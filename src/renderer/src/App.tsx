@@ -1,35 +1,39 @@
 import { useEffect, useRef, useState } from "react"
-import { ArrowDown, ArrowUp, FolderOpen, Plus, X } from "lucide-react"
+import { ArrowUp, FileText, FolderOpen, Plus, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Markdown } from "@/components/markdown"
 import { VIEW_TO_MODE, type View } from "@/components/sidebar"
-import type { Message } from "@/types"
+import {
+  MessageScrollerProvider,
+  MessageScroller,
+  MessageScrollerViewport,
+  MessageScrollerContent,
+  MessageScrollerItem,
+  MessageScrollerButton,
+} from "@/components/ui/message-scroller"
+import { Message, MessageContent } from "@/components/ui/message"
+import { Bubble, BubbleContent } from "@/components/ui/bubble"
+import { Marker, MarkerIcon, MarkerContent } from "@/components/ui/marker"
+import { Spinner } from "@/components/ui/spinner"
+import {
+  Attachment,
+  AttachmentGroup,
+  AttachmentMedia,
+  AttachmentContent,
+  AttachmentTitle,
+  AttachmentActions,
+  AttachmentAction,
+} from "@/components/ui/attachment"
+import { ToolGroup } from "@/components/tool-group"
+import {
+  buildTimeline,
+  toToolUse,
+  isErrorResult,
+  baseName as lastSegment,
+  type TimelineItem,
+  type ToolUse,
+} from "@/lib/timeline"
 import { cn } from "@/lib/utils"
-
-interface ChatMessage {
-  role: "user" | "assistant"
-  content: string
-}
-
-// Shows only the last segment of a path, e.g. "/Users/me/perficient" -> "perficient".
-function lastSegment(path: string) {
-  const parts = path.replace(/[/\\]+$/, "").split(/[/\\]/)
-  return parts[parts.length - 1] || path
-}
-
-// Map stored messages to the renderer's two-bubble shape: only user and
-// non-empty assistant text rows are shown. Tool rows and tool-call-only
-// assistant rows stay in the DB (for the LLM) but aren't rendered.
-function toChatMessages(rows: Message[]): ChatMessage[] {
-  return rows
-    .filter(
-      (m) =>
-        (m.role === "user" || m.role === "assistant") &&
-        !!m.content &&
-        m.content.trim().length > 0
-    )
-    .map((m) => ({ role: m.role as "user" | "assistant", content: m.content! }))
-}
 
 export default function App({
   view,
@@ -49,12 +53,15 @@ export default function App({
   const [workspace, setWorkspace] = useState("")
   const [attachments, setAttachments] = useState<string[]>([])
   const [message, setMessage] = useState("")
-  const [messages, setMessages] = useState<ChatMessage[]>([])
+  // The persisted transcript, rebuilt from stored rows (text bubbles + tool
+  // groups, interleaved in order). Live in-flight state is held separately.
+  const [timeline, setTimeline] = useState<TimelineItem[]>([])
   const [loading, setLoading] = useState(false)
-  const [tool, setTool] = useState<string | null>(null)
+  // The in-flight assistant turn: streamed text and the tool calls as they run.
+  // Rendered live, then replaced by the reconciled `timeline` when the turn ends.
+  const [liveText, setLiveText] = useState("")
+  const [liveTools, setLiveTools] = useState<ToolUse[]>([])
 
-  const scrollRef = useRef<HTMLDivElement>(null)
-  const [atBottom, setAtBottom] = useState(true)
   // The conversation the panel is currently showing. Used to ignore a settling
   // turn's reconcile if the user switched conversations mid-stream.
   const viewingRef = useRef<string | null>(conversationId)
@@ -63,32 +70,16 @@ export default function App({
   const canSend =
     !!message.trim() && !loading && (isChat || !!workspace.trim())
 
-  const scrollToBottom = (behavior: ScrollBehavior = "smooth") =>
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior })
-
-  // Track whether the user is at (or near) the bottom. Scrolling up sets this
-  // false, which cancels auto-scroll; scrolling back down re-enables it.
-  function handleScroll() {
-    const el = scrollRef.current
-    if (!el) return
-    const distance = el.scrollHeight - el.scrollTop - el.clientHeight
-    setAtBottom(distance < 80)
-  }
-
-  // Auto-scroll to follow new content, but only while the user is pinned to the
-  // bottom — never yank them back up if they've scrolled away to read.
-  useEffect(() => {
-    if (atBottom) scrollToBottom()
-  }, [messages, loading, atBottom])
-
   // Load the active conversation when it changes. A null id is a fresh,
   // not-yet-created conversation: clear the panel. Otherwise reload its stored
   // messages and linked workspace (so reopening restores both).
   useEffect(() => {
     let cancelled = false
     viewingRef.current = conversationId
+    setLiveText("")
+    setLiveTools([])
     if (!conversationId) {
-      setMessages([])
+      setTimeline([])
       setWorkspace("")
       setAttachments([])
       return
@@ -98,7 +89,7 @@ export default function App({
       window.cowork.db.conversations.get(conversationId),
     ]).then(async ([rows, convo]) => {
       if (cancelled) return
-      setMessages(toChatMessages(rows))
+      setTimeline(buildTimeline(rows))
       setAttachments([])
       if (convo?.workspaceId) {
         const ws = await window.cowork.db.workspaces.list()
@@ -129,10 +120,7 @@ export default function App({
         }
       }
     } catch (error) {
-      setMessages((prev) => [
-        ...prev,
-        { role: "assistant", content: error instanceof Error ? error.message : "Picker failed" },
-      ])
+      pushError(error)
     }
   }
 
@@ -144,11 +132,17 @@ export default function App({
         setAttachments((prev) => [...new Set([...prev, ...data.paths!])])
       }
     } catch (error) {
-      setMessages((prev) => [
-        ...prev,
-        { role: "assistant", content: error instanceof Error ? error.message : "Picker failed" },
-      ])
+      pushError(error)
     }
+  }
+
+  // Surface a picker failure as an assistant text item in the transcript.
+  function pushError(error: unknown) {
+    const content = error instanceof Error ? error.message : "Picker failed"
+    setTimeline((prev) => [
+      ...prev,
+      { kind: "text", key: `err-${prev.length}`, role: "assistant", content },
+    ])
   }
 
   function removeAttachment(path: string) {
@@ -178,28 +172,17 @@ export default function App({
       isNew = true
     }
 
-    // Append the user message and an empty assistant bubble to stream into.
-    setMessages((prev) => [
+    // Optimistically append the user message; the assistant turn renders from
+    // the transient live state below until the turn settles and reconciles.
+    setTimeline((prev) => [
       ...prev,
-      { role: "user", content: text },
-      { role: "assistant", content: "" },
+      { kind: "text", key: `local-${convoId}-${prev.length}`, role: "user", content: text },
     ])
     setMessage("")
     setAttachments([])
+    setLiveText("")
+    setLiveTools([])
     setLoading(true)
-    // Sending re-engages auto-scroll so the user follows their own message,
-    // even if they'd scrolled up while reading earlier replies.
-    setAtBottom(true)
-    setTool(null)
-
-    // Append a streamed token to the last (assistant) bubble.
-    const appendToLast = (delta: string) =>
-      setMessages((prev) => {
-        const next = [...prev]
-        const last = next[next.length - 1]
-        next[next.length - 1] = { ...last, content: last.content + delta }
-        return next
-      })
 
     try {
       const data = await window.cowork.chat(
@@ -212,37 +195,53 @@ export default function App({
         },
         (event) => {
           if (event.type === "token") {
-            appendToLast(event.delta)
-          } else if (event.type === "tool") {
-            setTool(event.phase === "start" ? event.name : null)
+            setLiveText((s) => s + event.delta)
+          } else if (event.type === "tool" && event.phase === "start") {
+            // A tool started — add a running row (label derived from its args).
+            setLiveTools((prev) => [
+              ...prev,
+              toToolUse({ id: event.id, name: event.name, arguments: event.arguments }),
+            ])
+          } else if (event.type === "tool" && event.phase === "done") {
+            // Its result arrived — attach it and flip status (matched by id).
+            setLiveTools((prev) =>
+              prev.map((t) =>
+                t.id === event.id
+                  ? {
+                      ...t,
+                      result: event.result,
+                      status: isErrorResult(event.result) ? "error" : "done",
+                    }
+                  : t
+              )
+            )
           }
         }
       )
-      // On error (or if nothing streamed), fill the bubble with the final text.
+      // If nothing streamed, surface the final text/error in the live bubble.
+      // (Transient — immediately superseded by the reconcile below.)
       if (data.error) {
-        appendToLast(`Error: ${data.error}`)
+        setLiveText((s) => s || `Error: ${data.error}`)
       } else if (data.content) {
-        setMessages((prev) => {
-          const next = [...prev]
-          const last = next[next.length - 1]
-          if (!last.content) next[next.length - 1] = { ...last, content: data.content! }
-          return next
-        })
+        setLiveText((s) => s || data.content!)
       }
     } catch (error) {
-      appendToLast(error instanceof Error ? error.message : "Request failed")
+      setLiveText((s) => s || (error instanceof Error ? error.message : "Request failed"))
     } finally {
       setLoading(false)
-      setTool(null)
-      // Reconcile the optimistic bubbles with the persisted transcript so the
-      // rendered text matches storage exactly — but only if the user is still
-      // viewing this conversation (for an existing one). A freshly created
-      // conversation is promoted to active just below, which reloads anyway.
+      // Reconcile the live turn with the persisted transcript so the rendered
+      // content matches storage exactly — but only if the user is still viewing
+      // this conversation. A freshly created one is promoted to active just
+      // below, which reloads anyway.
       const stillViewing = isNew || viewingRef.current === convoId
       if (stillViewing) {
         try {
           const rows = await window.cowork.db.messages.list(convoId)
-          if (viewingRef.current === convoId || isNew) setMessages(toChatMessages(rows))
+          if (viewingRef.current === convoId || isNew) {
+            setTimeline(buildTimeline(rows))
+            setLiveText("")
+            setLiveTools([])
+          }
         } catch {
           // Keep the optimistic view if the reconcile read fails.
         }
@@ -257,33 +256,34 @@ export default function App({
   // Before the first message is sent, an empty session shows the composer
   // centered (an inviting "start typing" state). Once there are messages it
   // moves to its usual bottom-pinned position.
-  const isEmpty = messages.length === 0
+  const isEmpty = timeline.length === 0 && !loading
 
   // The composer (attachment chips + input box). Rendered both centered and
   // bottom-pinned, so it's defined once here.
   const composer = (
     <>
-      {/* Attachment chips (Chat only) — removable, shown above the input. */}
+      {/* Attachment cards (Chat only) — removable, shown above the input. */}
       {isChat && attachments.length > 0 && (
-        <div className="mb-2 flex flex-wrap gap-1.5">
+        <AttachmentGroup className="mb-2">
           {attachments.map((path) => (
-            <span
-              key={path}
-              className="flex items-center gap-1 rounded-md border bg-muted px-2 py-1 text-xs text-foreground"
-              title={path}
-            >
-              <span className="max-w-40 truncate">{lastSegment(path)}</span>
-              <button
-                type="button"
-                onClick={() => removeAttachment(path)}
-                aria-label={`Remove ${lastSegment(path)}`}
-                className="text-muted-foreground transition-colors hover:text-foreground"
-              >
-                <X className="size-3.5" />
-              </button>
-            </span>
+            <Attachment key={path} size="sm" title={path}>
+              <AttachmentMedia variant="icon">
+                <FileText />
+              </AttachmentMedia>
+              <AttachmentContent>
+                <AttachmentTitle>{lastSegment(path)}</AttachmentTitle>
+              </AttachmentContent>
+              <AttachmentActions>
+                <AttachmentAction
+                  onClick={() => removeAttachment(path)}
+                  aria-label={`Remove ${lastSegment(path)}`}
+                >
+                  <X />
+                </AttachmentAction>
+              </AttachmentActions>
+            </Attachment>
           ))}
-        </div>
+        </AttachmentGroup>
       )}
       <div className="rounded-2xl border border-input bg-transparent focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50">
         <textarea
@@ -362,56 +362,81 @@ export default function App({
 
   return (
     <div className="relative flex h-svh w-full flex-col overflow-hidden">
-      {/* Conversation (the window drag bar lives in Shell, above this column) */}
-      <div ref={scrollRef} onScroll={handleScroll} className="relative min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto flex w-full max-w-[min(90%,72rem)] flex-col gap-4 px-4 py-6">
-          {messages.map((m, i) => {
-            const isLast = i === messages.length - 1
-            // The streaming assistant bubble shows a status until tokens arrive.
-            const pending = m.role === "assistant" && !m.content && isLast && loading
-            return (
-              <div
-                key={i}
-                className={cn("flex", m.role === "user" ? "justify-end" : "justify-start")}
-              >
-                <div
-                  className={cn(
-                    "max-w-[80%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed",
-                    m.role === "user"
-                      ? "bg-primary text-primary-foreground whitespace-pre-wrap"
-                      : "bg-muted text-foreground",
-                    pending && "text-muted-foreground"
-                  )}
-                >
-                  {pending ? (
-                    tool ? (
-                      `Using ${tool}…`
-                    ) : (
-                      "Thinking…"
-                    )
-                  ) : m.role === "assistant" ? (
-                    <Markdown content={m.content} />
-                  ) : (
-                    m.content
-                  )}
-                </div>
-              </div>
-            )
-          })}
-        </div>
-      </div>
+      {/* Conversation — MessageScroller handles auto-follow + scroll-to-bottom.
+          The window drag bar lives in Shell, above this column. */}
+      <MessageScrollerProvider autoScroll defaultScrollPosition="last-anchor">
+        <MessageScroller className="min-h-0 flex-1">
+          <MessageScrollerViewport>
+            <MessageScrollerContent className="mx-auto w-full max-w-[min(90%,72rem)] gap-4 px-4 py-6">
+              {timeline.map((item, i) => {
+                const isLast = i === timeline.length - 1 && !loading
+                if (item.kind === "tools") {
+                  return (
+                    <MessageScrollerItem key={item.key} scrollAnchor={isLast}>
+                      <Message align="start">
+                        <MessageContent>
+                          <ToolGroup calls={item.calls} />
+                        </MessageContent>
+                      </Message>
+                    </MessageScrollerItem>
+                  )
+                }
+                const align = item.role === "user" ? "end" : "start"
+                return (
+                  <MessageScrollerItem key={item.key} scrollAnchor={isLast}>
+                    <Message align={align}>
+                      <MessageContent>
+                        <Bubble
+                          align={align}
+                          variant={item.role === "user" ? "default" : "muted"}
+                        >
+                          <BubbleContent
+                            className={cn(item.role === "user" && "whitespace-pre-wrap")}
+                          >
+                            {item.role === "assistant" ? (
+                              <Markdown content={item.content} />
+                            ) : (
+                              item.content
+                            )}
+                          </BubbleContent>
+                        </Bubble>
+                      </MessageContent>
+                    </Message>
+                  </MessageScrollerItem>
+                )
+              })}
 
-      {/* Scroll-to-bottom button — shown only when the user has scrolled up. */}
-      {!atBottom && messages.length > 0 && (
-        <button
-          type="button"
-          onClick={() => scrollToBottom()}
-          aria-label="Scroll to bottom"
-          className="absolute bottom-32 left-1/2 z-10 -translate-x-1/2 rounded-full border bg-background p-2 text-muted-foreground shadow-md transition-colors hover:text-foreground"
-        >
-          <ArrowDown className="size-4" />
-        </button>
-      )}
+              {/* The in-flight assistant turn: tool activity, then streamed text,
+                  with a "Thinking…" status for the gap before the first event. */}
+              {loading && (
+                <MessageScrollerItem key="live" scrollAnchor>
+                  <Message align="start">
+                    <MessageContent>
+                      {liveTools.length > 0 && <ToolGroup calls={liveTools} />}
+                      {liveText ? (
+                        <Bubble align="start" variant="muted">
+                          <BubbleContent>
+                            <Markdown content={liveText} />
+                          </BubbleContent>
+                        </Bubble>
+                      ) : liveTools.length === 0 ? (
+                        <Marker>
+                          <MarkerIcon>
+                            <Spinner />
+                          </MarkerIcon>
+                          <MarkerContent>Thinking…</MarkerContent>
+                        </Marker>
+                      ) : null}
+                    </MessageContent>
+                  </Message>
+                </MessageScrollerItem>
+              )}
+            </MessageScrollerContent>
+          </MessageScrollerViewport>
+          {/* Scroll-to-bottom button — self-manages its visibility. */}
+          <MessageScrollerButton direction="end" />
+        </MessageScroller>
+      </MessageScrollerProvider>
 
       {/* Composer */}
       <div className="border-t bg-background">
