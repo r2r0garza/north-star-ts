@@ -18,6 +18,16 @@ import {
   ContextMenuItem,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
 import { ButtonGroup } from "@/components/ui/button-group"
 import type { Conversation, Mode } from "@/types"
@@ -146,6 +156,9 @@ export function AppSidebar({
   refreshKey: number
 }) {
   const [conversations, setConversations] = useState<Conversation[]>([])
+  // The conversation awaiting delete confirmation, if any. Set by a row's
+  // Delete action; cleared on confirm or cancel.
+  const [pendingDelete, setPendingDelete] = useState<Conversation | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -168,12 +181,15 @@ export function AppSidebar({
     await window.cowork.db.conversations.update(id, { title })
   }
 
-  async function deleteConversation(id: string) {
+  async function confirmDelete() {
+    const target = pendingDelete
+    if (!target) return
+    setPendingDelete(null)
     // Optimistic removal from the list, then persist + notify the shell (which
     // clears the active conversation if it was the one deleted).
-    setConversations((prev) => prev.filter((c) => c.id !== id))
-    await window.cowork.db.conversations.delete(id)
-    onConversationDeleted(id)
+    setConversations((prev) => prev.filter((c) => c.id !== target.id))
+    await window.cowork.db.conversations.delete(target.id)
+    onConversationDeleted(target.id)
   }
 
   return (
@@ -229,7 +245,7 @@ export function AppSidebar({
                   isActive={c.id === activeConversationId}
                   onSelect={() => onSelectConversation(c.id, c.mode)}
                   onRename={(title) => renameConversation(c.id, title)}
-                  onDelete={() => deleteConversation(c.id)}
+                  onDelete={() => setPendingDelete(c)}
                 />
               ))}
             </SidebarMenu>
@@ -237,6 +253,30 @@ export function AppSidebar({
         </SidebarGroup>
       </SidebarContent>
       <SidebarFooter />
+
+      {/* Confirmation before deleting a session — deletion is irreversible. */}
+      <AlertDialog
+        open={pendingDelete !== null}
+        onOpenChange={(open) => {
+          if (!open) setPendingDelete(null)
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete this session?</AlertDialogTitle>
+            <AlertDialogDescription>
+              “{pendingDelete?.title ?? "Untitled"}” and all of its messages will
+              be permanently deleted. This can’t be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction variant="destructive" onClick={confirmDelete}>
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </Sidebar>
   )
 }
