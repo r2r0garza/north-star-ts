@@ -4,11 +4,11 @@ import { resolveInWorkspace } from "./workspace"
 
 // Lists files at a path within the workspace. Uses fs.readdir (no shell) and
 // confines all access to the workspace root to avoid escape/injection.
-export const ls: Tool = {
+export const listFilesTool: Tool = {
   definition: {
     type: "function",
     function: {
-      name: "ls",
+      name: "list_files_tool",
       description:
         "List the files and directories at a given path inside the workspace.",
       parameters: {

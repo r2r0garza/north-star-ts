@@ -1,8 +1,8 @@
 import type { Tool, ToolContext } from "./types"
-import { ls } from "./ls"
+import { listFilesTool } from "./list_files_tool"
 
 // Register tools here — add a new tool by importing it and listing it below.
-const registry: Tool[] = [ls]
+const registry: Tool[] = [listFilesTool]
 
 // Schemas sent to the model (the `tools` array in the chat request).
 export const toolDefinitions = registry.map((t) => t.definition)

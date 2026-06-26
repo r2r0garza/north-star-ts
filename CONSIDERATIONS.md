@@ -89,3 +89,28 @@ restart. Two options:
   2. **Cache with invalidation** — keep the cache but watch the file (fs watch)
      or compare mtime, reloading only when it changes.
 Option 1 is simplest and consistent with the skills behavior.
+
+## 5. Chat attachments are inlined whole, as UTF-8, with a per-file size cap
+
+**Where:** `src/main/agent/index.ts` (`buildAttachmentsText`, `MAX_ATTACHMENT_BYTES`),
+fed by the Chat view's file picker in `src/renderer/src/App.tsx`. See
+`.decisions/007-view-switcher-chat-attachments.md`.
+
+**Behavior:** In the Chat view (no workspace), each attached file is read with
+`readFile(p, "utf8")` and inlined into the user message as a labeled fenced
+block. Files over **256 KB** are skipped with a short note; so are files that
+fail to read or aren't regular files. There is **no content-type detection** —
+a binary file (image, PDF, zip) is decoded as UTF-8 and inlined as garbage — and
+**no token budgeting**: attaching many files near the cap can still blow past the
+model's context window, and `max_tokens` is a fixed 1024.
+
+**Why it's fine now:** Chat is aimed at small text files (code, config, notes).
+A hard per-file byte cap is a cheap guard against a stray huge file, and inlining
+keeps Chat mode free of any filesystem access (the model gets no tools that touch
+disk). Keeping it dumb avoids premature complexity.
+
+**Change if:** users attach binaries or large/many files. Then: sniff content
+type and reject or special-case binaries (e.g. base64 image parts if the model
+supports vision); budget total inlined bytes against the context window, not just
+per file; and consider streaming large files through a tool/RAG instead of
+inlining. If Chat ever gains a workspace, prefer filesystem tools over inlining.

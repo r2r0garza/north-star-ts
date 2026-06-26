@@ -13,7 +13,7 @@ const api = {
   // the returned promise resolves with the final result. The event listener is
   // attached only for the duration of the turn and removed when it settles.
   chat: (
-    req: { message: string; workspace: string },
+    req: { message: string; workspace?: string; attachments?: string[] },
     onEvent?: (event: ChatEvent) => void
   ) => {
     const listener = (_e: IpcRendererEvent, event: ChatEvent) => onEvent?.(event)
@@ -27,6 +27,12 @@ const api = {
   pickWorkspace: () =>
     ipcRenderer.invoke("pick-workspace") as Promise<{
       path?: string
+      canceled?: boolean
+    }>,
+  // Native multi-file picker for Chat attachments.
+  pickFiles: () =>
+    ipcRenderer.invoke("pick-files") as Promise<{
+      paths?: string[]
       canceled?: boolean
     }>,
   // Whether the window is currently fullscreen (macOS traffic lights hidden).

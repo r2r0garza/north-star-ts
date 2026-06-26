@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react"
-import { ArrowDown, ArrowUp, FolderOpen } from "lucide-react"
+import { ArrowDown, ArrowUp, FolderOpen, Plus, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Markdown } from "@/components/markdown"
+import type { View } from "@/components/sidebar"
 import { cn } from "@/lib/utils"
 
 interface ChatMessage {
@@ -15,8 +16,13 @@ function lastSegment(path: string) {
   return parts[parts.length - 1] || path
 }
 
-export default function App() {
+export default function App({ view }: { view: View }) {
+  // Chat runs without a workspace and attaches files instead; North Star and
+  // Interactive are workspace-backed and share the same behavior.
+  const isChat = view === "Chat"
+
   const [workspace, setWorkspace] = useState("")
+  const [attachments, setAttachments] = useState<string[]>([])
   const [message, setMessage] = useState("")
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [loading, setLoading] = useState(false)
@@ -24,7 +30,10 @@ export default function App() {
 
   const scrollRef = useRef<HTMLDivElement>(null)
   const [atBottom, setAtBottom] = useState(true)
-  const canSend = !!message.trim() && !!workspace.trim() && !loading
+  // Chat needs only a message (a file is optional); the workspace views need a
+  // selected folder as well.
+  const canSend =
+    !!message.trim() && !loading && (isChat || !!workspace.trim())
 
   const scrollToBottom = (behavior: ScrollBehavior = "smooth") =>
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior })
@@ -56,9 +65,29 @@ export default function App() {
     }
   }
 
+  async function attachFiles() {
+    try {
+      const data = await window.cowork.pickFiles()
+      if (data.paths?.length) {
+        // Merge with existing, de-duplicating by path.
+        setAttachments((prev) => [...new Set([...prev, ...data.paths!])])
+      }
+    } catch (error) {
+      setMessages((prev) => [
+        ...prev,
+        { role: "assistant", content: error instanceof Error ? error.message : "Picker failed" },
+      ])
+    }
+  }
+
+  function removeAttachment(path: string) {
+    setAttachments((prev) => prev.filter((p) => p !== path))
+  }
+
   async function sendMessage() {
     if (!canSend) return
     const text = message.trim()
+    const sentAttachments = attachments
     // Append the user message and an empty assistant bubble to stream into.
     setMessages((prev) => [
       ...prev,
@@ -66,6 +95,7 @@ export default function App() {
       { role: "assistant", content: "" },
     ])
     setMessage("")
+    setAttachments([])
     setLoading(true)
     // Sending re-engages auto-scroll so the user follows their own message,
     // even if they'd scrolled up while reading earlier replies.
@@ -83,7 +113,12 @@ export default function App() {
 
     try {
       const data = await window.cowork.chat(
-        { message: text, workspace: workspace.trim() },
+        {
+          message: text,
+          // Chat sends no workspace and inlines attachments instead.
+          workspace: isChat ? undefined : workspace.trim(),
+          attachments: isChat ? sentAttachments : undefined,
+        },
         (event) => {
           if (event.type === "token") {
             appendToLast(event.delta)
@@ -118,8 +153,17 @@ export default function App() {
         <div className="mx-auto flex w-full max-w-[min(90%,72rem)] flex-col gap-4 px-4 py-6">
           {messages.length === 0 && (
             <div className="mt-24 text-center text-sm text-muted-foreground">
-              <p className="font-medium text-foreground">Cowork</p>
-              <p>Pick a workspace folder, then ask the agent about it.</p>
+              {isChat ? (
+                <>
+                  <p className="font-medium text-foreground">Chat</p>
+                  <p>Ask anything. Attach files with the + button.</p>
+                </>
+              ) : (
+                <>
+                  <p className="font-medium text-foreground">Cowork</p>
+                  <p>Pick a workspace folder, then ask the agent about it.</p>
+                </>
+              )}
             </div>
           )}
           {messages.map((m, i) => {
@@ -173,6 +217,28 @@ export default function App() {
       {/* Composer */}
       <div className="border-t bg-background">
         <div className="mx-auto w-full max-w-[min(90%,72rem)] px-4 py-4">
+          {/* Attachment chips (Chat only) — removable, shown above the input. */}
+          {isChat && attachments.length > 0 && (
+            <div className="mb-2 flex flex-wrap gap-1.5">
+              {attachments.map((path) => (
+                <span
+                  key={path}
+                  className="flex items-center gap-1 rounded-md border bg-muted px-2 py-1 text-xs text-foreground"
+                  title={path}
+                >
+                  <span className="max-w-40 truncate">{lastSegment(path)}</span>
+                  <button
+                    type="button"
+                    onClick={() => removeAttachment(path)}
+                    aria-label={`Remove ${lastSegment(path)}`}
+                    className="text-muted-foreground transition-colors hover:text-foreground"
+                  >
+                    <X className="size-3.5" />
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
           <div className="rounded-2xl border border-input bg-transparent focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50">
             <textarea
               value={message}
@@ -188,15 +254,27 @@ export default function App() {
               className="field-sizing-content max-h-[24.25rem] w-full resize-none bg-transparent px-4 py-3 text-sm leading-relaxed outline-none placeholder:text-muted-foreground"
             />
             <div className="flex items-center justify-between px-2.5 pb-2.5">
-              <button
-                type="button"
-                onClick={pickWorkspace}
-                title="Select workspace folder"
-                className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-              >
-                <FolderOpen className="size-4" />
-                {workspace && <span className="max-w-40 truncate">{lastSegment(workspace)}</span>}
-              </button>
+              {isChat ? (
+                <button
+                  type="button"
+                  onClick={attachFiles}
+                  title="Attach files"
+                  aria-label="Attach files"
+                  className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                >
+                  <Plus className="size-4" />
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={pickWorkspace}
+                  title="Select workspace folder"
+                  className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                >
+                  <FolderOpen className="size-4" />
+                  {workspace && <span className="max-w-40 truncate">{lastSegment(workspace)}</span>}
+                </button>
+              )}
               <Button
                 type="button"
                 size="icon"

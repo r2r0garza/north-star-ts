@@ -49,4 +49,7 @@ read-only response box) with a proper chat interface:
   the scroller.
 - **Fluid width** chosen over a fixed cap so the chat doesn't sit in a narrow
   column on large/fullscreen windows, while `72rem` keeps line lengths readable.
-- Send requires a workspace (the `chat` IPC contract needs one).
+- Send requires a workspace (the `chat` IPC contract needs one). **Partially
+  superseded by [007](007-view-switcher-chat-attachments.md):** still true for
+  North Star / Interactive, but the Chat view sends with no workspace and
+  attaches files instead.

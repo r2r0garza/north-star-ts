@@ -1,6 +1,6 @@
 import { Portkey } from "portkey-ai"
-import { stat } from "fs/promises"
-import { isAbsolute } from "path"
+import { stat, readFile } from "fs/promises"
+import { basename, isAbsolute } from "path"
 import { toolDefinitions, runTool } from "./tools"
 import { loadSkills } from "./skills/loader"
 import { buildSkillsPrompt } from "./skills/prompt"
@@ -26,7 +26,36 @@ function getClient(): Portkey {
 
 export interface ChatRequest {
   message: string
-  workspace: string
+  // The directory the agent's filesystem tools are confined to. Optional: the
+  // Chat view runs without a workspace and relies on inlined attachments.
+  workspace?: string
+  // Absolute paths of files to inline into the prompt (Chat view attachments).
+  attachments?: string[]
+}
+
+// Cap inlined attachment size so a stray large file can't blow the prompt.
+const MAX_ATTACHMENT_BYTES = 256 * 1024
+
+// Read each attachment and format it as a labeled, fenced block. Unreadable
+// files become a short note rather than failing the whole turn.
+async function buildAttachmentsText(paths: string[]): Promise<string> {
+  const blocks = await Promise.all(
+    paths.map(async (p) => {
+      try {
+        const info = await stat(p)
+        if (!info.isFile()) return `--- ${basename(p)} (skipped: not a file) ---`
+        if (info.size > MAX_ATTACHMENT_BYTES) {
+          return `--- ${basename(p)} (skipped: ${info.size} bytes exceeds ${MAX_ATTACHMENT_BYTES}) ---`
+        }
+        const content = await readFile(p, "utf8")
+        return `--- ${basename(p)} ---\n${content}`
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : "unreadable"
+        return `--- ${basename(p)} (skipped: ${reason}) ---`
+      }
+    })
+  )
+  return blocks.join("\n\n")
 }
 
 export interface ChatResult {
@@ -57,37 +86,56 @@ function contentToText(content: unknown): string {
 // Streams tokens and tool activity through `onEvent`, and returns the final
 // result object — IPC serializes it back to the renderer.
 export async function runChat(
-  { message, workspace }: ChatRequest,
+  { message, workspace, attachments }: ChatRequest,
   onEvent: OnEvent = () => {}
 ): Promise<ChatResult> {
-  // The workspace is the absolute directory the agent is confined to.
-  if (typeof workspace !== "string" || !isAbsolute(workspace)) {
-    return { error: "A valid absolute workspace path is required." }
-  }
-  try {
-    const info = await stat(workspace)
-    if (!info.isDirectory()) {
-      return { error: `Workspace is not a directory: ${workspace}` }
+  // The workspace is optional. When provided it must be a real directory and
+  // the agent's filesystem tools are confined to it; the Chat view sends no
+  // workspace and relies on inlined attachments instead.
+  const hasWorkspace = typeof workspace === "string" && workspace.length > 0
+  if (hasWorkspace) {
+    if (!isAbsolute(workspace!)) {
+      return { error: "A valid absolute workspace path is required." }
     }
-  } catch {
-    return { error: `Workspace does not exist: ${workspace}` }
+    try {
+      const info = await stat(workspace!)
+      if (!info.isDirectory()) {
+        return { error: `Workspace is not a directory: ${workspace}` }
+      }
+    } catch {
+      return { error: `Workspace does not exist: ${workspace}` }
+    }
   }
 
-  // Load skills for this workspace (app-bundled → user → project, last-wins),
-  // then build the read_skill tool and the Skills System prompt section. Only
-  // skill metadata enters the prompt; bodies are fetched on demand via the tool.
-  const skills = await loadSkills(skillSources(workspace))
+  // Load skills (app-bundled → user → project, last-wins), then build the
+  // read_skill tool and the Skills System prompt section. Only skill metadata
+  // enters the prompt; bodies are fetched on demand via the tool. Filesystem
+  // tools are only offered when there's a workspace to confine them to.
+  const skills = await loadSkills(skillSources(hasWorkspace ? workspace : undefined))
   const readSkillTool = createReadSkillTool(skills)
-  const tools = [...toolDefinitions, readSkillTool.definition]
+  const tools = [
+    ...(hasWorkspace ? toolDefinitions : []),
+    readSkillTool.definition,
+  ]
   const skillsPrompt = buildSkillsPrompt(skills)
 
   let systemPrompt = await loadSystemPrompt()
   if (skillsPrompt) systemPrompt += `\n\n${skillsPrompt}`
 
+  // Inline any attached files into the user message so the model can read them
+  // without filesystem access (the Chat view has no workspace).
+  let userContent = message ?? "What files are in the workspace?"
+  if (attachments && attachments.length > 0) {
+    const attachmentsText = await buildAttachmentsText(attachments)
+    userContent = userContent
+      ? `${userContent}\n\nAttached files:\n\n${attachmentsText}`
+      : `Attached files:\n\n${attachmentsText}`
+  }
+
   // Conversation history — grows as the agent calls tools and we feed results back.
   const messages: any[] = [
     { role: "system", content: systemPrompt },
-    { role: "user", content: message ?? "What files are in the workspace?" },
+    { role: "user", content: userContent },
   ]
 
   try {
@@ -168,10 +216,13 @@ export async function runChat(
       for (const call of toolCalls) {
         onEvent({ type: "tool", name: call.name, phase: "start" })
         const args = JSON.parse(call.arguments || "{}")
+        // read_skill ignores the workspace; filesystem tools are only offered
+        // when a workspace exists, so `?? ""` is never reached by them.
+        const ctx = { workspace: workspace ?? "" }
         const result =
           call.name === readSkillTool.definition.function.name
-            ? await readSkillTool.execute(args, { workspace })
-            : await runTool(call.name, args, { workspace })
+            ? await readSkillTool.execute(args, ctx)
+            : await runTool(call.name, args, ctx)
         onEvent({ type: "tool", name: call.name, phase: "done" })
         messages.push({
           role: "tool",

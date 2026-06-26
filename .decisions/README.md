@@ -16,6 +16,7 @@ away. For live, still-open trade-offs see `CONSIDERATIONS.md` at the repo root.
 - [004 — Markdown / Mermaid / code rendering](004-markdown-rendering.md)
 - [005 — Window chrome & sidebar](005-window-chrome-sidebar.md)
 - [006 — Externalized system prompt](006-system-prompt.md)
+- [007 — View switcher, Chat mode & file attachments](007-view-switcher-chat-attachments.md)
 
 ## Context
 

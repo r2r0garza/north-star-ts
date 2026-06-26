@@ -9,7 +9,7 @@ import { config as loadEnv } from "dotenv"
 loadEnv({ path: join(app.getAppPath(), ".env.local") })
 
 import { runChat, type ChatRequest } from "./agent"
-import { pickWorkspace } from "./pick-workspace"
+import { pickWorkspace, pickFiles } from "./pick-workspace"
 
 function createWindow(): void {
   const mainWindow = new BrowserWindow({
@@ -66,6 +66,7 @@ ipcMain.handle("chat", (event, req: ChatRequest) =>
   })
 )
 ipcMain.handle("pick-workspace", () => pickWorkspace())
+ipcMain.handle("pick-files", () => pickFiles())
 // Initial fullscreen state, queried by the renderer on mount.
 ipcMain.handle("is-fullscreen", (event) => {
   const win = BrowserWindow.fromWebContents(event.sender)
