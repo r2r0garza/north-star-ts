@@ -11,11 +11,11 @@
 # testing
 /coverage
 
-# next.js
-/.next/
+# electron-vite build output
 /out/
 
-# production
+# electron-builder packaged apps
+/dist/
 /build
 
 # misc
@@ -33,4 +33,3 @@ pnpm-debug.log*
 
 # typescript
 *.tsbuildinfo
-next-env.d.ts

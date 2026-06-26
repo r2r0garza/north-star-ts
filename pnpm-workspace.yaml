@@ -4,3 +4,6 @@ allowBuilds:
   sharp: true
   unrs-resolver: true
   msw: false
+  electron: true
+  esbuild: true
+  electron-winstaller: true

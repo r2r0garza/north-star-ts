@@ -1,0 +1,215 @@
+import { useEffect, useRef, useState } from "react"
+import { ArrowDown, ArrowUp, FolderOpen } from "lucide-react"
+import { Button } from "@/components/ui/button"
+import { Markdown } from "@/components/markdown"
+import { cn } from "@/lib/utils"
+
+interface ChatMessage {
+  role: "user" | "assistant"
+  content: string
+}
+
+// Shows only the last segment of a path, e.g. "/Users/me/perficient" -> "perficient".
+function lastSegment(path: string) {
+  const parts = path.replace(/[/\\]+$/, "").split(/[/\\]/)
+  return parts[parts.length - 1] || path
+}
+
+export default function App() {
+  const [workspace, setWorkspace] = useState("")
+  const [message, setMessage] = useState("")
+  const [messages, setMessages] = useState<ChatMessage[]>([])
+  const [loading, setLoading] = useState(false)
+  const [tool, setTool] = useState<string | null>(null)
+
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const [atBottom, setAtBottom] = useState(true)
+  const canSend = !!message.trim() && !!workspace.trim() && !loading
+
+  const scrollToBottom = (behavior: ScrollBehavior = "smooth") =>
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior })
+
+  // Track whether the user is at (or near) the bottom. Scrolling up sets this
+  // false, which cancels auto-scroll; scrolling back down re-enables it.
+  function handleScroll() {
+    const el = scrollRef.current
+    if (!el) return
+    const distance = el.scrollHeight - el.scrollTop - el.clientHeight
+    setAtBottom(distance < 80)
+  }
+
+  // Auto-scroll to follow new content, but only while the user is pinned to the
+  // bottom — never yank them back up if they've scrolled away to read.
+  useEffect(() => {
+    if (atBottom) scrollToBottom()
+  }, [messages, loading, atBottom])
+
+  async function pickWorkspace() {
+    try {
+      const data = await window.cowork.pickWorkspace()
+      if (data.path) setWorkspace(data.path)
+    } catch (error) {
+      setMessages((prev) => [
+        ...prev,
+        { role: "assistant", content: error instanceof Error ? error.message : "Picker failed" },
+      ])
+    }
+  }
+
+  async function sendMessage() {
+    if (!canSend) return
+    const text = message.trim()
+    // Append the user message and an empty assistant bubble to stream into.
+    setMessages((prev) => [
+      ...prev,
+      { role: "user", content: text },
+      { role: "assistant", content: "" },
+    ])
+    setMessage("")
+    setLoading(true)
+    // Sending re-engages auto-scroll so the user follows their own message,
+    // even if they'd scrolled up while reading earlier replies.
+    setAtBottom(true)
+    setTool(null)
+
+    // Append a streamed token to the last (assistant) bubble.
+    const appendToLast = (delta: string) =>
+      setMessages((prev) => {
+        const next = [...prev]
+        const last = next[next.length - 1]
+        next[next.length - 1] = { ...last, content: last.content + delta }
+        return next
+      })
+
+    try {
+      const data = await window.cowork.chat(
+        { message: text, workspace: workspace.trim() },
+        (event) => {
+          if (event.type === "token") {
+            appendToLast(event.delta)
+          } else if (event.type === "tool") {
+            setTool(event.phase === "start" ? event.name : null)
+          }
+        }
+      )
+      // On error (or if nothing streamed), fill the bubble with the final text.
+      if (data.error) {
+        appendToLast(`Error: ${data.error}`)
+      } else if (data.content) {
+        setMessages((prev) => {
+          const next = [...prev]
+          const last = next[next.length - 1]
+          if (!last.content) next[next.length - 1] = { ...last, content: data.content! }
+          return next
+        })
+      }
+    } catch (error) {
+      appendToLast(error instanceof Error ? error.message : "Request failed")
+    } finally {
+      setLoading(false)
+      setTool(null)
+    }
+  }
+
+  return (
+    <div className="relative flex h-svh w-full flex-col overflow-hidden">
+      {/* Conversation (the window drag bar lives in Shell, above this column) */}
+      <div ref={scrollRef} onScroll={handleScroll} className="relative min-h-0 flex-1 overflow-y-auto">
+        <div className="mx-auto flex w-full max-w-[min(90%,72rem)] flex-col gap-4 px-4 py-6">
+          {messages.length === 0 && (
+            <div className="mt-24 text-center text-sm text-muted-foreground">
+              <p className="font-medium text-foreground">Cowork</p>
+              <p>Pick a workspace folder, then ask the agent about it.</p>
+            </div>
+          )}
+          {messages.map((m, i) => {
+            const isLast = i === messages.length - 1
+            // The streaming assistant bubble shows a status until tokens arrive.
+            const pending = m.role === "assistant" && !m.content && isLast && loading
+            return (
+              <div
+                key={i}
+                className={cn("flex", m.role === "user" ? "justify-end" : "justify-start")}
+              >
+                <div
+                  className={cn(
+                    "max-w-[80%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed",
+                    m.role === "user"
+                      ? "bg-primary text-primary-foreground whitespace-pre-wrap"
+                      : "bg-muted text-foreground",
+                    pending && "text-muted-foreground"
+                  )}
+                >
+                  {pending ? (
+                    tool ? (
+                      `Using ${tool}…`
+                    ) : (
+                      "Thinking…"
+                    )
+                  ) : m.role === "assistant" ? (
+                    <Markdown content={m.content} />
+                  ) : (
+                    m.content
+                  )}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      </div>
+
+      {/* Scroll-to-bottom button — shown only when the user has scrolled up. */}
+      {!atBottom && messages.length > 0 && (
+        <button
+          type="button"
+          onClick={() => scrollToBottom()}
+          aria-label="Scroll to bottom"
+          className="absolute bottom-32 left-1/2 z-10 -translate-x-1/2 rounded-full border bg-background p-2 text-muted-foreground shadow-md transition-colors hover:text-foreground"
+        >
+          <ArrowDown className="size-4" />
+        </button>
+      )}
+
+      {/* Composer */}
+      <div className="border-t bg-background">
+        <div className="mx-auto w-full max-w-[min(90%,72rem)] px-4 py-4">
+          <div className="rounded-2xl border border-input bg-transparent focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50">
+            <textarea
+              value={message}
+              onChange={(e) => setMessage(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault()
+                  sendMessage()
+                }
+              }}
+              rows={2}
+              placeholder="Send a message…"
+              className="field-sizing-content max-h-[24.25rem] w-full resize-none bg-transparent px-4 py-3 text-sm leading-relaxed outline-none placeholder:text-muted-foreground"
+            />
+            <div className="flex items-center justify-between px-2.5 pb-2.5">
+              <button
+                type="button"
+                onClick={pickWorkspace}
+                title="Select workspace folder"
+                className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+              >
+                <FolderOpen className="size-4" />
+                {workspace && <span className="max-w-40 truncate">{lastSegment(workspace)}</span>}
+              </button>
+              <Button
+                type="button"
+                size="icon"
+                onClick={sendMessage}
+                disabled={!canSend}
+                className="size-8 rounded-full"
+              >
+                <ArrowUp className="size-4" />
+              </Button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}

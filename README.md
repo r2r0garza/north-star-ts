@@ -1,21 +1,70 @@
-# Next.js template
+# Cowork
 
-This is a Next.js template with shadcn/ui.
+A desktop AI agent (Electron + Vite + React) that works inside a user-selected
+workspace folder. The agent talks to Claude via a Portkey gateway and can call
+server-side tools (e.g. `ls`) that are confined to the chosen workspace.
 
-## Adding components
+## Architecture
 
-To add components to your app, run the following command:
-
-```bash
-npx shadcn@latest add button
+```
+src/
+  main/          Electron main process (Node)
+    index.ts       window lifecycle + IPC handlers + .env.local loading
+    agent/         Portkey agentic loop + tools (ls, workspace confinement)
+    pick-workspace.ts  native OS folder picker (dialog.showOpenDialog)
+  preload/       contextBridge → window.cowork.{chat, pickWorkspace}
+  renderer/      React UI (Vite). @/* → src/renderer/src
 ```
 
-This will place the ui components in the `components` directory.
+The renderer never touches Node or the network directly — it calls the main
+process over IPC through the `window.cowork` bridge defined in `preload/`.
 
-## Using components
+## Scripts
 
-To use the components in your app, import them as follows:
+```bash
+pnpm dev        # run the app with HMR (electron-vite dev)
+pnpm build      # build all three processes into out/
+pnpm start      # preview the production build
+pnpm dist       # build + package a distributable (electron-builder)
+pnpm typecheck  # tsc --noEmit
+```
+
+## Configuration
+
+The Portkey API key is read from the environment, `NEXT_apiKey` taking priority
+over a system-wide `PORTKEY_API_KEY`. Put a local key in `.env.local`:
+
+```
+NEXT_apiKey=your-key-here
+```
+
+`.env.local` is loaded by the main process at startup (Electron does not do this
+automatically the way Next.js did).
+
+## Prompts & Skills
+
+```
+prompts/
+  system-prompt.md   The agent's system prompt, loaded at conversation start
+skills/
+  git-commit         Skill definition for the git-commit tool
+```
+
+These directories are bundled into the distributable alongside `out/`.
+
+## Adding an agent tool
+
+1. Create `src/main/agent/tools/my-tool.ts` exporting a `Tool`.
+2. Import it in `src/main/agent/tools/index.ts` and add it to the `registry`.
+
+Resolve any model-supplied path through `resolveInWorkspace(ctx.workspace, path)`
+to inherit workspace confinement.
+
+## UI components
+
+shadcn/ui components live in `src/renderer/src/components/ui` and are imported
+via the `@/` alias:
 
 ```tsx
-import { Button } from "@/components/ui/button";
+import { Button } from "@/components/ui/button"
 ```
