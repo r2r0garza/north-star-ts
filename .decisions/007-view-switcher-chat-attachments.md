@@ -58,6 +58,10 @@ added. In `runChat`:
 
 ## Trade-offs / notes
 
+- **Attachment inlining superseded by [008](008-file-tools-and-per-mode-prompts.md).**
+  Chat no longer inlines attachment contents; it lists attached file names and
+  the model reads them on demand via `read_file_tool` (scoped to the attachment
+  allowlist). The view-switcher and attachment-picker UI here still hold.
 - **Supersedes the "Send requires a workspace" note in
   [001 — Chat UI](001-chat-ui.md).** That still holds for North Star /
   Interactive; Chat sends with no workspace.
