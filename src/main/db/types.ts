@@ -97,3 +97,29 @@ export interface Approval {
   requestedAt: number
   resolvedAt: number | null
 }
+
+// The scope an "always allow" decision applies to. PR2 exposes only `once`
+// (not persisted) and `workspace`; the rest are reserved so the model can grow
+// without a schema change.
+export type AllowlistScope =
+  | "once"
+  | "conversation"
+  | "workspace"
+  | "agent"
+  | "global"
+
+// A remembered "always allow" rule, backing the approval pipeline. Generic over
+// tool/kind so one table serves every gated tool. `identity` is the exact
+// normalized action identity — matching is conservative equality.
+export interface ActionAllowlistRule {
+  id: string
+  tool: string
+  kind: string
+  identity: string
+  scope: AllowlistScope
+  workspacePath: string | null
+  conversationId: string | null
+  agentId: string | null
+  createdAt: number
+  lastUsedAt: number | null
+}

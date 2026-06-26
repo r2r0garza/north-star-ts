@@ -86,3 +86,27 @@ CREATE TABLE approvals (
 CREATE INDEX idx_approvals_task ON approvals(task_id);
 CREATE INDEX idx_approvals_status ON approvals(status);
 `
+
+// v2: the action allowlist backing "always allow" decisions from the approval
+// pipeline. Generic over tool/kind (shell command, file write, file edit) so a
+// single table serves every gated tool. `identity` is the exact normalized
+// action identity — matching is conservative equality, never a broad pattern
+// like "git" or "rm". `workspace_path` (not a workspaces.id FK) because runChat
+// receives a path; `agent_id` is reserved for a future agent abstraction.
+export const SCHEMA_V2 = `
+CREATE TABLE action_allowlist (
+  id              TEXT PRIMARY KEY,
+  tool            TEXT NOT NULL,
+  kind            TEXT NOT NULL,
+  identity        TEXT NOT NULL,
+  scope           TEXT NOT NULL CHECK (scope IN
+                    ('once','conversation','workspace','agent','global')),
+  workspace_path  TEXT,
+  conversation_id TEXT,
+  agent_id        TEXT,
+  created_at      INTEGER NOT NULL,
+  last_used_at    INTEGER
+);
+CREATE INDEX idx_action_allowlist_lookup
+  ON action_allowlist(kind, scope, workspace_path, identity);
+`

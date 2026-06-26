@@ -4,6 +4,7 @@ import { readFileTool } from "./read_file_tool"
 import { searchTool } from "./search_tool"
 import { editFileTool } from "./edit_file_tool"
 import { writeFileTool } from "./write_file_tool"
+import { runShellTool } from "./run_shell_tool"
 
 // Register tools here — add a new tool by importing it and listing it below.
 const registry: Tool[] = [
@@ -12,6 +13,7 @@ const registry: Tool[] = [
   searchTool,
   editFileTool,
   writeFileTool,
+  runShellTool,
 ]
 
 // Schemas sent to the model (the `tools` array in the chat request).

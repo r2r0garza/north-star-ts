@@ -20,6 +20,14 @@ export type ChatEvent =
   | { type: "token"; delta: string }
   | { type: "tool"; phase: "start"; id: string; name: string; arguments: string }
   | { type: "tool"; phase: "done"; id: string; name: string; result: string }
+  | {
+      type: "approval"
+      id: string
+      requestId: string
+      tool: string
+      summary: string
+      reason: string
+    }
 
 // The typed API exposed to the renderer as `window.cowork`.
 // This is the ONLY surface the UI can use to reach the main process.
@@ -44,6 +52,15 @@ const api = {
       error?: string
     }>).finally(done)
   },
+  // Resolve an in-flight approval request (from an "approval" ChatEvent). The
+  // agent loop is paused until this is called. `requestId` is the token from the
+  // event. `remember: "workspace"` persists an allowlist rule so the same action
+  // is auto-approved next time.
+  chatApprove: (payload: {
+    requestId: string
+    decision: "approved" | "denied"
+    remember?: "workspace"
+  }) => ipcRenderer.invoke("chat:approve", payload) as Promise<void>,
   pickWorkspace: () =>
     ipcRenderer.invoke("pick-workspace") as Promise<{
       path?: string
