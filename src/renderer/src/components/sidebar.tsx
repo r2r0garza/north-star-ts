@@ -1,23 +1,181 @@
+import { useEffect, useRef, useState } from "react"
+import { Plus } from "lucide-react"
 import {
   Sidebar,
   SidebarContent,
   SidebarFooter,
   SidebarGroup,
+  SidebarGroupContent,
+  SidebarGroupLabel,
   SidebarHeader,
+  SidebarMenu,
+  SidebarMenuButton,
+  SidebarMenuItem,
 } from "@/components/ui/sidebar"
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu"
 import { Button } from "@/components/ui/button"
 import { ButtonGroup } from "@/components/ui/button-group"
+import type { Conversation, Mode } from "@/types"
 
 export const VIEWS = ["Chat", "Interactive", "North Star"] as const
 export type View = (typeof VIEWS)[number]
 
+// Mapping between the view label and the persisted conversation mode.
+export const VIEW_TO_MODE: Record<View, Mode> = {
+  Chat: "chat",
+  Interactive: "interactive",
+  "North Star": "north_star",
+}
+export const MODE_TO_VIEW: Record<Mode, View> = {
+  chat: "Chat",
+  interactive: "Interactive",
+  north_star: "North Star",
+}
+
+// Label for the "+ New" button per view.
+const NEW_LABEL: Record<View, string> = {
+  Chat: "+ New Chat",
+  Interactive: "+ New Session",
+  "North Star": "+ New Task",
+}
+
+// A single session row. Right-click opens a context menu with Rename (inline
+// edit) and Delete. Both persist to the DB and update the in-memory list.
+function SessionRow({
+  conversation,
+  isActive,
+  onSelect,
+  onRename,
+  onDelete,
+}: {
+  conversation: Conversation
+  isActive: boolean
+  onSelect: () => void
+  onRename: (title: string) => void
+  onDelete: () => void
+}) {
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState(conversation.title ?? "")
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    if (editing) {
+      inputRef.current?.focus()
+      inputRef.current?.select()
+    }
+  }, [editing])
+
+  function startRename() {
+    setDraft(conversation.title ?? "")
+    setEditing(true)
+  }
+
+  function commit() {
+    setEditing(false)
+    const next = draft.trim()
+    if (next && next !== conversation.title) onRename(next)
+  }
+
+  if (editing) {
+    return (
+      <SidebarMenuItem>
+        <input
+          ref={inputRef}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault()
+              commit()
+            } else if (e.key === "Escape") {
+              e.preventDefault()
+              setEditing(false)
+            }
+          }}
+          className="h-8 w-full rounded-md border border-input bg-transparent px-2 text-sm outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
+        />
+      </SidebarMenuItem>
+    )
+  }
+
+  return (
+    <SidebarMenuItem>
+      <ContextMenu>
+        <ContextMenuTrigger asChild>
+          <SidebarMenuButton
+            isActive={isActive}
+            onClick={onSelect}
+            title={conversation.title ?? "Untitled"}
+          >
+            <span className="truncate">{conversation.title ?? "Untitled"}</span>
+          </SidebarMenuButton>
+        </ContextMenuTrigger>
+        <ContextMenuContent>
+          <ContextMenuItem onSelect={startRename}>Rename</ContextMenuItem>
+          <ContextMenuItem variant="destructive" onSelect={onDelete}>
+            Delete
+          </ContextMenuItem>
+        </ContextMenuContent>
+      </ContextMenu>
+    </SidebarMenuItem>
+  )
+}
+
 export function AppSidebar({
   view,
   onViewChange,
+  activeConversationId,
+  onSelectConversation,
+  onNewConversation,
+  onConversationDeleted,
+  refreshKey,
 }: {
   view: View
   onViewChange: (view: View) => void
+  activeConversationId: string | null
+  onSelectConversation: (id: string, mode: Mode) => void
+  onNewConversation: () => void
+  onConversationDeleted: (id: string) => void
+  // Bumped by the app whenever conversations change, so the list refetches.
+  refreshKey: number
 }) {
+  const [conversations, setConversations] = useState<Conversation[]>([])
+
+  useEffect(() => {
+    let cancelled = false
+    window.cowork.db.conversations.list().then((rows) => {
+      if (!cancelled) setConversations(rows)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [refreshKey])
+
+  // Conversations for the active view's mode, most-recent first (the repo
+  // already orders by updated_at DESC).
+  const mode = VIEW_TO_MODE[view]
+  const items = conversations.filter((c) => c.mode === mode)
+
+  async function renameConversation(id: string, title: string) {
+    // Optimistic update, then persist.
+    setConversations((prev) => prev.map((c) => (c.id === id ? { ...c, title } : c)))
+    await window.cowork.db.conversations.update(id, { title })
+  }
+
+  async function deleteConversation(id: string) {
+    // Optimistic removal from the list, then persist + notify the shell (which
+    // clears the active conversation if it was the one deleted).
+    setConversations((prev) => prev.filter((c) => c.id !== id))
+    await window.cowork.db.conversations.delete(id)
+    onConversationDeleted(id)
+  }
+
   return (
     <Sidebar>
       {/* Top padding clears the macOS traffic lights / sidebar toggle. Window
@@ -41,9 +199,42 @@ export function AppSidebar({
           ))}
         </ButtonGroup>
       </div>
+      {/* "+ New" — label depends on the active view. */}
+      <div className="px-2 pb-2">
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          onClick={onNewConversation}
+          className="w-full justify-start"
+        >
+          <Plus className="size-4" />
+          {NEW_LABEL[view].replace(/^\+ /, "")}
+        </Button>
+      </div>
       <SidebarContent>
-        <SidebarGroup />
-        <SidebarGroup />
+        <SidebarGroup>
+          <SidebarGroupLabel>{view}</SidebarGroupLabel>
+          <SidebarGroupContent>
+            <SidebarMenu>
+              {items.length === 0 && (
+                <p className="px-2 py-1 text-xs text-muted-foreground">
+                  No conversations yet.
+                </p>
+              )}
+              {items.map((c) => (
+                <SessionRow
+                  key={c.id}
+                  conversation={c}
+                  isActive={c.id === activeConversationId}
+                  onSelect={() => onSelectConversation(c.id, c.mode)}
+                  onRename={(title) => renameConversation(c.id, title)}
+                  onDelete={() => deleteConversation(c.id)}
+                />
+              ))}
+            </SidebarMenu>
+          </SidebarGroupContent>
+        </SidebarGroup>
       </SidebarContent>
       <SidebarFooter />
     </Sidebar>

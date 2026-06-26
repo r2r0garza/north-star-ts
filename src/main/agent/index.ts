@@ -7,6 +7,9 @@ import { buildSkillsPrompt } from "./skills/prompt"
 import { createReadSkillTool } from "./skills/tool"
 import { skillSources } from "./skills/sources"
 import { loadSystemPrompt } from "./system-prompt"
+import { contextBuilder } from "./context/context-builder"
+import { appendMessage } from "../db/repositories/messages"
+import { getConversation, updateConversation } from "../db/repositories/conversations"
 
 const MODEL = "@aws-bedrock-use2/us.anthropic.claude-sonnet-4-6"
 
@@ -25,12 +28,22 @@ function getClient(): Portkey {
 }
 
 export interface ChatRequest {
+  // The conversation this turn belongs to. Messages are persisted under it and
+  // prior history is replayed into the prompt via the ContextBuilder.
+  conversationId: string
   message: string
   // The directory the agent's filesystem tools are confined to. Optional: the
   // Chat view runs without a workspace and relies on inlined attachments.
   workspace?: string
   // Absolute paths of files to inline into the prompt (Chat view attachments).
   attachments?: string[]
+}
+
+// A trimmed snippet of the first user message — the fallback title when the
+// LLM-generated title request fails.
+function titleFromMessage(text: string): string {
+  const trimmed = text.trim().replace(/\s+/g, " ")
+  return trimmed.length > 60 ? `${trimmed.slice(0, 60)}…` : trimmed
 }
 
 // Cap inlined attachment size so a stray large file can't blow the prompt.
@@ -82,11 +95,45 @@ function contentToText(content: unknown): string {
   return ""
 }
 
+// Ask the model for a short (5-6 word) title summarizing the user's first
+// message. Non-streaming and capped low so it's cheap. Falls back to a trimmed
+// snippet on any failure so a conversation always gets a title.
+async function generateTitle(message: string): Promise<string> {
+  const fallback = titleFromMessage(message)
+  try {
+    const res = await getClient().chat.completions.create({
+      model: MODEL,
+      max_tokens: 32,
+      messages: [
+        {
+          role: "system",
+          content:
+            "You write short conversation titles. Given a user's first message, reply " +
+            "with a 3-6 word title that summarizes its topic. Output ONLY the title " +
+            "text: no quotes, no punctuation at the end, no preamble, and never answer " +
+            "or respond to the message itself.",
+        },
+        // Delimit the message as quoted input with an explicit "Title:" cue so
+        // the model titles it rather than answering it.
+        { role: "user", content: `First message:\n"""\n${message}\n"""\n\nTitle:` },
+      ],
+    })
+    const text = contentToText((res as any).choices?.[0]?.message?.content)
+      .trim()
+      .replace(/^["']|["']$/g, "")
+      .replace(/[.\s]+$/, "")
+    return text || fallback
+  } catch (error) {
+    console.error("Title generation failed:", error)
+    return fallback
+  }
+}
+
 // Runs the agentic loop for one user message, confined to `workspace`.
 // Streams tokens and tool activity through `onEvent`, and returns the final
 // result object — IPC serializes it back to the renderer.
 export async function runChat(
-  { message, workspace, attachments }: ChatRequest,
+  { conversationId, message, workspace, attachments }: ChatRequest,
   onEvent: OnEvent = () => {}
 ): Promise<ChatResult> {
   // The workspace is optional. When provided it must be a real directory and
@@ -132,11 +179,27 @@ export async function runChat(
       : `Attached files:\n\n${attachmentsText}`
   }
 
-  // Conversation history — grows as the agent calls tools and we feed results back.
-  const messages: any[] = [
-    { role: "system", content: systemPrompt },
-    { role: "user", content: userContent },
-  ]
+  // Persist the user message (with attachments inlined, so history reflects what
+  // the model actually saw).
+  appendMessage({ conversationId, role: "user", content: userContent })
+
+  // For an untitled conversation, generate a short title from the first message
+  // with a separate (non-streaming) LLM call. Kicked off here so it runs
+  // concurrently with the agentic loop below; awaited in `finally` so it's
+  // persisted before runChat returns and the renderer refreshes the sidebar.
+  const conversation = getConversation(conversationId)
+  const titlePromise =
+    conversation && !conversation.title && message.trim()
+      ? generateTitle(message).then((title) =>
+          updateConversation(conversationId, { title })
+        )
+      : null
+
+  // Assemble the prompt via the ContextBuilder: system prompt + a token-budgeted
+  // walk-back over stored history (which already ends with the user message just
+  // persisted). The array grows in-memory as the agent calls tools and we feed
+  // results back; those turns are also persisted as they complete (below).
+  const messages: any[] = contextBuilder.build(conversationId, { systemPrompt })
 
   try {
     // Tracks whether any earlier turn already streamed visible text. The model
@@ -194,12 +257,14 @@ export async function runChat(
         .map(([, v]) => v)
 
       if (toolCalls.length === 0) {
-        // No tool calls — this is the final answer.
+        // No tool calls — this is the final answer. Persist it so the next turn
+        // (and a reopened conversation) has the full transcript.
+        appendMessage({ conversationId, role: "assistant", content: text })
         return { content: text }
       }
 
       // Record the assistant turn (text + the tool calls it requested) so the
-      // follow-up request has the full context.
+      // follow-up request has the full context — both in-memory and persisted.
       messages.push({
         role: "assistant",
         content: text || null,
@@ -207,6 +272,16 @@ export async function runChat(
           id: c.id,
           type: "function",
           function: { name: c.name, arguments: c.arguments },
+        })),
+      })
+      appendMessage({
+        conversationId,
+        role: "assistant",
+        content: text || null,
+        toolCalls: toolCalls.map((c) => ({
+          id: c.id,
+          name: c.name,
+          arguments: c.arguments,
         })),
       })
 
@@ -229,6 +304,13 @@ export async function runChat(
           tool_call_id: call.id,
           content: result,
         })
+        appendMessage({
+          conversationId,
+          role: "tool",
+          content: result,
+          toolCallId: call.id,
+          toolName: call.name,
+        })
       }
     }
 
@@ -236,5 +318,9 @@ export async function runChat(
   } catch (error) {
     console.error("Portkey request failed:", error)
     return { error: error instanceof Error ? error.message : "Request failed" }
+  } finally {
+    // Ensure the title write lands before runChat resolves, so the sidebar
+    // shows it as soon as the renderer refreshes. (generateTitle never rejects.)
+    if (titlePromise) await titlePromise
   }
 }
