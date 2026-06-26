@@ -1,7 +1,9 @@
 # 006 — Externalized system prompt
 
 **Area:** Main — `src/main/agent/system-prompt.ts`, `prompts/system-prompt.md`
-**Status:** Implemented
+**Status:** Superseded by [008](008-file-tools-and-per-mode-prompts.md) — the
+single `prompts/system-prompt.md` was replaced by three per-mode prompt files
+and `loadSystemPrompt(mode)`. The externalized-prompt approach below still holds.
 
 ## What
 

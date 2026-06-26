@@ -1,7 +1,8 @@
 import { Portkey } from "portkey-ai"
-import { stat, readFile } from "fs/promises"
+import { stat } from "fs/promises"
 import { basename, isAbsolute } from "path"
 import { toolDefinitions, runTool } from "./tools"
+import { readFileTool } from "./tools/read_file_tool"
 import { loadSkills } from "./skills/loader"
 import { buildSkillsPrompt } from "./skills/prompt"
 import { createReadSkillTool } from "./skills/tool"
@@ -44,31 +45,6 @@ export interface ChatRequest {
 function titleFromMessage(text: string): string {
   const trimmed = text.trim().replace(/\s+/g, " ")
   return trimmed.length > 60 ? `${trimmed.slice(0, 60)}…` : trimmed
-}
-
-// Cap inlined attachment size so a stray large file can't blow the prompt.
-const MAX_ATTACHMENT_BYTES = 256 * 1024
-
-// Read each attachment and format it as a labeled, fenced block. Unreadable
-// files become a short note rather than failing the whole turn.
-async function buildAttachmentsText(paths: string[]): Promise<string> {
-  const blocks = await Promise.all(
-    paths.map(async (p) => {
-      try {
-        const info = await stat(p)
-        if (!info.isFile()) return `--- ${basename(p)} (skipped: not a file) ---`
-        if (info.size > MAX_ATTACHMENT_BYTES) {
-          return `--- ${basename(p)} (skipped: ${info.size} bytes exceeds ${MAX_ATTACHMENT_BYTES}) ---`
-        }
-        const content = await readFile(p, "utf8")
-        return `--- ${basename(p)} ---\n${content}`
-      } catch (err) {
-        const reason = err instanceof Error ? err.message : "unreadable"
-        return `--- ${basename(p)} (skipped: ${reason}) ---`
-      }
-    })
-  )
-  return blocks.join("\n\n")
 }
 
 export interface ChatResult {
@@ -156,27 +132,40 @@ export async function runChat(
 
   // Load skills (app-bundled → user → project, last-wins), then build the
   // read_skill tool and the Skills System prompt section. Only skill metadata
-  // enters the prompt; bodies are fetched on demand via the tool. Filesystem
-  // tools are only offered when there's a workspace to confine them to.
+  // enters the prompt; bodies are fetched on demand via the tool.
   const skills = await loadSkills(skillSources(hasWorkspace ? workspace : undefined))
   const readSkillTool = createReadSkillTool(skills)
+
+  // Filesystem tools are confined to a workspace, so the full set is only
+  // offered when one exists. A Chat session has no workspace; instead it offers
+  // just read_file_tool, scoped to the files the user attached (the attachment
+  // list is the read allowlist — see read_file_tool's resolveReadable).
+  const hasAttachments = !!attachments && attachments.length > 0
   const tools = [
-    ...(hasWorkspace ? toolDefinitions : []),
+    ...(hasWorkspace
+      ? toolDefinitions
+      : hasAttachments
+        ? [readFileTool.definition]
+        : []),
     readSkillTool.definition,
   ]
   const skillsPrompt = buildSkillsPrompt(skills)
 
-  let systemPrompt = await loadSystemPrompt()
+  // Load the conversation once, here: its `mode` selects the base system prompt,
+  // and it's reused below for the title check. Defaults to "chat" if missing.
+  const conversation = getConversation(conversationId)
+  let systemPrompt = await loadSystemPrompt(conversation?.mode)
   if (skillsPrompt) systemPrompt += `\n\n${skillsPrompt}`
 
-  // Inline any attached files into the user message so the model can read them
-  // without filesystem access (the Chat view has no workspace).
+  // List any attached files by name so the model knows what it can read. The
+  // contents are NOT inlined: the model reads them on demand via read_file_tool
+  // (scoped to this attachment list), which supports large files via paging.
   let userContent = message ?? "What files are in the workspace?"
-  if (attachments && attachments.length > 0) {
-    const attachmentsText = await buildAttachmentsText(attachments)
-    userContent = userContent
-      ? `${userContent}\n\nAttached files:\n\n${attachmentsText}`
-      : `Attached files:\n\n${attachmentsText}`
+  if (hasAttachments) {
+    const names = attachments!.map((p) => basename(p)).join(", ")
+    const note =
+      `Attached files (read with read_file_tool when needed): ${names}`
+    userContent = userContent ? `${userContent}\n\n${note}` : note
   }
 
   // Persist the user message (with attachments inlined, so history reflects what
@@ -187,7 +176,6 @@ export async function runChat(
   // with a separate (non-streaming) LLM call. Kicked off here so it runs
   // concurrently with the agentic loop below; awaited in `finally` so it's
   // persisted before runChat returns and the renderer refreshes the sidebar.
-  const conversation = getConversation(conversationId)
   const titlePromise =
     conversation && !conversation.title && message.trim()
       ? generateTitle(message).then((title) =>
@@ -291,9 +279,9 @@ export async function runChat(
       for (const call of toolCalls) {
         onEvent({ type: "tool", name: call.name, phase: "start" })
         const args = JSON.parse(call.arguments || "{}")
-        // read_skill ignores the workspace; filesystem tools are only offered
-        // when a workspace exists, so `?? ""` is never reached by them.
-        const ctx = { workspace: workspace ?? "" }
+        // read_skill ignores both fields. With a workspace, file tools confine
+        // to it; without one, read_file_tool reads only the attached files.
+        const ctx = { workspace: workspace ?? "", attachments }
         const result =
           call.name === readSkillTool.definition.function.name
             ? await readSkillTool.execute(args, ctx)

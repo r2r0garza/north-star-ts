@@ -17,6 +17,7 @@ away. For live, still-open trade-offs see `CONSIDERATIONS.md` at the repo root.
 - [005 — Window chrome & sidebar](005-window-chrome-sidebar.md)
 - [006 — Externalized system prompt](006-system-prompt.md)
 - [007 — View switcher, Chat mode & file attachments](007-view-switcher-chat-attachments.md)
+- [008 — Core file tools, tools-out-of-prompt & per-mode system prompts](008-file-tools-and-per-mode-prompts.md)
 
 ## Context
 
