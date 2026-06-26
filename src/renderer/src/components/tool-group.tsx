@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react"
 import {
   BookOpen,
   Check,
@@ -8,6 +9,8 @@ import {
   FolderOpen,
   Pencil,
   Search,
+  ShieldAlert,
+  Terminal,
   Wrench,
   type LucideIcon,
 } from "lucide-react"
@@ -18,9 +21,19 @@ import {
 } from "@/components/ui/collapsible"
 import { Marker, MarkerIcon, MarkerContent } from "@/components/ui/marker"
 import { Bubble, BubbleContent } from "@/components/ui/bubble"
+import { Button } from "@/components/ui/button"
 import { Spinner } from "@/components/ui/spinner"
 import { cn } from "@/lib/utils"
 import { isErrorResult, type ToolUse } from "@/lib/timeline"
+
+// How the user resolved an inline approval. `requestId` is the token from the
+// approval event. `remember` persists a workspace allowlist rule so the same
+// action isn't prompted again.
+export type ApprovalHandler = (
+  requestId: string,
+  decision: "approved" | "denied",
+  remember?: "workspace"
+) => void
 
 // Icon per tool name; falls back to a generic wrench for anything unmapped.
 const ICONS: Record<string, LucideIcon> = {
@@ -30,6 +43,7 @@ const ICONS: Record<string, LucideIcon> = {
   search_tool: Search,
   list_files_tool: FolderOpen,
   read_skill: BookOpen,
+  run_shell_tool: Terminal,
 }
 const iconFor = (name: string): LucideIcon => ICONS[name] ?? Wrench
 
@@ -44,11 +58,30 @@ function clip(text: string): string {
 
 // A collapsible group of tool calls for one assistant turn. Collapsed by
 // default; summary shows the count (and a spinner while any call is running).
-export function ToolGroup({ calls }: { calls: ToolUse[] }) {
+// `onApproval` is passed during a live turn so a pending approval card can
+// resolve; it's absent when rendering a reconciled/persisted timeline.
+export function ToolGroup({
+  calls,
+  onApproval,
+}: {
+  calls: ToolUse[]
+  onApproval?: ApprovalHandler
+}) {
   const anyRunning = calls.some((c) => c.status === "running")
   const n = calls.length
+
+  // Controlled open state: the user can collapse/expand freely, but a pending
+  // approval force-opens the group so the inline card is never hidden inside a
+  // collapsed group (it can arrive after the group already mounted, so a static
+  // defaultOpen wouldn't react to it).
+  const hasPending = calls.some((c) => c.approval?.status === "pending")
+  const [open, setOpen] = useState(hasPending)
+  useEffect(() => {
+    if (hasPending) setOpen(true)
+  }, [hasPending])
+
   return (
-    <Collapsible className="w-full">
+    <Collapsible className="w-full" open={open} onOpenChange={setOpen}>
       <CollapsibleTrigger asChild>
         <button type="button" className="group/tg w-full text-left">
           <Marker>
@@ -68,7 +101,7 @@ export function ToolGroup({ calls }: { calls: ToolUse[] }) {
       <CollapsibleContent>
         <div className="mt-1 flex flex-col gap-1 pl-2">
           {calls.map((c) => (
-            <ToolUseRow key={c.id} use={c} />
+            <ToolUseRow key={c.id} use={c} onApproval={onApproval} />
           ))}
         </div>
       </CollapsibleContent>
@@ -77,44 +110,98 @@ export function ToolGroup({ calls }: { calls: ToolUse[] }) {
 }
 
 // One tool call: a collapsible row whose trigger is the labeled marker and whose
-// content reveals the arguments and the result/output.
-function ToolUseRow({ use }: { use: ToolUse }) {
+// content reveals the arguments and the result/output. When the action is
+// awaiting human approval, an inline approval card renders above the row.
+function ToolUseRow({
+  use,
+  onApproval,
+}: {
+  use: ToolUse
+  onApproval?: ApprovalHandler
+}) {
   const Icon = iconFor(use.name)
   const error = use.status === "error"
   return (
-    <Collapsible className="w-full">
-      <CollapsibleTrigger asChild>
-        <button type="button" className="group/row w-full text-left">
-          <Marker className={cn(error && "text-destructive")}>
-            <MarkerIcon>
-              {use.status === "running" ? <Spinner /> : <Icon />}
-            </MarkerIcon>
-            <MarkerContent>{use.label}</MarkerContent>
-            {use.status === "done" && (
-              <Check className="size-3.5 shrink-0 text-muted-foreground" />
+    <div className="flex flex-col gap-1">
+      {use.approval?.status === "pending" && onApproval && (
+        <ApprovalCard approval={use.approval} onApproval={onApproval} />
+      )}
+      <Collapsible className="w-full">
+        <CollapsibleTrigger asChild>
+          <button type="button" className="group/row w-full text-left">
+            <Marker className={cn(error && "text-destructive")}>
+              <MarkerIcon>
+                {use.status === "running" ? <Spinner /> : <Icon />}
+              </MarkerIcon>
+              <MarkerContent>{use.label}</MarkerContent>
+              {use.status === "done" && (
+                <Check className="size-3.5 shrink-0 text-muted-foreground" />
+              )}
+              {error && <CircleAlert className="size-3.5 shrink-0 text-destructive" />}
+            </Marker>
+          </button>
+        </CollapsibleTrigger>
+        <CollapsibleContent>
+          <div className="mt-1 flex flex-col gap-2 pl-6 text-xs">
+            {(use.args || use.rawArgs) && (
+              <pre className="overflow-x-auto rounded-md bg-muted px-2 py-1.5 text-muted-foreground">
+                {use.args ? JSON.stringify(use.args, null, 2) : use.rawArgs}
+              </pre>
             )}
-            {error && <CircleAlert className="size-3.5 shrink-0 text-destructive" />}
-          </Marker>
-        </button>
-      </CollapsibleTrigger>
-      <CollapsibleContent>
-        <div className="mt-1 flex flex-col gap-2 pl-6 text-xs">
-          {(use.args || use.rawArgs) && (
-            <pre className="overflow-x-auto rounded-md bg-muted px-2 py-1.5 text-muted-foreground">
-              {use.args ? JSON.stringify(use.args, null, 2) : use.rawArgs}
-            </pre>
-          )}
-          {use.result !== undefined && (
-            <Bubble align="start" variant={isErrorResult(use.result) ? "destructive" : "muted"}>
-              <BubbleContent>
-                <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words">
-                  {clip(use.result)}
-                </pre>
-              </BubbleContent>
-            </Bubble>
-          )}
-        </div>
-      </CollapsibleContent>
-    </Collapsible>
+            {use.result !== undefined && (
+              <Bubble align="start" variant={isErrorResult(use.result) ? "destructive" : "muted"}>
+                <BubbleContent>
+                  <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words">
+                    {clip(use.result)}
+                  </pre>
+                </BubbleContent>
+              </Bubble>
+            )}
+          </div>
+        </CollapsibleContent>
+      </Collapsible>
+    </div>
+  )
+}
+
+// Inline approval prompt for a gated tool action. Shows the action summary and
+// why it was flagged, with Approve / Always-allow-in-workspace / Deny actions.
+function ApprovalCard({
+  approval,
+  onApproval,
+}: {
+  approval: NonNullable<ToolUse["approval"]>
+  onApproval: ApprovalHandler
+}) {
+  const { requestId } = approval
+  return (
+    <div className="flex flex-col gap-2 rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-xs">
+      <div className="flex items-center gap-2 font-medium text-destructive">
+        <ShieldAlert className="size-3.5 shrink-0" />
+        <span>Approval required — {approval.reason}</span>
+      </div>
+      <pre className="overflow-x-auto rounded-md bg-muted px-2 py-1.5 text-muted-foreground">
+        {approval.summary}
+      </pre>
+      <div className="flex flex-wrap gap-2">
+        <Button size="xs" onClick={() => onApproval(requestId, "approved")}>
+          Approve
+        </Button>
+        <Button
+          size="xs"
+          variant="outline"
+          onClick={() => onApproval(requestId, "approved", "workspace")}
+        >
+          Always allow in this workspace
+        </Button>
+        <Button
+          size="xs"
+          variant="destructive"
+          onClick={() => onApproval(requestId, "denied")}
+        >
+          Deny
+        </Button>
+      </div>
+    </div>
   )
 }

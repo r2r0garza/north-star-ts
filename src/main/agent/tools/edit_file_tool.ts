@@ -1,6 +1,7 @@
 import { readFile, writeFile, rename, stat } from "fs/promises"
 import { dirname, join } from "path"
 import type { Tool } from "./types"
+import type { ToolAction } from "../approval/types"
 import { resolveInWorkspaceReal } from "./workspace"
 import { toolError } from "./output"
 
@@ -115,6 +116,26 @@ export const editFileTool: Tool = {
     const updated = replaceAll
       ? content.split(oldString).join(newString)
       : content.replace(oldString, newString)
+
+    // Route through the shared approval pipeline (see ../approval). The default
+    // file policy auto-allows; this makes edit_file a first-class pipeline
+    // participant so future gating needs no architectural change.
+    if (ctx.gate) {
+      const action: ToolAction = {
+        tool: "edit_file_tool",
+        kind: "file_edit",
+        summary: `edit ${path}`,
+        identity: `file_edit:${path}`,
+        detail: { path },
+      }
+      const outcome = await ctx.gate(action)
+      if (outcome === "blocked") {
+        return toolError("blocked", `Editing ${path} is blocked by policy.`)
+      }
+      if (outcome === "denied") {
+        return toolError("denied", `The user denied approval to edit ${path}.`)
+      }
+    }
 
     await atomicWrite(target, updated)
 

@@ -8,6 +8,16 @@ import type { Message as DbMessage } from "@/types"
 
 export type ToolStatus = "running" | "done" | "error"
 
+// A pending/resolved human-approval request for a gated tool action. Live-only:
+// it exists during a turn while the agent waits on a decision, and is never
+// persisted — buildTimeline (reload) never reconstructs it.
+export interface ToolApproval {
+  requestId: string // process-unique token echoed back to resolve this request
+  summary: string // e.g. "$ rm -rf build"
+  reason: string // why it's flagged, e.g. "recursive delete"
+  status: "pending" | "approved" | "denied"
+}
+
 // A single tool call and (once it finishes) its result. `id` is the tool_call
 // id — it's the React key and the join between a live "start" and "done" event,
 // and matches the persisted toolCallId.
@@ -19,6 +29,7 @@ export interface ToolUse {
   rawArgs: string // original JSON string (shown verbatim if parse failed)
   result?: string // tool output (undefined while running)
   status: ToolStatus
+  approval?: ToolApproval // set while a gated action awaits a human decision
 }
 
 export type TimelineItem =

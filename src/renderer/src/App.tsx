@@ -149,6 +149,24 @@ export default function App({
     setAttachments((prev) => prev.filter((p) => p !== path))
   }
 
+  // Resolve an inline approval request. Optimistically flips the card's status
+  // (so the buttons disappear immediately), then unblocks the paused agent loop
+  // over IPC. The matching tool's "done" event will clear the card shortly after.
+  function resolveApproval(
+    requestId: string,
+    decision: "approved" | "denied",
+    remember?: "workspace"
+  ) {
+    setLiveTools((prev) =>
+      prev.map((t) =>
+        t.approval?.requestId === requestId
+          ? { ...t, approval: { ...t.approval, status: decision } }
+          : t
+      )
+    )
+    void window.cowork.chatApprove({ requestId, decision, remember })
+  }
+
   async function sendMessage() {
     if (!canSend) return
     const text = message.trim()
@@ -203,7 +221,8 @@ export default function App({
               toToolUse({ id: event.id, name: event.name, arguments: event.arguments }),
             ])
           } else if (event.type === "tool" && event.phase === "done") {
-            // Its result arrived — attach it and flip status (matched by id).
+            // Its result arrived — attach it, clear any approval card, and flip
+            // status (matched by id).
             setLiveTools((prev) =>
               prev.map((t) =>
                 t.id === event.id
@@ -211,6 +230,25 @@ export default function App({
                       ...t,
                       result: event.result,
                       status: isErrorResult(event.result) ? "error" : "done",
+                      approval: undefined,
+                    }
+                  : t
+              )
+            )
+          } else if (event.type === "approval") {
+            // The agent is paused waiting on a human decision — attach a pending
+            // approval card to the matching (already-running) tool row.
+            setLiveTools((prev) =>
+              prev.map((t) =>
+                t.id === event.id
+                  ? {
+                      ...t,
+                      approval: {
+                        requestId: event.requestId,
+                        summary: event.summary,
+                        reason: event.reason,
+                        status: "pending",
+                      },
                     }
                   : t
               )
@@ -412,7 +450,9 @@ export default function App({
                 <MessageScrollerItem key="live" scrollAnchor>
                   <Message align="start">
                     <MessageContent>
-                      {liveTools.length > 0 && <ToolGroup calls={liveTools} />}
+                      {liveTools.length > 0 && (
+                        <ToolGroup calls={liveTools} onApproval={resolveApproval} />
+                      )}
                       {liveText ? (
                         <Bubble align="start" variant="muted">
                           <BubbleContent>

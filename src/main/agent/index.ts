@@ -1,4 +1,5 @@
 import { Portkey } from "portkey-ai"
+import { randomUUID } from "crypto"
 import { stat } from "fs/promises"
 import { basename, isAbsolute } from "path"
 import { toolDefinitions, runTool } from "./tools"
@@ -11,6 +12,11 @@ import { loadSystemPrompt } from "./system-prompt"
 import { contextBuilder } from "./context/context-builder"
 import { appendMessage } from "../db/repositories/messages"
 import { getConversation, updateConversation } from "../db/repositories/conversations"
+import { actionAllowlist } from "../db/repositories"
+import { PolicyEngine, type AllowlistLookup } from "./approval/policy"
+import { RegexCommandClassifier } from "./approval/regex-classifier"
+import { FileActionClassifier } from "./approval/file-classifier"
+import type { Gate, GateOutcome, ToolAction } from "./approval/types"
 
 const MODEL = "@aws-bedrock-use2/us.anthropic.claude-sonnet-4-6"
 
@@ -26,6 +32,59 @@ function getClient(): Portkey {
     })
   }
   return client
+}
+
+// The single approval policy, shared across turns. The allowlist lookup is
+// backed by the action_allowlist table; classifiers are tried in order (file
+// first since it returns null for shell, then the regex command classifier).
+const allowlistLookup: AllowlistLookup = {
+  isAllowed(action: ToolAction, ctx) {
+    return !!actionAllowlist.findMatch(action.kind, action.identity, {
+      workspacePath: ctx.workspacePath,
+      conversationId: ctx.conversationId,
+    })
+  },
+}
+const policy = new PolicyEngine(
+  [new FileActionClassifier(), new RegexCommandClassifier()],
+  allowlistLookup
+)
+
+// Decision for one pending approval, set by resolveApproval and awaited inside
+// the gate. `remember` persists an allowlist rule when the human chose "always".
+interface PendingApproval {
+  resolve: (decision: "approved" | "denied") => void
+  action: ToolAction
+  workspacePath?: string
+  conversationId?: string
+}
+const pendingApprovals = new Map<string, PendingApproval>()
+
+// Called from the renderer over IPC ("chat:approve") to resolve a request the
+// gate is blocked on. `requestId` is a process-unique token (not the model's
+// tool-call id, which is only unique within a turn) so a decision can never
+// resolve a different conversation's pending gate. On "approved" with
+// remember:"workspace", the action is persisted to the allowlist so identical
+// future actions skip the prompt.
+export function resolveApproval(
+  requestId: string,
+  decision: "approved" | "denied",
+  remember?: "workspace"
+): void {
+  const pending = pendingApprovals.get(requestId)
+  if (!pending) return
+  pendingApprovals.delete(requestId)
+  if (decision === "approved" && remember === "workspace" && pending.workspacePath) {
+    actionAllowlist.addRule({
+      tool: pending.action.tool,
+      kind: pending.action.kind,
+      identity: pending.action.identity,
+      scope: "workspace",
+      workspacePath: pending.workspacePath,
+      conversationId: pending.conversationId ?? null,
+    })
+  }
+  pending.resolve(decision)
 }
 
 export interface ChatRequest {
@@ -60,6 +119,18 @@ export type ChatEvent =
   | { type: "token"; delta: string }
   | { type: "tool"; phase: "start"; id: string; name: string; arguments: string }
   | { type: "tool"; phase: "done"; id: string; name: string; result: string }
+  // The agent wants to perform a gated action and needs the human to decide.
+  // `id` is the tool-call id so the renderer can attach the approval card to the
+  // right tool marker; `requestId` is the process-unique token the renderer
+  // echoes back to resolve this exact request. The turn pauses until then.
+  | {
+      type: "approval"
+      id: string
+      requestId: string
+      tool: string
+      summary: string
+      reason: string
+    }
 
 type OnEvent = (event: ChatEvent) => void
 
@@ -288,9 +359,40 @@ export async function runChat(
           arguments: call.arguments,
         })
         const args = JSON.parse(call.arguments || "{}")
-        // read_skill ignores both fields. With a workspace, file tools confine
+        // The approval gate for this tool call. `allow` and `hard_block` resolve
+        // synchronously; `require_approval` emits an event and blocks until the
+        // renderer calls resolveApproval over IPC. The event carries the tool-
+        // call `id` (so the renderer attaches the card to the right marker) and
+        // a process-unique `requestId` keying the pending map — the renderer
+        // echoes the latter back, so a decision can't resolve another turn's gate.
+        const gate: Gate = (action): Promise<GateOutcome> => {
+          const decision = policy.decide(action, {
+            workspacePath: workspace,
+            conversationId,
+          })
+          if (decision.level === "allow") return Promise.resolve("approved")
+          if (decision.level === "hard_block") return Promise.resolve("blocked")
+          const requestId = randomUUID()
+          onEvent({
+            type: "approval",
+            id: call.id,
+            requestId,
+            tool: action.tool,
+            summary: action.summary,
+            reason: decision.reason,
+          })
+          return new Promise<GateOutcome>((resolve) => {
+            pendingApprovals.set(requestId, {
+              resolve,
+              action,
+              workspacePath: workspace,
+              conversationId,
+            })
+          })
+        }
+        // read_skill ignores these fields. With a workspace, file tools confine
         // to it; without one, read_file_tool reads only the attached files.
-        const ctx = { workspace: workspace ?? "", attachments }
+        const ctx = { workspace: workspace ?? "", attachments, conversationId, gate }
         const result =
           call.name === readSkillTool.definition.function.name
             ? await readSkillTool.execute(args, ctx)

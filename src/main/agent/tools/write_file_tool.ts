@@ -1,6 +1,7 @@
 import { writeFile, rename, mkdir } from "fs/promises"
 import { dirname, join } from "path"
 import type { Tool } from "./types"
+import type { ToolAction } from "../approval/types"
 import { resolveInWorkspaceReal } from "./workspace"
 import { toolError } from "./output"
 
@@ -48,8 +49,26 @@ export const writeFileTool: Tool = {
 
     const target = await resolveInWorkspaceReal(ctx.workspace, path)
 
-    // PR2: a human-approval check will slot in here (before any write), gating
-    // writes behind ctx.requestApproval without changing this tool's signature.
+    // Route through the shared approval pipeline (see ../approval). The default
+    // file policy auto-allows, so behavior is unchanged today — but this makes
+    // write_file a first-class pipeline participant, so gating file writes later
+    // is a one-line classifier change, not an architectural one.
+    if (ctx.gate) {
+      const action: ToolAction = {
+        tool: "write_file_tool",
+        kind: "file_write",
+        summary: `write ${path}`,
+        identity: `file_write:${path}`,
+        detail: { path },
+      }
+      const outcome = await ctx.gate(action)
+      if (outcome === "blocked") {
+        return toolError("blocked", `Writing ${path} is blocked by policy.`)
+      }
+      if (outcome === "denied") {
+        return toolError("denied", `The user denied approval to write ${path}.`)
+      }
+    }
 
     await mkdir(dirname(target), { recursive: true })
     await atomicWrite(target, content)

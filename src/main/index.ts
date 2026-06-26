@@ -8,7 +8,7 @@ import { config as loadEnv } from "dotenv"
 // agent's own NEXT_apiKey-first fallback still prioritizes the file's key.
 loadEnv({ path: join(app.getAppPath(), ".env.local") })
 
-import { runChat, type ChatRequest } from "./agent"
+import { runChat, resolveApproval, type ChatRequest } from "./agent"
 import { pickWorkspace, pickFiles } from "./pick-workspace"
 import { registerDbHandlers } from "./ipc/db-handlers"
 import { closeDb } from "./db/connection"
@@ -66,6 +66,21 @@ ipcMain.handle("chat", (event, req: ChatRequest) =>
       event.sender.send("chat:event", chatEvent)
     }
   })
+)
+// Resolve an approval the agent loop is paused on. Fire-and-forget from the
+// renderer's perspective: it just unblocks the gate in runChat.
+ipcMain.handle(
+  "chat:approve",
+  (
+    _event,
+    payload: {
+      requestId: string
+      decision: "approved" | "denied"
+      remember?: "workspace"
+    }
+  ) => {
+    resolveApproval(payload.requestId, payload.decision, payload.remember)
+  }
 )
 ipcMain.handle("pick-workspace", () => pickWorkspace())
 ipcMain.handle("pick-files", () => pickFiles())
