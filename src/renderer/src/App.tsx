@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from "react"
 import { ArrowDown, ArrowUp, FolderOpen, Plus, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Markdown } from "@/components/markdown"
-import type { View } from "@/components/sidebar"
+import { VIEW_TO_MODE, type View } from "@/components/sidebar"
+import type { Message } from "@/types"
 import { cn } from "@/lib/utils"
 
 interface ChatMessage {
@@ -16,7 +17,31 @@ function lastSegment(path: string) {
   return parts[parts.length - 1] || path
 }
 
-export default function App({ view }: { view: View }) {
+// Map stored messages to the renderer's two-bubble shape: only user and
+// non-empty assistant text rows are shown. Tool rows and tool-call-only
+// assistant rows stay in the DB (for the LLM) but aren't rendered.
+function toChatMessages(rows: Message[]): ChatMessage[] {
+  return rows
+    .filter(
+      (m) =>
+        (m.role === "user" || m.role === "assistant") &&
+        !!m.content &&
+        m.content.trim().length > 0
+    )
+    .map((m) => ({ role: m.role as "user" | "assistant", content: m.content! }))
+}
+
+export default function App({
+  view,
+  conversationId,
+  onConversationCreated,
+  onConversationChanged,
+}: {
+  view: View
+  conversationId: string | null
+  onConversationCreated: (id: string) => void
+  onConversationChanged: () => void
+}) {
   // Chat runs without a workspace and attaches files instead; North Star and
   // Interactive are workspace-backed and share the same behavior.
   const isChat = view === "Chat"
@@ -30,6 +55,9 @@ export default function App({ view }: { view: View }) {
 
   const scrollRef = useRef<HTMLDivElement>(null)
   const [atBottom, setAtBottom] = useState(true)
+  // The conversation the panel is currently showing. Used to ignore a settling
+  // turn's reconcile if the user switched conversations mid-stream.
+  const viewingRef = useRef<string | null>(conversationId)
   // Chat needs only a message (a file is optional); the workspace views need a
   // selected folder as well.
   const canSend =
@@ -53,10 +81,53 @@ export default function App({ view }: { view: View }) {
     if (atBottom) scrollToBottom()
   }, [messages, loading, atBottom])
 
+  // Load the active conversation when it changes. A null id is a fresh,
+  // not-yet-created conversation: clear the panel. Otherwise reload its stored
+  // messages and linked workspace (so reopening restores both).
+  useEffect(() => {
+    let cancelled = false
+    viewingRef.current = conversationId
+    if (!conversationId) {
+      setMessages([])
+      setWorkspace("")
+      setAttachments([])
+      return
+    }
+    Promise.all([
+      window.cowork.db.messages.list(conversationId),
+      window.cowork.db.conversations.get(conversationId),
+    ]).then(async ([rows, convo]) => {
+      if (cancelled) return
+      setMessages(toChatMessages(rows))
+      setAttachments([])
+      if (convo?.workspaceId) {
+        const ws = await window.cowork.db.workspaces.list()
+        const match = ws.find((w) => w.id === convo.workspaceId)
+        if (!cancelled) setWorkspace(match?.path ?? "")
+      } else {
+        setWorkspace("")
+      }
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [conversationId])
+
   async function pickWorkspace() {
     try {
       const data = await window.cowork.pickWorkspace()
-      if (data.path) setWorkspace(data.path)
+      if (data.path) {
+        setWorkspace(data.path)
+        // If a conversation already exists, record the workspace on it now;
+        // otherwise it's linked when the conversation is created on first send.
+        if (conversationId) {
+          const ws = await window.cowork.db.workspaces.upsert(data.path)
+          await window.cowork.db.conversations.update(conversationId, {
+            workspaceId: ws.id,
+          })
+          onConversationChanged()
+        }
+      }
     } catch (error) {
       setMessages((prev) => [
         ...prev,
@@ -88,6 +159,25 @@ export default function App({ view }: { view: View }) {
     if (!canSend) return
     const text = message.trim()
     const sentAttachments = attachments
+
+    // Ensure a conversation exists — created lazily on first send. For
+    // workspace views, link the picked workspace at creation time.
+    let convoId = conversationId
+    let isNew = false
+    if (!convoId) {
+      let workspaceId: string | undefined
+      if (!isChat && workspace.trim()) {
+        const ws = await window.cowork.db.workspaces.upsert(workspace.trim())
+        workspaceId = ws.id
+      }
+      const convo = await window.cowork.db.conversations.create({
+        mode: VIEW_TO_MODE[view],
+        workspaceId,
+      })
+      convoId = convo.id
+      isNew = true
+    }
+
     // Append the user message and an empty assistant bubble to stream into.
     setMessages((prev) => [
       ...prev,
@@ -114,6 +204,7 @@ export default function App({ view }: { view: View }) {
     try {
       const data = await window.cowork.chat(
         {
+          conversationId: convoId,
           message: text,
           // Chat sends no workspace and inlines attachments instead.
           workspace: isChat ? undefined : workspace.trim(),
@@ -143,6 +234,23 @@ export default function App({ view }: { view: View }) {
     } finally {
       setLoading(false)
       setTool(null)
+      // Reconcile the optimistic bubbles with the persisted transcript so the
+      // rendered text matches storage exactly — but only if the user is still
+      // viewing this conversation (for an existing one). A freshly created
+      // conversation is promoted to active just below, which reloads anyway.
+      const stillViewing = isNew || viewingRef.current === convoId
+      if (stillViewing) {
+        try {
+          const rows = await window.cowork.db.messages.list(convoId)
+          if (viewingRef.current === convoId || isNew) setMessages(toChatMessages(rows))
+        } catch {
+          // Keep the optimistic view if the reconcile read fails.
+        }
+      }
+      // Promote a freshly created conversation to active (also refreshes the
+      // sidebar so its title appears); otherwise just refresh ordering/title.
+      if (isNew) onConversationCreated(convoId)
+      else onConversationChanged()
     }
   }
 

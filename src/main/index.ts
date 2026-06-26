@@ -10,6 +10,8 @@ loadEnv({ path: join(app.getAppPath(), ".env.local") })
 
 import { runChat, type ChatRequest } from "./agent"
 import { pickWorkspace, pickFiles } from "./pick-workspace"
+import { registerDbHandlers } from "./ipc/db-handlers"
+import { closeDb } from "./db/connection"
 
 function createWindow(): void {
   const mainWindow = new BrowserWindow({
@@ -74,6 +76,9 @@ ipcMain.handle("is-fullscreen", (event) => {
 })
 
 app.whenReady().then(() => {
+  // Register DB-backed IPC handlers now — the connection opens lazily on first
+  // use, after userData is available.
+  registerDbHandlers()
   createWindow()
 
   app.on("activate", () => {
@@ -86,3 +91,6 @@ app.on("window-all-closed", () => {
   // macOS apps typically stay active until the user quits explicitly.
   if (process.platform !== "darwin") app.quit()
 })
+
+// Flush the WAL and close the DB cleanly on quit.
+app.on("will-quit", () => closeDb())

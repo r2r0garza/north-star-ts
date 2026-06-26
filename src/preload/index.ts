@@ -1,5 +1,19 @@
 import { contextBridge, ipcRenderer } from "electron"
 import type { IpcRendererEvent } from "electron"
+// Type-only imports — erased at build time, so better-sqlite3 is never pulled
+// into the preload bundle. The renderer gets exact DB row types via these.
+import type {
+  Approval,
+  ApprovalStatus,
+  Conversation,
+  Message,
+  Mode,
+  Task,
+  TaskCheckpoint,
+  TaskEvent,
+  TaskStatus,
+  Workspace,
+} from "../main/db/types"
 
 // Streaming events emitted during a chat turn (mirrors ChatEvent in the agent).
 export type ChatEvent =
@@ -13,7 +27,12 @@ const api = {
   // the returned promise resolves with the final result. The event listener is
   // attached only for the duration of the turn and removed when it settles.
   chat: (
-    req: { message: string; workspace?: string; attachments?: string[] },
+    req: {
+      conversationId: string
+      message: string
+      workspace?: string
+      attachments?: string[]
+    },
     onEvent?: (event: ChatEvent) => void
   ) => {
     const listener = (_e: IpcRendererEvent, event: ChatEvent) => onEvent?.(event)
@@ -45,8 +64,88 @@ const api = {
       ipcRenderer.removeListener("window:fullscreen", listener)
     }
   },
+
+  // Durable local state (SQLite, owned by the main process). Thin invoke
+  // wrappers — the renderer only displays state and sends actions; it never
+  // touches the database directly.
+  db: {
+    conversations: {
+      create: (input: { mode: Mode; workspaceId?: string | null; title?: string | null }) =>
+        ipcRenderer.invoke("db:conversations:create", input) as Promise<Conversation>,
+      list: (opts?: { mode?: Mode }) =>
+        ipcRenderer.invoke("db:conversations:list", opts) as Promise<Conversation[]>,
+      get: (id: string) =>
+        ipcRenderer.invoke("db:conversations:get", id) as Promise<Conversation | null>,
+      update: (id: string, patch: { title?: string | null; workspaceId?: string | null }) =>
+        ipcRenderer.invoke("db:conversations:update", id, patch) as Promise<Conversation>,
+      delete: (id: string) =>
+        ipcRenderer.invoke("db:conversations:delete", id) as Promise<void>,
+    },
+    messages: {
+      list: (conversationId: string) =>
+        ipcRenderer.invoke("db:messages:list", conversationId) as Promise<Message[]>,
+    },
+    workspaces: {
+      list: () => ipcRenderer.invoke("db:workspaces:list") as Promise<Workspace[]>,
+      upsert: (path: string, name?: string) =>
+        ipcRenderer.invoke("db:workspaces:upsert", path, name) as Promise<Workspace>,
+      update: (id: string, patch: { name?: string }) =>
+        ipcRenderer.invoke("db:workspaces:update", id, patch) as Promise<Workspace>,
+      delete: (id: string) =>
+        ipcRenderer.invoke("db:workspaces:delete", id) as Promise<void>,
+    },
+    tasks: {
+      create: (input: { conversationId: string; title?: string | null; status?: TaskStatus; input?: unknown }) =>
+        ipcRenderer.invoke("db:tasks:create", input) as Promise<Task>,
+      list: (opts?: { conversationId?: string; status?: TaskStatus }) =>
+        ipcRenderer.invoke("db:tasks:list", opts) as Promise<Task[]>,
+      get: (id: string) => ipcRenderer.invoke("db:tasks:get", id) as Promise<Task | null>,
+      update: (id: string, patch: { title?: string | null; status?: TaskStatus; result?: unknown; error?: string | null }) =>
+        ipcRenderer.invoke("db:tasks:update", id, patch) as Promise<Task>,
+      delete: (id: string) => ipcRenderer.invoke("db:tasks:delete", id) as Promise<void>,
+    },
+    taskEvents: {
+      append: (input: { taskId: string; type: string; payload?: unknown }) =>
+        ipcRenderer.invoke("db:taskEvents:append", input) as Promise<TaskEvent>,
+      list: (taskId: string, opts?: { afterId?: number; limit?: number }) =>
+        ipcRenderer.invoke("db:taskEvents:list", taskId, opts) as Promise<TaskEvent[]>,
+    },
+    checkpoints: {
+      create: (input: { taskId: string; label?: string | null; state: unknown }) =>
+        ipcRenderer.invoke("db:checkpoints:create", input) as Promise<TaskCheckpoint>,
+      list: (taskId: string) =>
+        ipcRenderer.invoke("db:checkpoints:list", taskId) as Promise<TaskCheckpoint[]>,
+      get: (id: string) =>
+        ipcRenderer.invoke("db:checkpoints:get", id) as Promise<TaskCheckpoint | null>,
+      delete: (id: string) =>
+        ipcRenderer.invoke("db:checkpoints:delete", id) as Promise<void>,
+    },
+    approvals: {
+      create: (input: { taskId: string; request?: unknown }) =>
+        ipcRenderer.invoke("db:approvals:create", input) as Promise<Approval>,
+      list: (opts?: { taskId?: string; status?: ApprovalStatus }) =>
+        ipcRenderer.invoke("db:approvals:list", opts) as Promise<Approval[]>,
+      resolve: (id: string, decision: { status: "approved" | "denied"; decision?: unknown }) =>
+        ipcRenderer.invoke("db:approvals:resolve", id, decision) as Promise<Approval>,
+    },
+  },
 }
 
 contextBridge.exposeInMainWorld("cowork", api)
 
 export type CoworkApi = typeof api
+
+// Re-export DB row types so the renderer can import them from the preload
+// surface without reaching into the main process directly.
+export type {
+  Approval,
+  ApprovalStatus,
+  Conversation,
+  Message,
+  Mode,
+  Task,
+  TaskCheckpoint,
+  TaskEvent,
+  TaskStatus,
+  Workspace,
+} from "../main/db/types"

@@ -1,0 +1,9 @@
+// Barrel re-export for the DB repositories, namespaced per entity so callers
+// read e.g. `conversations.create(...)`, `messages.appendMessage(...)`.
+export * as conversations from "./conversations"
+export * as messages from "./messages"
+export * as workspaces from "./workspaces"
+export * as tasks from "./tasks"
+export * as taskEvents from "./task-events"
+export * as checkpoints from "./task-checkpoints"
+export * as approvals from "./approvals"
