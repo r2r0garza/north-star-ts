@@ -18,7 +18,8 @@ import type {
 // Streaming events emitted during a chat turn (mirrors ChatEvent in the agent).
 export type ChatEvent =
   | { type: "token"; delta: string }
-  | { type: "tool"; name: string; phase: "start" | "done" }
+  | { type: "tool"; phase: "start"; id: string; name: string; arguments: string }
+  | { type: "tool"; phase: "done"; id: string; name: string; result: string }
 
 // The typed API exposed to the renderer as `window.cowork`.
 // This is the ONLY surface the UI can use to reach the main process.

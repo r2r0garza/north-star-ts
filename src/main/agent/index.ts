@@ -53,10 +53,13 @@ export interface ChatResult {
 }
 
 // Streaming events emitted during a turn. `token` is a text delta to append to
-// the assistant bubble; `tool` reports tool activity so the UI can show it.
+// the assistant bubble; `tool` reports tool activity so the UI can show it. The
+// tool-call `id` joins start↔done (and matches the persisted toolCallId), so the
+// live markers render identically to the ones rebuilt from storage on reload.
 export type ChatEvent =
   | { type: "token"; delta: string }
-  | { type: "tool"; name: string; phase: "start" | "done" }
+  | { type: "tool"; phase: "start"; id: string; name: string; arguments: string }
+  | { type: "tool"; phase: "done"; id: string; name: string; result: string }
 
 type OnEvent = (event: ChatEvent) => void
 
@@ -277,7 +280,13 @@ export async function runChat(
       // built per-chat (it closes over the loaded skills), so route it directly;
       // everything else goes through the static tool registry.
       for (const call of toolCalls) {
-        onEvent({ type: "tool", name: call.name, phase: "start" })
+        onEvent({
+          type: "tool",
+          phase: "start",
+          id: call.id,
+          name: call.name,
+          arguments: call.arguments,
+        })
         const args = JSON.parse(call.arguments || "{}")
         // read_skill ignores both fields. With a workspace, file tools confine
         // to it; without one, read_file_tool reads only the attached files.
@@ -286,7 +295,7 @@ export async function runChat(
           call.name === readSkillTool.definition.function.name
             ? await readSkillTool.execute(args, ctx)
             : await runTool(call.name, args, ctx)
-        onEvent({ type: "tool", name: call.name, phase: "done" })
+        onEvent({ type: "tool", phase: "done", id: call.id, name: call.name, result })
         messages.push({
           role: "tool",
           tool_call_id: call.id,
