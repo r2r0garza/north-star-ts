@@ -254,26 +254,117 @@ export default function App({
     }
   }
 
+  // Before the first message is sent, an empty session shows the composer
+  // centered (an inviting "start typing" state). Once there are messages it
+  // moves to its usual bottom-pinned position.
+  const isEmpty = messages.length === 0
+
+  // The composer (attachment chips + input box). Rendered both centered and
+  // bottom-pinned, so it's defined once here.
+  const composer = (
+    <>
+      {/* Attachment chips (Chat only) — removable, shown above the input. */}
+      {isChat && attachments.length > 0 && (
+        <div className="mb-2 flex flex-wrap gap-1.5">
+          {attachments.map((path) => (
+            <span
+              key={path}
+              className="flex items-center gap-1 rounded-md border bg-muted px-2 py-1 text-xs text-foreground"
+              title={path}
+            >
+              <span className="max-w-40 truncate">{lastSegment(path)}</span>
+              <button
+                type="button"
+                onClick={() => removeAttachment(path)}
+                aria-label={`Remove ${lastSegment(path)}`}
+                className="text-muted-foreground transition-colors hover:text-foreground"
+              >
+                <X className="size-3.5" />
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+      <div className="rounded-2xl border border-input bg-transparent focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50">
+        <textarea
+          value={message}
+          onChange={(e) => setMessage(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault()
+              sendMessage()
+            }
+          }}
+          rows={2}
+          placeholder="Send a message…"
+          className="field-sizing-content max-h-[24.25rem] w-full resize-none bg-transparent px-4 py-3 text-sm leading-relaxed outline-none placeholder:text-muted-foreground"
+        />
+        <div className="flex items-center justify-between px-2.5 pb-2.5">
+          {isChat ? (
+            <button
+              type="button"
+              onClick={attachFiles}
+              title="Attach files"
+              aria-label="Attach files"
+              className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            >
+              <Plus className="size-4" />
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={pickWorkspace}
+              title="Select workspace folder"
+              className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            >
+              <FolderOpen className="size-4" />
+              {workspace && <span className="max-w-40 truncate">{lastSegment(workspace)}</span>}
+            </button>
+          )}
+          <Button
+            type="button"
+            size="icon"
+            onClick={sendMessage}
+            disabled={!canSend}
+            className="size-8 rounded-full"
+          >
+            <ArrowUp className="size-4" />
+          </Button>
+        </div>
+      </div>
+    </>
+  )
+
+  // Empty session: center the heading + composer vertically so the user can
+  // start typing right away.
+  if (isEmpty) {
+    return (
+      <div className="relative flex h-svh w-full flex-col items-center justify-center overflow-hidden px-4">
+        <div className="w-full max-w-[min(90%,48rem)]">
+          <div className="mb-6 text-center text-sm text-muted-foreground">
+            {isChat ? (
+              <>
+                <p className="font-medium text-foreground">Chat</p>
+                <p>Ask anything. Attach files with the + button.</p>
+              </>
+            ) : (
+              <>
+                <p className="font-medium text-foreground">Cowork</p>
+                <p>Pick a workspace folder, then ask the agent about it.</p>
+              </>
+            )}
+          </div>
+          {composer}
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="relative flex h-svh w-full flex-col overflow-hidden">
       {/* Conversation (the window drag bar lives in Shell, above this column) */}
       <div ref={scrollRef} onScroll={handleScroll} className="relative min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto flex w-full max-w-[min(90%,72rem)] flex-col gap-4 px-4 py-6">
-          {messages.length === 0 && (
-            <div className="mt-24 text-center text-sm text-muted-foreground">
-              {isChat ? (
-                <>
-                  <p className="font-medium text-foreground">Chat</p>
-                  <p>Ask anything. Attach files with the + button.</p>
-                </>
-              ) : (
-                <>
-                  <p className="font-medium text-foreground">Cowork</p>
-                  <p>Pick a workspace folder, then ask the agent about it.</p>
-                </>
-              )}
-            </div>
-          )}
           {messages.map((m, i) => {
             const isLast = i === messages.length - 1
             // The streaming assistant bubble shows a status until tokens arrive.
@@ -324,77 +415,7 @@ export default function App({
 
       {/* Composer */}
       <div className="border-t bg-background">
-        <div className="mx-auto w-full max-w-[min(90%,72rem)] px-4 py-4">
-          {/* Attachment chips (Chat only) — removable, shown above the input. */}
-          {isChat && attachments.length > 0 && (
-            <div className="mb-2 flex flex-wrap gap-1.5">
-              {attachments.map((path) => (
-                <span
-                  key={path}
-                  className="flex items-center gap-1 rounded-md border bg-muted px-2 py-1 text-xs text-foreground"
-                  title={path}
-                >
-                  <span className="max-w-40 truncate">{lastSegment(path)}</span>
-                  <button
-                    type="button"
-                    onClick={() => removeAttachment(path)}
-                    aria-label={`Remove ${lastSegment(path)}`}
-                    className="text-muted-foreground transition-colors hover:text-foreground"
-                  >
-                    <X className="size-3.5" />
-                  </button>
-                </span>
-              ))}
-            </div>
-          )}
-          <div className="rounded-2xl border border-input bg-transparent focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50">
-            <textarea
-              value={message}
-              onChange={(e) => setMessage(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault()
-                  sendMessage()
-                }
-              }}
-              rows={2}
-              placeholder="Send a message…"
-              className="field-sizing-content max-h-[24.25rem] w-full resize-none bg-transparent px-4 py-3 text-sm leading-relaxed outline-none placeholder:text-muted-foreground"
-            />
-            <div className="flex items-center justify-between px-2.5 pb-2.5">
-              {isChat ? (
-                <button
-                  type="button"
-                  onClick={attachFiles}
-                  title="Attach files"
-                  aria-label="Attach files"
-                  className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-                >
-                  <Plus className="size-4" />
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  onClick={pickWorkspace}
-                  title="Select workspace folder"
-                  className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-                >
-                  <FolderOpen className="size-4" />
-                  {workspace && <span className="max-w-40 truncate">{lastSegment(workspace)}</span>}
-                </button>
-              )}
-              <Button
-                type="button"
-                size="icon"
-                onClick={sendMessage}
-                disabled={!canSend}
-                className="size-8 rounded-full"
-              >
-                <ArrowUp className="size-4" />
-              </Button>
-            </div>
-          </div>
-        </div>
+        <div className="mx-auto w-full max-w-[min(90%,72rem)] px-4 py-4">{composer}</div>
       </div>
     </div>
   )
