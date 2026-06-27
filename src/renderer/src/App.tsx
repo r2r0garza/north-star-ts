@@ -24,7 +24,7 @@ import {
   AttachmentActions,
   AttachmentAction,
 } from "@/components/ui/attachment"
-import { ToolGroup } from "@/components/tool-group"
+import { ToolGroup, ApprovalCard } from "@/components/tool-group"
 import {
   buildTimeline,
   toToolUse,
@@ -317,6 +317,11 @@ export default function App({
   // moves to its usual bottom-pinned position.
   const isEmpty = timeline.length === 0 && !loading
 
+  // Sequential gating means at most one approval is pending at a time, so a
+  // single panel above the composer suffices. Purely derived — it disappears
+  // automatically when resolved, when the tool completes, or when the turn ends.
+  const pendingApproval = liveTools.find((t) => t.approval?.status === "pending")?.approval
+
   // The composer (attachment chips + input box). Rendered both centered and
   // bottom-pinned, so it's defined once here.
   const composer = (
@@ -486,9 +491,7 @@ export default function App({
                 <MessageScrollerItem key="live" scrollAnchor>
                   <Message align="start">
                     <MessageContent>
-                      {liveTools.length > 0 && (
-                        <ToolGroup calls={liveTools} onApproval={resolveApproval} />
-                      )}
+                      {liveTools.length > 0 && <ToolGroup calls={liveTools} />}
                       {liveText ? (
                         <Bubble align="start" variant="muted">
                           <BubbleContent>
@@ -514,9 +517,17 @@ export default function App({
         </MessageScroller>
       </MessageScrollerProvider>
 
-      {/* Composer */}
+      {/* Composer — with the pending approval prompt popped out just above it,
+          so it stays in one fixed place regardless of transcript scrolling. */}
       <div className="border-t bg-background">
-        <div className="mx-auto w-full max-w-[min(90%,72rem)] px-4 py-4">{composer}</div>
+        <div className="mx-auto w-full max-w-[min(90%,72rem)] px-4 py-4">
+          {pendingApproval && (
+            <div className="mb-3 animate-in fade-in-0 slide-in-from-bottom-4 duration-200">
+              <ApprovalCard approval={pendingApproval} onApproval={resolveApproval} />
+            </div>
+          )}
+          {composer}
+        </div>
       </div>
     </div>
   )
