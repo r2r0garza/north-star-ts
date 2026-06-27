@@ -1,15 +1,20 @@
-import { writeFile, rename, mkdir } from "fs/promises"
 import { dirname, join } from "path"
 import type { Tool } from "./types"
 import type { ToolAction } from "../approval/types"
-import { resolveInWorkspaceReal } from "./workspace"
+import { LocalEnvironment } from "../env/local"
+import type { Environment } from "../env/types"
 import { toolError } from "./output"
 
 // Atomic write: temp file in the same directory, then rename over the target.
-async function atomicWrite(target: string, content: string): Promise<void> {
+// Both steps go through the env so the atomicity holds on host or in a container.
+async function atomicWrite(
+  env: Environment,
+  target: string,
+  content: string
+): Promise<void> {
   const tmp = join(dirname(target), `.${Date.now()}-${process.pid}.tmp`)
-  await writeFile(tmp, content, "utf8")
-  await rename(tmp, target)
+  await env.writeFile(tmp, content)
+  await env.rename(tmp, target)
 }
 
 // Creates or overwrites a file inside the workspace, creating parent
@@ -47,7 +52,8 @@ export const writeFileTool: Tool = {
     }
     const content = args.content
 
-    const target = await resolveInWorkspaceReal(ctx.workspace, path)
+    const env = ctx.env ?? new LocalEnvironment(ctx.workspace)
+    const target = await env.resolve(path)
 
     // Route through the shared approval pipeline (see ../approval). The default
     // file policy auto-allows, so behavior is unchanged today — but this makes
@@ -70,8 +76,8 @@ export const writeFileTool: Tool = {
       }
     }
 
-    await mkdir(dirname(target), { recursive: true })
-    await atomicWrite(target, content)
+    await env.mkdirp(dirname(target))
+    await atomicWrite(env, target, content)
 
     const bytes = Buffer.byteLength(content, "utf8")
     return `Wrote ${bytes} bytes to ${path}.`

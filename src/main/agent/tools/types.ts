@@ -1,4 +1,5 @@
 import type { Gate } from "../approval/types"
+import type { Environment } from "../env/types"
 
 // --- ask_user_question ---
 // The model asks the user one or more clarifying questions, each with preset
@@ -53,6 +54,15 @@ export interface ToolContext {
   // Pause the turn to ask the user clarifying questions (see ask_user_question).
   // Absent in contexts that can't prompt the user.
   ask?: Ask
+  // The execution/filesystem backend this turn's tools run against (see ../env).
+  // Optional for backward-compat: when absent, tools fall back to a
+  // LocalEnvironment(workspace), so a bare ToolContext (e.g. in unit tests) keeps
+  // working with host fs/spawn exactly as before. The real agent loop always sets it.
+  env?: Environment
+  // The turn's abort signal, threaded into env.exec so a running command can be
+  // killed when the turn is stopped (see .plan/005). Nothing fires it yet, so its
+  // presence changes no behavior today.
+  signal?: AbortSignal
 }
 
 // A tool the agent can call. `definition` is the OpenAI-compatible schema

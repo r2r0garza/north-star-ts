@@ -97,3 +97,37 @@ for this use case). Likely **one "OCI container" backend parameterized by runtim
   the bind mount; `rm -rf` inside the container does **not** touch host files outside the mount.
 - Missing-runtime path: with Docker/Podman absent, the app reports it and uses Local.
 - `pnpm typecheck` + `pnpm build` clean.
+
+## Status: foundation shipped (2026-06-27)
+
+The `Environment` seam landed with both `LocalEnvironment` and a minimal
+`ContainerEnvironment` (`src/main/agent/env/`). All 6 machine-touching tools route through
+`ctx.env`; `runChat` builds the backend (env-var selected via `COWORK_ENV_RUNTIME`, default
+Local) and disposes it per turn. `Environment.exec` carries a `signal?: AbortSignal` seam.
+
+**`search` is a bulk Environment method, not a tool-side walk.** The first cut had the search
+tool walk the tree via `env.readdir`/`stat`/`readFile`; on a container each of those is a
+separate `exec` round-trip, so a ~285-file workspace took *minutes* (hundreds of ~300ms calls).
+`Environment.search(opts)` fixes this: Local keeps the Node/fs walk (behavior-identical), and
+Container runs **one** in-container command — `rg` if present, else a `find … | xargs grep -R`
+fallback — bringing the same search to ~0.5s. This is the general lesson: where per-call
+overhead makes a per-item loop pathological, the abstraction should expose the bulk operation.
+
+### Follow-ups (deliberately deferred from the foundation PR)
+- **Container exec cancellation + timeout (depends on 005).** Killing the host `<runtime> exec`
+  client on timeout/abort does **not** stop the in-container process — the inner process keeps
+  running. The `signal` parameter is already threaded through `Environment.exec` and the kill is
+  wired; only the in-container kill is deferred. Fix alongside 005, e.g. run the command under
+  `setsid` and, on abort, `<runtime> exec <name> sh -c 'kill -KILL -<pgid>'` to kill the process
+  group. The same host-side-only limitation applies to the exec timeout.
+- **Symlink realpath parity in the container.** `ContainerEnvironment.resolve` does the lexical
+  guard only (rejects `..`/absolute); it relies on the bind-mount boundary (the container sees
+  only `/workspace`) rather than an in-container `realpath`. Full parity with
+  `resolveInWorkspaceReal` would run `realpath` inside the container per resolve.
+- **Lifecycle.** MVP disposes (stop+rm) the container each turn. A later optimization could keep
+  it warm across turns keyed by conversation, trading per-turn startup cost for reuse.
+- **`readdir` entry types.** Container `readdir` uses `ls -Ap1` (trailing `/` ⇒ dir, else file).
+  Symlinks/sockets are treated as files; `find -maxdepth 1 -printf` would give exact types.
+- **Settings + approval policy (E).** Backend choice still comes from an env var, not the
+  settings pane (004); the approval policy is unchanged. Loosening auto-approval inside a sandbox
+  is the payoff still to come.
