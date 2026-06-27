@@ -1,8 +1,11 @@
 # Execution Environments — selectable backend for agent tools (local / container)
 
-> Status: **NOT STARTED** — design note (2026-06-27). A foundational refactor, not a tool.
-> Best landed *before* more machine-touching tools, since retrofitting an interface under each
-> new tool gets harder over time. The shape below is a hypothesis to refine before building.
+> Status: **FOUNDATION SHIPPED (A–D), section E deferred** — design note (2026-06-27),
+> foundation landed (2026-06-27). Sections A–D (the `Environment` interface, Local + Container
+> backends, tools routed through `ctx.env`) are built and verified — see "Status" at the bottom.
+> Section E (surface backend choice in settings + loosen sandbox approval policy — the payoff)
+> is **separate future work, gated on `.plan/004-settings-pane.md`**, which doesn't exist yet.
+> The sections below are the original design note, kept for context.
 
 ## Context
 
@@ -72,11 +75,14 @@ for this use case). Likely **one "OCI container" backend parameterized by runtim
 - Lifecycle: start/reuse a container per workspace (or per conversation), image management, and
   `dispose()` on cleanup. The future agent-daemon split would naturally own this lifecycle.
 
-### E. Settings + approval policy
+### E. Settings + approval policy  — **NOT DONE (deferred, gated on `.plan/004`)**
 - Surface the backend choice in the settings pane (`.plan/004-settings-pane.md`): per-workspace
-  (or global default) Local / Docker / Podman.
+  (or global default) Local / Docker / Podman. Today the choice is the `COWORK_ENV_RUNTIME` env
+  var instead; the settings pane (004) is not built yet.
 - Once sandboxed, loosen the approval policy for container backends (auto-allow a wider command
-  set) — the payoff that justifies the whole effort. Local stays strict.
+  set) — the payoff that justifies the whole effort. Local stays strict. **Not yet implemented:**
+  the approval policy is identical for both backends today. This is the headline benefit of the
+  whole effort and the reason E waits on 004 rather than shipping with the foundation.
 
 ### Interactions with shipped work
 - **Stop / `process_registry`:** cancellation must flow through the env — killing a process means
