@@ -1,8 +1,8 @@
-import { readFile, writeFile, rename, stat } from "fs/promises"
 import { dirname, join } from "path"
 import type { Tool } from "./types"
 import type { ToolAction } from "../approval/types"
-import { resolveInWorkspaceReal } from "./workspace"
+import { LocalEnvironment } from "../env/local"
+import type { Environment } from "../env/types"
 import { toolError } from "./output"
 
 // Count non-overlapping occurrences of `needle` in `haystack`.
@@ -19,14 +19,19 @@ function countOccurrences(haystack: string, needle: string): number {
 
 // Write `content` to `target` atomically: write a sibling temp file, then rename
 // over the target (rename is atomic within a filesystem). Avoids leaving a
-// half-written file if the process dies mid-write.
-async function atomicWrite(target: string, content: string): Promise<void> {
+// half-written file if the process dies mid-write. Routed through the env so it
+// holds on host or in a container.
+async function atomicWrite(
+  env: Environment,
+  target: string,
+  content: string
+): Promise<void> {
   const tmp = join(
     dirname(target),
     `.${Date.now()}-${process.pid}.tmp` // unique within the dir
   )
-  await writeFile(tmp, content, "utf8")
-  await rename(tmp, target)
+  await env.writeFile(tmp, content)
+  await env.rename(tmp, target)
 }
 
 // Replaces an exact string in a workspace file. Requires `old_string` to occur
@@ -83,11 +88,12 @@ export const editFileTool: Tool = {
       )
     }
 
-    const target = await resolveInWorkspaceReal(ctx.workspace, path)
+    const env = ctx.env ?? new LocalEnvironment(ctx.workspace)
+    const target = await env.resolve(path)
 
     let info
     try {
-      info = await stat(target)
+      info = await env.stat(target)
     } catch {
       return toolError("not_found", `No such file: ${path}`)
     }
@@ -95,7 +101,7 @@ export const editFileTool: Tool = {
       return toolError("not_a_file", `Not a regular file: ${path}`)
     }
 
-    const content = await readFile(target, "utf8")
+    const content = (await env.readFile(target)).toString("utf8")
     const occurrences = countOccurrences(content, oldString)
 
     if (occurrences === 0) {
@@ -137,7 +143,7 @@ export const editFileTool: Tool = {
       }
     }
 
-    await atomicWrite(target, updated)
+    await atomicWrite(env, target, updated)
 
     const replaced = replaceAll ? occurrences : 1
     return `Replaced ${replaced} occurrence${replaced === 1 ? "" : "s"} in ${path}.`

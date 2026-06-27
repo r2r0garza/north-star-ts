@@ -1,18 +1,19 @@
-import { readdir, readFile, stat } from "fs/promises"
-import { join, relative } from "path"
+import { relative } from "path"
 import type { Tool } from "./types"
-import { resolveInWorkspaceReal } from "./workspace"
+import { LocalEnvironment } from "../env/local"
 import { truncateForModel, toolError } from "./output"
 
 // Directories never worth searching. Keeps the walk fast and the results clean.
-const SKIP_DIRS = new Set([".git", "node_modules", "dist", "out", ".cache"])
+const SKIP_DIRS = [".git", "node_modules", "dist", "out", ".cache"]
 
 // Don't read files larger than this when scanning for matches.
 const MAX_FILE_BYTES = 1024 * 1024 // 1 MB
 
-// Searches file contents under the workspace for a regex pattern (pure Node, no
-// shell, no ripgrep dependency). Returns `relpath:line: text` hits, bounded by
-// max_results and truncated so large result sets can't blow the context window.
+// Searches file contents under the workspace for a regex pattern. The actual scan
+// is a first-class Environment operation (env.search): Local does a Node/fs walk,
+// Container runs one in-container rg/grep — a per-file walk there would be
+// hundreds of slow exec round-trips. Returns `relpath:line: text` hits, bounded
+// by max_results and truncated so large result sets can't blow the context window.
 export const searchTool: Tool = {
   definition: {
     type: "function",
@@ -53,9 +54,8 @@ export const searchTool: Tool = {
     const pattern = typeof args.pattern === "string" ? args.pattern : ""
     if (!pattern) return toolError("bad_args", "A `pattern` is required.")
 
-    let regex: RegExp
     try {
-      regex = new RegExp(pattern)
+      new RegExp(pattern)
     } catch (err) {
       return toolError(
         "bad_regex",
@@ -63,8 +63,13 @@ export const searchTool: Tool = {
       )
     }
 
+    const env = ctx.env ?? new LocalEnvironment(ctx.workspace)
     const sub = typeof args.path === "string" ? args.path : ""
-    const root = await resolveInWorkspaceReal(ctx.workspace, sub)
+    const root = await env.resolve(sub)
+    // Display hits relative to the workspace root (resolved in the env's own
+    // filesystem view), so the path reads identically whether matches come back
+    // as host paths or in-container paths under the bind mount.
+    const displayRoot = await env.resolve("")
     const glob =
       typeof args.glob === "string" && args.glob ? args.glob.toLowerCase() : ""
     const maxResults =
@@ -72,56 +77,21 @@ export const searchTool: Tool = {
         ? Math.floor(args.max_results)
         : 100
 
-    const hits: string[] = []
-    let capped = false
+    const { matches, capped } = await env.search({
+      root,
+      pattern,
+      glob: glob || undefined,
+      maxResults,
+      skipDirs: SKIP_DIRS,
+      maxFileBytes: MAX_FILE_BYTES,
+    })
 
-    const walk = async (dir: string): Promise<void> => {
-      if (capped) return
-      let entries
-      try {
-        entries = await readdir(dir, { withFileTypes: true })
-      } catch {
-        return // unreadable dir — skip rather than fail the whole search
-      }
-      for (const entry of entries) {
-        if (capped) return
-        const full = join(dir, entry.name)
-        if (entry.isDirectory()) {
-          if (SKIP_DIRS.has(entry.name)) continue
-          await walk(full)
-          continue
-        }
-        if (!entry.isFile()) continue
-        if (glob && !entry.name.toLowerCase().includes(glob)) continue
-
-        try {
-          const info = await stat(full)
-          if (info.size > MAX_FILE_BYTES) continue
-          const buf = await readFile(full)
-          if (buf.subarray(0, 8000).includes(0)) continue // binary
-          const lines = buf.toString("utf8").split("\n")
-          const rel = relative(ctx.workspace, full)
-          for (let i = 0; i < lines.length; i++) {
-            if (regex.test(lines[i])) {
-              hits.push(`${rel}:${i + 1}: ${lines[i].trim()}`)
-              if (hits.length >= maxResults) {
-                capped = true
-                return
-              }
-            }
-          }
-        } catch {
-          // Unreadable file — skip.
-        }
-      }
-    }
-
-    await walk(root)
-
-    if (hits.length === 0) {
+    if (matches.length === 0) {
       return `No matches for /${pattern}/.`
     }
-    let out = hits.join("\n")
+    let out = matches
+      .map((m) => `${relative(displayRoot, m.path)}:${m.line}: ${m.text}`)
+      .join("\n")
     if (capped) {
       out += `\n[stopped at ${maxResults} matches — narrow the pattern or path for more]`
     }

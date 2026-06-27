@@ -1,9 +1,8 @@
-import { readdir } from "fs/promises"
 import type { Tool } from "./types"
-import { resolveInWorkspace } from "./workspace"
+import { LocalEnvironment } from "../env/local"
 
-// Lists files at a path within the workspace. Uses fs.readdir (no shell) and
-// confines all access to the workspace root to avoid escape/injection.
+// Lists files at a path within the workspace. Routes through the env's readdir
+// and confines all access to the workspace root to avoid escape/injection.
 export const listFilesTool: Tool = {
   definition: {
     type: "function",
@@ -26,8 +25,9 @@ export const listFilesTool: Tool = {
   },
   execute: async (args, ctx) => {
     const path = typeof args.path === "string" ? args.path : ""
-    const target = resolveInWorkspace(ctx.workspace, path)
-    const entries = await readdir(target, { withFileTypes: true })
+    const env = ctx.env ?? new LocalEnvironment(ctx.workspace)
+    const target = env.resolveLexical(path)
+    const entries = await env.readdir(target)
     return entries
       .map((e) => (e.isDirectory() ? `${e.name}/` : e.name))
       .join("\n")

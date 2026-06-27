@@ -1,69 +1,13 @@
-import { spawn } from "child_process"
 import type { Tool, ToolContext } from "./types"
 import type { ToolAction } from "../approval/types"
 import { normalizeCommand } from "../approval/normalize"
 import { stripAnsi } from "../approval/ansi"
 import { truncateForModel, toolError } from "./output"
+import { LocalEnvironment } from "../env/local"
 
 const DEFAULT_TIMEOUT_MS = 30_000
 const MAX_TIMEOUT_MS = 600_000
 const MAX_OUTPUT_BYTES = 1024 * 1024 // 1 MB hard cap on captured output
-
-interface RunResult {
-  stdout: string
-  exitCode: number | null
-  signal: NodeJS.Signals | null
-  timedOut: boolean
-}
-
-// Run `command` through the user's shell, confined to `cwd`. Captures combined
-// stdout+stderr (interleaved order isn't guaranteed, but the model rarely needs
-// it), enforces a timeout, and caps captured bytes so a runaway command can't
-// exhaust memory. stdin is closed so the command can't block waiting for input.
-//
-// Chunks are collected as raw Buffers and decoded ONCE at the end: decoding each
-// chunk separately would corrupt any multibyte UTF-8 character that straddles a
-// chunk boundary (a common case for non-ASCII build/test output). The byte cap
-// is enforced on the accumulated Buffer length, not a char-indexed string slice.
-function run(command: string, cwd: string, timeoutMs: number): Promise<RunResult> {
-  return new Promise((resolve) => {
-    const child = spawn(command, {
-      cwd,
-      shell: true,
-      stdio: ["ignore", "pipe", "pipe"],
-    })
-
-    const chunks: Buffer[] = []
-    let bytes = 0
-    let timedOut = false
-
-    const capture = (chunk: Buffer) => {
-      if (bytes >= MAX_OUTPUT_BYTES) return
-      const room = MAX_OUTPUT_BYTES - bytes
-      // Keep at most `room` bytes of this chunk, then ignore the rest. Slicing
-      // the Buffer (byte-indexed) is correct; decoding happens once below.
-      const keep = chunk.length > room ? chunk.subarray(0, room) : chunk
-      chunks.push(keep)
-      bytes += keep.length
-    }
-    child.stdout.on("data", capture)
-    child.stderr.on("data", capture)
-
-    const timer = setTimeout(() => {
-      timedOut = true
-      child.kill("SIGKILL")
-    }, timeoutMs)
-
-    child.on("error", (err) => {
-      clearTimeout(timer)
-      resolve({ stdout: `Failed to start command: ${err.message}`, exitCode: null, signal: null, timedOut })
-    })
-    child.on("close", (code, signal) => {
-      clearTimeout(timer)
-      resolve({ stdout: Buffer.concat(chunks).toString("utf8"), exitCode: code, signal, timedOut })
-    })
-  })
-}
 
 // Runs a shell command in the workspace. Gated through the shared approval
 // pipeline (ctx.gate): catastrophic commands are hard-blocked and never spawn,
@@ -144,8 +88,16 @@ export const runShellTool: Tool = {
       return toolError("denied", "The user denied approval to run this command.")
     }
 
-    const result = await run(command, ctx.workspace, timeoutMs)
-    const cleaned = stripAnsi(result.stdout)
+    // Run through the turn's execution backend (host or container). The byte cap
+    // and multibyte-once decode live in the env; decode the returned Buffer once.
+    const env = ctx.env ?? new LocalEnvironment(ctx.workspace)
+    const result = await env.exec(command, {
+      cwd: ctx.workspace,
+      timeoutMs,
+      maxOutputBytes: MAX_OUTPUT_BYTES,
+      signal: ctx.signal,
+    })
+    const cleaned = stripAnsi(result.stdout.toString("utf8"))
     const body = truncateForModel(cleaned).text
 
     const status = result.timedOut

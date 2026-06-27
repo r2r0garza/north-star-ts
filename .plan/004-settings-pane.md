@@ -16,6 +16,10 @@ Everything the user might want to tune is currently hardcoded or env-only, with 
 - **Tool permissions** are fixed in code: `FileActionClassifier` (`src/main/agent/approval/
   file-classifier.ts`) always returns `allow`, so file writes/edits never prompt. There's no
   switch to make "edit_file requires approval".
+- **Execution backend** (Local vs. Docker/Podman container) is now selectable, but only via the
+  `COWORK_ENV_RUNTIME` env var — there's no UI. The `Environment` abstraction shipped in
+  `.plan/006` (foundation A–D); its **section E — surface the backend choice here + loosen the
+  approval policy inside a sandbox — was deliberately deferred to this pane.** See §G below.
 
 This phase adds a **Settings pane** so the user can, from the UI: pick the LLM provider (only
 Portkey today, but the model is future-proofed for more), choose the model from a maintained
@@ -157,11 +161,40 @@ scope + Sheet UI** as the leading hypothesis.
   at shell level. **`src/renderer/src/components/sidebar.tsx`** — add a gear `Button` (ghost,
   icon) in the sidebar footer that opens it. No new entry in the `VIEWS` enum.
 
+### G. Execution backend + sandbox approval policy (inherited from `.plan/006` section E)
+
+The `Environment` abstraction (`.plan/006`, foundation A–D) shipped, but its **section E was
+deferred to this pane** because it depends on the settings store + the live-permission classifier
+seam built here. Two pieces to land:
+
+- **Backend choice in Settings.** Replace the `COWORK_ENV_RUNTIME` env var (see
+  `src/main/agent/env/factory.ts` → `envConfigFromEnv()`) with a persisted setting: `Local |
+  Docker | Podman` (+ optional image). Stored in the `settings` table (e.g. an `execution` blob,
+  §A) and read by `runChat` when it builds the env (`src/main/agent/index.ts`, the
+  `createEnvironment(...)` call) instead of from the env var. Global scope for V1, matching the
+  rest of this pane. Surface it as a tab/section in the Settings Sheet (§F) — a `select` for
+  runtime, with a clear "container runtime not detected" state when `docker`/`podman` isn't on
+  PATH (the factory already fails closed; the UI should preflight and disable unavailable options).
+- **Loosen the approval policy inside a sandbox — the payoff.** This is the headline benefit of
+  the whole 006 effort: in a container, a bad command trashes an ephemeral container, not the
+  laptop, so we can auto-approve a wider command set. Mechanism reuses §D's live-classifier seam —
+  the classifier reads, **at `classify()` time**, both the permission settings *and* whether the
+  active backend is a container, and relaxes accordingly. **Hard invariant: the
+  `RegexCommandClassifier` hardline tier (`rm -rf /`, fork bombs, etc.) stays unconditional — a
+  sandbox must never bypass it.** Local always stays strict. Decide the exact relaxed set when
+  building (e.g. auto-allow non-hardline shell + file writes when sandboxed), and gate it behind an
+  explicit, clearly-labeled setting rather than silent behavior.
+
+This keeps 006's mechanism (already shipped) and 004's policy/UI (here) cleanly separated: 006
+made execution *swappable*; 004 makes the choice *visible* and turns the sandbox into the *trust*
+lever that justifies it.
+
 ## Sequencing
 schema+repo (settings table) → settings service (cache + safeStorage + defaults) → agent reads
 settings (getClient/model dynamic + invalidate) → classifier reads permissions → IPC+preload →
-renderer Sheet + gear trigger. Each step typecheck-able independently; the agent keeps working
-with defaults until the UI writes anything.
+renderer Sheet + gear trigger → **backend choice + sandbox approval policy (§G, the 006-E
+pickup)**. Each step typecheck-able independently; the agent keeps working with defaults (and the
+`COWORK_ENV_RUNTIME` env var) until the UI writes anything.
 
 ## Verification (when built)
 - **Defaults / back-compat:** fresh install with only `.env.local` set behaves exactly as today
@@ -177,6 +210,11 @@ with defaults until the UI writes anything.
   apply (no restart).
 - **Hardline safety:** with any permissive shell setting (if shipped), `rm -rf /` is still
   hard-blocked — settings can never override the hardline tier.
+- **Execution backend (§G):** switching the runtime in Settings makes the next turn run in that
+  backend (e.g. `run_shell_tool hostname` differs from the host in a container) with no restart;
+  an unavailable runtime is disabled/flagged in the UI rather than failing mid-turn. With a
+  container backend + sandbox-loosening enabled, a previously-prompting command auto-approves —
+  but `rm -rf /` is **still** hard-blocked (sandbox never bypasses the hardline tier).
 - `pnpm typecheck`, `pnpm test`, `pnpm build` clean; `pnpm dev` boots and the gear opens the Sheet.
 
 ## Out of scope

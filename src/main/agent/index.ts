@@ -12,6 +12,9 @@ import { createReadSkillTool } from "./skills/tool"
 import { skillSources } from "./skills/sources"
 import { loadSystemPrompt } from "./system-prompt"
 import { contextBuilder } from "./context/context-builder"
+import { createEnvironment, envConfigFromEnv } from "./env"
+import { LocalEnvironment } from "./env/local"
+import type { Environment } from "./env/types"
 import { appendMessage } from "../db/repositories/messages"
 import { getConversation, updateConversation } from "../db/repositories/conversations"
 import { actionAllowlist } from "../db/repositories"
@@ -324,6 +327,24 @@ export async function runChat(
   // results back; those turns are also persisted as they complete (below).
   const messages: any[] = contextBuilder.build(conversationId, { systemPrompt })
 
+  // Build this turn's execution backend (host or container). The backend is
+  // selected by env var until the settings pane lands (see ./env/factory). A
+  // container is started up front, so a missing/broken runtime fails clearly here
+  // rather than hanging mid-turn; we surface the error instead of crashing. Chat
+  // sessions (no workspace) only ever use the local attachment path, so a plain
+  // LocalEnvironment is enough there.
+  let env: Environment
+  if (hasWorkspace) {
+    try {
+      env = await createEnvironment(workspace!, conversationId, envConfigFromEnv())
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err)
+      return { error: `Execution backend unavailable: ${detail}` }
+    }
+  } else {
+    env = new LocalEnvironment("")
+  }
+
   // Register the abort controller for this turn so the Stop button (chat:stop →
   // stopChat) can cancel it. One turn per conversation (the UI disables Send
   // while loading), so a plain Map keyed by conversation is enough.
@@ -528,7 +549,7 @@ export async function runChat(
         }
         // read_skill ignores these fields. With a workspace, file tools confine
         // to it; without one, read_file_tool reads only the attached files.
-        const ctx = { workspace: workspace ?? "", attachments, conversationId, gate, ask }
+        const ctx = { workspace: workspace ?? "", attachments, conversationId, gate, ask, env, signal: abort.signal }
         const result =
           call.name === readSkillTool.definition.function.name
             ? await readSkillTool.execute(args, ctx)
@@ -572,6 +593,13 @@ export async function runChat(
     })
     return { error: message }
   } finally {
+    // Tear down this turn's execution backend (stop+remove a container; no-op for
+    // Local). Never let cleanup failure mask the turn's real result.
+    try {
+      await env.dispose()
+    } catch (err) {
+      console.error("Environment dispose failed:", err)
+    }
     // Release this turn's abort controller (only if it's still the current one —
     // defensive against a future overlapping turn replacing it).
     if (abortControllers.get(conversationId) === abort) {
