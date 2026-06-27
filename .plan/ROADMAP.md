@@ -16,6 +16,9 @@ item is its plan file, not its rank.
    shell command can be killed, not just the LLM stream. The `Environment.exec` signal seam
    already exists (from `006`); this wires it through and adds the in-container kill (the
    documented `006` follow-up — killing `docker exec` doesn't stop the inner process yet).
+3. **`007` — Slash commands for skills.** Let users force a skill with `/skill-name …` (pre-inject
+   the `read_skill` call), keeping today's model-discretionary path for plain messages. Adds a
+   `skills:list` IPC channel + composer autocomplete. Independent of `004`/`005` — schedule freely.
 
 ## Done
 
