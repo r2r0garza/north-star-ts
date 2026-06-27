@@ -131,3 +131,16 @@ CREATE TABLE todos (
 );
 CREATE INDEX idx_todos_conversation_seq ON todos(conversation_id, seq);
 `
+
+// v4: the app's first persisted settings store. A small key-value table (one row
+// per settings group, e.g. "execution", "permissions") with a JSON blob value,
+// so adding a new setting is a code change in the settings service — not a
+// migration. Global scope for now (no workspace/conversation FK); the table can
+// grow a scope column later if per-workspace overrides are needed.
+export const SCHEMA_V4 = `
+CREATE TABLE settings (
+  key        TEXT PRIMARY KEY,
+  value      TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+`

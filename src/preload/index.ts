@@ -15,6 +15,11 @@ import type {
   Workspace,
 } from "../main/db/types"
 import type { Question, QuestionAnswer } from "../main/agent/tools/types"
+import type {
+  ExecutionSettings,
+  PermissionSettings,
+} from "../main/settings/service"
+import type { RuntimeStatus } from "../main/agent/env/runtime-check"
 
 // Streaming events emitted during a chat turn (mirrors ChatEvent in the agent).
 export type ChatEvent =
@@ -164,6 +169,25 @@ const api = {
         ipcRenderer.invoke("db:approvals:resolve", id, decision) as Promise<Approval>,
     },
   },
+
+  // Persisted settings (execution backend + approval policy). Mirrors the
+  // `settings:` IPC channels; all reads/writes go through the main-process
+  // settings service so its cache and the DB stay coherent.
+  settings: {
+    getExecution: () =>
+      ipcRenderer.invoke("settings:getExecution") as Promise<ExecutionSettings>,
+    setExecution: (next: ExecutionSettings) =>
+      ipcRenderer.invoke("settings:setExecution", next) as Promise<ExecutionSettings>,
+    getPermissions: () =>
+      ipcRenderer.invoke("settings:getPermissions") as Promise<PermissionSettings>,
+    setPermissions: (next: PermissionSettings) =>
+      ipcRenderer.invoke("settings:setPermissions", next) as Promise<PermissionSettings>,
+    checkRuntimes: (recheck?: boolean) =>
+      ipcRenderer.invoke("settings:checkRuntimes", recheck) as Promise<{
+        docker: RuntimeStatus
+        podman: RuntimeStatus
+      }>,
+  },
 }
 
 contextBridge.exposeInMainWorld("cowork", api)
@@ -186,3 +210,12 @@ export type {
 } from "../main/db/types"
 // Re-export the ask_user_question types so the renderer can type the panel.
 export type { Question, QuestionOption, QuestionAnswer } from "../main/agent/tools/types"
+// Re-export settings types so the renderer can type the Settings pane.
+export type {
+  ExecutionSettings,
+  PermissionSettings,
+  Backend,
+  FilePermission,
+  ApprovalCategory,
+} from "../main/settings/service"
+export type { RuntimeStatus, Runtime } from "../main/agent/env/runtime-check"

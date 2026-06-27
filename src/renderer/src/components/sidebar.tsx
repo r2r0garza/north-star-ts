@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react"
-import { Plus } from "lucide-react"
+import { Plus, Settings } from "lucide-react"
 import {
   Sidebar,
   SidebarContent,
@@ -144,6 +144,7 @@ export function AppSidebar({
   onSelectConversation,
   onNewConversation,
   onConversationDeleted,
+  onSettingsClick,
   refreshKey,
 }: {
   view: View
@@ -152,6 +153,7 @@ export function AppSidebar({
   onSelectConversation: (id: string, mode: Mode) => void
   onNewConversation: () => void
   onConversationDeleted: (id: string) => void
+  onSettingsClick: () => void
   // Bumped by the app whenever conversations change, so the list refetches.
   refreshKey: number
 }) {
@@ -252,7 +254,18 @@ export function AppSidebar({
           </SidebarGroupContent>
         </SidebarGroup>
       </SidebarContent>
-      <SidebarFooter />
+      <SidebarFooter className="p-2">
+        <Button
+          type="button"
+          size="sm"
+          variant="ghost"
+          onClick={onSettingsClick}
+          className="w-full justify-start"
+        >
+          <Settings className="size-4" />
+          Settings
+        </Button>
+      </SidebarFooter>
 
       {/* Confirmation before deleting a session — deletion is irreversible. */}
       <AlertDialog

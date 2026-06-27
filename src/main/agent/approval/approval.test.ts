@@ -3,7 +3,11 @@ import { stripAnsi } from "./ansi"
 import { normalizeCommand } from "./normalize"
 import { RegexCommandClassifier } from "./regex-classifier"
 import { FileActionClassifier } from "./file-classifier"
-import { PolicyEngine, type AllowlistLookup } from "./policy"
+import {
+  PolicyEngine,
+  type AllowlistLookup,
+  type SandboxPolicyLookup,
+} from "./policy"
 import type { ToolAction } from "./types"
 
 // Build a shell action for the classifier under test.
@@ -191,5 +195,91 @@ describe("PolicyEngine — precedence", () => {
   it("defaults to allow when no classifier handles the action", () => {
     const engine = new PolicyEngine([new FileActionClassifier()], allowNone)
     expect(engine.decide(shell("rm -rf build")).level).toBe("allow")
+  })
+})
+
+describe("RegexCommandClassifier — categories", () => {
+  it("tags a dangerous command with its category", () => {
+    const d = classify("rm -rf build")
+    expect(d?.level).toBe("require_approval")
+    expect(d && "category" in d && d.category).toBe("destructive_fs")
+  })
+
+  it("tags git history rewrites distinctly from fs deletes", () => {
+    const d = classify("git reset --hard HEAD~3")
+    expect(d && "category" in d && d.category).toBe("history_rewrite")
+  })
+
+  it("hard_block carries no category (never downgradable)", () => {
+    const d = classify("rm -rf /")
+    expect(d?.level).toBe("hard_block")
+    expect((d as { category?: string }).category).toBeUndefined()
+  })
+})
+
+describe("FileActionClassifier — settings-driven", () => {
+  it("auto-allows when permission is 'auto'", () => {
+    const c = new FileActionClassifier(() => ({ file_write: "auto", file_edit: "auto" }))
+    expect(c.classify(fileWrite("a.ts"))?.level).toBe("allow")
+  })
+
+  it("requires approval (tagged workspace_mutation) when set", () => {
+    const c = new FileActionClassifier(() => ({
+      file_write: "require_approval",
+      file_edit: "auto",
+    }))
+    const d = c.classify(fileWrite("a.ts"))
+    expect(d?.level).toBe("require_approval")
+    expect(d && "category" in d && d.category).toBe("workspace_mutation")
+  })
+})
+
+describe("PolicyEngine — sandbox auto-approve", () => {
+  const allowNone: AllowlistLookup = { isAllowed: () => false }
+  // A sandbox policy that auto-approves only "workspace_mutation".
+  const sandboxWorkspaceOnly: SandboxPolicyLookup = {
+    autoApproves: (cat) => cat === "workspace_mutation",
+  }
+
+  it("downgrades an enabled category to allow when sandboxed", () => {
+    const engine = new PolicyEngine(
+      [new FileActionClassifier(() => ({ file_write: "require_approval", file_edit: "auto" }))],
+      allowNone,
+      sandboxWorkspaceOnly
+    )
+    expect(engine.decide(fileWrite("a.ts"), { sandboxed: true }).level).toBe("allow")
+  })
+
+  it("does NOT downgrade the same action when not sandboxed", () => {
+    const engine = new PolicyEngine(
+      [new FileActionClassifier(() => ({ file_write: "require_approval", file_edit: "auto" }))],
+      allowNone,
+      sandboxWorkspaceOnly
+    )
+    expect(engine.decide(fileWrite("a.ts"), { sandboxed: false }).level).toBe(
+      "require_approval"
+    )
+  })
+
+  it("does NOT downgrade a category the sandbox policy leaves off", () => {
+    const engine = new PolicyEngine([classifier], allowNone, sandboxWorkspaceOnly)
+    // rm -rf build is "destructive_fs", not enabled by sandboxWorkspaceOnly.
+    expect(engine.decide(shell("rm -rf build"), { sandboxed: true }).level).toBe(
+      "require_approval"
+    )
+  })
+
+  it("auto-approves a dangerous command when its category IS enabled", () => {
+    const sandboxFsToo: SandboxPolicyLookup = {
+      autoApproves: (cat) => cat === "destructive_fs",
+    }
+    const engine = new PolicyEngine([classifier], allowNone, sandboxFsToo)
+    expect(engine.decide(shell("rm -rf build"), { sandboxed: true }).level).toBe("allow")
+  })
+
+  it("NEVER downgrades hard_block, even sandboxed with an all-yes policy", () => {
+    const sandboxAll: SandboxPolicyLookup = { autoApproves: () => true }
+    const engine = new PolicyEngine([classifier], allowNone, sandboxAll)
+    expect(engine.decide(shell("rm -rf /"), { sandboxed: true }).level).toBe("hard_block")
   })
 })

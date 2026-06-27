@@ -24,10 +24,13 @@ export interface ToolAction {
   detail?: Record<string, unknown>
 }
 
-// A classifier's verdict for an action.
+// A classifier's verdict for an action. A `require_approval` verdict may carry a
+// `category` (e.g. "workspace_mutation", "destructive_fs") so a sandbox policy
+// can choose to auto-approve *selected* categories inside a container — see
+// PolicyEngine.decide. `hard_block` has no category: it is never downgradable.
 export type ActionDecision =
   | { level: "allow"; reason?: string }
-  | { level: "require_approval"; reason: string }
+  | { level: "require_approval"; reason: string; category?: string }
   | { level: "hard_block"; reason: string }
 
 // Classifies a tool action. A classifier returns null for action kinds it

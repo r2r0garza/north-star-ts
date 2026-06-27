@@ -6,6 +6,7 @@ import { ThemeProvider } from "@/components/theme-provider"
 import { SidebarProvider } from "@/components/ui/sidebar"
 import { AppSidebar, MODE_TO_VIEW, type View } from "@/components/sidebar"
 import { SidebarToggle } from "@/components/sidebar-toggle"
+import { SettingsSheet } from "@/components/settings-sheet"
 import type { Mode } from "@/types"
 import App from "./App"
 
@@ -22,6 +23,8 @@ function Shell() {
   // Bumped whenever conversations change so the sidebar list refetches.
   const [refreshKey, setRefreshKey] = useState(0)
   const refreshConversations = () => setRefreshKey((k) => k + 1)
+  // Whether the Settings sheet is open (opened from the sidebar gear).
+  const [settingsOpen, setSettingsOpen] = useState(false)
 
   useEffect(() => {
     window.cowork.isFullScreen().then(setFullscreen)
@@ -62,6 +65,7 @@ function Shell() {
         onSelectConversation={handleSelectConversation}
         onNewConversation={() => setActiveConversationId(null)}
         onConversationDeleted={handleConversationDeleted}
+        onSettingsClick={() => setSettingsOpen(true)}
         refreshKey={refreshKey}
       />
       <App
@@ -73,6 +77,7 @@ function Shell() {
         }}
         onConversationChanged={refreshConversations}
       />
+      <SettingsSheet open={settingsOpen} onOpenChange={setSettingsOpen} />
     </SidebarProvider>
   )
 }

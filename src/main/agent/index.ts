@@ -12,13 +12,14 @@ import { createReadSkillTool } from "./skills/tool"
 import { skillSources } from "./skills/sources"
 import { loadSystemPrompt } from "./system-prompt"
 import { contextBuilder } from "./context/context-builder"
-import { createEnvironment, envConfigFromEnv } from "./env"
+import { createEnvironment } from "./env"
 import { LocalEnvironment } from "./env/local"
 import type { Environment } from "./env/types"
+import * as settingsService from "../settings/service"
 import { appendMessage } from "../db/repositories/messages"
 import { getConversation, updateConversation } from "../db/repositories/conversations"
 import { actionAllowlist } from "../db/repositories"
-import { PolicyEngine, type AllowlistLookup } from "./approval/policy"
+import { PolicyEngine, type AllowlistLookup, type SandboxPolicyLookup } from "./approval/policy"
 import { RegexCommandClassifier } from "./approval/regex-classifier"
 import { FileActionClassifier } from "./approval/file-classifier"
 import type { Gate, GateOutcome, ToolAction } from "./approval/types"
@@ -51,9 +52,21 @@ const allowlistLookup: AllowlistLookup = {
     })
   },
 }
+// The sandbox policy reads live settings at decision time (like the file
+// classifier), so a settings change takes effect on the next action without
+// rebuilding the engine.
+const sandboxPolicy: SandboxPolicyLookup = {
+  autoApproves(category) {
+    return settingsService.sandboxAutoApproves(category)
+  },
+}
 const policy = new PolicyEngine(
-  [new FileActionClassifier(), new RegexCommandClassifier()],
-  allowlistLookup
+  [
+    new FileActionClassifier(() => settingsService.getPermissions()),
+    new RegexCommandClassifier(),
+  ],
+  allowlistLookup,
+  sandboxPolicy
 )
 
 // Decision for one pending approval, set by resolveApproval and awaited inside
@@ -334,9 +347,14 @@ export async function runChat(
   // sessions (no workspace) only ever use the local attachment path, so a plain
   // LocalEnvironment is enough there.
   let env: Environment
+  // Whether this turn runs in an isolated container — gates the sandbox
+  // auto-approve downgrade in the approval policy below.
+  let sandboxed = false
   if (hasWorkspace) {
     try {
-      env = await createEnvironment(workspace!, conversationId, envConfigFromEnv())
+      const envConfig = settingsService.getExecutionConfig()
+      sandboxed = envConfig.kind === "container"
+      env = await createEnvironment(workspace!, conversationId, envConfig)
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err)
       return { error: `Execution backend unavailable: ${detail}` }
@@ -499,6 +517,7 @@ export async function runChat(
           const decision = policy.decide(action, {
             workspacePath: workspace,
             conversationId,
+            sandboxed,
           })
           if (decision.level === "allow") return Promise.resolve("approved")
           if (decision.level === "hard_block") return Promise.resolve("blocked")

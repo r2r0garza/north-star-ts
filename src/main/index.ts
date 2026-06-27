@@ -11,6 +11,7 @@ loadEnv({ path: join(app.getAppPath(), ".env.local") })
 import { runChat, resolveApproval, resolveQuestion, stopChat, type ChatRequest } from "./agent"
 import { pickWorkspace, pickFiles } from "./pick-workspace"
 import { registerDbHandlers } from "./ipc/db-handlers"
+import { registerSettingsHandlers } from "./ipc/settings-handlers"
 import { closeDb } from "./db/connection"
 
 function createWindow(): void {
@@ -114,6 +115,7 @@ app.whenReady().then(() => {
   // Register DB-backed IPC handlers now — the connection opens lazily on first
   // use, after userData is available.
   registerDbHandlers()
+  registerSettingsHandlers()
   createWindow()
 
   app.on("activate", () => {
