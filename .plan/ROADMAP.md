@@ -7,15 +7,15 @@ item is its plan file, not its rank.
 
 ## Next up
 
-1. **`006` — Execution environments (Local / Docker / Podman).** Foundational refactor:
-   put an `Environment` interface under the machine-touching tools so the backend is
-   selectable. Prerequisite for safely loosening auto-approval and for unattended
-   autonomy — best done before adding more tools that would otherwise need retrofitting.
-2. **`004` — Settings pane.** User-facing settings (and the natural home for the
-   environment/backend choice from `006`).
-3. **`005` — Stop in-flight tool calls.** Carry the abort signal into tools so a running
-   shell command can be killed, not just the LLM stream. Coordinates with `006` (killing
-   a process means killing it in the right backend).
+1. **`004` (LLM slice) — Settings pane, provider/model + API key.** The remaining half of
+   `004`: settings-aware `getClient()` (dynamic provider/model + invalidation), safeStorage
+   API-key encryption, and the Provider/Model + API-Key tabs in the Settings Sheet. The store,
+   service, IPC, and Sheet shell already exist (slice 1) — this fills in §C and the LLM parts of
+   §B/§E/§F. Open questions Q1 (key storage) and Q3 (model list) still to decide.
+2. **`005` — Stop in-flight tool calls.** Carry the abort signal into tools so a running
+   shell command can be killed, not just the LLM stream. The `Environment.exec` signal seam
+   already exists (from `006`); this wires it through and adds the in-container kill (the
+   documented `006` follow-up — killing `docker exec` doesn't stop the inner process yet).
 
 ## Done
 
@@ -23,6 +23,15 @@ item is its plan file, not its rank.
 - **`002` — Shell execution + approval gating.** Shipped (`main`, merge `7ce97d6`).
 - **`003` — todo_tool.** Shipped (merge `51699ac`). Also in that merge: unbounded agent
   loop, Stop button (LLM/loop cancel), pop-out approval prompt, and `ask_user_question`.
+- **`006` — Execution environments (Local / Docker / Podman).** Shipped (`main`, merge `828a397`).
+  `Environment` interface under the machine-touching tools, `LocalEnvironment` + a minimal
+  `ContainerEnvironment`, bulk `search`, and an `exec` abort seam. Section E (settings + sandbox
+  approval) was deferred into `004` and has since shipped (see below).
+- **`004` (slice 1) — Settings pane: backend + sandbox approval.** Shipped on `feat/settings-pane`
+  (commit `213654e`; not yet merged to `main`). First persisted settings store (`SCHEMA_V4`),
+  execution-backend choice in the UI (replacing the `COWORK_ENV_RUNTIME` env var), file-permission
+  toggles, and the sandbox-aware approval downgrade (the `006`-E payoff — config-driven by
+  category, hardline never bypassed). **LLM provider/model + API-key UI still pending** → Next up.
 
 ## Backlog (not yet planned)
 
