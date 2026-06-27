@@ -22,6 +22,10 @@ export type TaskStatus =
 
 export type ApprovalStatus = "pending" | "approved" | "denied"
 
+// The agent's per-conversation task list (the `todo_write` tool). Distinct from
+// TaskStatus — these are a planning scratchpad, not durable runner lifecycle.
+export type TodoStatus = "pending" | "in_progress" | "completed" | "cancelled"
+
 // A single tool call requested by the assistant, stored as JSON on the message
 // row. Mirrors the OpenAI-compatible tool_call shape Portkey expects.
 export interface ToolCallRecord {
@@ -86,6 +90,18 @@ export interface TaskCheckpoint {
   label: string | null
   state: unknown
   createdAt: number
+}
+
+// One item in a conversation's task list. `itemId` is the model-chosen id
+// (unique within a conversation); `seq` is list order = priority.
+export interface Todo {
+  conversationId: string
+  itemId: string
+  seq: number
+  content: string
+  status: TodoStatus
+  createdAt: number
+  updatedAt: number
 }
 
 export interface Approval {

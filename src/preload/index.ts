@@ -50,8 +50,13 @@ const api = {
     return (ipcRenderer.invoke("chat", req) as Promise<{
       content?: string
       error?: string
+      stopped?: boolean
     }>).finally(done)
   },
+  // Cancel the in-flight turn for a conversation (the Stop button). The chat()
+  // promise above then resolves with `{ stopped: true }`.
+  chatStop: (conversationId: string) =>
+    ipcRenderer.invoke("chat:stop", conversationId) as Promise<void>,
   // Resolve an in-flight approval request (from an "approval" ChatEvent). The
   // agent loop is paused until this is called. `requestId` is the token from the
   // event. `remember: "workspace"` persists an allowlist rule so the same action

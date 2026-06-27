@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react"
-import { ArrowUp, FileText, FolderOpen, Plus, X } from "lucide-react"
+import { ArrowUp, FileText, FolderOpen, Plus, Square, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Markdown } from "@/components/markdown"
 import { VIEW_TO_MODE, type View } from "@/components/sidebar"
@@ -65,6 +65,9 @@ export default function App({
   // The conversation the panel is currently showing. Used to ignore a settling
   // turn's reconcile if the user switched conversations mid-stream.
   const viewingRef = useRef<string | null>(conversationId)
+  // The conversation whose turn is currently in flight (set in sendMessage,
+  // which may create the conversation lazily). The Stop button cancels this one.
+  const inFlightRef = useRef<string | null>(null)
   // Chat needs only a message (a file is optional); the workspace views need a
   // selected folder as well.
   const canSend =
@@ -201,6 +204,7 @@ export default function App({
     setLiveText("")
     setLiveTools([])
     setLoading(true)
+    inFlightRef.current = convoId
 
     try {
       const data = await window.cowork.chat(
@@ -256,17 +260,26 @@ export default function App({
           }
         }
       )
-      // If nothing streamed, surface the final text/error in the live bubble.
-      // (Transient — immediately superseded by the reconcile below.)
+      // Surface the final text/error in the live bubble. An error is APPENDED
+      // (not `s || …`) so it shows even after a preamble already streamed —
+      // otherwise a turn that ends mid-work after some text would stop silently.
+      // (Transient — immediately superseded by the reconcile below, which now
+      // also reads the persisted error note.)
       if (data.error) {
-        setLiveText((s) => s || `Error: ${data.error}`)
+        setLiveText((s) => (s ? `${s}\n\n⚠️ ${data.error}` : `Error: ${data.error}`))
+      } else if (data.stopped) {
+        // Clean user cancel — the "⏹ Stopped by user." note is persisted and
+        // shown by the reconcile below; append a transient marker meanwhile.
+        setLiveText((s) => (s ? `${s}\n\n⏹ Stopped` : "⏹ Stopped"))
       } else if (data.content) {
         setLiveText((s) => s || data.content!)
       }
     } catch (error) {
-      setLiveText((s) => s || (error instanceof Error ? error.message : "Request failed"))
+      const msg = error instanceof Error ? error.message : "Request failed"
+      setLiveText((s) => (s ? `${s}\n\n⚠️ ${msg}` : msg))
     } finally {
       setLoading(false)
+      inFlightRef.current = null
       // Reconcile the live turn with the persisted transcript so the rendered
       // content matches storage exactly — but only if the user is still viewing
       // this conversation. A freshly created one is promoted to active just
@@ -289,6 +302,14 @@ export default function App({
       if (isNew) onConversationCreated(convoId)
       else onConversationChanged()
     }
+  }
+
+  // Cancel the in-flight turn. The main process aborts the LLM stream and
+  // resolves chat() with `{ stopped: true }`, which unwinds sendMessage's
+  // finally (reconcile + loading reset) normally.
+  function stopMessage() {
+    const id = inFlightRef.current
+    if (id) window.cowork.chatStop(id)
   }
 
   // Before the first message is sent, an empty session shows the composer
@@ -359,15 +380,30 @@ export default function App({
               {workspace && <span className="max-w-40 truncate">{lastSegment(workspace)}</span>}
             </button>
           )}
-          <Button
-            type="button"
-            size="icon"
-            onClick={sendMessage}
-            disabled={!canSend}
-            className="size-8 rounded-full"
-          >
-            <ArrowUp className="size-4" />
-          </Button>
+          {loading ? (
+            <Button
+              type="button"
+              size="icon"
+              onClick={stopMessage}
+              title="Stop"
+              aria-label="Stop"
+              className="size-8 rounded-full"
+            >
+              <Square className="size-3.5 fill-current" />
+            </Button>
+          ) : (
+            <Button
+              type="button"
+              size="icon"
+              onClick={sendMessage}
+              disabled={!canSend}
+              title="Send"
+              aria-label="Send"
+              className="size-8 rounded-full"
+            >
+              <ArrowUp className="size-4" />
+            </Button>
+          )}
         </div>
       </div>
     </>

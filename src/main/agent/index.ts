@@ -2,8 +2,10 @@ import { Portkey } from "portkey-ai"
 import { randomUUID } from "crypto"
 import { stat } from "fs/promises"
 import { basename, isAbsolute } from "path"
-import { toolDefinitions, runTool } from "./tools"
+import { toolDefinitions, runTool, todoWriteTool } from "./tools"
 import { readFileTool } from "./tools/read_file_tool"
+import { listTodos } from "../db/repositories/todos"
+import { buildTodoListPrompt } from "./todo-prompt"
 import { loadSkills } from "./skills/loader"
 import { buildSkillsPrompt } from "./skills/prompt"
 import { createReadSkillTool } from "./skills/tool"
@@ -60,6 +62,19 @@ interface PendingApproval {
 }
 const pendingApprovals = new Map<string, PendingApproval>()
 
+// One AbortController per in-flight turn, keyed by conversation. The renderer's
+// Stop button calls stopChat(conversationId), which aborts the controller: that
+// cancels the in-flight Portkey stream (signal passed to every create() call),
+// unblocks any pending approval gate, and breaks the agentic loop. A turn owns
+// at most one controller; runChat clears it in `finally`.
+const abortControllers = new Map<string, AbortController>()
+
+// Called from the renderer over IPC ("chat:stop") to cancel an in-flight turn.
+// Idempotent and safe to call when nothing is running (no-op if no controller).
+export function stopChat(conversationId: string): void {
+  abortControllers.get(conversationId)?.abort()
+}
+
 // Called from the renderer over IPC ("chat:approve") to resolve a request the
 // gate is blocked on. `requestId` is a process-unique token (not the model's
 // tool-call id, which is only unique within a turn) so a decision can never
@@ -109,6 +124,9 @@ function titleFromMessage(text: string): string {
 export interface ChatResult {
   content?: string
   error?: string
+  // True when the turn was cancelled by the user's Stop button (a clean stop,
+  // not an error). The "⏹ Stopped by user." note is already persisted.
+  stopped?: boolean
 }
 
 // Streaming events emitted during a turn. `token` is a text delta to append to
@@ -215,21 +233,37 @@ export async function runChat(
   // just read_file_tool, scoped to the files the user attached (the attachment
   // list is the read allowlist — see read_file_tool's resolveReadable).
   const hasAttachments = !!attachments && attachments.length > 0
+
+  // Load the conversation once, here: its `mode` selects the base system prompt,
+  // gates the todo tool, and is reused below for the title check. Defaults to
+  // "chat" if missing.
+  const conversation = getConversation(conversationId)
+
+  // The todo tool is gated by mode, not workspace: chat is the tool-light mode
+  // and doesn't get it; interactive/north_star do, with or without a workspace.
+  const showTodos = conversation?.mode != null && conversation.mode !== "chat"
+
   const tools = [
     ...(hasWorkspace
       ? toolDefinitions
       : hasAttachments
         ? [readFileTool.definition]
         : []),
+    ...(showTodos ? [todoWriteTool.definition] : []),
     readSkillTool.definition,
   ]
   const skillsPrompt = buildSkillsPrompt(skills)
 
-  // Load the conversation once, here: its `mode` selects the base system prompt,
-  // and it's reused below for the title check. Defaults to "chat" if missing.
-  const conversation = getConversation(conversationId)
   let systemPrompt = await loadSystemPrompt(conversation?.mode)
   if (skillsPrompt) systemPrompt += `\n\n${skillsPrompt}`
+
+  // Re-inject the current task list each turn so a multi-step plan survives
+  // context compression and tool round-trips (see todo_write). Mode-gated and
+  // only when non-empty.
+  if (showTodos) {
+    const todoPrompt = buildTodoListPrompt(listTodos(conversationId))
+    if (todoPrompt) systemPrompt += `\n\n${todoPrompt}`
+  }
 
   // List any attached files by name so the model knows what it can read. The
   // contents are NOT inlined: the model reads them on demand via read_file_tool
@@ -263,6 +297,12 @@ export async function runChat(
   // results back; those turns are also persisted as they complete (below).
   const messages: any[] = contextBuilder.build(conversationId, { systemPrompt })
 
+  // Register the abort controller for this turn so the Stop button (chat:stop →
+  // stopChat) can cancel it. One turn per conversation (the UI disables Send
+  // while loading), so a plain Map keyed by conversation is enough.
+  const abort = new AbortController()
+  abortControllers.set(conversationId, abort)
+
   try {
     // Tracks whether any earlier turn already streamed visible text. The model
     // may emit a preamble ("Let me check…"), call a tool, then continue in a
@@ -270,15 +310,41 @@ export async function runChat(
     // token so the two pieces don't run together in the bubble.
     let streamedText = false
 
-    // Agentic loop: call the model, run any tools it asks for, repeat until done.
-    for (let i = 0; i < 5; i++) {
-      const stream = await getClient().chat.completions.create({
-        model: MODEL,
-        max_tokens: 1024,
-        messages,
-        tools,
-        stream: true,
-      })
+    // Agentic loop: call the model, run any tools it asks for, repeat until the
+    // model returns a turn with no tool calls (the final answer). No round-trip
+    // cap — like Claude Code, we let the model run until it's done; multi-step
+    // tasks (and the todo list that tracks them) need more than a handful of
+    // steps. A turn ends only on a tool-free reply or a thrown error (caught
+    // below and surfaced/persisted).
+    while (true) {
+      // Stop pressed during the previous step's tool execution: break before
+      // starting another model round-trip. (An abort mid-stream is caught by the
+      // signal on create() below and handled in `catch`.)
+      if (abort.signal.aborted) {
+        appendMessage({
+          conversationId,
+          role: "assistant",
+          content: "⏹ Stopped by user.",
+        })
+        return { stopped: true }
+      }
+
+      const stream = await getClient().chat.completions.create(
+        {
+          model: MODEL,
+          max_tokens: 1024,
+          messages,
+          tools,
+          stream: true,
+        },
+        undefined,
+        // We pass the signal, but the Portkey SDK (3.1.0) does NOT forward it to
+        // the underlying fetch — it only checks `signal.aborted` after an error.
+        // So aborting alone won't stop a healthy stream. The real cancellation is
+        // the `break` in the consume loop below: breaking runs the stream
+        // iterator's return()/reader.cancel(), which tears down the HTTP body.
+        { signal: abort.signal }
+      )
 
       // Reassemble the streamed turn. Text deltas are forwarded live; tool-call
       // fragments arrive piecemeal and are accumulated by their `index`.
@@ -289,6 +355,10 @@ export async function runChat(
       >()
 
       for await (const chunk of stream) {
+        // Stop pressed mid-stream: break so the iterator cancels the reader and
+        // the HTTP stream stops. The post-loop abort check unwinds the turn.
+        if (abort.signal.aborted) break
+
         const delta = chunk.choices[0]?.delta
         if (!delta) continue
 
@@ -312,6 +382,18 @@ export async function runChat(
           if (tc.function?.arguments) slot.arguments += tc.function.arguments
           toolAcc.set(tc.index, slot)
         }
+      }
+
+      // Stopped mid-stream (we broke out above): persist whatever text streamed
+      // so far plus the stop note, and end the turn. Don't act on a partial
+      // tool-call fragment.
+      if (abort.signal.aborted) {
+        appendMessage({
+          conversationId,
+          role: "assistant",
+          content: text ? `${text}\n\n⏹ Stopped by user.` : "⏹ Stopped by user.",
+        })
+        return { stopped: true }
       }
 
       const toolCalls = [...toolAcc.entries()]
@@ -388,6 +470,16 @@ export async function runChat(
               workspacePath: workspace,
               conversationId,
             })
+            // If the turn is stopped while waiting on this approval, release the
+            // gate (as a denial) so the loop can unwind instead of hanging — the
+            // pre-PR2 "renderer disconnect hangs the gate" gap, closed by Stop.
+            abort.signal.addEventListener(
+              "abort",
+              () => {
+                if (pendingApprovals.delete(requestId)) resolve("denied")
+              },
+              { once: true }
+            )
           })
         }
         // read_skill ignores these fields. With a workspace, file tools confine
@@ -412,12 +504,35 @@ export async function runChat(
         })
       }
     }
-
-    return { error: "Agent did not finish within the tool-call limit." }
   } catch (error) {
+    // A user Stop aborts the in-flight stream, which surfaces here as an abort
+    // error. That's a clean stop, not a failure: persist a neutral note (so the
+    // transcript shows where it stopped) and return without an error banner.
+    if (abort.signal.aborted) {
+      appendMessage({
+        conversationId,
+        role: "assistant",
+        content: "⏹ Stopped by user.",
+      })
+      return { stopped: true }
+    }
     console.error("Portkey request failed:", error)
-    return { error: error instanceof Error ? error.message : "Request failed" }
+    const message = error instanceof Error ? error.message : "Request failed"
+    // Persist the failure as an assistant note so a reopened conversation (and
+    // the post-turn reconcile in the renderer) explains why the turn ended,
+    // rather than stopping silently after the last tool call.
+    appendMessage({
+      conversationId,
+      role: "assistant",
+      content: `⚠️ The turn ended early: ${message}`,
+    })
+    return { error: message }
   } finally {
+    // Release this turn's abort controller (only if it's still the current one —
+    // defensive against a future overlapping turn replacing it).
+    if (abortControllers.get(conversationId) === abort) {
+      abortControllers.delete(conversationId)
+    }
     // Ensure the title write lands before runChat resolves, so the sidebar
     // shows it as soon as the renderer refreshes. (generateTitle never rejects.)
     if (titlePromise) await titlePromise

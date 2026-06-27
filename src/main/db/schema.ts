@@ -110,3 +110,24 @@ CREATE TABLE action_allowlist (
 CREATE INDEX idx_action_allowlist_lookup
   ON action_allowlist(kind, scope, workspace_path, identity);
 `
+
+// v3: the agent's per-conversation task list (the `todo_write` tool). A bounded
+// planning scratchpad the model writes to and that is re-injected into the
+// prompt each turn so a multi-step plan survives context compression. Composite
+// PK (conversation_id, item_id) lets the model reuse simple ids ("1","2","3")
+// per conversation without global collisions; `seq` is list order = priority.
+// ON DELETE CASCADE cleans up with the conversation, like `messages`.
+export const SCHEMA_V3 = `
+CREATE TABLE todos (
+  conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  item_id         TEXT NOT NULL,
+  seq             INTEGER NOT NULL,
+  content         TEXT NOT NULL,
+  status          TEXT NOT NULL CHECK (status IN
+                    ('pending','in_progress','completed','cancelled')),
+  created_at      INTEGER NOT NULL,
+  updated_at      INTEGER NOT NULL,
+  PRIMARY KEY (conversation_id, item_id)
+);
+CREATE INDEX idx_todos_conversation_seq ON todos(conversation_id, seq);
+`

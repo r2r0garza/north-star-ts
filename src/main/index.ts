@@ -8,7 +8,7 @@ import { config as loadEnv } from "dotenv"
 // agent's own NEXT_apiKey-first fallback still prioritizes the file's key.
 loadEnv({ path: join(app.getAppPath(), ".env.local") })
 
-import { runChat, resolveApproval, type ChatRequest } from "./agent"
+import { runChat, resolveApproval, stopChat, type ChatRequest } from "./agent"
 import { pickWorkspace, pickFiles } from "./pick-workspace"
 import { registerDbHandlers } from "./ipc/db-handlers"
 import { closeDb } from "./db/connection"
@@ -82,6 +82,12 @@ ipcMain.handle(
     resolveApproval(payload.requestId, payload.decision, payload.remember)
   }
 )
+// Cancel an in-flight turn (the Stop button). Aborts the controller in runChat,
+// which kills the in-flight LLM stream, releases any pending approval gate, and
+// unwinds the loop. No-op if nothing is running for that conversation.
+ipcMain.handle("chat:stop", (_event, conversationId: string) => {
+  stopChat(conversationId)
+})
 ipcMain.handle("pick-workspace", () => pickWorkspace())
 ipcMain.handle("pick-files", () => pickFiles())
 // Initial fullscreen state, queried by the renderer on mount.

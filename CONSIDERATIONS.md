@@ -4,6 +4,95 @@ Running list of known trade-offs and deferred decisions. Each entry notes the
 current behavior, why it's acceptable for now, and what to change if the
 assumption breaks.
 
+## 7. The agentic loop in `runChat` is unbounded (no round-trip cap)
+
+**Where:** `src/main/agent/index.ts` — the `while (true)` agentic loop in `runChat`.
+
+**Behavior:** The loop calls the model, runs any tools it requests, and repeats
+until the model returns a turn with **no tool calls** (the final answer). There
+is no maximum round-trip count — matching Claude Code, which lets the model run
+until it's done. Previously this was `for (let i = 0; i < 5; i++)`, which
+silently ended multi-step tasks right after exploration/reads (before the edit
+step) and returned a "did not finish within the tool-call limit" error. The todo
+tool — built for multi-step work — was the first feature to routinely hit it.
+
+**Why it's fine now:** A turn ends naturally when the model stops calling tools.
+The remaining backstops are: a thrown error (network/API failure) is caught,
+persisted as an assistant note, and surfaced (see #8); approval-gated tools still
+require human sign-off per dangerous action; and the user can close the window.
+Real tasks converge in a bounded number of steps.
+
+**Change if:** a model gets stuck in a tool-call cycle (e.g. repeatedly reading
+the same file, or two tools ping-ponging) and burns tokens without converging.
+Then add a *soft* guard rather than the old hard cap — e.g. detect repeated
+identical tool calls, or a generous ceiling (hundreds) that only trips on a true
+runaway — plus turn cancellation (the known limitation in `002`, no abort path
+today). Also revisit `max_tokens: 1024` per call, which is independently low for
+large edits.
+
+## 8. A failed turn is persisted as an assistant note
+
+**Where:** `src/main/agent/index.ts` (the `catch` in `runChat`) and the live
+error handling in `src/renderer/src/App.tsx` (`sendMessage`).
+
+**Behavior:** When a turn throws (network/API error), `runChat` writes an
+assistant message (`⚠️ The turn ended early: <message>`) before returning the
+error, so a reopened conversation explains why it stopped instead of ending
+silently after the last tool marker. The renderer also *appends* the error to
+the live bubble (rather than the old `s || …`, which dropped it whenever a
+preamble had already streamed) so it's visible immediately too.
+
+**Why it's fine now:** Silent stops were the worst part of the old behavior —
+the user saw tool activity then nothing. A persisted note is simple, survives
+reload, and reconciles cleanly with the transcript.
+
+**Change if:** we want richer error UX (a distinct error bubble style, a retry
+affordance, or structured error rows rather than a text message). The persisted
+note is plain assistant text today; a dedicated error role/marker would let the
+UI style it differently and avoid it being mistaken for model output.
+
+## 9. Stop cancels the LLM stream and the loop, but not an in-flight tool
+
+**Where:** `src/main/agent/index.ts` (`stopChat`, the per-conversation
+`abortControllers` map, the abort checks in the loop + gate); IPC `chat:stop` in
+`src/main/index.ts`; `chatStop` in `src/preload/index.ts`; the Send↔Stop toggle
+and `stopMessage` in `src/renderer/src/App.tsx`.
+
+**Behavior:** The Stop button aborts the turn's `AbortController`. That (a)
+cancels the in-flight LLM stream, (b) releases any pending approval gate as a
+denial, and (c) breaks the agentic loop before the next round-trip. A clean stop
+persists a neutral "⏹ Stopped by user." note (preserving any text that already
+streamed) and returns `{ stopped: true }` (not an error). This closes most of
+the PR2 "renderer disconnect hangs the gate" gap — an explicit Stop now unwinds
+a turn waiting on approval.
+
+**How the stream is actually cancelled (important):** the Portkey SDK (3.1.0)
+**ignores `opts.signal` for the fetch** — `buildRequest` never attaches it, and
+`signal` is only read post-hoc to relabel an already-thrown error
+(`node_modules/.../portkey-ai/dist/src/baseClient.js`). So aborting the
+controller does **not** stop a healthy stream on its own. Cancellation works
+because the consume loop in `runChat` checks `abort.signal.aborted` and `break`s
+out of the `for await`; that runs the stream iterator's `return()` →
+`reader.cancel()` (`streaming.js`), which tears down the HTTP response body. We
+still pass `signal` to `create()` so the SDK's error path labels things
+correctly, but the `break` is what does the work.
+
+What Stop does **not** interrupt: a tool that is **already executing** when Stop
+is pressed (e.g. a long `run_shell_tool` command, or a large file read). The
+loop awaits that tool to completion, then sees `signal.aborted` and stops before
+the next model call — so the stop is honored, but a slow in-flight tool can
+delay it. Tools don't currently receive the abort signal.
+
+**Why it's fine now:** Inference (the long pole) and the loop are both cancelled
+promptly, which covers the common case (stop a rambling/looping turn). Tool
+calls are individually short relative to a multi-step turn.
+
+**Change if:** a single tool can run long enough that "Stop doesn't stop it" is
+noticeable — most likely `run_shell_tool` on a slow command, or a future
+network/MCP tool. Then thread the abort signal into `ToolContext` and have
+long-running tools (shell exec especially) honor it: pass it to
+`child_process.spawn`'s `signal` option so Stop kills the subprocess too.
+
 ## 1. `runChat` returns only the last turn's text
 
 **Where:** `src/main/agent/index.ts` (`runChat` return value), consumed by the
@@ -89,6 +178,28 @@ restart. Two options:
   2. **Cache with invalidation** — keep the cache but watch the file (fs watch)
      or compare mtime, reloading only when it changes.
 Option 1 is simplest and consistent with the skills behavior.
+
+## 6. DB-integration tests skip unless `better-sqlite3` matches the Node ABI
+
+**Where:** `src/main/db/repositories/todos.test.ts` (the `describe.skipIf(!sqliteLoads)`
+blocks), driven by how `better-sqlite3` is built (see the native-module-rebuild memory note).
+
+**Behavior:** `better-sqlite3` ships a native binary compiled for **one** Node ABI. The app
+needs it built for **Electron's** ABI, so under plain-Node `vitest` the binary fails to load
+(`NODE_MODULE_VERSION` mismatch). The todos repo tests that open a real in-memory DB therefore
+**skip** rather than fail when the binary can't load; the pure `normalizeItems` tests and the
+mocked tool tests always run. With the Electron ABI binary in place (normal dev state),
+`pnpm test` reports `74 passed | 8 skipped`.
+
+**Why it's fine now:** The DB tests *were* run and verified — temporarily rebuild for the Node
+ABI (`npm rebuild better-sqlite3 --build-from-source`), `pnpm test` → all 82 pass, then restore
+the Electron ABI (`pnpm exec electron-rebuild -f -w better-sqlite3`). Skipping (not failing)
+keeps the everyday `pnpm test` green on the Electron-ABI binary the app uses.
+
+**Change if:** we want the DB tests in CI every run. Options: (1) a CI step that builds
+`better-sqlite3` for the Node ABI before `vitest` (and never ships that artifact); (2) run these
+tests under Electron (e.g. an electron-based test runner); (3) swap to a pure-JS SQLite for
+tests. Until then, re-verify the skipped tests with the rebuild dance after touching repo SQL.
 
 ## 5. Chat attachments are inlined whole, as UTF-8, with a per-file size cap
 

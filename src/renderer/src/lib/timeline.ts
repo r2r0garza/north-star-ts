@@ -76,6 +76,21 @@ export function deriveLabel(
       const skill = typeof a.name === "string" ? a.name : ""
       return skill ? `Read skill ${skill}` : "Read skill"
     }
+    case "todo_write": {
+      // No `todos` arg → a read. Otherwise summarize the write by status count.
+      const todos = Array.isArray(a.todos) ? a.todos : null
+      if (!todos) return "Read task list"
+      if (todos.length === 0) return "Cleared task list"
+      const count = (s: string) =>
+        todos.filter((t) => t && typeof t === "object" && (t as any).status === s).length
+      const parts: string[] = []
+      const inProgress = count("in_progress")
+      const done = count("completed")
+      if (inProgress) parts.push(`${inProgress} in progress`)
+      if (done) parts.push(`${done} done`)
+      const suffix = parts.length ? ` — ${parts.join(", ")}` : ""
+      return `Updated task list (${todos.length} item${todos.length === 1 ? "" : "s"})${suffix}`
+    }
     default:
       return name
   }
