@@ -14,6 +14,7 @@ import type {
   TaskStatus,
   Workspace,
 } from "../main/db/types"
+import type { Question, QuestionAnswer } from "../main/agent/tools/types"
 
 // Streaming events emitted during a chat turn (mirrors ChatEvent in the agent).
 export type ChatEvent =
@@ -27,6 +28,12 @@ export type ChatEvent =
       tool: string
       summary: string
       reason: string
+    }
+  | {
+      type: "question"
+      id: string
+      requestId: string
+      questions: Question[]
     }
 
 // The typed API exposed to the renderer as `window.cowork`.
@@ -50,8 +57,13 @@ const api = {
     return (ipcRenderer.invoke("chat", req) as Promise<{
       content?: string
       error?: string
+      stopped?: boolean
     }>).finally(done)
   },
+  // Cancel the in-flight turn for a conversation (the Stop button). The chat()
+  // promise above then resolves with `{ stopped: true }`.
+  chatStop: (conversationId: string) =>
+    ipcRenderer.invoke("chat:stop", conversationId) as Promise<void>,
   // Resolve an in-flight approval request (from an "approval" ChatEvent). The
   // agent loop is paused until this is called. `requestId` is the token from the
   // event. `remember: "workspace"` persists an allowlist rule so the same action
@@ -61,6 +73,11 @@ const api = {
     decision: "approved" | "denied"
     remember?: "workspace"
   }) => ipcRenderer.invoke("chat:approve", payload) as Promise<void>,
+  // Answer an in-flight ask_user_question (from a "question" ChatEvent). The
+  // agent loop is paused until this is called. `answers` is parallel to the
+  // event's `questions` array.
+  chatAnswer: (payload: { requestId: string; answers: QuestionAnswer[] }) =>
+    ipcRenderer.invoke("chat:answer", payload) as Promise<void>,
   pickWorkspace: () =>
     ipcRenderer.invoke("pick-workspace") as Promise<{
       path?: string
@@ -167,3 +184,5 @@ export type {
   TaskStatus,
   Workspace,
 } from "../main/db/types"
+// Re-export the ask_user_question types so the renderer can type the panel.
+export type { Question, QuestionOption, QuestionAnswer } from "../main/agent/tools/types"

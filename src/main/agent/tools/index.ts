@@ -5,9 +5,13 @@ import { searchTool } from "./search_tool"
 import { editFileTool } from "./edit_file_tool"
 import { writeFileTool } from "./write_file_tool"
 import { runShellTool } from "./run_shell_tool"
+import { todoWriteTool } from "./todo_tool"
+import { askUserQuestionTool } from "./ask_user_question_tool"
 
-// Register tools here — add a new tool by importing it and listing it below.
-const registry: Tool[] = [
+// Workspace-gated tools — offered only when the agent has a workspace (they
+// touch the filesystem). Add a new filesystem tool by importing it and listing
+// it below.
+const workspaceTools: Tool[] = [
   listFilesTool,
   readFileTool,
   searchTool,
@@ -16,11 +20,20 @@ const registry: Tool[] = [
   runShellTool,
 ]
 
-// Schemas sent to the model (the `tools` array in the chat request).
-export const toolDefinitions = registry.map((t) => t.definition)
+// Tools gated by something other than the workspace (e.g. conversation mode).
+// They're dispatchable via runTool but are NOT in `toolDefinitions`; runChat
+// decides when to offer each one. todo_write is conversation-scoped (offered by
+// mode); ask_user_question is offered in every mode (clarification is universal).
+const otherTools: Tool[] = [todoWriteTool, askUserQuestionTool]
 
-// Lookup by name, used to execute a tool the model asked for.
-const byName = new Map(registry.map((t) => [t.definition.function.name, t]))
+// Schemas for the workspace-gated tools (the `tools` array when a workspace
+// exists). Mode-gated tools are added by runChat from their exported definition.
+export const toolDefinitions = workspaceTools.map((t) => t.definition)
+
+// Lookup by name, used to execute any tool the model asked for.
+const byName = new Map(
+  [...workspaceTools, ...otherTools].map((t) => [t.definition.function.name, t])
+)
 
 // Run a tool call by name. Returns a string result (or an error message).
 export async function runTool(
@@ -38,5 +51,9 @@ export async function runTool(
     }`
   }
 }
+
+// Re-exported so runChat can offer them directly (they're not in toolDefinitions).
+export { todoWriteTool } from "./todo_tool"
+export { askUserQuestionTool } from "./ask_user_question_tool"
 
 export type { Tool, ToolContext } from "./types"

@@ -12,3 +12,6 @@ export type {
   TaskStatus,
   Workspace,
 } from "../../preload/index"
+
+// ask_user_question types, surfaced for the QuestionPanel.
+export type { Question, QuestionOption, QuestionAnswer } from "../../preload/index"

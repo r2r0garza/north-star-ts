@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react"
-import { ArrowUp, FileText, FolderOpen, Plus, X } from "lucide-react"
+import { ArrowUp, FileText, FolderOpen, Plus, Square, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Markdown } from "@/components/markdown"
 import { VIEW_TO_MODE, type View } from "@/components/sidebar"
@@ -24,7 +24,8 @@ import {
   AttachmentActions,
   AttachmentAction,
 } from "@/components/ui/attachment"
-import { ToolGroup } from "@/components/tool-group"
+import { ToolGroup, ApprovalCard } from "@/components/tool-group"
+import { QuestionPanel } from "@/components/question-panel"
 import {
   buildTimeline,
   toToolUse,
@@ -34,6 +35,7 @@ import {
   type ToolUse,
 } from "@/lib/timeline"
 import { cn } from "@/lib/utils"
+import type { Question, QuestionAnswer } from "@/types"
 
 export default function App({
   view,
@@ -61,10 +63,20 @@ export default function App({
   // Rendered live, then replaced by the reconciled `timeline` when the turn ends.
   const [liveText, setLiveText] = useState("")
   const [liveTools, setLiveTools] = useState<ToolUse[]>([])
+  // A pending ask_user_question prompt, if the agent raised one this turn. Like
+  // the approval, it pauses the turn and renders above the composer; cleared
+  // when answered or when the turn ends.
+  const [liveQuestion, setLiveQuestion] = useState<{
+    requestId: string
+    questions: Question[]
+  } | null>(null)
 
   // The conversation the panel is currently showing. Used to ignore a settling
   // turn's reconcile if the user switched conversations mid-stream.
   const viewingRef = useRef<string | null>(conversationId)
+  // The conversation whose turn is currently in flight (set in sendMessage,
+  // which may create the conversation lazily). The Stop button cancels this one.
+  const inFlightRef = useRef<string | null>(null)
   // Chat needs only a message (a file is optional); the workspace views need a
   // selected folder as well.
   const canSend =
@@ -200,7 +212,9 @@ export default function App({
     setAttachments([])
     setLiveText("")
     setLiveTools([])
+    setLiveQuestion(null)
     setLoading(true)
+    inFlightRef.current = convoId
 
     try {
       const data = await window.cowork.chat(
@@ -253,20 +267,36 @@ export default function App({
                   : t
               )
             )
+          } else if (event.type === "question") {
+            // The agent paused to ask the user — show the question panel above
+            // the composer until answered.
+            setLiveQuestion({ requestId: event.requestId, questions: event.questions })
           }
         }
       )
-      // If nothing streamed, surface the final text/error in the live bubble.
-      // (Transient — immediately superseded by the reconcile below.)
+      // Surface the final text/error in the live bubble. An error is APPENDED
+      // (not `s || …`) so it shows even after a preamble already streamed —
+      // otherwise a turn that ends mid-work after some text would stop silently.
+      // (Transient — immediately superseded by the reconcile below, which now
+      // also reads the persisted error note.)
       if (data.error) {
-        setLiveText((s) => s || `Error: ${data.error}`)
+        setLiveText((s) => (s ? `${s}\n\n⚠️ ${data.error}` : `Error: ${data.error}`))
+      } else if (data.stopped) {
+        // Clean user cancel — the "⏹ Stopped by user." note is persisted and
+        // shown by the reconcile below; append a transient marker meanwhile.
+        setLiveText((s) => (s ? `${s}\n\n⏹ Stopped` : "⏹ Stopped"))
       } else if (data.content) {
         setLiveText((s) => s || data.content!)
       }
     } catch (error) {
-      setLiveText((s) => s || (error instanceof Error ? error.message : "Request failed"))
+      const msg = error instanceof Error ? error.message : "Request failed"
+      setLiveText((s) => (s ? `${s}\n\n⚠️ ${msg}` : msg))
     } finally {
       setLoading(false)
+      inFlightRef.current = null
+      // The question panel is a transient prompt tied to the in-flight turn —
+      // clear it once the turn settles regardless of which conversation is shown.
+      setLiveQuestion(null)
       // Reconcile the live turn with the persisted transcript so the rendered
       // content matches storage exactly — but only if the user is still viewing
       // this conversation. A freshly created one is promoted to active just
@@ -291,10 +321,31 @@ export default function App({
     }
   }
 
+  // Cancel the in-flight turn. The main process aborts the LLM stream and
+  // resolves chat() with `{ stopped: true }`, which unwinds sendMessage's
+  // finally (reconcile + loading reset) normally.
+  function stopMessage() {
+    const id = inFlightRef.current
+    if (id) window.cowork.chatStop(id)
+  }
+
+  // Submit the user's answers to a pending ask_user_question. Clear the panel
+  // immediately (the agent resumes with the answers as the tool result).
+  function answerQuestion(answers: QuestionAnswer[]) {
+    if (!liveQuestion) return
+    void window.cowork.chatAnswer({ requestId: liveQuestion.requestId, answers })
+    setLiveQuestion(null)
+  }
+
   // Before the first message is sent, an empty session shows the composer
   // centered (an inviting "start typing" state). Once there are messages it
   // moves to its usual bottom-pinned position.
   const isEmpty = timeline.length === 0 && !loading
+
+  // Sequential gating means at most one approval is pending at a time, so a
+  // single panel above the composer suffices. Purely derived — it disappears
+  // automatically when resolved, when the tool completes, or when the turn ends.
+  const pendingApproval = liveTools.find((t) => t.approval?.status === "pending")?.approval
 
   // The composer (attachment chips + input box). Rendered both centered and
   // bottom-pinned, so it's defined once here.
@@ -359,15 +410,30 @@ export default function App({
               {workspace && <span className="max-w-40 truncate">{lastSegment(workspace)}</span>}
             </button>
           )}
-          <Button
-            type="button"
-            size="icon"
-            onClick={sendMessage}
-            disabled={!canSend}
-            className="size-8 rounded-full"
-          >
-            <ArrowUp className="size-4" />
-          </Button>
+          {loading ? (
+            <Button
+              type="button"
+              size="icon"
+              onClick={stopMessage}
+              title="Stop"
+              aria-label="Stop"
+              className="size-8 rounded-full"
+            >
+              <Square className="size-3.5 fill-current" />
+            </Button>
+          ) : (
+            <Button
+              type="button"
+              size="icon"
+              onClick={sendMessage}
+              disabled={!canSend}
+              title="Send"
+              aria-label="Send"
+              className="size-8 rounded-full"
+            >
+              <ArrowUp className="size-4" />
+            </Button>
+          )}
         </div>
       </div>
     </>
@@ -450,9 +516,7 @@ export default function App({
                 <MessageScrollerItem key="live" scrollAnchor>
                   <Message align="start">
                     <MessageContent>
-                      {liveTools.length > 0 && (
-                        <ToolGroup calls={liveTools} onApproval={resolveApproval} />
-                      )}
+                      {liveTools.length > 0 && <ToolGroup calls={liveTools} />}
                       {liveText ? (
                         <Bubble align="start" variant="muted">
                           <BubbleContent>
@@ -478,9 +542,23 @@ export default function App({
         </MessageScroller>
       </MessageScrollerProvider>
 
-      {/* Composer */}
+      {/* Composer — with the pending approval or question prompt popped out just
+          above it, so it stays in one fixed place regardless of transcript
+          scrolling. Gating is sequential, so these are mutually exclusive. */}
       <div className="border-t bg-background">
-        <div className="mx-auto w-full max-w-[min(90%,72rem)] px-4 py-4">{composer}</div>
+        <div className="mx-auto w-full max-w-[min(90%,72rem)] px-4 py-4">
+          {pendingApproval && (
+            <div className="mb-3 animate-in fade-in-0 slide-in-from-bottom-4 duration-200">
+              <ApprovalCard approval={pendingApproval} onApproval={resolveApproval} />
+            </div>
+          )}
+          {liveQuestion && (
+            <div className="mb-3 animate-in fade-in-0 slide-in-from-bottom-4 duration-200">
+              <QuestionPanel questions={liveQuestion.questions} onSubmit={answerQuestion} />
+            </div>
+          )}
+          {composer}
+        </div>
       </div>
     </div>
   )

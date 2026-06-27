@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useState } from "react"
 import {
   BookOpen,
   Check,
@@ -58,27 +58,14 @@ function clip(text: string): string {
 
 // A collapsible group of tool calls for one assistant turn. Collapsed by
 // default; summary shows the count (and a spinner while any call is running).
-// `onApproval` is passed during a live turn so a pending approval card can
-// resolve; it's absent when rendering a reconciled/persisted timeline.
-export function ToolGroup({
-  calls,
-  onApproval,
-}: {
-  calls: ToolUse[]
-  onApproval?: ApprovalHandler
-}) {
+// A pending approval no longer force-opens the group: the approval prompt now
+// renders above the composer (see App.tsx), not inline here. The running row
+// just shows an "awaiting approval" hint.
+export function ToolGroup({ calls }: { calls: ToolUse[] }) {
   const anyRunning = calls.some((c) => c.status === "running")
   const n = calls.length
 
-  // Controlled open state: the user can collapse/expand freely, but a pending
-  // approval force-opens the group so the inline card is never hidden inside a
-  // collapsed group (it can arrive after the group already mounted, so a static
-  // defaultOpen wouldn't react to it).
-  const hasPending = calls.some((c) => c.approval?.status === "pending")
-  const [open, setOpen] = useState(hasPending)
-  useEffect(() => {
-    if (hasPending) setOpen(true)
-  }, [hasPending])
+  const [open, setOpen] = useState(false)
 
   return (
     <Collapsible className="w-full" open={open} onOpenChange={setOpen}>
@@ -101,7 +88,7 @@ export function ToolGroup({
       <CollapsibleContent>
         <div className="mt-1 flex flex-col gap-1 pl-2">
           {calls.map((c) => (
-            <ToolUseRow key={c.id} use={c} onApproval={onApproval} />
+            <ToolUseRow key={c.id} use={c} />
           ))}
         </div>
       </CollapsibleContent>
@@ -111,21 +98,14 @@ export function ToolGroup({
 
 // One tool call: a collapsible row whose trigger is the labeled marker and whose
 // content reveals the arguments and the result/output. When the action is
-// awaiting human approval, an inline approval card renders above the row.
-function ToolUseRow({
-  use,
-  onApproval,
-}: {
-  use: ToolUse
-  onApproval?: ApprovalHandler
-}) {
+// awaiting human approval, the row shows an "awaiting approval" hint — the
+// actionable prompt itself renders above the composer (see App.tsx).
+function ToolUseRow({ use }: { use: ToolUse }) {
   const Icon = iconFor(use.name)
   const error = use.status === "error"
+  const awaiting = use.approval?.status === "pending"
   return (
     <div className="flex flex-col gap-1">
-      {use.approval?.status === "pending" && onApproval && (
-        <ApprovalCard approval={use.approval} onApproval={onApproval} />
-      )}
       <Collapsible className="w-full">
         <CollapsibleTrigger asChild>
           <button type="button" className="group/row w-full text-left">
@@ -134,6 +114,11 @@ function ToolUseRow({
                 {use.status === "running" ? <Spinner /> : <Icon />}
               </MarkerIcon>
               <MarkerContent>{use.label}</MarkerContent>
+              {awaiting && (
+                <span className="ml-auto flex items-center gap-1 text-[0.7rem] text-destructive">
+                  <ShieldAlert className="size-3.5 shrink-0" /> awaiting approval
+                </span>
+              )}
               {use.status === "done" && (
                 <Check className="size-3.5 shrink-0 text-muted-foreground" />
               )}
@@ -164,9 +149,10 @@ function ToolUseRow({
   )
 }
 
-// Inline approval prompt for a gated tool action. Shows the action summary and
-// why it was flagged, with Approve / Always-allow-in-workspace / Deny actions.
-function ApprovalCard({
+// Approval prompt for a gated tool action. Shows the action summary and why it
+// was flagged, with Approve / Always-allow-in-workspace / Deny actions. Rendered
+// above the composer (App.tsx) so it stays put while the transcript scrolls.
+export function ApprovalCard({
   approval,
   onApproval,
 }: {
