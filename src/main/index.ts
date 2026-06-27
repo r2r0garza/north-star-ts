@@ -8,7 +8,7 @@ import { config as loadEnv } from "dotenv"
 // agent's own NEXT_apiKey-first fallback still prioritizes the file's key.
 loadEnv({ path: join(app.getAppPath(), ".env.local") })
 
-import { runChat, resolveApproval, stopChat, type ChatRequest } from "./agent"
+import { runChat, resolveApproval, resolveQuestion, stopChat, type ChatRequest } from "./agent"
 import { pickWorkspace, pickFiles } from "./pick-workspace"
 import { registerDbHandlers } from "./ipc/db-handlers"
 import { closeDb } from "./db/connection"
@@ -80,6 +80,20 @@ ipcMain.handle(
     }
   ) => {
     resolveApproval(payload.requestId, payload.decision, payload.remember)
+  }
+)
+// Deliver the user's answers to a pending ask_user_question. Fire-and-forget;
+// unblocks the `ask` promise in runChat.
+ipcMain.handle(
+  "chat:answer",
+  (
+    _event,
+    payload: {
+      requestId: string
+      answers: Array<{ selected: string[]; other?: string }>
+    }
+  ) => {
+    resolveQuestion(payload.requestId, payload.answers)
   }
 )
 // Cancel an in-flight turn (the Stop button). Aborts the controller in runChat,

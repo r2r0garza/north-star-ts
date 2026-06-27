@@ -2,7 +2,7 @@ import { Portkey } from "portkey-ai"
 import { randomUUID } from "crypto"
 import { stat } from "fs/promises"
 import { basename, isAbsolute } from "path"
-import { toolDefinitions, runTool, todoWriteTool } from "./tools"
+import { toolDefinitions, runTool, todoWriteTool, askUserQuestionTool } from "./tools"
 import { readFileTool } from "./tools/read_file_tool"
 import { listTodos } from "../db/repositories/todos"
 import { buildTodoListPrompt } from "./todo-prompt"
@@ -19,6 +19,7 @@ import { PolicyEngine, type AllowlistLookup } from "./approval/policy"
 import { RegexCommandClassifier } from "./approval/regex-classifier"
 import { FileActionClassifier } from "./approval/file-classifier"
 import type { Gate, GateOutcome, ToolAction } from "./approval/types"
+import type { Ask, AskResult, Question, QuestionAnswer } from "./tools/types"
 
 const MODEL = "@aws-bedrock-use2/us.anthropic.claude-sonnet-4-6"
 
@@ -102,6 +103,21 @@ export function resolveApproval(
   pending.resolve(decision)
 }
 
+// One pending ask_user_question round-trip, awaited inside the `ask` function.
+// Keyed by a process-unique requestId so an answer can't resolve another turn's
+// question (mirrors pendingApprovals).
+const pendingQuestions = new Map<string, (result: AskResult) => void>()
+
+// Called from the renderer over IPC ("chat:answer") to deliver the user's
+// answers to a pending ask_user_question. No-op if the request is gone (already
+// answered or the turn was stopped).
+export function resolveQuestion(requestId: string, answers: QuestionAnswer[]): void {
+  const resolve = pendingQuestions.get(requestId)
+  if (!resolve) return
+  pendingQuestions.delete(requestId)
+  resolve({ status: "answered", answers })
+}
+
 export interface ChatRequest {
   // The conversation this turn belongs to. Messages are persisted under it and
   // prior history is replayed into the prompt via the ContextBuilder.
@@ -148,6 +164,15 @@ export type ChatEvent =
       tool: string
       summary: string
       reason: string
+    }
+  // The agent is asking the user clarifying questions (ask_user_question). `id`
+  // is the tool-call id; `requestId` is the process-unique token the renderer
+  // echoes back with the answers. The turn pauses until then.
+  | {
+      type: "question"
+      id: string
+      requestId: string
+      questions: Question[]
     }
 
 type OnEvent = (event: ChatEvent) => void
@@ -250,6 +275,8 @@ export async function runChat(
         ? [readFileTool.definition]
         : []),
     ...(showTodos ? [todoWriteTool.definition] : []),
+    // ask_user_question is offered in every mode — clarification is universal.
+    askUserQuestionTool.definition,
     readSkillTool.definition,
   ]
   const skillsPrompt = buildSkillsPrompt(skills)
@@ -482,9 +509,26 @@ export async function runChat(
             )
           })
         }
+        // The clarification prompt for ask_user_question. Emits a `question`
+        // event and blocks until the renderer answers (chat:answer → resolveQuestion)
+        // or the turn is stopped (resolves "cancelled" so the loop unwinds).
+        const ask: Ask = (questions): Promise<AskResult> => {
+          const requestId = randomUUID()
+          onEvent({ type: "question", id: call.id, requestId, questions })
+          return new Promise<AskResult>((resolve) => {
+            pendingQuestions.set(requestId, resolve)
+            abort.signal.addEventListener(
+              "abort",
+              () => {
+                if (pendingQuestions.delete(requestId)) resolve({ status: "cancelled" })
+              },
+              { once: true }
+            )
+          })
+        }
         // read_skill ignores these fields. With a workspace, file tools confine
         // to it; without one, read_file_tool reads only the attached files.
-        const ctx = { workspace: workspace ?? "", attachments, conversationId, gate }
+        const ctx = { workspace: workspace ?? "", attachments, conversationId, gate, ask }
         const result =
           call.name === readSkillTool.definition.function.name
             ? await readSkillTool.execute(args, ctx)

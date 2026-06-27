@@ -25,6 +25,7 @@ import {
   AttachmentAction,
 } from "@/components/ui/attachment"
 import { ToolGroup, ApprovalCard } from "@/components/tool-group"
+import { QuestionPanel } from "@/components/question-panel"
 import {
   buildTimeline,
   toToolUse,
@@ -34,6 +35,7 @@ import {
   type ToolUse,
 } from "@/lib/timeline"
 import { cn } from "@/lib/utils"
+import type { Question, QuestionAnswer } from "@/types"
 
 export default function App({
   view,
@@ -61,6 +63,13 @@ export default function App({
   // Rendered live, then replaced by the reconciled `timeline` when the turn ends.
   const [liveText, setLiveText] = useState("")
   const [liveTools, setLiveTools] = useState<ToolUse[]>([])
+  // A pending ask_user_question prompt, if the agent raised one this turn. Like
+  // the approval, it pauses the turn and renders above the composer; cleared
+  // when answered or when the turn ends.
+  const [liveQuestion, setLiveQuestion] = useState<{
+    requestId: string
+    questions: Question[]
+  } | null>(null)
 
   // The conversation the panel is currently showing. Used to ignore a settling
   // turn's reconcile if the user switched conversations mid-stream.
@@ -203,6 +212,7 @@ export default function App({
     setAttachments([])
     setLiveText("")
     setLiveTools([])
+    setLiveQuestion(null)
     setLoading(true)
     inFlightRef.current = convoId
 
@@ -257,6 +267,10 @@ export default function App({
                   : t
               )
             )
+          } else if (event.type === "question") {
+            // The agent paused to ask the user — show the question panel above
+            // the composer until answered.
+            setLiveQuestion({ requestId: event.requestId, questions: event.questions })
           }
         }
       )
@@ -280,6 +294,9 @@ export default function App({
     } finally {
       setLoading(false)
       inFlightRef.current = null
+      // The question panel is a transient prompt tied to the in-flight turn —
+      // clear it once the turn settles regardless of which conversation is shown.
+      setLiveQuestion(null)
       // Reconcile the live turn with the persisted transcript so the rendered
       // content matches storage exactly — but only if the user is still viewing
       // this conversation. A freshly created one is promoted to active just
@@ -310,6 +327,14 @@ export default function App({
   function stopMessage() {
     const id = inFlightRef.current
     if (id) window.cowork.chatStop(id)
+  }
+
+  // Submit the user's answers to a pending ask_user_question. Clear the panel
+  // immediately (the agent resumes with the answers as the tool result).
+  function answerQuestion(answers: QuestionAnswer[]) {
+    if (!liveQuestion) return
+    void window.cowork.chatAnswer({ requestId: liveQuestion.requestId, answers })
+    setLiveQuestion(null)
   }
 
   // Before the first message is sent, an empty session shows the composer
@@ -517,13 +542,19 @@ export default function App({
         </MessageScroller>
       </MessageScrollerProvider>
 
-      {/* Composer — with the pending approval prompt popped out just above it,
-          so it stays in one fixed place regardless of transcript scrolling. */}
+      {/* Composer — with the pending approval or question prompt popped out just
+          above it, so it stays in one fixed place regardless of transcript
+          scrolling. Gating is sequential, so these are mutually exclusive. */}
       <div className="border-t bg-background">
         <div className="mx-auto w-full max-w-[min(90%,72rem)] px-4 py-4">
           {pendingApproval && (
             <div className="mb-3 animate-in fade-in-0 slide-in-from-bottom-4 duration-200">
               <ApprovalCard approval={pendingApproval} onApproval={resolveApproval} />
+            </div>
+          )}
+          {liveQuestion && (
+            <div className="mb-3 animate-in fade-in-0 slide-in-from-bottom-4 duration-200">
+              <QuestionPanel questions={liveQuestion.questions} onSubmit={answerQuestion} />
             </div>
           )}
           {composer}
