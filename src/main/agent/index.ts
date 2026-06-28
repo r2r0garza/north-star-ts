@@ -15,7 +15,7 @@ import { createEnvironment } from "./env"
 import { LocalEnvironment } from "./env/local"
 import type { Environment } from "./env/types"
 import * as settingsService from "../settings/service"
-import { resolveLlm, NoActiveProviderError, type LlmSelection } from "./providers"
+import { resolveLlm, createCompletion, NoActiveProviderError, type LlmSelection } from "./providers"
 import { appendMessage } from "../db/repositories/messages"
 import { getConversation, updateConversation } from "../db/repositories/conversations"
 import { actionAllowlist } from "../db/repositories"
@@ -195,9 +195,7 @@ async function generateTitle(message: string, sel: LlmSelection): Promise<string
   const fallback = titleFromMessage(message)
   try {
     const { client, model } = resolveLlm(sel)
-    const res = await client.chat.completions.create({
-      model,
-      max_tokens: 32,
+    const res = await createCompletion(client, model, 32, {
       messages: [
         {
           role: "system",
@@ -400,21 +398,20 @@ export async function runChat(
         return { stopped: true }
       }
 
-      const stream = await llm.client.chat.completions.create(
-        {
-          model: llm.model,
-          max_tokens: 1024,
-          messages,
-          tools,
-          stream: true,
-        },
-        undefined,
-        // We pass the signal, but the Portkey SDK (3.1.0) does NOT forward it to
-        // the underlying fetch — it only checks `signal.aborted` after an error.
-        // So aborting alone won't stop a healthy stream. The real cancellation is
-        // the `break` in the consume loop below: breaking runs the stream
-        // iterator's return()/reader.cancel(), which tears down the HTTP body.
-        { signal: abort.signal }
+      const stream = await createCompletion(
+        llm.client,
+        llm.model,
+        1024,
+        { messages, tools, stream: true },
+        [
+          undefined,
+          // We pass the signal, but the Portkey SDK (3.1.0) does NOT forward it to
+          // the underlying fetch — it only checks `signal.aborted` after an error.
+          // So aborting alone won't stop a healthy stream. The real cancellation is
+          // the `break` in the consume loop below: breaking runs the stream
+          // iterator's return()/reader.cancel(), which tears down the HTTP body.
+          { signal: abort.signal },
+        ]
       )
 
       // Reassemble the streamed turn. Text deltas are forwarded live; tool-call

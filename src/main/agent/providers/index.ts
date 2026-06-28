@@ -163,3 +163,73 @@ export async function fetchGatewayModelIds(accountId: string): Promise<string[]>
   const data = res?.data ?? []
   return data.map((m) => m?.id).filter((id): id is string => typeof id === "string" && id.length > 0)
 }
+
+// ── Output-token parameter compatibility ─────────────────────────────────────
+// The OpenAI-compatible APIs are split on how to cap output: older models (and
+// Bedrock/Claude via the gateway) take `max_tokens`; the GPT-5.x / o-series
+// reject it with an `unsupported_parameter` error and require
+// `max_completion_tokens`. There's no reliable way to tell from the model id, so
+// we probe: build the request with `max_tokens`, and if the gateway rejects it
+// for that reason, rebuild with `max_completion_tokens`. The working choice is
+// cached per model id so we only ever pay the failed round-trip once.
+type TokenParam = "max_tokens" | "max_completion_tokens"
+const tokenParamByModel = new Map<string, TokenParam>()
+
+// Whether an error is the gateway's "use max_completion_tokens instead" rejection.
+function isMaxTokensUnsupported(err: unknown): boolean {
+  const msg =
+    err && typeof err === "object"
+      ? // Portkey/OpenAI surface it as error.code or in the message string.
+        String(((err as any).code ?? "")) + " " + String(((err as any).message ?? err))
+      : String(err)
+  return (
+    /unsupported_parameter/i.test(msg) &&
+    /max_tokens/i.test(msg) &&
+    /max_completion_tokens/i.test(msg)
+  )
+}
+
+// Build the chat-completions params with the correct output-token field for this
+// model, honoring a previously-learned choice.
+function withTokenParam(
+  base: Record<string, unknown>,
+  model: string,
+  maxOutputTokens: number,
+  param: TokenParam
+): Record<string, unknown> {
+  return { ...base, model, [param]: maxOutputTokens }
+}
+
+// Create a chat completion (streaming or not), transparently coping with the
+// max_tokens vs max_completion_tokens split. `base` is everything except the
+// model + the output-token field. Pass the Portkey `opts`/`signal` through via
+// `extraArgs` (used by the streaming call site). On the first call for a model we
+// try `max_tokens`; a single retry switches to `max_completion_tokens` and the
+// result is cached so later calls skip the probe.
+export async function createCompletion(
+  client: Portkey,
+  model: string,
+  maxOutputTokens: number,
+  base: Record<string, unknown>,
+  extraArgs: unknown[] = []
+): Promise<any> {
+  const tryParam = (param: TokenParam) =>
+    (client.chat.completions.create as any)(
+      withTokenParam(base, model, maxOutputTokens, param),
+      ...extraArgs
+    )
+
+  const known = tokenParamByModel.get(model)
+  if (known) return tryParam(known)
+
+  try {
+    const res = await tryParam("max_tokens")
+    tokenParamByModel.set(model, "max_tokens")
+    return res
+  } catch (err) {
+    if (!isMaxTokensUnsupported(err)) throw err
+    const res = await tryParam("max_completion_tokens")
+    tokenParamByModel.set(model, "max_completion_tokens")
+    return res
+  }
+}
