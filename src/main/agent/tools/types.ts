@@ -59,9 +59,10 @@ export interface ToolContext {
   // LocalEnvironment(workspace), so a bare ToolContext (e.g. in unit tests) keeps
   // working with host fs/spawn exactly as before. The real agent loop always sets it.
   env?: Environment
-  // The turn's abort signal, threaded into env.exec so a running command can be
-  // killed when the turn is stopped (see .plan/005). Nothing fires it yet, so its
-  // presence changes no behavior today.
+  // The turn's abort signal, threaded into env.exec. When the user presses Stop
+  // (or the command times out), the local backend SIGKILLs the running command's
+  // whole process group, so a slow in-flight shell command stops promptly instead
+  // of delaying the turn's end (see .plan/005).
   signal?: AbortSignal
 }
 

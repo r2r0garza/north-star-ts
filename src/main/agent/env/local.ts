@@ -60,13 +60,21 @@ export class LocalEnvironment implements Environment {
   // cap/timeout/abort logic lives in captureSpawn (shared with the container
   // backend); this just spawns the process. stdin is closed so the command can't
   // block waiting for input.
+  //
+  // `detached: true` makes the child its own process-group leader, so on abort or
+  // timeout captureSpawn can SIGKILL the whole group (killGroup) — otherwise a
+  // `shell: true` command that forked children (a pipeline, `npm run build` → node)
+  // would orphan them when only the sh wrapper is killed. We keep stdio piped (the
+  // parent holds the handles) and deliberately do NOT call child.unref(): the child
+  // stays tied to this turn, not surviving it.
   exec(command: string, opts: ExecOptions): Promise<ExecResult> {
     const child = spawn(command, {
       cwd: opts.cwd,
       shell: true,
+      detached: true,
       stdio: ["ignore", "pipe", "pipe"],
     })
-    return captureSpawn(child, opts)
+    return captureSpawn(child, { ...opts, killGroup: true })
   }
 
   // The original tool-side walk, moved behind the interface: recurse with readdir,

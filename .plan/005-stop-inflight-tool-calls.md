@@ -1,8 +1,13 @@
 # Cowork Agent Tools — PR5: Stop in-flight tool calls (carry abort into tools)
 
-> Status: **NOT STARTED** — pickup note (2026-06-26), written so we don't forget. Follows the
-> Stop-button work shipped on `feat/agent-tools-3` (see CONSIDERATIONS.md #9). Independent of the
-> todo tool; can be built any time. The shape below is a starting hypothesis, not a locked spec.
+> Status: **DONE** (2026-06-27). The abort signal was already threaded into tools end-to-end
+> (ctx.signal → env.exec → captureSpawn) before this PR — the open questions below about the
+> *surface* (Q1) were already resolved in the env-backend work. The real fix this PR delivered was
+> **Q2**: `LocalEnvironment.exec` spawned `shell: true`, so killing the child only killed the
+> `sh -c` wrapper and orphaned any grandchildren a pipeline/build forked (reparented to PID 1).
+> Now the local child is spawned `detached` (its own process-group leader) and abort/timeout
+> SIGKILL the whole group, reaping grandchildren. ContainerEnvironment in-container kill is a
+> separate design, deferred to `.plan/005.1`.
 
 ## Context
 

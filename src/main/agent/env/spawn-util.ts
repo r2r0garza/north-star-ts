@@ -16,7 +16,15 @@ import type { ExecResult, ExecOptions } from "./types"
 // caller's concern (run_shell closes it; container writeFile pipes to it).
 export function captureSpawn(
   child: ChildProcess,
-  opts: Pick<ExecOptions, "timeoutMs" | "maxOutputBytes" | "signal">
+  opts: Pick<ExecOptions, "timeoutMs" | "maxOutputBytes" | "signal"> & {
+    // When true, kill the child's whole process group instead of just the child.
+    // LocalEnvironment spawns `detached` (the child leads its own group), so a
+    // group kill reaps grandchildren a `shell: true` command forked (a pipeline,
+    // `npm run build` → node, etc.) — a bare child.kill would orphan them. The
+    // container backend spawns a non-detached `docker exec` client and leaves this
+    // off (process.kill(-pid) on a non-leader would hit the wrong group).
+    killGroup?: boolean
+  }
 ): Promise<ExecResult> {
   return new Promise((resolve) => {
     const chunks: Buffer[] = []
@@ -36,17 +44,37 @@ export function captureSpawn(
     child.stdout?.on("data", capture)
     child.stderr?.on("data", capture)
 
+    // The one kill path shared by the timeout and the abort seam. With killGroup,
+    // SIGKILL the whole process group (negative pid) so a shell wrapper's forked
+    // grandchildren die too; the group kill can throw ESRCH if the group is
+    // already gone, so swallow it and fall back to killing the child directly.
+    const terminate = () => {
+      if (opts.killGroup && child.pid) {
+        try {
+          process.kill(-child.pid, "SIGKILL")
+          return
+        } catch {
+          // group already gone (ESRCH) or not a leader — fall through to child.kill
+        }
+      }
+      try {
+        child.kill("SIGKILL")
+      } catch {
+        // child already dead — nothing to do
+      }
+    }
+
     const timer = setTimeout(() => {
       timedOut = true
-      child.kill("SIGKILL")
+      terminate()
     }, opts.timeoutMs)
 
-    // Abort seam: a fired signal kills the child the same way a timeout does.
-    // With no signal (the case today), this is inert. The listener is removed on
-    // close so an aborted-after-completion signal can't reach a dead child.
-    const onAbort = () => child.kill("SIGKILL")
+    // Abort seam: a fired signal kills the child the same way a timeout does. The
+    // listener is removed on close so an aborted-after-completion signal can't
+    // reach a dead child.
+    const onAbort = () => terminate()
     if (opts.signal) {
-      if (opts.signal.aborted) child.kill("SIGKILL")
+      if (opts.signal.aborted) terminate()
       else opts.signal.addEventListener("abort", onAbort, { once: true })
     }
 
