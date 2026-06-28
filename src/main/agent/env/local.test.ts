@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest"
+import { execSync } from "child_process"
 import { mkdtemp, rm, readFile, writeFile, mkdir } from "fs/promises"
 import { tmpdir } from "os"
 import { join } from "path"
@@ -69,6 +70,54 @@ describe("LocalEnvironment.exec", () => {
     // Killed before the 5s timeout fired.
     expect(r.timedOut).toBe(false)
     expect(r.signal).toBe("SIGKILL")
+  })
+
+  // A pipeline forces the shell to STAY as a parent of two children (it can't exec
+  // a single binary into itself), so a bare child.kill of the sh wrapper would
+  // orphan the `sleep` grandchild (reparented to init). detached + process-group
+  // kill must reap it. We tag the grandchild with a unique marker and assert no
+  // process carrying that marker survives.
+  const markerSurvives = (marker: string): boolean => {
+    const out = execSync("ps -eo pid,command", { encoding: "utf8" })
+    return out
+      .split("\n")
+      .some((line) => line.includes(marker) && !line.includes("ps -eo"))
+  }
+
+  it("reaps the whole process group on abort (no orphaned grandchild)", async () => {
+    const marker = "envlocal-abort-marker-9f3a"
+    const ac = new AbortController()
+    const p = env.exec(`sleep 30 | grep ${marker}`, {
+      cwd: workspace,
+      timeoutMs: 30_000,
+      maxOutputBytes: 1024 * 1024,
+      signal: ac.signal,
+    })
+    setTimeout(() => ac.abort(), 100)
+    const r = await p
+    expect(r.signal).toBe("SIGKILL")
+    expect(r.timedOut).toBe(false)
+    // Give the OS a beat to tear the group down before we look.
+    await new Promise((res) => setTimeout(res, 200))
+    if (markerSurvives(marker)) {
+      execSync(`pkill -f ${marker} || true`)
+      throw new Error("orphaned grandchild survived abort")
+    }
+  })
+
+  it("reaps the whole process group on timeout (no orphaned grandchild)", async () => {
+    const marker = "envlocal-timeout-marker-7b21"
+    const r = await env.exec(`sleep 30 | grep ${marker}`, {
+      cwd: workspace,
+      timeoutMs: 100,
+      maxOutputBytes: 1024 * 1024,
+    })
+    expect(r.timedOut).toBe(true)
+    await new Promise((res) => setTimeout(res, 200))
+    if (markerSurvives(marker)) {
+      execSync(`pkill -f ${marker} || true`)
+      throw new Error("orphaned grandchild survived timeout")
+    }
   })
 })
 

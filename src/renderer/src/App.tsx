@@ -600,7 +600,7 @@ export default function App({
               </>
             ) : (
               <>
-                <p className="font-medium text-foreground">Cowork</p>
+                <p className="font-medium text-foreground">North Star</p>
                 <p>Pick a workspace folder, then ask the agent about it.</p>
               </>
             )}

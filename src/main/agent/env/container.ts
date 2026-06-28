@@ -282,9 +282,10 @@ export class ContainerEnvironment implements Environment {
     // inner command's exit code propagates through `docker exec`. Capture/cap/
     // timeout/abort are shared with the local backend via captureSpawn.
     //
-    // Follow-up (see .plan/006): killing the host `exec` client (on timeout or
-    // abort) does not stop the in-container process. The signal seam is wired;
-    // only the in-container kill is deferred to the stop-in-flight work (005).
+    // Follow-up (see .plan/005.1): killing the host `exec` client (on timeout or
+    // abort) does not stop the in-container process. The signal seam is wired and
+    // we intentionally do NOT pass killGroup here — the docker/podman exec client
+    // is not a detached group leader; an in-container kill needs its own design.
     const child = spawn(
       this.cfg.runtime,
       ["exec", "-w", this.toContainerPath(opts.cwd), this.name, "sh", "-c", command],
