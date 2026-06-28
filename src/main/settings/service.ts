@@ -50,12 +50,29 @@ export interface PermissionSettings {
   file_edit: FilePermission
 }
 
+// The DEFAULT LLM selection — which configured provider account + model new
+// conversations start with. Each conversation can override it (see the nullable
+// account_id/model_id columns on `conversations`, SCHEMA_V6); this blob is only
+// the fallback when a conversation hasn't pinned its own. The accounts and models
+// themselves live in their own tables (SCHEMA_V5); this only points at the
+// default pair. Both null on a fresh install → the UI prompts the user to
+// configure a provider before the first turn.
+export interface LlmSettings {
+  activeAccountId: string | null
+  activeModelId: string | null
+}
+
 // Default container image when a runtime is chosen but no image is set.
 const DEFAULT_CONTAINER_IMAGE = "node:20-bookworm"
 
 const DEFAULT_PERMISSIONS: PermissionSettings = {
   file_write: "auto",
   file_edit: "auto",
+}
+
+const DEFAULT_LLM: LlmSettings = {
+  activeAccountId: null,
+  activeModelId: null,
 }
 
 function defaultExecution(): ExecutionSettings {
@@ -73,9 +90,11 @@ function defaultExecution(): ExecutionSettings {
 
 const KEY_EXECUTION = "execution"
 const KEY_PERMISSIONS = "permissions"
+const KEY_LLM = "llm"
 
 let executionCache: ExecutionSettings | undefined
 let permissionsCache: PermissionSettings | undefined
+let llmCache: LlmSettings | undefined
 // Tracks whether an execution row exists, so getExecutionConfig can fall back to
 // the COWORK_ENV_RUNTIME env var until the user writes a backend choice.
 let executionPersisted = false
@@ -125,6 +144,25 @@ function loadPermissions(): PermissionSettings {
   return permissionsCache
 }
 
+function loadLlm(): LlmSettings {
+  if (llmCache) return llmCache
+  const raw = settingsRepo.getSetting(KEY_LLM)
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw) as Partial<LlmSettings>
+      llmCache = {
+        activeAccountId: parsed.activeAccountId ?? DEFAULT_LLM.activeAccountId,
+        activeModelId: parsed.activeModelId ?? DEFAULT_LLM.activeModelId,
+      }
+      return llmCache
+    } catch {
+      // Corrupt blob — fall through to defaults.
+    }
+  }
+  llmCache = { ...DEFAULT_LLM }
+  return llmCache
+}
+
 // ── Reads ────────────────────────────────────────────────────────────────────
 
 export function getExecution(): ExecutionSettings {
@@ -149,6 +187,10 @@ export function getExecutionConfig(): EnvConfig {
 
 export function getPermissions(): PermissionSettings {
   return loadPermissions()
+}
+
+export function getLlm(): LlmSettings {
+  return loadLlm()
 }
 
 // Whether the sandbox policy auto-approves a given action category. Consulted by
@@ -176,9 +218,27 @@ export function setPermissions(next: PermissionSettings): PermissionSettings {
   return next
 }
 
+// Invalidation hook fired whenever the active LLM selection changes, so the
+// provider routing layer can drop its cached client and the next turn rebuilds
+// with the new account/model. Registered by the providers module to avoid a
+// circular import (providers → service for reads; service → providers only via
+// this opaque callback).
+let onLlmChange: (() => void) | undefined
+export function setLlmChangeListener(fn: () => void): void {
+  onLlmChange = fn
+}
+
+export function setLlm(next: LlmSettings): LlmSettings {
+  settingsRepo.setSetting(KEY_LLM, JSON.stringify(next))
+  llmCache = next
+  onLlmChange?.()
+  return next
+}
+
 // Test hook: drop the in-memory cache so the next read re-hits the repo.
 export function _resetCacheForTests(): void {
   executionCache = undefined
   permissionsCache = undefined
+  llmCache = undefined
   executionPersisted = false
 }

@@ -25,6 +25,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
+import { ProvidersTab, ModelsTab, useLlmSettings } from "@/components/llm-settings"
 import type {
   ExecutionSettings,
   PermissionSettings,
@@ -75,13 +76,17 @@ const RUNTIME_STATUS_LABEL: Record<RuntimeStatus, string> = {
 export function SettingsSheet({
   open,
   onOpenChange,
+  initialTab = "backend",
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
+  // Which tab to open on. The first-launch prompt opens straight to "providers".
+  initialTab?: string
 }) {
   const [execution, setExecution] = useState<ExecutionSettings | null>(null)
   const [permissions, setPermissions] = useState<PermissionSettings | null>(null)
   const [runtimes, setRuntimes] = useState<Record<Runtime, RuntimeStatus> | null>(null)
+  const llm = useLlmSettings(open)
   // When set, the first-time onboarding dialog is shown for this just-picked
   // container backend (awaiting the user's enable / not-now choice).
   const [onboarding, setOnboarding] = useState<Exclude<Backend, "local"> | null>(null)
@@ -155,14 +160,19 @@ export function SettingsSheet({
           </SheetHeader>
 
           {execution && permissions && (
-            <Tabs defaultValue="backend" className="px-4">
+            <Tabs defaultValue={initialTab} className="flex min-h-0 flex-1 flex-col px-4">
               <TabsList>
+                <TabsTrigger value="providers">Providers</TabsTrigger>
+                <TabsTrigger value="models">Models</TabsTrigger>
                 <TabsTrigger value="backend">Backend</TabsTrigger>
                 <TabsTrigger value="permissions">Permissions</TabsTrigger>
                 <TabsTrigger value="sandbox" disabled={!isContainer}>
                   Sandbox
                 </TabsTrigger>
               </TabsList>
+
+              <ProvidersTab state={llm} />
+              <ModelsTab state={llm} />
 
               {/* Backend picker — Local / Docker / Podman, gated by availability. */}
               <TabsContent value="backend" className="flex flex-col gap-4 py-2">

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { ArrowUp, FileText, FolderOpen, Plus, Square, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Markdown } from "@/components/markdown"
@@ -27,6 +27,19 @@ import {
 import { ToolGroup, ApprovalCard } from "@/components/tool-group"
 import { QuestionPanel } from "@/components/question-panel"
 import {
+  Combobox,
+  ComboboxCollection,
+  ComboboxContent,
+  ComboboxEmpty,
+  ComboboxGroup,
+  ComboboxInput,
+  ComboboxItem,
+  ComboboxLabel,
+  ComboboxList,
+  ComboboxTrigger,
+  ComboboxValue,
+} from "@/components/ui/combobox"
+import {
   buildTimeline,
   toToolUse,
   isErrorResult,
@@ -35,18 +48,26 @@ import {
   type ToolUse,
 } from "@/lib/timeline"
 import { cn } from "@/lib/utils"
-import type { Question, QuestionAnswer } from "@/types"
+import type { Question, QuestionAnswer, LlmSettings, AccountWithModels } from "@/types"
 
 export default function App({
   view,
   conversationId,
   onConversationCreated,
   onConversationChanged,
+  onOpenSettings,
+  settingsOpen,
 }: {
   view: View
   conversationId: string | null
   onConversationCreated: (id: string) => void
   onConversationChanged: () => void
+  // Open the Settings sheet to a given tab (the composer's provider/model picker
+  // routes here to configure an LLM).
+  onOpenSettings: (tab?: string) => void
+  // Whether Settings is open — when it closes we re-read the active provider so
+  // the composer picker and Send gate reflect any change.
+  settingsOpen: boolean
 }) {
   // Chat runs without a workspace and attaches files instead; North Star and
   // Interactive are workspace-backed and share the same behavior.
@@ -71,16 +92,49 @@ export default function App({
     questions: Question[]
   } | null>(null)
 
+  // All providers + their models (for the composer's grouped picker) and the
+  // default selection (the starting point for a fresh conversation). Reloaded
+  // when Settings closes so changes there show immediately.
+  const [accountsWithModels, setAccountsWithModels] = useState<AccountWithModels[]>([])
+  const [defaultLlm, setDefaultLlm] = useState<LlmSettings | null>(null)
+  // This conversation's selection (provider account + model gateway id). Persisted
+  // onto the conversation row; for a not-yet-created conversation it's carried into
+  // create() on first send. Null fields fall back to the default.
+  const [selAccountId, setSelAccountId] = useState<string | null>(null)
+  const [selModelId, setSelModelId] = useState<string | null>(null)
+
+  const reloadLlm = useCallback(async () => {
+    const [list, dflt] = await Promise.all([
+      window.cowork.providers.listWithModels(),
+      window.cowork.providers.getDefault(),
+    ])
+    setAccountsWithModels(list)
+    setDefaultLlm(dflt)
+  }, [])
+
+  // Initial load + reload whenever Settings closes.
+  useEffect(() => {
+    if (!settingsOpen) void reloadLlm()
+  }, [settingsOpen, reloadLlm])
+
+  // The effective selection = the conversation's own pick, else the default.
+  const effAccountId = selAccountId ?? defaultLlm?.activeAccountId ?? null
+  const effModelId = selModelId ?? defaultLlm?.activeModelId ?? null
+
   // The conversation the panel is currently showing. Used to ignore a settling
   // turn's reconcile if the user switched conversations mid-stream.
   const viewingRef = useRef<string | null>(conversationId)
   // The conversation whose turn is currently in flight (set in sendMessage,
   // which may create the conversation lazily). The Stop button cancels this one.
   const inFlightRef = useRef<string | null>(null)
+  // A usable provider + model must be selected before any turn. Mirrors the
+  // main-process resolveLlm gate (the backstop there returns the same error if a
+  // stale selection slips through).
+  const hasLlm = !!effAccountId && !!effModelId
   // Chat needs only a message (a file is optional); the workspace views need a
-  // selected folder as well.
+  // selected folder as well. All views need an LLM selection.
   const canSend =
-    !!message.trim() && !loading && (isChat || !!workspace.trim())
+    !!message.trim() && !loading && hasLlm && (isChat || !!workspace.trim())
 
   // Load the active conversation when it changes. A null id is a fresh,
   // not-yet-created conversation: clear the panel. Otherwise reload its stored
@@ -94,6 +148,9 @@ export default function App({
       setTimeline([])
       setWorkspace("")
       setAttachments([])
+      // A fresh conversation starts from the default selection (null = inherit).
+      setSelAccountId(null)
+      setSelModelId(null)
       return
     }
     Promise.all([
@@ -103,6 +160,9 @@ export default function App({
       if (cancelled) return
       setTimeline(buildTimeline(rows))
       setAttachments([])
+      // Restore the conversation's own model selection (null falls back to default).
+      setSelAccountId(convo?.accountId ?? null)
+      setSelModelId(convo?.modelId ?? null)
       if (convo?.workspaceId) {
         const ws = await window.cowork.db.workspaces.list()
         const match = ws.find((w) => w.id === convo.workspaceId)
@@ -197,6 +257,10 @@ export default function App({
       const convo = await window.cowork.db.conversations.create({
         mode: VIEW_TO_MODE[view],
         workspaceId,
+        // Persist the chosen model on the new conversation. Null means "inherit
+        // the default" — only store an explicit pick that differs from default.
+        accountId: selAccountId,
+        modelId: selModelId,
       })
       convoId = convo.id
       isNew = true
@@ -347,6 +411,86 @@ export default function App({
   // automatically when resolved, when the tool completes, or when the turn ends.
   const pendingApproval = liveTools.find((t) => t.approval?.status === "pending")?.approval
 
+  // The composer's model picker. Spans every provider's models (grouped by
+  // provider) in a type-to-filter combobox, so a session can switch provider+model
+  // inline without visiting Settings. The choice is per-conversation: persisted
+  // onto the conversation row if it exists, else held in state and carried into
+  // create() on first send. Each item value encodes account + model
+  // (`accountId::modelId`) to disambiguate the same model id across providers.
+  // When nothing is configured it's a button to Settings → Providers.
+  async function selectModel(accountId: string, modelId: string) {
+    setSelAccountId(accountId)
+    setSelModelId(modelId)
+    if (conversationId) {
+      await window.cowork.db.conversations.update(conversationId, { accountId, modelId })
+    }
+  }
+  // Combobox items use { value: "accountId::modelId", label } objects — Base UI
+  // filters and displays on `label` automatically. Grouped by provider account.
+  const modelGroups = accountsWithModels
+    .filter((a) => a.models.length > 0)
+    .map((a) => ({
+      value: a.account.id,
+      label: a.account.displayName,
+      items: a.models.map((m) => ({
+        value: `${a.account.id}::${m.modelId}`,
+        label: m.modelName && m.modelName.trim() ? m.modelName : m.modelId,
+      })),
+    }))
+  const selectedItem =
+    effAccountId && effModelId
+      ? modelGroups
+          .flatMap((g) => g.items)
+          .find((it) => it.value === `${effAccountId}::${effModelId}`) ?? null
+      : null
+  const modelPicker = hasLlm ? (
+    <Combobox
+      items={modelGroups}
+      value={selectedItem}
+      isItemEqualToValue={(a, b) => a?.value === b?.value}
+      onValueChange={(item) => {
+        if (!item) return
+        const sep = item.value.indexOf("::")
+        if (sep < 0) return
+        void selectModel(item.value.slice(0, sep), item.value.slice(sep + 2))
+      }}
+    >
+      <ComboboxTrigger className="flex h-7 max-w-52 items-center gap-1 rounded-md px-2 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">
+        <ComboboxValue placeholder="Model">
+          {(value: { label: string } | null) => (
+            <span className="truncate">{value ? value.label : "Model"}</span>
+          )}
+        </ComboboxValue>
+      </ComboboxTrigger>
+      <ComboboxContent className="w-72 min-w-72">
+        <ComboboxInput placeholder="Search models…" showTrigger={false} />
+        <ComboboxEmpty>No models found.</ComboboxEmpty>
+        <ComboboxList>
+          {(group: { value: string; label: string; items: { value: string; label: string }[] }) => (
+            <ComboboxGroup key={group.value} items={group.items}>
+              <ComboboxLabel>{group.label}</ComboboxLabel>
+              <ComboboxCollection>
+                {(item: { value: string; label: string }) => (
+                  <ComboboxItem key={item.value} value={item}>
+                    {item.label}
+                  </ComboboxItem>
+                )}
+              </ComboboxCollection>
+            </ComboboxGroup>
+          )}
+        </ComboboxList>
+      </ComboboxContent>
+    </Combobox>
+  ) : (
+    <button
+      type="button"
+      onClick={() => onOpenSettings("providers")}
+      className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+    >
+      Configure model…
+    </button>
+  )
+
   // The composer (attachment chips + input box). Rendered both centered and
   // bottom-pinned, so it's defined once here.
   const composer = (
@@ -389,27 +533,30 @@ export default function App({
           className="field-sizing-content max-h-[24.25rem] w-full resize-none bg-transparent px-4 py-3 text-sm leading-relaxed outline-none placeholder:text-muted-foreground"
         />
         <div className="flex items-center justify-between px-2.5 pb-2.5">
-          {isChat ? (
-            <button
-              type="button"
-              onClick={attachFiles}
-              title="Attach files"
-              aria-label="Attach files"
-              className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-            >
-              <Plus className="size-4" />
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={pickWorkspace}
-              title="Select workspace folder"
-              className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-            >
-              <FolderOpen className="size-4" />
-              {workspace && <span className="max-w-40 truncate">{lastSegment(workspace)}</span>}
-            </button>
-          )}
+          <div className="flex items-center gap-1">
+            {isChat ? (
+              <button
+                type="button"
+                onClick={attachFiles}
+                title="Attach files"
+                aria-label="Attach files"
+                className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+              >
+                <Plus className="size-4" />
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={pickWorkspace}
+                title="Select workspace folder"
+                className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+              >
+                <FolderOpen className="size-4" />
+                {workspace && <span className="max-w-40 truncate">{lastSegment(workspace)}</span>}
+              </button>
+            )}
+            {modelPicker}
+          </div>
           {loading ? (
             <Button
               type="button"

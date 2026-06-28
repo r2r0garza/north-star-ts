@@ -75,6 +75,20 @@ describe("settings service — persisted overrides", () => {
   })
 })
 
+describe("settings service — llm selection", () => {
+  it("defaults to no active account/model", () => {
+    expect(service.getLlm()).toEqual({ activeAccountId: null, activeModelId: null })
+  })
+
+  it("round-trips the active selection and fires the change listener", () => {
+    let fired = 0
+    service.setLlmChangeListener(() => fired++)
+    service.setLlm({ activeAccountId: "acc-1", activeModelId: "model-1" })
+    expect(service.getLlm()).toEqual({ activeAccountId: "acc-1", activeModelId: "model-1" })
+    expect(fired).toBe(1)
+  })
+})
+
 describe("settings service — sandboxAutoApproves", () => {
   it("returns false when auto-approve is off", () => {
     service.setExecution({

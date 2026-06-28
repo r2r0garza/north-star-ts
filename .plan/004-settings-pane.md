@@ -1,9 +1,55 @@
-# Cowork — Settings Pane (PARTIALLY SHIPPED)
+# Cowork — Settings Pane (SHIPPED)
 
-> Status: **SLICE 1 SHIPPED** (branch `feat/settings-pane`, commit `213654e`) — the settings
-> store + execution backend + sandbox-aware approval. **LLM slice still pending** (provider/model
-> + API key UI + safeStorage). Builds on the SQLite layer (`001`), the approval pipeline (`002`),
-> and the `Environment` abstraction (`006`).
+> Status: **SLICE 1 SHIPPED** (commit `213654e`) + **LLM SLICE SHIPPED** (branch
+> `feat/settings-pane`) — settings store + execution backend + sandbox-aware approval, and now the
+> multi-provider LLM layer (provider accounts, safeStorage-encrypted keys, dual-source model
+> management, composer model picker). Builds on the SQLite layer (`001`), the approval pipeline
+> (`002`), and the `Environment` abstraction (`006`).
+>
+> **What shipped (LLM slice — expanded from the original single-key/single-model draft):**
+> - **`SCHEMA_V5`** — two tables: `provider_accounts` (provider, display_name, base_url,
+>   `encrypted_key` BLOB, timestamps) + `models` (account_id FK `ON DELETE CASCADE`, model_id,
+>   `model_name` optional custom label, `origin` manual|gateway|seeded, `UNIQUE(account_id,
+>   model_id)`). Repos: `provider-accounts.ts` (ciphertext never leaves the repo — public shape
+>   exposes `hasKey` only; raw blob via `getEncryptedKey` for the secrets layer) + `models.ts`
+>   (`mergeGatewayModels` upserts gateway ids, never clobbering manual/seeded rows).
+> - **`src/main/settings/secrets.ts`** — strict Electron `safeStorage`. Encrypt on save, store
+>   ciphertext only, decrypt only in main. **No plaintext fallback** — throws
+>   `SafeStorageUnavailableError` so the UI shows a clear error. **Env is no longer a runtime
+>   fallback**; `getMaskedApiKey` returns `••••abcd` for the renderer (plaintext never crosses IPC).
+> - **`src/main/agent/providers/index.ts`** — routing layer. `getActiveClient()` resolves the
+>   active account+model, decrypts the key in-process, builds + caches a Portkey client (Portkey
+>   and `openai_compatible` share the SDK). `invalidate()` on any credential/selection change,
+>   wired via `settingsService.setLlmChangeListener`. `fetchGatewayModelIds` for the optional
+>   import. `hasActiveProvider()` gates the UI. Old env-keyed `getClient()`/`MODEL` singleton removed.
+> - **Settings service** — `llm` blob (`{ activeAccountId, activeModelId }`) holds the **default**
+>   provider/model for new conversations + `getLlm`/`setLlm` + the change-listener hook.
+> - **Per-conversation selection (`SCHEMA_V6`)** — nullable `account_id`/`model_id` columns on
+>   `conversations` so each session keeps its own model (a Chat on provider A, a North Star on
+>   provider B). `resolveLlm({accountId, modelId})` falls back to the default per-field; clients
+>   are cached per account id. The composer picker spans **all** providers' models (grouped by
+>   provider) and persists the choice onto the conversation (carried into create() for a new one);
+>   reopening a conversation restores its model. The Settings "active" control is now the
+>   **default**, not a global switch.
+> - **`src/main/settings/bootstrap.ts`** — `seedProviderFromEnvIfEmpty()` migrates a pre-settings
+>   `NEXT_apiKey`/`PORTKEY_API_KEY` into a seeded Portkey account on first boot (no-op once any
+>   account exists), so existing dev setups keep working without re-entering the key.
+> - **IPC + preload** — `providers:*` (list/listWithModels/create/update/delete,
+>   setKey/clearKey/getMaskedKey, secureStorageAvailable, getDefault/setDefault, hasActive) +
+>   `models:*` (list/add/update/delete, importFromGateway) + `db:conversations:*` extended with
+>   `accountId`/`modelId`. `window.cowork.providers` / `.models`; types re-exported via `@/types`.
+> - **Renderer** — `llm-settings.tsx` (Providers tab: accounts CRUD, masked key with replace/clear,
+>   provider dropdown with disabled "coming soon" entries, active-provider select; Models tab:
+>   manual add/edit/delete with custom `model_name`, gateway import, origin badges, pick-active).
+>   Settings sheet gained **Providers/Models** tabs (open-to-tab via `initialTab`). Composer
+>   (`App.tsx`) gained an inline **model picker**; Send is gated on an active provider; first
+>   launch with nothing configured auto-opens Settings → Providers.
+>
+> Verified: `pnpm typecheck` + `pnpm build` clean; **133 tests** pass (2 new service tests; new
+> provider-accounts/models/conversations repo tests run under Electron, skipped in plain-node
+> vitest like all DB repo tests). Q1 resolved **safeStorage (strict)**, Q3 resolved **both**
+> (user-maintained source of truth + optional gateway import). Selection scope resolved
+> **per-conversation, persisted**, with the Settings selection as the **default for new sessions**.
 >
 > **What shipped (slice 1):**
 > - §A Settings store — `SCHEMA_V4` `settings` table + `repositories/settings.ts` + barrel export.

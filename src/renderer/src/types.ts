@@ -20,9 +20,20 @@ export type { Question, QuestionOption, QuestionAnswer } from "../../preload/ind
 export type {
   ExecutionSettings,
   PermissionSettings,
+  LlmSettings,
   Backend,
   FilePermission,
   ApprovalCategory,
   RuntimeStatus,
   Runtime,
+} from "../../preload/index"
+
+// LLM provider/model types, surfaced for the Providers/Models tabs + composer.
+export type {
+  Provider,
+  ModelOrigin,
+  ProviderAccount,
+  ModelEntry,
+  AccountView,
+  AccountWithModels,
 } from "../../preload/index"

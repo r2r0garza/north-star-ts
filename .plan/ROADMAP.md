@@ -7,18 +7,13 @@ item is its plan file, not its rank.
 
 ## Next up
 
-1. **`004` (LLM slice) — Settings pane, provider/model + API key.** The remaining half of
-   `004`: settings-aware `getClient()` (dynamic provider/model + invalidation), safeStorage
-   API-key encryption, and the Provider/Model + API-Key tabs in the Settings Sheet. The store,
-   service, IPC, and Sheet shell already exist (slice 1) — this fills in §C and the LLM parts of
-   §B/§E/§F. Open questions Q1 (key storage) and Q3 (model list) still to decide.
-2. **`005` — Stop in-flight tool calls.** Carry the abort signal into tools so a running
+1. **`005` — Stop in-flight tool calls.** Carry the abort signal into tools so a running
    shell command can be killed, not just the LLM stream. The `Environment.exec` signal seam
    already exists (from `006`); this wires it through and adds the in-container kill (the
    documented `006` follow-up — killing `docker exec` doesn't stop the inner process yet).
-3. **`007` — Slash commands for skills.** Let users force a skill with `/skill-name …` (pre-inject
+2. **`007` — Slash commands for skills.** Let users force a skill with `/skill-name …` (pre-inject
    the `read_skill` call), keeping today's model-discretionary path for plain messages. Adds a
-   `skills:list` IPC channel + composer autocomplete. Independent of `004`/`005` — schedule freely.
+   `skills:list` IPC channel + composer autocomplete. Independent of `005` — schedule freely.
 
 ## Done
 
@@ -30,11 +25,17 @@ item is its plan file, not its rank.
   `Environment` interface under the machine-touching tools, `LocalEnvironment` + a minimal
   `ContainerEnvironment`, bulk `search`, and an `exec` abort seam. Section E (settings + sandbox
   approval) was deferred into `004` and has since shipped (see below).
-- **`004` (slice 1) — Settings pane: backend + sandbox approval.** Shipped on `feat/settings-pane`
-  (commit `213654e`; not yet merged to `main`). First persisted settings store (`SCHEMA_V4`),
-  execution-backend choice in the UI (replacing the `COWORK_ENV_RUNTIME` env var), file-permission
-  toggles, and the sandbox-aware approval downgrade (the `006`-E payoff — config-driven by
-  category, hardline never bypassed). **LLM provider/model + API-key UI still pending** → Next up.
+- **`004` — Settings pane.** Shipped on `feat/settings-pane` (not yet merged to `main`).
+  - *Slice 1* (commit `213654e`): first persisted settings store (`SCHEMA_V4`), execution-backend
+    choice in the UI (replacing the `COWORK_ENV_RUNTIME` env var), file-permission toggles, and the
+    sandbox-aware approval downgrade (the `006`-E payoff — config-driven by category, hardline
+    never bypassed).
+  - *LLM slice*: multi-provider LLM layer (`SCHEMA_V5` — `provider_accounts` + `models`),
+    safeStorage-encrypted API keys (strict, no plaintext fallback, env no longer a runtime
+    fallback), a provider routing layer (`agent/providers`) replacing the env-keyed `getClient()`
+    singleton, dual-source model management (user-maintained + optional gateway import, custom
+    `model_name` labels), Providers/Models settings tabs, a composer model picker, and first-launch
+    provider setup. Q1→safeStorage, Q3→both sources.
 
 ## Backlog (not yet planned)
 

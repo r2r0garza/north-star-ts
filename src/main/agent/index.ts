@@ -1,4 +1,3 @@
-import { Portkey } from "portkey-ai"
 import { randomUUID } from "crypto"
 import { stat } from "fs/promises"
 import { basename, isAbsolute } from "path"
@@ -16,6 +15,7 @@ import { createEnvironment } from "./env"
 import { LocalEnvironment } from "./env/local"
 import type { Environment } from "./env/types"
 import * as settingsService from "../settings/service"
+import { resolveLlm, NoActiveProviderError, type LlmSelection } from "./providers"
 import { appendMessage } from "../db/repositories/messages"
 import { getConversation, updateConversation } from "../db/repositories/conversations"
 import { actionAllowlist } from "../db/repositories"
@@ -24,22 +24,6 @@ import { RegexCommandClassifier } from "./approval/regex-classifier"
 import { FileActionClassifier } from "./approval/file-classifier"
 import type { Gate, GateOutcome, ToolAction } from "./approval/types"
 import type { Ask, AskResult, Question, QuestionAnswer } from "./tools/types"
-
-const MODEL = "@aws-bedrock-use2/us.anthropic.claude-sonnet-4-6"
-
-// Lazily construct the client so it reads process.env AFTER the main process
-// has loaded .env.local — not at module-import time. NEXT_apiKey (from
-// .env.local) takes priority over the system-wide PORTKEY_API_KEY.
-let client: Portkey | undefined
-function getClient(): Portkey {
-  if (!client) {
-    client = new Portkey({
-      baseURL: "https://portkeygateway.perficient.com/v1",
-      apiKey: process.env.NEXT_apiKey ?? process.env.PORTKEY_API_KEY,
-    })
-  }
-  return client
-}
 
 // The single approval policy, shared across turns. The allowlist lookup is
 // backed by the action_allowlist table; classifiers are tried in order (file
@@ -207,11 +191,12 @@ function contentToText(content: unknown): string {
 // Ask the model for a short (5-6 word) title summarizing the user's first
 // message. Non-streaming and capped low so it's cheap. Falls back to a trimmed
 // snippet on any failure so a conversation always gets a title.
-async function generateTitle(message: string): Promise<string> {
+async function generateTitle(message: string, sel: LlmSelection): Promise<string> {
   const fallback = titleFromMessage(message)
   try {
-    const res = await getClient().chat.completions.create({
-      model: MODEL,
+    const { client, model } = resolveLlm(sel)
+    const res = await client.chat.completions.create({
+      model,
       max_tokens: 32,
       messages: [
         {
@@ -280,6 +265,14 @@ export async function runChat(
   // "chat" if missing.
   const conversation = getConversation(conversationId)
 
+  // This conversation's LLM selection (provider account + model). Null fields
+  // fall back to the global default inside resolveLlm, so a session that never
+  // picked a model uses the default while one that did keeps its own.
+  const llmSelection: LlmSelection = {
+    accountId: conversation?.accountId ?? null,
+    modelId: conversation?.modelId ?? null,
+  }
+
   // The todo tool is gated by mode, not workspace: chat is the tool-light mode
   // and doesn't get it; interactive/north_star do, with or without a workspace.
   const showTodos = conversation?.mode != null && conversation.mode !== "chat"
@@ -329,7 +322,7 @@ export async function runChat(
   // persisted before runChat returns and the renderer refreshes the sidebar.
   const titlePromise =
     conversation && !conversation.title && message.trim()
-      ? generateTitle(message).then((title) =>
+      ? generateTitle(message, llmSelection).then((title) =>
           updateConversation(conversationId, { title })
         )
       : null
@@ -346,6 +339,18 @@ export async function runChat(
   // rather than hanging mid-turn; we surface the error instead of crashing. Chat
   // sessions (no workspace) only ever use the local attachment path, so a plain
   // LocalEnvironment is enough there.
+  // Resolve this conversation's LLM provider + model up front (its own selection,
+  // or the default). A missing/incomplete provider config fails the turn cleanly
+  // here (before any container spin-up) rather than mid-loop. The renderer gates
+  // Send on hasActiveProvider, so this is the backstop for a stale selection.
+  let llm: ReturnType<typeof resolveLlm>
+  try {
+    llm = resolveLlm(llmSelection)
+  } catch (err) {
+    if (err instanceof NoActiveProviderError) return { error: err.message }
+    throw err
+  }
+
   let env: Environment
   // Whether this turn runs in an isolated container — gates the sandbox
   // auto-approve downgrade in the approval policy below.
@@ -395,9 +400,9 @@ export async function runChat(
         return { stopped: true }
       }
 
-      const stream = await getClient().chat.completions.create(
+      const stream = await llm.client.chat.completions.create(
         {
-          model: MODEL,
+          model: llm.model,
           max_tokens: 1024,
           messages,
           tools,

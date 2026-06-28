@@ -18,8 +18,13 @@ import type { Question, QuestionAnswer } from "../main/agent/tools/types"
 import type {
   ExecutionSettings,
   PermissionSettings,
+  LlmSettings,
 } from "../main/settings/service"
 import type { RuntimeStatus } from "../main/agent/env/runtime-check"
+import type { CreateAccountInput } from "../main/db/repositories/provider-accounts"
+import type { AddModelInput } from "../main/db/repositories/models"
+import type { AccountView, AccountWithModels } from "../main/ipc/provider-handlers"
+import type { ModelEntry } from "../main/db/types"
 
 // Streaming events emitted during a chat turn (mirrors ChatEvent in the agent).
 export type ChatEvent =
@@ -110,14 +115,26 @@ const api = {
   // touches the database directly.
   db: {
     conversations: {
-      create: (input: { mode: Mode; workspaceId?: string | null; title?: string | null }) =>
-        ipcRenderer.invoke("db:conversations:create", input) as Promise<Conversation>,
+      create: (input: {
+        mode: Mode
+        workspaceId?: string | null
+        title?: string | null
+        accountId?: string | null
+        modelId?: string | null
+      }) => ipcRenderer.invoke("db:conversations:create", input) as Promise<Conversation>,
       list: (opts?: { mode?: Mode }) =>
         ipcRenderer.invoke("db:conversations:list", opts) as Promise<Conversation[]>,
       get: (id: string) =>
         ipcRenderer.invoke("db:conversations:get", id) as Promise<Conversation | null>,
-      update: (id: string, patch: { title?: string | null; workspaceId?: string | null }) =>
-        ipcRenderer.invoke("db:conversations:update", id, patch) as Promise<Conversation>,
+      update: (
+        id: string,
+        patch: {
+          title?: string | null
+          workspaceId?: string | null
+          accountId?: string | null
+          modelId?: string | null
+        }
+      ) => ipcRenderer.invoke("db:conversations:update", id, patch) as Promise<Conversation>,
       delete: (id: string) =>
         ipcRenderer.invoke("db:conversations:delete", id) as Promise<void>,
     },
@@ -188,6 +205,59 @@ const api = {
         podman: RuntimeStatus
       }>,
   },
+
+  // LLM provider accounts, their models, API keys, and the active selection.
+  // The renderer never receives a plaintext key — only `hasKey`/`maskedKey`.
+  // All secret handling stays in the main process.
+  providers: {
+    // Whether secure (keychain) key storage is usable on this machine.
+    secureStorageAvailable: () =>
+      ipcRenderer.invoke("providers:secureStorageAvailable") as Promise<boolean>,
+    list: () => ipcRenderer.invoke("providers:list") as Promise<AccountView[]>,
+    create: (input: CreateAccountInput) =>
+      ipcRenderer.invoke("providers:create", input) as Promise<AccountView>,
+    update: (id: string, patch: { displayName?: string; baseUrl?: string | null }) =>
+      ipcRenderer.invoke("providers:update", id, patch) as Promise<AccountView>,
+    delete: (id: string) =>
+      ipcRenderer.invoke("providers:delete", id) as Promise<void>,
+    // Store an API key (encrypted in main). Resolves { ok } / { ok:false, error }.
+    setKey: (id: string, key: string) =>
+      ipcRenderer.invoke("providers:setKey", id, key) as Promise<{
+        ok: boolean
+        error?: string
+      }>,
+    clearKey: (id: string) =>
+      ipcRenderer.invoke("providers:clearKey", id) as Promise<void>,
+    getMaskedKey: (id: string) =>
+      ipcRenderer.invoke("providers:getMaskedKey", id) as Promise<string | null>,
+    // Every account paired with its models — for the composer's grouped picker.
+    listWithModels: () =>
+      ipcRenderer.invoke("providers:listWithModels") as Promise<AccountWithModels[]>,
+    // The DEFAULT provider/model for new conversations (per-conversation overrides
+    // are stored on the conversation row via db.conversations.update).
+    getDefault: () =>
+      ipcRenderer.invoke("providers:getDefault") as Promise<LlmSettings>,
+    setDefault: (next: LlmSettings) =>
+      ipcRenderer.invoke("providers:setDefault", next) as Promise<LlmSettings>,
+    hasActive: () => ipcRenderer.invoke("providers:hasActive") as Promise<boolean>,
+  },
+
+  // Models belonging to a provider account.
+  models: {
+    list: (accountId: string) =>
+      ipcRenderer.invoke("models:list", accountId) as Promise<ModelEntry[]>,
+    add: (input: AddModelInput) =>
+      ipcRenderer.invoke("models:add", input) as Promise<ModelEntry>,
+    update: (id: string, patch: { modelId?: string; modelName?: string | null }) =>
+      ipcRenderer.invoke("models:update", id, patch) as Promise<ModelEntry>,
+    delete: (id: string) => ipcRenderer.invoke("models:delete", id) as Promise<void>,
+    // Fetch the gateway catalog and merge it in. { ok } / { ok:false, error }.
+    importFromGateway: (accountId: string) =>
+      ipcRenderer.invoke("models:importFromGateway", accountId) as Promise<{
+        ok: boolean
+        error?: string
+      }>,
+  },
 }
 
 contextBridge.exposeInMainWorld("cowork", api)
@@ -214,8 +284,12 @@ export type { Question, QuestionOption, QuestionAnswer } from "../main/agent/too
 export type {
   ExecutionSettings,
   PermissionSettings,
+  LlmSettings,
   Backend,
   FilePermission,
   ApprovalCategory,
 } from "../main/settings/service"
 export type { RuntimeStatus, Runtime } from "../main/agent/env/runtime-check"
+// LLM provider/model types for the Providers & Models tabs and the composer.
+export type { Provider, ModelOrigin, ProviderAccount, ModelEntry } from "../main/db/types"
+export type { AccountView, AccountWithModels } from "../main/ipc/provider-handlers"
