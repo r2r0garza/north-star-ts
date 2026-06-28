@@ -7,13 +7,24 @@ item is its plan file, not its rank.
 
 ## Next up
 
-1. **`005` — Stop in-flight tool calls.** Carry the abort signal into tools so a running
-   shell command can be killed, not just the LLM stream. The `Environment.exec` signal seam
-   already exists (from `006`); this wires it through and adds the in-container kill (the
-   documented `006` follow-up — killing `docker exec` doesn't stop the inner process yet).
-2. **`007` — Slash commands for skills.** Let users force a skill with `/skill-name …` (pre-inject
+1. **`009` — Durable task execution.** Activate the storage-only task tables (`tasks`,
+   `task_events`, `task_checkpoints`, `approvals` from `001`) with a real runner: resumable
+   (survive crash/quit + pause), background (no live renderer needed), queued (ordered under a
+   concurrency cap), and retried (transient failures back off; cancel never retries). Wraps the
+   existing `runChat` loop, checkpointing at turn boundaries. The substrate `008` runs on.
+2. **`008` — Repository indexing.** Background, incremental, cancellable workspace index so the
+   agent can answer immediately while the index improves. Four stages (file map → metadata →
+   symbols → embeddings-later); incremental by content hash (skip unchanged, re-index changed,
+   drop deleted, add new); resumable across restart. New v7 tables; reuses the `LocalEnvironment`
+   walk + ignore rules. Interactive = low priority; North Star = higher, but never hard-blocks
+   execution. First real client of `009`'s runner (ships its own `IndexService` first; converges
+   later).
+3. **`005.1` — ContainerEnvironment stop in-flight.** The deferred half of `005`: killing the host
+   `docker/podman exec` client doesn't stop the in-container process. Needs its own kill mechanism
+   (in-container PID tracking / `exec kill`, or marker `pkill`). Out of scope when `005` shipped.
+4. **`007` — Slash commands for skills.** Let users force a skill with `/skill-name …` (pre-inject
    the `read_skill` call), keeping today's model-discretionary path for plain messages. Adds a
-   `skills:list` IPC channel + composer autocomplete. Independent of `005` — schedule freely.
+   `skills:list` IPC channel + composer autocomplete. Independent — schedule freely.
 
 ## Done
 
@@ -38,6 +49,12 @@ item is its plan file, not its rank.
     first-launch provider setup. **Per-conversation model selection** (`SCHEMA_V6`) — each session
     keeps its own provider+model, with the Settings choice as the default for new sessions.
     Q1→safeStorage, Q3→both sources, selection scope→per-conversation.
+- **`005` — Stop in-flight tool calls (Local).** Shipped on `feat/stop-tools-mid-flight` (commit
+  `d572805`, not yet merged to `main`). The abort signal was already threaded end-to-end
+  (`ctx.signal` → `env.exec` → `captureSpawn`); the real fix was process-group orphaning —
+  `LocalEnvironment.exec` now spawns `detached` and abort/timeout SIGKILL the whole group, so a
+  pipeline/build's grandchildren die instead of being reparented to PID 1. The container half is
+  split out to `005.1` (in Next up).
 
 ## Backlog (not yet planned)
 
