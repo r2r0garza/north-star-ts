@@ -34,8 +34,10 @@ item is its plan file, not its rank.
     safeStorage-encrypted API keys (strict, no plaintext fallback, env no longer a runtime
     fallback), a provider routing layer (`agent/providers`) replacing the env-keyed `getClient()`
     singleton, dual-source model management (user-maintained + optional gateway import, custom
-    `model_name` labels), Providers/Models settings tabs, a composer model picker, and first-launch
-    provider setup. Q1→safeStorage, Q3→both sources.
+    `model_name` labels), Providers/Models settings tabs, a filterable composer model picker, and
+    first-launch provider setup. **Per-conversation model selection** (`SCHEMA_V6`) — each session
+    keeps its own provider+model, with the Settings choice as the default for new sessions.
+    Q1→safeStorage, Q3→both sources, selection scope→per-conversation.
 
 ## Backlog (not yet planned)
 

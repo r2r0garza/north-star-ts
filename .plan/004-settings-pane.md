@@ -17,11 +17,14 @@
 >   ciphertext only, decrypt only in main. **No plaintext fallback** — throws
 >   `SafeStorageUnavailableError` so the UI shows a clear error. **Env is no longer a runtime
 >   fallback**; `getMaskedApiKey` returns `••••abcd` for the renderer (plaintext never crosses IPC).
-> - **`src/main/agent/providers/index.ts`** — routing layer. `getActiveClient()` resolves the
->   active account+model, decrypts the key in-process, builds + caches a Portkey client (Portkey
->   and `openai_compatible` share the SDK). `invalidate()` on any credential/selection change,
->   wired via `settingsService.setLlmChangeListener`. `fetchGatewayModelIds` for the optional
->   import. `hasActiveProvider()` gates the UI. Old env-keyed `getClient()`/`MODEL` singleton removed.
+> - **`src/main/agent/providers/index.ts`** — routing layer. `resolveLlm({accountId, modelId})`
+>   resolves a conversation's selection (or the default), decrypts the key in-process, builds +
+>   caches a Portkey client per account (Portkey and `openai_compatible` share the SDK).
+>   `invalidate()` on any credential/selection change, wired via
+>   `settingsService.setLlmChangeListener`. `fetchGatewayModelIds` for the optional import.
+>   `hasActiveProvider()` gates the UI. Old env-keyed `getClient()`/`MODEL` singleton removed.
+>   `createCompletion()` transparently handles the `max_tokens` vs `max_completion_tokens` split
+>   (GPT-5.x / o-series reject `max_tokens`) — probes once, caches the working param per model.
 > - **Settings service** — `llm` blob (`{ activeAccountId, activeModelId }`) holds the **default**
 >   provider/model for new conversations + `getLlm`/`setLlm` + the change-listener hook.
 > - **Per-conversation selection (`SCHEMA_V6`)** — nullable `account_id`/`model_id` columns on
