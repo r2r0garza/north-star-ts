@@ -47,6 +47,11 @@ export interface Conversation {
   mode: Mode
   title: string | null
   workspaceId: string | null
+  // Per-conversation LLM selection (SCHEMA_V6). Null = use the default from the
+  // settings `llm` blob. `accountId` is a provider_accounts.id; `modelId` is the
+  // model's gateway id string (not the models.id row id).
+  accountId: string | null
+  modelId: string | null
   createdAt: number
   updatedAt: number
 }
@@ -138,4 +143,47 @@ export interface ActionAllowlistRule {
   agentId: string | null
   createdAt: number
   lastUsedAt: number | null
+}
+
+// The LLM providers a user can configure. `portkey` and `openai_compatible`
+// (an endpoint that routes through the Portkey connector, e.g. LM Studio) are
+// wired in V1; the rest are reserved so the UI can list them as "coming soon"
+// without a schema change.
+export type Provider =
+  | "portkey"
+  | "openai_compatible"
+  | "openai"
+  | "anthropic"
+  | "google"
+  | "azure_openai"
+
+// Where a model row came from: hand-typed by the user, imported from the
+// gateway's /models catalog, or auto-seeded on account creation. Drives the UI
+// badge and the gateway-import merge (re-import refreshes `gateway` rows; it
+// never deletes `manual`/`seeded` ones).
+export type ModelOrigin = "manual" | "gateway" | "seeded"
+
+// A configured connection to an LLM provider. The API key is NEVER held here in
+// plaintext — `hasKey` reflects whether ciphertext is stored (the row's actual
+// `encrypted_key` BLOB stays in the main process and never crosses IPC).
+export interface ProviderAccount {
+  id: string
+  provider: Provider
+  displayName: string
+  baseUrl: string | null
+  hasKey: boolean
+  createdAt: number
+  lastUsedAt: number | null
+}
+
+// One model id belonging to a provider account. `modelName` is an optional
+// custom display label; callers fall back to `modelId` when it's null.
+export interface ModelEntry {
+  id: string
+  accountId: string
+  modelId: string
+  modelName: string | null
+  origin: ModelOrigin
+  createdAt: number
+  updatedAt: number
 }

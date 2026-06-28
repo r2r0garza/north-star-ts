@@ -6,6 +6,7 @@ import { ThemeProvider } from "@/components/theme-provider"
 import { SidebarProvider } from "@/components/ui/sidebar"
 import { AppSidebar, MODE_TO_VIEW, type View } from "@/components/sidebar"
 import { SidebarToggle } from "@/components/sidebar-toggle"
+import { SettingsSheet } from "@/components/settings-sheet"
 import type { Mode } from "@/types"
 import App from "./App"
 
@@ -22,11 +23,32 @@ function Shell() {
   // Bumped whenever conversations change so the sidebar list refetches.
   const [refreshKey, setRefreshKey] = useState(0)
   const refreshConversations = () => setRefreshKey((k) => k + 1)
+  // Whether the Settings sheet is open (opened from the sidebar gear).
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  // Which tab Settings opens on. First launch (no provider configured) opens
+  // straight to Providers so the user can set one up.
+  const [settingsTab, setSettingsTab] = useState("backend")
 
   useEffect(() => {
     window.cowork.isFullScreen().then(setFullscreen)
     return window.cowork.onFullScreenChange(setFullscreen)
   }, [])
+
+  // First launch: if no LLM provider is configured yet, open Settings to the
+  // Providers tab so the user configures one before sending a message.
+  useEffect(() => {
+    window.cowork.providers.hasActive().then((active) => {
+      if (!active) {
+        setSettingsTab("providers")
+        setSettingsOpen(true)
+      }
+    })
+  }, [])
+
+  function openSettings(tab = "backend") {
+    setSettingsTab(tab)
+    setSettingsOpen(true)
+  }
 
   // Switching views starts a fresh conversation for that view (the sidebar
   // shows prior ones to reopen).
@@ -62,6 +84,7 @@ function Shell() {
         onSelectConversation={handleSelectConversation}
         onNewConversation={() => setActiveConversationId(null)}
         onConversationDeleted={handleConversationDeleted}
+        onSettingsClick={() => openSettings()}
         refreshKey={refreshKey}
       />
       <App
@@ -72,6 +95,13 @@ function Shell() {
           refreshConversations()
         }}
         onConversationChanged={refreshConversations}
+        onOpenSettings={openSettings}
+        settingsOpen={settingsOpen}
+      />
+      <SettingsSheet
+        open={settingsOpen}
+        onOpenChange={setSettingsOpen}
+        initialTab={settingsTab}
       />
     </SidebarProvider>
   )

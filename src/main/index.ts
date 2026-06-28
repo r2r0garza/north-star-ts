@@ -2,15 +2,19 @@ import { app, shell, BrowserWindow, ipcMain } from "electron"
 import { join } from "path"
 import { config as loadEnv } from "dotenv"
 
-// Load .env.local before anything reads process.env. Next did this for us;
-// Electron does not, so the NEXT_apiKey override must be loaded explicitly.
-// `override: false` keeps real system env vars winning over the file, but the
-// agent's own NEXT_apiKey-first fallback still prioritizes the file's key.
+// Load .env.local before anything reads process.env. The API key is no longer
+// read from env at runtime (it's stored per provider account, encrypted via
+// safeStorage), but a key found here on first launch is migrated into a seeded
+// Portkey account by seedProviderFromEnvIfEmpty so existing dev setups keep
+// working. Other env-driven config (e.g. COWORK_ENV_RUNTIME) still relies on this.
 loadEnv({ path: join(app.getAppPath(), ".env.local") })
 
 import { runChat, resolveApproval, resolveQuestion, stopChat, type ChatRequest } from "./agent"
 import { pickWorkspace, pickFiles } from "./pick-workspace"
 import { registerDbHandlers } from "./ipc/db-handlers"
+import { registerSettingsHandlers } from "./ipc/settings-handlers"
+import { registerProviderHandlers } from "./ipc/provider-handlers"
+import { seedProviderFromEnvIfEmpty } from "./settings/bootstrap"
 import { closeDb } from "./db/connection"
 
 function createWindow(): void {
@@ -114,6 +118,12 @@ app.whenReady().then(() => {
   // Register DB-backed IPC handlers now — the connection opens lazily on first
   // use, after userData is available.
   registerDbHandlers()
+  registerSettingsHandlers()
+  registerProviderHandlers()
+  // Migrate a pre-settings env-configured key into a stored provider account, so
+  // existing dev setups keep working without re-entering it (no-op once any
+  // account exists). After this, the stored key is the source of truth.
+  seedProviderFromEnvIfEmpty()
   createWindow()
 
   app.on("activate", () => {

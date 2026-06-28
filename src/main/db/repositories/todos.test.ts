@@ -48,8 +48,11 @@ beforeEach(() => {
 })
 
 describe.skipIf(!sqliteLoads)("migrations", () => {
-  it("brings a fresh DB to user_version 3", () => {
-    expect(db.pragma("user_version", { simple: true })).toBe(3)
+  it("creates the todos table (reached by the full migration chain)", () => {
+    const row = db
+      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='todos'")
+      .get()
+    expect(row).toBeTruthy()
   })
 })
 

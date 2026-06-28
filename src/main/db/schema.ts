@@ -131,3 +131,63 @@ CREATE TABLE todos (
 );
 CREATE INDEX idx_todos_conversation_seq ON todos(conversation_id, seq);
 `
+
+// v4: the app's first persisted settings store. A small key-value table (one row
+// per settings group, e.g. "execution", "permissions") with a JSON blob value,
+// so adding a new setting is a code change in the settings service — not a
+// migration. Global scope for now (no workspace/conversation FK); the table can
+// grow a scope column later if per-workspace overrides are needed.
+export const SCHEMA_V4 = `
+CREATE TABLE settings (
+  key        TEXT PRIMARY KEY,
+  value      TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+`
+
+// v5: LLM provider accounts + their models (the 004 LLM slice). A provider
+// account is one configured connection to a gateway (Portkey or an
+// OpenAI-compatible endpoint that routes through it). The API key is NEVER stored
+// here in plaintext: `encrypted_key` holds Electron safeStorage ciphertext,
+// decrypted only in the main process when building the LLM client. Models belong
+// to an account (ON DELETE CASCADE) and track their `origin` so a gateway
+// re-import can refresh fetched rows without clobbering user-added ones.
+// `model_name` is an optional custom display label; the UI falls back to
+// `model_id` when it's null. The active provider/model selection is NOT here —
+// it lives in the `settings` table's `llm` blob (global scope, like the rest).
+export const SCHEMA_V5 = `
+CREATE TABLE provider_accounts (
+  id            TEXT PRIMARY KEY,
+  provider      TEXT NOT NULL CHECK (provider IN
+                  ('portkey','openai_compatible','openai','anthropic','google','azure_openai')),
+  display_name  TEXT NOT NULL,
+  base_url      TEXT,
+  encrypted_key BLOB,
+  created_at    INTEGER NOT NULL,
+  last_used_at  INTEGER
+);
+
+CREATE TABLE models (
+  id          TEXT PRIMARY KEY,
+  account_id  TEXT NOT NULL REFERENCES provider_accounts(id) ON DELETE CASCADE,
+  model_id    TEXT NOT NULL,
+  model_name  TEXT,
+  origin      TEXT NOT NULL CHECK (origin IN ('manual','gateway','seeded')),
+  created_at  INTEGER NOT NULL,
+  updated_at  INTEGER NOT NULL,
+  UNIQUE (account_id, model_id)
+);
+CREATE INDEX idx_models_account ON models(account_id);
+`
+
+// v6: per-conversation LLM selection. A conversation can pin which provider
+// account + model it uses, so different sessions (e.g. a Chat with provider A and
+// a North Star with provider B) keep independent models without a global switch.
+// Both nullable — null means "use the default" (the settings `llm` blob). Stored
+// as the account id + the model's gateway id string (not the models.id row id),
+// matching how runChat calls the gateway. No FK on account_id: a deleted account
+// falls back to the default at resolve time rather than cascade-nulling here.
+export const SCHEMA_V6 = `
+ALTER TABLE conversations ADD COLUMN account_id TEXT;
+ALTER TABLE conversations ADD COLUMN model_id TEXT;
+`

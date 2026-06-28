@@ -1,9 +1,14 @@
 import type { ActionClassifier, ActionDecision, ToolAction } from "./types"
 
-// Context for a policy decision — the scope inputs the allowlist matches on.
+// Context for a policy decision — the scope inputs the allowlist matches on,
+// plus whether this turn runs in a sandbox (a container backend), which gates the
+// sandbox auto-approve downgrade.
 export interface PolicyContext {
   workspacePath?: string
   conversationId?: string
+  // True when the active execution backend is an isolated container, so the
+  // sandbox policy may auto-approve selected require_approval categories.
+  sandboxed?: boolean
 }
 
 // Allowlist lookup the PolicyEngine consults before classifying. Decoupled from
@@ -13,6 +18,14 @@ export interface AllowlistLookup {
   isAllowed(action: ToolAction, ctx: PolicyContext): boolean
 }
 
+// Sandbox auto-approve policy. Returns true when an action of the given category
+// should be auto-approved while running in a container. Decoupled from settings
+// (the service implements it) so the engine stays unit-testable. Hardline is
+// never routed here — see decide().
+export interface SandboxPolicyLookup {
+  autoApproves(category: string | undefined): boolean
+}
+
 // The single decision point for every gated action. Consults the allowlist
 // first, then an ordered list of classifiers (first non-null verdict wins). A
 // `hard_block` from a classifier is never overridable by the allowlist — the
@@ -20,12 +33,14 @@ export interface AllowlistLookup {
 export class PolicyEngine {
   constructor(
     private readonly classifiers: ActionClassifier[],
-    private readonly allowlist?: AllowlistLookup
+    private readonly allowlist?: AllowlistLookup,
+    private readonly sandboxPolicy?: SandboxPolicyLookup
   ) {}
 
   decide(action: ToolAction, ctx: PolicyContext = {}): ActionDecision {
-    // Classify first so a hard_block always wins, even over an allowlist rule
-    // (a remembered "always allow" must never resurrect a catastrophic command).
+    // Classify first so a hard_block always wins, even over an allowlist rule or
+    // a sandbox (a remembered/sandboxed "allow" must never resurrect a
+    // catastrophic command).
     let verdict: ActionDecision = { level: "allow" }
     for (const classifier of this.classifiers) {
       const result = classifier.classify(action)
@@ -35,14 +50,21 @@ export class PolicyEngine {
       }
     }
 
+    // The single safety invariant: a hard_block returns here, before ANY
+    // downgrade path below. Neither the allowlist nor the sandbox can reach it.
     if (verdict.level === "hard_block") return verdict
 
-    // An allowlist rule downgrades a required approval to an allow.
-    if (
-      verdict.level === "require_approval" &&
-      this.allowlist?.isAllowed(action, ctx)
-    ) {
-      return { level: "allow", reason: "allowlisted" }
+    if (verdict.level === "require_approval") {
+      // An allowlist rule ("always allow this") downgrades to allow.
+      if (this.allowlist?.isAllowed(action, ctx)) {
+        return { level: "allow", reason: "allowlisted" }
+      }
+      // In a sandbox, the sandbox policy may auto-approve selected categories —
+      // the container's isolation is what makes this safe. Hardline already
+      // returned above, so this can only ever relax the recoverable tier.
+      if (ctx.sandboxed && this.sandboxPolicy?.autoApproves(verdict.category)) {
+        return { level: "allow", reason: "sandboxed" }
+      }
     }
 
     return verdict

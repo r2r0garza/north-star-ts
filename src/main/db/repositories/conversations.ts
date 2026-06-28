@@ -7,6 +7,8 @@ interface ConversationRow {
   mode: Mode
   title: string | null
   workspace_id: string | null
+  account_id: string | null
+  model_id: string | null
   created_at: number
   updated_at: number
 }
@@ -17,6 +19,8 @@ function toConversation(row: ConversationRow): Conversation {
     mode: row.mode,
     title: row.title,
     workspaceId: row.workspace_id,
+    accountId: row.account_id,
+    modelId: row.model_id,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   }
@@ -26,14 +30,25 @@ export function createConversation(input: {
   mode: Mode
   workspaceId?: string | null
   title?: string | null
+  accountId?: string | null
+  modelId?: string | null
 }): Conversation {
   const id = randomUUID()
   const now = Date.now()
   getDb()
     .prepare(
-      "INSERT INTO conversations (id, mode, title, workspace_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)"
+      "INSERT INTO conversations (id, mode, title, workspace_id, account_id, model_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
     )
-    .run(id, input.mode, input.title ?? null, input.workspaceId ?? null, now, now)
+    .run(
+      id,
+      input.mode,
+      input.title ?? null,
+      input.workspaceId ?? null,
+      input.accountId ?? null,
+      input.modelId ?? null,
+      now,
+      now
+    )
   return getConversation(id)!
 }
 
@@ -59,7 +74,12 @@ export function listConversations(opts?: { mode?: Mode }): Conversation[] {
 
 export function updateConversation(
   id: string,
-  patch: { title?: string | null; workspaceId?: string | null }
+  patch: {
+    title?: string | null
+    workspaceId?: string | null
+    accountId?: string | null
+    modelId?: string | null
+  }
 ): Conversation {
   const now = Date.now()
   const sets: string[] = []
@@ -71,6 +91,14 @@ export function updateConversation(
   if (patch.workspaceId !== undefined) {
     sets.push("workspace_id = ?")
     values.push(patch.workspaceId)
+  }
+  if (patch.accountId !== undefined) {
+    sets.push("account_id = ?")
+    values.push(patch.accountId)
+  }
+  if (patch.modelId !== undefined) {
+    sets.push("model_id = ?")
+    values.push(patch.modelId)
   }
   if (sets.length > 0) {
     sets.push("updated_at = ?")

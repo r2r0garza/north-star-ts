@@ -7,15 +7,13 @@ item is its plan file, not its rank.
 
 ## Next up
 
-1. **`006` — Execution environments (Local / Docker / Podman).** Foundational refactor:
-   put an `Environment` interface under the machine-touching tools so the backend is
-   selectable. Prerequisite for safely loosening auto-approval and for unattended
-   autonomy — best done before adding more tools that would otherwise need retrofitting.
-2. **`004` — Settings pane.** User-facing settings (and the natural home for the
-   environment/backend choice from `006`).
-3. **`005` — Stop in-flight tool calls.** Carry the abort signal into tools so a running
-   shell command can be killed, not just the LLM stream. Coordinates with `006` (killing
-   a process means killing it in the right backend).
+1. **`005` — Stop in-flight tool calls.** Carry the abort signal into tools so a running
+   shell command can be killed, not just the LLM stream. The `Environment.exec` signal seam
+   already exists (from `006`); this wires it through and adds the in-container kill (the
+   documented `006` follow-up — killing `docker exec` doesn't stop the inner process yet).
+2. **`007` — Slash commands for skills.** Let users force a skill with `/skill-name …` (pre-inject
+   the `read_skill` call), keeping today's model-discretionary path for plain messages. Adds a
+   `skills:list` IPC channel + composer autocomplete. Independent of `005` — schedule freely.
 
 ## Done
 
@@ -23,6 +21,23 @@ item is its plan file, not its rank.
 - **`002` — Shell execution + approval gating.** Shipped (`main`, merge `7ce97d6`).
 - **`003` — todo_tool.** Shipped (merge `51699ac`). Also in that merge: unbounded agent
   loop, Stop button (LLM/loop cancel), pop-out approval prompt, and `ask_user_question`.
+- **`006` — Execution environments (Local / Docker / Podman).** Shipped (`main`, merge `828a397`).
+  `Environment` interface under the machine-touching tools, `LocalEnvironment` + a minimal
+  `ContainerEnvironment`, bulk `search`, and an `exec` abort seam. Section E (settings + sandbox
+  approval) was deferred into `004` and has since shipped (see below).
+- **`004` — Settings pane.** Shipped on `feat/settings-pane` (not yet merged to `main`).
+  - *Slice 1* (commit `213654e`): first persisted settings store (`SCHEMA_V4`), execution-backend
+    choice in the UI (replacing the `COWORK_ENV_RUNTIME` env var), file-permission toggles, and the
+    sandbox-aware approval downgrade (the `006`-E payoff — config-driven by category, hardline
+    never bypassed).
+  - *LLM slice*: multi-provider LLM layer (`SCHEMA_V5` — `provider_accounts` + `models`),
+    safeStorage-encrypted API keys (strict, no plaintext fallback, env no longer a runtime
+    fallback), a provider routing layer (`agent/providers`) replacing the env-keyed `getClient()`
+    singleton, dual-source model management (user-maintained + optional gateway import, custom
+    `model_name` labels), Providers/Models settings tabs, a filterable composer model picker, and
+    first-launch provider setup. **Per-conversation model selection** (`SCHEMA_V6`) — each session
+    keeps its own provider+model, with the Settings choice as the default for new sessions.
+    Q1→safeStorage, Q3→both sources, selection scope→per-conversation.
 
 ## Backlog (not yet planned)
 

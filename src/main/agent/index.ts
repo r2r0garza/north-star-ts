@@ -1,4 +1,3 @@
-import { Portkey } from "portkey-ai"
 import { randomUUID } from "crypto"
 import { stat } from "fs/promises"
 import { basename, isAbsolute } from "path"
@@ -12,33 +11,19 @@ import { createReadSkillTool } from "./skills/tool"
 import { skillSources } from "./skills/sources"
 import { loadSystemPrompt } from "./system-prompt"
 import { contextBuilder } from "./context/context-builder"
-import { createEnvironment, envConfigFromEnv } from "./env"
+import { createEnvironment } from "./env"
 import { LocalEnvironment } from "./env/local"
 import type { Environment } from "./env/types"
+import * as settingsService from "../settings/service"
+import { resolveLlm, createCompletion, NoActiveProviderError, type LlmSelection } from "./providers"
 import { appendMessage } from "../db/repositories/messages"
 import { getConversation, updateConversation } from "../db/repositories/conversations"
 import { actionAllowlist } from "../db/repositories"
-import { PolicyEngine, type AllowlistLookup } from "./approval/policy"
+import { PolicyEngine, type AllowlistLookup, type SandboxPolicyLookup } from "./approval/policy"
 import { RegexCommandClassifier } from "./approval/regex-classifier"
 import { FileActionClassifier } from "./approval/file-classifier"
 import type { Gate, GateOutcome, ToolAction } from "./approval/types"
 import type { Ask, AskResult, Question, QuestionAnswer } from "./tools/types"
-
-const MODEL = "@aws-bedrock-use2/us.anthropic.claude-sonnet-4-6"
-
-// Lazily construct the client so it reads process.env AFTER the main process
-// has loaded .env.local — not at module-import time. NEXT_apiKey (from
-// .env.local) takes priority over the system-wide PORTKEY_API_KEY.
-let client: Portkey | undefined
-function getClient(): Portkey {
-  if (!client) {
-    client = new Portkey({
-      baseURL: "https://portkeygateway.perficient.com/v1",
-      apiKey: process.env.NEXT_apiKey ?? process.env.PORTKEY_API_KEY,
-    })
-  }
-  return client
-}
 
 // The single approval policy, shared across turns. The allowlist lookup is
 // backed by the action_allowlist table; classifiers are tried in order (file
@@ -51,9 +36,21 @@ const allowlistLookup: AllowlistLookup = {
     })
   },
 }
+// The sandbox policy reads live settings at decision time (like the file
+// classifier), so a settings change takes effect on the next action without
+// rebuilding the engine.
+const sandboxPolicy: SandboxPolicyLookup = {
+  autoApproves(category) {
+    return settingsService.sandboxAutoApproves(category)
+  },
+}
 const policy = new PolicyEngine(
-  [new FileActionClassifier(), new RegexCommandClassifier()],
-  allowlistLookup
+  [
+    new FileActionClassifier(() => settingsService.getPermissions()),
+    new RegexCommandClassifier(),
+  ],
+  allowlistLookup,
+  sandboxPolicy
 )
 
 // Decision for one pending approval, set by resolveApproval and awaited inside
@@ -194,12 +191,11 @@ function contentToText(content: unknown): string {
 // Ask the model for a short (5-6 word) title summarizing the user's first
 // message. Non-streaming and capped low so it's cheap. Falls back to a trimmed
 // snippet on any failure so a conversation always gets a title.
-async function generateTitle(message: string): Promise<string> {
+async function generateTitle(message: string, sel: LlmSelection): Promise<string> {
   const fallback = titleFromMessage(message)
   try {
-    const res = await getClient().chat.completions.create({
-      model: MODEL,
-      max_tokens: 32,
+    const { client, model } = resolveLlm(sel)
+    const res = await createCompletion(client, model, 32, {
       messages: [
         {
           role: "system",
@@ -267,6 +263,14 @@ export async function runChat(
   // "chat" if missing.
   const conversation = getConversation(conversationId)
 
+  // This conversation's LLM selection (provider account + model). Null fields
+  // fall back to the global default inside resolveLlm, so a session that never
+  // picked a model uses the default while one that did keeps its own.
+  const llmSelection: LlmSelection = {
+    accountId: conversation?.accountId ?? null,
+    modelId: conversation?.modelId ?? null,
+  }
+
   // The todo tool is gated by mode, not workspace: chat is the tool-light mode
   // and doesn't get it; interactive/north_star do, with or without a workspace.
   const showTodos = conversation?.mode != null && conversation.mode !== "chat"
@@ -316,7 +320,7 @@ export async function runChat(
   // persisted before runChat returns and the renderer refreshes the sidebar.
   const titlePromise =
     conversation && !conversation.title && message.trim()
-      ? generateTitle(message).then((title) =>
+      ? generateTitle(message, llmSelection).then((title) =>
           updateConversation(conversationId, { title })
         )
       : null
@@ -333,10 +337,27 @@ export async function runChat(
   // rather than hanging mid-turn; we surface the error instead of crashing. Chat
   // sessions (no workspace) only ever use the local attachment path, so a plain
   // LocalEnvironment is enough there.
+  // Resolve this conversation's LLM provider + model up front (its own selection,
+  // or the default). A missing/incomplete provider config fails the turn cleanly
+  // here (before any container spin-up) rather than mid-loop. The renderer gates
+  // Send on hasActiveProvider, so this is the backstop for a stale selection.
+  let llm: ReturnType<typeof resolveLlm>
+  try {
+    llm = resolveLlm(llmSelection)
+  } catch (err) {
+    if (err instanceof NoActiveProviderError) return { error: err.message }
+    throw err
+  }
+
   let env: Environment
+  // Whether this turn runs in an isolated container — gates the sandbox
+  // auto-approve downgrade in the approval policy below.
+  let sandboxed = false
   if (hasWorkspace) {
     try {
-      env = await createEnvironment(workspace!, conversationId, envConfigFromEnv())
+      const envConfig = settingsService.getExecutionConfig()
+      sandboxed = envConfig.kind === "container"
+      env = await createEnvironment(workspace!, conversationId, envConfig)
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err)
       return { error: `Execution backend unavailable: ${detail}` }
@@ -377,21 +398,20 @@ export async function runChat(
         return { stopped: true }
       }
 
-      const stream = await getClient().chat.completions.create(
-        {
-          model: MODEL,
-          max_tokens: 1024,
-          messages,
-          tools,
-          stream: true,
-        },
-        undefined,
-        // We pass the signal, but the Portkey SDK (3.1.0) does NOT forward it to
-        // the underlying fetch — it only checks `signal.aborted` after an error.
-        // So aborting alone won't stop a healthy stream. The real cancellation is
-        // the `break` in the consume loop below: breaking runs the stream
-        // iterator's return()/reader.cancel(), which tears down the HTTP body.
-        { signal: abort.signal }
+      const stream = await createCompletion(
+        llm.client,
+        llm.model,
+        1024,
+        { messages, tools, stream: true },
+        [
+          undefined,
+          // We pass the signal, but the Portkey SDK (3.1.0) does NOT forward it to
+          // the underlying fetch — it only checks `signal.aborted` after an error.
+          // So aborting alone won't stop a healthy stream. The real cancellation is
+          // the `break` in the consume loop below: breaking runs the stream
+          // iterator's return()/reader.cancel(), which tears down the HTTP body.
+          { signal: abort.signal },
+        ]
       )
 
       // Reassemble the streamed turn. Text deltas are forwarded live; tool-call
@@ -499,6 +519,7 @@ export async function runChat(
           const decision = policy.decide(action, {
             workspacePath: workspace,
             conversationId,
+            sandboxed,
           })
           if (decision.level === "allow") return Promise.resolve("approved")
           if (decision.level === "hard_block") return Promise.resolve("blocked")

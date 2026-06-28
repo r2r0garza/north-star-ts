@@ -72,11 +72,13 @@ function SheetContent({
           <SheetPrimitive.Close data-slot="sheet-close" asChild>
             <Button
               variant="ghost"
-              className="absolute top-3 right-3"
+              // no-drag: the close button can sit under the window's top drag
+              // region (see Shell's top bar). macOS swallows clicks over a drag
+              // region unless the element opts out — same fix as SidebarToggle.
+              className="absolute top-3 right-3 [-webkit-app-region:no-drag]"
               size="icon-sm"
             >
-              <XIcon
-              />
+              <XIcon />
               <span className="sr-only">Close</span>
             </Button>
           </SheetPrimitive.Close>
