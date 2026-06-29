@@ -46,6 +46,21 @@ export type ChatEvent =
       questions: Question[]
     }
 
+// Runner lifecycle events appended to task_events alongside ChatEvents (mirrors
+// RunnerLifecycleEvent in the task runner).
+export type RunnerLifecycleEvent =
+  | { type: "status_change"; from: TaskStatus; to: TaskStatus }
+  | { type: "task_completed"; result?: string }
+  | { type: "task_failed"; error: string }
+
+// The full event vocabulary a task emits, live or replayed from task_events.
+export type TaskEventPayload = ChatEvent | RunnerLifecycleEvent
+
+// A live task event, as forwarded over the "task:event" channel. `id` is the
+// task_events row id (0 for ephemeral token deltas, which aren't persisted), so
+// the renderer can dedupe the live tail against a db.taskEvents.list replay.
+export type TaskLiveEvent = { taskId: string; event: TaskEventPayload; id: number }
+
 // The typed API exposed to the renderer as `window.cowork`.
 // This is the ONLY surface the UI can use to reach the main process.
 const api = {
@@ -88,6 +103,49 @@ const api = {
   // event's `questions` array.
   chatAnswer: (payload: { requestId: string; answers: QuestionAnswer[] }) =>
     ipcRenderer.invoke("chat:answer", payload) as Promise<void>,
+
+  // Durable task runner control. Unlike chat() (a live, foreground turn tied to
+  // the calling renderer), a task runs in the background in the main process,
+  // persists its progress to task_events, and survives the renderer detaching or
+  // the app restarting. Replay a task's history with db.taskEvents.list, then
+  // subscribe to the live tail with tasks.onEvent.
+  tasks: {
+    // Start a new durable agent turn. Resolves with the created task row.
+    start: (input: {
+      conversationId: string
+      message: string
+      kind?: string
+      title?: string | null
+    }) => ipcRenderer.invoke("task:start", input) as Promise<Task>,
+    // Manually resume an interrupted task (e.g. one reconciled after a crash).
+    resume: (taskId: string) =>
+      ipcRenderer.invoke("task:resume", taskId) as Promise<void>,
+    // Cancel a task: a running one is aborted (its in-flight shell is killed),
+    // a pending one is marked cancelled. Never retries.
+    cancel: (taskId: string) =>
+      ipcRenderer.invoke("task:cancel", taskId) as Promise<void>,
+    // Resolve a gate a paused (waiting_for_approval) task is blocked on. The
+    // requestId comes from the task's approval/question event. approve/deny gate
+    // a tool action; answer responds to an ask_user_question.
+    approve: (payload: { taskId: string; requestId: string; remember?: "workspace" }) =>
+      ipcRenderer.invoke("task:approve", payload) as Promise<void>,
+    deny: (payload: { taskId: string; requestId: string }) =>
+      ipcRenderer.invoke("task:deny", payload) as Promise<void>,
+    answer: (payload: { taskId: string; requestId: string; answers: QuestionAnswer[] }) =>
+      ipcRenderer.invoke("task:answer", payload) as Promise<void>,
+    // Subscribe to the live event tail for ALL tasks. Returns an unsubscribe fn.
+    // The callback fires for every running task's tokens, tool activity, and
+    // status changes; filter by `taskId` in the handler.
+    onEvent: (cb: (event: TaskLiveEvent) => void) => {
+      const listener = (_e: IpcRendererEvent, payload: TaskLiveEvent) => cb(payload)
+      ipcRenderer.on("task:event", listener)
+      void ipcRenderer.invoke("task:subscribe")
+      return () => {
+        ipcRenderer.removeListener("task:event", listener)
+        void ipcRenderer.invoke("task:unsubscribe")
+      }
+    },
+  },
   pickWorkspace: () =>
     ipcRenderer.invoke("pick-workspace") as Promise<{
       path?: string
@@ -154,8 +212,11 @@ const api = {
     tasks: {
       create: (input: { conversationId: string; title?: string | null; status?: TaskStatus; input?: unknown }) =>
         ipcRenderer.invoke("db:tasks:create", input) as Promise<Task>,
-      list: (opts?: { conversationId?: string; status?: TaskStatus }) =>
-        ipcRenderer.invoke("db:tasks:list", opts) as Promise<Task[]>,
+      list: (opts?: {
+        conversationId?: string
+        sourceConversationId?: string
+        status?: TaskStatus
+      }) => ipcRenderer.invoke("db:tasks:list", opts) as Promise<Task[]>,
       get: (id: string) => ipcRenderer.invoke("db:tasks:get", id) as Promise<Task | null>,
       update: (id: string, patch: { title?: string | null; status?: TaskStatus; result?: unknown; error?: string | null }) =>
         ipcRenderer.invoke("db:tasks:update", id, patch) as Promise<Task>,

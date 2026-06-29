@@ -13,6 +13,10 @@ export type {
   Workspace,
 } from "../../preload/index"
 
+// Durable task runner event types, surfaced for the Workspace Activity panel's
+// live tail subscription (window.cowork.tasks.onEvent).
+export type { TaskEventPayload, TaskLiveEvent } from "../../preload/index"
+
 // ask_user_question types, surfaced for the QuestionPanel.
 export type { Question, QuestionOption, QuestionAnswer } from "../../preload/index"
 

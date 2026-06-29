@@ -14,8 +14,14 @@ import { pickWorkspace, pickFiles } from "./pick-workspace"
 import { registerDbHandlers } from "./ipc/db-handlers"
 import { registerSettingsHandlers } from "./ipc/settings-handlers"
 import { registerProviderHandlers } from "./ipc/provider-handlers"
+import { registerTaskHandlers } from "./ipc/task-handlers"
+import { TaskRunner } from "./tasks/runner"
 import { seedProviderFromEnvIfEmpty } from "./settings/bootstrap"
 import { closeDb } from "./db/connection"
+
+// The durable task runner — a singleton owned by the main process. Started in
+// app.whenReady (after the DB handlers register) and stopped on will-quit.
+const taskRunner = new TaskRunner()
 
 function createWindow(): void {
   const mainWindow = new BrowserWindow({
@@ -120,6 +126,11 @@ app.whenReady().then(() => {
   registerDbHandlers()
   registerSettingsHandlers()
   registerProviderHandlers()
+  // Start the durable task runner now that the DB handlers are registered (it
+  // reads the task tables synchronously). reconcile() marks any task left
+  // mid-flight by a previous run as interrupted; the pump then drains the queue.
+  taskRunner.start()
+  registerTaskHandlers(taskRunner)
   // Migrate a pre-settings env-configured key into a stored provider account, so
   // existing dev setups keep working without re-entering it (no-op once any
   // account exists). After this, the stored key is the source of truth.
@@ -137,5 +148,9 @@ app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit()
 })
 
-// Flush the WAL and close the DB cleanly on quit.
-app.on("will-quit", () => closeDb())
+// Stop the task runner (abort in-flight tasks; next boot's reconcile recovers
+// them) and flush the WAL + close the DB cleanly on quit.
+app.on("will-quit", () => {
+  void taskRunner.stop()
+  closeDb()
+})

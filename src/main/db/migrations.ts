@@ -1,5 +1,13 @@
 import type Database from "better-sqlite3"
-import { SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6 } from "./schema"
+import {
+  SCHEMA_V1,
+  SCHEMA_V2,
+  SCHEMA_V3,
+  SCHEMA_V4,
+  SCHEMA_V5,
+  SCHEMA_V6,
+  SCHEMA_V7,
+} from "./schema"
 
 // Ordered migrations. Index 0 runs to reach user_version 1, index 1 to reach 2,
 // and so on. Add a new entry to evolve the schema (e.g. future repo-indexing
@@ -11,6 +19,7 @@ const MIGRATIONS: Array<(db: Database.Database) => void> = [
   (db) => db.exec(SCHEMA_V4),
   (db) => db.exec(SCHEMA_V5),
   (db) => db.exec(SCHEMA_V6),
+  (db) => db.exec(SCHEMA_V7),
 ]
 
 // Apply every migration newer than the database's current user_version, each in

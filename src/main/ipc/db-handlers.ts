@@ -58,8 +58,10 @@ export function registerDbHandlers(): void {
     (_e, input: { conversationId: string; title?: string | null; status?: TaskStatus; input?: unknown }) =>
       tasks.createTask(input)
   )
-  ipcMain.handle("db:tasks:list", (_e, opts?: { conversationId?: string; status?: TaskStatus }) =>
-    tasks.listTasks(opts)
+  ipcMain.handle(
+    "db:tasks:list",
+    (_e, opts?: { conversationId?: string; sourceConversationId?: string; status?: TaskStatus }) =>
+      tasks.listTasks(opts)
   )
   ipcMain.handle("db:tasks:get", (_e, id: string) => tasks.getTask(id) ?? null)
   ipcMain.handle(

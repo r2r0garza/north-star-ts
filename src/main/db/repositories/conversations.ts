@@ -59,15 +59,24 @@ export function getConversation(id: string): Conversation | undefined {
   return row ? toConversation(row) : undefined
 }
 
+// Lists user-facing conversations for the sidebar. Excludes private task
+// transcripts (a conversation that backs a durable task — i.e. is referenced by
+// tasks.conversation_id): those are background workers shown in the Workspace
+// Activity panel, not standalone chats. A task's progress surfaces under its
+// source conversation, so its forked transcript must not clutter the list.
 export function listConversations(opts?: { mode?: Mode }): Conversation[] {
+  const notTaskTranscript =
+    "id NOT IN (SELECT conversation_id FROM tasks WHERE conversation_id IS NOT NULL)"
   const rows = opts?.mode
     ? (getDb()
         .prepare(
-          "SELECT * FROM conversations WHERE mode = ? ORDER BY updated_at DESC"
+          `SELECT * FROM conversations WHERE mode = ? AND ${notTaskTranscript} ORDER BY updated_at DESC`
         )
         .all(opts.mode) as ConversationRow[])
     : (getDb()
-        .prepare("SELECT * FROM conversations ORDER BY updated_at DESC")
+        .prepare(
+          `SELECT * FROM conversations WHERE ${notTaskTranscript} ORDER BY updated_at DESC`
+        )
         .all() as ConversationRow[])
   return rows.map(toConversation)
 }

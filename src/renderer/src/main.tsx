@@ -6,8 +6,15 @@ import { ThemeProvider } from "@/components/theme-provider"
 import { SidebarProvider } from "@/components/ui/sidebar"
 import { AppSidebar, MODE_TO_VIEW, type View } from "@/components/sidebar"
 import { SidebarToggle } from "@/components/sidebar-toggle"
+import {
+  ActivityPanel,
+  ActivityToggle,
+  readActivityOpen,
+  writeActivityOpen,
+} from "@/components/activity-panel"
 import { SettingsSheet } from "@/components/settings-sheet"
-import type { Mode } from "@/types"
+import { TaskTranscriptSheet } from "@/components/task-transcript-sheet"
+import type { Mode, Task } from "@/types"
 import App from "./App"
 
 // Tracks window fullscreen state so the sidebar toggle can reposition (the
@@ -28,6 +35,18 @@ function Shell() {
   // Which tab Settings opens on. First launch (no provider configured) opens
   // straight to Providers so the user can set one up.
   const [settingsTab, setSettingsTab] = useState("backend")
+  // Whether the right-hand Workspace Activity panel is open. Controlled here so
+  // the toggle can live in the drag bar (macOS swallows clicks on floating
+  // elements that merely overlap it) and "Run in background" can reveal it when
+  // a task starts. Seeded from — and persisted back to — the panel's cookie.
+  const [activityOpen, setActivityOpen] = useState(readActivityOpen)
+  const setActivity = (open: boolean) => {
+    setActivityOpen(open)
+    writeActivityOpen(open)
+  }
+  // The background task whose read-only transcript is open (null = closed).
+  // Opened from the Workspace Activity panel or a chat completion card.
+  const [viewingTask, setViewingTask] = useState<Task | null>(null)
 
   useEffect(() => {
     window.cowork.isFullScreen().then(setFullscreen)
@@ -76,6 +95,7 @@ function Shell() {
           child of this region so macOS lets its click through. */}
       <div className="absolute inset-x-0 top-0 z-20 h-11 [-webkit-app-region:drag]">
         <SidebarToggle fullscreen={fullscreen} />
+        <ActivityToggle open={activityOpen} onToggle={() => setActivity(!activityOpen)} />
       </div>
       <AppSidebar
         view={view}
@@ -97,6 +117,21 @@ function Shell() {
         onConversationChanged={refreshConversations}
         onOpenSettings={openSettings}
         settingsOpen={settingsOpen}
+        onRanInBackground={() => setActivity(true)}
+        onOpenTask={setViewingTask}
+      />
+      <ActivityPanel
+        conversationId={activeConversationId}
+        open={activityOpen}
+        onOpenChange={setActivity}
+        onOpenTask={setViewingTask}
+      />
+      <TaskTranscriptSheet
+        task={viewingTask}
+        open={viewingTask !== null}
+        onOpenChange={(open) => {
+          if (!open) setViewingTask(null)
+        }}
       />
       <SettingsSheet
         open={settingsOpen}

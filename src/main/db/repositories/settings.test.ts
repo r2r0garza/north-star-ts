@@ -23,8 +23,8 @@ beforeEach(() => {
 })
 
 describe.skipIf(!sqliteLoads)("migrations", () => {
-  it("brings a fresh DB to user_version 6 (per-conversation LLM selection)", () => {
-    expect(db.pragma("user_version", { simple: true })).toBe(6)
+  it("brings a fresh DB to user_version 7 (task source-conversation link)", () => {
+    expect(db.pragma("user_version", { simple: true })).toBe(7)
   })
 })
 
