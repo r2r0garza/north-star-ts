@@ -26,7 +26,6 @@ import {
 } from "@/components/ui/attachment"
 import { ToolGroup, ApprovalCard } from "@/components/tool-group"
 import { QuestionPanel } from "@/components/question-panel"
-import { TaskCompletionCards } from "@/components/task-completion-cards"
 import {
   Combobox,
   ComboboxCollection,
@@ -49,7 +48,7 @@ import {
   type ToolUse,
 } from "@/lib/timeline"
 import { cn } from "@/lib/utils"
-import type { Question, QuestionAnswer, LlmSettings, AccountWithModels, Task } from "@/types"
+import type { Question, QuestionAnswer, LlmSettings, AccountWithModels } from "@/types"
 
 export default function App({
   view,
@@ -59,7 +58,6 @@ export default function App({
   onOpenSettings,
   settingsOpen,
   onRanInBackground,
-  onOpenTask,
 }: {
   view: View
   conversationId: string | null
@@ -74,9 +72,6 @@ export default function App({
   // Called after "Run in background" starts a durable task, so the Shell can
   // reveal the Workspace Activity panel where the new task appears.
   onRanInBackground?: () => void
-  // Open a background task's read-only transcript (the Shell hosts the viewer).
-  // Used by the completion cards shown above the composer.
-  onOpenTask?: (task: Task) => void
 }) {
   // Chat runs without a workspace and attaches files instead; North Star and
   // Interactive are workspace-backed and share the same behavior.
@@ -672,9 +667,6 @@ export default function App({
               </>
             )}
           </div>
-          {conversationId && (
-            <TaskCompletionCards conversationId={conversationId} onOpenTask={onOpenTask ?? (() => {})} />
-          )}
           {composer}
         </div>
       </div>
@@ -773,9 +765,6 @@ export default function App({
             <div className="mb-3 animate-in fade-in-0 slide-in-from-bottom-4 duration-200">
               <QuestionPanel questions={liveQuestion.questions} onSubmit={answerQuestion} />
             </div>
-          )}
-          {conversationId && (
-            <TaskCompletionCards conversationId={conversationId} onOpenTask={onOpenTask ?? (() => {})} />
           )}
           {composer}
         </div>

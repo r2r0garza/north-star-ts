@@ -1,5 +1,5 @@
 import * as React from "react"
-import { PanelRight } from "lucide-react"
+import { PanelRight, ChevronRight } from "lucide-react"
 import { cn } from "@/lib/utils"
 import {
   SidebarHeader,
@@ -8,7 +8,13 @@ import {
   SidebarGroupLabel,
   SidebarGroupContent,
 } from "@/components/ui/sidebar"
+import {
+  Collapsible,
+  CollapsibleTrigger,
+  CollapsibleContent,
+} from "@/components/ui/collapsible"
 import { TasksSection } from "@/components/tasks-section"
+import { TasksHistorySection } from "@/components/tasks-history-section"
 import type { Task } from "@/types"
 
 // The right-hand Workspace Activity panel. Deliberately SELF-CONTAINED rather
@@ -92,6 +98,8 @@ export function ActivityPanel({
   open,
   onOpenChange,
   onOpenTask,
+  historyExpanded,
+  onHistoryExpandedChange,
 }: {
   conversationId: string | null
   // Controlled open state (the Shell owns it so the toggle can live in the drag
@@ -100,6 +108,11 @@ export function ActivityPanel({
   onOpenChange: (open: boolean) => void
   // Open a task's read-only transcript (the Shell hosts the viewer).
   onOpenTask: (task: Task) => void
+  // Controlled expand state for the History section (collapsed by default). The
+  // Shell owns it so the completion toast's "View history" action can force it
+  // open along with the panel.
+  historyExpanded: boolean
+  onHistoryExpandedChange: (open: boolean) => void
 }) {
   // Cmd/Ctrl+J toggles the panel (the left sidebar owns Cmd/Ctrl+B).
   React.useEffect(() => {
@@ -144,6 +157,26 @@ export function ActivityPanel({
           <ActivitySection title="Tasks">
             <TasksSection conversationId={conversationId} onOpenTask={onOpenTask} />
           </ActivitySection>
+          {/* History: terminal tasks for this conversation. Collapsed by default
+              so it doesn't crowd the situational Tasks view above. */}
+          <Collapsible open={historyExpanded} onOpenChange={onHistoryExpandedChange}>
+            <SidebarGroup>
+              <CollapsibleTrigger asChild>
+                <button
+                  type="button"
+                  className="group/history flex w-full items-center gap-1"
+                >
+                  <ChevronRight className="size-3.5 text-muted-foreground transition-transform group-data-[state=open]/history:rotate-90" />
+                  <SidebarGroupLabel className="cursor-pointer">History</SidebarGroupLabel>
+                </button>
+              </CollapsibleTrigger>
+              <CollapsibleContent>
+                <SidebarGroupContent>
+                  <TasksHistorySection conversationId={conversationId} onOpenTask={onOpenTask} />
+                </SidebarGroupContent>
+              </CollapsibleContent>
+            </SidebarGroup>
+          </Collapsible>
         </SidebarContent>
       </div>
     </div>

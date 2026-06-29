@@ -7,12 +7,7 @@ item is its plan file, not its rank.
 
 ## Next up
 
-1. **`013` — Task history in the panel.** Add a collapsible **History** section to the Workspace
-   Activity panel listing terminal tasks (`completed`/`failed`/`cancelled`) for the active
-   conversation, each opening the existing read-only transcript viewer. Renderer-only, no schema
-   change (reuses `listTasks` + the transcript sheet). The Tasks section stays actionable-only.
-   **Depends on `009` (built).**
-2. **`015` — Task producer API.** State (and lightly enforce) the contract that *every* future
+1. **`015` — Task producer API.** State (and lightly enforce) the contract that *every* future
    background producer (workspace indexing, re-index changed files, North Star subtasks, scheduled
    maintenance, artifact generation, repo analysis) creates work through the same `TaskRunner` —
    never the DB or `runAgentLoop` directly — so approvals, events, recovery, transcript, and history
@@ -20,7 +15,7 @@ item is its plan file, not its rank.
    headless-capable, open `kind`); the only gap is a `registerKind(kind, { autoResume })` affordance
    for producers whose kind should re-queue on restart. Small; no schema change. Best landed just
    before `008` (the indexer is its first consumer).
-3. **`008` — Workspace indexing.** Background, incremental, pausable/cancellable workspace index so
+2. **`008` — Workspace indexing.** Background, incremental, pausable/cancellable workspace index so
    the agent can answer immediately while the index improves. Four stages (file map → metadata →
    symbols → embeddings-later); incremental by content hash (skip unchanged, re-index changed, drop
    deleted, add new); resumable across restart. Controls: configurable auto-start, pause/resume,
@@ -28,7 +23,7 @@ item is its plan file, not its rank.
    settings group. New v7 tables; reuses the `LocalEnvironment` walk + ignore rules. Interactive =
    low priority; North Star = higher, but never hard-blocks execution. **Depends on `009`**: the
    indexer runs as a durable task so pause is a real task state. **Consumes `015`** (first producer).
-4. **`014` — Context builder.** Evolve the existing `ContextBuilder` into a structured, budgeted,
+3. **`014` — Context builder.** Evolve the existing `ContextBuilder` into a structured, budgeted,
    multi-source assembler: conversation summary, recent messages (the current walk-back), workspace
    index + relevant files (from `008`), durable memories, task state, and approvals — each a labeled
    section under one global token budget with an explicit drop order. Ships the framework + the
@@ -36,22 +31,32 @@ item is its plan file, not its rank.
    no-ops behind a capability check until `008` lands. Surfaces two prerequisite sub-features to
    decide on: a rolling **conversation summary** and a **durable-memories** store (likely its own
    plan). **Soft-depends on `008`** (graceful without it); reads `009`'s task tables.
-5. **`010` — Container runtime profiles.** Decouple Workspace (the files) from Runtime (the env a
+4. **`010` — Container runtime profiles.** Decouple Workspace (the files) from Runtime (the env a
    tool call executes in). Replace the raw container `image` string with a named **profile**
    (`node` | `python` | `fullstack`), resolved to an image in the env factory; default/fallback =
    `fullstack` (Node + Python) so a Node repo that later adds a Python backend doesn't wedge.
    One profile per conversation, user-overridable in settings. Kills the "one workspace = one image
    forever" assumption **without** building auto-routing or image management (both deferred). Small
    refactor of `env/factory.ts` + `container.ts` + execution settings (JSON blob — no migration).
-6. **`005.1` — ContainerEnvironment stop in-flight.** The deferred half of `005`: killing the host
+5. **`005.1` — ContainerEnvironment stop in-flight.** The deferred half of `005`: killing the host
    `docker/podman exec` client doesn't stop the in-container process. Needs its own kill mechanism
    (in-container PID tracking / `exec kill`, or marker `pkill`). Out of scope when `005` shipped.
-7. **`007` — Slash commands for skills.** Let users force a skill with `/skill-name …` (pre-inject
+6. **`007` — Slash commands for skills.** Let users force a skill with `/skill-name …` (pre-inject
    the `read_skill` call), keeping today's model-discretionary path for plain messages. Adds a
    `skills:list` IPC channel + composer autocomplete. Independent — schedule freely.
 
 ## Done
 
+- **`013` — Task history in the panel.** Built on `feat/task-history-panel`. A collapsible **History**
+  section in the Workspace Activity panel lists terminal tasks (`completed`/`failed`/`cancelled`) for
+  the active source conversation, newest first, capped at 25 ("Showing last 25"), each row opening the
+  existing read-only transcript viewer. The Tasks section stays actionable-only. Replaced the per-task
+  "Background task completed" cards (which didn't scale — one dismissable card per finished task) with
+  a **single** toast: reusing a fixed Sonner toast id means there's never more than one on screen — one
+  aggregate toast on opening a session with unseen terminal history, one coalesced toast when tasks
+  finish live, both with a **View history** action that opens the panel + expands History. Renderer-only,
+  no schema/IPC change (reuses `listTasks` + the transcript sheet + the `tasks.onEvent` tail). Verified:
+  `pnpm typecheck` + `pnpm build` clean, 140 tests passing.
 - **`012` — Durable approval recovery.** Built on `feat/durable-approval-recovery` (commit `7bc7f78`;
   not yet merged to `main`). A background task blocked on an approval gate now survives an app
   restart: quit while it asks → reopen → Resume → it **re-prompts**, and on approval completes. Three
