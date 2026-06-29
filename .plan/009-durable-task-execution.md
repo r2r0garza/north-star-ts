@@ -1,12 +1,29 @@
 # PR9: Durable task execution — runner over the existing task tables
 
-> Status: **PHASE 1 IN PROGRESS** (branch `feat/durable-tasks`, 2026-06-29). Scoped to the core
-> value: **queue + background + crash-resume**. Retry-with-backoff split to `011`; durable approval
-> recovery across restart split to `012`. Crash recovery is **manual resume** (orphaned `running`
-> tasks → `interrupted`, surfaced for the user), with auto-resume designed as a per-task-kind
-> capability (`TASK_KINDS` in `src/main/tasks/runner.ts`) so a future background job (e.g. 008's
-> indexer) can opt in. Activates the task tables that have been storage-only since .plan/001.
-> 008 (workspace indexing) depends on this — its indexer runs as a durable task on this runner.
+> Status: **PHASE 1 BUILT** (branch `feat/durable-tasks`, 2026-06-29; commits `03257c3` runner,
+> `a33d5ac` UI — not yet merged to `main`). Delivered the core value — **queue + background +
+> crash-resume** — plus the renderer surface it needed to be usable end-to-end:
+> - **Runner** (`src/main/tasks/runner.ts`): FIFO wakeable queue, concurrency cap, startup
+>   reconcile of orphaned `running`/`waiting_for_approval` → `interrupted`, **manual resume**, with
+>   auto-resume as a per-task-kind capability (`TASK_KINDS`) for future jobs (e.g. 008's indexer).
+>   `runChat` was refactored to a shared `runAgentLoop` core; resume replays the persisted
+>   transcript (no checkpoint blob — `task_checkpoints` unused). Dangling-tool-call repair keeps a
+>   resumed transcript API-valid.
+> - **Task isolation** (`SCHEMA_V7`): each task runs in its OWN forked conversation
+>   (`tasks.source_conversation_id` links it back to the live chat), so a background task never
+>   interleaves with the live transcript — fixed the message-race/duplicate-answer/blocked-chat bug
+>   found in testing. Task transcripts are hidden from the sidebar.
+> - **Workspace Activity panel** (right-hand, collapsible): a Tasks section showing actionable tasks
+>   for the active conversation, with Resume/Cancel, **inline approval & ask_user_question gates**
+>   (`task:approve`/`deny`/`answer` reuse the live resolvers; task flips to `waiting_for_approval`
+>   and back), a "Run in background" composer entry point, source-chat completion cards, and a
+>   read-only task transcript viewer.
+>
+> **Split out / follow-ups:** retry-with-backoff → `011`; durable approval recovery across restart →
+> `012` (in-session gate recovery works; cross-restart re-prompts on resume); **terminal-task
+> history in the panel → `013`** (the panel shows only actionable tasks by design). Verified manually
+> end-to-end on local + Podman backends (queue, isolation, questions, approval gating). 008
+> (workspace indexing) depends on this — its indexer runs as a durable task on this runner.
 
 ## Context
 
