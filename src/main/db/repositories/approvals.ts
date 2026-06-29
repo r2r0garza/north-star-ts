@@ -2,8 +2,12 @@ import { randomUUID } from "crypto"
 import { getDb } from "../connection"
 import type { Approval, ApprovalStatus } from "../types"
 
-// Storage-only this phase: human-in-the-loop gate records. No runner requests
-// or blocks on these yet.
+// Durable human-in-the-loop gate records. The task runner dual-writes the
+// agent's in-memory approval gate here (createApproval on require_approval,
+// resolveApproval on the user's decision) so a request blocked across an app
+// restart survives — reconcile sweeps any stale `pending` row and the resumed
+// loop re-prompts (plan 012). The live `chat` path has no task, so it never
+// touches this table.
 
 interface ApprovalRow {
   id: string

@@ -1,4 +1,4 @@
-import { runAgentLoop, type ChatEvent, type ChatResult } from "../agent"
+import { runAgentLoop, SHUTDOWN_ABORT_REASON, type ChatEvent, type ChatResult } from "../agent"
 import {
   createTask,
   getTask,
@@ -6,7 +6,12 @@ import {
   updateTask,
 } from "../db/repositories/tasks"
 import { appendEvent } from "../db/repositories/task-events"
-import { appendMessage, listMessages } from "../db/repositories/messages"
+import {
+  createApproval,
+  listApprovals,
+  resolveApproval as resolveApprovalRecord,
+} from "../db/repositories/approvals"
+import { appendMessage } from "../db/repositories/messages"
 import { getConversation, createConversation } from "../db/repositories/conversations"
 import { getWorkspace } from "../db/repositories/workspaces"
 import type { Task, TaskStatus } from "../db/types"
@@ -246,6 +251,39 @@ export class TaskRunner {
     this.emit(taskId, { type: "status_change", from: "waiting_for_approval", to: "running" })
   }
 
+  // Record the user's decision on a gate (durable approvals table) and flip the
+  // task back to `running`. Called by the task:approve/deny IPC handlers after
+  // they resolve the agent's in-memory gate. The `requestId` selects the exact
+  // pending row to resolve, so a stale decision can't settle a request the task
+  // re-created on resume.
+  recordApprovalDecision(
+    taskId: string,
+    requestId: string,
+    status: "approved" | "denied"
+  ): void {
+    this.settleApprovals(taskId, status, undefined, requestId)
+    this.markRunning(taskId)
+  }
+
+  // Resolve still-`pending` approval rows for a task. With `requestId`, only the
+  // row carrying that process-unique token is settled (the precise user
+  // decision); without it, every pending row for the task is swept (crash/cancel
+  // cleanup). `decision` is the structured blob recorded alongside the status.
+  private settleApprovals(
+    taskId: string,
+    status: "approved" | "denied",
+    decision?: unknown,
+    requestId?: string
+  ): void {
+    for (const approval of listApprovals({ taskId, status: "pending" })) {
+      if (requestId !== undefined) {
+        const req = approval.request as { requestId?: string } | null
+        if (req?.requestId !== requestId) continue
+      }
+      resolveApprovalRecord(approval.id, { status, decision })
+    }
+  }
+
   // Subscribe to the live event tail (all tasks). Returns an unsubscribe fn.
   subscribe(listener: TaskEventListener): () => void {
     this.listeners.add(listener)
@@ -265,7 +303,12 @@ export class TaskRunner {
     // next boot's reconcile maps them to `interrupted`, same as in-flight tasks.
     for (const timer of this.backoffTimers.values()) clearTimeout(timer)
     this.backoffTimers.clear()
-    for (const controller of this.running.values()) controller.abort()
+    // Abort with the shutdown reason so a task parked on an approval/question
+    // gate is NOT resolved as denied/cancelled — leaving it unresolved keeps the
+    // task `waiting_for_approval`, which the next boot's reconcile maps to
+    // `interrupted` for a clean re-prompt on resume (plan 012). A plain abort()
+    // here used to fabricate an "ERROR[denied]" tool result that wedged resume.
+    for (const controller of this.running.values()) controller.abort(SHUTDOWN_ABORT_REASON)
     this.wakeup()
   }
 
@@ -279,6 +322,13 @@ export class TaskRunner {
       ...listTasks({ status: "waiting_for_approval" }),
     ]
     for (const task of orphaned) {
+      // A task killed mid-wait left a `pending` approval row whose in-memory gate
+      // is gone. Resolve it `denied` (superseded) so it doesn't linger; on resume
+      // the loop re-enters the gate and creates a fresh request (re-prompt, plan
+      // 012). The agent never replays a decision the user made while quit.
+      if (task.status === "waiting_for_approval") {
+        this.settleApprovals(task.id, "denied", { superseded: "restart" })
+      }
       const next: TaskStatus = capabilityOf(kindOf(task)).autoResume
         ? "queued"
         : "interrupted"
@@ -366,16 +416,16 @@ export class TaskRunner {
     return undefined
   }
 
-  // Run one task to completion: repair any dangling tool-call tail, resolve the
-  // workspace, drive runAgentLoop, and settle the final status. A transient
-  // failure is retried with backoff (settleError); a deterministic one fails fast.
+  // Run one task to completion: resolve the workspace, drive runAgentLoop (which
+  // repairs any dangling tool-call tail from a crashed turn before rebuilding
+  // context), and settle the final status. A transient failure is retried with
+  // backoff (settleError); a deterministic one fails fast.
   private async runOne(taskId: string): Promise<void> {
     const task = getTask(taskId)
     if (!task) return
     const abort = new AbortController()
     this.running.set(taskId, abort)
     try {
-      this.repairDanglingToolCalls(task.conversationId)
       const workspace = this.resolveWorkspace(task.conversationId)
 
       updateTask(taskId, { status: "running" })
@@ -392,6 +442,23 @@ export class TaskRunner {
           // (the loop hasn't returned), so the concurrency slot is still held —
           // intended: a paused task shouldn't free a slot mid-turn.
           if (event.type === "approval" || event.type === "question") {
+            // Dual-write the approval gate to the durable `approvals` table so a
+            // request blocked across an app restart is recoverable. Only
+            // `approval` gets a row (questions are out of scope, plan 012); the
+            // request blob mirrors the event so reconcile/resolve can match it by
+            // its process-unique requestId.
+            if (event.type === "approval") {
+              createApproval({
+                taskId,
+                request: {
+                  tool: event.tool,
+                  summary: event.summary,
+                  reason: event.reason,
+                  requestId: event.requestId,
+                  toolCallId: event.id,
+                },
+              })
+            }
             updateTask(taskId, { status: "waiting_for_approval" })
             this.emit(taskId, {
               type: "status_change",
@@ -406,6 +473,10 @@ export class TaskRunner {
 
       if (result.stopped) {
         this.attempts.delete(taskId)
+        // A turn stopped while parked on a gate leaves a `pending` approval row;
+        // sweep it so it doesn't outlive the cancelled task (no-op if the user
+        // already approved/denied it).
+        this.settleApprovals(taskId, "denied", { superseded: "interrupted" })
         updateTask(taskId, { status: "cancelled" })
         this.emit(taskId, { type: "status_change", from: "running", to: "cancelled" })
       } else if (result.error) {
@@ -422,6 +493,7 @@ export class TaskRunner {
       // so it fails fast with no retry.
       const message = err instanceof Error ? err.message : String(err)
       this.attempts.delete(taskId)
+      this.settleApprovals(taskId, "denied", { superseded: "interrupted" })
       updateTask(taskId, { status: "failed", error: message })
       this.emit(taskId, { type: "task_failed", error: message })
     } finally {
@@ -467,40 +539,6 @@ export class TaskRunner {
     const conversation = getConversation(conversationId)
     if (!conversation?.workspaceId) return undefined
     return getWorkspace(conversation.workspaceId)?.path
-  }
-
-  // Before resuming an interrupted task, repair a dangling assistant tool-call
-  // tail: if the last assistant turn requested tool calls but the app died
-  // before every result was persisted, the rebuilt context would be invalid (the
-  // model API requires a `tool` message for each tool_call_id). Append a
-  // synthetic result for each unanswered call so the next request is well-formed.
-  private repairDanglingToolCalls(conversationId: string): void {
-    const messages = listMessages(conversationId)
-    let lastIdx = -1
-    for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i].role === "assistant" && messages[i].toolCalls?.length) {
-        lastIdx = i
-        break
-      }
-    }
-    if (lastIdx === -1) return
-    const toolCalls = messages[lastIdx].toolCalls ?? []
-    const answered = new Set(
-      messages
-        .slice(lastIdx + 1)
-        .filter((m) => m.role === "tool" && m.toolCallId)
-        .map((m) => m.toolCallId as string)
-    )
-    for (const call of toolCalls) {
-      if (answered.has(call.id)) continue
-      appendMessage({
-        conversationId,
-        role: "tool",
-        content: "Interrupted before completion; result unknown.",
-        toolCallId: call.id,
-        toolName: call.name,
-      })
-    }
   }
 
   // Persist an event to the durable log and forward it to live subscribers.
