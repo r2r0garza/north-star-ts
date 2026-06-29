@@ -15,7 +15,13 @@ import { createEnvironment } from "./env"
 import { LocalEnvironment } from "./env/local"
 import type { Environment } from "./env/types"
 import * as settingsService from "../settings/service"
-import { resolveLlm, createCompletion, NoActiveProviderError, type LlmSelection } from "./providers"
+import {
+  resolveLlm,
+  createCompletion,
+  isTransientError,
+  NoActiveProviderError,
+  type LlmSelection,
+} from "./providers"
 import { appendMessage } from "../db/repositories/messages"
 import { getConversation, updateConversation } from "../db/repositories/conversations"
 import { actionAllowlist } from "../db/repositories"
@@ -143,6 +149,11 @@ export interface ChatResult {
   // True when the turn was cancelled by the user's Stop button (a clean stop,
   // not an error). The "⏹ Stopped by user." note is already persisted.
   stopped?: boolean
+  // Only meaningful alongside `error`: true when the failure was a transient
+  // infrastructure hiccup (gateway 5xx, network/timeout) worth a backoff retry.
+  // Classified at the catch block where the raw error's status/code is still
+  // available; the task runner reads it to decide retry vs fail-fast (plan 011).
+  retryable?: boolean
 }
 
 // Streaming events emitted during a turn. `token` is a text delta to append to
@@ -619,6 +630,7 @@ export async function runAgentLoop(opts: RunAgentLoopOptions): Promise<ChatResul
     }
     console.error("Portkey request failed:", error)
     const message = error instanceof Error ? error.message : "Request failed"
+    const retryable = isTransientError(error)
     // Persist the failure as an assistant note so a reopened conversation (and
     // the post-turn reconcile in the renderer) explains why the turn ended,
     // rather than stopping silently after the last tool call.
@@ -627,7 +639,7 @@ export async function runAgentLoop(opts: RunAgentLoopOptions): Promise<ChatResul
       role: "assistant",
       content: `⚠️ The turn ended early: ${message}`,
     })
-    return { error: message }
+    return { error: message, retryable }
   } finally {
     // Tear down this run's execution backend (stop+remove a container; no-op for
     // Local). Never let cleanup failure mask the run's real result. The abort

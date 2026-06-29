@@ -234,6 +234,189 @@ describe.skipIf(!sqliteLoads)("TaskRunner — dangling tool_call repair on resum
   })
 })
 
+describe.skipIf(!sqliteLoads)("TaskRunner — transient retry with backoff", () => {
+  // Tiny delays so backoff completes within a test tick; 3 total attempts.
+  const fastBackoff = { baseMs: 1, maxMs: 2, maxAttempts: 3 }
+
+  it("retries a transient failure and completes on the next attempt", async () => {
+    const conv = createConversation({ mode: "chat" })
+    let call = 0
+    loopImpl = async () => {
+      call++
+      return call === 1 ? { error: "gateway 502", retryable: true } : { content: "done" }
+    }
+
+    const runner = new TaskRunner({ backoff: fastBackoff })
+    runner.start()
+    const task = runner.enqueue({ conversationId: conv.id, message: "go" })
+    await settle()
+
+    expect(getTask(task.id)?.status).toBe("completed")
+    expect(loopCalls).toHaveLength(2)
+    const events = listEvents(task.id)
+    const attempts = events.filter((e) => e.type === "attempt")
+    expect(attempts).toHaveLength(1)
+    expect((attempts[0].payload as { n: number }).n).toBe(1)
+    await runner.stop()
+  })
+
+  it("fails after exhausting the attempt budget", async () => {
+    const conv = createConversation({ mode: "chat" })
+    loopImpl = async () => ({ error: "still 503", retryable: true })
+
+    const runner = new TaskRunner({ backoff: fastBackoff })
+    runner.start()
+    const task = runner.enqueue({ conversationId: conv.id, message: "go" })
+    await settle()
+
+    expect(getTask(task.id)?.status).toBe("failed")
+    expect(getTask(task.id)?.error).toBe("still 503")
+    // maxAttempts total runs, maxAttempts-1 attempt events, one terminal failure.
+    expect(loopCalls).toHaveLength(fastBackoff.maxAttempts)
+    const types = listEvents(task.id).map((e) => e.type)
+    expect(types.filter((t) => t === "attempt")).toHaveLength(fastBackoff.maxAttempts - 1)
+    expect(types.filter((t) => t === "task_failed")).toHaveLength(1)
+    await runner.stop()
+  })
+
+  it("does not retry a deterministic failure", async () => {
+    const conv = createConversation({ mode: "chat" })
+    loopImpl = async () => ({ error: "bad args", retryable: false })
+
+    const runner = new TaskRunner({ backoff: fastBackoff })
+    runner.start()
+    const task = runner.enqueue({ conversationId: conv.id, message: "go" })
+    await settle()
+
+    expect(getTask(task.id)?.status).toBe("failed")
+    expect(loopCalls).toHaveLength(1)
+    expect(listEvents(task.id).filter((e) => e.type === "attempt")).toHaveLength(0)
+    await runner.stop()
+  })
+
+  it("does not retry a user Stop", async () => {
+    const conv = createConversation({ mode: "chat" })
+    loopImpl = async () => ({ stopped: true })
+
+    const runner = new TaskRunner({ backoff: fastBackoff })
+    runner.start()
+    const task = runner.enqueue({ conversationId: conv.id, message: "go" })
+    await settle()
+
+    expect(getTask(task.id)?.status).toBe("cancelled")
+    expect(loopCalls).toHaveLength(1)
+    await runner.stop()
+  })
+
+  it("cancel during backoff clears the timer and settles cancelled", async () => {
+    const conv = createConversation({ mode: "chat" })
+    loopImpl = async () => ({ error: "502", retryable: true })
+
+    // Long backoff so the task is reliably mid-sleep when we cancel it.
+    const runner = new TaskRunner({ backoff: { baseMs: 10_000, maxMs: 10_000, maxAttempts: 3 } })
+    runner.start()
+    const task = runner.enqueue({ conversationId: conv.id, message: "go" })
+
+    // Wait for the first run to fail and arm the backoff timer.
+    for (let i = 0; i < 50 && loopCalls.length < 1; i++) {
+      await new Promise((r) => setTimeout(r, 5))
+    }
+    expect(loopCalls).toHaveLength(1)
+
+    runner.cancel(task.id)
+    expect(getTask(task.id)?.status).toBe("cancelled")
+
+    // Give the (cleared) timer a chance to wrongly fire — it must not re-run.
+    await new Promise((r) => setTimeout(r, 30))
+    expect(loopCalls).toHaveLength(1)
+    await runner.stop()
+  })
+
+  it("stop during backoff prevents a re-run", async () => {
+    const conv = createConversation({ mode: "chat" })
+    loopImpl = async () => ({ error: "502", retryable: true })
+
+    const runner = new TaskRunner({ backoff: { baseMs: 10_000, maxMs: 10_000, maxAttempts: 3 } })
+    runner.start()
+    runner.enqueue({ conversationId: conv.id, message: "go" })
+
+    for (let i = 0; i < 50 && loopCalls.length < 1; i++) {
+      await new Promise((r) => setTimeout(r, 5))
+    }
+    expect(loopCalls).toHaveLength(1)
+
+    await runner.stop()
+    await new Promise((r) => setTimeout(r, 30))
+    expect(loopCalls).toHaveLength(1)
+  })
+
+  it("frees the concurrency slot during backoff so a sibling can run", async () => {
+    const convA = createConversation({ mode: "chat" })
+    const convB = createConversation({ mode: "chat" })
+    loopImpl = async (opts) => {
+      // Task A (convA) fails transiently once; task B always completes. With
+      // concurrency 1, B can only run if A's slot is freed during A's backoff.
+      const isA = listMessages(opts.conversationId).some((m) => m.content === "task-a")
+      if (isA) return { error: "502", retryable: true }
+      return { content: "b-done" }
+    }
+
+    const runner = new TaskRunner({ concurrency: 1, backoff: { baseMs: 20, maxMs: 20, maxAttempts: 3 } })
+    runner.start()
+    const a = runner.enqueue({ conversationId: convA.id, message: "task-a" })
+    const b = runner.enqueue({ conversationId: convB.id, message: "task-b" })
+    await settle()
+
+    expect(getTask(b.id)?.status).toBe("completed")
+    expect(getTask(a.id)?.status).toBe("failed")
+    await runner.stop()
+  })
+
+  it("never runs a same-conversation sibling concurrently across a backoff gap", async () => {
+    // Two tasks share one conversation (created directly — enqueue would fork a
+    // private conversation per task and they'd never collide). The first fails
+    // transiently then succeeds with a small in-loop delay; the second also
+    // delays. The per-conversation guard — extended to cover backing-off tasks —
+    // must keep them from ever executing at the same time on the shared log.
+    const conv = createConversation({ mode: "chat" })
+    appendMessage({ conversationId: conv.id, role: "user", content: "go" })
+    const t1 = createTask({
+      conversationId: conv.id,
+      status: "queued",
+      input: { kind: "agent_chat", message: "go" },
+    })
+    const t2 = createTask({
+      conversationId: conv.id,
+      status: "queued",
+      input: { kind: "agent_chat", message: "go" },
+    })
+
+    let active = 0
+    let maxActive = 0
+    let firstRun = true
+    loopImpl = async () => {
+      active++
+      maxActive = Math.max(maxActive, active)
+      await new Promise((r) => setTimeout(r, 10))
+      active--
+      if (firstRun) {
+        firstRun = false
+        return { error: "502", retryable: true }
+      }
+      return { content: "ok" }
+    }
+
+    const runner = new TaskRunner({ concurrency: 2, backoff: { baseMs: 15, maxMs: 15, maxAttempts: 3 } })
+    runner.start()
+    await settle()
+
+    expect(maxActive).toBe(1)
+    expect(getTask(t1.id)?.status).toBe("completed")
+    expect(getTask(t2.id)?.status).toBe("completed")
+    await runner.stop()
+  })
+})
+
 describe.skipIf(!sqliteLoads)("TaskRunner — concurrent tasks under the cap", () => {
   it("runs two tasks from one source to completion in their own transcripts", async () => {
     const conv = createConversation({ mode: "chat" })
