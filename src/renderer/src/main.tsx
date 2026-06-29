@@ -14,6 +14,8 @@ import {
 } from "@/components/activity-panel"
 import { SettingsSheet } from "@/components/settings-sheet"
 import { TaskTranscriptSheet } from "@/components/task-transcript-sheet"
+import { TaskCompletionToasts } from "@/components/task-completion-toasts"
+import { Toaster } from "@/components/ui/sonner"
 import type { Mode, Task } from "@/types"
 import App from "./App"
 
@@ -45,8 +47,16 @@ function Shell() {
     writeActivityOpen(open)
   }
   // The background task whose read-only transcript is open (null = closed).
-  // Opened from the Workspace Activity panel or a chat completion card.
+  // Opened from the Workspace Activity panel or a completion toast.
   const [viewingTask, setViewingTask] = useState<Task | null>(null)
+  // Whether the activity panel's History section is expanded (collapsed by
+  // default). Owned here so a completion toast can force it open with the panel.
+  const [historyExpanded, setHistoryExpanded] = useState(false)
+  // Open the panel and reveal History — the completion toast's action.
+  const revealHistory = () => {
+    setActivity(true)
+    setHistoryExpanded(true)
+  }
 
   useEffect(() => {
     window.cowork.isFullScreen().then(setFullscreen)
@@ -118,14 +128,17 @@ function Shell() {
         onOpenSettings={openSettings}
         settingsOpen={settingsOpen}
         onRanInBackground={() => setActivity(true)}
-        onOpenTask={setViewingTask}
       />
       <ActivityPanel
         conversationId={activeConversationId}
         open={activityOpen}
         onOpenChange={setActivity}
         onOpenTask={setViewingTask}
+        historyExpanded={historyExpanded}
+        onHistoryExpandedChange={setHistoryExpanded}
       />
+      <TaskCompletionToasts conversationId={activeConversationId} onReveal={revealHistory} />
+      <Toaster />
       <TaskTranscriptSheet
         task={viewingTask}
         open={viewingTask !== null}

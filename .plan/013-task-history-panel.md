@@ -1,10 +1,11 @@
 # PR13: Durable task history — completed/failed/cancelled tasks in the panel
 
-> Status: **NOT STARTED**. Builds on `009` Phase 1 (the durable task runner +
-> Workspace Activity panel). The panel today shows only **actionable** tasks
-> (`queued`/`running`/`waiting_for_approval`/`interrupted`) and deliberately hides
-> terminal ones; this PR adds a History view so a finished task is still findable.
-> Depends on `009`.
+> Status: **BUILT** on `feat/task-history-panel`. Builds on `009` Phase 1 (the
+> durable task runner + Workspace Activity panel). The panel previously showed
+> only **actionable** tasks (`queued`/`running`/`waiting_for_approval`/`interrupted`)
+> and deliberately hid terminal ones; this PR adds a collapsible **History**
+> section so a finished task is still findable, and replaces the per-task
+> completion cards with a single toast pointing there. Depends on `009`.
 
 ## Context
 
