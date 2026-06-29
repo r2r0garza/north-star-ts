@@ -1,8 +1,9 @@
 # PR9: Durable task execution — runner over the existing task tables
 
 > Status: **NOT STARTED** — pickup note (2026-06-27). Activates the task tables that have been
-> storage-only since .plan/001. Complementary to 008 (repo indexing), which is the first natural
-> client of a general background runner. Starting hypothesis, not a locked spec.
+> storage-only since .plan/001. 008 (workspace indexing) depends on this — its indexer runs as a
+> durable task on this runner (pause/resume/cancel are real task states). Starting hypothesis, not
+> a locked spec.
 
 ## Context
 

@@ -12,17 +12,25 @@ item is its plan file, not its rank.
    (survive crash/quit + pause), background (no live renderer needed), queued (ordered under a
    concurrency cap), and retried (transient failures back off; cancel never retries). Wraps the
    existing `runChat` loop, checkpointing at turn boundaries. The substrate `008` runs on.
-2. **`008` — Repository indexing.** Background, incremental, cancellable workspace index so the
-   agent can answer immediately while the index improves. Four stages (file map → metadata →
-   symbols → embeddings-later); incremental by content hash (skip unchanged, re-index changed,
-   drop deleted, add new); resumable across restart. New v7 tables; reuses the `LocalEnvironment`
-   walk + ignore rules. Interactive = low priority; North Star = higher, but never hard-blocks
-   execution. First real client of `009`'s runner (ships its own `IndexService` first; converges
-   later).
-3. **`005.1` — ContainerEnvironment stop in-flight.** The deferred half of `005`: killing the host
+2. **`008` — Workspace indexing.** Background, incremental, pausable/cancellable workspace index so
+   the agent can answer immediately while the index improves. Four stages (file map → metadata →
+   symbols → embeddings-later); incremental by content hash (skip unchanged, re-index changed, drop
+   deleted, add new); resumable across restart. Controls: configurable auto-start, pause/resume,
+   cancel-keeps-partial, per-workspace disable/re-enable, clear-index — plus a Workspace Indexing
+   settings group. New v7 tables; reuses the `LocalEnvironment` walk + ignore rules. Interactive =
+   low priority; North Star = higher, but never hard-blocks execution. **Depends on `009`**: the
+   indexer runs as a durable task so pause is a real task state.
+3. **`010` — Container runtime profiles.** Decouple Workspace (the files) from Runtime (the env a
+   tool call executes in). Replace the raw container `image` string with a named **profile**
+   (`node` | `python` | `fullstack`), resolved to an image in the env factory; default/fallback =
+   `fullstack` (Node + Python) so a Node repo that later adds a Python backend doesn't wedge.
+   One profile per conversation, user-overridable in settings. Kills the "one workspace = one image
+   forever" assumption **without** building auto-routing or image management (both deferred). Small
+   refactor of `env/factory.ts` + `container.ts` + execution settings (JSON blob — no migration).
+4. **`005.1` — ContainerEnvironment stop in-flight.** The deferred half of `005`: killing the host
    `docker/podman exec` client doesn't stop the in-container process. Needs its own kill mechanism
    (in-container PID tracking / `exec kill`, or marker `pkill`). Out of scope when `005` shipped.
-4. **`007` — Slash commands for skills.** Let users force a skill with `/skill-name …` (pre-inject
+5. **`007` — Slash commands for skills.** Let users force a skill with `/skill-name …` (pre-inject
    the `read_skill` call), keeping today's model-discretionary path for plain messages. Adds a
    `skills:list` IPC channel + composer autocomplete. Independent — schedule freely.
 
