@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react"
-import { ArrowUp, FileText, FolderOpen, Plus, Square, X } from "lucide-react"
+import { ArrowUp, FileText, FolderOpen, Plus, Square, Workflow, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Markdown } from "@/components/markdown"
 import { VIEW_TO_MODE, type View } from "@/components/sidebar"
@@ -26,6 +26,7 @@ import {
 } from "@/components/ui/attachment"
 import { ToolGroup, ApprovalCard } from "@/components/tool-group"
 import { QuestionPanel } from "@/components/question-panel"
+import { TaskCompletionCards } from "@/components/task-completion-cards"
 import {
   Combobox,
   ComboboxCollection,
@@ -48,7 +49,7 @@ import {
   type ToolUse,
 } from "@/lib/timeline"
 import { cn } from "@/lib/utils"
-import type { Question, QuestionAnswer, LlmSettings, AccountWithModels } from "@/types"
+import type { Question, QuestionAnswer, LlmSettings, AccountWithModels, Task } from "@/types"
 
 export default function App({
   view,
@@ -57,6 +58,8 @@ export default function App({
   onConversationChanged,
   onOpenSettings,
   settingsOpen,
+  onRanInBackground,
+  onOpenTask,
 }: {
   view: View
   conversationId: string | null
@@ -68,6 +71,12 @@ export default function App({
   // Whether Settings is open — when it closes we re-read the active provider so
   // the composer picker and Send gate reflect any change.
   settingsOpen: boolean
+  // Called after "Run in background" starts a durable task, so the Shell can
+  // reveal the Workspace Activity panel where the new task appears.
+  onRanInBackground?: () => void
+  // Open a background task's read-only transcript (the Shell hosts the viewer).
+  // Used by the completion cards shown above the composer.
+  onOpenTask?: (task: Task) => void
 }) {
   // Chat runs without a workspace and attaches files instead; North Star and
   // Interactive are workspace-backed and share the same behavior.
@@ -385,6 +394,46 @@ export default function App({
     }
   }
 
+  // Start the current message as a durable background task instead of a live
+  // turn. The runner persists the message, queues the task, and streams progress
+  // to the Workspace Activity panel — so this does NOT use the live chat path or
+  // touch the transcript view here. Workspace-backed views only for now (Chat's
+  // attachment-only path can come later).
+  async function runInBackground() {
+    if (!canSend || isChat) return
+    const text = message.trim()
+
+    // Ensure a conversation exists — created lazily, mirroring sendMessage. For
+    // workspace views, link the picked workspace at creation time.
+    let convoId = conversationId
+    let isNew = false
+    if (!convoId) {
+      let workspaceId: string | undefined
+      if (workspace.trim()) {
+        const ws = await window.cowork.db.workspaces.upsert(workspace.trim())
+        workspaceId = ws.id
+      }
+      const convo = await window.cowork.db.conversations.create({
+        mode: VIEW_TO_MODE[view],
+        workspaceId,
+        accountId: selAccountId,
+        modelId: selModelId,
+      })
+      convoId = convo.id
+      isNew = true
+    }
+
+    await window.cowork.tasks.start({ conversationId: convoId, message: text })
+    setMessage("")
+    setAttachments([])
+    // Promote a freshly created conversation (also refreshes the sidebar); else
+    // just refresh ordering. Either way reveal the activity panel so the new task
+    // is visible.
+    if (isNew) onConversationCreated(convoId)
+    else onConversationChanged()
+    onRanInBackground?.()
+  }
+
   // Cancel the in-flight turn. The main process aborts the LLM stream and
   // resolves chat() with `{ stopped: true }`, which unwinds sendMessage's
   // finally (reconcile + loading reset) normally.
@@ -557,30 +606,48 @@ export default function App({
             )}
             {modelPicker}
           </div>
-          {loading ? (
-            <Button
-              type="button"
-              size="icon"
-              onClick={stopMessage}
-              title="Stop"
-              aria-label="Stop"
-              className="size-8 rounded-full"
-            >
-              <Square className="size-3.5 fill-current" />
-            </Button>
-          ) : (
-            <Button
-              type="button"
-              size="icon"
-              onClick={sendMessage}
-              disabled={!canSend}
-              title="Send"
-              aria-label="Send"
-              className="size-8 rounded-full"
-            >
-              <ArrowUp className="size-4" />
-            </Button>
-          )}
+          <div className="flex items-center gap-1.5">
+            {/* Run the message as a durable background task (workspace views
+                only). Lives next to Send; disabled by the same gate. */}
+            {!isChat && !loading && (
+              <Button
+                type="button"
+                size="icon"
+                variant="outline"
+                onClick={runInBackground}
+                disabled={!canSend}
+                title="Run in background"
+                aria-label="Run in background"
+                className="size-8 rounded-full"
+              >
+                <Workflow className="size-4" />
+              </Button>
+            )}
+            {loading ? (
+              <Button
+                type="button"
+                size="icon"
+                onClick={stopMessage}
+                title="Stop"
+                aria-label="Stop"
+                className="size-8 rounded-full"
+              >
+                <Square className="size-3.5 fill-current" />
+              </Button>
+            ) : (
+              <Button
+                type="button"
+                size="icon"
+                onClick={sendMessage}
+                disabled={!canSend}
+                title="Send"
+                aria-label="Send"
+                className="size-8 rounded-full"
+              >
+                <ArrowUp className="size-4" />
+              </Button>
+            )}
+          </div>
         </div>
       </div>
     </>
@@ -605,6 +672,9 @@ export default function App({
               </>
             )}
           </div>
+          {conversationId && (
+            <TaskCompletionCards conversationId={conversationId} onOpenTask={onOpenTask ?? (() => {})} />
+          )}
           {composer}
         </div>
       </div>
@@ -703,6 +773,9 @@ export default function App({
             <div className="mb-3 animate-in fade-in-0 slide-in-from-bottom-4 duration-200">
               <QuestionPanel questions={liveQuestion.questions} onSubmit={answerQuestion} />
             </div>
+          )}
+          {conversationId && (
+            <TaskCompletionCards conversationId={conversationId} onOpenTask={onOpenTask ?? (() => {})} />
           )}
           {composer}
         </div>

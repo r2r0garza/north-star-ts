@@ -7,7 +7,7 @@ import {
 } from "../db/repositories/tasks"
 import { appendEvent } from "../db/repositories/task-events"
 import { appendMessage, listMessages } from "../db/repositories/messages"
-import { getConversation } from "../db/repositories/conversations"
+import { getConversation, createConversation } from "../db/repositories/conversations"
 import { getWorkspace } from "../db/repositories/workspaces"
 import type { Task, TaskStatus } from "../db/types"
 
@@ -103,10 +103,16 @@ export class TaskRunner {
     void this.pump()
   }
 
-  // Enqueue a new durable agent turn. Persists the user message immediately so
-  // the loop (and any later resume) replays it from the transcript — runOne
-  // calls runAgentLoop with no fresh userMessage, making a first run and a
-  // resume the exact same code path.
+  // Enqueue a new durable agent turn. The task runs in its OWN forked
+  // conversation — a private worker transcript — so its model/tool messages
+  // never interleave with the live chat the user started it from (which caused
+  // races, mixed context, and duplicate answers when both wrote to one log). The
+  // fork copies the source's mode, workspace, and LLM selection so the task runs
+  // with the same context; `sourceConversationId` links it back so the Workspace
+  // Activity panel can list it under the originating conversation. The user
+  // message is persisted into the PRIVATE transcript, so runOne calls
+  // runAgentLoop with no fresh userMessage — a first run and a resume are the
+  // exact same code path.
   enqueue(input: {
     conversationId: string
     message: string
@@ -115,14 +121,27 @@ export class TaskRunner {
   }): Task {
     const kind = input.kind ?? DEFAULT_KIND
     const taskInput: TaskInput = { kind, message: input.message }
+
+    // Fork a private conversation from the source, inheriting its execution
+    // context (mode → tools/prompt, workspace, provider/model selection).
+    const source = getConversation(input.conversationId)
+    const taskConversation = createConversation({
+      mode: source?.mode ?? "interactive",
+      workspaceId: source?.workspaceId ?? null,
+      accountId: source?.accountId ?? null,
+      modelId: source?.modelId ?? null,
+      title: input.title ?? input.message.slice(0, 60),
+    })
+
     const task = createTask({
-      conversationId: input.conversationId,
+      conversationId: taskConversation.id,
+      sourceConversationId: input.conversationId,
       title: input.title ?? null,
       status: "queued",
       input: taskInput,
     })
     appendMessage({
-      conversationId: input.conversationId,
+      conversationId: taskConversation.id,
       role: "user",
       content: input.message,
     })
@@ -157,6 +176,19 @@ export class TaskRunner {
       updateTask(taskId, { status: "cancelled" })
       this.emit(taskId, { type: "status_change", from: task.status, to: "cancelled" })
     }
+  }
+
+  // Flip a paused task back to `running` after its approval/question gate was
+  // resolved (the actual gate promise is resolved by resolveApproval/
+  // resolveQuestion in the agent module — this just reflects the status). No-op
+  // unless the task is currently waiting, so a stale call can't disturb a task
+  // that already moved on. The loop was never suspended at the runner level (the
+  // agent gate held it), so there's nothing to re-pump.
+  markRunning(taskId: string): void {
+    const task = getTask(taskId)
+    if (!task || task.status !== "waiting_for_approval") return
+    updateTask(taskId, { status: "running" })
+    this.emit(taskId, { type: "status_change", from: "waiting_for_approval", to: "running" })
   }
 
   // Subscribe to the live event tail (all tasks). Returns an unsubscribe fn.
@@ -284,7 +316,23 @@ export class TaskRunner {
       const result: ChatResult = await runAgentLoop({
         conversationId: task.conversationId,
         workspace,
-        onEvent: (event) => this.emit(taskId, event),
+        onEvent: (event) => {
+          // A gate is blocking the loop: surface it as waiting_for_approval so
+          // the panel can prompt. The agent's gate promise stays parked until
+          // the user answers via task:approve/deny/answer, which calls
+          // markRunning to flip the status back. The task stays in `running`
+          // (the loop hasn't returned), so the concurrency slot is still held —
+          // intended: a paused task shouldn't free a slot mid-turn.
+          if (event.type === "approval" || event.type === "question") {
+            updateTask(taskId, { status: "waiting_for_approval" })
+            this.emit(taskId, {
+              type: "status_change",
+              from: "running",
+              to: "waiting_for_approval",
+            })
+          }
+          this.emit(taskId, event)
+        },
         abort,
       })
 

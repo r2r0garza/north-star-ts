@@ -124,6 +124,15 @@ const api = {
     // a pending one is marked cancelled. Never retries.
     cancel: (taskId: string) =>
       ipcRenderer.invoke("task:cancel", taskId) as Promise<void>,
+    // Resolve a gate a paused (waiting_for_approval) task is blocked on. The
+    // requestId comes from the task's approval/question event. approve/deny gate
+    // a tool action; answer responds to an ask_user_question.
+    approve: (payload: { taskId: string; requestId: string; remember?: "workspace" }) =>
+      ipcRenderer.invoke("task:approve", payload) as Promise<void>,
+    deny: (payload: { taskId: string; requestId: string }) =>
+      ipcRenderer.invoke("task:deny", payload) as Promise<void>,
+    answer: (payload: { taskId: string; requestId: string; answers: QuestionAnswer[] }) =>
+      ipcRenderer.invoke("task:answer", payload) as Promise<void>,
     // Subscribe to the live event tail for ALL tasks. Returns an unsubscribe fn.
     // The callback fires for every running task's tokens, tool activity, and
     // status changes; filter by `taskId` in the handler.
@@ -203,8 +212,11 @@ const api = {
     tasks: {
       create: (input: { conversationId: string; title?: string | null; status?: TaskStatus; input?: unknown }) =>
         ipcRenderer.invoke("db:tasks:create", input) as Promise<Task>,
-      list: (opts?: { conversationId?: string; status?: TaskStatus }) =>
-        ipcRenderer.invoke("db:tasks:list", opts) as Promise<Task[]>,
+      list: (opts?: {
+        conversationId?: string
+        sourceConversationId?: string
+        status?: TaskStatus
+      }) => ipcRenderer.invoke("db:tasks:list", opts) as Promise<Task[]>,
       get: (id: string) => ipcRenderer.invoke("db:tasks:get", id) as Promise<Task | null>,
       update: (id: string, patch: { title?: string | null; status?: TaskStatus; result?: unknown; error?: string | null }) =>
         ipcRenderer.invoke("db:tasks:update", id, patch) as Promise<Task>,

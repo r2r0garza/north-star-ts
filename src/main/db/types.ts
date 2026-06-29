@@ -71,7 +71,12 @@ export interface Message {
 
 export interface Task {
   id: string
+  // The task's PRIVATE worker transcript — a forked conversation the runner
+  // writes model/tool messages to, isolated from any live chat.
   conversationId: string
+  // The live conversation the task was started from (where it shows in the
+  // Workspace Activity panel). Null if that conversation was later deleted.
+  sourceConversationId: string | null
   title: string | null
   status: TaskStatus
   input: unknown

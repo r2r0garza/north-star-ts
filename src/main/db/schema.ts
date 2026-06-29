@@ -191,3 +191,21 @@ export const SCHEMA_V6 = `
 ALTER TABLE conversations ADD COLUMN account_id TEXT;
 ALTER TABLE conversations ADD COLUMN model_id TEXT;
 `
+
+// v7: durable tasks run in their OWN forked conversation so a background worker
+// never interleaves its model/tool messages with the live chat transcript (which
+// caused races, mixed context, and duplicate answers when a task and a live turn
+// shared one message log). A task's `conversation_id` is now its PRIVATE worker
+// transcript; `source_conversation_id` links back to the live conversation where
+// the user started it, so the Workspace Activity panel can list a conversation's
+// tasks while their messages stay isolated. Nullable + ON DELETE SET NULL so a
+// task outlives the deletion of its source chat (its own transcript is what the
+// runner needs). Backfilled to conversation_id for any pre-v7 task so existing
+// rows keep a sane source.
+export const SCHEMA_V7 = `
+ALTER TABLE tasks ADD COLUMN source_conversation_id TEXT
+  REFERENCES conversations(id) ON DELETE SET NULL;
+UPDATE tasks SET source_conversation_id = conversation_id
+  WHERE source_conversation_id IS NULL;
+CREATE INDEX idx_tasks_source_conversation ON tasks(source_conversation_id);
+`

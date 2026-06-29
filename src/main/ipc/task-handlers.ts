@@ -1,5 +1,7 @@
 import { ipcMain, type WebContents } from "electron"
 import type { TaskRunner, TaskEventPayload } from "../tasks/runner"
+import { resolveApproval, resolveQuestion } from "../agent"
+import type { QuestionAnswer } from "../agent/tools/types"
 
 // Registers the durable task-runner control channels and the live event tail.
 // The CRUD over the task tables already lives on the `db:tasks:*` / `db:taskEvents:*`
@@ -18,6 +20,33 @@ export function registerTaskHandlers(runner: TaskRunner): void {
   ipcMain.handle("task:resume", (_e, taskId: string) => runner.resume(taskId))
   // Cancel a task (running → aborted → cancelled; pending → cancelled directly).
   ipcMain.handle("task:cancel", (_e, taskId: string) => runner.cancel(taskId))
+
+  // Resolve a gate a paused background task is blocked on. The agent loop's gate
+  // is keyed by a process-unique `requestId` (carried in the approval/question
+  // event the panel received), so these reuse the same resolvers the live chat
+  // path uses (resolveApproval/resolveQuestion) — then flip the task's status
+  // back to running. `taskId` is only used to update that status.
+  ipcMain.handle(
+    "task:approve",
+    (_e, payload: { taskId: string; requestId: string; remember?: "workspace" }) => {
+      resolveApproval(payload.requestId, "approved", payload.remember)
+      runner.markRunning(payload.taskId)
+    }
+  )
+  ipcMain.handle(
+    "task:deny",
+    (_e, payload: { taskId: string; requestId: string }) => {
+      resolveApproval(payload.requestId, "denied")
+      runner.markRunning(payload.taskId)
+    }
+  )
+  ipcMain.handle(
+    "task:answer",
+    (_e, payload: { taskId: string; requestId: string; answers: QuestionAnswer[] }) => {
+      resolveQuestion(payload.requestId, payload.answers)
+      runner.markRunning(payload.taskId)
+    }
+  )
 
   // Live event tail. A renderer calls "task:subscribe" once; from then on it
   // receives every task's events on the "task:event" channel until its

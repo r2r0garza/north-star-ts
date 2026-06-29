@@ -89,11 +89,18 @@ describe.skipIf(!sqliteLoads)("TaskRunner — enqueue + run", () => {
     expect(finished.status).toBe("completed")
     expect(finished.result).toBe("done")
 
-    // The user message was persisted up front; runAgentLoop got no fresh
-    // userMessage (resume == first-run code path).
-    const msgs = listMessages(conv.id)
+    // The task runs in its OWN forked conversation, linked back to the source —
+    // its messages never touch the live conversation.
+    expect(finished.sourceConversationId).toBe(conv.id)
+    expect(finished.conversationId).not.toBe(conv.id)
+    expect(listMessages(conv.id)).toHaveLength(0)
+
+    // The user message was persisted into the private transcript up front;
+    // runAgentLoop got no fresh userMessage (resume == first-run code path).
+    const msgs = listMessages(finished.conversationId)
     expect(msgs.map((m) => m.content)).toContain("do the thing")
     expect(loopCalls[0].userMessage).toBeUndefined()
+    expect(loopCalls[0].conversationId).toBe(finished.conversationId)
 
     // A status_change to completed and a task_completed event are in the log.
     const types = listEvents(task.id).map((e) => e.type)
@@ -119,6 +126,45 @@ describe.skipIf(!sqliteLoads)("TaskRunner — enqueue + run", () => {
     await settle()
     expect(getTask(failed.id)?.status).toBe("failed")
     expect(getTask(failed.id)?.error).toBe("boom")
+    await runner.stop()
+  })
+
+  it("flips to waiting_for_approval when the loop emits a gate, and back on markRunning", async () => {
+    const conv = createConversation({ mode: "chat" })
+    const runner = new TaskRunner()
+    runner.start()
+
+    // The loop emits an approval event (the gate), then blocks until we resolve.
+    let release: () => void
+    const blocked = new Promise<void>((r) => {
+      release = r
+    })
+    loopImpl = async (opts) => {
+      opts.onEvent?.({
+        type: "approval",
+        id: "call-1",
+        requestId: "req-1",
+        tool: "run_shell",
+        summary: "rm -rf build",
+        reason: "destructive",
+      })
+      await blocked
+      return { content: "done" }
+    }
+
+    const task = runner.enqueue({ conversationId: conv.id, message: "go" })
+    // Wait for the gate event to flip status (poll briefly).
+    for (let i = 0; i < 50 && getTask(task.id)?.status !== "waiting_for_approval"; i++) {
+      await new Promise((r) => setTimeout(r, 5))
+    }
+    expect(getTask(task.id)?.status).toBe("waiting_for_approval")
+
+    // Resolve: markRunning flips it back, then let the loop finish.
+    runner.markRunning(task.id)
+    expect(getTask(task.id)?.status).toBe("running")
+    release!()
+    await settle()
+    expect(getTask(task.id)?.status).toBe("completed")
     await runner.stop()
   })
 })
@@ -188,13 +234,10 @@ describe.skipIf(!sqliteLoads)("TaskRunner — dangling tool_call repair on resum
   })
 })
 
-describe.skipIf(!sqliteLoads)("TaskRunner — FIFO order under a concurrency cap", () => {
-  it("runs same-conversation tasks oldest-first, one at a time", async () => {
+describe.skipIf(!sqliteLoads)("TaskRunner — concurrent tasks under the cap", () => {
+  it("runs two tasks from one source to completion in their own transcripts", async () => {
     const conv = createConversation({ mode: "chat" })
-    const order: string[] = []
-    // Gate each run so we can observe ordering deterministically.
-    loopImpl = async (opts) => {
-      order.push(opts.conversationId)
+    loopImpl = async () => {
       await new Promise((r) => setTimeout(r, 10))
       return { content: "done" }
     }
@@ -205,10 +248,11 @@ describe.skipIf(!sqliteLoads)("TaskRunner — FIFO order under a concurrency cap
     const b = runner.enqueue({ conversationId: conv.id, message: "second" })
     await settle()
 
-    // Both completed; the per-conversation guard kept them serialized so the
-    // loop was called twice (not concurrently) for the same conversation.
+    // Each task forks its own private conversation, so there's no shared-log
+    // race — both run (concurrently under the cap) and complete.
     expect(getTask(a.id)?.status).toBe("completed")
     expect(getTask(b.id)?.status).toBe("completed")
+    expect(getTask(a.id)?.conversationId).not.toBe(getTask(b.id)?.conversationId)
     expect(loopCalls).toHaveLength(2)
     await runner.stop()
   })

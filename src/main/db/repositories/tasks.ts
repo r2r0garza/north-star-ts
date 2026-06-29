@@ -2,12 +2,10 @@ import { randomUUID } from "crypto"
 import { getDb } from "../connection"
 import type { Task, TaskStatus } from "../types"
 
-// Storage-only this phase: rows persist a task's lifecycle, but no runner acts
-// on them yet.
-
 interface TaskRow {
   id: string
   conversation_id: string
+  source_conversation_id: string | null
   title: string | null
   status: TaskStatus
   input: string | null
@@ -21,6 +19,7 @@ function toTask(row: TaskRow): Task {
   return {
     id: row.id,
     conversationId: row.conversation_id,
+    sourceConversationId: row.source_conversation_id,
     title: row.title,
     status: row.status,
     input: row.input ? JSON.parse(row.input) : null,
@@ -32,7 +31,11 @@ function toTask(row: TaskRow): Task {
 }
 
 export function createTask(input: {
+  // The task's private worker transcript (a forked conversation).
   conversationId: string
+  // The live conversation the task was started from. Defaults to conversationId
+  // (self-sourced) when omitted.
+  sourceConversationId?: string | null
   title?: string | null
   status?: TaskStatus
   input?: unknown
@@ -41,11 +44,12 @@ export function createTask(input: {
   const now = Date.now()
   getDb()
     .prepare(
-      "INSERT INTO tasks (id, conversation_id, title, status, input, result, error, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+      "INSERT INTO tasks (id, conversation_id, source_conversation_id, title, status, input, result, error, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )
     .run(
       id,
       input.conversationId,
+      input.sourceConversationId ?? input.conversationId,
       input.title ?? null,
       input.status ?? "queued",
       input.input !== undefined ? JSON.stringify(input.input) : null,
@@ -66,6 +70,7 @@ export function getTask(id: string): Task | undefined {
 
 export function listTasks(opts?: {
   conversationId?: string
+  sourceConversationId?: string
   status?: TaskStatus
 }): Task[] {
   const clauses: string[] = []
@@ -73,6 +78,10 @@ export function listTasks(opts?: {
   if (opts?.conversationId) {
     clauses.push("conversation_id = ?")
     values.push(opts.conversationId)
+  }
+  if (opts?.sourceConversationId) {
+    clauses.push("source_conversation_id = ?")
+    values.push(opts.sourceConversationId)
   }
   if (opts?.status) {
     clauses.push("status = ?")
