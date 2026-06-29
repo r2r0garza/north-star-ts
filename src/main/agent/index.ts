@@ -11,6 +11,7 @@ import { createReadSkillTool } from "./skills/tool"
 import { skillSources } from "./skills/sources"
 import { loadSystemPrompt } from "./system-prompt"
 import { contextBuilder } from "./context/context-builder"
+import { repairDanglingToolCalls } from "./repair"
 import { createEnvironment } from "./env"
 import { LocalEnvironment } from "./env/local"
 import type { Environment } from "./env/types"
@@ -75,6 +76,15 @@ const pendingApprovals = new Map<string, PendingApproval>()
 // unblocks any pending approval gate, and breaks the agentic loop. A turn owns
 // at most one controller; runChat clears it in `finally`.
 const abortControllers = new Map<string, AbortController>()
+
+// Reason passed to controller.abort() when the app is shutting down (will-quit),
+// as opposed to a user Stop/cancel. A user abort resolves a pending gate as
+// "denied" so the loop unwinds cleanly; a shutdown must instead leave the gate
+// UNRESOLVED — no tool result is persisted, so the task stays
+// `waiting_for_approval` and the next boot reconciles it to `interrupted` and
+// re-prompts on resume (plan 012). Fabricating a denial here was the bug that
+// persisted a fake "ERROR[denied]" result and wedged resume.
+export const SHUTDOWN_ABORT_REASON = Symbol("agent:shutdown")
 
 // Called from the renderer over IPC ("chat:stop") to cancel an in-flight turn.
 // Idempotent and safe to call when nothing is running (no-op if no controller).
@@ -340,6 +350,26 @@ export async function runAgentLoop(opts: RunAgentLoopOptions): Promise<ChatResul
     if (todoPrompt) systemPrompt += `\n\n${todoPrompt}`
   }
 
+  // Before assembling context, repair any dangling tool-call tail from a turn
+  // that was abandoned (the app quit, or a turn was left parked on an approval
+  // gate, before its tool produced a result). Without this the rebuilt history
+  // would carry an assistant tool_call with no matching `tool` message and the
+  // next request would 400.
+  //
+  // The repair mode depends on the caller, distinguished by `userMessage`:
+  //  - A durable-task RESUME passes no userMessage ("carry on"). Roll the
+  //    incomplete turn back so the agent re-plans and re-issues the gated tool —
+  //    the gate re-prompts (plan 012). A synthetic result would look like a
+  //    finished call and the action would never be retried.
+  //  - A live-chat turn passes a fresh userMessage. Synthesize an "interrupted"
+  //    result and let the new message drive (live chat is ephemeral; the user
+  //    retries by typing). A first task run also has no dangling tail, so its
+  //    rollback is a no-op.
+  repairDanglingToolCalls(
+    conversationId,
+    userMessage === undefined ? "rollback" : "synthesize"
+  )
+
   // Persist this turn's user message before context is assembled (the
   // ContextBuilder replays from stored messages). A resuming durable task passes
   // no userMessage — the transcript already ends with the user turn — so we skip
@@ -568,9 +598,15 @@ export async function runAgentLoop(opts: RunAgentLoopOptions): Promise<ChatResul
             // If the turn is stopped while waiting on this approval, release the
             // gate (as a denial) so the loop can unwind instead of hanging — the
             // pre-PR2 "renderer disconnect hangs the gate" gap, closed by Stop.
+            // EXCEPTION: an app-shutdown abort leaves the gate unresolved on
+            // purpose — persisting a denial result here would record a decision
+            // the user never made and wedge resume (plan 012). The process is
+            // exiting anyway; the task stays waiting_for_approval and reconciles
+            // to interrupted on next boot.
             abort.signal.addEventListener(
               "abort",
               () => {
+                if (abort.signal.reason === SHUTDOWN_ABORT_REASON) return
                 if (pendingApprovals.delete(requestId)) resolve("denied")
               },
               { once: true }
@@ -588,6 +624,9 @@ export async function runAgentLoop(opts: RunAgentLoopOptions): Promise<ChatResul
             abort.signal.addEventListener(
               "abort",
               () => {
+                // Shutdown: leave unresolved so no synthetic answer is persisted
+                // and the task reconciles to interrupted (mirrors the gate above).
+                if (abort.signal.reason === SHUTDOWN_ABORT_REASON) return
                 if (pendingQuestions.delete(requestId)) resolve({ status: "cancelled" })
               },
               { once: true }

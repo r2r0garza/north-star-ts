@@ -4,6 +4,7 @@ import {
   Check,
   ChevronRight,
   CircleAlert,
+  CircleSlash,
   FilePlus,
   FileText,
   FolderOpen,
@@ -103,20 +104,32 @@ export function ToolGroup({ calls }: { calls: ToolUse[] }) {
 function ToolUseRow({ use }: { use: ToolUse }) {
   const Icon = iconFor(use.name)
   const error = use.status === "error"
+  const interrupted = use.status === "interrupted"
   const awaiting = use.approval?.status === "pending"
   return (
     <div className="flex flex-col gap-1">
       <Collapsible className="w-full">
         <CollapsibleTrigger asChild>
           <button type="button" className="group/row w-full text-left">
-            <Marker className={cn(error && "text-destructive")}>
+            <Marker className={cn(error && "text-destructive", interrupted && "text-muted-foreground")}>
               <MarkerIcon>
-                {use.status === "running" ? <Spinner /> : <Icon />}
+                {use.status === "running" ? (
+                  <Spinner />
+                ) : interrupted ? (
+                  <CircleSlash />
+                ) : (
+                  <Icon />
+                )}
               </MarkerIcon>
               <MarkerContent>{use.label}</MarkerContent>
               {awaiting && (
                 <span className="ml-auto flex items-center gap-1 text-[0.7rem] text-destructive">
                   <ShieldAlert className="size-3.5 shrink-0" /> awaiting approval
+                </span>
+              )}
+              {interrupted && (
+                <span className="ml-auto flex items-center gap-1 text-[0.7rem] text-muted-foreground">
+                  <CircleSlash className="size-3.5 shrink-0" /> interrupted
                 </span>
               )}
               {use.status === "done" && (
@@ -139,6 +152,14 @@ function ToolUseRow({ use }: { use: ToolUse }) {
                   <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words">
                     {clip(use.result)}
                   </pre>
+                </BubbleContent>
+              </Bubble>
+            )}
+            {interrupted && (
+              <Bubble align="start" variant="muted">
+                <BubbleContent>
+                  This request was interrupted before it finished and wasn't
+                  completed. Send a new message to try again.
                 </BubbleContent>
               </Bubble>
             )}

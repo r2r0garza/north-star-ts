@@ -24,20 +24,22 @@ export function registerTaskHandlers(runner: TaskRunner): void {
   // Resolve a gate a paused background task is blocked on. The agent loop's gate
   // is keyed by a process-unique `requestId` (carried in the approval/question
   // event the panel received), so these reuse the same resolvers the live chat
-  // path uses (resolveApproval/resolveQuestion) — then flip the task's status
-  // back to running. `taskId` is only used to update that status.
+  // path uses (resolveApproval/resolveQuestion). For approvals, the runner also
+  // records the decision in the durable `approvals` table and flips the task's
+  // status back to running (recordApprovalDecision); questions have no durable
+  // row, so they just markRunning.
   ipcMain.handle(
     "task:approve",
     (_e, payload: { taskId: string; requestId: string; remember?: "workspace" }) => {
       resolveApproval(payload.requestId, "approved", payload.remember)
-      runner.markRunning(payload.taskId)
+      runner.recordApprovalDecision(payload.taskId, payload.requestId, "approved")
     }
   )
   ipcMain.handle(
     "task:deny",
     (_e, payload: { taskId: string; requestId: string }) => {
       resolveApproval(payload.requestId, "denied")
-      runner.markRunning(payload.taskId)
+      runner.recordApprovalDecision(payload.taskId, payload.requestId, "denied")
     }
   )
   ipcMain.handle(

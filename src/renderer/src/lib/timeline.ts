@@ -6,7 +6,13 @@ import type { Message as DbMessage } from "@/types"
 // live from stream events during a turn — both produce the same shapes so they
 // render identically.
 
-export type ToolStatus = "running" | "done" | "error"
+// "interrupted" is reload-only: a persisted tool_call with no result message,
+// meaning the turn was abandoned (app quit / live chat left parked on an
+// approval gate) before the tool ran. The live stream never produces it — it
+// distinguishes "this call was never finished and won't be" from a call that is
+// actively "running" in an in-flight turn, so the UI shows a settled note rather
+// than a perpetual spinner. Live chat is ephemeral: the user just retries.
+export type ToolStatus = "running" | "done" | "error" | "interrupted"
 
 // A pending/resolved human-approval request for a gated tool action. Live-only:
 // it exists during a turn while the agent waits on a decision, and is never
@@ -161,6 +167,16 @@ export function buildTimeline(rows: DbMessage[]): TimelineItem[] {
       }
     }
     // role:"system" is never persisted; ignore if present.
+  }
+
+  // Any call still "running" after replaying all stored rows never got a result
+  // message: the turn was abandoned mid-flight. Mark it "interrupted" so it
+  // renders as a settled note instead of a forever-spinning row. (A genuinely
+  // in-flight turn streams through liveTools, not buildTimeline, so this only
+  // ever catches truly dangling calls.) The next user message repairs the
+  // transcript main-side (repairDanglingToolCalls) so the conversation continues.
+  for (const use of callById.values()) {
+    if (use.status === "running") use.status = "interrupted"
   }
 
   return items

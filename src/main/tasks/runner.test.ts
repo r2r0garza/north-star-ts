@@ -11,9 +11,17 @@ vi.mock("../db/connection", () => ({ getDb: () => db }))
 
 // Stub the agent core. Each test sets `loopImpl` to control what a "run" does:
 // emit events, return a result, or observe the options it was called with.
+// SHUTDOWN_ABORT_REASON is a real const the runner imports — re-export a stable
+// sentinel (via vi.hoisted so it exists when the hoisted mock factory runs) so
+// identity comparisons (signal.reason === SHUTDOWN_ABORT_REASON) hold across the
+// runner and the test.
+const { SHUTDOWN_ABORT_REASON } = vi.hoisted(() => ({
+  SHUTDOWN_ABORT_REASON: Symbol("agent:shutdown"),
+}))
 let loopImpl: (opts: RunAgentLoopOptions) => Promise<ChatResult>
 const loopCalls: RunAgentLoopOptions[] = []
 vi.mock("../agent", () => ({
+  SHUTDOWN_ABORT_REASON,
   runAgentLoop: (opts: RunAgentLoopOptions) => {
     loopCalls.push(opts)
     return loopImpl(opts)
@@ -31,6 +39,7 @@ import { TaskRunner } from "./runner"
 import { createTask, getTask, listTasks } from "../db/repositories/tasks"
 import { appendMessage, listMessages } from "../db/repositories/messages"
 import { listEvents } from "../db/repositories/task-events"
+import { createApproval, listApprovals } from "../db/repositories/approvals"
 import { createConversation } from "../db/repositories/conversations"
 
 // Wait for the wakeable pump to settle: poll until every task has left the
@@ -169,70 +178,159 @@ describe.skipIf(!sqliteLoads)("TaskRunner — enqueue + run", () => {
   })
 })
 
-describe.skipIf(!sqliteLoads)("TaskRunner — dangling tool_call repair on resume", () => {
-  it("synthesizes a tool result for an unanswered tool_call before resuming", async () => {
+describe.skipIf(!sqliteLoads)("TaskRunner — durable approval recovery (plan 012)", () => {
+  // Drive a task until the loop emits an approval gate and blocks. Returns the
+  // task, its release fn (resolves the blocked loop), and the runner.
+  async function enqueueBlockedOnApproval(requestId = "req-1") {
     const conv = createConversation({ mode: "chat" })
-    // Simulate a crash mid-turn: user msg + assistant turn with a tool_call, but
-    // no tool result persisted before the app died.
-    appendMessage({ conversationId: conv.id, role: "user", content: "go" })
-    appendMessage({
-      conversationId: conv.id,
-      role: "assistant",
-      content: null,
-      toolCalls: [{ id: "call-1", name: "run_shell", arguments: "{}" }],
-    })
-    const task = createTask({
-      conversationId: conv.id,
-      status: "interrupted",
-      input: { kind: "agent_chat", message: "go" },
-    })
-
     const runner = new TaskRunner()
     runner.start()
-    runner.resume(task.id)
-    await settle()
 
-    // A synthetic tool result for call-1 was appended before the loop ran, so
-    // the rebuilt context is API-valid (every tool_call has a tool message).
-    const toolMsgs = listMessages(conv.id).filter((m) => m.role === "tool")
-    expect(toolMsgs).toHaveLength(1)
-    expect(toolMsgs[0].toolCallId).toBe("call-1")
+    let release: () => void
+    const blocked = new Promise<void>((r) => {
+      release = r
+    })
+    loopImpl = async (opts) => {
+      opts.onEvent?.({
+        type: "approval",
+        id: "call-1",
+        requestId,
+        tool: "run_shell",
+        summary: "rm -rf build",
+        reason: "destructive",
+      })
+      await blocked
+      return { content: "done" }
+    }
+
+    const task = runner.enqueue({ conversationId: conv.id, message: "go" })
+    for (let i = 0; i < 50 && getTask(task.id)?.status !== "waiting_for_approval"; i++) {
+      await new Promise((r) => setTimeout(r, 5))
+    }
+    return { task, release: release!, runner }
+  }
+
+  it("writes a pending approval row when the loop emits a gate", async () => {
+    const { task, release, runner } = await enqueueBlockedOnApproval()
+
+    const pending = listApprovals({ taskId: task.id, status: "pending" })
+    expect(pending).toHaveLength(1)
+    expect((pending[0].request as { requestId: string }).requestId).toBe("req-1")
+    expect((pending[0].request as { tool: string }).tool).toBe("run_shell")
+
+    release()
+    await settle()
+    await runner.stop()
+  })
+
+  it("resolves the row approved and flips to running on recordApprovalDecision", async () => {
+    const { task, release, runner } = await enqueueBlockedOnApproval()
+
+    runner.recordApprovalDecision(task.id, "req-1", "approved")
+    expect(getTask(task.id)?.status).toBe("running")
+
+    const resolved = listApprovals({ taskId: task.id })
+    expect(resolved).toHaveLength(1)
+    expect(resolved[0].status).toBe("approved")
+    expect(resolved[0].resolvedAt).not.toBeNull()
+    expect(listApprovals({ taskId: task.id, status: "pending" })).toHaveLength(0)
+
+    release()
+    await settle()
     expect(getTask(task.id)?.status).toBe("completed")
     await runner.stop()
   })
 
-  it("leaves an already-answered tool_call alone", async () => {
+  it("only resolves the row matching the requestId", async () => {
+    const { task, release, runner } = await enqueueBlockedOnApproval("req-1")
+    // A second, unrelated pending row (e.g. one re-created on a prior resume).
+    createApproval({ taskId: task.id, request: { requestId: "stale" } })
+
+    runner.recordApprovalDecision(task.id, "req-1", "approved")
+
+    const stillPending = listApprovals({ taskId: task.id, status: "pending" })
+    expect(stillPending).toHaveLength(1)
+    expect((stillPending[0].request as { requestId: string }).requestId).toBe("stale")
+
+    release()
+    await settle()
+    await runner.stop()
+  })
+
+  it("on shutdown, aborts the gate with the shutdown reason and leaves it unresolved", async () => {
     const conv = createConversation({ mode: "chat" })
-    appendMessage({ conversationId: conv.id, role: "user", content: "go" })
-    appendMessage({
-      conversationId: conv.id,
-      role: "assistant",
-      content: null,
-      toolCalls: [{ id: "call-1", name: "run_shell", arguments: "{}" }],
-    })
-    appendMessage({
-      conversationId: conv.id,
-      role: "tool",
-      content: "ok",
-      toolCallId: "call-1",
-      toolName: "run_shell",
-    })
+    const runner = new TaskRunner()
+    runner.start()
+
+    // Model the real agent loop's gate: on abort it resolves "denied" UNLESS the
+    // abort is a shutdown, in which case it stays parked (no tool result). This
+    // is the exact behavior the fix added to agent/index.ts.
+    let capturedSignal: AbortSignal | undefined
+    let deniedByAbort = false
+    loopImpl = async (opts) => {
+      capturedSignal = opts.abort.signal
+      opts.onEvent?.({
+        type: "approval",
+        id: "call-1",
+        requestId: "req-1",
+        tool: "run_shell",
+        summary: "rm -rf build",
+        reason: "destructive",
+      })
+      await new Promise<void>((resolve) => {
+        opts.abort.signal.addEventListener("abort", () => {
+          if (opts.abort.signal.reason === SHUTDOWN_ABORT_REASON) return // stay parked
+          deniedByAbort = true
+          resolve()
+        })
+      })
+      return { content: "done" }
+    }
+
+    const task = runner.enqueue({ conversationId: conv.id, message: "go" })
+    for (let i = 0; i < 50 && getTask(task.id)?.status !== "waiting_for_approval"; i++) {
+      await new Promise((r) => setTimeout(r, 5))
+    }
+    expect(getTask(task.id)?.status).toBe("waiting_for_approval")
+
+    await runner.stop()
+
+    // The gate saw a shutdown abort and did NOT fabricate a denial: the loop is
+    // still parked, the task is still waiting_for_approval, and its pending
+    // approval row survives for the next boot's reconcile to interrupt.
+    expect(capturedSignal?.reason).toBe(SHUTDOWN_ABORT_REASON)
+    expect(deniedByAbort).toBe(false)
+    expect(getTask(task.id)?.status).toBe("waiting_for_approval")
+    expect(listApprovals({ taskId: task.id, status: "pending" })).toHaveLength(1)
+  })
+
+  it("on reconcile, denies a stale pending row and interrupts the task", async () => {
+    const conv = createConversation({ mode: "chat" })
     const task = createTask({
       conversationId: conv.id,
-      status: "interrupted",
-      input: { kind: "agent_chat", message: "go" },
+      status: "waiting_for_approval",
+      input: { kind: "agent_chat", message: "hi" },
     })
+    createApproval({ taskId: task.id, request: { requestId: "req-1" } })
+    loopImpl = async () => ({ content: "should not run" })
 
     const runner = new TaskRunner()
     runner.start()
-    runner.resume(task.id)
     await settle()
 
-    // Still exactly one tool message — no synthetic duplicate added.
-    expect(listMessages(conv.id).filter((m) => m.role === "tool")).toHaveLength(1)
+    expect(getTask(task.id)?.status).toBe("interrupted")
+    const rows = listApprovals({ taskId: task.id })
+    expect(rows).toHaveLength(1)
+    expect(rows[0].status).toBe("denied")
+    expect((rows[0].decision as { superseded: string }).superseded).toBe("restart")
+    expect(loopCalls).toHaveLength(0)
     await runner.stop()
   })
 })
+
+// Dangling tool-call repair moved out of the runner into runAgentLoop (shared by
+// the live chat path too) — see repair.test.ts. The runner test mocks
+// runAgentLoop, so repair is exercised there against a real DB instead.
 
 describe.skipIf(!sqliteLoads)("TaskRunner — transient retry with backoff", () => {
   // Tiny delays so backoff completes within a test tick; 3 total attempts.
