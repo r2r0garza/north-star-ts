@@ -189,6 +189,47 @@ function isMaxTokensUnsupported(err: unknown): boolean {
   )
 }
 
+// Whether a failed request is a transient infrastructure hiccup (worth a backoff
+// retry) rather than a deterministic error that would fail identically next time.
+// Read off the raw error here — by the time the agent loop collapses it into a
+// string, the structured status/code is gone. Portkey/OpenAI APIErrors carry a
+// numeric `.status`; connection-layer failures carry a Node/undici `.code` or an
+// SDK error `.name`. Anything we can't positively identify as transient is treated
+// as deterministic (no retry).
+const TRANSIENT_NETWORK_CODES = new Set([
+  "ETIMEDOUT",
+  "ECONNRESET",
+  "ECONNREFUSED",
+  "ECONNABORTED",
+  "EPIPE",
+  "EAI_AGAIN",
+  "ENOTFOUND",
+  "ENETUNREACH",
+  "EHOSTUNREACH",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_SOCKET",
+])
+
+export function isTransientError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false
+  const e = err as { status?: unknown; code?: unknown; name?: unknown }
+
+  // HTTP status present → classify by status. 408 (timeout), 429 (rate limit),
+  // and 5xx (gateway/server) are transient; any other 4xx is deterministic.
+  if (typeof e.status === "number") {
+    if (e.status === 408 || e.status === 429) return true
+    return e.status >= 500 && e.status <= 599
+  }
+
+  // No status → connection layer. Match Node/undici codes or the OpenAI SDK's
+  // connection error class names.
+  const code = typeof e.code === "string" ? e.code : ""
+  if (TRANSIENT_NETWORK_CODES.has(code)) return true
+  const name = typeof e.name === "string" ? e.name : ""
+  return name === "APIConnectionError" || name === "APIConnectionTimeoutError"
+}
+
 // Build the chat-completions params with the correct output-token field for this
 // model, honoring a previously-learned choice.
 function withTokenParam(

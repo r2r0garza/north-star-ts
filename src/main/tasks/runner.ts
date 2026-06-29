@@ -19,6 +19,11 @@ export type RunnerLifecycleEvent =
   | { type: "status_change"; from: TaskStatus; to: TaskStatus }
   | { type: "task_completed"; result?: string }
   | { type: "task_failed"; error: string }
+  // A transient failure is being retried: `n` is the attempt just completed (1 =
+  // the first run failed), `reason` is the error message. The task stays
+  // logically running (DB row unchanged) while it backs off, so no status_change
+  // accompanies this — it's a progress note in the durable log (plan 011).
+  | { type: "attempt"; n: number; reason: string }
 
 // The full vocabulary written to task_events / streamed on the live tail: the
 // agent's own streaming events plus the runner's lifecycle events. Reusing the
@@ -63,6 +68,29 @@ function kindOf(task: Task): string {
   return input?.kind ?? DEFAULT_KIND
 }
 
+// Retry-with-backoff tuning for transient failures (plan 011). MAX_ATTEMPTS is
+// the total number of runs (1 initial + 2 retries); delay grows exponentially,
+// capped at MAX_DELAY_MS.
+interface BackoffConfig {
+  baseMs: number
+  maxMs: number
+  maxAttempts: number
+}
+const DEFAULT_BACKOFF: BackoffConfig = {
+  baseMs: 1000,
+  maxMs: 30_000,
+  maxAttempts: 3,
+}
+
+// Capped exponential backoff with full jitter: a random delay in
+// [0, min(maxMs, baseMs * 2^(attempt-1))]. Full jitter (vs a fixed schedule)
+// avoids a thundering herd when sibling tasks back off together. Math.random is
+// fine here — this is the Electron main process, not the workflow sandbox.
+function backoffDelay(attempt: number, cfg: BackoffConfig): number {
+  const ceiling = Math.min(cfg.maxMs, cfg.baseMs * 2 ** (attempt - 1))
+  return Math.floor(Math.random() * ceiling)
+}
+
 function capabilityOf(kind: string): TaskKindCapability {
   return TASK_KINDS[kind] ?? { autoResume: false }
 }
@@ -89,9 +117,17 @@ export class TaskRunner {
   private wakeQueued = false
   private stopped = false
   private pumping = false
+  // Per-task count of failed attempts so far (transient-retry budget). Survives
+  // between a failed run and its backoff re-run; deleted on any terminal settle.
+  private attempts = new Map<string, number>()
+  // Pending backoff timers so cancel()/stop() can clear a task mid-sleep. A task
+  // here is NOT in `running` (its slot is freed) but its DB row stays `running`.
+  private backoffTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  private readonly backoff: BackoffConfig
 
-  constructor(opts: { concurrency?: number } = {}) {
+  constructor(opts: { concurrency?: number; backoff?: Partial<BackoffConfig> } = {}) {
     this.concurrency = opts.concurrency ?? 2
+    this.backoff = { ...DEFAULT_BACKOFF, ...opts.backoff }
   }
 
   // Reconcile orphaned tasks from a previous run, seed the queue with anything
@@ -155,6 +191,9 @@ export class TaskRunner {
   resume(taskId: string): void {
     const task = getTask(taskId)
     if (!task || task.status !== "interrupted") return
+    // A manual resume restarts the retry budget — the prior attempt counter (if
+    // any survived) is stale; a fresh user-driven run gets the full allowance.
+    this.attempts.delete(taskId)
     updateTask(taskId, { status: "queued" })
     this.emit(taskId, { type: "status_change", from: task.status, to: "queued" })
     if (!this.queue.includes(taskId)) this.queue.push(taskId)
@@ -165,6 +204,22 @@ export class TaskRunner {
   // down any in-flight shell) and runOne maps the resulting {stopped:true} to a
   // `cancelled` status. A still-pending task is marked cancelled directly.
   cancel(taskId: string): void {
+    // Backing off between retries: the task is sleeping on a timer, not in the
+    // queue or the running map. Clear the timer and settle it cancelled. Its DB
+    // row reads `running` during backoff, so map from there.
+    const timer = this.backoffTimers.get(taskId)
+    if (timer) {
+      clearTimeout(timer)
+      this.backoffTimers.delete(taskId)
+      this.attempts.delete(taskId)
+      this.queue = this.queue.filter((id) => id !== taskId)
+      const task = getTask(taskId)
+      if (task) {
+        updateTask(taskId, { status: "cancelled" })
+        this.emit(taskId, { type: "status_change", from: task.status, to: "cancelled" })
+      }
+      return
+    }
     this.queue = this.queue.filter((id) => id !== taskId)
     const controller = this.running.get(taskId)
     if (controller) {
@@ -205,6 +260,11 @@ export class TaskRunner {
   // process exits.
   async stop(): Promise<void> {
     this.stopped = true
+    // Clear any pending backoff timers so they don't fire into a stopped pump
+    // (or after the process is quitting). Their DB rows stay `running` and the
+    // next boot's reconcile maps them to `interrupted`, same as in-flight tasks.
+    for (const timer of this.backoffTimers.values()) clearTimeout(timer)
+    this.backoffTimers.clear()
     for (const controller of this.running.values()) controller.abort()
     this.wakeup()
   }
@@ -284,6 +344,14 @@ export class TaskRunner {
       const task = getTask(id)
       if (task) busy.add(task.conversationId)
     }
+    // A backing-off task isn't in `running` (its slot is freed) but it's still
+    // logically in-flight on its conversation. Treat its conversation as busy too
+    // so a same-conversation sibling can't start and interleave message writes
+    // while it sleeps between retries.
+    for (const id of this.backoffTimers.keys()) {
+      const task = getTask(id)
+      if (task) busy.add(task.conversationId)
+    }
     for (let i = 0; i < this.queue.length; i++) {
       const task = getTask(this.queue[i])
       if (!task) {
@@ -299,8 +367,8 @@ export class TaskRunner {
   }
 
   // Run one task to completion: repair any dangling tool-call tail, resolve the
-  // workspace, drive runAgentLoop, and settle the final status. No retry in this
-  // cut — a transient failure ends `failed` (retry is plan 011).
+  // workspace, drive runAgentLoop, and settle the final status. A transient
+  // failure is retried with backoff (settleError); a deterministic one fails fast.
   private async runOne(taskId: string): Promise<void> {
     const task = getTask(taskId)
     if (!task) return
@@ -337,27 +405,58 @@ export class TaskRunner {
       })
 
       if (result.stopped) {
+        this.attempts.delete(taskId)
         updateTask(taskId, { status: "cancelled" })
         this.emit(taskId, { type: "status_change", from: "running", to: "cancelled" })
       } else if (result.error) {
-        updateTask(taskId, { status: "failed", error: result.error })
-        this.emit(taskId, { type: "task_failed", error: result.error })
-        this.emit(taskId, { type: "status_change", from: "running", to: "failed" })
+        this.settleError(taskId, result.error, result.retryable === true)
       } else {
+        this.attempts.delete(taskId)
         updateTask(taskId, { status: "completed", result: result.content ?? null })
         this.emit(taskId, { type: "task_completed", result: result.content })
         this.emit(taskId, { type: "status_change", from: "running", to: "completed" })
       }
     } catch (err) {
       // runAgentLoop swallows its own errors into {error}, so reaching here is an
-      // unexpected throw (e.g. a repository call). Record it as a failure.
+      // unexpected throw (e.g. a repository call) — not a provider-transient error,
+      // so it fails fast with no retry.
       const message = err instanceof Error ? err.message : String(err)
+      this.attempts.delete(taskId)
       updateTask(taskId, { status: "failed", error: message })
       this.emit(taskId, { type: "task_failed", error: message })
     } finally {
       this.running.delete(taskId)
       this.wakeup()
     }
+  }
+
+  // Settle a failed run: retry transient failures with backoff (up to
+  // maxAttempts), fail fast otherwise. On a retry we record an `attempt` event,
+  // leave the DB row `running` (so a crash mid-backoff reconciles to
+  // `interrupted`), and arm a timer that re-queues the task once the slot is
+  // freed by runOne's finally. On exhaustion (or a deterministic error) we mark
+  // the task `failed` and clear the attempt counter.
+  private settleError(taskId: string, error: string, retryable: boolean): void {
+    const n = (this.attempts.get(taskId) ?? 0) + 1
+    if (retryable && n < this.backoff.maxAttempts) {
+      this.attempts.set(taskId, n)
+      this.emit(taskId, { type: "attempt", n, reason: error })
+      const timer = setTimeout(() => {
+        this.backoffTimers.delete(taskId)
+        if (this.stopped || !getTask(taskId)) {
+          this.attempts.delete(taskId)
+          return
+        }
+        if (!this.queue.includes(taskId)) this.queue.push(taskId)
+        this.wakeup()
+      }, backoffDelay(n, this.backoff))
+      this.backoffTimers.set(taskId, timer)
+      return
+    }
+    this.attempts.delete(taskId)
+    updateTask(taskId, { status: "failed", error })
+    this.emit(taskId, { type: "task_failed", error })
+    this.emit(taskId, { type: "status_change", from: "running", to: "failed" })
   }
 
   // Resolve the absolute workspace directory for a conversation (or undefined for

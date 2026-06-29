@@ -7,18 +7,15 @@ item is its plan file, not its rank.
 
 ## Next up
 
-1. **`011` — Task retry with backoff.** Transient failures (gateway 5xx / network / timeout) retry
-   with capped exponential backoff (in-memory, recorded in `task_events`); deterministic failures
-   and user Stop never retry. No schema change. **Depends on `009` (built).**
-2. **`012` — Durable approval recovery.** Dual-write the in-memory approval gate to the `approvals`
+1. **`012` — Durable approval recovery.** Dual-write the in-memory approval gate to the `approvals`
    table so a task `waiting_for_approval` survives an app restart (re-prompts on resume). No schema
    change. **Depends on `009` (built).** (In-session gate recovery already works.)
-3. **`013` — Task history in the panel.** Add a collapsible **History** section to the Workspace
+2. **`013` — Task history in the panel.** Add a collapsible **History** section to the Workspace
    Activity panel listing terminal tasks (`completed`/`failed`/`cancelled`) for the active
    conversation, each opening the existing read-only transcript viewer. Renderer-only, no schema
    change (reuses `listTasks` + the transcript sheet). The Tasks section stays actionable-only.
    **Depends on `009` (built).**
-4. **`008` — Workspace indexing.** Background, incremental, pausable/cancellable workspace index so
+3. **`008` — Workspace indexing.** Background, incremental, pausable/cancellable workspace index so
    the agent can answer immediately while the index improves. Four stages (file map → metadata →
    symbols → embeddings-later); incremental by content hash (skip unchanged, re-index changed, drop
    deleted, add new); resumable across restart. Controls: configurable auto-start, pause/resume,
@@ -26,7 +23,7 @@ item is its plan file, not its rank.
    settings group. New v7 tables; reuses the `LocalEnvironment` walk + ignore rules. Interactive =
    low priority; North Star = higher, but never hard-blocks execution. **Depends on `009`**: the
    indexer runs as a durable task so pause is a real task state.
-5. **`014` — Context builder.** Evolve the existing `ContextBuilder` into a structured, budgeted,
+4. **`014` — Context builder.** Evolve the existing `ContextBuilder` into a structured, budgeted,
    multi-source assembler: conversation summary, recent messages (the current walk-back), workspace
    index + relevant files (from `008`), durable memories, task state, and approvals — each a labeled
    section under one global token budget with an explicit drop order. Ships the framework + the
@@ -34,22 +31,32 @@ item is its plan file, not its rank.
    no-ops behind a capability check until `008` lands. Surfaces two prerequisite sub-features to
    decide on: a rolling **conversation summary** and a **durable-memories** store (likely its own
    plan). **Soft-depends on `008`** (graceful without it); reads `009`'s task tables.
-6. **`010` — Container runtime profiles.** Decouple Workspace (the files) from Runtime (the env a
+5. **`010` — Container runtime profiles.** Decouple Workspace (the files) from Runtime (the env a
    tool call executes in). Replace the raw container `image` string with a named **profile**
    (`node` | `python` | `fullstack`), resolved to an image in the env factory; default/fallback =
    `fullstack` (Node + Python) so a Node repo that later adds a Python backend doesn't wedge.
    One profile per conversation, user-overridable in settings. Kills the "one workspace = one image
    forever" assumption **without** building auto-routing or image management (both deferred). Small
    refactor of `env/factory.ts` + `container.ts` + execution settings (JSON blob — no migration).
-7. **`005.1` — ContainerEnvironment stop in-flight.** The deferred half of `005`: killing the host
+6. **`005.1` — ContainerEnvironment stop in-flight.** The deferred half of `005`: killing the host
    `docker/podman exec` client doesn't stop the in-container process. Needs its own kill mechanism
    (in-container PID tracking / `exec kill`, or marker `pkill`). Out of scope when `005` shipped.
-8. **`007` — Slash commands for skills.** Let users force a skill with `/skill-name …` (pre-inject
+7. **`007` — Slash commands for skills.** Let users force a skill with `/skill-name …` (pre-inject
    the `read_skill` call), keeping today's model-discretionary path for plain messages. Adds a
    `skills:list` IPC channel + composer autocomplete. Independent — schedule freely.
 
 ## Done
 
+- **`011` — Task retry with backoff.** Built on `feat/task-retry` (not yet merged to `main`).
+  Transient failures (HTTP `408`/`429`/`5xx`, connection-layer codes / SDK connection errors) retry
+  with capped exponential backoff + full jitter (max 3 attempts), in-memory in the runner and
+  recorded as `attempt` events in `task_events`; deterministic failures (other 4xx, provider config)
+  and user Stop never retry. Classification lives in `isTransientError` (`agent/providers`) at the
+  catch block where the raw `.status`/`.code` survives, surfaced via a new `ChatResult.retryable`.
+  The slot frees during backoff while the DB row stays `running` (crash → `interrupted`); `takeNext`
+  treats backing-off conversations as busy to preserve per-conversation serialization. No schema
+  change. Verified: classifier + 7 runner unit tests (183 passing) and E2E against a local 5xx/401
+  server.
 - **`009` — Durable task execution (Phase 1).** Built on `feat/durable-tasks` (commits `03257c3`
   runner, `a33d5ac` UI; not yet merged to `main`). Activated the storage-only task tables with a
   real runner: FIFO queue + concurrency cap, background execution (progress in `task_events`,
@@ -61,7 +68,7 @@ item is its plan file, not its rank.
   collapsible) with a Tasks section, Resume/Cancel, inline approval + ask_user_question gates
   (`task:approve`/`deny`/`answer`), a "Run in background" composer entry point, source-chat
   completion cards, and a read-only task transcript viewer. Verified end-to-end on local + Podman.
-  Follow-ups: retry → `011`, durable approval recovery across restart → `012`, terminal-task
+  Follow-ups: retry → `011` (built), durable approval recovery across restart → `012`, terminal-task
   history → `013`.
 - **`001` — SQLite persistence layer.** Shipped. Foundation everything else builds on.
 - **`002` — Shell execution + approval gating.** Shipped (`main`, merge `7ce97d6`).

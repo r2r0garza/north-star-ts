@@ -52,6 +52,7 @@ export type RunnerLifecycleEvent =
   | { type: "status_change"; from: TaskStatus; to: TaskStatus }
   | { type: "task_completed"; result?: string }
   | { type: "task_failed"; error: string }
+  | { type: "attempt"; n: number; reason: string }
 
 // The full event vocabulary a task emits, live or replayed from task_events.
 export type TaskEventPayload = ChatEvent | RunnerLifecycleEvent
