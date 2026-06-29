@@ -221,13 +221,43 @@ async function generateTitle(message: string, sel: LlmSelection): Promise<string
   }
 }
 
-// Runs the agentic loop for one user message, confined to `workspace`.
-// Streams tokens and tool activity through `onEvent`, and returns the final
-// result object — IPC serializes it back to the renderer.
-export async function runChat(
-  { conversationId, message, workspace, attachments }: ChatRequest,
-  onEvent: OnEvent = () => {}
-): Promise<ChatResult> {
+// Options for the core agentic loop. The caller owns the AbortController and its
+// registration/teardown, so the live `chat` path can key it by conversationId
+// (see runChat) while the durable task runner keys it by taskId. runAgentLoop
+// only reads `abort.signal`; it never registers or clears the controller.
+export interface RunAgentLoopOptions {
+  // The conversation this run belongs to. Messages are persisted under it and
+  // prior history is replayed into the prompt via the ContextBuilder.
+  conversationId: string
+  // The directory the agent's filesystem tools are confined to. Optional: the
+  // Chat view runs without a workspace and relies on inlined attachments.
+  workspace?: string
+  // Absolute paths of files to inline into the prompt (Chat view attachments).
+  attachments?: string[]
+  // A fresh user message to persist before the loop starts (a new turn). Omitted
+  // when a durable task resumes — the loop continues from the already-persisted
+  // transcript with no new user turn, since context is rebuilt from stored
+  // messages each round.
+  userMessage?: string
+  // Receives streamed tokens and tool activity. Defaults to a no-op so a
+  // background task with no renderer attached still runs.
+  onEvent?: OnEvent
+  // The controller this run honors. Aborting it cancels the in-flight stream,
+  // releases any pending approval/question gate, and unwinds the loop. The
+  // caller registers and tears it down (this function never touches the
+  // module-level abortControllers map).
+  abort: AbortController
+}
+
+// The core agentic loop, shared by the live `chat` path (runChat) and the
+// durable task runner. Runs the model→tools cycle for `conversationId`, confined
+// to `workspace`, streaming through `onEvent` and persisting every turn (user,
+// assistant, tool results) as it goes so the transcript is durable and
+// resumable. Returns the final result object.
+export async function runAgentLoop(opts: RunAgentLoopOptions): Promise<ChatResult> {
+  const { conversationId, workspace, attachments, userMessage, abort } = opts
+  const onEvent: OnEvent = opts.onEvent ?? (() => {})
+
   // The workspace is optional. When provided it must be a real directory and
   // the agent's filesystem tools are confined to it; the Chat view sends no
   // workspace and relies on inlined attachments instead.
@@ -299,31 +329,22 @@ export async function runChat(
     if (todoPrompt) systemPrompt += `\n\n${todoPrompt}`
   }
 
-  // List any attached files by name so the model knows what it can read. The
-  // contents are NOT inlined: the model reads them on demand via read_file_tool
-  // (scoped to this attachment list), which supports large files via paging.
-  let userContent = message ?? "What files are in the workspace?"
-  if (hasAttachments) {
-    const names = attachments!.map((p) => basename(p)).join(", ")
-    const note =
-      `Attached files (read with read_file_tool when needed): ${names}`
-    userContent = userContent ? `${userContent}\n\n${note}` : note
+  // Persist this turn's user message before context is assembled (the
+  // ContextBuilder replays from stored messages). A resuming durable task passes
+  // no userMessage — the transcript already ends with the user turn — so we skip
+  // the append and let the loop continue from stored history. List any attached
+  // files by name (contents are NOT inlined: the model reads them on demand via
+  // read_file_tool, scoped to this attachment list, which supports paging).
+  if (userMessage !== undefined) {
+    let userContent = userMessage || "What files are in the workspace?"
+    if (hasAttachments) {
+      const names = attachments!.map((p) => basename(p)).join(", ")
+      const note = `Attached files (read with read_file_tool when needed): ${names}`
+      userContent = userContent ? `${userContent}\n\n${note}` : note
+    }
+    // With attachments inlined, so history reflects what the model actually saw.
+    appendMessage({ conversationId, role: "user", content: userContent })
   }
-
-  // Persist the user message (with attachments inlined, so history reflects what
-  // the model actually saw).
-  appendMessage({ conversationId, role: "user", content: userContent })
-
-  // For an untitled conversation, generate a short title from the first message
-  // with a separate (non-streaming) LLM call. Kicked off here so it runs
-  // concurrently with the agentic loop below; awaited in `finally` so it's
-  // persisted before runChat returns and the renderer refreshes the sidebar.
-  const titlePromise =
-    conversation && !conversation.title && message.trim()
-      ? generateTitle(message, llmSelection).then((title) =>
-          updateConversation(conversationId, { title })
-        )
-      : null
 
   // Assemble the prompt via the ContextBuilder: system prompt + a token-budgeted
   // walk-back over stored history (which already ends with the user message just
@@ -365,12 +386,6 @@ export async function runChat(
   } else {
     env = new LocalEnvironment("")
   }
-
-  // Register the abort controller for this turn so the Stop button (chat:stop →
-  // stopChat) can cancel it. One turn per conversation (the UI disables Send
-  // while loading), so a plain Map keyed by conversation is enough.
-  const abort = new AbortController()
-  abortControllers.set(conversationId, abort)
 
   try {
     // Tracks whether any earlier turn already streamed visible text. The model
@@ -614,13 +629,61 @@ export async function runChat(
     })
     return { error: message }
   } finally {
-    // Tear down this turn's execution backend (stop+remove a container; no-op for
-    // Local). Never let cleanup failure mask the turn's real result.
+    // Tear down this run's execution backend (stop+remove a container; no-op for
+    // Local). Never let cleanup failure mask the run's real result. The abort
+    // controller is owned by the caller (runChat / the task runner), so it's
+    // their responsibility to release it.
     try {
       await env.dispose()
     } catch (err) {
       console.error("Environment dispose failed:", err)
     }
+  }
+}
+
+// Runs the agentic loop for one new user message, confined to `workspace`.
+// Streams tokens and tool activity through `onEvent`, and returns the final
+// result object — IPC serializes it back to the renderer. This is the thin
+// "live turn" wrapper around runAgentLoop: it persists the new user message,
+// kicks off title generation, and owns the conversation-keyed AbortController so
+// the Stop button (chat:stop → stopChat) can cancel it. A "live turn" is just a
+// task with a renderer attached; the durable task runner calls runAgentLoop
+// directly with its own task-keyed controller.
+export async function runChat(
+  { conversationId, message, workspace, attachments }: ChatRequest,
+  onEvent: OnEvent = () => {}
+): Promise<ChatResult> {
+  // For an untitled conversation, generate a short title from the first message
+  // with a separate (non-streaming) LLM call. Kicked off here so it runs
+  // concurrently with the agentic loop below; awaited in `finally` so it's
+  // persisted before runChat returns and the renderer refreshes the sidebar.
+  const conversation = getConversation(conversationId)
+  const llmSelection: LlmSelection = {
+    accountId: conversation?.accountId ?? null,
+    modelId: conversation?.modelId ?? null,
+  }
+  const titlePromise =
+    conversation && !conversation.title && message.trim()
+      ? generateTitle(message, llmSelection).then((title) =>
+          updateConversation(conversationId, { title })
+        )
+      : null
+
+  // Register the abort controller for this turn so the Stop button (chat:stop →
+  // stopChat) can cancel it. One turn per conversation (the UI disables Send
+  // while loading), so a plain Map keyed by conversation is enough.
+  const abort = new AbortController()
+  abortControllers.set(conversationId, abort)
+  try {
+    return await runAgentLoop({
+      conversationId,
+      workspace,
+      attachments,
+      userMessage: message,
+      onEvent,
+      abort,
+    })
+  } finally {
     // Release this turn's abort controller (only if it's still the current one —
     // defensive against a future overlapping turn replacing it).
     if (abortControllers.get(conversationId) === abort) {

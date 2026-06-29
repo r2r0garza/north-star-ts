@@ -1,9 +1,12 @@
 # PR9: Durable task execution — runner over the existing task tables
 
-> Status: **NOT STARTED** — pickup note (2026-06-27). Activates the task tables that have been
-> storage-only since .plan/001. 008 (workspace indexing) depends on this — its indexer runs as a
-> durable task on this runner (pause/resume/cancel are real task states). Starting hypothesis, not
-> a locked spec.
+> Status: **PHASE 1 IN PROGRESS** (branch `feat/durable-tasks`, 2026-06-29). Scoped to the core
+> value: **queue + background + crash-resume**. Retry-with-backoff split to `011`; durable approval
+> recovery across restart split to `012`. Crash recovery is **manual resume** (orphaned `running`
+> tasks → `interrupted`, surfaced for the user), with auto-resume designed as a per-task-kind
+> capability (`TASK_KINDS` in `src/main/tasks/runner.ts`) so a future background job (e.g. 008's
+> indexer) can opt in. Activates the task tables that have been storage-only since .plan/001.
+> 008 (workspace indexing) depends on this — its indexer runs as a durable task on this runner.
 
 ## Context
 
