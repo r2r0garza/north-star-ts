@@ -7,14 +7,19 @@ item is its plan file, not its rank.
 
 ## Next up
 
-1. **`012` — Durable approval recovery.** Dual-write the in-memory approval gate to the `approvals`
-   table so a task `waiting_for_approval` survives an app restart (re-prompts on resume). No schema
-   change. **Depends on `009` (built).** (In-session gate recovery already works.)
-2. **`013` — Task history in the panel.** Add a collapsible **History** section to the Workspace
+1. **`013` — Task history in the panel.** Add a collapsible **History** section to the Workspace
    Activity panel listing terminal tasks (`completed`/`failed`/`cancelled`) for the active
    conversation, each opening the existing read-only transcript viewer. Renderer-only, no schema
    change (reuses `listTasks` + the transcript sheet). The Tasks section stays actionable-only.
    **Depends on `009` (built).**
+2. **`015` — Task producer API.** State (and lightly enforce) the contract that *every* future
+   background producer (workspace indexing, re-index changed files, North Star subtasks, scheduled
+   maintenance, artifact generation, repo analysis) creates work through the same `TaskRunner` —
+   never the DB or `runAgentLoop` directly — so approvals, events, recovery, transcript, and history
+   stay consistent. The audit found the runner is already general (no hardcoded origin,
+   headless-capable, open `kind`); the only gap is a `registerKind(kind, { autoResume })` affordance
+   for producers whose kind should re-queue on restart. Small; no schema change. Best landed just
+   before `008` (the indexer is its first consumer).
 3. **`008` — Workspace indexing.** Background, incremental, pausable/cancellable workspace index so
    the agent can answer immediately while the index improves. Four stages (file map → metadata →
    symbols → embeddings-later); incremental by content hash (skip unchanged, re-index changed, drop
@@ -22,7 +27,7 @@ item is its plan file, not its rank.
    cancel-keeps-partial, per-workspace disable/re-enable, clear-index — plus a Workspace Indexing
    settings group. New v7 tables; reuses the `LocalEnvironment` walk + ignore rules. Interactive =
    low priority; North Star = higher, but never hard-blocks execution. **Depends on `009`**: the
-   indexer runs as a durable task so pause is a real task state.
+   indexer runs as a durable task so pause is a real task state. **Consumes `015`** (first producer).
 4. **`014` — Context builder.** Evolve the existing `ContextBuilder` into a structured, budgeted,
    multi-source assembler: conversation summary, recent messages (the current walk-back), workspace
    index + relevant files (from `008`), durable memories, task state, and approvals — each a labeled
@@ -47,6 +52,20 @@ item is its plan file, not its rank.
 
 ## Done
 
+- **`012` — Durable approval recovery.** Built on `feat/durable-approval-recovery` (commit `7bc7f78`;
+  not yet merged to `main`). A background task blocked on an approval gate now survives an app
+  restart: quit while it asks → reopen → Resume → it **re-prompts**, and on approval completes. Three
+  layers: (1) the runner dual-writes the gate to the existing `approvals` table (`createApproval` on
+  the `approval` event, `recordApprovalDecision` on the user's choice, reconcile/cancel sweeps stale
+  rows) — runner-side because `approvals.task_id` is `NOT NULL`, so the live chat path is untouched;
+  (2) `will-quit` now aborts with a `SHUTDOWN_ABORT_REASON` sentinel so the gate is left *unresolved*
+  instead of fabricating an `ERROR[denied]` result that wedged resume; (3) two-mode dangling
+  tool-call repair in `runAgentLoop` (`agent/repair.ts`) — task **resume rolls back** the incomplete
+  turn so the agent re-issues the gated tool (re-prompt), live chat **synthesizes** an interrupted
+  result and lets a new message drive. Renderer shows a reloaded mid-gate tool-call as `interrupted`
+  rather than a stuck spinner. No schema change. Verified: `agent/repair.test.ts` + runner cases
+  (194 passing) and E2E (`delete build/` → quit at prompt → Resume → re-prompt → approve → deleted).
+  Spun off `015` (task producer API).
 - **`011` — Task retry with backoff.** Built on `feat/task-retry` (not yet merged to `main`).
   Transient failures (HTTP `408`/`429`/`5xx`, connection-layer codes / SDK connection errors) retry
   with capped exponential backoff + full jitter (max 3 attempts), in-memory in the runner and
