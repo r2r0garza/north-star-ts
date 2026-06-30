@@ -2,7 +2,7 @@ import * as React from "react"
 import { Play } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
-import type { Todo, TodoStatus, TaskEventPayload } from "@/types"
+import type { Todo, TodoStatus, TaskStatus, TaskEventPayload } from "@/types"
 
 // Compact status marker per todo status — mirrors the model-facing markers in
 // todo-prompt.ts so the panel reads the same way the agent's list does.
@@ -39,13 +39,39 @@ export function TodosSection({
 }) {
   const [todos, setTodos] = React.useState<Todo[]>([])
   const [dispatching, setDispatching] = React.useState(false)
+  // Whether a still-running todo_run task already owns this conversation's list.
+  // Drives the button so the user can't hand the same list off twice.
+  const [activeTodoRun, setActiveTodoRun] = React.useState(false)
 
   const refetch = React.useCallback(async () => {
     if (!conversationId) {
       setTodos([])
+      setActiveTodoRun(false)
       return
     }
-    setTodos(await window.cowork.db.todos.list(conversationId))
+    // Prefer a todo_run task's FORK todos so the panel shows the background
+    // worker's [ ]→[>]→[x] progress (and the final list once it completes).
+    // After a 016 handoff the source conversation's own todos are a frozen
+    // snapshot; the worker marks items completed in its forked conversation.
+    // listTasks orders created_at DESC, so the first todo_run match is the
+    // latest. No status filter on selection — a completed task must still show
+    // its final fork list. Fall back to this conversation's todos when none.
+    const tasks = await window.cowork.db.tasks.list({ sourceConversationId: conversationId })
+    const todoRun = tasks.find(
+      (t) =>
+        typeof t.input === "object" &&
+        t.input !== null &&
+        (t.input as { kind?: unknown }).kind === "todo_run"
+    )
+    const LIVE = new Set<TaskStatus>([
+      "queued",
+      "running",
+      "waiting_for_approval",
+      "interrupted",
+    ])
+    setActiveTodoRun(!!todoRun && LIVE.has(todoRun.status))
+    const readFrom = todoRun ? todoRun.conversationId : conversationId
+    setTodos(await window.cowork.db.todos.list(readFrom))
   }, [conversationId])
   const refetchRef = React.useRef(refetch)
   refetchRef.current = refetch
@@ -103,12 +129,14 @@ export function TodosSection({
         size="sm"
         variant="outline"
         className="self-start"
-        disabled={remaining === 0 || dispatching}
+        disabled={remaining === 0 || dispatching || activeTodoRun}
         onClick={() => void runAll()}
         title={
-          remaining === 0
-            ? "No pending tasks to run"
-            : "Run the remaining tasks in a background task"
+          activeTodoRun
+            ? "Already running in the background"
+            : remaining === 0
+              ? "No pending tasks to run"
+              : "Run the remaining tasks in a background task"
         }
       >
         <Play className="size-3.5" />
