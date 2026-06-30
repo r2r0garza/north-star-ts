@@ -44,6 +44,18 @@ item is its plan file, not its rank.
 6. **`007` — Slash commands for skills.** Let users force a skill with `/skill-name …` (pre-inject
    the `read_skill` call), keeping today's model-discretionary path for plain messages. Adds a
    `skills:list` IPC channel + composer autocomplete. Independent — schedule freely.
+7. **`018` — Agentic goal mode.** An opt-in **execution mode** (orthogonal to chat/interactive/
+   north_star): `simple` (today's one-pass behavior, default) vs `goal` (bounded **plan → execute →
+   review → fix → finalize**, capped by `maxIterations` — never unbounded). Modeled as a task-level
+   orchestrator inside the runner's `runOne` (one task / one forked conversation, calling
+   `runAgentLoop` once per phase), so it works for foreground AND background and inherits durable
+   events, crash-resume, and cancellation for free. First real consumer of the unused `checkpoints`
+   table (one checkpoint per phase = the resume cursor) and a new `phase_change` task event. Reviewer
+   is **deterministic-first** — tests/lint/build/file-existence/`git diff` via `Environment.exec`,
+   with an LLM review that *supplements* (can't flip a hard check failure). Manual invocation only this
+   PR (`/goal <request>` — reuses `007`'s composer slash-command affordance — + a "Run with review
+   loop" button); the Always/Ask/Manual/Off **setting is deferred** to its own plan. Placed by `007`
+   since both add `/`-command composer UI.
 
 ## Done
 
@@ -147,7 +159,7 @@ item is its plan file, not its rank.
 ## Backlog (not yet planned)
 
 Tracked in `IMPLEMENTED-TOOLS.md` → "Not yet implemented". Near-term tool candidates:
-`read_extract`, `session_search`, `process_registry`, `tool_result_storage`. Larger:
+`apply_patch`, `read_extract`, `session_search`, `process_registry`, `tool_result_storage`. Larger:
 `skill_manager`, `tool_search`, `cron`/`blueprints`, `code_execution`. Deferred:
 web/SSRF, memory, subagents, MCP, browser/computer-use, media, integrations.
 
