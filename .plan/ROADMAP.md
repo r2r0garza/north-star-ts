@@ -7,14 +7,14 @@ item is its plan file, not its rank.
 
 ## Next up
 
-1. **`015` — Task producer API.** State (and lightly enforce) the contract that *every* future
-   background producer (workspace indexing, re-index changed files, North Star subtasks, scheduled
-   maintenance, artifact generation, repo analysis) creates work through the same `TaskRunner` —
-   never the DB or `runAgentLoop` directly — so approvals, events, recovery, transcript, and history
-   stay consistent. The audit found the runner is already general (no hardcoded origin,
-   headless-capable, open `kind`); the only gap is a `registerKind(kind, { autoResume })` affordance
-   for producers whose kind should re-queue on restart. Small; no schema change. Best landed just
-   before `008` (the indexer is its first consumer).
+1. **`017` — Todo-run follow-ups.** Two gaps surfaced testing `016`. (1) **Robust large-file writes**:
+   full-file content inlined as one JSON tool argument truncates at the output-token cap (the immediate
+   cap-bump + truncation-detection fix shipped with `016`; this is the structural fix — prefer surgical
+   `edit_file_tool` edits and/or a chunked write tool so large writes never ride one oversized
+   completion). (2) **Live todo progress in the panel**: after a handoff the Todos panel shows stale
+   all-`[ ]` because it reads the *source* conversation's todos while the background agent updates the
+   *forked* worker conversation — make the panel reflect real per-item progress. Independent of each
+   other; general agent-tool robustness (item 1) + a UI read gap (item 2), not `todo_run`-specific.
 2. **`008` — Workspace indexing.** Background, incremental, pausable/cancellable workspace index so
    the agent can answer immediately while the index improves. Four stages (file map → metadata →
    symbols → embeddings-later); incremental by content hash (skip unchanged, re-index changed, drop
@@ -47,6 +47,28 @@ item is its plan file, not its rank.
 
 ## Done
 
+- **`016` — Todo → background handoff.** Run a whole todo list as one durable background task. The
+  agent builds a list with `todo_write`, then either it calls the new gated `run_todos_in_background`
+  tool (the **delegation** is the approved action — a new `delegate` approval kind that always prompts,
+  never sandbox-downgraded or allowlisted; the turn pauses on the live-chat approval card, which omits
+  "always allow") or the user clicks **Run all in background** on the new **Todos** panel (explicit
+  intent → no gate). Both converge on `TaskRunner.enqueue` with `kind: "todo_run"` (`registerKind`,
+  auto-resume) and a **seed** mechanism: since `enqueue` forks an empty worker conversation, the
+  current list is snapshotted into `TaskInput.seedTodos` and seeded into the fork. `enqueueTask` is
+  injected into `ToolContext` (the agent layer can't import the runner — cycle), supplied by both
+  `runChat` and the runner's `runOne`. New `db:todos:list` read path + Todos panel. Verified:
+  typecheck + 209 tests (runner seed/auto-resume, tool gate/deny/fail-closed, delegation classifier).
+  Follow-ups → `017` (large-file write robustness — immediate cap-bump+truncation-detection fix shipped
+  here; live todo progress in the panel).
+- **`015` — Task producer API.** Stated + lightly enforced the contract that *every* background
+  producer creates work through `TaskRunner.enqueue` (never the DB or `runAgentLoop` directly), so
+  approvals, events, recovery, transcript, and history stay consistent. The audit found the runner
+  already general (no hardcoded origin, headless-capable, open `kind`); the gap was a
+  `registerKind(kind, { autoResume })` affordance (registry moved from a private const to a per-instance
+  map; `agent_chat` pre-registered) for producers whose kind should re-queue on restart. Also fixed a
+  real FK bug it exposed: `enqueue` wrote `source_conversation_id` to a non-existent source under
+  `foreign_keys = ON`; now links back only when the source exists (else self-sourced). No schema change.
+  `016` is its first consumer.
 - **`013` — Task history in the panel.** Built on `feat/task-history-panel`. A collapsible **History**
   section in the Workspace Activity panel lists terminal tasks (`completed`/`failed`/`cancelled`) for
   the active source conversation, newest first, capped at 25 ("Showing last 25"), each row opening the

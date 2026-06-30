@@ -22,6 +22,9 @@ export interface ToolApproval {
   summary: string // e.g. "$ rm -rf build"
   reason: string // why it's flagged, e.g. "recursive delete"
   status: "pending" | "approved" | "denied"
+  // The action kind, when known. "delegate" (handing work to the background) is
+  // asked every time, so its card hides the "always allow" affordance.
+  kind?: string
 }
 
 // A single tool call and (once it finishes) its result. `id` is the tool_call
@@ -97,6 +100,8 @@ export function deriveLabel(
       const suffix = parts.length ? ` — ${parts.join(", ")}` : ""
       return `Updated task list (${todos.length} item${todos.length === 1 ? "" : "s"})${suffix}`
     }
+    case "run_todos_in_background":
+      return "Run tasks in the background"
     default:
       return name
   }

@@ -45,7 +45,8 @@ export const editFileTool: Tool = {
       description:
         "Replace an exact string in a file inside the workspace. `old_string` " +
         "must match exactly once (include surrounding context to disambiguate), " +
-        "unless replace_all is true.",
+        "unless replace_all is true. Use this to modify an existing file; use " +
+        "write_file_tool to create new files.",
       parameters: {
         type: "object",
         properties: {

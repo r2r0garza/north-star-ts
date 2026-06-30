@@ -5,8 +5,11 @@
 // it. There is ONE pipeline, not one for shell and another for files.
 
 // The kind of side effect a tool wants to perform. Classifiers register against
-// these; the allowlist persists rules keyed by kind + identity.
-export type ActionKind = "shell" | "file_write" | "file_edit"
+// these; the allowlist persists rules keyed by kind + identity. `delegate` is
+// not a filesystem/shell side effect — it's handing the remaining work off to a
+// background task (run_todos_in_background). It always requires approval and is
+// never allowlisted or sandbox-downgraded (see DelegationClassifier).
+export type ActionKind = "shell" | "file_write" | "file_edit" | "delegate"
 
 // A tool's request to do something gated. Tool-agnostic.
 export interface ToolAction {

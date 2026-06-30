@@ -181,6 +181,9 @@ export function ApprovalCard({
   onApproval: ApprovalHandler
 }) {
   const { requestId } = approval
+  // Delegation (handing work to a background task) is asked every time — there's
+  // no "always allow" for it, so hide that affordance for delegate approvals.
+  const allowRemember = approval.kind !== "delegate"
   return (
     <div className="flex flex-col gap-2 rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-xs">
       <div className="flex items-center gap-2 font-medium text-destructive">
@@ -194,13 +197,15 @@ export function ApprovalCard({
         <Button size="xs" onClick={() => onApproval(requestId, "approved")}>
           Approve
         </Button>
-        <Button
-          size="xs"
-          variant="outline"
-          onClick={() => onApproval(requestId, "approved", "workspace")}
-        >
-          Always allow in this workspace
-        </Button>
+        {allowRemember && (
+          <Button
+            size="xs"
+            variant="outline"
+            onClick={() => onApproval(requestId, "approved", "workspace")}
+          >
+            Always allow in this workspace
+          </Button>
+        )}
         <Button
           size="xs"
           variant="destructive"

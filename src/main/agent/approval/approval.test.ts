@@ -3,6 +3,7 @@ import { stripAnsi } from "./ansi"
 import { normalizeCommand } from "./normalize"
 import { RegexCommandClassifier } from "./regex-classifier"
 import { FileActionClassifier } from "./file-classifier"
+import { DelegationClassifier } from "./delegation-classifier"
 import {
   PolicyEngine,
   type AllowlistLookup,
@@ -281,5 +282,38 @@ describe("PolicyEngine — sandbox auto-approve", () => {
     const sandboxAll: SandboxPolicyLookup = { autoApproves: () => true }
     const engine = new PolicyEngine([classifier], allowNone, sandboxAll)
     expect(engine.decide(shell("rm -rf /"), { sandboxed: true }).level).toBe("hard_block")
+  })
+})
+
+describe("DelegationClassifier", () => {
+  const delegate = (): ToolAction => ({
+    tool: "run_todos_in_background",
+    kind: "delegate",
+    summary: "Run 3 tasks in the background",
+    identity: "delegate:conv-1",
+  })
+  const dc = new DelegationClassifier()
+
+  it("requires approval for a delegate action, with no category", () => {
+    const verdict = dc.classify(delegate())
+    expect(verdict).toMatchObject({ level: "require_approval" })
+    expect((verdict as { category?: string }).category).toBeUndefined()
+  })
+
+  it("returns null for non-delegate actions (lets other classifiers run)", () => {
+    expect(dc.classify(shell("ls"))).toBeNull()
+    expect(dc.classify(fileWrite("a.ts"))).toBeNull()
+  })
+
+  it("is NOT downgraded by the sandbox: a category-less verdict can't match a category policy", () => {
+    // Mirror the real sandbox policy (settingsService.sandboxAutoApproves): it
+    // returns false for an undefined category. A delegate verdict carries no
+    // category, so it can never be auto-approved — the safety property we rely on.
+    const sandboxRealistic: SandboxPolicyLookup = {
+      autoApproves: (cat) => cat !== undefined,
+    }
+    const allowNone: AllowlistLookup = { isAllowed: () => false }
+    const engine = new PolicyEngine([dc], allowNone, sandboxRealistic)
+    expect(engine.decide(delegate(), { sandboxed: true }).level).toBe("require_approval")
   })
 })

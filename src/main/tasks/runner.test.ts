@@ -41,6 +41,7 @@ import { appendMessage, listMessages } from "../db/repositories/messages"
 import { listEvents } from "../db/repositories/task-events"
 import { createApproval, listApprovals } from "../db/repositories/approvals"
 import { createConversation } from "../db/repositories/conversations"
+import { listTodos } from "../db/repositories/todos"
 
 // Wait for the wakeable pump to settle: poll until every task has left the
 // queued/running states (or a timeout). The pump runs on microtasks, so a few
@@ -81,6 +82,154 @@ describe.skipIf(!sqliteLoads)("TaskRunner — reconcile on start", () => {
 
     expect(getTask(task.id)?.status).toBe("interrupted")
     expect(loopCalls).toHaveLength(0)
+    await runner.stop()
+  })
+})
+
+describe.skipIf(!sqliteLoads)("TaskRunner — registerKind (producer auto-resume opt-in)", () => {
+  it("auto-resumes an orphaned running task of a registered auto-resume kind", async () => {
+    const conv = createConversation({ mode: "chat" })
+    const task = createTask({
+      conversationId: conv.id,
+      status: "running",
+      input: { kind: "auto_kind", message: "reindex" },
+    })
+
+    const runner = new TaskRunner()
+    // A background producer opts its kind into auto-resume BEFORE start().
+    runner.registerKind("auto_kind", { autoResume: true })
+    runner.start()
+    await settle()
+
+    // reconcile re-queued it (autoResume) instead of interrupting; the pump ran it.
+    expect(getTask(task.id)?.status).toBe("completed")
+    expect(loopCalls).toHaveLength(1)
+    await runner.stop()
+  })
+
+  it("auto-resumes an orphaned waiting_for_approval task and denies its stale row", async () => {
+    const conv = createConversation({ mode: "chat" })
+    const task = createTask({
+      conversationId: conv.id,
+      status: "waiting_for_approval",
+      input: { kind: "auto_kind", message: "reindex" },
+    })
+    createApproval({ taskId: task.id, request: { requestId: "req-1" } })
+
+    const runner = new TaskRunner()
+    runner.registerKind("auto_kind", { autoResume: true })
+    runner.start()
+    await settle()
+
+    // The stale gate is swept (denied/superseded restart), then the task
+    // re-queues and runs — not left interrupted.
+    expect(getTask(task.id)?.status).toBe("completed")
+    expect(loopCalls).toHaveLength(1)
+    const rows = listApprovals({ taskId: task.id })
+    expect(rows).toHaveLength(1)
+    expect(rows[0].status).toBe("denied")
+    expect((rows[0].decision as { superseded: string }).superseded).toBe("restart")
+    await runner.stop()
+  })
+
+  it("still interrupts an orphaned task of an UNregistered kind", async () => {
+    const conv = createConversation({ mode: "chat" })
+    const task = createTask({
+      conversationId: conv.id,
+      status: "running",
+      input: { kind: "never_registered", message: "x" },
+    })
+    loopImpl = async () => ({ content: "should not run" })
+
+    const runner = new TaskRunner()
+    runner.start()
+    await settle()
+
+    expect(getTask(task.id)?.status).toBe("interrupted")
+    expect(loopCalls).toHaveLength(0)
+    await runner.stop()
+  })
+
+  it("enqueues a custom kind with a non-existent conversationId and still runs headless", async () => {
+    const runner = new TaskRunner()
+    runner.registerKind("auto_kind", { autoResume: true })
+    runner.start()
+
+    // No subscriber attached, and the source conversation does not exist: enqueue
+    // must still fork a valid private worker conversation and drive the loop.
+    const task = runner.enqueue({
+      conversationId: "does-not-exist",
+      message: "headless work",
+      kind: "auto_kind",
+    })
+    await settle()
+
+    const finished = getTask(task.id)!
+    expect(finished.status).toBe("completed")
+    // No live source to link back to: not the bogus id. createTask treats a null
+    // source as self-sourced (points at the task's own forked worker conversation),
+    // which keeps the source_conversation_id FK satisfied.
+    expect(finished.sourceConversationId).not.toBe("does-not-exist")
+    expect(finished.sourceConversationId).toBe(finished.conversationId)
+    expect(finished.conversationId).not.toBe("does-not-exist")
+    // The user message landed in the forked private transcript.
+    expect(listMessages(finished.conversationId).map((m) => m.content)).toContain("headless work")
+    expect(loopCalls).toHaveLength(1)
+    expect(loopCalls[0].conversationId).toBe(finished.conversationId)
+    await runner.stop()
+  })
+})
+
+describe.skipIf(!sqliteLoads)("TaskRunner — todo_run seed (plan 016)", () => {
+  it("seeds the handed-off todo list into the forked worker conversation", async () => {
+    const conv = createConversation({ mode: "interactive" })
+    const runner = new TaskRunner()
+    runner.registerKind("todo_run", { autoResume: true })
+    runner.start()
+
+    const seedTodos = [
+      { itemId: "a", content: "first item", status: "completed" as const },
+      { itemId: "b", content: "second item", status: "pending" as const },
+      { itemId: "c", content: "third item", status: "in_progress" as const },
+    ]
+    const task = runner.enqueue({
+      conversationId: conv.id,
+      message: "work the list",
+      kind: "todo_run",
+      title: "3 tasks",
+      seedTodos,
+    })
+    await settle()
+
+    const finished = getTask(task.id)!
+    expect(finished.status).toBe("completed")
+    // The fork is a NEW conversation; its todos table was empty until enqueue
+    // seeded the snapshot. The source conversation's list is untouched (empty).
+    const forkedTodos = listTodos(finished.conversationId)
+    expect(forkedTodos.map((t) => [t.itemId, t.content, t.status])).toEqual([
+      ["a", "first item", "completed"],
+      ["b", "second item", "pending"],
+      ["c", "third item", "in_progress"],
+    ])
+    expect(listTodos(conv.id)).toHaveLength(0)
+    await runner.stop()
+  })
+
+  it("auto-resumes an orphaned todo_run task on reconcile", async () => {
+    const conv = createConversation({ mode: "interactive" })
+    const task = createTask({
+      conversationId: conv.id,
+      status: "running",
+      input: { kind: "todo_run", message: "work the list" },
+    })
+
+    const runner = new TaskRunner()
+    runner.registerKind("todo_run", { autoResume: true })
+    runner.start()
+    await settle()
+
+    expect(getTask(task.id)?.status).toBe("completed")
+    expect(loopCalls).toHaveLength(1)
     await runner.stop()
   })
 })
