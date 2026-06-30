@@ -1,5 +1,20 @@
 import type { Gate } from "../approval/types"
 import type { Environment } from "../env/types"
+import type { TodoStatus } from "../../db/types"
+
+// Hand work off to the durable task runner from inside a tool. A thin shape over
+// TaskRunner.enqueue (the producer-contract seam, plan 015) — passed via
+// ToolContext rather than imported, so the agent layer never depends on the
+// runner (which imports the agent layer). `seedTodos` lets run_todos_in_background
+// snapshot the conversation's list into the forked worker conversation.
+export type EnqueueTaskInput = {
+  conversationId: string
+  message: string
+  kind?: string
+  title?: string | null
+  seedTodos?: Array<{ itemId: string; content: string; status: TodoStatus }>
+}
+export type EnqueueTask = (input: EnqueueTaskInput) => { id: string; status: string }
 
 // --- ask_user_question ---
 // The model asks the user one or more clarifying questions, each with preset
@@ -64,6 +79,10 @@ export interface ToolContext {
   // whole process group, so a slow in-flight shell command stops promptly instead
   // of delaying the turn's end (see .plan/005).
   signal?: AbortSignal
+  // Hand the remaining work off to a durable background task (see EnqueueTask).
+  // Set by the real agent loop; absent in contexts that can't delegate (e.g.
+  // unit tests) — run_todos_in_background then reports it's unavailable.
+  enqueueTask?: EnqueueTask
 }
 
 // A tool the agent can call. `definition` is the OpenAI-compatible schema

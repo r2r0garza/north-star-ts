@@ -136,6 +136,7 @@ function Shell() {
         onOpenTask={setViewingTask}
         historyExpanded={historyExpanded}
         onHistoryExpandedChange={setHistoryExpanded}
+        onRanInBackground={() => setActivity(true)}
       />
       <TaskCompletionToasts conversationId={activeConversationId} onReveal={revealHistory} />
       <Toaster />

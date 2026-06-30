@@ -10,6 +10,8 @@ export type {
   TaskCheckpoint,
   TaskEvent,
   TaskStatus,
+  Todo,
+  TodoStatus,
   Workspace,
 } from "../../preload/index"
 

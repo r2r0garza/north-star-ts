@@ -14,7 +14,8 @@ import {
 import { appendMessage } from "../db/repositories/messages"
 import { getConversation, createConversation } from "../db/repositories/conversations"
 import { getWorkspace } from "../db/repositories/workspaces"
-import type { Task, TaskStatus } from "../db/types"
+import { replaceTodos } from "../db/repositories/todos"
+import type { Task, TaskStatus, TodoStatus } from "../db/types"
 
 // Runner-emitted lifecycle events, appended to task_events alongside the agent's
 // ChatEvents so a (re)attaching renderer can reconstruct a task's progress from
@@ -50,22 +51,25 @@ export type TaskEventListener = (
 // workspace indexer) can opt into resuming itself on startup, while user-driven
 // coding tasks stay manual-resume-only until we have stronger workspace
 // validation and resume semantics.
-interface TaskKindCapability {
+export interface TaskKindCapability {
   autoResume: boolean
 }
 
 // The default kind for a durable agent turn enqueued from the UI: manual resume
-// only. Future kinds (indexing, maintenance) register here with autoResume:true.
+// only. Background producers (indexing, maintenance) opt their kind into
+// auto-resume via registerKind() at app init.
 const DEFAULT_KIND = "agent_chat"
-const TASK_KINDS: Record<string, TaskKindCapability> = {
-  agent_chat: { autoResume: false },
-}
 
 // A task's input blob carries its kind and the user message to run. Stored as
 // JSON on tasks.input by enqueue; read back on resume.
 interface TaskInput {
   kind: string
   message: string
+  // Optional snapshot of a todo list to seed into the forked worker conversation
+  // (plan 016, todo_run). enqueue forks a fresh conversation with an empty todos
+  // table, so a handed-off list must be carried here and seeded — not a column
+  // (per the 015 producer contract: per-kind config rides in the input blob).
+  seedTodos?: Array<{ itemId: string; content: string; status: TodoStatus }>
 }
 
 function kindOf(task: Task): string {
@@ -96,16 +100,23 @@ function backoffDelay(attempt: number, cfg: BackoffConfig): number {
   return Math.floor(Math.random() * ceiling)
 }
 
-function capabilityOf(kind: string): TaskKindCapability {
-  return TASK_KINDS[kind] ?? { autoResume: false }
-}
-
 // A single-process durable task runner over the existing task tables. It makes
 // agent work queued (FIFO under a concurrency cap), background (runs with no
 // renderer attached; progress persisted to task_events), and crash-resumable
 // (an interrupted task survives an app restart). It wraps runAgentLoop — a
 // "live turn" (runChat) and a "task" share that core loop but own their own
 // AbortController, so the two lifecycles stay independent.
+//
+// PRODUCER CONTRACT: every task producer — the "Run in background" button, and
+// future ones (workspace indexing, re-index, North Star subtasks, scheduled
+// maintenance, artifact generation) — creates work ONLY through enqueue()
+// (in-process) or the task:start IPC (over IPC). A producer must NEVER write the
+// tasks/messages tables or call runAgentLoop directly. enqueue is the single
+// seam; everything downstream — approvals, retry, crash recovery, cancellation,
+// history — is shared by construction, so behavior is identical no matter who
+// enqueued the task. A producer needing richer per-kind config passes it inside
+// the task input blob (extend TaskInput per-kind) rather than adding columns,
+// and registers its kind's capabilities via registerKind() at app init.
 export class TaskRunner {
   // Pending task ids in FIFO order.
   private queue: string[] = []
@@ -129,6 +140,13 @@ export class TaskRunner {
   // here is NOT in `running` (its slot is freed) but its DB row stays `running`.
   private backoffTimers = new Map<string, ReturnType<typeof setTimeout>>()
   private readonly backoff: BackoffConfig
+  // Per-kind capability registry — the source of truth for capabilityOf().
+  // agent_chat is pre-registered (manual-resume-only); producers opt their kind
+  // into auto-resume via registerKind() at app init, before start() runs
+  // reconcile/seed. Unknown kinds fall back to { autoResume: false }.
+  private readonly kinds = new Map<string, TaskKindCapability>([
+    [DEFAULT_KIND, { autoResume: false }],
+  ])
 
   constructor(opts: { concurrency?: number; backoff?: Partial<BackoffConfig> } = {}) {
     this.concurrency = opts.concurrency ?? 2
@@ -144,13 +162,30 @@ export class TaskRunner {
     void this.pump()
   }
 
+  // Register a task kind's capabilities (e.g. a background producer opting into
+  // auto-resume on restart). Call once at app init, BEFORE start() — start()
+  // runs reconcile(), which consults the registry to decide whether an orphaned
+  // task of this kind re-queues (autoResume) or waits for a manual resume.
+  // Re-registering a kind overwrites its capability.
+  registerKind(kind: string, capability: TaskKindCapability): void {
+    this.kinds.set(kind, capability)
+  }
+
+  // The capabilities of a task kind, from the registry. An unregistered kind
+  // gets the conservative default: manual resume only.
+  private capabilityOf(kind: string): TaskKindCapability {
+    return this.kinds.get(kind) ?? { autoResume: false }
+  }
+
   // Enqueue a new durable agent turn. The task runs in its OWN forked
   // conversation — a private worker transcript — so its model/tool messages
   // never interleave with the live chat the user started it from (which caused
   // races, mixed context, and duplicate answers when both wrote to one log). The
   // fork copies the source's mode, workspace, and LLM selection so the task runs
   // with the same context; `sourceConversationId` links it back so the Workspace
-  // Activity panel can list it under the originating conversation. The user
+  // Activity panel can list it under the originating conversation. A headless
+  // producer whose source conversation doesn't exist passes null, which createTask
+  // treats as self-sourced (the task's own worker conversation). The user
   // message is persisted into the PRIVATE transcript, so runOne calls
   // runAgentLoop with no fresh userMessage — a first run and a resume are the
   // exact same code path.
@@ -159,9 +194,10 @@ export class TaskRunner {
     message: string
     kind?: string
     title?: string | null
+    seedTodos?: TaskInput["seedTodos"]
   }): Task {
     const kind = input.kind ?? DEFAULT_KIND
-    const taskInput: TaskInput = { kind, message: input.message }
+    const taskInput: TaskInput = { kind, message: input.message, seedTodos: input.seedTodos }
 
     // Fork a private conversation from the source, inheriting its execution
     // context (mode → tools/prompt, workspace, provider/model selection).
@@ -174,9 +210,22 @@ export class TaskRunner {
       title: input.title ?? input.message.slice(0, 60),
     })
 
+    // Seed a handed-off todo list into the fresh worker conversation (plan 016).
+    // The fork starts with an empty todos table; replaceTodos writes the snapshot
+    // so buildTodoListPrompt re-injects it and the background agent works the list.
+    if (input.seedTodos && input.seedTodos.length > 0) {
+      replaceTodos(
+        taskConversation.id,
+        input.seedTodos.map((t) => ({ id: t.itemId, content: t.content, status: t.status }))
+      )
+    }
+
     const task = createTask({
       conversationId: taskConversation.id,
-      sourceConversationId: input.conversationId,
+      // Link back to the source only when it actually exists — source_conversation_id
+      // has a FK (ON DELETE SET NULL), so a headless producer with no live source
+      // (or a since-deleted one) records null rather than violating the constraint.
+      sourceConversationId: source ? input.conversationId : null,
       title: input.title ?? null,
       status: "queued",
       input: taskInput,
@@ -329,7 +378,7 @@ export class TaskRunner {
       if (task.status === "waiting_for_approval") {
         this.settleApprovals(task.id, "denied", { superseded: "restart" })
       }
-      const next: TaskStatus = capabilityOf(kindOf(task)).autoResume
+      const next: TaskStatus = this.capabilityOf(kindOf(task)).autoResume
         ? "queued"
         : "interrupted"
       updateTask(task.id, { status: next })
@@ -434,6 +483,10 @@ export class TaskRunner {
       const result: ChatResult = await runAgentLoop({
         conversationId: task.conversationId,
         workspace,
+        // A background task can itself hand off more work (e.g. a todo_run task
+        // spawning another). Bind to this same runner so it goes through the one
+        // enqueue seam — the producer contract holds recursively.
+        enqueueTask: (input) => this.enqueue(input),
         onEvent: (event) => {
           // A gate is blocking the loop: surface it as waiting_for_approval so
           // the panel can prompt. The agent's gate promise stays parked until

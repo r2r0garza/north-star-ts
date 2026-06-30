@@ -71,11 +71,17 @@ function createWindow(): void {
 // `chat` runs the agentic loop and streams events back to the calling renderer
 // over the "chat:event" channel; the invoke resolves with the final result.
 ipcMain.handle("chat", (event, req: ChatRequest) =>
-  runChat(req, (chatEvent) => {
-    if (!event.sender.isDestroyed()) {
-      event.sender.send("chat:event", chatEvent)
-    }
-  })
+  runChat(
+    req,
+    (chatEvent) => {
+      if (!event.sender.isDestroyed()) {
+        event.sender.send("chat:event", chatEvent)
+      }
+    },
+    // Let a live turn hand work to the background (run_todos_in_background). The
+    // runner singleton lives here; runChat can't import it (cycle).
+    (input) => taskRunner.enqueue(input)
+  )
 )
 // Resolve an approval the agent loop is paused on. Fire-and-forget from the
 // renderer's perspective: it just unblocks the gate in runChat.
@@ -129,6 +135,12 @@ app.whenReady().then(() => {
   // Start the durable task runner now that the DB handlers are registered (it
   // reads the task tables synchronously). reconcile() marks any task left
   // mid-flight by a previous run as interrupted; the pump then drains the queue.
+  // Future background producers (indexing, maintenance) register their task
+  // kinds here via taskRunner.registerKind(...) BEFORE start() — reconcile()
+  // consults the registry to decide which orphaned kinds auto-resume.
+  // todo_run: a handed-off todo list. Auto-resume so a long list survives a
+  // restart and continues (plan 016).
+  taskRunner.registerKind("todo_run", { autoResume: true })
   taskRunner.start()
   registerTaskHandlers(taskRunner)
   // Migrate a pre-settings env-configured key into a stored provider account, so

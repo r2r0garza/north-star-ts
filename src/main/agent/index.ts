@@ -1,7 +1,7 @@
 import { randomUUID } from "crypto"
 import { stat } from "fs/promises"
 import { basename, isAbsolute } from "path"
-import { toolDefinitions, runTool, todoWriteTool, askUserQuestionTool } from "./tools"
+import { toolDefinitions, runTool, todoWriteTool, askUserQuestionTool, runTodosInBackgroundTool } from "./tools"
 import { readFileTool } from "./tools/read_file_tool"
 import { listTodos } from "../db/repositories/todos"
 import { buildTodoListPrompt } from "./todo-prompt"
@@ -29,8 +29,9 @@ import { actionAllowlist } from "../db/repositories"
 import { PolicyEngine, type AllowlistLookup, type SandboxPolicyLookup } from "./approval/policy"
 import { RegexCommandClassifier } from "./approval/regex-classifier"
 import { FileActionClassifier } from "./approval/file-classifier"
-import type { Gate, GateOutcome, ToolAction } from "./approval/types"
-import type { Ask, AskResult, Question, QuestionAnswer } from "./tools/types"
+import { DelegationClassifier } from "./approval/delegation-classifier"
+import type { ActionKind, Gate, GateOutcome, ToolAction } from "./approval/types"
+import type { Ask, AskResult, EnqueueTask, Question, QuestionAnswer } from "./tools/types"
 
 // The single approval policy, shared across turns. The allowlist lookup is
 // backed by the action_allowlist table; classifiers are tried in order (file
@@ -53,6 +54,10 @@ const sandboxPolicy: SandboxPolicyLookup = {
 }
 const policy = new PolicyEngine(
   [
+    // Delegation first: a `delegate` action always requires approval and is never
+    // sandbox-downgraded or allowlisted (no category), so classify it before the
+    // file/shell classifiers (which return null for it anyway).
+    new DelegationClassifier(),
     new FileActionClassifier(() => settingsService.getPermissions()),
     new RegexCommandClassifier(),
   ],
@@ -85,6 +90,14 @@ const abortControllers = new Map<string, AbortController>()
 // re-prompts on resume (plan 012). Fabricating a denial here was the bug that
 // persisted a fake "ERROR[denied]" result and wedged resume.
 export const SHUTDOWN_ABORT_REASON = Symbol("agent:shutdown")
+
+// Max output tokens per model turn. The agent emits tool calls whose arguments
+// can be large (e.g. write_file_tool inlines a whole file as a JSON blob), so a
+// low cap truncates the response mid-tool-call — the streamed arguments arrive as
+// invalid JSON. 1024 was far too low for a file-writing agent; 8192 covers normal
+// writes. A turn that still hits the ceiling is detected via finish_reason below
+// and surfaced as a clean, retryable error rather than a cryptic JSON parse throw.
+const MAX_OUTPUT_TOKENS = 8192
 
 // Called from the renderer over IPC ("chat:stop") to cancel an in-flight turn.
 // Idempotent and safe to call when nothing is running (no-op if no controller).
@@ -185,6 +198,11 @@ export type ChatEvent =
       tool: string
       summary: string
       reason: string
+      // The action kind being approved. The renderer keys affordances off it —
+      // e.g. a `delegate` approval (handing work to the background) omits the
+      // "always allow in this workspace" button, since delegation is asked every
+      // time. Optional so older persisted events without it still parse.
+      kind?: ActionKind
     }
   // The agent is asking the user clarifying questions (ask_user_question). `id`
   // is the tool-call id; `requestId` is the process-unique token the renderer
@@ -268,6 +286,12 @@ export interface RunAgentLoopOptions {
   // caller registers and tears it down (this function never touches the
   // module-level abortControllers map).
   abort: AbortController
+  // Hand work off to the durable task runner. Injected by the caller (runChat
+  // and the runner's own runOne both bind it to the singleton's enqueue) rather
+  // than imported — the agent module can't import the runner (the runner imports
+  // it; that would be a cycle). Threaded into ToolContext so run_todos_in_background
+  // can enqueue a `todo_run` task. Absent in contexts that can't delegate.
+  enqueueTask?: EnqueueTask
 }
 
 // The core agentic loop, shared by the live `chat` path (runChat) and the
@@ -332,7 +356,9 @@ export async function runAgentLoop(opts: RunAgentLoopOptions): Promise<ChatResul
       : hasAttachments
         ? [readFileTool.definition]
         : []),
-    ...(showTodos ? [todoWriteTool.definition] : []),
+    ...(showTodos
+      ? [todoWriteTool.definition, runTodosInBackgroundTool.definition]
+      : []),
     // ask_user_question is offered in every mode — clarification is universal.
     askUserQuestionTool.definition,
     readSkillTool.definition,
@@ -457,7 +483,7 @@ export async function runAgentLoop(opts: RunAgentLoopOptions): Promise<ChatResul
       const stream = await createCompletion(
         llm.client,
         llm.model,
-        1024,
+        MAX_OUTPUT_TOKENS,
         { messages, tools, stream: true },
         [
           undefined,
@@ -477,13 +503,19 @@ export async function runAgentLoop(opts: RunAgentLoopOptions): Promise<ChatResul
         number,
         { id: string; name: string; arguments: string }
       >()
+      // The provider's reason for ending the turn (last non-null wins). "length"
+      // means the output hit the token cap — the response (and any tool-call JSON
+      // mid-stream) is truncated, so we must NOT try to parse it as complete.
+      let finishReason: string | null = null
 
       for await (const chunk of stream) {
         // Stop pressed mid-stream: break so the iterator cancels the reader and
         // the HTTP stream stops. The post-loop abort check unwinds the turn.
         if (abort.signal.aborted) break
 
-        const delta = chunk.choices[0]?.delta
+        const choice = chunk.choices[0]
+        if (choice?.finish_reason) finishReason = choice.finish_reason
+        const delta = choice?.delta
         if (!delta) continue
 
         const piece = contentToText(delta.content)
@@ -523,6 +555,21 @@ export async function runAgentLoop(opts: RunAgentLoopOptions): Promise<ChatResul
       const toolCalls = [...toolAcc.entries()]
         .sort(([a], [b]) => a - b)
         .map(([, v]) => v)
+
+      // The turn hit the output-token ceiling. If it was cut off mid tool-call,
+      // the accumulated arguments are partial/invalid JSON — parsing them below
+      // throws a cryptic SyntaxError that surfaces as an opaque "turn ended early"
+      // (the bug a large write_file_tool blob triggered). Fail cleanly and
+      // retryably instead, with a message the agent/user can act on. A truncated
+      // text-only answer falls through: its partial text is still usable.
+      if (finishReason === "length" && toolCalls.length > 0) {
+        const note =
+          "The model's response was truncated before the tool call completed " +
+          "(hit the output token limit). Retry with a smaller write, a chunked " +
+          "file write, or a higher output cap."
+        appendMessage({ conversationId, role: "assistant", content: `⚠️ ${note}` })
+        return { error: note, retryable: true }
+      }
 
       if (toolCalls.length === 0) {
         // No tool calls — this is the final answer. Persist it so the next turn
@@ -587,6 +634,7 @@ export async function runAgentLoop(opts: RunAgentLoopOptions): Promise<ChatResul
             tool: action.tool,
             summary: action.summary,
             reason: decision.reason,
+            kind: action.kind,
           })
           return new Promise<GateOutcome>((resolve) => {
             pendingApprovals.set(requestId, {
@@ -635,7 +683,7 @@ export async function runAgentLoop(opts: RunAgentLoopOptions): Promise<ChatResul
         }
         // read_skill ignores these fields. With a workspace, file tools confine
         // to it; without one, read_file_tool reads only the attached files.
-        const ctx = { workspace: workspace ?? "", attachments, conversationId, gate, ask, env, signal: abort.signal }
+        const ctx = { workspace: workspace ?? "", attachments, conversationId, gate, ask, env, signal: abort.signal, enqueueTask: opts.enqueueTask }
         const result =
           call.name === readSkillTool.definition.function.name
             ? await readSkillTool.execute(args, ctx)
@@ -702,7 +750,11 @@ export async function runAgentLoop(opts: RunAgentLoopOptions): Promise<ChatResul
 // directly with its own task-keyed controller.
 export async function runChat(
   { conversationId, message, workspace, attachments }: ChatRequest,
-  onEvent: OnEvent = () => {}
+  onEvent: OnEvent = () => {},
+  // Lets a live interactive/north_star turn hand work off to the background via
+  // run_todos_in_background. Injected by the main-process IPC handler (which owns
+  // the TaskRunner singleton) so the agent module never imports the runner.
+  enqueueTask?: EnqueueTask
 ): Promise<ChatResult> {
   // For an untitled conversation, generate a short title from the first message
   // with a separate (non-streaming) LLM call. Kicked off here so it runs
@@ -733,6 +785,7 @@ export async function runChat(
       userMessage: message,
       onEvent,
       abort,
+      enqueueTask,
     })
   } finally {
     // Release this turn's abort controller (only if it's still the current one —

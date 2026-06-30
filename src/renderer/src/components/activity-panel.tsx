@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/collapsible"
 import { TasksSection } from "@/components/tasks-section"
 import { TasksHistorySection } from "@/components/tasks-history-section"
+import { TodosSection } from "@/components/todos-section"
 import type { Task } from "@/types"
 
 // The right-hand Workspace Activity panel. Deliberately SELF-CONTAINED rather
@@ -100,6 +101,7 @@ export function ActivityPanel({
   onOpenTask,
   historyExpanded,
   onHistoryExpandedChange,
+  onRanInBackground,
 }: {
   conversationId: string | null
   // Controlled open state (the Shell owns it so the toggle can live in the drag
@@ -113,6 +115,9 @@ export function ActivityPanel({
   // open along with the panel.
   historyExpanded: boolean
   onHistoryExpandedChange: (open: boolean) => void
+  // Called after the Todos panel hands its list off to the background, so the
+  // Shell can keep the panel open and surface the new task.
+  onRanInBackground?: () => void
 }) {
   // Cmd/Ctrl+J toggles the panel (the left sidebar owns Cmd/Ctrl+B).
   React.useEffect(() => {
@@ -156,6 +161,11 @@ export function ActivityPanel({
         <SidebarContent>
           <ActivitySection title="Tasks">
             <TasksSection conversationId={conversationId} onOpenTask={onOpenTask} />
+          </ActivitySection>
+          {/* Todos: the agent's task list for this conversation, with a handoff to
+              run the whole list in the background (plan 016). */}
+          <ActivitySection title="Todos">
+            <TodosSection conversationId={conversationId} onRanInBackground={onRanInBackground} />
           </ActivitySection>
           {/* History: terminal tasks for this conversation. Collapsed by default
               so it doesn't crowd the situational Tasks view above. */}

@@ -2,6 +2,8 @@ import { ipcMain, type WebContents } from "electron"
 import type { TaskRunner, TaskEventPayload } from "../tasks/runner"
 import { resolveApproval, resolveQuestion } from "../agent"
 import type { QuestionAnswer } from "../agent/tools/types"
+import { listTodos } from "../db/repositories/todos"
+import { TODO_RUN_KICKOFF, actionableTodos, todoRunTitle, todoSeed } from "../tasks/todo-run"
 
 // Registers the durable task-runner control channels and the live event tail.
 // The CRUD over the task tables already lives on the `db:tasks:*` / `db:taskEvents:*`
@@ -16,6 +18,24 @@ export function registerTaskHandlers(runner: TaskRunner): void {
     (_e, input: { conversationId: string; message: string; kind?: string; title?: string | null }) =>
       runner.enqueue(input)
   )
+  // Hand the conversation's todo list off to a background task (plan 016, the
+  // user-triggered "Run all in background" button). Snapshots the list HERE
+  // (server-side) so the renderer doesn't round-trip it, then enqueues the SAME
+  // `todo_run` task the agent tool does. No approval gate: clicking the button is
+  // already explicit user intent. Returns null when there's nothing to run.
+  ipcMain.handle("task:start-todos", (_e, conversationId: string) => {
+    const todos = listTodos(conversationId)
+    const actionable = actionableTodos(todos)
+    if (actionable.length === 0) return null
+    return runner.enqueue({
+      conversationId,
+      message: TODO_RUN_KICKOFF,
+      kind: "todo_run",
+      title: todoRunTitle(actionable),
+      seedTodos: todoSeed(todos),
+    })
+  })
+
   // Resume an interrupted task (user-driven manual resume).
   ipcMain.handle("task:resume", (_e, taskId: string) => runner.resume(taskId))
   // Cancel a task (running → aborted → cancelled; pending → cancelled directly).

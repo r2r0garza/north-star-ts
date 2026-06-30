@@ -330,6 +330,7 @@ export default function App({
                         summary: event.summary,
                         reason: event.reason,
                         status: "pending",
+                        kind: event.kind,
                       },
                     }
                   : t

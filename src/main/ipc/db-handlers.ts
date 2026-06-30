@@ -7,6 +7,7 @@ import {
   taskEvents,
   checkpoints,
   approvals,
+  todos,
 } from "../db/repositories"
 import type { Mode, TaskStatus, ApprovalStatus } from "../db/types"
 
@@ -38,6 +39,13 @@ export function registerDbHandlers(): void {
   // Messages (read-only from the renderer; writes happen inside runChat)
   ipcMain.handle("db:messages:list", (_e, conversationId: string) =>
     messages.listMessages(conversationId)
+  )
+
+  // Todos (read-only from the renderer; writes happen via the todo_write tool).
+  // The Todos panel reads the active conversation's list to render it and offer
+  // the "Run all in background" handoff (plan 016).
+  ipcMain.handle("db:todos:list", (_e, conversationId: string) =>
+    todos.listTodos(conversationId)
   )
 
   // Workspaces

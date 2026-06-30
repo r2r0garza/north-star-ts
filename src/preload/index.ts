@@ -12,8 +12,10 @@ import type {
   TaskCheckpoint,
   TaskEvent,
   TaskStatus,
+  Todo,
   Workspace,
 } from "../main/db/types"
+import type { ActionKind } from "../main/agent/approval/types"
 import type { Question, QuestionAnswer } from "../main/agent/tools/types"
 import type {
   ExecutionSettings,
@@ -38,6 +40,9 @@ export type ChatEvent =
       tool: string
       summary: string
       reason: string
+      // The action kind being approved (e.g. "delegate"). The renderer hides the
+      // "always allow" affordance for delegate approvals. Optional for back-compat.
+      kind?: ActionKind
     }
   | {
       type: "question"
@@ -118,6 +123,11 @@ const api = {
       kind?: string
       title?: string | null
     }) => ipcRenderer.invoke("task:start", input) as Promise<Task>,
+    // Hand the conversation's current todo list off to a background task (the
+    // "Run all in background" button, plan 016). Snapshots the list server-side
+    // and enqueues a `todo_run` task. Resolves null when there's nothing to run.
+    startTodos: (conversationId: string) =>
+      ipcRenderer.invoke("task:start-todos", conversationId) as Promise<Task | null>,
     // Manually resume an interrupted task (e.g. one reconciled after a crash).
     resume: (taskId: string) =>
       ipcRenderer.invoke("task:resume", taskId) as Promise<void>,
@@ -200,6 +210,12 @@ const api = {
     messages: {
       list: (conversationId: string) =>
         ipcRenderer.invoke("db:messages:list", conversationId) as Promise<Message[]>,
+    },
+    todos: {
+      // Read the conversation's task list (rendered by the Todos panel). Writes
+      // happen via the agent's todo_write tool, not the renderer.
+      list: (conversationId: string) =>
+        ipcRenderer.invoke("db:todos:list", conversationId) as Promise<Todo[]>,
     },
     workspaces: {
       list: () => ipcRenderer.invoke("db:workspaces:list") as Promise<Workspace[]>,
@@ -338,6 +354,8 @@ export type {
   TaskCheckpoint,
   TaskEvent,
   TaskStatus,
+  Todo,
+  TodoStatus,
   Workspace,
 } from "../main/db/types"
 // Re-export the ask_user_question types so the renderer can type the panel.
