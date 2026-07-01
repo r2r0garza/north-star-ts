@@ -1,7 +1,10 @@
 # PR15: Task producer API — every background producer goes through TaskRunner
 
-> Status: **NOT STARTED** (contract + one small affordance). Builds on the `TaskRunner`
+> Status: **BUILT** (commit `0c4cc0b`; contract + one small affordance). Builds on the `TaskRunner`
 > (`src/main/tasks/runner.ts`) from `009`, its retry (`011`), and durable approvals (`012`).
+> Shipped: `registerKind(kind, { autoResume })` (per-instance registry; `agent_chat` pre-registered),
+> `EnqueueTask`/`EnqueueTaskInput` on `ToolContext`, and the `source_conversation_id` FK fix
+> (links back only when the source exists, else self-sourced). No schema change. First consumer: `016`.
 
 ## Context
 

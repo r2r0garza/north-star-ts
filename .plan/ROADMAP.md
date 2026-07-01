@@ -7,15 +7,7 @@ item is its plan file, not its rank.
 
 ## Next up
 
-1. **`017` — Todo-run follow-ups.** Two gaps surfaced testing `016`. (1) **Robust large-file writes**:
-   full-file content inlined as one JSON tool argument truncates at the output-token cap (the immediate
-   cap-bump + truncation-detection fix shipped with `016`; this is the structural fix — prefer surgical
-   `edit_file_tool` edits and/or a chunked write tool so large writes never ride one oversized
-   completion). (2) **Live todo progress in the panel**: after a handoff the Todos panel shows stale
-   all-`[ ]` because it reads the *source* conversation's todos while the background agent updates the
-   *forked* worker conversation — make the panel reflect real per-item progress. Independent of each
-   other; general agent-tool robustness (item 1) + a UI read gap (item 2), not `todo_run`-specific.
-2. **`008` — Workspace indexing.** Background, incremental, pausable/cancellable workspace index so
+1. **`008` — Workspace indexing.** Background, incremental, pausable/cancellable workspace index so
    the agent can answer immediately while the index improves. Four stages (file map → metadata →
    symbols → embeddings-later); incremental by content hash (skip unchanged, re-index changed, drop
    deleted, add new); resumable across restart. Controls: configurable auto-start, pause/resume,
@@ -23,7 +15,7 @@ item is its plan file, not its rank.
    settings group. New v7 tables; reuses the `LocalEnvironment` walk + ignore rules. Interactive =
    low priority; North Star = higher, but never hard-blocks execution. **Depends on `009`**: the
    indexer runs as a durable task so pause is a real task state. **Consumes `015`** (first producer).
-3. **`014` — Context builder.** Evolve the existing `ContextBuilder` into a structured, budgeted,
+2. **`014` — Context builder.** Evolve the existing `ContextBuilder` into a structured, budgeted,
    multi-source assembler: conversation summary, recent messages (the current walk-back), workspace
    index + relevant files (from `008`), durable memories, task state, and approvals — each a labeled
    section under one global token budget with an explicit drop order. Ships the framework + the
@@ -31,20 +23,20 @@ item is its plan file, not its rank.
    no-ops behind a capability check until `008` lands. Surfaces two prerequisite sub-features to
    decide on: a rolling **conversation summary** and a **durable-memories** store (likely its own
    plan). **Soft-depends on `008`** (graceful without it); reads `009`'s task tables.
-4. **`010` — Container runtime profiles.** Decouple Workspace (the files) from Runtime (the env a
+3. **`010` — Container runtime profiles.** Decouple Workspace (the files) from Runtime (the env a
    tool call executes in). Replace the raw container `image` string with a named **profile**
    (`node` | `python` | `fullstack`), resolved to an image in the env factory; default/fallback =
    `fullstack` (Node + Python) so a Node repo that later adds a Python backend doesn't wedge.
    One profile per conversation, user-overridable in settings. Kills the "one workspace = one image
    forever" assumption **without** building auto-routing or image management (both deferred). Small
    refactor of `env/factory.ts` + `container.ts` + execution settings (JSON blob — no migration).
-5. **`005.1` — ContainerEnvironment stop in-flight.** The deferred half of `005`: killing the host
+4. **`005.1` — ContainerEnvironment stop in-flight.** The deferred half of `005`: killing the host
    `docker/podman exec` client doesn't stop the in-container process. Needs its own kill mechanism
    (in-container PID tracking / `exec kill`, or marker `pkill`). Out of scope when `005` shipped.
-6. **`007` — Slash commands for skills.** Let users force a skill with `/skill-name …` (pre-inject
+5. **`007` — Slash commands for skills.** Let users force a skill with `/skill-name …` (pre-inject
    the `read_skill` call), keeping today's model-discretionary path for plain messages. Adds a
    `skills:list` IPC channel + composer autocomplete. Independent — schedule freely.
-7. **`018` — Agentic goal mode.** An opt-in **execution mode** (orthogonal to chat/interactive/
+6. **`018` — Agentic goal mode.** An opt-in **execution mode** (orthogonal to chat/interactive/
    north_star): `simple` (today's one-pass behavior, default) vs `goal` (bounded **plan → execute →
    review → fix → finalize**, capped by `maxIterations` — never unbounded). Modeled as a task-level
    orchestrator inside the runner's `runOne` (one task / one forked conversation, calling
@@ -59,6 +51,18 @@ item is its plan file, not its rank.
 
 ## Done
 
+- **`017` — Todo-run follow-ups.** Two gaps surfaced testing `016`, shipped as one PR. (1) **Robust
+  large-file writes** (steer + append): `write_file_tool` gained an optional `mode: "create" | "append"`
+  (default `create`) — append re-reads the file and rewrites the concatenation via the existing
+  `atomicWrite`, so a large file is built across small, parseable calls instead of one oversized JSON
+  argument that truncates at the output cap. No `Environment` change; gate identity stays
+  `file_write:${path}` so one approval covers a multi-chunk write. Tool descriptions + both system
+  prompts steer toward `edit_file_tool` for existing files. (2) **Live todo progress in the panel**: the
+  Todos panel now reads the latest `todo_run` task's *fork* todos (was reading the frozen *source*
+  snapshot), so it shows real `[ ] → [>] → [x]` progress and the final list on completion; the **Run all
+  in background** button is disabled while a live task exists. Refresh rides the existing `tasks.onEvent`
+  tail — no backend/preload change. Verified: typecheck clean; 40 tool tests (9 new in
+  `write_file_tool.test.ts`).
 - **`016` — Todo → background handoff.** Run a whole todo list as one durable background task. The
   agent builds a list with `todo_write`, then either it calls the new gated `run_todos_in_background`
   tool (the **delegation** is the approved action — a new `delegate` approval kind that always prompts,

@@ -1,8 +1,29 @@
 # PR17: Todo-run follow-ups — robust large-file writes + live todo progress in the panel
 
-> Status: **NOT STARTED**. Two independent follow-ups surfaced while testing `016`
-> (todo → background handoff). Neither is a regression in `016`; both are pre-existing
-> gaps the handoff flow made visible. Can ship in either order (or as two PRs).
+> Status: **BUILT** (commit `7e51bea`; shipped as one PR). Two independent follow-ups surfaced
+> while testing `016` (todo → background handoff). Neither is a regression in `016`; both were
+> pre-existing gaps the handoff flow made visible.
+>
+> **What shipped:**
+> - **Item 1 (chosen: steer + append).** `write_file_tool` gained an optional `mode: "create" | "append"`
+>   (default `create`, backward compatible). Append re-reads the file and rewrites the concatenation via
+>   the existing `atomicWrite` — so a large file is built across several small, parseable calls instead of
+>   one oversized JSON argument that truncates at the output cap. No `Environment` interface change. The
+>   gate identity stays `file_write:${path}` for both modes, so one approval covers a whole multi-chunk
+>   write. Tool descriptions + both system prompts (`interactive`, `north_star`) steer: `edit_file_tool`
+>   for existing files, `create` for small new files, `append` for large generated files. New
+>   `write_file_tool.test.ts` (create/overwrite, append, append-to-missing-as-create, multi-chunk build,
+>   invalid mode, gate identity).
+> - **Item 2 (chosen: option a — read fork todos).** The Todos panel
+>   (`src/renderer/src/components/todos-section.tsx`) now finds the latest `todo_run` task for the active
+>   conversation (`db.tasks.list({ sourceConversationId })`, ordered `created_at DESC`) and reads *its
+>   fork's* todos, so it shows live `[ ] → [>] → [x]` progress and the final list on completion. Falls
+>   back to the source conversation's todos when no task exists. Refresh rides the existing
+>   `tasks.onEvent` tail — no backend/preload/types change. The **Run all in background** button is
+>   disabled while a live `todo_run` task exists (prevents double-handoff).
+>
+> Verified: `npm run typecheck` clean; 40 tool tests pass (incl. the 9 new). Item 2's live-progress
+> behavior through a real handoff is the manual-verification step (needs the running app).
 
 ## Context
 
