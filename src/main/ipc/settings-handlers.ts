@@ -4,6 +4,7 @@ import { checkRuntimes } from "../agent/env/runtime-check"
 import type {
   ExecutionSettings,
   PermissionSettings,
+  IndexingSettings,
 } from "../settings/service"
 
 // Registers the `settings:` IPC channels. All route through the settings service
@@ -19,6 +20,11 @@ export function registerSettingsHandlers(): void {
   ipcMain.handle("settings:getPermissions", () => settingsService.getPermissions())
   ipcMain.handle("settings:setPermissions", (_e, next: PermissionSettings) =>
     settingsService.setPermissions(next)
+  )
+
+  ipcMain.handle("settings:getIndexing", () => settingsService.getIndexing())
+  ipcMain.handle("settings:setIndexing", (_e, next: IndexingSettings) =>
+    settingsService.setIndexing(next)
   )
 
   // Runtime availability for the backend picker. `recheck` forces a fresh probe

@@ -62,6 +62,20 @@ export interface LlmSettings {
   activeModelId: string | null
 }
 
+// Workspace Indexing (plan 008). Global defaults; a per-workspace disable lives
+// on index_runs.enabled, not here.
+export interface IndexingSettings {
+  // Auto-start indexing when a workspace is assigned to an interactive/north_star
+  // conversation. A per-workspace disable overrides this.
+  autoIndexNewWorkspaces: boolean
+  // Feed the index into the agent's system prompt (a compact workspace summary).
+  // Off = the index still builds but the agent ignores it (useful for debugging).
+  useIndexForContext: boolean
+  // Stage 4 semantic embeddings — deferred; shown disabled in the UI to signal
+  // the roadmap. Persisted so the toggle round-trips, but unused in slice 1.
+  includeEmbeddings: boolean
+}
+
 // Default container image when a runtime is chosen but no image is set.
 const DEFAULT_CONTAINER_IMAGE = "node:20-bookworm"
 
@@ -73,6 +87,12 @@ const DEFAULT_PERMISSIONS: PermissionSettings = {
 const DEFAULT_LLM: LlmSettings = {
   activeAccountId: null,
   activeModelId: null,
+}
+
+const DEFAULT_INDEXING: IndexingSettings = {
+  autoIndexNewWorkspaces: true,
+  useIndexForContext: true,
+  includeEmbeddings: false,
 }
 
 function defaultExecution(): ExecutionSettings {
@@ -91,10 +111,12 @@ function defaultExecution(): ExecutionSettings {
 const KEY_EXECUTION = "execution"
 const KEY_PERMISSIONS = "permissions"
 const KEY_LLM = "llm"
+const KEY_INDEXING = "indexing"
 
 let executionCache: ExecutionSettings | undefined
 let permissionsCache: PermissionSettings | undefined
 let llmCache: LlmSettings | undefined
+let indexingCache: IndexingSettings | undefined
 // Tracks whether an execution row exists, so getExecutionConfig can fall back to
 // the COWORK_ENV_RUNTIME env var until the user writes a backend choice.
 let executionPersisted = false
@@ -163,6 +185,27 @@ function loadLlm(): LlmSettings {
   return llmCache
 }
 
+function loadIndexing(): IndexingSettings {
+  if (indexingCache) return indexingCache
+  const raw = settingsRepo.getSetting(KEY_INDEXING)
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw) as Partial<IndexingSettings>
+      indexingCache = {
+        autoIndexNewWorkspaces:
+          parsed.autoIndexNewWorkspaces ?? DEFAULT_INDEXING.autoIndexNewWorkspaces,
+        useIndexForContext: parsed.useIndexForContext ?? DEFAULT_INDEXING.useIndexForContext,
+        includeEmbeddings: parsed.includeEmbeddings ?? DEFAULT_INDEXING.includeEmbeddings,
+      }
+      return indexingCache
+    } catch {
+      // Corrupt blob — fall through to defaults.
+    }
+  }
+  indexingCache = { ...DEFAULT_INDEXING }
+  return indexingCache
+}
+
 // ── Reads ────────────────────────────────────────────────────────────────────
 
 export function getExecution(): ExecutionSettings {
@@ -193,6 +236,10 @@ export function getLlm(): LlmSettings {
   return loadLlm()
 }
 
+export function getIndexing(): IndexingSettings {
+  return loadIndexing()
+}
+
 // Whether the sandbox policy auto-approves a given action category. Consulted by
 // the PolicyEngine only when the active backend is a container (see policy.ts).
 // Unknown/undefined categories are never auto-approved (conservative default).
@@ -218,6 +265,12 @@ export function setPermissions(next: PermissionSettings): PermissionSettings {
   return next
 }
 
+export function setIndexing(next: IndexingSettings): IndexingSettings {
+  settingsRepo.setSetting(KEY_INDEXING, JSON.stringify(next))
+  indexingCache = next
+  return next
+}
+
 // Invalidation hook fired whenever the active LLM selection changes, so the
 // provider routing layer can drop its cached client and the next turn rebuilds
 // with the new account/model. Registered by the providers module to avoid a
@@ -240,5 +293,6 @@ export function _resetCacheForTests(): void {
   executionCache = undefined
   permissionsCache = undefined
   llmCache = undefined
+  indexingCache = undefined
   executionPersisted = false
 }

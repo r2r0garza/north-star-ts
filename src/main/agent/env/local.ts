@@ -1,11 +1,11 @@
 import { spawn } from "child_process"
 import { readFile, writeFile, rename, mkdir, stat, readdir } from "fs/promises"
-import { join } from "path"
 import {
   resolveInWorkspace,
   resolveInWorkspaceReal,
 } from "../tools/workspace"
 import { captureSpawn } from "./spawn-util"
+import { walkFiles, isBinaryBuffer } from "./walk"
 import type {
   Environment,
   ExecResult,
@@ -77,55 +77,41 @@ export class LocalEnvironment implements Environment {
     return captureSpawn(child, { ...opts, killGroup: true })
   }
 
-  // The original tool-side walk, moved behind the interface: recurse with readdir,
-  // skip pruned dirs and the glob-mismatched/oversized/binary files, and regex
-  // each line. In-process fs calls, so this stays as fast as before on the host.
+  // Grep the workspace by walking the tree (shared walkFiles — same prune/size
+  // rules the indexer uses) and regexing each line of every text file. In-process
+  // fs calls, so this stays as fast as before on the host. The glob/binary/cap
+  // logic that's search-specific stays here on top of the shared traversal.
   async search(opts: SearchOptions): Promise<SearchResult> {
     const regex = new RegExp(opts.pattern)
-    const skip = new Set(opts.skipDirs)
     const matches: SearchMatch[] = []
     let capped = false
 
-    const walk = async (dir: string): Promise<void> => {
-      if (capped) return
-      let entries: DirEntry[]
+    for await (const file of walkFiles({
+      root: opts.root,
+      skipDirs: opts.skipDirs,
+      maxFileBytes: opts.maxFileBytes,
+    })) {
+      if (capped) break
+      const name = file.relPath.split("/").pop() ?? ""
+      if (opts.glob && !name.toLowerCase().includes(opts.glob)) continue
       try {
-        entries = await readdir(dir, { withFileTypes: true })
-      } catch {
-        return // unreadable dir — skip rather than fail the whole search
-      }
-      for (const entry of entries) {
-        if (capped) return
-        const full = join(dir, entry.name)
-        if (entry.isDirectory()) {
-          if (skip.has(entry.name)) continue
-          await walk(full)
-          continue
-        }
-        if (!entry.isFile()) continue
-        if (opts.glob && !entry.name.toLowerCase().includes(opts.glob)) continue
-        try {
-          const info = await stat(full)
-          if (info.size > opts.maxFileBytes) continue
-          const buf = await readFile(full)
-          if (buf.subarray(0, 8000).includes(0)) continue // binary
-          const lines = buf.toString("utf8").split("\n")
-          for (let i = 0; i < lines.length; i++) {
-            if (regex.test(lines[i])) {
-              matches.push({ path: full, line: i + 1, text: lines[i].trim() })
-              if (matches.length >= opts.maxResults) {
-                capped = true
-                return
-              }
+        const buf = await readFile(file.path)
+        if (isBinaryBuffer(buf)) continue
+        const lines = buf.toString("utf8").split("\n")
+        for (let i = 0; i < lines.length; i++) {
+          if (regex.test(lines[i])) {
+            matches.push({ path: file.path, line: i + 1, text: lines[i].trim() })
+            if (matches.length >= opts.maxResults) {
+              capped = true
+              break
             }
           }
-        } catch {
-          // Unreadable file — skip.
         }
+      } catch {
+        // Unreadable file — skip.
       }
     }
 
-    await walk(opts.root)
     return { matches, capped }
   }
 

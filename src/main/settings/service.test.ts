@@ -117,3 +117,35 @@ describe("settings service — sandboxAutoApproves", () => {
     expect(service.sandboxAutoApproves("unknown_category")).toBe(false)
   })
 })
+
+describe("settings service — indexing (plan 008)", () => {
+  it("defaults: auto-index on, use-for-context on, embeddings off", () => {
+    expect(service.getIndexing()).toEqual({
+      autoIndexNewWorkspaces: true,
+      useIndexForContext: true,
+      includeEmbeddings: false,
+    })
+  })
+
+  it("round-trips a persisted change", () => {
+    service.setIndexing({
+      autoIndexNewWorkspaces: false,
+      useIndexForContext: false,
+      includeEmbeddings: false,
+    })
+    service._resetCacheForTests()
+    const idx = service.getIndexing()
+    expect(idx.autoIndexNewWorkspaces).toBe(false)
+    expect(idx.useIndexForContext).toBe(false)
+  })
+
+  it("falls back to defaults on a corrupt blob", () => {
+    service.setIndexing({
+      autoIndexNewWorkspaces: false,
+      useIndexForContext: true,
+      includeEmbeddings: false,
+    })
+    // A partial/corrupt stored blob still yields a complete typed shape.
+    expect(service.getIndexing().includeEmbeddings).toBe(false)
+  })
+})

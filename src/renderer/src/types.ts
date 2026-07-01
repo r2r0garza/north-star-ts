@@ -27,12 +27,16 @@ export type {
   ExecutionSettings,
   PermissionSettings,
   LlmSettings,
+  IndexingSettings,
   Backend,
   FilePermission,
   ApprovalCategory,
   RuntimeStatus,
   Runtime,
 } from "../../preload/index"
+
+// Workspace indexing types (plan 008), surfaced for the status strip + settings.
+export type { IndexStatus, IndexPriority, IndexStage } from "../../preload/index"
 
 // LLM provider/model types, surfaced for the Providers/Models tabs + composer.
 export type {

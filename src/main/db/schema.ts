@@ -209,3 +209,101 @@ UPDATE tasks SET source_conversation_id = conversation_id
   WHERE source_conversation_id IS NULL;
 CREATE INDEX idx_tasks_source_conversation ON tasks(source_conversation_id);
 `
+
+// v8: the workspace index (plan 008). Four tables keyed by workspace_id hold a
+// deterministic, incremental, resumable snapshot of a workspace so the agent can
+// answer immediately from a cheap structured overview instead of re-walking the
+// live filesystem. The index build runs as a durable 009 task (queue/resume/
+// cancel/pause reused); this schema holds only the index-specific state — the run
+// *lifecycle* lives on the task, not here.
+//
+// Also widens tasks.status to add 'paused' (plan 008: pause is a real task state,
+// not an ad-hoc flag). SQLite can't ALTER a CHECK constraint, so tasks is rebuilt
+// (create → copy → drop → rename). runMigrations disables foreign_keys around the
+// migration loop so DROP TABLE tasks doesn't cascade-delete task_events/approvals/
+// task_checkpoints; the rename preserves every id so child FKs stay valid.
+export const SCHEMA_V8 = `
+CREATE TABLE tasks_new (
+  id                     TEXT PRIMARY KEY,
+  conversation_id        TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  source_conversation_id TEXT REFERENCES conversations(id) ON DELETE SET NULL,
+  title                  TEXT,
+  status                 TEXT NOT NULL CHECK (status IN
+                           ('queued','running','waiting_for_approval','interrupted',
+                            'completed','failed','cancelled','paused')),
+  input                  TEXT,
+  result                 TEXT,
+  error                  TEXT,
+  created_at             INTEGER NOT NULL,
+  updated_at             INTEGER NOT NULL
+);
+INSERT INTO tasks_new
+  (id, conversation_id, source_conversation_id, title, status, input, result, error, created_at, updated_at)
+  SELECT id, conversation_id, source_conversation_id, title, status, input, result, error, created_at, updated_at
+  FROM tasks;
+DROP TABLE tasks;
+ALTER TABLE tasks_new RENAME TO tasks;
+CREATE INDEX idx_tasks_conversation ON tasks(conversation_id);
+CREATE INDEX idx_tasks_status ON tasks(status);
+CREATE INDEX idx_tasks_source_conversation ON tasks(source_conversation_id);
+
+-- Per-workspace indexing state: links to the 009 task, holds resumable progress
+-- and the per-workspace enable toggle. Status lives on the task; this is the
+-- cheap workspace-scoped record (one per workspace) for progress + the flag.
+CREATE TABLE index_runs (
+  id              TEXT PRIMARY KEY,
+  workspace_id    TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  task_id         TEXT,
+  enabled         INTEGER NOT NULL DEFAULT 1,
+  stage           TEXT NOT NULL CHECK (stage IN ('file_map','metadata','symbols','embeddings')),
+  priority        TEXT NOT NULL CHECK (priority IN ('low','high')),
+  cursor          TEXT,
+  files_scanned   INTEGER NOT NULL DEFAULT 0,
+  files_total     INTEGER NOT NULL DEFAULT 0,
+  error           TEXT,
+  created_at      INTEGER NOT NULL,
+  updated_at      INTEGER NOT NULL,
+  UNIQUE (workspace_id)
+);
+CREATE INDEX idx_index_runs_workspace ON index_runs(workspace_id);
+
+-- Stage 1: the file map. One row per tracked file; hash drives incremental skip.
+CREATE TABLE index_files (
+  id            TEXT PRIMARY KEY,
+  workspace_id  TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  path          TEXT NOT NULL,
+  ext           TEXT,
+  size          INTEGER NOT NULL,
+  mtime         INTEGER NOT NULL,
+  hash          TEXT NOT NULL,
+  indexed_stage TEXT NOT NULL,
+  updated_at    INTEGER NOT NULL,
+  UNIQUE (workspace_id, path)
+);
+CREATE INDEX idx_index_files_workspace ON index_files(workspace_id);
+
+-- Stage 2: parsed metadata (one row per key doc, value is JSON).
+CREATE TABLE index_metadata (
+  id            TEXT PRIMARY KEY,
+  workspace_id  TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  kind          TEXT NOT NULL,
+  path          TEXT,
+  value         TEXT NOT NULL,
+  updated_at    INTEGER NOT NULL
+);
+CREATE INDEX idx_index_metadata_workspace ON index_metadata(workspace_id, kind);
+
+-- Stage 3: symbols & imports (unpopulated in slice 1; schema leaves room).
+CREATE TABLE index_symbols (
+  id            TEXT PRIMARY KEY,
+  workspace_id  TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  file_id       TEXT NOT NULL REFERENCES index_files(id) ON DELETE CASCADE,
+  name          TEXT NOT NULL,
+  kind          TEXT NOT NULL,
+  line          INTEGER,
+  detail        TEXT,
+  updated_at    INTEGER NOT NULL
+);
+CREATE INDEX idx_index_symbols_workspace_name ON index_symbols(workspace_id, name);
+CREATE INDEX idx_index_symbols_file ON index_symbols(file_id);
+`

@@ -16,6 +16,7 @@ import {
 import { TasksSection } from "@/components/tasks-section"
 import { TasksHistorySection } from "@/components/tasks-history-section"
 import { TodosSection } from "@/components/todos-section"
+import { IndexingSection } from "@/components/indexing-section"
 import type { Task } from "@/types"
 
 // The right-hand Workspace Activity panel. Deliberately SELF-CONTAINED rather
@@ -161,6 +162,11 @@ export function ActivityPanel({
         <SidebarContent>
           <ActivitySection title="Tasks">
             <TasksSection conversationId={conversationId} onOpenTask={onOpenTask} />
+          </ActivitySection>
+          {/* Indexing: the background workspace index build for this session's
+              workspace, with pause/resume/cancel/clear (plan 008). */}
+          <ActivitySection title="Indexing">
+            <IndexingSection conversationId={conversationId} />
           </ActivitySection>
           {/* Todos: the agent's task list for this conversation, with a handoff to
               run the whole list in the background (plan 016). */}

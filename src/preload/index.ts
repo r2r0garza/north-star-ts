@@ -21,12 +21,14 @@ import type {
   ExecutionSettings,
   PermissionSettings,
   LlmSettings,
+  IndexingSettings,
 } from "../main/settings/service"
 import type { RuntimeStatus } from "../main/agent/env/runtime-check"
 import type { CreateAccountInput } from "../main/db/repositories/provider-accounts"
 import type { AddModelInput } from "../main/db/repositories/models"
 import type { AccountView, AccountWithModels } from "../main/ipc/provider-handlers"
-import type { ModelEntry } from "../main/db/types"
+import type { ModelEntry, IndexPriority } from "../main/db/types"
+import type { IndexStatus } from "../main/ipc/index-handlers"
 
 // Streaming events emitted during a chat turn (mirrors ChatEvent in the agent).
 export type ChatEvent =
@@ -58,6 +60,8 @@ export type RunnerLifecycleEvent =
   | { type: "task_completed"; result?: string }
   | { type: "task_failed"; error: string }
   | { type: "attempt"; n: number; reason: string }
+  // Deterministic indexing progress (plan 008): scanned/total for the strip.
+  | { type: "index_progress"; stage: string; filesScanned: number; filesTotal: number }
 
 // The full event vocabulary a task emits, live or replayed from task_events.
 export type TaskEventPayload = ChatEvent | RunnerLifecycleEvent
@@ -135,6 +139,10 @@ const api = {
     // a pending one is marked cancelled. Never retries.
     cancel: (taskId: string) =>
       ipcRenderer.invoke("task:cancel", taskId) as Promise<void>,
+    // Pause a task (plan 008): a running one aborts to `paused` (a durable resume
+    // state keeping partial progress); resume() with the same id continues it.
+    pause: (taskId: string) =>
+      ipcRenderer.invoke("task:pause", taskId) as Promise<void>,
     // Resolve a gate a paused (waiting_for_approval) task is blocked on. The
     // requestId comes from the task's approval/question event. approve/deny gate
     // a tool action; answer responds to an ask_user_question.
@@ -277,11 +285,38 @@ const api = {
       ipcRenderer.invoke("settings:getPermissions") as Promise<PermissionSettings>,
     setPermissions: (next: PermissionSettings) =>
       ipcRenderer.invoke("settings:setPermissions", next) as Promise<PermissionSettings>,
+    getIndexing: () =>
+      ipcRenderer.invoke("settings:getIndexing") as Promise<IndexingSettings>,
+    setIndexing: (next: IndexingSettings) =>
+      ipcRenderer.invoke("settings:setIndexing", next) as Promise<IndexingSettings>,
     checkRuntimes: (recheck?: boolean) =>
       ipcRenderer.invoke("settings:checkRuntimes", recheck) as Promise<{
         docker: RuntimeStatus
         podman: RuntimeStatus
       }>,
+  },
+
+  // Workspace indexing (plan 008). Pause/resume/cancel reuse tasks.* (an index
+  // run IS a durable task); these are the index-specific verbs. Live progress
+  // arrives on tasks.onEvent as `index_progress` events.
+  index: {
+    // One-shot status snapshot for the strip's first paint / reattach.
+    status: (workspaceId: string) =>
+      ipcRenderer.invoke("index:status", workspaceId) as Promise<IndexStatus>,
+    // (Re)start indexing for a workspace — Start after cancel/clear, or Rebuild
+    // after completion. Idempotent (no-op if a build is already live).
+    start: (payload: { workspaceId: string; priority?: IndexPriority }) =>
+      ipcRenderer.invoke("index:start", payload) as Promise<void>,
+    // Drop all index rows for a workspace and reset its run (cancels any live task).
+    clear: (workspaceId: string) =>
+      ipcRenderer.invoke("index:clear", workspaceId) as Promise<void>,
+    // Enable/disable indexing for one workspace (disable cancels a live run;
+    // enable kicks a fresh run).
+    setEnabled: (payload: {
+      workspaceId: string
+      enabled: boolean
+      priority?: IndexPriority
+    }) => ipcRenderer.invoke("index:setEnabled", payload) as Promise<void>,
   },
 
   // LLM provider accounts, their models, API keys, and the active selection.
@@ -365,6 +400,7 @@ export type {
   ExecutionSettings,
   PermissionSettings,
   LlmSettings,
+  IndexingSettings,
   Backend,
   FilePermission,
   ApprovalCategory,
@@ -373,3 +409,6 @@ export type { RuntimeStatus, Runtime } from "../main/agent/env/runtime-check"
 // LLM provider/model types for the Providers & Models tabs and the composer.
 export type { Provider, ModelOrigin, ProviderAccount, ModelEntry } from "../main/db/types"
 export type { AccountView, AccountWithModels } from "../main/ipc/provider-handlers"
+// Workspace indexing types (plan 008) for the status strip + settings tab.
+export type { IndexPriority, IndexStage } from "../main/db/types"
+export type { IndexStatus } from "../main/ipc/index-handlers"

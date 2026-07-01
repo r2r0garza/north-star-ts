@@ -15,13 +15,18 @@ import { registerDbHandlers } from "./ipc/db-handlers"
 import { registerSettingsHandlers } from "./ipc/settings-handlers"
 import { registerProviderHandlers } from "./ipc/provider-handlers"
 import { registerTaskHandlers } from "./ipc/task-handlers"
+import { registerIndexHandlers } from "./ipc/index-handlers"
 import { TaskRunner } from "./tasks/runner"
+import { IndexService } from "./index/service"
 import { seedProviderFromEnvIfEmpty } from "./settings/bootstrap"
 import { closeDb } from "./db/connection"
 
 // The durable task runner — a singleton owned by the main process. Started in
 // app.whenReady (after the DB handlers register) and stopped on will-quit.
 const taskRunner = new TaskRunner()
+// The workspace indexer (plan 008), driven as a deterministic task kind on the
+// runner above. Holds the runner reference so ensureRunning can enqueue.
+const indexService = new IndexService(taskRunner)
 
 function createWindow(): void {
   const mainWindow = new BrowserWindow({
@@ -129,7 +134,7 @@ ipcMain.handle("is-fullscreen", (event) => {
 app.whenReady().then(() => {
   // Register DB-backed IPC handlers now — the connection opens lazily on first
   // use, after userData is available.
-  registerDbHandlers()
+  registerDbHandlers(indexService)
   registerSettingsHandlers()
   registerProviderHandlers()
   // Start the durable task runner now that the DB handlers are registered (it
@@ -141,8 +146,15 @@ app.whenReady().then(() => {
   // todo_run: a handed-off todo list. Auto-resume so a long list survives a
   // restart and continues (plan 016).
   taskRunner.registerKind("todo_run", { autoResume: true })
+  // workspace_index: deterministic (no LLM) executor; auto-resume so a paused or
+  // crash-interrupted index continues from its cursor on next boot (plan 008).
+  taskRunner.registerKind("workspace_index", {
+    autoResume: true,
+    run: indexService.execute,
+  })
   taskRunner.start()
   registerTaskHandlers(taskRunner)
+  registerIndexHandlers(taskRunner, indexService)
   // Migrate a pre-settings env-configured key into a stored provider account, so
   // existing dev setups keep working without re-entering it (no-op once any
   // account exists). After this, the stored key is the source of truth.

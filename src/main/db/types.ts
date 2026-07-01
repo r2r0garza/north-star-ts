@@ -10,7 +10,9 @@ export type Mode = "chat" | "interactive" | "north_star"
 // never persisted — the system prompt is rebuilt per turn (skills are dynamic).
 export type MessageRole = "system" | "user" | "assistant" | "tool"
 
-// Durable task lifecycle. Storage-only this phase (no runner yet).
+// Durable task lifecycle. `paused` is a deliberate durable state (plan 008): a
+// paused task survives restart and resumes from its own progress cursor, unlike
+// `cancelled` (terminal) or `interrupted` (orphaned by a crash).
 export type TaskStatus =
   | "queued"
   | "running"
@@ -19,6 +21,7 @@ export type TaskStatus =
   | "completed"
   | "failed"
   | "cancelled"
+  | "paused"
 
 export type ApprovalStatus = "pending" | "approved" | "denied"
 
@@ -100,6 +103,72 @@ export interface TaskCheckpoint {
   label: string | null
   state: unknown
   createdAt: number
+}
+
+// The workspace index (plan 008). Deterministic, incremental, resumable.
+
+// The stage a run has reached. Stages enrich cumulatively; `symbols`/`embeddings`
+// are schema-reserved (slice 1 builds file_map + metadata).
+export type IndexStage = "file_map" | "metadata" | "symbols" | "embeddings"
+
+// Indexing priority: North Star = high (prefer index before deep execution),
+// Interactive = low (background, yields between batches).
+export type IndexPriority = "low" | "high"
+
+// One row per workspace: links to the driving 009 task, holds resumable progress
+// (cursor + scanned/total counts) and the per-workspace enable toggle. Run
+// lifecycle (queued/running/paused/…) lives on the task, not duplicated here.
+export interface IndexRun {
+  id: string
+  workspaceId: string
+  taskId: string | null
+  enabled: boolean
+  stage: IndexStage
+  priority: IndexPriority
+  cursor: string | null
+  filesScanned: number
+  filesTotal: number
+  error: string | null
+  createdAt: number
+  updatedAt: number
+}
+
+// Stage 1: one row per tracked file. `hash` drives incremental skip; `size`/
+// `mtime` are the fast-path check before hashing. `indexedStage` is the highest
+// stage completed for this file.
+export interface IndexFile {
+  id: string
+  workspaceId: string
+  path: string
+  ext: string | null
+  size: number
+  mtime: number
+  hash: string
+  indexedStage: IndexStage
+  updatedAt: number
+}
+
+// Stage 2: parsed metadata for a key doc (package.json, tsconfig, readme, git…).
+// `value` is a parsed JSON blob.
+export interface IndexMetadata {
+  id: string
+  workspaceId: string
+  kind: string
+  path: string | null
+  value: unknown
+  updatedAt: number
+}
+
+// Stage 3: a symbol/import extracted from a file (unpopulated in slice 1).
+export interface IndexSymbol {
+  id: string
+  workspaceId: string
+  fileId: string
+  name: string
+  kind: string
+  line: number | null
+  detail: unknown
+  updatedAt: number
 }
 
 // One item in a conversation's task list. `itemId` is the model-chosen id

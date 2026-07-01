@@ -36,10 +36,13 @@ export function registerTaskHandlers(runner: TaskRunner): void {
     })
   })
 
-  // Resume an interrupted task (user-driven manual resume).
+  // Resume an interrupted OR paused task (user-driven manual resume).
   ipcMain.handle("task:resume", (_e, taskId: string) => runner.resume(taskId))
   // Cancel a task (running → aborted → cancelled; pending → cancelled directly).
   ipcMain.handle("task:cancel", (_e, taskId: string) => runner.cancel(taskId))
+  // Pause a task (plan 008): running → aborted → paused (a durable resume state
+  // that keeps the partial index); queued → paused directly.
+  ipcMain.handle("task:pause", (_e, taskId: string) => runner.pause(taskId))
 
   // Resolve a gate a paused background task is blocked on. The agent loop's gate
   // is keyed by a process-unique `requestId` (carried in the approval/question

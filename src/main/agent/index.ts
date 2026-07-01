@@ -10,6 +10,7 @@ import { buildSkillsPrompt } from "./skills/prompt"
 import { createReadSkillTool } from "./skills/tool"
 import { skillSources } from "./skills/sources"
 import { loadSystemPrompt } from "./system-prompt"
+import { buildIndexSummary } from "../index/summary"
 import { contextBuilder } from "./context/context-builder"
 import { repairDanglingToolCalls } from "./repair"
 import { createEnvironment } from "./env"
@@ -374,6 +375,16 @@ export async function runAgentLoop(opts: RunAgentLoopOptions): Promise<ChatResul
   if (showTodos) {
     const todoPrompt = buildTodoListPrompt(listTodos(conversationId))
     if (todoPrompt) systemPrompt += `\n\n${todoPrompt}`
+  }
+
+  // Inject a compact workspace-index summary (plan 008) so the agent has cheap
+  // structured orientation ("what's here", "what framework") without walking the
+  // tree. Advisory only — gated by the "use index for context" setting; off = the
+  // index still builds but the agent ignores it. Mode-gated like todos (chat is
+  // tool-light) and only when the workspace has an index.
+  if (showTodos && conversation?.workspaceId && settingsService.getIndexing().useIndexForContext) {
+    const indexSummary = buildIndexSummary(conversation.workspaceId)
+    if (indexSummary) systemPrompt += `\n\n${indexSummary}`
   }
 
   // Before assembling context, repair any dangling tool-call tail from a turn

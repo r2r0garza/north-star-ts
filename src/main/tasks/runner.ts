@@ -30,6 +30,11 @@ export type RunnerLifecycleEvent =
   // logically running (DB row unchanged) while it backs off, so no status_change
   // accompanies this — it's a progress note in the durable log (plan 011).
   | { type: "attempt"; n: number; reason: string }
+  // Deterministic indexing progress (plan 008). Emitted per batch by the
+  // workspace_index executor and forwarded on the live tail so the status strip
+  // can render `filesScanned / filesTotal` and the current stage. `filesTotal` is
+  // 0 until the walk enumerates (UI shows an indeterminate "Scanning…").
+  | { type: "index_progress"; stage: string; filesScanned: number; filesTotal: number }
 
 // The full vocabulary written to task_events / streamed on the live tail: the
 // agent's own streaming events plus the runner's lifecycle events. Reusing the
@@ -46,13 +51,42 @@ export type TaskEventListener = (
   eventId: number
 ) => void
 
+// The terminal outcome a deterministic executor returns. Structurally a subset
+// of the agent path's ChatResult, so runOne's settle block maps both the same
+// way: stopped→cancelled, paused→paused, error(+retryable)→backoff/failed,
+// else→completed.
+export interface TaskExecResult {
+  content?: string
+  error?: string
+  stopped?: boolean
+  retryable?: boolean
+  // The run was paused (not cancelled): a durable state it resumes from later.
+  paused?: boolean
+}
+
+// Everything a non-LLM executor needs, all of it already resolved by runOne for
+// the agent path: the task row (executors read their config off task.input per
+// the 015 producer contract), the per-task abort signal (pause/cancel seam), the
+// durable emit, and the resolved workspace path.
+export interface TaskExecContext {
+  task: Task
+  signal: AbortSignal
+  emit: (event: TaskEventPayload) => void
+  workspace: string | undefined
+}
+
+export type TaskExecutor = (ctx: TaskExecContext) => Promise<TaskExecResult>
+
 // What a registered task kind is allowed to do. Auto-resume is a per-kind
 // capability, deliberately NOT a global switch: a background job (e.g. 008's
 // workspace indexer) can opt into resuming itself on startup, while user-driven
 // coding tasks stay manual-resume-only until we have stronger workspace
-// validation and resume semantics.
+// validation and resume semantics. `run`, when present, makes the kind
+// DETERMINISTIC — runOne drives this executor instead of runAgentLoop (no LLM in
+// the build path). Absent → the agent-turn path, unchanged.
 export interface TaskKindCapability {
   autoResume: boolean
+  run?: TaskExecutor
 }
 
 // The default kind for a durable agent turn enqueued from the UI: manual resume
@@ -60,16 +94,28 @@ export interface TaskKindCapability {
 // auto-resume via registerKind() at app init.
 const DEFAULT_KIND = "agent_chat"
 
+// Abort reason for a deliberate pause (plan 008). Distinct from a plain
+// cancel/stop so runOne can map the resulting {stopped} to `paused` (a durable
+// resume state) rather than `cancelled` (terminal). Mirrors SHUTDOWN_ABORT_REASON.
+export const PAUSE_ABORT_REASON = Symbol("task:pause")
+
 // A task's input blob carries its kind and the user message to run. Stored as
 // JSON on tasks.input by enqueue; read back on resume.
 interface TaskInput {
   kind: string
-  message: string
+  // The user message to run. Optional: a deterministic kind (008 workspace_index)
+  // has no message — its executor reads config from the fields below instead.
+  message?: string
   // Optional snapshot of a todo list to seed into the forked worker conversation
   // (plan 016, todo_run). enqueue forks a fresh conversation with an empty todos
   // table, so a handed-off list must be carried here and seeded — not a column
   // (per the 015 producer contract: per-kind config rides in the input blob).
   seedTodos?: Array<{ itemId: string; content: string; status: TodoStatus }>
+  // Per-kind config for a deterministic executor (008 workspace_index): which
+  // workspace to index and at what priority. Rides in the blob per the 015
+  // producer contract rather than as new columns.
+  workspaceId?: string
+  priority?: "low" | "high"
 }
 
 function kindOf(task: Task): string {
@@ -240,11 +286,44 @@ export class TaskRunner {
     return task
   }
 
-  // Manually resume an interrupted task (user-driven). No-op if the task is
-  // missing or not in the `interrupted` state.
+  // Enqueue a durable task that is NOT an agent turn: a deterministic kind driven
+  // by its registered `run` executor (008 workspace_index). No seeded user message
+  // (the executor reads config from the input blob, not the transcript), but it
+  // still forks a private conversation — cheap, workspace-scoped, and it keeps the
+  // per-conversation serialization in takeNext() meaningful (one index run per
+  // conversation, never interleaved with a real chat). Honors the 015 producer
+  // contract: work is created only through the runner, config rides in the blob.
+  enqueueKind(input: {
+    kind: string
+    title?: string | null
+    input: { workspaceId?: string; priority?: "low" | "high" } & Record<string, unknown>
+  }): Task {
+    const taskInput: TaskInput = { kind: input.kind, ...input.input }
+    const taskConversation = createConversation({
+      mode: "interactive",
+      workspaceId: input.input.workspaceId ?? null,
+      accountId: null,
+      modelId: null,
+      title: input.title ?? input.kind,
+    })
+    const task = createTask({
+      conversationId: taskConversation.id,
+      sourceConversationId: null,
+      title: input.title ?? null,
+      status: "queued",
+      input: taskInput,
+    })
+    this.queue.push(task.id)
+    this.wakeup()
+    return task
+  }
+
+  // Manually resume a task the runner isn't actively driving: an `interrupted`
+  // task (orphaned by a crash) or a `paused` task (008, deliberately halted).
+  // No-op otherwise.
   resume(taskId: string): void {
     const task = getTask(taskId)
-    if (!task || task.status !== "interrupted") return
+    if (!task || (task.status !== "interrupted" && task.status !== "paused")) return
     // A manual resume restarts the retry budget — the prior attempt counter (if
     // any survived) is stale; a fresh user-driven run gets the full allowance.
     this.attempts.delete(taskId)
@@ -252,6 +331,32 @@ export class TaskRunner {
     this.emit(taskId, { type: "status_change", from: task.status, to: "queued" })
     if (!this.queue.includes(taskId)) this.queue.push(taskId)
     this.wakeup()
+  }
+
+  // Pause a task (plan 008). A running task is aborted with PAUSE_ABORT_REASON so
+  // runOne maps its {stopped} to `paused` (not `cancelled`); a still-queued task
+  // is marked `paused` directly (and pulled from the queue). A paused task keeps
+  // its partial progress and resumes from its own cursor via resume(). No-op if
+  // the task can't be paused from its current state.
+  pause(taskId: string): void {
+    const controller = this.running.get(taskId)
+    if (controller) {
+      controller.abort(PAUSE_ABORT_REASON)
+      return
+    }
+    // Backing off between retries: settle to paused like cancel does.
+    const timer = this.backoffTimers.get(taskId)
+    if (timer) {
+      clearTimeout(timer)
+      this.backoffTimers.delete(taskId)
+      this.attempts.delete(taskId)
+    }
+    this.queue = this.queue.filter((id) => id !== taskId)
+    const task = getTask(taskId)
+    if (task && (task.status === "queued" || task.status === "running")) {
+      updateTask(taskId, { status: "paused" })
+      this.emit(taskId, { type: "status_change", from: task.status, to: "paused" })
+    }
   }
 
   // Cancel a task. A running task is aborted (its 005 process-group kill tears
@@ -480,51 +585,78 @@ export class TaskRunner {
       updateTask(taskId, { status: "running" })
       this.emit(taskId, { type: "status_change", from: task.status, to: "running" })
 
-      const result: ChatResult = await runAgentLoop({
-        conversationId: task.conversationId,
-        workspace,
-        // A background task can itself hand off more work (e.g. a todo_run task
-        // spawning another). Bind to this same runner so it goes through the one
-        // enqueue seam — the producer contract holds recursively.
-        enqueueTask: (input) => this.enqueue(input),
-        onEvent: (event) => {
-          // A gate is blocking the loop: surface it as waiting_for_approval so
-          // the panel can prompt. The agent's gate promise stays parked until
-          // the user answers via task:approve/deny/answer, which calls
-          // markRunning to flip the status back. The task stays in `running`
-          // (the loop hasn't returned), so the concurrency slot is still held —
-          // intended: a paused task shouldn't free a slot mid-turn.
-          if (event.type === "approval" || event.type === "question") {
-            // Dual-write the approval gate to the durable `approvals` table so a
-            // request blocked across an app restart is recoverable. Only
-            // `approval` gets a row (questions are out of scope, plan 012); the
-            // request blob mirrors the event so reconcile/resolve can match it by
-            // its process-unique requestId.
-            if (event.type === "approval") {
-              createApproval({
-                taskId,
-                request: {
-                  tool: event.tool,
-                  summary: event.summary,
-                  reason: event.reason,
-                  requestId: event.requestId,
-                  toolCallId: event.id,
-                },
+      const capability = this.capabilityOf(kindOf(task))
+      let result: ChatResult | TaskExecResult
+      if (capability.run) {
+        // Deterministic kind (008 workspace_index): no forked-conversation LLM
+        // turn. Same abort signal, same durable emit, same resolved workspace.
+        // A deterministic executor never emits approval/question events, so the
+        // gate handling below is agent-only — the status stays running until the
+        // executor settles.
+        result = await capability.run({
+          task,
+          signal: abort.signal,
+          emit: (event) => this.emit(taskId, event),
+          workspace,
+        })
+      } else {
+        result = await runAgentLoop({
+          conversationId: task.conversationId,
+          workspace,
+          // A background task can itself hand off more work (e.g. a todo_run task
+          // spawning another). Bind to this same runner so it goes through the one
+          // enqueue seam — the producer contract holds recursively.
+          enqueueTask: (input) => this.enqueue(input),
+          onEvent: (event) => {
+            // A gate is blocking the loop: surface it as waiting_for_approval so
+            // the panel can prompt. The agent's gate promise stays parked until
+            // the user answers via task:approve/deny/answer, which calls
+            // markRunning to flip the status back. The task stays in `running`
+            // (the loop hasn't returned), so the concurrency slot is still held —
+            // intended: a paused task shouldn't free a slot mid-turn.
+            if (event.type === "approval" || event.type === "question") {
+              // Dual-write the approval gate to the durable `approvals` table so a
+              // request blocked across an app restart is recoverable. Only
+              // `approval` gets a row (questions are out of scope, plan 012); the
+              // request blob mirrors the event so reconcile/resolve can match it by
+              // its process-unique requestId.
+              if (event.type === "approval") {
+                createApproval({
+                  taskId,
+                  request: {
+                    tool: event.tool,
+                    summary: event.summary,
+                    reason: event.reason,
+                    requestId: event.requestId,
+                    toolCallId: event.id,
+                  },
+                })
+              }
+              updateTask(taskId, { status: "waiting_for_approval" })
+              this.emit(taskId, {
+                type: "status_change",
+                from: "running",
+                to: "waiting_for_approval",
               })
             }
-            updateTask(taskId, { status: "waiting_for_approval" })
-            this.emit(taskId, {
-              type: "status_change",
-              from: "running",
-              to: "waiting_for_approval",
-            })
-          }
-          this.emit(taskId, event)
-        },
-        abort,
-      })
+            this.emit(taskId, event)
+          },
+          abort,
+        })
+      }
 
-      if (result.stopped) {
+      // A pause aborts the executor with PAUSE_ABORT_REASON: settle to `paused`
+      // (a durable resume state), not `cancelled`. Deterministic executors also
+      // signal it explicitly via {paused:true} so the mapping doesn't depend on
+      // the abort reason surviving.
+      if (
+        ("paused" in result && result.paused) ||
+        abort.signal.reason === PAUSE_ABORT_REASON
+      ) {
+        this.attempts.delete(taskId)
+        updateTask(taskId, { status: "paused" })
+        this.emit(taskId, { type: "status_change", from: "running", to: "paused" })
+      } else if (result.stopped) {
         this.attempts.delete(taskId)
         // A turn stopped while parked on a gate leaves a `pending` approval row;
         // sweep it so it doesn't outlive the cancelled task (no-op if the user

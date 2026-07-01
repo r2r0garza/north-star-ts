@@ -29,6 +29,7 @@ import { ProvidersTab, ModelsTab, useLlmSettings } from "@/components/llm-settin
 import type {
   ExecutionSettings,
   PermissionSettings,
+  IndexingSettings,
   Backend,
   ApprovalCategory,
   Runtime,
@@ -85,6 +86,7 @@ export function SettingsSheet({
 }) {
   const [execution, setExecution] = useState<ExecutionSettings | null>(null)
   const [permissions, setPermissions] = useState<PermissionSettings | null>(null)
+  const [indexing, setIndexing] = useState<IndexingSettings | null>(null)
   const [runtimes, setRuntimes] = useState<Record<Runtime, RuntimeStatus> | null>(null)
   const llm = useLlmSettings(open)
   // When set, the first-time onboarding dialog is shown for this just-picked
@@ -98,11 +100,13 @@ export function SettingsSheet({
     Promise.all([
       window.cowork.settings.getExecution(),
       window.cowork.settings.getPermissions(),
+      window.cowork.settings.getIndexing(),
       window.cowork.settings.checkRuntimes(),
-    ]).then(([exec, perms, rt]) => {
+    ]).then(([exec, perms, idx, rt]) => {
       if (cancelled) return
       setExecution(exec)
       setPermissions(perms)
+      setIndexing(idx)
       setRuntimes(rt)
     })
     return () => {
@@ -118,6 +122,10 @@ export function SettingsSheet({
   async function savePermissions(next: PermissionSettings) {
     setPermissions(next)
     await window.cowork.settings.setPermissions(next)
+  }
+  async function saveIndexing(next: IndexingSettings) {
+    setIndexing(next)
+    await window.cowork.settings.setIndexing(next)
   }
 
   function onBackendChange(value: string) {
@@ -159,13 +167,14 @@ export function SettingsSheet({
             </SheetDescription>
           </SheetHeader>
 
-          {execution && permissions && (
+          {execution && permissions && indexing && (
             <Tabs defaultValue={initialTab} className="flex min-h-0 flex-1 flex-col px-4">
               <TabsList>
                 <TabsTrigger value="providers">Providers</TabsTrigger>
                 <TabsTrigger value="models">Models</TabsTrigger>
                 <TabsTrigger value="backend">Backend</TabsTrigger>
                 <TabsTrigger value="permissions">Permissions</TabsTrigger>
+                <TabsTrigger value="indexing">Indexing</TabsTrigger>
                 <TabsTrigger value="sandbox" disabled={!isContainer}>
                   Sandbox
                 </TabsTrigger>
@@ -239,6 +248,51 @@ export function SettingsSheet({
                       })
                     }
                   />
+                </Field>
+              </TabsContent>
+
+              {/* Workspace Indexing (plan 008) — background index build + agent use. */}
+              <TabsContent value="indexing" className="flex flex-col gap-4 py-2">
+                <Field orientation="horizontal">
+                  <FieldContent>
+                    <FieldLabel htmlFor="idx-auto">Automatically index new workspaces</FieldLabel>
+                    <FieldDescription>
+                      Build a background index when a workspace is opened, so the agent can answer
+                      about it right away. Per-workspace disable overrides this.
+                    </FieldDescription>
+                  </FieldContent>
+                  <Switch
+                    id="idx-auto"
+                    checked={indexing.autoIndexNewWorkspaces}
+                    onCheckedChange={(checked) =>
+                      saveIndexing({ ...indexing, autoIndexNewWorkspaces: checked })
+                    }
+                  />
+                </Field>
+                <Field orientation="horizontal">
+                  <FieldContent>
+                    <FieldLabel htmlFor="idx-context">Use index to improve agent context</FieldLabel>
+                    <FieldDescription>
+                      Feed a compact workspace summary into the agent. Off = the index still builds
+                      but the agent ignores it.
+                    </FieldDescription>
+                  </FieldContent>
+                  <Switch
+                    id="idx-context"
+                    checked={indexing.useIndexForContext}
+                    onCheckedChange={(checked) =>
+                      saveIndexing({ ...indexing, useIndexForContext: checked })
+                    }
+                  />
+                </Field>
+                <Field orientation="horizontal">
+                  <FieldContent>
+                    <FieldLabel htmlFor="idx-embed">Include embeddings</FieldLabel>
+                    <FieldDescription>
+                      Semantic search over the index — coming in a later release.
+                    </FieldDescription>
+                  </FieldContent>
+                  <Switch id="idx-embed" checked={false} disabled />
                 </Field>
               </TabsContent>
 

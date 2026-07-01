@@ -9,17 +9,45 @@ import {
   approvals,
   todos,
 } from "../db/repositories"
-import type { Mode, TaskStatus, ApprovalStatus } from "../db/types"
+import type { Conversation, Mode, TaskStatus, ApprovalStatus } from "../db/types"
+import type { IndexService } from "../index/service"
+import { getIndexing } from "../settings/service"
+import { getRunByWorkspace } from "../db/repositories/index-runs"
+
+// Kick off auto-indexing when a conversation gains a workspace in an indexable
+// mode (plan 008). Gated by the global auto-index setting and the per-workspace
+// enable flag; North Star indexes at high priority (prefer index before deep
+// execution), Interactive at low (background). ensureRunning is idempotent, so
+// re-firing on every create/update is safe. Failures never block the DB call.
+function maybeAutoIndex(conversation: Conversation, service?: IndexService): void {
+  if (!service || !conversation.workspaceId) return
+  if (conversation.mode !== "interactive" && conversation.mode !== "north_star") return
+  if (!getIndexing().autoIndexNewWorkspaces) return
+  const run = getRunByWorkspace(conversation.workspaceId)
+  if (run && !run.enabled) return
+  try {
+    service.ensureRunning(
+      conversation.workspaceId,
+      conversation.mode === "north_star" ? "high" : "low"
+    )
+  } catch (err) {
+    console.error("auto-index trigger failed:", err)
+  }
+}
 
 // Registers every `db:` IPC channel. Call after app.whenReady() so the DB
 // connection (which reads app.getPath("userData")) opens lazily on first use.
 // All handlers are synchronous repository calls; SQLite access stays in main.
-export function registerDbHandlers(): void {
+// `indexService` (plan 008) is optional so tests/headless callers can omit it.
+export function registerDbHandlers(indexService?: IndexService): void {
   // Conversations
   ipcMain.handle(
     "db:conversations:create",
-    (_e, input: { mode: Mode; workspaceId?: string | null; title?: string | null }) =>
-      conversations.createConversation(input)
+    (_e, input: { mode: Mode; workspaceId?: string | null; title?: string | null }) => {
+      const conversation = conversations.createConversation(input)
+      maybeAutoIndex(conversation, indexService)
+      return conversation
+    }
   )
   ipcMain.handle("db:conversations:list", (_e, opts?: { mode?: Mode }) =>
     conversations.listConversations(opts)
@@ -29,8 +57,11 @@ export function registerDbHandlers(): void {
   )
   ipcMain.handle(
     "db:conversations:update",
-    (_e, id: string, patch: { title?: string | null; workspaceId?: string | null }) =>
-      conversations.updateConversation(id, patch)
+    (_e, id: string, patch: { title?: string | null; workspaceId?: string | null }) => {
+      const conversation = conversations.updateConversation(id, patch)
+      maybeAutoIndex(conversation, indexService)
+      return conversation
+    }
   )
   ipcMain.handle("db:conversations:delete", (_e, id: string) =>
     conversations.deleteConversation(id)

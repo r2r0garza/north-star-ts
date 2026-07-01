@@ -687,3 +687,146 @@ describe.skipIf(!sqliteLoads)("TaskRunner — concurrent tasks under the cap", (
     await runner.stop()
   })
 })
+
+describe.skipIf(!sqliteLoads)("TaskRunner — deterministic executor seam (plan 008)", () => {
+  it("drives a kind's run executor instead of runAgentLoop", async () => {
+    let ran = false
+    const runner = new TaskRunner()
+    runner.registerKind("indexer", {
+      autoResume: true,
+      run: async () => {
+        ran = true
+        return { content: "indexed" }
+      },
+    })
+    runner.start()
+    const task = runner.enqueueKind({ kind: "indexer", input: {} })
+    await settle()
+
+    expect(ran).toBe(true)
+    // The agent loop was never touched for a deterministic kind.
+    expect(loopCalls).toHaveLength(0)
+    expect(getTask(task.id)?.status).toBe("completed")
+    await runner.stop()
+  })
+
+  it("maps executor results to terminal statuses", async () => {
+    const runner = new TaskRunner()
+    runner.registerKind("ok", { autoResume: false, run: async () => ({ content: "x" }) })
+    runner.registerKind("boom", {
+      autoResume: false,
+      run: async () => ({ error: "bad", retryable: false }),
+    })
+    runner.registerKind("halt", { autoResume: false, run: async () => ({ stopped: true }) })
+    runner.start()
+    const ok = runner.enqueueKind({ kind: "ok", input: {} })
+    const boom = runner.enqueueKind({ kind: "boom", input: {} })
+    const halt = runner.enqueueKind({ kind: "halt", input: {} })
+    await settle()
+
+    expect(getTask(ok.id)?.status).toBe("completed")
+    expect(getTask(boom.id)?.status).toBe("failed")
+    expect(getTask(halt.id)?.status).toBe("cancelled")
+    await runner.stop()
+  })
+
+  it("passes the resolved workspace to the executor", async () => {
+    // enqueueKind forks a conversation with the given workspaceId, but the task's
+    // workspace is resolved via that conversation → workspace path. Seed a
+    // workspace row and link it so resolveWorkspace returns its path.
+    const now = Date.now()
+    const wsId = "ws-seam"
+    db.prepare(
+      "INSERT INTO workspaces (id, path, name, created_at, updated_at) VALUES (?, ?, 'w', ?, ?)"
+    ).run(wsId, "/tmp/seam-ws", now, now)
+    let seen: string | undefined = "unset"
+    const runner = new TaskRunner()
+    runner.registerKind("probe", {
+      autoResume: false,
+      run: async ({ workspace }) => {
+        seen = workspace
+        return { content: "x" }
+      },
+    })
+    runner.start()
+    runner.enqueueKind({ kind: "probe", input: { workspaceId: wsId } })
+    await settle()
+
+    expect(seen).toBe("/tmp/seam-ws")
+    await runner.stop()
+  })
+})
+
+describe.skipIf(!sqliteLoads)("TaskRunner — pause/resume (plan 008)", () => {
+  it("pauses a running task (abort reason → paused) and resumes it from paused", async () => {
+    const runner = new TaskRunner()
+    runner.registerKind("slow", {
+      autoResume: true,
+      run: ({ signal }) =>
+        new Promise((resolve) => {
+          signal.addEventListener("abort", () => resolve({ stopped: true }))
+        }),
+    })
+    runner.start()
+    const task = runner.enqueueKind({ kind: "slow", input: {} })
+    // Let it start running.
+    await new Promise((r) => setTimeout(r, 20))
+    expect(getTask(task.id)?.status).toBe("running")
+
+    runner.pause(task.id)
+    await settle()
+    expect(getTask(task.id)?.status).toBe("paused")
+
+    // Resume: the paused task re-queues and runs again.
+    let secondRun = false
+    runner.registerKind("slow", {
+      autoResume: true,
+      run: async () => {
+        secondRun = true
+        return { content: "done" }
+      },
+    })
+    runner.resume(task.id)
+    await settle()
+    expect(secondRun).toBe(true)
+    expect(getTask(task.id)?.status).toBe("completed")
+    await runner.stop()
+  })
+
+  it("pauses a still-queued task directly", async () => {
+    const runner = new TaskRunner({ concurrency: 1 })
+    // A blocker occupies the single slot (aborts on stop) so the second task
+    // stays queued long enough to be paused.
+    runner.registerKind("blocker", {
+      autoResume: false,
+      run: ({ signal }) =>
+        new Promise((resolve) => {
+          signal.addEventListener("abort", () => resolve({ stopped: true }))
+        }),
+    })
+    runner.registerKind("waiter", { autoResume: true, run: async () => ({ content: "x" }) })
+    runner.start()
+    runner.enqueueKind({ kind: "blocker", input: {} })
+    await new Promise((r) => setTimeout(r, 20))
+    const waiter = runner.enqueueKind({ kind: "waiter", input: {} })
+    runner.pause(waiter.id)
+    expect(getTask(waiter.id)?.status).toBe("paused")
+    await runner.stop()
+  })
+
+  it("leaves a paused task paused across a restart (not auto-resumed)", async () => {
+    const conv = createConversation({ mode: "interactive" })
+    const task = createTask({
+      conversationId: conv.id,
+      status: "paused",
+      input: { kind: "workspace_index", workspaceId: "w" },
+    })
+    const runner = new TaskRunner()
+    runner.registerKind("workspace_index", { autoResume: true, run: async () => ({ content: "x" }) })
+    runner.start()
+    await settle()
+    // reconcile only touches running/waiting_for_approval; a paused task stays put.
+    expect(getTask(task.id)?.status).toBe("paused")
+    await runner.stop()
+  })
+})
