@@ -50,6 +50,17 @@ import {
 import { cn } from "@/lib/utils"
 import type { Question, QuestionAnswer, LlmSettings, AccountWithModels } from "@/types"
 
+// The live, in-flight state of one streaming turn, held per-conversation in
+// `liveTurns` until the turn settles and reconciles into the persisted timeline.
+// A pending approval lives inside `tools` (on the matching call's `approval`),
+// so restoring a switched-away turn restores its approval card too.
+interface LiveTurn {
+  text: string
+  tools: ToolUse[]
+  question: { requestId: string; questions: Question[] } | null
+}
+const EMPTY_LIVE: LiveTurn = { text: "", tools: [], question: null }
+
 export default function App({
   view,
   conversationId,
@@ -83,18 +94,43 @@ export default function App({
   // The persisted transcript, rebuilt from stored rows (text bubbles + tool
   // groups, interleaved in order). Live in-flight state is held separately.
   const [timeline, setTimeline] = useState<TimelineItem[]>([])
-  const [loading, setLoading] = useState(false)
-  // The in-flight assistant turn: streamed text and the tool calls as they run.
-  // Rendered live, then replaced by the reconciled `timeline` when the turn ends.
-  const [liveText, setLiveText] = useState("")
-  const [liveTools, setLiveTools] = useState<ToolUse[]>([])
-  // A pending ask_user_question prompt, if the agent raised one this turn. Like
-  // the approval, it pauses the turn and renders above the composer; cleared
-  // when answered or when the turn ends.
-  const [liveQuestion, setLiveQuestion] = useState<{
-    requestId: string
-    questions: Question[]
-  } | null>(null)
+  // Conversations with a turn currently streaming in the main process. A single
+  // App instance is shared across all conversations (only the `conversationId`
+  // prop changes when you switch), so "loading" is derived per-conversation from
+  // this set — switching away from a streaming turn no longer shows its spinner
+  // (or its Stop button) on the conversation you switched to.
+  const [runningConvos, setRunningConvos] = useState<Set<string>>(new Set())
+  // The in-flight assistant turn for each streaming conversation: streamed text,
+  // the tool calls as they run, and any pending approval/question. Keyed by
+  // conversation — NOT a single shared buffer — so switching away from a turn
+  // that's still streaming (or parked on an approval gate in the main process)
+  // preserves its live state, and switching back restores it exactly. A single
+  // App instance is shared across all conversations, so a shared buffer would be
+  // wiped on switch: the returning conversation would show a perpetual "Thinking…"
+  // spinner with no approval card and no way to send (the session-bleed bug).
+  // Each entry is dropped when its turn settles (reconciled into `timeline`).
+  const [liveTurns, setLiveTurns] = useState<Map<string, LiveTurn>>(new Map())
+  // Mutate one conversation's live turn immutably; seeds an empty turn if absent.
+  const updateLive = useCallback(
+    (convoId: string, fn: (prev: LiveTurn) => LiveTurn) => {
+      setLiveTurns((prev) => {
+        const next = new Map(prev)
+        next.set(convoId, fn(prev.get(convoId) ?? EMPTY_LIVE))
+        return next
+      })
+    },
+    []
+  )
+  // Drop one conversation's live turn (its content has been reconciled into the
+  // persisted transcript, or the turn is being restarted).
+  const clearLive = useCallback((convoId: string) => {
+    setLiveTurns((prev) => {
+      if (!prev.has(convoId)) return prev
+      const next = new Map(prev)
+      next.delete(convoId)
+      return next
+    })
+  }, [])
 
   // All providers + their models (for the composer's grouped picker) and the
   // default selection (the starting point for a fresh conversation). Reloaded
@@ -125,12 +161,20 @@ export default function App({
   const effAccountId = selAccountId ?? defaultLlm?.activeAccountId ?? null
   const effModelId = selModelId ?? defaultLlm?.activeModelId ?? null
 
-  // The conversation the panel is currently showing. Used to ignore a settling
-  // turn's reconcile if the user switched conversations mid-stream.
+  // The conversation the panel is currently showing. Updated synchronously when
+  // the prop changes (in the load effect) so streaming callbacks can tell, at the
+  // moment an event arrives, whether it belongs to the conversation on screen.
   const viewingRef = useRef<string | null>(conversationId)
-  // The conversation whose turn is currently in flight (set in sendMessage,
-  // which may create the conversation lazily). The Stop button cancels this one.
-  const inFlightRef = useRef<string | null>(null)
+  // A conversation just created by sendMessage and promoted to active mid-send.
+  // Set so the load effect knows to skip its clear/reload for that one render —
+  // App already holds the optimistic transcript and the live stream for it, and
+  // nothing is persisted yet to load. Consumed (cleared) on the first effect run.
+  const justCreatedRef = useRef<string | null>(null)
+  // Whether the conversation currently on screen has a turn streaming. Derived
+  // from runningConvos, NOT a standalone flag: a single App instance is shared
+  // across conversations, so a per-conversation derivation is what stops one
+  // conversation's spinner/Stop button from showing on another.
+  const loading = conversationId !== null && runningConvos.has(conversationId)
   // A usable provider + model must be selected before any turn. Mirrors the
   // main-process resolveLlm gate (the backstop there returns the same error if a
   // stale selection slips through).
@@ -146,8 +190,20 @@ export default function App({
   useEffect(() => {
     let cancelled = false
     viewingRef.current = conversationId
-    setLiveText("")
-    setLiveTools([])
+    // A conversation sendMessage just created and promoted mid-turn: App already
+    // shows its optimistic transcript and is streaming its live turn, and nothing
+    // is persisted yet to reload. Skip the clear+reload entirely (and consume the
+    // flag) so we don't wipe the in-flight stream the user is watching.
+    if (conversationId && justCreatedRef.current === conversationId) {
+      justCreatedRef.current = null
+      return
+    }
+    // Switching to a different conversation no longer wipes any live state: each
+    // streaming turn's text/tools/approval/question is held per-conversation in
+    // `liveTurns` and rendered by looking up the id on screen. Leaving a turn that
+    // is still streaming (or parked on an approval gate) and returning to it now
+    // restores its live buffers — including the pending approval card — instead of
+    // stranding it as a perpetual "Thinking…" spinner with no way to respond.
     if (!conversationId) {
       setTimeline([])
       setWorkspace("")
@@ -233,13 +289,18 @@ export default function App({
     decision: "approved" | "denied",
     remember?: "workspace"
   ) {
-    setLiveTools((prev) =>
-      prev.map((t) =>
-        t.approval?.requestId === requestId
-          ? { ...t, approval: { ...t.approval, status: decision } }
-          : t
-      )
-    )
+    // The card is only shown for the conversation on screen, so flip its status
+    // in that conversation's live turn (matched by requestId).
+    if (conversationId) {
+      updateLive(conversationId, (turn) => ({
+        ...turn,
+        tools: turn.tools.map((t) =>
+          t.approval?.requestId === requestId
+            ? { ...t, approval: { ...t.approval, status: decision } }
+            : t
+        ),
+      }))
+    }
     void window.cowork.chatApprove({ requestId, decision, remember })
   }
 
@@ -270,43 +331,71 @@ export default function App({
       isNew = true
     }
 
+    // From here, treat `convoId` as a non-null local so the guards below read
+    // cleanly (it's assigned in both branches above).
+    const turnConvoId = convoId as string
+
     // Optimistically append the user message; the assistant turn renders from
     // the transient live state below until the turn settles and reconciles.
     setTimeline((prev) => [
       ...prev,
-      { kind: "text", key: `local-${convoId}-${prev.length}`, role: "user", content: text },
+      { kind: "text", key: `local-${turnConvoId}-${prev.length}`, role: "user", content: text },
     ])
     setMessage("")
     setAttachments([])
-    setLiveText("")
-    setLiveTools([])
-    setLiveQuestion(null)
-    setLoading(true)
-    inFlightRef.current = convoId
+    // Start this conversation's live turn from a clean slate (its buffers are
+    // keyed by conversation, so this never touches another conversation's turn).
+    setLiveTurns((prev) => {
+      const next = new Map(prev)
+      next.set(turnConvoId, EMPTY_LIVE)
+      return next
+    })
+    // Mark this conversation as streaming (per-conversation, so switching away
+    // doesn't carry the spinner/Stop button to another conversation).
+    setRunningConvos((prev) => new Set(prev).add(turnConvoId))
+
+    // Promote a freshly created conversation to active NOW, not after the turn,
+    // so its live stream renders in place under a stable id. viewingRef is set
+    // synchronously (the load effect reads it), and justCreatedRef tells that
+    // effect to skip its reload so the optimistic transcript isn't wiped.
+    if (isNew) {
+      justCreatedRef.current = turnConvoId
+      viewingRef.current = turnConvoId
+      onConversationCreated(turnConvoId)
+    }
 
     try {
       const data = await window.cowork.chat(
         {
-          conversationId: convoId,
+          conversationId: turnConvoId,
           message: text,
           // Chat sends no workspace and inlines attachments instead.
           workspace: isChat ? undefined : workspace.trim(),
           attachments: isChat ? sentAttachments : undefined,
         },
+        // Events always route into THIS turn's own per-conversation live buffer
+        // (keyed by turnConvoId), regardless of what's on screen. The render layer
+        // decides what to show by looking up the viewed conversation's entry, so a
+        // turn that keeps streaming after the user switches away no longer loses
+        // its tokens/tools/approval — they're preserved and restored on return.
         (event) => {
           if (event.type === "token") {
-            setLiveText((s) => s + event.delta)
+            updateLive(turnConvoId, (turn) => ({ ...turn, text: turn.text + event.delta }))
           } else if (event.type === "tool" && event.phase === "start") {
             // A tool started — add a running row (label derived from its args).
-            setLiveTools((prev) => [
-              ...prev,
-              toToolUse({ id: event.id, name: event.name, arguments: event.arguments }),
-            ])
+            updateLive(turnConvoId, (turn) => ({
+              ...turn,
+              tools: [
+                ...turn.tools,
+                toToolUse({ id: event.id, name: event.name, arguments: event.arguments }),
+              ],
+            }))
           } else if (event.type === "tool" && event.phase === "done") {
             // Its result arrived — attach it, clear any approval card, and flip
             // status (matched by id).
-            setLiveTools((prev) =>
-              prev.map((t) =>
+            updateLive(turnConvoId, (turn) => ({
+              ...turn,
+              tools: turn.tools.map((t) =>
                 t.id === event.id
                   ? {
                       ...t,
@@ -315,13 +404,14 @@ export default function App({
                       approval: undefined,
                     }
                   : t
-              )
-            )
+              ),
+            }))
           } else if (event.type === "approval") {
             // The agent is paused waiting on a human decision — attach a pending
             // approval card to the matching (already-running) tool row.
-            setLiveTools((prev) =>
-              prev.map((t) =>
+            updateLive(turnConvoId, (turn) => ({
+              ...turn,
+              tools: turn.tools.map((t) =>
                 t.id === event.id
                   ? {
                       ...t,
@@ -334,59 +424,67 @@ export default function App({
                       },
                     }
                   : t
-              )
-            )
+              ),
+            }))
           } else if (event.type === "question") {
             // The agent paused to ask the user — show the question panel above
             // the composer until answered.
-            setLiveQuestion({ requestId: event.requestId, questions: event.questions })
+            updateLive(turnConvoId, (turn) => ({
+              ...turn,
+              question: { requestId: event.requestId, questions: event.questions },
+            }))
           }
         }
       )
-      // Surface the final text/error in the live bubble. An error is APPENDED
-      // (not `s || …`) so it shows even after a preamble already streamed —
-      // otherwise a turn that ends mid-work after some text would stop silently.
-      // (Transient — immediately superseded by the reconcile below, which now
-      // also reads the persisted error note.)
+      // Surface the final text/error in this turn's live bubble. An error is
+      // APPENDED (not `s || …`) so it shows even after a preamble already streamed
+      // — otherwise a turn that ends mid-work after some text would stop silently.
+      // (Transient — immediately superseded by the reconcile below, which also
+      // reads the persisted error note.)
       if (data.error) {
-        setLiveText((s) => (s ? `${s}\n\n⚠️ ${data.error}` : `Error: ${data.error}`))
+        updateLive(turnConvoId, (turn) => ({
+          ...turn,
+          text: turn.text ? `${turn.text}\n\n⚠️ ${data.error}` : `Error: ${data.error}`,
+        }))
       } else if (data.stopped) {
         // Clean user cancel — the "⏹ Stopped by user." note is persisted and
         // shown by the reconcile below; append a transient marker meanwhile.
-        setLiveText((s) => (s ? `${s}\n\n⏹ Stopped` : "⏹ Stopped"))
+        updateLive(turnConvoId, (turn) => ({
+          ...turn,
+          text: turn.text ? `${turn.text}\n\n⏹ Stopped` : "⏹ Stopped",
+        }))
       } else if (data.content) {
-        setLiveText((s) => s || data.content!)
+        updateLive(turnConvoId, (turn) => ({ ...turn, text: turn.text || data.content! }))
       }
     } catch (error) {
       const msg = error instanceof Error ? error.message : "Request failed"
-      setLiveText((s) => (s ? `${s}\n\n⚠️ ${msg}` : msg))
+      updateLive(turnConvoId, (turn) => ({
+        ...turn,
+        text: turn.text ? `${turn.text}\n\n⚠️ ${msg}` : msg,
+      }))
     } finally {
-      setLoading(false)
-      inFlightRef.current = null
-      // The question panel is a transient prompt tied to the in-flight turn —
-      // clear it once the turn settles regardless of which conversation is shown.
-      setLiveQuestion(null)
-      // Reconcile the live turn with the persisted transcript so the rendered
-      // content matches storage exactly — but only if the user is still viewing
-      // this conversation. A freshly created one is promoted to active just
-      // below, which reloads anyway.
-      const stillViewing = isNew || viewingRef.current === convoId
-      if (stillViewing) {
-        try {
-          const rows = await window.cowork.db.messages.list(convoId)
-          if (viewingRef.current === convoId || isNew) {
-            setTimeline(buildTimeline(rows))
-            setLiveText("")
-            setLiveTools([])
-          }
-        } catch {
-          // Keep the optimistic view if the reconcile read fails.
-        }
+      // Clear this conversation's running flag (drops its spinner/Stop button).
+      setRunningConvos((prev) => {
+        if (!prev.has(turnConvoId)) return prev
+        const next = new Set(prev)
+        next.delete(turnConvoId)
+        return next
+      })
+      // Reconcile the settled turn into the persisted transcript so the rendered
+      // content matches storage exactly, then drop its live buffer. If this turn's
+      // conversation is on screen, refresh the timeline in place; either way the
+      // live entry is dropped (its content is now persisted and rebuilt by
+      // buildTimeline whenever the conversation is next viewed).
+      try {
+        const rows = await window.cowork.db.messages.list(turnConvoId)
+        if (viewingRef.current === turnConvoId) setTimeline(buildTimeline(rows))
+      } catch {
+        // Keep the optimistic view if the reconcile read fails.
       }
-      // Promote a freshly created conversation to active (also refreshes the
-      // sidebar so its title appears); otherwise just refresh ordering/title.
-      if (isNew) onConversationCreated(convoId)
-      else onConversationChanged()
+      clearLive(turnConvoId)
+      // Refresh the sidebar ordering/title. (A freshly created conversation was
+      // already promoted to active up front, before the turn started streaming.)
+      onConversationChanged()
     }
   }
 
@@ -430,21 +528,53 @@ export default function App({
     onRanInBackground?.()
   }
 
-  // Cancel the in-flight turn. The main process aborts the LLM stream and
-  // resolves chat() with `{ stopped: true }`, which unwinds sendMessage's
-  // finally (reconcile + loading reset) normally.
+  // Cancel the in-flight turn for the conversation on screen. The Stop button is
+  // only shown while THIS conversation is loading (loading is derived from
+  // runningConvos), so the displayed conversationId is the one to cancel. The
+  // main process aborts the LLM stream and resolves chat() with `{ stopped: true }`,
+  // which unwinds that turn's sendMessage finally normally.
   function stopMessage() {
-    const id = inFlightRef.current
-    if (id) window.cowork.chatStop(id)
+    if (conversationId) window.cowork.chatStop(conversationId)
   }
+
+  // The live turn for the conversation on screen (if any). All the render-time
+  // live state — streamed text, tool rows, pending approval/question — reads from
+  // this, so switching conversations just changes which entry we look up rather
+  // than wiping a shared buffer.
+  const liveTurn = conversationId ? liveTurns.get(conversationId) : undefined
+  const liveText = liveTurn?.text ?? ""
+  const liveTools = liveTurn?.tools ?? []
+  const liveQuestion = liveTurn?.question ?? null
 
   // Submit the user's answers to a pending ask_user_question. Clear the panel
   // immediately (the agent resumes with the answers as the tool result).
   function answerQuestion(answers: QuestionAnswer[]) {
-    if (!liveQuestion) return
+    if (!liveQuestion || !conversationId) return
     void window.cowork.chatAnswer({ requestId: liveQuestion.requestId, answers })
-    setLiveQuestion(null)
+    updateLive(conversationId, (turn) => ({ ...turn, question: null }))
   }
+
+  // What to actually render as the transcript. When a live turn is on screen, the
+  // assistant response after the last user message is owned by the live buffer
+  // (streamed text + tool rows + approval card). But switching away and back
+  // reloads this conversation's rows from the DB — and the agent persists its
+  // assistant tool_calls row mid-turn, before the approval gate blocks. Left
+  // as-is that row would render a second, "interrupted" copy of the same tools
+  // group alongside the live one. So while a live turn exists, drop everything
+  // after the last user message: the live buffer is the single source of truth
+  // for the in-flight response. (No live turn → render the full timeline.)
+  const displayTimeline = (() => {
+    if (!liveTurn) return timeline
+    let lastUser = -1
+    for (let i = timeline.length - 1; i >= 0; i--) {
+      const item = timeline[i]
+      if (item.kind === "text" && item.role === "user") {
+        lastUser = i
+        break
+      }
+    }
+    return lastUser === -1 ? timeline : timeline.slice(0, lastUser + 1)
+  })()
 
   // Before the first message is sent, an empty session shows the composer
   // centered (an inviting "start typing" state). Once there are messages it
@@ -682,8 +812,8 @@ export default function App({
         <MessageScroller className="min-h-0 flex-1">
           <MessageScrollerViewport>
             <MessageScrollerContent className="mx-auto w-full max-w-[min(90%,72rem)] gap-4 px-4 py-6">
-              {timeline.map((item, i) => {
-                const isLast = i === timeline.length - 1 && !loading
+              {displayTimeline.map((item, i) => {
+                const isLast = i === displayTimeline.length - 1 && !loading
                 if (item.kind === "tools") {
                   return (
                     <MessageScrollerItem key={item.key} scrollAnchor={isLast}>
