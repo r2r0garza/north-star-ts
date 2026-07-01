@@ -11,7 +11,12 @@ import { createReadSkillTool } from "./skills/tool"
 import { skillSources } from "./skills/sources"
 import { loadSystemPrompt } from "./system-prompt"
 import { buildIndexSummary } from "../index/summary"
-import { contextBuilder } from "./context/context-builder"
+import {
+  contextBuilder,
+  SECTION_PRIORITY,
+  type ContextSection,
+} from "./context/context-builder"
+import { taskStateSection } from "./context/sections"
 import { repairDanglingToolCalls } from "./repair"
 import { createEnvironment } from "./env"
 import { LocalEnvironment } from "./env/local"
@@ -373,27 +378,43 @@ export async function runAgentLoop(opts: RunAgentLoopOptions): Promise<ChatResul
     askUserQuestionTool.definition,
     readSkillTool.definition,
   ]
+  // The non-droppable base prompt (mode prompt). Everything else is a droppable
+  // context SECTION handed to the ContextBuilder, which budgets + composes them
+  // into the system block under one global budget with an explicit drop order
+  // (plan 014). This replaces the previous pile of `systemPrompt +=` appends.
+  const baseSystemPrompt = await loadSystemPrompt(conversation?.mode)
+  const sections: ContextSection[] = []
+
+  // Skills: the read_skill catalog. Kept longest under budget pressure (highest
+  // priority) — dropping it would hide capabilities the agent is told it has.
   const skillsPrompt = buildSkillsPrompt(skills)
-
-  let systemPrompt = await loadSystemPrompt(conversation?.mode)
-  if (skillsPrompt) systemPrompt += `\n\n${skillsPrompt}`
-
-  // Re-inject the current task list each turn so a multi-step plan survives
-  // context compression and tool round-trips (see todo_write). Mode-gated and
-  // only when non-empty.
-  if (showTodos) {
-    const todoPrompt = buildTodoListPrompt(listTodos(conversationId))
-    if (todoPrompt) systemPrompt += `\n\n${todoPrompt}`
+  if (skillsPrompt) {
+    sections.push({ name: "skills", priority: SECTION_PRIORITY.skills, content: skillsPrompt })
   }
 
-  // Inject a compact workspace-index summary (plan 008) so the agent has cheap
-  // structured orientation ("what's here", "what framework") without walking the
-  // tree. Advisory only — gated by the "use index for context" setting; off = the
-  // index still builds but the agent ignores it. Mode-gated like todos (chat is
-  // tool-light) and only when the workspace has an index.
+  // Todo list: re-injected each turn so a multi-step plan survives context
+  // compression and tool round-trips (see todo_write). Mode-gated.
+  if (showTodos) {
+    const todoPrompt = buildTodoListPrompt(listTodos(conversationId))
+    if (todoPrompt) {
+      sections.push({ name: "todos", priority: SECTION_PRIORITY.todos, content: todoPrompt })
+    }
+  }
+
+  // Background task state: active durable tasks spawned from this session, so the
+  // agent doesn't re-start work already running (plan 014).
+  if (showTodos) {
+    const taskSection = taskStateSection(conversationId)
+    if (taskSection) sections.push(taskSection)
+  }
+
+  // Workspace-index summary (plan 008): cheap structured orientation. Advisory,
+  // most droppable. Gated by the "use index for context" setting + a workspace.
   if (useIndex && conversation?.workspaceId) {
     const indexSummary = buildIndexSummary(conversation.workspaceId)
-    if (indexSummary) systemPrompt += `\n\n${indexSummary}`
+    if (indexSummary) {
+      sections.push({ name: "index", priority: SECTION_PRIORITY.index, content: indexSummary })
+    }
   }
 
   // Before assembling context, repair any dangling tool-call tail from a turn
@@ -437,7 +458,10 @@ export async function runAgentLoop(opts: RunAgentLoopOptions): Promise<ChatResul
   // walk-back over stored history (which already ends with the user message just
   // persisted). The array grows in-memory as the agent calls tools and we feed
   // results back; those turns are also persisted as they complete (below).
-  const messages: any[] = contextBuilder.build(conversationId, { systemPrompt })
+  const messages: any[] = contextBuilder.build(conversationId, {
+    baseSystemPrompt,
+    sections,
+  })
 
   // Build this turn's execution backend (host or container). The backend is
   // selected by env var until the settings pane lands (see ./env/factory). A
