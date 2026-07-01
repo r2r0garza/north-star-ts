@@ -103,6 +103,40 @@ export function listFiles(workspaceId: string): IndexFile[] {
   return rows.map(toIndexFile)
 }
 
+// Files at a given indexed_stage — the Stage 3 dirty set is everything still at
+// 'file_map' (new or content-changed; unchanged files that already reached
+// 'symbols' are skipped). Ordered by path for stable, resumable processing.
+export function listFilesByStage(workspaceId: string, stage: IndexStage): IndexFile[] {
+  const rows = getDb()
+    .prepare(
+      "SELECT * FROM index_files WHERE workspace_id = ? AND indexed_stage = ? ORDER BY path ASC"
+    )
+    .all(workspaceId, stage) as IndexFileRow[]
+  return rows.map(toIndexFile)
+}
+
+// Bump a file's highest-completed stage (e.g. after symbol extraction).
+export function setIndexedStage(fileId: string, stage: IndexStage): void {
+  getDb()
+    .prepare("UPDATE index_files SET indexed_stage = ?, updated_at = ? WHERE id = ?")
+    .run(stage, Date.now(), fileId)
+}
+
+// List files matching a case-insensitive glob substring on the path (e.g.
+// ".ts", "components/"), for the index_query_tool's list-files op. Capped.
+export function listFilesMatching(
+  workspaceId: string,
+  glob: string,
+  limit = 200
+): IndexFile[] {
+  const rows = getDb()
+    .prepare(
+      "SELECT * FROM index_files WHERE workspace_id = ? AND path LIKE ? COLLATE NOCASE ORDER BY path ASC LIMIT ?"
+    )
+    .all(workspaceId, `%${glob}%`, Math.floor(limit)) as IndexFileRow[]
+  return rows.map(toIndexFile)
+}
+
 // The set of tracked paths, for diffing against a fresh walk to find deletions.
 export function listPaths(workspaceId: string): Set<string> {
   const rows = getDb()

@@ -1,6 +1,7 @@
 import { getRunByWorkspace } from "../db/repositories/index-runs"
 import { countByExt } from "../db/repositories/index-files"
 import { listMetadata } from "../db/repositories/index-metadata"
+import { countSymbols } from "../db/repositories/index-symbols"
 
 // Build the compact workspace-index summary injected into the interactive/
 // north_star system prompt (plan 008, gated by the "use index for context"
@@ -63,9 +64,14 @@ export function buildIndexSummary(workspaceId: string): string | null {
     if (firstLine) lines.push(`README starts: ${firstLine.trim().slice(0, 200)}`)
   }
 
+  // Symbol coverage — signals that index_query_tool can answer symbol lookups.
+  const symbols = countSymbols(workspaceId)
+  if (symbols > 0) lines.push(`Indexed symbols: ${symbols} (queryable via index_query_tool).`)
+
   lines.push(
-    "This is an advisory summary. Use the normal file tools for exact reads and searches; " +
-      "deeper index querying will come later."
+    "This is an advisory summary. Use index_query_tool to find symbols, list files, or see what " +
+      "imports a module; use the normal file tools for exact reads and full-text search. The index " +
+      "may be partial or stale — treat misses as 'not indexed yet', not 'does not exist'."
   )
 
   return lines.join("\n")

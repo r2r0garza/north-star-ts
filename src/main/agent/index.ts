@@ -1,7 +1,7 @@
 import { randomUUID } from "crypto"
 import { stat } from "fs/promises"
 import { basename, isAbsolute } from "path"
-import { toolDefinitions, runTool, todoWriteTool, askUserQuestionTool, runTodosInBackgroundTool } from "./tools"
+import { toolDefinitions, runTool, todoWriteTool, askUserQuestionTool, runTodosInBackgroundTool, indexQueryTool } from "./tools"
 import { readFileTool } from "./tools/read_file_tool"
 import { listTodos } from "../db/repositories/todos"
 import { buildTodoListPrompt } from "./todo-prompt"
@@ -351,6 +351,14 @@ export async function runAgentLoop(opts: RunAgentLoopOptions): Promise<ChatResul
   // and doesn't get it; interactive/north_star do, with or without a workspace.
   const showTodos = conversation?.mode != null && conversation.mode !== "chat"
 
+  // Whether to surface the workspace index to the agent (plan 008/014): a
+  // workspace-backed non-chat session with the "use index for context" setting on.
+  // Gates BOTH the index_query_tool and the injected summary below.
+  const useIndex =
+    showTodos &&
+    !!conversation?.workspaceId &&
+    settingsService.getIndexing().useIndexForContext
+
   const tools = [
     ...(hasWorkspace
       ? toolDefinitions
@@ -360,6 +368,7 @@ export async function runAgentLoop(opts: RunAgentLoopOptions): Promise<ChatResul
     ...(showTodos
       ? [todoWriteTool.definition, runTodosInBackgroundTool.definition]
       : []),
+    ...(useIndex ? [indexQueryTool.definition] : []),
     // ask_user_question is offered in every mode — clarification is universal.
     askUserQuestionTool.definition,
     readSkillTool.definition,
@@ -382,7 +391,7 @@ export async function runAgentLoop(opts: RunAgentLoopOptions): Promise<ChatResul
   // tree. Advisory only — gated by the "use index for context" setting; off = the
   // index still builds but the agent ignores it. Mode-gated like todos (chat is
   // tool-light) and only when the workspace has an index.
-  if (showTodos && conversation?.workspaceId && settingsService.getIndexing().useIndexForContext) {
+  if (useIndex && conversation?.workspaceId) {
     const indexSummary = buildIndexSummary(conversation.workspaceId)
     if (indexSummary) systemPrompt += `\n\n${indexSummary}`
   }

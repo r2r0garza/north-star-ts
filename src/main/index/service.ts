@@ -12,6 +12,8 @@ import {
   getFileByPath,
   upsertFiles,
   listPaths,
+  listFilesByStage,
+  setIndexedStage,
   deleteFile,
   deleteFilesByWorkspace,
   type UpsertFileInput,
@@ -20,9 +22,11 @@ import {
   upsertMetadata,
   deleteMetadataByWorkspace,
 } from "../db/repositories/index-metadata"
+import { replaceSymbolsForFile } from "../db/repositories/index-symbols"
 import { getTask } from "../db/repositories/tasks"
-import { walkFiles, loadGitignore, type WalkedFile } from "../agent/env/walk"
+import { walkFiles, loadGitignore, isBinaryBuffer, type WalkedFile } from "../agent/env/walk"
 import { classifyFile } from "./classify"
+import { pickExtractor } from "./extractors"
 import type { TaskRunner, TaskExecutor } from "../tasks/runner"
 import type { IndexPriority } from "../db/types"
 import {
@@ -113,15 +117,14 @@ export class IndexService {
     resetRun(workspaceId)
   }
 
-  // Stage machine: file_map → metadata (symbols/embeddings deferred). Both stages
-  // are idempotent and cheap on re-run — file_map is hash-skip incremental, and
-  // metadata is a handful of small parses — so every run (fresh trigger OR resume
-  // after pause/interrupt) simply runs both from the top. That makes resume
-  // trivially correct (re-walking hash-skips already-indexed files) without a
-  // per-file resume cursor. `stage` is written for the UI's benefit. A
-  // pause/cancel throws AbortedError out; the partial file map is already
-  // persisted per batch, so the next run continues from where it effectively left
-  // off (unindexed files still differ by hash; indexed ones skip).
+  // Stage machine: file_map → metadata → symbols (embeddings deferred). Every
+  // stage is idempotent and cheap on re-run — file_map is hash-skip incremental,
+  // metadata is a handful of small parses, and symbols re-extracts only the
+  // "dirty" files (those still at indexed_stage=file_map, i.e. new/changed) — so
+  // every run (fresh trigger OR resume after pause/interrupt) runs all three from
+  // the top and converges without a per-file resume cursor. `stage` is written
+  // for the UI's benefit. A pause/cancel throws AbortedError out; partial state is
+  // persisted per batch, so the next run continues from where it left off.
   private async runStages(ctx: {
     workspaceId: string
     root: string
@@ -134,6 +137,9 @@ export class IndexService {
     this.throwIfAborted(ctx.signal)
     upsertRun(ctx.workspaceId, { stage: "metadata" })
     await this.stageMetadata(ctx)
+    this.throwIfAborted(ctx.signal)
+    upsertRun(ctx.workspaceId, { stage: "symbols" })
+    await this.stageSymbols(ctx)
   }
 
   // Stage 1: walk the tree, incrementally upsert changed/new files, drop deleted.
@@ -268,6 +274,50 @@ export class IndexService {
       filesScanned: run?.filesScanned ?? 0,
       filesTotal: run?.filesTotal ?? 0,
     })
+  }
+
+  // Stage 3: extract symbols/imports for the dirty files (those still at
+  // indexed_stage=file_map — new or content-changed). Each file goes to the first
+  // Extractor that supports() it; the returned symbols replace that file's rows,
+  // and the file is bumped to indexed_stage=symbols so the next run skips it.
+  // Binaries and lockfiles are skipped (no useful symbols). Batched + abortable.
+  private async stageSymbols(ctx: {
+    workspaceId: string
+    root: string
+    priority: IndexPriority
+    signal: AbortSignal
+    emit: (event: { type: "index_progress"; stage: string; filesScanned: number; filesTotal: number }) => void
+  }): Promise<void> {
+    const dirty = listFilesByStage(ctx.workspaceId, "file_map")
+    const total = dirty.length
+    let done = 0
+    for (const file of dirty) {
+      this.throwIfAborted(ctx.signal)
+      try {
+        const buf = await readFile(join(ctx.root, file.path))
+        // Skip binaries: no text to parse. Still bump the stage so we don't
+        // re-open them every run.
+        if (!isBinaryBuffer(buf)) {
+          const ext = file.ext ?? ""
+          const doc = pickExtractor({ relPath: file.path, ext }).extract({
+            relPath: file.path,
+            ext,
+            content: buf.toString("utf8"),
+          })
+          replaceSymbolsForFile(ctx.workspaceId, file.id, doc.symbols)
+        }
+      } catch {
+        // Unreadable/parse failure — skip this file's symbols but still advance
+        // its stage so a persistently-bad file doesn't wedge every run.
+      }
+      setIndexedStage(file.id, "symbols")
+      done++
+      if (done % BATCH_SIZE === 0) {
+        ctx.emit({ type: "index_progress", stage: "symbols", filesScanned: done, filesTotal: total })
+        await sleep(BATCH_DELAY_MS[ctx.priority])
+      }
+    }
+    ctx.emit({ type: "index_progress", stage: "symbols", filesScanned: done, filesTotal: total })
   }
 
   private throwIfAborted(signal: AbortSignal): void {

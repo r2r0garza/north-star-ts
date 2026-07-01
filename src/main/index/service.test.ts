@@ -17,8 +17,13 @@ try {
 }
 
 import { IndexService } from "./service"
-import { listFiles, listPaths } from "../db/repositories/index-files"
+import { listFiles, listPaths, getFileByPath } from "../db/repositories/index-files"
 import { listMetadata } from "../db/repositories/index-metadata"
+import {
+  findSymbolsByName,
+  findImportsOf,
+  countSymbols,
+} from "../db/repositories/index-symbols"
 import { getRunByWorkspace, upsertRun } from "../db/repositories/index-runs"
 import type { TaskRunner } from "../tasks/runner"
 
@@ -170,11 +175,72 @@ describe.skipIf(!sqliteLoads)("IndexService stage 2 (metadata)", () => {
     expect((meta.git as { branch: string }).branch).toBe("feat/x")
   })
 
-  it("advances the run to the metadata stage on completion", async () => {
+  it("advances the run through to the symbols stage on completion", async () => {
     await writeFile(join(root, "a.ts"), "x")
     const svc = new IndexService(fakeRunner())
     await runIndex(svc, { workspaceId, priority: "high" })
-    expect(getRunByWorkspace(workspaceId)!.stage).toBe("metadata")
+    expect(getRunByWorkspace(workspaceId)!.stage).toBe("symbols")
+  })
+})
+
+describe.skipIf(!sqliteLoads)("IndexService stage 3 (symbols)", () => {
+  it("extracts symbols and imports from TS files", async () => {
+    await mkdir(join(root, "src"))
+    await writeFile(
+      join(root, "src", "a.ts"),
+      `import { helper } from "./util"\nexport function doThing() {}\nexport class Widget {}`
+    )
+    const svc = new IndexService(fakeRunner())
+    await runIndex(svc, { workspaceId, priority: "high" })
+
+    expect(countSymbols(workspaceId)).toBeGreaterThan(0)
+    const fn = findSymbolsByName(workspaceId, "doThing")
+    expect(fn).toHaveLength(1)
+    expect(fn[0].kind).toBe("function")
+    const cls = findSymbolsByName(workspaceId, "Widget")
+    expect(cls[0].kind).toBe("class")
+  })
+
+  it("findSymbolsByName excludes imports by default", async () => {
+    await writeFile(join(root, "a.ts"), `import { foo } from "./x"`)
+    const svc = new IndexService(fakeRunner())
+    await runIndex(svc, { workspaceId, priority: "high" })
+    expect(findSymbolsByName(workspaceId, "foo")).toHaveLength(0)
+    expect(findSymbolsByName(workspaceId, "foo", { includeImports: true })).toHaveLength(1)
+  })
+
+  it("findImportsOf returns files importing a module", async () => {
+    await writeFile(join(root, "a.ts"), `import { x } from "lodash"`)
+    await writeFile(join(root, "b.ts"), `import { y } from "lodash"`)
+    await writeFile(join(root, "c.ts"), `import { z } from "react"`)
+    const svc = new IndexService(fakeRunner())
+    await runIndex(svc, { workspaceId, priority: "high" })
+    const importers = findImportsOf(workspaceId, "lodash")
+    expect(importers.map((i) => i.path).sort()).toEqual(["a.ts", "b.ts"])
+  })
+
+  it("re-extracts only changed files (dirty tracking) and marks files symbols-done", async () => {
+    await writeFile(join(root, "a.ts"), `export function original() {}`)
+    const svc = new IndexService(fakeRunner())
+    await runIndex(svc, { workspaceId, priority: "high" })
+    expect(getFileByPath(workspaceId, "a.ts")!.indexedStage).toBe("symbols")
+
+    // Edit the file: it goes dirty (file_map) and re-extracts to the new symbol.
+    await new Promise((r) => setTimeout(r, 10))
+    await writeFile(join(root, "a.ts"), `export function renamed() {}`)
+    await runIndex(svc, { workspaceId, priority: "high" })
+    expect(findSymbolsByName(workspaceId, "original")).toHaveLength(0)
+    expect(findSymbolsByName(workspaceId, "renamed")).toHaveLength(1)
+  })
+
+  it("drops a deleted file's symbols (cascade)", async () => {
+    await writeFile(join(root, "a.ts"), `export function gone() {}`)
+    const svc = new IndexService(fakeRunner())
+    await runIndex(svc, { workspaceId, priority: "high" })
+    expect(findSymbolsByName(workspaceId, "gone")).toHaveLength(1)
+    await rm(join(root, "a.ts"))
+    await runIndex(svc, { workspaceId, priority: "high" })
+    expect(findSymbolsByName(workspaceId, "gone")).toHaveLength(0)
   })
 })
 
