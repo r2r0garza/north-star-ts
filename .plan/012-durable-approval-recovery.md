@@ -1,6 +1,6 @@
 # PR12: Durable approval recovery — survive a restart while waiting_for_approval
 
-> Status: **BUILT** on `feat/durable-approval-recovery` (commit `7bc7f78`; not yet merged to `main`).
+> Status: **BUILT** on `feat/durable-approval-recovery` (commit `7bc7f78`; merged to `main`).
 > Split out of `009` (durable task execution). Builds on the `TaskRunner` (`src/main/tasks/runner.ts`)
 > and the in-memory approval gate in `src/main/agent/index.ts` (`pendingApprovals`, `resolveApproval`).
 

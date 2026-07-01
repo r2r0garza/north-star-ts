@@ -1,6 +1,6 @@
 # PR11: Task retry with backoff — transient failures only
 
-> Status: **BUILT** on `feat/task-retry` (not yet merged to `main`). Split out of `009` (durable task
+> Status: **BUILT** on `feat/task-retry` (merged to `main`). Split out of `009` (durable task
 > execution), which shipped Phase 1 (queue + background + crash-resume) without retry. Builds on the
 > `TaskRunner` (`src/main/tasks/runner.ts`) and its `task_events` log from `009`.
 

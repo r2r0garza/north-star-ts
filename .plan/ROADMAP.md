@@ -7,36 +7,32 @@ item is its plan file, not its rank.
 
 ## Next up
 
-1. **`008` — Workspace indexing.** Background, incremental, pausable/cancellable workspace index so
-   the agent can answer immediately while the index improves. Four stages (file map → metadata →
-   symbols → embeddings-later); incremental by content hash (skip unchanged, re-index changed, drop
-   deleted, add new); resumable across restart. Controls: configurable auto-start, pause/resume,
-   cancel-keeps-partial, per-workspace disable/re-enable, clear-index — plus a Workspace Indexing
-   settings group. New v7 tables; reuses the `LocalEnvironment` walk + ignore rules. Interactive =
-   low priority; North Star = higher, but never hard-blocks execution. **Depends on `009`**: the
-   indexer runs as a durable task so pause is a real task state. **Consumes `015`** (first producer).
-2. **`014` — Context builder.** Evolve the existing `ContextBuilder` into a structured, budgeted,
+1. **`014` — Context builder.** Evolve the existing `ContextBuilder` into a structured, budgeted,
    multi-source assembler: conversation summary, recent messages (the current walk-back), workspace
    index + relevant files (from `008`), durable memories, task state, and approvals — each a labeled
    section under one global token budget with an explicit drop order. Ships the framework + the
-   already-available sources (recent messages, task state, approvals); index/retrieval sections are
-   no-ops behind a capability check until `008` lands. Surfaces two prerequisite sub-features to
+   already-available sources (recent messages, task state, approvals); the workspace-index section
+   can now draw on `008`'s Stages 1+2 (file map + metadata — landed) rather than being a no-op.
+   Surfaces two prerequisite sub-features to
    decide on: a rolling **conversation summary** and a **durable-memories** store (likely its own
-   plan). **Soft-depends on `008`** (graceful without it); reads `009`'s task tables.
-3. **`010` — Container runtime profiles.** Decouple Workspace (the files) from Runtime (the env a
+   plan). **Soft-depends on `008`** (now landed — Stages 1+2). **Natural home for `008`'s deferred
+   Stage 3** (symbols + Extractor registry) and the **`index_query_tool`** (find-symbol / list-files
+   / what-imports-X, with live-fs fallback) — index *consumption* is a retrieval concern. Reads
+   `009`'s task tables.
+2. **`010` — Container runtime profiles.** Decouple Workspace (the files) from Runtime (the env a
    tool call executes in). Replace the raw container `image` string with a named **profile**
    (`node` | `python` | `fullstack`), resolved to an image in the env factory; default/fallback =
    `fullstack` (Node + Python) so a Node repo that later adds a Python backend doesn't wedge.
    One profile per conversation, user-overridable in settings. Kills the "one workspace = one image
    forever" assumption **without** building auto-routing or image management (both deferred). Small
    refactor of `env/factory.ts` + `container.ts` + execution settings (JSON blob — no migration).
-4. **`005.1` — ContainerEnvironment stop in-flight.** The deferred half of `005`: killing the host
+3. **`005.1` — ContainerEnvironment stop in-flight.** The deferred half of `005`: killing the host
    `docker/podman exec` client doesn't stop the in-container process. Needs its own kill mechanism
    (in-container PID tracking / `exec kill`, or marker `pkill`). Out of scope when `005` shipped.
-5. **`007` — Slash commands for skills.** Let users force a skill with `/skill-name …` (pre-inject
+4. **`007` — Slash commands for skills.** Let users force a skill with `/skill-name …` (pre-inject
    the `read_skill` call), keeping today's model-discretionary path for plain messages. Adds a
    `skills:list` IPC channel + composer autocomplete. Independent — schedule freely.
-6. **`018` — Agentic goal mode.** An opt-in **execution mode** (orthogonal to chat/interactive/
+5. **`018` — Agentic goal mode.** An opt-in **execution mode** (orthogonal to chat/interactive/
    north_star): `simple` (today's one-pass behavior, default) vs `goal` (bounded **plan → execute →
    review → fix → finalize**, capped by `maxIterations` — never unbounded). Modeled as a task-level
    orchestrator inside the runner's `runOne` (one task / one forked conversation, calling
@@ -51,6 +47,30 @@ item is its plan file, not its rank.
 
 ## Done
 
+- **`008` — Workspace indexing (slice 1).** Built on `feat/workspace-indexing` (commit `591e9e2`;
+  not yet merged to `main`). A background, incremental, deterministic (no LLM in the build path)
+  workspace index run as a `009` durable task. **Ships Stages 1 (file map) + 2 (metadata)**: a
+  recursive walk (shared `walkFiles`, factored out of `LocalEnvironment.search`, `.gitignore` via the
+  `ignore` dep) upserts one `index_files` row per file with an incremental **hash-skip** — `(size,
+  mtime)` fast path → `sha1` only on a miss, drop deleted, add new — then parses `package.json`/
+  `tsconfig`/`vite`/`README`/`pnpm-workspace`/git-branch into `index_metadata`. The **crux** is a
+  deterministic **executor seam** on the runner: `TaskKindCapability.run` — `runOne` drives it for the
+  `workspace_index` kind and leaves the `runAgentLoop` path unchanged for LLM kinds; `enqueueKind` is a
+  lean message-free enqueue, config in the input blob (015 contract). **Pause is a real task state**
+  (`SCHEMA_V8` widens the task-status CHECK via a tasks-table rebuild; `PAUSE_ABORT_REASON` +
+  `pause()`, `resume()` accepts `paused`, reconcile leaves it put across restart). Four v8 tables
+  (`index_runs`/`index_files`/`index_metadata`/`index_symbols` — symbols unpopulated, schema leaves
+  room). Controls: auto-index on workspace-open (North Star `high` / Interactive `low`),
+  pause/resume/cancel-keeps-partial/clear/start-rebuild, per-workspace disable — via reused `task:*`
+  verbs + new `index:*` handlers and a Workspace-Activity status strip; plus a Workspace Indexing
+  settings group. Agent consumption is a **compact system-prompt summary only** (indexed status,
+  file counts by ext, package/framework/config metadata, git branch), gated by "Use index for
+  context" and advisory (the agent still uses real file tools). Verified manually (index on select,
+  cross-session reuse, auto-resume after quit/reopen, pause/resume, cancel, clear) + `pnpm typecheck`/
+  `build` clean and **276 unit tests** (migration-over-v7 incl. `paused`, repos, walk/gitignore,
+  `classifyFile`, full IndexService incremental flow + restart-after-cancel/clear, runner executor
+  seam + pause/resume). **Deferred → folded into `014`:** Stage 3 (symbols + Extractor registry +
+  the `typescript` runtime dep), the `index_query_tool`, Stage 4 embeddings, live file watching.
 - **`017` — Todo-run follow-ups.** Two gaps surfaced testing `016`, shipped as one PR. (1) **Robust
   large-file writes** (steer + append): `write_file_tool` gained an optional `mode: "create" | "append"`
   (default `create`) — append re-reads the file and rewrites the concatenation via the existing
@@ -96,7 +116,7 @@ item is its plan file, not its rank.
   no schema/IPC change (reuses `listTasks` + the transcript sheet + the `tasks.onEvent` tail). Verified:
   `pnpm typecheck` + `pnpm build` clean, 140 tests passing.
 - **`012` — Durable approval recovery.** Built on `feat/durable-approval-recovery` (commit `7bc7f78`;
-  not yet merged to `main`). A background task blocked on an approval gate now survives an app
+  merged to `main`). A background task blocked on an approval gate now survives an app
   restart: quit while it asks → reopen → Resume → it **re-prompts**, and on approval completes. Three
   layers: (1) the runner dual-writes the gate to the existing `approvals` table (`createApproval` on
   the `approval` event, `recordApprovalDecision` on the user's choice, reconcile/cancel sweeps stale
@@ -109,7 +129,7 @@ item is its plan file, not its rank.
   rather than a stuck spinner. No schema change. Verified: `agent/repair.test.ts` + runner cases
   (194 passing) and E2E (`delete build/` → quit at prompt → Resume → re-prompt → approve → deleted).
   Spun off `015` (task producer API).
-- **`011` — Task retry with backoff.** Built on `feat/task-retry` (not yet merged to `main`).
+- **`011` — Task retry with backoff.** Built on `feat/task-retry` (merged to `main`).
   Transient failures (HTTP `408`/`429`/`5xx`, connection-layer codes / SDK connection errors) retry
   with capped exponential backoff + full jitter (max 3 attempts), in-memory in the runner and
   recorded as `attempt` events in `task_events`; deterministic failures (other 4xx, provider config)
@@ -120,7 +140,7 @@ item is its plan file, not its rank.
   change. Verified: classifier + 7 runner unit tests (183 passing) and E2E against a local 5xx/401
   server.
 - **`009` — Durable task execution (Phase 1).** Built on `feat/durable-tasks` (commits `03257c3`
-  runner, `a33d5ac` UI; not yet merged to `main`). Activated the storage-only task tables with a
+  runner, `a33d5ac` UI; merged to `main`). Activated the storage-only task tables with a
   real runner: FIFO queue + concurrency cap, background execution (progress in `task_events`,
   live-tailed over `task:event`), and crash-resume (orphaned tasks reconcile to `interrupted`,
   manual resume; auto-resume is a per-task-kind capability). `runChat` refactored to a shared
@@ -140,7 +160,7 @@ item is its plan file, not its rank.
   `Environment` interface under the machine-touching tools, `LocalEnvironment` + a minimal
   `ContainerEnvironment`, bulk `search`, and an `exec` abort seam. Section E (settings + sandbox
   approval) was deferred into `004` and has since shipped (see below).
-- **`004` — Settings pane.** Shipped on `feat/settings-pane` (not yet merged to `main`).
+- **`004` — Settings pane.** Shipped on `feat/settings-pane` (merged to `main`).
   - *Slice 1* (commit `213654e`): first persisted settings store (`SCHEMA_V4`), execution-backend
     choice in the UI (replacing the `COWORK_ENV_RUNTIME` env var), file-permission toggles, and the
     sandbox-aware approval downgrade (the `006`-E payoff — config-driven by category, hardline
@@ -154,7 +174,7 @@ item is its plan file, not its rank.
     keeps its own provider+model, with the Settings choice as the default for new sessions.
     Q1→safeStorage, Q3→both sources, selection scope→per-conversation.
 - **`005` — Stop in-flight tool calls (Local).** Shipped on `feat/stop-tools-mid-flight` (commit
-  `d572805`, not yet merged to `main`). The abort signal was already threaded end-to-end
+  `d572805`, merged to `main`). The abort signal was already threaded end-to-end
   (`ctx.signal` → `env.exec` → `captureSpawn`); the real fix was process-group orphaning —
   `LocalEnvironment.exec` now spawns `detached` and abort/timeout SIGKILL the whole group, so a
   pipeline/build's grandchildren die instead of being reparented to PID 1. The container half is

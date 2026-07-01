@@ -1,9 +1,20 @@
 # PR8: Workspace indexing — background, incremental, cancellable workspace index
 
-> Status: **NOT STARTED** — pickup note (2026-06-27, updated 2026-06-29). Depends on 009 (durable
-> task execution): **pause is a real task state**, so the indexer runs as a durable task and reuses
-> 009's queue/resume/cancel machinery rather than inventing its own. Starting hypothesis, not a
-> locked spec — resolve the open questions before building.
+> Status: **SLICE 1 BUILT** (2026-07-01) on `feat/workspace-indexing` (commit `591e9e2`; not yet
+> merged to `main`). Ships **Stages 1 (file map) + 2 (metadata)**, the deterministic executor seam,
+> a real `paused` task state, incremental hash-skip, pause/resume/cancel/clear/start, the Workspace
+> Indexing settings group, and a compact system-prompt summary (agent consumption). **Deferred to a
+> follow-up (folded into `014`, the retrieval/context layer):** Stage 3 (symbols + Extractor
+> registry, and the `typescript` runtime dep it needs), the `index_query_tool`, Stage 4 embeddings,
+> and live file watching. The `index_symbols` table ships in v8 but is unpopulated. See the
+> "Resolved decisions" and "What shipped" notes at the end of this file. Verified manually (index on
+> workspace select, cross-session reuse, auto-resume after quit/reopen, pause/resume, cancel-keeps-
+> partial, clear) + 276 unit tests.
+>
+> Original pickup note (2026-06-27, updated 2026-06-29): Depends on 009 (durable task execution):
+> **pause is a real task state**, so the indexer runs as a durable task and reuses 009's
+> queue/resume/cancel machinery rather than inventing its own. Starting hypothesis, not a locked
+> spec — resolve the open questions before building.
 
 ## Context
 
@@ -339,3 +350,48 @@ reset `index_runs` (cursor/counts → 0, `task_id` → NULL); **disable** = set 
   a container is out of scope (see env work in .plan/006 / .plan/005.1).
 - **A standalone indexing runner** — indexing runs on 009's durable task runner (Q1); do not build
   a separate job system.
+
+## Resolved decisions (slice 1)
+
+How the open questions above were answered when slice 1 was built (2026-07-01):
+
+- **Q1 (runner seam):** the indexer runs on the 009 runner via a new **deterministic executor
+  seam** — `TaskKindCapability` gained an optional `run` executor; `runOne` dispatches to it for the
+  `workspace_index` kind and leaves the `runAgentLoop` path byte-for-byte for LLM kinds. `enqueueKind`
+  is a lean, message-free enqueue (no forked chat transcript). Per-kind config (`workspaceId`,
+  `priority`) rides in the task input blob (015 producer contract). No separate lane; shares the
+  concurrency pool. Priority is North Star = `high`, Interactive = `low` (inter-batch yield delay).
+- **Q2 (where the index lives):** SQLite, v8 migration (the spec said "v7" but v7 was already taken
+  by 015's `source_conversation_id`). Four tables keyed by `workspace_id`.
+- **Q3 (CPU/blocking):** chunked async + event-loop yield + priority-based inter-batch delay +
+  cooperative `AbortSignal` checks. No `worker_threads` (revisit only if it janks).
+- **Q4 (hashing):** `(size, mtime)` fast path → `sha1` (node `crypto`) only on a miss; a matching
+  hash after a touch downgrades to unchanged. Logic isolated in a pure `classifyFile` fn.
+- **Q5 (change detection):** no watcher. Index on workspace open + manual Start/Rebuild/Resume.
+  `.gitignore` respected via the `ignore` npm dep.
+- **Q6 (agent consumption):** **compact system-prompt summary only** (indexed status, file counts by
+  ext, package/framework/config metadata, git branch, progress), gated by "Use index for context".
+  **No `index_query_tool`** — deferred to the retrieval layer (014).
+- **Q7 (partial-index correctness):** the summary is explicitly advisory; the agent still uses the
+  real file tools for exact reads/searches (prompt says so). Nothing asserted as ground truth.
+- **Q8 (status/controls plumbing):** reuses 009's `task:event` tail (added an `index_progress`
+  event) + the `task:pause`/`resume`/`cancel` verbs; adds `index:*` handlers for
+  status/start/clear/setEnabled.
+- **Pause** was implemented as a **real task state** (per the dependency note), not an ad-hoc flag:
+  added `paused` to the task-status enum (v8 tasks-table rebuild), `PAUSE_ABORT_REASON`, a
+  `pause()` verb, `resume()` accepting `paused`, and reconcile leaving `paused` tasks put across a
+  restart.
+
+## What shipped (slice 1) vs. deferred
+
+**Shipped:** Stages 1 (file map) + 2 (metadata); deterministic executor seam + `paused` state; v8
+schema (4 tables, `index_symbols` unpopulated); `index-runs`/`index-files`/`index-metadata` repos;
+shared `walkFiles` (factored out of `LocalEnvironment.search`) + `.gitignore`; `IndexService`
+(incremental hash-skip, deletion diffing, metadata parse, batched/abortable); Workspace Indexing
+settings group + tab; `index:*` IPC + preload; auto-index trigger on conversation create/update;
+Activity-panel status strip (Pause/Resume/Cancel/Start-Rebuild/Clear); compact prompt summary.
+
+**Deferred (→ folded into `014`, retrieval/context layer):** Stage 3 (Extractor registry +
+`TypeScriptExtractor`/`FallbackExtractor`, promoting `typescript` to a runtime dep); the
+`index_query_tool` (find-symbol / list-files / what-imports-X) with live-fs fallback; Stage 4
+embeddings; live file watching; extractors beyond TS/JS; container-backend indexing.

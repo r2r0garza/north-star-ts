@@ -1,7 +1,7 @@
 # PR9: Durable task execution — runner over the existing task tables
 
 > Status: **PHASE 1 BUILT** (branch `feat/durable-tasks`, 2026-06-29; commits `03257c3` runner,
-> `a33d5ac` UI — not yet merged to `main`). Delivered the core value — **queue + background +
+> `a33d5ac` UI — merged to `main`). Delivered the core value — **queue + background +
 > crash-resume** — plus the renderer surface it needed to be usable end-to-end:
 > - **Runner** (`src/main/tasks/runner.ts`): FIFO wakeable queue, concurrency cap, startup
 >   reconcile of orphaned `running`/`waiting_for_approval` → `interrupted`, **manual resume**, with
