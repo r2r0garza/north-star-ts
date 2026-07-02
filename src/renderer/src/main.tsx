@@ -12,7 +12,7 @@ import {
   readActivityOpen,
   writeActivityOpen,
 } from "@/components/activity-panel"
-import { SettingsSheet } from "@/components/settings-sheet"
+import { SettingsScreen } from "@/components/settings-screen"
 import { TaskTranscriptSheet } from "@/components/task-transcript-sheet"
 import { TaskCompletionToasts } from "@/components/task-completion-toasts"
 import { Toaster } from "@/components/ui/sonner"
@@ -155,7 +155,7 @@ function Shell() {
           if (!open) setViewingTask(null)
         }}
       />
-      <SettingsSheet
+      <SettingsScreen
         open={settingsOpen}
         onOpenChange={setSettingsOpen}
         initialTab={settingsTab}

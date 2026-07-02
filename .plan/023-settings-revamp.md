@@ -1,6 +1,6 @@
 # PR23: Settings revamp — full-screen takeover instead of the right slide-out sheet
 
-> Status: **NOT STARTED**. UI-only (renderer). No backend, no IPC, no schema change — the same
+> Status: **BUILT** (pending manual verification). UI-only (renderer). No backend, no IPC, no schema change — the same
 > `window.cowork.settings.*` / `providers.*` / `models.*` surface is reused verbatim.
 
 ## Context
