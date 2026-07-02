@@ -192,6 +192,12 @@ export function SettingsScreen({
           <DialogPrimitive.Content
             data-slot="settings-screen"
             aria-describedby={undefined}
+            // A full-screen takeover has no meaningful "outside" to click, so
+            // close is Escape / the [X] only. This also fixes a Radix quirk: an
+            // open modal Select sets `pointer-events: none` on the body, so a
+            // click dismissing the dropdown resolves its target to <body> — which
+            // the dialog would otherwise read as an outside-click and close on.
+            onInteractOutside={(e) => e.preventDefault()}
             className="fixed inset-0 z-50 flex h-screen w-screen flex-col bg-background text-sm text-foreground outline-none data-open:animate-in data-open:fade-in-0 data-open:slide-in-from-bottom-2 data-closed:animate-out data-closed:fade-out-0 data-closed:slide-out-to-bottom-2"
           >
             {/* Header row. Doubles as the window drag region (matching the app's
