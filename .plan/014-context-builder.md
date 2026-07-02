@@ -1,10 +1,27 @@
 # PR14: Context builder — assemble model context from all available sources
 
-> Status: **NOT STARTED**. Evolves the existing `ContextBuilder`
-> (`src/main/agent/context/context-builder.ts`), whose own comment already names this work:
-> *"later this composes summaries, memories, workspace state, task state, retrieved codebase
-> context, etc. before the history walk."* This is the realization of that comment — a structured,
-> budgeted, multi-source assembler — **not** a new parallel system.
+> Status: **FRAMEWORK + AVAILABLE SOURCES BUILT** (2026-07-01) on `feat/workspace-indexing`
+> (commit `aff2db5`; not yet merged to `main`). Evolves the existing `ContextBuilder`
+> (`src/main/agent/context/context-builder.ts`), whose own comment already named this work. Realizes
+> the section framework and wires the sources that exist today; the two sources that need their own
+> storage are split into their own plans.
+>
+> **Shipped:** the `ContextSection` abstraction, one global token budget with an explicit drop order
+> (a section-budget share that can never starve the recent-message walk-back), the include/drop log
+> (no silent truncation), migration of the old `runAgentLoop` `systemPrompt +=` appends (skills,
+> todos, workspace-index summary) into sections, and a new **task-state** section. Also delivered the
+> **workspace-index consumption** side alongside `008`: the injected index summary + the
+> `index_query_tool` (find-symbol / what-imports / list-files / metadata, advisory with live-fs
+> fallback). Verified: `pnpm typecheck`/`build` clean, section-framework + section-renderer tests,
+> and live in the app.
+>
+> **Deferred to their own plans (sections reserved, currently absent):**
+> - **`019` — conversation summaries** (Q1): the rolling-summary section. Needs summary storage + an
+>   out-of-band generation step.
+> - **`020` — durable memories** (Q2): the cross-conversation memories section. Needs a memories
+>   store + a gated write path.
+> - **Approvals section** (see "Deferred sections" below): NOT its own plan — an additive section on
+>   existing tables, recorded here.
 
 ## Context
 
@@ -64,30 +81,44 @@ budget share and a graceful-degradation order, producing the final `ChatMessage[
 - **Used by both paths**: live `runChat` and durable tasks both already funnel through
   `runAgentLoop` → `contextBuilder.build`, so this benefits both with no extra wiring.
 
-## Open questions to resolve BEFORE building
+## Open questions — how they were resolved
 
-1. **Summary generation & storage.** Where does the rolling conversation summary live (new
-   `conversation_summaries` table? a column on `conversations`?), and when is it (re)generated —
-   end of turn, on a size threshold, lazily before build? It costs an LLM call; decide cadence and
-   whether it's a durable task (`009`) itself.
-2. **Durable memories don't exist yet.** This is a prerequisite sub-feature: a `memories` table, a
-   write path (explicit "remember this" tool vs. inferred), scoping (global / per-workspace /
-   per-conversation), and retrieval (all small memories inline vs. retrieval-ranked). Likely its
-   **own plan** that `014` consumes — decide whether to split it out (recommended) or fold a minimal
-   version in.
-3. **Dependency on `008`.** The workspace-index and relevant-files sections can't be real until
-   `008` ships an index to read. `014` should ship the **framework + the available sources** (recent
-   messages, task state, approvals, and summary/memories if those land first), with index/retrieval
-   sections as no-ops behind a capability check until `008` exists. Don't block `014` on `008`.
-4. **Budget policy.** Fixed per-section shares vs. priority-with-spillover (a section under budget
-   donates to the next)? What's the non-droppable core (system + live user turn + enough recent
-   messages to be coherent)? Define the drop order explicitly.
-5. **Relevance/retrieval ranking** (for relevant-files and memories): embeddings vs. lexical/recency
-   first? Lean lexical/recency for v1 (no embedding infra), upgrade later (008 lists embeddings as
-   "later").
-6. **Per-mode / per-task-kind composition.** Chat (no workspace) vs. North Star vs. a background
-   task want different sections (Chat shouldn't pull workspace index). Sections should be
-   enable-able by mode/kind — reuse the existing mode gating (`showTodos` pattern).
+1. **Summary generation & storage.** → **Split to `019`** (conversation summaries). Not built here;
+   the section slot is reserved.
+2. **Durable memories.** → **Split to `020`** (durable memories). Recommended split taken; not built
+   here; the section slot is reserved.
+3. **Dependency on `008`.** → `008` landed first (Stages 1+2 + symbols), so the workspace-index
+   section is real, not a no-op: this PR shipped both the injected summary and the `index_query_tool`.
+   The framework still degrades gracefully (the index section is simply absent when there's no index
+   or the "use index for context" setting is off).
+4. **Budget policy.** → **Priority with a section-budget cap.** Sections are admitted
+   highest-priority-first while their cumulative cost fits a share of the total budget (default 50%),
+   so they can never starve the recent-message walk-back. Non-droppable core = base system prompt +
+   the walk-back (tool-call integrity preserved) + the live user turn. Drop order (ascending priority
+   = dropped first) is centralized in `SECTION_PRIORITY`: index → approvals → task-state → todos →
+   skills; summary/memories slot in above these when `019`/`020` land. No spillover in v1 (simple,
+   predictable); revisit if sections routinely under-fill.
+5. **Relevance/retrieval ranking.** → Not needed yet — no relevant-files section shipped. The index
+   is queried on demand via `index_query_tool` (lexical: name/module/path match), not
+   retrieval-ranked into context. Embedding-based ranking stays deferred (per `008`).
+6. **Per-mode / per-task-kind composition.** → Sections are gated at their call site in
+   `runAgentLoop` using the existing `showTodos` (mode ≠ chat) + workspace + setting checks. Chat
+   stays tool-light and pulls no workspace/index sections. A blank/empty section is skipped.
+
+## Deferred sections (reserved, not yet built)
+
+- **Conversation summary** → `019`. Priority: above skills (compressed older context outvalues the
+  skills catalog under pressure).
+- **Durable memories** → `020`. Priority: high (user-stated facts); rank vs summary in build.
+- **Approvals section** — **not a separate plan** (unlike `019`/`020`, which are subsystems): the
+  `approvals` table + `action_allowlist` already exist (`002`/`009`/`012`). This is an additive
+  section — one new scoped read (`listAllowlistRules({ workspacePath, conversationId })`; the repo
+  currently only has `findMatch`) + a renderer folding granted/pending decisions into a
+  `ContextSection` (slot reserved: `SECTION_PRIORITY.approvals = 20`). Deliberately **not built in
+  this slice**: live-chat gates are in-memory/synchronous so there are usually no rows to show on the
+  common path — its value is mainly a **resumed background task** re-grounding on what's already been
+  granted/denied so it doesn't re-request. Build it when that scenario is exercised (near `018` goal
+  mode, whose fix loop re-runs gated actions), or fold it in opportunistically.
 
 ## Verification (when built)
 - A long conversation stays coherent past the recent-message window via the summary section, and

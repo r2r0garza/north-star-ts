@@ -7,32 +7,33 @@ item is its plan file, not its rank.
 
 ## Next up
 
-1. **`014` — Context builder.** Evolve the existing `ContextBuilder` into a structured, budgeted,
-   multi-source assembler: conversation summary, recent messages (the current walk-back), workspace
-   index + relevant files (from `008`), durable memories, task state, and approvals — each a labeled
-   section under one global token budget with an explicit drop order. Ships the framework + the
-   already-available sources (recent messages, task state, approvals); the workspace-index section
-   can now draw on `008`'s Stages 1+2 (file map + metadata — landed) rather than being a no-op.
-   Surfaces two prerequisite sub-features to
-   decide on: a rolling **conversation summary** and a **durable-memories** store (likely its own
-   plan). **Soft-depends on `008`** (now landed — Stages 1+2). **Natural home for `008`'s deferred
-   Stage 3** (symbols + Extractor registry) and the **`index_query_tool`** (find-symbol / list-files
-   / what-imports-X, with live-fs fallback) — index *consumption* is a retrieval concern. Reads
-   `009`'s task tables.
-2. **`010` — Container runtime profiles.** Decouple Workspace (the files) from Runtime (the env a
+1. **`019` — Conversation summaries.** The rolling-summary section `014` reserved: a compact,
+   periodically-regenerated digest of the turns that fell out of the recent-message window, injected
+   as a high-priority context section so long conversations keep their thread. New
+   `conversation_summaries` table (one row/conversation, tracks the covered `seq` range); an
+   **out-of-band** generation step (a `009` `summarize` task — never on the user's turn latency),
+   incremental + debounced past a size threshold; a `summarySection` renderer for the `014`
+   framework. Split out of `014` Q1.
+2. **`020` — Durable memories.** The cross-conversation memories section `014` reserved: small,
+   persisted facts the agent writes (a **gated, explicit** `remember` tool — no silent profiling)
+   and that inject into future turns, **scoped** global / workspace / conversation (mirrors the
+   `action_allowlist` scoping). New `memories` table + a list/delete surface (durable +
+   cross-conversation ⇒ must be auditable/revocable); a `memoriesSection` renderer with an injection
+   cap. Split out of `014` Q2.
+3. **`010` — Container runtime profiles.** Decouple Workspace (the files) from Runtime (the env a
    tool call executes in). Replace the raw container `image` string with a named **profile**
    (`node` | `python` | `fullstack`), resolved to an image in the env factory; default/fallback =
    `fullstack` (Node + Python) so a Node repo that later adds a Python backend doesn't wedge.
    One profile per conversation, user-overridable in settings. Kills the "one workspace = one image
    forever" assumption **without** building auto-routing or image management (both deferred). Small
    refactor of `env/factory.ts` + `container.ts` + execution settings (JSON blob — no migration).
-3. **`005.1` — ContainerEnvironment stop in-flight.** The deferred half of `005`: killing the host
+4. **`005.1` — ContainerEnvironment stop in-flight.** The deferred half of `005`: killing the host
    `docker/podman exec` client doesn't stop the in-container process. Needs its own kill mechanism
    (in-container PID tracking / `exec kill`, or marker `pkill`). Out of scope when `005` shipped.
-4. **`007` — Slash commands for skills.** Let users force a skill with `/skill-name …` (pre-inject
+5. **`007` — Slash commands for skills.** Let users force a skill with `/skill-name …` (pre-inject
    the `read_skill` call), keeping today's model-discretionary path for plain messages. Adds a
    `skills:list` IPC channel + composer autocomplete. Independent — schedule freely.
-5. **`018` — Agentic goal mode.** An opt-in **execution mode** (orthogonal to chat/interactive/
+6. **`018` — Agentic goal mode.** An opt-in **execution mode** (orthogonal to chat/interactive/
    north_star): `simple` (today's one-pass behavior, default) vs `goal` (bounded **plan → execute →
    review → fix → finalize**, capped by `maxIterations` — never unbounded). Modeled as a task-level
    orchestrator inside the runner's `runOne` (one task / one forked conversation, calling
@@ -47,6 +48,22 @@ item is its plan file, not its rank.
 
 ## Done
 
+- **`014` — Context builder (framework + available sources).** Built on `feat/workspace-indexing`
+  (commit `aff2db5`; not yet merged to `main`). Evolved the `ContextBuilder` from a single-budget
+  history walk-back into a section assembler: a `ContextSection` abstraction, one global token budget
+  with an explicit **drop order** (a section-budget share admitted highest-priority-first that can
+  never starve the recent-message walk-back — the non-droppable core, tool-call integrity preserved),
+  and an include/drop log (no silent truncation). Migrated `runAgentLoop`'s ad-hoc `systemPrompt +=`
+  appends (skills, todos, workspace-index summary) into sections and added a **task-state** section
+  (active durable tasks spawned from the session, so the agent doesn't re-start running work). The
+  **workspace-index consumption** side shipped alongside `008` (commit `a57fe48`, fixes `a2ba066`):
+  the injected index summary + the `index_query_tool` (find-symbol / what-imports / list-files /
+  metadata — advisory, with live-fs fallback and honest truncation/counts). `SECTION_PRIORITY`
+  centralizes the order: index → approvals → task-state → todos → skills. Verified: `pnpm typecheck`/
+  `build` clean, section-framework + renderer + query-tool tests, and live in the app. **Deferred to
+  their own plans** (sections reserved): rolling **conversation summary** → `019`, **durable
+  memories** → `020`; the **approvals section** is recorded in `014` as additive future work (not a
+  plan — the tables already exist).
 - **`008` — Workspace indexing (slice 1).** Built on `feat/workspace-indexing` (commit `591e9e2`;
   not yet merged to `main`). A background, incremental, deterministic (no LLM in the build path)
   workspace index run as a `009` durable task. **Ships Stages 1 (file map) + 2 (metadata)**: a
@@ -69,8 +86,10 @@ item is its plan file, not its rank.
   cross-session reuse, auto-resume after quit/reopen, pause/resume, cancel, clear) + `pnpm typecheck`/
   `build` clean and **276 unit tests** (migration-over-v7 incl. `paused`, repos, walk/gitignore,
   `classifyFile`, full IndexService incremental flow + restart-after-cancel/clear, runner executor
-  seam + pause/resume). **Deferred → folded into `014`:** Stage 3 (symbols + Extractor registry +
-  the `typescript` runtime dep), the `index_query_tool`, Stage 4 embeddings, live file watching.
+  seam + pause/resume). **Follow-up shipped in `014`** (commit `a57fe48`): Stage 3 (symbols +
+  Extractor registry + `typescript` promoted to a runtime dep) now populates `index_symbols`, and the
+  `index_query_tool` queries it. **Still deferred:** Stage 4 embeddings, live file watching,
+  extractors beyond TS/JS + fallback.
 - **`017` — Todo-run follow-ups.** Two gaps surfaced testing `016`, shipped as one PR. (1) **Robust
   large-file writes** (steer + append): `write_file_tool` gained an optional `mode: "create" | "append"`
   (default `create`) — append re-reads the file and rewrites the concatenation via the existing
