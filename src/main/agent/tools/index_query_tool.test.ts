@@ -102,19 +102,60 @@ describe.skipIf(!sqliteLoads)("index_query_tool", () => {
     expect(out).not.toContain("readme.md")
   })
 
-  it("list_files with no query summarizes by extension", async () => {
+  it("list_files with no query summarizes by extension with an honest total", async () => {
     await writeFile(join(root, "a.ts"), "export const a = 1")
+    await writeFile(join(root, "b.ts"), "export const b = 1")
+    await writeFile(join(root, ".gitignore"), "node_modules\n") // extensionless
     await buildIndex()
     const out = await run({ op: "list_files" })
-    expect(out).toContain(".ts")
+    expect(out).toContain(".ts: 2")
+    // The extensionless .gitignore is counted in the total + remainder, so the
+    // numbers reconcile (was the source of the 237-vs-246 confusion).
+    expect(out).toContain("total: 3")
+    expect(out).toContain("other, incl. extensionless: 1")
   })
 
-  it("metadata returns parsed package.json", async () => {
-    await writeFile(join(root, "package.json"), JSON.stringify({ name: "demo" }))
+  it("list_files caps large results with a truncation banner", async () => {
+    for (let i = 0; i < 12; i++) {
+      await writeFile(join(root, `f${i}.ts`), "export const x = 1")
+    }
+    await buildIndex()
+    // limit=5 forces a cap over the 12 .ts files.
+    const out = await run({ op: "list_files", query: ".ts", limit: 5 })
+    expect(out).toContain("stopped at 5 files")
+    // Exactly 5 paths shown (+ the banner line).
+    expect(out.split("\n").filter((l) => l.endsWith(".ts"))).toHaveLength(5)
+  })
+
+  it("metadata renders a compact digest, not raw JSON", async () => {
+    await writeFile(
+      join(root, "package.json"),
+      JSON.stringify({
+        name: "demo",
+        scripts: { build: "vite", test: "vitest" },
+        dependencies: { react: "^19", clsx: "^2" },
+      })
+    )
+    await mkdir(join(root, ".git"))
+    await writeFile(join(root, ".git", "HEAD"), "ref: refs/heads/main\n")
     await buildIndex()
     const out = await run({ op: "metadata" })
-    expect(out).toContain("package_json")
-    expect(out).toContain("demo")
+    expect(out).toContain("package.json: name demo")
+    expect(out).toContain("scripts: build, test")
+    expect(out).toContain("dependencies (2)")
+    expect(out).toContain("git: branch main")
+    // Not a raw JSON dump.
+    expect(out).not.toContain('"dependencies":')
+  })
+
+  it("metadata caps a huge dependency list", async () => {
+    const deps: Record<string, string> = {}
+    for (let i = 0; i < 60; i++) deps[`dep${i}`] = "^1"
+    await writeFile(join(root, "package.json"), JSON.stringify({ name: "big", dependencies: deps }))
+    await buildIndex()
+    const out = await run({ op: "metadata" })
+    expect(out).toContain("dependencies (60)")
+    expect(out).toContain("more")
   })
 
   it("a miss steers back to the real tools (advisory)", async () => {

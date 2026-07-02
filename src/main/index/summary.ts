@@ -25,12 +25,20 @@ export function buildIndexSummary(workspaceId: string): string | null {
     lines.push("Status: not yet indexed.")
   }
 
-  // File counts by extension (top handful).
-  const byExt = countByExt(workspaceId)
-    .filter((r) => r.ext)
-    .slice(0, 8)
-    .map((r) => `${r.ext} ${r.count}`)
-  if (byExt.length > 0) lines.push(`Files by type: ${byExt.join(", ")}.`)
+  // File counts by extension (top handful) — with a remainder so the numbers
+  // reconcile with the status-line total (which counts extensionless files and
+  // buckets past the top handful too; otherwise the two lines contradict).
+  const all = countByExt(workspaceId)
+  const total = all.reduce((sum, r) => sum + r.count, 0)
+  const withExt = all.filter((r) => r.ext)
+  const shown = withExt.slice(0, 8)
+  const shownSum = shown.reduce((sum, r) => sum + r.count, 0)
+  const other = total - shownSum
+  if (shown.length > 0) {
+    const parts = shown.map((r) => `${r.ext} ${r.count}`)
+    if (other > 0) parts.push(`other ${other}`)
+    lines.push(`Files by type: ${parts.join(", ")} (total ${total}).`)
+  }
 
   // Key metadata: package manager / name, framework hints, git branch, configs.
   const meta = new Map(listMetadata(workspaceId).map((m) => [m.kind, m.value]))

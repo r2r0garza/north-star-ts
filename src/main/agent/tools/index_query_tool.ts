@@ -5,6 +5,7 @@ import { getRunByWorkspace } from "../../db/repositories/index-runs"
 import { listFilesMatching, countByExt } from "../../db/repositories/index-files"
 import { listMetadata } from "../../db/repositories/index-metadata"
 import { findSymbolsByName, findImportsOf } from "../../db/repositories/index-symbols"
+import type { IndexMetadata } from "../../db/types"
 
 // Query the pre-built workspace index (plan 008/014). Advisory + fast: it answers
 // "where is X defined", "what imports Y", "what files match Z", and "what's the
@@ -60,8 +61,13 @@ export const indexQueryTool: Tool = {
     const op = typeof args.op === "string" ? args.op : ""
     const query = typeof args.query === "string" ? args.query.trim() : ""
     const kind = typeof args.kind === "string" && args.kind ? args.kind : undefined
-    const limit =
-      typeof args.limit === "number" && args.limit > 0 ? Math.floor(args.limit) : 50
+    const explicitLimit =
+      typeof args.limit === "number" && args.limit > 0 ? Math.floor(args.limit) : undefined
+    // find_symbol/what_imports rarely have many hits (50 is plenty); a file
+    // listing routinely does, so it gets a higher default. Either way an explicit
+    // limit wins.
+    const limit = explicitLimit ?? 50
+    const listLimit = explicitLimit ?? 500
 
     if (!ctx.workspace) {
       return toolError("no_workspace", "The index is only available with a workspace.")
@@ -110,28 +116,43 @@ export const indexQueryTool: Tool = {
 
       case "list_files": {
         if (!query) {
-          // No filter → summarize the file map by extension.
-          const counts = countByExt(ws.id)
-            .filter((r) => r.ext)
-            .slice(0, 20)
-            .map((r) => `${r.ext}: ${r.count}`)
-          return withBanner(
-            counts.length ? `Files by extension:\n${counts.join("\n")}` : "No files indexed.",
-            partial
-          )
+          // No filter → summarize the file map by extension. Honest totals: the
+          // per-ext lines PLUS a total and an explicit remainder for extensionless
+          // files / buckets past the shown ones, so the numbers always reconcile.
+          const all = countByExt(ws.id)
+          const total = all.reduce((sum, r) => sum + r.count, 0)
+          if (total === 0) return withBanner("No files indexed.", partial)
+          const TOP = 20
+          const withExt = all.filter((r) => r.ext)
+          const shown = withExt.slice(0, TOP)
+          const shownSum = shown.reduce((sum, r) => sum + r.count, 0)
+          const other = total - shownSum
+          const lines = shown.map((r) => `${r.ext}: ${r.count}`)
+          if (other > 0) {
+            lines.push(`(other, incl. extensionless: ${other})`)
+          }
+          lines.push(`total: ${total}`)
+          return withBanner(`Files by extension:\n${lines.join("\n")}`, partial)
         }
-        const files = listFilesMatching(ws.id, query, limit)
+        // Over-fetch by one to detect (and honestly report) truncation, the way
+        // search_tool does — the agent must never think a capped list is complete.
+        const files = listFilesMatching(ws.id, query, listLimit + 1)
         if (files.length === 0) {
           return notIndexed(`No indexed file path matches "${query}".`, partial)
         }
-        return withBanner(files.map((f) => f.path).join("\n"), partial)
+        const capped = files.length > listLimit
+        const shown = capped ? files.slice(0, listLimit) : files
+        let body = shown.map((f) => f.path).join("\n")
+        if (capped) {
+          body += `\n[stopped at ${listLimit} files — narrow the query for more]`
+        }
+        return withBanner(body, partial)
       }
 
       case "metadata": {
         const meta = listMetadata(ws.id)
         if (meta.length === 0) return notIndexed("No metadata indexed yet.", partial)
-        const lines = meta.map((m) => `${m.kind}${m.path ? ` (${m.path})` : ""}: ${JSON.stringify(m.value)}`)
-        return withBanner(lines.join("\n"), partial)
+        return withBanner(renderMetadata(meta), partial)
       }
 
       default:
@@ -141,6 +162,75 @@ export const indexQueryTool: Tool = {
         )
     }
   },
+}
+
+// A compact, bounded digest of the parsed metadata — NOT a raw JSON dump. Full
+// package.json (every dep/devDep) + a README excerpt would blow the token cap and
+// bury the signal, so each known kind is summarized to its high-value fields; any
+// unrecognized kind falls back to a short JSON snippet.
+function renderMetadata(meta: IndexMetadata[]): string {
+  const byKind = new Map(meta.map((m) => [m.kind, m]))
+  const lines: string[] = []
+
+  const pkg = byKind.get("package_json")?.value as
+    | {
+        name?: string
+        version?: string
+        packageManager?: string
+        scripts?: Record<string, string>
+        dependencies?: Record<string, string>
+        devDependencies?: Record<string, string>
+      }
+    | undefined
+  if (pkg) {
+    const bits: string[] = []
+    if (pkg.name) bits.push(`name ${pkg.name}`)
+    if (pkg.version) bits.push(`v${pkg.version}`)
+    if (pkg.packageManager) bits.push(`packageManager ${pkg.packageManager}`)
+    lines.push(`package.json: ${bits.join(", ") || "(present)"}`)
+    if (pkg.scripts) {
+      lines.push(`  scripts: ${Object.keys(pkg.scripts).join(", ")}`)
+    }
+    const deps = Object.keys(pkg.dependencies ?? {})
+    if (deps.length) lines.push(`  dependencies (${deps.length}): ${capList(deps, 30)}`)
+    const dev = Object.keys(pkg.devDependencies ?? {})
+    if (dev.length) lines.push(`  devDependencies (${dev.length}): ${capList(dev, 30)}`)
+  }
+
+  const git = byKind.get("git")?.value as { branch?: string; sha?: string } | undefined
+  if (git?.branch) lines.push(`git: branch ${git.branch}`)
+  else if (git?.sha) lines.push(`git: detached at ${git.sha}`)
+
+  // Config presence (name only — contents aren't useful inline).
+  const configs: string[] = []
+  if (byKind.has("tsconfig")) configs.push("tsconfig.json")
+  if (byKind.has("pnpm_workspace")) configs.push("pnpm-workspace.yaml (monorepo)")
+  const vite = byKind.get("vite_config")?.value as { config?: string } | undefined
+  if (vite?.config) configs.push(vite.config)
+  if (configs.length) lines.push(`config: ${configs.join(", ")}`)
+
+  const readme = byKind.get("readme")?.value as { excerpt?: string } | undefined
+  if (readme?.excerpt) {
+    const firstLine = readme.excerpt.split("\n").find((l) => l.trim().length > 0)
+    if (firstLine) lines.push(`README: ${firstLine.trim().slice(0, 160)}`)
+  }
+
+  // Any other kinds we didn't special-case: a short snippet so nothing is hidden.
+  const known = new Set(["package_json", "git", "tsconfig", "pnpm_workspace", "vite_config", "readme"])
+  for (const m of meta) {
+    if (!known.has(m.kind)) {
+      lines.push(`${m.kind}: ${JSON.stringify(m.value).slice(0, 160)}`)
+    }
+  }
+
+  return lines.length ? lines.join("\n") : "No recognizable metadata indexed."
+}
+
+// Join a list, capping the count with a "+N more" suffix so a big dep list can't
+// dominate the output.
+function capList(items: string[], max: number): string {
+  if (items.length <= max) return items.join(", ")
+  return `${items.slice(0, max).join(", ")}, +${items.length - max} more`
 }
 
 // A miss is advisory, not authoritative — always steer to the real tools.
