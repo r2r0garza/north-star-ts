@@ -20,8 +20,9 @@
 >   out-of-band generation step.
 > - **`020` — durable memories** (Q2): the cross-conversation memories section. Needs a memories
 >   store + a gated write path.
-> - **Approvals section** (see "Deferred sections" below): NOT its own plan — an additive section on
->   existing tables, recorded here.
+> - **`021` — approvals context section**: read-only visibility into what's already granted/denied.
+>   An additive section on existing tables (no new subsystem), split to its own plan so it gets a
+>   dedicated build session.
 
 ## Context
 
@@ -110,15 +111,15 @@ budget share and a graceful-degradation order, producing the final `ChatMessage[
 - **Conversation summary** → `019`. Priority: above skills (compressed older context outvalues the
   skills catalog under pressure).
 - **Durable memories** → `020`. Priority: high (user-stated facts); rank vs summary in build.
-- **Approvals section** — **not a separate plan** (unlike `019`/`020`, which are subsystems): the
-  `approvals` table + `action_allowlist` already exist (`002`/`009`/`012`). This is an additive
-  section — one new scoped read (`listAllowlistRules({ workspacePath, conversationId })`; the repo
-  currently only has `findMatch`) + a renderer folding granted/pending decisions into a
-  `ContextSection` (slot reserved: `SECTION_PRIORITY.approvals = 20`). Deliberately **not built in
-  this slice**: live-chat gates are in-memory/synchronous so there are usually no rows to show on the
-  common path — its value is mainly a **resumed background task** re-grounding on what's already been
-  granted/denied so it doesn't re-request. Build it when that scenario is exercised (near `018` goal
-  mode, whose fix loop re-runs gated actions), or fold it in opportunistically.
+- **Approvals section** → **`021`**. Simpler than `019`/`020` (no new subsystem — the `approvals`
+  table + `action_allowlist` already exist, `002`/`009`/`012`): a new scoped read
+  (`listRules({ workspacePath, conversationId })`; the repo currently only has `findMatch`) + a
+  renderer folding granted/pending decisions into a `ContextSection` (slot reserved:
+  `SECTION_PRIORITY.approvals = 20`). Split to its own plan/session because it carries real design
+  context worth preserving (why it waited: live-chat gates are in-memory/synchronous so there are
+  usually no rows on the common path — its value is mainly a **resumed background task** re-grounding
+  on what's already granted/denied; pairs with `018`, whose fix loop re-runs gated actions). See
+  `021` for the full write-up.
 
 ## Verification (when built)
 - A long conversation stays coherent past the recent-message window via the summary section, and

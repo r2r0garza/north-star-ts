@@ -7,33 +7,41 @@ item is its plan file, not its rank.
 
 ## Next up
 
-1. **`019` — Conversation summaries.** The rolling-summary section `014` reserved: a compact,
+1. **`021` — Approvals context section.** The last section `014` reserved: give the agent read-only
+   visibility into what the user has **already granted/denied** so it doesn't re-request an
+   allowlisted action or retry a denied one. Additive over existing tables (no migration): a new
+   `listRules({ workspacePath, conversationId })` read on `action_allowlist` (`002`) + optionally
+   recent/pending `approvals` rows (`009`/`012`) for durable-task turns, folded into an
+   `approvalsSection` (slot `SECTION_PRIORITY.approvals = 20` already defined). Advisory only — never
+   bypasses the live gate. Pairs naturally with `018` (its fix loop re-runs gated actions). Small;
+   scheduled next by request (a dedicated session to preserve design context).
+2. **`019` — Conversation summaries.** The rolling-summary section `014` reserved: a compact,
    periodically-regenerated digest of the turns that fell out of the recent-message window, injected
    as a high-priority context section so long conversations keep their thread. New
    `conversation_summaries` table (one row/conversation, tracks the covered `seq` range); an
    **out-of-band** generation step (a `009` `summarize` task — never on the user's turn latency),
    incremental + debounced past a size threshold; a `summarySection` renderer for the `014`
    framework. Split out of `014` Q1.
-2. **`020` — Durable memories.** The cross-conversation memories section `014` reserved: small,
+3. **`020` — Durable memories.** The cross-conversation memories section `014` reserved: small,
    persisted facts the agent writes (a **gated, explicit** `remember` tool — no silent profiling)
    and that inject into future turns, **scoped** global / workspace / conversation (mirrors the
    `action_allowlist` scoping). New `memories` table + a list/delete surface (durable +
    cross-conversation ⇒ must be auditable/revocable); a `memoriesSection` renderer with an injection
    cap. Split out of `014` Q2.
-3. **`010` — Container runtime profiles.** Decouple Workspace (the files) from Runtime (the env a
+4. **`010` — Container runtime profiles.** Decouple Workspace (the files) from Runtime (the env a
    tool call executes in). Replace the raw container `image` string with a named **profile**
    (`node` | `python` | `fullstack`), resolved to an image in the env factory; default/fallback =
    `fullstack` (Node + Python) so a Node repo that later adds a Python backend doesn't wedge.
    One profile per conversation, user-overridable in settings. Kills the "one workspace = one image
    forever" assumption **without** building auto-routing or image management (both deferred). Small
    refactor of `env/factory.ts` + `container.ts` + execution settings (JSON blob — no migration).
-4. **`005.1` — ContainerEnvironment stop in-flight.** The deferred half of `005`: killing the host
+5. **`005.1` — ContainerEnvironment stop in-flight.** The deferred half of `005`: killing the host
    `docker/podman exec` client doesn't stop the in-container process. Needs its own kill mechanism
    (in-container PID tracking / `exec kill`, or marker `pkill`). Out of scope when `005` shipped.
-5. **`007` — Slash commands for skills.** Let users force a skill with `/skill-name …` (pre-inject
+6. **`007` — Slash commands for skills.** Let users force a skill with `/skill-name …` (pre-inject
    the `read_skill` call), keeping today's model-discretionary path for plain messages. Adds a
    `skills:list` IPC channel + composer autocomplete. Independent — schedule freely.
-6. **`018` — Agentic goal mode.** An opt-in **execution mode** (orthogonal to chat/interactive/
+7. **`018` — Agentic goal mode.** An opt-in **execution mode** (orthogonal to chat/interactive/
    north_star): `simple` (today's one-pass behavior, default) vs `goal` (bounded **plan → execute →
    review → fix → finalize**, capped by `maxIterations` — never unbounded). Modeled as a task-level
    orchestrator inside the runner's `runOne` (one task / one forked conversation, calling
