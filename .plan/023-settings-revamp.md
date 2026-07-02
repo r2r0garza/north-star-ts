@@ -1,7 +1,39 @@
 # PR23: Settings revamp — full-screen takeover instead of the right slide-out sheet
 
-> Status: **BUILT** (pending manual verification). UI-only (renderer). No backend, no IPC, no schema change — the same
-> `window.cowork.settings.*` / `providers.*` / `models.*` surface is reused verbatim.
+> Status: **SHIPPED** — merged to `main` (`--no-ff` merge `1ea9445`; feature `b96b9b4`, dropdown
+> fix `c5e901a`, on `feat/settings-revamp`). UI-only (renderer). No backend, no IPC, no schema
+> change — the same `window.cowork.settings.*` / `providers.*` / `models.*` surface is reused verbatim.
+
+## What shipped
+
+Built exactly to the "reuse content, swap the container" approach. `settings-sheet.tsx` →
+**`settings-screen.tsx`**: a full-viewport takeover with a **left vertical nav rail** (the six
+sections) + a `max-w-2xl` centered content column. `main.tsx` swapped `<SettingsSheet>` →
+`<SettingsScreen>` (state/props/open-paths unchanged); `ui/sheet.tsx` left in place per Out of scope.
+
+Resolutions to the open questions:
+
+- **Q1 (drag bar):** full cover. The header row *is* the window drag region (`h-11` matching the app
+  top bar, `pl-20` to clear the macOS traffic lights); the close **[X]** opts out with
+  `[-webkit-app-region:no-drag]`.
+- **Q2 (Dialog vs bespoke):** built on the **raw Radix `Dialog` primitive** (`DialogPrimitive.Portal`
+  + `DialogPrimitive.Content`), *not* the shared `DialogContent` wrapper — because `cn` uses `twMerge`,
+  which can't strip the `zoom`/`slide` `tw-animate-css` utilities baked into `DialogContent`. The
+  primitive gives the focus-trap / Escape / portal for free with a clean `fixed inset-0` panel.
+- **Q3 (animation):** subtle fade + slide-up-from-bottom-2 (no modal zoom).
+- **Q4 (rail extras):** deferred — plain section list only.
+
+Section switching uses `Tabs orientation="vertical"` (Radix keyboard nav + selected-state preserved);
+the six `TabsContent` bodies and the delegated `ProvidersTab`/`ModelsTab` are reused verbatim. Inline
+bodies now scroll their own overflow so long lists don't clip. Onboarding stays a nested centered `Dialog`.
+
+**Post-merge fix (`c5e901a`):** an open modal Radix `Select` sets `pointer-events: none` on `<body>`,
+so a click dismissing the dropdown resolved its target to `<body>` — which the full-screen Dialog read
+as an outside-click and closed the whole screen on. A takeover has no meaningful "outside", so
+`onInteractOutside` is `preventDefault`'d; Escape and the **[X]** still close.
+
+Verified: `pnpm typecheck` + `pnpm build` clean; manually verified in the running app (open paths,
+close, every section, the dropdown-dismiss bug).
 
 ## Context
 
