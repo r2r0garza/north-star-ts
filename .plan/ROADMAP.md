@@ -79,7 +79,8 @@ item is its plan file, not its rank.
   `workspace_index` kept) + new `migrations.test.ts`; two pre-existing `user_version` assertions
   bumped 8 → 9. **Verified against the real dev DB**: v9 applied, orphaned tasks now 0, all 15 chat +
   7 interactive sessions intact, `foreign_key_check` + `integrity_check` clean (after clearing
-  unrelated `pr21-test-task` manual-test debris). Commit ref pending.
+  unrelated `pr21-test-task` manual-test debris). Built on `feat/orphaned-task-cleanup` (commit
+  `95f05e0`; not yet merged to `main`).
 - **`021` — Approvals context section.** Built on `pr21-approvals-context-section` (commit ref pending
   merge). Filled the last `014`-reserved section slot (`SECTION_PRIORITY.approvals = 20`): a read-only,
   advisory section giving the agent visibility into what the user has **already granted/denied**, so it

@@ -1,6 +1,6 @@
 # PR22: Orphaned tasks & worker conversations on session delete
 
-> Status: **DONE** (commit ref pending). Found while manually verifying `021` (approvals context
+> Status: **DONE** (commit `95f05e0`, branch `feat/orphaned-task-cleanup`). Found while manually verifying `021` (approvals context
 > section). A data-lifecycle bug, unrelated to `021` — the approvals work only surfaced it.
 >
 > **Shipped.** Both decisions resolved before building: (1) **delete all** tasks a deleted session
