@@ -7,14 +7,15 @@ item is its plan file, not its rank.
 
 ## Next up
 
-1. **`021` — Approvals context section.** The last section `014` reserved: give the agent read-only
-   visibility into what the user has **already granted/denied** so it doesn't re-request an
-   allowlisted action or retry a denied one. Additive over existing tables (no migration): a new
-   `listRules({ workspacePath, conversationId })` read on `action_allowlist` (`002`) + optionally
-   recent/pending `approvals` rows (`009`/`012`) for durable-task turns, folded into an
-   `approvalsSection` (slot `SECTION_PRIORITY.approvals = 20` already defined). Advisory only — never
-   bypasses the live gate. Pairs naturally with `018` (its fix loop re-runs gated actions). Small;
-   scheduled next by request (a dedicated session to preserve design context).
+1. **`022` — Orphaned task cleanup on session delete.** Found verifying `021`. Deleting a session
+   nulls its tasks' `source_conversation_id` (FK `ON DELETE SET NULL`) but leaves the forked **worker
+   conversation** + task rows behind — invisible to the UI (panels fetch by `sourceConversationId`;
+   workers aren't sidebar-listed), unbounded accumulation, and a latent hazard: an orphaned
+   non-terminal **auto-resume** kind (`todo_run`/`goal_run`) can silently re-queue on boot with no
+   panel to cancel it. Fix the delete path (runner-coordinated cascade to worker conversation + child
+   rows, cancel in-flight first) + a `reconcile` guard against source-less auto-resume + a `SCHEMA_V9`
+   one-time reap (real dev DB had 25 orphaned tasks / 42 orphaned workers). Not related to `021` — that
+   work only surfaced it.
 2. **`019` — Conversation summaries.** The rolling-summary section `014` reserved: a compact,
    periodically-regenerated digest of the turns that fell out of the recent-message window, injected
    as a high-priority context section so long conversations keep their thread. New
@@ -56,6 +57,23 @@ item is its plan file, not its rank.
 
 ## Done
 
+- **`021` — Approvals context section.** Built on `pr21-approvals-context-section` (commit ref pending
+  merge). Filled the last `014`-reserved section slot (`SECTION_PRIORITY.approvals = 20`): a read-only,
+  advisory section giving the agent visibility into what the user has **already granted/denied**, so it
+  doesn't re-request an allowlisted action or retry a denied one. **Shipped both halves.** (1) *Allowlist*
+  — a new `listRules({ workspacePath, conversationId })` read on `action-allowlist.ts` returning all
+  in-scope grants (global + matching workspace + matching conversation), mirroring `findMatch`'s scope
+  logic but returning every match and **not** touching `last_used_at` (a display read must not mark rules
+  used). Meaningful on any non-chat turn. (2) *Task approvals* — recent/pending `approvals` rows
+  (`009`/`012`) surfaced only when the turn belongs to a durable task; an optional `taskId` was threaded
+  into `RunAgentLoopOptions` and set by the runner's `runOne`; pending decisions render as "NOT yet
+  granted". Both fold into an `approvalsSection` in `context/sections.ts` (deduped by kind/identity/scope,
+  capped), pushed in `runAgentLoop` at the existing `showTodos` gate; returns null (no block) for a bare
+  turn. **No schema change, no migration.** Advisory only — never bypasses the live gate
+  (`agent/approval` unchanged). Verified: `pnpm typecheck` + `pnpm build` clean; 15 unit tests
+  (`action-allowlist.test.ts` scope resolution + no-touch-`last_used_at`; `sections.test.ts`
+  renderer/dedup/gating); manual E2E (grant line appears in-scope, absent cross-workspace and in bare
+  chat; task half renders on resume). Testing surfaced an unrelated data-lifecycle bug → `022`.
 - **`014` — Context builder (framework + available sources).** Built on `feat/workspace-indexing`
   (commit `aff2db5`; not yet merged to `main`). Evolved the `ContextBuilder` from a single-budget
   history walk-back into a section assembler: a `ContextSection` abstraction, one global token budget

@@ -1,10 +1,23 @@
 # PR21: Approvals context section — the agent sees what's already granted/denied
 
-> Status: **NOT STARTED**. The last of the three sections `014` (context builder) reserved but did
-> not build. Unlike `019` (summaries) and `020` (memories) — each a new subsystem — this is a small
-> **additive section over tables that already exist** (`approvals` from `009`/`012`,
-> `action_allowlist` from `002`). Fills the `SECTION_PRIORITY.approvals` slot (= 20) already defined
-> in `src/main/agent/context/context-builder.ts`.
+> Status: **DONE** (built on branch `pr21-approvals-context-section`; commit ref pending merge). Shipped
+> **both halves** (allowlist grants + task-approval decisions). The last of the three sections `014`
+> (context builder) reserved but did not build. Unlike `019` (summaries) and `020` (memories) — each a
+> new subsystem — this was a small **additive section over tables that already exist** (`approvals`
+> from `009`/`012`, `action_allowlist` from `002`). Fills the `SECTION_PRIORITY.approvals` slot (= 20)
+> already defined in `src/main/agent/context/context-builder.ts`. No schema change, no migration.
+>
+> **As built:** a `listRules({ workspacePath, conversationId })` read on `action-allowlist.ts`
+> (all in-scope matches; unlike `findMatch` it does **not** touch `last_used_at` — a display read must
+> not mark rules used); an `approvalsSection({ conversationId, workspacePath?, taskId? })` renderer in
+> `context/sections.ts` (allowlist half deduped by kind/identity/scope + capped; task-approval half
+> gated on `taskId`, pending shown as "NOT yet granted"); an optional `taskId` threaded into
+> `RunAgentLoopOptions` and set by the runner's `runOne`; the section pushed in `runAgentLoop` at the
+> existing `showTodos` gate. Verified: `pnpm typecheck` + `pnpm build` clean; 15 unit tests
+> (`action-allowlist.test.ts` scope resolution + no-touch; `sections.test.ts` renderer/dedup/gating);
+> manual E2E (allowlist line appears on a workspace-scoped grant, absent in a different workspace and
+> in bare chat; task half renders on resume). Testing surfaced an unrelated data-lifecycle bug →
+> `022`.
 
 ## Context
 

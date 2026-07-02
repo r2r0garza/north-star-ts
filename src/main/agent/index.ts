@@ -23,7 +23,7 @@ import {
   SECTION_PRIORITY,
   type ContextSection,
 } from "./context/context-builder"
-import { taskStateSection } from "./context/sections"
+import { taskStateSection, approvalsSection } from "./context/sections"
 import { repairDanglingToolCalls } from "./repair"
 import { createEnvironment } from "./env"
 import { LocalEnvironment } from "./env/local"
@@ -344,6 +344,12 @@ export interface RunAgentLoopOptions {
   // it; that would be a cycle). Threaded into ToolContext so run_todos_in_background
   // can enqueue a `todo_run` task. Absent in contexts that can't delegate.
   enqueueTask?: EnqueueTask
+  // The durable task this run belongs to, when driven by the runner's runOne.
+  // Absent on the live `chat` path (which has no task). Used only to surface this
+  // task's prior gate decisions in the approvals context section (plan 021) so a
+  // resumed task doesn't re-request an already-decided action — advisory, never a
+  // gate bypass.
+  taskId?: string
 }
 
 // The core agentic loop, shared by the live `chat` path (runChat) and the
@@ -354,7 +360,8 @@ export interface RunAgentLoopOptions {
 export async function runAgentLoop(
   opts: RunAgentLoopOptions
 ): Promise<ChatResult> {
-  const { conversationId, workspace, attachments, userMessage, abort } = opts
+  const { conversationId, workspace, attachments, userMessage, abort, taskId } =
+    opts
   const onEvent: OnEvent = opts.onEvent ?? (() => {})
 
   // The workspace is optional. When provided it must be a real directory and
@@ -464,6 +471,21 @@ export async function runAgentLoop(
   if (showTodos) {
     const taskSection = taskStateSection(conversationId)
     if (taskSection) sections.push(taskSection)
+  }
+
+  // Prior approvals (plan 021): durable "always allow" grants in scope + this
+  // task's recent/pending gate decisions, so the agent doesn't re-ask for an
+  // already-granted action or retry a denied one. Advisory only — the live gate
+  // is still the authority. `workspace` is the path (matches allowlist scoping);
+  // `taskId` is undefined on the live path, set by the runner. Returns null (no
+  // block) for a bare turn with no grants and no task.
+  if (showTodos) {
+    const approvals = approvalsSection({
+      conversationId,
+      workspacePath: workspace,
+      taskId,
+    })
+    if (approvals) sections.push(approvals)
   }
 
   // Workspace-index summary (plan 008): cheap structured orientation. Advisory,

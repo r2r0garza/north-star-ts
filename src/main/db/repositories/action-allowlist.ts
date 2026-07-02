@@ -107,6 +107,40 @@ export function findMatch(
   return undefined
 }
 
+// List remembered "always allow" rules in scope for a turn: all `global` rules,
+// plus `workspace`/`conversation` rules whose path/id matches. Mirrors findMatch's
+// scope logic but returns every match (findMatch stops at the first) and does NOT
+// touch last_used_at — this feeds the advisory approvals context section (plan
+// 021), not a policy decision, so it must not mark rules as used. `once`/`agent`
+// scopes are never listed (same as findMatch).
+export function listRules(
+  opts: { workspacePath?: string | null; conversationId?: string | null } = {}
+): ActionAllowlistRule[] {
+  const rows = getDb()
+    .prepare("SELECT * FROM action_allowlist ORDER BY created_at DESC")
+    .all() as AllowlistRow[]
+  return rows
+    .filter((row) => {
+      if (row.scope === "global") return true
+      if (
+        row.scope === "workspace" &&
+        opts.workspacePath &&
+        row.workspace_path === opts.workspacePath
+      ) {
+        return true
+      }
+      if (
+        row.scope === "conversation" &&
+        opts.conversationId &&
+        row.conversation_id === opts.conversationId
+      ) {
+        return true
+      }
+      return false
+    })
+    .map(toRule)
+}
+
 function touch(rule: ActionAllowlistRule): ActionAllowlistRule {
   touchLastUsed(rule.id)
   return rule

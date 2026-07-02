@@ -655,6 +655,9 @@ export class TaskRunner {
         result = await runAgentLoop({
           conversationId: task.conversationId,
           workspace,
+          // Surfaces this task's prior gate decisions in the approvals context
+          // section (plan 021) so a resumed task re-grounds instead of re-asking.
+          taskId,
           // A background task can itself hand off more work (e.g. a todo_run task
           // spawning another). Bind to this same runner so it goes through the one
           // enqueue seam — the producer contract holds recursively.
