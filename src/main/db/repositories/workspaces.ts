@@ -70,7 +70,10 @@ export function listWorkspaces(): Workspace[] {
   return rows.map(toWorkspace)
 }
 
-export function updateWorkspace(id: string, patch: { name?: string }): Workspace {
+export function updateWorkspace(
+  id: string,
+  patch: { name?: string }
+): Workspace {
   const now = Date.now()
   if (patch.name !== undefined) {
     getDb()

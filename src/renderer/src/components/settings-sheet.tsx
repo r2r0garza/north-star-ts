@@ -15,7 +15,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { Field, FieldContent, FieldDescription, FieldLabel } from "@/components/ui/field"
+import {
+  Field,
+  FieldContent,
+  FieldDescription,
+  FieldLabel,
+} from "@/components/ui/field"
 import {
   Dialog,
   DialogContent,
@@ -25,7 +30,11 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
-import { ProvidersTab, ModelsTab, useLlmSettings } from "@/components/llm-settings"
+import {
+  ProvidersTab,
+  ModelsTab,
+  useLlmSettings,
+} from "@/components/llm-settings"
 import type {
   ExecutionSettings,
   PermissionSettings,
@@ -38,28 +47,29 @@ import type {
 
 // Human-readable labels + help for each sandbox category (mirrors the taxonomy
 // in the main-process settings service / regex classifier).
-const CATEGORY_META: Record<ApprovalCategory, { label: string; help: string }> = {
-  workspace_mutation: {
-    label: "Workspace edits",
-    help: "Create, write, and edit files inside the workspace.",
-  },
-  destructive_fs: {
-    label: "Destructive file ops",
-    help: "Recursive/forced deletes (rm -r, find -delete, git clean -f).",
-  },
-  history_rewrite: {
-    label: "Git history rewrite",
-    help: "git reset --hard, force-push, branch delete.",
-  },
-  system_mutation: {
-    label: "System changes",
-    help: "Permissions, services, devices, or credential/system paths.",
-  },
-  code_exec: {
-    label: "Arbitrary code execution",
-    help: "Inline interpreters and piping remote scripts to a shell.",
-  },
-}
+const CATEGORY_META: Record<ApprovalCategory, { label: string; help: string }> =
+  {
+    workspace_mutation: {
+      label: "Workspace edits",
+      help: "Create, write, and edit files inside the workspace.",
+    },
+    destructive_fs: {
+      label: "Destructive file ops",
+      help: "Recursive/forced deletes (rm -r, find -delete, git clean -f).",
+    },
+    history_rewrite: {
+      label: "Git history rewrite",
+      help: "git reset --hard, force-push, branch delete.",
+    },
+    system_mutation: {
+      label: "System changes",
+      help: "Permissions, services, devices, or credential/system paths.",
+    },
+    code_exec: {
+      label: "Arbitrary code execution",
+      help: "Inline interpreters and piping remote scripts to a shell.",
+    },
+  }
 const CATEGORY_ORDER: ApprovalCategory[] = [
   "workspace_mutation",
   "destructive_fs",
@@ -85,13 +95,21 @@ export function SettingsSheet({
   initialTab?: string
 }) {
   const [execution, setExecution] = useState<ExecutionSettings | null>(null)
-  const [permissions, setPermissions] = useState<PermissionSettings | null>(null)
+  const [permissions, setPermissions] = useState<PermissionSettings | null>(
+    null
+  )
   const [indexing, setIndexing] = useState<IndexingSettings | null>(null)
-  const [runtimes, setRuntimes] = useState<Record<Runtime, RuntimeStatus> | null>(null)
+  const [runtimes, setRuntimes] = useState<Record<
+    Runtime,
+    RuntimeStatus
+  > | null>(null)
   const llm = useLlmSettings(open)
   // When set, the first-time onboarding dialog is shown for this just-picked
   // container backend (awaiting the user's enable / not-now choice).
-  const [onboarding, setOnboarding] = useState<Exclude<Backend, "local"> | null>(null)
+  const [onboarding, setOnboarding] = useState<Exclude<
+    Backend,
+    "local"
+  > | null>(null)
 
   // Load current settings + runtime availability whenever the sheet opens.
   useEffect(() => {
@@ -150,7 +168,8 @@ export function SettingsSheet({
     void saveExecution(next)
   }
 
-  const isContainer = execution?.backend === "docker" || execution?.backend === "podman"
+  const isContainer =
+    execution?.backend === "docker" || execution?.backend === "podman"
 
   function runtimeOptionDisabled(rt: Runtime): boolean {
     return runtimes != null && runtimes[rt] !== "available"
@@ -163,12 +182,16 @@ export function SettingsSheet({
           <SheetHeader>
             <SheetTitle>Settings</SheetTitle>
             <SheetDescription>
-              Execution backend and approval policy. Changes apply on the next turn.
+              Execution backend and approval policy. Changes apply on the next
+              turn.
             </SheetDescription>
           </SheetHeader>
 
           {execution && permissions && indexing && (
-            <Tabs defaultValue={initialTab} className="flex min-h-0 flex-1 flex-col px-4">
+            <Tabs
+              defaultValue={initialTab}
+              className="flex min-h-0 flex-1 flex-col px-4"
+            >
               <TabsList>
                 <TabsTrigger value="providers">Providers</TabsTrigger>
                 <TabsTrigger value="models">Models</TabsTrigger>
@@ -186,20 +209,37 @@ export function SettingsSheet({
               {/* Backend picker — Local / Docker / Podman, gated by availability. */}
               <TabsContent value="backend" className="flex flex-col gap-4 py-2">
                 <Field>
-                  <FieldLabel htmlFor="backend-select">Execution backend</FieldLabel>
-                  <Select value={execution.backend} onValueChange={onBackendChange}>
+                  <FieldLabel htmlFor="backend-select">
+                    Execution backend
+                  </FieldLabel>
+                  <Select
+                    value={execution.backend}
+                    onValueChange={onBackendChange}
+                  >
                     <SelectTrigger id="backend-select">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="local">Local (this machine)</SelectItem>
-                      <SelectItem value="docker" disabled={runtimeOptionDisabled("docker")}>
-                        Docker
-                        {runtimes ? ` — ${RUNTIME_STATUS_LABEL[runtimes.docker]}` : ""}
+                      <SelectItem value="local">
+                        Local (this machine)
                       </SelectItem>
-                      <SelectItem value="podman" disabled={runtimeOptionDisabled("podman")}>
+                      <SelectItem
+                        value="docker"
+                        disabled={runtimeOptionDisabled("docker")}
+                      >
+                        Docker
+                        {runtimes
+                          ? ` — ${RUNTIME_STATUS_LABEL[runtimes.docker]}`
+                          : ""}
+                      </SelectItem>
+                      <SelectItem
+                        value="podman"
+                        disabled={runtimeOptionDisabled("podman")}
+                      >
                         Podman
-                        {runtimes ? ` — ${RUNTIME_STATUS_LABEL[runtimes.podman]}` : ""}
+                        {runtimes
+                          ? ` — ${RUNTIME_STATUS_LABEL[runtimes.podman]}`
+                          : ""}
                       </SelectItem>
                     </SelectContent>
                   </Select>
@@ -212,10 +252,15 @@ export function SettingsSheet({
               </TabsContent>
 
               {/* File-permission toggles — flip "require approval" per kind. */}
-              <TabsContent value="permissions" className="flex flex-col gap-4 py-2">
+              <TabsContent
+                value="permissions"
+                className="flex flex-col gap-4 py-2"
+              >
                 <Field orientation="horizontal">
                   <FieldContent>
-                    <FieldLabel htmlFor="perm-write">Require approval to write files</FieldLabel>
+                    <FieldLabel htmlFor="perm-write">
+                      Require approval to write files
+                    </FieldLabel>
                     <FieldDescription>
                       Prompt before creating or overwriting a file.
                     </FieldDescription>
@@ -233,7 +278,9 @@ export function SettingsSheet({
                 </Field>
                 <Field orientation="horizontal">
                   <FieldContent>
-                    <FieldLabel htmlFor="perm-edit">Require approval to edit files</FieldLabel>
+                    <FieldLabel htmlFor="perm-edit">
+                      Require approval to edit files
+                    </FieldLabel>
                     <FieldDescription>
                       Prompt before replacing text in an existing file.
                     </FieldDescription>
@@ -252,29 +299,40 @@ export function SettingsSheet({
               </TabsContent>
 
               {/* Workspace Indexing (plan 008) — background index build + agent use. */}
-              <TabsContent value="indexing" className="flex flex-col gap-4 py-2">
+              <TabsContent
+                value="indexing"
+                className="flex flex-col gap-4 py-2"
+              >
                 <Field orientation="horizontal">
                   <FieldContent>
-                    <FieldLabel htmlFor="idx-auto">Automatically index new workspaces</FieldLabel>
+                    <FieldLabel htmlFor="idx-auto">
+                      Automatically index new workspaces
+                    </FieldLabel>
                     <FieldDescription>
-                      Build a background index when a workspace is opened, so the agent can answer
-                      about it right away. Per-workspace disable overrides this.
+                      Build a background index when a workspace is opened, so
+                      the agent can answer about it right away. Per-workspace
+                      disable overrides this.
                     </FieldDescription>
                   </FieldContent>
                   <Switch
                     id="idx-auto"
                     checked={indexing.autoIndexNewWorkspaces}
                     onCheckedChange={(checked) =>
-                      saveIndexing({ ...indexing, autoIndexNewWorkspaces: checked })
+                      saveIndexing({
+                        ...indexing,
+                        autoIndexNewWorkspaces: checked,
+                      })
                     }
                   />
                 </Field>
                 <Field orientation="horizontal">
                   <FieldContent>
-                    <FieldLabel htmlFor="idx-context">Use index to improve agent context</FieldLabel>
+                    <FieldLabel htmlFor="idx-context">
+                      Use index to improve agent context
+                    </FieldLabel>
                     <FieldDescription>
-                      Feed a compact workspace summary into the agent. Off = the index still builds
-                      but the agent ignores it.
+                      Feed a compact workspace summary into the agent. Off = the
+                      index still builds but the agent ignores it.
                     </FieldDescription>
                   </FieldContent>
                   <Switch
@@ -287,9 +345,12 @@ export function SettingsSheet({
                 </Field>
                 <Field orientation="horizontal">
                   <FieldContent>
-                    <FieldLabel htmlFor="idx-embed">Include embeddings</FieldLabel>
+                    <FieldLabel htmlFor="idx-embed">
+                      Include embeddings
+                    </FieldLabel>
                     <FieldDescription>
-                      Semantic search over the index — coming in a later release.
+                      Semantic search over the index — coming in a later
+                      release.
                     </FieldDescription>
                   </FieldContent>
                   <Switch id="idx-embed" checked={false} disabled />
@@ -301,10 +362,12 @@ export function SettingsSheet({
               <TabsContent value="sandbox" className="flex flex-col gap-4 py-2">
                 <Field orientation="horizontal">
                   <FieldContent>
-                    <FieldLabel htmlFor="sandbox-master">Sandbox auto-approve</FieldLabel>
+                    <FieldLabel htmlFor="sandbox-master">
+                      Sandbox auto-approve
+                    </FieldLabel>
                     <FieldDescription>
-                      Auto-approve selected actions while running in a container. Hard-blocked
-                      commands are never auto-approved.
+                      Auto-approve selected actions while running in a
+                      container. Hard-blocked commands are never auto-approved.
                     </FieldDescription>
                   </FieldContent>
                   <Switch
@@ -323,8 +386,12 @@ export function SettingsSheet({
                   CATEGORY_ORDER.map((cat) => (
                     <Field key={cat} orientation="horizontal">
                       <FieldContent>
-                        <FieldLabel htmlFor={`cat-${cat}`}>{CATEGORY_META[cat].label}</FieldLabel>
-                        <FieldDescription>{CATEGORY_META[cat].help}</FieldDescription>
+                        <FieldLabel htmlFor={`cat-${cat}`}>
+                          {CATEGORY_META[cat].label}
+                        </FieldLabel>
+                        <FieldDescription>
+                          {CATEGORY_META[cat].help}
+                        </FieldDescription>
                       </FieldContent>
                       <Switch
                         id={`cat-${cat}`}
@@ -334,7 +401,10 @@ export function SettingsSheet({
                             ...execution,
                             sandbox: {
                               ...execution.sandbox,
-                              categories: { ...execution.sandbox.categories, [cat]: checked },
+                              categories: {
+                                ...execution.sandbox.categories,
+                                [cat]: checked,
+                              },
                             },
                           })
                         }
@@ -348,16 +418,20 @@ export function SettingsSheet({
       </Sheet>
 
       {/* One-time explanation the first time a container backend is chosen. */}
-      <Dialog open={onboarding !== null} onOpenChange={(o) => !o && resolveOnboarding(false)}>
+      <Dialog
+        open={onboarding !== null}
+        onOpenChange={(o) => !o && resolveOnboarding(false)}
+      >
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Enable sandbox auto-approve?</DialogTitle>
             <DialogDescription>
-              You're now running tools inside an isolated container — a bad command trashes the
-              container, not your machine. You can let the agent auto-approve a curated set of
-              otherwise-prompting actions (starting with workspace edits). Catastrophic commands
-              (e.g. <code>rm -rf /</code>) are still always blocked. You can change this anytime in
-              Settings.
+              You're now running tools inside an isolated container — a bad
+              command trashes the container, not your machine. You can let the
+              agent auto-approve a curated set of otherwise-prompting actions
+              (starting with workspace edits). Catastrophic commands (e.g.{" "}
+              <code>rm -rf /</code>) are still always blocked. You can change
+              this anytime in Settings.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>

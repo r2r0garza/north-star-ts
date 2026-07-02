@@ -2,7 +2,12 @@ import type { Tool, ToolContext } from "./types"
 import type { ToolAction } from "../approval/types"
 import { toolError } from "./output"
 import { listTodos } from "../../db/repositories/todos"
-import { TODO_RUN_KICKOFF, actionableTodos, todoRunTitle, todoSeed } from "../../tasks/todo-run"
+import {
+  TODO_RUN_KICKOFF,
+  actionableTodos,
+  todoRunTitle,
+  todoSeed,
+} from "../../tasks/todo-run"
 
 // Hand the remaining work off to a durable background task. The agent builds a
 // plan with todo_write, then calls this to run the whole list in the background
@@ -75,7 +80,10 @@ export const runTodosInBackgroundTool: Tool = {
     }
     const outcome = ctx.gate ? await ctx.gate(action) : ("denied" as const)
     if (outcome === "blocked") {
-      return toolError("blocked", "Starting a background task is not permitted here.")
+      return toolError(
+        "blocked",
+        "Starting a background task is not permitted here."
+      )
     }
     if (outcome === "denied") {
       return toolError(

@@ -70,7 +70,9 @@ export async function parseMetadataDoc(
 
 // Detect the vite/electron-vite config by presence (contents aren't parsed —
 // they're JS, not data). Records which config file exists as a framework hint.
-export async function detectViteConfig(root: string): Promise<ParsedMetadata | null> {
+export async function detectViteConfig(
+  root: string
+): Promise<ParsedMetadata | null> {
   for (const rel of VITE_CANDIDATES) {
     try {
       await readFile(join(root, rel), "utf8")
@@ -85,7 +87,9 @@ export async function detectViteConfig(root: string): Promise<ParsedMetadata | n
 // Read the current git branch from .git/HEAD without shelling out. A symbolic ref
 // ("ref: refs/heads/main") yields the branch name; a detached HEAD yields the
 // short SHA. Returns null when there's no git repo.
-export async function readGitBranch(root: string): Promise<ParsedMetadata | null> {
+export async function readGitBranch(
+  root: string
+): Promise<ParsedMetadata | null> {
   try {
     const head = (await readFile(join(root, ".git", "HEAD"), "utf8")).trim()
     if (head.startsWith("ref:")) {
@@ -93,7 +97,10 @@ export async function readGitBranch(root: string): Promise<ParsedMetadata | null
       const branch = ref.replace(/^refs\/heads\//, "")
       return { path: ".git/HEAD", value: { branch, ref } }
     }
-    return { path: ".git/HEAD", value: { detached: true, sha: head.slice(0, 12) } }
+    return {
+      path: ".git/HEAD",
+      value: { detached: true, sha: head.slice(0, 12) },
+    }
   } catch {
     return null
   }

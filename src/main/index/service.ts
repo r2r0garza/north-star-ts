@@ -24,7 +24,12 @@ import {
 } from "../db/repositories/index-metadata"
 import { replaceSymbolsForFile } from "../db/repositories/index-symbols"
 import { getTask } from "../db/repositories/tasks"
-import { walkFiles, loadGitignore, isBinaryBuffer, type WalkedFile } from "../agent/env/walk"
+import {
+  walkFiles,
+  loadGitignore,
+  isBinaryBuffer,
+  type WalkedFile,
+} from "../agent/env/walk"
 import { classifyFile } from "./classify"
 import { pickExtractor } from "./extractors"
 import type { TaskRunner, TaskExecutor } from "../tasks/runner"
@@ -63,15 +68,25 @@ export class IndexService {
   // The executor the runner invokes for the `workspace_index` kind. Registered at
   // app init: runner.registerKind("workspace_index", { autoResume: true, run }).
   readonly execute: TaskExecutor = async ({ task, signal, emit }) => {
-    const input = task.input as { workspaceId?: string; priority?: IndexPriority } | null
+    const input = task.input as {
+      workspaceId?: string
+      priority?: IndexPriority
+    } | null
     const workspaceId = input?.workspaceId
     const priority = input?.priority ?? "low"
-    if (!workspaceId) return { error: "workspace_index task missing workspaceId" }
+    if (!workspaceId)
+      return { error: "workspace_index task missing workspaceId" }
     const ws = getWorkspace(workspaceId)
     if (!ws) return { error: "workspace not found" }
 
     try {
-      await this.runStages({ workspaceId, root: ws.path, priority, signal, emit })
+      await this.runStages({
+        workspaceId,
+        root: ws.path,
+        priority,
+        signal,
+        emit,
+      })
       upsertRun(workspaceId, { error: null })
       return { content: "index complete" }
     } catch (err) {
@@ -130,7 +145,12 @@ export class IndexService {
     root: string
     priority: IndexPriority
     signal: AbortSignal
-    emit: (event: { type: "index_progress"; stage: string; filesScanned: number; filesTotal: number }) => void
+    emit: (event: {
+      type: "index_progress"
+      stage: string
+      filesScanned: number
+      filesTotal: number
+    }) => void
   }): Promise<void> {
     upsertRun(ctx.workspaceId, { stage: "file_map" })
     await this.stageFileMap(ctx)
@@ -148,7 +168,12 @@ export class IndexService {
     root: string
     priority: IndexPriority
     signal: AbortSignal
-    emit: (event: { type: "index_progress"; stage: string; filesScanned: number; filesTotal: number }) => void
+    emit: (event: {
+      type: "index_progress"
+      stage: string
+      filesScanned: number
+      filesTotal: number
+    }) => void
   }): Promise<void> {
     const gitignore = await loadGitignore(ctx.root)
     const seen = new Set<string>()
@@ -166,7 +191,12 @@ export class IndexService {
         stage: "file_map",
         cursor: null,
       })
-      ctx.emit({ type: "index_progress", stage: "file_map", filesScanned: scanned, filesTotal: scanned })
+      ctx.emit({
+        type: "index_progress",
+        stage: "file_map",
+        filesScanned: scanned,
+        filesTotal: scanned,
+      })
       await sleep(BATCH_DELAY_MS[ctx.priority])
       this.throwIfAborted(ctx.signal)
     }
@@ -191,8 +221,17 @@ export class IndexService {
       if (!seen.has(path)) deleteFile(ctx.workspaceId, path)
     }
     // Now the total is known and equals scanned (all walked files).
-    updateProgress(ctx.workspaceId, { filesScanned: scanned, filesTotal: scanned, stage: "file_map" })
-    ctx.emit({ type: "index_progress", stage: "file_map", filesScanned: scanned, filesTotal: scanned })
+    updateProgress(ctx.workspaceId, {
+      filesScanned: scanned,
+      filesTotal: scanned,
+      stage: "file_map",
+    })
+    ctx.emit({
+      type: "index_progress",
+      stage: "file_map",
+      filesScanned: scanned,
+      filesTotal: scanned,
+    })
   }
 
   // Decide whether a walked file needs (re)indexing; return the row to upsert, or
@@ -203,12 +242,19 @@ export class IndexService {
   ): Promise<UpsertFileInput | null> {
     const existing = getFileByPath(workspaceId, file.relPath)
     if (existing) {
-      const stateBeforeHash = classifyFile(existing, { size: file.size, mtime: file.mtime })
+      const stateBeforeHash = classifyFile(existing, {
+        size: file.size,
+        mtime: file.mtime,
+      })
       if (stateBeforeHash === "unchanged") return null
     }
     // Stat differs (or brand new): hash to confirm a real change vs a touch.
     const hash = await this.hashFile(file.path)
-    if (existing && classifyFile(existing, { size: file.size, mtime: file.mtime, hash }) === "unchanged") {
+    if (
+      existing &&
+      classifyFile(existing, { size: file.size, mtime: file.mtime, hash }) ===
+        "unchanged"
+    ) {
       // A touch that didn't change content — refresh stat so the fast path hits
       // next time, but no deeper re-index needed.
       return {
@@ -242,7 +288,12 @@ export class IndexService {
     workspaceId: string
     root: string
     signal: AbortSignal
-    emit: (event: { type: "index_progress"; stage: string; filesScanned: number; filesTotal: number }) => void
+    emit: (event: {
+      type: "index_progress"
+      stage: string
+      filesScanned: number
+      filesTotal: number
+    }) => void
   }): Promise<void> {
     updateProgress(ctx.workspaceId, { stage: "metadata" })
     for (const doc of METADATA_FILES) {
@@ -261,11 +312,21 @@ export class IndexService {
     this.throwIfAborted(ctx.signal)
     const vite = await detectViteConfig(ctx.root)
     if (vite) {
-      upsertMetadata({ workspaceId: ctx.workspaceId, kind: "vite_config", path: vite.path, value: vite.value })
+      upsertMetadata({
+        workspaceId: ctx.workspaceId,
+        kind: "vite_config",
+        path: vite.path,
+        value: vite.value,
+      })
     }
     const git = await readGitBranch(ctx.root)
     if (git) {
-      upsertMetadata({ workspaceId: ctx.workspaceId, kind: "git", path: git.path, value: git.value })
+      upsertMetadata({
+        workspaceId: ctx.workspaceId,
+        kind: "git",
+        path: git.path,
+        value: git.value,
+      })
     }
     const run = getRunByWorkspace(ctx.workspaceId)
     ctx.emit({
@@ -286,7 +347,12 @@ export class IndexService {
     root: string
     priority: IndexPriority
     signal: AbortSignal
-    emit: (event: { type: "index_progress"; stage: string; filesScanned: number; filesTotal: number }) => void
+    emit: (event: {
+      type: "index_progress"
+      stage: string
+      filesScanned: number
+      filesTotal: number
+    }) => void
   }): Promise<void> {
     const dirty = listFilesByStage(ctx.workspaceId, "file_map")
     const total = dirty.length
@@ -313,11 +379,21 @@ export class IndexService {
       setIndexedStage(file.id, "symbols")
       done++
       if (done % BATCH_SIZE === 0) {
-        ctx.emit({ type: "index_progress", stage: "symbols", filesScanned: done, filesTotal: total })
+        ctx.emit({
+          type: "index_progress",
+          stage: "symbols",
+          filesScanned: done,
+          filesTotal: total,
+        })
         await sleep(BATCH_DELAY_MS[ctx.priority])
       }
     }
-    ctx.emit({ type: "index_progress", stage: "symbols", filesScanned: done, filesTotal: total })
+    ctx.emit({
+      type: "index_progress",
+      stage: "symbols",
+      filesScanned: done,
+      filesTotal: total,
+    })
   }
 
   private throwIfAborted(signal: AbortSignal): void {

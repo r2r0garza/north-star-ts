@@ -2,7 +2,12 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest"
 import { mkdtemp, rm, writeFile, mkdir } from "fs/promises"
 import { tmpdir } from "os"
 import { join } from "path"
-import { walkFiles, loadGitignore, isBinaryBuffer, DEFAULT_SKIP_DIRS } from "./walk"
+import {
+  walkFiles,
+  loadGitignore,
+  isBinaryBuffer,
+  DEFAULT_SKIP_DIRS,
+} from "./walk"
 
 let root: string
 
@@ -13,7 +18,9 @@ afterEach(async () => {
   await rm(root, { recursive: true, force: true })
 })
 
-async function collect(opts: Parameters<typeof walkFiles>[0]): Promise<string[]> {
+async function collect(
+  opts: Parameters<typeof walkFiles>[0]
+): Promise<string[]> {
   const out: string[] = []
   for await (const f of walkFiles(opts)) out.push(f.relPath)
   return out.sort()
@@ -34,7 +41,11 @@ describe("walkFiles", () => {
     await mkdir(join(root, ".git"))
     await writeFile(join(root, ".git", "HEAD"), "ref")
     await writeFile(join(root, "keep.ts"), "x")
-    const rels = await collect({ root, skipDirs: DEFAULT_SKIP_DIRS, maxFileBytes: 1e6 })
+    const rels = await collect({
+      root,
+      skipDirs: DEFAULT_SKIP_DIRS,
+      maxFileBytes: 1e6,
+    })
     expect(rels).toEqual(["keep.ts"])
   })
 

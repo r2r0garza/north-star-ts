@@ -20,7 +20,10 @@ beforeEach(() => {
 
 describe("settings service — defaults (back-compat)", () => {
   it("permissions default to auto/auto", () => {
-    expect(service.getPermissions()).toEqual({ file_write: "auto", file_edit: "auto" })
+    expect(service.getPermissions()).toEqual({
+      file_write: "auto",
+      file_edit: "auto",
+    })
   })
 
   it("execution defaults to local with sandbox off", () => {
@@ -70,21 +73,30 @@ describe("settings service — persisted overrides", () => {
   })
 
   it("setPermissions round-trips and is read back", () => {
-    service.setPermissions({ file_write: "require_approval", file_edit: "auto" })
+    service.setPermissions({
+      file_write: "require_approval",
+      file_edit: "auto",
+    })
     expect(service.getPermissions().file_write).toBe("require_approval")
   })
 })
 
 describe("settings service — llm selection", () => {
   it("defaults to no active account/model", () => {
-    expect(service.getLlm()).toEqual({ activeAccountId: null, activeModelId: null })
+    expect(service.getLlm()).toEqual({
+      activeAccountId: null,
+      activeModelId: null,
+    })
   })
 
   it("round-trips the active selection and fires the change listener", () => {
     let fired = 0
     service.setLlmChangeListener(() => fired++)
     service.setLlm({ activeAccountId: "acc-1", activeModelId: "model-1" })
-    expect(service.getLlm()).toEqual({ activeAccountId: "acc-1", activeModelId: "model-1" })
+    expect(service.getLlm()).toEqual({
+      activeAccountId: "acc-1",
+      activeModelId: "model-1",
+    })
     expect(fired).toBe(1)
   })
 })
@@ -108,7 +120,10 @@ describe("settings service — sandboxAutoApproves", () => {
       sandbox: {
         autoApprove: true,
         prompted: true,
-        categories: { workspace_mutation: true, destructive_fs: false } as never,
+        categories: {
+          workspace_mutation: true,
+          destructive_fs: false,
+        } as never,
       },
     })
     expect(service.sandboxAutoApproves("workspace_mutation")).toBe(true)

@@ -47,11 +47,17 @@ export function TaskTranscriptSheet({
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent side="right" className="flex w-[min(90vw,40rem)] flex-col gap-0 p-0 sm:max-w-none">
+      <SheetContent
+        side="right"
+        className="flex w-[min(90vw,40rem)] flex-col gap-0 p-0 sm:max-w-none"
+      >
         <SheetHeader className="border-b">
-          <SheetTitle className="truncate">{task?.title ?? "Task transcript"}</SheetTitle>
+          <SheetTitle className="truncate">
+            {task?.title ?? "Task transcript"}
+          </SheetTitle>
           <SheetDescription>
-            Read-only transcript of this background task{task ? ` — ${task.status}` : ""}.
+            Read-only transcript of this background task
+            {task ? ` — ${task.status}` : ""}.
           </SheetDescription>
         </SheetHeader>
         <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-auto px-4 py-4">
@@ -72,9 +78,14 @@ export function TaskTranscriptSheet({
               return (
                 <Message key={item.key} align={align}>
                   <MessageContent>
-                    <Bubble align={align} variant={item.role === "user" ? "default" : "muted"}>
+                    <Bubble
+                      align={align}
+                      variant={item.role === "user" ? "default" : "muted"}
+                    >
                       <BubbleContent
-                        className={cn(item.role === "user" && "whitespace-pre-wrap")}
+                        className={cn(
+                          item.role === "user" && "whitespace-pre-wrap"
+                        )}
                       >
                         {item.role === "assistant" ? (
                           <Markdown content={item.content} />

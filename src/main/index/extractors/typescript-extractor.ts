@@ -1,7 +1,21 @@
 import ts from "typescript"
-import type { Extractor, ExtractableFile, ExtractedDocument, ExtractedSymbol } from "./types"
+import type {
+  Extractor,
+  ExtractableFile,
+  ExtractedDocument,
+  ExtractedSymbol,
+} from "./types"
 
-const TS_EXTS = new Set([".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"])
+const TS_EXTS = new Set([
+  ".ts",
+  ".tsx",
+  ".mts",
+  ".cts",
+  ".js",
+  ".jsx",
+  ".mjs",
+  ".cjs",
+])
 
 // Extracts declarations + imports from TS/JS via the TypeScript compiler API
 // (ts.createSourceFile → AST). No type-checking, no program/host — a single-file
@@ -30,7 +44,10 @@ export const typeScriptExtractor: Extractor = {
 
     const isExported = (node: ts.Node): boolean =>
       ts.canHaveModifiers(node) &&
-      (ts.getModifiers(node)?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword) ?? false)
+      (ts
+        .getModifiers(node)
+        ?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword) ??
+        false)
 
     // Only walk top-level statements + one level into namespaces/exported blocks.
     // A full recursive walk would surface every local const; the index wants the
@@ -106,7 +123,11 @@ export const typeScriptExtractor: Extractor = {
 // An import declaration → one `import` symbol per bound name, all tagged with the
 // source module so the query tool can answer "what imports X". Named after the
 // module when there are no bindings (bare `import "x"`).
-function collectImport(node: ts.ImportDeclaration, out: ExtractedSymbol[], line: number): void {
+function collectImport(
+  node: ts.ImportDeclaration,
+  out: ExtractedSymbol[],
+  line: number
+): void {
   if (!ts.isStringLiteral(node.moduleSpecifier)) return
   const module = node.moduleSpecifier.text
   const clause = node.importClause

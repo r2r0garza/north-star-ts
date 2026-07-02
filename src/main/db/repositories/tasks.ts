@@ -62,9 +62,9 @@ export function createTask(input: {
 }
 
 export function getTask(id: string): Task | undefined {
-  const row = getDb()
-    .prepare("SELECT * FROM tasks WHERE id = ?")
-    .get(id) as TaskRow | undefined
+  const row = getDb().prepare("SELECT * FROM tasks WHERE id = ?").get(id) as
+    | TaskRow
+    | undefined
   return row ? toTask(row) : undefined
 }
 
@@ -124,7 +124,9 @@ export function updateTask(
   if (sets.length > 0) {
     sets.push("updated_at = ?")
     values.push(Date.now(), id)
-    getDb().prepare(`UPDATE tasks SET ${sets.join(", ")} WHERE id = ?`).run(...values)
+    getDb()
+      .prepare(`UPDATE tasks SET ${sets.join(", ")} WHERE id = ?`)
+      .run(...values)
   }
   return getTask(id)!
 }

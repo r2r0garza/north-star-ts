@@ -3,7 +3,12 @@ import type { TaskRunner, TaskEventPayload } from "../tasks/runner"
 import { resolveApproval, resolveQuestion } from "../agent"
 import type { QuestionAnswer } from "../agent/tools/types"
 import { listTodos } from "../db/repositories/todos"
-import { TODO_RUN_KICKOFF, actionableTodos, todoRunTitle, todoSeed } from "../tasks/todo-run"
+import {
+  TODO_RUN_KICKOFF,
+  actionableTodos,
+  todoRunTitle,
+  todoSeed,
+} from "../tasks/todo-run"
 
 // Registers the durable task-runner control channels and the live event tail.
 // The CRUD over the task tables already lives on the `db:tasks:*` / `db:taskEvents:*`
@@ -15,8 +20,15 @@ export function registerTaskHandlers(runner: TaskRunner): void {
   // renderer can track it.
   ipcMain.handle(
     "task:start",
-    (_e, input: { conversationId: string; message: string; kind?: string; title?: string | null }) =>
-      runner.enqueue(input)
+    (
+      _e,
+      input: {
+        conversationId: string
+        message: string
+        kind?: string
+        title?: string | null
+      }
+    ) => runner.enqueue(input)
   )
   // Hand the conversation's todo list off to a background task (plan 016, the
   // user-triggered "Run all in background" button). Snapshots the list HERE
@@ -53,9 +65,16 @@ export function registerTaskHandlers(runner: TaskRunner): void {
   // row, so they just markRunning.
   ipcMain.handle(
     "task:approve",
-    (_e, payload: { taskId: string; requestId: string; remember?: "workspace" }) => {
+    (
+      _e,
+      payload: { taskId: string; requestId: string; remember?: "workspace" }
+    ) => {
       resolveApproval(payload.requestId, "approved", payload.remember)
-      runner.recordApprovalDecision(payload.taskId, payload.requestId, "approved")
+      runner.recordApprovalDecision(
+        payload.taskId,
+        payload.requestId,
+        "approved"
+      )
     }
   )
   ipcMain.handle(
@@ -67,7 +86,10 @@ export function registerTaskHandlers(runner: TaskRunner): void {
   )
   ipcMain.handle(
     "task:answer",
-    (_e, payload: { taskId: string; requestId: string; answers: QuestionAnswer[] }) => {
+    (
+      _e,
+      payload: { taskId: string; requestId: string; answers: QuestionAnswer[] }
+    ) => {
       resolveQuestion(payload.requestId, payload.answers)
       runner.markRunning(payload.taskId)
     }

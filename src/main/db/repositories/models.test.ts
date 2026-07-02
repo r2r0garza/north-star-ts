@@ -61,17 +61,24 @@ describe.skipIf(!sqliteLoads)("models repo", () => {
   })
 
   it("merges gateway ids without clobbering existing rows", () => {
-    addModel({ accountId, modelId: "manual-1", modelName: "Mine", origin: "manual" })
+    addModel({
+      accountId,
+      modelId: "manual-1",
+      modelName: "Mine",
+      origin: "manual",
+    })
     mergeGatewayModels(accountId, ["manual-1", "gw-1", "gw-2"])
     const models = listModels(accountId)
     // manual-1 kept its custom name + manual origin; two new gateway rows added.
     const manual = models.find((m) => m.modelId === "manual-1")!
     expect(manual.origin).toBe("manual")
     expect(manual.modelName).toBe("Mine")
-    expect(models.filter((m) => m.origin === "gateway").map((m) => m.modelId).sort()).toEqual([
-      "gw-1",
-      "gw-2",
-    ])
+    expect(
+      models
+        .filter((m) => m.origin === "gateway")
+        .map((m) => m.modelId)
+        .sort()
+    ).toEqual(["gw-1", "gw-2"])
   })
 
   it("a second merge dedupes already-imported gateway ids", () => {

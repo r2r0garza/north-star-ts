@@ -50,7 +50,10 @@ async function settle(timeoutMs = 1000): Promise<void> {
   const start = Date.now()
   while (Date.now() - start < timeoutMs) {
     await new Promise((r) => setTimeout(r, 5))
-    const pending = [...listTasks({ status: "queued" }), ...listTasks({ status: "running" })]
+    const pending = [
+      ...listTasks({ status: "queued" }),
+      ...listTasks({ status: "running" }),
+    ]
     if (pending.length === 0) return
   }
 }
@@ -86,99 +89,106 @@ describe.skipIf(!sqliteLoads)("TaskRunner — reconcile on start", () => {
   })
 })
 
-describe.skipIf(!sqliteLoads)("TaskRunner — registerKind (producer auto-resume opt-in)", () => {
-  it("auto-resumes an orphaned running task of a registered auto-resume kind", async () => {
-    const conv = createConversation({ mode: "chat" })
-    const task = createTask({
-      conversationId: conv.id,
-      status: "running",
-      input: { kind: "auto_kind", message: "reindex" },
+describe.skipIf(!sqliteLoads)(
+  "TaskRunner — registerKind (producer auto-resume opt-in)",
+  () => {
+    it("auto-resumes an orphaned running task of a registered auto-resume kind", async () => {
+      const conv = createConversation({ mode: "chat" })
+      const task = createTask({
+        conversationId: conv.id,
+        status: "running",
+        input: { kind: "auto_kind", message: "reindex" },
+      })
+
+      const runner = new TaskRunner()
+      // A background producer opts its kind into auto-resume BEFORE start().
+      runner.registerKind("auto_kind", { autoResume: true })
+      runner.start()
+      await settle()
+
+      // reconcile re-queued it (autoResume) instead of interrupting; the pump ran it.
+      expect(getTask(task.id)?.status).toBe("completed")
+      expect(loopCalls).toHaveLength(1)
+      await runner.stop()
     })
 
-    const runner = new TaskRunner()
-    // A background producer opts its kind into auto-resume BEFORE start().
-    runner.registerKind("auto_kind", { autoResume: true })
-    runner.start()
-    await settle()
+    it("auto-resumes an orphaned waiting_for_approval task and denies its stale row", async () => {
+      const conv = createConversation({ mode: "chat" })
+      const task = createTask({
+        conversationId: conv.id,
+        status: "waiting_for_approval",
+        input: { kind: "auto_kind", message: "reindex" },
+      })
+      createApproval({ taskId: task.id, request: { requestId: "req-1" } })
 
-    // reconcile re-queued it (autoResume) instead of interrupting; the pump ran it.
-    expect(getTask(task.id)?.status).toBe("completed")
-    expect(loopCalls).toHaveLength(1)
-    await runner.stop()
-  })
+      const runner = new TaskRunner()
+      runner.registerKind("auto_kind", { autoResume: true })
+      runner.start()
+      await settle()
 
-  it("auto-resumes an orphaned waiting_for_approval task and denies its stale row", async () => {
-    const conv = createConversation({ mode: "chat" })
-    const task = createTask({
-      conversationId: conv.id,
-      status: "waiting_for_approval",
-      input: { kind: "auto_kind", message: "reindex" },
+      // The stale gate is swept (denied/superseded restart), then the task
+      // re-queues and runs — not left interrupted.
+      expect(getTask(task.id)?.status).toBe("completed")
+      expect(loopCalls).toHaveLength(1)
+      const rows = listApprovals({ taskId: task.id })
+      expect(rows).toHaveLength(1)
+      expect(rows[0].status).toBe("denied")
+      expect((rows[0].decision as { superseded: string }).superseded).toBe(
+        "restart"
+      )
+      await runner.stop()
     })
-    createApproval({ taskId: task.id, request: { requestId: "req-1" } })
 
-    const runner = new TaskRunner()
-    runner.registerKind("auto_kind", { autoResume: true })
-    runner.start()
-    await settle()
+    it("still interrupts an orphaned task of an UNregistered kind", async () => {
+      const conv = createConversation({ mode: "chat" })
+      const task = createTask({
+        conversationId: conv.id,
+        status: "running",
+        input: { kind: "never_registered", message: "x" },
+      })
+      loopImpl = async () => ({ content: "should not run" })
 
-    // The stale gate is swept (denied/superseded restart), then the task
-    // re-queues and runs — not left interrupted.
-    expect(getTask(task.id)?.status).toBe("completed")
-    expect(loopCalls).toHaveLength(1)
-    const rows = listApprovals({ taskId: task.id })
-    expect(rows).toHaveLength(1)
-    expect(rows[0].status).toBe("denied")
-    expect((rows[0].decision as { superseded: string }).superseded).toBe("restart")
-    await runner.stop()
-  })
+      const runner = new TaskRunner()
+      runner.start()
+      await settle()
 
-  it("still interrupts an orphaned task of an UNregistered kind", async () => {
-    const conv = createConversation({ mode: "chat" })
-    const task = createTask({
-      conversationId: conv.id,
-      status: "running",
-      input: { kind: "never_registered", message: "x" },
+      expect(getTask(task.id)?.status).toBe("interrupted")
+      expect(loopCalls).toHaveLength(0)
+      await runner.stop()
     })
-    loopImpl = async () => ({ content: "should not run" })
 
-    const runner = new TaskRunner()
-    runner.start()
-    await settle()
+    it("enqueues a custom kind with a non-existent conversationId and still runs headless", async () => {
+      const runner = new TaskRunner()
+      runner.registerKind("auto_kind", { autoResume: true })
+      runner.start()
 
-    expect(getTask(task.id)?.status).toBe("interrupted")
-    expect(loopCalls).toHaveLength(0)
-    await runner.stop()
-  })
+      // No subscriber attached, and the source conversation does not exist: enqueue
+      // must still fork a valid private worker conversation and drive the loop.
+      const task = runner.enqueue({
+        conversationId: "does-not-exist",
+        message: "headless work",
+        kind: "auto_kind",
+      })
+      await settle()
 
-  it("enqueues a custom kind with a non-existent conversationId and still runs headless", async () => {
-    const runner = new TaskRunner()
-    runner.registerKind("auto_kind", { autoResume: true })
-    runner.start()
-
-    // No subscriber attached, and the source conversation does not exist: enqueue
-    // must still fork a valid private worker conversation and drive the loop.
-    const task = runner.enqueue({
-      conversationId: "does-not-exist",
-      message: "headless work",
-      kind: "auto_kind",
+      const finished = getTask(task.id)!
+      expect(finished.status).toBe("completed")
+      // No live source to link back to: not the bogus id. createTask treats a null
+      // source as self-sourced (points at the task's own forked worker conversation),
+      // which keeps the source_conversation_id FK satisfied.
+      expect(finished.sourceConversationId).not.toBe("does-not-exist")
+      expect(finished.sourceConversationId).toBe(finished.conversationId)
+      expect(finished.conversationId).not.toBe("does-not-exist")
+      // The user message landed in the forked private transcript.
+      expect(
+        listMessages(finished.conversationId).map((m) => m.content)
+      ).toContain("headless work")
+      expect(loopCalls).toHaveLength(1)
+      expect(loopCalls[0].conversationId).toBe(finished.conversationId)
+      await runner.stop()
     })
-    await settle()
-
-    const finished = getTask(task.id)!
-    expect(finished.status).toBe("completed")
-    // No live source to link back to: not the bogus id. createTask treats a null
-    // source as self-sourced (points at the task's own forked worker conversation),
-    // which keeps the source_conversation_id FK satisfied.
-    expect(finished.sourceConversationId).not.toBe("does-not-exist")
-    expect(finished.sourceConversationId).toBe(finished.conversationId)
-    expect(finished.conversationId).not.toBe("does-not-exist")
-    // The user message landed in the forked private transcript.
-    expect(listMessages(finished.conversationId).map((m) => m.content)).toContain("headless work")
-    expect(loopCalls).toHaveLength(1)
-    expect(loopCalls[0].conversationId).toBe(finished.conversationId)
-    await runner.stop()
-  })
-})
+  }
+)
 
 describe.skipIf(!sqliteLoads)("TaskRunner — todo_run seed (plan 016)", () => {
   it("seeds the handed-off todo list into the forked worker conversation", async () => {
@@ -240,7 +250,10 @@ describe.skipIf(!sqliteLoads)("TaskRunner — enqueue + run", () => {
     const runner = new TaskRunner()
     runner.start()
 
-    const task = runner.enqueue({ conversationId: conv.id, message: "do the thing" })
+    const task = runner.enqueue({
+      conversationId: conv.id,
+      message: "do the thing",
+    })
     await settle()
 
     const finished = getTask(task.id)!
@@ -312,7 +325,11 @@ describe.skipIf(!sqliteLoads)("TaskRunner — enqueue + run", () => {
 
     const task = runner.enqueue({ conversationId: conv.id, message: "go" })
     // Wait for the gate event to flip status (poll briefly).
-    for (let i = 0; i < 50 && getTask(task.id)?.status !== "waiting_for_approval"; i++) {
+    for (
+      let i = 0;
+      i < 50 && getTask(task.id)?.status !== "waiting_for_approval";
+      i++
+    ) {
       await new Promise((r) => setTimeout(r, 5))
     }
     expect(getTask(task.id)?.status).toBe("waiting_for_approval")
@@ -327,435 +344,491 @@ describe.skipIf(!sqliteLoads)("TaskRunner — enqueue + run", () => {
   })
 })
 
-describe.skipIf(!sqliteLoads)("TaskRunner — durable approval recovery (plan 012)", () => {
-  // Drive a task until the loop emits an approval gate and blocks. Returns the
-  // task, its release fn (resolves the blocked loop), and the runner.
-  async function enqueueBlockedOnApproval(requestId = "req-1") {
-    const conv = createConversation({ mode: "chat" })
-    const runner = new TaskRunner()
-    runner.start()
+describe.skipIf(!sqliteLoads)(
+  "TaskRunner — durable approval recovery (plan 012)",
+  () => {
+    // Drive a task until the loop emits an approval gate and blocks. Returns the
+    // task, its release fn (resolves the blocked loop), and the runner.
+    async function enqueueBlockedOnApproval(requestId = "req-1") {
+      const conv = createConversation({ mode: "chat" })
+      const runner = new TaskRunner()
+      runner.start()
 
-    let release: () => void
-    const blocked = new Promise<void>((r) => {
-      release = r
-    })
-    loopImpl = async (opts) => {
-      opts.onEvent?.({
-        type: "approval",
-        id: "call-1",
-        requestId,
-        tool: "run_shell",
-        summary: "rm -rf build",
-        reason: "destructive",
+      let release: () => void
+      const blocked = new Promise<void>((r) => {
+        release = r
       })
-      await blocked
-      return { content: "done" }
-    }
-
-    const task = runner.enqueue({ conversationId: conv.id, message: "go" })
-    for (let i = 0; i < 50 && getTask(task.id)?.status !== "waiting_for_approval"; i++) {
-      await new Promise((r) => setTimeout(r, 5))
-    }
-    return { task, release: release!, runner }
-  }
-
-  it("writes a pending approval row when the loop emits a gate", async () => {
-    const { task, release, runner } = await enqueueBlockedOnApproval()
-
-    const pending = listApprovals({ taskId: task.id, status: "pending" })
-    expect(pending).toHaveLength(1)
-    expect((pending[0].request as { requestId: string }).requestId).toBe("req-1")
-    expect((pending[0].request as { tool: string }).tool).toBe("run_shell")
-
-    release()
-    await settle()
-    await runner.stop()
-  })
-
-  it("resolves the row approved and flips to running on recordApprovalDecision", async () => {
-    const { task, release, runner } = await enqueueBlockedOnApproval()
-
-    runner.recordApprovalDecision(task.id, "req-1", "approved")
-    expect(getTask(task.id)?.status).toBe("running")
-
-    const resolved = listApprovals({ taskId: task.id })
-    expect(resolved).toHaveLength(1)
-    expect(resolved[0].status).toBe("approved")
-    expect(resolved[0].resolvedAt).not.toBeNull()
-    expect(listApprovals({ taskId: task.id, status: "pending" })).toHaveLength(0)
-
-    release()
-    await settle()
-    expect(getTask(task.id)?.status).toBe("completed")
-    await runner.stop()
-  })
-
-  it("only resolves the row matching the requestId", async () => {
-    const { task, release, runner } = await enqueueBlockedOnApproval("req-1")
-    // A second, unrelated pending row (e.g. one re-created on a prior resume).
-    createApproval({ taskId: task.id, request: { requestId: "stale" } })
-
-    runner.recordApprovalDecision(task.id, "req-1", "approved")
-
-    const stillPending = listApprovals({ taskId: task.id, status: "pending" })
-    expect(stillPending).toHaveLength(1)
-    expect((stillPending[0].request as { requestId: string }).requestId).toBe("stale")
-
-    release()
-    await settle()
-    await runner.stop()
-  })
-
-  it("on shutdown, aborts the gate with the shutdown reason and leaves it unresolved", async () => {
-    const conv = createConversation({ mode: "chat" })
-    const runner = new TaskRunner()
-    runner.start()
-
-    // Model the real agent loop's gate: on abort it resolves "denied" UNLESS the
-    // abort is a shutdown, in which case it stays parked (no tool result). This
-    // is the exact behavior the fix added to agent/index.ts.
-    let capturedSignal: AbortSignal | undefined
-    let deniedByAbort = false
-    loopImpl = async (opts) => {
-      capturedSignal = opts.abort.signal
-      opts.onEvent?.({
-        type: "approval",
-        id: "call-1",
-        requestId: "req-1",
-        tool: "run_shell",
-        summary: "rm -rf build",
-        reason: "destructive",
-      })
-      await new Promise<void>((resolve) => {
-        opts.abort.signal.addEventListener("abort", () => {
-          if (opts.abort.signal.reason === SHUTDOWN_ABORT_REASON) return // stay parked
-          deniedByAbort = true
-          resolve()
+      loopImpl = async (opts) => {
+        opts.onEvent?.({
+          type: "approval",
+          id: "call-1",
+          requestId,
+          tool: "run_shell",
+          summary: "rm -rf build",
+          reason: "destructive",
         })
-      })
-      return { content: "done" }
+        await blocked
+        return { content: "done" }
+      }
+
+      const task = runner.enqueue({ conversationId: conv.id, message: "go" })
+      for (
+        let i = 0;
+        i < 50 && getTask(task.id)?.status !== "waiting_for_approval";
+        i++
+      ) {
+        await new Promise((r) => setTimeout(r, 5))
+      }
+      return { task, release: release!, runner }
     }
 
-    const task = runner.enqueue({ conversationId: conv.id, message: "go" })
-    for (let i = 0; i < 50 && getTask(task.id)?.status !== "waiting_for_approval"; i++) {
-      await new Promise((r) => setTimeout(r, 5))
-    }
-    expect(getTask(task.id)?.status).toBe("waiting_for_approval")
+    it("writes a pending approval row when the loop emits a gate", async () => {
+      const { task, release, runner } = await enqueueBlockedOnApproval()
 
-    await runner.stop()
+      const pending = listApprovals({ taskId: task.id, status: "pending" })
+      expect(pending).toHaveLength(1)
+      expect((pending[0].request as { requestId: string }).requestId).toBe(
+        "req-1"
+      )
+      expect((pending[0].request as { tool: string }).tool).toBe("run_shell")
 
-    // The gate saw a shutdown abort and did NOT fabricate a denial: the loop is
-    // still parked, the task is still waiting_for_approval, and its pending
-    // approval row survives for the next boot's reconcile to interrupt.
-    expect(capturedSignal?.reason).toBe(SHUTDOWN_ABORT_REASON)
-    expect(deniedByAbort).toBe(false)
-    expect(getTask(task.id)?.status).toBe("waiting_for_approval")
-    expect(listApprovals({ taskId: task.id, status: "pending" })).toHaveLength(1)
-  })
-
-  it("on reconcile, denies a stale pending row and interrupts the task", async () => {
-    const conv = createConversation({ mode: "chat" })
-    const task = createTask({
-      conversationId: conv.id,
-      status: "waiting_for_approval",
-      input: { kind: "agent_chat", message: "hi" },
+      release()
+      await settle()
+      await runner.stop()
     })
-    createApproval({ taskId: task.id, request: { requestId: "req-1" } })
-    loopImpl = async () => ({ content: "should not run" })
 
-    const runner = new TaskRunner()
-    runner.start()
-    await settle()
+    it("resolves the row approved and flips to running on recordApprovalDecision", async () => {
+      const { task, release, runner } = await enqueueBlockedOnApproval()
 
-    expect(getTask(task.id)?.status).toBe("interrupted")
-    const rows = listApprovals({ taskId: task.id })
-    expect(rows).toHaveLength(1)
-    expect(rows[0].status).toBe("denied")
-    expect((rows[0].decision as { superseded: string }).superseded).toBe("restart")
-    expect(loopCalls).toHaveLength(0)
-    await runner.stop()
-  })
-})
+      runner.recordApprovalDecision(task.id, "req-1", "approved")
+      expect(getTask(task.id)?.status).toBe("running")
+
+      const resolved = listApprovals({ taskId: task.id })
+      expect(resolved).toHaveLength(1)
+      expect(resolved[0].status).toBe("approved")
+      expect(resolved[0].resolvedAt).not.toBeNull()
+      expect(
+        listApprovals({ taskId: task.id, status: "pending" })
+      ).toHaveLength(0)
+
+      release()
+      await settle()
+      expect(getTask(task.id)?.status).toBe("completed")
+      await runner.stop()
+    })
+
+    it("only resolves the row matching the requestId", async () => {
+      const { task, release, runner } = await enqueueBlockedOnApproval("req-1")
+      // A second, unrelated pending row (e.g. one re-created on a prior resume).
+      createApproval({ taskId: task.id, request: { requestId: "stale" } })
+
+      runner.recordApprovalDecision(task.id, "req-1", "approved")
+
+      const stillPending = listApprovals({ taskId: task.id, status: "pending" })
+      expect(stillPending).toHaveLength(1)
+      expect((stillPending[0].request as { requestId: string }).requestId).toBe(
+        "stale"
+      )
+
+      release()
+      await settle()
+      await runner.stop()
+    })
+
+    it("on shutdown, aborts the gate with the shutdown reason and leaves it unresolved", async () => {
+      const conv = createConversation({ mode: "chat" })
+      const runner = new TaskRunner()
+      runner.start()
+
+      // Model the real agent loop's gate: on abort it resolves "denied" UNLESS the
+      // abort is a shutdown, in which case it stays parked (no tool result). This
+      // is the exact behavior the fix added to agent/index.ts.
+      let capturedSignal: AbortSignal | undefined
+      let deniedByAbort = false
+      loopImpl = async (opts) => {
+        capturedSignal = opts.abort.signal
+        opts.onEvent?.({
+          type: "approval",
+          id: "call-1",
+          requestId: "req-1",
+          tool: "run_shell",
+          summary: "rm -rf build",
+          reason: "destructive",
+        })
+        await new Promise<void>((resolve) => {
+          opts.abort.signal.addEventListener("abort", () => {
+            if (opts.abort.signal.reason === SHUTDOWN_ABORT_REASON) return // stay parked
+            deniedByAbort = true
+            resolve()
+          })
+        })
+        return { content: "done" }
+      }
+
+      const task = runner.enqueue({ conversationId: conv.id, message: "go" })
+      for (
+        let i = 0;
+        i < 50 && getTask(task.id)?.status !== "waiting_for_approval";
+        i++
+      ) {
+        await new Promise((r) => setTimeout(r, 5))
+      }
+      expect(getTask(task.id)?.status).toBe("waiting_for_approval")
+
+      await runner.stop()
+
+      // The gate saw a shutdown abort and did NOT fabricate a denial: the loop is
+      // still parked, the task is still waiting_for_approval, and its pending
+      // approval row survives for the next boot's reconcile to interrupt.
+      expect(capturedSignal?.reason).toBe(SHUTDOWN_ABORT_REASON)
+      expect(deniedByAbort).toBe(false)
+      expect(getTask(task.id)?.status).toBe("waiting_for_approval")
+      expect(
+        listApprovals({ taskId: task.id, status: "pending" })
+      ).toHaveLength(1)
+    })
+
+    it("on reconcile, denies a stale pending row and interrupts the task", async () => {
+      const conv = createConversation({ mode: "chat" })
+      const task = createTask({
+        conversationId: conv.id,
+        status: "waiting_for_approval",
+        input: { kind: "agent_chat", message: "hi" },
+      })
+      createApproval({ taskId: task.id, request: { requestId: "req-1" } })
+      loopImpl = async () => ({ content: "should not run" })
+
+      const runner = new TaskRunner()
+      runner.start()
+      await settle()
+
+      expect(getTask(task.id)?.status).toBe("interrupted")
+      const rows = listApprovals({ taskId: task.id })
+      expect(rows).toHaveLength(1)
+      expect(rows[0].status).toBe("denied")
+      expect((rows[0].decision as { superseded: string }).superseded).toBe(
+        "restart"
+      )
+      expect(loopCalls).toHaveLength(0)
+      await runner.stop()
+    })
+  }
+)
 
 // Dangling tool-call repair moved out of the runner into runAgentLoop (shared by
 // the live chat path too) — see repair.test.ts. The runner test mocks
 // runAgentLoop, so repair is exercised there against a real DB instead.
 
-describe.skipIf(!sqliteLoads)("TaskRunner — transient retry with backoff", () => {
-  // Tiny delays so backoff completes within a test tick; 3 total attempts.
-  const fastBackoff = { baseMs: 1, maxMs: 2, maxAttempts: 3 }
+describe.skipIf(!sqliteLoads)(
+  "TaskRunner — transient retry with backoff",
+  () => {
+    // Tiny delays so backoff completes within a test tick; 3 total attempts.
+    const fastBackoff = { baseMs: 1, maxMs: 2, maxAttempts: 3 }
 
-  it("retries a transient failure and completes on the next attempt", async () => {
-    const conv = createConversation({ mode: "chat" })
-    let call = 0
-    loopImpl = async () => {
-      call++
-      return call === 1 ? { error: "gateway 502", retryable: true } : { content: "done" }
-    }
-
-    const runner = new TaskRunner({ backoff: fastBackoff })
-    runner.start()
-    const task = runner.enqueue({ conversationId: conv.id, message: "go" })
-    await settle()
-
-    expect(getTask(task.id)?.status).toBe("completed")
-    expect(loopCalls).toHaveLength(2)
-    const events = listEvents(task.id)
-    const attempts = events.filter((e) => e.type === "attempt")
-    expect(attempts).toHaveLength(1)
-    expect((attempts[0].payload as { n: number }).n).toBe(1)
-    await runner.stop()
-  })
-
-  it("fails after exhausting the attempt budget", async () => {
-    const conv = createConversation({ mode: "chat" })
-    loopImpl = async () => ({ error: "still 503", retryable: true })
-
-    const runner = new TaskRunner({ backoff: fastBackoff })
-    runner.start()
-    const task = runner.enqueue({ conversationId: conv.id, message: "go" })
-    await settle()
-
-    expect(getTask(task.id)?.status).toBe("failed")
-    expect(getTask(task.id)?.error).toBe("still 503")
-    // maxAttempts total runs, maxAttempts-1 attempt events, one terminal failure.
-    expect(loopCalls).toHaveLength(fastBackoff.maxAttempts)
-    const types = listEvents(task.id).map((e) => e.type)
-    expect(types.filter((t) => t === "attempt")).toHaveLength(fastBackoff.maxAttempts - 1)
-    expect(types.filter((t) => t === "task_failed")).toHaveLength(1)
-    await runner.stop()
-  })
-
-  it("does not retry a deterministic failure", async () => {
-    const conv = createConversation({ mode: "chat" })
-    loopImpl = async () => ({ error: "bad args", retryable: false })
-
-    const runner = new TaskRunner({ backoff: fastBackoff })
-    runner.start()
-    const task = runner.enqueue({ conversationId: conv.id, message: "go" })
-    await settle()
-
-    expect(getTask(task.id)?.status).toBe("failed")
-    expect(loopCalls).toHaveLength(1)
-    expect(listEvents(task.id).filter((e) => e.type === "attempt")).toHaveLength(0)
-    await runner.stop()
-  })
-
-  it("does not retry a user Stop", async () => {
-    const conv = createConversation({ mode: "chat" })
-    loopImpl = async () => ({ stopped: true })
-
-    const runner = new TaskRunner({ backoff: fastBackoff })
-    runner.start()
-    const task = runner.enqueue({ conversationId: conv.id, message: "go" })
-    await settle()
-
-    expect(getTask(task.id)?.status).toBe("cancelled")
-    expect(loopCalls).toHaveLength(1)
-    await runner.stop()
-  })
-
-  it("cancel during backoff clears the timer and settles cancelled", async () => {
-    const conv = createConversation({ mode: "chat" })
-    loopImpl = async () => ({ error: "502", retryable: true })
-
-    // Long backoff so the task is reliably mid-sleep when we cancel it.
-    const runner = new TaskRunner({ backoff: { baseMs: 10_000, maxMs: 10_000, maxAttempts: 3 } })
-    runner.start()
-    const task = runner.enqueue({ conversationId: conv.id, message: "go" })
-
-    // Wait for the first run to fail and arm the backoff timer.
-    for (let i = 0; i < 50 && loopCalls.length < 1; i++) {
-      await new Promise((r) => setTimeout(r, 5))
-    }
-    expect(loopCalls).toHaveLength(1)
-
-    runner.cancel(task.id)
-    expect(getTask(task.id)?.status).toBe("cancelled")
-
-    // Give the (cleared) timer a chance to wrongly fire — it must not re-run.
-    await new Promise((r) => setTimeout(r, 30))
-    expect(loopCalls).toHaveLength(1)
-    await runner.stop()
-  })
-
-  it("stop during backoff prevents a re-run", async () => {
-    const conv = createConversation({ mode: "chat" })
-    loopImpl = async () => ({ error: "502", retryable: true })
-
-    const runner = new TaskRunner({ backoff: { baseMs: 10_000, maxMs: 10_000, maxAttempts: 3 } })
-    runner.start()
-    runner.enqueue({ conversationId: conv.id, message: "go" })
-
-    for (let i = 0; i < 50 && loopCalls.length < 1; i++) {
-      await new Promise((r) => setTimeout(r, 5))
-    }
-    expect(loopCalls).toHaveLength(1)
-
-    await runner.stop()
-    await new Promise((r) => setTimeout(r, 30))
-    expect(loopCalls).toHaveLength(1)
-  })
-
-  it("frees the concurrency slot during backoff so a sibling can run", async () => {
-    const convA = createConversation({ mode: "chat" })
-    const convB = createConversation({ mode: "chat" })
-    loopImpl = async (opts) => {
-      // Task A (convA) fails transiently once; task B always completes. With
-      // concurrency 1, B can only run if A's slot is freed during A's backoff.
-      const isA = listMessages(opts.conversationId).some((m) => m.content === "task-a")
-      if (isA) return { error: "502", retryable: true }
-      return { content: "b-done" }
-    }
-
-    const runner = new TaskRunner({ concurrency: 1, backoff: { baseMs: 20, maxMs: 20, maxAttempts: 3 } })
-    runner.start()
-    const a = runner.enqueue({ conversationId: convA.id, message: "task-a" })
-    const b = runner.enqueue({ conversationId: convB.id, message: "task-b" })
-    await settle()
-
-    expect(getTask(b.id)?.status).toBe("completed")
-    expect(getTask(a.id)?.status).toBe("failed")
-    await runner.stop()
-  })
-
-  it("never runs a same-conversation sibling concurrently across a backoff gap", async () => {
-    // Two tasks share one conversation (created directly — enqueue would fork a
-    // private conversation per task and they'd never collide). The first fails
-    // transiently then succeeds with a small in-loop delay; the second also
-    // delays. The per-conversation guard — extended to cover backing-off tasks —
-    // must keep them from ever executing at the same time on the shared log.
-    const conv = createConversation({ mode: "chat" })
-    appendMessage({ conversationId: conv.id, role: "user", content: "go" })
-    const t1 = createTask({
-      conversationId: conv.id,
-      status: "queued",
-      input: { kind: "agent_chat", message: "go" },
-    })
-    const t2 = createTask({
-      conversationId: conv.id,
-      status: "queued",
-      input: { kind: "agent_chat", message: "go" },
-    })
-
-    let active = 0
-    let maxActive = 0
-    let firstRun = true
-    loopImpl = async () => {
-      active++
-      maxActive = Math.max(maxActive, active)
-      await new Promise((r) => setTimeout(r, 10))
-      active--
-      if (firstRun) {
-        firstRun = false
-        return { error: "502", retryable: true }
+    it("retries a transient failure and completes on the next attempt", async () => {
+      const conv = createConversation({ mode: "chat" })
+      let call = 0
+      loopImpl = async () => {
+        call++
+        return call === 1
+          ? { error: "gateway 502", retryable: true }
+          : { content: "done" }
       }
-      return { content: "ok" }
-    }
 
-    const runner = new TaskRunner({ concurrency: 2, backoff: { baseMs: 15, maxMs: 15, maxAttempts: 3 } })
-    runner.start()
-    await settle()
+      const runner = new TaskRunner({ backoff: fastBackoff })
+      runner.start()
+      const task = runner.enqueue({ conversationId: conv.id, message: "go" })
+      await settle()
 
-    expect(maxActive).toBe(1)
-    expect(getTask(t1.id)?.status).toBe("completed")
-    expect(getTask(t2.id)?.status).toBe("completed")
-    await runner.stop()
-  })
-})
-
-describe.skipIf(!sqliteLoads)("TaskRunner — concurrent tasks under the cap", () => {
-  it("runs two tasks from one source to completion in their own transcripts", async () => {
-    const conv = createConversation({ mode: "chat" })
-    loopImpl = async () => {
-      await new Promise((r) => setTimeout(r, 10))
-      return { content: "done" }
-    }
-
-    const runner = new TaskRunner({ concurrency: 2 })
-    runner.start()
-    const a = runner.enqueue({ conversationId: conv.id, message: "first" })
-    const b = runner.enqueue({ conversationId: conv.id, message: "second" })
-    await settle()
-
-    // Each task forks its own private conversation, so there's no shared-log
-    // race — both run (concurrently under the cap) and complete.
-    expect(getTask(a.id)?.status).toBe("completed")
-    expect(getTask(b.id)?.status).toBe("completed")
-    expect(getTask(a.id)?.conversationId).not.toBe(getTask(b.id)?.conversationId)
-    expect(loopCalls).toHaveLength(2)
-    await runner.stop()
-  })
-})
-
-describe.skipIf(!sqliteLoads)("TaskRunner — deterministic executor seam (plan 008)", () => {
-  it("drives a kind's run executor instead of runAgentLoop", async () => {
-    let ran = false
-    const runner = new TaskRunner()
-    runner.registerKind("indexer", {
-      autoResume: true,
-      run: async () => {
-        ran = true
-        return { content: "indexed" }
-      },
+      expect(getTask(task.id)?.status).toBe("completed")
+      expect(loopCalls).toHaveLength(2)
+      const events = listEvents(task.id)
+      const attempts = events.filter((e) => e.type === "attempt")
+      expect(attempts).toHaveLength(1)
+      expect((attempts[0].payload as { n: number }).n).toBe(1)
+      await runner.stop()
     })
-    runner.start()
-    const task = runner.enqueueKind({ kind: "indexer", input: {} })
-    await settle()
 
-    expect(ran).toBe(true)
-    // The agent loop was never touched for a deterministic kind.
-    expect(loopCalls).toHaveLength(0)
-    expect(getTask(task.id)?.status).toBe("completed")
-    await runner.stop()
-  })
+    it("fails after exhausting the attempt budget", async () => {
+      const conv = createConversation({ mode: "chat" })
+      loopImpl = async () => ({ error: "still 503", retryable: true })
 
-  it("maps executor results to terminal statuses", async () => {
-    const runner = new TaskRunner()
-    runner.registerKind("ok", { autoResume: false, run: async () => ({ content: "x" }) })
-    runner.registerKind("boom", {
-      autoResume: false,
-      run: async () => ({ error: "bad", retryable: false }),
+      const runner = new TaskRunner({ backoff: fastBackoff })
+      runner.start()
+      const task = runner.enqueue({ conversationId: conv.id, message: "go" })
+      await settle()
+
+      expect(getTask(task.id)?.status).toBe("failed")
+      expect(getTask(task.id)?.error).toBe("still 503")
+      // maxAttempts total runs, maxAttempts-1 attempt events, one terminal failure.
+      expect(loopCalls).toHaveLength(fastBackoff.maxAttempts)
+      const types = listEvents(task.id).map((e) => e.type)
+      expect(types.filter((t) => t === "attempt")).toHaveLength(
+        fastBackoff.maxAttempts - 1
+      )
+      expect(types.filter((t) => t === "task_failed")).toHaveLength(1)
+      await runner.stop()
     })
-    runner.registerKind("halt", { autoResume: false, run: async () => ({ stopped: true }) })
-    runner.start()
-    const ok = runner.enqueueKind({ kind: "ok", input: {} })
-    const boom = runner.enqueueKind({ kind: "boom", input: {} })
-    const halt = runner.enqueueKind({ kind: "halt", input: {} })
-    await settle()
 
-    expect(getTask(ok.id)?.status).toBe("completed")
-    expect(getTask(boom.id)?.status).toBe("failed")
-    expect(getTask(halt.id)?.status).toBe("cancelled")
-    await runner.stop()
-  })
+    it("does not retry a deterministic failure", async () => {
+      const conv = createConversation({ mode: "chat" })
+      loopImpl = async () => ({ error: "bad args", retryable: false })
 
-  it("passes the resolved workspace to the executor", async () => {
-    // enqueueKind forks a conversation with the given workspaceId, but the task's
-    // workspace is resolved via that conversation → workspace path. Seed a
-    // workspace row and link it so resolveWorkspace returns its path.
-    const now = Date.now()
-    const wsId = "ws-seam"
-    db.prepare(
-      "INSERT INTO workspaces (id, path, name, created_at, updated_at) VALUES (?, ?, 'w', ?, ?)"
-    ).run(wsId, "/tmp/seam-ws", now, now)
-    let seen: string | undefined = "unset"
-    const runner = new TaskRunner()
-    runner.registerKind("probe", {
-      autoResume: false,
-      run: async ({ workspace }) => {
-        seen = workspace
-        return { content: "x" }
-      },
+      const runner = new TaskRunner({ backoff: fastBackoff })
+      runner.start()
+      const task = runner.enqueue({ conversationId: conv.id, message: "go" })
+      await settle()
+
+      expect(getTask(task.id)?.status).toBe("failed")
+      expect(loopCalls).toHaveLength(1)
+      expect(
+        listEvents(task.id).filter((e) => e.type === "attempt")
+      ).toHaveLength(0)
+      await runner.stop()
     })
-    runner.start()
-    runner.enqueueKind({ kind: "probe", input: { workspaceId: wsId } })
-    await settle()
 
-    expect(seen).toBe("/tmp/seam-ws")
-    await runner.stop()
-  })
-})
+    it("does not retry a user Stop", async () => {
+      const conv = createConversation({ mode: "chat" })
+      loopImpl = async () => ({ stopped: true })
+
+      const runner = new TaskRunner({ backoff: fastBackoff })
+      runner.start()
+      const task = runner.enqueue({ conversationId: conv.id, message: "go" })
+      await settle()
+
+      expect(getTask(task.id)?.status).toBe("cancelled")
+      expect(loopCalls).toHaveLength(1)
+      await runner.stop()
+    })
+
+    it("cancel during backoff clears the timer and settles cancelled", async () => {
+      const conv = createConversation({ mode: "chat" })
+      loopImpl = async () => ({ error: "502", retryable: true })
+
+      // Long backoff so the task is reliably mid-sleep when we cancel it.
+      const runner = new TaskRunner({
+        backoff: { baseMs: 10_000, maxMs: 10_000, maxAttempts: 3 },
+      })
+      runner.start()
+      const task = runner.enqueue({ conversationId: conv.id, message: "go" })
+
+      // Wait for the first run to fail and arm the backoff timer.
+      for (let i = 0; i < 50 && loopCalls.length < 1; i++) {
+        await new Promise((r) => setTimeout(r, 5))
+      }
+      expect(loopCalls).toHaveLength(1)
+
+      runner.cancel(task.id)
+      expect(getTask(task.id)?.status).toBe("cancelled")
+
+      // Give the (cleared) timer a chance to wrongly fire — it must not re-run.
+      await new Promise((r) => setTimeout(r, 30))
+      expect(loopCalls).toHaveLength(1)
+      await runner.stop()
+    })
+
+    it("stop during backoff prevents a re-run", async () => {
+      const conv = createConversation({ mode: "chat" })
+      loopImpl = async () => ({ error: "502", retryable: true })
+
+      const runner = new TaskRunner({
+        backoff: { baseMs: 10_000, maxMs: 10_000, maxAttempts: 3 },
+      })
+      runner.start()
+      runner.enqueue({ conversationId: conv.id, message: "go" })
+
+      for (let i = 0; i < 50 && loopCalls.length < 1; i++) {
+        await new Promise((r) => setTimeout(r, 5))
+      }
+      expect(loopCalls).toHaveLength(1)
+
+      await runner.stop()
+      await new Promise((r) => setTimeout(r, 30))
+      expect(loopCalls).toHaveLength(1)
+    })
+
+    it("frees the concurrency slot during backoff so a sibling can run", async () => {
+      const convA = createConversation({ mode: "chat" })
+      const convB = createConversation({ mode: "chat" })
+      loopImpl = async (opts) => {
+        // Task A (convA) fails transiently once; task B always completes. With
+        // concurrency 1, B can only run if A's slot is freed during A's backoff.
+        const isA = listMessages(opts.conversationId).some(
+          (m) => m.content === "task-a"
+        )
+        if (isA) return { error: "502", retryable: true }
+        return { content: "b-done" }
+      }
+
+      const runner = new TaskRunner({
+        concurrency: 1,
+        backoff: { baseMs: 20, maxMs: 20, maxAttempts: 3 },
+      })
+      runner.start()
+      const a = runner.enqueue({ conversationId: convA.id, message: "task-a" })
+      const b = runner.enqueue({ conversationId: convB.id, message: "task-b" })
+      await settle()
+
+      expect(getTask(b.id)?.status).toBe("completed")
+      expect(getTask(a.id)?.status).toBe("failed")
+      await runner.stop()
+    })
+
+    it("never runs a same-conversation sibling concurrently across a backoff gap", async () => {
+      // Two tasks share one conversation (created directly — enqueue would fork a
+      // private conversation per task and they'd never collide). The first fails
+      // transiently then succeeds with a small in-loop delay; the second also
+      // delays. The per-conversation guard — extended to cover backing-off tasks —
+      // must keep them from ever executing at the same time on the shared log.
+      const conv = createConversation({ mode: "chat" })
+      appendMessage({ conversationId: conv.id, role: "user", content: "go" })
+      const t1 = createTask({
+        conversationId: conv.id,
+        status: "queued",
+        input: { kind: "agent_chat", message: "go" },
+      })
+      const t2 = createTask({
+        conversationId: conv.id,
+        status: "queued",
+        input: { kind: "agent_chat", message: "go" },
+      })
+
+      let active = 0
+      let maxActive = 0
+      let firstRun = true
+      loopImpl = async () => {
+        active++
+        maxActive = Math.max(maxActive, active)
+        await new Promise((r) => setTimeout(r, 10))
+        active--
+        if (firstRun) {
+          firstRun = false
+          return { error: "502", retryable: true }
+        }
+        return { content: "ok" }
+      }
+
+      const runner = new TaskRunner({
+        concurrency: 2,
+        backoff: { baseMs: 15, maxMs: 15, maxAttempts: 3 },
+      })
+      runner.start()
+      await settle()
+
+      expect(maxActive).toBe(1)
+      expect(getTask(t1.id)?.status).toBe("completed")
+      expect(getTask(t2.id)?.status).toBe("completed")
+      await runner.stop()
+    })
+  }
+)
+
+describe.skipIf(!sqliteLoads)(
+  "TaskRunner — concurrent tasks under the cap",
+  () => {
+    it("runs two tasks from one source to completion in their own transcripts", async () => {
+      const conv = createConversation({ mode: "chat" })
+      loopImpl = async () => {
+        await new Promise((r) => setTimeout(r, 10))
+        return { content: "done" }
+      }
+
+      const runner = new TaskRunner({ concurrency: 2 })
+      runner.start()
+      const a = runner.enqueue({ conversationId: conv.id, message: "first" })
+      const b = runner.enqueue({ conversationId: conv.id, message: "second" })
+      await settle()
+
+      // Each task forks its own private conversation, so there's no shared-log
+      // race — both run (concurrently under the cap) and complete.
+      expect(getTask(a.id)?.status).toBe("completed")
+      expect(getTask(b.id)?.status).toBe("completed")
+      expect(getTask(a.id)?.conversationId).not.toBe(
+        getTask(b.id)?.conversationId
+      )
+      expect(loopCalls).toHaveLength(2)
+      await runner.stop()
+    })
+  }
+)
+
+describe.skipIf(!sqliteLoads)(
+  "TaskRunner — deterministic executor seam (plan 008)",
+  () => {
+    it("drives a kind's run executor instead of runAgentLoop", async () => {
+      let ran = false
+      const runner = new TaskRunner()
+      runner.registerKind("indexer", {
+        autoResume: true,
+        run: async () => {
+          ran = true
+          return { content: "indexed" }
+        },
+      })
+      runner.start()
+      const task = runner.enqueueKind({ kind: "indexer", input: {} })
+      await settle()
+
+      expect(ran).toBe(true)
+      // The agent loop was never touched for a deterministic kind.
+      expect(loopCalls).toHaveLength(0)
+      expect(getTask(task.id)?.status).toBe("completed")
+      await runner.stop()
+    })
+
+    it("maps executor results to terminal statuses", async () => {
+      const runner = new TaskRunner()
+      runner.registerKind("ok", {
+        autoResume: false,
+        run: async () => ({ content: "x" }),
+      })
+      runner.registerKind("boom", {
+        autoResume: false,
+        run: async () => ({ error: "bad", retryable: false }),
+      })
+      runner.registerKind("halt", {
+        autoResume: false,
+        run: async () => ({ stopped: true }),
+      })
+      runner.start()
+      const ok = runner.enqueueKind({ kind: "ok", input: {} })
+      const boom = runner.enqueueKind({ kind: "boom", input: {} })
+      const halt = runner.enqueueKind({ kind: "halt", input: {} })
+      await settle()
+
+      expect(getTask(ok.id)?.status).toBe("completed")
+      expect(getTask(boom.id)?.status).toBe("failed")
+      expect(getTask(halt.id)?.status).toBe("cancelled")
+      await runner.stop()
+    })
+
+    it("passes the resolved workspace to the executor", async () => {
+      // enqueueKind forks a conversation with the given workspaceId, but the task's
+      // workspace is resolved via that conversation → workspace path. Seed a
+      // workspace row and link it so resolveWorkspace returns its path.
+      const now = Date.now()
+      const wsId = "ws-seam"
+      db.prepare(
+        "INSERT INTO workspaces (id, path, name, created_at, updated_at) VALUES (?, ?, 'w', ?, ?)"
+      ).run(wsId, "/tmp/seam-ws", now, now)
+      let seen: string | undefined = "unset"
+      const runner = new TaskRunner()
+      runner.registerKind("probe", {
+        autoResume: false,
+        run: async ({ workspace }) => {
+          seen = workspace
+          return { content: "x" }
+        },
+      })
+      runner.start()
+      runner.enqueueKind({ kind: "probe", input: { workspaceId: wsId } })
+      await settle()
+
+      expect(seen).toBe("/tmp/seam-ws")
+      await runner.stop()
+    })
+  }
+)
 
 describe.skipIf(!sqliteLoads)("TaskRunner — pause/resume (plan 008)", () => {
   it("pauses a running task (abort reason → paused) and resumes it from paused", async () => {
@@ -804,7 +877,10 @@ describe.skipIf(!sqliteLoads)("TaskRunner — pause/resume (plan 008)", () => {
           signal.addEventListener("abort", () => resolve({ stopped: true }))
         }),
     })
-    runner.registerKind("waiter", { autoResume: true, run: async () => ({ content: "x" }) })
+    runner.registerKind("waiter", {
+      autoResume: true,
+      run: async () => ({ content: "x" }),
+    })
     runner.start()
     runner.enqueueKind({ kind: "blocker", input: {} })
     await new Promise((r) => setTimeout(r, 20))
@@ -822,7 +898,10 @@ describe.skipIf(!sqliteLoads)("TaskRunner — pause/resume (plan 008)", () => {
       input: { kind: "workspace_index", workspaceId: "w" },
     })
     const runner = new TaskRunner()
-    runner.registerKind("workspace_index", { autoResume: true, run: async () => ({ content: "x" }) })
+    runner.registerKind("workspace_index", {
+      autoResume: true,
+      run: async () => ({ content: "x" }),
+    })
     runner.start()
     await settle()
     // reconcile only touches running/waiting_for_approval; a paused task stays put.

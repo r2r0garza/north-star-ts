@@ -23,7 +23,8 @@ export class SafeStorageUnavailableError extends Error {
 }
 
 function assertAvailable(): void {
-  if (!safeStorage.isEncryptionAvailable()) throw new SafeStorageUnavailableError()
+  if (!safeStorage.isEncryptionAvailable())
+    throw new SafeStorageUnavailableError()
 }
 
 // Whether secure storage is usable on this platform/session. The UI checks this

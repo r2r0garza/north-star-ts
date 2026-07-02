@@ -21,7 +21,8 @@ function validateName(name: string, dirName: string): string | null {
     if (!isLower && !isDigit)
       return "name must be lowercase alphanumeric with single hyphens only"
   }
-  if (name !== dirName) return `name '${name}' must match directory name '${dirName}'`
+  if (name !== dirName)
+    return `name '${name}' must match directory name '${dirName}'`
   return null
 }
 
@@ -58,15 +59,19 @@ function parseSkill(
   const name = String(data.name ?? "").trim()
   let description = String(data.description ?? "").trim()
   if (!name || !description) {
-    console.warn(`Skipping ${skillPath}: missing required 'name' or 'description'`)
+    console.warn(
+      `Skipping ${skillPath}: missing required 'name' or 'description'`
+    )
     return null
   }
 
   // Spec violations warn but still load (backwards-compat), matching deepagents.
   const nameErr = validateName(name, dirName)
-  if (nameErr) console.warn(`Skill '${name}' in ${skillPath} violates spec: ${nameErr}`)
+  if (nameErr)
+    console.warn(`Skill '${name}' in ${skillPath} violates spec: ${nameErr}`)
 
-  if (description.length > MAX_DESCRIPTION) description = description.slice(0, MAX_DESCRIPTION)
+  if (description.length > MAX_DESCRIPTION)
+    description = description.slice(0, MAX_DESCRIPTION)
 
   let compatibility = String(data.compatibility ?? "").trim() || undefined
   if (compatibility && compatibility.length > MAX_COMPATIBILITY)
@@ -85,7 +90,8 @@ function parseSkill(
   const rawMeta = data.metadata
   const metadata: Record<string, string> = {}
   if (rawMeta && typeof rawMeta === "object") {
-    for (const [k, v] of Object.entries(rawMeta)) metadata[String(k)] = String(v)
+    for (const [k, v] of Object.entries(rawMeta))
+      metadata[String(k)] = String(v)
   }
 
   return {

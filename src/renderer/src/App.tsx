@@ -1,5 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react"
-import { ArrowUp, FileText, FolderOpen, Plus, Square, Workflow, X } from "lucide-react"
+import {
+  ArrowUp,
+  FileText,
+  FolderOpen,
+  Plus,
+  Square,
+  Workflow,
+  X,
+} from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Markdown } from "@/components/markdown"
 import { VIEW_TO_MODE, type View } from "@/components/sidebar"
@@ -48,7 +56,12 @@ import {
   type ToolUse,
 } from "@/lib/timeline"
 import { cn } from "@/lib/utils"
-import type { Question, QuestionAnswer, LlmSettings, AccountWithModels } from "@/types"
+import type {
+  Question,
+  QuestionAnswer,
+  LlmSettings,
+  AccountWithModels,
+} from "@/types"
 
 // The live, in-flight state of one streaming turn, held per-conversation in
 // `liveTurns` until the turn settles and reconciles into the persisted timeline.
@@ -135,7 +148,9 @@ export default function App({
   // All providers + their models (for the composer's grouped picker) and the
   // default selection (the starting point for a fresh conversation). Reloaded
   // when Settings closes so changes there show immediately.
-  const [accountsWithModels, setAccountsWithModels] = useState<AccountWithModels[]>([])
+  const [accountsWithModels, setAccountsWithModels] = useState<
+    AccountWithModels[]
+  >([])
   const [defaultLlm, setDefaultLlm] = useState<LlmSettings | null>(null)
   // This conversation's selection (provider account + model gateway id). Persisted
   // onto the conversation row; for a not-yet-created conversation it's carried into
@@ -339,7 +354,12 @@ export default function App({
     // the transient live state below until the turn settles and reconciles.
     setTimeline((prev) => [
       ...prev,
-      { kind: "text", key: `local-${turnConvoId}-${prev.length}`, role: "user", content: text },
+      {
+        kind: "text",
+        key: `local-${turnConvoId}-${prev.length}`,
+        role: "user",
+        content: text,
+      },
     ])
     setMessage("")
     setAttachments([])
@@ -380,14 +400,21 @@ export default function App({
         // its tokens/tools/approval — they're preserved and restored on return.
         (event) => {
           if (event.type === "token") {
-            updateLive(turnConvoId, (turn) => ({ ...turn, text: turn.text + event.delta }))
+            updateLive(turnConvoId, (turn) => ({
+              ...turn,
+              text: turn.text + event.delta,
+            }))
           } else if (event.type === "tool" && event.phase === "start") {
             // A tool started — add a running row (label derived from its args).
             updateLive(turnConvoId, (turn) => ({
               ...turn,
               tools: [
                 ...turn.tools,
-                toToolUse({ id: event.id, name: event.name, arguments: event.arguments }),
+                toToolUse({
+                  id: event.id,
+                  name: event.name,
+                  arguments: event.arguments,
+                }),
               ],
             }))
           } else if (event.type === "tool" && event.phase === "done") {
@@ -431,7 +458,10 @@ export default function App({
             // the composer until answered.
             updateLive(turnConvoId, (turn) => ({
               ...turn,
-              question: { requestId: event.requestId, questions: event.questions },
+              question: {
+                requestId: event.requestId,
+                questions: event.questions,
+              },
             }))
           }
         }
@@ -444,7 +474,9 @@ export default function App({
       if (data.error) {
         updateLive(turnConvoId, (turn) => ({
           ...turn,
-          text: turn.text ? `${turn.text}\n\n⚠️ ${data.error}` : `Error: ${data.error}`,
+          text: turn.text
+            ? `${turn.text}\n\n⚠️ ${data.error}`
+            : `Error: ${data.error}`,
         }))
       } else if (data.stopped) {
         // Clean user cancel — the "⏹ Stopped by user." note is persisted and
@@ -454,7 +486,10 @@ export default function App({
           text: turn.text ? `${turn.text}\n\n⏹ Stopped` : "⏹ Stopped",
         }))
       } else if (data.content) {
-        updateLive(turnConvoId, (turn) => ({ ...turn, text: turn.text || data.content! }))
+        updateLive(turnConvoId, (turn) => ({
+          ...turn,
+          text: turn.text || data.content!,
+        }))
       }
     } catch (error) {
       const msg = error instanceof Error ? error.message : "Request failed"
@@ -550,7 +585,10 @@ export default function App({
   // immediately (the agent resumes with the answers as the tool result).
   function answerQuestion(answers: QuestionAnswer[]) {
     if (!liveQuestion || !conversationId) return
-    void window.cowork.chatAnswer({ requestId: liveQuestion.requestId, answers })
+    void window.cowork.chatAnswer({
+      requestId: liveQuestion.requestId,
+      answers,
+    })
     updateLive(conversationId, (turn) => ({ ...turn, question: null }))
   }
 
@@ -584,7 +622,9 @@ export default function App({
   // Sequential gating means at most one approval is pending at a time, so a
   // single panel above the composer suffices. Purely derived — it disappears
   // automatically when resolved, when the tool completes, or when the turn ends.
-  const pendingApproval = liveTools.find((t) => t.approval?.status === "pending")?.approval
+  const pendingApproval = liveTools.find(
+    (t) => t.approval?.status === "pending"
+  )?.approval
 
   // The composer's model picker. Spans every provider's models (grouped by
   // provider) in a type-to-filter combobox, so a session can switch provider+model
@@ -597,7 +637,10 @@ export default function App({
     setSelAccountId(accountId)
     setSelModelId(modelId)
     if (conversationId) {
-      await window.cowork.db.conversations.update(conversationId, { accountId, modelId })
+      await window.cowork.db.conversations.update(conversationId, {
+        accountId,
+        modelId,
+      })
     }
   }
   // Combobox items use { value: "accountId::modelId", label } objects — Base UI
@@ -614,9 +657,9 @@ export default function App({
     }))
   const selectedItem =
     effAccountId && effModelId
-      ? modelGroups
+      ? (modelGroups
           .flatMap((g) => g.items)
-          .find((it) => it.value === `${effAccountId}::${effModelId}`) ?? null
+          .find((it) => it.value === `${effAccountId}::${effModelId}`) ?? null)
       : null
   const modelPicker = hasLlm ? (
     <Combobox
@@ -641,7 +684,11 @@ export default function App({
         <ComboboxInput placeholder="Search models…" showTrigger={false} />
         <ComboboxEmpty>No models found.</ComboboxEmpty>
         <ComboboxList>
-          {(group: { value: string; label: string; items: { value: string; label: string }[] }) => (
+          {(group: {
+            value: string
+            label: string
+            items: { value: string; label: string }[]
+          }) => (
             <ComboboxGroup key={group.value} items={group.items}>
               <ComboboxLabel>{group.label}</ComboboxLabel>
               <ComboboxCollection>
@@ -727,7 +774,11 @@ export default function App({
                 className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
               >
                 <FolderOpen className="size-4" />
-                {workspace && <span className="max-w-40 truncate">{lastSegment(workspace)}</span>}
+                {workspace && (
+                  <span className="max-w-40 truncate">
+                    {lastSegment(workspace)}
+                  </span>
+                )}
               </button>
             )}
             {modelPicker}
@@ -835,7 +886,9 @@ export default function App({
                           variant={item.role === "user" ? "default" : "muted"}
                         >
                           <BubbleContent
-                            className={cn(item.role === "user" && "whitespace-pre-wrap")}
+                            className={cn(
+                              item.role === "user" && "whitespace-pre-wrap"
+                            )}
                           >
                             {item.role === "assistant" ? (
                               <Markdown content={item.content} />
@@ -888,13 +941,19 @@ export default function App({
       <div className="border-t bg-background">
         <div className="mx-auto w-full max-w-[min(90%,72rem)] px-4 py-4">
           {pendingApproval && (
-            <div className="mb-3 animate-in fade-in-0 slide-in-from-bottom-4 duration-200">
-              <ApprovalCard approval={pendingApproval} onApproval={resolveApproval} />
+            <div className="mb-3 animate-in duration-200 fade-in-0 slide-in-from-bottom-4">
+              <ApprovalCard
+                approval={pendingApproval}
+                onApproval={resolveApproval}
+              />
             </div>
           )}
           {liveQuestion && (
-            <div className="mb-3 animate-in fade-in-0 slide-in-from-bottom-4 duration-200">
-              <QuestionPanel questions={liveQuestion.questions} onSubmit={answerQuestion} />
+            <div className="mb-3 animate-in duration-200 fade-in-0 slide-in-from-bottom-4">
+              <QuestionPanel
+                questions={liveQuestion.questions}
+                onSubmit={answerQuestion}
+              />
             </div>
           )}
           {composer}

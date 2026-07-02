@@ -1,6 +1,11 @@
 import type { Tool } from "./types"
 import { toolError } from "./output"
-import { listTodos, replaceTodos, mergeTodos, type TodoInput } from "../../db/repositories/todos"
+import {
+  listTodos,
+  replaceTodos,
+  mergeTodos,
+  type TodoInput,
+} from "../../db/repositories/todos"
 import type { Todo } from "../../db/types"
 
 // The agent's task list for the current conversation. A single tool that reads
@@ -33,12 +38,19 @@ export const todoWriteTool: Tool = {
         properties: {
           todos: {
             type: "array",
-            description: "Task items to write. Omit entirely to read the current list.",
+            description:
+              "Task items to write. Omit entirely to read the current list.",
             items: {
               type: "object",
               properties: {
-                id: { type: "string", description: "Unique item id within this conversation." },
-                content: { type: "string", description: "Short task description." },
+                id: {
+                  type: "string",
+                  description: "Unique item id within this conversation.",
+                },
+                content: {
+                  type: "string",
+                  description: "Short task description.",
+                },
                 status: {
                   type: "string",
                   enum: ["pending", "in_progress", "completed", "cancelled"],
@@ -76,7 +88,10 @@ export const todoWriteTool: Tool = {
       try {
         todos = JSON.parse(todos)
       } catch {
-        return toolError("bad_args", "`todos` must be an array of items, not an unparseable string.")
+        return toolError(
+          "bad_args",
+          "`todos` must be an array of items, not an unparseable string."
+        )
       }
     }
 
@@ -91,13 +106,20 @@ export const todoWriteTool: Tool = {
         : replaceTodos(conversationId, todos as TodoInput[])
     }
 
-    return JSON.stringify({ todos: summarizeForModel(items), summary: countByStatus(items) })
+    return JSON.stringify({
+      todos: summarizeForModel(items),
+      summary: countByStatus(items),
+    })
   },
 }
 
 // Trim the rows to the fields the model cares about (drop timestamps/seq noise).
 function summarizeForModel(items: Todo[]) {
-  return items.map((t) => ({ id: t.itemId, content: t.content, status: t.status }))
+  return items.map((t) => ({
+    id: t.itemId,
+    content: t.content,
+    status: t.status,
+  }))
 }
 
 function countByStatus(items: Todo[]) {

@@ -17,7 +17,11 @@ interface LiveProgress {
   filesTotal: number
 }
 
-export function IndexingSection({ conversationId }: { conversationId: string | null }) {
+export function IndexingSection({
+  conversationId,
+}: {
+  conversationId: string | null
+}) {
   const [workspaceId, setWorkspaceId] = React.useState<string | null>(null)
   const [status, setStatus] = React.useState<IndexStatus | null>(null)
   const [live, setLive] = React.useState<LiveProgress | null>(null)
@@ -73,10 +77,18 @@ export function IndexingSection({ conversationId }: { conversationId: string | n
   }, [workspaceId, status?.taskId])
 
   if (!conversationId) {
-    return <p className="px-2 py-1.5 text-xs text-muted-foreground">No session selected.</p>
+    return (
+      <p className="px-2 py-1.5 text-xs text-muted-foreground">
+        No session selected.
+      </p>
+    )
   }
   if (!workspaceId) {
-    return <p className="px-2 py-1.5 text-xs text-muted-foreground">No workspace assigned.</p>
+    return (
+      <p className="px-2 py-1.5 text-xs text-muted-foreground">
+        No workspace assigned.
+      </p>
+    )
   }
   if (!status) {
     return <p className="px-2 py-1.5 text-xs text-muted-foreground">Loading…</p>
@@ -87,12 +99,17 @@ export function IndexingSection({ conversationId }: { conversationId: string | n
   if (!status.enabled) {
     return (
       <div className="flex flex-col gap-2 px-1">
-        <p className="text-xs text-muted-foreground">Indexing disabled for this workspace.</p>
+        <p className="text-xs text-muted-foreground">
+          Indexing disabled for this workspace.
+        </p>
         <Button
           size="sm"
           variant="outline"
           onClick={async () => {
-            await window.cowork.index.setEnabled({ workspaceId: wsId, enabled: true })
+            await window.cowork.index.setEnabled({
+              workspaceId: wsId,
+              enabled: true,
+            })
             await refetch(wsId)
           }}
         >
@@ -164,7 +181,12 @@ export function IndexingSection({ conversationId }: { conversationId: string | n
       <div className="flex gap-1">
         {isRunning && (
           <>
-            <Button size="sm" variant="outline" onClick={() => void pause()} title="Pause indexing">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => void pause()}
+              title="Pause indexing"
+            >
               <Pause className="size-3.5" />
               Pause
             </Button>
@@ -180,7 +202,12 @@ export function IndexingSection({ conversationId }: { conversationId: string | n
           </>
         )}
         {isPaused && (
-          <Button size="sm" variant="outline" onClick={() => void resume()} title="Resume indexing">
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => void resume()}
+            title="Resume indexing"
+          >
             <Play className="size-3.5" />
             Resume
           </Button>

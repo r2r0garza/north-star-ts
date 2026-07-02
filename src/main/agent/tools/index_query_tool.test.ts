@@ -30,27 +30,36 @@ function makeWorkspace(): void {
   ).run(randomUUID(), root, now, now)
 }
 
-const fakeRunner = () => ({ enqueueKind: () => ({ id: randomUUID() }) }) as unknown as TaskRunner
+const fakeRunner = () =>
+  ({ enqueueKind: () => ({ id: randomUUID() }) }) as unknown as TaskRunner
 
 // Build a real index over the temp workspace, then query through the tool.
 async function buildIndex(): Promise<void> {
   const svc = new IndexService(fakeRunner())
   const ac = new AbortController()
   await svc.execute({
-    task: { id: "t", input: { workspaceId: currentWsId(), priority: "high" } } as never,
+    task: {
+      id: "t",
+      input: { workspaceId: currentWsId(), priority: "high" },
+    } as never,
     signal: ac.signal,
     emit: () => {},
     workspace: root,
   })
 }
 function currentWsId(): string {
-  return (db.prepare("SELECT id FROM workspaces WHERE path = ?").get(root) as { id: string }).id
+  return (
+    db.prepare("SELECT id FROM workspaces WHERE path = ?").get(root) as {
+      id: string
+    }
+  ).id
 }
 
 function ctx(): ToolContext {
   return { workspace: root, conversationId: "c1" }
 }
-const run = (args: Record<string, unknown>) => indexQueryTool.execute(args, ctx())
+const run = (args: Record<string, unknown>) =>
+  indexQueryTool.execute(args, ctx())
 
 beforeEach(async () => {
   if (!sqliteLoads) return
@@ -75,7 +84,10 @@ describe.skipIf(!sqliteLoads)("index_query_tool", () => {
   })
 
   it("find_symbol filters by kind", async () => {
-    await writeFile(join(root, "a.ts"), `export function foo() {}\nexport const foo2 = 1`)
+    await writeFile(
+      join(root, "a.ts"),
+      `export function foo() {}\nexport const foo2 = 1`
+    )
     await buildIndex()
     const fns = await run({ op: "find_symbol", query: "foo", kind: "function" })
     expect(fns).toContain("function foo")
@@ -151,7 +163,10 @@ describe.skipIf(!sqliteLoads)("index_query_tool", () => {
   it("metadata caps a huge dependency list", async () => {
     const deps: Record<string, string> = {}
     for (let i = 0; i < 60; i++) deps[`dep${i}`] = "^1"
-    await writeFile(join(root, "package.json"), JSON.stringify({ name: "big", dependencies: deps }))
+    await writeFile(
+      join(root, "package.json"),
+      JSON.stringify({ name: "big", dependencies: deps })
+    )
     await buildIndex()
     const out = await run({ op: "metadata" })
     expect(out).toContain("dependencies (60)")

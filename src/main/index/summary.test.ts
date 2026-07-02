@@ -23,7 +23,8 @@ import type { TaskRunner } from "../tasks/runner"
 let root: string
 let workspaceId: string
 
-const fakeRunner = () => ({ enqueueKind: () => ({ id: randomUUID() }) }) as unknown as TaskRunner
+const fakeRunner = () =>
+  ({ enqueueKind: () => ({ id: randomUUID() }) }) as unknown as TaskRunner
 
 async function buildIndex(): Promise<void> {
   const svc = new IndexService(fakeRunner())

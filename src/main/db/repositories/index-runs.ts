@@ -119,7 +119,9 @@ export function upsertRun(
     sets.push("updated_at = ?")
     values.push(now, workspaceId)
     getDb()
-      .prepare(`UPDATE index_runs SET ${sets.join(", ")} WHERE workspace_id = ?`)
+      .prepare(
+        `UPDATE index_runs SET ${sets.join(", ")} WHERE workspace_id = ?`
+      )
       .run(...values)
   }
   return getRunByWorkspace(workspaceId)!
@@ -157,7 +159,9 @@ export function resetRun(workspaceId: string): IndexRun {
 
 export function listEnabledRuns(): IndexRun[] {
   const rows = getDb()
-    .prepare("SELECT * FROM index_runs WHERE enabled = 1 ORDER BY created_at ASC")
+    .prepare(
+      "SELECT * FROM index_runs WHERE enabled = 1 ORDER BY created_at ASC"
+    )
     .all() as IndexRunRow[]
   return rows.map(toIndexRun)
 }

@@ -179,7 +179,9 @@ export function AppSidebar({
 
   async function renameConversation(id: string, title: string) {
     // Optimistic update, then persist.
-    setConversations((prev) => prev.map((c) => (c.id === id ? { ...c, title } : c)))
+    setConversations((prev) =>
+      prev.map((c) => (c.id === id ? { ...c, title } : c))
+    )
     await window.cowork.db.conversations.update(id, { title })
   }
 
@@ -278,8 +280,8 @@ export function AppSidebar({
           <AlertDialogHeader>
             <AlertDialogTitle>Delete this session?</AlertDialogTitle>
             <AlertDialogDescription>
-              “{pendingDelete?.title ?? "Untitled"}” and all of its messages will
-              be permanently deleted. This can’t be undone.
+              “{pendingDelete?.title ?? "Untitled"}” and all of its messages
+              will be permanently deleted. This can’t be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

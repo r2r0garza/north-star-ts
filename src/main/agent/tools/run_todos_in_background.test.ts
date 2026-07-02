@@ -12,7 +12,15 @@ import { runTodosInBackgroundTool } from "./run_todos_in_background"
 import type { EnqueueTask, ToolContext } from "./types"
 
 function todo(itemId: string, status: Todo["status"], content = itemId): Todo {
-  return { conversationId: "conv-1", itemId, seq: 0, content, status, createdAt: 0, updatedAt: 0 }
+  return {
+    conversationId: "conv-1",
+    itemId,
+    seq: 0,
+    content,
+    status,
+    createdAt: 0,
+    updatedAt: 0,
+  }
 }
 
 // A ToolContext with a gate that returns a fixed outcome and a spy enqueueTask.
@@ -20,7 +28,11 @@ function makeCtx(opts: {
   gateOutcome?: GateOutcome
   noGate?: boolean
   noEnqueue?: boolean
-}): { ctx: ToolContext; enqueue: ReturnType<typeof vi.fn>; gateCalls: ToolAction[] } {
+}): {
+  ctx: ToolContext
+  enqueue: ReturnType<typeof vi.fn>
+  gateCalls: ToolAction[]
+} {
   const gateCalls: ToolAction[] = []
   const enqueue = vi.fn<EnqueueTask>(() => ({ id: "task-1", status: "queued" }))
   const ctx: ToolContext = {
@@ -32,7 +44,9 @@ function makeCtx(opts: {
           gateCalls.push(action)
           return opts.gateOutcome ?? "approved"
         },
-    enqueueTask: opts.noEnqueue ? undefined : (enqueue as unknown as EnqueueTask),
+    enqueueTask: opts.noEnqueue
+      ? undefined
+      : (enqueue as unknown as EnqueueTask),
   }
   return { ctx, enqueue, gateCalls }
 }
@@ -74,7 +88,10 @@ describe("run_todos_in_background", () => {
 
     // The gated action describes the delegation, not the list.
     expect(gateCalls).toHaveLength(1)
-    expect(gateCalls[0]).toMatchObject({ kind: "delegate", identity: "delegate:conv-1" })
+    expect(gateCalls[0]).toMatchObject({
+      kind: "delegate",
+      identity: "delegate:conv-1",
+    })
 
     // Enqueued once with kind todo_run and the FULL snapshot (completed included).
     expect(enqueue).toHaveBeenCalledTimes(1)

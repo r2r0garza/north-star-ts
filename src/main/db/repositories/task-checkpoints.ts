@@ -34,7 +34,13 @@ export function createCheckpoint(input: {
     .prepare(
       "INSERT INTO task_checkpoints (id, task_id, label, state, created_at) VALUES (?, ?, ?, ?, ?)"
     )
-    .run(id, input.taskId, input.label ?? null, JSON.stringify(input.state), now)
+    .run(
+      id,
+      input.taskId,
+      input.label ?? null,
+      JSON.stringify(input.state),
+      now
+    )
   return getCheckpoint(id)!
 }
 

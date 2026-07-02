@@ -28,7 +28,9 @@ function Shell() {
   const [view, setView] = useState<View>("North Star")
   // The conversation currently shown. null = a fresh (uncreated) conversation;
   // it's created lazily on first send.
-  const [activeConversationId, setActiveConversationId] = useState<string | null>(null)
+  const [activeConversationId, setActiveConversationId] = useState<
+    string | null
+  >(null)
   // Bumped whenever conversations change so the sidebar list refetches.
   const [refreshKey, setRefreshKey] = useState(0)
   const refreshConversations = () => setRefreshKey((k) => k + 1)
@@ -105,7 +107,10 @@ function Shell() {
           child of this region so macOS lets its click through. */}
       <div className="absolute inset-x-0 top-0 z-20 h-11 [-webkit-app-region:drag]">
         <SidebarToggle fullscreen={fullscreen} />
-        <ActivityToggle open={activityOpen} onToggle={() => setActivity(!activityOpen)} />
+        <ActivityToggle
+          open={activityOpen}
+          onToggle={() => setActivity(!activityOpen)}
+        />
       </div>
       <AppSidebar
         view={view}
@@ -138,7 +143,10 @@ function Shell() {
         onHistoryExpandedChange={setHistoryExpanded}
         onRanInBackground={() => setActivity(true)}
       />
-      <TaskCompletionToasts conversationId={activeConversationId} onReveal={revealHistory} />
+      <TaskCompletionToasts
+        conversationId={activeConversationId}
+        onReveal={revealHistory}
+      />
       <Toaster />
       <TaskTranscriptSheet
         task={viewingTask}

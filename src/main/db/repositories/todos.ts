@@ -53,11 +53,16 @@ function toTodo(row: TodoRow): Todo {
 
 function capContent(content: string): string {
   if (content.length <= MAX_TODO_CONTENT_CHARS) return content
-  return content.slice(0, MAX_TODO_CONTENT_CHARS - TRUNCATION_MARKER.length) + TRUNCATION_MARKER
+  return (
+    content.slice(0, MAX_TODO_CONTENT_CHARS - TRUNCATION_MARKER.length) +
+    TRUNCATION_MARKER
+  )
 }
 
 function normalizeStatus(status: unknown): TodoStatus {
-  const s = String(status ?? "").trim().toLowerCase()
+  const s = String(status ?? "")
+    .trim()
+    .toLowerCase()
   return VALID_STATUSES.has(s as TodoStatus) ? (s as TodoStatus) : "pending"
 }
 
@@ -68,7 +73,10 @@ function normalizeStatus(status: unknown): TodoStatus {
 export function normalizeItems(
   items: TodoInput[]
 ): Array<{ itemId: string; content: string; status: TodoStatus }> {
-  const byId = new Map<string, { itemId: string; content: string; status: TodoStatus }>()
+  const byId = new Map<
+    string,
+    { itemId: string; content: string; status: TodoStatus }
+  >()
   items.forEach((raw, i) => {
     const item = raw && typeof raw === "object" ? raw : {}
     const itemId = String(item.id ?? "").trim() || `item_${i + 1}`
@@ -89,17 +97,30 @@ export function listTodos(conversationId: string): Todo[] {
 // Replace the entire list for a conversation in one transaction: delete all
 // rows, then insert the normalized items with seq = index (array order is
 // priority). Passing [] clears the list.
-export function replaceTodos(conversationId: string, items: TodoInput[]): Todo[] {
+export function replaceTodos(
+  conversationId: string,
+  items: TodoInput[]
+): Todo[] {
   const clean = normalizeItems(items)
   const now = Date.now()
   const db = getDb()
   const tx = db.transaction(() => {
-    db.prepare("DELETE FROM todos WHERE conversation_id = ?").run(conversationId)
+    db.prepare("DELETE FROM todos WHERE conversation_id = ?").run(
+      conversationId
+    )
     const insert = db.prepare(
       "INSERT INTO todos (conversation_id, item_id, seq, content, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
     )
     clean.forEach((item, i) => {
-      insert.run(conversationId, item.itemId, i, item.content, item.status, now, now)
+      insert.run(
+        conversationId,
+        item.itemId,
+        i,
+        item.content,
+        item.status,
+        now,
+        now
+      )
     })
   })
   tx()
@@ -115,12 +136,11 @@ export function mergeTodos(conversationId: string, items: TodoInput[]): Todo[] {
   const db = getDb()
   const tx = db.transaction(() => {
     const existing = new Map(
-      (db
-        .prepare("SELECT item_id, seq FROM todos WHERE conversation_id = ?")
-        .all(conversationId) as Array<{ item_id: string; seq: number }>).map((r) => [
-        r.item_id,
-        r.seq,
-      ])
+      (
+        db
+          .prepare("SELECT item_id, seq FROM todos WHERE conversation_id = ?")
+          .all(conversationId) as Array<{ item_id: string; seq: number }>
+      ).map((r) => [r.item_id, r.seq])
     )
     let nextSeq = existing.size ? Math.max(...existing.values()) + 1 : 0
     let total = existing.size
@@ -135,7 +155,15 @@ export function mergeTodos(conversationId: string, items: TodoInput[]): Todo[] {
         update.run(item.content, item.status, now, conversationId, item.itemId)
       } else if (total < MAX_TODO_ITEMS) {
         // Cap appends so a merge can't grow the list past MAX_TODO_ITEMS.
-        insert.run(conversationId, item.itemId, nextSeq++, item.content, item.status, now, now)
+        insert.run(
+          conversationId,
+          item.itemId,
+          nextSeq++,
+          item.content,
+          item.status,
+          now,
+          now
+        )
         total++
       }
     }

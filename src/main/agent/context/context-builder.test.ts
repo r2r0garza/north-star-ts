@@ -8,7 +8,11 @@ vi.mock("../../db/repositories/messages", () => ({
   listMessages: () => history,
 }))
 
-import { ContextBuilder, SECTION_PRIORITY, type ContextSection } from "./context-builder"
+import {
+  ContextBuilder,
+  SECTION_PRIORITY,
+  type ContextSection,
+} from "./context-builder"
 
 function msg(seq: number, role: Message["role"], content: string): Message {
   return {
@@ -58,7 +62,10 @@ describe("ContextBuilder — sections (plan 014)", () => {
 
   it("folds sections into the system block in declaration order", () => {
     const b = new ContextBuilder()
-    const out = b.build("c1", { baseSystemPrompt: "BASE", sections: sections() })
+    const out = b.build("c1", {
+      baseSystemPrompt: "BASE",
+      sections: sections(),
+    })
     expect(out[0].role).toBe("system")
     expect(out[0].content).toBe("BASE\n\nSKILLS\n\nTODOS\n\nINDEX")
   })
@@ -81,7 +88,11 @@ describe("ContextBuilder — sections (plan 014)", () => {
       baseSystemPrompt: "BASE",
       sections: [
         { name: "skills", priority: SECTION_PRIORITY.skills, content: "SK" },
-        { name: "index", priority: SECTION_PRIORITY.index, content: "IX" + "z".repeat(200) },
+        {
+          name: "index",
+          priority: SECTION_PRIORITY.index,
+          content: "IX" + "z".repeat(200),
+        },
       ],
     })
     // The higher-priority skills section fits; the big low-priority index drops.

@@ -59,6 +59,8 @@ export function listEvents(
     sql += " LIMIT ?"
     values.push(opts.limit)
   }
-  const rows = getDb().prepare(sql).all(...values) as TaskEventRow[]
+  const rows = getDb()
+    .prepare(sql)
+    .all(...values) as TaskEventRow[]
   return rows.map(toTaskEvent)
 }

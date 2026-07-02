@@ -1,4 +1,8 @@
-import { appendMessage, deleteMessage, listMessages } from "../db/repositories/messages"
+import {
+  appendMessage,
+  deleteMessage,
+  listMessages,
+} from "../db/repositories/messages"
 
 // The synthetic result appended (in "synthesize" mode) for a tool call that
 // never produced one. The model API requires a `tool` message for every

@@ -13,10 +13,18 @@ import { SECTION_PRIORITY } from "./context-builder"
 // Surfaces them so the agent knows what's already running/queued and doesn't
 // re-spawn duplicate work. Terminal tasks are omitted — this is "what's live",
 // not history. Returns null when there are none.
-export function taskStateSection(conversationId: string): ContextSection | null {
-  const ACTIVE = new Set(["queued", "running", "waiting_for_approval", "paused", "interrupted"])
-  const tasks = listTasks({ sourceConversationId: conversationId }).filter((t) =>
-    ACTIVE.has(t.status)
+export function taskStateSection(
+  conversationId: string
+): ContextSection | null {
+  const ACTIVE = new Set([
+    "queued",
+    "running",
+    "waiting_for_approval",
+    "paused",
+    "interrupted",
+  ])
+  const tasks = listTasks({ sourceConversationId: conversationId }).filter(
+    (t) => ACTIVE.has(t.status)
   )
   if (tasks.length === 0) return null
 

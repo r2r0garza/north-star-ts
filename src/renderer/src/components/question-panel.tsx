@@ -22,8 +22,12 @@ export function QuestionPanel({
 }) {
   // Per-question selected option labels (OTHER is a member when chosen) and the
   // free-form text typed for Other. Indexed parallel to `questions`.
-  const [selected, setSelected] = useState<string[][]>(() => questions.map(() => []))
-  const [otherText, setOtherText] = useState<string[]>(() => questions.map(() => ""))
+  const [selected, setSelected] = useState<string[][]>(() =>
+    questions.map(() => [])
+  )
+  const [otherText, setOtherText] = useState<string[]>(() =>
+    questions.map(() => "")
+  )
   // Which question is currently shown.
   const [current, setCurrent] = useState(0)
 
@@ -114,13 +118,17 @@ export function QuestionPanel({
                 onClick={() => toggle(current, opt.label, multi)}
                 className={cn(
                   "flex items-start gap-2 rounded-md border px-3 py-2 text-left transition-colors",
-                  on ? "border-primary bg-primary/5" : "border-input hover:bg-accent"
+                  on
+                    ? "border-primary bg-primary/5"
+                    : "border-input hover:bg-accent"
                 )}
               >
                 <span
                   className={cn(
                     "mt-0.5 flex size-4 shrink-0 items-center justify-center rounded-full border",
-                    on ? "border-primary bg-primary text-primary-foreground" : "border-input"
+                    on
+                      ? "border-primary bg-primary text-primary-foreground"
+                      : "border-input"
                   )}
                 >
                   {on && <Check className="size-3" />}
@@ -128,7 +136,9 @@ export function QuestionPanel({
                 <span className="flex flex-col">
                   <span className="font-medium">{opt.label}</span>
                   {opt.description && (
-                    <span className="text-xs text-muted-foreground">{opt.description}</span>
+                    <span className="text-xs text-muted-foreground">
+                      {opt.description}
+                    </span>
                   )}
                 </span>
               </button>
@@ -140,13 +150,17 @@ export function QuestionPanel({
             onClick={() => toggle(current, OTHER, multi)}
             className={cn(
               "flex items-center gap-2 rounded-md border px-3 py-2 text-left transition-colors",
-              otherSelected ? "border-primary bg-primary/5" : "border-input hover:bg-accent"
+              otherSelected
+                ? "border-primary bg-primary/5"
+                : "border-input hover:bg-accent"
             )}
           >
             <span
               className={cn(
                 "flex size-4 shrink-0 items-center justify-center rounded-full border",
-                otherSelected ? "border-primary bg-primary text-primary-foreground" : "border-input"
+                otherSelected
+                  ? "border-primary bg-primary text-primary-foreground"
+                  : "border-input"
               )}
             >
               {otherSelected && <Check className="size-3" />}
@@ -188,7 +202,9 @@ export function QuestionPanel({
               <Button
                 size="sm"
                 variant="outline"
-                onClick={() => setCurrent((c) => Math.min(questions.length - 1, c + 1))}
+                onClick={() =>
+                  setCurrent((c) => Math.min(questions.length - 1, c + 1))
+                }
                 disabled={isLast}
               >
                 Next <ChevronRight className="size-4" />

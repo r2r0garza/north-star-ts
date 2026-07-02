@@ -72,7 +72,8 @@ export class ContextBuilder {
   constructor(opts: ContextBuilderOptions = {}) {
     this.counter = opts.tokenCounter ?? defaultTokenCounter
     this.budget = opts.tokenBudget ?? DEFAULT_TOKEN_BUDGET
-    this.sectionBudgetShare = opts.sectionBudgetShare ?? DEFAULT_SECTION_BUDGET_SHARE
+    this.sectionBudgetShare =
+      opts.sectionBudgetShare ?? DEFAULT_SECTION_BUDGET_SHARE
     this.log = opts.log ?? ((m) => console.debug(m))
   }
 
@@ -84,17 +85,29 @@ export class ContextBuilder {
     conversationId: string,
     opts: { baseSystemPrompt: string; sections?: ContextSection[] }
   ): ChatMessage[] {
-    const systemContent = this.composeSystemBlock(opts.baseSystemPrompt, opts.sections ?? [])
+    const systemContent = this.composeSystemBlock(
+      opts.baseSystemPrompt,
+      opts.sections ?? []
+    )
     const history = listMessages(conversationId)
-    const included = this.walkBack(history, this.budget - this.counter.count(systemContent))
-    return [{ role: "system", content: systemContent }, ...included.map(toChatMessage)]
+    const included = this.walkBack(
+      history,
+      this.budget - this.counter.count(systemContent)
+    )
+    return [
+      { role: "system", content: systemContent },
+      ...included.map(toChatMessage),
+    ]
   }
 
   // Admit sections highest-priority-first while their cumulative cost fits the
   // section budget (a share of the total); drop the rest. Preserves each admitted
   // section's declared order in the final block for a stable, readable prompt.
   // Logs exactly what was included and dropped (no silent truncation).
-  private composeSystemBlock(baseSystemPrompt: string, sections: ContextSection[]): string {
+  private composeSystemBlock(
+    baseSystemPrompt: string,
+    sections: ContextSection[]
+  ): string {
     const present = sections.filter((s) => s.content.trim().length > 0)
     const sectionBudget = Math.floor(this.budget * this.sectionBudgetShare)
     const byPriority = [...present].sort((a, b) => b.priority - a.priority)

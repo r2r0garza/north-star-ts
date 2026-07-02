@@ -14,7 +14,9 @@ export const TODO_RUN_KICKOFF =
 
 // Items that still represent work to do.
 export function actionableTodos(todos: Todo[]): Todo[] {
-  return todos.filter((t) => t.status === "pending" || t.status === "in_progress")
+  return todos.filter(
+    (t) => t.status === "pending" || t.status === "in_progress"
+  )
 }
 
 // A short task title from the actionable count + the first item's text.
@@ -29,5 +31,9 @@ export function todoRunTitle(actionable: Todo[]): string {
 export function todoSeed(
   todos: Todo[]
 ): Array<{ itemId: string; content: string; status: TodoStatus }> {
-  return todos.map((t) => ({ itemId: t.itemId, content: t.content, status: t.status }))
+  return todos.map((t) => ({
+    itemId: t.itemId,
+    content: t.content,
+    status: t.status,
+  }))
 }

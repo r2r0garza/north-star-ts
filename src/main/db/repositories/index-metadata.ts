@@ -37,14 +37,23 @@ export function upsertMetadata(input: {
     .get(input.workspaceId, input.kind) as IndexMetadataRow | undefined
   if (existing) {
     getDb()
-      .prepare("UPDATE index_metadata SET path = ?, value = ?, updated_at = ? WHERE id = ?")
+      .prepare(
+        "UPDATE index_metadata SET path = ?, value = ?, updated_at = ? WHERE id = ?"
+      )
       .run(input.path ?? null, serialized, now, existing.id)
   } else {
     getDb()
       .prepare(
         "INSERT INTO index_metadata (id, workspace_id, kind, path, value, updated_at) VALUES (?, ?, ?, ?, ?, ?)"
       )
-      .run(randomUUID(), input.workspaceId, input.kind, input.path ?? null, serialized, now)
+      .run(
+        randomUUID(),
+        input.workspaceId,
+        input.kind,
+        input.path ?? null,
+        serialized,
+        now
+      )
   }
   const row = getDb()
     .prepare("SELECT * FROM index_metadata WHERE workspace_id = ? AND kind = ?")
@@ -54,11 +63,15 @@ export function upsertMetadata(input: {
 
 export function listMetadata(workspaceId: string): IndexMetadata[] {
   const rows = getDb()
-    .prepare("SELECT * FROM index_metadata WHERE workspace_id = ? ORDER BY kind ASC")
+    .prepare(
+      "SELECT * FROM index_metadata WHERE workspace_id = ? ORDER BY kind ASC"
+    )
     .all(workspaceId) as IndexMetadataRow[]
   return rows.map(toIndexMetadata)
 }
 
 export function deleteMetadataByWorkspace(workspaceId: string): void {
-  getDb().prepare("DELETE FROM index_metadata WHERE workspace_id = ?").run(workspaceId)
+  getDb()
+    .prepare("DELETE FROM index_metadata WHERE workspace_id = ?")
+    .run(workspaceId)
 }

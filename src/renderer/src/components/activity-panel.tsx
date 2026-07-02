@@ -161,7 +161,10 @@ export function ActivityPanel({
         </SidebarHeader>
         <SidebarContent>
           <ActivitySection title="Tasks">
-            <TasksSection conversationId={conversationId} onOpenTask={onOpenTask} />
+            <TasksSection
+              conversationId={conversationId}
+              onOpenTask={onOpenTask}
+            />
           </ActivitySection>
           {/* Indexing: the background workspace index build for this session's
               workspace, with pause/resume/cancel/clear (plan 008). */}
@@ -171,11 +174,17 @@ export function ActivityPanel({
           {/* Todos: the agent's task list for this conversation, with a handoff to
               run the whole list in the background (plan 016). */}
           <ActivitySection title="Todos">
-            <TodosSection conversationId={conversationId} onRanInBackground={onRanInBackground} />
+            <TodosSection
+              conversationId={conversationId}
+              onRanInBackground={onRanInBackground}
+            />
           </ActivitySection>
           {/* History: terminal tasks for this conversation. Collapsed by default
               so it doesn't crowd the situational Tasks view above. */}
-          <Collapsible open={historyExpanded} onOpenChange={onHistoryExpandedChange}>
+          <Collapsible
+            open={historyExpanded}
+            onOpenChange={onHistoryExpandedChange}
+          >
             <SidebarGroup>
               <CollapsibleTrigger asChild>
                 <button
@@ -183,12 +192,17 @@ export function ActivityPanel({
                   className="group/history flex w-full items-center gap-1"
                 >
                   <ChevronRight className="size-3.5 text-muted-foreground transition-transform group-data-[state=open]/history:rotate-90" />
-                  <SidebarGroupLabel className="cursor-pointer">History</SidebarGroupLabel>
+                  <SidebarGroupLabel className="cursor-pointer">
+                    History
+                  </SidebarGroupLabel>
                 </button>
               </CollapsibleTrigger>
               <CollapsibleContent>
                 <SidebarGroupContent>
-                  <TasksHistorySection conversationId={conversationId} onOpenTask={onOpenTask} />
+                  <TasksHistorySection
+                    conversationId={conversationId}
+                    onOpenTask={onOpenTask}
+                  />
                 </SidebarGroupContent>
               </CollapsibleContent>
             </SidebarGroup>

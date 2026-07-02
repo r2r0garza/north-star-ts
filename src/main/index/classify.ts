@@ -36,6 +36,7 @@ export function classifyFile(
     return "unchanged"
   }
   // Stat differs — a hash is needed to tell a real edit from a mere touch.
-  if (walked.hash !== undefined && walked.hash === existing.hash) return "unchanged"
+  if (walked.hash !== undefined && walked.hash === existing.hash)
+    return "unchanged"
   return "changed"
 }

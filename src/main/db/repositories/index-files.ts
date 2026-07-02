@@ -98,7 +98,9 @@ export function upsertFiles(inputs: UpsertFileInput[]): void {
 
 export function listFiles(workspaceId: string): IndexFile[] {
   const rows = getDb()
-    .prepare("SELECT * FROM index_files WHERE workspace_id = ? ORDER BY path ASC")
+    .prepare(
+      "SELECT * FROM index_files WHERE workspace_id = ? ORDER BY path ASC"
+    )
     .all(workspaceId) as IndexFileRow[]
   return rows.map(toIndexFile)
 }
@@ -106,7 +108,10 @@ export function listFiles(workspaceId: string): IndexFile[] {
 // Files at a given indexed_stage — the Stage 3 dirty set is everything still at
 // 'file_map' (new or content-changed; unchanged files that already reached
 // 'symbols' are skipped). Ordered by path for stable, resumable processing.
-export function listFilesByStage(workspaceId: string, stage: IndexStage): IndexFile[] {
+export function listFilesByStage(
+  workspaceId: string,
+  stage: IndexStage
+): IndexFile[] {
   const rows = getDb()
     .prepare(
       "SELECT * FROM index_files WHERE workspace_id = ? AND indexed_stage = ? ORDER BY path ASC"
@@ -118,7 +123,9 @@ export function listFilesByStage(workspaceId: string, stage: IndexStage): IndexF
 // Bump a file's highest-completed stage (e.g. after symbol extraction).
 export function setIndexedStage(fileId: string, stage: IndexStage): void {
   getDb()
-    .prepare("UPDATE index_files SET indexed_stage = ?, updated_at = ? WHERE id = ?")
+    .prepare(
+      "UPDATE index_files SET indexed_stage = ?, updated_at = ? WHERE id = ?"
+    )
     .run(stage, Date.now(), fileId)
 }
 
@@ -145,7 +152,9 @@ export function listPaths(workspaceId: string): Set<string> {
   return new Set(rows.map((r) => r.path))
 }
 
-export function countByExt(workspaceId: string): Array<{ ext: string | null; count: number }> {
+export function countByExt(
+  workspaceId: string
+): Array<{ ext: string | null; count: number }> {
   return getDb()
     .prepare(
       "SELECT ext, COUNT(*) AS count FROM index_files WHERE workspace_id = ? GROUP BY ext ORDER BY count DESC"
@@ -160,5 +169,7 @@ export function deleteFile(workspaceId: string, path: string): void {
 }
 
 export function deleteFilesByWorkspace(workspaceId: string): void {
-  getDb().prepare("DELETE FROM index_files WHERE workspace_id = ?").run(workspaceId)
+  getDb()
+    .prepare("DELETE FROM index_files WHERE workspace_id = ?")
+    .run(workspaceId)
 }

@@ -91,7 +91,9 @@ export function resolveApproval(
     )
     .run(
       decision.status,
-      decision.decision !== undefined ? JSON.stringify(decision.decision) : null,
+      decision.decision !== undefined
+        ? JSON.stringify(decision.decision)
+        : null,
       Date.now(),
       id
     )

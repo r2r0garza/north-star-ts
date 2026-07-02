@@ -11,7 +11,11 @@ import { cn } from "@/lib/utils"
 function nodeText(children: React.ReactNode): string {
   if (typeof children === "string") return children
   if (Array.isArray(children)) return children.map(nodeText).join("")
-  if (children && typeof children === "object" && "props" in (children as any)) {
+  if (
+    children &&
+    typeof children === "object" &&
+    "props" in (children as any)
+  ) {
     return nodeText((children as any).props?.children)
   }
   return ""
@@ -40,7 +44,10 @@ const components: Components = {
     }
     // Highlighted block code: rehype-highlight has added hljs token classes.
     return (
-      <code className={cn("hljs font-mono text-[0.85em]", className)} {...props}>
+      <code
+        className={cn("hljs font-mono text-[0.85em]", className)}
+        {...props}
+      >
         {children}
       </code>
     )
@@ -64,7 +71,12 @@ const components: Components = {
   a({ children, ...props }) {
     // External links open in the OS browser via the main process handler.
     return (
-      <a className="text-primary underline underline-offset-2" target="_blank" rel="noreferrer" {...props}>
+      <a
+        className="text-primary underline underline-offset-2"
+        target="_blank"
+        rel="noreferrer"
+        {...props}
+      >
         {children}
       </a>
     )
@@ -83,11 +95,15 @@ const components: Components = {
 // Renders assistant markdown: GFM (tables, task lists, strikethrough) via
 // remark-gfm, syntax highlighting via rehype-highlight, and mermaid diagrams
 // through the custom code handler. Memoized so streaming re-renders are cheap.
-export const Markdown = memo(function Markdown({ content }: { content: string }) {
+export const Markdown = memo(function Markdown({
+  content,
+}: {
+  content: string
+}) {
   return (
     <div
       className={cn(
-        "prose prose-sm dark:prose-invert max-w-none",
+        "prose prose-sm max-w-none dark:prose-invert",
         "prose-pre:bg-transparent prose-pre:p-0", // <pre> styling handled above
         "prose-headings:font-semibold prose-p:leading-relaxed"
       )}

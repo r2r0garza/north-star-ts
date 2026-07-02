@@ -1,4 +1,9 @@
-import { runAgentLoop, SHUTDOWN_ABORT_REASON, type ChatEvent, type ChatResult } from "../agent"
+import {
+  runAgentLoop,
+  SHUTDOWN_ABORT_REASON,
+  type ChatEvent,
+  type ChatResult,
+} from "../agent"
 import {
   createTask,
   getTask,
@@ -12,7 +17,10 @@ import {
   resolveApproval as resolveApprovalRecord,
 } from "../db/repositories/approvals"
 import { appendMessage } from "../db/repositories/messages"
-import { getConversation, createConversation } from "../db/repositories/conversations"
+import {
+  getConversation,
+  createConversation,
+} from "../db/repositories/conversations"
 import { getWorkspace } from "../db/repositories/workspaces"
 import { replaceTodos } from "../db/repositories/todos"
 import type { Task, TaskStatus, TodoStatus } from "../db/types"
@@ -34,7 +42,12 @@ export type RunnerLifecycleEvent =
   // workspace_index executor and forwarded on the live tail so the status strip
   // can render `filesScanned / filesTotal` and the current stage. `filesTotal` is
   // 0 until the walk enumerates (UI shows an indeterminate "Scanning…").
-  | { type: "index_progress"; stage: string; filesScanned: number; filesTotal: number }
+  | {
+      type: "index_progress"
+      stage: string
+      filesScanned: number
+      filesTotal: number
+    }
 
 // The full vocabulary written to task_events / streamed on the live tail: the
 // agent's own streaming events plus the runner's lifecycle events. Reusing the
@@ -194,7 +207,9 @@ export class TaskRunner {
     [DEFAULT_KIND, { autoResume: false }],
   ])
 
-  constructor(opts: { concurrency?: number; backoff?: Partial<BackoffConfig> } = {}) {
+  constructor(
+    opts: { concurrency?: number; backoff?: Partial<BackoffConfig> } = {}
+  ) {
     this.concurrency = opts.concurrency ?? 2
     this.backoff = { ...DEFAULT_BACKOFF, ...opts.backoff }
   }
@@ -243,7 +258,11 @@ export class TaskRunner {
     seedTodos?: TaskInput["seedTodos"]
   }): Task {
     const kind = input.kind ?? DEFAULT_KIND
-    const taskInput: TaskInput = { kind, message: input.message, seedTodos: input.seedTodos }
+    const taskInput: TaskInput = {
+      kind,
+      message: input.message,
+      seedTodos: input.seedTodos,
+    }
 
     // Fork a private conversation from the source, inheriting its execution
     // context (mode → tools/prompt, workspace, provider/model selection).
@@ -262,7 +281,11 @@ export class TaskRunner {
     if (input.seedTodos && input.seedTodos.length > 0) {
       replaceTodos(
         taskConversation.id,
-        input.seedTodos.map((t) => ({ id: t.itemId, content: t.content, status: t.status }))
+        input.seedTodos.map((t) => ({
+          id: t.itemId,
+          content: t.content,
+          status: t.status,
+        }))
       )
     }
 
@@ -296,7 +319,10 @@ export class TaskRunner {
   enqueueKind(input: {
     kind: string
     title?: string | null
-    input: { workspaceId?: string; priority?: "low" | "high" } & Record<string, unknown>
+    input: { workspaceId?: string; priority?: "low" | "high" } & Record<
+      string,
+      unknown
+    >
   }): Task {
     const taskInput: TaskInput = { kind: input.kind, ...input.input }
     const taskConversation = createConversation({
@@ -323,12 +349,17 @@ export class TaskRunner {
   // No-op otherwise.
   resume(taskId: string): void {
     const task = getTask(taskId)
-    if (!task || (task.status !== "interrupted" && task.status !== "paused")) return
+    if (!task || (task.status !== "interrupted" && task.status !== "paused"))
+      return
     // A manual resume restarts the retry budget — the prior attempt counter (if
     // any survived) is stale; a fresh user-driven run gets the full allowance.
     this.attempts.delete(taskId)
     updateTask(taskId, { status: "queued" })
-    this.emit(taskId, { type: "status_change", from: task.status, to: "queued" })
+    this.emit(taskId, {
+      type: "status_change",
+      from: task.status,
+      to: "queued",
+    })
     if (!this.queue.includes(taskId)) this.queue.push(taskId)
     this.wakeup()
   }
@@ -355,7 +386,11 @@ export class TaskRunner {
     const task = getTask(taskId)
     if (task && (task.status === "queued" || task.status === "running")) {
       updateTask(taskId, { status: "paused" })
-      this.emit(taskId, { type: "status_change", from: task.status, to: "paused" })
+      this.emit(taskId, {
+        type: "status_change",
+        from: task.status,
+        to: "paused",
+      })
     }
   }
 
@@ -375,7 +410,11 @@ export class TaskRunner {
       const task = getTask(taskId)
       if (task) {
         updateTask(taskId, { status: "cancelled" })
-        this.emit(taskId, { type: "status_change", from: task.status, to: "cancelled" })
+        this.emit(taskId, {
+          type: "status_change",
+          from: task.status,
+          to: "cancelled",
+        })
       }
       return
     }
@@ -388,7 +427,11 @@ export class TaskRunner {
     const task = getTask(taskId)
     if (task && (task.status === "queued" || task.status === "interrupted")) {
       updateTask(taskId, { status: "cancelled" })
-      this.emit(taskId, { type: "status_change", from: task.status, to: "cancelled" })
+      this.emit(taskId, {
+        type: "status_change",
+        from: task.status,
+        to: "cancelled",
+      })
     }
   }
 
@@ -402,7 +445,11 @@ export class TaskRunner {
     const task = getTask(taskId)
     if (!task || task.status !== "waiting_for_approval") return
     updateTask(taskId, { status: "running" })
-    this.emit(taskId, { type: "status_change", from: "waiting_for_approval", to: "running" })
+    this.emit(taskId, {
+      type: "status_change",
+      from: "waiting_for_approval",
+      to: "running",
+    })
   }
 
   // Record the user's decision on a gate (durable approvals table) and flip the
@@ -462,7 +509,8 @@ export class TaskRunner {
     // task `waiting_for_approval`, which the next boot's reconcile maps to
     // `interrupted` for a clean re-prompt on resume (plan 012). A plain abort()
     // here used to fabricate an "ERROR[denied]" tool result that wedged resume.
-    for (const controller of this.running.values()) controller.abort(SHUTDOWN_ABORT_REASON)
+    for (const controller of this.running.values())
+      controller.abort(SHUTDOWN_ABORT_REASON)
     this.wakeup()
   }
 
@@ -583,7 +631,11 @@ export class TaskRunner {
       const workspace = this.resolveWorkspace(task.conversationId)
 
       updateTask(taskId, { status: "running" })
-      this.emit(taskId, { type: "status_change", from: task.status, to: "running" })
+      this.emit(taskId, {
+        type: "status_change",
+        from: task.status,
+        to: "running",
+      })
 
       const capability = this.capabilityOf(kindOf(task))
       let result: ChatResult | TaskExecResult
@@ -655,7 +707,11 @@ export class TaskRunner {
       ) {
         this.attempts.delete(taskId)
         updateTask(taskId, { status: "paused" })
-        this.emit(taskId, { type: "status_change", from: "running", to: "paused" })
+        this.emit(taskId, {
+          type: "status_change",
+          from: "running",
+          to: "paused",
+        })
       } else if (result.stopped) {
         this.attempts.delete(taskId)
         // A turn stopped while parked on a gate leaves a `pending` approval row;
@@ -663,14 +719,25 @@ export class TaskRunner {
         // already approved/denied it).
         this.settleApprovals(taskId, "denied", { superseded: "interrupted" })
         updateTask(taskId, { status: "cancelled" })
-        this.emit(taskId, { type: "status_change", from: "running", to: "cancelled" })
+        this.emit(taskId, {
+          type: "status_change",
+          from: "running",
+          to: "cancelled",
+        })
       } else if (result.error) {
         this.settleError(taskId, result.error, result.retryable === true)
       } else {
         this.attempts.delete(taskId)
-        updateTask(taskId, { status: "completed", result: result.content ?? null })
+        updateTask(taskId, {
+          status: "completed",
+          result: result.content ?? null,
+        })
         this.emit(taskId, { type: "task_completed", result: result.content })
-        this.emit(taskId, { type: "status_change", from: "running", to: "completed" })
+        this.emit(taskId, {
+          type: "status_change",
+          from: "running",
+          to: "completed",
+        })
       }
     } catch (err) {
       // runAgentLoop swallows its own errors into {error}, so reaching here is an
@@ -698,15 +765,18 @@ export class TaskRunner {
     if (retryable && n < this.backoff.maxAttempts) {
       this.attempts.set(taskId, n)
       this.emit(taskId, { type: "attempt", n, reason: error })
-      const timer = setTimeout(() => {
-        this.backoffTimers.delete(taskId)
-        if (this.stopped || !getTask(taskId)) {
-          this.attempts.delete(taskId)
-          return
-        }
-        if (!this.queue.includes(taskId)) this.queue.push(taskId)
-        this.wakeup()
-      }, backoffDelay(n, this.backoff))
+      const timer = setTimeout(
+        () => {
+          this.backoffTimers.delete(taskId)
+          if (this.stopped || !getTask(taskId)) {
+            this.attempts.delete(taskId)
+            return
+          }
+          if (!this.queue.includes(taskId)) this.queue.push(taskId)
+          this.wakeup()
+        },
+        backoffDelay(n, this.backoff)
+      )
       this.backoffTimers.set(taskId, timer)
       return
     }

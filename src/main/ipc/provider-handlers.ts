@@ -50,7 +50,11 @@ export function registerProviderHandlers(): void {
   )
   ipcMain.handle(
     "providers:update",
-    (_e, id: string, patch: { displayName?: string; baseUrl?: string | null }) => {
+    (
+      _e,
+      id: string,
+      patch: { displayName?: string; baseUrl?: string | null }
+    ) => {
       const account = providerAccountsRepo.updateAccount(id, patch)
       invalidateProviderClient() // base_url may have changed
       return toView(account)
@@ -79,7 +83,10 @@ export function registerProviderHandlers(): void {
         invalidateProviderClient()
         return { ok: true }
       } catch (err) {
-        return { ok: false, error: err instanceof Error ? err.message : "Failed to store key." }
+        return {
+          ok: false,
+          error: err instanceof Error ? err.message : "Failed to store key.",
+        }
       }
     }
   )
@@ -87,15 +94,18 @@ export function registerProviderHandlers(): void {
     secrets.clearApiKey(id)
     invalidateProviderClient()
   })
-  ipcMain.handle("providers:getMaskedKey", (_e, id: string) =>
-    secrets.getMaskedApiKey(id) ?? null
+  ipcMain.handle(
+    "providers:getMaskedKey",
+    (_e, id: string) => secrets.getMaskedApiKey(id) ?? null
   )
 
   // ── Models ──────────────────────────────────────────────────────────────
   ipcMain.handle("models:list", (_e, accountId: string) =>
     modelsRepo.listModels(accountId)
   )
-  ipcMain.handle("models:add", (_e, input: AddModelInput) => modelsRepo.addModel(input))
+  ipcMain.handle("models:add", (_e, input: AddModelInput) =>
+    modelsRepo.addModel(input)
+  )
   ipcMain.handle(
     "models:update",
     (_e, id: string, patch: { modelId?: string; modelName?: string | null }) =>
@@ -118,7 +128,10 @@ export function registerProviderHandlers(): void {
       } catch (err) {
         return {
           ok: false,
-          error: err instanceof Error ? err.message : "Failed to fetch models from the gateway.",
+          error:
+            err instanceof Error
+              ? err.message
+              : "Failed to fetch models from the gateway.",
         }
       }
     }

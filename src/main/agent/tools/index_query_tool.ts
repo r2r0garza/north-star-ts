@@ -2,9 +2,15 @@ import type { Tool } from "./types"
 import { truncateForModel, toolError } from "./output"
 import { getWorkspaceByPath } from "../../db/repositories/workspaces"
 import { getRunByWorkspace } from "../../db/repositories/index-runs"
-import { listFilesMatching, countByExt } from "../../db/repositories/index-files"
+import {
+  listFilesMatching,
+  countByExt,
+} from "../../db/repositories/index-files"
 import { listMetadata } from "../../db/repositories/index-metadata"
-import { findSymbolsByName, findImportsOf } from "../../db/repositories/index-symbols"
+import {
+  findSymbolsByName,
+  findImportsOf,
+} from "../../db/repositories/index-symbols"
 import type { IndexMetadata } from "../../db/types"
 
 // Query the pre-built workspace index (plan 008/014). Advisory + fast: it answers
@@ -60,9 +66,12 @@ export const indexQueryTool: Tool = {
   execute: async (args, ctx) => {
     const op = typeof args.op === "string" ? args.op : ""
     const query = typeof args.query === "string" ? args.query.trim() : ""
-    const kind = typeof args.kind === "string" && args.kind ? args.kind : undefined
+    const kind =
+      typeof args.kind === "string" && args.kind ? args.kind : undefined
     const explicitLimit =
-      typeof args.limit === "number" && args.limit > 0 ? Math.floor(args.limit) : undefined
+      typeof args.limit === "number" && args.limit > 0
+        ? Math.floor(args.limit)
+        : undefined
     // find_symbol/what_imports rarely have many hits (50 is plenty); a file
     // listing routinely does, so it gets a higher default. Either way an explicit
     // limit wins.
@@ -70,7 +79,10 @@ export const indexQueryTool: Tool = {
     const listLimit = explicitLimit ?? 500
 
     if (!ctx.workspace) {
-      return toolError("no_workspace", "The index is only available with a workspace.")
+      return toolError(
+        "no_workspace",
+        "The index is only available with a workspace."
+      )
     }
     const ws = getWorkspaceByPath(ctx.workspace)
     if (!ws) {
@@ -82,11 +94,13 @@ export const indexQueryTool: Tool = {
     }
     // A staleness/partial banner appended to results so the model calibrates trust.
     const partial =
-      run.stage !== "symbols" || (run.filesTotal > 0 && run.filesScanned < run.filesTotal)
+      run.stage !== "symbols" ||
+      (run.filesTotal > 0 && run.filesScanned < run.filesTotal)
 
     switch (op) {
       case "find_symbol": {
-        if (!query) return toolError("bad_args", "`query` (symbol name) is required.")
+        if (!query)
+          return toolError("bad_args", "`query` (symbol name) is required.")
         const hits = findSymbolsByName(ws.id, query, { kind, limit })
         if (hits.length === 0) {
           return notIndexed(
@@ -95,7 +109,9 @@ export const indexQueryTool: Tool = {
           )
         }
         const lines = hits.map((s) => {
-          const exported = (s.detail as { exported?: boolean } | null)?.exported ? " (exported)" : ""
+          const exported = (s.detail as { exported?: boolean } | null)?.exported
+            ? " (exported)"
+            : ""
           const at = s.line != null ? `:${s.line}` : ""
           return `${s.kind} ${s.name}${exported} — ${s.path}${at}`
         })
@@ -103,13 +119,18 @@ export const indexQueryTool: Tool = {
       }
 
       case "what_imports": {
-        if (!query) return toolError("bad_args", "`query` (module specifier) is required.")
+        if (!query)
+          return toolError(
+            "bad_args",
+            "`query` (module specifier) is required."
+          )
         const importers = findImportsOf(ws.id, query, limit)
         if (importers.length === 0) {
           return notIndexed(`No indexed file imports "${query}".`, partial)
         }
         const lines = importers.map(
-          (i) => `${i.path}${i.line != null ? `:${i.line}` : ""} — imports ${i.name}`
+          (i) =>
+            `${i.path}${i.line != null ? `:${i.line}` : ""} — imports ${i.name}`
         )
         return withBanner(lines.join("\n"), partial)
       }
@@ -151,7 +172,8 @@ export const indexQueryTool: Tool = {
 
       case "metadata": {
         const meta = listMetadata(ws.id)
-        if (meta.length === 0) return notIndexed("No metadata indexed yet.", partial)
+        if (meta.length === 0)
+          return notIndexed("No metadata indexed yet.", partial)
         return withBanner(renderMetadata(meta), partial)
       }
 
@@ -192,31 +214,47 @@ function renderMetadata(meta: IndexMetadata[]): string {
       lines.push(`  scripts: ${Object.keys(pkg.scripts).join(", ")}`)
     }
     const deps = Object.keys(pkg.dependencies ?? {})
-    if (deps.length) lines.push(`  dependencies (${deps.length}): ${capList(deps, 30)}`)
+    if (deps.length)
+      lines.push(`  dependencies (${deps.length}): ${capList(deps, 30)}`)
     const dev = Object.keys(pkg.devDependencies ?? {})
-    if (dev.length) lines.push(`  devDependencies (${dev.length}): ${capList(dev, 30)}`)
+    if (dev.length)
+      lines.push(`  devDependencies (${dev.length}): ${capList(dev, 30)}`)
   }
 
-  const git = byKind.get("git")?.value as { branch?: string; sha?: string } | undefined
+  const git = byKind.get("git")?.value as
+    | { branch?: string; sha?: string }
+    | undefined
   if (git?.branch) lines.push(`git: branch ${git.branch}`)
   else if (git?.sha) lines.push(`git: detached at ${git.sha}`)
 
   // Config presence (name only — contents aren't useful inline).
   const configs: string[] = []
   if (byKind.has("tsconfig")) configs.push("tsconfig.json")
-  if (byKind.has("pnpm_workspace")) configs.push("pnpm-workspace.yaml (monorepo)")
-  const vite = byKind.get("vite_config")?.value as { config?: string } | undefined
+  if (byKind.has("pnpm_workspace"))
+    configs.push("pnpm-workspace.yaml (monorepo)")
+  const vite = byKind.get("vite_config")?.value as
+    | { config?: string }
+    | undefined
   if (vite?.config) configs.push(vite.config)
   if (configs.length) lines.push(`config: ${configs.join(", ")}`)
 
   const readme = byKind.get("readme")?.value as { excerpt?: string } | undefined
   if (readme?.excerpt) {
-    const firstLine = readme.excerpt.split("\n").find((l) => l.trim().length > 0)
+    const firstLine = readme.excerpt
+      .split("\n")
+      .find((l) => l.trim().length > 0)
     if (firstLine) lines.push(`README: ${firstLine.trim().slice(0, 160)}`)
   }
 
   // Any other kinds we didn't special-case: a short snippet so nothing is hidden.
-  const known = new Set(["package_json", "git", "tsconfig", "pnpm_workspace", "vite_config", "readme"])
+  const known = new Set([
+    "package_json",
+    "git",
+    "tsconfig",
+    "pnpm_workspace",
+    "vite_config",
+    "readme",
+  ])
   for (const m of meta) {
     if (!known.has(m.kind)) {
       lines.push(`${m.kind}: ${JSON.stringify(m.value).slice(0, 160)}`)

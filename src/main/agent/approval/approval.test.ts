@@ -150,7 +150,9 @@ describe("FileActionClassifier", () => {
   const fileClassifier = new FileActionClassifier()
 
   it("allows file writes by default", () => {
-    expect(fileClassifier.classify(fileWrite("src/index.ts"))?.level).toBe("allow")
+    expect(fileClassifier.classify(fileWrite("src/index.ts"))?.level).toBe(
+      "allow"
+    )
   })
 
   it("returns null for shell actions", () => {
@@ -220,7 +222,10 @@ describe("RegexCommandClassifier — categories", () => {
 
 describe("FileActionClassifier — settings-driven", () => {
   it("auto-allows when permission is 'auto'", () => {
-    const c = new FileActionClassifier(() => ({ file_write: "auto", file_edit: "auto" }))
+    const c = new FileActionClassifier(() => ({
+      file_write: "auto",
+      file_edit: "auto",
+    }))
     expect(c.classify(fileWrite("a.ts"))?.level).toBe("allow")
   })
 
@@ -244,16 +249,28 @@ describe("PolicyEngine — sandbox auto-approve", () => {
 
   it("downgrades an enabled category to allow when sandboxed", () => {
     const engine = new PolicyEngine(
-      [new FileActionClassifier(() => ({ file_write: "require_approval", file_edit: "auto" }))],
+      [
+        new FileActionClassifier(() => ({
+          file_write: "require_approval",
+          file_edit: "auto",
+        })),
+      ],
       allowNone,
       sandboxWorkspaceOnly
     )
-    expect(engine.decide(fileWrite("a.ts"), { sandboxed: true }).level).toBe("allow")
+    expect(engine.decide(fileWrite("a.ts"), { sandboxed: true }).level).toBe(
+      "allow"
+    )
   })
 
   it("does NOT downgrade the same action when not sandboxed", () => {
     const engine = new PolicyEngine(
-      [new FileActionClassifier(() => ({ file_write: "require_approval", file_edit: "auto" }))],
+      [
+        new FileActionClassifier(() => ({
+          file_write: "require_approval",
+          file_edit: "auto",
+        })),
+      ],
       allowNone,
       sandboxWorkspaceOnly
     )
@@ -263,11 +280,15 @@ describe("PolicyEngine — sandbox auto-approve", () => {
   })
 
   it("does NOT downgrade a category the sandbox policy leaves off", () => {
-    const engine = new PolicyEngine([classifier], allowNone, sandboxWorkspaceOnly)
-    // rm -rf build is "destructive_fs", not enabled by sandboxWorkspaceOnly.
-    expect(engine.decide(shell("rm -rf build"), { sandboxed: true }).level).toBe(
-      "require_approval"
+    const engine = new PolicyEngine(
+      [classifier],
+      allowNone,
+      sandboxWorkspaceOnly
     )
+    // rm -rf build is "destructive_fs", not enabled by sandboxWorkspaceOnly.
+    expect(
+      engine.decide(shell("rm -rf build"), { sandboxed: true }).level
+    ).toBe("require_approval")
   })
 
   it("auto-approves a dangerous command when its category IS enabled", () => {
@@ -275,13 +296,17 @@ describe("PolicyEngine — sandbox auto-approve", () => {
       autoApproves: (cat) => cat === "destructive_fs",
     }
     const engine = new PolicyEngine([classifier], allowNone, sandboxFsToo)
-    expect(engine.decide(shell("rm -rf build"), { sandboxed: true }).level).toBe("allow")
+    expect(
+      engine.decide(shell("rm -rf build"), { sandboxed: true }).level
+    ).toBe("allow")
   })
 
   it("NEVER downgrades hard_block, even sandboxed with an all-yes policy", () => {
     const sandboxAll: SandboxPolicyLookup = { autoApproves: () => true }
     const engine = new PolicyEngine([classifier], allowNone, sandboxAll)
-    expect(engine.decide(shell("rm -rf /"), { sandboxed: true }).level).toBe("hard_block")
+    expect(engine.decide(shell("rm -rf /"), { sandboxed: true }).level).toBe(
+      "hard_block"
+    )
   })
 })
 
@@ -314,6 +339,8 @@ describe("DelegationClassifier", () => {
     }
     const allowNone: AllowlistLookup = { isAllowed: () => false }
     const engine = new PolicyEngine([dc], allowNone, sandboxRealistic)
-    expect(engine.decide(delegate(), { sandboxed: true }).level).toBe("require_approval")
+    expect(engine.decide(delegate(), { sandboxed: true }).level).toBe(
+      "require_approval"
+    )
   })
 })

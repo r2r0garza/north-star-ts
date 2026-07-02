@@ -9,11 +9,19 @@ import { fallbackExtractor } from "./fallback-extractor"
 const REGISTRY: Extractor[] = [typeScriptExtractor, fallbackExtractor]
 
 // Pick the extractor for a file (always resolves — fallback is the catch-all).
-export function pickExtractor(file: { relPath: string; ext: string }): Extractor {
+export function pickExtractor(file: {
+  relPath: string
+  ext: string
+}): Extractor {
   for (const ex of REGISTRY) {
     if (ex.supports(file)) return ex
   }
   return fallbackExtractor
 }
 
-export type { Extractor, ExtractedDocument, ExtractedSymbol, ExtractableFile } from "./types"
+export type {
+  Extractor,
+  ExtractedDocument,
+  ExtractedSymbol,
+  ExtractableFile,
+} from "./types"

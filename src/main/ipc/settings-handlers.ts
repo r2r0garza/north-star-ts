@@ -17,7 +17,9 @@ export function registerSettingsHandlers(): void {
     settingsService.setExecution(next)
   )
 
-  ipcMain.handle("settings:getPermissions", () => settingsService.getPermissions())
+  ipcMain.handle("settings:getPermissions", () =>
+    settingsService.getPermissions()
+  )
   ipcMain.handle("settings:setPermissions", (_e, next: PermissionSettings) =>
     settingsService.setPermissions(next)
   )

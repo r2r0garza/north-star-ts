@@ -135,7 +135,10 @@ function loadExecution(): ExecutionSettings {
         sandbox: {
           autoApprove: parsed.sandbox?.autoApprove ?? base.sandbox.autoApprove,
           prompted: parsed.sandbox?.prompted ?? base.sandbox.prompted,
-          categories: { ...base.sandbox.categories, ...parsed.sandbox?.categories },
+          categories: {
+            ...base.sandbox.categories,
+            ...parsed.sandbox?.categories,
+          },
         },
       }
       return executionCache
@@ -193,9 +196,12 @@ function loadIndexing(): IndexingSettings {
       const parsed = JSON.parse(raw) as Partial<IndexingSettings>
       indexingCache = {
         autoIndexNewWorkspaces:
-          parsed.autoIndexNewWorkspaces ?? DEFAULT_INDEXING.autoIndexNewWorkspaces,
-        useIndexForContext: parsed.useIndexForContext ?? DEFAULT_INDEXING.useIndexForContext,
-        includeEmbeddings: parsed.includeEmbeddings ?? DEFAULT_INDEXING.includeEmbeddings,
+          parsed.autoIndexNewWorkspaces ??
+          DEFAULT_INDEXING.autoIndexNewWorkspaces,
+        useIndexForContext:
+          parsed.useIndexForContext ?? DEFAULT_INDEXING.useIndexForContext,
+        includeEmbeddings:
+          parsed.includeEmbeddings ?? DEFAULT_INDEXING.includeEmbeddings,
       }
       return indexingCache
     } catch {

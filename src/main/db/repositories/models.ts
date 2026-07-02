@@ -32,15 +32,17 @@ function toModel(row: ModelRow): ModelEntry {
 }
 
 export function getModel(id: string): ModelEntry | undefined {
-  const row = getDb()
-    .prepare("SELECT * FROM models WHERE id = ?")
-    .get(id) as ModelRow | undefined
+  const row = getDb().prepare("SELECT * FROM models WHERE id = ?").get(id) as
+    | ModelRow
+    | undefined
   return row ? toModel(row) : undefined
 }
 
 export function listModels(accountId: string): ModelEntry[] {
   const rows = getDb()
-    .prepare("SELECT * FROM models WHERE account_id = ? ORDER BY created_at ASC")
+    .prepare(
+      "SELECT * FROM models WHERE account_id = ? ORDER BY created_at ASC"
+    )
     .all(accountId) as ModelRow[]
   return rows.map(toModel)
 }
@@ -66,7 +68,15 @@ export function addModel(input: AddModelInput): ModelEntry {
       `INSERT INTO models (id, account_id, model_id, model_name, origin, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?)`
     )
-    .run(id, input.accountId, input.modelId, input.modelName ?? null, input.origin ?? "manual", now, now)
+    .run(
+      id,
+      input.accountId,
+      input.modelId,
+      input.modelName ?? null,
+      input.origin ?? "manual",
+      now,
+      now
+    )
   return getModel(id)!
 }
 
@@ -90,7 +100,9 @@ export function updateModel(
     sets.push("updated_at = ?")
     args.push(Date.now())
     args.push(id)
-    getDb().prepare(`UPDATE models SET ${sets.join(", ")} WHERE id = ?`).run(...args)
+    getDb()
+      .prepare(`UPDATE models SET ${sets.join(", ")} WHERE id = ?`)
+      .run(...args)
   }
   return getModel(id)!
 }
@@ -103,7 +115,10 @@ export function deleteModel(id: string): void {
 // `origin:'gateway'` if new; existing rows (any origin) are left untouched, so a
 // user-added or renamed id survives a re-import. Returns the merged list. The
 // caller decides what to do on fetch failure — this only ever adds.
-export function mergeGatewayModels(accountId: string, modelIds: string[]): ModelEntry[] {
+export function mergeGatewayModels(
+  accountId: string,
+  modelIds: string[]
+): ModelEntry[] {
   const db = getDb()
   const now = Date.now()
   const tx = db.transaction(() => {

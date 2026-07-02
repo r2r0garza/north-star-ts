@@ -33,7 +33,11 @@ beforeEach(() => {
 
 describe.skipIf(!sqliteLoads)("provider-accounts repo", () => {
   it("creates an account with no key (hasKey false)", () => {
-    const a = createAccount({ provider: "portkey", displayName: "Work", baseUrl: "https://x/v1" })
+    const a = createAccount({
+      provider: "portkey",
+      displayName: "Work",
+      baseUrl: "https://x/v1",
+    })
     expect(a.provider).toBe("portkey")
     expect(a.hasKey).toBe(false)
     expect(getAccount(a.id)?.baseUrl).toBe("https://x/v1")
@@ -44,9 +48,9 @@ describe.skipIf(!sqliteLoads)("provider-accounts repo", () => {
     setEncryptedKey(a.id, Buffer.from([1, 2, 3, 4]))
     // The public shape exposes only hasKey, not the ciphertext.
     expect(getAccount(a.id)?.hasKey).toBe(true)
-    expect(getAccount(a.id) as unknown as Record<string, unknown>).not.toHaveProperty(
-      "encrypted_key"
-    )
+    expect(
+      getAccount(a.id) as unknown as Record<string, unknown>
+    ).not.toHaveProperty("encrypted_key")
     // The raw blob is only reachable via the dedicated accessor.
     expect(getEncryptedKey(a.id)).toEqual(Buffer.from([1, 2, 3, 4]))
   })

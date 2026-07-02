@@ -20,7 +20,11 @@ export type {
 export type { TaskEventPayload, TaskLiveEvent } from "../../preload/index"
 
 // ask_user_question types, surfaced for the QuestionPanel.
-export type { Question, QuestionOption, QuestionAnswer } from "../../preload/index"
+export type {
+  Question,
+  QuestionOption,
+  QuestionAnswer,
+} from "../../preload/index"
 
 // Settings types, surfaced for the Settings pane.
 export type {
@@ -36,7 +40,11 @@ export type {
 } from "../../preload/index"
 
 // Workspace indexing types (plan 008), surfaced for the status strip + settings.
-export type { IndexStatus, IndexPriority, IndexStage } from "../../preload/index"
+export type {
+  IndexStatus,
+  IndexPriority,
+  IndexStage,
+} from "../../preload/index"
 
 // LLM provider/model types, surfaced for the Providers/Models tabs + composer.
 export type {

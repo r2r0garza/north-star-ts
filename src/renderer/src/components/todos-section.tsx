@@ -21,7 +21,9 @@ const STATUS_CLASS: Record<TodoStatus, string> = {
 
 // Items that still represent work to do (mirrors actionableTodos server-side).
 function actionable(todos: Todo[]): Todo[] {
-  return todos.filter((t) => t.status === "pending" || t.status === "in_progress")
+  return todos.filter(
+    (t) => t.status === "pending" || t.status === "in_progress"
+  )
 }
 
 // The Todos section of the Workspace Activity panel. Renders the active
@@ -56,7 +58,9 @@ export function TodosSection({
     // listTasks orders created_at DESC, so the first todo_run match is the
     // latest. No status filter on selection — a completed task must still show
     // its final fork list. Fall back to this conversation's todos when none.
-    const tasks = await window.cowork.db.tasks.list({ sourceConversationId: conversationId })
+    const tasks = await window.cowork.db.tasks.list({
+      sourceConversationId: conversationId,
+    })
     const todoRun = tasks.find(
       (t) =>
         typeof t.input === "object" &&
@@ -105,10 +109,16 @@ export function TodosSection({
   }
 
   if (!conversationId) {
-    return <p className="px-2 py-1.5 text-xs text-muted-foreground">No session selected.</p>
+    return (
+      <p className="px-2 py-1.5 text-xs text-muted-foreground">
+        No session selected.
+      </p>
+    )
   }
   if (todos.length === 0) {
-    return <p className="px-2 py-1.5 text-xs text-muted-foreground">No tasks yet.</p>
+    return (
+      <p className="px-2 py-1.5 text-xs text-muted-foreground">No tasks yet.</p>
+    )
   }
 
   const remaining = actionable(todos).length
@@ -118,10 +128,12 @@ export function TodosSection({
       <ul className="flex flex-col gap-1">
         {todos.map((t) => (
           <li key={t.itemId} className="flex gap-1.5 text-xs">
-            <span className="select-none font-mono text-muted-foreground">
+            <span className="font-mono text-muted-foreground select-none">
               {MARKERS[t.status] ?? "[?]"}
             </span>
-            <span className={cn("min-w-0 flex-1", STATUS_CLASS[t.status])}>{t.content}</span>
+            <span className={cn("min-w-0 flex-1", STATUS_CLASS[t.status])}>
+              {t.content}
+            </span>
           </li>
         ))}
       </ul>

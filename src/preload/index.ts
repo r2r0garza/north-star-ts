@@ -26,14 +26,23 @@ import type {
 import type { RuntimeStatus } from "../main/agent/env/runtime-check"
 import type { CreateAccountInput } from "../main/db/repositories/provider-accounts"
 import type { AddModelInput } from "../main/db/repositories/models"
-import type { AccountView, AccountWithModels } from "../main/ipc/provider-handlers"
+import type {
+  AccountView,
+  AccountWithModels,
+} from "../main/ipc/provider-handlers"
 import type { ModelEntry, IndexPriority } from "../main/db/types"
 import type { IndexStatus } from "../main/ipc/index-handlers"
 
 // Streaming events emitted during a chat turn (mirrors ChatEvent in the agent).
 export type ChatEvent =
   | { type: "token"; delta: string }
-  | { type: "tool"; phase: "start"; id: string; name: string; arguments: string }
+  | {
+      type: "tool"
+      phase: "start"
+      id: string
+      name: string
+      arguments: string
+    }
   | { type: "tool"; phase: "done"; id: string; name: string; result: string }
   | {
       type: "approval"
@@ -61,7 +70,12 @@ export type RunnerLifecycleEvent =
   | { type: "task_failed"; error: string }
   | { type: "attempt"; n: number; reason: string }
   // Deterministic indexing progress (plan 008): scanned/total for the strip.
-  | { type: "index_progress"; stage: string; filesScanned: number; filesTotal: number }
+  | {
+      type: "index_progress"
+      stage: string
+      filesScanned: number
+      filesTotal: number
+    }
 
 // The full event vocabulary a task emits, live or replayed from task_events.
 export type TaskEventPayload = ChatEvent | RunnerLifecycleEvent
@@ -69,7 +83,11 @@ export type TaskEventPayload = ChatEvent | RunnerLifecycleEvent
 // A live task event, as forwarded over the "task:event" channel. `id` is the
 // task_events row id (0 for ephemeral token deltas, which aren't persisted), so
 // the renderer can dedupe the live tail against a db.taskEvents.list replay.
-export type TaskLiveEvent = { taskId: string; event: TaskEventPayload; id: number }
+export type TaskLiveEvent = {
+  taskId: string
+  event: TaskEventPayload
+  id: number
+}
 
 // The typed API exposed to the renderer as `window.cowork`.
 // This is the ONLY surface the UI can use to reach the main process.
@@ -86,14 +104,17 @@ const api = {
     },
     onEvent?: (event: ChatEvent) => void
   ) => {
-    const listener = (_e: IpcRendererEvent, event: ChatEvent) => onEvent?.(event)
+    const listener = (_e: IpcRendererEvent, event: ChatEvent) =>
+      onEvent?.(event)
     ipcRenderer.on("chat:event", listener)
     const done = () => ipcRenderer.removeListener("chat:event", listener)
-    return (ipcRenderer.invoke("chat", req) as Promise<{
-      content?: string
-      error?: string
-      stopped?: boolean
-    }>).finally(done)
+    return (
+      ipcRenderer.invoke("chat", req) as Promise<{
+        content?: string
+        error?: string
+        stopped?: boolean
+      }>
+    ).finally(done)
   },
   // Cancel the in-flight turn for a conversation (the Stop button). The chat()
   // promise above then resolves with `{ stopped: true }`.
@@ -131,7 +152,10 @@ const api = {
     // "Run all in background" button, plan 016). Snapshots the list server-side
     // and enqueues a `todo_run` task. Resolves null when there's nothing to run.
     startTodos: (conversationId: string) =>
-      ipcRenderer.invoke("task:start-todos", conversationId) as Promise<Task | null>,
+      ipcRenderer.invoke(
+        "task:start-todos",
+        conversationId
+      ) as Promise<Task | null>,
     // Manually resume an interrupted task (e.g. one reconciled after a crash).
     resume: (taskId: string) =>
       ipcRenderer.invoke("task:resume", taskId) as Promise<void>,
@@ -146,17 +170,24 @@ const api = {
     // Resolve a gate a paused (waiting_for_approval) task is blocked on. The
     // requestId comes from the task's approval/question event. approve/deny gate
     // a tool action; answer responds to an ask_user_question.
-    approve: (payload: { taskId: string; requestId: string; remember?: "workspace" }) =>
-      ipcRenderer.invoke("task:approve", payload) as Promise<void>,
+    approve: (payload: {
+      taskId: string
+      requestId: string
+      remember?: "workspace"
+    }) => ipcRenderer.invoke("task:approve", payload) as Promise<void>,
     deny: (payload: { taskId: string; requestId: string }) =>
       ipcRenderer.invoke("task:deny", payload) as Promise<void>,
-    answer: (payload: { taskId: string; requestId: string; answers: QuestionAnswer[] }) =>
-      ipcRenderer.invoke("task:answer", payload) as Promise<void>,
+    answer: (payload: {
+      taskId: string
+      requestId: string
+      answers: QuestionAnswer[]
+    }) => ipcRenderer.invoke("task:answer", payload) as Promise<void>,
     // Subscribe to the live event tail for ALL tasks. Returns an unsubscribe fn.
     // The callback fires for every running task's tokens, tool activity, and
     // status changes; filter by `taskId` in the handler.
     onEvent: (cb: (event: TaskLiveEvent) => void) => {
-      const listener = (_e: IpcRendererEvent, payload: TaskLiveEvent) => cb(payload)
+      const listener = (_e: IpcRendererEvent, payload: TaskLiveEvent) =>
+        cb(payload)
       ipcRenderer.on("task:event", listener)
       void ipcRenderer.invoke("task:subscribe")
       return () => {
@@ -198,11 +229,20 @@ const api = {
         title?: string | null
         accountId?: string | null
         modelId?: string | null
-      }) => ipcRenderer.invoke("db:conversations:create", input) as Promise<Conversation>,
+      }) =>
+        ipcRenderer.invoke(
+          "db:conversations:create",
+          input
+        ) as Promise<Conversation>,
       list: (opts?: { mode?: Mode }) =>
-        ipcRenderer.invoke("db:conversations:list", opts) as Promise<Conversation[]>,
+        ipcRenderer.invoke("db:conversations:list", opts) as Promise<
+          Conversation[]
+        >,
       get: (id: string) =>
-        ipcRenderer.invoke("db:conversations:get", id) as Promise<Conversation | null>,
+        ipcRenderer.invoke(
+          "db:conversations:get",
+          id
+        ) as Promise<Conversation | null>,
       update: (
         id: string,
         patch: {
@@ -211,13 +251,20 @@ const api = {
           accountId?: string | null
           modelId?: string | null
         }
-      ) => ipcRenderer.invoke("db:conversations:update", id, patch) as Promise<Conversation>,
+      ) =>
+        ipcRenderer.invoke(
+          "db:conversations:update",
+          id,
+          patch
+        ) as Promise<Conversation>,
       delete: (id: string) =>
         ipcRenderer.invoke("db:conversations:delete", id) as Promise<void>,
     },
     messages: {
       list: (conversationId: string) =>
-        ipcRenderer.invoke("db:messages:list", conversationId) as Promise<Message[]>,
+        ipcRenderer.invoke("db:messages:list", conversationId) as Promise<
+          Message[]
+        >,
     },
     todos: {
       // Read the conversation's task list (rendered by the Todos panel). Writes
@@ -226,40 +273,76 @@ const api = {
         ipcRenderer.invoke("db:todos:list", conversationId) as Promise<Todo[]>,
     },
     workspaces: {
-      list: () => ipcRenderer.invoke("db:workspaces:list") as Promise<Workspace[]>,
+      list: () =>
+        ipcRenderer.invoke("db:workspaces:list") as Promise<Workspace[]>,
       upsert: (path: string, name?: string) =>
-        ipcRenderer.invoke("db:workspaces:upsert", path, name) as Promise<Workspace>,
+        ipcRenderer.invoke(
+          "db:workspaces:upsert",
+          path,
+          name
+        ) as Promise<Workspace>,
       update: (id: string, patch: { name?: string }) =>
-        ipcRenderer.invoke("db:workspaces:update", id, patch) as Promise<Workspace>,
+        ipcRenderer.invoke(
+          "db:workspaces:update",
+          id,
+          patch
+        ) as Promise<Workspace>,
       delete: (id: string) =>
         ipcRenderer.invoke("db:workspaces:delete", id) as Promise<void>,
     },
     tasks: {
-      create: (input: { conversationId: string; title?: string | null; status?: TaskStatus; input?: unknown }) =>
-        ipcRenderer.invoke("db:tasks:create", input) as Promise<Task>,
+      create: (input: {
+        conversationId: string
+        title?: string | null
+        status?: TaskStatus
+        input?: unknown
+      }) => ipcRenderer.invoke("db:tasks:create", input) as Promise<Task>,
       list: (opts?: {
         conversationId?: string
         sourceConversationId?: string
         status?: TaskStatus
       }) => ipcRenderer.invoke("db:tasks:list", opts) as Promise<Task[]>,
-      get: (id: string) => ipcRenderer.invoke("db:tasks:get", id) as Promise<Task | null>,
-      update: (id: string, patch: { title?: string | null; status?: TaskStatus; result?: unknown; error?: string | null }) =>
-        ipcRenderer.invoke("db:tasks:update", id, patch) as Promise<Task>,
-      delete: (id: string) => ipcRenderer.invoke("db:tasks:delete", id) as Promise<void>,
+      get: (id: string) =>
+        ipcRenderer.invoke("db:tasks:get", id) as Promise<Task | null>,
+      update: (
+        id: string,
+        patch: {
+          title?: string | null
+          status?: TaskStatus
+          result?: unknown
+          error?: string | null
+        }
+      ) => ipcRenderer.invoke("db:tasks:update", id, patch) as Promise<Task>,
+      delete: (id: string) =>
+        ipcRenderer.invoke("db:tasks:delete", id) as Promise<void>,
     },
     taskEvents: {
       append: (input: { taskId: string; type: string; payload?: unknown }) =>
         ipcRenderer.invoke("db:taskEvents:append", input) as Promise<TaskEvent>,
       list: (taskId: string, opts?: { afterId?: number; limit?: number }) =>
-        ipcRenderer.invoke("db:taskEvents:list", taskId, opts) as Promise<TaskEvent[]>,
+        ipcRenderer.invoke("db:taskEvents:list", taskId, opts) as Promise<
+          TaskEvent[]
+        >,
     },
     checkpoints: {
-      create: (input: { taskId: string; label?: string | null; state: unknown }) =>
-        ipcRenderer.invoke("db:checkpoints:create", input) as Promise<TaskCheckpoint>,
+      create: (input: {
+        taskId: string
+        label?: string | null
+        state: unknown
+      }) =>
+        ipcRenderer.invoke(
+          "db:checkpoints:create",
+          input
+        ) as Promise<TaskCheckpoint>,
       list: (taskId: string) =>
-        ipcRenderer.invoke("db:checkpoints:list", taskId) as Promise<TaskCheckpoint[]>,
+        ipcRenderer.invoke("db:checkpoints:list", taskId) as Promise<
+          TaskCheckpoint[]
+        >,
       get: (id: string) =>
-        ipcRenderer.invoke("db:checkpoints:get", id) as Promise<TaskCheckpoint | null>,
+        ipcRenderer.invoke(
+          "db:checkpoints:get",
+          id
+        ) as Promise<TaskCheckpoint | null>,
       delete: (id: string) =>
         ipcRenderer.invoke("db:checkpoints:delete", id) as Promise<void>,
     },
@@ -268,8 +351,15 @@ const api = {
         ipcRenderer.invoke("db:approvals:create", input) as Promise<Approval>,
       list: (opts?: { taskId?: string; status?: ApprovalStatus }) =>
         ipcRenderer.invoke("db:approvals:list", opts) as Promise<Approval[]>,
-      resolve: (id: string, decision: { status: "approved" | "denied"; decision?: unknown }) =>
-        ipcRenderer.invoke("db:approvals:resolve", id, decision) as Promise<Approval>,
+      resolve: (
+        id: string,
+        decision: { status: "approved" | "denied"; decision?: unknown }
+      ) =>
+        ipcRenderer.invoke(
+          "db:approvals:resolve",
+          id,
+          decision
+        ) as Promise<Approval>,
     },
   },
 
@@ -280,15 +370,26 @@ const api = {
     getExecution: () =>
       ipcRenderer.invoke("settings:getExecution") as Promise<ExecutionSettings>,
     setExecution: (next: ExecutionSettings) =>
-      ipcRenderer.invoke("settings:setExecution", next) as Promise<ExecutionSettings>,
+      ipcRenderer.invoke(
+        "settings:setExecution",
+        next
+      ) as Promise<ExecutionSettings>,
     getPermissions: () =>
-      ipcRenderer.invoke("settings:getPermissions") as Promise<PermissionSettings>,
+      ipcRenderer.invoke(
+        "settings:getPermissions"
+      ) as Promise<PermissionSettings>,
     setPermissions: (next: PermissionSettings) =>
-      ipcRenderer.invoke("settings:setPermissions", next) as Promise<PermissionSettings>,
+      ipcRenderer.invoke(
+        "settings:setPermissions",
+        next
+      ) as Promise<PermissionSettings>,
     getIndexing: () =>
       ipcRenderer.invoke("settings:getIndexing") as Promise<IndexingSettings>,
     setIndexing: (next: IndexingSettings) =>
-      ipcRenderer.invoke("settings:setIndexing", next) as Promise<IndexingSettings>,
+      ipcRenderer.invoke(
+        "settings:setIndexing",
+        next
+      ) as Promise<IndexingSettings>,
     checkRuntimes: (recheck?: boolean) =>
       ipcRenderer.invoke("settings:checkRuntimes", recheck) as Promise<{
         docker: RuntimeStatus
@@ -325,11 +426,16 @@ const api = {
   providers: {
     // Whether secure (keychain) key storage is usable on this machine.
     secureStorageAvailable: () =>
-      ipcRenderer.invoke("providers:secureStorageAvailable") as Promise<boolean>,
+      ipcRenderer.invoke(
+        "providers:secureStorageAvailable"
+      ) as Promise<boolean>,
     list: () => ipcRenderer.invoke("providers:list") as Promise<AccountView[]>,
     create: (input: CreateAccountInput) =>
       ipcRenderer.invoke("providers:create", input) as Promise<AccountView>,
-    update: (id: string, patch: { displayName?: string; baseUrl?: string | null }) =>
+    update: (
+      id: string,
+      patch: { displayName?: string; baseUrl?: string | null }
+    ) =>
       ipcRenderer.invoke("providers:update", id, patch) as Promise<AccountView>,
     delete: (id: string) =>
       ipcRenderer.invoke("providers:delete", id) as Promise<void>,
@@ -342,17 +448,22 @@ const api = {
     clearKey: (id: string) =>
       ipcRenderer.invoke("providers:clearKey", id) as Promise<void>,
     getMaskedKey: (id: string) =>
-      ipcRenderer.invoke("providers:getMaskedKey", id) as Promise<string | null>,
+      ipcRenderer.invoke("providers:getMaskedKey", id) as Promise<
+        string | null
+      >,
     // Every account paired with its models — for the composer's grouped picker.
     listWithModels: () =>
-      ipcRenderer.invoke("providers:listWithModels") as Promise<AccountWithModels[]>,
+      ipcRenderer.invoke("providers:listWithModels") as Promise<
+        AccountWithModels[]
+      >,
     // The DEFAULT provider/model for new conversations (per-conversation overrides
     // are stored on the conversation row via db.conversations.update).
     getDefault: () =>
       ipcRenderer.invoke("providers:getDefault") as Promise<LlmSettings>,
     setDefault: (next: LlmSettings) =>
       ipcRenderer.invoke("providers:setDefault", next) as Promise<LlmSettings>,
-    hasActive: () => ipcRenderer.invoke("providers:hasActive") as Promise<boolean>,
+    hasActive: () =>
+      ipcRenderer.invoke("providers:hasActive") as Promise<boolean>,
   },
 
   // Models belonging to a provider account.
@@ -361,9 +472,12 @@ const api = {
       ipcRenderer.invoke("models:list", accountId) as Promise<ModelEntry[]>,
     add: (input: AddModelInput) =>
       ipcRenderer.invoke("models:add", input) as Promise<ModelEntry>,
-    update: (id: string, patch: { modelId?: string; modelName?: string | null }) =>
-      ipcRenderer.invoke("models:update", id, patch) as Promise<ModelEntry>,
-    delete: (id: string) => ipcRenderer.invoke("models:delete", id) as Promise<void>,
+    update: (
+      id: string,
+      patch: { modelId?: string; modelName?: string | null }
+    ) => ipcRenderer.invoke("models:update", id, patch) as Promise<ModelEntry>,
+    delete: (id: string) =>
+      ipcRenderer.invoke("models:delete", id) as Promise<void>,
     // Fetch the gateway catalog and merge it in. { ok } / { ok:false, error }.
     importFromGateway: (accountId: string) =>
       ipcRenderer.invoke("models:importFromGateway", accountId) as Promise<{
@@ -394,7 +508,11 @@ export type {
   Workspace,
 } from "../main/db/types"
 // Re-export the ask_user_question types so the renderer can type the panel.
-export type { Question, QuestionOption, QuestionAnswer } from "../main/agent/tools/types"
+export type {
+  Question,
+  QuestionOption,
+  QuestionAnswer,
+} from "../main/agent/tools/types"
 // Re-export settings types so the renderer can type the Settings pane.
 export type {
   ExecutionSettings,
@@ -407,8 +525,16 @@ export type {
 } from "../main/settings/service"
 export type { RuntimeStatus, Runtime } from "../main/agent/env/runtime-check"
 // LLM provider/model types for the Providers & Models tabs and the composer.
-export type { Provider, ModelOrigin, ProviderAccount, ModelEntry } from "../main/db/types"
-export type { AccountView, AccountWithModels } from "../main/ipc/provider-handlers"
+export type {
+  Provider,
+  ModelOrigin,
+  ProviderAccount,
+  ModelEntry,
+} from "../main/db/types"
+export type {
+  AccountView,
+  AccountWithModels,
+} from "../main/ipc/provider-handlers"
 // Workspace indexing types (plan 008) for the status strip + settings tab.
 export type { IndexPriority, IndexStage } from "../main/db/types"
 export type { IndexStatus } from "../main/ipc/index-handlers"

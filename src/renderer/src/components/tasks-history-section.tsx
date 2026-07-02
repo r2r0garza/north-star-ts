@@ -16,9 +16,17 @@ const STATUS_ICON: Record<
   string,
   { Icon: typeof CheckCircle2; className: string; label: string }
 > = {
-  completed: { Icon: CheckCircle2, className: "text-primary", label: "Completed" },
+  completed: {
+    Icon: CheckCircle2,
+    className: "text-primary",
+    label: "Completed",
+  },
   failed: { Icon: CircleAlert, className: "text-destructive", label: "Failed" },
-  cancelled: { Icon: Ban, className: "text-muted-foreground", label: "Cancelled" },
+  cancelled: {
+    Icon: Ban,
+    className: "text-muted-foreground",
+    label: "Cancelled",
+  },
 }
 
 // The History section of the Workspace Activity panel. Mirrors tasks-section's
@@ -42,7 +50,9 @@ export function TasksHistorySection({
       setTruncated(false)
       return
     }
-    const rows = await window.cowork.db.tasks.list({ sourceConversationId: conversationId })
+    const rows = await window.cowork.db.tasks.list({
+      sourceConversationId: conversationId,
+    })
     // Rows arrive ORDER BY created_at DESC; filter to terminal then cap.
     const terminal = rows.filter((t) => TERMINAL.includes(t.status))
     setTruncated(terminal.length > CAP)
@@ -61,7 +71,11 @@ export function TasksHistorySection({
     if (!conversationId) return
     const unsubscribe = window.cowork.tasks.onEvent((payload) => {
       const t = payload.event.type
-      if (t === "task_completed" || t === "task_failed" || t === "status_change") {
+      if (
+        t === "task_completed" ||
+        t === "task_failed" ||
+        t === "status_change"
+      ) {
         void refetchRef.current()
       }
     })
@@ -69,10 +83,18 @@ export function TasksHistorySection({
   }, [conversationId])
 
   if (!conversationId) {
-    return <p className="px-2 py-1.5 text-xs text-muted-foreground">No session selected.</p>
+    return (
+      <p className="px-2 py-1.5 text-xs text-muted-foreground">
+        No session selected.
+      </p>
+    )
   }
   if (tasks.length === 0) {
-    return <p className="px-2 py-1.5 text-xs text-muted-foreground">No past tasks.</p>
+    return (
+      <p className="px-2 py-1.5 text-xs text-muted-foreground">
+        No past tasks.
+      </p>
+    )
   }
 
   return (
@@ -103,7 +125,9 @@ export function TasksHistorySection({
         )
       })}
       {truncated && (
-        <p className="px-1.5 pt-1 text-xs text-muted-foreground">Showing last {CAP}</p>
+        <p className="px-1.5 pt-1 text-xs text-muted-foreground">
+          Showing last {CAP}
+        </p>
       )}
     </div>
   )

@@ -81,7 +81,9 @@ export async function loadGitignore(root: string): Promise<Ignore | undefined> {
 // gitignored paths and oversized files. Shared by the search tool and the
 // workspace indexer so both honor the same ignore rules. Unreadable dirs/files
 // are skipped rather than aborting the whole walk.
-export async function* walkFiles(opts: WalkOptions): AsyncGenerator<WalkedFile> {
+export async function* walkFiles(
+  opts: WalkOptions
+): AsyncGenerator<WalkedFile> {
   const skip = new Set(opts.skipDirs ?? DEFAULT_SKIP_DIRS)
   const ig = opts.gitignore
 

@@ -95,7 +95,12 @@ export function captureSpawn(
       })
     })
     child.on("close", (code, signal) => {
-      finish({ stdout: Buffer.concat(chunks), exitCode: code, signal, timedOut })
+      finish({
+        stdout: Buffer.concat(chunks),
+        exitCode: code,
+        signal,
+        timedOut,
+      })
     })
   })
 }

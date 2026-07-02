@@ -16,7 +16,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty"
+import {
+  Empty,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyTitle,
+} from "@/components/ui/empty"
 import { Spinner } from "@/components/ui/spinner"
 import { ChevronDown, Plus, Trash2, X } from "lucide-react"
 import { cn } from "@/lib/utils"
@@ -91,7 +96,8 @@ type LlmState = ReturnType<typeof useLlmSettings>
 
 // A section that grows/scrolls inside the sheet. The tab itself is the flex
 // child; this scrolls its overflow so long provider/model lists stay reachable.
-const TAB_SCROLL = "flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto py-2 pr-1"
+const TAB_SCROLL =
+  "flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto py-2 pr-1"
 
 // ── Providers tab ────────────────────────────────────────────────────────────
 
@@ -121,8 +127,8 @@ export function ProvidersTab({ state }: { state: LlmState }) {
     <TabsContent value="providers" className={TAB_SCROLL}>
       {!secureOk && (
         <p className="rounded-md bg-destructive/10 px-3 py-2 text-xs text-destructive">
-          Secure key storage (OS keychain) is unavailable on this machine, so API keys can't be
-          saved. Keys are never stored in plaintext.
+          Secure key storage (OS keychain) is unavailable on this machine, so
+          API keys can't be saved. Keys are never stored in plaintext.
         </p>
       )}
 
@@ -163,8 +169,9 @@ export function ProvidersTab({ state }: { state: LlmState }) {
               </SelectContent>
             </Select>
             <FieldDescription>
-              The provider and model new conversations start with — pick its default model in the
-              Models tab. Each conversation can switch model from the composer.
+              The provider and model new conversations start with — pick its
+              default model in the Models tab. Each conversation can switch
+              model from the composer.
             </FieldDescription>
           </Field>
 
@@ -224,7 +231,9 @@ function AccountCard({
 
   async function saveBaseUrl() {
     if (baseUrl === (account.baseUrl ?? "")) return
-    await window.cowork.providers.update(account.id, { baseUrl: baseUrl || null })
+    await window.cowork.providers.update(account.id, {
+      baseUrl: baseUrl || null,
+    })
     await onChange()
   }
 
@@ -232,7 +241,10 @@ function AccountCard({
     if (!keyInput.trim()) return
     setBusy(true)
     setError(null)
-    const res = await window.cowork.providers.setKey(account.id, keyInput.trim())
+    const res = await window.cowork.providers.setKey(
+      account.id,
+      keyInput.trim()
+    )
     setBusy(false)
     if (!res.ok) {
       setError(res.error ?? "Failed to store key.")
@@ -263,7 +275,9 @@ function AccountCard({
               !open && "-rotate-90"
             )}
           />
-          <span className="truncate text-sm font-medium">{account.displayName}</span>
+          <span className="truncate text-sm font-medium">
+            {account.displayName}
+          </span>
           <Badge variant="secondary">{providerLabel(account.provider)}</Badge>
           {!account.hasKey && (
             <Badge variant="destructive" className="shrink-0">
@@ -310,7 +324,11 @@ function AccountCard({
                 disabled={!secureOk}
                 autoComplete="off"
               />
-              <Button size="sm" onClick={saveKey} disabled={!secureOk || busy || !keyInput.trim()}>
+              <Button
+                size="sm"
+                onClick={saveKey}
+                disabled={!secureOk || busy || !keyInput.trim()}
+              >
                 {busy ? <Spinner /> : "Save"}
               </Button>
               {account.hasKey && (
@@ -329,15 +347,28 @@ function AccountCard({
               <span className="font-mono text-sm text-muted-foreground">
                 {account.maskedKey ?? "•••• set"}
               </span>
-              <Button variant="outline" size="sm" onClick={() => setEditingKey(true)}>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setEditingKey(true)}
+              >
                 Replace
               </Button>
-              <Button variant="ghost" size="sm" className="text-destructive" onClick={clearKey}>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="text-destructive"
+                onClick={clearKey}
+              >
                 Clear
               </Button>
             </div>
           )}
-          {error && <FieldDescription className="text-destructive">{error}</FieldDescription>}
+          {error && (
+            <FieldDescription className="text-destructive">
+              {error}
+            </FieldDescription>
+          )}
         </Field>
       </CollapsibleContent>
     </Collapsible>
@@ -372,7 +403,10 @@ function NewAccountForm({
     <div className="flex flex-col gap-3 rounded-lg border border-dashed border-border p-3">
       <Field>
         <FieldLabel htmlFor="new-provider">Provider</FieldLabel>
-        <Select value={provider} onValueChange={(v) => setProvider(v as Provider)}>
+        <Select
+          value={provider}
+          onValueChange={(v) => setProvider(v as Provider)}
+        >
           <SelectTrigger id="new-provider">
             <SelectValue />
           </SelectTrigger>
@@ -429,7 +463,9 @@ export function ModelsTab({ state }: { state: LlmState }) {
   // Seed expansion once accounts load: active account open, rest collapsed.
   useEffect(() => {
     if (accounts == null || expanded != null) return
-    setExpanded(new Set(active?.activeAccountId ? [active.activeAccountId] : []))
+    setExpanded(
+      new Set(active?.activeAccountId ? [active.activeAccountId] : [])
+    )
   }, [accounts, active, expanded])
 
   const toggle = (id: string) =>
@@ -453,7 +489,9 @@ export function ModelsTab({ state }: { state: LlmState }) {
         <Empty>
           <EmptyHeader>
             <EmptyTitle>No providers configured</EmptyTitle>
-            <EmptyDescription>Add a provider in the Providers tab first.</EmptyDescription>
+            <EmptyDescription>
+              Add a provider in the Providers tab first.
+            </EmptyDescription>
           </EmptyHeader>
         </Empty>
       </TabsContent>
@@ -551,7 +589,9 @@ function AccountModelsSection({
             !open && "-rotate-90"
           )}
         />
-        <span className="truncate text-sm font-medium">{account.displayName}</span>
+        <span className="truncate text-sm font-medium">
+          {account.displayName}
+        </span>
         <Badge variant="secondary">{providerLabel(account.provider)}</Badge>
         {models && (
           <span className="ml-auto shrink-0 text-xs text-muted-foreground">
@@ -562,11 +602,18 @@ function AccountModelsSection({
 
       <CollapsibleContent className="flex flex-col gap-3 px-3 pb-3">
         <div className="flex justify-end">
-          <Button variant="outline" size="sm" onClick={runImport} disabled={importing}>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={runImport}
+            disabled={importing}
+          >
             {importing ? <Spinner /> : "Import from gateway"}
           </Button>
         </div>
-        {importError && <p className="text-xs text-destructive">{importError}</p>}
+        {importError && (
+          <p className="text-xs text-destructive">{importError}</p>
+        )}
 
         {models && models.length > 0 ? (
           <div className="flex flex-col gap-2">
@@ -574,7 +621,9 @@ function AccountModelsSection({
               <ModelRow
                 key={m.id}
                 model={m}
-                isActive={isActiveAccount && active?.activeModelId === m.modelId}
+                isActive={
+                  isActiveAccount && active?.activeModelId === m.modelId
+                }
                 onSelect={() => onSelectActive(m.modelId)}
                 onChange={loadModels}
               />
@@ -587,7 +636,9 @@ function AccountModelsSection({
         )}
 
         <div className="flex flex-col gap-2 rounded-lg border border-dashed border-border p-3">
-          <FieldLabel htmlFor={`new-model-${account.id}`}>Add a model</FieldLabel>
+          <FieldLabel htmlFor={`new-model-${account.id}`}>
+            Add a model
+          </FieldLabel>
           <Input
             id={`new-model-${account.id}`}
             value={newId}
@@ -599,7 +650,12 @@ function AccountModelsSection({
             onChange={(e) => setNewName(e.target.value)}
             placeholder="Custom display name (optional)"
           />
-          <Button size="sm" className="self-end" onClick={addModel} disabled={!newId.trim()}>
+          <Button
+            size="sm"
+            className="self-end"
+            onClick={addModel}
+            disabled={!newId.trim()}
+          >
             <Plus className="size-4" /> Add
           </Button>
         </div>
@@ -623,7 +679,9 @@ function ModelRow({
   const [name, setName] = useState(model.modelName ?? "")
 
   async function saveName() {
-    await window.cowork.models.update(model.id, { modelName: name.trim() || null })
+    await window.cowork.models.update(model.id, {
+      modelName: name.trim() || null,
+    })
     setEditing(false)
     await onChange()
   }

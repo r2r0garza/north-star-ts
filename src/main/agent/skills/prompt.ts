@@ -15,7 +15,8 @@ export function buildSkillsPrompt(skills: SkillMetadata[]): string {
         .filter(Boolean)
         .join(", ")
       let line = `- **${s.name}**: ${s.description}${annotations ? ` (${annotations})` : ""}`
-      if (s.allowedTools.length) line += `\n  → Recommended tools: ${s.allowedTools.join(", ")}`
+      if (s.allowedTools.length)
+        line += `\n  → Recommended tools: ${s.allowedTools.join(", ")}`
       line += `\n  → Call \`read_skill("${s.name}")\` for full instructions`
       return line
     })

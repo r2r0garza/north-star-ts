@@ -61,7 +61,10 @@ export async function resolveInWorkspaceReal(
     } catch (err) {
       // Re-throw our own escape error; ENOENT means this ancestor doesn't exist
       // yet, so step up to its parent and try again.
-      if (err instanceof Error && err.message.includes("outside the workspace")) {
+      if (
+        err instanceof Error &&
+        err.message.includes("outside the workspace")
+      ) {
         throw err
       }
       const parent = dirname(probe)

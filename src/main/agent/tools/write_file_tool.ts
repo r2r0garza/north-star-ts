@@ -29,8 +29,8 @@ export const writeFileTool: Tool = {
     function: {
       name: "write_file_tool",
       description:
-        "Write a file inside the workspace. mode \"create\" (default) creates or " +
-        "overwrites the file with `content`. mode \"append\" adds `content` to the " +
+        'Write a file inside the workspace. mode "create" (default) creates or ' +
+        'overwrites the file with `content`. mode "append" adds `content` to the ' +
         "end of the file (creating it if absent). Parent directories are created " +
         "automatically. Prefer edit_file_tool to modify an existing file. Use " +
         "create for small new files; for a large generated file, write it in " +
@@ -45,7 +45,8 @@ export const writeFileTool: Tool = {
           },
           content: {
             type: "string",
-            description: "The file content to write (the full file for create, or the chunk for append).",
+            description:
+              "The file content to write (the full file for create, or the chunk for append).",
           },
           mode: {
             type: "string",

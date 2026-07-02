@@ -30,13 +30,21 @@ function foldHomePrefix(command: string, home: string): string {
   if (!home) return command
   const components = home.split(/[/\\]+/).filter(Boolean)
   if (components.length < 2) return command
-  const escaped = components.map((c) => c.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+  const escaped = components.map((c) =>
+    c.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+  )
   const body = escaped.join("[/\\\\]+")
   // Optional leading separator, the home body, then a required path tail. The
   // tail's backslashes are normalized to `/` so multi-segment static patterns
   // (e.g. ~/.ssh/authorized_keys) match regardless of original separator.
-  const re = new RegExp(`[/\\\\]*${body}((?:[/\\\\][^/\\\\\\s'"\`;|&<>()]*)+)`, "g")
-  return command.replace(re, (_m, tail: string) => "~" + tail.replace(/\\/g, "/"))
+  const re = new RegExp(
+    `[/\\\\]*${body}((?:[/\\\\][^/\\\\\\s'"\`;|&<>()]*)+)`,
+    "g"
+  )
+  return command.replace(
+    re,
+    (_m, tail: string) => "~" + tail.replace(/\\/g, "/")
+  )
 }
 
 export function normalizeCommand(command: string): string {

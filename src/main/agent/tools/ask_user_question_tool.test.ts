@@ -7,12 +7,17 @@ import type { AskResult, Question } from "./types"
 const validQuestion = {
   question: "Which database should we use?",
   header: "Database",
-  options: [{ label: "Postgres" }, { label: "SQLite", description: "embedded" }],
+  options: [
+    { label: "Postgres" },
+    { label: "SQLite", description: "embedded" },
+  ],
 }
 
 // Build a ctx whose `ask` resolves with the given result and records what it saw.
 function ctxWith(result: AskResult) {
-  const ask = vi.fn<(q: Question[]) => Promise<AskResult>>().mockResolvedValue(result)
+  const ask = vi
+    .fn<(q: Question[]) => Promise<AskResult>>()
+    .mockResolvedValue(result)
   const ctx: ToolContext = { workspace: "", ask }
   return { ctx, ask }
 }
@@ -43,7 +48,11 @@ describe("ask_user_question", () => {
   it("rejects a question with fewer than 2 options", async () => {
     const { ctx } = ctxWith({ status: "answered", answers: [] })
     const result = await askUserQuestionTool.execute(
-      { questions: [{ question: "Pick", header: "x", options: [{ label: "only" }] }] },
+      {
+        questions: [
+          { question: "Pick", header: "x", options: [{ label: "only" }] },
+        ],
+      },
       ctx
     )
     expect(result).toContain("ERROR[bad_args]")
@@ -54,7 +63,10 @@ describe("ask_user_question", () => {
       status: "answered",
       answers: [{ selected: ["Postgres"] }],
     })
-    const result = await askUserQuestionTool.execute({ questions: [validQuestion] }, ctx)
+    const result = await askUserQuestionTool.execute(
+      { questions: [validQuestion] },
+      ctx
+    )
 
     // ask saw a clean Question with multiSelect defaulted to false.
     expect(ask).toHaveBeenCalledOnce()
@@ -78,12 +90,18 @@ describe("ask_user_question", () => {
       status: "answered",
       answers: [{ selected: [], other: "Use DynamoDB" }],
     })
-    const result = await askUserQuestionTool.execute({ questions: [validQuestion] }, ctx)
+    const result = await askUserQuestionTool.execute(
+      { questions: [validQuestion] },
+      ctx
+    )
     expect(JSON.parse(result).answers[0].other).toBe("Use DynamoDB")
   })
 
   it("drops blank options and synthesizes a header when omitted", async () => {
-    const { ctx, ask } = ctxWith({ status: "answered", answers: [{ selected: ["A"] }] })
+    const { ctx, ask } = ctxWith({
+      status: "answered",
+      answers: [{ selected: ["A"] }],
+    })
     await askUserQuestionTool.execute(
       {
         questions: [
@@ -102,7 +120,10 @@ describe("ask_user_question", () => {
 
   it("returns a cancelled error when the user dismisses (turn stopped)", async () => {
     const { ctx } = ctxWith({ status: "cancelled" })
-    const result = await askUserQuestionTool.execute({ questions: [validQuestion] }, ctx)
+    const result = await askUserQuestionTool.execute(
+      { questions: [validQuestion] },
+      ctx
+    )
     expect(result).toContain("ERROR[cancelled]")
   })
 })

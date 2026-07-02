@@ -1,9 +1,6 @@
 import { spawn } from "child_process"
 import { readFile, writeFile, rename, mkdir, stat, readdir } from "fs/promises"
-import {
-  resolveInWorkspace,
-  resolveInWorkspaceReal,
-} from "../tools/workspace"
+import { resolveInWorkspace, resolveInWorkspaceReal } from "../tools/workspace"
 import { captureSpawn } from "./spawn-util"
 import { walkFiles, isBinaryBuffer } from "./walk"
 import type {
@@ -100,7 +97,11 @@ export class LocalEnvironment implements Environment {
         const lines = buf.toString("utf8").split("\n")
         for (let i = 0; i < lines.length; i++) {
           if (regex.test(lines[i])) {
-            matches.push({ path: file.path, line: i + 1, text: lines[i].trim() })
+            matches.push({
+              path: file.path,
+              line: i + 1,
+              text: lines[i].trim(),
+            })
             if (matches.length >= opts.maxResults) {
               capped = true
               break

@@ -21,7 +21,8 @@ import type { ProviderAccount } from "../../db/types"
 
 // Seed defaults, used only when seeding a brand-new Portkey account so the dev
 // setup keeps working. They are NOT a runtime fallback for a configured account.
-export const DEFAULT_PORTKEY_BASE_URL = "https://portkeygateway.perficient.com/v1"
+export const DEFAULT_PORTKEY_BASE_URL =
+  "https://portkeygateway.perficient.com/v1"
 export const DEFAULT_MODEL = "@aws-bedrock-use2/us.anthropic.claude-sonnet-4-6"
 
 export class NoActiveProviderError extends Error {
@@ -63,7 +64,10 @@ settingsService.setLlmChangeListener(invalidate)
 function buildClient(account: ProviderAccount): Portkey {
   const cached = clientCache.get(account.id)
   if (cached) return cached
-  if (account.provider !== "portkey" && account.provider !== "openai_compatible") {
+  if (
+    account.provider !== "portkey" &&
+    account.provider !== "openai_compatible"
+  ) {
     throw new NoActiveProviderError(
       `Provider "${account.provider}" is not wired yet. Pick a Portkey or OpenAI-compatible account.`
     )
@@ -89,7 +93,9 @@ function buildClient(account: ProviderAccount): Portkey {
 // message when nothing usable resolves — runChat surfaces it as the turn's error.
 // `sel` defaults to "all default" so callers without a conversation (e.g. the
 // title generator before a selection exists) get the default.
-export function resolveLlm(sel: LlmSelection = { accountId: null, modelId: null }): ResolvedClient {
+export function resolveLlm(
+  sel: LlmSelection = { accountId: null, modelId: null }
+): ResolvedClient {
   const dflt = settingsService.getLlm()
   const accountId = sel.accountId ?? dflt.activeAccountId
   const modelId = sel.modelId ?? dflt.activeModelId
@@ -111,7 +117,9 @@ export function resolveLlm(sel: LlmSelection = { accountId: null, modelId: null 
     )
   }
   // The model id must belong to the account's stored list.
-  const model = modelsRepo.listModels(account.id).find((m) => m.modelId === modelId)
+  const model = modelsRepo
+    .listModels(account.id)
+    .find((m) => m.modelId === modelId)
   if (!model) {
     throw new NoActiveProviderError(
       "The selected model is no longer in the provider's list. Pick another in the composer."
@@ -133,7 +141,9 @@ export function hasActiveProvider(): boolean {
       const account = providerAccountsRepo.getAccount(accountId)
       if (!account || !account.hasKey || !account.baseUrl) return false
       const models = modelsRepo.listModels(account.id)
-      return modelId ? models.some((m) => m.modelId === modelId) : models.length > 0
+      return modelId
+        ? models.some((m) => m.modelId === modelId)
+        : models.length > 0
     }
     const { activeAccountId, activeModelId } = settingsService.getLlm()
     if (activeAccountId && usable(activeAccountId, activeModelId)) return true
@@ -157,11 +167,17 @@ export function clientForAccount(accountId: string): Portkey {
 // list of id strings. Throws on a network/auth failure — the caller (IPC handler)
 // catches it and reports cleanly, leaving the local list untouched. The app never
 // depends on this succeeding: manual/seeded models always remain usable.
-export async function fetchGatewayModelIds(accountId: string): Promise<string[]> {
+export async function fetchGatewayModelIds(
+  accountId: string
+): Promise<string[]> {
   const client = clientForAccount(accountId)
-  const res = (await client.models.list()) as { data?: Array<{ id?: string }> } | undefined
+  const res = (await client.models.list()) as
+    | { data?: Array<{ id?: string }> }
+    | undefined
   const data = res?.data ?? []
-  return data.map((m) => m?.id).filter((id): id is string => typeof id === "string" && id.length > 0)
+  return data
+    .map((m) => m?.id)
+    .filter((id): id is string => typeof id === "string" && id.length > 0)
 }
 
 // ── Output-token parameter compatibility ─────────────────────────────────────
@@ -180,7 +196,9 @@ function isMaxTokensUnsupported(err: unknown): boolean {
   const msg =
     err && typeof err === "object"
       ? // Portkey/OpenAI surface it as error.code or in the message string.
-        String(((err as any).code ?? "")) + " " + String(((err as any).message ?? err))
+        String((err as any).code ?? "") +
+        " " +
+        String((err as any).message ?? err)
       : String(err)
   return (
     /unsupported_parameter/i.test(msg) &&

@@ -9,7 +9,11 @@ let mermaidPromise: Promise<MermaidApi> | undefined
 function getMermaid(): Promise<MermaidApi> {
   if (!mermaidPromise) {
     mermaidPromise = import("mermaid").then(({ default: mermaid }) => {
-      mermaid.initialize({ startOnLoad: false, securityLevel: "strict", theme: "default" })
+      mermaid.initialize({
+        startOnLoad: false,
+        securityLevel: "strict",
+        theme: "default",
+      })
       return mermaid
     })
   }

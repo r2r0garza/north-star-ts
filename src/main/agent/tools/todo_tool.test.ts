@@ -19,7 +19,15 @@ import type { ToolContext } from "./types"
 const ctx: ToolContext = { workspace: "", conversationId: "conv-1" }
 
 function todo(itemId: string, status: Todo["status"], content = "x"): Todo {
-  return { conversationId: "conv-1", itemId, seq: 0, content, status, createdAt: 0, updatedAt: 0 }
+  return {
+    conversationId: "conv-1",
+    itemId,
+    seq: 0,
+    content,
+    status,
+    createdAt: 0,
+    updatedAt: 0,
+  }
 }
 
 beforeEach(() => {

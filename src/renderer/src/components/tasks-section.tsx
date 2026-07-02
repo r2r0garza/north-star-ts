@@ -5,7 +5,13 @@ import { Spinner } from "@/components/ui/spinner"
 import { ApprovalCard } from "@/components/tool-group"
 import { QuestionPanel } from "@/components/question-panel"
 import { cn } from "@/lib/utils"
-import type { Task, TaskStatus, TaskEventPayload, Question, QuestionAnswer } from "@/types"
+import type {
+  Task,
+  TaskStatus,
+  TaskEventPayload,
+  Question,
+  QuestionAnswer,
+} from "@/types"
 
 // The statuses the panel surfaces: the actionable ones. Terminal states
 // (completed/failed/cancelled) are intentionally hidden — this panel is about
@@ -28,7 +34,13 @@ const STATUS_META: Record<string, { label: string; dot: string }> = {
 // The pending gate a waiting task is blocked on — an approval prompt or an
 // ask_user_question — reconstructed from the task's event stream.
 type PendingGate =
-  | { kind: "approval"; requestId: string; tool: string; summary: string; reason: string }
+  | {
+      kind: "approval"
+      requestId: string
+      tool: string
+      summary: string
+      reason: string
+    }
   | { kind: "question"; requestId: string; questions: Question[] }
 
 // Derive a task's current pending gate from its events (newest wins). Used both
@@ -39,9 +51,19 @@ function latestGate(events: TaskEventPayload[]): PendingGate | null {
   let gate: PendingGate | null = null
   for (const ev of events) {
     if (ev.type === "approval") {
-      gate = { kind: "approval", requestId: ev.requestId, tool: ev.tool, summary: ev.summary, reason: ev.reason }
+      gate = {
+        kind: "approval",
+        requestId: ev.requestId,
+        tool: ev.tool,
+        summary: ev.summary,
+        reason: ev.reason,
+      }
     } else if (ev.type === "question") {
-      gate = { kind: "question", requestId: ev.requestId, questions: ev.questions }
+      gate = {
+        kind: "question",
+        requestId: ev.requestId,
+        questions: ev.questions,
+      }
     } else if (ev.type === "status_change" && ev.to === "running") {
       // Resolved (markRunning) — the gate is no longer pending.
       gate = null
@@ -69,7 +91,10 @@ function TaskRow({
   onDeny: (requestId: string) => void
   onAnswer: (requestId: string, answers: QuestionAnswer[]) => void
 }) {
-  const meta = STATUS_META[task.status] ?? { label: task.status, dot: "bg-muted-foreground/50" }
+  const meta = STATUS_META[task.status] ?? {
+    label: task.status,
+    dot: "bg-muted-foreground/50",
+  }
   const isRunning = task.status === "running"
   const isInterrupted = task.status === "interrupted"
   const isWaiting = task.status === "waiting_for_approval"
@@ -98,7 +123,12 @@ function TaskRow({
         </button>
         <div className="flex shrink-0 gap-1">
           {isInterrupted && (
-            <Button size="sm" variant="outline" onClick={onResume} title="Resume task">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={onResume}
+              title="Resume task"
+            >
               <Play className="size-3.5" />
               Resume
             </Button>
@@ -128,7 +158,9 @@ function TaskRow({
             status: "pending",
           }}
           onApproval={(requestId, decision, remember) =>
-            decision === "approved" ? onApprove(requestId, remember) : onDeny(requestId)
+            decision === "approved"
+              ? onApprove(requestId, remember)
+              : onDeny(requestId)
           }
         />
       )}
@@ -160,23 +192,32 @@ export function TasksSection({
 }) {
   const [tasks, setTasks] = React.useState<Task[]>([])
   // Pending gate per task id, derived from the event stream.
-  const [gates, setGates] = React.useState<Record<string, PendingGate | null>>({})
+  const [gates, setGates] = React.useState<Record<string, PendingGate | null>>(
+    {}
+  )
 
   const refetch = React.useCallback(async () => {
     if (!conversationId) {
       setTasks([])
       return
     }
-    const rows = await window.cowork.db.tasks.list({ sourceConversationId: conversationId })
+    const rows = await window.cowork.db.tasks.list({
+      sourceConversationId: conversationId,
+    })
     const actionable = rows.filter((t) => ACTIONABLE.includes(t.status))
     setTasks(actionable)
     // Recover any pending gate for waiting tasks by replaying their events —
     // so a gate survives a panel remount or a fresh open of the conversation.
-    const waiting = actionable.filter((t) => t.status === "waiting_for_approval")
+    const waiting = actionable.filter(
+      (t) => t.status === "waiting_for_approval"
+    )
     const recovered = await Promise.all(
       waiting.map(async (t) => {
         const events = await window.cowork.db.taskEvents.list(t.id)
-        return [t.id, latestGate(events.map((e) => e.payload as TaskEventPayload))] as const
+        return [
+          t.id,
+          latestGate(events.map((e) => e.payload as TaskEventPayload)),
+        ] as const
       })
     )
     setGates((prev) => {
@@ -211,12 +252,22 @@ export function TasksSection({
       if (event.type === "approval") {
         setGates((g) => ({
           ...g,
-          [taskId]: { kind: "approval", requestId: event.requestId, tool: event.tool, summary: event.summary, reason: event.reason },
+          [taskId]: {
+            kind: "approval",
+            requestId: event.requestId,
+            tool: event.tool,
+            summary: event.summary,
+            reason: event.reason,
+          },
         }))
       } else if (event.type === "question") {
         setGates((g) => ({
           ...g,
-          [taskId]: { kind: "question", requestId: event.requestId, questions: event.questions },
+          [taskId]: {
+            kind: "question",
+            requestId: event.requestId,
+            questions: event.questions,
+          },
         }))
       } else if (event.type === "status_change" && event.to === "running") {
         setGates((g) => ({ ...g, [taskId]: null }))
@@ -243,16 +294,28 @@ export function TasksSection({
     void window.cowork.tasks.deny({ taskId, requestId })
     setGates((g) => ({ ...g, [taskId]: null }))
   }
-  function answer(taskId: string, requestId: string, answers: QuestionAnswer[]) {
+  function answer(
+    taskId: string,
+    requestId: string,
+    answers: QuestionAnswer[]
+  ) {
     void window.cowork.tasks.answer({ taskId, requestId, answers })
     setGates((g) => ({ ...g, [taskId]: null }))
   }
 
   if (!conversationId) {
-    return <p className="px-2 py-1.5 text-xs text-muted-foreground">No session selected.</p>
+    return (
+      <p className="px-2 py-1.5 text-xs text-muted-foreground">
+        No session selected.
+      </p>
+    )
   }
   if (tasks.length === 0) {
-    return <p className="px-2 py-1.5 text-xs text-muted-foreground">No active tasks.</p>
+    return (
+      <p className="px-2 py-1.5 text-xs text-muted-foreground">
+        No active tasks.
+      </p>
+    )
   }
 
   return (
@@ -265,7 +328,9 @@ export function TasksSection({
           onResume={() => void resume(task.id)}
           onCancel={() => void cancel(task.id)}
           onOpen={() => onOpenTask(task)}
-          onApprove={(requestId, remember) => approve(task.id, requestId, remember)}
+          onApprove={(requestId, remember) =>
+            approve(task.id, requestId, remember)
+          }
           onDeny={(requestId) => deny(task.id, requestId)}
           onAnswer={(requestId, answers) => answer(task.id, requestId, answers)}
         />

@@ -50,7 +50,9 @@ beforeEach(() => {
 describe.skipIf(!sqliteLoads)("migrations", () => {
   it("creates the todos table (reached by the full migration chain)", () => {
     const row = db
-      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='todos'")
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='todos'"
+      )
       .get()
     expect(row).toBeTruthy()
   })
@@ -63,12 +65,18 @@ describe("normalizeItems", () => {
   })
 
   it("drops items with blank content", () => {
-    expect(normalizeItems([{ id: "1", content: "  ", status: "pending" }])).toHaveLength(0)
+    expect(
+      normalizeItems([{ id: "1", content: "  ", status: "pending" }])
+    ).toHaveLength(0)
   })
 
   it("truncates oversized content with a marker", () => {
     const [item] = normalizeItems([
-      { id: "1", content: "a".repeat(MAX_TODO_CONTENT_CHARS + 500), status: "pending" },
+      {
+        id: "1",
+        content: "a".repeat(MAX_TODO_CONTENT_CHARS + 500),
+        status: "pending",
+      },
     ])
     expect(item.content.length).toBe(MAX_TODO_CONTENT_CHARS)
     expect(item.content.endsWith("[truncated]")).toBe(true)

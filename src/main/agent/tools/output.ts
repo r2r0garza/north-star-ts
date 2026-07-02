@@ -64,7 +64,11 @@ export function truncateForModel(
 // A consistent error format tools return for *expected* failures (file not
 // found, ambiguous edit match, file too large, etc.). The `code` lets the model
 // branch programmatically; the optional `hint` tells it how to recover.
-export function toolError(code: string, message: string, hint?: string): string {
+export function toolError(
+  code: string,
+  message: string,
+  hint?: string
+): string {
   const base = `ERROR[${code}]: ${message}`
   return hint ? `${base} Hint: ${hint}` : base
 }

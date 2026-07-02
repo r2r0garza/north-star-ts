@@ -111,7 +111,12 @@ function ToolUseRow({ use }: { use: ToolUse }) {
       <Collapsible className="w-full">
         <CollapsibleTrigger asChild>
           <button type="button" className="group/row w-full text-left">
-            <Marker className={cn(error && "text-destructive", interrupted && "text-muted-foreground")}>
+            <Marker
+              className={cn(
+                error && "text-destructive",
+                interrupted && "text-muted-foreground"
+              )}
+            >
               <MarkerIcon>
                 {use.status === "running" ? (
                   <Spinner />
@@ -124,7 +129,8 @@ function ToolUseRow({ use }: { use: ToolUse }) {
               <MarkerContent>{use.label}</MarkerContent>
               {awaiting && (
                 <span className="ml-auto flex items-center gap-1 text-[0.7rem] text-destructive">
-                  <ShieldAlert className="size-3.5 shrink-0" /> awaiting approval
+                  <ShieldAlert className="size-3.5 shrink-0" /> awaiting
+                  approval
                 </span>
               )}
               {interrupted && (
@@ -135,7 +141,9 @@ function ToolUseRow({ use }: { use: ToolUse }) {
               {use.status === "done" && (
                 <Check className="size-3.5 shrink-0 text-muted-foreground" />
               )}
-              {error && <CircleAlert className="size-3.5 shrink-0 text-destructive" />}
+              {error && (
+                <CircleAlert className="size-3.5 shrink-0 text-destructive" />
+              )}
             </Marker>
           </button>
         </CollapsibleTrigger>
@@ -147,9 +155,12 @@ function ToolUseRow({ use }: { use: ToolUse }) {
               </pre>
             )}
             {use.result !== undefined && (
-              <Bubble align="start" variant={isErrorResult(use.result) ? "destructive" : "muted"}>
+              <Bubble
+                align="start"
+                variant={isErrorResult(use.result) ? "destructive" : "muted"}
+              >
                 <BubbleContent>
-                  <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words">
+                  <pre className="max-h-64 overflow-auto break-words whitespace-pre-wrap">
                     {clip(use.result)}
                   </pre>
                 </BubbleContent>

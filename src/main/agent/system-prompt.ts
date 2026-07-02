@@ -39,7 +39,10 @@ export async function loadSystemPrompt(mode: Mode = "chat"): Promise<string> {
     cache.set(mode, prompt)
     return prompt
   } catch (error) {
-    console.warn(`Could not read prompt for mode "${mode}", using fallback:`, error)
+    console.warn(
+      `Could not read prompt for mode "${mode}", using fallback:`,
+      error
+    )
     cache.set(mode, FALLBACK)
     return FALLBACK
   }

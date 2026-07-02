@@ -1,7 +1,14 @@
 import { randomUUID } from "crypto"
 import { stat } from "fs/promises"
 import { basename, isAbsolute } from "path"
-import { toolDefinitions, runTool, todoWriteTool, askUserQuestionTool, runTodosInBackgroundTool, indexQueryTool } from "./tools"
+import {
+  toolDefinitions,
+  runTool,
+  todoWriteTool,
+  askUserQuestionTool,
+  runTodosInBackgroundTool,
+  indexQueryTool,
+} from "./tools"
 import { readFileTool } from "./tools/read_file_tool"
 import { listTodos } from "../db/repositories/todos"
 import { buildTodoListPrompt } from "./todo-prompt"
@@ -30,14 +37,32 @@ import {
   type LlmSelection,
 } from "./providers"
 import { appendMessage } from "../db/repositories/messages"
-import { getConversation, updateConversation } from "../db/repositories/conversations"
+import {
+  getConversation,
+  updateConversation,
+} from "../db/repositories/conversations"
 import { actionAllowlist } from "../db/repositories"
-import { PolicyEngine, type AllowlistLookup, type SandboxPolicyLookup } from "./approval/policy"
+import {
+  PolicyEngine,
+  type AllowlistLookup,
+  type SandboxPolicyLookup,
+} from "./approval/policy"
 import { RegexCommandClassifier } from "./approval/regex-classifier"
 import { FileActionClassifier } from "./approval/file-classifier"
 import { DelegationClassifier } from "./approval/delegation-classifier"
-import type { ActionKind, Gate, GateOutcome, ToolAction } from "./approval/types"
-import type { Ask, AskResult, EnqueueTask, Question, QuestionAnswer } from "./tools/types"
+import type {
+  ActionKind,
+  Gate,
+  GateOutcome,
+  ToolAction,
+} from "./approval/types"
+import type {
+  Ask,
+  AskResult,
+  EnqueueTask,
+  Question,
+  QuestionAnswer,
+} from "./tools/types"
 
 // The single approval policy, shared across turns. The allowlist lookup is
 // backed by the action_allowlist table; classifiers are tried in order (file
@@ -125,7 +150,11 @@ export function resolveApproval(
   const pending = pendingApprovals.get(requestId)
   if (!pending) return
   pendingApprovals.delete(requestId)
-  if (decision === "approved" && remember === "workspace" && pending.workspacePath) {
+  if (
+    decision === "approved" &&
+    remember === "workspace" &&
+    pending.workspacePath
+  ) {
     actionAllowlist.addRule({
       tool: pending.action.tool,
       kind: pending.action.kind,
@@ -146,7 +175,10 @@ const pendingQuestions = new Map<string, (result: AskResult) => void>()
 // Called from the renderer over IPC ("chat:answer") to deliver the user's
 // answers to a pending ask_user_question. No-op if the request is gone (already
 // answered or the turn was stopped).
-export function resolveQuestion(requestId: string, answers: QuestionAnswer[]): void {
+export function resolveQuestion(
+  requestId: string,
+  answers: QuestionAnswer[]
+): void {
   const resolve = pendingQuestions.get(requestId)
   if (!resolve) return
   pendingQuestions.delete(requestId)
@@ -191,7 +223,13 @@ export interface ChatResult {
 // live markers render identically to the ones rebuilt from storage on reload.
 export type ChatEvent =
   | { type: "token"; delta: string }
-  | { type: "tool"; phase: "start"; id: string; name: string; arguments: string }
+  | {
+      type: "tool"
+      phase: "start"
+      id: string
+      name: string
+      arguments: string
+    }
   | { type: "tool"; phase: "done"; id: string; name: string; result: string }
   // The agent wants to perform a gated action and needs the human to decide.
   // `id` is the tool-call id so the renderer can attach the approval card to the
@@ -227,7 +265,9 @@ function contentToText(content: unknown): string {
   if (typeof content === "string") return content
   if (Array.isArray(content)) {
     return content
-      .map((part: any) => (typeof part === "string" ? part : (part?.text ?? "")))
+      .map((part: any) =>
+        typeof part === "string" ? part : (part?.text ?? "")
+      )
       .join("")
   }
   return ""
@@ -236,7 +276,10 @@ function contentToText(content: unknown): string {
 // Ask the model for a short (5-6 word) title summarizing the user's first
 // message. Non-streaming and capped low so it's cheap. Falls back to a trimmed
 // snippet on any failure so a conversation always gets a title.
-async function generateTitle(message: string, sel: LlmSelection): Promise<string> {
+async function generateTitle(
+  message: string,
+  sel: LlmSelection
+): Promise<string> {
   const fallback = titleFromMessage(message)
   try {
     const { client, model } = resolveLlm(sel)
@@ -252,7 +295,10 @@ async function generateTitle(message: string, sel: LlmSelection): Promise<string
         },
         // Delimit the message as quoted input with an explicit "Title:" cue so
         // the model titles it rather than answering it.
-        { role: "user", content: `First message:\n"""\n${message}\n"""\n\nTitle:` },
+        {
+          role: "user",
+          content: `First message:\n"""\n${message}\n"""\n\nTitle:`,
+        },
       ],
     })
     const text = contentToText((res as any).choices?.[0]?.message?.content)
@@ -305,7 +351,9 @@ export interface RunAgentLoopOptions {
 // to `workspace`, streaming through `onEvent` and persisting every turn (user,
 // assistant, tool results) as it goes so the transcript is durable and
 // resumable. Returns the final result object.
-export async function runAgentLoop(opts: RunAgentLoopOptions): Promise<ChatResult> {
+export async function runAgentLoop(
+  opts: RunAgentLoopOptions
+): Promise<ChatResult> {
   const { conversationId, workspace, attachments, userMessage, abort } = opts
   const onEvent: OnEvent = opts.onEvent ?? (() => {})
 
@@ -330,7 +378,9 @@ export async function runAgentLoop(opts: RunAgentLoopOptions): Promise<ChatResul
   // Load skills (app-bundled → user → project, last-wins), then build the
   // read_skill tool and the Skills System prompt section. Only skill metadata
   // enters the prompt; bodies are fetched on demand via the tool.
-  const skills = await loadSkills(skillSources(hasWorkspace ? workspace : undefined))
+  const skills = await loadSkills(
+    skillSources(hasWorkspace ? workspace : undefined)
+  )
   const readSkillTool = createReadSkillTool(skills)
 
   // Filesystem tools are confined to a workspace, so the full set is only
@@ -389,7 +439,11 @@ export async function runAgentLoop(opts: RunAgentLoopOptions): Promise<ChatResul
   // priority) — dropping it would hide capabilities the agent is told it has.
   const skillsPrompt = buildSkillsPrompt(skills)
   if (skillsPrompt) {
-    sections.push({ name: "skills", priority: SECTION_PRIORITY.skills, content: skillsPrompt })
+    sections.push({
+      name: "skills",
+      priority: SECTION_PRIORITY.skills,
+      content: skillsPrompt,
+    })
   }
 
   // Todo list: re-injected each turn so a multi-step plan survives context
@@ -397,7 +451,11 @@ export async function runAgentLoop(opts: RunAgentLoopOptions): Promise<ChatResul
   if (showTodos) {
     const todoPrompt = buildTodoListPrompt(listTodos(conversationId))
     if (todoPrompt) {
-      sections.push({ name: "todos", priority: SECTION_PRIORITY.todos, content: todoPrompt })
+      sections.push({
+        name: "todos",
+        priority: SECTION_PRIORITY.todos,
+        content: todoPrompt,
+      })
     }
   }
 
@@ -413,7 +471,11 @@ export async function runAgentLoop(opts: RunAgentLoopOptions): Promise<ChatResul
   if (useIndex && conversation?.workspaceId) {
     const indexSummary = buildIndexSummary(conversation.workspaceId)
     if (indexSummary) {
-      sections.push({ name: "index", priority: SECTION_PRIORITY.index, content: indexSummary })
+      sections.push({
+        name: "index",
+        priority: SECTION_PRIORITY.index,
+        content: indexSummary,
+      })
     }
   }
 
@@ -591,7 +653,9 @@ export async function runAgentLoop(opts: RunAgentLoopOptions): Promise<ChatResul
         appendMessage({
           conversationId,
           role: "assistant",
-          content: text ? `${text}\n\n⏹ Stopped by user.` : "⏹ Stopped by user.",
+          content: text
+            ? `${text}\n\n⏹ Stopped by user.`
+            : "⏹ Stopped by user.",
         })
         return { stopped: true }
       }
@@ -611,7 +675,11 @@ export async function runAgentLoop(opts: RunAgentLoopOptions): Promise<ChatResul
           "The model's response was truncated before the tool call completed " +
           "(hit the output token limit). Retry with a smaller write, a chunked " +
           "file write, or a higher output cap."
-        appendMessage({ conversationId, role: "assistant", content: `⚠️ ${note}` })
+        appendMessage({
+          conversationId,
+          role: "assistant",
+          content: `⚠️ ${note}`,
+        })
         return { error: note, retryable: true }
       }
 
@@ -719,7 +787,8 @@ export async function runAgentLoop(opts: RunAgentLoopOptions): Promise<ChatResul
                 // Shutdown: leave unresolved so no synthetic answer is persisted
                 // and the task reconciles to interrupted (mirrors the gate above).
                 if (abort.signal.reason === SHUTDOWN_ABORT_REASON) return
-                if (pendingQuestions.delete(requestId)) resolve({ status: "cancelled" })
+                if (pendingQuestions.delete(requestId))
+                  resolve({ status: "cancelled" })
               },
               { once: true }
             )
@@ -727,12 +796,27 @@ export async function runAgentLoop(opts: RunAgentLoopOptions): Promise<ChatResul
         }
         // read_skill ignores these fields. With a workspace, file tools confine
         // to it; without one, read_file_tool reads only the attached files.
-        const ctx = { workspace: workspace ?? "", attachments, conversationId, gate, ask, env, signal: abort.signal, enqueueTask: opts.enqueueTask }
+        const ctx = {
+          workspace: workspace ?? "",
+          attachments,
+          conversationId,
+          gate,
+          ask,
+          env,
+          signal: abort.signal,
+          enqueueTask: opts.enqueueTask,
+        }
         const result =
           call.name === readSkillTool.definition.function.name
             ? await readSkillTool.execute(args, ctx)
             : await runTool(call.name, args, ctx)
-        onEvent({ type: "tool", phase: "done", id: call.id, name: call.name, result })
+        onEvent({
+          type: "tool",
+          phase: "done",
+          id: call.id,
+          name: call.name,
+          result,
+        })
         messages.push({
           role: "tool",
           tool_call_id: call.id,

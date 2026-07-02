@@ -17,11 +17,15 @@ describe("classifyFile", () => {
   })
 
   it("changed: stat differs and hash differs", () => {
-    expect(classifyFile(existing, { size: 200, mtime: 2000, hash: "xyz" })).toBe("changed")
+    expect(
+      classifyFile(existing, { size: 200, mtime: 2000, hash: "xyz" })
+    ).toBe("changed")
   })
 
   it("unchanged: stat differs but hash matches (a touch, not an edit)", () => {
-    expect(classifyFile(existing, { size: 100, mtime: 9999, hash: "abc" })).toBe("unchanged")
+    expect(
+      classifyFile(existing, { size: 100, mtime: 9999, hash: "abc" })
+    ).toBe("unchanged")
   })
 
   it("changed: stat differs, no hash provided yet (caller must hash)", () => {

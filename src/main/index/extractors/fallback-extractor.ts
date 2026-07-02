@@ -1,4 +1,10 @@
-import type { Extractor, ExtractableFile, ExtractedDocument, ExtractedSymbol, ExtractedChunk } from "./types"
+import type {
+  Extractor,
+  ExtractableFile,
+  ExtractedDocument,
+  ExtractedSymbol,
+  ExtractedChunk,
+} from "./types"
 
 const MARKDOWN_EXTS = new Set([".md", ".mdx", ".markdown"])
 
@@ -15,7 +21,10 @@ export const fallbackExtractor: Extractor = {
 
   extract: (file: ExtractableFile): ExtractedDocument => {
     if (MARKDOWN_EXTS.has(file.ext)) {
-      return { symbols: markdownHeadings(file.content), chunks: chunkLines(file.content) }
+      return {
+        symbols: markdownHeadings(file.content),
+        chunks: chunkLines(file.content),
+      }
     }
     return { symbols: [], chunks: chunkLines(file.content) }
   },

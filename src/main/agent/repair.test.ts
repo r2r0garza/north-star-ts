@@ -69,7 +69,10 @@ describe.skipIf(!sqliteLoads)("repairDanglingToolCalls", () => {
     repairDanglingToolCalls(conv.id)
 
     const toolMsgs = listMessages(conv.id).filter((m) => m.role === "tool")
-    expect(toolMsgs.map((m) => m.toolCallId).sort()).toEqual(["call-1", "call-2"])
+    expect(toolMsgs.map((m) => m.toolCallId).sort()).toEqual([
+      "call-1",
+      "call-2",
+    ])
     const synthesized = toolMsgs.find((m) => m.toolCallId === "call-2")
     expect(synthesized?.content).toContain("Interrupted")
   })
@@ -95,17 +98,25 @@ describe.skipIf(!sqliteLoads)("repairDanglingToolCalls", () => {
     repairDanglingToolCalls(conv.id)
 
     // No synthetic duplicate added on either pass.
-    expect(listMessages(conv.id).filter((m) => m.role === "tool")).toHaveLength(1)
+    expect(listMessages(conv.id).filter((m) => m.role === "tool")).toHaveLength(
+      1
+    )
   })
 
   it("is a no-op when there is no tool-calling turn", () => {
     const conv = createConversation({ mode: "chat" })
     appendMessage({ conversationId: conv.id, role: "user", content: "hi" })
-    appendMessage({ conversationId: conv.id, role: "assistant", content: "hello" })
+    appendMessage({
+      conversationId: conv.id,
+      role: "assistant",
+      content: "hello",
+    })
 
     repairDanglingToolCalls(conv.id)
 
-    expect(listMessages(conv.id).filter((m) => m.role === "tool")).toHaveLength(0)
+    expect(listMessages(conv.id).filter((m) => m.role === "tool")).toHaveLength(
+      0
+    )
   })
 })
 
@@ -114,12 +125,22 @@ describe.skipIf(!sqliteLoads)("repairDanglingToolCalls — rollback mode", () =>
     const conv = createConversation({ mode: "chat" })
     // A task parked on an approval gate at quit: the user's request and the
     // assistant's gated tool-call are persisted, but no result.
-    appendMessage({ conversationId: conv.id, role: "user", content: "delete build/" })
+    appendMessage({
+      conversationId: conv.id,
+      role: "user",
+      content: "delete build/",
+    })
     appendMessage({
       conversationId: conv.id,
       role: "assistant",
       content: "I'll delete it.",
-      toolCalls: [{ id: "call-1", name: "run_shell", arguments: '{"cmd":"rm -rf build"}' }],
+      toolCalls: [
+        {
+          id: "call-1",
+          name: "run_shell",
+          arguments: '{"cmd":"rm -rf build"}',
+        },
+      ],
     })
 
     repairDanglingToolCalls(conv.id, "rollback")
@@ -135,7 +156,11 @@ describe.skipIf(!sqliteLoads)("repairDanglingToolCalls — rollback mode", () =>
 
   it("drops partial tool results from the incomplete turn too", () => {
     const conv = createConversation({ mode: "chat" })
-    appendMessage({ conversationId: conv.id, role: "user", content: "do two things" })
+    appendMessage({
+      conversationId: conv.id,
+      role: "user",
+      content: "do two things",
+    })
     appendMessage({
       conversationId: conv.id,
       role: "assistant",

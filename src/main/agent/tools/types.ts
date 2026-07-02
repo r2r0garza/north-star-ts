@@ -14,7 +14,10 @@ export type EnqueueTaskInput = {
   title?: string | null
   seedTodos?: Array<{ itemId: string; content: string; status: TodoStatus }>
 }
-export type EnqueueTask = (input: EnqueueTaskInput) => { id: string; status: string }
+export type EnqueueTask = (input: EnqueueTaskInput) => {
+  id: string
+  status: string
+}
 
 // --- ask_user_question ---
 // The model asks the user one or more clarifying questions, each with preset

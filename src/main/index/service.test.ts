@@ -17,7 +17,11 @@ try {
 }
 
 import { IndexService } from "./service"
-import { listFiles, listPaths, getFileByPath } from "../db/repositories/index-files"
+import {
+  listFiles,
+  listPaths,
+  getFileByPath,
+} from "../db/repositories/index-files"
 import { listMetadata } from "../db/repositories/index-metadata"
 import {
   findSymbolsByName,
@@ -170,7 +174,9 @@ describe.skipIf(!sqliteLoads)("IndexService stage 2 (metadata)", () => {
     await writeFile(join(root, ".git", "HEAD"), "ref: refs/heads/feat/x\n")
     const svc = new IndexService(fakeRunner())
     await runIndex(svc, { workspaceId, priority: "high" })
-    const meta = Object.fromEntries(listMetadata(workspaceId).map((m) => [m.kind, m.value]))
+    const meta = Object.fromEntries(
+      listMetadata(workspaceId).map((m) => [m.kind, m.value])
+    )
     expect((meta.package_json as { name: string }).name).toBe("demo")
     expect((meta.git as { branch: string }).branch).toBe("feat/x")
   })
@@ -206,7 +212,9 @@ describe.skipIf(!sqliteLoads)("IndexService stage 3 (symbols)", () => {
     const svc = new IndexService(fakeRunner())
     await runIndex(svc, { workspaceId, priority: "high" })
     expect(findSymbolsByName(workspaceId, "foo")).toHaveLength(0)
-    expect(findSymbolsByName(workspaceId, "foo", { includeImports: true })).toHaveLength(1)
+    expect(
+      findSymbolsByName(workspaceId, "foo", { includeImports: true })
+    ).toHaveLength(1)
   })
 
   it("findImportsOf returns files importing a module", async () => {
@@ -259,48 +267,53 @@ describe.skipIf(!sqliteLoads)("IndexService.clear", () => {
   })
 })
 
-describe.skipIf(!sqliteLoads)("IndexService.ensureRunning (manual (re)start)", () => {
-  it("enqueues a task and links it to the run", () => {
-    const runner = fakeRunner()
-    const svc = new IndexService(runner)
-    svc.ensureRunning(workspaceId, "low")
-    expect(runner.calls).toBe(1)
-    expect(getRunByWorkspace(workspaceId)!.taskId).toBe(runner.lastTaskId)
-  })
+describe.skipIf(!sqliteLoads)(
+  "IndexService.ensureRunning (manual (re)start)",
+  () => {
+    it("enqueues a task and links it to the run", () => {
+      const runner = fakeRunner()
+      const svc = new IndexService(runner)
+      svc.ensureRunning(workspaceId, "low")
+      expect(runner.calls).toBe(1)
+      expect(getRunByWorkspace(workspaceId)!.taskId).toBe(runner.lastTaskId)
+    })
 
-  it("is a no-op while a build is already live (queued/running)", () => {
-    const runner = fakeRunner()
-    const svc = new IndexService(runner)
-    svc.ensureRunning(workspaceId, "low") // enqueues; task is 'queued' (live)
-    svc.ensureRunning(workspaceId, "low") // no duplicate
-    expect(runner.calls).toBe(1)
-  })
+    it("is a no-op while a build is already live (queued/running)", () => {
+      const runner = fakeRunner()
+      const svc = new IndexService(runner)
+      svc.ensureRunning(workspaceId, "low") // enqueues; task is 'queued' (live)
+      svc.ensureRunning(workspaceId, "low") // no duplicate
+      expect(runner.calls).toBe(1)
+    })
 
-  it("restarts after the previous task was cancelled", () => {
-    const runner = fakeRunner()
-    const svc = new IndexService(runner)
-    svc.ensureRunning(workspaceId, "low")
-    // Simulate the user cancelling: flip the linked task to terminal.
-    const taskId = getRunByWorkspace(workspaceId)!.taskId!
-    db.prepare("UPDATE tasks SET status = 'cancelled' WHERE id = ?").run(taskId)
-    svc.ensureRunning(workspaceId, "low")
-    expect(runner.calls).toBe(2) // a fresh build was enqueued
-  })
+    it("restarts after the previous task was cancelled", () => {
+      const runner = fakeRunner()
+      const svc = new IndexService(runner)
+      svc.ensureRunning(workspaceId, "low")
+      // Simulate the user cancelling: flip the linked task to terminal.
+      const taskId = getRunByWorkspace(workspaceId)!.taskId!
+      db.prepare("UPDATE tasks SET status = 'cancelled' WHERE id = ?").run(
+        taskId
+      )
+      svc.ensureRunning(workspaceId, "low")
+      expect(runner.calls).toBe(2) // a fresh build was enqueued
+    })
 
-  it("restarts after a clear (run reset, task_id null)", () => {
-    const runner = fakeRunner()
-    const svc = new IndexService(runner)
-    svc.ensureRunning(workspaceId, "low")
-    svc.clear(workspaceId) // resetRun nulls task_id
-    svc.ensureRunning(workspaceId, "low")
-    expect(runner.calls).toBe(2)
-  })
+    it("restarts after a clear (run reset, task_id null)", () => {
+      const runner = fakeRunner()
+      const svc = new IndexService(runner)
+      svc.ensureRunning(workspaceId, "low")
+      svc.clear(workspaceId) // resetRun nulls task_id
+      svc.ensureRunning(workspaceId, "low")
+      expect(runner.calls).toBe(2)
+    })
 
-  it("does not restart when the workspace is disabled", () => {
-    const runner = fakeRunner()
-    const svc = new IndexService(runner)
-    upsertRun(workspaceId, { enabled: false })
-    svc.ensureRunning(workspaceId, "low")
-    expect(runner.calls).toBe(0)
-  })
-})
+    it("does not restart when the workspace is disabled", () => {
+      const runner = fakeRunner()
+      const svc = new IndexService(runner)
+      upsertRun(workspaceId, { enabled: false })
+      svc.ensureRunning(workspaceId, "low")
+      expect(runner.calls).toBe(0)
+    })
+  }
+)

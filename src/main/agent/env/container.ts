@@ -110,7 +110,10 @@ export class ContainerEnvironment implements Environment {
       "{{.State.Running}}",
       this.name,
     ])
-    if (running.code === 0 && running.stdout.toString("utf8").trim() === "true") {
+    if (
+      running.code === 0 &&
+      running.stdout.toString("utf8").trim() === "true"
+    ) {
       return
     }
 
@@ -288,7 +291,15 @@ export class ContainerEnvironment implements Environment {
     // is not a detached group leader; an in-container kill needs its own design.
     const child = spawn(
       this.cfg.runtime,
-      ["exec", "-w", this.toContainerPath(opts.cwd), this.name, "sh", "-c", command],
+      [
+        "exec",
+        "-w",
+        this.toContainerPath(opts.cwd),
+        this.name,
+        "sh",
+        "-c",
+        command,
+      ],
       { stdio: ["ignore", "pipe", "pipe"] }
     )
     return captureSpawn(child, opts)
@@ -306,9 +317,7 @@ export class ContainerEnvironment implements Environment {
 
     // ripgrep: --no-ignore + --hidden so it walks like the host (no .gitignore
     // handling, dotfiles included); we prune only the explicit skipDirs.
-    const rgExcludes = opts.skipDirs
-      .map((d) => `-g ${shq(`!${d}`)}`)
-      .join(" ")
+    const rgExcludes = opts.skipDirs.map((d) => `-g ${shq(`!${d}`)}`).join(" ")
     const rgGlob = opts.glob ? ` --iglob ${shq(`*${opts.glob}*`)}` : ""
     const rg =
       `rg --line-number --no-heading --with-filename --color never ` +
@@ -317,9 +326,7 @@ export class ContainerEnvironment implements Environment {
 
     // grep fallback: find prunes skipDirs and bounds file size, xargs feeds grep
     // -I (skip binary) -n -H -E. /dev/null guarantees a filename prefix.
-    const prune = opts.skipDirs
-      .map((d) => `-name ${shq(d)}`)
-      .join(" -o ")
+    const prune = opts.skipDirs.map((d) => `-name ${shq(d)}`).join(" -o ")
     const findGlob = opts.glob ? ` -iname ${shq(`*${opts.glob}*`)}` : ""
     const grep =
       `find ${shq(root)} ${prune ? `\\( ${prune} \\) -prune -o ` : ""}` +

@@ -8,10 +8,18 @@ describe("typeScriptExtractor", () => {
     typeScriptExtractor.extract({ relPath: `f${ext}`, ext, content })
 
   it("supports TS/JS extensions, not others", () => {
-    expect(typeScriptExtractor.supports({ relPath: "a.ts", ext: ".ts" })).toBe(true)
-    expect(typeScriptExtractor.supports({ relPath: "a.tsx", ext: ".tsx" })).toBe(true)
-    expect(typeScriptExtractor.supports({ relPath: "a.js", ext: ".js" })).toBe(true)
-    expect(typeScriptExtractor.supports({ relPath: "a.md", ext: ".md" })).toBe(false)
+    expect(typeScriptExtractor.supports({ relPath: "a.ts", ext: ".ts" })).toBe(
+      true
+    )
+    expect(
+      typeScriptExtractor.supports({ relPath: "a.tsx", ext: ".tsx" })
+    ).toBe(true)
+    expect(typeScriptExtractor.supports({ relPath: "a.js", ext: ".js" })).toBe(
+      true
+    )
+    expect(typeScriptExtractor.supports({ relPath: "a.md", ext: ".md" })).toBe(
+      false
+    )
   })
 
   it("extracts functions, classes, interfaces, types, enums, consts", () => {
@@ -23,7 +31,8 @@ describe("typeScriptExtractor", () => {
       enum Color { Red }
       export const answer = 42
     `)
-    const byKind = (k: string) => doc.symbols.filter((s) => s.kind === k).map((s) => s.name)
+    const byKind = (k: string) =>
+      doc.symbols.filter((s) => s.kind === k).map((s) => s.name)
     expect(byKind("function")).toEqual(["foo"])
     expect(byKind("class")).toEqual(["Bar"])
     expect(byKind("interface")).toEqual(["Baz"])
@@ -69,7 +78,9 @@ describe("typeScriptExtractor", () => {
 
 describe("fallbackExtractor", () => {
   it("supports everything (catch-all)", () => {
-    expect(fallbackExtractor.supports({ relPath: "x.bin", ext: ".bin" })).toBe(true)
+    expect(fallbackExtractor.supports({ relPath: "x.bin", ext: ".bin" })).toBe(
+      true
+    )
   })
 
   it("extracts markdown headings as symbols", () => {
@@ -91,14 +102,20 @@ describe("fallbackExtractor", () => {
       content: "line\n".repeat(100),
     })
     expect(doc.symbols).toHaveLength(0)
-    expect((doc.chunks?.length ?? 0)).toBeGreaterThan(1)
+    expect(doc.chunks?.length ?? 0).toBeGreaterThan(1)
   })
 })
 
 describe("pickExtractor", () => {
   it("routes TS to the TS extractor and everything else to fallback", () => {
-    expect(pickExtractor({ relPath: "a.ts", ext: ".ts" })).toBe(typeScriptExtractor)
-    expect(pickExtractor({ relPath: "a.md", ext: ".md" })).toBe(fallbackExtractor)
-    expect(pickExtractor({ relPath: "a.rs", ext: ".rs" })).toBe(fallbackExtractor)
+    expect(pickExtractor({ relPath: "a.ts", ext: ".ts" })).toBe(
+      typeScriptExtractor
+    )
+    expect(pickExtractor({ relPath: "a.md", ext: ".md" })).toBe(
+      fallbackExtractor
+    )
+    expect(pickExtractor({ relPath: "a.rs", ext: ".rs" })).toBe(
+      fallbackExtractor
+    )
   })
 })

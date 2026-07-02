@@ -134,5 +134,7 @@ export function countSymbols(workspaceId: string): number {
 }
 
 export function deleteSymbolsByWorkspace(workspaceId: string): void {
-  getDb().prepare("DELETE FROM index_symbols WHERE workspace_id = ?").run(workspaceId)
+  getDb()
+    .prepare("DELETE FROM index_symbols WHERE workspace_id = ?")
+    .run(workspaceId)
 }

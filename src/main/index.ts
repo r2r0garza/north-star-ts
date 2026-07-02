@@ -9,7 +9,13 @@ import { config as loadEnv } from "dotenv"
 // working. Other env-driven config (e.g. COWORK_ENV_RUNTIME) still relies on this.
 loadEnv({ path: join(app.getAppPath(), ".env.local") })
 
-import { runChat, resolveApproval, resolveQuestion, stopChat, type ChatRequest } from "./agent"
+import {
+  runChat,
+  resolveApproval,
+  resolveQuestion,
+  stopChat,
+  type ChatRequest,
+} from "./agent"
 import { pickWorkspace, pickFiles } from "./pick-workspace"
 import { registerDbHandlers } from "./ipc/db-handlers"
 import { registerSettingsHandlers } from "./ipc/settings-handlers"

@@ -1,6 +1,9 @@
 import { randomUUID } from "crypto"
 import { getDb } from "../connection"
-import { defaultTokenCounter, type TokenCounter } from "../../agent/context/token-counter"
+import {
+  defaultTokenCounter,
+  type TokenCounter,
+} from "../../agent/context/token-counter"
 import { touchConversation } from "./conversations"
 import type { Message, MessageRole, ToolCallRecord } from "../types"
 
@@ -24,7 +27,9 @@ function toMessage(row: MessageRow): Message {
     seq: row.seq,
     role: row.role,
     content: row.content,
-    toolCalls: row.tool_calls ? (JSON.parse(row.tool_calls) as ToolCallRecord[]) : null,
+    toolCalls: row.tool_calls
+      ? (JSON.parse(row.tool_calls) as ToolCallRecord[])
+      : null,
     toolCallId: row.tool_call_id,
     toolName: row.tool_name,
     tokenEstimate: row.token_estimate,
@@ -34,7 +39,10 @@ function toMessage(row: MessageRow): Message {
 
 // Text used to estimate a message's token cost — the visible content plus any
 // serialized tool-call arguments, which also occupy context.
-function estimateText(content: string | null, toolCalls: ToolCallRecord[] | null): string {
+function estimateText(
+  content: string | null,
+  toolCalls: ToolCallRecord[] | null
+): string {
   let text = content ?? ""
   if (toolCalls?.length) text += JSON.stringify(toolCalls)
   return text
@@ -94,9 +102,9 @@ export function appendMessage(
 }
 
 export function getMessage(id: string): Message | undefined {
-  const row = getDb()
-    .prepare("SELECT * FROM messages WHERE id = ?")
-    .get(id) as MessageRow | undefined
+  const row = getDb().prepare("SELECT * FROM messages WHERE id = ?").get(id) as
+    | MessageRow
+    | undefined
   return row ? toMessage(row) : undefined
 }
 
@@ -104,7 +112,9 @@ export function getMessage(id: string): Message | undefined {
 // the renderer reload and by the ContextBuilder.
 export function listMessages(conversationId: string): Message[] {
   const rows = getDb()
-    .prepare("SELECT * FROM messages WHERE conversation_id = ? ORDER BY seq ASC")
+    .prepare(
+      "SELECT * FROM messages WHERE conversation_id = ? ORDER BY seq ASC"
+    )
     .all(conversationId) as MessageRow[]
   return rows.map(toMessage)
 }

@@ -32,8 +32,14 @@ export function seedProviderFromEnvIfEmpty(): void {
       modelId: DEFAULT_MODEL,
       origin: "seeded",
     })
-    settingsService.setLlm({ activeAccountId: account.id, activeModelId: model.modelId })
+    settingsService.setLlm({
+      activeAccountId: account.id,
+      activeModelId: model.modelId,
+    })
   } catch (err) {
-    console.error("Provider env-seed failed (configure a provider in Settings):", err)
+    console.error(
+      "Provider env-seed failed (configure a provider in Settings):",
+      err
+    )
   }
 }

@@ -67,8 +67,7 @@ export const readFileTool: Tool = {
           },
           limit: {
             type: "integer",
-            description:
-              "Maximum number of lines to return. Defaults to 2000.",
+            description: "Maximum number of lines to return. Defaults to 2000.",
           },
         },
         required: ["path"],
@@ -111,10 +110,7 @@ export const readFileTool: Tool = {
     const buf = await readAt(target)
     // Binary detection: a NUL byte in the first chunk means this isn't text.
     if (buf.subarray(0, 8000).includes(0)) {
-      return toolError(
-        "binary",
-        `File appears to be binary, not text: ${path}`
-      )
+      return toolError("binary", `File appears to be binary, not text: ${path}`)
     }
 
     const content = buf.toString("utf8")

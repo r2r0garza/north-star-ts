@@ -43,13 +43,19 @@ export function TaskCompletionToasts({
   React.useEffect(() => {
     if (!conversationId) return
     let cancelled = false
-    void window.cowork.db.tasks.list({ sourceConversationId: conversationId }).then((rows) => {
-      if (cancelled) return
-      const unseen = rows.filter((t) => TERMINAL.includes(t.status) && !seen.current.has(t.id))
-      if (unseen.length === 0) return
-      for (const t of unseen) seen.current.add(t.id)
-      fire("You have completed background tasks — open the panel (⌘J) to view history.")
-    })
+    void window.cowork.db.tasks
+      .list({ sourceConversationId: conversationId })
+      .then((rows) => {
+        if (cancelled) return
+        const unseen = rows.filter(
+          (t) => TERMINAL.includes(t.status) && !seen.current.has(t.id)
+        )
+        if (unseen.length === 0) return
+        for (const t of unseen) seen.current.add(t.id)
+        fire(
+          "You have completed background tasks — open the panel (⌘J) to view history."
+        )
+      })
     return () => {
       cancelled = true
     }
@@ -61,18 +67,22 @@ export function TaskCompletionToasts({
     const unsubscribe = window.cowork.tasks.onEvent((payload) => {
       const t = payload.event.type
       if (t !== "task_completed" && t !== "task_failed") return
-      void window.cowork.db.tasks.list({ sourceConversationId: conversationId }).then((rows) => {
-        const fresh = rows.filter((r) => TERMINAL.includes(r.status) && !seen.current.has(r.id))
-        if (fresh.length === 0) return
-        for (const r of fresh) seen.current.add(r.id)
-        fire(
-          fresh.length === 1
-            ? fresh[0].status === "failed"
-              ? "Background task failed — view it in the activity panel."
-              : "Background task completed — view it in the activity panel."
-            : "Background tasks finished — view them in the activity panel."
-        )
-      })
+      void window.cowork.db.tasks
+        .list({ sourceConversationId: conversationId })
+        .then((rows) => {
+          const fresh = rows.filter(
+            (r) => TERMINAL.includes(r.status) && !seen.current.has(r.id)
+          )
+          if (fresh.length === 0) return
+          for (const r of fresh) seen.current.add(r.id)
+          fire(
+            fresh.length === 1
+              ? fresh[0].status === "failed"
+                ? "Background task failed — view it in the activity panel."
+                : "Background task completed — view it in the activity panel."
+              : "Background tasks finished — view them in the activity panel."
+          )
+        })
     })
     return unsubscribe
   }, [conversationId, fire])

@@ -44,14 +44,19 @@ export function buildIndexSummary(workspaceId: string): string | null {
   const meta = new Map(listMetadata(workspaceId).map((m) => [m.kind, m.value]))
 
   const pkg = meta.get("package_json") as
-    | { name?: string; packageManager?: string; scripts?: Record<string, string> }
+    | {
+        name?: string
+        packageManager?: string
+        scripts?: Record<string, string>
+      }
     | undefined
   if (pkg) {
     const bits: string[] = []
     if (pkg.name) bits.push(`name: ${pkg.name}`)
     if (pkg.packageManager) bits.push(`package manager: ${pkg.packageManager}`)
     const scripts = pkg.scripts ? Object.keys(pkg.scripts) : []
-    if (scripts.length > 0) bits.push(`scripts: ${scripts.slice(0, 8).join(", ")}`)
+    if (scripts.length > 0)
+      bits.push(`scripts: ${scripts.slice(0, 8).join(", ")}`)
     if (bits.length > 0) lines.push(`package.json — ${bits.join("; ")}.`)
   }
 
@@ -68,13 +73,17 @@ export function buildIndexSummary(workspaceId: string): string | null {
 
   const readme = meta.get("readme") as { excerpt?: string } | undefined
   if (readme?.excerpt) {
-    const firstLine = readme.excerpt.split("\n").find((l) => l.trim().length > 0)
-    if (firstLine) lines.push(`README starts: ${firstLine.trim().slice(0, 200)}`)
+    const firstLine = readme.excerpt
+      .split("\n")
+      .find((l) => l.trim().length > 0)
+    if (firstLine)
+      lines.push(`README starts: ${firstLine.trim().slice(0, 200)}`)
   }
 
   // Symbol coverage — signals that index_query_tool can answer symbol lookups.
   const symbols = countSymbols(workspaceId)
-  if (symbols > 0) lines.push(`Indexed symbols: ${symbols} (queryable via index_query_tool).`)
+  if (symbols > 0)
+    lines.push(`Indexed symbols: ${symbols} (queryable via index_query_tool).`)
 
   lines.push(
     "This is an advisory summary. Use index_query_tool to find symbols, list files, or see what " +

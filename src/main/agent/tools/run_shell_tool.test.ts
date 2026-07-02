@@ -40,7 +40,10 @@ describe("run_shell_tool", () => {
   })
 
   it("runs an approved command and reports exit code 0", async () => {
-    const result = await runShellTool.execute({ command: "echo hello" }, approveAll)
+    const result = await runShellTool.execute(
+      { command: "echo hello" },
+      approveAll
+    )
     expect(result).toContain("hello")
     expect(result).toContain("exit code 0")
   })

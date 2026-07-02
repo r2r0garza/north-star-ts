@@ -91,7 +91,9 @@ export function deriveLabel(
       if (!todos) return "Read task list"
       if (todos.length === 0) return "Cleared task list"
       const count = (s: string) =>
-        todos.filter((t) => t && typeof t === "object" && (t as any).status === s).length
+        todos.filter(
+          (t) => t && typeof t === "object" && (t as any).status === s
+        ).length
       const parts: string[] = []
       const inProgress = count("in_progress")
       const done = count("completed")
@@ -141,7 +143,12 @@ export function buildTimeline(rows: DbMessage[]): TimelineItem[] {
   for (const m of rows) {
     if (m.role === "user") {
       if (m.content?.trim()) {
-        items.push({ kind: "text", key: m.id, role: "user", content: m.content })
+        items.push({
+          kind: "text",
+          key: m.id,
+          role: "user",
+          content: m.content,
+        })
       }
       continue
     }

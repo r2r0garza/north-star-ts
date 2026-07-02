@@ -30,7 +30,8 @@ export const runShellTool: Tool = {
         properties: {
           command: {
             type: "string",
-            description: "The shell command to run (executed via the system shell).",
+            description:
+              "The shell command to run (executed via the system shell).",
           },
           timeout_ms: {
             type: "integer",
@@ -73,9 +74,7 @@ export const runShellTool: Tool = {
     // Route through the shared approval pipeline. Fail-closed: if no gate is
     // wired, never run a command that would otherwise need approval — but a
     // gate is always present in the real agent loop.
-    const outcome = ctx.gate
-      ? await ctx.gate(action)
-      : ("denied" as const)
+    const outcome = ctx.gate ? await ctx.gate(action) : ("denied" as const)
 
     if (outcome === "blocked") {
       return toolError(
@@ -85,7 +84,10 @@ export const runShellTool: Tool = {
       )
     }
     if (outcome === "denied") {
-      return toolError("denied", "The user denied approval to run this command.")
+      return toolError(
+        "denied",
+        "The user denied approval to run this command."
+      )
     }
 
     // Run through the turn's execution backend (host or container). The byte cap

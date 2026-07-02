@@ -4,7 +4,11 @@ import type { Task, TaskStatus } from "../../db/types"
 let tasks: Task[] = []
 vi.mock("../../db/repositories/tasks", () => ({
   listTasks: (opts?: { sourceConversationId?: string }) =>
-    tasks.filter((t) => !opts?.sourceConversationId || t.sourceConversationId === opts.sourceConversationId),
+    tasks.filter(
+      (t) =>
+        !opts?.sourceConversationId ||
+        t.sourceConversationId === opts.sourceConversationId
+    ),
 }))
 
 import { taskStateSection } from "./sections"
@@ -32,7 +36,11 @@ describe("taskStateSection", () => {
   })
 
   it("lists active tasks with their status", () => {
-    tasks = [task("Indexing", "running"), task("Refactor", "paused"), task("old", "completed")]
+    tasks = [
+      task("Indexing", "running"),
+      task("Refactor", "paused"),
+      task("old", "completed"),
+    ]
     const section = taskStateSection("c1")
     expect(section).not.toBeNull()
     expect(section!.priority).toBe(SECTION_PRIORITY.taskState)
@@ -42,7 +50,10 @@ describe("taskStateSection", () => {
   })
 
   it("only counts tasks sourced from this conversation", () => {
-    tasks = [{ ...task("mine", "running") }, { ...task("theirs", "running"), sourceConversationId: "other" }]
+    tasks = [
+      { ...task("mine", "running") },
+      { ...task("theirs", "running"), sourceConversationId: "other" },
+    ]
     const section = taskStateSection("c1")
     expect(section!.content).toContain("mine")
     expect(section!.content).not.toContain("theirs")

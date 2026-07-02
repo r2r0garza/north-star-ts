@@ -15,7 +15,9 @@ const MARKERS: Record<TodoStatus, string> = {
 // what lets a multi-step plan survive context compression.
 export function buildTodoListPrompt(todos: Todo[]): string | null {
   if (todos.length === 0) return null
-  const lines = todos.map((t) => `${MARKERS[t.status] ?? "[?]"} ${t.itemId}. ${t.content}`)
+  const lines = todos.map(
+    (t) => `${MARKERS[t.status] ?? "[?]"} ${t.itemId}. ${t.content}`
+  )
   return [
     "## Current task list",
     "",

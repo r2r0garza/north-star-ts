@@ -31,7 +31,11 @@ import {
   countByExt,
   deleteFilesByWorkspace,
 } from "./index-files"
-import { upsertMetadata, listMetadata, deleteMetadataByWorkspace } from "./index-metadata"
+import {
+  upsertMetadata,
+  listMetadata,
+  deleteMetadataByWorkspace,
+} from "./index-metadata"
 
 function freshWorkspace(path = `/tmp/${randomUUID()}`): string {
   const id = randomUUID()
@@ -51,7 +55,12 @@ beforeEach(() => {
 
 describe.skipIf(!sqliteLoads)("v8 migration", () => {
   it("creates the four index tables", () => {
-    for (const name of ["index_runs", "index_files", "index_metadata", "index_symbols"]) {
+    for (const name of [
+      "index_runs",
+      "index_files",
+      "index_metadata",
+      "index_symbols",
+    ]) {
       const row = db
         .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?")
         .get(name)
@@ -119,7 +128,12 @@ describe.skipIf(!sqliteLoads)("index-runs", () => {
   it("updateProgress writes scanned/total/stage/cursor", () => {
     const ws = freshWorkspace()
     upsertRun(ws)
-    updateProgress(ws, { filesScanned: 42, filesTotal: 100, stage: "metadata", cursor: "src/x" })
+    updateProgress(ws, {
+      filesScanned: 42,
+      filesTotal: 100,
+      stage: "metadata",
+      cursor: "src/x",
+    })
     const run = getRunByWorkspace(ws)!
     expect(run.filesScanned).toBe(42)
     expect(run.filesTotal).toBe(100)
@@ -136,7 +150,13 @@ describe.skipIf(!sqliteLoads)("index-runs", () => {
 
   it("resetRun clears cursor/counts/taskId but keeps enabled", () => {
     const ws = freshWorkspace()
-    upsertRun(ws, { taskId: "t1", cursor: "c", filesScanned: 5, filesTotal: 9, enabled: true })
+    upsertRun(ws, {
+      taskId: "t1",
+      cursor: "c",
+      filesScanned: 5,
+      filesTotal: 9,
+      enabled: true,
+    })
     const run = resetRun(ws)
     expect(run.taskId).toBeNull()
     expect(run.cursor).toBeNull()
@@ -173,7 +193,12 @@ describe.skipIf(!sqliteLoads)("index-runs", () => {
 })
 
 describe.skipIf(!sqliteLoads)("index-files", () => {
-  const base = { size: 10, mtime: 1, hash: "h", indexedStage: "file_map" as const }
+  const base = {
+    size: 10,
+    mtime: 1,
+    hash: "h",
+    indexedStage: "file_map" as const,
+  }
 
   it("upserts by (workspace, path) and hash-skip lookup finds it", () => {
     const ws = freshWorkspace()
@@ -181,7 +206,13 @@ describe.skipIf(!sqliteLoads)("index-files", () => {
     const f = getFileByPath(ws, "a.ts")!
     expect(f.hash).toBe("h")
     // Re-upsert same path updates in place (no duplicate).
-    upsertFile({ workspaceId: ws, path: "a.ts", ext: ".ts", ...base, hash: "h2" })
+    upsertFile({
+      workspaceId: ws,
+      path: "a.ts",
+      ext: ".ts",
+      ...base,
+      hash: "h2",
+    })
     expect(getFileByPath(ws, "a.ts")!.hash).toBe("h2")
     expect(listPaths(ws).size).toBe(1)
   })
@@ -198,7 +229,9 @@ describe.skipIf(!sqliteLoads)("index-files", () => {
     upsertFile({ workspaceId: ws, path: "a.ts", ext: ".ts", ...base })
     upsertFile({ workspaceId: ws, path: "b.ts", ext: ".ts", ...base })
     upsertFile({ workspaceId: ws, path: "c.md", ext: ".md", ...base })
-    const counts = Object.fromEntries(countByExt(ws).map((r) => [r.ext, r.count]))
+    const counts = Object.fromEntries(
+      countByExt(ws).map((r) => [r.ext, r.count])
+    )
     expect(counts[".ts"]).toBe(2)
     expect(counts[".md"]).toBe(1)
   })
@@ -228,8 +261,16 @@ describe.skipIf(!sqliteLoads)("index-files", () => {
 describe.skipIf(!sqliteLoads)("index-metadata", () => {
   it("replaces by (workspace, kind)", () => {
     const ws = freshWorkspace()
-    upsertMetadata({ workspaceId: ws, kind: "package_json", value: { name: "a" } })
-    upsertMetadata({ workspaceId: ws, kind: "package_json", value: { name: "b" } })
+    upsertMetadata({
+      workspaceId: ws,
+      kind: "package_json",
+      value: { name: "a" },
+    })
+    upsertMetadata({
+      workspaceId: ws,
+      kind: "package_json",
+      value: { name: "b" },
+    })
     const list = listMetadata(ws)
     expect(list).toHaveLength(1)
     expect((list[0].value as { name: string }).name).toBe("b")

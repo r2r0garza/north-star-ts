@@ -21,7 +21,10 @@ export interface IndexStatus {
 // The index-specific IPC channels (plan 008). Pause/resume/cancel reuse the
 // `task:*` verbs — an index run IS a durable task — so these add only what's
 // index-specific: clear, per-workspace enable/disable, and the status snapshot.
-export function registerIndexHandlers(runner: TaskRunner, service: IndexService): void {
+export function registerIndexHandlers(
+  runner: TaskRunner,
+  service: IndexService
+): void {
   // Manually (re)start indexing for a workspace — the UI "Start"/"Rebuild"
   // action. ensureRunning is idempotent: a no-op if a build is already live, else
   // it enqueues a fresh one. Covers restarting after cancel/clear/completion.
@@ -29,7 +32,10 @@ export function registerIndexHandlers(runner: TaskRunner, service: IndexService)
     "index:start",
     (_e, payload: { workspaceId: string; priority?: IndexPriority }) => {
       const run = getRunByWorkspace(payload.workspaceId)
-      service.ensureRunning(payload.workspaceId, payload.priority ?? run?.priority ?? "low")
+      service.ensureRunning(
+        payload.workspaceId,
+        payload.priority ?? run?.priority ?? "low"
+      )
     }
   )
 
@@ -44,14 +50,24 @@ export function registerIndexHandlers(runner: TaskRunner, service: IndexService)
   // enable kicks a fresh run at the given (or low) priority.
   ipcMain.handle(
     "index:setEnabled",
-    (_e, payload: { workspaceId: string; enabled: boolean; priority?: IndexPriority }) => {
+    (
+      _e,
+      payload: {
+        workspaceId: string
+        enabled: boolean
+        priority?: IndexPriority
+      }
+    ) => {
       setEnabled(payload.workspaceId, payload.enabled)
       const run = getRunByWorkspace(payload.workspaceId)
       if (!payload.enabled) {
         if (run?.taskId) runner.cancel(run.taskId)
         return
       }
-      service.ensureRunning(payload.workspaceId, payload.priority ?? run?.priority ?? "low")
+      service.ensureRunning(
+        payload.workspaceId,
+        payload.priority ?? run?.priority ?? "low"
+      )
     }
   )
 

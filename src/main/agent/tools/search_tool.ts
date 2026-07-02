@@ -27,7 +27,8 @@ export const searchTool: Tool = {
         properties: {
           pattern: {
             type: "string",
-            description: "JavaScript regular expression to match against each line.",
+            description:
+              "JavaScript regular expression to match against each line.",
           },
           path: {
             type: "string",
@@ -39,11 +40,12 @@ export const searchTool: Tool = {
             type: "string",
             description:
               "Optional case-insensitive substring or extension filter on file " +
-              "names (e.g. \".ts\"). Only matching files are searched.",
+              'names (e.g. ".ts"). Only matching files are searched.',
           },
           max_results: {
             type: "integer",
-            description: "Maximum number of matching lines to return. Defaults to 100.",
+            description:
+              "Maximum number of matching lines to return. Defaults to 100.",
           },
         },
         required: ["pattern"],
