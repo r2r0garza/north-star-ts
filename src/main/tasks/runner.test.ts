@@ -40,7 +40,12 @@ import { createTask, getTask, listTasks } from "../db/repositories/tasks"
 import { appendMessage, listMessages } from "../db/repositories/messages"
 import { listEvents } from "../db/repositories/task-events"
 import { createApproval, listApprovals } from "../db/repositories/approvals"
-import { createConversation } from "../db/repositories/conversations"
+import { appendEvent } from "../db/repositories/task-events"
+import { createCheckpoint } from "../db/repositories/task-checkpoints"
+import {
+  createConversation,
+  getConversation,
+} from "../db/repositories/conversations"
 import { listTodos } from "../db/repositories/todos"
 
 // Wait for the wakeable pump to settle: poll until every task has left the
@@ -906,6 +911,172 @@ describe.skipIf(!sqliteLoads)("TaskRunner — pause/resume (plan 008)", () => {
     await settle()
     // reconcile only touches running/waiting_for_approval; a paused task stays put.
     expect(getTask(task.id)?.status).toBe("paused")
+    await runner.stop()
+  })
+})
+
+describe.skipIf(!sqliteLoads)(
+  "TaskRunner — deleteSourceConversation (plan 022)",
+  () => {
+    it("deletes a sourced task, its worker conversation, and all child rows", async () => {
+      const source = createConversation({ mode: "chat" })
+      const runner = new TaskRunner()
+      runner.start()
+      const task = runner.enqueue({
+        conversationId: source.id,
+        message: "background work",
+      })
+      // Add child rows that must cascade away with the worker conversation/task.
+      createApproval({ taskId: task.id, request: { requestId: "req-1" } })
+      appendEvent({ taskId: task.id, type: "note", payload: { x: 1 } })
+      createCheckpoint({ taskId: task.id, state: { at: "start" } })
+      await settle()
+      expect(getTask(task.id)?.status).toBe("completed")
+      const workerConvId = task.conversationId
+
+      await runner.deleteSourceConversation(source.id)
+
+      // Task, worker conversation, source conversation, and children all gone.
+      expect(getTask(task.id)).toBeUndefined()
+      expect(getConversation(workerConvId)).toBeUndefined()
+      expect(getConversation(source.id)).toBeUndefined()
+      expect(listApprovals({ taskId: task.id })).toHaveLength(0)
+      expect(listEvents(task.id)).toHaveLength(0)
+      // No dangling references anywhere.
+      expect(db.pragma("foreign_key_check")).toHaveLength(0)
+      await runner.stop()
+    })
+
+    it("aborts a running task and settles it BEFORE deleting the row (no FK throw)", async () => {
+      const source = createConversation({ mode: "chat" })
+      const runner = new TaskRunner()
+      runner.start()
+
+      // The loop blocks until aborted; on abort it returns {stopped:true}, which
+      // runOne maps to `cancelled` with a post-abort updateTask/emit — those
+      // writes must complete before deleteSourceConversation removes the row.
+      let sawAbort = false
+      loopImpl = (opts) =>
+        new Promise((resolve) => {
+          opts.abort.signal.addEventListener("abort", () => {
+            sawAbort = true
+            resolve({ stopped: true })
+          })
+        })
+
+      const task = runner.enqueue({
+        conversationId: source.id,
+        message: "long job",
+      })
+      // Wait until it's actually running (occupying a slot).
+      for (let i = 0; i < 50 && getTask(task.id)?.status !== "running"; i++) {
+        await new Promise((r) => setTimeout(r, 5))
+      }
+      expect(getTask(task.id)?.status).toBe("running")
+
+      // Should not throw despite the row being deleted right after the in-flight
+      // run settles (deleteSourceConversation awaits the runOne promise first).
+      await runner.deleteSourceConversation(source.id)
+
+      expect(sawAbort).toBe(true)
+      expect(getTask(task.id)).toBeUndefined()
+      expect(getConversation(source.id)).toBeUndefined()
+      expect(db.pragma("foreign_key_check")).toHaveLength(0)
+      await runner.stop()
+    })
+
+    it("reaps nested tasks sourced from a worker conversation (transitive)", async () => {
+      const source = createConversation({ mode: "chat" })
+      const runner = new TaskRunner()
+      runner.start()
+
+      // A parent task whose loop enqueues a NESTED task sourced from its own
+      // worker conversation (the recursive producer path). Enqueue once, then
+      // stop driving so we can delete deterministically.
+      const parent = runner.enqueue({
+        conversationId: source.id,
+        message: "parent",
+      })
+      await settle()
+      // Simulate the nested hand-off: a task sourced from the parent's worker conv.
+      const nested = runner.enqueue({
+        conversationId: parent.conversationId,
+        message: "nested",
+      })
+      await settle()
+      expect(nested.sourceConversationId).toBe(parent.conversationId)
+
+      await runner.deleteSourceConversation(source.id)
+
+      expect(getTask(parent.id)).toBeUndefined()
+      expect(getTask(nested.id)).toBeUndefined()
+      expect(getConversation(nested.conversationId)).toBeUndefined()
+      expect(db.pragma("foreign_key_check")).toHaveLength(0)
+      await runner.stop()
+    })
+  }
+)
+
+describe.skipIf(!sqliteLoads)("TaskRunner — reapOrphans on start (plan 022)", () => {
+  // createTask coerces a null sourceConversationId to conversationId (self-sourced,
+  // tasks.ts). A genuine orphan has source_conversation_id NULL — the state the
+  // ON DELETE SET NULL leaves behind — so null it directly, as the real delete did.
+  function orphan(taskId: string): void {
+    db.prepare("UPDATE tasks SET source_conversation_id = NULL WHERE id = ?").run(
+      taskId
+    )
+  }
+
+  it("reaps a source-less task of a surface-less kind on boot (never requeues)", async () => {
+    // An orphan left by a pre-fix session delete: an auto-resume kind with NO
+    // independent surface, left `running` by a crash. reapOrphans must delete it
+    // before reconcile would flip it to queued and the pump run it.
+    const workerConv = createConversation({ mode: "interactive" })
+    const task = createTask({
+      conversationId: workerConv.id,
+      status: "running",
+      input: { kind: "todo_run", message: "orphaned list" },
+    })
+    orphan(task.id)
+
+    const runner = new TaskRunner()
+    runner.registerKind("todo_run", { autoResume: true })
+    runner.start()
+    await settle()
+
+    // Reaped before reconcile/seed could requeue it — gone, never ran.
+    expect(getTask(task.id)).toBeUndefined()
+    expect(getConversation(workerConv.id)).toBeUndefined()
+    expect(loopCalls).toHaveLength(0)
+    expect(db.pragma("foreign_key_check")).toHaveLength(0)
+    await runner.stop()
+  })
+
+  it("keeps a source-less workspace_index task (hasIndependentSurface) and auto-resumes it", async () => {
+    const workerConv = createConversation({ mode: "interactive" })
+    const task = createTask({
+      conversationId: workerConv.id,
+      status: "running",
+      input: { kind: "workspace_index", workspaceId: "w" },
+    })
+    orphan(task.id)
+
+    const runner = new TaskRunner()
+    let ran = false
+    runner.registerKind("workspace_index", {
+      autoResume: true,
+      hasIndependentSurface: true,
+      run: async () => {
+        ran = true
+        return { content: "indexed" }
+      },
+    })
+    runner.start()
+    await settle()
+
+    // Not reaped (independent surface); reconcile auto-resumed it and it ran.
+    expect(ran).toBe(true)
+    expect(getTask(task.id)?.status).toBe("completed")
     await runner.stop()
   })
 })

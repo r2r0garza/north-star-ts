@@ -140,7 +140,7 @@ ipcMain.handle("is-fullscreen", (event) => {
 app.whenReady().then(() => {
   // Register DB-backed IPC handlers now — the connection opens lazily on first
   // use, after userData is available.
-  registerDbHandlers(indexService)
+  registerDbHandlers(indexService, taskRunner)
   registerSettingsHandlers()
   registerProviderHandlers()
   // Start the durable task runner now that the DB handlers are registered (it
@@ -156,6 +156,9 @@ app.whenReady().then(() => {
   // crash-interrupted index continues from its cursor on next boot (plan 008).
   taskRunner.registerKind("workspace_index", {
     autoResume: true,
+    // Observable/cancellable via the indexing panel, and born source-less by
+    // design — exempt from the plan 022 orphan reaper.
+    hasIndependentSurface: true,
     run: indexService.execute,
   })
   taskRunner.start()

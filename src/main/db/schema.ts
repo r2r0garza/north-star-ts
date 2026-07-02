@@ -307,3 +307,43 @@ CREATE TABLE index_symbols (
 CREATE INDEX idx_index_symbols_workspace_name ON index_symbols(workspace_id, name);
 CREATE INDEX idx_index_symbols_file ON index_symbols(file_id);
 `
+
+// v9 (plan 022): reap durable-task state orphaned by pre-fix session deletes.
+// tasks.source_conversation_id is ON DELETE SET NULL, so deleting the originating
+// session left the task, its forked worker conversation, and all child rows
+// behind — invisible (the activity panel queries by source_conversation_id) and,
+// for auto-resume kinds, a runaway with no UI handle. The delete path is fixed
+// going forward (runner.deleteSourceConversation); this sweeps existing orphans.
+//
+// runMigrations runs the loop with foreign_keys OFF (see migrations.ts), so a
+// plain DELETE does NOT cascade — every child is deleted explicitly. Orphans are
+// collected transitively via a recursive CTE (a reaped worker conversation may
+// itself have sourced nested tasks). The SEED of the recursion excludes
+// workspace_index: it's born source-less by design and is observable in the
+// indexing panel (not an orphan) — mirroring the hasIndependentSurface capability
+// flag at the SQL level. The recursive step has no kind filter, so every task
+// descending from a reaped worker conversation is also reaped, leaving no
+// dangling source_conversation_id for the post-migration foreign_key_check.
+export const SCHEMA_V9 = `
+CREATE TEMP TABLE _reap_convs AS
+WITH RECURSIVE r(conv) AS (
+  SELECT conversation_id FROM tasks
+    WHERE source_conversation_id IS NULL
+      AND COALESCE(json_extract(input, '$.kind'), 'agent_chat') <> 'workspace_index'
+  UNION
+  SELECT t.conversation_id FROM tasks t JOIN r ON t.source_conversation_id = r.conv
+)
+SELECT conv FROM r;
+
+DELETE FROM task_events WHERE task_id IN
+  (SELECT id FROM tasks WHERE conversation_id IN (SELECT conv FROM _reap_convs));
+DELETE FROM task_checkpoints WHERE task_id IN
+  (SELECT id FROM tasks WHERE conversation_id IN (SELECT conv FROM _reap_convs));
+DELETE FROM approvals WHERE task_id IN
+  (SELECT id FROM tasks WHERE conversation_id IN (SELECT conv FROM _reap_convs));
+DELETE FROM messages WHERE conversation_id IN (SELECT conv FROM _reap_convs);
+DELETE FROM todos    WHERE conversation_id IN (SELECT conv FROM _reap_convs);
+DELETE FROM tasks    WHERE conversation_id IN (SELECT conv FROM _reap_convs);
+DELETE FROM conversations WHERE id IN (SELECT conv FROM _reap_convs);
+DROP TABLE _reap_convs;
+`

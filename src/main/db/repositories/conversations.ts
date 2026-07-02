@@ -130,3 +130,20 @@ export function touchConversation(id: string): void {
 export function deleteConversation(id: string): void {
   getDb().prepare("DELETE FROM conversations WHERE id = ?").run(id)
 }
+
+// Delete several conversations in one transaction. Used by the runner's
+// session-delete cascade (plan 022): a deleted session and every worker
+// conversation of the tasks it sourced are removed together, so ON DELETE
+// CASCADE reaps their tasks + messages + todos + approvals + task_events +
+// task_checkpoints. Runtime FK enforcement is ON, so each delete cascades (unlike
+// migrations, which run with foreign_keys OFF). Ids are deduped — a self-sourced
+// task's worker conversation IS the source, so the list can carry duplicates.
+export function deleteConversations(ids: string[]): void {
+  const unique = [...new Set(ids)]
+  if (unique.length === 0) return
+  const db = getDb()
+  const stmt = db.prepare("DELETE FROM conversations WHERE id = ?")
+  db.transaction((rows: string[]) => {
+    for (const id of rows) stmt.run(id)
+  })(unique)
+}

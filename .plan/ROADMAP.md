@@ -7,49 +7,40 @@ item is its plan file, not its rank.
 
 ## Next up
 
-1. **`022` — Orphaned task cleanup on session delete.** Found verifying `021`. Deleting a session
-   nulls its tasks' `source_conversation_id` (FK `ON DELETE SET NULL`) but leaves the forked **worker
-   conversation** + task rows behind — invisible to the UI (panels fetch by `sourceConversationId`;
-   workers aren't sidebar-listed), unbounded accumulation, and a latent hazard: an orphaned
-   non-terminal **auto-resume** kind (`todo_run`/`goal_run`) can silently re-queue on boot with no
-   panel to cancel it. Fix the delete path (runner-coordinated cascade to worker conversation + child
-   rows, cancel in-flight first) + a `reconcile` guard against source-less auto-resume + a `SCHEMA_V9`
-   one-time reap (real dev DB had 25 orphaned tasks / 42 orphaned workers). Not related to `021` — that
-   work only surfaced it.
-2. **`023` — Settings revamp (full-screen takeover).** UI-only. Replace the cramped right-side
+1. **`023` — Settings revamp (full-screen takeover).** UI-only. Replace the cramped right-side
    slide-out `Sheet` (~448px, six tabs jammed in a narrow column) with a **full-screen takeover** —
    left nav rail + wide content area (VS Code / macOS System Settings model). **Reuse all tab content
    verbatim**; only swap the container (`Sheet`→full-viewport `Dialog`) and the horizontal `TabsList`
    for a vertical nav rail. No backend/IPC/schema change (same `settings.*`/`providers.*`/`models.*`
    surface). Daily friction the user flagged. Content redesign within sections deferred to a later
    polish pass.
-3. **`019` — Conversation summaries.** The rolling-summary section `014` reserved: a compact,
+2. **`019` — Conversation summaries.** The rolling-summary section `014` reserved: a compact,
    periodically-regenerated digest of the turns that fell out of the recent-message window, injected
    as a high-priority context section so long conversations keep their thread. New
    `conversation_summaries` table (one row/conversation, tracks the covered `seq` range); an
    **out-of-band** generation step (a `009` `summarize` task — never on the user's turn latency),
    incremental + debounced past a size threshold; a `summarySection` renderer for the `014`
    framework. Split out of `014` Q1.
-4. **`020` — Durable memories.** The cross-conversation memories section `014` reserved: small,
+3. **`020` — Durable memories.** The cross-conversation memories section `014` reserved: small,
    persisted facts the agent writes (a **gated, explicit** `remember` tool — no silent profiling)
    and that inject into future turns, **scoped** global / workspace / conversation (mirrors the
    `action_allowlist` scoping). New `memories` table + a list/delete surface (durable +
    cross-conversation ⇒ must be auditable/revocable); a `memoriesSection` renderer with an injection
    cap. Split out of `014` Q2.
-5. **`010` — Container runtime profiles.** Decouple Workspace (the files) from Runtime (the env a
+4. **`010` — Container runtime profiles.** Decouple Workspace (the files) from Runtime (the env a
    tool call executes in). Replace the raw container `image` string with a named **profile**
    (`node` | `python` | `fullstack`), resolved to an image in the env factory; default/fallback =
    `fullstack` (Node + Python) so a Node repo that later adds a Python backend doesn't wedge.
    One profile per conversation, user-overridable in settings. Kills the "one workspace = one image
    forever" assumption **without** building auto-routing or image management (both deferred). Small
    refactor of `env/factory.ts` + `container.ts` + execution settings (JSON blob — no migration).
-6. **`005.1` — ContainerEnvironment stop in-flight.** The deferred half of `005`: killing the host
+5. **`005.1` — ContainerEnvironment stop in-flight.** The deferred half of `005`: killing the host
    `docker/podman exec` client doesn't stop the in-container process. Needs its own kill mechanism
    (in-container PID tracking / `exec kill`, or marker `pkill`). Out of scope when `005` shipped.
-7. **`007` — Slash commands for skills.** Let users force a skill with `/skill-name …` (pre-inject
+6. **`007` — Slash commands for skills.** Let users force a skill with `/skill-name …` (pre-inject
    the `read_skill` call), keeping today's model-discretionary path for plain messages. Adds a
    `skills:list` IPC channel + composer autocomplete. Independent — schedule freely.
-8. **`018` — Agentic goal mode.** An opt-in **execution mode** (orthogonal to chat/interactive/
+7. **`018` — Agentic goal mode.** An opt-in **execution mode** (orthogonal to chat/interactive/
    north_star): `simple` (today's one-pass behavior, default) vs `goal` (bounded **plan → execute →
    review → fix → finalize**, capped by `maxIterations` — never unbounded). Modeled as a task-level
    orchestrator inside the runner's `runOne` (one task / one forked conversation, calling
@@ -64,6 +55,31 @@ item is its plan file, not its rank.
 
 ## Done
 
+- **`022` — Orphaned task cleanup on session delete.** Found verifying `021`. Deleting a session
+  nulled its tasks' `source_conversation_id` (FK `ON DELETE SET NULL`) but left the forked **worker
+  conversation** + task rows behind — invisible to the UI (panels fetch by `sourceConversationId`;
+  workers aren't sidebar-listed), unbounded, and a latent hazard: an orphaned non-terminal
+  **auto-resume** kind (`todo_run`) could silently re-queue on boot with no panel to cancel it.
+  **Shipped both parts.** *(A) Delete path* — threaded the `taskRunner` singleton into
+  `registerDbHandlers` (type-only import, no cycle) so `db:conversations:delete` routes through a new
+  `TaskRunner.deleteSourceConversation(id)`: a **transitive** BFS over source links collects every
+  descendant worker conversation, cancels each task, **awaits any in-flight run's settle** (a new
+  `inflight` map — so a running task's post-abort writes finish before its row is deleted, no FK
+  throw), then deletes worker conversations + the source in one transaction (`deleteConversations`
+  repo helper; runtime FK cascade clears tasks/messages/todos/approvals/task_events/task_checkpoints).
+  A `reapOrphans()` step at the top of `start()` is the safety net: it deletes any source-less task of
+  a kind with **no independent UI surface**, guarded by a new `hasIndependentSurface` capability flag
+  so `workspace_index` (born source-less by design, observable in the indexing panel) is exempt.
+  *(B) One-time reap* — `SCHEMA_V9` (`user_version` → 9): a recursive-CTE sweep with **explicit** child
+  deletes (migrations run `foreign_keys = OFF`, so a plain `DELETE` won't cascade), seeded excluding
+  `workspace_index`, reaping descendants transitively so no dangling `source_conversation_id` survives.
+  **Decisions:** delete *all* sourced tasks regardless of status; *reap* (not re-home) source-less
+  surface-less tasks. Verified: `pnpm typecheck` + `pnpm build` clean; new runner tests (cascade +
+  child rows, in-flight abort-before-delete, transitive nested reap, `todo_run` reaped vs.
+  `workspace_index` kept) + new `migrations.test.ts`; two pre-existing `user_version` assertions
+  bumped 8 → 9. **Verified against the real dev DB**: v9 applied, orphaned tasks now 0, all 15 chat +
+  7 interactive sessions intact, `foreign_key_check` + `integrity_check` clean (after clearing
+  unrelated `pr21-test-task` manual-test debris). Commit ref pending.
 - **`021` — Approvals context section.** Built on `pr21-approvals-context-section` (commit ref pending
   merge). Filled the last `014`-reserved section slot (`SECTION_PRIORITY.approvals = 20`): a read-only,
   advisory section giving the agent visibility into what the user has **already granted/denied**, so it

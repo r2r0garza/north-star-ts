@@ -16,6 +16,7 @@ import type {
   ApprovalStatus,
 } from "../db/types"
 import type { IndexService } from "../index/service"
+import type { TaskRunner } from "../tasks/runner"
 import { getIndexing } from "../settings/service"
 import { getRunByWorkspace } from "../db/repositories/index-runs"
 
@@ -48,7 +49,13 @@ function maybeAutoIndex(
 // connection (which reads app.getPath("userData")) opens lazily on first use.
 // All handlers are synchronous repository calls; SQLite access stays in main.
 // `indexService` (plan 008) is optional so tests/headless callers can omit it.
-export function registerDbHandlers(indexService?: IndexService): void {
+// `runner` (plan 022) is optional for the same reason: when present, a session
+// delete routes through it so the tasks it sourced are cancelled and their worker
+// conversations cleaned up (no orphans); when absent, delete is the raw DB call.
+export function registerDbHandlers(
+  indexService?: IndexService,
+  runner?: TaskRunner
+): void {
   // Conversations
   ipcMain.handle(
     "db:conversations:create",
@@ -81,7 +88,9 @@ export function registerDbHandlers(indexService?: IndexService): void {
     }
   )
   ipcMain.handle("db:conversations:delete", (_e, id: string) =>
-    conversations.deleteConversation(id)
+    runner
+      ? runner.deleteSourceConversation(id)
+      : conversations.deleteConversation(id)
   )
 
   // Messages (read-only from the renderer; writes happen inside runChat)
