@@ -1,7 +1,26 @@
 # PR22: Orphaned tasks & worker conversations on session delete
 
-> Status: **NOT STARTED**. Found while manually verifying `021` (approvals context section). A
-> data-lifecycle bug, unrelated to `021` — the approvals work only surfaced it.
+> Status: **DONE** (commit `95f05e0`, branch `feat/orphaned-task-cleanup`). Found while manually verifying `021` (approvals context
+> section). A data-lifecycle bug, unrelated to `021` — the approvals work only surfaced it.
+>
+> **Shipped.** Both decisions resolved before building: (1) **delete all** tasks a deleted session
+> sourced, regardless of status; (2) reconcile safety net **reaps** source-less tasks of kinds with no
+> independent UI surface. Runner reachability: threaded `taskRunner` into `registerDbHandlers`
+> (type-only import — no cycle). Migration cascade: confirmed migrations run `foreign_keys = OFF`, so
+> `SCHEMA_V9` deletes children explicitly via a recursive CTE (excluding `workspace_index`, which is
+> born source-less by design and observable in the indexing panel).
+>
+> **Delivered:** a `hasIndependentSurface` capability flag on `TaskKindCapability`; an `inflight` map so
+> a running task fully settles before its row is deleted; `TaskRunner.deleteSourceConversation(id)` —
+> transitive (BFS over source links) cancel-then-delete; `reapOrphans()` run at the top of `start()`;
+> `deleteConversations(ids)` transactional repo helper; runner-coordinated `db:conversations:delete`;
+> and `SCHEMA_V9` (`user_version` → 9). Verified: `pnpm typecheck` + `pnpm build` clean; new runner
+> tests (cascade + child rows, in-flight abort-before-delete with no FK throw, transitive nested reap,
+> reapOrphans reaping `todo_run` vs. keeping `workspace_index`) and a new `migrations.test.ts` (fresh
+> DB → v9; orphan + transitive reap with live/`workspace_index` preserved; `foreign_key_check` clean);
+> two pre-existing `user_version` assertions bumped 8 → 9. **Verified against the real dev DB**: v9
+> applied, orphaned tasks now 0, all sessions intact, `foreign_key_check` + `integrity_check` clean
+> (after clearing unrelated `pr21-test-task` manual-test debris that predated this work).
 
 ## Context
 

@@ -23,8 +23,8 @@ beforeEach(() => {
 })
 
 describe.skipIf(!sqliteLoads)("migrations", () => {
-  it("brings a fresh DB to user_version 8 (workspace index tables)", () => {
-    expect(db.pragma("user_version", { simple: true })).toBe(8)
+  it("brings a fresh DB to the latest user_version", () => {
+    expect(db.pragma("user_version", { simple: true })).toBe(9)
   })
 })
 

@@ -20,6 +20,8 @@ import { appendMessage } from "../db/repositories/messages"
 import {
   getConversation,
   createConversation,
+  deleteConversation,
+  deleteConversations,
 } from "../db/repositories/conversations"
 import { getWorkspace } from "../db/repositories/workspaces"
 import { replaceTodos } from "../db/repositories/todos"
@@ -100,6 +102,12 @@ export type TaskExecutor = (ctx: TaskExecContext) => Promise<TaskExecResult>
 export interface TaskKindCapability {
   autoResume: boolean
   run?: TaskExecutor
+  // True if this kind is observable/cancellable via its OWN UI panel (not only
+  // through its source conversation's task list — e.g. workspace_index in the
+  // indexing panel). Such a kind is BORN source-less by design (enqueueKind sets
+  // sourceConversationId null), so a source-less task of this kind is NOT an
+  // orphan and must be exempt from the reapOrphans safety net (plan 022).
+  hasIndependentSurface?: boolean
 }
 
 // The default kind for a durable agent turn enqueued from the UI: manual resume
@@ -182,6 +190,12 @@ export class TaskRunner {
   // In-flight tasks → their AbortController (task-keyed, unlike runChat's
   // conversation-keyed map). cancel/stop abort these.
   private running = new Map<string, AbortController>()
+  // In-flight tasks → the runOne promise driving them. deleteSourceConversation
+  // awaits this after aborting, so a running task fully SETTLES (its post-abort
+  // updateTask/emit writes complete) BEFORE its row is deleted — otherwise those
+  // writes would hit a deleted task and throw an FK error on the task_events
+  // insert (plan 022).
+  private inflight = new Map<string, Promise<void>>()
   private readonly concurrency: number
   private listeners = new Set<TaskEventListener>()
   // The pump sleeps on this resolver when idle (a wakeable queue, not a busy
@@ -218,9 +232,69 @@ export class TaskRunner {
   // already `queued`, and start the pump. Call once in app.whenReady (after the
   // DB handlers are registered — the runner reads the DB synchronously).
   start(): void {
+    this.reapOrphans()
     this.reconcile()
     this.seed()
     void this.pump()
+  }
+
+  // Safety net for orphans left by a pre-022 session delete (or any that slip
+  // through): a task whose source_conversation_id is NULL and whose kind has no
+  // independent UI surface is invisible and — if an auto-resume kind — a runaway
+  // with no handle. Delete it before reconcile/seed so it can't requeue. Runs
+  // synchronously at boot (no task is in flight yet, so no cancel/await needed).
+  // Loops until stable: deleting a worker conversation SET-NULLs any nested task
+  // sourced to it, surfacing the next layer of orphans. Kinds WITH an independent
+  // surface (workspace_index) are born source-less by design and are exempt.
+  private reapOrphans(): void {
+    for (;;) {
+      const orphans = listTasks().filter(
+        (t) =>
+          t.sourceConversationId === null &&
+          !this.capabilityOf(kindOf(t)).hasIndependentSurface
+      )
+      if (orphans.length === 0) return
+      for (const task of orphans) deleteConversation(task.conversationId)
+    }
+  }
+
+  // Cascade a session delete to the durable tasks it sourced (plan 022). The
+  // sidebar delete routes here (via db:conversations:delete) so the runner —
+  // which owns in-flight tasks — stops them before their rows vanish, and no
+  // orphaned worker conversation is left behind. Transitive over source links: a
+  // background task can enqueue nested tasks sourced to its OWN worker
+  // conversation, so a BFS collects every descendant worker conversation too.
+  async deleteSourceConversation(id: string): Promise<void> {
+    const workerConvs: string[] = []
+    const orphanedTasks: Task[] = []
+    const queue = [id]
+    const seen = new Set<string>()
+    while (queue.length > 0) {
+      const conv = queue.shift()!
+      if (seen.has(conv)) continue
+      seen.add(conv)
+      for (const task of listTasks({ sourceConversationId: conv })) {
+        orphanedTasks.push(task)
+        workerConvs.push(task.conversationId)
+        // A nested task may be sourced from this task's worker conversation.
+        queue.push(task.conversationId)
+      }
+    }
+    // Cancel each task, then await any run that was in flight so its settle
+    // completes before we delete the row. Capture the inflight promise BEFORE
+    // cancel() aborts — the abort resolves runOne, which clears the map entry.
+    const waits: Promise<void>[] = []
+    for (const task of orphanedTasks) {
+      const running = this.inflight.get(task.id)
+      this.cancel(task.id)
+      if (running) waits.push(running)
+    }
+    await Promise.all(waits)
+    // Runtime FK enforcement is ON, so deleting each worker conversation cascades
+    // its task + messages + todos + approvals + task_events + task_checkpoints.
+    // The source session itself is deleted last (cascading any self-sourced task
+    // whose conversation_id == id).
+    deleteConversations([...workerConvs, id])
   }
 
   // Register a task kind's capabilities (e.g. a background producer opting into
@@ -558,7 +632,9 @@ export class TaskRunner {
         while (this.running.size < this.concurrency) {
           const taskId = this.takeNext()
           if (!taskId) break
-          void this.runOne(taskId)
+          // Track the driving promise so deleteSourceConversation can await a
+          // running task's settle before deleting its row (plan 022).
+          this.inflight.set(taskId, this.runOne(taskId))
         }
         if (this.stopped) break
         if (this.wakeQueued) {
@@ -753,6 +829,7 @@ export class TaskRunner {
       this.emit(taskId, { type: "task_failed", error: message })
     } finally {
       this.running.delete(taskId)
+      this.inflight.delete(taskId)
       this.wakeup()
     }
   }
