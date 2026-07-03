@@ -23,7 +23,11 @@ import {
   SECTION_PRIORITY,
   type ContextSection,
 } from "./context/context-builder"
-import { taskStateSection, approvalsSection } from "./context/sections"
+import {
+  taskStateSection,
+  approvalsSection,
+  summarySection,
+} from "./context/sections"
 import { repairDanglingToolCalls } from "./repair"
 import { createEnvironment } from "./env"
 import { LocalEnvironment } from "./env/local"
@@ -486,6 +490,16 @@ export async function runAgentLoop(
       taskId,
     })
     if (approvals) sections.push(approvals)
+  }
+
+  // Rolling conversation summary (plan 019): a compact digest of earlier turns
+  // that have scrolled out of the walk-back, so a long conversation keeps its
+  // early thread. Generated out of band by the `summarize` task; read here each
+  // turn (possibly one generation stale — the recent messages cover the seam).
+  // Highest-priority section (last dropped). Mode-gated like the others.
+  if (showTodos) {
+    const summary = summarySection(conversationId)
+    if (summary) sections.push(summary)
   }
 
   // Workspace-index summary (plan 008): cheap structured orientation. Advisory,

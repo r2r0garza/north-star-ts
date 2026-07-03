@@ -45,7 +45,9 @@ export const SECTION_PRIORITY = {
   approvals: 20,
   taskState: 30,
   todos: 40,
-  skills: 50, // capability definitions — kept longest
+  skills: 50, // capability definitions
+  summary: 60, // compressed older context — kept longest (dropping it loses the
+  //             early thread a long conversation can't otherwise recover)
 } as const
 
 export interface ContextBuilderOptions {

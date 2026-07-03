@@ -40,8 +40,17 @@ vi.mock("../../db/repositories/approvals", () => ({
     approvals.filter((a) => !opts?.taskId || a.taskId === opts.taskId),
 }))
 
-import { taskStateSection, approvalsSection } from "./sections"
+// summarySection reads the rolling-summary repo. Mock it so the section is
+// exercised without a DB (the repo itself is covered by
+// conversation-summaries.test.ts).
+let summary: ConversationSummary | undefined
+vi.mock("../../db/repositories/conversation-summaries", () => ({
+  getConversationSummary: () => summary,
+}))
+
+import { taskStateSection, approvalsSection, summarySection } from "./sections"
 import { SECTION_PRIORITY } from "./context-builder"
+import type { ConversationSummary } from "../../db/types"
 
 function task(title: string, status: TaskStatus): Task {
   return {
@@ -191,5 +200,42 @@ describe("approvalsSection", () => {
     })
     expect(section!.content).toContain("NOT yet granted")
     expect(section!.content).toContain("delete file")
+  })
+})
+
+function summaryRecord(
+  over: Partial<ConversationSummary> = {}
+): ConversationSummary {
+  return {
+    conversationId: "c1",
+    summary: "## Decisions\n- use sqlite",
+    coversThrough: 20,
+    messageCount: 20,
+    tokenEstimate: 30,
+    updatedAt: 0,
+    ...over,
+  }
+}
+
+describe("summarySection", () => {
+  it("returns null when no summary exists", () => {
+    summary = undefined
+    expect(summarySection("c1")).toBeNull()
+  })
+
+  it("returns null when the summary is blank", () => {
+    summary = summaryRecord({ summary: "   " })
+    expect(summarySection("c1")).toBeNull()
+  })
+
+  it("renders the digest at the summary priority (highest, dropped last)", () => {
+    summary = summaryRecord({ summary: "## Decisions\n- use sqlite" })
+    const section = summarySection("c1")
+    expect(section).not.toBeNull()
+    expect(section!.name).toBe("summary")
+    expect(section!.priority).toBe(SECTION_PRIORITY.summary)
+    expect(section!.priority).toBeGreaterThan(SECTION_PRIORITY.skills)
+    expect(section!.content).toContain("use sqlite")
+    expect(section!.content).toContain("Conversation summary so far")
   })
 })

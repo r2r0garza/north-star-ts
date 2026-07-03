@@ -72,6 +72,21 @@ export interface Message {
   createdAt: number
 }
 
+// The rolling conversation summary (SCHEMA_V10, plan 019). One row per
+// conversation — a compact digest of the turns scrolling out of the
+// ContextBuilder's recent-message window. `coversThrough` is the highest
+// messages.seq folded in (the incremental-regeneration cursor and the
+// debounce baseline); `messageCount` is how many turns are folded so far;
+// `tokenEstimate` is the digest's cost via the shared TokenCounter.
+export interface ConversationSummary {
+  conversationId: string
+  summary: string
+  coversThrough: number
+  messageCount: number
+  tokenEstimate: number | null
+  updatedAt: number
+}
+
 export interface Task {
   id: string
   // The task's PRIVATE worker transcript — a forked conversation the runner

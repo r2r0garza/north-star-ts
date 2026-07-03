@@ -1,6 +1,7 @@
 import { listTasks } from "../../db/repositories/tasks"
 import { listRules } from "../../db/repositories/action-allowlist"
 import { listApprovals } from "../../db/repositories/approvals"
+import { getConversationSummary } from "../../db/repositories/conversation-summaries"
 import type { ContextSection } from "./context-builder"
 import { SECTION_PRIORITY } from "./context-builder"
 
@@ -102,4 +103,25 @@ export function approvalsSection(opts: {
   if (blocks.length === 0) return null
   const content = "## Prior approvals\n" + blocks.join("\n\n")
   return { name: "approvals", priority: SECTION_PRIORITY.approvals, content }
+}
+
+// The rolling conversation summary (plan 019): a compact digest of the turns that
+// have scrolled (or are scrolling) out of the ContextBuilder's recent-message
+// walk-back, so a long conversation keeps its early thread (decisions,
+// constraints, open threads). Generated out of band by the `summarize` task and
+// read here each turn. Highest priority of the built-in sections — dropping it
+// under budget pressure loses context the conversation can't otherwise recover.
+// Additive to the walk-back (not a replacement): a slight overlap with the most
+// recent turns is harmless; there's never a gap. Returns null when no summary
+// exists yet (short conversation, or the first summarize task hasn't run).
+export function summarySection(conversationId: string): ContextSection | null {
+  const record = getConversationSummary(conversationId)
+  if (!record || record.summary.trim().length === 0) return null
+  const content =
+    "## Conversation summary so far\n" +
+    "A rolling digest of earlier turns in this conversation (older messages may " +
+    "have scrolled out of the window below). Treat it as background context, not " +
+    "the latest word — the recent messages are authoritative where they differ.\n\n" +
+    record.summary
+  return { name: "summary", priority: SECTION_PRIORITY.summary, content }
 }
