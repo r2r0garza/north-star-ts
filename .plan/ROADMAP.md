@@ -7,33 +7,26 @@ item is its plan file, not its rank.
 
 ## Next up
 
-1. **`019` — Conversation summaries.** The rolling-summary section `014` reserved: a compact,
-   periodically-regenerated digest of the turns that fell out of the recent-message window, injected
-   as a high-priority context section so long conversations keep their thread. New
-   `conversation_summaries` table (one row/conversation, tracks the covered `seq` range); an
-   **out-of-band** generation step (a `009` `summarize` task — never on the user's turn latency),
-   incremental + debounced past a size threshold; a `summarySection` renderer for the `014`
-   framework. Split out of `014` Q1.
-2. **`020` — Durable memories.** The cross-conversation memories section `014` reserved: small,
+1. **`020` — Durable memories.** The cross-conversation memories section `014` reserved: small,
    persisted facts the agent writes (a **gated, explicit** `remember` tool — no silent profiling)
    and that inject into future turns, **scoped** global / workspace / conversation (mirrors the
    `action_allowlist` scoping). New `memories` table + a list/delete surface (durable +
    cross-conversation ⇒ must be auditable/revocable); a `memoriesSection` renderer with an injection
    cap. Split out of `014` Q2.
-3. **`010` — Container runtime profiles.** Decouple Workspace (the files) from Runtime (the env a
+2. **`010` — Container runtime profiles.** Decouple Workspace (the files) from Runtime (the env a
    tool call executes in). Replace the raw container `image` string with a named **profile**
    (`node` | `python` | `fullstack`), resolved to an image in the env factory; default/fallback =
    `fullstack` (Node + Python) so a Node repo that later adds a Python backend doesn't wedge.
    One profile per conversation, user-overridable in settings. Kills the "one workspace = one image
    forever" assumption **without** building auto-routing or image management (both deferred). Small
    refactor of `env/factory.ts` + `container.ts` + execution settings (JSON blob — no migration).
-4. **`005.1` — ContainerEnvironment stop in-flight.** The deferred half of `005`: killing the host
+3. **`005.1` — ContainerEnvironment stop in-flight.** The deferred half of `005`: killing the host
    `docker/podman exec` client doesn't stop the in-container process. Needs its own kill mechanism
    (in-container PID tracking / `exec kill`, or marker `pkill`). Out of scope when `005` shipped.
-5. **`007` — Slash commands for skills.** Let users force a skill with `/skill-name …` (pre-inject
+4. **`007` — Slash commands for skills.** Let users force a skill with `/skill-name …` (pre-inject
    the `read_skill` call), keeping today's model-discretionary path for plain messages. Adds a
    `skills:list` IPC channel + composer autocomplete. Independent — schedule freely.
-6. **`018` — Agentic goal mode.** An opt-in **execution mode** (orthogonal to chat/interactive/
+5. **`018` — Agentic goal mode.** An opt-in **execution mode** (orthogonal to chat/interactive/
    north_star): `simple` (today's one-pass behavior, default) vs `goal` (bounded **plan → execute →
    review → fix → finalize**, capped by `maxIterations` — never unbounded). Modeled as a task-level
    orchestrator inside the runner's `runOne` (one task / one forked conversation, calling
@@ -45,7 +38,7 @@ item is its plan file, not its rank.
    PR (`/goal <request>` — reuses `007`'s composer slash-command affordance — + a "Run with review
    loop" button); the Always/Ask/Manual/Off **setting is deferred** to its own plan. Placed by `007`
    since both add `/`-command composer UI.
-7. **`024` — Index filesystem/git watcher.** The "live file watching" follow-up `008` deferred (and
+6. **`024` — Index filesystem/git watcher.** The "live file watching" follow-up `008` deferred (and
    `014` re-deferred). Today the workspace index — and the compact summary `buildIndexSummary`
    injects into the system prompt on every message send — only refreshes when `IndexService.
    ensureRunning` is called, which fires on conversation create/update or manual Start/Rebuild;
@@ -62,6 +55,33 @@ item is its plan file, not its rank.
 
 ## Done
 
+- **`019` — Conversation summaries.** Filled the rolling-summary section `014` reserved: a compact,
+  periodically-regenerated digest of the turns scrolling out of the ContextBuilder's recent-message
+  walk-back, so a long conversation keeps its early thread. **Storage** (`SCHEMA_V10`): a new
+  `conversation_summaries` table, one row/conversation (`ON DELETE CASCADE`), tracking
+  `covers_through` (the incremental-regeneration cursor + debounce baseline), `message_count`, and
+  `token_estimate`. **Generation** (out of band): a new `summarize` `009` task kind
+  (`autoResume:false` — a stale summary is harmless) whose deterministic-`run` executor makes exactly
+  **one** bounded, non-streaming LLM call (no agentic loop) using the conversation's own model, folds
+  prior-summary + only-new-turns incrementally, and upserts — never on the user's turn latency. The
+  **trigger** runs post-turn from the `chat` IPC handler: fires only at ≥10 msgs AND (≥20 fresh turns
+  OR ≥6k fresh tokens past `covers_through`), deduped against an in-flight run. **Wiring into `014`**:
+  `SECTION_PRIORITY.summary` (highest — compressed older context dropped last), a `summarySection`
+  renderer, mode-gated and **additive** to the walk-back (safe overlap, never a gap). **Prompt
+  hardening found in live testing** (the schema/wiring worked first try; the first *summaries* didn't):
+  (1) the transcript was rendered as a bare `user:/assistant:` log ending in an `UPDATED SUMMARY:` cue,
+  so the model *continued the transcript* before summarizing — burning the output budget and
+  truncating the digest → fence inputs as data (`<prior_summary>`/`<new_turns>`) + imperative, no cue;
+  (2) guard on `finish_reason==="length"` (retryable error, never store a truncated summary);
+  (3) `stripPreamble` (drop anything before the first `##`); (4) instruct the model to omit — and
+  actively drop from a prior summary — volatile repo-state facts (branch, file/symbol counts, paths)
+  the live index section already supplies fresh (the deeper index staleness is `024`'s scope).
+  Verified: `pnpm typecheck` + `pnpm build` clean; repo (upsert/cascade) + `summarySection` + 16
+  `SummaryService` tests (trigger threshold/debounce/dedupe; executor incremental/error/truncation/
+  preamble/prompt-shape); three "latest `user_version`" assertions bumped 9 → 10; and **live-verified
+  end to end** against the real dev DB (threshold fires, task runs out of band, a clean non-meta
+  seeded conversation produced a complete, faithful, non-echoed digest). Split out of `014` Q1. Built
+  on `feat/conversation-summaries` (commit `68066c4`; not yet merged to `main`).
 - **`023` — Settings revamp (full-screen takeover).** UI-only (renderer); no backend/IPC/schema
   change — the same `settings.*`/`providers.*`/`models.*` surface reused verbatim. Replaced the
   cramped ~448px right slide-out `Sheet` with a **full-viewport takeover**: `settings-sheet.tsx` →
