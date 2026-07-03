@@ -45,6 +45,20 @@ item is its plan file, not its rank.
    PR (`/goal <request>` — reuses `007`'s composer slash-command affordance — + a "Run with review
    loop" button); the Always/Ask/Manual/Off **setting is deferred** to its own plan. Placed by `007`
    since both add `/`-command composer UI.
+7. **`024` — Index filesystem/git watcher.** The "live file watching" follow-up `008` deferred (and
+   `014` re-deferred). Today the workspace index — and the compact summary `buildIndexSummary`
+   injects into the system prompt on every message send — only refreshes when `IndexService.
+   ensureRunning` is called, which fires on conversation create/update or manual Start/Rebuild;
+   **nothing watches the filesystem or git**. So the injected summary drifts (file counts, metadata,
+   symbol count, and most visibly the **git branch** — the one field that changes on a `git checkout`
+   with an identical working tree, so the hash-skip `file_map` finds zero dirty files and never
+   re-runs). Adds an `IndexWatcher` (main-process, long-lived listener — not a `009` task) that
+   debounces workspace changes and kicks an **incremental** `ensureRunning` (`low` priority), plus a
+   targeted `.git/HEAD`+refs watch for branch/sha freshness (metadata-only refresh seam so a branch
+   flip needn't pay for a tree walk). Reuses `loadGitignore`/`DEFAULT_SKIP_DIRS` + `readGitBranch`;
+   gated by a new **"Watch workspace for changes"** toggle in the Workspace Indexing settings group
+   (global store, no migration). Open Qs: watcher mechanism (`chokidar` vs core `fs.watch` vs
+   `@parcel/watcher`), watch scope/lifetime, debounce window, churn backpressure. Placed after `018`.
 
 ## Done
 
