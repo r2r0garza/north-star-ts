@@ -309,9 +309,11 @@ export default function App({
     }
   }, [conversationId])
 
-  // Load the skill catalog for the slash menu. Reloads when the workspace
-  // changes so project-level skills (<workspace>/.cowork/skills) are included.
-  useEffect(() => {
+  // Fetch the skill catalog for the slash menu. Extracted so it can be re-run on
+  // demand (see below): the main process reads skills fresh from disk every turn,
+  // but this renderer copy would otherwise only refresh on workspace change, so an
+  // on-disk add/move wouldn't show up until a new session. Stable per workspace.
+  const reloadSkills = useCallback(() => {
     let cancelled = false
     window.cowork.skills
       .list(workspace.trim() || undefined)
@@ -325,6 +327,10 @@ export default function App({
       cancelled = true
     }
   }, [workspace])
+
+  // Initial load + reload on workspace change (project-level skills live under
+  // <workspace>/.cowork/skills and <workspace>/.github/skills).
+  useEffect(() => reloadSkills(), [reloadSkills])
 
   // The confirmed mentions, in the shape the token helpers consume. Both the
   // overlay (badges) and send-time expansion read this.
@@ -378,6 +384,9 @@ export default function App({
     const token = activeMentionToken(text, caret)
     const allowed = token && (token.kind === "skill" || !isChat)
     if (token && allowed) {
+      // Re-scan skills as the `/` menu opens (only on the open transition, not
+      // every keystroke) so on-disk adds/moves show up without a new session.
+      if (token.kind === "skill" && menu?.kind !== "skill") reloadSkills()
       setMenu({ kind: token.kind, query: token.query })
       if (token.kind === "skill") {
         // Preselect the top-ranked skill so Enter works without arrowing first.
