@@ -29,7 +29,12 @@ vi.mock("../agent/providers", () => {
   // Defined inside the factory (vi.mock is hoisted above module scope).
   class NoActiveProviderError extends Error {}
   return {
-    resolveLlm: () => ({ client: {}, model: "test-model", accountId: "a1" }),
+    resolveLlm: () => ({
+      client: {},
+      model: "test-model",
+      accountId: "a1",
+      apiMode: "completions",
+    }),
     createCompletion: async (
       _client: unknown,
       _model: string,

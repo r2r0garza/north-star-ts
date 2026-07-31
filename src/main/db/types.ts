@@ -246,6 +246,12 @@ export type Provider =
   | "google"
   | "azure_openai"
 
+// Which OpenAI wire API an account speaks. `completions` is /chat/completions
+// (the universal path used by every provider today); `responses` is reserved for
+// a future OpenAI Responses (/responses) adapter. Persisted on the account so the
+// provider layer can branch without a per-request probe.
+export type ApiMode = "completions" | "responses"
+
 // Where a model row came from: hand-typed by the user, imported from the
 // gateway's /models catalog, or auto-seeded on account creation. Drives the UI
 // badge and the gateway-import merge (re-import refreshes `gateway` rows; it
@@ -261,6 +267,9 @@ export interface ProviderAccount {
   displayName: string
   baseUrl: string | null
   hasKey: boolean
+  // The OpenAI wire API this account speaks. Defaults to "completions"; only
+  // consulted for openai/openai_compatible accounts (portkey ignores it).
+  apiMode: ApiMode
   createdAt: number
   lastUsedAt: number | null
 }

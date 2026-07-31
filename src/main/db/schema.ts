@@ -375,3 +375,14 @@ CREATE TABLE conversation_summaries (
   updated_at       INTEGER NOT NULL
 );
 `
+
+// v11: which OpenAI wire API a provider account speaks. 'completions' is the
+// universal /chat/completions path (all current providers); 'responses' is
+// reserved for a future OpenAI Responses (/responses) adapter. Nullable with a
+// default so existing rows read as 'completions' and the app never has to
+// backfill. openai/openai_compatible now route through the OpenAI SDK (Bearer
+// auth on every request); portkey keeps the Portkey SDK.
+export const SCHEMA_V11 = `
+ALTER TABLE provider_accounts ADD COLUMN api_mode TEXT NOT NULL DEFAULT 'completions'
+  CHECK (api_mode IN ('completions','responses'));
+`

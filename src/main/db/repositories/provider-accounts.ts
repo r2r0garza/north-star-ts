@@ -1,6 +1,6 @@
 import { randomUUID } from "crypto"
 import { getDb } from "../connection"
-import type { Provider, ProviderAccount } from "../types"
+import type { ApiMode, Provider, ProviderAccount } from "../types"
 
 // Persisted LLM provider connections (SCHEMA_V5). The API key is stored as a
 // safeStorage-encrypted BLOB in `encrypted_key` and NEVER returned in the public
@@ -14,6 +14,7 @@ interface ProviderAccountRow {
   display_name: string
   base_url: string | null
   encrypted_key: Buffer | null
+  api_mode: ApiMode
   created_at: number
   last_used_at: number | null
 }
@@ -27,6 +28,7 @@ function toAccount(row: ProviderAccountRow): ProviderAccount {
     displayName: row.display_name,
     baseUrl: row.base_url,
     hasKey: row.encrypted_key != null && row.encrypted_key.length > 0,
+    apiMode: row.api_mode,
     createdAt: row.created_at,
     lastUsedAt: row.last_used_at,
   }
@@ -50,6 +52,8 @@ export interface CreateAccountInput {
   provider: Provider
   displayName: string
   baseUrl?: string | null
+  // Defaults to "completions" when omitted (the column default backs this up).
+  apiMode?: ApiMode
 }
 
 export function createAccount(input: CreateAccountInput): ProviderAccount {
@@ -57,10 +61,17 @@ export function createAccount(input: CreateAccountInput): ProviderAccount {
   const now = Date.now()
   getDb()
     .prepare(
-      `INSERT INTO provider_accounts (id, provider, display_name, base_url, encrypted_key, created_at, last_used_at)
-       VALUES (?, ?, ?, ?, NULL, ?, NULL)`
+      `INSERT INTO provider_accounts (id, provider, display_name, base_url, encrypted_key, api_mode, created_at, last_used_at)
+       VALUES (?, ?, ?, ?, NULL, ?, ?, NULL)`
     )
-    .run(id, input.provider, input.displayName, input.baseUrl ?? null, now)
+    .run(
+      id,
+      input.provider,
+      input.displayName,
+      input.baseUrl ?? null,
+      input.apiMode ?? "completions",
+      now
+    )
   return getAccount(id)!
 }
 
@@ -68,7 +79,7 @@ export function createAccount(input: CreateAccountInput): ProviderAccount {
 // clearKey so secret handling stays in one place.
 export function updateAccount(
   id: string,
-  patch: { displayName?: string; baseUrl?: string | null }
+  patch: { displayName?: string; baseUrl?: string | null; apiMode?: ApiMode }
 ): ProviderAccount {
   const sets: string[] = []
   const args: unknown[] = []
@@ -79,6 +90,10 @@ export function updateAccount(
   if (patch.baseUrl !== undefined) {
     sets.push("base_url = ?")
     args.push(patch.baseUrl)
+  }
+  if (patch.apiMode !== undefined) {
+    sets.push("api_mode = ?")
+    args.push(patch.apiMode)
   }
   if (sets.length > 0) {
     args.push(id)

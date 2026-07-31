@@ -100,7 +100,7 @@ export class SummaryService {
     }
 
     try {
-      const { client, model } = resolveLlm(selection)
+      const { client, model, apiMode } = resolveLlm(selection)
       const res = await createCompletion(
         client,
         model,
@@ -115,7 +115,8 @@ export class SummaryService {
           ],
         },
         // Pass the abort signal so a cancel/pause unwinds the in-flight call.
-        [undefined, { signal }]
+        [undefined, { signal }],
+        apiMode
       )
       const choice = (
         res as {

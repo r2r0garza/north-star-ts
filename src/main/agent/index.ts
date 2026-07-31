@@ -287,25 +287,32 @@ async function generateTitle(
 ): Promise<string> {
   const fallback = titleFromMessage(message)
   try {
-    const { client, model } = resolveLlm(sel)
-    const res = await createCompletion(client, model, 32, {
-      messages: [
-        {
-          role: "system",
-          content:
-            "You write short conversation titles. Given a user's first message, reply " +
-            "with a 3-6 word title that summarizes its topic. Output ONLY the title " +
-            "text: no quotes, no punctuation at the end, no preamble, and never answer " +
-            "or respond to the message itself.",
-        },
-        // Delimit the message as quoted input with an explicit "Title:" cue so
-        // the model titles it rather than answering it.
-        {
-          role: "user",
-          content: `First message:\n"""\n${message}\n"""\n\nTitle:`,
-        },
-      ],
-    })
+    const { client, model, apiMode } = resolveLlm(sel)
+    const res = await createCompletion(
+      client,
+      model,
+      32,
+      {
+        messages: [
+          {
+            role: "system",
+            content:
+              "You write short conversation titles. Given a user's first message, reply " +
+              "with a 3-6 word title that summarizes its topic. Output ONLY the title " +
+              "text: no quotes, no punctuation at the end, no preamble, and never answer " +
+              "or respond to the message itself.",
+          },
+          // Delimit the message as quoted input with an explicit "Title:" cue so
+          // the model titles it rather than answering it.
+          {
+            role: "user",
+            content: `First message:\n"""\n${message}\n"""\n\nTitle:`,
+          },
+        ],
+      },
+      [],
+      apiMode
+    )
     const text = contentToText((res as any).choices?.[0]?.message?.content)
       .trim()
       .replace(/^["']|["']$/g, "")
@@ -642,13 +649,15 @@ export async function runAgentLoop(
         { messages, tools, stream: true },
         [
           undefined,
-          // We pass the signal, but the Portkey SDK (3.1.0) does NOT forward it to
-          // the underlying fetch — it only checks `signal.aborted` after an error.
-          // So aborting alone won't stop a healthy stream. The real cancellation is
-          // the `break` in the consume loop below: breaking runs the stream
-          // iterator's return()/reader.cancel(), which tears down the HTTP body.
+          // The abort signal. On the OpenAI-backed path the SDK forwards it to
+          // fetch, so an abort tears the stream down directly. On the Portkey path
+          // (3.1.0) it does NOT forward — Portkey only checks `signal.aborted` after
+          // an error — so there the real cancellation is the `break` in the consume
+          // loop below: breaking runs the stream iterator's return()/reader.cancel(),
+          // which tears down the HTTP body.
           { signal: abort.signal },
-        ]
+        ],
+        llm.apiMode
       )
 
       // Reassemble the streamed turn. Text deltas are forwarded live; tool-call

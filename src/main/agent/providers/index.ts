@@ -1,9 +1,10 @@
 import { Portkey } from "portkey-ai"
+import OpenAI from "openai"
 import * as providerAccountsRepo from "../../db/repositories/provider-accounts"
 import * as modelsRepo from "../../db/repositories/models"
 import * as settingsService from "../../settings/service"
 import { getApiKey } from "../../settings/secrets"
-import type { ProviderAccount } from "../../db/types"
+import type { ApiMode, ProviderAccount } from "../../db/types"
 
 // The LLM routing layer. Resolves a provider account + model — either an explicit
 // per-conversation selection or the global default (the settings `llm` blob) —
@@ -15,9 +16,18 @@ import type { ProviderAccount } from "../../db/types"
 // the default selection changes (via settingsService.setLlmChangeListener) or an
 // account's key/base_url is edited (callers invoke invalidate()).
 //
-// Portkey and openai_compatible both route through the Portkey SDK — same
-// {baseURL, apiKey, model} shape — so a single client builder serves both. The
-// remaining providers are reserved (disabled in the UI) until wired here.
+// Two SDKs back the wired providers, chosen by provider type:
+//   • portkey                     → the Portkey SDK (routes via x-portkey-* headers).
+//   • openai, openai_compatible   → the OpenAI SDK (Authorization: Bearer on EVERY
+//                                   request — chat AND models — which is what a plain
+//                                   OpenAI-compatible gateway like Copilot Bridge
+//                                   requires; the Portkey SDK only sent Bearer on the
+//                                   models path, so chat 401'd).
+// Both expose the same {baseURL, apiKey, model} shape and the same
+// chat.completions.create / models.list surface, so a small LlmClient wrapper (below)
+// lets the rest of the module stay SDK-agnostic. baseURL is optional for native
+// `openai` (the SDK defaults to api.openai.com) and required for openai_compatible.
+// The remaining providers are reserved (disabled in the UI) until wired here.
 
 // Seed defaults, used only when seeding a brand-new Portkey account so the dev
 // setup keeps working. They are NOT a runtime fallback for a configured account.
@@ -32,12 +42,32 @@ export class NoActiveProviderError extends Error {
   }
 }
 
+// A minimal, SDK-agnostic client surface. Both the Portkey and OpenAI SDKs expose
+// exactly this shape, so the agent loop and model import can talk to either without
+// caring which backs it. `chat.completions.create` keeps the Portkey positional
+// signature — create(body, params, opts) — so existing call sites (which pass the
+// abort signal via extraArgs) are unchanged; the OpenAI-backed wrapper maps those
+// positional args onto the OpenAI SDK's own create(body, opts) shape internally.
+export interface LlmClient {
+  chat: {
+    completions: {
+      create: (body: Record<string, unknown>, ...rest: unknown[]) => unknown
+    }
+  }
+  models: {
+    list: () => Promise<{ data?: Array<{ id?: string }> } | undefined>
+  }
+}
+
 // The resolved client + the model id to call it with, returned together so the
-// agent doesn't re-read settings separately.
+// agent doesn't re-read settings separately. `apiMode` rides along so the chat
+// path can branch (completions today; /responses reserved) without re-reading the
+// account.
 export interface ResolvedClient {
-  client: Portkey
+  client: LlmClient
   model: string
   accountId: string
+  apiMode: ApiMode
 }
 
 // A per-conversation (or default) selection. Either field null → fall back to the
@@ -49,7 +79,7 @@ export interface LlmSelection {
 
 // Clients cached per account id. Cleared wholesale on any credential/default
 // change — simpler than per-account invalidation and cheap to rebuild.
-const clientCache = new Map<string, Portkey>()
+const clientCache = new Map<string, LlmClient>()
 
 // Drop all cached clients so the next resolve rebuilds. Called on any change to
 // the default selection or an account's credentials.
@@ -61,15 +91,61 @@ export function invalidate(): void {
 // changing the default account/model takes effect on the next turn with no restart.
 settingsService.setLlmChangeListener(invalidate)
 
-function buildClient(account: ProviderAccount): Portkey {
+// Wrap a Portkey SDK instance as an LlmClient. Portkey's native surface already
+// matches — chat.completions.create is positional (body, params, opts) and
+// models.list returns the {data:[{id}]} catalog — so this is a straight pass-through.
+function wrapPortkey(client: Portkey): LlmClient {
+  return {
+    chat: {
+      completions: {
+        create: (body, ...rest) =>
+          (client.chat.completions.create as any)(body, ...rest),
+      },
+    },
+    models: {
+      list: () =>
+        client.models.list() as Promise<
+          { data?: Array<{ id?: string }> } | undefined
+        >,
+    },
+  }
+}
+
+// Wrap an OpenAI SDK instance as an LlmClient. The OpenAI SDK's create takes
+// (body, opts) — no Portkey `params` slot — so we translate the positional call:
+// callers pass [params, opts] as extraArgs (params is unused by the OpenAI path),
+// and we forward `opts` (which carries the abort signal) as the OpenAI SDK's second
+// arg. Unlike Portkey 3.1.0, the OpenAI SDK forwards that signal to fetch, so an
+// abort actually tears down an in-flight stream.
+function wrapOpenAI(client: OpenAI): LlmClient {
+  return {
+    chat: {
+      completions: {
+        create: (body, ...rest) => {
+          const opts = rest[1] as Record<string, unknown> | undefined
+          return (client.chat.completions.create as any)(body, opts)
+        },
+      },
+    },
+    models: {
+      list: async () =>
+        (await client.models.list()) as unknown as {
+          data?: Array<{ id?: string }>
+        },
+    },
+  }
+}
+
+function buildClient(account: ProviderAccount): LlmClient {
   const cached = clientCache.get(account.id)
   if (cached) return cached
   if (
     account.provider !== "portkey" &&
-    account.provider !== "openai_compatible"
+    account.provider !== "openai_compatible" &&
+    account.provider !== "openai"
   ) {
     throw new NoActiveProviderError(
-      `Provider "${account.provider}" is not wired yet. Pick a Portkey or OpenAI-compatible account.`
+      `Provider "${account.provider}" is not wired yet. Pick a Portkey, OpenAI, or OpenAI-compatible account.`
     )
   }
   const apiKey = getApiKey(account.id)
@@ -78,12 +154,24 @@ function buildClient(account: ProviderAccount): Portkey {
       `The provider "${account.displayName}" has no API key set. Add one in Settings.`
     )
   }
-  if (!account.baseUrl) {
+  // A base URL is required for the two gateway providers; native `openai` may omit
+  // it (the SDK defaults to api.openai.com).
+  if (!account.baseUrl && account.provider !== "openai") {
     throw new NoActiveProviderError(
       `The provider "${account.displayName}" has no base URL set. Add one in Settings.`
     )
   }
-  const client = new Portkey({ baseURL: account.baseUrl, apiKey })
+
+  let client: LlmClient
+  if (account.provider === "portkey") {
+    client = wrapPortkey(new Portkey({ baseURL: account.baseUrl!, apiKey }))
+  } else {
+    // openai + openai_compatible: the OpenAI SDK sends Authorization: Bearer on
+    // every request. baseURL undefined → native api.openai.com.
+    client = wrapOpenAI(
+      new OpenAI({ apiKey, baseURL: account.baseUrl ?? undefined })
+    )
+  }
   clientCache.set(account.id, client)
   return client
 }
@@ -128,7 +216,12 @@ export function resolveLlm(
 
   const client = buildClient(account)
   providerAccountsRepo.touchLastUsed(account.id)
-  return { client, model: model.modelId, accountId: account.id }
+  return {
+    client,
+    model: model.modelId,
+    accountId: account.id,
+    apiMode: account.apiMode,
+  }
 }
 
 // A human-readable label for the model a selection would resolve to, WITHOUT
@@ -178,7 +271,7 @@ export function hasActiveProvider(): boolean {
 // Build a transient client for an account by id — used by the gateway model
 // import, which needs a client before the account is necessarily the active one.
 // Throws NoActiveProviderError on missing key/base_url. Not cached.
-export function clientForAccount(accountId: string): Portkey {
+export function clientForAccount(accountId: string): LlmClient {
   const account = providerAccountsRepo.getAccount(accountId)
   if (!account) throw new NoActiveProviderError("Provider account not found.")
   return buildClient(account)
@@ -288,12 +381,23 @@ function withTokenParam(
 // try `max_tokens`; a single retry switches to `max_completion_tokens` and the
 // result is cached so later calls skip the probe.
 export async function createCompletion(
-  client: Portkey,
+  client: LlmClient,
   model: string,
   maxOutputTokens: number,
   base: Record<string, unknown>,
-  extraArgs: unknown[] = []
+  extraArgs: unknown[] = [],
+  apiMode: ApiMode = "completions"
 ): Promise<any> {
+  // Seam for a future OpenAI Responses (/responses) adapter. Only "completions"
+  // is implemented today; a "responses" account is rejected loudly rather than
+  // silently mis-routed, so wiring it later is an additive change here (plus a
+  // request/stream/tool-call translation) with no call-site churn.
+  if (apiMode === "responses") {
+    throw new Error(
+      "The OpenAI Responses API (/responses) is not supported yet; use an account with apiMode 'completions'."
+    )
+  }
+
   const tryParam = (param: TokenParam) =>
     (client.chat.completions.create as any)(
       withTokenParam(base, model, maxOutputTokens, param),
