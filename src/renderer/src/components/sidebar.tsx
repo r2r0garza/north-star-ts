@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react"
 import { Plus, Settings } from "lucide-react"
+import { Spinner } from "@/components/ui/spinner"
 import {
   Sidebar,
   SidebarContent,
@@ -59,12 +60,15 @@ const NEW_LABEL: Record<View, string> = {
 function SessionRow({
   conversation,
   isActive,
+  isRunning,
   onSelect,
   onRename,
   onDelete,
 }: {
   conversation: Conversation
   isActive: boolean
+  // A turn is currently streaming in this conversation — show a spinner.
+  isRunning: boolean
   onSelect: () => void
   onRename: (title: string) => void
   onDelete: () => void
@@ -124,6 +128,9 @@ function SessionRow({
             title={conversation.title ?? "Untitled"}
           >
             <span className="truncate">{conversation.title ?? "Untitled"}</span>
+            {isRunning && (
+              <Spinner className="ml-auto size-3.5 text-muted-foreground" />
+            )}
           </SidebarMenuButton>
         </ContextMenuTrigger>
         <ContextMenuContent>
@@ -146,6 +153,7 @@ export function AppSidebar({
   onConversationDeleted,
   onSettingsClick,
   refreshKey,
+  runningConvos,
 }: {
   view: View
   onViewChange: (view: View) => void
@@ -156,6 +164,8 @@ export function AppSidebar({
   onSettingsClick: () => void
   // Bumped by the app whenever conversations change, so the list refetches.
   refreshKey: number
+  // Conversations with a turn currently streaming — each shows a spinner.
+  runningConvos: Set<string>
 }) {
   const [conversations, setConversations] = useState<Conversation[]>([])
   // The conversation awaiting delete confirmation, if any. Set by a row's
@@ -247,6 +257,7 @@ export function AppSidebar({
                   key={c.id}
                   conversation={c}
                   isActive={c.id === activeConversationId}
+                  isRunning={runningConvos.has(c.id)}
                   onSelect={() => onSelectConversation(c.id, c.mode)}
                   onRename={(title) => renameConversation(c.id, title)}
                   onDelete={() => setPendingDelete(c)}

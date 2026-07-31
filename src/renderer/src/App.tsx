@@ -82,6 +82,7 @@ export default function App({
   onOpenSettings,
   settingsOpen,
   onRanInBackground,
+  onRunningConvosChange,
 }: {
   view: View
   conversationId: string | null
@@ -96,6 +97,10 @@ export default function App({
   // Called after "Run in background" starts a durable task, so the Shell can
   // reveal the Workspace Activity panel where the new task appears.
   onRanInBackground?: () => void
+  // Reports the set of conversations with a turn currently streaming, so the
+  // Shell can show a spinner on each active row in the sidebar. A single App
+  // instance owns this state, but the sidebar is a sibling — this lifts it up.
+  onRunningConvosChange?: (ids: Set<string>) => void
 }) {
   // Chat runs without a workspace and attaches files instead; North Star and
   // Interactive are workspace-backed and share the same behavior.
@@ -123,6 +128,11 @@ export default function App({
   // spinner with no approval card and no way to send (the session-bleed bug).
   // Each entry is dropped when its turn settles (reconciled into `timeline`).
   const [liveTurns, setLiveTurns] = useState<Map<string, LiveTurn>>(new Map())
+  // Surface the running set to the Shell (for the sidebar's per-row spinner)
+  // whenever it changes.
+  useEffect(() => {
+    onRunningConvosChange?.(runningConvos)
+  }, [runningConvos, onRunningConvosChange])
   // Mutate one conversation's live turn immutably; seeds an empty turn if absent.
   const updateLive = useCallback(
     (convoId: string, fn: (prev: LiveTurn) => LiveTurn) => {
