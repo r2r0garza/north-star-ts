@@ -35,12 +35,18 @@ import {
 } from "@/components/ui/attachment"
 import { ToolGroup, ApprovalCard } from "@/components/tool-group"
 import { QuestionPanel } from "@/components/question-panel"
-import { SkillMenu, rankSkills } from "@/components/skill-menu"
 import {
-  activeSlashToken,
+  MentionMenu,
+  rankSkills,
+  type MentionItem,
+} from "@/components/mention-menu"
+import {
+  activeMentionToken,
   segmentMessage,
-  expandSkillTokens,
-} from "@/lib/skill-tokens"
+  expandMentions,
+  type MentionKind,
+  type ConfirmedMentions,
+} from "@/lib/mention-tokens"
 import {
   Combobox,
   ComboboxCollection,
@@ -82,6 +88,17 @@ interface LiveTurn {
 }
 const EMPTY_LIVE: LiveTurn = { text: "", tools: [], question: null }
 
+// Split a workspace-relative POSIX path (from the `@`-mention file list) into its
+// basename and parent dir for two-line display in the menu.
+function baseName(path: string): string {
+  const i = path.lastIndexOf("/")
+  return i === -1 ? path : path.slice(i + 1)
+}
+function dirName(path: string): string {
+  const i = path.lastIndexOf("/")
+  return i === -1 ? "" : path.slice(0, i)
+}
+
 export default function App({
   view,
   conversationId,
@@ -117,17 +134,29 @@ export default function App({
   const [workspace, setWorkspace] = useState("")
   const [attachments, setAttachments] = useState<string[]>([])
   const [message, setMessage] = useState("")
-  // Slash-command skill picker. `skills` is the catalog (loaded from main);
-  // `menuQuery` is the `/word` being typed (null = menu closed); `menuActive` is
-  // the highlighted skill name. `confirmedSkills` are the names the user actually
-  // picked — the source of truth for which `/tokens` get a badge + get expanded
-  // to natural language at send. A typed-but-unpicked `/foo` stays plain text.
+  // Mention pickers: `/skill` steers the agent toward a skill, `@file` points it
+  // at a workspace file. Both share one menu anchored to the textarea.
+  //   - `skills` is the catalog (loaded once per workspace, filtered client-side).
+  //   - `menu` = { kind, query } for the trigger token being typed (null = closed).
+  //   - `menuActive` is the highlighted value; `fileItems` is the server-filtered
+  //     file list for the current `@` query (files can be huge, so unlike skills
+  //     they're filtered in the main process per keystroke).
+  //   - `confirmedSkills` / `confirmedFiles` are the values the user actually
+  //     picked — the source of truth for which tokens get a badge and get expanded
+  //     at send. A typed-but-unpicked `/foo` or `@bar` stays plain text.
   const [skills, setSkills] = useState<SkillSummary[]>([])
-  const [menuQuery, setMenuQuery] = useState<string | null>(null)
+  const [menu, setMenu] = useState<{ kind: MentionKind; query: string } | null>(
+    null
+  )
   const [menuActive, setMenuActive] = useState<string | null>(null)
+  const [fileItems, setFileItems] = useState<string[]>([])
   const [confirmedSkills, setConfirmedSkills] = useState<Set<string>>(new Set())
+  const [confirmedFiles, setConfirmedFiles] = useState<Set<string>>(new Set())
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const overlayRef = useRef<HTMLDivElement>(null)
+  // Guards async file-list responses: only the latest `@` query's result is
+  // applied, so a slow walk for an earlier query can't clobber a newer one.
+  const fileReqRef = useRef(0)
   // The persisted transcript, rebuilt from stored rows (text bubbles + tool
   // groups, interleaved in order). Live in-flight state is held separately.
   const [timeline, setTimeline] = useState<TimelineItem[]>([])
@@ -297,54 +326,116 @@ export default function App({
     }
   }, [workspace])
 
-  // The ranked list the menu shows for the current query, and whether it's open.
-  // Both the menu render and arrow-key navigation read this same ordered list.
-  const menuOpen = menuQuery !== null
-  const rankedSkills = menuQuery !== null ? rankSkills(skills, menuQuery) : []
+  // The confirmed mentions, in the shape the token helpers consume. Both the
+  // overlay (badges) and send-time expansion read this.
+  const confirmedMentions: ConfirmedMentions[] = [
+    { kind: "skill", values: confirmedSkills },
+    { kind: "file", values: confirmedFiles },
+  ]
 
-  // Handle composer edits: update the text, (re)detect the `/word` token at the
-  // caret to drive the menu, and drop any confirmed skill whose token the user
-  // has since deleted (so stale badges/expansions don't linger).
+  // The menu's rendered items for the current trigger. Skills are ranked
+  // client-side (small list); files arrive pre-filtered from the main process.
+  // Both the render and arrow-key navigation read this same ordered list.
+  const menuItems: MentionItem[] =
+    menu?.kind === "skill"
+      ? rankSkills(skills, menu.query).map((s) => ({
+          value: s.name,
+          primary: `/${s.name}`,
+          secondary: s.description,
+        }))
+      : menu?.kind === "file"
+        ? fileItems.map((path) => ({
+            value: path,
+            primary: `@${baseName(path)}`,
+            secondary: dirName(path),
+          }))
+        : []
+  const menuOpen = menu !== null
+
+  // Fetch the workspace file list for an `@` query (server-side filtered).
+  // Stale-guarded so only the latest query's result is applied.
+  function fetchFiles(query: string) {
+    const req = ++fileReqRef.current
+    window.cowork.files
+      .list(workspace.trim(), query)
+      .then((paths) => {
+        if (fileReqRef.current === req) {
+          setFileItems(paths)
+          setMenuActive((prev) => prev ?? paths[0] ?? null)
+        }
+      })
+      .catch(() => {
+        if (fileReqRef.current === req) setFileItems([])
+      })
+  }
+
+  // Handle composer edits: update the text, (re)detect the trigger token at the
+  // caret to drive the menu, and drop any confirmed mention whose token the user
+  // has since deleted (so stale badges/expansions don't linger). The `@` menu is
+  // only offered in workspace-backed views (Chat has no workspace to list).
   function handleMessageChange(text: string, caret: number) {
     setMessage(text)
-    const token = activeSlashToken(text, caret)
-    if (token) {
-      setMenuQuery(token.query)
-      // Preselect the top-ranked item so Enter works without arrowing first.
-      const ranked = rankSkills(skills, token.query)
-      setMenuActive(ranked[0]?.name ?? null)
+    const token = activeMentionToken(text, caret)
+    const allowed = token && (token.kind === "skill" || !isChat)
+    if (token && allowed) {
+      setMenu({ kind: token.kind, query: token.query })
+      if (token.kind === "skill") {
+        // Preselect the top-ranked skill so Enter works without arrowing first.
+        setMenuActive(rankSkills(skills, token.query)[0]?.name ?? null)
+      } else {
+        // Files are async: clear the highlight and fetch; fetchFiles seeds it.
+        setMenuActive(null)
+        fetchFiles(token.query)
+      }
     } else {
-      setMenuQuery(null)
+      setMenu(null)
       setMenuActive(null)
     }
-    // Reconcile confirmed skills against tokens still present in the text.
-    setConfirmedSkills((prev) => {
+    // Reconcile confirmed mentions against tokens still present in the text.
+    const present = segmentMessage(text, confirmedMentions).filter(
+      (s) => s.kind
+    )
+    reconcileConfirmed(setConfirmedSkills, present, "skill")
+    reconcileConfirmed(setConfirmedFiles, present, "file")
+  }
+
+  // Drop confirmed values of one kind whose marker no longer appears in `present`
+  // (the segmented mention tokens still in the text).
+  function reconcileConfirmed(
+    setter: typeof setConfirmedSkills,
+    present: { text: string; kind: MentionKind | null }[],
+    kind: MentionKind
+  ) {
+    setter((prev) => {
       if (prev.size === 0) return prev
-      const present = new Set(
-        segmentMessage(text, prev)
-          .filter((s) => s.skill)
-          .map((s) => s.skill as string)
+      const stillThere = new Set(
+        present.filter((s) => s.kind === kind).map((s) => s.text.slice(1)) // strip the leading trigger char
       )
-      if (present.size === prev.size) return prev
-      return present
+      if (stillThere.size === prev.size) return prev
+      return stillThere
     })
   }
 
-  // Insert the chosen skill's canonical `/name ` token in place of the `/query`
+  // Insert the chosen mention's canonical token in place of the trigger token
   // being typed, mark it confirmed (badge + send-time expansion), close the menu,
   // and restore the caret just after the inserted token.
-  function selectSkill(skill: SkillSummary) {
+  function selectMention(item: MentionItem) {
+    if (!menu) return
     const el = textareaRef.current
     const caret = el?.selectionStart ?? message.length
-    const token = activeSlashToken(message, caret)
+    const token = activeMentionToken(message, caret)
     if (!token) return
-    const insert = `/${skill.name} `
+    const insert = `${token.trigger}${item.value} `
     const next =
       message.slice(0, token.start) + insert + message.slice(token.end)
     const nextCaret = token.start + insert.length
     setMessage(next)
-    setConfirmedSkills((prev) => new Set(prev).add(skill.name))
-    setMenuQuery(null)
+    if (menu.kind === "skill") {
+      setConfirmedSkills((prev) => new Set(prev).add(item.value))
+    } else {
+      setConfirmedFiles((prev) => new Set(prev).add(item.value))
+    }
+    setMenu(null)
     setMenuActive(null)
     // Restore focus + caret after React commits the new value.
     requestAnimationFrame(() => {
@@ -360,31 +451,29 @@ export default function App({
   // navigation/selection keys BEFORE the Enter-to-send path below; otherwise
   // fall through to the existing send behavior.
   function handleComposerKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
-    if (menuOpen && rankedSkills.length > 0) {
-      const idx = rankedSkills.findIndex((s) => s.name === menuActive)
+    if (menuOpen && menuItems.length > 0) {
+      const idx = menuItems.findIndex((it) => it.value === menuActive)
       if (e.key === "ArrowDown") {
         e.preventDefault()
-        const next =
-          rankedSkills[(idx + 1 + rankedSkills.length) % rankedSkills.length]
-        setMenuActive(next.name)
+        const next = menuItems[(idx + 1 + menuItems.length) % menuItems.length]
+        setMenuActive(next.value)
         return
       }
       if (e.key === "ArrowUp") {
         e.preventDefault()
-        const prev =
-          rankedSkills[(idx - 1 + rankedSkills.length) % rankedSkills.length]
-        setMenuActive(prev.name)
+        const prev = menuItems[(idx - 1 + menuItems.length) % menuItems.length]
+        setMenuActive(prev.value)
         return
       }
       if (e.key === "Enter" || e.key === "Tab") {
         e.preventDefault()
-        const chosen = rankedSkills[idx] ?? rankedSkills[0]
-        if (chosen) selectSkill(chosen)
+        const chosen = menuItems[idx] ?? menuItems[0]
+        if (chosen) selectMention(chosen)
         return
       }
       if (e.key === "Escape") {
         e.preventDefault()
-        setMenuQuery(null)
+        setMenu(null)
         setMenuActive(null)
         return
       }
@@ -466,11 +555,11 @@ export default function App({
 
   async function sendMessage() {
     if (!canSend) return
-    // Expand confirmed `/skill` tokens into natural language before sending, so
-    // the model reliably reads the intended skill (e.g. `…with the /git-commit`
-    // → `…with the git-commit skill`). The expanded text is also what's shown in
-    // the optimistic timeline, so the transcript matches what the agent received.
-    const text = expandSkillTokens(message, confirmedSkills).trim()
+    // Expand confirmed mention tokens before sending, so the model reliably
+    // reads them: `/git-commit` → `git-commit skill`, `@src/foo.ts` → `src/foo.ts`.
+    // The expanded text is also what's shown in the optimistic timeline, so the
+    // transcript matches what the agent received.
+    const text = expandMentions(message, confirmedMentions).trim()
     const sentAttachments = attachments
 
     // Ensure a conversation exists — created lazily on first send. For
@@ -512,7 +601,8 @@ export default function App({
     ])
     setMessage("")
     setConfirmedSkills(new Set())
-    setMenuQuery(null)
+    setConfirmedFiles(new Set())
+    setMenu(null)
     setMenuActive(null)
     setAttachments([])
     // Start this conversation's live turn from a clean slate (its buffers are
@@ -894,15 +984,18 @@ export default function App({
       )}
       <div className="relative rounded-2xl border border-input bg-transparent focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50">
         {menuOpen && (
-          <SkillMenu
-            items={rankedSkills}
+          <MentionMenu
+            items={menuItems}
             activeValue={menuActive}
             onActiveValueChange={setMenuActive}
-            onSelect={selectSkill}
+            onSelect={selectMention}
+            emptyLabel={
+              menu?.kind === "file" ? "No matching files" : "No matching skills"
+            }
           />
         )}
         {/* Input box: a transparent-text mirror behind the textarea paints a
-            rounded tint behind confirmed `/skill` tokens (the "badge"). The two
+            rounded tint behind confirmed mention tokens (the "badge"). The two
             share identical typography/padding so the tint lines up exactly. */}
         <div className="relative">
           <div
@@ -910,8 +1003,8 @@ export default function App({
             aria-hidden
             className="pointer-events-none absolute inset-0 overflow-hidden px-4 py-3 text-sm leading-relaxed break-words whitespace-pre-wrap text-transparent"
           >
-            {segmentMessage(message, confirmedSkills).map((seg, i) =>
-              seg.skill ? (
+            {segmentMessage(message, confirmedMentions).map((seg, i) =>
+              seg.kind ? (
                 <span key={i} className="rounded bg-primary/15">
                   {seg.text}
                 </span>

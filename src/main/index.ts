@@ -19,6 +19,7 @@ import {
 import { pickWorkspace, pickFiles } from "./pick-workspace"
 import { skillSources } from "./agent/skills/sources"
 import { loadSkills } from "./agent/skills/loader"
+import { listWorkspaceFiles } from "./files/list"
 import { registerDbHandlers } from "./ipc/db-handlers"
 import { registerSettingsHandlers } from "./ipc/settings-handlers"
 import { registerProviderHandlers } from "./ipc/provider-handlers"
@@ -158,6 +159,17 @@ ipcMain.handle("skills:list", async (_event, workspace?: string) => {
   const skills = await loadSkills(skillSources(workspace))
   return skills.map(({ name, description }) => ({ name, description }))
 })
+// List workspace files (relative POSIX paths) for the composer's `@`-mention
+// menu, filtered by the typed query server-side. Backed by a cached
+// gitignore-aware walk so large repos stay responsive. Returns [] with no
+// workspace (e.g. Chat mode).
+ipcMain.handle(
+  "files:list",
+  async (_event, workspace: string, query: string) => {
+    if (!workspace?.trim()) return []
+    return listWorkspaceFiles(workspace.trim(), query ?? "", Date.now())
+  }
+)
 // Initial fullscreen state, queried by the renderer on mount.
 ipcMain.handle("is-fullscreen", (event) => {
   const win = BrowserWindow.fromWebContents(event.sender)

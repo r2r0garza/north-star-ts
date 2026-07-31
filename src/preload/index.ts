@@ -228,6 +228,13 @@ const api = {
     list: (workspace?: string) =>
       ipcRenderer.invoke("skills:list", workspace) as Promise<SkillSummary[]>,
   },
+  // List workspace files for the composer's `@`-mention menu, filtered by the
+  // typed query (server-side). Returns workspace-relative POSIX paths, capped.
+  // Resolves [] when there's no workspace (Chat mode).
+  files: {
+    list: (workspace: string, query: string) =>
+      ipcRenderer.invoke("files:list", workspace, query) as Promise<string[]>,
+  },
   // Whether the window is currently fullscreen (macOS traffic lights hidden).
   isFullScreen: () => ipcRenderer.invoke("is-fullscreen") as Promise<boolean>,
   // Subscribe to fullscreen changes. Returns an unsubscribe function.
