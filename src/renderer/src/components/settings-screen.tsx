@@ -487,6 +487,27 @@ export function SettingsScreen({
                           }
                         />
                       </Field>
+                      <Field orientation="horizontal">
+                        <FieldContent>
+                          <FieldLabel htmlFor="log-sysprompt">
+                            Log system prompts
+                          </FieldLabel>
+                          <FieldDescription>
+                            Write each turn's assembled system prompt to
+                            system-prompt-logs/ for debugging. Off by default.
+                          </FieldDescription>
+                        </FieldContent>
+                        <Switch
+                          id="log-sysprompt"
+                          checked={indexing.logSystemPrompt}
+                          onCheckedChange={(checked) =>
+                            saveIndexing({
+                              ...indexing,
+                              logSystemPrompt: checked,
+                            })
+                          }
+                        />
+                      </Field>
                     </TabsContent>
 
                     {/* Sandbox auto-approve — master switch + per-category opt-ins.

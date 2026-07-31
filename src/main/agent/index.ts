@@ -17,6 +17,7 @@ import { buildSkillsPrompt } from "./skills/prompt"
 import { createReadSkillTool } from "./skills/tool"
 import { skillSources } from "./skills/sources"
 import { loadSystemPrompt } from "./system-prompt"
+import { logSystemPrompt } from "./prompt-log"
 import { buildIndexSummary } from "../index/summary"
 import {
   contextBuilder,
@@ -580,6 +581,16 @@ export async function runAgentLoop(
     baseSystemPrompt,
     sections,
   })
+
+  // Debug aid (settings.logSystemPrompt): dump the verbatim system block for this
+  // turn to system-prompt-logs/. Best-effort and fire-and-forget — never blocks or
+  // fails the turn. messages[0] is always the composed system message.
+  if (settingsService.getIndexing().logSystemPrompt) {
+    void logSystemPrompt(
+      conversation?.mode ?? "chat",
+      String(messages[0]?.content ?? "")
+    )
+  }
 
   // Build this turn's execution backend (host or container). The backend is
   // selected by env var until the settings pane lands (see ./env/factory). A

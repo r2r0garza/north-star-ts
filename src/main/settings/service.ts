@@ -80,6 +80,9 @@ export interface IndexingSettings {
   // on tokens only; both 0 ⇒ summarization off. See summaries/service.ts.
   summarizeMessageThreshold: number
   summarizeTokenThreshold: number
+  // Debug aid: when on, each turn's assembled system prompt is written verbatim
+  // to system-prompt-logs/<mode> - <MM-DD-YYYY HH-MM-SS>.md. Off by default.
+  logSystemPrompt: boolean
 }
 
 // Default container image when a runtime is chosen but no image is set.
@@ -103,6 +106,7 @@ const DEFAULT_INDEXING: IndexingSettings = {
   // fresh tail reaches ~80k tokens. Both are user-adjustable in Settings.
   summarizeMessageThreshold: 0,
   summarizeTokenThreshold: 80000,
+  logSystemPrompt: false,
 }
 
 function defaultExecution(): ExecutionSettings {
@@ -218,6 +222,8 @@ function loadIndexing(): IndexingSettings {
         summarizeTokenThreshold:
           parsed.summarizeTokenThreshold ??
           DEFAULT_INDEXING.summarizeTokenThreshold,
+        logSystemPrompt:
+          parsed.logSystemPrompt ?? DEFAULT_INDEXING.logSystemPrompt,
       }
       return indexingCache
     } catch {

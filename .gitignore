@@ -36,3 +36,4 @@ pnpm-debug.log*
 
 hermes-tools/
 claude-prompts/
+system-prompt-logs/

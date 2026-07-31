@@ -141,6 +141,7 @@ describe("settings service — indexing (plan 008)", () => {
       includeEmbeddings: false,
       summarizeMessageThreshold: 0,
       summarizeTokenThreshold: 80000,
+      logSystemPrompt: false,
     })
   })
 
@@ -151,6 +152,7 @@ describe("settings service — indexing (plan 008)", () => {
       includeEmbeddings: false,
       summarizeMessageThreshold: 50,
       summarizeTokenThreshold: 6000,
+      logSystemPrompt: true,
     })
     service._resetCacheForTests()
     const idx = service.getIndexing()
@@ -158,6 +160,7 @@ describe("settings service — indexing (plan 008)", () => {
     expect(idx.useIndexForContext).toBe(false)
     expect(idx.summarizeMessageThreshold).toBe(50)
     expect(idx.summarizeTokenThreshold).toBe(6000)
+    expect(idx.logSystemPrompt).toBe(true)
   })
 
   it("fills in missing summarize fields from an older persisted blob", () => {
@@ -169,6 +172,7 @@ describe("settings service — indexing (plan 008)", () => {
     expect(idx.autoIndexNewWorkspaces).toBe(false)
     expect(idx.summarizeMessageThreshold).toBe(0)
     expect(idx.summarizeTokenThreshold).toBe(80000)
+    expect(idx.logSystemPrompt).toBe(false)
   })
 
   it("falls back to defaults on a corrupt blob", () => {
@@ -178,6 +182,7 @@ describe("settings service — indexing (plan 008)", () => {
       includeEmbeddings: false,
       summarizeMessageThreshold: 0,
       summarizeTokenThreshold: 80000,
+      logSystemPrompt: false,
     })
     // A partial/corrupt stored blob still yields a complete typed shape.
     expect(service.getIndexing().includeEmbeddings).toBe(false)
