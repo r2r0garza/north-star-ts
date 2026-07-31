@@ -19,3 +19,17 @@ export interface SkillMetadata {
   // Tool names the skill recommends. Advisory only.
   allowedTools: string[]
 }
+
+// One skill-source directory as surfaced to the Settings → Capabilities table.
+// `kind` distinguishes the locked built-ins from user-added custom folders:
+//   app       — app-bundled <app>/skills
+//   user      — ~/.cowork/skills
+//   custom    — a folder the user registered (removable)
+//   github    — <workspace>/.github/skills (zero-config, workspace-scoped)
+//   workspace — <workspace>/.cowork/skills
+export type SkillSourceKind = "app" | "user" | "custom" | "github" | "workspace"
+export interface SkillSourceRow {
+  path: string
+  kind: SkillSourceKind
+  skillCount: number
+}

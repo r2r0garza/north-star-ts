@@ -27,7 +27,11 @@ export type {
 } from "../../preload/index"
 
 // Skill summary type, surfaced for the composer's slash menu.
-export type { SkillSummary } from "../../preload/index"
+export type {
+  SkillSummary,
+  SkillSourceRow,
+  SkillSourceKind,
+} from "../../preload/index"
 
 // Settings types, surfaced for the Settings pane.
 export type {
@@ -35,6 +39,7 @@ export type {
   PermissionSettings,
   LlmSettings,
   IndexingSettings,
+  SkillSourcesSettings,
   Backend,
   FilePermission,
   ApprovalCategory,

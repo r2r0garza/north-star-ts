@@ -107,8 +107,9 @@ function parseSkill(
   }
 }
 
-// List skills in a single source directory.
-async function listSource(sourceDir: string): Promise<SkillMetadata[]> {
+// List skills in a single source directory. Exported so the skills:sources IPC
+// can count skills per source without loading the whole merged catalog.
+export async function listSource(sourceDir: string): Promise<SkillMetadata[]> {
   let entries: string[]
   try {
     entries = await readdir(sourceDir)

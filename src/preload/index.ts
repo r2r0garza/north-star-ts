@@ -22,7 +22,9 @@ import type {
   PermissionSettings,
   LlmSettings,
   IndexingSettings,
+  SkillSourcesSettings,
 } from "../main/settings/service"
+import type { SkillSourceRow } from "../main/agent/skills/types"
 import type { RuntimeStatus } from "../main/agent/env/runtime-check"
 import type { CreateAccountInput } from "../main/db/repositories/provider-accounts"
 import type { AddModelInput } from "../main/db/repositories/models"
@@ -227,6 +229,13 @@ const api = {
   skills: {
     list: (workspace?: string) =>
       ipcRenderer.invoke("skills:list", workspace) as Promise<SkillSummary[]>,
+    // Enumerate the skill-source folders (built-in + custom) with per-source
+    // skill counts, for Settings → Capabilities. Pass the workspace to include
+    // the workspace-scoped sources.
+    sources: (workspace?: string) =>
+      ipcRenderer.invoke("skills:sources", workspace) as Promise<
+        SkillSourceRow[]
+      >,
   },
   // List workspace files for the composer's `@`-mention menu, filtered by the
   // typed query (server-side). Returns workspace-relative POSIX paths, capped.
@@ -418,6 +427,15 @@ const api = {
         "settings:setIndexing",
         next
       ) as Promise<IndexingSettings>,
+    getSkillSources: () =>
+      ipcRenderer.invoke(
+        "settings:getSkillSources"
+      ) as Promise<SkillSourcesSettings>,
+    setSkillSources: (next: SkillSourcesSettings) =>
+      ipcRenderer.invoke(
+        "settings:setSkillSources",
+        next
+      ) as Promise<SkillSourcesSettings>,
     checkRuntimes: (recheck?: boolean) =>
       ipcRenderer.invoke("settings:checkRuntimes", recheck) as Promise<{
         docker: RuntimeStatus
@@ -547,10 +565,15 @@ export type {
   PermissionSettings,
   LlmSettings,
   IndexingSettings,
+  SkillSourcesSettings,
   Backend,
   FilePermission,
   ApprovalCategory,
 } from "../main/settings/service"
+export type {
+  SkillSourceRow,
+  SkillSourceKind,
+} from "../main/agent/skills/types"
 export type { RuntimeStatus, Runtime } from "../main/agent/env/runtime-check"
 // LLM provider/model types for the Providers & Models tabs and the composer.
 export type {

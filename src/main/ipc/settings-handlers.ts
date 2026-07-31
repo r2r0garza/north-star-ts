@@ -5,6 +5,7 @@ import type {
   ExecutionSettings,
   PermissionSettings,
   IndexingSettings,
+  SkillSourcesSettings,
 } from "../settings/service"
 
 // Registers the `settings:` IPC channels. All route through the settings service
@@ -27,6 +28,13 @@ export function registerSettingsHandlers(): void {
   ipcMain.handle("settings:getIndexing", () => settingsService.getIndexing())
   ipcMain.handle("settings:setIndexing", (_e, next: IndexingSettings) =>
     settingsService.setIndexing(next)
+  )
+
+  ipcMain.handle("settings:getSkillSources", () =>
+    settingsService.getSkillSources()
+  )
+  ipcMain.handle("settings:setSkillSources", (_e, next: SkillSourcesSettings) =>
+    settingsService.setSkillSources(next)
   )
 
   // Runtime availability for the backend picker. `recheck` forces a fresh probe
