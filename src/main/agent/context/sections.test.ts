@@ -48,7 +48,40 @@ vi.mock("../../db/repositories/conversation-summaries", () => ({
   getConversationSummary: () => summary,
 }))
 
-import { taskStateSection, approvalsSection, summarySection } from "./sections"
+// environmentSection reads git branch, resolves a model label, and shells out for
+// git status/log. Mock all three so the section is exercised without a real repo,
+// DB, or provider config. `gitBranch` is the readGitBranch result; `execImpl`
+// stands in for LocalEnvironment.exec (git status/log).
+let gitBranch: unknown = null
+vi.mock("../../index/metadata", () => ({
+  readGitBranch: () => Promise.resolve(gitBranch),
+}))
+
+let execImpl: (command: string) => Promise<{
+  stdout: Buffer
+  exitCode: number | null
+  timedOut: boolean
+}> = () =>
+  Promise.resolve({ stdout: Buffer.from(""), exitCode: 0, timedOut: false })
+vi.mock("../env/local", () => ({
+  LocalEnvironment: class {
+    exec(command: string) {
+      return execImpl(command)
+    }
+  },
+}))
+
+let modelLabel: string | null = null
+vi.mock("../providers", () => ({
+  resolveModelLabel: () => modelLabel,
+}))
+
+import {
+  taskStateSection,
+  approvalsSection,
+  summarySection,
+  environmentSection,
+} from "./sections"
 import { SECTION_PRIORITY } from "./context-builder"
 import type { ConversationSummary } from "../../db/types"
 
@@ -237,5 +270,130 @@ describe("summarySection", () => {
     expect(section!.priority).toBeGreaterThan(SECTION_PRIORITY.skills)
     expect(section!.content).toContain("use sqlite")
     expect(section!.content).toContain("Conversation summary so far")
+  })
+})
+
+describe("environmentSection", () => {
+  const fixedNow = new Date(2026, 6, 30) // deterministic date line
+
+  it("includes date + model but no workspace/platform/git in bare chat", async () => {
+    gitBranch = { path: ".git/HEAD", value: { branch: "main" } } // ignored: no ws
+    modelLabel = "Claude Opus"
+    const section = await environmentSection({
+      llmSelection: { accountId: null, modelId: null },
+      now: fixedNow,
+    })
+    expect(section).not.toBeNull()
+    expect(section!.name).toBe("environment")
+    expect(section!.priority).toBe(SECTION_PRIORITY.environment)
+    expect(section!.content).toContain("Model: Claude Opus")
+    expect(section!.content).toContain("Date:")
+    expect(section!.content).not.toContain("Workspace:")
+    expect(section!.content).not.toContain("Platform:")
+    expect(section!.content).not.toContain("Git")
+  })
+
+  it("omits the model line when no model resolves", async () => {
+    gitBranch = null
+    modelLabel = null
+    const section = await environmentSection({ now: fixedNow })
+    expect(section!.content).not.toContain("Model:")
+  })
+
+  it("adds workspace + platform but NO git block for a non-repo folder", async () => {
+    gitBranch = null // readGitBranch returns null → not a repo
+    modelLabel = "m"
+    let execCalled = false
+    execImpl = () => {
+      execCalled = true
+      return Promise.resolve({
+        stdout: Buffer.from(""),
+        exitCode: 0,
+        timedOut: false,
+      })
+    }
+    const section = await environmentSection({
+      workspacePath: "/ws",
+      now: fixedNow,
+    })
+    expect(section!.content).toContain("Workspace: /ws")
+    expect(section!.content).toContain("Platform:")
+    expect(section!.content).not.toContain("Git branch")
+    expect(execCalled).toBe(false) // no git shell-out when not a repo
+  })
+
+  it("renders a full git block for a repo (branch, status, commits)", async () => {
+    gitBranch = { path: ".git/HEAD", value: { branch: "feat/x" } }
+    modelLabel = "m"
+    execImpl = (command: string) => {
+      const out = command.includes("status")
+        ? " M src/a.ts"
+        : "abc123 do a thing"
+      return Promise.resolve({
+        stdout: Buffer.from(out),
+        exitCode: 0,
+        timedOut: false,
+      })
+    }
+    const section = await environmentSection({
+      workspacePath: "/ws",
+      now: fixedNow,
+    })
+    expect(section!.content).toContain("Git branch: feat/x")
+    expect(section!.content).toContain("M src/a.ts")
+    expect(section!.content).toContain("abc123 do a thing")
+  })
+
+  it("reports a clean tree when git status is empty", async () => {
+    gitBranch = { path: ".git/HEAD", value: { branch: "main" } }
+    modelLabel = "m"
+    execImpl = () =>
+      Promise.resolve({
+        stdout: Buffer.from(""),
+        exitCode: 0,
+        timedOut: false,
+      })
+    const section = await environmentSection({
+      workspacePath: "/ws",
+      now: fixedNow,
+    })
+    expect(section!.content).toContain("Git status: clean")
+  })
+
+  it("shows a detached HEAD by short sha", async () => {
+    gitBranch = { path: ".git/HEAD", value: { detached: true, sha: "deadbeef1234" } }
+    modelLabel = "m"
+    execImpl = () =>
+      Promise.resolve({
+        stdout: Buffer.from(""),
+        exitCode: 0,
+        timedOut: false,
+      })
+    const section = await environmentSection({
+      workspacePath: "/ws",
+      now: fixedNow,
+    })
+    expect(section!.content).toContain("detached at deadbeef1234")
+  })
+
+  it("survives git command failure: branch shown, status/commits skipped", async () => {
+    gitBranch = { path: ".git/HEAD", value: { branch: "main" } }
+    modelLabel = "m"
+    execImpl = () =>
+      Promise.resolve({
+        stdout: Buffer.from("boom"),
+        exitCode: 1, // non-zero → runGit returns null
+        timedOut: false,
+      })
+    const section = await environmentSection({
+      workspacePath: "/ws",
+      now: fixedNow,
+    })
+    expect(section!.content).toContain("Git branch: main")
+    // A failed status command (null) is omitted entirely — not reported as clean —
+    // and the recent-commits line is skipped too.
+    expect(section!.content).not.toContain("Git status")
+    expect(section!.content).not.toContain("Recent commits")
+    expect(section!.content).not.toContain("boom")
   })
 })

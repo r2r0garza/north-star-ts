@@ -131,6 +131,28 @@ export function resolveLlm(
   return { client, model: model.modelId, accountId: account.id }
 }
 
+// A human-readable label for the model a selection would resolve to, WITHOUT
+// throwing or building a client — used by the environment context section, which
+// runs before resolveLlm and must degrade gracefully. Prefers the stored custom
+// `modelName`, falls back to the model id, and returns null when nothing resolves
+// (no provider configured, stale selection) so the caller can omit the line.
+export function resolveModelLabel(
+  sel: LlmSelection = { accountId: null, modelId: null }
+): string | null {
+  try {
+    const dflt = settingsService.getLlm()
+    const accountId = sel.accountId ?? dflt.activeAccountId
+    const modelId = sel.modelId ?? dflt.activeModelId
+    if (!accountId || !modelId) return modelId ?? null
+    const model = modelsRepo
+      .listModels(accountId)
+      .find((m) => m.modelId === modelId)
+    return model?.modelName?.trim() || modelId
+  } catch {
+    return null
+  }
+}
+
 // Whether ANY usable provider+model exists (used to gate Send and drive the
 // first-launch prompt). Checks the default selection first, then falls back to
 // "any account with a key, a base URL, and at least one model" so a user who has

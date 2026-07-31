@@ -27,6 +27,7 @@ import {
   taskStateSection,
   approvalsSection,
   summarySection,
+  environmentSection,
 } from "./context/sections"
 import { repairDanglingToolCalls } from "./repair"
 import { createEnvironment } from "./env"
@@ -445,6 +446,18 @@ export async function runAgentLoop(
   // (plan 014). This replaces the previous pile of `systemPrompt +=` appends.
   const baseSystemPrompt = await loadSystemPrompt(conversation?.mode)
   const sections: ContextSection[] = []
+
+  // Environment orientation: date + model always, and (when a workspace exists)
+  // platform + workspace path + a git block for a real repo. Assembled fresh each
+  // turn from what's actually true — no git noise for a non-repo folder, no
+  // workspace line in bare chat. Async (git shells out), so it's awaited here
+  // before the synchronous ContextBuilder.build() below. Model label is resolved
+  // best-effort from this conversation's selection (resolveLlm runs later).
+  const envSection = await environmentSection({
+    workspacePath: hasWorkspace ? workspace : undefined,
+    llmSelection,
+  })
+  if (envSection) sections.push(envSection)
 
   // Skills: the read_skill catalog. Kept longest under budget pressure (highest
   // priority) — dropping it would hide capabilities the agent is told it has.

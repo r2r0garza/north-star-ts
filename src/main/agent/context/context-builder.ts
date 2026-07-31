@@ -41,6 +41,7 @@ export interface ContextSection {
 // yields before the agent's skills. Kept here so the drop order is one list, not
 // scattered across call sites.
 export const SECTION_PRIORITY = {
+  environment: 5, // date/model/workspace/git orientation — small, most droppable
   index: 10, // advisory workspace orientation — most droppable
   approvals: 20,
   taskState: 30,
