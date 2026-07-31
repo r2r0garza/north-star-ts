@@ -90,7 +90,14 @@ ipcMain.handle("chat", async (event, req: ChatRequest) => {
     req,
     (chatEvent) => {
       if (!event.sender.isDestroyed()) {
-        event.sender.send("chat:event", chatEvent)
+        // Tag every event with its conversation so the renderer's per-turn
+        // listener can ignore events from other in-flight turns. Without this,
+        // a second turn's listener also receives the first turn's tokens
+        // (single broadcast channel) and streams them into the wrong bubble.
+        event.sender.send("chat:event", {
+          conversationId: req.conversationId,
+          event: chatEvent,
+        })
       }
     },
     // Let a live turn hand work to the background (run_todos_in_background). The

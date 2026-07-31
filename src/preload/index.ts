@@ -104,8 +104,15 @@ const api = {
     },
     onEvent?: (event: ChatEvent) => void
   ) => {
-    const listener = (_e: IpcRendererEvent, event: ChatEvent) =>
-      onEvent?.(event)
+    // The "chat:event" channel is shared by every in-flight turn, so filter to
+    // this turn's conversation — otherwise a concurrent turn's tokens would
+    // stream into this one's bubble.
+    const listener = (
+      _e: IpcRendererEvent,
+      payload: { conversationId: string; event: ChatEvent }
+    ) => {
+      if (payload.conversationId === req.conversationId) onEvent?.(payload.event)
+    }
     ipcRenderer.on("chat:event", listener)
     const done = () => ipcRenderer.removeListener("chat:event", listener)
     return (
