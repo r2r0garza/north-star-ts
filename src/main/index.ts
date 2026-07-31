@@ -17,6 +17,8 @@ import {
   type ChatRequest,
 } from "./agent"
 import { pickWorkspace, pickFiles } from "./pick-workspace"
+import { skillSources } from "./agent/skills/sources"
+import { loadSkills } from "./agent/skills/loader"
 import { registerDbHandlers } from "./ipc/db-handlers"
 import { registerSettingsHandlers } from "./ipc/settings-handlers"
 import { registerProviderHandlers } from "./ipc/provider-handlers"
@@ -148,6 +150,14 @@ ipcMain.handle("chat:stop", (_event, conversationId: string) => {
 })
 ipcMain.handle("pick-workspace", () => pickWorkspace())
 ipcMain.handle("pick-files", () => pickFiles())
+// List available skills (name + description only) for the composer's slash
+// menu. Resolves the same source dirs the agent uses at turn time, so the
+// picker shows exactly what the model can read via read_skill. `body`/`path`
+// are dropped — the renderer only needs to display and match on name/desc.
+ipcMain.handle("skills:list", async (_event, workspace?: string) => {
+  const skills = await loadSkills(skillSources(workspace))
+  return skills.map(({ name, description }) => ({ name, description }))
+})
 // Initial fullscreen state, queried by the renderer on mount.
 ipcMain.handle("is-fullscreen", (event) => {
   const win = BrowserWindow.fromWebContents(event.sender)

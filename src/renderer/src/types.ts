@@ -26,6 +26,9 @@ export type {
   QuestionAnswer,
 } from "../../preload/index"
 
+// Skill summary type, surfaced for the composer's slash menu.
+export type { SkillSummary } from "../../preload/index"
+
 // Settings types, surfaced for the Settings pane.
 export type {
   ExecutionSettings,

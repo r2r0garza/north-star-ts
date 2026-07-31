@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react"
+import type { KeyboardEvent } from "react"
 import {
   ArrowUp,
   FileText,
@@ -34,6 +35,12 @@ import {
 } from "@/components/ui/attachment"
 import { ToolGroup, ApprovalCard } from "@/components/tool-group"
 import { QuestionPanel } from "@/components/question-panel"
+import { SkillMenu, rankSkills } from "@/components/skill-menu"
+import {
+  activeSlashToken,
+  segmentMessage,
+  expandSkillTokens,
+} from "@/lib/skill-tokens"
 import {
   Combobox,
   ComboboxCollection,
@@ -61,6 +68,7 @@ import type {
   QuestionAnswer,
   LlmSettings,
   AccountWithModels,
+  SkillSummary,
 } from "@/types"
 
 // The live, in-flight state of one streaming turn, held per-conversation in
@@ -109,6 +117,17 @@ export default function App({
   const [workspace, setWorkspace] = useState("")
   const [attachments, setAttachments] = useState<string[]>([])
   const [message, setMessage] = useState("")
+  // Slash-command skill picker. `skills` is the catalog (loaded from main);
+  // `menuQuery` is the `/word` being typed (null = menu closed); `menuActive` is
+  // the highlighted skill name. `confirmedSkills` are the names the user actually
+  // picked — the source of truth for which `/tokens` get a badge + get expanded
+  // to natural language at send. A typed-but-unpicked `/foo` stays plain text.
+  const [skills, setSkills] = useState<SkillSummary[]>([])
+  const [menuQuery, setMenuQuery] = useState<string | null>(null)
+  const [menuActive, setMenuActive] = useState<string | null>(null)
+  const [confirmedSkills, setConfirmedSkills] = useState<Set<string>>(new Set())
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const overlayRef = useRef<HTMLDivElement>(null)
   // The persisted transcript, rebuilt from stored rows (text bubbles + tool
   // groups, interleaved in order). Live in-flight state is held separately.
   const [timeline, setTimeline] = useState<TimelineItem[]>([])
@@ -261,6 +280,122 @@ export default function App({
     }
   }, [conversationId])
 
+  // Load the skill catalog for the slash menu. Reloads when the workspace
+  // changes so project-level skills (<workspace>/.cowork/skills) are included.
+  useEffect(() => {
+    let cancelled = false
+    window.cowork.skills
+      .list(workspace.trim() || undefined)
+      .then((list) => {
+        if (!cancelled) setSkills(list)
+      })
+      .catch(() => {
+        if (!cancelled) setSkills([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [workspace])
+
+  // The ranked list the menu shows for the current query, and whether it's open.
+  // Both the menu render and arrow-key navigation read this same ordered list.
+  const menuOpen = menuQuery !== null
+  const rankedSkills = menuQuery !== null ? rankSkills(skills, menuQuery) : []
+
+  // Handle composer edits: update the text, (re)detect the `/word` token at the
+  // caret to drive the menu, and drop any confirmed skill whose token the user
+  // has since deleted (so stale badges/expansions don't linger).
+  function handleMessageChange(text: string, caret: number) {
+    setMessage(text)
+    const token = activeSlashToken(text, caret)
+    if (token) {
+      setMenuQuery(token.query)
+      // Preselect the top-ranked item so Enter works without arrowing first.
+      const ranked = rankSkills(skills, token.query)
+      setMenuActive(ranked[0]?.name ?? null)
+    } else {
+      setMenuQuery(null)
+      setMenuActive(null)
+    }
+    // Reconcile confirmed skills against tokens still present in the text.
+    setConfirmedSkills((prev) => {
+      if (prev.size === 0) return prev
+      const present = new Set(
+        segmentMessage(text, prev)
+          .filter((s) => s.skill)
+          .map((s) => s.skill as string)
+      )
+      if (present.size === prev.size) return prev
+      return present
+    })
+  }
+
+  // Insert the chosen skill's canonical `/name ` token in place of the `/query`
+  // being typed, mark it confirmed (badge + send-time expansion), close the menu,
+  // and restore the caret just after the inserted token.
+  function selectSkill(skill: SkillSummary) {
+    const el = textareaRef.current
+    const caret = el?.selectionStart ?? message.length
+    const token = activeSlashToken(message, caret)
+    if (!token) return
+    const insert = `/${skill.name} `
+    const next =
+      message.slice(0, token.start) + insert + message.slice(token.end)
+    const nextCaret = token.start + insert.length
+    setMessage(next)
+    setConfirmedSkills((prev) => new Set(prev).add(skill.name))
+    setMenuQuery(null)
+    setMenuActive(null)
+    // Restore focus + caret after React commits the new value.
+    requestAnimationFrame(() => {
+      const node = textareaRef.current
+      if (node) {
+        node.focus()
+        node.setSelectionRange(nextCaret, nextCaret)
+      }
+    })
+  }
+
+  // Keyboard handling for the composer. When the menu is open, intercept
+  // navigation/selection keys BEFORE the Enter-to-send path below; otherwise
+  // fall through to the existing send behavior.
+  function handleComposerKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
+    if (menuOpen && rankedSkills.length > 0) {
+      const idx = rankedSkills.findIndex((s) => s.name === menuActive)
+      if (e.key === "ArrowDown") {
+        e.preventDefault()
+        const next =
+          rankedSkills[(idx + 1 + rankedSkills.length) % rankedSkills.length]
+        setMenuActive(next.name)
+        return
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault()
+        const prev =
+          rankedSkills[(idx - 1 + rankedSkills.length) % rankedSkills.length]
+        setMenuActive(prev.name)
+        return
+      }
+      if (e.key === "Enter" || e.key === "Tab") {
+        e.preventDefault()
+        const chosen = rankedSkills[idx] ?? rankedSkills[0]
+        if (chosen) selectSkill(chosen)
+        return
+      }
+      if (e.key === "Escape") {
+        e.preventDefault()
+        setMenuQuery(null)
+        setMenuActive(null)
+        return
+      }
+    }
+    // Menu closed (or empty): existing Enter-to-send, Shift+Enter for newline.
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault()
+      sendMessage()
+    }
+  }
+
   async function pickWorkspace() {
     try {
       const data = await window.cowork.pickWorkspace()
@@ -331,7 +466,11 @@ export default function App({
 
   async function sendMessage() {
     if (!canSend) return
-    const text = message.trim()
+    // Expand confirmed `/skill` tokens into natural language before sending, so
+    // the model reliably reads the intended skill (e.g. `…with the /git-commit`
+    // → `…with the git-commit skill`). The expanded text is also what's shown in
+    // the optimistic timeline, so the transcript matches what the agent received.
+    const text = expandSkillTokens(message, confirmedSkills).trim()
     const sentAttachments = attachments
 
     // Ensure a conversation exists — created lazily on first send. For
@@ -372,6 +511,9 @@ export default function App({
       },
     ])
     setMessage("")
+    setConfirmedSkills(new Set())
+    setMenuQuery(null)
+    setMenuActive(null)
     setAttachments([])
     // Start this conversation's live turn from a clean slate (its buffers are
     // keyed by conversation, so this never touches another conversation's turn).
@@ -750,20 +892,50 @@ export default function App({
           ))}
         </AttachmentGroup>
       )}
-      <div className="rounded-2xl border border-input bg-transparent focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50">
-        <textarea
-          value={message}
-          onChange={(e) => setMessage(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault()
-              sendMessage()
+      <div className="relative rounded-2xl border border-input bg-transparent focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50">
+        {menuOpen && (
+          <SkillMenu
+            items={rankedSkills}
+            activeValue={menuActive}
+            onActiveValueChange={setMenuActive}
+            onSelect={selectSkill}
+          />
+        )}
+        {/* Input box: a transparent-text mirror behind the textarea paints a
+            rounded tint behind confirmed `/skill` tokens (the "badge"). The two
+            share identical typography/padding so the tint lines up exactly. */}
+        <div className="relative">
+          <div
+            ref={overlayRef}
+            aria-hidden
+            className="pointer-events-none absolute inset-0 overflow-hidden px-4 py-3 text-sm leading-relaxed break-words whitespace-pre-wrap text-transparent"
+          >
+            {segmentMessage(message, confirmedSkills).map((seg, i) =>
+              seg.skill ? (
+                <span key={i} className="rounded bg-primary/15">
+                  {seg.text}
+                </span>
+              ) : (
+                <span key={i}>{seg.text}</span>
+              )
+            )}
+          </div>
+          <textarea
+            ref={textareaRef}
+            value={message}
+            onChange={(e) =>
+              handleMessageChange(e.target.value, e.target.selectionStart)
             }
-          }}
-          rows={2}
-          placeholder="Send a message…"
-          className="field-sizing-content max-h-[24.25rem] w-full resize-none bg-transparent px-4 py-3 text-sm leading-relaxed outline-none placeholder:text-muted-foreground"
-        />
+            onKeyDown={handleComposerKeyDown}
+            onScroll={(e) => {
+              if (overlayRef.current)
+                overlayRef.current.scrollTop = e.currentTarget.scrollTop
+            }}
+            rows={2}
+            placeholder="Send a message…"
+            className="relative field-sizing-content max-h-[24.25rem] w-full resize-none bg-transparent px-4 py-3 text-sm leading-relaxed outline-none placeholder:text-muted-foreground"
+          />
+        </div>
         <div className="flex items-center justify-between px-2.5 pb-2.5">
           <div className="flex items-center gap-1">
             {isChat ? (

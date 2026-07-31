@@ -89,6 +89,13 @@ export type TaskLiveEvent = {
   id: number
 }
 
+// A skill as surfaced to the composer's slash menu — just what the picker needs
+// to display and match on. The full body stays in the main process (read_skill).
+export type SkillSummary = {
+  name: string
+  description: string
+}
+
 // The typed API exposed to the renderer as `window.cowork`.
 // This is the ONLY surface the UI can use to reach the main process.
 const api = {
@@ -111,7 +118,8 @@ const api = {
       _e: IpcRendererEvent,
       payload: { conversationId: string; event: ChatEvent }
     ) => {
-      if (payload.conversationId === req.conversationId) onEvent?.(payload.event)
+      if (payload.conversationId === req.conversationId)
+        onEvent?.(payload.event)
     }
     ipcRenderer.on("chat:event", listener)
     const done = () => ipcRenderer.removeListener("chat:event", listener)
@@ -214,6 +222,12 @@ const api = {
       paths?: string[]
       canceled?: boolean
     }>,
+  // List available skills (name + description) for the composer's slash menu.
+  // Pass the active workspace so project-level skills are included.
+  skills: {
+    list: (workspace?: string) =>
+      ipcRenderer.invoke("skills:list", workspace) as Promise<SkillSummary[]>,
+  },
   // Whether the window is currently fullscreen (macOS traffic lights hidden).
   isFullScreen: () => ipcRenderer.invoke("is-fullscreen") as Promise<boolean>,
   // Subscribe to fullscreen changes. Returns an unsubscribe function.
