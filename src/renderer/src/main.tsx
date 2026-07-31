@@ -84,6 +84,19 @@ function Shell() {
     setSettingsOpen(true)
   }
 
+  // Cmd+, (macOS) / Ctrl+, (Windows/Linux) opens Settings — the platform's
+  // conventional shortcut. metaKey||ctrlKey covers both without a platform check.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "," && (event.metaKey || event.ctrlKey)) {
+        event.preventDefault()
+        setSettingsOpen(true)
+      }
+    }
+    window.addEventListener("keydown", onKeyDown)
+    return () => window.removeEventListener("keydown", onKeyDown)
+  }, [])
+
   // Switching views starts a fresh conversation for that view (the sidebar
   // shows prior ones to reopen).
   function handleViewChange(next: View) {
