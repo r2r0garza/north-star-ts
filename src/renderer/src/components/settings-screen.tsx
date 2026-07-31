@@ -374,7 +374,7 @@ export function SettingsScreen({
                         </Select>
                         <FieldDescription>
                           {execution.backend === "local"
-                            ? "Tools run directly on your machine. The approval gate is the only guard."
+                            ? "Tools run directly on your machine. Only file reads run without asking — every command and file write/edit needs your approval."
                             : "Tools run in an isolated container with only the workspace mounted."}
                         </FieldDescription>
                       </Field>
@@ -385,6 +385,13 @@ export function SettingsScreen({
                       value="permissions"
                       className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto py-6"
                     >
+                      {execution.backend === "local" && (
+                        <FieldDescription>
+                          On the local backend every file write and edit already
+                          requires approval — these toggles take effect only when
+                          running in a container.
+                        </FieldDescription>
+                      )}
                       <Field orientation="horizontal">
                         <FieldContent>
                           <FieldLabel htmlFor="perm-write">
