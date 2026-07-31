@@ -74,6 +74,12 @@ export interface IndexingSettings {
   // Stage 4 semantic embeddings — deferred; shown disabled in the UI to signal
   // the roadmap. Persisted so the toggle round-trips, but unused in slice 1.
   includeEmbeddings: boolean
+  // Conversation-summary triggers (plan 019). A summary regenerates when the
+  // un-summarized tail past coversThrough reaches EITHER threshold (whichever
+  // comes first). `0` disables that trigger independently: message=0 ⇒ summarize
+  // on tokens only; both 0 ⇒ summarization off. See summaries/service.ts.
+  summarizeMessageThreshold: number
+  summarizeTokenThreshold: number
 }
 
 // Default container image when a runtime is chosen but no image is set.
@@ -93,6 +99,10 @@ const DEFAULT_INDEXING: IndexingSettings = {
   autoIndexNewWorkspaces: true,
   useIndexForContext: true,
   includeEmbeddings: false,
+  // Token-only triggering by default: message count off (0), summarize once the
+  // fresh tail reaches ~80k tokens. Both are user-adjustable in Settings.
+  summarizeMessageThreshold: 0,
+  summarizeTokenThreshold: 80000,
 }
 
 function defaultExecution(): ExecutionSettings {
@@ -202,6 +212,12 @@ function loadIndexing(): IndexingSettings {
           parsed.useIndexForContext ?? DEFAULT_INDEXING.useIndexForContext,
         includeEmbeddings:
           parsed.includeEmbeddings ?? DEFAULT_INDEXING.includeEmbeddings,
+        summarizeMessageThreshold:
+          parsed.summarizeMessageThreshold ??
+          DEFAULT_INDEXING.summarizeMessageThreshold,
+        summarizeTokenThreshold:
+          parsed.summarizeTokenThreshold ??
+          DEFAULT_INDEXING.summarizeTokenThreshold,
       }
       return indexingCache
     } catch {

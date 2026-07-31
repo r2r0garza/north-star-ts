@@ -52,6 +52,20 @@ vi.mock("../agent/providers", () => {
   }
 })
 
+// maybeSummarize live-reads the two thresholds from the settings service. Mock it
+// with a mutable object so each test sets the triggers it needs without standing
+// up the real settings repo/cache. Only getIndexing is consulted here.
+const indexingSettings = {
+  autoIndexNewWorkspaces: true,
+  useIndexForContext: true,
+  includeEmbeddings: false,
+  summarizeMessageThreshold: 0,
+  summarizeTokenThreshold: 80000,
+}
+vi.mock("../settings/service", () => ({
+  getIndexing: () => indexingSettings,
+}))
+
 import { SummaryService, SUMMARIZE_KIND } from "./service"
 import { NoActiveProviderError as FakeNoProvider } from "../agent/providers"
 import { appendMessage } from "../db/repositories/messages"
@@ -147,38 +161,67 @@ describe.skipIf(!sqliteLoads)("SummaryService.maybeSummarize (trigger)", () => {
     runMigrations(db)
     runner = fakeRunner()
     svc = new SummaryService(runner)
+    // Reset to the shipped defaults (token-only, 80k) before each test tweaks it.
+    indexingSettings.summarizeMessageThreshold = 0
+    indexingSettings.summarizeTokenThreshold = 80000
   })
 
-  it("does not summarize a short conversation", () => {
+  it("does not fire on message count at the token-only default", () => {
+    // msg threshold 0 (disabled), token threshold high — a chatty-but-small
+    // conversation stays well under 80k tokens, so no trigger.
     const convId = freshConversation()
-    seedMessages(convId, 4)
+    seedMessages(convId, 40)
     svc.maybeSummarize(convId)
     expect(runner.calls).toBe(0)
   })
 
-  it("does not summarize when the fresh tail is below the threshold", () => {
+  it("fires on the message threshold once enough fresh turns accumulate", () => {
+    indexingSettings.summarizeMessageThreshold = 20
     const convId = freshConversation()
-    // Above MIN_MESSAGES (10) but below the 20-turn trigger and small enough to
-    // stay under the token trigger.
-    seedMessages(convId, 12)
+    seedMessages(convId, 19)
     svc.maybeSummarize(convId)
-    expect(runner.calls).toBe(0)
-  })
+    expect(runner.calls).toBe(0) // one short of the threshold
 
-  it("enqueues once the turn-count threshold is crossed", () => {
-    const convId = freshConversation()
-    seedMessages(convId, 22)
+    seedMessages(convId, 1)
     svc.maybeSummarize(convId)
-    expect(runner.calls).toBe(1)
+    expect(runner.calls).toBe(1) // exactly at the threshold
 
     const tasks = listTasks()
-    expect(tasks).toHaveLength(1)
     const input = tasks[0].input as { kind?: string; conversationId?: string }
     expect(input.kind).toBe(SUMMARIZE_KIND)
     expect(input.conversationId).toBe(convId)
   })
 
+  it("fires below the old 10-message floor when the threshold is low", () => {
+    // Proves MIN_MESSAGES is gone: a threshold of 3 fires at 3 messages.
+    indexingSettings.summarizeMessageThreshold = 3
+    const convId = freshConversation()
+    seedMessages(convId, 3)
+    svc.maybeSummarize(convId)
+    expect(runner.calls).toBe(1)
+  })
+
+  it("fires on the token threshold (whichever comes first) with msg disabled", () => {
+    // msg=0 (off), a tiny token budget → the token trigger fires on its own.
+    indexingSettings.summarizeMessageThreshold = 0
+    indexingSettings.summarizeTokenThreshold = 50
+    const convId = freshConversation()
+    seedMessages(convId, 12) // comfortably >50 tokens of content
+    svc.maybeSummarize(convId)
+    expect(runner.calls).toBe(1)
+  })
+
+  it("never fires when both thresholds are 0", () => {
+    indexingSettings.summarizeMessageThreshold = 0
+    indexingSettings.summarizeTokenThreshold = 0
+    const convId = freshConversation()
+    seedMessages(convId, 100)
+    svc.maybeSummarize(convId)
+    expect(runner.calls).toBe(0)
+  })
+
   it("does not enqueue a duplicate while one is already in flight", () => {
+    indexingSettings.summarizeMessageThreshold = 20
     const convId = freshConversation()
     seedMessages(convId, 22)
     svc.maybeSummarize(convId)
@@ -187,6 +230,7 @@ describe.skipIf(!sqliteLoads)("SummaryService.maybeSummarize (trigger)", () => {
   })
 
   it("only counts fresh turns past coversThrough for the threshold", () => {
+    indexingSettings.summarizeMessageThreshold = 20
     const convId = freshConversation()
     seedMessages(convId, 22)
     // Pretend everything so far is already summarized.

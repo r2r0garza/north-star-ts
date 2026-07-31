@@ -2,6 +2,7 @@ import { useEffect, useState } from "react"
 import { Dialog as DialogPrimitive } from "radix-ui"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Switch } from "@/components/ui/switch"
+import { Input } from "@/components/ui/input"
 import {
   Select,
   SelectContent,
@@ -85,9 +86,22 @@ const SECTIONS: Array<{ value: string; label: string }> = [
   { value: "models", label: "Models" },
   { value: "backend", label: "Backend" },
   { value: "permissions", label: "Permissions" },
-  { value: "indexing", label: "Indexing" },
+  { value: "indexing", label: "Context" },
   { value: "sandbox", label: "Sandbox" },
 ]
+
+// Parse a numeric input to an integer clamped to [min, max]. A blank/NaN entry
+// (mid-edit) falls back to `fallback` so we never persist NaN into settings.
+function clampInt(
+  raw: string,
+  min: number,
+  max: number,
+  fallback: number
+): number {
+  const n = Number.parseInt(raw, 10)
+  if (Number.isNaN(n)) return fallback
+  return Math.min(max, Math.max(min, n))
+}
 
 export function SettingsScreen({
   open,
@@ -405,6 +419,73 @@ export function SettingsScreen({
                           </FieldDescription>
                         </FieldContent>
                         <Switch id="idx-embed" checked={false} disabled />
+                      </Field>
+
+                      {/* Conversation-summary triggers (plan 019). A rolling
+                          digest regenerates when the un-summarized tail reaches
+                          either threshold, whichever comes first. */}
+                      <Field orientation="horizontal">
+                        <FieldContent>
+                          <FieldLabel htmlFor="sum-msg">
+                            Summarize after N messages
+                          </FieldLabel>
+                          <FieldDescription>
+                            Regenerate the conversation summary once this many new
+                            messages accumulate. Set to 0 to trigger on tokens
+                            only.
+                          </FieldDescription>
+                        </FieldContent>
+                        <Input
+                          id="sum-msg"
+                          type="number"
+                          min={0}
+                          step={1}
+                          className="w-28"
+                          value={indexing.summarizeMessageThreshold}
+                          onChange={(e) =>
+                            saveIndexing({
+                              ...indexing,
+                              summarizeMessageThreshold: clampInt(
+                                e.target.value,
+                                0,
+                                Number.MAX_SAFE_INTEGER,
+                                indexing.summarizeMessageThreshold
+                              ),
+                            })
+                          }
+                        />
+                      </Field>
+                      <Field orientation="horizontal">
+                        <FieldContent>
+                          <FieldLabel htmlFor="sum-tok">
+                            Summarize after N tokens
+                          </FieldLabel>
+                          <FieldDescription>
+                            Regenerate the summary once the un-summarized turns
+                            reach this many tokens (whichever threshold is hit
+                            first). Range 6,000–150,000.
+                          </FieldDescription>
+                        </FieldContent>
+                        <Input
+                          id="sum-tok"
+                          type="number"
+                          min={6000}
+                          max={150000}
+                          step={1000}
+                          className="w-28"
+                          value={indexing.summarizeTokenThreshold}
+                          onChange={(e) =>
+                            saveIndexing({
+                              ...indexing,
+                              summarizeTokenThreshold: clampInt(
+                                e.target.value,
+                                6000,
+                                150000,
+                                indexing.summarizeTokenThreshold
+                              ),
+                            })
+                          }
+                        />
                       </Field>
                     </TabsContent>
 

@@ -134,11 +134,13 @@ describe("settings service — sandboxAutoApproves", () => {
 })
 
 describe("settings service — indexing (plan 008)", () => {
-  it("defaults: auto-index on, use-for-context on, embeddings off", () => {
+  it("defaults: auto-index on, use-for-context on, embeddings off, token-only summarize", () => {
     expect(service.getIndexing()).toEqual({
       autoIndexNewWorkspaces: true,
       useIndexForContext: true,
       includeEmbeddings: false,
+      summarizeMessageThreshold: 0,
+      summarizeTokenThreshold: 80000,
     })
   })
 
@@ -147,11 +149,26 @@ describe("settings service — indexing (plan 008)", () => {
       autoIndexNewWorkspaces: false,
       useIndexForContext: false,
       includeEmbeddings: false,
+      summarizeMessageThreshold: 50,
+      summarizeTokenThreshold: 6000,
     })
     service._resetCacheForTests()
     const idx = service.getIndexing()
     expect(idx.autoIndexNewWorkspaces).toBe(false)
     expect(idx.useIndexForContext).toBe(false)
+    expect(idx.summarizeMessageThreshold).toBe(50)
+    expect(idx.summarizeTokenThreshold).toBe(6000)
+  })
+
+  it("fills in missing summarize fields from an older persisted blob", () => {
+    // Simulate a pre-existing blob written before the summarize fields existed:
+    // the loader must backfill them from defaults, not leave them undefined.
+    store.set("indexing", JSON.stringify({ autoIndexNewWorkspaces: false }))
+    service._resetCacheForTests()
+    const idx = service.getIndexing()
+    expect(idx.autoIndexNewWorkspaces).toBe(false)
+    expect(idx.summarizeMessageThreshold).toBe(0)
+    expect(idx.summarizeTokenThreshold).toBe(80000)
   })
 
   it("falls back to defaults on a corrupt blob", () => {
@@ -159,6 +176,8 @@ describe("settings service — indexing (plan 008)", () => {
       autoIndexNewWorkspaces: false,
       useIndexForContext: true,
       includeEmbeddings: false,
+      summarizeMessageThreshold: 0,
+      summarizeTokenThreshold: 80000,
     })
     // A partial/corrupt stored blob still yields a complete typed shape.
     expect(service.getIndexing().includeEmbeddings).toBe(false)

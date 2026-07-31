@@ -13,6 +13,7 @@ import {
   type LlmSelection,
 } from "../agent/providers"
 import { defaultTokenCounter } from "../agent/context/token-counter"
+import * as settingsService from "../settings/service"
 import type { TaskRunner, TaskExecutor } from "../tasks/runner"
 import type { Message } from "../db/types"
 
@@ -27,16 +28,11 @@ import type { Message } from "../db/types"
 // The task kind driven by this service's executor.
 export const SUMMARIZE_KIND = "summarize"
 
-// Smallest transcript worth summarizing. A short chat fits the walk-back whole —
-// summarizing it wastes an LLM call and buys nothing.
-const MIN_MESSAGES = 10
-
-// Debounce: only (re)summarize once the tail past `coversThrough` has grown by at
-// least this many turns OR this many estimated tokens. Keeps regeneration
-// incremental and cheap — we don't re-summarize every turn, only when enough new
-// context has accumulated to be worth folding in.
-const TRIGGER_TURNS = 20
-const TRIGGER_TOKENS = 6000
+// The (re)summarize triggers — how many fresh turns / fresh tokens past
+// `coversThrough` must accumulate before we regenerate — are user-configurable
+// (settings `summarizeMessageThreshold` / `summarizeTokenThreshold`) and read
+// live in maybeSummarize(). A `0` threshold disables that trigger; both 0 turns
+// summarization off entirely.
 
 // Cap on the digest's own size (output tokens). The prompt also asks the model to
 // stay terse; this is the hard ceiling.
@@ -163,16 +159,23 @@ export class SummaryService {
   // never adds to the turn's latency. Idempotent: no-op if a summarize run for
   // this conversation is already in flight.
   maybeSummarize(conversationId: string): void {
-    const messages = listMessages(conversationId)
-    if (messages.length < MIN_MESSAGES) return
+    // Live-read the user's thresholds. `0` disables a trigger independently, so
+    // message=0 ⇒ token-only, and both 0 ⇒ summarization off.
+    const { summarizeMessageThreshold: msgN, summarizeTokenThreshold: tokN } =
+      settingsService.getIndexing()
+    if (msgN <= 0 && tokN <= 0) return
 
+    const messages = listMessages(conversationId)
     const prior = getConversationSummary(conversationId)
     const coversThrough = prior?.coversThrough ?? 0
     const fresh = messages.filter((m) => m.seq > coversThrough)
     if (fresh.length === 0) return
 
+    // OR across the enabled thresholds — whichever is met first fires.
+    const msgHit = msgN > 0 && fresh.length >= msgN
     const freshTokens = fresh.reduce((sum, m) => sum + costOf(m), 0)
-    if (fresh.length < TRIGGER_TURNS && freshTokens < TRIGGER_TOKENS) return
+    const tokHit = tokN > 0 && freshTokens >= tokN
+    if (!msgHit && !tokHit) return
 
     if (this.hasLiveTask(conversationId)) return
 
