@@ -22,7 +22,9 @@ import type {
   PermissionSettings,
   LlmSettings,
   IndexingSettings,
+  SkillSourcesSettings,
 } from "../main/settings/service"
+import type { SkillSourceRow } from "../main/agent/skills/types"
 import type { RuntimeStatus } from "../main/agent/env/runtime-check"
 import type { CreateAccountInput } from "../main/db/repositories/provider-accounts"
 import type { AddModelInput } from "../main/db/repositories/models"
@@ -89,6 +91,13 @@ export type TaskLiveEvent = {
   id: number
 }
 
+// A skill as surfaced to the composer's slash menu — just what the picker needs
+// to display and match on. The full body stays in the main process (read_skill).
+export type SkillSummary = {
+  name: string
+  description: string
+}
+
 // The typed API exposed to the renderer as `window.cowork`.
 // This is the ONLY surface the UI can use to reach the main process.
 const api = {
@@ -111,7 +120,8 @@ const api = {
       _e: IpcRendererEvent,
       payload: { conversationId: string; event: ChatEvent }
     ) => {
-      if (payload.conversationId === req.conversationId) onEvent?.(payload.event)
+      if (payload.conversationId === req.conversationId)
+        onEvent?.(payload.event)
     }
     ipcRenderer.on("chat:event", listener)
     const done = () => ipcRenderer.removeListener("chat:event", listener)
@@ -214,6 +224,26 @@ const api = {
       paths?: string[]
       canceled?: boolean
     }>,
+  // List available skills (name + description) for the composer's slash menu.
+  // Pass the active workspace so project-level skills are included.
+  skills: {
+    list: (workspace?: string) =>
+      ipcRenderer.invoke("skills:list", workspace) as Promise<SkillSummary[]>,
+    // Enumerate the skill-source folders (built-in + custom) with per-source
+    // skill counts, for Settings → Capabilities. Pass the workspace to include
+    // the workspace-scoped sources.
+    sources: (workspace?: string) =>
+      ipcRenderer.invoke("skills:sources", workspace) as Promise<
+        SkillSourceRow[]
+      >,
+  },
+  // List workspace files for the composer's `@`-mention menu, filtered by the
+  // typed query (server-side). Returns workspace-relative POSIX paths, capped.
+  // Resolves [] when there's no workspace (Chat mode).
+  files: {
+    list: (workspace: string, query: string) =>
+      ipcRenderer.invoke("files:list", workspace, query) as Promise<string[]>,
+  },
   // Whether the window is currently fullscreen (macOS traffic lights hidden).
   isFullScreen: () => ipcRenderer.invoke("is-fullscreen") as Promise<boolean>,
   // Subscribe to fullscreen changes. Returns an unsubscribe function.
@@ -397,6 +427,15 @@ const api = {
         "settings:setIndexing",
         next
       ) as Promise<IndexingSettings>,
+    getSkillSources: () =>
+      ipcRenderer.invoke(
+        "settings:getSkillSources"
+      ) as Promise<SkillSourcesSettings>,
+    setSkillSources: (next: SkillSourcesSettings) =>
+      ipcRenderer.invoke(
+        "settings:setSkillSources",
+        next
+      ) as Promise<SkillSourcesSettings>,
     checkRuntimes: (recheck?: boolean) =>
       ipcRenderer.invoke("settings:checkRuntimes", recheck) as Promise<{
         docker: RuntimeStatus
@@ -526,10 +565,15 @@ export type {
   PermissionSettings,
   LlmSettings,
   IndexingSettings,
+  SkillSourcesSettings,
   Backend,
   FilePermission,
   ApprovalCategory,
 } from "../main/settings/service"
+export type {
+  SkillSourceRow,
+  SkillSourceKind,
+} from "../main/agent/skills/types"
 export type { RuntimeStatus, Runtime } from "../main/agent/env/runtime-check"
 // LLM provider/model types for the Providers & Models tabs and the composer.
 export type {

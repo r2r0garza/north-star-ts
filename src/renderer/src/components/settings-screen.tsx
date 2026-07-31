@@ -25,7 +25,16 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
-import { XIcon } from "lucide-react"
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableFooter,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table"
+import { XIcon, Plus, Trash2 } from "lucide-react"
 import {
   ProvidersTab,
   ModelsTab,
@@ -39,6 +48,7 @@ import type {
   ApprovalCategory,
   Runtime,
   RuntimeStatus,
+  SkillSourceRow,
 } from "@/types"
 
 // Human-readable labels + help for each sandbox category (mirrors the taxonomy
@@ -87,8 +97,18 @@ const SECTIONS: Array<{ value: string; label: string }> = [
   { value: "backend", label: "Backend" },
   { value: "permissions", label: "Permissions" },
   { value: "indexing", label: "Context" },
+  { value: "capabilities", label: "Capabilities" },
   { value: "sandbox", label: "Sandbox" },
 ]
+
+// Human-readable labels for the non-custom (locked) skill-source kinds.
+const SKILL_SOURCE_KIND_LABEL: Record<SkillSourceRow["kind"], string> = {
+  app: "Built-in",
+  user: "User",
+  custom: "Custom",
+  github: "Workspace",
+  workspace: "Workspace",
+}
 
 // Parse a numeric input to an integer clamped to [min, max]. A blank/NaN entry
 // (mid-edit) falls back to `fallback` so we never persist NaN into settings.
@@ -119,6 +139,12 @@ export function SettingsScreen({
     null
   )
   const [indexing, setIndexing] = useState<IndexingSettings | null>(null)
+  // Skill-source rows for the Capabilities tab (built-in + custom folders, each
+  // with a live skill count). Loaded independently of the other settings so a
+  // slow directory scan doesn't gate the whole screen.
+  const [skillSources, setSkillSources] = useState<SkillSourceRow[] | null>(
+    null
+  )
   const [runtimes, setRuntimes] = useState<Record<
     Runtime,
     RuntimeStatus
@@ -151,6 +177,47 @@ export function SettingsScreen({
       cancelled = true
     }
   }, [open])
+
+  // Load skill sources separately (a directory scan per source), so it never
+  // blocks the main settings render. Re-fetched after add/remove via refreshSkillSources.
+  useEffect(() => {
+    if (!open) return
+    let cancelled = false
+    setSkillSources(null)
+    window.cowork.skills.sources().then((rows) => {
+      if (!cancelled) setSkillSources(rows)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [open])
+
+  async function refreshSkillSources() {
+    setSkillSources(await window.cowork.skills.sources())
+  }
+
+  // Add a custom skill-source folder via the native directory picker. Skips a
+  // path that's already registered (built-in or custom), then re-scans for counts.
+  async function addSkillFolder() {
+    const picked = await window.cowork.pickWorkspace()
+    if (!picked.path) return
+    const current = await window.cowork.settings.getSkillSources()
+    if (current.folders.includes(picked.path)) return
+    // Also skip if it duplicates a built-in source already shown in the table.
+    if (skillSources?.some((r) => r.path === picked.path)) return
+    await window.cowork.settings.setSkillSources({
+      folders: [...current.folders, picked.path],
+    })
+    await refreshSkillSources()
+  }
+
+  async function removeSkillFolder(path: string) {
+    const current = await window.cowork.settings.getSkillSources()
+    await window.cowork.settings.setSkillSources({
+      folders: current.folders.filter((f) => f !== path),
+    })
+    await refreshSkillSources()
+  }
 
   // Persist execution + update local state together so the UI stays in sync.
   async function saveExecution(next: ExecutionSettings) {
@@ -329,7 +396,9 @@ export function SettingsScreen({
                         </FieldContent>
                         <Switch
                           id="perm-write"
-                          checked={permissions.file_write === "require_approval"}
+                          checked={
+                            permissions.file_write === "require_approval"
+                          }
                           onCheckedChange={(checked) =>
                             savePermissions({
                               ...permissions,
@@ -430,9 +499,9 @@ export function SettingsScreen({
                             Summarize after N messages
                           </FieldLabel>
                           <FieldDescription>
-                            Regenerate the conversation summary once this many new
-                            messages accumulate. Set to 0 to trigger on tokens
-                            only.
+                            Regenerate the conversation summary once this many
+                            new messages accumulate. Set to 0 to trigger on
+                            tokens only.
                           </FieldDescription>
                         </FieldContent>
                         <Input
@@ -508,6 +577,92 @@ export function SettingsScreen({
                           }
                         />
                       </Field>
+                    </TabsContent>
+
+                    {/* Capabilities — skill-source folders. The built-in sources
+                        are locked; the user can add/remove extra folders, each
+                        scanned as a container of <name>/SKILL.md subfolders. */}
+                    <TabsContent
+                      value="capabilities"
+                      className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto py-6"
+                    >
+                      <div className="flex flex-col gap-1">
+                        <h3 className="text-sm font-medium">Skill folders</h3>
+                        <p className="text-sm text-muted-foreground">
+                          Folders scanned for skills. Each should contain
+                          per-skill subfolders with a <code>SKILL.md</code>{" "}
+                          inside. Built-in sources can't be removed. Workspace
+                          folders (<code>.github/skills</code>,{" "}
+                          <code>.cowork/skills</code>) are picked up
+                          automatically when a workspace is open.
+                        </p>
+                      </div>
+                      {skillSources === null ? (
+                        <p className="text-sm text-muted-foreground">
+                          Scanning…
+                        </p>
+                      ) : (
+                        <div className="overflow-hidden rounded-lg border">
+                          <Table>
+                            <TableHeader>
+                              <TableRow>
+                                <TableHead>Folder</TableHead>
+                                <TableHead className="w-24">Skills</TableHead>
+                                <TableHead className="w-24 text-right">
+                                  Kind
+                                </TableHead>
+                                <TableHead className="w-12" />
+                              </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                              {skillSources.map((row) => (
+                                <TableRow key={row.path}>
+                                  <TableCell className="font-mono text-xs break-all">
+                                    {row.path}
+                                  </TableCell>
+                                  <TableCell className="text-muted-foreground">
+                                    {row.skillCount}
+                                  </TableCell>
+                                  <TableCell className="text-right text-muted-foreground">
+                                    {SKILL_SOURCE_KIND_LABEL[row.kind]}
+                                  </TableCell>
+                                  <TableCell className="text-right">
+                                    {row.kind === "custom" && (
+                                      <Button
+                                        type="button"
+                                        variant="ghost"
+                                        size="icon-sm"
+                                        onClick={() =>
+                                          removeSkillFolder(row.path)
+                                        }
+                                        aria-label={`Remove ${row.path}`}
+                                        title="Remove folder"
+                                      >
+                                        <Trash2 />
+                                      </Button>
+                                    )}
+                                  </TableCell>
+                                </TableRow>
+                              ))}
+                            </TableBody>
+                            <TableFooter>
+                              <TableRow className="hover:bg-transparent">
+                                <TableCell colSpan={4}>
+                                  <Button
+                                    type="button"
+                                    variant="ghost"
+                                    size="sm"
+                                    onClick={addSkillFolder}
+                                  >
+                                    <Plus />
+                                    Add folder
+                                  </Button>
+                                </TableCell>
+                              </TableRow>
+                            </TableFooter>
+                          </Table>
+                        </div>
+                      )}
                     </TabsContent>
 
                     {/* Sandbox auto-approve — master switch + per-category opt-ins.

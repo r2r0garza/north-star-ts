@@ -188,3 +188,32 @@ describe("settings service — indexing (plan 008)", () => {
     expect(service.getIndexing().includeEmbeddings).toBe(false)
   })
 })
+
+describe("settings service — skill sources (capabilities)", () => {
+  it("defaults to no custom folders", () => {
+    expect(service.getSkillSources()).toEqual({ folders: [] })
+  })
+
+  it("round-trips a set of folders", () => {
+    service.setSkillSources({ folders: ["/a/skills", "/b/skills"] })
+    service._resetCacheForTests()
+    expect(service.getSkillSources().folders).toEqual([
+      "/a/skills",
+      "/b/skills",
+    ])
+  })
+
+  it("tolerates a corrupt/partial blob and non-string entries", () => {
+    // folders missing → default empty
+    store.set("skillSources", JSON.stringify({}))
+    expect(service.getSkillSources().folders).toEqual([])
+    // non-string entries filtered out
+    service._resetCacheForTests()
+    store.set("skillSources", JSON.stringify({ folders: ["/ok", 42, null] }))
+    expect(service.getSkillSources().folders).toEqual(["/ok"])
+    // unparseable blob → default empty
+    service._resetCacheForTests()
+    store.set("skillSources", "{not json")
+    expect(service.getSkillSources().folders).toEqual([])
+  })
+})

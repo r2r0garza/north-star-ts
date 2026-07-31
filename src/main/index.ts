@@ -17,6 +17,11 @@ import {
   type ChatRequest,
 } from "./agent"
 import { pickWorkspace, pickFiles } from "./pick-workspace"
+import { skillSources } from "./agent/skills/sources"
+import { loadSkills, listSource } from "./agent/skills/loader"
+import type { SkillSourceRow, SkillSourceKind } from "./agent/skills/types"
+import * as settingsService from "./settings/service"
+import { listWorkspaceFiles } from "./files/list"
 import { registerDbHandlers } from "./ipc/db-handlers"
 import { registerSettingsHandlers } from "./ipc/settings-handlers"
 import { registerProviderHandlers } from "./ipc/provider-handlers"
@@ -148,6 +153,57 @@ ipcMain.handle("chat:stop", (_event, conversationId: string) => {
 })
 ipcMain.handle("pick-workspace", () => pickWorkspace())
 ipcMain.handle("pick-files", () => pickFiles())
+// List available skills (name + description only) for the composer's slash
+// menu. Resolves the same source dirs the agent uses at turn time, so the
+// picker shows exactly what the model can read via read_skill. `body`/`path`
+// are dropped — the renderer only needs to display and match on name/desc.
+ipcMain.handle("skills:list", async (_event, workspace?: string) => {
+  const skills = await loadSkills(skillSources(workspace))
+  return skills.map(({ name, description }) => ({ name, description }))
+})
+// Enumerate the skill sources (built-in + custom) for Settings → Capabilities,
+// each tagged with its kind and its current skill count. Mirrors the ordering
+// in skillSources() so the table matches the load order. The workspace rows are
+// only included when a workspace is passed.
+ipcMain.handle(
+  "skills:sources",
+  async (_event, workspace?: string): Promise<SkillSourceRow[]> => {
+    const custom = settingsService.getSkillSources().folders
+    const entries: Array<{ path: string; kind: SkillSourceKind }> = [
+      { path: join(app.getAppPath(), "skills"), kind: "app" },
+      { path: join(app.getPath("home"), ".cowork", "skills"), kind: "user" },
+      ...custom.map((path) => ({ path, kind: "custom" as const })),
+    ]
+    if (workspace) {
+      entries.push({
+        path: join(workspace, ".github", "skills"),
+        kind: "github",
+      })
+      entries.push({
+        path: join(workspace, ".cowork", "skills"),
+        kind: "workspace",
+      })
+    }
+    return Promise.all(
+      entries.map(async ({ path, kind }) => ({
+        path,
+        kind,
+        skillCount: (await listSource(path)).length,
+      }))
+    )
+  }
+)
+// List workspace files (relative POSIX paths) for the composer's `@`-mention
+// menu, filtered by the typed query server-side. Backed by a cached
+// gitignore-aware walk so large repos stay responsive. Returns [] with no
+// workspace (e.g. Chat mode).
+ipcMain.handle(
+  "files:list",
+  async (_event, workspace: string, query: string) => {
+    if (!workspace?.trim()) return []
+    return listWorkspaceFiles(workspace.trim(), query ?? "", Date.now())
+  }
+)
 // Initial fullscreen state, queried by the renderer on mount.
 ipcMain.handle("is-fullscreen", (event) => {
   const win = BrowserWindow.fromWebContents(event.sender)
