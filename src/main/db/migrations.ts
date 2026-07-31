@@ -9,6 +9,8 @@ import {
   SCHEMA_V7,
   SCHEMA_V8,
   SCHEMA_V9,
+  SCHEMA_V10,
+  SCHEMA_V11,
 } from "./schema"
 
 // Ordered migrations. Index 0 runs to reach user_version 1, index 1 to reach 2,
@@ -24,6 +26,8 @@ const MIGRATIONS: Array<(db: Database.Database) => void> = [
   (db) => db.exec(SCHEMA_V7),
   (db) => db.exec(SCHEMA_V8),
   (db) => db.exec(SCHEMA_V9),
+  (db) => db.exec(SCHEMA_V10),
+  (db) => db.exec(SCHEMA_V11),
 ]
 
 // Apply every migration newer than the database's current user_version, each in

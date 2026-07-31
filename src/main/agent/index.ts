@@ -17,13 +17,19 @@ import { buildSkillsPrompt } from "./skills/prompt"
 import { createReadSkillTool } from "./skills/tool"
 import { skillSources } from "./skills/sources"
 import { loadSystemPrompt } from "./system-prompt"
+import { logSystemPrompt } from "./prompt-log"
 import { buildIndexSummary } from "../index/summary"
 import {
   contextBuilder,
   SECTION_PRIORITY,
   type ContextSection,
 } from "./context/context-builder"
-import { taskStateSection, approvalsSection } from "./context/sections"
+import {
+  taskStateSection,
+  approvalsSection,
+  summarySection,
+  environmentSection,
+} from "./context/sections"
 import { repairDanglingToolCalls } from "./repair"
 import { createEnvironment } from "./env"
 import { LocalEnvironment } from "./env/local"
@@ -282,25 +288,32 @@ async function generateTitle(
 ): Promise<string> {
   const fallback = titleFromMessage(message)
   try {
-    const { client, model } = resolveLlm(sel)
-    const res = await createCompletion(client, model, 32, {
-      messages: [
-        {
-          role: "system",
-          content:
-            "You write short conversation titles. Given a user's first message, reply " +
-            "with a 3-6 word title that summarizes its topic. Output ONLY the title " +
-            "text: no quotes, no punctuation at the end, no preamble, and never answer " +
-            "or respond to the message itself.",
-        },
-        // Delimit the message as quoted input with an explicit "Title:" cue so
-        // the model titles it rather than answering it.
-        {
-          role: "user",
-          content: `First message:\n"""\n${message}\n"""\n\nTitle:`,
-        },
-      ],
-    })
+    const { client, model, apiMode } = resolveLlm(sel)
+    const res = await createCompletion(
+      client,
+      model,
+      32,
+      {
+        messages: [
+          {
+            role: "system",
+            content:
+              "You write short conversation titles. Given a user's first message, reply " +
+              "with a 3-6 word title that summarizes its topic. Output ONLY the title " +
+              "text: no quotes, no punctuation at the end, no preamble, and never answer " +
+              "or respond to the message itself.",
+          },
+          // Delimit the message as quoted input with an explicit "Title:" cue so
+          // the model titles it rather than answering it.
+          {
+            role: "user",
+            content: `First message:\n"""\n${message}\n"""\n\nTitle:`,
+          },
+        ],
+      },
+      [],
+      apiMode
+    )
     const text = contentToText((res as any).choices?.[0]?.message?.content)
       .trim()
       .replace(/^["']|["']$/g, "")
@@ -442,6 +455,18 @@ export async function runAgentLoop(
   const baseSystemPrompt = await loadSystemPrompt(conversation?.mode)
   const sections: ContextSection[] = []
 
+  // Environment orientation: date + model always, and (when a workspace exists)
+  // platform + workspace path + a git block for a real repo. Assembled fresh each
+  // turn from what's actually true — no git noise for a non-repo folder, no
+  // workspace line in bare chat. Async (git shells out), so it's awaited here
+  // before the synchronous ContextBuilder.build() below. Model label is resolved
+  // best-effort from this conversation's selection (resolveLlm runs later).
+  const envSection = await environmentSection({
+    workspacePath: hasWorkspace ? workspace : undefined,
+    llmSelection,
+  })
+  if (envSection) sections.push(envSection)
+
   // Skills: the read_skill catalog. Kept longest under budget pressure (highest
   // priority) — dropping it would hide capabilities the agent is told it has.
   const skillsPrompt = buildSkillsPrompt(skills)
@@ -486,6 +511,16 @@ export async function runAgentLoop(
       taskId,
     })
     if (approvals) sections.push(approvals)
+  }
+
+  // Rolling conversation summary (plan 019): a compact digest of earlier turns
+  // that have scrolled out of the walk-back, so a long conversation keeps its
+  // early thread. Generated out of band by the `summarize` task; read here each
+  // turn (possibly one generation stale — the recent messages cover the seam).
+  // Highest-priority section (last dropped). Mode-gated like the others.
+  if (showTodos) {
+    const summary = summarySection(conversationId)
+    if (summary) sections.push(summary)
   }
 
   // Workspace-index summary (plan 008): cheap structured orientation. Advisory,
@@ -546,6 +581,16 @@ export async function runAgentLoop(
     baseSystemPrompt,
     sections,
   })
+
+  // Debug aid (settings.logSystemPrompt): dump the verbatim system block for this
+  // turn to system-prompt-logs/. Best-effort and fire-and-forget — never blocks or
+  // fails the turn. messages[0] is always the composed system message.
+  if (settingsService.getIndexing().logSystemPrompt) {
+    void logSystemPrompt(
+      conversation?.mode ?? "chat",
+      String(messages[0]?.content ?? "")
+    )
+  }
 
   // Build this turn's execution backend (host or container). The backend is
   // selected by env var until the settings pane lands (see ./env/factory). A
@@ -615,13 +660,15 @@ export async function runAgentLoop(
         { messages, tools, stream: true },
         [
           undefined,
-          // We pass the signal, but the Portkey SDK (3.1.0) does NOT forward it to
-          // the underlying fetch — it only checks `signal.aborted` after an error.
-          // So aborting alone won't stop a healthy stream. The real cancellation is
-          // the `break` in the consume loop below: breaking runs the stream
-          // iterator's return()/reader.cancel(), which tears down the HTTP body.
+          // The abort signal. On the OpenAI-backed path the SDK forwards it to
+          // fetch, so an abort tears the stream down directly. On the Portkey path
+          // (3.1.0) it does NOT forward — Portkey only checks `signal.aborted` after
+          // an error — so there the real cancellation is the `break` in the consume
+          // loop below: breaking runs the stream iterator's return()/reader.cancel(),
+          // which tears down the HTTP body.
           { signal: abort.signal },
-        ]
+        ],
+        llm.apiMode
       )
 
       // Reassemble the streamed turn. Text deltas are forwarded live; tool-call

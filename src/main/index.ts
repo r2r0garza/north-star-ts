@@ -24,6 +24,7 @@ import { registerTaskHandlers } from "./ipc/task-handlers"
 import { registerIndexHandlers } from "./ipc/index-handlers"
 import { TaskRunner } from "./tasks/runner"
 import { IndexService } from "./index/service"
+import { SummaryService, SUMMARIZE_KIND } from "./summaries/service"
 import { seedProviderFromEnvIfEmpty } from "./settings/bootstrap"
 import { closeDb } from "./db/connection"
 
@@ -33,6 +34,9 @@ const taskRunner = new TaskRunner()
 // The workspace indexer (plan 008), driven as a deterministic task kind on the
 // runner above. Holds the runner reference so ensureRunning can enqueue.
 const indexService = new IndexService(taskRunner)
+// The rolling conversation summarizer (plan 019), driven as a task kind on the
+// runner. Holds the runner reference so the post-turn trigger can enqueue.
+const summaryService = new SummaryService(taskRunner)
 
 function createWindow(): void {
   const mainWindow = new BrowserWindow({
@@ -81,19 +85,32 @@ function createWindow(): void {
 // IPC handlers — the renderer reaches these through the preload bridge.
 // `chat` runs the agentic loop and streams events back to the calling renderer
 // over the "chat:event" channel; the invoke resolves with the final result.
-ipcMain.handle("chat", (event, req: ChatRequest) =>
-  runChat(
+ipcMain.handle("chat", async (event, req: ChatRequest) => {
+  const result = await runChat(
     req,
     (chatEvent) => {
       if (!event.sender.isDestroyed()) {
-        event.sender.send("chat:event", chatEvent)
+        // Tag every event with its conversation so the renderer's per-turn
+        // listener can ignore events from other in-flight turns. Without this,
+        // a second turn's listener also receives the first turn's tokens
+        // (single broadcast channel) and streams them into the wrong bubble.
+        event.sender.send("chat:event", {
+          conversationId: req.conversationId,
+          event: chatEvent,
+        })
       }
     },
     // Let a live turn hand work to the background (run_todos_in_background). The
     // runner singleton lives here; runChat can't import it (cycle).
     (input) => taskRunner.enqueue(input)
   )
-)
+  // After the turn's transcript is persisted, consider refreshing the rolling
+  // conversation summary (plan 019). Threshold + debounce + dedupe live inside
+  // maybeSummarize; the LLM call itself runs out of band in the task runner, so
+  // this adds no latency to the turn just completed.
+  summaryService.maybeSummarize(req.conversationId)
+  return result
+})
 // Resolve an approval the agent loop is paused on. Fire-and-forget from the
 // renderer's perspective: it just unblocks the gate in runChat.
 ipcMain.handle(
@@ -160,6 +177,17 @@ app.whenReady().then(() => {
     // design — exempt from the plan 022 orphan reaper.
     hasIndependentSurface: true,
     run: indexService.execute,
+  })
+  // summarize: deterministic (one bounded LLM call, no agentic loop) executor for
+  // the rolling conversation summary (plan 019). autoResume:false — a stale
+  // summary is harmless and the next turn re-triggers, so there's no need to
+  // resume across a restart. Deliberately NOT hasIndependentSurface: a summarize
+  // task is born source-less and, unlike a runaway, is safe to reap — so the plan
+  // 022 orphan reaper cleans any leftover summarize task (and its empty forked
+  // worker conversation) at the next boot rather than letting them accumulate.
+  taskRunner.registerKind(SUMMARIZE_KIND, {
+    autoResume: false,
+    run: summaryService.execute,
   })
   taskRunner.start()
   registerTaskHandlers(taskRunner)

@@ -347,3 +347,42 @@ DELETE FROM tasks    WHERE conversation_id IN (SELECT conv FROM _reap_convs);
 DELETE FROM conversations WHERE id IN (SELECT conv FROM _reap_convs);
 DROP TABLE _reap_convs;
 `
+
+// v10: the rolling conversation summary (plan 019). One row per conversation — a
+// compact, periodically-regenerated digest of the turns that have (or will soon)
+// scroll out of the ContextBuilder's recent-message walk-back, so a long
+// conversation keeps its early thread (decisions, constraints, open threads).
+// A dedicated table (not a column on conversations) keeps the digest + its
+// bookkeeping off the hot conversation row and carries the covered range.
+//
+//   covers_through — the highest messages.seq folded into `summary`. The
+//     summarizer regenerates INCREMENTALLY (prior summary + only the turns with
+//     seq > covers_through), and the trigger debounces off how far the tail has
+//     grown past it. The walk-back is additive and independent: it may re-include
+//     recent turns already in the summary (safe overlap, never a gap).
+//   message_count — turns folded so far (surfaced for observability/thresholds).
+//   token_estimate — the digest's cost via the shared TokenCounter, so the
+//     builder budgets the section without re-counting.
+//
+// ON DELETE CASCADE reaps the row with its conversation (like messages/todos).
+export const SCHEMA_V10 = `
+CREATE TABLE conversation_summaries (
+  conversation_id  TEXT PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE,
+  summary          TEXT NOT NULL,
+  covers_through   INTEGER NOT NULL,
+  message_count    INTEGER NOT NULL,
+  token_estimate   INTEGER,
+  updated_at       INTEGER NOT NULL
+);
+`
+
+// v11: which OpenAI wire API a provider account speaks. 'completions' is the
+// universal /chat/completions path (all current providers); 'responses' is
+// reserved for a future OpenAI Responses (/responses) adapter. Nullable with a
+// default so existing rows read as 'completions' and the app never has to
+// backfill. openai/openai_compatible now route through the OpenAI SDK (Bearer
+// auth on every request); portkey keeps the Portkey SDK.
+export const SCHEMA_V11 = `
+ALTER TABLE provider_accounts ADD COLUMN api_mode TEXT NOT NULL DEFAULT 'completions'
+  CHECK (api_mode IN ('completions','responses'));
+`

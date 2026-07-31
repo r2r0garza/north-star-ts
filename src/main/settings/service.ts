@@ -74,6 +74,15 @@ export interface IndexingSettings {
   // Stage 4 semantic embeddings — deferred; shown disabled in the UI to signal
   // the roadmap. Persisted so the toggle round-trips, but unused in slice 1.
   includeEmbeddings: boolean
+  // Conversation-summary triggers (plan 019). A summary regenerates when the
+  // un-summarized tail past coversThrough reaches EITHER threshold (whichever
+  // comes first). `0` disables that trigger independently: message=0 ⇒ summarize
+  // on tokens only; both 0 ⇒ summarization off. See summaries/service.ts.
+  summarizeMessageThreshold: number
+  summarizeTokenThreshold: number
+  // Debug aid: when on, each turn's assembled system prompt is written verbatim
+  // to system-prompt-logs/<mode> - <MM-DD-YYYY HH-MM-SS>.md. Off by default.
+  logSystemPrompt: boolean
 }
 
 // Default container image when a runtime is chosen but no image is set.
@@ -93,6 +102,11 @@ const DEFAULT_INDEXING: IndexingSettings = {
   autoIndexNewWorkspaces: true,
   useIndexForContext: true,
   includeEmbeddings: false,
+  // Token-only triggering by default: message count off (0), summarize once the
+  // fresh tail reaches ~80k tokens. Both are user-adjustable in Settings.
+  summarizeMessageThreshold: 0,
+  summarizeTokenThreshold: 80000,
+  logSystemPrompt: false,
 }
 
 function defaultExecution(): ExecutionSettings {
@@ -202,6 +216,14 @@ function loadIndexing(): IndexingSettings {
           parsed.useIndexForContext ?? DEFAULT_INDEXING.useIndexForContext,
         includeEmbeddings:
           parsed.includeEmbeddings ?? DEFAULT_INDEXING.includeEmbeddings,
+        summarizeMessageThreshold:
+          parsed.summarizeMessageThreshold ??
+          DEFAULT_INDEXING.summarizeMessageThreshold,
+        summarizeTokenThreshold:
+          parsed.summarizeTokenThreshold ??
+          DEFAULT_INDEXING.summarizeTokenThreshold,
+        logSystemPrompt:
+          parsed.logSystemPrompt ?? DEFAULT_INDEXING.logSystemPrompt,
       }
       return indexingCache
     } catch {

@@ -1,6 +1,11 @@
 import { listTasks } from "../../db/repositories/tasks"
 import { listRules } from "../../db/repositories/action-allowlist"
 import { listApprovals } from "../../db/repositories/approvals"
+import { getConversationSummary } from "../../db/repositories/conversation-summaries"
+import { readGitBranch } from "../../index/metadata"
+import { LocalEnvironment } from "../env/local"
+import { resolveModelLabel } from "../providers"
+import type { LlmSelection } from "../providers"
 import type { ContextSection } from "./context-builder"
 import { SECTION_PRIORITY } from "./context-builder"
 
@@ -102,4 +107,117 @@ export function approvalsSection(opts: {
   if (blocks.length === 0) return null
   const content = "## Prior approvals\n" + blocks.join("\n\n")
   return { name: "approvals", priority: SECTION_PRIORITY.approvals, content }
+}
+
+// The rolling conversation summary (plan 019): a compact digest of the turns that
+// have scrolled (or are scrolling) out of the ContextBuilder's recent-message
+// walk-back, so a long conversation keeps its early thread (decisions,
+// constraints, open threads). Generated out of band by the `summarize` task and
+// read here each turn. Highest priority of the built-in sections — dropping it
+// under budget pressure loses context the conversation can't otherwise recover.
+// Additive to the walk-back (not a replacement): a slight overlap with the most
+// recent turns is harmless; there's never a gap. Returns null when no summary
+// exists yet (short conversation, or the first summarize task hasn't run).
+export function summarySection(conversationId: string): ContextSection | null {
+  const record = getConversationSummary(conversationId)
+  if (!record || record.summary.trim().length === 0) return null
+  const content =
+    "## Conversation summary so far\n" +
+    "A rolling digest of earlier turns in this conversation (older messages may " +
+    "have scrolled out of the window below). Treat it as background context, not " +
+    "the latest word — the recent messages are authoritative where they differ.\n\n" +
+    record.summary
+  return { name: "summary", priority: SECTION_PRIORITY.summary, content }
+}
+
+// Run a short git command in `cwd` and return its trimmed stdout, or null if it
+// fails (non-zero exit, timeout, git missing). Uses the host environment's exec —
+// the same spawn/capture path the shell tool uses — with a tight timeout and byte
+// cap so gathering context can never hang or flood the prompt. Read-only git
+// plumbing, so it runs directly here (not through the approval gate, which is for
+// the agent's own tool calls).
+async function runGit(cwd: string, args: string): Promise<string | null> {
+  try {
+    const env = new LocalEnvironment(cwd)
+    const res = await env.exec(`git ${args}`, {
+      cwd,
+      timeoutMs: 3000,
+      maxOutputBytes: 4096,
+    })
+    if (res.exitCode !== 0 || res.timedOut) return null
+    return res.stdout.toString("utf8").trim()
+  } catch {
+    return null
+  }
+}
+
+// Dynamic per-turn environment orientation (mirrors the "# Environment" / git
+// blocks a coding harness bakes in, but assembled fresh each turn from what's
+// actually true). Composes only the parts that apply, so nothing here is a
+// stale snapshot or a claim about a capability the session lacks:
+//   - date + time + model: always (model omitted if it can't be resolved).
+//   - platform + workspace line: only when a workspace path is present — platform
+//     matters only when the agent can run commands, which chat can't.
+//   - git block (branch + short status + recent commits): only when the workspace
+//     is a git repo (readGitBranch reads .git/HEAD and returns null otherwise),
+//     and only the sub-lines whose git command succeeded.
+// Date is always present so this never returns null in practice; the `| null`
+// return keeps it uniform with the other section renderers. Async because git
+// needs a shell — render it before ContextBuilder.build(), which takes
+// pre-rendered sections.
+export async function environmentSection(opts: {
+  workspacePath?: string
+  llmSelection?: LlmSelection
+  now?: Date
+}): Promise<ContextSection | null> {
+  const lines: string[] = []
+
+  const now = opts.now ?? new Date()
+  lines.push(`- Date: ${now.toLocaleDateString()}`)
+  lines.push(`- Time: ${now.toLocaleTimeString()}`)
+
+  const model = resolveModelLabel(opts.llmSelection)
+  if (model) lines.push(`- Model: ${model}`)
+
+  if (opts.workspacePath) {
+    lines.push(`- Platform: ${process.platform}`)
+    lines.push(`- Workspace: ${opts.workspacePath}`)
+
+    // Git block — only for a real repo. readGitBranch is the zero-dependency
+    // repo check; when it resolves, layer on status + recent commits best-effort.
+    const branch = await readGitBranch(opts.workspacePath)
+    if (branch) {
+      const v = branch.value as
+        | { branch?: string; detached?: boolean; sha?: string }
+        | undefined
+      const branchLabel = v?.branch
+        ? v.branch
+        : v?.sha
+          ? `detached at ${v.sha}`
+          : "unknown"
+      lines.push(`- Git branch: ${branchLabel}`)
+
+      // Distinguish empty output (clean tree) from a failed command (null): only
+      // claim "clean" when git actually succeeded and returned nothing.
+      const status = await runGit(opts.workspacePath, "status --short")
+      if (status !== null) {
+        lines.push(
+          status.length > 0 ? `- Git status:\n${status}` : "- Git status: clean"
+        )
+      }
+
+      const log = await runGit(opts.workspacePath, "log -5 --oneline")
+      if (log) lines.push(`- Recent commits:\n${log}`)
+    }
+  }
+
+  const content =
+    "## Environment\n" +
+    "Live context for this turn (assembled fresh; not a fixed snapshot):\n" +
+    lines.join("\n")
+  return {
+    name: "environment",
+    priority: SECTION_PRIORITY.environment,
+    content,
+  }
 }

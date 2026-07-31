@@ -1,9 +1,25 @@
 # PR19: Conversation summaries — a rolling summary so long chats stay coherent
 
-> Status: **NOT STARTED**. A prerequisite sub-feature split out of `014` (context builder, Q1).
-> `014` shipped the section framework; this fills the **conversation-summary section** it reserved.
-> Builds on `runAgentLoop` (the shared agent core), the `messages` repo + `TokenCounter`, and the
-> `009` task runner (the summarizer runs as a durable task so the LLM call never blocks a turn).
+> Status: **SHIPPED** (commit `68066c4` on `feat/conversation-summaries`; not yet merged to `main`).
+> Filled the **conversation-summary section** `014` reserved. Built on `runAgentLoop`, the `messages`
+> repo + `TokenCounter`, and the `009` task runner (the summarizer runs as a durable task kind so its
+> single LLM call never blocks a turn). A prerequisite sub-feature split out of `014` (Q1).
+>
+> **What shipped** — resolving the open questions: (1) trigger = **post-turn, threshold + debounce**
+> (≥10 msgs, and ≥20 fresh turns *or* ≥6k fresh tokens past `covers_through`), deduped against an
+> in-flight run; (2) a `009` durable **task** kind (`summarize`, `autoResume:false` — a stale summary
+> is harmless), NOT an inline hook; (3) **structured** shape — four sections (Decisions / Constraints
+> / Open threads / Key facts); (4) the **conversation's own model** (falls back to the default);
+> (5) **additive** to the walk-back (safe overlap, never a gap — no double-count guard needed);
+> (6) staleness accepted (a turn may build from a one-generation-old summary; recent messages cover
+> the seam).
+>
+> **Prompt hardening found in live testing** (the interesting part — see "What we learned"): the
+> first working summaries were *echoing the transcript* and *truncating*, and *memorizing volatile
+> repo facts*. Three fixes landed: fence inputs as data + drop the completion cue; guard on
+> `finish_reason==="length"` (retry, never store a truncated digest); strip any preamble before the
+> first `##`; and instruct the model to omit — and actively drop from a prior summary — volatile
+> repo-state facts the live index section already supplies fresh.
 
 ## Context
 
@@ -71,33 +87,66 @@ turns since `covers_through`, not the whole transcript).
   than the skills catalog under pressure) — decide the exact rank in build.
 - `runAgentLoop` pushes the section (mode-gated like the others).
 
-## Open questions to resolve BEFORE building
-1. **Trigger cadence & threshold.** Turn-count vs token-estimate threshold; debounce interval. What's
-   the smallest transcript worth summarizing (don't summarize a 3-message chat)?
-2. **Task vs inline post-turn hook.** A `009` task (durable, observable, cancellable, reuses the
-   producer contract) vs a lighter fire-and-forget post-turn call. Lean task for consistency with the
-   producer contract (`015`), but confirm the overhead is acceptable for something this frequent.
-3. **Summary prompt & shape.** Prose vs structured (decisions / open threads / constraints)?
-   Structured is more useful to the model and cheaper to keep stable across regenerations.
-4. **Model selection.** Use the conversation's own model, or a cheaper/faster one for summaries?
-   (Reuses the `agent/providers` routing either way.)
-5. **Interaction with the walk-back.** Does the summary *replace* the dropped turns (builder trims
-   the walk-back to `covers_through`), or is it purely additive (summary + whatever recent messages
-   fit)? Additive is simpler and safe; replacing reclaims budget but risks double-counting. Lean
-   additive for v1.
-6. **Staleness.** A turn may build from a summary one generation behind (the summarize task hasn't
-   finished). Acceptable? (Yes — recent messages cover the gap — but state it.)
+## Open questions — RESOLVED
+1. **Trigger cadence & threshold.** → Post-turn, in the `chat` IPC handler. Fires only when
+   `messages` ≥ **10** (`MIN_MESSAGES` — skip short chats) AND the fresh tail past `covers_through`
+   is ≥ **20 turns** (`TRIGGER_TURNS`) *or* ≥ **6000 tokens** (`TRIGGER_TOKENS`) — whichever trips
+   first. Deduped against an in-flight `summarize` run for the same conversation.
+2. **Task vs inline post-turn hook.** → A `009` **task** kind (`summarize`). The overhead is fine
+   because the threshold+debounce means it runs rarely, and the durable/observable/cancellable
+   machinery + producer contract (`015`) come for free. The executor is deterministic-`run` (like
+   `workspace_index`) but makes **one** bounded, non-streaming LLM call — no agentic loop.
+   `autoResume:false`, and deliberately **not** `hasIndependentSurface` (so a leftover run is reaped
+   by the `022` orphan sweep — a stale summary is harmless).
+3. **Summary prompt & shape.** → **Structured**: four fixed `##` sections (Decisions / Constraints /
+   Open threads / Key facts).
+4. **Model selection.** → The **conversation's own model** (`resolveLlm` with the conversation's
+   account/model; null → default).
+5. **Interaction with the walk-back.** → **Additive.** The summary is injected as a section; the
+   walk-back is unchanged and may re-include recent turns already folded in — a harmless overlap,
+   never a gap. No builder trim, no double-count guard.
+6. **Staleness.** → Accepted. A turn builds from whatever summary exists (possibly one generation
+   behind); the recent-message walk-back covers the seam.
 
-## Verification (when built)
+## What we learned (live testing surfaced 3 prompt/output bugs)
+The schema/wiring worked first try, but the *first real summaries were bad* — and debugging them
+against the live DB (a real conversation's `conversation_summaries` row) drove three fixes, all in
+`summaries/service.ts`:
+
+1. **Transcript echo → budget burn → truncation.** The user prompt rendered the turns as a bare
+   `user:/assistant:` log ending in an `UPDATED SUMMARY:` cue — i.e. a *completion to continue*. The
+   model dutifully continued the transcript (re-typing turns, even inventing new ones) before
+   summarizing, exhausting the output cap and cutting the real digest off mid-section. Fix: fence the
+   inputs as data (`<prior_summary>` / `<new_turns>`), drop the completion cue, and end with an
+   imperative ("Output ONLY the four `##` sections. Do NOT repeat or continue the transcript").
+2. **No truncation guard.** A cut-off digest was being stored verbatim. Fix: check
+   `finish_reason === "length"` and return a **retryable** error instead of persisting a partial
+   summary (mirrors the main agent loop). Backstop for a legitimately long summary.
+3. **Memorizing volatile repo facts.** The digest kept baking in the git branch, file/symbol counts,
+   directory listings, importer lists — facts the always-fresh `## Workspace index` section (built
+   at call time, plan `008`/`014`) already supplies. It then went **stale** and contradicted the
+   live index (a summary asserting `feat/workspace-indexing` while the index showed
+   `pr21-approvals-context-section`). Fix: instruct the summarizer to omit those and, overriding
+   "carry forward", to **actively delete** them from a prior summary. (The deeper index-summary
+   staleness — the branch not refreshing on `git checkout` — is `024`'s scope, untouched here.)
+   Plus a `stripPreamble` (drop anything before the first `##`) as belt-and-suspenders for chatty
+   lead-ins.
+
+Verified on a clean, non-meta seeded conversation (a Tailwind dark-mode chat): the resulting digest
+was complete, non-echoed, faithful (captured a mid-conversation reversal correctly), and carried
+conversational conclusions rather than raw repo state.
+
+## Verification
 - A conversation long past the recent-message window still answers questions about early decisions,
-  sourced from the summary section (visible in the builder's include/drop log).
-- The summarize task runs out of band (the user's turn latency is unchanged) and regenerates only
-  past the threshold, incrementally (not re-reading the whole transcript each time).
-- `covers_through` advances as the conversation grows; the summary + walk-back cover the transcript
-  with no gap and no unbounded growth.
-- Cascade: deleting a conversation drops its summary row.
-- `pnpm typecheck` + `pnpm build` clean; new repo + section tests; migration applies over the
-  current version.
+  sourced from the summary section (visible in the builder's include/drop log). ✓ (live)
+- The summarize task runs out of band (turn latency unchanged) and regenerates only past the
+  threshold, incrementally (folds prior summary + only-new turns). ✓
+- `covers_through` advances as the conversation grows; summary + walk-back cover the transcript with
+  no gap and no unbounded growth. ✓
+- Cascade: deleting a conversation drops its summary row. ✓ (FK `ON DELETE CASCADE`, repo test)
+- `pnpm typecheck` + `pnpm build` clean; new repo + section + service tests (16 service cases incl.
+  truncation/preamble/prompt-shape); migration applies over v9 (three "latest `user_version`"
+  assertions bumped 9 → 10). ✓
 
 ## Out of scope
 - **Cross-conversation memory** — that's durable memories (`020`), a different scope.

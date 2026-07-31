@@ -34,6 +34,9 @@ function Shell() {
   // Bumped whenever conversations change so the sidebar list refetches.
   const [refreshKey, setRefreshKey] = useState(0)
   const refreshConversations = () => setRefreshKey((k) => k + 1)
+  // Conversations with a turn currently streaming, reported up from App (which
+  // owns the state). Drives the per-row spinner in the sidebar.
+  const [runningConvos, setRunningConvos] = useState<Set<string>>(new Set())
   // Whether the Settings sheet is open (opened from the sidebar gear).
   const [settingsOpen, setSettingsOpen] = useState(false)
   // Which tab Settings opens on. First launch (no provider configured) opens
@@ -81,6 +84,19 @@ function Shell() {
     setSettingsOpen(true)
   }
 
+  // Cmd+, (macOS) / Ctrl+, (Windows/Linux) opens Settings — the platform's
+  // conventional shortcut. metaKey||ctrlKey covers both without a platform check.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "," && (event.metaKey || event.ctrlKey)) {
+        event.preventDefault()
+        setSettingsOpen(true)
+      }
+    }
+    window.addEventListener("keydown", onKeyDown)
+    return () => window.removeEventListener("keydown", onKeyDown)
+  }, [])
+
   // Switching views starts a fresh conversation for that view (the sidebar
   // shows prior ones to reopen).
   function handleViewChange(next: View) {
@@ -121,6 +137,7 @@ function Shell() {
         onConversationDeleted={handleConversationDeleted}
         onSettingsClick={() => openSettings()}
         refreshKey={refreshKey}
+        runningConvos={runningConvos}
       />
       <App
         view={view}
@@ -133,6 +150,7 @@ function Shell() {
         onOpenSettings={openSettings}
         settingsOpen={settingsOpen}
         onRanInBackground={() => setActivity(true)}
+        onRunningConvosChange={setRunningConvos}
       />
       <ActivityPanel
         conversationId={activeConversationId}

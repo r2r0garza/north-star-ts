@@ -72,6 +72,21 @@ export interface Message {
   createdAt: number
 }
 
+// The rolling conversation summary (SCHEMA_V10, plan 019). One row per
+// conversation — a compact digest of the turns scrolling out of the
+// ContextBuilder's recent-message window. `coversThrough` is the highest
+// messages.seq folded in (the incremental-regeneration cursor and the
+// debounce baseline); `messageCount` is how many turns are folded so far;
+// `tokenEstimate` is the digest's cost via the shared TokenCounter.
+export interface ConversationSummary {
+  conversationId: string
+  summary: string
+  coversThrough: number
+  messageCount: number
+  tokenEstimate: number | null
+  updatedAt: number
+}
+
 export interface Task {
   id: string
   // The task's PRIVATE worker transcript — a forked conversation the runner
@@ -231,6 +246,12 @@ export type Provider =
   | "google"
   | "azure_openai"
 
+// Which OpenAI wire API an account speaks. `completions` is /chat/completions
+// (the universal path used by every provider today); `responses` is reserved for
+// a future OpenAI Responses (/responses) adapter. Persisted on the account so the
+// provider layer can branch without a per-request probe.
+export type ApiMode = "completions" | "responses"
+
 // Where a model row came from: hand-typed by the user, imported from the
 // gateway's /models catalog, or auto-seeded on account creation. Drives the UI
 // badge and the gateway-import merge (re-import refreshes `gateway` rows; it
@@ -246,6 +267,9 @@ export interface ProviderAccount {
   displayName: string
   baseUrl: string | null
   hasKey: boolean
+  // The OpenAI wire API this account speaks. Defaults to "completions"; only
+  // consulted for openai/openai_compatible accounts (portkey ignores it).
+  apiMode: ApiMode
   createdAt: number
   lastUsedAt: number | null
 }

@@ -34,16 +34,24 @@ import type {
 } from "@/types"
 
 // Provider catalog for the picker. `enabled` ones are wired; the rest show as
-// "coming soon" and are disabled. Portkey + OpenAI-compatible both route through
-// the Portkey SDK in the main process.
+// "coming soon" and are disabled. In the main process, Portkey routes through the
+// Portkey SDK; OpenAI + OpenAI-compatible route through the OpenAI SDK (which sends
+// Authorization: Bearer on every request). Native OpenAI needs no base URL; the
+// others do — see `requiresBaseUrl`.
 const PROVIDERS: Array<{ value: Provider; label: string; enabled: boolean }> = [
   { value: "portkey", label: "Portkey", enabled: true },
   { value: "openai_compatible", label: "OpenAI-compatible", enabled: true },
-  { value: "openai", label: "OpenAI", enabled: false },
+  { value: "openai", label: "OpenAI", enabled: true },
   { value: "anthropic", label: "Anthropic", enabled: false },
   { value: "google", label: "Google", enabled: false },
   { value: "azure_openai", label: "Azure OpenAI", enabled: false },
 ]
+
+// Native OpenAI can omit a base URL (the SDK defaults to api.openai.com); every
+// other wired provider is a gateway that requires one.
+function requiresBaseUrl(provider: Provider): boolean {
+  return provider !== "openai"
+}
 
 function providerLabel(provider: Provider): string {
   return PROVIDERS.find((p) => p.value === provider)?.label ?? provider
@@ -388,12 +396,16 @@ function NewAccountForm({
   const [displayName, setDisplayName] = useState("")
   const [baseUrl, setBaseUrl] = useState("")
 
+  const needsBaseUrl = requiresBaseUrl(provider)
+  const canSave = !needsBaseUrl || baseUrl.trim().length > 0
+
   async function save() {
+    if (!canSave) return
     const name = displayName.trim() || providerLabel(provider)
     const account = await window.cowork.providers.create({
       provider,
       displayName: name,
-      baseUrl: baseUrl || null,
+      baseUrl: baseUrl.trim() || null,
     })
     await onSaved(account.id)
     onDone()
@@ -430,19 +442,25 @@ function NewAccountForm({
         />
       </Field>
       <Field>
-        <FieldLabel htmlFor="new-base">Base URL</FieldLabel>
+        <FieldLabel htmlFor="new-base">
+          Base URL{needsBaseUrl ? "" : " (optional)"}
+        </FieldLabel>
         <Input
           id="new-base"
           value={baseUrl}
           onChange={(e) => setBaseUrl(e.target.value)}
-          placeholder="https://gateway.example.com/v1"
+          placeholder={
+            needsBaseUrl
+              ? "https://gateway.example.com/v1"
+              : "Leave blank for api.openai.com"
+          }
         />
       </Field>
       <div className="flex justify-end gap-2">
         <Button variant="outline" size="sm" onClick={onDone}>
           Cancel
         </Button>
-        <Button size="sm" onClick={save}>
+        <Button size="sm" onClick={save} disabled={!canSave}>
           Add
         </Button>
       </div>
