@@ -164,24 +164,33 @@ describe("PolicyEngine — precedence", () => {
   const allowAll: AllowlistLookup = { isAllowed: () => true }
   const allowNone: AllowlistLookup = { isAllowed: () => false }
 
-  it("auto-allows a benign command (classifier allow, no prompt)", () => {
+  it("auto-allows a benign command in a sandbox (classifier allow, no prompt)", () => {
     const engine = new PolicyEngine([classifier], allowNone)
-    expect(engine.decide(shell("git status")).level).toBe("allow")
+    // sandboxed: the container's isolation is the guard, so benign passes through.
+    expect(engine.decide(shell("git status"), { sandboxed: true }).level).toBe(
+      "allow"
+    )
   })
 
   it("requires approval for a dangerous command with no allowlist match", () => {
     const engine = new PolicyEngine([classifier], allowNone)
-    expect(engine.decide(shell("rm -rf build")).level).toBe("require_approval")
+    expect(
+      engine.decide(shell("rm -rf build"), { sandboxed: true }).level
+    ).toBe("require_approval")
   })
 
   it("allowlist downgrades require_approval to allow", () => {
     const engine = new PolicyEngine([classifier], allowAll)
-    expect(engine.decide(shell("rm -rf build")).level).toBe("allow")
+    expect(
+      engine.decide(shell("rm -rf build"), { sandboxed: true }).level
+    ).toBe("allow")
   })
 
   it("hard_block is never overridable by the allowlist", () => {
     const engine = new PolicyEngine([classifier], allowAll)
-    expect(engine.decide(shell("rm -rf /")).level).toBe("hard_block")
+    expect(engine.decide(shell("rm -rf /"), { sandboxed: true }).level).toBe(
+      "hard_block"
+    )
   })
 
   it("first classifier returning non-null wins (ordering)", () => {
@@ -189,15 +198,71 @@ describe("PolicyEngine — precedence", () => {
       [new FileActionClassifier(), classifier],
       allowNone
     )
-    // file classifier handles file_write and returns allow.
-    expect(engine.decide(fileWrite("src/index.ts")).level).toBe("allow")
+    // file classifier handles file_write and returns allow (sandboxed → no local tighten).
+    expect(
+      engine.decide(fileWrite("src/index.ts"), { sandboxed: true }).level
+    ).toBe("allow")
     // shell falls through the file classifier (null) to the regex classifier.
-    expect(engine.decide(shell("rm -rf build")).level).toBe("require_approval")
+    expect(
+      engine.decide(shell("rm -rf build"), { sandboxed: true }).level
+    ).toBe("require_approval")
   })
 
-  it("defaults to allow when no classifier handles the action", () => {
+  it("defaults to allow when no classifier handles the action (sandboxed)", () => {
     const engine = new PolicyEngine([new FileActionClassifier()], allowNone)
-    expect(engine.decide(shell("rm -rf build")).level).toBe("allow")
+    expect(
+      engine.decide(shell("rm -rf build"), { sandboxed: true }).level
+    ).toBe("allow")
+  })
+})
+
+describe("PolicyEngine — local backend tightening", () => {
+  const allowNone: AllowlistLookup = { isAllowed: () => false }
+  const allowAll: AllowlistLookup = { isAllowed: () => true }
+
+  it("upgrades a benign shell command to require_approval on local backend", () => {
+    const engine = new PolicyEngine([classifier], allowNone)
+    // Not sandboxed → the approval gate is the only guard, so even "git status" asks.
+    expect(engine.decide(shell("git status"), { sandboxed: false }).level).toBe(
+      "require_approval"
+    )
+  })
+
+  it("upgrades an auto-allowed file write to require_approval on local backend", () => {
+    const engine = new PolicyEngine(
+      [new FileActionClassifier(() => ({ file_write: "auto", file_edit: "auto" }))],
+      allowNone
+    )
+    expect(engine.decide(fileWrite("a.ts"), { sandboxed: false }).level).toBe(
+      "require_approval"
+    )
+  })
+
+  it("treats a missing sandboxed flag as local (tightens by default)", () => {
+    const engine = new PolicyEngine([classifier], allowNone)
+    expect(engine.decide(shell("git status")).level).toBe("require_approval")
+  })
+
+  it("does NOT tighten when sandboxed", () => {
+    const engine = new PolicyEngine([classifier], allowNone)
+    expect(engine.decide(shell("git status"), { sandboxed: true }).level).toBe(
+      "allow"
+    )
+  })
+
+  it("allowlist still downgrades a locally-tightened command to allow", () => {
+    const engine = new PolicyEngine([classifier], allowAll)
+    // The upgrade runs before the allowlist check, so "always allow this" wins.
+    expect(engine.decide(shell("git status"), { sandboxed: false }).level).toBe(
+      "allow"
+    )
+  })
+
+  it("still hard-blocks a catastrophic command on local backend", () => {
+    const engine = new PolicyEngine([classifier], allowNone)
+    expect(engine.decide(shell("rm -rf /"), { sandboxed: false }).level).toBe(
+      "hard_block"
+    )
   })
 })
 

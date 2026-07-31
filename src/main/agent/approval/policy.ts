@@ -54,6 +54,25 @@ export class PolicyEngine {
     // downgrade path below. Neither the allowlist nor the sandbox can reach it.
     if (verdict.level === "hard_block") return verdict
 
+    // Local backend (not a container): the approval gate is the ONLY guard, so
+    // the policy TIGHTENS — a benign `allow` is upgraded to require_approval so
+    // everything the agent does on the user's own machine is opt-in. This is the
+    // mirror of the sandbox downgrade below: a container's isolation lets it
+    // relax, a bare machine has no isolation so it asks. File READS never reach
+    // the engine (they build no ToolAction), so they stay auto — the one thing
+    // still allowed outright. Ordinary shell commands and file writes/edits now
+    // prompt. The upgrade runs BEFORE the allowlist check below, so an "always
+    // allow this action" rule remains the per-action escape hatch.
+    if (!ctx.sandboxed && verdict.level === "allow") {
+      verdict = {
+        level: "require_approval",
+        reason:
+          action.kind === "shell"
+            ? "command requires approval (local backend)"
+            : `${action.kind} requires approval (local backend)`,
+      }
+    }
+
     if (verdict.level === "require_approval") {
       // An allowlist rule ("always allow this") downgrades to allow.
       if (this.allowlist?.isAllowed(action, ctx)) {
