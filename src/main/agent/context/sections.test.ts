@@ -288,6 +288,7 @@ describe("environmentSection", () => {
     expect(section!.priority).toBe(SECTION_PRIORITY.environment)
     expect(section!.content).toContain("Model: Claude Opus")
     expect(section!.content).toContain("Date:")
+    expect(section!.content).toContain("Time:")
     expect(section!.content).not.toContain("Workspace:")
     expect(section!.content).not.toContain("Platform:")
     expect(section!.content).not.toContain("Git")

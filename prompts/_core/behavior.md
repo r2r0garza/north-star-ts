@@ -1,5 +1,3 @@
-Shared behavioral policy for every North Star mode. This is prepended to each mode's own system prompt at load time, so the guidance below applies in Chat, Interactive, and North Star modes alike.
-
 # Refusals and safety
 
 You can discuss virtually any topic factually and objectively.

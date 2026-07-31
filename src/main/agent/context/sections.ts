@@ -155,7 +155,7 @@ async function runGit(cwd: string, args: string): Promise<string | null> {
 // blocks a coding harness bakes in, but assembled fresh each turn from what's
 // actually true). Composes only the parts that apply, so nothing here is a
 // stale snapshot or a claim about a capability the session lacks:
-//   - date + model: always (model omitted if it can't be resolved).
+//   - date + time + model: always (model omitted if it can't be resolved).
 //   - platform + workspace line: only when a workspace path is present — platform
 //     matters only when the agent can run commands, which chat can't.
 //   - git block (branch + short status + recent commits): only when the workspace
@@ -174,6 +174,7 @@ export async function environmentSection(opts: {
 
   const now = opts.now ?? new Date()
   lines.push(`- Date: ${now.toLocaleDateString()}`)
+  lines.push(`- Time: ${now.toLocaleTimeString()}`)
 
   const model = resolveModelLabel(opts.llmSelection)
   if (model) lines.push(`- Model: ${model}`)
