@@ -16,6 +16,7 @@ import { browserClickTool } from "./browser/click"
 import { browserTypeTool } from "./browser/type"
 import { browserBackTool } from "./browser/back"
 import { browserCloseTool } from "./browser/close"
+import { browserHandoffTool } from "./browser/handoff"
 
 // Workspace-gated tools — offered only when the agent has a workspace (they
 // touch the filesystem). Add a new filesystem tool by importing it and listing
@@ -52,6 +53,7 @@ const browserTools: Tool[] = [
   browserTypeTool,
   browserBackTool,
   browserCloseTool,
+  browserHandoffTool,
 ]
 export const browserToolDefinitions = browserTools.map((t) => t.definition)
 

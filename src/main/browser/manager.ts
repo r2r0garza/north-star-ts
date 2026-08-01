@@ -40,6 +40,8 @@ export interface BrowserHandle {
   back(): Promise<NavigateResult>
   // Close the browser when done. Returns true if a session was actually open.
   close(): boolean
+  // Force the browser window visible (for a manual handoff — captcha/login).
+  reveal(): void
 }
 
 export class BrowserManager {
@@ -135,6 +137,12 @@ export class BrowserManager {
       // close() must NOT create a session — it tears down whatever's open (or
       // no-ops if nothing is), so it calls closeSession directly.
       close: () => this.closeSession(),
+      // A manual handoff needs the window visible so the user can act on it.
+      // ensureSession so a handoff works even if the window was hidden.
+      reveal: () => {
+        this.ensureSession()
+        this.host.reveal()
+      },
     }
   }
 
