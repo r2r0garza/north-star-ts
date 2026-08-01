@@ -113,24 +113,58 @@ function implicitRole(el: Element): string | null {
   return null
 }
 
+// The element's accessible name, tried in the order a screen reader would:
+// aria-label, then a form control's value/placeholder, then its trimmed visible
+// text. Visible text is capped and collapsed so clicking a large container
+// yields a short label, not a wall of descendant text (or, on <html>, the page's
+// injected <style> CSS).
+function accessibleName(el: Element): string | null {
+  const aria = el.getAttribute("aria-label")?.trim()
+  if (aria) return aria
+  const title = el.getAttribute("title")?.trim()
+  if (title) return title
+  if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+    const v = el.value?.trim() || el.placeholder?.trim()
+    if (v) return v.slice(0, MAX_TEXT)
+  }
+  // innerText (not textContent) reflects rendered, visible text and skips
+  // <style>/<script> and hidden nodes — exactly what a user would read.
+  const visible = (el as HTMLElement).innerText
+  if (visible) {
+    const t = visible.replace(/\s+/g, " ").trim()
+    if (t) return t.slice(0, MAX_TEXT)
+  }
+  return null
+}
+
 function describe(el: Element): PickedElement {
   const role = el.getAttribute("role") || implicitRole(el)
-  const ariaLabel = el.getAttribute("aria-label")?.trim()
-  const text = (el.textContent || "").replace(/\s+/g, " ").trim().slice(0, MAX_TEXT)
-  const name = ariaLabel || text || null
+  const name = accessibleName(el)
   return {
     selector: computeSelector(el),
     role: role || null,
     name,
     tag: el.tagName.toLowerCase(),
-    text,
+    text: name ?? "",
   }
+}
+
+// Resolve the real element under the cursor. We deliberately DON'T trust
+// e.target: this preload runs in a sandboxed, context-isolated world, where the
+// event's target can collapse to the document root (<html>) rather than the page
+// element that was actually under the pointer. document.elementFromPoint does
+// true hit-testing against the render tree and returns the topmost real element
+// — and it ignores our pointer-events:none overlay, so the highlight can't
+// shadow the pick. This is the same approach DevTools/Playwright pickers use.
+function elementAt(e: MouseEvent): Element | null {
+  const el = document.elementFromPoint(e.clientX, e.clientY)
+  return el && el.nodeType === 1 ? el : null
 }
 
 function onMove(e: MouseEvent): void {
   if (!active) return
-  const target = e.target as Element | null
-  if (target && target.nodeType === 1) moveOverlayTo(target)
+  const target = elementAt(e)
+  if (target) moveOverlayTo(target)
 }
 
 function onClick(e: MouseEvent): void {
@@ -138,8 +172,8 @@ function onClick(e: MouseEvent): void {
   // Swallow the click so it selects rather than activating the page.
   e.preventDefault()
   e.stopPropagation()
-  const target = e.target as Element | null
-  if (!target || target.nodeType !== 1) return
+  const target = elementAt(e)
+  if (!target) return
   ipcRenderer.send("browser-pick:picked", describe(target))
   // One pick per activation; main decides whether to re-enable.
   setActive(false)
