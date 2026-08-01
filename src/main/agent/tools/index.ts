@@ -12,6 +12,9 @@ import { indexQueryTool } from "./index_query_tool"
 import { browserNavigateTool } from "./browser/navigate"
 import { browserSnapshotTool } from "./browser/snapshot"
 import { browserScreenshotTool } from "./browser/screenshot"
+import { browserClickTool } from "./browser/click"
+import { browserTypeTool } from "./browser/type"
+import { browserBackTool } from "./browser/back"
 
 // Workspace-gated tools — offered only when the agent has a workspace (they
 // touch the filesystem). Add a new filesystem tool by importing it and listing
@@ -44,6 +47,9 @@ const browserTools: Tool[] = [
   browserNavigateTool,
   browserSnapshotTool,
   browserScreenshotTool,
+  browserClickTool,
+  browserTypeTool,
+  browserBackTool,
 ]
 export const browserToolDefinitions = browserTools.map((t) => t.definition)
 

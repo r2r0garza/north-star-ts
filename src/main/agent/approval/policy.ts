@@ -63,7 +63,14 @@ export class PolicyEngine {
     // still allowed outright. Ordinary shell commands and file writes/edits now
     // prompt. The upgrade runs BEFORE the allowlist check below, so an "always
     // allow this action" rule remains the per-action escape hatch.
-    if (!ctx.sandboxed && verdict.level === "allow") {
+    //
+    // CARVE-OUT: `browser` interactions (click/type/back) stay auto even on a
+    // local backend. Opening a page (browser_navigate) already prompted via the
+    // browser classifier's require_approval; once the user approved the page,
+    // prompting on every click/keystroke would make verifying a multi-step flow
+    // unusable. Navigation isn't affected — it's already require_approval, not
+    // allow, so it never reaches this upgrade branch.
+    if (!ctx.sandboxed && verdict.level === "allow" && action.kind !== "browser") {
       verdict = {
         level: "require_approval",
         reason:

@@ -1,6 +1,10 @@
 import { BrowserSession } from "./session"
 import { BrowserWindowHost } from "./window"
-import type { NavigateResult, ScreenshotResult } from "./session"
+import type {
+  InteractionResult,
+  NavigateResult,
+  ScreenshotResult,
+} from "./session"
 
 // The single owner of the agent's browser. Phase 1: one shared window + one
 // global session (per-conversation sessions land in Phase 4). Instantiated once
@@ -11,11 +15,12 @@ import type { NavigateResult, ScreenshotResult } from "./session"
 // released when the turn ends. The SESSION persists across turns (so "navigate,
 // then next turn screenshot" works); only the handle is per-turn.
 
-// Per-action timeouts. Navigation waits longest (real page loads); reads are
-// quick. All are bounded so a hung page can't wedge a turn.
+// Per-action timeouts. Navigation waits longest (real page loads); reads and
+// interactions are quicker. All are bounded so a hung page can't wedge a turn.
 const NAVIGATE_TIMEOUT_MS = 30_000
 const SNAPSHOT_TIMEOUT_MS = 15_000
 const SCREENSHOT_TIMEOUT_MS = 15_000
+const INTERACT_TIMEOUT_MS = 15_000
 
 // The narrow surface the browser tools call. Every method binds the turn's
 // signal so Stop/shutdown unwinds an in-flight browser op (see cdp.withDeadline).
@@ -23,6 +28,9 @@ export interface BrowserHandle {
   navigate(url: string): Promise<NavigateResult>
   screenshot(): Promise<ScreenshotResult>
   snapshot(): Promise<string>
+  click(ref: string): Promise<InteractionResult>
+  type(ref: string, text: string, submit: boolean): Promise<InteractionResult>
+  back(): Promise<NavigateResult>
 }
 
 export class BrowserManager {
@@ -76,6 +84,11 @@ export class BrowserManager {
         this.ensureSession().screenshot(SCREENSHOT_TIMEOUT_MS, signal),
       snapshot: () =>
         this.ensureSession().snapshot(SNAPSHOT_TIMEOUT_MS, signal),
+      click: (ref) =>
+        this.ensureSession().click(ref, INTERACT_TIMEOUT_MS, signal),
+      type: (ref, text, submit) =>
+        this.ensureSession().type(ref, text, submit, INTERACT_TIMEOUT_MS, signal),
+      back: () => this.ensureSession().back(NAVIGATE_TIMEOUT_MS, signal),
     }
   }
 
