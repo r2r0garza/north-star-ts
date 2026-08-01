@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en" class="antialiased">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- No remote code; inline styles only for this tiny chrome. -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;"
+    />
+    <title>Agent Browser</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font-family:
+          system-ui,
+          -apple-system,
+          sans-serif;
+      }
+      /* The chrome bar. Must match CHROME_HEIGHT (44) in src/main/browser/window.ts
+         so the WebContentsView sits flush beneath it. */
+      #bar {
+        height: 44px;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 0 8px;
+        border-bottom: 1px solid rgba(128, 128, 128, 0.3);
+        background: Canvas;
+        color: CanvasText;
+      }
+      button {
+        height: 28px;
+        min-width: 30px;
+        border: 1px solid rgba(128, 128, 128, 0.35);
+        border-radius: 6px;
+        background: transparent;
+        color: inherit;
+        cursor: pointer;
+        font-size: 14px;
+      }
+      button:hover {
+        background: rgba(128, 128, 128, 0.15);
+      }
+      #url {
+        flex: 1;
+        height: 28px;
+        padding: 0 10px;
+        border: 1px solid rgba(128, 128, 128, 0.35);
+        border-radius: 6px;
+        background: transparent;
+        color: inherit;
+        font-size: 13px;
+        outline: none;
+      }
+      #url:focus {
+        border-color: rgba(80, 130, 255, 0.8);
+      }
+    </style>
+  </head>
+  <body>
+    <div id="bar">
+      <button id="reload" title="Reload">⟳</button>
+      <input id="url" type="text" placeholder="Enter a URL…" spellcheck="false" />
+    </div>
+    <script type="module" src="/src/browser-chrome.ts"></script>
+  </body>
+</html>

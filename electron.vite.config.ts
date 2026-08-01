@@ -16,7 +16,14 @@ export default defineConfig({
     plugins: [externalizeDepsPlugin()],
     build: {
       rollupOptions: {
-        input: { index: resolve(__dirname, "src/preload/index.ts") },
+        input: {
+          index: resolve(__dirname, "src/preload/index.ts"),
+          // Preload for the agent-browser chrome window (URL bar + reload).
+          "browser-chrome": resolve(
+            __dirname,
+            "src/preload/browser-chrome.ts"
+          ),
+        },
       },
     },
   },
@@ -30,7 +37,11 @@ export default defineConfig({
     plugins: [react()],
     build: {
       rollupOptions: {
-        input: { index: resolve(__dirname, "src/renderer/index.html") },
+        input: {
+          index: resolve(__dirname, "src/renderer/index.html"),
+          // The agent-browser chrome page loaded by the secondary window.
+          browser: resolve(__dirname, "src/renderer/browser.html"),
+        },
       },
     },
   },

@@ -30,6 +30,7 @@ import { registerIndexHandlers } from "./ipc/index-handlers"
 import { TaskRunner } from "./tasks/runner"
 import { IndexService } from "./index/service"
 import { SummaryService, SUMMARIZE_KIND } from "./summaries/service"
+import { BrowserManager } from "./browser/manager"
 import { seedProviderFromEnvIfEmpty } from "./settings/bootstrap"
 import { closeDb } from "./db/connection"
 
@@ -42,6 +43,10 @@ const indexService = new IndexService(taskRunner)
 // The rolling conversation summarizer (plan 019), driven as a task kind on the
 // runner. Holds the runner reference so the post-turn trigger can enqueue.
 const summaryService = new SummaryService(taskRunner)
+// The agent's browser (secondary window + WebContentsView driven over CDP).
+// Owned here so runChat can hand each live turn a signal-bound handle; disposed
+// on will-quit. Lazily creates its window on first agent use.
+const browserManager = new BrowserManager()
 
 function createWindow(): void {
   const mainWindow = new BrowserWindow({
@@ -107,7 +112,10 @@ ipcMain.handle("chat", async (event, req: ChatRequest) => {
     },
     // Let a live turn hand work to the background (run_todos_in_background). The
     // runner singleton lives here; runChat can't import it (cycle).
-    (input) => taskRunner.enqueue(input)
+    (input) => taskRunner.enqueue(input),
+    // Give the live turn a browser handle bound to its abort signal. The manager
+    // singleton lives here for the same cycle-avoidance reason as the runner.
+    (signal) => browserManager.handleForTurn(signal)
   )
   // After the turn's transcript is persisted, consider refreshing the rolling
   // conversation summary (plan 019). Threshold + debounce + dedupe live inside
@@ -151,6 +159,13 @@ ipcMain.handle(
 ipcMain.handle("chat:stop", (_event, conversationId: string) => {
   stopChat(conversationId)
 })
+// Agent-browser chrome → main: user-driven navigation/reload from the secondary
+// window's URL bar. Fire-and-forget; not gated (the human is driving their own
+// browser). The chrome reaches these via its own preload bridge.
+ipcMain.handle("browser:navigate", (_event, url: string) => {
+  if (typeof url === "string" && url.trim()) browserManager.userNavigate(url.trim())
+})
+ipcMain.handle("browser:reload", () => browserManager.userReload())
 ipcMain.handle("pick-workspace", () => pickWorkspace())
 ipcMain.handle("pick-files", () => pickFiles())
 // List available skills (name + description only) for the composer's slash
@@ -269,5 +284,6 @@ app.on("window-all-closed", () => {
 // them) and flush the WAL + close the DB cleanly on quit.
 app.on("will-quit", () => {
   void taskRunner.stop()
+  browserManager.dispose()
   closeDb()
 })

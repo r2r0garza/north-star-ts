@@ -9,7 +9,12 @@
 // not a filesystem/shell side effect — it's handing the remaining work off to a
 // background task (run_todos_in_background). It always requires approval and is
 // never allowlisted or sandbox-downgraded (see DelegationClassifier).
-export type ActionKind = "shell" | "file_write" | "file_edit" | "delegate"
+export type ActionKind =
+  | "shell"
+  | "file_write"
+  | "file_edit"
+  | "delegate"
+  | "browser"
 
 // A tool's request to do something gated. Tool-agnostic.
 export interface ToolAction {
