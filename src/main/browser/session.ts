@@ -120,8 +120,12 @@ export class BrowserSession {
     timeoutMs: number,
     signal?: AbortSignal
   ): Promise<NavigateResult> {
-    await this.ensureAttached(timeoutMs, signal)
     const wc = this.view.webContents
+    // Navigation itself does not need CDP. In Electron 37, DOM.enable can stall
+    // indefinitely on a newly-created WebContentsView's initial about:blank page.
+    // Attaching here would therefore prevent loadURL from ever running on the
+    // first browser_navigate call. CDP-backed reads/interactions attach lazily
+    // after a real page has loaded.
     // Resolve as soon as the page is ready, treating THREE signals as success
     // (whichever comes first):
     //  - loadURL() resolving — fires on did-finish-load (DOM + onload done). This
@@ -146,7 +150,9 @@ export class BrowserSession {
       ) => {
         if (errorCode === -3) return
         cleanup()
-        reject(new Error(`Navigation failed: ${errorDescription} (${errorCode})`))
+        reject(
+          new Error(`Navigation failed: ${errorDescription} (${errorCode})`)
+        )
       }
       const cleanup = () => {
         wc.off("did-finish-load", onReady)
