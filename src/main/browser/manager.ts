@@ -102,11 +102,20 @@ export class BrowserManager {
     wc.on("did-start-loading", push)
     wc.on("did-stop-loading", push)
     wc.on("page-title-updated", push)
-    // A pick exits pick mode; forward it to the main app renderer (which shows
-    // the chip on its own active conversation) and un-toggle the chrome button.
+    // Forward a pick to the main app renderer (which shows the chip on its own
+    // active conversation).
     session.onElementPicked = (element) => {
-      this.host.sendToChrome("browser:pick-mode", false)
       this.pickForwarder?.(element)
+    }
+    // Keep the chrome's "Pick" toggle in sync with the session's TRUE pick-mode
+    // state — for the active tab only (the chrome shows one page at a time). This
+    // fires on every change (toggle, pick complete, failure), so the button can
+    // never get stuck highlighted while the overlay is actually off, or vice
+    // versa. This is what prevents the "picker stuck on" desync.
+    session.onPickModeChanged = (active) => {
+      if (this.activeConversationId === conversationId) {
+        this.host.sendToChrome("browser:pick-mode", active)
+      }
     }
     this.tabs.set(conversationId, session)
     this.host.addView(conversationId, session.view)

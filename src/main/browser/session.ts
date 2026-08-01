@@ -78,6 +78,10 @@ export class BrowserSession {
   // Called with the element the user picked in pick mode. Set by the manager so
   // the pick can be forwarded to the main app renderer.
   onElementPicked?: (element: PickedElement) => void
+  // Fired whenever pick mode turns on/off for ANY reason (user toggle, a pick
+  // completing, or a failure). The manager mirrors this to the chrome's toggle
+  // button so its highlighted state can never drift from reality.
+  onPickModeChanged?: (active: boolean) => void
   private pickMode = false
   private pickModeGeneration = 0
 
@@ -104,11 +108,16 @@ export class BrowserSession {
     // context (including composed content) and reports the exact backend node.
     // This avoids Electron isolated-world DOM APIs collapsing every hit to <html>.
     this.view.webContents.debugger.on("message", (_event, method, params) => {
-      if (method !== "Overlay.inspectNodeRequested" || !this.pickMode) return
+      // inspectNodeRequested is ONLY emitted while inspect mode is engaged in the
+      // renderer — so if we get it, the user genuinely clicked a node. Don't gate
+      // on this.pickMode (it can drift from the renderer's real overlay state and
+      // would then swallow a legitimate pick). Chromium auto-exits inspect mode
+      // after this event, so we flip our flag to match and describe the node.
+      if (method !== "Overlay.inspectNodeRequested") return
       const backendNodeId = (params as { backendNodeId?: unknown })
         ?.backendNodeId
       if (typeof backendNodeId !== "number") return
-      this.pickMode = false
+      this.setPickModeFlag(false)
       const generation = ++this.pickModeGeneration
       void this.completeElementPick(backendNodeId, generation).catch(
         () => undefined
@@ -116,11 +125,19 @@ export class BrowserSession {
     })
   }
 
+  // Single point that mutates the pickMode flag, so every change (toggle, pick,
+  // failure) notifies the manager and the flag can't silently drift from the UI.
+  private setPickModeFlag(active: boolean): void {
+    if (this.pickMode === active) return
+    this.pickMode = active
+    this.onPickModeChanged?.(active)
+  }
+
   // Enter/exit Chromium's native inspect mode. DevTools owns hit-testing,
   // highlighting, and click interception; we only describe the selected node.
   setPickMode(active: boolean): void {
     if (this.disposed || this.view.webContents.isDestroyed()) return
-    this.pickMode = active
+    this.setPickModeFlag(active)
     const generation = ++this.pickModeGeneration
     void this.updatePickMode(active, generation)
   }
@@ -168,16 +185,31 @@ export class BrowserSession {
         return
       }
 
-      if (!this.attached) return
-      await sendCommand(
-        this.view.webContents.debugger,
-        "Overlay.setInspectMode",
-        { mode: "none" },
-        PICK_TIMEOUT_MS
-      )
+      await this.exitInspectMode()
     } catch {
-      if (generation === this.pickModeGeneration) this.pickMode = false
+      // Enabling pick mode failed partway (e.g. a CDP timeout after the overlay
+      // may already have engaged in the renderer). Reset the flag AND force the
+      // overlay down, so we never leave the renderer stuck in inspect mode with
+      // our flag reading "off" (hover-highlights with clicks going nowhere).
+      if (generation === this.pickModeGeneration) {
+        this.setPickModeFlag(false)
+        await this.exitInspectMode().catch(() => undefined)
+      }
     }
+  }
+
+  // Force Chromium's inspect overlay off. Best-effort and idempotent — safe to
+  // call even if inspect mode isn't engaged (setInspectMode:none is a no-op then).
+  private async exitInspectMode(): Promise<void> {
+    if (this.disposed || this.view.webContents.isDestroyed()) return
+    const dbg = this.view.webContents.debugger
+    if (!dbg.isAttached()) return
+    await sendCommand(
+      dbg,
+      "Overlay.setInspectMode",
+      { mode: "none" },
+      PICK_TIMEOUT_MS
+    )
   }
 
   private async completeElementPick(
@@ -190,14 +222,9 @@ export class BrowserSession {
         this.onElementPicked?.(element)
       }
     } finally {
-      if (this.attached && !this.view.webContents.isDestroyed()) {
-        await sendCommand(
-          this.view.webContents.debugger,
-          "Overlay.setInspectMode",
-          { mode: "none" },
-          PICK_TIMEOUT_MS
-        ).catch(() => undefined)
-      }
+      // Chromium auto-exits inspect mode after a pick, but force it down anyway
+      // so the renderer overlay can never linger if the auto-exit didn't stick.
+      await this.exitInspectMode().catch(() => undefined)
     }
   }
 
