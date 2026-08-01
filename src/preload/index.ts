@@ -246,6 +246,12 @@ const api = {
     list: (workspace: string, query: string) =>
       ipcRenderer.invoke("files:list", workspace, query) as Promise<string[]>,
   },
+  // Read the current git branch for a workspace folder. Resolves with the
+  // branch name, a short detached-HEAD SHA, or null when not a git repo.
+  git: {
+    branch: (path: string) =>
+      ipcRenderer.invoke("git:branch", path) as Promise<string | null>,
+  },
   // Whether the window is currently fullscreen (macOS traffic lights hidden).
   isFullScreen: () => ipcRenderer.invoke("is-fullscreen") as Promise<boolean>,
   // Subscribe to fullscreen changes. Returns an unsubscribe function.

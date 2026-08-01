@@ -2,8 +2,10 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import type { KeyboardEvent } from "react"
 import {
   ArrowUp,
+  BrainCircuit,
   FileText,
   FolderOpen,
+  GitBranch,
   MousePointerClick,
   Plus,
   Square,
@@ -125,6 +127,7 @@ export default function App({
   onConversationChanged,
   onOpenSettings,
   settingsOpen,
+  rightPanelOpen,
   onRanInBackground,
   onRunningConvosChange,
   onWaitingConvosChange,
@@ -139,6 +142,10 @@ export default function App({
   // Whether Settings is open — when it closes we re-read the active provider so
   // the composer picker and Send gate reflect any change.
   settingsOpen: boolean
+  // When the right-hand panel (Info / Browser) is open the composer toolbar is
+  // squeezed: collapse folder + branch to icon-only and hide the model picker
+  // (no icon available for it).
+  rightPanelOpen: boolean
   // Called after "Run in background" starts a durable task, so the Shell can
   // reveal the Workspace Activity panel where the new task appears.
   onRanInBackground?: () => void
@@ -157,6 +164,10 @@ export default function App({
   const isChat = view === "Chat"
 
   const [workspace, setWorkspace] = useState("")
+  // Current git branch for the selected workspace folder, or null when not a
+  // git repo (or no folder is selected). Shown as a small badge next to the
+  // folder name in the Interactive / North Star composer.
+  const [gitBranch, setGitBranch] = useState<string | null>(null)
   const [attachments, setAttachments] = useState<string[]>([])
   const [message, setMessage] = useState("")
   // An element the user picked in the agent browser ("point at this button").
@@ -384,6 +395,25 @@ export default function App({
   // Initial load + reload on workspace change (project-level skills live under
   // <workspace>/.cowork/skills and <workspace>/.github/skills).
   useEffect(() => reloadSkills(), [reloadSkills])
+
+  // Fetch the git branch for the current workspace folder. Clears when the
+  // folder is deselected or when it's not a git repo.
+  useEffect(() => {
+    const path = workspace.trim()
+    if (!path || isChat) {
+      setGitBranch(null)
+      return
+    }
+    let cancelled = false
+    window.cowork.git.branch(path).then((branch) => {
+      if (!cancelled) setGitBranch(branch)
+    }).catch(() => {
+      if (!cancelled) setGitBranch(null)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [workspace, isChat])
 
   // The confirmed mentions, in the shape the token helpers consume. Both the
   // overlay (badges) and send-time expansion read this.
@@ -1025,6 +1055,61 @@ export default function App({
     </button>
   )
 
+  // Icon-only model picker shown when the right panel is open (squeezes the
+  // toolbar). Uses the same Combobox but renders only the BrainCircuit icon;
+  // the selected model name appears as a native tooltip.
+  const modelPickerCompact = hasLlm ? (
+    <Combobox
+      items={modelGroups}
+      value={selectedItem}
+      isItemEqualToValue={(a, b) => a?.value === b?.value}
+      onValueChange={(item) => {
+        if (!item) return
+        const sep = item.value.indexOf("::")
+        if (sep < 0) return
+        void selectModel(item.value.slice(0, sep), item.value.slice(sep + 2))
+      }}
+    >
+      <ComboboxTrigger
+        title={selectedItem ? selectedItem.label : "Select model"}
+        className="flex h-7 items-center rounded-md px-2 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+      >
+        <BrainCircuit className="size-4" />
+      </ComboboxTrigger>
+      <ComboboxContent className="w-72 min-w-72">
+        <ComboboxInput placeholder="Search models…" showTrigger={false} />
+        <ComboboxEmpty>No models found.</ComboboxEmpty>
+        <ComboboxList>
+          {(group: {
+            value: string
+            label: string
+            items: { value: string; label: string }[]
+          }) => (
+            <ComboboxGroup key={group.value} items={group.items}>
+              <ComboboxLabel>{group.label}</ComboboxLabel>
+              <ComboboxCollection>
+                {(item: { value: string; label: string }) => (
+                  <ComboboxItem key={item.value} value={item}>
+                    {item.label}
+                  </ComboboxItem>
+                )}
+              </ComboboxCollection>
+            </ComboboxGroup>
+          )}
+        </ComboboxList>
+      </ComboboxContent>
+    </Combobox>
+  ) : (
+    <button
+      type="button"
+      title="Configure model"
+      onClick={() => onOpenSettings("providers")}
+      className="flex items-center rounded-md px-2 py-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+    >
+      <BrainCircuit className="size-4" />
+    </button>
+  )
+
   // The composer (attachment chips + input box). Rendered both centered and
   // bottom-pinned, so it's defined once here.
   const composer = (
@@ -1138,21 +1223,35 @@ export default function App({
                 <Plus className="size-4" />
               </button>
             ) : (
-              <button
-                type="button"
-                onClick={pickWorkspace}
-                title="Select workspace folder"
-                className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-              >
-                <FolderOpen className="size-4" />
-                {workspace && (
-                  <span className="max-w-40 truncate">
-                    {lastSegment(workspace)}
+              <>
+                <button
+                  type="button"
+                  onClick={pickWorkspace}
+                  title={workspace ? lastSegment(workspace) : "Select workspace folder"}
+                  className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                >
+                  <FolderOpen className="size-4" />
+                  {workspace && !rightPanelOpen && (
+                    <span className="max-w-40 truncate">
+                      {lastSegment(workspace)}
+                    </span>
+                  )}
+                </button>
+                {gitBranch && !rightPanelOpen && (
+                  <span title={gitBranch} className="flex items-center gap-1 rounded bg-accent px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+                    <GitBranch className="size-3 shrink-0" />
+                    <span>{gitBranch}</span>
                   </span>
                 )}
-              </button>
+                {gitBranch && rightPanelOpen && (
+                  <span title={gitBranch} className="flex items-center rounded bg-accent p-1 text-muted-foreground">
+                    <GitBranch className="size-3" />
+                  </span>
+                )}
+              </>
             )}
-            {modelPicker}
+            {!rightPanelOpen && modelPicker}
+            {rightPanelOpen && modelPickerCompact}
           </div>
           <div className="flex items-center gap-1.5">
             {/* Run the message as a durable background task (workspace views

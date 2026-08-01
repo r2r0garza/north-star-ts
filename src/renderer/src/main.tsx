@@ -196,6 +196,7 @@ function Shell() {
         onConversationChanged={refreshConversations}
         onOpenSettings={openSettings}
         settingsOpen={settingsOpen}
+        rightPanelOpen={activityOpen}
         onRanInBackground={() => setActivity(true)}
         onRunningConvosChange={setRunningConvos}
         onWaitingConvosChange={setWaitingConvos}

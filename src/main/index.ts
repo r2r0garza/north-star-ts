@@ -22,6 +22,7 @@ import { loadSkills, listSource } from "./agent/skills/loader"
 import type { SkillSourceRow, SkillSourceKind } from "./agent/skills/types"
 import * as settingsService from "./settings/service"
 import { listWorkspaceFiles } from "./files/list"
+import { readGitBranch } from "./index/metadata"
 import { registerDbHandlers } from "./ipc/db-handlers"
 import { registerSettingsHandlers } from "./ipc/settings-handlers"
 import { registerProviderHandlers } from "./ipc/provider-handlers"
@@ -312,6 +313,16 @@ ipcMain.handle(
     return listWorkspaceFiles(workspace.trim(), query ?? "", Date.now())
   }
 )
+// Read the current git branch for a workspace folder. Returns the branch name
+// string, a short SHA when the HEAD is detached, or null when the folder is
+// not a git repo (no .git/HEAD). Zero-dependency: reads .git/HEAD directly.
+ipcMain.handle("git:branch", async (_event, path: string) => {
+  if (!path?.trim()) return null
+  const result = await readGitBranch(path.trim())
+  if (!result) return null
+  const val = result.value as { branch?: string; detached?: boolean; sha?: string }
+  return val.branch ?? val.sha ?? null
+})
 // Initial fullscreen state, queried by the renderer on mount.
 ipcMain.handle("is-fullscreen", (event) => {
   const win = BrowserWindow.fromWebContents(event.sender)
