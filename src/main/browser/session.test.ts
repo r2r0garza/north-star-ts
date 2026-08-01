@@ -35,14 +35,14 @@ const electronMock = vi.hoisted(() => {
     attach = vi.fn()
     detach = vi.fn()
     isAttached = vi.fn(() => false)
-    sendCommand = vi.fn(() => new Promise<never>(() => undefined))
+    sendCommand = vi.fn(
+      (_method?: string, _params?: Record<string, unknown>): Promise<unknown> =>
+        new Promise<never>(() => undefined)
+    )
   }
 
   class WebContentsMock extends EventTargetMock {
     debugger = new DebuggerMock()
-    // View-scoped IpcMain (webContents.ipc). The session registers a
-    // "browser-pick:picked" receiver on it in the constructor.
-    ipc = { on: vi.fn(), removeListener: vi.fn() }
     currentUrl = "about:blank"
     title = ""
     loadURL = vi.fn(async (url: string) => {
@@ -90,5 +90,71 @@ describe("BrowserSession.navigate", () => {
     expect(webContents.loadURL).toHaveBeenCalledWith("https://example.com")
     expect(webContents.debugger.attach).not.toHaveBeenCalled()
     expect(webContents.debugger.sendCommand).not.toHaveBeenCalled()
+  })
+})
+
+describe("BrowserSession element picker", () => {
+  beforeEach(() => {
+    electronMock.instances.length = 0
+  })
+
+  it("uses CDP inspect mode and describes the selected backend node", async () => {
+    const session = new BrowserSession()
+    const webContents = electronMock.instances[0]
+    const onElementPicked = vi.fn()
+    session.onElementPicked = onElementPicked
+
+    webContents.debugger.sendCommand.mockImplementation(async (method) => {
+      if (method === "DOM.resolveNode") {
+        return { object: { objectId: "picked-node" } }
+      }
+      if (method === "Runtime.callFunctionOn") {
+        return {
+          result: {
+            value: {
+              selector: "#save",
+              tag: "button",
+              text: "Save",
+              name: "Save",
+            },
+          },
+        }
+      }
+      if (method === "Accessibility.getPartialAXTree") {
+        return {
+          nodes: [
+            {
+              backendDOMNodeId: 42,
+              role: { value: "button" },
+              name: { value: "Save changes" },
+            },
+          ],
+        }
+      }
+      return {}
+    })
+
+    session.setPickMode(true)
+
+    await vi.waitFor(() => {
+      expect(webContents.debugger.sendCommand).toHaveBeenCalledWith(
+        "Overlay.setInspectMode",
+        expect.objectContaining({ mode: "searchForNode" })
+      )
+    })
+
+    webContents.debugger.emit("message", {}, "Overlay.inspectNodeRequested", {
+      backendNodeId: 42,
+    })
+
+    await vi.waitFor(() => {
+      expect(onElementPicked).toHaveBeenCalledWith({
+        selector: "#save",
+        role: "button",
+        name: "Save changes",
+        tag: "button",
+        text: "Save",
+      })
+    })
   })
 })

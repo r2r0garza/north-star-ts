@@ -1,5 +1,4 @@
 import { WebContentsView } from "electron"
-import { join } from "path"
 import { sendCommand, withDeadline } from "./cdp"
 import type { PickedElement } from "./types"
 
@@ -79,16 +78,18 @@ export class BrowserSession {
   // Called with the element the user picked in pick mode. Set by the manager so
   // the pick can be forwarded to the main app renderer.
   onElementPicked?: (element: PickedElement) => void
+  private pickMode = false
+  private pickModeGeneration = 0
 
   constructor() {
     this.view = new WebContentsView({
       webPreferences: {
         partition: BROWSER_PARTITION,
         // The page is untrusted content the agent navigates to — keep it isolated
-        // and sandboxed. The pick-mode preload runs in the page's isolated world.
+        // and sandboxed. Element picking is handled by CDP's native inspect mode,
+        // so no page preload or page-world bridge is needed.
         contextIsolation: true,
         sandbox: true,
-        preload: join(__dirname, "../preload/browser-pick.js"),
       },
     })
     // Detach bookkeeping: if DevTools or anything else steals the debugger, we
@@ -99,18 +100,29 @@ export class BrowserSession {
     // A document-level navigation invalidates every backendDOMNodeId, so drop the
     // ref map. (In-page navigations keep the DOM, so those don't clear it.)
     this.view.webContents.on("did-navigate", () => this.refs.clear())
-    // View-scoped IPC (not global ipcMain) so this receiver only ever hears its
-    // own page's pick events. The preload sends the computed descriptor here.
-    this.view.webContents.ipc.on("browser-pick:picked", (_e, element) => {
-      this.onElementPicked?.(element as PickedElement)
+    // Chromium's native inspector performs hit-testing in the real page/renderer
+    // context (including composed content) and reports the exact backend node.
+    // This avoids Electron isolated-world DOM APIs collapsing every hit to <html>.
+    this.view.webContents.debugger.on("message", (_event, method, params) => {
+      if (method !== "Overlay.inspectNodeRequested" || !this.pickMode) return
+      const backendNodeId = (params as { backendNodeId?: unknown })
+        ?.backendNodeId
+      if (typeof backendNodeId !== "number") return
+      this.pickMode = false
+      const generation = ++this.pickModeGeneration
+      void this.completeElementPick(backendNodeId, generation).catch(
+        () => undefined
+      )
     })
   }
 
-  // Enter/exit element-pick mode: tells the injected preload to start/stop
-  // highlighting + capturing clicks. No-op if the contents are gone.
+  // Enter/exit Chromium's native inspect mode. DevTools owns hit-testing,
+  // highlighting, and click interception; we only describe the selected node.
   setPickMode(active: boolean): void {
-    const wc = this.view.webContents
-    if (!wc.isDestroyed()) wc.send("browser-pick:set", active)
+    if (this.disposed || this.view.webContents.isDestroyed()) return
+    this.pickMode = active
+    const generation = ++this.pickModeGeneration
+    void this.updatePickMode(active, generation)
   }
 
   get webContents() {
@@ -131,6 +143,122 @@ export class BrowserSession {
     await sendCommand(dbg, "DOM.enable", undefined, timeoutMs, signal)
     await sendCommand(dbg, "Accessibility.enable", undefined, timeoutMs, signal)
     this.attached = true
+  }
+
+  private async updatePickMode(
+    active: boolean,
+    generation: number
+  ): Promise<void> {
+    try {
+      if (active) {
+        await this.ensureAttached(PICK_TIMEOUT_MS)
+        if (!this.pickMode || generation !== this.pickModeGeneration) return
+        const dbg = this.view.webContents.debugger
+        await sendCommand(dbg, "Overlay.enable", undefined, PICK_TIMEOUT_MS)
+        if (!this.pickMode || generation !== this.pickModeGeneration) return
+        await sendCommand(
+          dbg,
+          "Overlay.setInspectMode",
+          {
+            mode: "searchForNode",
+            highlightConfig: PICK_HIGHLIGHT_CONFIG,
+          },
+          PICK_TIMEOUT_MS
+        )
+        return
+      }
+
+      if (!this.attached) return
+      await sendCommand(
+        this.view.webContents.debugger,
+        "Overlay.setInspectMode",
+        { mode: "none" },
+        PICK_TIMEOUT_MS
+      )
+    } catch {
+      if (generation === this.pickModeGeneration) this.pickMode = false
+    }
+  }
+
+  private async completeElementPick(
+    backendNodeId: number,
+    generation: number
+  ): Promise<void> {
+    try {
+      const element = await this.describePickedElement(backendNodeId)
+      if (generation === this.pickModeGeneration) {
+        this.onElementPicked?.(element)
+      }
+    } finally {
+      if (this.attached && !this.view.webContents.isDestroyed()) {
+        await sendCommand(
+          this.view.webContents.debugger,
+          "Overlay.setInspectMode",
+          { mode: "none" },
+          PICK_TIMEOUT_MS
+        ).catch(() => undefined)
+      }
+    }
+  }
+
+  private async describePickedElement(
+    backendNodeId: number
+  ): Promise<PickedElement> {
+    const dbg = this.view.webContents.debugger
+    const { object } = await sendCommand<{
+      object?: { objectId?: string }
+    }>(dbg, "DOM.resolveNode", { backendNodeId }, PICK_TIMEOUT_MS)
+    const objectId = object?.objectId
+    if (!objectId) throw new Error("Could not resolve the picked element.")
+
+    try {
+      const [domResult, axResult] = await Promise.all([
+        sendCommand<{
+          result?: { value?: PickedElementDomDetails | null }
+        }>(
+          dbg,
+          "Runtime.callFunctionOn",
+          {
+            objectId,
+            functionDeclaration: DESCRIBE_PICKED_ELEMENT,
+            returnByValue: true,
+            silent: true,
+          },
+          PICK_TIMEOUT_MS
+        ),
+        sendCommand<{ nodes?: AXNode[] }>(
+          dbg,
+          "Accessibility.getPartialAXTree",
+          { backendNodeId, fetchRelatives: false },
+          PICK_TIMEOUT_MS
+        ),
+      ])
+
+      const details = domResult.result?.value
+      if (!details) throw new Error("The picked node is not an HTML element.")
+      const axNode =
+        axResult.nodes?.find(
+          (node) => node.backendDOMNodeId === backendNodeId
+        ) ?? axResult.nodes?.[0]
+      const axRole = axString(axNode?.role)
+      const axName = axString(axNode?.name)
+      const role = axRole && !NON_SEMANTIC_AX_ROLES.has(axRole) ? axRole : null
+
+      return {
+        selector: details.selector,
+        role,
+        name: axName || details.name,
+        tag: details.tag,
+        text: details.text,
+      }
+    } finally {
+      await sendCommand(
+        dbg,
+        "Runtime.releaseObject",
+        { objectId },
+        PICK_TIMEOUT_MS
+      ).catch(() => undefined)
+    }
   }
 
   // Navigate and wait for the load to settle (or the deadline/abort to fire).
@@ -456,6 +584,74 @@ export class BrowserSession {
 // How long to wait after an interaction for a possible navigation before giving
 // up and reporting the (unchanged) page. Short: most clicks don't navigate.
 const SETTLE_GRACE_MS = 500
+const PICK_TIMEOUT_MS = 5_000
+
+const PICK_HIGHLIGHT_CONFIG = {
+  showInfo: true,
+  showAccessibilityInfo: true,
+  contentColor: { r: 80, g: 130, b: 255, a: 0.25 },
+  borderColor: { r: 80, g: 130, b: 255, a: 0.9 },
+}
+
+const NON_SEMANTIC_AX_ROLES = new Set(["none", "generic"])
+
+const DESCRIBE_PICKED_ELEMENT = `function () {
+  const node = this && this.nodeType === 1 ? this : this && this.parentElement
+  if (!node) return null
+  const maxText = 120
+  const clean = (value) => {
+    const text = typeof value === "string" ? value.replace(/\\s+/g, " ").trim() : ""
+    return text ? text.slice(0, maxText) : null
+  }
+  const escape = (value) => CSS.escape(String(value))
+  const selector = (() => {
+    if (node.id) return "#" + escape(node.id)
+    for (const attr of ["data-testid", "data-test", "name"]) {
+      const value = node.getAttribute(attr)
+      if (value) return node.tagName.toLowerCase() + "[" + attr + "=\\\"" + escape(value) + "\\\"]"
+    }
+    const parts = []
+    let current = node
+    let depth = 0
+    while (current && current.nodeType === 1 && depth < 4) {
+      let part = current.tagName.toLowerCase()
+      const parent = current.parentElement
+      if (parent) {
+        const sameTag = Array.from(parent.children).filter(
+          (child) => child.tagName === current.tagName
+        )
+        if (sameTag.length > 1) {
+          part += ":nth-of-type(" + (sameTag.indexOf(current) + 1) + ")"
+        }
+      }
+      parts.unshift(part)
+      if (current.id) {
+        parts[0] = "#" + escape(current.id)
+        break
+      }
+      current = parent
+      depth++
+    }
+    return parts.join(" > ")
+  })()
+  const inputValue =
+    node instanceof HTMLInputElement || node instanceof HTMLTextAreaElement
+      ? clean(node.value) || clean(node.placeholder)
+      : null
+  const text = clean(node.innerText) || ""
+  const name =
+    clean(node.getAttribute("aria-label")) ||
+    clean(node.getAttribute("title")) ||
+    inputValue ||
+    text ||
+    null
+  return {
+    selector,
+    tag: node.tagName.toLowerCase(),
+    text,
+    name,
+  }
+}`
 
 // Roles that get a ref (things the agent can meaningfully click or type into).
 const INTERACTIVE_ROLES = new Set([
@@ -480,7 +676,22 @@ const INTERACTIVE_ROLES = new Set([
 // Minimal shape of a CDP Accessibility node (only the fields we read).
 interface AXNode {
   ignored?: boolean
-  role?: { value?: string }
-  name?: { value?: string }
+  role?: AXValue
+  name?: AXValue
   backendDOMNodeId?: number
+}
+
+interface AXValue {
+  value?: string
+}
+
+interface PickedElementDomDetails {
+  selector: string
+  tag: string
+  text: string
+  name: string | null
+}
+
+function axString(value?: AXValue): string | null {
+  return value?.value?.trim() || null
 }

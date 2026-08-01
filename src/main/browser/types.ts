@@ -1,8 +1,6 @@
 // An element the user picked in the agent browser ("point at this button").
-// Produced by the pick-mode preload injected into the page, forwarded to the
-// main app renderer, and shown as a pending chip above the composer. The shape
-// is shared by the preload (which computes it), the main process (which
-// forwards it), and the renderer (which displays it).
+// Produced from Chromium's native CDP inspect mode, forwarded to the main app
+// renderer, and shown as a pending chip above the composer.
 export interface PickedElement {
   // A best-effort stable CSS selector for the element (id → data-testid →
   // structural path). The agent can grep source for it or match it in a
@@ -14,6 +12,6 @@ export interface PickedElement {
   name: string | null
   // Lowercase tag name, e.g. "button", "a", "input".
   tag: string
-  // Trimmed visible text content (may duplicate name; capped in the preload).
+  // Trimmed visible text content (may duplicate name; capped during CDP extraction).
   text: string
 }

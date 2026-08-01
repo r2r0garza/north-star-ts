@@ -19,12 +19,7 @@ export default defineConfig({
         input: {
           index: resolve(__dirname, "src/preload/index.ts"),
           // Preload for the agent-browser chrome window (URL bar + reload).
-          "browser-chrome": resolve(
-            __dirname,
-            "src/preload/browser-chrome.ts"
-          ),
-          // Preload injected into the agent-browser page for element-pick mode.
-          "browser-pick": resolve(__dirname, "src/preload/browser-pick.ts"),
+          "browser-chrome": resolve(__dirname, "src/preload/browser-chrome.ts"),
         },
       },
     },
