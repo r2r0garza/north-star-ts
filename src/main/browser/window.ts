@@ -92,6 +92,19 @@ export class BrowserWindowHost {
     if (!win.isVisible()) win.showInactive()
   }
 
+  // Detach the current page view and hide the window, WITHOUT destroying the
+  // window — so a later attachView/reveal (a fresh session) reuses it. Used by
+  // browser_close: the session's WebContentsView is disposed by its owner; here
+  // we just stop showing it and hide the chrome.
+  hide(): void {
+    if (!this.window || this.window.isDestroyed()) return
+    if (this.attachedView) {
+      this.window.contentView.removeChildView(this.attachedView)
+      this.attachedView = null
+    }
+    if (this.window.isVisible()) this.window.hide()
+  }
+
   // Push a message to the chrome (URL bar / reload UI). No-op if the window is
   // gone or its chrome hasn't finished loading yet.
   sendToChrome(channel: string, ...args: unknown[]): void {

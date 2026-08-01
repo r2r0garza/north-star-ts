@@ -439,7 +439,7 @@ describe("BrowserActionClassifier", () => {
     expect((verdict as { category?: string }).category).toBeUndefined()
   })
 
-  it("auto-allows interactions within an open page (click/type/back)", () => {
+  it("auto-allows interactions within an open page (click/type/back/close)", () => {
     expect(bc.classify(browserClick("e3"))?.level).toBe("allow")
     expect(
       bc.classify({
@@ -455,6 +455,14 @@ describe("BrowserActionClassifier", () => {
         kind: "browser",
         summary: "Go back",
         identity: "browser_back",
+      })?.level
+    ).toBe("allow")
+    expect(
+      bc.classify({
+        tool: "browser_close",
+        kind: "browser",
+        summary: "Close the browser",
+        identity: "browser_close",
       })?.level
     ).toBe("allow")
   })

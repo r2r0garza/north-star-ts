@@ -38,6 +38,8 @@ export interface BrowserHandle {
   click(ref: string): Promise<InteractionResult>
   type(ref: string, text: string, submit: boolean): Promise<InteractionResult>
   back(): Promise<NavigateResult>
+  // Close the browser when done. Returns true if a session was actually open.
+  close(): boolean
 }
 
 export class BrowserManager {
@@ -103,6 +105,18 @@ export class BrowserManager {
     this.session.webContents.reload()
   }
 
+  // Close the current browser session: dispose its view (frees the renderer
+  // process, detaches the debugger) and hide the window. Distinct from dispose()
+  // (permanent, app-quit) — the manager stays usable, and the next navigate
+  // lazily creates a fresh session/window. Returns true if a session was open.
+  closeSession(): boolean {
+    if (this.disposed || !this.session) return false
+    this.host.hide()
+    this.session.dispose()
+    this.session = null
+    return true
+  }
+
   // Build a per-turn handle bound to this turn's AbortSignal. Cheap — it just
   // closes over the signal; the durable session is created lazily on first call.
   handleForTurn(signal?: AbortSignal): BrowserHandle {
@@ -118,6 +132,9 @@ export class BrowserManager {
       type: (ref, text, submit) =>
         this.ensureSession().type(ref, text, submit, INTERACT_TIMEOUT_MS, signal),
       back: () => this.ensureSession().back(NAVIGATE_TIMEOUT_MS, signal),
+      // close() must NOT create a session — it tears down whatever's open (or
+      // no-ops if nothing is), so it calls closeSession directly.
+      close: () => this.closeSession(),
     }
   }
 

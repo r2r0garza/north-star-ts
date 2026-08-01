@@ -21,6 +21,7 @@ const INTERACTION_TOOLS = new Set([
   "browser_click",
   "browser_type",
   "browser_back",
+  "browser_close",
 ])
 
 export class BrowserActionClassifier implements ActionClassifier {
