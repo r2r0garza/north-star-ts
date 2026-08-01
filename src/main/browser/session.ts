@@ -122,11 +122,20 @@ export class BrowserSession {
   ): Promise<NavigateResult> {
     await this.ensureAttached(timeoutMs, signal)
     const wc = this.view.webContents
-    // Wait for the DOM-ready load rather than every subresource: did-stop-loading
-    // fires when the main frame is done, which is what "the page is ready" means
-    // for verifying a flow. Race it against the deadline + abort.
+    // Resolve as soon as the page is ready, treating THREE signals as success
+    // (whichever comes first):
+    //  - loadURL() resolving — fires on did-finish-load (DOM + onload done). This
+    //    is the primary signal and the one the manual URL bar implicitly uses.
+    //  - did-finish-load — same milestone, belt-and-suspenders.
+    //  - did-stop-loading — the webContents went idle.
+    // We must NOT wait on did-stop-loading ALONE: a dev server holds a persistent
+    // connection open (HMR websocket / streaming), so with the debugger attached
+    // the "loading" state can linger and did-stop-loading may never fire — the
+    // page is fully usable but the navigate call would hang to the deadline. Only
+    // a real did-fail-load (not -3 ERR_ABORTED, which fires for benign redirects)
+    // rejects.
     const loaded = new Promise<void>((resolve, reject) => {
-      const onStop = () => {
+      const onReady = () => {
         cleanup()
         resolve()
       }
@@ -135,22 +144,25 @@ export class BrowserSession {
         errorCode: number,
         errorDescription: string
       ) => {
-        // -3 is ERR_ABORTED, which fires for ordinary client-side redirects —
-        // not a real failure, so ignore it and keep waiting for did-stop-loading.
         if (errorCode === -3) return
         cleanup()
         reject(new Error(`Navigation failed: ${errorDescription} (${errorCode})`))
       }
       const cleanup = () => {
-        wc.off("did-stop-loading", onStop)
+        wc.off("did-finish-load", onReady)
+        wc.off("did-stop-loading", onReady)
         wc.off("did-fail-load", onFail)
       }
-      wc.on("did-stop-loading", onStop)
+      wc.on("did-finish-load", onReady)
+      wc.on("did-stop-loading", onReady)
       wc.on("did-fail-load", onFail)
-    })
-    await wc.loadURL(url).catch(() => {
-      // loadURL rejects on aborted/redirected loads even when the navigation is
-      // fine; rely on the did-stop-loading race below for the real signal.
+      // loadURL resolves on did-finish-load and rejects on a failed load. A
+      // rejection here for a benign reason (aborted/redirected) shouldn't fail the
+      // navigation — the event listeners above carry the real verdict — but a
+      // clean resolution is a definitive "ready", so wire it in as another signal.
+      wc.loadURL(url).then(onReady, () => {
+        /* ignore — the did-fail-load listener decides real failures */
+      })
     })
     await withDeadline(loaded, timeoutMs, signal)
     return { url: wc.getURL(), title: wc.getTitle() }
@@ -317,8 +329,16 @@ export class BrowserSession {
     if (!nav.canGoBack()) {
       throw new Error("There is no page to go back to.")
     }
+    // Resolve on did-finish-load OR did-stop-loading, whichever fires first —
+    // did-stop-loading alone can linger on a dev-server page (see navigate()).
     const loaded = new Promise<void>((resolve) => {
-      wc.once("did-stop-loading", () => resolve())
+      const onReady = () => {
+        wc.off("did-finish-load", onReady)
+        wc.off("did-stop-loading", onReady)
+        resolve()
+      }
+      wc.once("did-finish-load", onReady)
+      wc.once("did-stop-loading", onReady)
     })
     nav.goBack()
     await withDeadline(loaded, timeoutMs, signal)
