@@ -61,6 +61,14 @@ browserManager.setPickForwarder((element) => {
   if (wc && !wc.isDestroyed()) wc.send("browser:element-picked", element)
 })
 
+// Route a browser tab click to the main app renderer so it switches to that
+// conversation (the bidirectional binding — see main.tsx's listener).
+browserManager.setConversationActivator((conversationId) => {
+  const wc = mainWindow?.webContents
+  if (wc && !wc.isDestroyed())
+    wc.send("browser:activate-conversation", conversationId)
+})
+
 function createWindow(): void {
   // Local const for in-function use (clean non-null narrowing in the closures
   // below); the module-level `mainWindow` mirrors it for external pushes.
@@ -134,9 +142,10 @@ ipcMain.handle("chat", async (event, req: ChatRequest) => {
     // Let a live turn hand work to the background (run_todos_in_background). The
     // runner singleton lives here; runChat can't import it (cycle).
     (input) => taskRunner.enqueue(input),
-    // Give the live turn a browser handle bound to its abort signal. The manager
-    // singleton lives here for the same cycle-avoidance reason as the runner.
-    (signal) => browserManager.handleForTurn(signal)
+    // Give the live turn a browser handle scoped to its conversation's tab and
+    // bound to its abort signal. req.conversationId is already in scope here, so
+    // no agent-loop signature change is needed to thread it (Option B).
+    (signal) => browserManager.handleForTurn(req.conversationId, signal)
   )
   // After the turn's transcript is persisted, consider refreshing the rolling
   // conversation summary (plan 019). Threshold + debounce + dedupe live inside
@@ -191,6 +200,20 @@ ipcMain.handle("browser:reload", () => browserManager.userReload())
 ipcMain.handle("browser:set-pick-mode", (_event, active: boolean) => {
   browserManager.setPickMode(!!active)
 })
+// Chrome tab click → ask the app to switch to that conversation (bidirectional).
+ipcMain.handle("browser:activate-conversation", (_event, id: string) => {
+  if (typeof id === "string" && id) browserManager.requestConversationActivation(id)
+})
+// Main app renderer → main: the user switched to this conversation; show its tab
+// (or hide if null / no tab). This drives which tab is visible.
+ipcMain.handle(
+  "browser:set-active-conversation",
+  (_event, conversationId: string | null) => {
+    browserManager.setActiveConversation(
+      typeof conversationId === "string" ? conversationId : null
+    )
+  }
+)
 ipcMain.handle("pick-workspace", () => pickWorkspace())
 ipcMain.handle("pick-files", () => pickFiles())
 // List available skills (name + description only) for the composer's slash
@@ -253,7 +276,9 @@ ipcMain.handle("is-fullscreen", (event) => {
 app.whenReady().then(() => {
   // Register DB-backed IPC handlers now — the connection opens lazily on first
   // use, after userData is available.
-  registerDbHandlers(indexService, taskRunner)
+  registerDbHandlers(indexService, taskRunner, (id) =>
+    browserManager.closeTab(id)
+  )
   registerSettingsHandlers()
   registerProviderHandlers()
   // Start the durable task runner now that the DB handlers are registered (it

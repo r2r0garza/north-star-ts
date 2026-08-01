@@ -1,8 +1,8 @@
-import type { BrowserChromeApi } from "../../preload/browser-chrome"
+import type { BrowserChromeApi, ChromeTab } from "../../preload/browser-chrome"
 
-// Script for the agent-browser chrome (URL bar + reload). Talks to main only via
-// the narrow `browserChrome` preload bridge. Kept dependency-free (no React) —
-// this is a tiny toolbar, not an app surface.
+// Script for the agent-browser chrome (tab strip + URL bar + reload). Talks to
+// main only via the narrow `browserChrome` preload bridge. Kept dependency-free
+// (no React) — this is a tiny toolbar, not an app surface.
 
 declare global {
   interface Window {
@@ -11,6 +11,7 @@ declare global {
 }
 
 const bridge = window.browserChrome
+const tabsEl = document.getElementById("tabs") as HTMLDivElement
 const urlInput = document.getElementById("url") as HTMLInputElement
 const reloadBtn = document.getElementById("reload") as HTMLButtonElement
 const pickBtn = document.getElementById("pick") as HTMLButtonElement
@@ -57,10 +58,31 @@ pickBtn.addEventListener("click", () => {
   bridge.setPickMode(picking)
 })
 
-// Keep the bar in sync with the page (agent- or user-driven), unless the user is
-// mid-edit.
-bridge.onUrl((url) => {
-  if (!editing) urlInput.value = url
+// Render the tab strip and sync the URL bar to the active tab. Rebuilt on every
+// push — the list is tiny (one tab per conversation with a browser open).
+bridge.onTabs((tabs: ChromeTab[]) => {
+  tabsEl.replaceChildren()
+  for (const tab of tabs) {
+    const el = document.createElement("div")
+    el.className = tab.active ? "tab active" : "tab"
+    el.title = tab.url || tab.title
+    if (tab.loading) {
+      const dot = document.createElement("span")
+      dot.className = "spinner"
+      el.appendChild(dot)
+    }
+    const title = document.createElement("span")
+    title.className = "title"
+    title.textContent = tab.title
+    el.appendChild(title)
+    el.addEventListener("click", () => bridge.activateTab(tab.id))
+    tabsEl.appendChild(el)
+  }
+  // Drive the URL bar from the active tab (unless the user is mid-edit).
+  if (!editing) {
+    const active = tabs.find((t) => t.active)
+    urlInput.value = active?.url ?? ""
+  }
 })
 
 // Main pushes the authoritative pick-mode state (e.g. auto-off after a pick).

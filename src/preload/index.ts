@@ -24,6 +24,7 @@ import type {
   LlmSettings,
   IndexingSettings,
   SkillSourcesSettings,
+  BrowserSettings,
 } from "../main/settings/service"
 import type { SkillSourceRow } from "../main/agent/skills/types"
 import type { RuntimeStatus } from "../main/agent/env/runtime-check"
@@ -266,6 +267,20 @@ const api = {
       ipcRenderer.removeListener("browser:element-picked", listener)
     }
   },
+  // Tell main which conversation the user is now viewing, so the agent browser
+  // shows that conversation's tab. Null = a fresh/uncreated conversation.
+  setActiveConversation: (conversationId: string | null) => {
+    void ipcRenderer.invoke("browser:set-active-conversation", conversationId)
+  },
+  // Subscribe to a request (from clicking a tab in the agent browser) to switch
+  // the app to a conversation. Returns an unsubscribe function.
+  onActivateConversation: (cb: (conversationId: string) => void) => {
+    const listener = (_e: IpcRendererEvent, id: string) => cb(id)
+    ipcRenderer.on("browser:activate-conversation", listener)
+    return () => {
+      ipcRenderer.removeListener("browser:activate-conversation", listener)
+    }
+  },
 
   // Durable local state (SQLite, owned by the main process). Thin invoke
   // wrappers — the renderer only displays state and sends actions; it never
@@ -448,6 +463,13 @@ const api = {
         "settings:setSkillSources",
         next
       ) as Promise<SkillSourcesSettings>,
+    getBrowser: () =>
+      ipcRenderer.invoke("settings:getBrowser") as Promise<BrowserSettings>,
+    setBrowser: (next: BrowserSettings) =>
+      ipcRenderer.invoke(
+        "settings:setBrowser",
+        next
+      ) as Promise<BrowserSettings>,
     checkRuntimes: (recheck?: boolean) =>
       ipcRenderer.invoke("settings:checkRuntimes", recheck) as Promise<{
         docker: RuntimeStatus
@@ -578,6 +600,8 @@ export type {
   LlmSettings,
   IndexingSettings,
   SkillSourcesSettings,
+  BrowserSettings,
+  BrowserReveal,
   Backend,
   FilePermission,
   ApprovalCategory,

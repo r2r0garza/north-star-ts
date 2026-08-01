@@ -93,6 +93,15 @@ export interface SkillSourcesSettings {
   folders: string[]
 }
 
+// Agent browser preferences. `revealOnAgentUse` controls whether the browser
+// window pops to the front when the agent navigates in the conversation you're
+// viewing: "always" reveals it, "never" keeps it hidden (the page still runs and
+// screenshots still work; a browser_handoff for a captcha/login still reveals).
+export type BrowserReveal = "always" | "never"
+export interface BrowserSettings {
+  revealOnAgentUse: BrowserReveal
+}
+
 // Default container image when a runtime is chosen but no image is set.
 const DEFAULT_CONTAINER_IMAGE = "node:20-bookworm"
 
@@ -119,6 +128,10 @@ const DEFAULT_INDEXING: IndexingSettings = {
 
 const DEFAULT_SKILL_SOURCES: SkillSourcesSettings = { folders: [] }
 
+const DEFAULT_BROWSER: BrowserSettings = {
+  revealOnAgentUse: "always",
+}
+
 function defaultExecution(): ExecutionSettings {
   return {
     backend: "local",
@@ -137,12 +150,14 @@ const KEY_PERMISSIONS = "permissions"
 const KEY_LLM = "llm"
 const KEY_INDEXING = "indexing"
 const KEY_SKILL_SOURCES = "skillSources"
+const KEY_BROWSER = "browser"
 
 let executionCache: ExecutionSettings | undefined
 let permissionsCache: PermissionSettings | undefined
 let llmCache: LlmSettings | undefined
 let indexingCache: IndexingSettings | undefined
 let skillSourcesCache: SkillSourcesSettings | undefined
+let browserCache: BrowserSettings | undefined
 // Tracks whether an execution row exists, so getExecutionConfig can fall back to
 // the COWORK_ENV_RUNTIME env var until the user writes a backend choice.
 let executionPersisted = false
@@ -266,6 +281,25 @@ function loadSkillSources(): SkillSourcesSettings {
   return skillSourcesCache
 }
 
+function loadBrowser(): BrowserSettings {
+  if (browserCache) return browserCache
+  const raw = settingsRepo.getSetting(KEY_BROWSER)
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw) as Partial<BrowserSettings>
+      browserCache = {
+        revealOnAgentUse:
+          parsed.revealOnAgentUse === "never" ? "never" : "always",
+      }
+      return browserCache
+    } catch {
+      // Corrupt blob — fall through to defaults.
+    }
+  }
+  browserCache = { ...DEFAULT_BROWSER }
+  return browserCache
+}
+
 // ── Reads ────────────────────────────────────────────────────────────────────
 
 export function getExecution(): ExecutionSettings {
@@ -302,6 +336,10 @@ export function getIndexing(): IndexingSettings {
 
 export function getSkillSources(): SkillSourcesSettings {
   return loadSkillSources()
+}
+
+export function getBrowser(): BrowserSettings {
+  return loadBrowser()
 }
 
 // Whether the sandbox policy auto-approves a given action category. Consulted by
@@ -343,6 +381,12 @@ export function setSkillSources(
   return next
 }
 
+export function setBrowser(next: BrowserSettings): BrowserSettings {
+  settingsRepo.setSetting(KEY_BROWSER, JSON.stringify(next))
+  browserCache = next
+  return next
+}
+
 // Invalidation hook fired whenever the active LLM selection changes, so the
 // provider routing layer can drop its cached client and the next turn rebuilds
 // with the new account/model. Registered by the providers module to avoid a
@@ -367,5 +411,6 @@ export function _resetCacheForTests(): void {
   llmCache = undefined
   indexingCache = undefined
   skillSourcesCache = undefined
+  browserCache = undefined
   executionPersisted = false
 }

@@ -43,6 +43,8 @@ export type {
   LlmSettings,
   IndexingSettings,
   SkillSourcesSettings,
+  BrowserSettings,
+  BrowserReveal,
   Backend,
   FilePermission,
   ApprovalCategory,

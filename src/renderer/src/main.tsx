@@ -68,6 +68,23 @@ function Shell() {
     return window.cowork.onFullScreenChange(setFullscreen)
   }, [])
 
+  // Tell the agent browser which conversation is active, so it shows that
+  // conversation's tab (or hides if this is a fresh/uncreated one).
+  useEffect(() => {
+    window.cowork.setActiveConversation(activeConversationId)
+  }, [activeConversationId])
+
+  // Reverse binding: clicking a tab in the agent browser switches the app to
+  // that conversation. Resolve its mode to pick the right view, then reuse the
+  // same path as a sidebar click.
+  useEffect(() => {
+    return window.cowork.onActivateConversation((id) => {
+      void window.cowork.db.conversations.get(id).then((convo) => {
+        if (convo) handleSelectConversation(id, convo.mode)
+      })
+    })
+  }, [])
+
   // First launch: if no LLM provider is configured yet, open Settings to the
   // Providers tab so the user configures one before sending a message.
   useEffect(() => {

@@ -23,8 +23,64 @@
           -apple-system,
           sans-serif;
       }
-      /* The chrome bar. Must match CHROME_HEIGHT (44) in src/main/browser/window.ts
-         so the WebContentsView sits flush beneath it. */
+      /* The chrome = tab strip (36px) + control bar (44px) = 80px. Must match
+         CHROME_HEIGHT in src/main/browser/window.ts so views sit flush beneath. */
+      #tabs {
+        height: 36px;
+        display: flex;
+        align-items: stretch;
+        gap: 4px;
+        padding: 4px 8px 0;
+        overflow-x: auto;
+        background: Canvas;
+        color: CanvasText;
+      }
+      .tab {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        max-width: 200px;
+        padding: 0 10px;
+        border: 1px solid rgba(128, 128, 128, 0.3);
+        border-bottom: none;
+        border-radius: 8px 8px 0 0;
+        background: transparent;
+        font-size: 12px;
+        cursor: pointer;
+        white-space: nowrap;
+        opacity: 0.7;
+      }
+      .tab:hover {
+        background: rgba(128, 128, 128, 0.12);
+      }
+      .tab.active {
+        opacity: 1;
+        background: rgba(128, 128, 128, 0.18);
+        border-color: rgba(128, 128, 128, 0.45);
+      }
+      .tab .title {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        max-width: 160px;
+      }
+      /* Loading spinner dot. */
+      .tab .spinner {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: rgba(80, 130, 255, 0.9);
+        flex: none;
+        animation: pulse 1s ease-in-out infinite;
+      }
+      @keyframes pulse {
+        0%,
+        100% {
+          opacity: 0.3;
+        }
+        50% {
+          opacity: 1;
+        }
+      }
       #bar {
         height: 44px;
         display: flex;
@@ -76,6 +132,7 @@
     </style>
   </head>
   <body>
+    <div id="tabs"></div>
     <div id="bar">
       <button id="reload" title="Reload">⟳</button>
       <input id="url" type="text" placeholder="Enter a URL…" spellcheck="false" />

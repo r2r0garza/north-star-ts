@@ -217,3 +217,28 @@ describe("settings service — skill sources (capabilities)", () => {
     expect(service.getSkillSources().folders).toEqual([])
   })
 })
+
+describe("settings service — browser (tabbed browser, plan: Phase 4)", () => {
+  it("defaults revealOnAgentUse to always", () => {
+    expect(service.getBrowser()).toEqual({ revealOnAgentUse: "always" })
+  })
+
+  it("round-trips a persisted change to never", () => {
+    service.setBrowser({ revealOnAgentUse: "never" })
+    service._resetCacheForTests()
+    expect(service.getBrowser().revealOnAgentUse).toBe("never")
+  })
+
+  it("coerces an unknown/partial value to always", () => {
+    store.set("browser", JSON.stringify({ revealOnAgentUse: "bogus" }))
+    expect(service.getBrowser().revealOnAgentUse).toBe("always")
+    service._resetCacheForTests()
+    store.set("browser", JSON.stringify({}))
+    expect(service.getBrowser().revealOnAgentUse).toBe("always")
+  })
+
+  it("falls back to defaults on a corrupt blob", () => {
+    store.set("browser", "{not json")
+    expect(service.getBrowser().revealOnAgentUse).toBe("always")
+  })
+})

@@ -6,6 +6,7 @@ import type {
   PermissionSettings,
   IndexingSettings,
   SkillSourcesSettings,
+  BrowserSettings,
 } from "../settings/service"
 
 // Registers the `settings:` IPC channels. All route through the settings service
@@ -35,6 +36,11 @@ export function registerSettingsHandlers(): void {
   )
   ipcMain.handle("settings:setSkillSources", (_e, next: SkillSourcesSettings) =>
     settingsService.setSkillSources(next)
+  )
+
+  ipcMain.handle("settings:getBrowser", () => settingsService.getBrowser())
+  ipcMain.handle("settings:setBrowser", (_e, next: BrowserSettings) =>
+    settingsService.setBrowser(next)
   )
 
   // Runtime availability for the backend picker. `recheck` forces a fresh probe
