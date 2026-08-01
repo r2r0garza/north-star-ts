@@ -13,6 +13,15 @@ declare global {
 const bridge = window.browserChrome
 const urlInput = document.getElementById("url") as HTMLInputElement
 const reloadBtn = document.getElementById("reload") as HTMLButtonElement
+const pickBtn = document.getElementById("pick") as HTMLButtonElement
+
+// Local mirror of pick-mode state; main is the source of truth (it pushes
+// browser:pick-mode when a pick completes or is cancelled).
+let picking = false
+function setPicking(next: boolean): void {
+  picking = next
+  pickBtn.classList.toggle("active", picking)
+}
 
 // Whether the user is actively editing the URL bar — while they are, don't clobber
 // their text with page-driven URL updates.
@@ -42,8 +51,17 @@ urlInput.addEventListener("keydown", (e) => {
 })
 reloadBtn.addEventListener("click", () => bridge.reload())
 
+pickBtn.addEventListener("click", () => {
+  // Optimistically flip; main will confirm/correct via onPickMode.
+  setPicking(!picking)
+  bridge.setPickMode(picking)
+})
+
 // Keep the bar in sync with the page (agent- or user-driven), unless the user is
 // mid-edit.
 bridge.onUrl((url) => {
   if (!editing) urlInput.value = url
 })
+
+// Main pushes the authoritative pick-mode state (e.g. auto-off after a pick).
+bridge.onPickMode(setPicking)

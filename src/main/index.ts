@@ -48,8 +48,23 @@ const summaryService = new SummaryService(taskRunner)
 // on will-quit. Lazily creates its window on first agent use.
 const browserManager = new BrowserManager()
 
+// Module-level handle to the main app window, so pushes from services that don't
+// own it (the browser manager forwarding picked elements) can reach its renderer.
+// Assigned in createWindow; the browser manager reads it via the forwarder below.
+let mainWindow: BrowserWindow | null = null
+
+// Route picked elements from the agent browser to the main app renderer, where
+// they surface as a pending composer chip. Reads mainWindow lazily so it works
+// regardless of creation order; no-ops if the window is gone.
+browserManager.setPickForwarder((element) => {
+  const wc = mainWindow?.webContents
+  if (wc && !wc.isDestroyed()) wc.send("browser:element-picked", element)
+})
+
 function createWindow(): void {
-  const mainWindow = new BrowserWindow({
+  // Local const for in-function use (clean non-null narrowing in the closures
+  // below); the module-level `mainWindow` mirrors it for external pushes.
+  const win = new BrowserWindow({
     width: 1100,
     height: 800,
     show: false,
@@ -67,18 +82,24 @@ function createWindow(): void {
       sandbox: false,
     },
   })
+  mainWindow = win
 
-  mainWindow.on("ready-to-show", () => mainWindow.show())
+  win.on("ready-to-show", () => win.show())
+  // Drop the module reference when the window is gone so pushes no-op instead of
+  // hitting a destroyed webContents.
+  win.on("closed", () => {
+    if (mainWindow === win) mainWindow = null
+  })
 
   // Tell the renderer when fullscreen changes — in fullscreen the macOS traffic
   // lights are hidden, so the UI shifts its sidebar toggle to the left edge.
   const sendFullScreen = (value: boolean) =>
-    mainWindow.webContents.send("window:fullscreen", value)
-  mainWindow.on("enter-full-screen", () => sendFullScreen(true))
-  mainWindow.on("leave-full-screen", () => sendFullScreen(false))
+    win.webContents.send("window:fullscreen", value)
+  win.on("enter-full-screen", () => sendFullScreen(true))
+  win.on("leave-full-screen", () => sendFullScreen(false))
 
   // Open external links in the user's browser, not inside the app window.
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+  win.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url)
     return { action: "deny" }
   })
@@ -86,9 +107,9 @@ function createWindow(): void {
   // electron-vite injects the dev server URL in development; in production we
   // load the built renderer HTML from disk.
   if (process.env.ELECTRON_RENDERER_URL) {
-    mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL)
+    win.loadURL(process.env.ELECTRON_RENDERER_URL)
   } else {
-    mainWindow.loadFile(join(__dirname, "../renderer/index.html"))
+    win.loadFile(join(__dirname, "../renderer/index.html"))
   }
 }
 
@@ -166,6 +187,10 @@ ipcMain.handle("browser:navigate", (_event, url: string) => {
   if (typeof url === "string" && url.trim()) browserManager.userNavigate(url.trim())
 })
 ipcMain.handle("browser:reload", () => browserManager.userReload())
+// Toggle element-pick mode from the chrome's "Pick element" button.
+ipcMain.handle("browser:set-pick-mode", (_event, active: boolean) => {
+  browserManager.setPickMode(!!active)
+})
 ipcMain.handle("pick-workspace", () => pickWorkspace())
 ipcMain.handle("pick-files", () => pickFiles())
 // List available skills (name + description only) for the composer's slash

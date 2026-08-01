@@ -26,6 +26,9 @@ export type {
   QuestionAnswer,
 } from "../../preload/index"
 
+// Picked-element type (agent browser pick mode), surfaced for the composer chip.
+export type { PickedElement } from "../../preload/index"
+
 // Skill summary type, surfaced for the composer's slash menu.
 export type {
   SkillSummary,

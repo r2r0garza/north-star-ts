@@ -12,11 +12,22 @@ const api = {
   reload: (): void => {
     void ipcRenderer.invoke("browser:reload")
   },
+  // Toggle element-pick mode (highlight + click-to-select on the page).
+  setPickMode: (active: boolean): void => {
+    void ipcRenderer.invoke("browser:set-pick-mode", active)
+  },
   // Subscribe to page URL updates. Returns an unsubscribe fn.
   onUrl: (cb: (url: string) => void): (() => void) => {
     const listener = (_e: unknown, url: string) => cb(url)
     ipcRenderer.on("browser:url", listener)
     return () => ipcRenderer.off("browser:url", listener)
+  },
+  // Subscribe to pick-mode changes pushed from main (e.g. auto-off after a pick),
+  // so the toggle button reflects the true state. Returns an unsubscribe fn.
+  onPickMode: (cb: (active: boolean) => void): (() => void) => {
+    const listener = (_e: unknown, active: boolean) => cb(active)
+    ipcRenderer.on("browser:pick-mode", listener)
+    return () => ipcRenderer.off("browser:pick-mode", listener)
   },
 }
 

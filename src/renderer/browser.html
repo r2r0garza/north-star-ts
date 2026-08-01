@@ -62,12 +62,26 @@
       #url:focus {
         border-color: rgba(80, 130, 255, 0.8);
       }
+      /* Pick-mode toggle: highlighted when active. */
+      #pick.active {
+        background: rgba(80, 130, 255, 0.9);
+        border-color: rgba(80, 130, 255, 0.9);
+        color: white;
+      }
+      #pick {
+        padding: 0 10px;
+        min-width: auto;
+        white-space: nowrap;
+      }
     </style>
   </head>
   <body>
     <div id="bar">
       <button id="reload" title="Reload">⟳</button>
       <input id="url" type="text" placeholder="Enter a URL…" spellcheck="false" />
+      <button id="pick" title="Pick an element to send to the agent">
+        ⌖ Pick
+      </button>
     </div>
     <script type="module" src="/src/browser-chrome.ts"></script>
   </body>

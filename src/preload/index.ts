@@ -16,6 +16,7 @@ import type {
   Workspace,
 } from "../main/db/types"
 import type { ActionKind } from "../main/agent/approval/types"
+import type { PickedElement } from "../main/browser/types"
 import type { Question, QuestionAnswer } from "../main/agent/tools/types"
 import type {
   ExecutionSettings,
@@ -252,6 +253,17 @@ const api = {
     ipcRenderer.on("window:fullscreen", listener)
     return () => {
       ipcRenderer.removeListener("window:fullscreen", listener)
+    }
+  },
+  // Subscribe to elements the user picks in the agent browser (pick mode). The
+  // renderer surfaces the payload as a pending composer chip. Returns an
+  // unsubscribe function.
+  onBrowserElementPicked: (cb: (element: PickedElement) => void) => {
+    const listener = (_e: IpcRendererEvent, element: PickedElement) =>
+      cb(element)
+    ipcRenderer.on("browser:element-picked", listener)
+    return () => {
+      ipcRenderer.removeListener("browser:element-picked", listener)
     }
   },
 
@@ -589,3 +601,4 @@ export type {
 // Workspace indexing types (plan 008) for the status strip + settings tab.
 export type { IndexPriority, IndexStage } from "../main/db/types"
 export type { IndexStatus } from "../main/ipc/index-handlers"
+export type { PickedElement } from "../main/browser/types"

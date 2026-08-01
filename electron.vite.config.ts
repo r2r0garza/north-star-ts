@@ -23,6 +23,8 @@ export default defineConfig({
             __dirname,
             "src/preload/browser-chrome.ts"
           ),
+          // Preload injected into the agent-browser page for element-pick mode.
+          "browser-pick": resolve(__dirname, "src/preload/browser-pick.ts"),
         },
       },
     },

@@ -40,6 +40,9 @@ const electronMock = vi.hoisted(() => {
 
   class WebContentsMock extends EventTargetMock {
     debugger = new DebuggerMock()
+    // View-scoped IpcMain (webContents.ipc). The session registers a
+    // "browser-pick:picked" receiver on it in the constructor.
+    ipc = { on: vi.fn(), removeListener: vi.fn() }
     currentUrl = "about:blank"
     title = ""
     loadURL = vi.fn(async (url: string) => {
@@ -48,6 +51,7 @@ const electronMock = vi.hoisted(() => {
     getURL = vi.fn(() => this.currentUrl)
     getTitle = vi.fn(() => this.title)
     isDestroyed = vi.fn(() => false)
+    send = vi.fn()
     close = vi.fn()
   }
 

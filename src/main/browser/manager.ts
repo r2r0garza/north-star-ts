@@ -5,6 +5,13 @@ import type {
   NavigateResult,
   ScreenshotResult,
 } from "./session"
+import type { PickedElement } from "./types"
+
+// Forwards a picked element to the main app renderer (so it can surface as a
+// composer chip). Injected by the caller — the manager can't reach the main
+// window itself (see src/main/index.ts wiring), same cycle-avoidance as the
+// browser handle / task-runner enqueue.
+export type PickForwarder = (element: PickedElement) => void
 
 // The single owner of the agent's browser. Phase 1: one shared window + one
 // global session (per-conversation sessions land in Phase 4). Instantiated once
@@ -37,6 +44,14 @@ export class BrowserManager {
   private readonly host = new BrowserWindowHost()
   private session: BrowserSession | null = null
   private disposed = false
+  // Where picked elements go (main app renderer). Set via setPickForwarder.
+  private pickForwarder: PickForwarder | null = null
+
+  // Wire the destination for picked elements. Called once from main/index.ts
+  // after the main window exists.
+  setPickForwarder(forward: PickForwarder): void {
+    this.pickForwarder = forward
+  }
 
   // Get the shared session, creating it (and attaching its view to the window)
   // on first use. Reveal policy is applied here in Phase 1 (always reveal); the
@@ -51,10 +66,24 @@ export class BrowserManager {
       this.host.sendToChrome("browser:url", session.webContents.getURL())
     session.webContents.on("did-navigate", pushUrl)
     session.webContents.on("did-navigate-in-page", pushUrl)
+    // A pick exits pick mode; forward it to the main app renderer and tell the
+    // chrome to un-toggle its pick button.
+    session.onElementPicked = (element) => {
+      this.host.sendToChrome("browser:pick-mode", false)
+      this.pickForwarder?.(element)
+    }
     this.host.attachView(session)
     this.host.reveal()
     this.session = session
     return session
+  }
+
+  // Enter/exit element-pick mode from the chrome's toggle. Creating the session
+  // if needed so the toggle works even before the agent has navigated.
+  setPickMode(active: boolean): void {
+    if (this.disposed) return
+    this.ensureSession().setPickMode(active)
+    if (active) this.host.reveal()
   }
 
   // User-driven navigation from the chrome URL bar. Not gated — the human is

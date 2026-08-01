@@ -1,5 +1,7 @@
 import { WebContentsView } from "electron"
+import { join } from "path"
 import { sendCommand, withDeadline } from "./cdp"
+import type { PickedElement } from "./types"
 
 // One agent-controllable browser page. Wraps a WebContentsView (its page runs in
 // its own renderer/GPU process, off the main event loop) and drives it over the
@@ -74,14 +76,19 @@ export class BrowserSession {
   // kept alongside so an interaction can report what it acted on.
   private refs = new Map<string, { backendNodeId: number; label: string }>()
 
+  // Called with the element the user picked in pick mode. Set by the manager so
+  // the pick can be forwarded to the main app renderer.
+  onElementPicked?: (element: PickedElement) => void
+
   constructor() {
     this.view = new WebContentsView({
       webPreferences: {
         partition: BROWSER_PARTITION,
         // The page is untrusted content the agent navigates to — keep it isolated
-        // and sandboxed. (The pick-mode preload in Phase 2 lands here.)
+        // and sandboxed. The pick-mode preload runs in the page's isolated world.
         contextIsolation: true,
         sandbox: true,
+        preload: join(__dirname, "../preload/browser-pick.js"),
       },
     })
     // Detach bookkeeping: if DevTools or anything else steals the debugger, we
@@ -92,6 +99,18 @@ export class BrowserSession {
     // A document-level navigation invalidates every backendDOMNodeId, so drop the
     // ref map. (In-page navigations keep the DOM, so those don't clear it.)
     this.view.webContents.on("did-navigate", () => this.refs.clear())
+    // View-scoped IPC (not global ipcMain) so this receiver only ever hears its
+    // own page's pick events. The preload sends the computed descriptor here.
+    this.view.webContents.ipc.on("browser-pick:picked", (_e, element) => {
+      this.onElementPicked?.(element as PickedElement)
+    })
+  }
+
+  // Enter/exit element-pick mode: tells the injected preload to start/stop
+  // highlighting + capturing clicks. No-op if the contents are gone.
+  setPickMode(active: boolean): void {
+    const wc = this.view.webContents
+    if (!wc.isDestroyed()) wc.send("browser-pick:set", active)
   }
 
   get webContents() {

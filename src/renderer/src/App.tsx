@@ -4,6 +4,7 @@ import {
   ArrowUp,
   FileText,
   FolderOpen,
+  MousePointerClick,
   Plus,
   Square,
   Workflow,
@@ -75,6 +76,7 @@ import type {
   LlmSettings,
   AccountWithModels,
   SkillSummary,
+  PickedElement,
 } from "@/types"
 
 // The live, in-flight state of one streaming turn, held per-conversation in
@@ -97,6 +99,23 @@ function baseName(path: string): string {
 function dirName(path: string): string {
   const i = path.lastIndexOf("/")
   return i === -1 ? "" : path.slice(0, i)
+}
+
+// A short human label for a picked element's chip, e.g. `button "Sign up"` or
+// `a#nav-tasks`. Prefers role + name; falls back to tag + selector.
+function pickedElementLabel(el: PickedElement): string {
+  if (el.role && el.name) return `${el.role} "${el.name}"`
+  if (el.name) return `"${el.name}"`
+  return el.selector || el.tag
+}
+
+// The descriptor prepended to the outgoing message when an element is picked, so
+// the agent has the concrete details to locate/act on it.
+function formatPickedElement(el: PickedElement): string {
+  const parts = [`tag=${el.tag}`, `selector=${el.selector}`]
+  if (el.role) parts.push(`role=${el.role}`)
+  if (el.name) parts.push(`name=${JSON.stringify(el.name)}`)
+  return `[User pointed at a browser element — ${parts.join(", ")}]`
 }
 
 export default function App({
@@ -134,6 +153,10 @@ export default function App({
   const [workspace, setWorkspace] = useState("")
   const [attachments, setAttachments] = useState<string[]>([])
   const [message, setMessage] = useState("")
+  // An element the user picked in the agent browser ("point at this button").
+  // Held as a pending chip above the composer and prepended to the next message
+  // on Send, then cleared. Null when nothing is pending.
+  const [pickedElement, setPickedElement] = useState<PickedElement | null>(null)
   // Mention pickers: `/skill` steers the agent toward a skill, `@file` points it
   // at a workspace file. Both share one menu anchored to the textarea.
   //   - `skills` is the catalog (loaded once per workspace, filtered client-side).
@@ -256,6 +279,15 @@ export default function App({
   // selected folder as well. All views need an LLM selection.
   const canSend =
     !!message.trim() && !loading && hasLlm && (isChat || !!workspace.trim())
+
+  // Subscribe to elements picked in the agent browser (pick mode). The latest
+  // pick replaces any pending one — a single chip, not a list. Cleared on Send
+  // (prepended to the message) or via the chip's remove button.
+  useEffect(() => {
+    return window.cowork.onBrowserElementPicked((element) => {
+      setPickedElement(element)
+    })
+  }, [])
 
   // Load the active conversation when it changes. A null id is a fresh,
   // not-yet-created conversation: clear the panel. Otherwise reload its stored
@@ -568,7 +600,14 @@ export default function App({
     // reads them: `/git-commit` → `git-commit skill`, `@src/foo.ts` → `src/foo.ts`.
     // The expanded text is also what's shown in the optimistic timeline, so the
     // transcript matches what the agent received.
-    const text = expandMentions(message, confirmedMentions).trim()
+    const base = expandMentions(message, confirmedMentions).trim()
+    // Prepend a picked-element descriptor (if any) so the agent knows exactly
+    // which on-page element the user is pointing at. It can act on it two ways:
+    // edit the source that renders it (grep the selector/text), or
+    // browser_snapshot + match the role/name to click it.
+    const text = pickedElement
+      ? `${formatPickedElement(pickedElement)}\n\n${base}`
+      : base
     const sentAttachments = attachments
 
     // Ensure a conversation exists — created lazily on first send. For
@@ -614,6 +653,7 @@ export default function App({
     setMenu(null)
     setMenuActive(null)
     setAttachments([])
+    setPickedElement(null)
     // Start this conversation's live turn from a clean slate (its buffers are
     // keyed by conversation, so this never touches another conversation's turn).
     setLiveTurns((prev) => {
@@ -968,6 +1008,32 @@ export default function App({
   // bottom-pinned, so it's defined once here.
   const composer = (
     <>
+      {/* Picked browser element — removable chip, prepended to the next message. */}
+      {pickedElement && (
+        <AttachmentGroup className="mb-2">
+          <Attachment
+            size="sm"
+            title={formatPickedElement(pickedElement)}
+          >
+            <AttachmentMedia variant="icon">
+              <MousePointerClick />
+            </AttachmentMedia>
+            <AttachmentContent>
+              <AttachmentTitle>
+                {pickedElementLabel(pickedElement)}
+              </AttachmentTitle>
+            </AttachmentContent>
+            <AttachmentActions>
+              <AttachmentAction
+                onClick={() => setPickedElement(null)}
+                aria-label="Remove picked element"
+              >
+                <X />
+              </AttachmentAction>
+            </AttachmentActions>
+          </Attachment>
+        </AttachmentGroup>
+      )}
       {/* Attachment cards (Chat only) — removable, shown above the input. */}
       {isChat && attachments.length > 0 && (
         <AttachmentGroup className="mb-2">
