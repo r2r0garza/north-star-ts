@@ -21,6 +21,12 @@ export class BrowserWindowHost {
   private window: BrowserWindow | null = null
   private attachedView: BrowserSession["view"] | null = null
   private resizeHandler: (() => void) | null = null
+  // Set on app quit. The user-close handler below normally vetoes close and
+  // hides the window (so the session survives a stray close). But that veto,
+  // left in place during quit, cancels the whole quit — the main process and its
+  // renderer children stay alive (a leaked Electron process). When quitting we
+  // stop vetoing so every window closes and the process exits cleanly.
+  private quitting = false
 
   // Lazily create the window on first use. Hidden until reveal() so the page can
   // load/paint/screenshot without stealing focus.
@@ -50,9 +56,11 @@ export class BrowserWindowHost {
       this.attachedView = null
     })
     // Hide instead of destroy on user close, so a live session survives a stray
-    // window close and can be revealed again on the next agent action.
+    // window close and can be revealed again on the next agent action. EXCEPT
+    // during app quit: vetoing then would cancel the quit and leak the process,
+    // so once `quitting` is set we let the close proceed.
     win.on("close", (e) => {
-      if (!win.isDestroyed()) {
+      if (!this.quitting && !win.isDestroyed()) {
         e.preventDefault()
         win.hide()
       }
@@ -91,6 +99,13 @@ export class BrowserWindowHost {
     if (wc && !wc.isDestroyed()) wc.send(channel, ...args)
   }
 
+  // Called on app `before-quit`, ahead of the window-close pass. Clears the
+  // user-close veto so quitting actually closes the window instead of being
+  // cancelled by it (see the `quitting` field).
+  prepareForQuit(): void {
+    this.quitting = true
+  }
+
   private layout(): void {
     if (!this.window || this.window.isDestroyed() || !this.attachedView) return
     const [width, height] = this.window.getContentSize()
@@ -103,6 +118,9 @@ export class BrowserWindowHost {
   }
 
   dispose(): void {
+    // Belt-and-suspenders: ensure the veto is off even if dispose is reached
+    // without a prior prepareForQuit (e.g. a programmatic teardown).
+    this.quitting = true
     if (this.window && !this.window.isDestroyed()) {
       this.window.removeAllListeners("close")
       this.window.destroy()

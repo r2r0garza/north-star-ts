@@ -92,6 +92,13 @@ export class BrowserManager {
     }
   }
 
+  // Called on app `before-quit`: clear the browser window's user-close veto so
+  // quitting closes it cleanly instead of being cancelled (which would leak the
+  // process). Safe to call when no window exists yet.
+  prepareForQuit(): void {
+    this.host.prepareForQuit()
+  }
+
   dispose(): void {
     if (this.disposed) return
     this.disposed = true

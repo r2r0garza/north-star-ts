@@ -280,6 +280,14 @@ app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit()
 })
 
+// Before the quit sequence closes windows, clear the agent browser's user-close
+// veto. That veto hides-instead-of-closes on a normal user close (so a session
+// survives a stray window close), but during quit it would cancel the quit and
+// leave the process (and its renderer children) running. Runs before will-quit.
+app.on("before-quit", () => {
+  browserManager.prepareForQuit()
+})
+
 // Stop the task runner (abort in-flight tasks; next boot's reconcile recovers
 // them) and flush the WAL + close the DB cleanly on quit.
 app.on("will-quit", () => {
