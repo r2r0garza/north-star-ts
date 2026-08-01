@@ -281,6 +281,76 @@ const api = {
       ipcRenderer.removeListener("browser:activate-conversation", listener)
     }
   },
+  // Report the right-panel Browser slot's on-screen rectangle so the embedded
+  // agent-browser view is laid out to match. Null hides the embed (panel closed /
+  // not in Browser mode / obscured by a modal).
+  reportBrowserBounds: (
+    bounds: { x: number; y: number; width: number; height: number } | null
+  ) => {
+    void ipcRenderer.invoke("browser:report-bounds", bounds)
+  },
+  // Choose where the agent browser displays: "sidebar" (embedded in the app
+  // panel) or "window" (the separate pop-out window).
+  setBrowserSurface: (surface: "window" | "sidebar") => {
+    void ipcRenderer.invoke("browser:set-surface", surface)
+  },
+  // Drive the active tab from the sidebar browser chrome (URL bar / reload /
+  // pick). These reuse the same handlers the separate window's chrome uses.
+  browserNavigate: (url: string) => {
+    void ipcRenderer.invoke("browser:navigate", url)
+  },
+  browserReload: () => {
+    void ipcRenderer.invoke("browser:reload")
+  },
+  browserSetPickMode: (active: boolean) => {
+    void ipcRenderer.invoke("browser:set-pick-mode", active)
+  },
+  // Subscribe to a request to open the right panel in Browser mode (the sidebar
+  // equivalent of the agent browser window revealing itself). Returns unsubscribe.
+  onBrowserRequestOpen: (cb: () => void) => {
+    const listener = () => cb()
+    ipcRenderer.on("browser:request-open", listener)
+    return () => {
+      ipcRenderer.removeListener("browser:request-open", listener)
+    }
+  },
+  // Subscribe to the active tab's pick-mode state (so the panel's "Pick" toggle
+  // reflects the true state — auto-off after a pick, etc.). Returns unsubscribe.
+  onBrowserPickMode: (cb: (active: boolean) => void) => {
+    const listener = (_e: IpcRendererEvent, active: boolean) => cb(active)
+    ipcRenderer.on("browser:pick-mode", listener)
+    return () => {
+      ipcRenderer.removeListener("browser:pick-mode", listener)
+    }
+  },
+  // Subscribe to the tab list (used by the sidebar chrome to show the active
+  // tab's URL/title/loading). Returns unsubscribe.
+  onBrowserTabs: (
+    cb: (
+      tabs: Array<{
+        id: string
+        title: string
+        url: string
+        loading: boolean
+        active: boolean
+      }>
+    ) => void
+  ) => {
+    const listener = (
+      _e: IpcRendererEvent,
+      tabs: Array<{
+        id: string
+        title: string
+        url: string
+        loading: boolean
+        active: boolean
+      }>
+    ) => cb(tabs)
+    ipcRenderer.on("browser:tabs", listener)
+    return () => {
+      ipcRenderer.removeListener("browser:tabs", listener)
+    }
+  },
 
   // Durable local state (SQLite, owned by the main process). Thin invoke
   // wrappers — the renderer only displays state and sends actions; it never

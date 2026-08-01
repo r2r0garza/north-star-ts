@@ -9,8 +9,12 @@ import { SidebarToggle } from "@/components/sidebar-toggle"
 import {
   ActivityPanel,
   ActivityToggle,
+  SidebarModeToggle,
   readActivityOpen,
   writeActivityOpen,
+  readSidebarMode,
+  writeSidebarMode,
+  type SidebarMode,
 } from "@/components/activity-panel"
 import { SettingsScreen } from "@/components/settings-screen"
 import { TaskTranscriptSheet } from "@/components/task-transcript-sheet"
@@ -55,6 +59,15 @@ function Shell() {
     setActivityOpen(open)
     writeActivityOpen(open)
   }
+  // Which content the right panel shows: "info" (Workspace Activity) or
+  // "browser" (the agent's live browser). Global (one choice for the whole app),
+  // persisted to a cookie like the open state.
+  const [sidebarMode, setSidebarMode] = useState<SidebarMode>(readSidebarMode)
+  const changeSidebarMode = (mode: SidebarMode) => {
+    setSidebarMode(mode)
+    writeSidebarMode(mode)
+    setActivity(true)
+  }
   // The background task whose read-only transcript is open (null = closed).
   // Opened from the Workspace Activity panel or a completion toast.
   const [viewingTask, setViewingTask] = useState<Task | null>(null)
@@ -86,6 +99,17 @@ function Shell() {
       void window.cowork.db.conversations.get(id).then((convo) => {
         if (convo) handleSelectConversation(id, convo.mode)
       })
+    })
+  }, [])
+
+  // The agent navigated (with reveal-on-use) or a handoff needs the browser: open
+  // the right panel in Browser mode. The sidebar equivalent of the separate
+  // window revealing itself.
+  useEffect(() => {
+    return window.cowork.onBrowserRequestOpen(() => {
+      setSidebarMode("browser")
+      writeSidebarMode("browser")
+      setActivity(true)
     })
   }, [])
 
@@ -144,6 +168,7 @@ function Shell() {
           child of this region so macOS lets its click through. */}
       <div className="absolute inset-x-0 top-0 z-20 h-11 [-webkit-app-region:drag]">
         <SidebarToggle fullscreen={fullscreen} />
+        <SidebarModeToggle mode={sidebarMode} onModeChange={changeSidebarMode} />
         <ActivityToggle
           open={activityOpen}
           onToggle={() => setActivity(!activityOpen)}
@@ -178,6 +203,8 @@ function Shell() {
       <ActivityPanel
         conversationId={activeConversationId}
         open={activityOpen}
+        mode={sidebarMode}
+        browserObscured={settingsOpen || viewingTask !== null}
         onOpenChange={setActivity}
         onOpenTask={setViewingTask}
         historyExpanded={historyExpanded}

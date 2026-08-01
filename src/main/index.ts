@@ -69,6 +69,26 @@ browserManager.setConversationActivator((conversationId) => {
     wc.send("browser:activate-conversation", conversationId)
 })
 
+// Ask the app to open its right panel in Browser mode (the sidebar equivalent of
+// revealing the separate window — used on agent navigation / handoff when the
+// browser surface is "sidebar").
+browserManager.setOpenRequester(() => {
+  const wc = mainWindow?.webContents
+  if (wc && !wc.isDestroyed()) wc.send("browser:request-open")
+})
+
+// Mirror the active tab's pick-mode + tab state to the app renderer, so the
+// sidebar browser chrome (URL/loading + "Pick" toggle) tracks the true state —
+// the counterpart of the pushes that already feed the separate window's chrome.
+browserManager.setAppPickModeEmitter((active) => {
+  const wc = mainWindow?.webContents
+  if (wc && !wc.isDestroyed()) wc.send("browser:pick-mode", active)
+})
+browserManager.setAppTabsEmitter((tabs) => {
+  const wc = mainWindow?.webContents
+  if (wc && !wc.isDestroyed()) wc.send("browser:tabs", tabs)
+})
+
 function createWindow(): void {
   // Local const for in-function use (clean non-null narrowing in the closures
   // below); the module-level `mainWindow` mirrors it for external pushes.
@@ -91,6 +111,9 @@ function createWindow(): void {
     },
   })
   mainWindow = win
+  // Give the browser manager this window so it can embed the agent browser's
+  // WebContentsView in the right-hand panel (the "sidebar" surface).
+  browserManager.setMainWindow(win)
 
   win.on("ready-to-show", () => win.show())
   // Drop the module reference when the window is gone so pushes no-op instead of
@@ -214,6 +237,28 @@ ipcMain.handle(
     )
   }
 )
+// Main app renderer → main: the right-panel Browser slot reported its on-screen
+// rectangle (device-independent px), so the embedded WebContentsView can be laid
+// out to match. A null rect hides the embed (panel closed / not in Browser mode /
+// obscured by a modal). Fire-and-forget — layout is idempotent.
+ipcMain.handle(
+  "browser:report-bounds",
+  (
+    _event,
+    bounds: { x: number; y: number; width: number; height: number } | null
+  ) => {
+    browserManager.reportSidebarBounds(
+      bounds && typeof bounds.width === "number" ? bounds : null
+    )
+  }
+)
+// Choose the display surface: "sidebar" embeds the active tab in the app panel;
+// "window" pops it out into the separate Agent Browser window.
+ipcMain.handle("browser:set-surface", (_event, surface: string) => {
+  if (surface === "window" || surface === "sidebar") {
+    browserManager.setSurface(surface)
+  }
+})
 ipcMain.handle("pick-workspace", () => pickWorkspace())
 ipcMain.handle("pick-files", () => pickFiles())
 // List available skills (name + description only) for the composer's slash

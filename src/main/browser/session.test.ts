@@ -32,9 +32,14 @@ const electronMock = vi.hoisted(() => {
   }
 
   class DebuggerMock extends EventTargetMock {
-    attach = vi.fn()
-    detach = vi.fn()
-    isAttached = vi.fn(() => false)
+    private attached = false
+    attach = vi.fn(() => {
+      this.attached = true
+    })
+    detach = vi.fn(() => {
+      this.attached = false
+    })
+    isAttached = vi.fn(() => this.attached)
     sendCommand = vi.fn(
       (_method?: string, _params?: Record<string, unknown>): Promise<unknown> =>
         new Promise<never>(() => undefined)
@@ -155,6 +160,64 @@ describe("BrowserSession element picker", () => {
         tag: "button",
         text: "Save",
       })
+    })
+  })
+
+  it("turns inspect mode back off when an enable settles after selection", async () => {
+    const session = new BrowserSession()
+    const webContents = electronMock.instances[0]
+    let resolveEnable: (() => void) | undefined
+    const delayedEnable = new Promise<void>((resolve) => {
+      resolveEnable = resolve
+    })
+
+    webContents.debugger.sendCommand.mockImplementation(
+      async (method, params) => {
+        if (
+          method === "Overlay.setInspectMode" &&
+          params?.mode === "searchForNode"
+        ) {
+          await delayedEnable
+        }
+        return {}
+      }
+    )
+
+    session.setPickMode(true)
+
+    await vi.waitFor(() => {
+      expect(webContents.debugger.sendCommand).toHaveBeenCalledWith(
+        "Overlay.setInspectMode",
+        expect.objectContaining({ mode: "searchForNode" })
+      )
+    })
+
+    // Chromium can emit the pick while Electron's command promise is still
+    // pending. The selection turns the desired state off immediately.
+    webContents.debugger.emit("message", {}, "Overlay.inspectNodeRequested", {
+      backendNodeId: 42,
+    })
+
+    await vi.waitFor(() => {
+      expect(
+        webContents.debugger.sendCommand.mock.calls.filter(
+          ([method, params]) =>
+            method === "Overlay.setInspectMode" && params?.mode === "none"
+        )
+      ).toHaveLength(1)
+    })
+
+    // The stale enable now settles after the first cleanup. Reconciliation must
+    // issue another off command so the picker cannot resurrect itself.
+    resolveEnable?.()
+
+    await vi.waitFor(() => {
+      expect(
+        webContents.debugger.sendCommand.mock.calls.filter(
+          ([method, params]) =>
+            method === "Overlay.setInspectMode" && params?.mode === "none"
+        )
+      ).toHaveLength(2)
     })
   })
 })

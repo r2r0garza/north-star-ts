@@ -119,6 +119,10 @@ export class BrowserSession {
       if (typeof backendNodeId !== "number") return
       this.setPickModeFlag(false)
       const generation = ++this.pickModeGeneration
+      // Do not wait for node description before forcing inspect mode off. More
+      // importantly, this off command supersedes any timed-out enable command
+      // that may still be running underneath withDeadline.
+      void this.updatePickMode(false, generation)
       void this.completeElementPick(backendNodeId, generation).catch(
         () => undefined
       )
@@ -173,19 +177,18 @@ export class BrowserSession {
         const dbg = this.view.webContents.debugger
         await sendCommand(dbg, "Overlay.enable", undefined, PICK_TIMEOUT_MS)
         if (!this.pickMode || generation !== this.pickModeGeneration) return
-        await sendCommand(
-          dbg,
-          "Overlay.setInspectMode",
+        await this.applyInspectMode(
+          true,
+          generation,
           {
             mode: "searchForNode",
             highlightConfig: PICK_HIGHLIGHT_CONFIG,
-          },
-          PICK_TIMEOUT_MS
+          }
         )
         return
       }
 
-      await this.exitInspectMode()
+      await this.exitInspectMode(generation)
     } catch {
       // Enabling pick mode failed partway (e.g. a CDP timeout after the overlay
       // may already have engaged in the renderer). Reset the flag AND force the
@@ -193,38 +196,60 @@ export class BrowserSession {
       // our flag reading "off" (hover-highlights with clicks going nowhere).
       if (generation === this.pickModeGeneration) {
         this.setPickModeFlag(false)
-        await this.exitInspectMode().catch(() => undefined)
+        await this.exitInspectMode(generation).catch(() => undefined)
       }
     }
   }
 
+  // CDP deadlines only stop awaiting a command; Electron cannot cancel the
+  // underlying side effect. If a timed-out/stale inspect command settles later,
+  // reconcile Chromium back to the latest desired state so an old "on" cannot
+  // resurrect the picker after a completed selection (and an old "off" cannot
+  // cancel a newer selection attempt).
+  private async applyInspectMode(
+    active: boolean,
+    generation: number,
+    params: Record<string, unknown>
+  ): Promise<void> {
+    const dbg = this.view.webContents.debugger
+    const command = dbg.sendCommand(
+      "Overlay.setInspectMode",
+      params
+    ) as Promise<unknown>
+
+    void command.then(
+      () => {
+        if (this.disposed || this.view.webContents.isDestroyed()) return
+        if (
+          generation === this.pickModeGeneration &&
+          active === this.pickMode
+        ) {
+          return
+        }
+        void this.updatePickMode(this.pickMode, this.pickModeGeneration)
+      },
+      () => undefined
+    )
+
+    await withDeadline(command, PICK_TIMEOUT_MS)
+  }
+
   // Force Chromium's inspect overlay off. Best-effort and idempotent — safe to
   // call even if inspect mode isn't engaged (setInspectMode:none is a no-op then).
-  private async exitInspectMode(): Promise<void> {
+  private async exitInspectMode(generation: number): Promise<void> {
     if (this.disposed || this.view.webContents.isDestroyed()) return
     const dbg = this.view.webContents.debugger
     if (!dbg.isAttached()) return
-    await sendCommand(
-      dbg,
-      "Overlay.setInspectMode",
-      { mode: "none" },
-      PICK_TIMEOUT_MS
-    )
+    await this.applyInspectMode(false, generation, { mode: "none" })
   }
 
   private async completeElementPick(
     backendNodeId: number,
     generation: number
   ): Promise<void> {
-    try {
-      const element = await this.describePickedElement(backendNodeId)
-      if (generation === this.pickModeGeneration) {
-        this.onElementPicked?.(element)
-      }
-    } finally {
-      // Chromium auto-exits inspect mode after a pick, but force it down anyway
-      // so the renderer overlay can never linger if the auto-exit didn't stick.
-      await this.exitInspectMode().catch(() => undefined)
+    const element = await this.describePickedElement(backendNodeId)
+    if (generation === this.pickModeGeneration) {
+      this.onElementPicked?.(element)
     }
   }
 
