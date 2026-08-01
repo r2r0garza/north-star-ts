@@ -37,6 +37,10 @@ function Shell() {
   // Conversations with a turn currently streaming, reported up from App (which
   // owns the state). Drives the per-row spinner in the sidebar.
   const [runningConvos, setRunningConvos] = useState<Set<string>>(new Set())
+  // Conversations whose turn is blocked waiting on the user (approval/question/
+  // handoff), reported up from App. Drives the sidebar's "needs you" indicator,
+  // which takes precedence over the running spinner.
+  const [waitingConvos, setWaitingConvos] = useState<Set<string>>(new Set())
   // Whether the Settings sheet is open (opened from the sidebar gear).
   const [settingsOpen, setSettingsOpen] = useState(false)
   // Which tab Settings opens on. First launch (no provider configured) opens
@@ -155,6 +159,7 @@ function Shell() {
         onSettingsClick={() => openSettings()}
         refreshKey={refreshKey}
         runningConvos={runningConvos}
+        waitingConvos={waitingConvos}
       />
       <App
         view={view}
@@ -168,6 +173,7 @@ function Shell() {
         settingsOpen={settingsOpen}
         onRanInBackground={() => setActivity(true)}
         onRunningConvosChange={setRunningConvos}
+        onWaitingConvosChange={setWaitingConvos}
       />
       <ActivityPanel
         conversationId={activeConversationId}

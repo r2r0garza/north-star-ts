@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react"
-import { Plus, Settings } from "lucide-react"
+import { BellDot, Plus, Settings } from "lucide-react"
 import { Spinner } from "@/components/ui/spinner"
 import {
   Sidebar,
@@ -61,6 +61,7 @@ function SessionRow({
   conversation,
   isActive,
   isRunning,
+  isWaiting,
   onSelect,
   onRename,
   onDelete,
@@ -69,6 +70,10 @@ function SessionRow({
   isActive: boolean
   // A turn is currently streaming in this conversation — show a spinner.
   isRunning: boolean
+  // The turn is blocked waiting on the user (approval/question/handoff) — show a
+  // "needs you" indicator. Takes precedence over the spinner: while blocked the
+  // turn is still technically running, but the user needs to act, not wait.
+  isWaiting: boolean
   onSelect: () => void
   onRename: (title: string) => void
   onDelete: () => void
@@ -128,8 +133,17 @@ function SessionRow({
             title={conversation.title ?? "Untitled"}
           >
             <span className="truncate">{conversation.title ?? "Untitled"}</span>
-            {isRunning && (
-              <Spinner className="ml-auto size-3.5 text-muted-foreground" />
+            {isWaiting ? (
+              // Needs-you indicator — takes precedence over the spinner. Amber +
+              // a subtle pulse so a blocked conversation stands out in the list.
+              <BellDot
+                className="ml-auto size-3.5 shrink-0 animate-pulse text-amber-500"
+                aria-label="Waiting for your input"
+              />
+            ) : (
+              isRunning && (
+                <Spinner className="ml-auto size-3.5 text-muted-foreground" />
+              )
             )}
           </SidebarMenuButton>
         </ContextMenuTrigger>
@@ -154,6 +168,7 @@ export function AppSidebar({
   onSettingsClick,
   refreshKey,
   runningConvos,
+  waitingConvos,
 }: {
   view: View
   onViewChange: (view: View) => void
@@ -166,6 +181,9 @@ export function AppSidebar({
   refreshKey: number
   // Conversations with a turn currently streaming — each shows a spinner.
   runningConvos: Set<string>
+  // Conversations blocked waiting on the user (approval/question/handoff) — each
+  // shows a "needs you" indicator, which takes precedence over the spinner.
+  waitingConvos: Set<string>
 }) {
   const [conversations, setConversations] = useState<Conversation[]>([])
   // The conversation awaiting delete confirmation, if any. Set by a row's
@@ -258,6 +276,7 @@ export function AppSidebar({
                   conversation={c}
                   isActive={c.id === activeConversationId}
                   isRunning={runningConvos.has(c.id)}
+                  isWaiting={waitingConvos.has(c.id)}
                   onSelect={() => onSelectConversation(c.id, c.mode)}
                   onRename={(title) => renameConversation(c.id, title)}
                   onDelete={() => setPendingDelete(c)}

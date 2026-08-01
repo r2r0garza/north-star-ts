@@ -127,6 +127,7 @@ export default function App({
   settingsOpen,
   onRanInBackground,
   onRunningConvosChange,
+  onWaitingConvosChange,
 }: {
   view: View
   conversationId: string | null
@@ -145,6 +146,11 @@ export default function App({
   // Shell can show a spinner on each active row in the sidebar. A single App
   // instance owns this state, but the sidebar is a sibling — this lifts it up.
   onRunningConvosChange?: (ids: Set<string>) => void
+  // Reports the set of conversations whose turn is BLOCKED waiting on the user —
+  // a pending approval, a clarifying question, or a browser handoff (all surface
+  // as approval/question events). Distinct from running: these need the user to
+  // act, so the sidebar shows a "needs you" indicator instead of the spinner.
+  onWaitingConvosChange?: (ids: Set<string>) => void
 }) {
   // Chat runs without a workspace and attaches files instead; North Star and
   // Interactive are workspace-backed and share the same behavior.
@@ -204,6 +210,21 @@ export default function App({
   useEffect(() => {
     onRunningConvosChange?.(runningConvos)
   }, [runningConvos, onRunningConvosChange])
+  // Derive the "waiting on the user" set from the live turns and surface it to
+  // the Shell (for the sidebar's per-row "needs you" indicator). A conversation
+  // is waiting when its turn is blocked on a pending approval or a question
+  // (browser handoffs come through as questions). Recomputed whenever liveTurns
+  // changes — the same map the approval/question events already update.
+  useEffect(() => {
+    const waiting = new Set<string>()
+    for (const [id, turn] of liveTurns) {
+      const blocked =
+        turn.question !== null ||
+        turn.tools.some((t) => t.approval?.status === "pending")
+      if (blocked) waiting.add(id)
+    }
+    onWaitingConvosChange?.(waiting)
+  }, [liveTurns, onWaitingConvosChange])
   // Mutate one conversation's live turn immutably; seeds an empty turn if absent.
   const updateLive = useCallback(
     (convoId: string, fn: (prev: LiveTurn) => LiveTurn) => {
