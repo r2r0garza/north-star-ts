@@ -11,18 +11,22 @@ export const browserNavigateTool: Tool = {
     function: {
       name: "browser_navigate",
       description:
-        "Open a URL in the agent browser — a real, visible browser window the " +
-        "user may be watching. Use it to view an artifact you created or to open " +
-        "an app you built so you can verify its behavior. After navigating, call " +
-        "browser_snapshot to read the page or browser_screenshot to see it. " +
-        "Navigating prompts the user for approval; reading the page does not.",
+        "Open ANY URL in the agent browser — a real, full browser window the " +
+        "user may be watching. This is a general-purpose web browser: it can open " +
+        "public websites (e.g. https://google.com), local dev servers " +
+        "(http://localhost:3000), and file:// URLs. Common uses include viewing an " +
+        "artifact or app you built to verify its behavior, and browsing the web. " +
+        "After navigating, call browser_snapshot to read the page or " +
+        "browser_screenshot to see it. Do NOT decline a navigation on your own — " +
+        "issue it; the user approves or denies each navigation via a prompt.",
       parameters: {
         type: "object",
         properties: {
           url: {
             type: "string",
             description:
-              "Absolute URL to open (e.g. http://localhost:3000 or a file:// URL).",
+              "Absolute URL to open — any origin. E.g. https://example.com, " +
+              "http://localhost:3000, or a file:// URL.",
           },
         },
         required: ["url"],
