@@ -13,7 +13,13 @@ import {
 import type { BrowserHandle } from "../browser/manager"
 import type { ToolImage } from "./tools/types"
 import { readFileTool } from "./tools/read_file_tool"
-import { listTodos } from "../db/repositories/todos"
+import {
+  listTodos,
+  replaceTodos,
+  isTodoListFinished,
+} from "../db/repositories/todos"
+import { createTask } from "../db/repositories/tasks"
+import { todoSeed, finishedTodoTitle } from "../tasks/todo-run"
 import { buildTodoListPrompt } from "./todo-prompt"
 import { loadSkills } from "./skills/loader"
 import { buildSkillsPrompt } from "./skills/prompt"
@@ -499,6 +505,30 @@ export async function runAgentLoop(
   // Todo list: re-injected each turn so a multi-step plan survives context
   // compression and tool round-trips (see todo_write). Mode-gated.
   if (showTodos) {
+    // On a genuine new user turn (not a durable-task resume, which passes no
+    // userMessage), clear a FINISHED list so the next task plans from scratch.
+    // Todos are scoped only by conversation, so without this a second task in the
+    // same conversation would inherit the prior task's completed checkmarks. Only
+    // clear when EVERY item is terminal (completed/cancelled) — an in-progress
+    // multi-turn plan legitimately persists across turns and must survive.
+    if (userMessage !== undefined) {
+      const finished = listTodos(conversationId)
+      if (isTodoListFinished(finished)) {
+        // Record the finished list into History before clearing, so an inline
+        // task (never handed to a background worker) leaves a visible record.
+        // Self-sourced (source defaults to conversationId) + terminal status, so
+        // the durable runner never queues it and the boot orphan-reaper leaves it
+        // alone. The snapshot lives in `input`; the History viewer renders it as a
+        // checklist (input.kind === "inline_todos").
+        createTask({
+          conversationId,
+          status: "completed",
+          title: finishedTodoTitle(finished),
+          input: { kind: "inline_todos", todos: todoSeed(finished) },
+        })
+        replaceTodos(conversationId, [])
+      }
+    }
     const todoPrompt = buildTodoListPrompt(listTodos(conversationId))
     if (todoPrompt) {
       sections.push({

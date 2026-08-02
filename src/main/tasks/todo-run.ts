@@ -26,6 +26,16 @@ export function todoRunTitle(actionable: Todo[]): string {
   return `${n} task${n === 1 ? "" : "s"}: ${first.slice(0, 50)}`
 }
 
+// Title for a FINISHED inline todo list recorded into History (plan: inline
+// task history). Uses the total count + first item's text — mirrors
+// todoRunTitle's shape but counts the whole finished list, not just actionable
+// items (there are none left once finished).
+export function finishedTodoTitle(todos: Todo[]): string {
+  const n = todos.length
+  const first = todos[0]?.content ?? ""
+  return `${n} task${n === 1 ? "" : "s"}: ${first.slice(0, 50)}`
+}
+
 // The seed snapshot enqueue expects — the FULL list (completed items included,
 // so the background agent never re-does them), mapped to the seedTodos shape.
 export function todoSeed(
