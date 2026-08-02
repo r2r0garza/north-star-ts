@@ -119,10 +119,12 @@ export class BrowserSession {
       if (typeof backendNodeId !== "number") return
       this.setPickModeFlag(false)
       const generation = ++this.pickModeGeneration
-      // Do not wait for node description before forcing inspect mode off. More
-      // importantly, this off command supersedes any timed-out enable command
-      // that may still be running underneath withDeadline.
-      void this.updatePickMode(false, generation)
+      // The native inspector overlay belongs to this debugger attachment. A
+      // normal setInspectMode:none command can itself get stuck behind the
+      // wedged command that produced this event, so tear down the attachment
+      // synchronously. This cancels the overlay and all stale picker commands;
+      // completeElementPick reattaches before resolving the selected node.
+      this.resetDebuggerAfterPickerExit(generation)
       void this.completeElementPick(backendNodeId, generation).catch(
         () => undefined
       )
@@ -143,7 +145,14 @@ export class BrowserSession {
     if (this.disposed || this.view.webContents.isDestroyed()) return
     this.setPickModeFlag(active)
     const generation = ++this.pickModeGeneration
-    void this.updatePickMode(active, generation)
+    if (!active) {
+      // Manual cancellation needs the same deterministic shutdown as a
+      // completed selection. Sending setInspectMode:none through the existing
+      // debugger can leave Chromium's native overlay active.
+      this.resetDebuggerAfterPickerExit(generation)
+      return
+    }
+    void this.updatePickMode(true, generation)
   }
 
   get webContents() {
@@ -243,10 +252,32 @@ export class BrowserSession {
     await this.applyInspectMode(false, generation, { mode: "none" })
   }
 
+  // Every picker exit needs a deterministic escape hatch. Detaching the CDP
+  // session destroys Chromium's inspector overlay even when its command queue is
+  // wedged. The browser page itself is unaffected; later operations simply
+  // attach a fresh debugger session through ensureAttached().
+  private resetDebuggerAfterPickerExit(generation: number): void {
+    const dbg = this.view.webContents.debugger
+    try {
+      if (dbg.isAttached()) dbg.detach()
+    } catch {
+      // If Electron refuses a synchronous detach, retain the normal best-effort
+      // off command as a fallback. The generation guard prevents stale cleanup
+      // from disabling a newer picker session.
+      void this.updatePickMode(false, generation)
+    } finally {
+      this.attached = false
+    }
+  }
+
   private async completeElementPick(
     backendNodeId: number,
     generation: number
   ): Promise<void> {
+    // Do not detach and reattach in the same call stack. Give Chromium one turn
+    // to destroy the old inspector overlay before opening the fresh CDP session.
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    await this.ensureAttached(PICK_TIMEOUT_MS)
     const element = await this.describePickedElement(backendNodeId)
     if (generation === this.pickModeGeneration) {
       this.onElementPicked?.(element)

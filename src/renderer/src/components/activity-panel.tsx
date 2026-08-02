@@ -227,10 +227,14 @@ function BrowserSlot({ active }: { active: boolean }) {
 // IPC the separate window's chrome uses.
 function BrowserPanel({
   embedded,
+  onPoppedOutChange,
 }: {
   // Whether the native view should be embedded here (panel open + not obscured +
   // surface is "sidebar"). Gates BrowserSlot's bounds reporting.
   embedded: boolean
+  // Reports pop-out toggles up so the Shell can collapse the panel when the
+  // browser detaches into its own window (and re-open when it docks back).
+  onPoppedOutChange: (poppedOut: boolean) => void
 }) {
   const [url, setUrl] = React.useState("")
   const [loading, setLoading] = React.useState(false)
@@ -267,6 +271,7 @@ function BrowserPanel({
     const next = !poppedOut
     setPoppedOut(next)
     window.cowork.setBrowserSurface(next ? "window" : "sidebar")
+    onPoppedOutChange(next)
   }
 
   return (
@@ -353,6 +358,7 @@ export function ActivityPanel({
   historyExpanded,
   onHistoryExpandedChange,
   onRanInBackground,
+  onBrowserPoppedOutChange,
 }: {
   conversationId: string | null
   // Controlled open state (the Shell owns it so the toggle can live in the drag
@@ -382,6 +388,9 @@ export function ActivityPanel({
   // Called after the Todos panel hands its list off to the background, so the
   // Shell can keep the panel open and surface the new task.
   onRanInBackground?: () => void
+  // Called when the browser pops out to / docks back from its own window, so the
+  // Shell can collapse the panel on pop-out (and re-open on dock).
+  onBrowserPoppedOutChange?: (poppedOut: boolean) => void
 }) {
   const [browserWidth, setBrowserWidth] = React.useState(readBrowserWidth)
 
@@ -468,7 +477,12 @@ export function ActivityPanel({
         </SidebarHeader>
         {mode === "browser" ? (
           <div className="min-h-0 flex-1">
-            <BrowserPanel embedded={embedded} />
+            <BrowserPanel
+              embedded={embedded}
+              onPoppedOutChange={(poppedOut) =>
+                onBrowserPoppedOutChange?.(poppedOut)
+              }
+            />
           </div>
         ) : mode === "changes" ? (
           <div className="min-h-0 flex-1">

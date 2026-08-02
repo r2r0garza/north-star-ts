@@ -104,6 +104,14 @@ function Shell() {
     setActivity(true)
     setHistoryExpanded(true)
   }
+  // Popping the browser out to its own window empties the panel's browser slot,
+  // so collapse the panel to give the chat the space back; docking it back re-
+  // opens it. Choosing Info or Changes from the mode dropdown re-opens on its own
+  // (changeSidebarMode forces it open), which is the "unless they pick info/
+  // changes" case.
+  const handleBrowserPoppedOutChange = (poppedOut: boolean) => {
+    setActivity(!poppedOut)
+  }
 
   useEffect(() => {
     window.cowork.isFullScreen().then(setFullscreen)
@@ -242,6 +250,7 @@ function Shell() {
         historyExpanded={historyExpanded}
         onHistoryExpandedChange={setHistoryExpanded}
         onRanInBackground={() => setActivity(true)}
+        onBrowserPoppedOutChange={handleBrowserPoppedOutChange}
       />
       <TaskCompletionToasts
         conversationId={activeConversationId}

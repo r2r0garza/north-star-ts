@@ -153,6 +153,7 @@ describe("BrowserSession element picker", () => {
     })
 
     await vi.waitFor(() => {
+      expect(webContents.debugger.detach).toHaveBeenCalledOnce()
       expect(onElementPicked).toHaveBeenCalledWith({
         selector: "#save",
         role: "button",
@@ -163,7 +164,7 @@ describe("BrowserSession element picker", () => {
     })
   })
 
-  it("turns inspect mode back off when an enable settles after selection", async () => {
+  it("detaches immediately when selection arrives during a pending enable", async () => {
     const session = new BrowserSession()
     const webContents = electronMock.instances[0]
     let resolveEnable: (() => void) | undefined
@@ -199,25 +200,35 @@ describe("BrowserSession element picker", () => {
     })
 
     await vi.waitFor(() => {
-      expect(
-        webContents.debugger.sendCommand.mock.calls.filter(
-          ([method, params]) =>
-            method === "Overlay.setInspectMode" && params?.mode === "none"
-        )
-      ).toHaveLength(1)
+      expect(webContents.debugger.detach).toHaveBeenCalledOnce()
     })
 
-    // The stale enable now settles after the first cleanup. Reconciliation must
-    // issue another off command so the picker cannot resurrect itself.
+    // Let the mocked promise settle so the test leaves no pending work. In real
+    // Electron, detach rejects commands owned by the old debugger session.
     resolveEnable?.()
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    expect(webContents.debugger.detach).toHaveBeenCalledOnce()
+  })
+
+  it("detaches immediately when the user toggles pick mode off", async () => {
+    const session = new BrowserSession()
+    const webContents = electronMock.instances[0]
+    const onPickModeChanged = vi.fn()
+    session.onPickModeChanged = onPickModeChanged
+    webContents.debugger.sendCommand.mockResolvedValue({})
+
+    session.setPickMode(true)
 
     await vi.waitFor(() => {
-      expect(
-        webContents.debugger.sendCommand.mock.calls.filter(
-          ([method, params]) =>
-            method === "Overlay.setInspectMode" && params?.mode === "none"
-        )
-      ).toHaveLength(2)
+      expect(webContents.debugger.sendCommand).toHaveBeenCalledWith(
+        "Overlay.setInspectMode",
+        expect.objectContaining({ mode: "searchForNode" })
+      )
     })
+
+    session.setPickMode(false)
+
+    expect(webContents.debugger.detach).toHaveBeenCalledOnce()
+    expect(onPickModeChanged.mock.calls).toEqual([[true], [false]])
   })
 })
