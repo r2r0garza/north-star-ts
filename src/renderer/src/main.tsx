@@ -21,6 +21,7 @@ import { TaskTranscriptSheet } from "@/components/task-transcript-sheet"
 import { TaskCompletionToasts } from "@/components/task-completion-toasts"
 import { Toaster } from "@/components/ui/sonner"
 import type { Mode, Task } from "@/types"
+import type { ChangedFile } from "@/lib/timeline"
 import App from "./App"
 
 // Tracks window fullscreen state so the sidebar toggle can reposition (the
@@ -59,14 +60,38 @@ function Shell() {
     setActivityOpen(open)
     writeActivityOpen(open)
   }
-  // Which content the right panel shows: "info" (Workspace Activity) or
-  // "browser" (the agent's live browser). Global (one choice for the whole app),
-  // persisted to a cookie like the open state.
+  // Which content the right panel shows: "info" (Workspace Activity), "browser"
+  // (the agent's live browser), or "changes" (the changed-file review). Global
+  // (one choice for the whole app), persisted to a cookie like the open state.
   const [sidebarMode, setSidebarMode] = useState<SidebarMode>(readSidebarMode)
   const changeSidebarMode = (mode: SidebarMode) => {
     setSidebarMode(mode)
     writeSidebarMode(mode)
     setActivity(true)
+  }
+  // The active conversation's workspace root, reported up from App. Needed by the
+  // sidebar's Changes review (git diffs + file:// previews) and browser opens.
+  const [workspacePath, setWorkspacePath] = useState("")
+  // Files under review in the sidebar's Changes mode, set when a transcript turn's
+  // "Review all" / "+N more" is clicked.
+  const [reviewFiles, setReviewFiles] = useState<ChangedFile[]>([])
+  // Open the Changes review for a turn's files: stash them, switch the panel to
+  // Changes mode, and open it.
+  const openChangesReview = (files: ChangedFile[]) => {
+    setReviewFiles(files)
+    setSidebarMode("changes")
+    writeSidebarMode("changes")
+    setActivity(true)
+  }
+  // Open a workspace-relative html file in the sidebar agent browser: dock the
+  // browser, switch the panel to Browser mode, and navigate to its file:// URL.
+  const openHtmlInBrowser = (relPath: string) => {
+    if (!workspacePath) return
+    window.cowork.setBrowserSurface("sidebar")
+    setSidebarMode("browser")
+    writeSidebarMode("browser")
+    setActivity(true)
+    window.cowork.browserNavigate(`file://${workspacePath}/${relPath}`)
   }
   // The background task whose read-only transcript is open (null = closed).
   // Opened from the Workspace Activity panel or a completion toast.
@@ -197,6 +222,9 @@ function Shell() {
         onOpenSettings={openSettings}
         settingsOpen={settingsOpen}
         rightPanelOpen={activityOpen}
+        onWorkspaceChange={setWorkspacePath}
+        onReviewChanges={openChangesReview}
+        onOpenHtml={openHtmlInBrowser}
         onRanInBackground={() => setActivity(true)}
         onRunningConvosChange={setRunningConvos}
         onWaitingConvosChange={setWaitingConvos}
@@ -206,6 +234,9 @@ function Shell() {
         open={activityOpen}
         mode={sidebarMode}
         browserObscured={settingsOpen || viewingTask !== null}
+        workspace={workspacePath}
+        changedFiles={reviewFiles}
+        onOpenHtml={openHtmlInBrowser}
         onOpenChange={setActivity}
         onOpenTask={setViewingTask}
         historyExpanded={historyExpanded}

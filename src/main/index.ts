@@ -23,6 +23,8 @@ import type { SkillSourceRow, SkillSourceKind } from "./agent/skills/types"
 import * as settingsService from "./settings/service"
 import { listWorkspaceFiles } from "./files/list"
 import { readGitBranch } from "./index/metadata"
+import { gitDiffFile } from "./git/diff"
+import { resolveInWorkspaceReal } from "./agent/tools/workspace"
 import { registerDbHandlers } from "./ipc/db-handlers"
 import { registerSettingsHandlers } from "./ipc/settings-handlers"
 import { registerProviderHandlers } from "./ipc/provider-handlers"
@@ -323,6 +325,38 @@ ipcMain.handle("git:branch", async (_event, path: string) => {
   const val = result.value as { branch?: string; detached?: boolean; sha?: string }
   return val.branch ?? val.sha ?? null
 })
+// Git diff for one workspace-relative file, backing the changed-file pills'
+// hover + the sidebar "Changes" review. Returns null when the workspace isn't a
+// git repo (renderer falls back to current content) or the path escapes it.
+ipcMain.handle(
+  "git:diff",
+  async (_event, workspace: string, relPath: string) => {
+    if (!workspace?.trim() || !relPath?.trim()) return null
+    // Confine: reject a path that escapes the workspace before shelling out.
+    try {
+      await resolveInWorkspaceReal(workspace.trim(), relPath.trim())
+    } catch {
+      return null
+    }
+    return gitDiffFile(workspace.trim(), relPath.trim())
+  }
+)
+// Open a workspace file in the user's default app for that type (their IDE, if
+// that's the default) — the click target of a code changed-file pill. Confined
+// to the workspace. Returns "" on success or an error string from shell.
+ipcMain.handle(
+  "open-in-editor",
+  async (_event, workspace: string, relPath: string) => {
+    if (!workspace?.trim() || !relPath?.trim()) return "No path."
+    let abs: string
+    try {
+      abs = await resolveInWorkspaceReal(workspace.trim(), relPath.trim())
+    } catch {
+      return "Path is outside the workspace."
+    }
+    return shell.openPath(abs)
+  }
+)
 // Initial fullscreen state, queried by the renderer on mount.
 ipcMain.handle("is-fullscreen", (event) => {
   const win = BrowserWindow.fromWebContents(event.sender)

@@ -29,6 +29,9 @@ export type {
 // Picked-element type (agent browser pick mode), surfaced for the composer chip.
 export type { PickedElement } from "../../preload/index"
 
+// Git diff result (changed-file pills + sidebar Changes review).
+export type { GitDiffResult } from "../../preload/index"
+
 // Skill summary type, surfaced for the composer's slash menu.
 export type {
   SkillSummary,

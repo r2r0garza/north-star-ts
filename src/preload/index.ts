@@ -17,6 +17,7 @@ import type {
 } from "../main/db/types"
 import type { ActionKind } from "../main/agent/approval/types"
 import type { PickedElement } from "../main/browser/types"
+import type { GitDiffResult } from "../main/git/diff"
 import type { Question, QuestionAnswer } from "../main/agent/tools/types"
 import type {
   ExecutionSettings,
@@ -251,7 +252,15 @@ const api = {
   git: {
     branch: (path: string) =>
       ipcRenderer.invoke("git:branch", path) as Promise<string | null>,
+    // Working-tree diff for one workspace-relative file (backs the changed-file
+    // pills). Null when not a git repo; { diff: "" } when tracked but unchanged.
+    diff: (workspace: string, relPath: string) =>
+      ipcRenderer.invoke("git:diff", workspace, relPath) as Promise<GitDiffResult | null>,
   },
+  // Open a workspace file in the OS default app for its type (the user's IDE, if
+  // that's the default). Resolves with "" on success or an error string.
+  openInEditor: (workspace: string, relPath: string) =>
+    ipcRenderer.invoke("open-in-editor", workspace, relPath) as Promise<string>,
   // Whether the window is currently fullscreen (macOS traffic lights hidden).
   isFullScreen: () => ipcRenderer.invoke("is-fullscreen") as Promise<boolean>,
   // Subscribe to fullscreen changes. Returns an unsubscribe function.
@@ -702,3 +711,4 @@ export type {
 export type { IndexPriority, IndexStage } from "../main/db/types"
 export type { IndexStatus } from "../main/ipc/index-handlers"
 export type { PickedElement } from "../main/browser/types"
+export type { GitDiffResult } from "../main/git/diff"

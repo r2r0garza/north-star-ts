@@ -37,6 +37,7 @@ import {
   AttachmentAction,
 } from "@/components/ui/attachment"
 import { ToolGroup, ApprovalCard } from "@/components/tool-group"
+import { ChangedFilesBar } from "@/components/changed-files-bar"
 import { QuestionPanel } from "@/components/question-panel"
 import {
   MentionMenu,
@@ -70,6 +71,7 @@ import {
   baseName as lastSegment,
   type TimelineItem,
   type ToolUse,
+  type ChangedFile,
 } from "@/lib/timeline"
 import { cn } from "@/lib/utils"
 import type {
@@ -128,6 +130,9 @@ export default function App({
   onOpenSettings,
   settingsOpen,
   rightPanelOpen,
+  onWorkspaceChange,
+  onReviewChanges,
+  onOpenHtml,
   onRanInBackground,
   onRunningConvosChange,
   onWaitingConvosChange,
@@ -146,6 +151,13 @@ export default function App({
   // squeezed: collapse folder + branch to icon-only and hide the model picker
   // (no icon available for it).
   rightPanelOpen: boolean
+  // Report the active conversation's workspace root up to the Shell (the sidebar
+  // Changes review + browser opens need it for git diffs and file:// URLs).
+  onWorkspaceChange?: (workspace: string) => void
+  // Open the sidebar Changes review scoped to a turn's changed files.
+  onReviewChanges?: (files: ChangedFile[]) => void
+  // Open an html changed-file in the sidebar agent browser.
+  onOpenHtml?: (relPath: string) => void
   // Called after "Run in background" starts a durable task, so the Shell can
   // reveal the Workspace Activity panel where the new task appears.
   onRanInBackground?: () => void
@@ -395,6 +407,12 @@ export default function App({
   // Initial load + reload on workspace change (project-level skills live under
   // <workspace>/.cowork/skills and <workspace>/.github/skills).
   useEffect(() => reloadSkills(), [reloadSkills])
+
+  // Report the workspace root up to the Shell so the sidebar Changes review + the
+  // browser file:// opens can use it. Chat has no workspace → report empty.
+  useEffect(() => {
+    onWorkspaceChange?.(isChat ? "" : workspace.trim())
+  }, [workspace, isChat, onWorkspaceChange])
 
   // Fetch the git branch for the current workspace folder. Clears when the
   // folder is deselected or when it's not a git repo.
@@ -1341,6 +1359,12 @@ export default function App({
                       <Message align="start">
                         <MessageContent>
                           <ToolGroup calls={item.calls} />
+                          <ChangedFilesBar
+                            calls={item.calls}
+                            workspace={workspace.trim()}
+                            onOpenHtml={(p) => onOpenHtml?.(p)}
+                            onReviewAll={(files) => onReviewChanges?.(files)}
+                          />
                         </MessageContent>
                       </Message>
                     </MessageScrollerItem>
@@ -1380,6 +1404,14 @@ export default function App({
                   <Message align="start">
                     <MessageContent>
                       {liveTools.length > 0 && <ToolGroup calls={liveTools} />}
+                      {liveTools.length > 0 && (
+                        <ChangedFilesBar
+                          calls={liveTools}
+                          workspace={workspace.trim()}
+                          onOpenHtml={(p) => onOpenHtml?.(p)}
+                          onReviewAll={(files) => onReviewChanges?.(files)}
+                        />
+                      )}
                       {liveText ? (
                         <Bubble align="start" variant="muted">
                           <BubbleContent>

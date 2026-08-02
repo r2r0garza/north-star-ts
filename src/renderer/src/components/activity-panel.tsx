@@ -30,6 +30,8 @@ import { TasksSection } from "@/components/tasks-section"
 import { TasksHistorySection } from "@/components/tasks-history-section"
 import { TodosSection } from "@/components/todos-section"
 import { IndexingSection } from "@/components/indexing-section"
+import { ChangesPanel } from "@/components/changes-panel"
+import type { ChangedFile } from "@/lib/timeline"
 import type { Task } from "@/types"
 
 // The right-hand panel. It has TWO modes, chosen from a dropdown in the drag bar
@@ -45,7 +47,7 @@ import type { Task } from "@/types"
 // state (controlled by the Shell), shortcut (Cmd/Ctrl+J), and cookie, and only
 // reuses the left sidebar's visual primitives (which are plain styled divs).
 
-export type SidebarMode = "info" | "browser"
+export type SidebarMode = "info" | "browser" | "changes"
 
 const ACTIVITY_COOKIE_NAME = "activity_state"
 const MODE_COOKIE_NAME = "sidebar_mode"
@@ -149,6 +151,7 @@ export function SidebarModeToggle({
         <SelectContent align="end">
           <SelectItem value="info">Info</SelectItem>
           <SelectItem value="browser">Browser</SelectItem>
+          <SelectItem value="changes">Changes</SelectItem>
         </SelectContent>
       </Select>
     </div>
@@ -342,6 +345,9 @@ export function ActivityPanel({
   open,
   mode,
   browserObscured,
+  workspace,
+  changedFiles,
+  onOpenHtml,
   onOpenChange,
   onOpenTask,
   historyExpanded,
@@ -358,6 +364,13 @@ export function ActivityPanel({
   // True while a DOM overlay (Settings / task transcript) is open. The native
   // browser view paints over the DOM, so it must hide while obscured.
   browserObscured: boolean
+  // Active conversation's workspace root (for the Changes review's git diffs +
+  // file:// previews). Empty in Chat mode / no workspace.
+  workspace: string
+  // Files under review in Changes mode (set by "Review all" in the transcript).
+  changedFiles: ChangedFile[]
+  // Open an html changed-file in the sidebar agent browser (from Changes mode).
+  onOpenHtml: (relPath: string) => void
   onOpenChange: (open: boolean) => void
   // Open a task's read-only transcript (the Shell hosts the viewer).
   onOpenTask: (task: Task) => void
@@ -409,7 +422,9 @@ export function ActivityPanel({
     window.addEventListener("mouseup", onUp)
   }
 
-  const width = mode === "browser" ? `${browserWidth}px` : INFO_WIDTH
+  // Browser and Changes are the wide, resizable modes; Info stays a narrow rail.
+  const wideMode = mode === "browser" || mode === "changes"
+  const width = wideMode ? `${browserWidth}px` : INFO_WIDTH
   // The native view is embedded here only when the panel is genuinely visible in
   // browser mode and nothing is drawing over it.
   const embedded = open && mode === "browser" && !browserObscured
@@ -432,10 +447,10 @@ export function ActivityPanel({
         )}
         style={{ "--activity-width": width } as React.CSSProperties}
       >
-        {mode === "browser" && (
-          // Resize handle in a left gutter (the pl-1 in BrowserPanel keeps the
-          // native view clear of it — a DOM element under the view can't receive
-          // clicks). Only meaningful in the resizable browser mode.
+        {wideMode && (
+          // Resize handle in a left gutter (the pl-1 in BrowserPanel/ChangesPanel
+          // keeps content clear of it — in browser mode a DOM element under the
+          // native view can't receive clicks). Only meaningful in the wide modes.
           <div
             onMouseDown={startResize}
             className="absolute inset-y-0 left-0 z-10 w-1 cursor-col-resize transition-colors hover:bg-border"
@@ -444,12 +459,24 @@ export function ActivityPanel({
         {/* Clears the top drag bar / toggle row. */}
         <SidebarHeader className="h-12 justify-center px-4">
           <span className="text-xs font-medium text-sidebar-foreground/70">
-            {mode === "browser" ? "Browser" : "Workspace Activity"}
+            {mode === "browser"
+              ? "Browser"
+              : mode === "changes"
+                ? "Changes"
+                : "Workspace Activity"}
           </span>
         </SidebarHeader>
         {mode === "browser" ? (
           <div className="min-h-0 flex-1">
             <BrowserPanel embedded={embedded} />
+          </div>
+        ) : mode === "changes" ? (
+          <div className="min-h-0 flex-1">
+            <ChangesPanel
+              files={changedFiles}
+              workspace={workspace}
+              onOpenHtml={onOpenHtml}
+            />
           </div>
         ) : (
           <SidebarContent>
