@@ -24,6 +24,7 @@ import * as settingsService from "./settings/service"
 import { listWorkspaceFiles } from "./files/list"
 import { readGitBranch } from "./index/metadata"
 import { gitDiffFile } from "./git/diff"
+import { openInIde } from "./ide/open"
 import { resolveInWorkspaceReal } from "./agent/tools/workspace"
 import { registerDbHandlers } from "./ipc/db-handlers"
 import { registerSettingsHandlers } from "./ipc/settings-handlers"
@@ -341,9 +342,11 @@ ipcMain.handle(
     return gitDiffFile(workspace.trim(), relPath.trim())
   }
 )
-// Open a workspace file in the user's default app for that type (their IDE, if
-// that's the default) — the click target of a code changed-file pill. Confined
-// to the workspace. Returns "" on success or an error string from shell.
+// Open a workspace file in the user's chosen IDE (Settings → Editor) — the click
+// target of a code changed-file pill. Opens the repo root first (focuses an
+// existing IDE window or opens the folder), then the file. "system" hands the
+// file to the OS default app. Confined to the workspace. Returns "" on success
+// or a short error string.
 ipcMain.handle(
   "open-in-editor",
   async (_event, workspace: string, relPath: string) => {
@@ -354,7 +357,7 @@ ipcMain.handle(
     } catch {
       return "Path is outside the workspace."
     }
-    return shell.openPath(abs)
+    return openInIde(workspace.trim(), abs, settingsService.getIde().ide)
   }
 )
 // Initial fullscreen state, queried by the renderer on mount.

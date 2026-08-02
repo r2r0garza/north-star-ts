@@ -26,6 +26,7 @@ import type {
   IndexingSettings,
   SkillSourcesSettings,
   BrowserSettings,
+  IdeSettings,
 } from "../main/settings/service"
 import type { SkillSourceRow } from "../main/agent/skills/types"
 import type { RuntimeStatus } from "../main/agent/env/runtime-check"
@@ -555,6 +556,16 @@ const api = {
         "settings:setBrowser",
         next
       ) as Promise<BrowserSettings>,
+    getIde: () =>
+      ipcRenderer.invoke("settings:getIde") as Promise<IdeSettings>,
+    setIde: (next: IdeSettings) =>
+      ipcRenderer.invoke("settings:setIde", next) as Promise<IdeSettings>,
+    // The selectable IDEs (id + label) for the Settings dropdown. Static list;
+    // mirrored from the main-process IDE registry so the renderer needs no import.
+    ideOptions: () =>
+      ipcRenderer.invoke("settings:getIdeOptions") as Promise<
+        Array<{ id: string; label: string }>
+      >,
     checkRuntimes: (recheck?: boolean) =>
       ipcRenderer.invoke("settings:checkRuntimes", recheck) as Promise<{
         docker: RuntimeStatus
@@ -687,6 +698,7 @@ export type {
   SkillSourcesSettings,
   BrowserSettings,
   BrowserReveal,
+  IdeSettings,
   Backend,
   FilePermission,
   ApprovalCategory,

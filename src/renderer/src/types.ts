@@ -48,6 +48,7 @@ export type {
   SkillSourcesSettings,
   BrowserSettings,
   BrowserReveal,
+  IdeSettings,
   Backend,
   FilePermission,
   ApprovalCategory,
