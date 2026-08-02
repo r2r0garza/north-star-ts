@@ -1,6 +1,22 @@
 import type { Gate } from "../approval/types"
 import type { Environment } from "../env/types"
 import type { TodoStatus } from "../../db/types"
+import type { BrowserHandle } from "../../browser/manager"
+
+// A JPEG image a tool produced (currently browser_screenshot) that should be
+// shown to the vision-capable model. Tool results themselves are text-only (they
+// are persisted/replayed as strings), so a tool hands an image to the loop via
+// `emitImage`; the loop injects it as a follow-up user message with an image
+// content part before the next model round-trip. `alt` is a short caption used
+// as the text part alongside the image.
+export interface ToolImage {
+  jpegBase64: string
+  alt: string
+}
+// Side-channel a tool uses to attach an image to the current turn. Absent in
+// contexts that can't render images (e.g. unit tests) — a tool then just returns
+// its text result.
+export type EmitImage = (image: ToolImage) => void
 
 // Hand work off to the durable task runner from inside a tool. A thin shape over
 // TaskRunner.enqueue (the producer-contract seam, plan 015) — passed via
@@ -86,6 +102,13 @@ export interface ToolContext {
   // Set by the real agent loop; absent in contexts that can't delegate (e.g.
   // unit tests) — run_todos_in_background then reports it's unavailable.
   enqueueTask?: EnqueueTask
+  // The agent-controllable browser for this turn, bound to ctx.signal (see
+  // BrowserManager.handleForTurn). Absent when no browser is available (e.g.
+  // unit tests) — browser tools then report the browser is unavailable.
+  browser?: BrowserHandle
+  // Attach an image to the current turn for the vision model (see ToolImage /
+  // EmitImage). Used by browser_screenshot; absent where images can't be shown.
+  emitImage?: EmitImage
 }
 
 // A tool the agent can call. `definition` is the OpenAI-compatible schema

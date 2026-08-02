@@ -22,6 +22,10 @@ import { loadSkills, listSource } from "./agent/skills/loader"
 import type { SkillSourceRow, SkillSourceKind } from "./agent/skills/types"
 import * as settingsService from "./settings/service"
 import { listWorkspaceFiles } from "./files/list"
+import { readGitBranch } from "./index/metadata"
+import { gitDiffFile } from "./git/diff"
+import { openInIde } from "./ide/open"
+import { resolveInWorkspaceReal } from "./agent/tools/workspace"
 import { registerDbHandlers } from "./ipc/db-handlers"
 import { registerSettingsHandlers } from "./ipc/settings-handlers"
 import { registerProviderHandlers } from "./ipc/provider-handlers"
@@ -30,6 +34,7 @@ import { registerIndexHandlers } from "./ipc/index-handlers"
 import { TaskRunner } from "./tasks/runner"
 import { IndexService } from "./index/service"
 import { SummaryService, SUMMARIZE_KIND } from "./summaries/service"
+import { BrowserManager } from "./browser/manager"
 import { seedProviderFromEnvIfEmpty } from "./settings/bootstrap"
 import { closeDb } from "./db/connection"
 
@@ -42,9 +47,56 @@ const indexService = new IndexService(taskRunner)
 // The rolling conversation summarizer (plan 019), driven as a task kind on the
 // runner. Holds the runner reference so the post-turn trigger can enqueue.
 const summaryService = new SummaryService(taskRunner)
+// The agent's browser (secondary window + WebContentsView driven over CDP).
+// Owned here so runChat can hand each live turn a signal-bound handle; disposed
+// on will-quit. Lazily creates its window on first agent use.
+const browserManager = new BrowserManager()
+
+// Module-level handle to the main app window, so pushes from services that don't
+// own it (the browser manager forwarding picked elements) can reach its renderer.
+// Assigned in createWindow; the browser manager reads it via the forwarder below.
+let mainWindow: BrowserWindow | null = null
+
+// Route picked elements from the agent browser to the main app renderer, where
+// they surface as a pending composer chip. Reads mainWindow lazily so it works
+// regardless of creation order; no-ops if the window is gone.
+browserManager.setPickForwarder((element) => {
+  const wc = mainWindow?.webContents
+  if (wc && !wc.isDestroyed()) wc.send("browser:element-picked", element)
+})
+
+// Route a browser tab click to the main app renderer so it switches to that
+// conversation (the bidirectional binding — see main.tsx's listener).
+browserManager.setConversationActivator((conversationId) => {
+  const wc = mainWindow?.webContents
+  if (wc && !wc.isDestroyed())
+    wc.send("browser:activate-conversation", conversationId)
+})
+
+// Ask the app to open its right panel in Browser mode (the sidebar equivalent of
+// revealing the separate window — used on agent navigation / handoff when the
+// browser surface is "sidebar").
+browserManager.setOpenRequester(() => {
+  const wc = mainWindow?.webContents
+  if (wc && !wc.isDestroyed()) wc.send("browser:request-open")
+})
+
+// Mirror the active tab's pick-mode + tab state to the app renderer, so the
+// sidebar browser chrome (URL/loading + "Pick" toggle) tracks the true state —
+// the counterpart of the pushes that already feed the separate window's chrome.
+browserManager.setAppPickModeEmitter((active) => {
+  const wc = mainWindow?.webContents
+  if (wc && !wc.isDestroyed()) wc.send("browser:pick-mode", active)
+})
+browserManager.setAppTabsEmitter((tabs) => {
+  const wc = mainWindow?.webContents
+  if (wc && !wc.isDestroyed()) wc.send("browser:tabs", tabs)
+})
 
 function createWindow(): void {
-  const mainWindow = new BrowserWindow({
+  // Local const for in-function use (clean non-null narrowing in the closures
+  // below); the module-level `mainWindow` mirrors it for external pushes.
+  const win = new BrowserWindow({
     width: 1100,
     height: 800,
     show: false,
@@ -62,18 +114,27 @@ function createWindow(): void {
       sandbox: false,
     },
   })
+  mainWindow = win
+  // Give the browser manager this window so it can embed the agent browser's
+  // WebContentsView in the right-hand panel (the "sidebar" surface).
+  browserManager.setMainWindow(win)
 
-  mainWindow.on("ready-to-show", () => mainWindow.show())
+  win.on("ready-to-show", () => win.show())
+  // Drop the module reference when the window is gone so pushes no-op instead of
+  // hitting a destroyed webContents.
+  win.on("closed", () => {
+    if (mainWindow === win) mainWindow = null
+  })
 
   // Tell the renderer when fullscreen changes — in fullscreen the macOS traffic
   // lights are hidden, so the UI shifts its sidebar toggle to the left edge.
   const sendFullScreen = (value: boolean) =>
-    mainWindow.webContents.send("window:fullscreen", value)
-  mainWindow.on("enter-full-screen", () => sendFullScreen(true))
-  mainWindow.on("leave-full-screen", () => sendFullScreen(false))
+    win.webContents.send("window:fullscreen", value)
+  win.on("enter-full-screen", () => sendFullScreen(true))
+  win.on("leave-full-screen", () => sendFullScreen(false))
 
   // Open external links in the user's browser, not inside the app window.
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+  win.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url)
     return { action: "deny" }
   })
@@ -81,9 +142,9 @@ function createWindow(): void {
   // electron-vite injects the dev server URL in development; in production we
   // load the built renderer HTML from disk.
   if (process.env.ELECTRON_RENDERER_URL) {
-    mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL)
+    win.loadURL(process.env.ELECTRON_RENDERER_URL)
   } else {
-    mainWindow.loadFile(join(__dirname, "../renderer/index.html"))
+    win.loadFile(join(__dirname, "../renderer/index.html"))
   }
 }
 
@@ -107,7 +168,11 @@ ipcMain.handle("chat", async (event, req: ChatRequest) => {
     },
     // Let a live turn hand work to the background (run_todos_in_background). The
     // runner singleton lives here; runChat can't import it (cycle).
-    (input) => taskRunner.enqueue(input)
+    (input) => taskRunner.enqueue(input),
+    // Give the live turn a browser handle scoped to its conversation's tab and
+    // bound to its abort signal. req.conversationId is already in scope here, so
+    // no agent-loop signature change is needed to thread it (Option B).
+    (signal) => browserManager.handleForTurn(req.conversationId, signal)
   )
   // After the turn's transcript is persisted, consider refreshing the rolling
   // conversation summary (plan 019). Threshold + debounce + dedupe live inside
@@ -150,6 +215,53 @@ ipcMain.handle(
 // unwinds the loop. No-op if nothing is running for that conversation.
 ipcMain.handle("chat:stop", (_event, conversationId: string) => {
   stopChat(conversationId)
+})
+// Agent-browser chrome → main: user-driven navigation/reload from the secondary
+// window's URL bar. Fire-and-forget; not gated (the human is driving their own
+// browser). The chrome reaches these via its own preload bridge.
+ipcMain.handle("browser:navigate", (_event, url: string) => {
+  if (typeof url === "string" && url.trim()) browserManager.userNavigate(url.trim())
+})
+ipcMain.handle("browser:reload", () => browserManager.userReload())
+// Toggle element-pick mode from the chrome's "Pick element" button.
+ipcMain.handle("browser:set-pick-mode", (_event, active: boolean) => {
+  browserManager.setPickMode(!!active)
+})
+// Chrome tab click → ask the app to switch to that conversation (bidirectional).
+ipcMain.handle("browser:activate-conversation", (_event, id: string) => {
+  if (typeof id === "string" && id) browserManager.requestConversationActivation(id)
+})
+// Main app renderer → main: the user switched to this conversation; show its tab
+// (or hide if null / no tab). This drives which tab is visible.
+ipcMain.handle(
+  "browser:set-active-conversation",
+  (_event, conversationId: string | null) => {
+    browserManager.setActiveConversation(
+      typeof conversationId === "string" ? conversationId : null
+    )
+  }
+)
+// Main app renderer → main: the right-panel Browser slot reported its on-screen
+// rectangle (device-independent px), so the embedded WebContentsView can be laid
+// out to match. A null rect hides the embed (panel closed / not in Browser mode /
+// obscured by a modal). Fire-and-forget — layout is idempotent.
+ipcMain.handle(
+  "browser:report-bounds",
+  (
+    _event,
+    bounds: { x: number; y: number; width: number; height: number } | null
+  ) => {
+    browserManager.reportSidebarBounds(
+      bounds && typeof bounds.width === "number" ? bounds : null
+    )
+  }
+)
+// Choose the display surface: "sidebar" embeds the active tab in the app panel;
+// "window" pops it out into the separate Agent Browser window.
+ipcMain.handle("browser:set-surface", (_event, surface: string) => {
+  if (surface === "window" || surface === "sidebar") {
+    browserManager.setSurface(surface)
+  }
 })
 ipcMain.handle("pick-workspace", () => pickWorkspace())
 ipcMain.handle("pick-files", () => pickFiles())
@@ -204,6 +316,50 @@ ipcMain.handle(
     return listWorkspaceFiles(workspace.trim(), query ?? "", Date.now())
   }
 )
+// Read the current git branch for a workspace folder. Returns the branch name
+// string, a short SHA when the HEAD is detached, or null when the folder is
+// not a git repo (no .git/HEAD). Zero-dependency: reads .git/HEAD directly.
+ipcMain.handle("git:branch", async (_event, path: string) => {
+  if (!path?.trim()) return null
+  const result = await readGitBranch(path.trim())
+  if (!result) return null
+  const val = result.value as { branch?: string; detached?: boolean; sha?: string }
+  return val.branch ?? val.sha ?? null
+})
+// Git diff for one workspace-relative file, backing the changed-file pills'
+// hover + the sidebar "Changes" review. Returns null when the workspace isn't a
+// git repo (renderer falls back to current content) or the path escapes it.
+ipcMain.handle(
+  "git:diff",
+  async (_event, workspace: string, relPath: string) => {
+    if (!workspace?.trim() || !relPath?.trim()) return null
+    // Confine: reject a path that escapes the workspace before shelling out.
+    try {
+      await resolveInWorkspaceReal(workspace.trim(), relPath.trim())
+    } catch {
+      return null
+    }
+    return gitDiffFile(workspace.trim(), relPath.trim())
+  }
+)
+// Open a workspace file in the user's chosen IDE (Settings → Editor) — the click
+// target of a code changed-file pill. Opens the repo root first (focuses an
+// existing IDE window or opens the folder), then the file. "system" hands the
+// file to the OS default app. Confined to the workspace. Returns "" on success
+// or a short error string.
+ipcMain.handle(
+  "open-in-editor",
+  async (_event, workspace: string, relPath: string) => {
+    if (!workspace?.trim() || !relPath?.trim()) return "No path."
+    let abs: string
+    try {
+      abs = await resolveInWorkspaceReal(workspace.trim(), relPath.trim())
+    } catch {
+      return "Path is outside the workspace."
+    }
+    return openInIde(workspace.trim(), abs, settingsService.getIde().ide)
+  }
+)
 // Initial fullscreen state, queried by the renderer on mount.
 ipcMain.handle("is-fullscreen", (event) => {
   const win = BrowserWindow.fromWebContents(event.sender)
@@ -213,7 +369,9 @@ ipcMain.handle("is-fullscreen", (event) => {
 app.whenReady().then(() => {
   // Register DB-backed IPC handlers now — the connection opens lazily on first
   // use, after userData is available.
-  registerDbHandlers(indexService, taskRunner)
+  registerDbHandlers(indexService, taskRunner, (id) =>
+    browserManager.closeTab(id)
+  )
   registerSettingsHandlers()
   registerProviderHandlers()
   // Start the durable task runner now that the DB handlers are registered (it
@@ -265,9 +423,18 @@ app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit()
 })
 
+// Before the quit sequence closes windows, clear the agent browser's user-close
+// veto. That veto hides-instead-of-closes on a normal user close (so a session
+// survives a stray window close), but during quit it would cancel the quit and
+// leave the process (and its renderer children) running. Runs before will-quit.
+app.on("before-quit", () => {
+  browserManager.prepareForQuit()
+})
+
 // Stop the task runner (abort in-flight tasks; next boot's reconcile recovers
 // them) and flush the WAL + close the DB cleanly on quit.
 app.on("will-quit", () => {
   void taskRunner.stop()
+  browserManager.dispose()
   closeDb()
 })

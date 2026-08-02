@@ -44,6 +44,8 @@ import type {
   ExecutionSettings,
   PermissionSettings,
   IndexingSettings,
+  BrowserSettings,
+  IdeSettings,
   Backend,
   ApprovalCategory,
   Runtime,
@@ -98,6 +100,8 @@ const SECTIONS: Array<{ value: string; label: string }> = [
   { value: "permissions", label: "Permissions" },
   { value: "indexing", label: "Context" },
   { value: "capabilities", label: "Capabilities" },
+  { value: "browser", label: "Browser" },
+  { value: "editor", label: "Editor" },
   { value: "sandbox", label: "Sandbox" },
 ]
 
@@ -139,6 +143,11 @@ export function SettingsScreen({
     null
   )
   const [indexing, setIndexing] = useState<IndexingSettings | null>(null)
+  const [browser, setBrowser] = useState<BrowserSettings | null>(null)
+  const [ide, setIde] = useState<IdeSettings | null>(null)
+  const [ideOptions, setIdeOptions] = useState<
+    Array<{ id: string; label: string }>
+  >([])
   // Skill-source rows for the Capabilities tab (built-in + custom folders, each
   // with a live skill count). Loaded independently of the other settings so a
   // slow directory scan doesn't gate the whole screen.
@@ -165,12 +174,18 @@ export function SettingsScreen({
       window.cowork.settings.getExecution(),
       window.cowork.settings.getPermissions(),
       window.cowork.settings.getIndexing(),
+      window.cowork.settings.getBrowser(),
+      window.cowork.settings.getIde(),
+      window.cowork.settings.ideOptions(),
       window.cowork.settings.checkRuntimes(),
-    ]).then(([exec, perms, idx, rt]) => {
+    ]).then(([exec, perms, idx, br, ideCfg, ideOpts, rt]) => {
       if (cancelled) return
       setExecution(exec)
       setPermissions(perms)
       setIndexing(idx)
+      setBrowser(br)
+      setIde(ideCfg)
+      setIdeOptions(ideOpts)
       setRuntimes(rt)
     })
     return () => {
@@ -231,6 +246,14 @@ export function SettingsScreen({
   async function saveIndexing(next: IndexingSettings) {
     setIndexing(next)
     await window.cowork.settings.setIndexing(next)
+  }
+  async function saveBrowser(next: BrowserSettings) {
+    setBrowser(next)
+    await window.cowork.settings.setBrowser(next)
+  }
+  async function saveIde(next: IdeSettings) {
+    setIde(next)
+    await window.cowork.settings.setIde(next)
   }
 
   function onBackendChange(value: string) {
@@ -301,7 +324,7 @@ export function SettingsScreen({
               </DialogPrimitive.Close>
             </div>
 
-            {execution && permissions && indexing && (
+            {execution && permissions && indexing && browser && ide && (
               <Tabs
                 orientation="vertical"
                 defaultValue={initialTab}
@@ -670,6 +693,75 @@ export function SettingsScreen({
                           </Table>
                         </div>
                       )}
+                    </TabsContent>
+
+                    {/* Agent browser preferences. */}
+                    <TabsContent
+                      value="browser"
+                      className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto py-6"
+                    >
+                      <Field orientation="horizontal">
+                        <FieldContent>
+                          <FieldLabel htmlFor="browser-reveal">
+                            Show the browser when the agent uses it
+                          </FieldLabel>
+                          <FieldDescription>
+                            Bring the browser window to the front when the agent
+                            navigates in the conversation you're viewing. When
+                            off, the browser stays hidden and works in the
+                            background (a login or CAPTCHA still brings it up).
+                          </FieldDescription>
+                        </FieldContent>
+                        <Switch
+                          id="browser-reveal"
+                          checked={browser.revealOnAgentUse === "always"}
+                          onCheckedChange={(checked) =>
+                            saveBrowser({
+                              revealOnAgentUse: checked ? "always" : "never",
+                            })
+                          }
+                        />
+                      </Field>
+                    </TabsContent>
+
+                    {/* Editor — which IDE a changed-file pill / "open in editor"
+                        launches. Opens the repo root first (focusing an existing
+                        window), then the file. "System Default" uses the OS. */}
+                    <TabsContent
+                      value="editor"
+                      className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto py-6"
+                    >
+                      <Field orientation="horizontal">
+                        <FieldContent>
+                          <FieldLabel htmlFor="editor-ide">
+                            Open files in
+                          </FieldLabel>
+                          <FieldDescription>
+                            When you click a changed-file pill, open it here. The
+                            repo root opens first so an already-open window is
+                            reused; then the file opens in it. "System Default"
+                            uses your OS's default app for the file type.
+                          </FieldDescription>
+                        </FieldContent>
+                        <Select
+                          value={ide.ide}
+                          onValueChange={(value) => saveIde({ ide: value })}
+                        >
+                          <SelectTrigger id="editor-ide" className="w-48">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="system">
+                              System Default
+                            </SelectItem>
+                            {ideOptions.map((opt) => (
+                              <SelectItem key={opt.id} value={opt.id}>
+                                {opt.label}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </Field>
                     </TabsContent>
 
                     {/* Sandbox auto-approve — master switch + per-category opt-ins.

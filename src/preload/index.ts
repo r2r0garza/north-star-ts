@@ -16,6 +16,8 @@ import type {
   Workspace,
 } from "../main/db/types"
 import type { ActionKind } from "../main/agent/approval/types"
+import type { PickedElement } from "../main/browser/types"
+import type { GitDiffResult } from "../main/git/diff"
 import type { Question, QuestionAnswer } from "../main/agent/tools/types"
 import type {
   ExecutionSettings,
@@ -23,6 +25,8 @@ import type {
   LlmSettings,
   IndexingSettings,
   SkillSourcesSettings,
+  BrowserSettings,
+  IdeSettings,
 } from "../main/settings/service"
 import type { SkillSourceRow } from "../main/agent/skills/types"
 import type { RuntimeStatus } from "../main/agent/env/runtime-check"
@@ -244,6 +248,20 @@ const api = {
     list: (workspace: string, query: string) =>
       ipcRenderer.invoke("files:list", workspace, query) as Promise<string[]>,
   },
+  // Read the current git branch for a workspace folder. Resolves with the
+  // branch name, a short detached-HEAD SHA, or null when not a git repo.
+  git: {
+    branch: (path: string) =>
+      ipcRenderer.invoke("git:branch", path) as Promise<string | null>,
+    // Working-tree diff for one workspace-relative file (backs the changed-file
+    // pills). Null when not a git repo; { diff: "" } when tracked but unchanged.
+    diff: (workspace: string, relPath: string) =>
+      ipcRenderer.invoke("git:diff", workspace, relPath) as Promise<GitDiffResult | null>,
+  },
+  // Open a workspace file in the OS default app for its type (the user's IDE, if
+  // that's the default). Resolves with "" on success or an error string.
+  openInEditor: (workspace: string, relPath: string) =>
+    ipcRenderer.invoke("open-in-editor", workspace, relPath) as Promise<string>,
   // Whether the window is currently fullscreen (macOS traffic lights hidden).
   isFullScreen: () => ipcRenderer.invoke("is-fullscreen") as Promise<boolean>,
   // Subscribe to fullscreen changes. Returns an unsubscribe function.
@@ -252,6 +270,101 @@ const api = {
     ipcRenderer.on("window:fullscreen", listener)
     return () => {
       ipcRenderer.removeListener("window:fullscreen", listener)
+    }
+  },
+  // Subscribe to elements the user picks in the agent browser (pick mode). The
+  // renderer surfaces the payload as a pending composer chip. Returns an
+  // unsubscribe function.
+  onBrowserElementPicked: (cb: (element: PickedElement) => void) => {
+    const listener = (_e: IpcRendererEvent, element: PickedElement) =>
+      cb(element)
+    ipcRenderer.on("browser:element-picked", listener)
+    return () => {
+      ipcRenderer.removeListener("browser:element-picked", listener)
+    }
+  },
+  // Tell main which conversation the user is now viewing, so the agent browser
+  // shows that conversation's tab. Null = a fresh/uncreated conversation.
+  setActiveConversation: (conversationId: string | null) => {
+    void ipcRenderer.invoke("browser:set-active-conversation", conversationId)
+  },
+  // Subscribe to a request (from clicking a tab in the agent browser) to switch
+  // the app to a conversation. Returns an unsubscribe function.
+  onActivateConversation: (cb: (conversationId: string) => void) => {
+    const listener = (_e: IpcRendererEvent, id: string) => cb(id)
+    ipcRenderer.on("browser:activate-conversation", listener)
+    return () => {
+      ipcRenderer.removeListener("browser:activate-conversation", listener)
+    }
+  },
+  // Report the right-panel Browser slot's on-screen rectangle so the embedded
+  // agent-browser view is laid out to match. Null hides the embed (panel closed /
+  // not in Browser mode / obscured by a modal).
+  reportBrowserBounds: (
+    bounds: { x: number; y: number; width: number; height: number } | null
+  ) => {
+    void ipcRenderer.invoke("browser:report-bounds", bounds)
+  },
+  // Choose where the agent browser displays: "sidebar" (embedded in the app
+  // panel) or "window" (the separate pop-out window).
+  setBrowserSurface: (surface: "window" | "sidebar") => {
+    void ipcRenderer.invoke("browser:set-surface", surface)
+  },
+  // Drive the active tab from the sidebar browser chrome (URL bar / reload /
+  // pick). These reuse the same handlers the separate window's chrome uses.
+  browserNavigate: (url: string) => {
+    void ipcRenderer.invoke("browser:navigate", url)
+  },
+  browserReload: () => {
+    void ipcRenderer.invoke("browser:reload")
+  },
+  browserSetPickMode: (active: boolean) => {
+    void ipcRenderer.invoke("browser:set-pick-mode", active)
+  },
+  // Subscribe to a request to open the right panel in Browser mode (the sidebar
+  // equivalent of the agent browser window revealing itself). Returns unsubscribe.
+  onBrowserRequestOpen: (cb: () => void) => {
+    const listener = () => cb()
+    ipcRenderer.on("browser:request-open", listener)
+    return () => {
+      ipcRenderer.removeListener("browser:request-open", listener)
+    }
+  },
+  // Subscribe to the active tab's pick-mode state (so the panel's "Pick" toggle
+  // reflects the true state — auto-off after a pick, etc.). Returns unsubscribe.
+  onBrowserPickMode: (cb: (active: boolean) => void) => {
+    const listener = (_e: IpcRendererEvent, active: boolean) => cb(active)
+    ipcRenderer.on("browser:pick-mode", listener)
+    return () => {
+      ipcRenderer.removeListener("browser:pick-mode", listener)
+    }
+  },
+  // Subscribe to the tab list (used by the sidebar chrome to show the active
+  // tab's URL/title/loading). Returns unsubscribe.
+  onBrowserTabs: (
+    cb: (
+      tabs: Array<{
+        id: string
+        title: string
+        url: string
+        loading: boolean
+        active: boolean
+      }>
+    ) => void
+  ) => {
+    const listener = (
+      _e: IpcRendererEvent,
+      tabs: Array<{
+        id: string
+        title: string
+        url: string
+        loading: boolean
+        active: boolean
+      }>
+    ) => cb(tabs)
+    ipcRenderer.on("browser:tabs", listener)
+    return () => {
+      ipcRenderer.removeListener("browser:tabs", listener)
     }
   },
 
@@ -436,6 +549,23 @@ const api = {
         "settings:setSkillSources",
         next
       ) as Promise<SkillSourcesSettings>,
+    getBrowser: () =>
+      ipcRenderer.invoke("settings:getBrowser") as Promise<BrowserSettings>,
+    setBrowser: (next: BrowserSettings) =>
+      ipcRenderer.invoke(
+        "settings:setBrowser",
+        next
+      ) as Promise<BrowserSettings>,
+    getIde: () =>
+      ipcRenderer.invoke("settings:getIde") as Promise<IdeSettings>,
+    setIde: (next: IdeSettings) =>
+      ipcRenderer.invoke("settings:setIde", next) as Promise<IdeSettings>,
+    // The selectable IDEs (id + label) for the Settings dropdown. Static list;
+    // mirrored from the main-process IDE registry so the renderer needs no import.
+    ideOptions: () =>
+      ipcRenderer.invoke("settings:getIdeOptions") as Promise<
+        Array<{ id: string; label: string }>
+      >,
     checkRuntimes: (recheck?: boolean) =>
       ipcRenderer.invoke("settings:checkRuntimes", recheck) as Promise<{
         docker: RuntimeStatus
@@ -566,6 +696,9 @@ export type {
   LlmSettings,
   IndexingSettings,
   SkillSourcesSettings,
+  BrowserSettings,
+  BrowserReveal,
+  IdeSettings,
   Backend,
   FilePermission,
   ApprovalCategory,
@@ -589,3 +722,5 @@ export type {
 // Workspace indexing types (plan 008) for the status strip + settings tab.
 export type { IndexPriority, IndexStage } from "../main/db/types"
 export type { IndexStatus } from "../main/ipc/index-handlers"
+export type { PickedElement } from "../main/browser/types"
+export type { GitDiffResult } from "../main/git/diff"

@@ -94,6 +94,18 @@ export function listTodos(conversationId: string): Todo[] {
   return rows.map(toTodo)
 }
 
+// Whether a list represents a finished task: non-empty and every item terminal
+// (completed or cancelled). The agent loop uses this at the start of a new user
+// turn to clear a done list so the next task plans from scratch, while leaving an
+// in-progress multi-turn plan (any pending/in_progress item) untouched. Empty
+// counts as not-finished so there's nothing to clear.
+export function isTodoListFinished(todos: Todo[]): boolean {
+  return (
+    todos.length > 0 &&
+    todos.every((t) => t.status === "completed" || t.status === "cancelled")
+  )
+}
+
 // Replace the entire list for a conversation in one transaction: delete all
 // rows, then insert the normalized items with seq = index (array order is
 // priority). Passing [] clears the list.

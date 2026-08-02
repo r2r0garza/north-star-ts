@@ -54,7 +54,11 @@ function maybeAutoIndex(
 // conversations cleaned up (no orphans); when absent, delete is the raw DB call.
 export function registerDbHandlers(
   indexService?: IndexService,
-  runner?: TaskRunner
+  runner?: TaskRunner,
+  // Close a conversation's browser tab when it's deleted (plan: tabbed browser).
+  // A thin callback rather than the BrowserManager type, to keep this module
+  // decoupled from the browser layer. Optional for tests/headless.
+  closeBrowserTab?: (conversationId: string) => void
 ): void {
   // Conversations
   ipcMain.handle(
@@ -87,11 +91,14 @@ export function registerDbHandlers(
       return conversation
     }
   )
-  ipcMain.handle("db:conversations:delete", (_e, id: string) =>
-    runner
+  ipcMain.handle("db:conversations:delete", (_e, id: string) => {
+    // Close the conversation's browser tab (if any) so a deleted conversation
+    // doesn't leave an orphaned tab/renderer behind.
+    closeBrowserTab?.(id)
+    return runner
       ? runner.deleteSourceConversation(id)
       : conversations.deleteConversation(id)
-  )
+  })
 
   // Messages (read-only from the renderer; writes happen inside runChat)
   ipcMain.handle("db:messages:list", (_e, conversationId: string) =>

@@ -93,6 +93,23 @@ export interface SkillSourcesSettings {
   folders: string[]
 }
 
+// Agent browser preferences. `revealOnAgentUse` controls whether the browser
+// window pops to the front when the agent navigates in the conversation you're
+// viewing: "always" reveals it, "never" keeps it hidden (the page still runs and
+// screenshots still work; a browser_handoff for a captcha/login still reveals).
+export type BrowserReveal = "always" | "never"
+export interface BrowserSettings {
+  revealOnAgentUse: BrowserReveal
+}
+
+// Which IDE a changed-file pill / "open in editor" launches. "system" (default)
+// hands the file to the OS default app; otherwise it's a known IDE id (see
+// src/main/ide/open.ts IDES). Stored as a plain id string so adding IDEs needs no
+// migration.
+export interface IdeSettings {
+  ide: string
+}
+
 // Default container image when a runtime is chosen but no image is set.
 const DEFAULT_CONTAINER_IMAGE = "node:20-bookworm"
 
@@ -119,6 +136,14 @@ const DEFAULT_INDEXING: IndexingSettings = {
 
 const DEFAULT_SKILL_SOURCES: SkillSourcesSettings = { folders: [] }
 
+const DEFAULT_BROWSER: BrowserSettings = {
+  revealOnAgentUse: "always",
+}
+
+const DEFAULT_IDE: IdeSettings = {
+  ide: "system",
+}
+
 function defaultExecution(): ExecutionSettings {
   return {
     backend: "local",
@@ -137,12 +162,16 @@ const KEY_PERMISSIONS = "permissions"
 const KEY_LLM = "llm"
 const KEY_INDEXING = "indexing"
 const KEY_SKILL_SOURCES = "skillSources"
+const KEY_BROWSER = "browser"
+const KEY_IDE = "ide"
 
 let executionCache: ExecutionSettings | undefined
 let permissionsCache: PermissionSettings | undefined
 let llmCache: LlmSettings | undefined
 let indexingCache: IndexingSettings | undefined
 let skillSourcesCache: SkillSourcesSettings | undefined
+let browserCache: BrowserSettings | undefined
+let ideCache: IdeSettings | undefined
 // Tracks whether an execution row exists, so getExecutionConfig can fall back to
 // the COWORK_ENV_RUNTIME env var until the user writes a backend choice.
 let executionPersisted = false
@@ -266,6 +295,41 @@ function loadSkillSources(): SkillSourcesSettings {
   return skillSourcesCache
 }
 
+function loadBrowser(): BrowserSettings {
+  if (browserCache) return browserCache
+  const raw = settingsRepo.getSetting(KEY_BROWSER)
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw) as Partial<BrowserSettings>
+      browserCache = {
+        revealOnAgentUse:
+          parsed.revealOnAgentUse === "never" ? "never" : "always",
+      }
+      return browserCache
+    } catch {
+      // Corrupt blob — fall through to defaults.
+    }
+  }
+  browserCache = { ...DEFAULT_BROWSER }
+  return browserCache
+}
+
+function loadIde(): IdeSettings {
+  if (ideCache) return ideCache
+  const raw = settingsRepo.getSetting(KEY_IDE)
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw) as Partial<IdeSettings>
+      ideCache = { ide: typeof parsed.ide === "string" ? parsed.ide : "system" }
+      return ideCache
+    } catch {
+      // Corrupt blob — fall through to defaults.
+    }
+  }
+  ideCache = { ...DEFAULT_IDE }
+  return ideCache
+}
+
 // ── Reads ────────────────────────────────────────────────────────────────────
 
 export function getExecution(): ExecutionSettings {
@@ -302,6 +366,14 @@ export function getIndexing(): IndexingSettings {
 
 export function getSkillSources(): SkillSourcesSettings {
   return loadSkillSources()
+}
+
+export function getBrowser(): BrowserSettings {
+  return loadBrowser()
+}
+
+export function getIde(): IdeSettings {
+  return loadIde()
 }
 
 // Whether the sandbox policy auto-approves a given action category. Consulted by
@@ -343,6 +415,18 @@ export function setSkillSources(
   return next
 }
 
+export function setBrowser(next: BrowserSettings): BrowserSettings {
+  settingsRepo.setSetting(KEY_BROWSER, JSON.stringify(next))
+  browserCache = next
+  return next
+}
+
+export function setIde(next: IdeSettings): IdeSettings {
+  settingsRepo.setSetting(KEY_IDE, JSON.stringify(next))
+  ideCache = next
+  return next
+}
+
 // Invalidation hook fired whenever the active LLM selection changes, so the
 // provider routing layer can drop its cached client and the next turn rebuilds
 // with the new account/model. Registered by the providers module to avoid a
@@ -367,5 +451,7 @@ export function _resetCacheForTests(): void {
   llmCache = undefined
   indexingCache = undefined
   skillSourcesCache = undefined
+  browserCache = undefined
+  ideCache = undefined
   executionPersisted = false
 }

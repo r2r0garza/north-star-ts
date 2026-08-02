@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en" class="antialiased">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- No remote code; inline styles only for this tiny chrome. -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;"
+    />
+    <title>Agent Browser</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font-family:
+          system-ui,
+          -apple-system,
+          sans-serif;
+      }
+      /* The chrome = tab strip (36px) + control bar (44px) = 80px. Must match
+         CHROME_HEIGHT in src/main/browser/window.ts so views sit flush beneath. */
+      #tabs {
+        height: 36px;
+        display: flex;
+        align-items: stretch;
+        gap: 4px;
+        padding: 4px 8px 0;
+        overflow-x: auto;
+        background: Canvas;
+        color: CanvasText;
+      }
+      .tab {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        max-width: 200px;
+        padding: 0 10px;
+        border: 1px solid rgba(128, 128, 128, 0.3);
+        border-bottom: none;
+        border-radius: 8px 8px 0 0;
+        background: transparent;
+        font-size: 12px;
+        cursor: pointer;
+        white-space: nowrap;
+        opacity: 0.7;
+      }
+      .tab:hover {
+        background: rgba(128, 128, 128, 0.12);
+      }
+      .tab.active {
+        opacity: 1;
+        background: rgba(128, 128, 128, 0.18);
+        border-color: rgba(128, 128, 128, 0.45);
+      }
+      .tab .title {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        max-width: 160px;
+      }
+      /* Loading spinner dot. */
+      .tab .spinner {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: rgba(80, 130, 255, 0.9);
+        flex: none;
+        animation: pulse 1s ease-in-out infinite;
+      }
+      @keyframes pulse {
+        0%,
+        100% {
+          opacity: 0.3;
+        }
+        50% {
+          opacity: 1;
+        }
+      }
+      #bar {
+        height: 44px;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 0 8px;
+        border-bottom: 1px solid rgba(128, 128, 128, 0.3);
+        background: Canvas;
+        color: CanvasText;
+      }
+      button {
+        height: 28px;
+        min-width: 30px;
+        border: 1px solid rgba(128, 128, 128, 0.35);
+        border-radius: 6px;
+        background: transparent;
+        color: inherit;
+        cursor: pointer;
+        font-size: 14px;
+      }
+      button:hover {
+        background: rgba(128, 128, 128, 0.15);
+      }
+      #url {
+        flex: 1;
+        height: 28px;
+        padding: 0 10px;
+        border: 1px solid rgba(128, 128, 128, 0.35);
+        border-radius: 6px;
+        background: transparent;
+        color: inherit;
+        font-size: 13px;
+        outline: none;
+      }
+      #url:focus {
+        border-color: rgba(80, 130, 255, 0.8);
+      }
+      /* Pick-mode toggle: highlighted when active. */
+      #pick.active {
+        background: rgba(80, 130, 255, 0.9);
+        border-color: rgba(80, 130, 255, 0.9);
+        color: white;
+      }
+      #pick {
+        padding: 0 10px;
+        min-width: auto;
+        white-space: nowrap;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="tabs"></div>
+    <div id="bar">
+      <button id="reload" title="Reload">⟳</button>
+      <input id="url" type="text" placeholder="Enter a URL…" spellcheck="false" />
+      <button id="pick" title="Pick an element to send to the agent">
+        ⌖ Pick
+      </button>
+    </div>
+    <script type="module" src="/src/browser-chrome.ts"></script>
+  </body>
+</html>

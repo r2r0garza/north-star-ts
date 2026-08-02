@@ -26,9 +26,24 @@ import {
   replaceTodos,
   mergeTodos,
   normalizeItems,
+  isTodoListFinished,
   MAX_TODO_ITEMS,
   MAX_TODO_CONTENT_CHARS,
 } from "./todos"
+import type { Todo, TodoStatus } from "../types"
+
+// Build a minimal Todo with the given statuses (only `status` matters here).
+function todosWith(...statuses: TodoStatus[]): Todo[] {
+  return statuses.map((status, i) => ({
+    conversationId: "c",
+    itemId: `item_${i + 1}`,
+    seq: i,
+    content: `task ${i + 1}`,
+    status,
+    createdAt: 0,
+    updatedAt: 0,
+  }))
+}
 
 // A conversation row is required by the todos FK; create one per test.
 function freshConversation(): string {
@@ -45,6 +60,26 @@ beforeEach(() => {
   db = new Database(":memory:")
   db.pragma("foreign_keys = ON")
   runMigrations(db)
+})
+
+describe("isTodoListFinished", () => {
+  it("is false for an empty list (nothing to clear)", () => {
+    expect(isTodoListFinished([])).toBe(false)
+  })
+  it("is true when every item is completed", () => {
+    expect(isTodoListFinished(todosWith("completed", "completed"))).toBe(true)
+  })
+  it("is true when items are completed or cancelled", () => {
+    expect(isTodoListFinished(todosWith("completed", "cancelled"))).toBe(true)
+  })
+  it("is false when any item is still pending", () => {
+    expect(isTodoListFinished(todosWith("completed", "pending"))).toBe(false)
+  })
+  it("is false when any item is in_progress", () => {
+    expect(isTodoListFinished(todosWith("in_progress", "completed"))).toBe(
+      false
+    )
+  })
 })
 
 describe.skipIf(!sqliteLoads)("migrations", () => {

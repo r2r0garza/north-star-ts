@@ -51,6 +51,48 @@ export function baseName(path: string): string {
   return parts[parts.length - 1] || path
 }
 
+// A file the agent created/edited in a turn, surfaced as a changed-file pill.
+export interface ChangedFile {
+  // Workspace-relative path (as the tool received it).
+  path: string
+  baseName: string
+  // Whether it was an in-place edit or a (re)write/create.
+  kind: "edit" | "write"
+  // Drives the pill's interaction: html previews in a browser/iframe; everything
+  // else is treated as code (git diff on hover, open in editor on click).
+  fileType: "html" | "code"
+}
+
+// Classify a path by extension for pill behavior. Only html gets the browser
+// treatment; all else is "code".
+function fileTypeOf(path: string): ChangedFile["fileType"] {
+  return /\.(html?|xhtml)$/i.test(path) ? "html" : "code"
+}
+
+// The file-writing tools whose calls produce a changed-file pill.
+const WRITE_TOOLS = new Set(["edit_file_tool", "write_file_tool"])
+
+// Derive the deduped, ordered list of files changed by a set of tool calls (one
+// assistant turn's group, or the live turn's tools). Later calls win on dedupe,
+// keeping their first-seen position, so the bar order is stable as a turn streams.
+// Reads the same `args.path` the labels already use — no new data source.
+export function changedFilesFromCalls(calls: ToolUse[]): ChangedFile[] {
+  const byPath = new Map<string, ChangedFile>()
+  for (const call of calls) {
+    if (!WRITE_TOOLS.has(call.name)) continue
+    const path =
+      call.args && typeof call.args.path === "string" ? call.args.path : ""
+    if (!path) continue
+    byPath.set(path, {
+      path,
+      baseName: baseName(path),
+      kind: call.name === "edit_file_tool" ? "edit" : "write",
+      fileType: fileTypeOf(path),
+    })
+  }
+  return [...byPath.values()]
+}
+
 // Parse a tool-call arguments JSON string into an object, or null on failure.
 export function parseArgs(raw: string): Record<string, unknown> | null {
   try {

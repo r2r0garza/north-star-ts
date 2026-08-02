@@ -3,14 +3,23 @@ import { stat } from "fs/promises"
 import { basename, isAbsolute } from "path"
 import {
   toolDefinitions,
+  browserToolDefinitions,
   runTool,
   todoWriteTool,
   askUserQuestionTool,
   runTodosInBackgroundTool,
   indexQueryTool,
 } from "./tools"
+import type { BrowserHandle } from "../browser/manager"
+import type { ToolImage } from "./tools/types"
 import { readFileTool } from "./tools/read_file_tool"
-import { listTodos } from "../db/repositories/todos"
+import {
+  listTodos,
+  replaceTodos,
+  isTodoListFinished,
+} from "../db/repositories/todos"
+import { createTask } from "../db/repositories/tasks"
+import { todoSeed, finishedTodoTitle } from "../tasks/todo-run"
 import { buildTodoListPrompt } from "./todo-prompt"
 import { loadSkills } from "./skills/loader"
 import { buildSkillsPrompt } from "./skills/prompt"
@@ -56,6 +65,7 @@ import {
 import { RegexCommandClassifier } from "./approval/regex-classifier"
 import { FileActionClassifier } from "./approval/file-classifier"
 import { DelegationClassifier } from "./approval/delegation-classifier"
+import { BrowserActionClassifier } from "./approval/browser-classifier"
 import type {
   ActionKind,
   Gate,
@@ -95,6 +105,9 @@ const policy = new PolicyEngine(
     // sandbox-downgraded or allowlisted (no category), so classify it before the
     // file/shell classifiers (which return null for it anyway).
     new DelegationClassifier(),
+    // Browser navigation always prompts (no category → never sandbox-downgraded);
+    // returns null for non-browser kinds, so placement is flexible.
+    new BrowserActionClassifier(),
     new FileActionClassifier(() => settingsService.getPermissions()),
     new RegexCommandClassifier(),
   ],
@@ -357,6 +370,11 @@ export interface RunAgentLoopOptions {
   // it; that would be a cycle). Threaded into ToolContext so run_todos_in_background
   // can enqueue a `todo_run` task. Absent in contexts that can't delegate.
   enqueueTask?: EnqueueTask
+  // Build the agent browser handle for this turn, bound to the turn's signal.
+  // Injected by the caller (the main-process IPC handler owns the BrowserManager
+  // singleton) rather than imported — same cycle-avoidance as enqueueTask. Absent
+  // in contexts with no browser (e.g. the durable task runner, unit tests).
+  provideBrowser?: (signal: AbortSignal) => BrowserHandle
   // The durable task this run belongs to, when driven by the runner's runOne.
   // Absent on the live `chat` path (which has no task). Used only to surface this
   // task's prior gate decisions in the approvals context section (plan 021) so a
@@ -434,6 +452,11 @@ export async function runAgentLoop(
     !!conversation?.workspaceId &&
     settingsService.getIndexing().useIndexForContext
 
+  // The agent browser is offered when the caller wired a provider (the live chat
+  // path does; the durable task runner does not — a background task has no window
+  // to drive). Bound to this turn's signal so Stop unwinds an in-flight browser op.
+  const browser = opts.provideBrowser?.(abort.signal)
+
   const tools = [
     ...(hasWorkspace
       ? toolDefinitions
@@ -444,6 +467,7 @@ export async function runAgentLoop(
       ? [todoWriteTool.definition, runTodosInBackgroundTool.definition]
       : []),
     ...(useIndex ? [indexQueryTool.definition] : []),
+    ...(browser ? browserToolDefinitions : []),
     // ask_user_question is offered in every mode — clarification is universal.
     askUserQuestionTool.definition,
     readSkillTool.definition,
@@ -481,6 +505,30 @@ export async function runAgentLoop(
   // Todo list: re-injected each turn so a multi-step plan survives context
   // compression and tool round-trips (see todo_write). Mode-gated.
   if (showTodos) {
+    // On a genuine new user turn (not a durable-task resume, which passes no
+    // userMessage), clear a FINISHED list so the next task plans from scratch.
+    // Todos are scoped only by conversation, so without this a second task in the
+    // same conversation would inherit the prior task's completed checkmarks. Only
+    // clear when EVERY item is terminal (completed/cancelled) — an in-progress
+    // multi-turn plan legitimately persists across turns and must survive.
+    if (userMessage !== undefined) {
+      const finished = listTodos(conversationId)
+      if (isTodoListFinished(finished)) {
+        // Record the finished list into History before clearing, so an inline
+        // task (never handed to a background worker) leaves a visible record.
+        // Self-sourced (source defaults to conversationId) + terminal status, so
+        // the durable runner never queues it and the boot orphan-reaper leaves it
+        // alone. The snapshot lives in `input`; the History viewer renders it as a
+        // checklist (input.kind === "inline_todos").
+        createTask({
+          conversationId,
+          status: "completed",
+          title: finishedTodoTitle(finished),
+          input: { kind: "inline_todos", todos: todoSeed(finished) },
+        })
+        replaceTodos(conversationId, [])
+      }
+    }
     const todoPrompt = buildTodoListPrompt(listTodos(conversationId))
     if (todoPrompt) {
       sections.push({
@@ -781,6 +829,12 @@ export async function runAgentLoop(
         })),
       })
 
+      // Images a tool produced this round (browser_screenshot). Collected across
+      // the round's tool calls, then injected as a single follow-up user message
+      // after the tool results so the vision model sees them on the next
+      // round-trip. Tool results themselves stay text-only (persisted as strings).
+      const turnImages: ToolImage[] = []
+
       // Execute each requested tool call and append its result. read_skill is
       // built per-chat (it closes over the loaded skills), so route it directly;
       // everything else goes through the static tool registry.
@@ -874,6 +928,8 @@ export async function runAgentLoop(
           env,
           signal: abort.signal,
           enqueueTask: opts.enqueueTask,
+          browser,
+          emitImage: (image: ToolImage) => turnImages.push(image),
         }
         const result =
           call.name === readSkillTool.definition.function.name
@@ -897,6 +953,29 @@ export async function runAgentLoop(
           content: result,
           toolCallId: call.id,
           toolName: call.name,
+        })
+      }
+
+      // If any tool produced an image this round (browser_screenshot), inject it
+      // as a user message with image content parts so the vision model sees it on
+      // the next round-trip. `messages` is untyped (any[]) and passes straight to
+      // the gateway (createCompletion forwards it), so content parts need no type
+      // surgery. This is transient (not persisted via appendMessage): screenshots
+      // aren't durable across reload in Phase 1 — the tool's text result remains
+      // in the transcript as the record that a capture happened.
+      if (turnImages.length > 0) {
+        messages.push({
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: "Screenshot(s) from the agent browser tool call(s) above:",
+            },
+            ...turnImages.map((img) => ({
+              type: "image_url",
+              image_url: { url: `data:image/jpeg;base64,${img.jpegBase64}` },
+            })),
+          ],
         })
       }
     }
@@ -951,7 +1030,10 @@ export async function runChat(
   // Lets a live interactive/north_star turn hand work off to the background via
   // run_todos_in_background. Injected by the main-process IPC handler (which owns
   // the TaskRunner singleton) so the agent module never imports the runner.
-  enqueueTask?: EnqueueTask
+  enqueueTask?: EnqueueTask,
+  // Builds the agent browser handle for the turn. Injected by the IPC handler
+  // (which owns the BrowserManager singleton) — same cycle-avoidance as above.
+  provideBrowser?: (signal: AbortSignal) => BrowserHandle
 ): Promise<ChatResult> {
   // For an untitled conversation, generate a short title from the first message
   // with a separate (non-streaming) LLM call. Kicked off here so it runs
@@ -983,6 +1065,7 @@ export async function runChat(
       onEvent,
       abort,
       enqueueTask,
+      provideBrowser,
     })
   } finally {
     // Release this turn's abort controller (only if it's still the current one —

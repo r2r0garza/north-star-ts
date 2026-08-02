@@ -2,8 +2,11 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import type { KeyboardEvent } from "react"
 import {
   ArrowUp,
+  BrainCircuit,
   FileText,
   FolderOpen,
+  GitBranch,
+  MousePointerClick,
   Plus,
   Square,
   Workflow,
@@ -34,6 +37,7 @@ import {
   AttachmentAction,
 } from "@/components/ui/attachment"
 import { ToolGroup, ApprovalCard } from "@/components/tool-group"
+import { ChangedFilesBar } from "@/components/changed-files-bar"
 import { QuestionPanel } from "@/components/question-panel"
 import {
   MentionMenu,
@@ -67,6 +71,7 @@ import {
   baseName as lastSegment,
   type TimelineItem,
   type ToolUse,
+  type ChangedFile,
 } from "@/lib/timeline"
 import { cn } from "@/lib/utils"
 import type {
@@ -75,6 +80,7 @@ import type {
   LlmSettings,
   AccountWithModels,
   SkillSummary,
+  PickedElement,
 } from "@/types"
 
 // The live, in-flight state of one streaming turn, held per-conversation in
@@ -99,6 +105,23 @@ function dirName(path: string): string {
   return i === -1 ? "" : path.slice(0, i)
 }
 
+// A short human label for a picked element's chip, e.g. `button "Sign up"` or
+// `a#nav-tasks`. Prefers role + name; falls back to tag + selector.
+function pickedElementLabel(el: PickedElement): string {
+  if (el.role && el.name) return `${el.role} "${el.name}"`
+  if (el.name) return `"${el.name}"`
+  return el.selector || el.tag
+}
+
+// The descriptor prepended to the outgoing message when an element is picked, so
+// the agent has the concrete details to locate/act on it.
+function formatPickedElement(el: PickedElement): string {
+  const parts = [`tag=${el.tag}`, `selector=${el.selector}`]
+  if (el.role) parts.push(`role=${el.role}`)
+  if (el.name) parts.push(`name=${JSON.stringify(el.name)}`)
+  return `[User pointed at a browser element — ${parts.join(", ")}]`
+}
+
 export default function App({
   view,
   conversationId,
@@ -106,8 +129,13 @@ export default function App({
   onConversationChanged,
   onOpenSettings,
   settingsOpen,
+  rightPanelOpen,
+  onWorkspaceChange,
+  onReviewChanges,
+  onOpenHtml,
   onRanInBackground,
   onRunningConvosChange,
+  onWaitingConvosChange,
 }: {
   view: View
   conversationId: string | null
@@ -119,6 +147,17 @@ export default function App({
   // Whether Settings is open — when it closes we re-read the active provider so
   // the composer picker and Send gate reflect any change.
   settingsOpen: boolean
+  // When the right-hand panel (Info / Browser) is open the composer toolbar is
+  // squeezed: collapse folder + branch to icon-only and hide the model picker
+  // (no icon available for it).
+  rightPanelOpen: boolean
+  // Report the active conversation's workspace root up to the Shell (the sidebar
+  // Changes review + browser opens need it for git diffs and file:// URLs).
+  onWorkspaceChange?: (workspace: string) => void
+  // Open the sidebar Changes review scoped to a turn's changed files.
+  onReviewChanges?: (files: ChangedFile[]) => void
+  // Open an html changed-file in the sidebar agent browser.
+  onOpenHtml?: (relPath: string) => void
   // Called after "Run in background" starts a durable task, so the Shell can
   // reveal the Workspace Activity panel where the new task appears.
   onRanInBackground?: () => void
@@ -126,14 +165,27 @@ export default function App({
   // Shell can show a spinner on each active row in the sidebar. A single App
   // instance owns this state, but the sidebar is a sibling — this lifts it up.
   onRunningConvosChange?: (ids: Set<string>) => void
+  // Reports the set of conversations whose turn is BLOCKED waiting on the user —
+  // a pending approval, a clarifying question, or a browser handoff (all surface
+  // as approval/question events). Distinct from running: these need the user to
+  // act, so the sidebar shows a "needs you" indicator instead of the spinner.
+  onWaitingConvosChange?: (ids: Set<string>) => void
 }) {
   // Chat runs without a workspace and attaches files instead; North Star and
   // Interactive are workspace-backed and share the same behavior.
   const isChat = view === "Chat"
 
   const [workspace, setWorkspace] = useState("")
+  // Current git branch for the selected workspace folder, or null when not a
+  // git repo (or no folder is selected). Shown as a small badge next to the
+  // folder name in the Interactive / North Star composer.
+  const [gitBranch, setGitBranch] = useState<string | null>(null)
   const [attachments, setAttachments] = useState<string[]>([])
   const [message, setMessage] = useState("")
+  // An element the user picked in the agent browser ("point at this button").
+  // Held as a pending chip above the composer and prepended to the next message
+  // on Send, then cleared. Null when nothing is pending.
+  const [pickedElement, setPickedElement] = useState<PickedElement | null>(null)
   // Mention pickers: `/skill` steers the agent toward a skill, `@file` points it
   // at a workspace file. Both share one menu anchored to the textarea.
   //   - `skills` is the catalog (loaded once per workspace, filtered client-side).
@@ -181,6 +233,21 @@ export default function App({
   useEffect(() => {
     onRunningConvosChange?.(runningConvos)
   }, [runningConvos, onRunningConvosChange])
+  // Derive the "waiting on the user" set from the live turns and surface it to
+  // the Shell (for the sidebar's per-row "needs you" indicator). A conversation
+  // is waiting when its turn is blocked on a pending approval or a question
+  // (browser handoffs come through as questions). Recomputed whenever liveTurns
+  // changes — the same map the approval/question events already update.
+  useEffect(() => {
+    const waiting = new Set<string>()
+    for (const [id, turn] of liveTurns) {
+      const blocked =
+        turn.question !== null ||
+        turn.tools.some((t) => t.approval?.status === "pending")
+      if (blocked) waiting.add(id)
+    }
+    onWaitingConvosChange?.(waiting)
+  }, [liveTurns, onWaitingConvosChange])
   // Mutate one conversation's live turn immutably; seeds an empty turn if absent.
   const updateLive = useCallback(
     (convoId: string, fn: (prev: LiveTurn) => LiveTurn) => {
@@ -257,6 +324,15 @@ export default function App({
   const canSend =
     !!message.trim() && !loading && hasLlm && (isChat || !!workspace.trim())
 
+  // Subscribe to elements picked in the agent browser (pick mode). The latest
+  // pick replaces any pending one — a single chip, not a list. Cleared on Send
+  // (prepended to the message) or via the chip's remove button.
+  useEffect(() => {
+    return window.cowork.onBrowserElementPicked((element) => {
+      setPickedElement(element)
+    })
+  }, [])
+
   // Load the active conversation when it changes. A null id is a fresh,
   // not-yet-created conversation: clear the panel. Otherwise reload its stored
   // messages and linked workspace (so reopening restores both).
@@ -331,6 +407,31 @@ export default function App({
   // Initial load + reload on workspace change (project-level skills live under
   // <workspace>/.cowork/skills and <workspace>/.github/skills).
   useEffect(() => reloadSkills(), [reloadSkills])
+
+  // Report the workspace root up to the Shell so the sidebar Changes review + the
+  // browser file:// opens can use it. Chat has no workspace → report empty.
+  useEffect(() => {
+    onWorkspaceChange?.(isChat ? "" : workspace.trim())
+  }, [workspace, isChat, onWorkspaceChange])
+
+  // Fetch the git branch for the current workspace folder. Clears when the
+  // folder is deselected or when it's not a git repo.
+  useEffect(() => {
+    const path = workspace.trim()
+    if (!path || isChat) {
+      setGitBranch(null)
+      return
+    }
+    let cancelled = false
+    window.cowork.git.branch(path).then((branch) => {
+      if (!cancelled) setGitBranch(branch)
+    }).catch(() => {
+      if (!cancelled) setGitBranch(null)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [workspace, isChat])
 
   // The confirmed mentions, in the shape the token helpers consume. Both the
   // overlay (badges) and send-time expansion read this.
@@ -568,7 +669,14 @@ export default function App({
     // reads them: `/git-commit` → `git-commit skill`, `@src/foo.ts` → `src/foo.ts`.
     // The expanded text is also what's shown in the optimistic timeline, so the
     // transcript matches what the agent received.
-    const text = expandMentions(message, confirmedMentions).trim()
+    const base = expandMentions(message, confirmedMentions).trim()
+    // Prepend a picked-element descriptor (if any) so the agent knows exactly
+    // which on-page element the user is pointing at. It can act on it two ways:
+    // edit the source that renders it (grep the selector/text), or
+    // browser_snapshot + match the role/name to click it.
+    const text = pickedElement
+      ? `${formatPickedElement(pickedElement)}\n\n${base}`
+      : base
     const sentAttachments = attachments
 
     // Ensure a conversation exists — created lazily on first send. For
@@ -614,6 +722,7 @@ export default function App({
     setMenu(null)
     setMenuActive(null)
     setAttachments([])
+    setPickedElement(null)
     // Start this conversation's live turn from a clean slate (its buffers are
     // keyed by conversation, so this never touches another conversation's turn).
     setLiveTurns((prev) => {
@@ -964,10 +1073,91 @@ export default function App({
     </button>
   )
 
+  // Icon-only model picker shown when the right panel is open (squeezes the
+  // toolbar). Uses the same Combobox but renders only the BrainCircuit icon;
+  // the selected model name appears as a native tooltip.
+  const modelPickerCompact = hasLlm ? (
+    <Combobox
+      items={modelGroups}
+      value={selectedItem}
+      isItemEqualToValue={(a, b) => a?.value === b?.value}
+      onValueChange={(item) => {
+        if (!item) return
+        const sep = item.value.indexOf("::")
+        if (sep < 0) return
+        void selectModel(item.value.slice(0, sep), item.value.slice(sep + 2))
+      }}
+    >
+      <ComboboxTrigger
+        title={selectedItem ? selectedItem.label : "Select model"}
+        className="flex h-7 items-center rounded-md px-2 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+      >
+        <BrainCircuit className="size-4" />
+      </ComboboxTrigger>
+      <ComboboxContent className="w-72 min-w-72">
+        <ComboboxInput placeholder="Search models…" showTrigger={false} />
+        <ComboboxEmpty>No models found.</ComboboxEmpty>
+        <ComboboxList>
+          {(group: {
+            value: string
+            label: string
+            items: { value: string; label: string }[]
+          }) => (
+            <ComboboxGroup key={group.value} items={group.items}>
+              <ComboboxLabel>{group.label}</ComboboxLabel>
+              <ComboboxCollection>
+                {(item: { value: string; label: string }) => (
+                  <ComboboxItem key={item.value} value={item}>
+                    {item.label}
+                  </ComboboxItem>
+                )}
+              </ComboboxCollection>
+            </ComboboxGroup>
+          )}
+        </ComboboxList>
+      </ComboboxContent>
+    </Combobox>
+  ) : (
+    <button
+      type="button"
+      title="Configure model"
+      onClick={() => onOpenSettings("providers")}
+      className="flex items-center rounded-md px-2 py-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+    >
+      <BrainCircuit className="size-4" />
+    </button>
+  )
+
   // The composer (attachment chips + input box). Rendered both centered and
   // bottom-pinned, so it's defined once here.
   const composer = (
     <>
+      {/* Picked browser element — removable chip, prepended to the next message. */}
+      {pickedElement && (
+        <AttachmentGroup className="mb-2">
+          <Attachment
+            size="sm"
+            title={formatPickedElement(pickedElement)}
+          >
+            <AttachmentMedia variant="icon">
+              <MousePointerClick />
+            </AttachmentMedia>
+            <AttachmentContent>
+              <AttachmentTitle>
+                {pickedElementLabel(pickedElement)}
+              </AttachmentTitle>
+            </AttachmentContent>
+            <AttachmentActions>
+              <AttachmentAction
+                onClick={() => setPickedElement(null)}
+                aria-label="Remove picked element"
+              >
+                <X />
+              </AttachmentAction>
+            </AttachmentActions>
+          </Attachment>
+        </AttachmentGroup>
+      )}
       {/* Attachment cards (Chat only) — removable, shown above the input. */}
       {isChat && attachments.length > 0 && (
         <AttachmentGroup className="mb-2">
@@ -1051,21 +1241,35 @@ export default function App({
                 <Plus className="size-4" />
               </button>
             ) : (
-              <button
-                type="button"
-                onClick={pickWorkspace}
-                title="Select workspace folder"
-                className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-              >
-                <FolderOpen className="size-4" />
-                {workspace && (
-                  <span className="max-w-40 truncate">
-                    {lastSegment(workspace)}
+              <>
+                <button
+                  type="button"
+                  onClick={pickWorkspace}
+                  title={workspace ? lastSegment(workspace) : "Select workspace folder"}
+                  className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                >
+                  <FolderOpen className="size-4" />
+                  {workspace && !rightPanelOpen && (
+                    <span className="max-w-40 truncate">
+                      {lastSegment(workspace)}
+                    </span>
+                  )}
+                </button>
+                {gitBranch && !rightPanelOpen && (
+                  <span title={gitBranch} className="flex items-center gap-1 rounded bg-accent px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+                    <GitBranch className="size-3 shrink-0" />
+                    <span>{gitBranch}</span>
                   </span>
                 )}
-              </button>
+                {gitBranch && rightPanelOpen && (
+                  <span title={gitBranch} className="flex items-center rounded bg-accent p-1 text-muted-foreground">
+                    <GitBranch className="size-3" />
+                  </span>
+                )}
+              </>
             )}
-            {modelPicker}
+            {!rightPanelOpen && modelPicker}
+            {rightPanelOpen && modelPickerCompact}
           </div>
           <div className="flex items-center gap-1.5">
             {/* Run the message as a durable background task (workspace views
@@ -1155,6 +1359,12 @@ export default function App({
                       <Message align="start">
                         <MessageContent>
                           <ToolGroup calls={item.calls} />
+                          <ChangedFilesBar
+                            calls={item.calls}
+                            workspace={workspace.trim()}
+                            onOpenHtml={(p) => onOpenHtml?.(p)}
+                            onReviewAll={(files) => onReviewChanges?.(files)}
+                          />
                         </MessageContent>
                       </Message>
                     </MessageScrollerItem>
@@ -1194,6 +1404,14 @@ export default function App({
                   <Message align="start">
                     <MessageContent>
                       {liveTools.length > 0 && <ToolGroup calls={liveTools} />}
+                      {liveTools.length > 0 && (
+                        <ChangedFilesBar
+                          calls={liveTools}
+                          workspace={workspace.trim()}
+                          onOpenHtml={(p) => onOpenHtml?.(p)}
+                          onReviewAll={(files) => onReviewChanges?.(files)}
+                        />
+                      )}
                       {liveText ? (
                         <Bubble align="start" variant="muted">
                           <BubbleContent>

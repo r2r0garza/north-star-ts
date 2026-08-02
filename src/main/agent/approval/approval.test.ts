@@ -4,6 +4,7 @@ import { normalizeCommand } from "./normalize"
 import { RegexCommandClassifier } from "./regex-classifier"
 import { FileActionClassifier } from "./file-classifier"
 import { DelegationClassifier } from "./delegation-classifier"
+import { BrowserActionClassifier } from "./browser-classifier"
 import {
   PolicyEngine,
   type AllowlistLookup,
@@ -28,6 +29,24 @@ function fileWrite(relPath: string): ToolAction {
     kind: "file_write",
     summary: `write ${relPath}`,
     identity: `file_write:${relPath}`,
+  }
+}
+
+// Build a browser action (navigate vs an interaction) for the classifier tests.
+function browserNavigate(url: string): ToolAction {
+  return {
+    tool: "browser_navigate",
+    kind: "browser",
+    summary: `Open ${url}`,
+    identity: `browser_navigate:${url}`,
+  }
+}
+function browserClick(ref: string): ToolAction {
+  return {
+    tool: "browser_click",
+    kind: "browser",
+    summary: `Click ${ref}`,
+    identity: `browser_click:${ref}`,
   }
 }
 
@@ -407,5 +426,82 @@ describe("DelegationClassifier", () => {
     expect(engine.decide(delegate(), { sandboxed: true }).level).toBe(
       "require_approval"
     )
+  })
+})
+
+describe("BrowserActionClassifier", () => {
+  const bc = new BrowserActionClassifier()
+
+  it("requires approval for navigation (opens a new origin)", () => {
+    const verdict = bc.classify(browserNavigate("https://example.com"))
+    expect(verdict).toMatchObject({ level: "require_approval" })
+    // No category → never sandbox-downgraded.
+    expect((verdict as { category?: string }).category).toBeUndefined()
+  })
+
+  it("auto-allows interactions within an open page (click/type/back/close)", () => {
+    expect(bc.classify(browserClick("e3"))?.level).toBe("allow")
+    expect(
+      bc.classify({
+        tool: "browser_type",
+        kind: "browser",
+        summary: "Type into e5",
+        identity: "browser_type:e5",
+      })?.level
+    ).toBe("allow")
+    expect(
+      bc.classify({
+        tool: "browser_back",
+        kind: "browser",
+        summary: "Go back",
+        identity: "browser_back",
+      })?.level
+    ).toBe("allow")
+    expect(
+      bc.classify({
+        tool: "browser_close",
+        kind: "browser",
+        summary: "Close the browser",
+        identity: "browser_close",
+      })?.level
+    ).toBe("allow")
+  })
+
+  it("returns null for non-browser actions (lets other classifiers run)", () => {
+    expect(bc.classify(shell("ls"))).toBeNull()
+    expect(bc.classify(fileWrite("a.ts"))).toBeNull()
+  })
+})
+
+describe("PolicyEngine — browser interaction carve-out (local backend)", () => {
+  const allowNone: AllowlistLookup = { isAllowed: () => false }
+  const engine = new PolicyEngine(
+    [new BrowserActionClassifier()],
+    allowNone
+  )
+
+  it("keeps a browser click auto-allowed on a local backend (no upgrade)", () => {
+    // Interactions are exempt from the local-backend allow→require_approval
+    // tightening, so a multi-step flow doesn't prompt on every click.
+    expect(engine.decide(browserClick("e3"), { sandboxed: false }).level).toBe(
+      "allow"
+    )
+  })
+
+  it("still requires approval for navigation on a local backend", () => {
+    expect(
+      engine.decide(browserNavigate("https://example.com"), {
+        sandboxed: false,
+      }).level
+    ).toBe("require_approval")
+  })
+
+  it("shell allow is still upgraded on local backend (carve-out is browser-only)", () => {
+    // Guard against the carve-out accidentally widening: a benign shell command
+    // must still be upgraded to require_approval on a local backend.
+    const shellEngine = new PolicyEngine([classifier], allowNone)
+    expect(
+      shellEngine.decide(shell("git status"), { sandboxed: false }).level
+    ).toBe("require_approval")
   })
 })
