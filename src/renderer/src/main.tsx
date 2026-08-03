@@ -17,6 +17,7 @@ import {
   type SidebarMode,
 } from "@/components/activity-panel"
 import { SettingsScreen } from "@/components/settings-screen"
+import { SkillsScreen } from "@/components/skills-screen"
 import { TaskTranscriptSheet } from "@/components/task-transcript-sheet"
 import { TaskCompletionToasts } from "@/components/task-completion-toasts"
 import { Toaster } from "@/components/ui/sonner"
@@ -48,6 +49,9 @@ function Shell() {
   const [waitingConvos, setWaitingConvos] = useState<Set<string>>(new Set())
   // Whether the Settings sheet is open (opened from the sidebar gear).
   const [settingsOpen, setSettingsOpen] = useState(false)
+  // Whether the Skills view is open (opened from the sidebar footer). A full-
+  // viewport overlay like Settings; browses/edits SKILL.md files.
+  const [skillsOpen, setSkillsOpen] = useState(false)
   // Which tab Settings opens on. First launch (no provider configured) opens
   // straight to Providers so the user can set one up.
   const [settingsTab, setSettingsTab] = useState("backend")
@@ -221,6 +225,7 @@ function Shell() {
         onNewConversation={() => setActiveConversationId(null)}
         onConversationDeleted={handleConversationDeleted}
         onSettingsClick={() => openSettings()}
+        onSkillsClick={() => setSkillsOpen(true)}
         refreshKey={refreshKey}
         runningConvos={runningConvos}
         waitingConvos={waitingConvos}
@@ -275,6 +280,7 @@ function Shell() {
         onOpenChange={setSettingsOpen}
         initialTab={settingsTab}
       />
+      <SkillsScreen open={skillsOpen} onOpenChange={setSkillsOpen} />
     </SidebarProvider>
   )
 }

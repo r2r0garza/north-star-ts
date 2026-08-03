@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react"
-import { BellDot, Plus, Settings } from "lucide-react"
+import { BellDot, BookOpen, Plus, Settings } from "lucide-react"
 import { Spinner } from "@/components/ui/spinner"
 import {
   Sidebar,
@@ -166,6 +166,7 @@ export function AppSidebar({
   onNewConversation,
   onConversationDeleted,
   onSettingsClick,
+  onSkillsClick,
   refreshKey,
   runningConvos,
   waitingConvos,
@@ -177,6 +178,7 @@ export function AppSidebar({
   onNewConversation: () => void
   onConversationDeleted: (id: string) => void
   onSettingsClick: () => void
+  onSkillsClick: () => void
   // Bumped by the app whenever conversations change, so the list refetches.
   refreshKey: number
   // Conversations with a turn currently streaming — each shows a spinner.
@@ -287,6 +289,16 @@ export function AppSidebar({
         </SidebarGroup>
       </SidebarContent>
       <SidebarFooter className="p-2">
+        <Button
+          type="button"
+          size="sm"
+          variant="ghost"
+          onClick={onSkillsClick}
+          className="w-full justify-start"
+        >
+          <BookOpen className="size-4" />
+          Skills
+        </Button>
         <Button
           type="button"
           size="sm"
