@@ -359,6 +359,11 @@ export default function App({
       justCreatedRef.current = null
       return
     }
+    // A genuine switch to (or reset from) another conversation: plan mode is
+    // session-only and per-conversation, so clear it. This runs AFTER the
+    // just-created guard above, so promoting a fresh conversation mid-send (which
+    // changes conversationId) does NOT clear the plan mode the turn was sent with.
+    setPlanMode(false)
     // Switching to a different conversation no longer wipes any live state: each
     // streaming turn's text/tools/approval/question is held per-conversation in
     // `liveTurns` and rendered by looking up the id on screen. Leaving a turn that
@@ -395,12 +400,6 @@ export default function App({
     return () => {
       cancelled = true
     }
-  }, [conversationId])
-
-  // Plan mode is session-only and per-send; reset it when the conversation on
-  // screen changes so it never leaks from one conversation into another.
-  useEffect(() => {
-    setPlanMode(false)
   }, [conversationId])
 
   // Fetch the skill catalog for the slash menu. Extracted so it can be re-run on
