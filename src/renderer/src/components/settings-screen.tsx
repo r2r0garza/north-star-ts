@@ -107,7 +107,6 @@ const SECTIONS: Array<{ value: string; label: string }> = [
 
 // Human-readable labels for the non-custom (locked) skill-source kinds.
 const SKILL_SOURCE_KIND_LABEL: Record<SkillSourceRow["kind"], string> = {
-  app: "Built-in",
   user: "User",
   custom: "Custom",
   github: "Workspace",
@@ -623,8 +622,8 @@ export function SettingsScreen({
                           per-skill subfolders with a <code>SKILL.md</code>{" "}
                           inside. Built-in sources can't be removed. Workspace
                           folders (<code>.github/skills</code>,{" "}
-                          <code>.cowork/skills</code>) are picked up
-                          automatically when a workspace is open.
+                          <code>{window.cowork.system().dataDirName}/skills</code>
+                          ) are picked up automatically when a workspace is open.
                         </p>
                       </div>
                       {skillSources === null ? (

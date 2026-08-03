@@ -1,5 +1,6 @@
 import { app, shell, BrowserWindow, ipcMain } from "electron"
-import { join } from "path"
+import { join, resolve, basename, sep } from "path"
+import { readFile, writeFile } from "fs/promises"
 import { config as loadEnv } from "dotenv"
 
 // Load .env.local before anything reads process.env. The API key is no longer
@@ -17,9 +18,20 @@ import {
   type ChatRequest,
 } from "./agent"
 import { pickWorkspace, pickFiles } from "./pick-workspace"
-import { skillSources } from "./agent/skills/sources"
+import {
+  skillSources,
+  initUserSkills,
+  userSkillsDir,
+} from "./agent/skills/sources"
 import { loadSkills, listSource } from "./agent/skills/loader"
-import type { SkillSourceRow, SkillSourceKind } from "./agent/skills/types"
+import type {
+  SkillSourceRow,
+  SkillSourceKind,
+  SkillCatalogEntry,
+  SkillTree,
+  SkillFolder,
+} from "./agent/skills/types"
+import { listWorkspaces } from "./db/repositories/workspaces"
 import * as settingsService from "./settings/service"
 import { listWorkspaceFiles } from "./files/list"
 import { readGitBranch } from "./index/metadata"
@@ -37,6 +49,7 @@ import { SummaryService, SUMMARIZE_KIND } from "./summaries/service"
 import { BrowserManager } from "./browser/manager"
 import { seedProviderFromEnvIfEmpty } from "./settings/bootstrap"
 import { closeDb } from "./db/connection"
+import { dataDirName, systemDisplayName } from "./config/system-name"
 
 // The durable task runner — a singleton owned by the main process. Started in
 // app.whenReady (after the DB handlers register) and stopped on will-quit.
@@ -273,31 +286,34 @@ ipcMain.handle("skills:list", async (_event, workspace?: string) => {
   const skills = await loadSkills(skillSources(workspace))
   return skills.map(({ name, description }) => ({ name, description }))
 })
-// Enumerate the skill sources (built-in + custom) for Settings → Capabilities,
-// each tagged with its kind and its current skill count. Mirrors the ordering
-// in skillSources() so the table matches the load order. The workspace rows are
-// only included when a workspace is passed.
+// The kind-tagged skill-source dirs for a workspace, in load order. Shared by
+// skills:sources (counts), skills:catalog (full skills), and skills:write (path
+// allow-list). The app-bundled dir is intentionally absent — it only seeds the
+// user dir once and is never a live source. Workspace rows only when a workspace
+// is passed.
+function skillSourceEntries(
+  workspace?: string
+): Array<{ path: string; kind: SkillSourceKind }> {
+  const custom = settingsService.getSkillSources().folders
+  const dataDir = dataDirName()
+  const entries: Array<{ path: string; kind: SkillSourceKind }> = [
+    { path: userSkillsDir(), kind: "user" },
+    ...custom.map((path) => ({ path, kind: "custom" as const })),
+  ]
+  if (workspace) {
+    entries.push({ path: join(workspace, ".github", "skills"), kind: "github" })
+    entries.push({ path: join(workspace, dataDir, "skills"), kind: "workspace" })
+  }
+  return entries
+}
+
+// Enumerate the skill sources (user + custom) for Settings → Capabilities, each
+// tagged with its kind and its current skill count. Mirrors the load order.
 ipcMain.handle(
   "skills:sources",
   async (_event, workspace?: string): Promise<SkillSourceRow[]> => {
-    const custom = settingsService.getSkillSources().folders
-    const entries: Array<{ path: string; kind: SkillSourceKind }> = [
-      { path: join(app.getAppPath(), "skills"), kind: "app" },
-      { path: join(app.getPath("home"), ".cowork", "skills"), kind: "user" },
-      ...custom.map((path) => ({ path, kind: "custom" as const })),
-    ]
-    if (workspace) {
-      entries.push({
-        path: join(workspace, ".github", "skills"),
-        kind: "github",
-      })
-      entries.push({
-        path: join(workspace, ".cowork", "skills"),
-        kind: "workspace",
-      })
-    }
     return Promise.all(
-      entries.map(async ({ path, kind }) => ({
+      skillSourceEntries(workspace).map(async ({ path, kind }) => ({
         path,
         kind,
         skillCount: (await listSource(path)).length,
@@ -305,6 +321,116 @@ ipcMain.handle(
     )
   }
 )
+// Full skill catalog for the Skills view: each source dir with its loaded skills
+// (SkillMetadata incl. body + absolute path), tagged by kind so the renderer can
+// group into Global (user) / Workspace (github + workspace) / Custom (custom).
+// NOT de-duped across sources — each source shows its own skills.
+ipcMain.handle(
+  "skills:catalog",
+  async (_event, workspace?: string): Promise<SkillCatalogEntry[]> => {
+    return Promise.all(
+      skillSourceEntries(workspace).map(async ({ path, kind }) => ({
+        path,
+        kind,
+        skills: await listSource(path),
+      }))
+    )
+  }
+)
+// The nested catalog for the Skills view: Global (the user dir) + one node per
+// KNOWN workspace (every repo the app has opened, not just the active one) + one
+// node per registered custom folder, each with its loaded skills. Enumerates
+// workspaces itself so the view populates with no active conversation. Folders
+// are included even when empty (the view shows them so the user sees every repo).
+ipcMain.handle("skills:tree", async (): Promise<SkillTree> => {
+  const dataDir = dataDirName()
+  const toFolder = async (
+    path: string,
+    label: string,
+    kind: SkillFolder["kind"]
+  ): Promise<SkillFolder> => ({
+    path,
+    label,
+    kind,
+    skills: await listSource(path),
+  })
+
+  const global = [await toFolder(userSkillsDir(), "Global", "user")]
+
+  const workspaces = await Promise.all(
+    listWorkspaces().map(async (ws) => ({
+      label: ws.name ?? baseName(ws.path),
+      path: ws.path,
+      folders: await Promise.all([
+        toFolder(join(ws.path, ".github", "skills"), ".github/skills", "github"),
+        toFolder(join(ws.path, dataDir, "skills"), `${dataDir}/skills`, "workspace"),
+      ]),
+    }))
+  )
+
+  const custom = await Promise.all(
+    settingsService
+      .getSkillSources()
+      .folders.map((folder) => toFolder(folder, baseName(folder), "custom"))
+  )
+
+  return { global, workspaces, custom }
+})
+// Read a SKILL.md's raw contents (frontmatter + body) for the in-app editor.
+// Only paths that live inside a known skill source are allowed (see below).
+ipcMain.handle(
+  "skills:read",
+  async (_event, filePath: string): Promise<string> => {
+    assertSkillPath(filePath)
+    return readFile(filePath, "utf-8")
+  }
+)
+// Save an edited SKILL.md back to disk. Validates the path is a SKILL.md inside a
+// known skill source before writing — the renderer only ever passes catalog
+// paths, but the handler must not trust arbitrary input.
+ipcMain.handle(
+  "skills:write",
+  async (_event, filePath: string, content: string): Promise<void> => {
+    assertSkillPath(filePath)
+    await writeFile(filePath, content, "utf-8")
+  }
+)
+// Basename of a path, tolerating a trailing separator (e.g. "/a/b/" -> "b").
+function baseName(p: string): string {
+  return basename(p.replace(/[/\\]+$/, "")) || p
+}
+// All skill-source roots the Skills view can read/write: the user dir + every
+// custom folder + BOTH workspace dirs for EVERY known workspace. The guard must
+// cover all workspaces (not just the active one) because the view now edits
+// skills across every repo the app knows about.
+function allSkillRoots(): string[] {
+  const dataDir = dataDirName()
+  const roots = [
+    userSkillsDir(),
+    ...settingsService.getSkillSources().folders,
+  ]
+  for (const ws of listWorkspaces()) {
+    roots.push(join(ws.path, ".github", "skills"))
+    roots.push(join(ws.path, dataDir, "skills"))
+  }
+  return roots.map((r) => resolve(r))
+}
+// Guard for skills:read/write. Requires the basename to be SKILL.md and the file
+// to resolve inside one of the known skill-source dirs. Throws otherwise. The
+// `resolved === root || startsWith(root + sep)` check rejects both path traversal
+// (../) and sibling-prefix tricks (e.g. "skills-evil" vs "skills").
+function assertSkillPath(filePath: string): void {
+  const resolved = resolve(filePath)
+  if (basename(resolved) !== "SKILL.md") {
+    throw new Error(`Refusing non-SKILL.md path: ${filePath}`)
+  }
+  const inside = allSkillRoots().some(
+    (root) => resolved === root || resolved.startsWith(root + sep)
+  )
+  if (!inside) {
+    throw new Error(`Refusing skill path outside known sources: ${filePath}`)
+  }
+}
 // List workspace files (relative POSIX paths) for the composer's `@`-mention
 // menu, filtered by the typed query server-side. Backed by a cached
 // gitignore-aware walk so large repos stay responsive. Returns [] with no
@@ -365,6 +491,15 @@ ipcMain.handle("is-fullscreen", (event) => {
   const win = BrowserWindow.fromWebContents(event.sender)
   return win?.isFullScreen() ?? false
 })
+// The customizable system name (from NEXT_system_name). Registered as a
+// synchronous handler so the renderer can set document.title on first paint
+// without an async flash of the static HTML title. See config/system-name.ts.
+ipcMain.on("system:name", (event) => {
+  event.returnValue = {
+    displayName: systemDisplayName(),
+    dataDirName: dataDirName(),
+  }
+})
 
 app.whenReady().then(() => {
   // Register DB-backed IPC handlers now — the connection opens lazily on first
@@ -410,6 +545,10 @@ app.whenReady().then(() => {
   // existing dev setups keep working without re-entering it (no-op once any
   // account exists). After this, the stored key is the source of truth.
   seedProviderFromEnvIfEmpty()
+  // Materialize the user-level skills dir (~/.<system>/skills) and, on first
+  // launch only, seed it with the app-bundled skills so users get editable
+  // copies of the built-ins.
+  initUserSkills()
   createWindow()
 
   app.on("activate", () => {

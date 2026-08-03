@@ -32,11 +32,16 @@ export type { PickedElement } from "../../preload/index"
 // Git diff result (changed-file pills + sidebar Changes review).
 export type { GitDiffResult } from "../../preload/index"
 
-// Skill summary type, surfaced for the composer's slash menu.
+// Skill types: summary for the composer's slash menu; metadata + catalog entry
+// for the Skills view (browse + edit SKILL.md).
 export type {
   SkillSummary,
   SkillSourceRow,
   SkillSourceKind,
+  SkillMetadata,
+  SkillCatalogEntry,
+  SkillFolder,
+  SkillTree,
 } from "../../preload/index"
 
 // Settings types, surfaced for the Settings pane.

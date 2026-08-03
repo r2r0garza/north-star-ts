@@ -2,6 +2,7 @@ import Database from "better-sqlite3"
 import { app } from "electron"
 import { join } from "path"
 import { runMigrations } from "./migrations"
+import { systemSlug } from "../config/system-name"
 
 // Singleton connection. Opened lazily on first access so it reads
 // app.getPath("userData") after the app is ready.
@@ -9,7 +10,7 @@ let db: Database.Database | undefined
 
 export function getDb(): Database.Database {
   if (!db) {
-    const file = join(app.getPath("userData"), "cowork.db")
+    const file = join(app.getPath("userData"), `${systemSlug()}.db`)
     db = new Database(file)
     // WAL for concurrent reads + crash resilience; foreign_keys is OFF by
     // default per-connection in SQLite and must be enabled for cascades;

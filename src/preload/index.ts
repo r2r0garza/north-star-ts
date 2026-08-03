@@ -28,7 +28,11 @@ import type {
   BrowserSettings,
   IdeSettings,
 } from "../main/settings/service"
-import type { SkillSourceRow } from "../main/agent/skills/types"
+import type {
+  SkillSourceRow,
+  SkillCatalogEntry,
+  SkillTree,
+} from "../main/agent/skills/types"
 import type { RuntimeStatus } from "../main/agent/env/runtime-check"
 import type { CreateAccountInput } from "../main/db/repositories/provider-accounts"
 import type { AddModelInput } from "../main/db/repositories/models"
@@ -240,6 +244,24 @@ const api = {
       ipcRenderer.invoke("skills:sources", workspace) as Promise<
         SkillSourceRow[]
       >,
+    // Full catalog for the Skills view: each source dir with its loaded skills
+    // (incl. body + absolute path), tagged by kind for Global/Workspace/Custom
+    // grouping. Pass the workspace to include the workspace-scoped sources.
+    catalog: (workspace?: string) =>
+      ipcRenderer.invoke("skills:catalog", workspace) as Promise<
+        SkillCatalogEntry[]
+      >,
+    // Nested catalog for the Skills view: Global + one node per known workspace
+    // + one per custom folder, each with its skills. Enumerates all workspaces
+    // itself, so it needs no workspace arg and works with no active session.
+    tree: () => ipcRenderer.invoke("skills:tree") as Promise<SkillTree>,
+    // Read a SKILL.md's raw contents (frontmatter + body) for the in-app editor.
+    // The main process validates the path against all known skill sources.
+    read: (filePath: string) =>
+      ipcRenderer.invoke("skills:read", filePath) as Promise<string>,
+    // Save an edited SKILL.md back to disk. The main process validates the path.
+    write: (filePath: string, content: string) =>
+      ipcRenderer.invoke("skills:write", filePath, content) as Promise<void>,
   },
   // List workspace files for the composer's `@`-mention menu, filtered by the
   // typed query (server-side). Returns workspace-relative POSIX paths, capped.
@@ -661,6 +683,13 @@ const api = {
         error?: string
       }>,
   },
+
+  // The customizable system name (from NEXT_system_name). Read synchronously so
+  // the UI can brand the window title / skills-path hints without an async flash.
+  // `displayName` is the human name (e.g. "Cowork"); `dataDirName` is the dotfile
+  // dir shown in skill-path hints (e.g. ".cowork").
+  system: (): { displayName: string; dataDirName: string } =>
+    ipcRenderer.sendSync("system:name"),
 }
 
 contextBridge.exposeInMainWorld("cowork", api)
@@ -706,6 +735,10 @@ export type {
 export type {
   SkillSourceRow,
   SkillSourceKind,
+  SkillMetadata,
+  SkillCatalogEntry,
+  SkillFolder,
+  SkillTree,
 } from "../main/agent/skills/types"
 export type { RuntimeStatus, Runtime } from "../main/agent/env/runtime-check"
 // LLM provider/model types for the Providers & Models tabs and the composer.
