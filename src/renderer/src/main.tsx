@@ -37,6 +37,12 @@ function Shell() {
   const [activeConversationId, setActiveConversationId] = useState<
     string | null
   >(null)
+  // The project a fresh (uncreated) conversation will belong to — set when "+"
+  // is clicked on a project section, null for an unassigned/"No Project" one.
+  // Consumed by App to adopt the project's directory and stamp project_id on
+  // create. Irrelevant once an existing conversation is selected (App reads the
+  // project from the stored row).
+  const [pendingProjectId, setPendingProjectId] = useState<string | null>(null)
   // Bumped whenever conversations change so the sidebar list refetches.
   const [refreshKey, setRefreshKey] = useState(0)
   const refreshConversations = () => setRefreshKey((k) => k + 1)
@@ -190,12 +196,23 @@ function Shell() {
   function handleViewChange(next: View) {
     setView(next)
     setActiveConversationId(null)
+    setPendingProjectId(null)
   }
 
-  // Reopen a stored conversation — switch the view to match its mode.
+  // Reopen a stored conversation — switch the view to match its mode. The
+  // pending project is only for uncreated conversations; clear it (App reads the
+  // stored conversation's own project).
   function handleSelectConversation(id: string, mode: Mode) {
     setView(MODE_TO_VIEW[mode])
     setActiveConversationId(id)
+    setPendingProjectId(null)
+  }
+
+  // Start a fresh conversation, optionally in a project (its directory is
+  // auto-adopted for workspace views).
+  function handleNewConversation(projectId: string | null = null) {
+    setActiveConversationId(null)
+    setPendingProjectId(projectId)
   }
 
   // A session was deleted from the sidebar. If it was the active one, drop back
@@ -222,7 +239,7 @@ function Shell() {
         onViewChange={handleViewChange}
         activeConversationId={activeConversationId}
         onSelectConversation={handleSelectConversation}
-        onNewConversation={() => setActiveConversationId(null)}
+        onNewConversation={handleNewConversation}
         onConversationDeleted={handleConversationDeleted}
         onSettingsClick={() => openSettings()}
         onSkillsClick={() => setSkillsOpen(true)}
@@ -233,6 +250,7 @@ function Shell() {
       <App
         view={view}
         conversationId={activeConversationId}
+        pendingProjectId={pendingProjectId}
         onConversationCreated={(id) => {
           setActiveConversationId(id)
           refreshConversations()

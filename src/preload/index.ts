@@ -8,6 +8,7 @@ import type {
   Conversation,
   Message,
   Mode,
+  Project,
   Task,
   TaskCheckpoint,
   TaskEvent,
@@ -408,6 +409,7 @@ const api = {
       create: (input: {
         mode: Mode
         workspaceId?: string | null
+        projectId?: string | null
         title?: string | null
         accountId?: string | null
         modelId?: string | null
@@ -430,6 +432,7 @@ const api = {
         patch: {
           title?: string | null
           workspaceId?: string | null
+          projectId?: string | null
           accountId?: string | null
           modelId?: string | null
         }
@@ -471,6 +474,19 @@ const api = {
         ) as Promise<Workspace>,
       delete: (id: string) =>
         ipcRenderer.invoke("db:workspaces:delete", id) as Promise<void>,
+    },
+    projects: {
+      create: (input: { name: string; workspaceId?: string | null }) =>
+        ipcRenderer.invoke("db:projects:create", input) as Promise<Project>,
+      list: () => ipcRenderer.invoke("db:projects:list") as Promise<Project[]>,
+      get: (id: string) =>
+        ipcRenderer.invoke("db:projects:get", id) as Promise<Project | null>,
+      update: (
+        id: string,
+        patch: { name?: string; workspaceId?: string | null }
+      ) => ipcRenderer.invoke("db:projects:update", id, patch) as Promise<Project>,
+      delete: (id: string) =>
+        ipcRenderer.invoke("db:projects:delete", id) as Promise<void>,
     },
     tasks: {
       create: (input: {
@@ -714,6 +730,7 @@ export type {
   Conversation,
   Message,
   Mode,
+  Project,
   Task,
   TaskCheckpoint,
   TaskEvent,
