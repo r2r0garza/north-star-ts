@@ -1,6 +1,7 @@
 import { useState } from "react"
 import { Check, ChevronLeft, ChevronRight, CircleHelp } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { Markdown } from "@/components/markdown"
 import { cn } from "@/lib/utils"
 import type { Question, QuestionAnswer } from "@/types"
 
@@ -16,9 +17,14 @@ const OTHER = "__other__"
 export function QuestionPanel({
   questions,
   onSubmit,
+  onCancel,
 }: {
   questions: Question[]
   onSubmit: (answers: QuestionAnswer[]) => void
+  // Back out of the question entirely (stops the turn). When omitted, no Cancel
+  // is shown. Used e.g. for the plan approval, where the user may decide not to
+  // proceed with the plan at all rather than approve or keep refining.
+  onCancel?: () => void
 }) {
   // Per-question selected option labels (OTHER is a member when chosen) and the
   // free-form text typed for Other. Indexed parallel to `questions`.
@@ -108,6 +114,13 @@ export function QuestionPanel({
       {/* Current question + its options. */}
       <div className="flex flex-col gap-2">
         <span className="font-medium">{q.question}</span>
+        {/* Optional Markdown context (e.g. the plan being approved), capped in
+            height and scrolled internally so a long body never dominates. */}
+        {q.body && (
+          <div className="max-h-[40vh] overflow-y-auto rounded-md border bg-muted/30 px-3 py-2">
+            <Markdown content={q.body} />
+          </div>
+        )}
         <div className="flex flex-col gap-1.5">
           {q.options.map((opt) => {
             const on = sel.includes(opt.label)
@@ -186,9 +199,15 @@ export function QuestionPanel({
         </div>
       </div>
 
-      {/* Footer: Back / Next page between questions; Submit sends everything. */}
+      {/* Footer: Cancel backs out entirely; Back / Next page between questions;
+          Submit sends everything. */}
       <div className="flex items-center justify-between">
         <div className="flex gap-2">
+          {onCancel && (
+            <Button size="sm" variant="ghost" onClick={onCancel}>
+              Cancel
+            </Button>
+          )}
           {multiple && (
             <>
               <Button

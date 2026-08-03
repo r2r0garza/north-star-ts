@@ -54,6 +54,12 @@ export interface Question {
   multiSelect?: boolean
   // 2-4 preset choices. The UI adds an "Other" free-form field on top.
   options: QuestionOption[]
+  // Optional Markdown body rendered above the options, in a fixed-height
+  // scrollable box, so a question can carry context the user must read before
+  // answering. Used by present_plan to show the plan alongside its approval
+  // prompt. Not model-facing: ask_user_question never sets it (it builds
+  // Question from model args explicitly), so it stays out of that tool's schema.
+  body?: string
 }
 // One question's answer: the chosen option labels, plus optional free-form text
 // the user typed into "Other".

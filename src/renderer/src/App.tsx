@@ -989,6 +989,23 @@ export default function App({
     updateLive(conversationId, (turn) => ({ ...turn, question: null }))
   }
 
+  // Back out of the pending question entirely. Stopping the turn resolves the
+  // backend's blocked `ask` as "cancelled", so the loop unwinds without another
+  // round-trip. For the plan approval this means the plan isn't implemented and
+  // plan mode stays on (setPlanMode(false) only runs on approval), so the user
+  // can redirect or start a fresh plan. Clear the panel immediately.
+  function cancelQuestion() {
+    if (!conversationId) return
+    window.cowork.chatStop(conversationId)
+    updateLive(conversationId, (turn) => ({ ...turn, question: null }))
+  }
+
+  // A question carrying a body to review (currently the plan approval) can be
+  // backed out of, not just answered — hence a Cancel. Plain clarifying
+  // questions keep the answer-or-stop behavior unchanged.
+  const questionCancellable =
+    liveQuestion?.questions.some((q) => q.body) === true
+
   // What to actually render as the transcript. When a live turn is on screen, the
   // assistant response after the last user message is owned by the live buffer
   // (streamed text + tool rows + approval card). But switching away and back
@@ -1522,6 +1539,7 @@ export default function App({
               <QuestionPanel
                 questions={liveQuestion.questions}
                 onSubmit={answerQuestion}
+                onCancel={questionCancellable ? cancelQuestion : undefined}
               />
             </div>
           )}

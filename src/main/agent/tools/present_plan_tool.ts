@@ -34,8 +34,10 @@ export const presentPlanTool: Tool = {
       )
     }
 
-    // Read the saved plan so we can confirm one exists before prompting. The user
-    // reviews the plan in the transcript; the question itself is the approval gate.
+    // Read the saved plan so we can confirm one exists and show it to the user.
+    // The plan Markdown rides along on the question's `body` (rendered in a
+    // scrollable box above the approve/refine options) — the same panel is both
+    // the plan and the approval gate.
     let plan: string
     try {
       plan = await readFile(planFilePath(ctx.conversationId), "utf-8")
@@ -55,6 +57,7 @@ export const presentPlanTool: Tool = {
     const question: Question = {
       question: "Is this plan approved?",
       header: "Plan",
+      body: plan,
       options: [
         { label: APPROVE_LABEL, description: "Exit plan mode and implement it." },
         {
