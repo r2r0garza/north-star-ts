@@ -182,10 +182,11 @@ export default function App({
   const [gitBranch, setGitBranch] = useState<string | null>(null)
   const [attachments, setAttachments] = useState<string[]>([])
   const [message, setMessage] = useState("")
-  // An element the user picked in the agent browser ("point at this button").
-  // Held as a pending chip above the composer and prepended to the next message
-  // on Send, then cleared. Null when nothing is pending.
-  const [pickedElement, setPickedElement] = useState<PickedElement | null>(null)
+  // Elements the user picked in the agent browser ("point at this button"). More
+  // than one can accumulate — via the sticky picker button or Alt/Option+click on
+  // a live page — so several can be sent in ONE turn. Held as pending chips above
+  // the composer and prepended to the next message on Send, then cleared.
+  const [pickedElements, setPickedElements] = useState<PickedElement[]>([])
   // Mention pickers: `/skill` steers the agent toward a skill, `@file` points it
   // at a workspace file. Both share one menu anchored to the textarea.
   //   - `skills` is the catalog (loaded once per workspace, filtered client-side).
@@ -324,12 +325,17 @@ export default function App({
   const canSend =
     !!message.trim() && !loading && hasLlm && (isChat || !!workspace.trim())
 
-  // Subscribe to elements picked in the agent browser (pick mode). The latest
-  // pick replaces any pending one — a single chip, not a list. Cleared on Send
-  // (prepended to the message) or via the chip's remove button.
+  // Subscribe to elements picked in the agent browser. Each pick APPENDS a chip
+  // (sticky picker button, or Alt/Option+click on a live page), so several can be
+  // sent in one turn. De-dupe on selector so re-picking the same element is a
+  // no-op. Cleared on Send (prepended to the message) or via a chip's remove.
   useEffect(() => {
     return window.cowork.onBrowserElementPicked((element) => {
-      setPickedElement(element)
+      setPickedElements((prev) =>
+        prev.some((e) => e.selector === element.selector)
+          ? prev
+          : [...prev, element]
+      )
     })
   }, [])
 
@@ -670,12 +676,12 @@ export default function App({
     // The expanded text is also what's shown in the optimistic timeline, so the
     // transcript matches what the agent received.
     const base = expandMentions(message, confirmedMentions).trim()
-    // Prepend a picked-element descriptor (if any) so the agent knows exactly
-    // which on-page element the user is pointing at. It can act on it two ways:
-    // edit the source that renders it (grep the selector/text), or
+    // Prepend a descriptor per picked element (if any) so the agent knows exactly
+    // which on-page element(s) the user is pointing at. It can act on each two
+    // ways: edit the source that renders it (grep the selector/text), or
     // browser_snapshot + match the role/name to click it.
-    const text = pickedElement
-      ? `${formatPickedElement(pickedElement)}\n\n${base}`
+    const text = pickedElements.length
+      ? `${pickedElements.map(formatPickedElement).join("\n")}\n\n${base}`
       : base
     const sentAttachments = attachments
 
@@ -722,7 +728,7 @@ export default function App({
     setMenu(null)
     setMenuActive(null)
     setAttachments([])
-    setPickedElement(null)
+    setPickedElements([])
     // Start this conversation's live turn from a clean slate (its buffers are
     // keyed by conversation, so this never touches another conversation's turn).
     setLiveTurns((prev) => {
@@ -1132,30 +1138,36 @@ export default function App({
   // bottom-pinned, so it's defined once here.
   const composer = (
     <>
-      {/* Picked browser element — removable chip, prepended to the next message. */}
-      {pickedElement && (
+      {/* Picked browser elements — removable chips, prepended to the next
+          message. Several can accumulate (sticky picker / Alt+click). */}
+      {pickedElements.length > 0 && (
         <AttachmentGroup className="mb-2">
-          <Attachment
-            size="sm"
-            title={formatPickedElement(pickedElement)}
-          >
-            <AttachmentMedia variant="icon">
-              <MousePointerClick />
-            </AttachmentMedia>
-            <AttachmentContent>
-              <AttachmentTitle>
-                {pickedElementLabel(pickedElement)}
-              </AttachmentTitle>
-            </AttachmentContent>
-            <AttachmentActions>
-              <AttachmentAction
-                onClick={() => setPickedElement(null)}
-                aria-label="Remove picked element"
-              >
-                <X />
-              </AttachmentAction>
-            </AttachmentActions>
-          </Attachment>
+          {pickedElements.map((el, i) => (
+            <Attachment
+              key={`${el.selector}-${i}`}
+              size="sm"
+              title={formatPickedElement(el)}
+            >
+              <AttachmentMedia variant="icon">
+                <MousePointerClick />
+              </AttachmentMedia>
+              <AttachmentContent>
+                <AttachmentTitle>{pickedElementLabel(el)}</AttachmentTitle>
+              </AttachmentContent>
+              <AttachmentActions>
+                <AttachmentAction
+                  onClick={() =>
+                    setPickedElements((prev) =>
+                      prev.filter((_, j) => j !== i)
+                    )
+                  }
+                  aria-label="Remove picked element"
+                >
+                  <X />
+                </AttachmentAction>
+              </AttachmentActions>
+            </Attachment>
+          ))}
         </AttachmentGroup>
       )}
       {/* Attachment cards (Chat only) — removable, shown above the input. */}

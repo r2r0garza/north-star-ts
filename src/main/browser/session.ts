@@ -84,6 +84,13 @@ export class BrowserSession {
   onPickModeChanged?: (active: boolean) => void
   private pickMode = false
   private pickModeGeneration = 0
+  // Whether the injected Alt+click listener is installed on the CURRENT debugger
+  // attachment. Alt-pick works independently of the native Overlay picker: while
+  // the button picker is OFF the page is live, and an Alt/Option+click captures an
+  // element without toggling pick mode. Reset whenever the debugger detaches (the
+  // binding + new-document script are lost with the attachment) so the next
+  // ensureAttached reinstalls it.
+  private altPickInstalled = false
 
   constructor() {
     this.view = new WebContentsView({
@@ -100,35 +107,101 @@ export class BrowserSession {
     // learn about it and re-attach (and re-enable domains) on the next command.
     this.view.webContents.debugger.on("detach", () => {
       this.attached = false
+      // The Alt-pick binding + new-document script live on the attachment, so a
+      // detach drops them; force a reinstall on the next ensureAttached.
+      this.altPickInstalled = false
     })
     // A document-level navigation invalidates every backendDOMNodeId, so drop the
     // ref map. (In-page navigations keep the DOM, so those don't clear it.)
     this.view.webContents.on("did-navigate", () => this.refs.clear())
+    // Opportunistically attach once a real page has finished loading, so Alt-pick
+    // is armed even when the user never triggered an agent action / button pick.
+    // (Attaching before the first loadURL can stall DOM.enable on about:blank —
+    // see navigate() — but by did-finish-load a real document is present.) Skip
+    // the initial about:blank; best-effort, so failures are swallowed.
+    this.view.webContents.on("did-finish-load", () => {
+      if (this.disposed) return
+      const url = this.view.webContents.getURL()
+      if (!url || url === "about:blank") return
+      void this.ensureAttached(PICK_TIMEOUT_MS).catch(() => undefined)
+    })
     // Chromium's native inspector performs hit-testing in the real page/renderer
     // context (including composed content) and reports the exact backend node.
     // This avoids Electron isolated-world DOM APIs collapsing every hit to <html>.
     this.view.webContents.debugger.on("message", (_event, method, params) => {
+      if (method === "Runtime.bindingCalled") {
+        this.handleBindingCalled(params)
+        return
+      }
       // inspectNodeRequested is ONLY emitted while inspect mode is engaged in the
       // renderer — so if we get it, the user genuinely clicked a node. Don't gate
       // on this.pickMode (it can drift from the renderer's real overlay state and
-      // would then swallow a legitimate pick). Chromium auto-exits inspect mode
-      // after this event, so we flip our flag to match and describe the node.
+      // would then swallow a legitimate pick). Chromium auto-exits its own overlay
+      // after this event; the picker is STICKY (accumulates), so we keep our flag
+      // on, describe the node, and re-arm inspect mode for the next click.
       if (method !== "Overlay.inspectNodeRequested") return
       const backendNodeId = (params as { backendNodeId?: unknown })
         ?.backendNodeId
       if (typeof backendNodeId !== "number") return
-      this.setPickModeFlag(false)
       const generation = ++this.pickModeGeneration
       // The native inspector overlay belongs to this debugger attachment. A
       // normal setInspectMode:none command can itself get stuck behind the
       // wedged command that produced this event, so tear down the attachment
       // synchronously. This cancels the overlay and all stale picker commands;
-      // completeElementPick reattaches before resolving the selected node.
+      // completeElementPick reattaches, describes, then re-arms inspect mode so
+      // the next click also picks (sticky) — pick mode stays on until the user
+      // toggles it off manually.
       this.resetDebuggerAfterPickerExit(generation)
       void this.completeElementPick(backendNodeId, generation).catch(
         () => undefined
       )
     })
+  }
+
+  // Handle a Runtime.bindingCalled message from the injected Alt+click listener:
+  // the payload is the slot index of the exact clicked node the page stashed.
+  // Independent of pick mode (Alt-pick works on a live page with the picker off),
+  // so it does NOT touch the pickMode flag or generation.
+  private handleBindingCalled(params: unknown): void {
+    const { name, payload } = (params ?? {}) as {
+      name?: unknown
+      payload?: unknown
+    }
+    if (name !== ALT_PICK_BINDING || typeof payload !== "string") return
+    const slot = Number(payload)
+    if (!Number.isInteger(slot) || slot < 0) return
+    void this.completeAltPick(slot).catch(() => undefined)
+  }
+
+  // Resolve the stashed slot to the EXACT clicked node's remote object and emit
+  // it. Reuses describeFromObject so Alt-picks are byte-for-byte identical to
+  // button picks — no coordinate re-hit-test (which could resolve to an ancestor
+  // container). The slot is cleared after resolution so the array can't grow
+  // unbounded. Runtime.evaluate is used (not callFunctionOn) since we don't yet
+  // hold an object for the page's global.
+  private async completeAltPick(slot: number): Promise<void> {
+    if (this.disposed || this.view.webContents.isDestroyed()) return
+    await this.ensureAttached(PICK_TIMEOUT_MS)
+    const dbg = this.view.webContents.debugger
+    const { result } = await sendCommand<{
+      result?: { objectId?: string; subtype?: string }
+    }>(
+      dbg,
+      "Runtime.evaluate",
+      {
+        expression: `(() => {
+          const slots = window.__coworkAltPickSlots || []
+          const el = slots[${slot}]
+          slots[${slot}] = undefined
+          return el
+        })()`,
+      },
+      PICK_TIMEOUT_MS
+    )
+    const objectId = result?.objectId
+    if (!objectId) return
+    const element = await this.describeFromObject(objectId)
+    this.onElementPicked?.(element)
   }
 
   // Single point that mutates the pickMode flag, so every change (toggle, pick,
@@ -150,6 +223,10 @@ export class BrowserSession {
       // completed selection. Sending setInspectMode:none through the existing
       // debugger can leave Chromium's native overlay active.
       this.resetDebuggerAfterPickerExit(generation)
+      // Re-attach so Alt+click keeps working on the now-live page (the detach
+      // above dropped the Alt-pick binding). Best-effort; next turn's lazy
+      // attach would also cover it.
+      void this.ensureAttached(PICK_TIMEOUT_MS).catch(() => undefined)
       return
     }
     void this.updatePickMode(true, generation)
@@ -173,6 +250,58 @@ export class BrowserSession {
     await sendCommand(dbg, "DOM.enable", undefined, timeoutMs, signal)
     await sendCommand(dbg, "Accessibility.enable", undefined, timeoutMs, signal)
     this.attached = true
+    // Re-establish the Alt+click listener on every (re)attach — the button
+    // picker's teardown detaches the debugger, so this keeps Alt-pick alive.
+    await this.installAltPick(timeoutMs, signal)
+  }
+
+  // Install the injected Alt/Option+click listener into the page. Idempotent per
+  // attachment (guarded by altPickInstalled). Uses a Runtime binding as the
+  // page→main channel and a new-document script so the listener survives
+  // navigations; also arms the current document immediately. Best-effort: a
+  // failure here must not break attach (picking is a convenience), so it's caught.
+  private async installAltPick(
+    timeoutMs: number,
+    signal?: AbortSignal
+  ): Promise<void> {
+    if (this.altPickInstalled || this.disposed) return
+    const dbg = this.view.webContents.debugger
+    try {
+      // Runtime MUST be enabled BEFORE addBinding: Runtime.bindingCalled is a
+      // Runtime-domain event, and CDP only delivers domain events once the domain
+      // is enabled. Without this the page-side binding call still runs but the
+      // event never reaches the main process, so the FIRST Alt+click is silently
+      // dropped (until some other command happens to enable Runtime) — the "have
+      // to alt-click twice" bug.
+      await sendCommand(dbg, "Runtime.enable", undefined, timeoutMs, signal)
+      await sendCommand(
+        dbg,
+        "Runtime.addBinding",
+        { name: ALT_PICK_BINDING },
+        timeoutMs,
+        signal
+      )
+      await sendCommand(dbg, "Page.enable", undefined, timeoutMs, signal)
+      // Survive navigations.
+      await sendCommand(
+        dbg,
+        "Page.addScriptToEvaluateOnNewDocument",
+        { source: ALT_PICK_SCRIPT },
+        timeoutMs,
+        signal
+      )
+      // Arm the document that's already loaded.
+      await sendCommand(
+        dbg,
+        "Runtime.evaluate",
+        { expression: ALT_PICK_SCRIPT },
+        timeoutMs,
+        signal
+      )
+      this.altPickInstalled = true
+    } catch {
+      // Leave altPickInstalled false so a later ensureAttached retries.
+    }
   }
 
   private async updatePickMode(
@@ -279,8 +408,14 @@ export class BrowserSession {
     await new Promise<void>((resolve) => setImmediate(resolve))
     await this.ensureAttached(PICK_TIMEOUT_MS)
     const element = await this.describePickedElement(backendNodeId)
-    if (generation === this.pickModeGeneration) {
-      this.onElementPicked?.(element)
+    // A newer pick or a manual toggle-off superseded this one — drop it silently.
+    if (generation !== this.pickModeGeneration) return
+    this.onElementPicked?.(element)
+    // Sticky picker: Chromium auto-exited its overlay after the click and we
+    // detached, so re-arm inspect mode for the next pick. Only while still in
+    // pick mode; use a fresh generation so a concurrent toggle-off wins.
+    if (this.pickMode) {
+      void this.updatePickMode(true, ++this.pickModeGeneration)
     }
   }
 
@@ -293,7 +428,17 @@ export class BrowserSession {
     }>(dbg, "DOM.resolveNode", { backendNodeId }, PICK_TIMEOUT_MS)
     const objectId = object?.objectId
     if (!objectId) throw new Error("Could not resolve the picked element.")
+    return this.describeFromObject(objectId)
+  }
 
+  // Describe an element given a Runtime remote-object id, releasing it when done.
+  // Shared by the button picker (which resolves a backendNodeId to an object) and
+  // Alt-pick (which stashes the exact clicked node and hands back its object), so
+  // BOTH paths produce identical selector/role/name/tag/text. Accessibility's
+  // getPartialAXTree accepts an objectId directly, so no backendNodeId is needed;
+  // with fetchRelatives:false the target is the sole/first node.
+  private async describeFromObject(objectId: string): Promise<PickedElement> {
+    const dbg = this.view.webContents.debugger
     try {
       const [domResult, axResult] = await Promise.all([
         sendCommand<{
@@ -312,17 +457,14 @@ export class BrowserSession {
         sendCommand<{ nodes?: AXNode[] }>(
           dbg,
           "Accessibility.getPartialAXTree",
-          { backendNodeId, fetchRelatives: false },
+          { objectId, fetchRelatives: false },
           PICK_TIMEOUT_MS
         ),
       ])
 
       const details = domResult.result?.value
       if (!details) throw new Error("The picked node is not an HTML element.")
-      const axNode =
-        axResult.nodes?.find(
-          (node) => node.backendDOMNodeId === backendNodeId
-        ) ?? axResult.nodes?.[0]
+      const axNode = axResult.nodes?.[0]
       const axRole = axString(axNode?.role)
       const axName = axString(axNode?.name)
       const role = axRole && !NON_SEMANTIC_AX_ROLES.has(axRole) ? axRole : null
@@ -677,6 +819,60 @@ const PICK_HIGHLIGHT_CONFIG = {
 }
 
 const NON_SEMANTIC_AX_ROLES = new Set(["none", "generic"])
+
+// Runtime binding name — the page→main channel the injected Alt+click listener
+// calls with the stashed-node slot index. Namespaced to avoid clashing with page
+// code.
+const ALT_PICK_BINDING = "__coworkAltPick"
+
+// Injected into the browser page (new-document + current document) to capture
+// Alt/Option+click without the native Overlay picker, so the page stays fully
+// interactive: plain clicks behave normally; only Alt-held clicks are captured.
+// On an Alt+click it suppresses the default (e.g. link download/navigation),
+// flashes a brief outline as confirmation, then stashes the EXACT clicked node
+// (event.target) in a slot array and reports the slot index back to the main
+// process. Main resolves that node and runs it through the same describe pipeline
+// as the button picker. Stashing the real target (rather than reporting
+// coordinates for main to re-hit-test) is what keeps Alt-pick and button-pick
+// identical: DOM.getNodeForLocation can resolve to a large ancestor container,
+// whereas event.target is the precise element under the cursor. Self-contained
+// and idempotent (a re-eval on the same document is a no-op).
+const ALT_PICK_SCRIPT = `(() => {
+  if (window.__coworkAltPickInstalled) return
+  window.__coworkAltPickInstalled = true
+  window.__coworkAltPickSlots = window.__coworkAltPickSlots || []
+  const flash = (el) => {
+    if (!el || el.nodeType !== 1) return
+    const prev = el.style.outline
+    const prevOffset = el.style.outlineOffset
+    el.style.outline = "2px solid rgba(80,130,255,0.9)"
+    el.style.outlineOffset = "2px"
+    setTimeout(() => {
+      el.style.outline = prev
+      el.style.outlineOffset = prevOffset
+    }, 400)
+  }
+  window.addEventListener(
+    "click",
+    (event) => {
+      if (!event.altKey) return
+      event.preventDefault()
+      event.stopPropagation()
+      // Resolve to the nearest element (a click can land on a text/other node).
+      const el =
+        event.target && event.target.nodeType === 1
+          ? event.target
+          : event.target && event.target.parentElement
+      if (!el) return
+      flash(el)
+      const slot = window.__coworkAltPickSlots.push(el) - 1
+      try {
+        window.${ALT_PICK_BINDING}(String(slot))
+      } catch {}
+    },
+    true
+  )
+})()`
 
 const DESCRIBE_PICKED_ELEMENT = `function () {
   const node = this && this.nodeType === 1 ? this : this && this.parentElement
