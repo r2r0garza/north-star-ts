@@ -109,6 +109,11 @@ export interface ToolContext {
   // Attach an image to the current turn for the vision model (see ToolImage /
   // EmitImage). Used by browser_screenshot; absent where images can't be shown.
   emitImage?: EmitImage
+  // Flip plan mode on/off for the CURRENT turn (see present_plan_tool). Set by the
+  // real agent loop, which holds plan mode as a mutable flag and rebuilds the
+  // toolset each iteration — so approving a plan (setPlanMode(false)) unlocks the
+  // filesystem tools for the same turn. Absent where plan mode isn't in play.
+  setPlanMode?: (on: boolean) => void
 }
 
 // A tool the agent can call. `definition` is the OpenAI-compatible schema

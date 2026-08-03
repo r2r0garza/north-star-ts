@@ -3,6 +3,7 @@ import type { KeyboardEvent } from "react"
 import {
   ArrowUp,
   BrainCircuit,
+  ClipboardList,
   FileText,
   FolderOpen,
   GitBranch,
@@ -182,6 +183,11 @@ export default function App({
   const [gitBranch, setGitBranch] = useState<string | null>(null)
   const [attachments, setAttachments] = useState<string[]>([])
   const [message, setMessage] = useState("")
+  // Plan mode: a read-only planning turn (interactive/north_star only) where the
+  // agent may only write its plan file, until the user approves it. Session-only
+  // (NOT persisted) — resets on reload/restart. Cleared when a plan is approved
+  // (the present_plan question resolves with "Yes, approved").
+  const [planMode, setPlanMode] = useState(false)
   // Elements the user picked in the agent browser ("point at this button"). More
   // than one can accumulate — via the sticky picker button or Alt/Option+click on
   // a live page — so several can be sent in ONE turn. Held as pending chips above
@@ -389,6 +395,12 @@ export default function App({
     return () => {
       cancelled = true
     }
+  }, [conversationId])
+
+  // Plan mode is session-only and per-send; reset it when the conversation on
+  // screen changes so it never leaks from one conversation into another.
+  useEffect(() => {
+    setPlanMode(false)
   }, [conversationId])
 
   // Fetch the skill catalog for the slash menu. Extracted so it can be re-run on
@@ -758,6 +770,8 @@ export default function App({
           // Chat sends no workspace and inlines attachments instead.
           workspace: isChat ? undefined : workspace.trim(),
           attachments: isChat ? sentAttachments : undefined,
+          // Plan mode is interactive/north_star only (never Chat).
+          planMode: !isChat && planMode,
         },
         // Events always route into THIS turn's own per-conversation live buffer
         // (keyed by turnConvoId), regardless of what's on screen. The render layer
@@ -955,6 +969,14 @@ export default function App({
       requestId: liveQuestion.requestId,
       answers,
     })
+    // If this was the plan-approval question and the user approved (a bare "Yes,
+    // approved" with no free-form edits), clear the composer's plan toggle so it
+    // reflects the backend flipping plan mode off for the rest of the turn.
+    const approved =
+      answers.length === 1 &&
+      answers[0]?.selected.includes("Yes, approved") === true &&
+      !answers[0]?.other?.trim()
+    if (approved) setPlanMode(false)
     updateLive(conversationId, (turn) => ({ ...turn, question: null }))
   }
 
@@ -1282,6 +1304,30 @@ export default function App({
             )}
             {!rightPanelOpen && modelPicker}
             {rightPanelOpen && modelPickerCompact}
+            {/* Plan mode toggle — workspace views only. Session-only; lit when
+                on. In plan mode the agent researches + drafts a plan and can't
+                touch the workspace until the user approves it. */}
+            {!isChat && (
+              <button
+                type="button"
+                onClick={() => setPlanMode((v) => !v)}
+                aria-pressed={planMode}
+                title={
+                  planMode
+                    ? "Plan mode on — agent plans before touching the workspace"
+                    : "Plan mode off"
+                }
+                className={cn(
+                  "flex items-center gap-1.5 rounded-md px-2 py-1 text-xs transition-colors",
+                  planMode
+                    ? "bg-accent text-foreground"
+                    : "text-muted-foreground hover:bg-accent hover:text-foreground"
+                )}
+              >
+                <ClipboardList className="size-4" />
+                {!rightPanelOpen && <span>Plan</span>}
+              </button>
+            )}
           </div>
           <div className="flex items-center gap-1.5">
             {/* Run the message as a durable background task (workspace views

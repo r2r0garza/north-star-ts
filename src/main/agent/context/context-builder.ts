@@ -49,6 +49,7 @@ export const SECTION_PRIORITY = {
   skills: 50, // capability definitions
   summary: 60, // compressed older context — kept longest (dropping it loses the
   //             early thread a long conversation can't otherwise recover)
+  planMode: 70, // plan-mode operating rules — never drop while plan mode is on
 } as const
 
 export interface ContextBuilderOptions {

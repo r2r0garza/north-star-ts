@@ -9,6 +9,8 @@ import {
   askUserQuestionTool,
   runTodosInBackgroundTool,
   indexQueryTool,
+  writePlanTool,
+  presentPlanTool,
 } from "./tools"
 import type { BrowserHandle } from "../browser/manager"
 import type { ToolImage } from "./tools/types"
@@ -66,6 +68,7 @@ import { RegexCommandClassifier } from "./approval/regex-classifier"
 import { FileActionClassifier } from "./approval/file-classifier"
 import { DelegationClassifier } from "./approval/delegation-classifier"
 import { BrowserActionClassifier } from "./approval/browser-classifier"
+import { PlanModeClassifier } from "./approval/plan-mode-classifier"
 import type {
   ActionKind,
   Gate,
@@ -149,6 +152,22 @@ export const SHUTDOWN_ABORT_REASON = Symbol("agent:shutdown")
 // and surfaced as a clean, retryable error rather than a cryptic JSON parse throw.
 const MAX_OUTPUT_TOKENS = 8192
 
+// Operating rules injected as a high-priority context section when a turn is in
+// plan mode. Kept short and imperative.
+const PLAN_MODE_PROMPT = `# Plan mode
+
+You are in PLAN MODE. Investigate and design an approach, but do NOT modify the
+workspace yet — writing files, editing files, running shell commands, and handing
+work to the background are all disabled until the user approves your plan.
+
+- Research freely with the read/search/browser tools to understand the task.
+- Capture your plan with the write_plan tool (Markdown). Call it again to revise
+  as you learn more — each call replaces the whole document.
+- When the plan is ready, call present_plan to show it to the user for approval.
+- If the user requests changes, revise with write_plan and present_plan again.
+- Once the user approves, plan mode ends and the full toolset returns — then
+  implement the approved plan in this same turn.`
+
 // Called from the renderer over IPC ("chat:stop") to cancel an in-flight turn.
 // Idempotent and safe to call when nothing is running (no-op if no controller).
 export function stopChat(conversationId: string): void {
@@ -214,6 +233,9 @@ export interface ChatRequest {
   workspace?: string
   // Absolute paths of files to inline into the prompt (Chat view attachments).
   attachments?: string[]
+  // Start this turn in plan mode (interactive/north_star only). See
+  // RunAgentLoopOptions.planMode.
+  planMode?: boolean
 }
 
 // A trimmed snippet of the first user message — the fallback title when the
@@ -381,6 +403,11 @@ export interface RunAgentLoopOptions {
   // resumed task doesn't re-request an already-decided action — advisory, never a
   // gate bypass.
   taskId?: string
+  // Start this turn in plan mode: the agent may read/search and write only its
+  // plan file (write_plan), and must call present_plan for approval before it can
+  // touch the workspace. Session-only (the renderer passes it per send; not
+  // persisted). Ignored for chat mode. Flips off mid-turn when the user approves.
+  planMode?: boolean
 }
 
 // The core agentic loop, shared by the live `chat` path (runChat) and the
@@ -444,6 +471,15 @@ export async function runAgentLoop(
   // and doesn't get it; interactive/north_star do, with or without a workspace.
   const showTodos = conversation?.mode != null && conversation.mode !== "chat"
 
+  // Plan mode (interactive/north_star only). MUTABLE: present_plan flips it off
+  // mid-turn on approval, and the toolset + gate are re-evaluated each loop
+  // iteration from this flag, so the same turn unlocks the filesystem tools once
+  // the user approves. Ignored for chat (the tool-light mode).
+  let planMode = !!opts.planMode && showTodos
+  // Reads the live `planMode` closure var, so its verdict tracks a mid-turn
+  // approval. Consulted before the shared PolicyEngine in the per-turn gate.
+  const planModeClassifier = new PlanModeClassifier(() => planMode)
+
   // Whether to surface the workspace index to the agent (plan 008/014): a
   // workspace-backed non-chat session with the "use index for context" setting on.
   // Gates BOTH the index_query_tool and the injected summary below.
@@ -457,17 +493,42 @@ export async function runAgentLoop(
   // to drive). Bound to this turn's signal so Stop unwinds an in-flight browser op.
   const browser = opts.provideBrowser?.(abort.signal)
 
-  const tools = [
+  // Names of the filesystem-mutating workspace tools. In plan mode these are
+  // dropped from the offered toolset (so the model can't call them) and also
+  // hard-blocked at the gate (belt-and-suspenders); write_plan replaces them as
+  // the only allowed write.
+  const MUTATING_TOOL_NAMES = new Set([
+    "write_file_tool",
+    "edit_file_tool",
+    "run_shell_tool",
+  ])
+
+  // Build the per-turn toolset from the CURRENT plan-mode flag. Recomputed each
+  // loop iteration: when the user approves a plan mid-turn, planMode flips false
+  // and the next model round-trip regains the full filesystem toolset.
+  const buildTools = () => [
     ...(hasWorkspace
-      ? toolDefinitions
+      ? planMode
+        ? toolDefinitions.filter(
+            (d) => !MUTATING_TOOL_NAMES.has(d.function.name)
+          )
+        : toolDefinitions
       : hasAttachments
         ? [readFileTool.definition]
         : []),
     ...(showTodos
-      ? [todoWriteTool.definition, runTodosInBackgroundTool.definition]
+      ? // run_todos_in_background delegates to a background writer, so it's
+        // withheld in plan mode along with the direct FS tools.
+        planMode
+        ? [todoWriteTool.definition]
+        : [todoWriteTool.definition, runTodosInBackgroundTool.definition]
       : []),
     ...(useIndex ? [indexQueryTool.definition] : []),
     ...(browser ? browserToolDefinitions : []),
+    // Plan-mode tools: the only write (write_plan) + the approval handoff.
+    ...(planMode
+      ? [writePlanTool.definition, presentPlanTool.definition]
+      : []),
     // ask_user_question is offered in every mode — clarification is universal.
     askUserQuestionTool.definition,
     readSkillTool.definition,
@@ -499,6 +560,18 @@ export async function runAgentLoop(
       name: "skills",
       priority: SECTION_PRIORITY.skills,
       content: skillsPrompt,
+    })
+  }
+
+  // Plan mode: the operating rules for a read-only planning turn. Highest
+  // priority so it's never dropped while active. Note this reflects plan mode at
+  // turn start; once the user approves mid-turn the tool result tells the model
+  // to implement, and the withheld tools reappear.
+  if (planMode) {
+    sections.push({
+      name: "plan_mode",
+      priority: SECTION_PRIORITY.planMode,
+      content: PLAN_MODE_PROMPT,
     })
   }
 
@@ -701,6 +774,11 @@ export async function runAgentLoop(
         return { stopped: true }
       }
 
+      // Recompute the toolset from the live plan-mode flag: an approval during
+      // the previous iteration's present_plan call flips planMode off, so this
+      // round-trip regains the full filesystem toolset.
+      const tools = buildTools()
+
       const stream = await createCompletion(
         llm.client,
         llm.model,
@@ -854,11 +932,17 @@ export async function runAgentLoop(
         // a process-unique `requestId` keying the pending map — the renderer
         // echoes the latter back, so a decision can't resolve another turn's gate.
         const gate: Gate = (action): Promise<GateOutcome> => {
-          const decision = policy.decide(action, {
-            workspacePath: workspace,
-            conversationId,
-            sandboxed,
-          })
+          // Plan mode hard-blocks workspace mutations regardless of the offered
+          // toolset (belt-and-suspenders: the mutating tools are already withheld
+          // from buildTools()). Reads the LIVE flag, so once a plan is approved
+          // this stops blocking and the same turn can implement.
+          const decision =
+            planModeClassifier.classify(action) ??
+            policy.decide(action, {
+              workspacePath: workspace,
+              conversationId,
+              sandboxed,
+            })
           if (decision.level === "allow") return Promise.resolve("approved")
           if (decision.level === "hard_block") return Promise.resolve("blocked")
           const requestId = randomUUID()
@@ -930,6 +1014,11 @@ export async function runAgentLoop(
           enqueueTask: opts.enqueueTask,
           browser,
           emitImage: (image: ToolImage) => turnImages.push(image),
+          // present_plan calls this on approval; the next loop iteration rebuilds
+          // the toolset (buildTools) and gate verdict from the flipped flag.
+          setPlanMode: (on: boolean) => {
+            planMode = on
+          },
         }
         const result =
           call.name === readSkillTool.definition.function.name
@@ -1025,7 +1114,7 @@ export async function runAgentLoop(
 // task with a renderer attached; the durable task runner calls runAgentLoop
 // directly with its own task-keyed controller.
 export async function runChat(
-  { conversationId, message, workspace, attachments }: ChatRequest,
+  { conversationId, message, workspace, attachments, planMode }: ChatRequest,
   onEvent: OnEvent = () => {},
   // Lets a live interactive/north_star turn hand work off to the background via
   // run_todos_in_background. Injected by the main-process IPC handler (which owns
@@ -1062,6 +1151,7 @@ export async function runChat(
       workspace,
       attachments,
       userMessage: message,
+      planMode,
       onEvent,
       abort,
       enqueueTask,
