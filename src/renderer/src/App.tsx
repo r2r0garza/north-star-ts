@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import type { KeyboardEvent } from "react"
+import { toast } from "sonner"
 import {
   ArrowUp,
   BrainCircuit,
@@ -842,6 +843,11 @@ export default function App({
                 questions: event.questions,
               },
             }))
+          } else if (event.type === "plan_mode") {
+            // Only the backend knows whether the configured execution environment
+            // started successfully, so reflect its confirmed state instead of
+            // optimistically clearing the toggle when approval is submitted.
+            setPlanMode(event.enabled)
           }
         }
       )
@@ -851,6 +857,18 @@ export default function App({
       // (Transient — immediately superseded by the reconcile below, which also
       // reads the persisted error note.)
       if (data.error) {
+        if (data.errorCode === "execution_backend_unavailable") {
+          toast.error("Selected execution backend is unavailable", {
+            id: `backend-unavailable-${turnConvoId}`,
+            description:
+              "Start the configured runtime or choose another backend in Settings.",
+            duration: 10000,
+            action: {
+              label: "Open settings",
+              onClick: () => onOpenSettings("backend"),
+            },
+          })
+        }
         updateLive(turnConvoId, (turn) => ({
           ...turn,
           text: turn.text
@@ -968,14 +986,6 @@ export default function App({
       requestId: liveQuestion.requestId,
       answers,
     })
-    // If this was the plan-approval question and the user approved (a bare "Yes,
-    // approved" with no free-form edits), clear the composer's plan toggle so it
-    // reflects the backend flipping plan mode off for the rest of the turn.
-    const approved =
-      answers.length === 1 &&
-      answers[0]?.selected.includes("Yes, approved") === true &&
-      !answers[0]?.other?.trim()
-    if (approved) setPlanMode(false)
     updateLive(conversationId, (turn) => ({ ...turn, question: null }))
   }
 

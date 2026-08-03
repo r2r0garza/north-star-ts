@@ -71,6 +71,7 @@ export type ChatEvent =
       requestId: string
       questions: Question[]
     }
+  | { type: "plan_mode"; enabled: boolean }
 
 // Runner lifecycle events appended to task_events alongside ChatEvents (mirrors
 // RunnerLifecycleEvent in the task runner).
@@ -140,6 +141,7 @@ const api = {
       ipcRenderer.invoke("chat", req) as Promise<{
         content?: string
         error?: string
+        errorCode?: "execution_backend_unavailable"
         stopped?: boolean
       }>
     ).finally(done)

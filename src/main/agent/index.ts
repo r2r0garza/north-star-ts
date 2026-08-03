@@ -248,6 +248,9 @@ function titleFromMessage(text: string): string {
 export interface ChatResult {
   content?: string
   error?: string
+  // Stable code for renderer actions that should not depend on parsing the
+  // human-readable error text.
+  errorCode?: "execution_backend_unavailable"
   // True when the turn was cancelled by the user's Stop button (a clean stop,
   // not an error). The "⏹ Stopped by user." note is already persisted.
   stopped?: boolean
@@ -256,6 +259,24 @@ export interface ChatResult {
   // Classified at the catch block where the raw error's status/code is still
   // available; the task runner reads it to decide retry vs fail-fast (plan 011).
   retryable?: boolean
+}
+
+// Persist a failure that happens after the user message has been appended but
+// before (or during) the model loop. The renderer reconciles the live buffer from
+// stored messages when a turn settles, so returning an unpersisted early error
+// makes the assistant bubble disappear and looks like the agent did nothing.
+function failTurn(
+  conversationId: string,
+  message: string,
+  retryable = false,
+  errorCode?: ChatResult["errorCode"]
+): ChatResult {
+  appendMessage({
+    conversationId,
+    role: "assistant",
+    content: `⚠️ The turn ended early: ${message}`,
+  })
+  return { error: message, retryable, errorCode }
 }
 
 // Streaming events emitted during a turn. `token` is a text delta to append to
@@ -298,6 +319,10 @@ export type ChatEvent =
       requestId: string
       questions: Question[]
     }
+  // The backend changed the current turn's plan-mode state. The renderer uses
+  // this confirmed event instead of optimistically clearing its toggle when the
+  // approval answer is submitted.
+  | { type: "plan_mode"; enabled: boolean }
 
 type OnEvent = (event: ChatEvent) => void
 
@@ -713,11 +738,10 @@ export async function runAgentLoop(
     )
   }
 
-  // Build this turn's execution backend (host or container). The backend is
-  // selected by env var until the settings pane lands (see ./env/factory). A
-  // container is started up front, so a missing/broken runtime fails clearly here
-  // rather than hanging mid-turn; we surface the error instead of crashing. Chat
-  // sessions (no workspace) only ever use the local attachment path, so a plain
+  // Build this turn's selected execution backend (host or container) up front.
+  // Never silently substitute another backend: if the configured runtime is
+  // unavailable, fail visibly so the user can start it or change the setting.
+  // Chat sessions (no workspace) only use the local attachment path, so a plain
   // LocalEnvironment is enough there.
   // Resolve this conversation's LLM provider + model up front (its own selection,
   // or the default). A missing/incomplete provider config fails the turn cleanly
@@ -727,7 +751,9 @@ export async function runAgentLoop(
   try {
     llm = resolveLlm(llmSelection)
   } catch (err) {
-    if (err instanceof NoActiveProviderError) return { error: err.message }
+    if (err instanceof NoActiveProviderError) {
+      return failTurn(conversationId, err.message)
+    }
     throw err
   }
 
@@ -742,7 +768,12 @@ export async function runAgentLoop(
       env = await createEnvironment(workspace!, conversationId, envConfig)
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err)
-      return { error: `Execution backend unavailable: ${detail}` }
+      return failTurn(
+        conversationId,
+        `Execution backend unavailable: ${detail}`,
+        false,
+        "execution_backend_unavailable"
+      )
     }
   } else {
     env = new LocalEnvironment("")
@@ -1014,10 +1045,11 @@ export async function runAgentLoop(
           enqueueTask: opts.enqueueTask,
           browser,
           emitImage: (image: ToolImage) => turnImages.push(image),
-          // present_plan calls this on approval; the next loop iteration rebuilds
-          // the toolset (buildTools) and gate verdict from the flipped flag.
+          // present_plan calls this on approval; the selected backend is already
+          // running, so the next loop iteration can safely unlock mutations.
           setPlanMode: (on: boolean) => {
             planMode = on
+            onEvent({ type: "plan_mode", enabled: on })
           },
         }
         const result =
@@ -1083,15 +1115,7 @@ export async function runAgentLoop(
     console.error("Portkey request failed:", error)
     const message = error instanceof Error ? error.message : "Request failed"
     const retryable = isTransientError(error)
-    // Persist the failure as an assistant note so a reopened conversation (and
-    // the post-turn reconcile in the renderer) explains why the turn ended,
-    // rather than stopping silently after the last tool call.
-    appendMessage({
-      conversationId,
-      role: "assistant",
-      content: `⚠️ The turn ended early: ${message}`,
-    })
-    return { error: message, retryable }
+    return failTurn(conversationId, message, retryable)
   } finally {
     // Tear down this run's execution backend (stop+remove a container; no-op for
     // Local). Never let cleanup failure mask the run's real result. The abort
