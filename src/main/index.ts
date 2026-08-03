@@ -17,7 +17,11 @@ import {
   type ChatRequest,
 } from "./agent"
 import { pickWorkspace, pickFiles } from "./pick-workspace"
-import { skillSources } from "./agent/skills/sources"
+import {
+  skillSources,
+  initUserSkills,
+  userSkillsDir,
+} from "./agent/skills/sources"
 import { loadSkills, listSource } from "./agent/skills/loader"
 import type { SkillSourceRow, SkillSourceKind } from "./agent/skills/types"
 import * as settingsService from "./settings/service"
@@ -37,6 +41,7 @@ import { SummaryService, SUMMARIZE_KIND } from "./summaries/service"
 import { BrowserManager } from "./browser/manager"
 import { seedProviderFromEnvIfEmpty } from "./settings/bootstrap"
 import { closeDb } from "./db/connection"
+import { dataDirName, systemDisplayName } from "./config/system-name"
 
 // The durable task runner — a singleton owned by the main process. Started in
 // app.whenReady (after the DB handlers register) and stopped on will-quit.
@@ -273,17 +278,18 @@ ipcMain.handle("skills:list", async (_event, workspace?: string) => {
   const skills = await loadSkills(skillSources(workspace))
   return skills.map(({ name, description }) => ({ name, description }))
 })
-// Enumerate the skill sources (built-in + custom) for Settings → Capabilities,
-// each tagged with its kind and its current skill count. Mirrors the ordering
-// in skillSources() so the table matches the load order. The workspace rows are
-// only included when a workspace is passed.
+// Enumerate the skill sources (user + custom) for Settings → Capabilities, each
+// tagged with its kind and its current skill count. Mirrors the ordering in
+// skillSources() so the table matches the load order. The app-bundled dir is not
+// listed: it only seeds the user dir once and is never a live source. The
+// workspace rows are only included when a workspace is passed.
 ipcMain.handle(
   "skills:sources",
   async (_event, workspace?: string): Promise<SkillSourceRow[]> => {
     const custom = settingsService.getSkillSources().folders
+    const dataDir = dataDirName()
     const entries: Array<{ path: string; kind: SkillSourceKind }> = [
-      { path: join(app.getAppPath(), "skills"), kind: "app" },
-      { path: join(app.getPath("home"), ".cowork", "skills"), kind: "user" },
+      { path: userSkillsDir(), kind: "user" },
       ...custom.map((path) => ({ path, kind: "custom" as const })),
     ]
     if (workspace) {
@@ -292,7 +298,7 @@ ipcMain.handle(
         kind: "github",
       })
       entries.push({
-        path: join(workspace, ".cowork", "skills"),
+        path: join(workspace, dataDir, "skills"),
         kind: "workspace",
       })
     }
@@ -365,6 +371,15 @@ ipcMain.handle("is-fullscreen", (event) => {
   const win = BrowserWindow.fromWebContents(event.sender)
   return win?.isFullScreen() ?? false
 })
+// The customizable system name (from NEXT_system_name). Registered as a
+// synchronous handler so the renderer can set document.title on first paint
+// without an async flash of the static HTML title. See config/system-name.ts.
+ipcMain.on("system:name", (event) => {
+  event.returnValue = {
+    displayName: systemDisplayName(),
+    dataDirName: dataDirName(),
+  }
+})
 
 app.whenReady().then(() => {
   // Register DB-backed IPC handlers now — the connection opens lazily on first
@@ -410,6 +425,10 @@ app.whenReady().then(() => {
   // existing dev setups keep working without re-entering it (no-op once any
   // account exists). After this, the stored key is the source of truth.
   seedProviderFromEnvIfEmpty()
+  // Materialize the user-level skills dir (~/.<system>/skills) and, on first
+  // launch only, seed it with the app-bundled skills so users get editable
+  // copies of the built-ins.
+  initUserSkills()
   createWindow()
 
   app.on("activate", () => {

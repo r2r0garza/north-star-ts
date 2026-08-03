@@ -661,6 +661,13 @@ const api = {
         error?: string
       }>,
   },
+
+  // The customizable system name (from NEXT_system_name). Read synchronously so
+  // the UI can brand the window title / skills-path hints without an async flash.
+  // `displayName` is the human name (e.g. "Cowork"); `dataDirName` is the dotfile
+  // dir shown in skill-path hints (e.g. ".cowork").
+  system: (): { displayName: string; dataDirName: string } =>
+    ipcRenderer.sendSync("system:name"),
 }
 
 contextBridge.exposeInMainWorld("cowork", api)

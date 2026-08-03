@@ -2,6 +2,7 @@ import { spawn } from "child_process"
 import { relative, posix } from "path"
 import { resolveInWorkspace } from "../tools/workspace"
 import { captureSpawn } from "./spawn-util"
+import { systemSlug } from "../../config/system-name"
 import type {
   Environment,
   ExecResult,
@@ -49,7 +50,7 @@ export class ContainerEnvironment implements Environment {
     // Container names allow [a-zA-Z0-9][a-zA-Z0-9_.-]*; ids may contain other
     // chars, so sanitize to keep `run --name` valid.
     const safeId = cfg.conversationId.replace(/[^a-zA-Z0-9_.-]/g, "-")
-    this.name = `cowork-env-${safeId}`
+    this.name = `${systemSlug()}-env-${safeId}`
   }
 
   // Spawn the runtime binary with raw args, capturing stdout (as a Buffer, for

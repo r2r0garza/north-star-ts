@@ -22,12 +22,13 @@ export interface SkillMetadata {
 
 // One skill-source directory as surfaced to the Settings → Capabilities table.
 // `kind` distinguishes the locked built-ins from user-added custom folders:
-//   app       — app-bundled <app>/skills
-//   user      — ~/.cowork/skills
+//   user      — ~/.<system>/skills (seeded once from the app-bundled skills)
 //   custom    — a folder the user registered (removable)
 //   github    — <workspace>/.github/skills (zero-config, workspace-scoped)
-//   workspace — <workspace>/.cowork/skills
-export type SkillSourceKind = "app" | "user" | "custom" | "github" | "workspace"
+//   workspace — <workspace>/.<system>/skills
+// Note: there's no "app" kind — the app-bundled dir seeds `user` on first launch
+// and is not itself a live source.
+export type SkillSourceKind = "user" | "custom" | "github" | "workspace"
 export interface SkillSourceRow {
   path: string
   kind: SkillSourceKind

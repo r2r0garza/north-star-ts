@@ -118,6 +118,12 @@ function Shell() {
     return window.cowork.onFullScreenChange(setFullscreen)
   }, [])
 
+  // Brand the window title from the customizable system name (NEXT_system_name),
+  // overriding the static "Cowork" baked into index.html.
+  useEffect(() => {
+    document.title = window.cowork.system().displayName
+  }, [])
+
   // Tell the agent browser which conversation is active, so it shows that
   // conversation's tab (or hides if this is a fresh/uncreated one).
   useEffect(() => {
