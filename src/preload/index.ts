@@ -72,6 +72,8 @@ export type ChatEvent =
       questions: Question[]
     }
   | { type: "plan_mode"; enabled: boolean }
+  // The backend activated auto mode (present_plan approved with Auto mode).
+  | { type: "auto_mode"; enabled: boolean }
 
 // Runner lifecycle events appended to task_events alongside ChatEvents (mirrors
 // RunnerLifecycleEvent in the task runner).
@@ -122,6 +124,9 @@ const api = {
       // Start the turn in plan mode (interactive/north_star only): read/search +
       // write_plan only, until the user approves via present_plan.
       planMode?: boolean
+      // Start the turn in auto mode (any mode, including chat): all
+      // require_approval gate decisions are automatically approved.
+      autoMode?: boolean
     },
     onEvent?: (event: ChatEvent) => void
   ) => {

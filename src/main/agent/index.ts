@@ -236,6 +236,9 @@ export interface ChatRequest {
   // Start this turn in plan mode (interactive/north_star only). See
   // RunAgentLoopOptions.planMode.
   planMode?: boolean
+  // Start this turn in auto mode (any mode, including chat). See
+  // RunAgentLoopOptions.autoMode.
+  autoMode?: boolean
 }
 
 // A trimmed snippet of the first user message — the fallback title when the
@@ -323,6 +326,9 @@ export type ChatEvent =
   // this confirmed event instead of optimistically clearing its toggle when the
   // approval answer is submitted.
   | { type: "plan_mode"; enabled: boolean }
+  // The backend activated auto mode (present_plan approved with Auto mode).
+  // The renderer uses this to switch its agentMode state to "auto".
+  | { type: "auto_mode"; enabled: boolean }
 
 type OnEvent = (event: ChatEvent) => void
 
@@ -433,6 +439,12 @@ export interface RunAgentLoopOptions {
   // touch the workspace. Session-only (the renderer passes it per send; not
   // persisted). Ignored for chat mode. Flips off mid-turn when the user approves.
   planMode?: boolean
+  // Start this turn in auto mode: all require_approval gate decisions are
+  // automatically approved so the agent acts without confirmation prompts.
+  // Session-only. Honored in every mode including chat (chat's browser_navigate
+  // is a require_approval action). Can also be activated mid-turn when the user
+  // picks "Yes, approve and work in Auto mode" in the plan approval question.
+  autoMode?: boolean
 }
 
 // The core agentic loop, shared by the live `chat` path (runChat) and the
@@ -504,6 +516,16 @@ export async function runAgentLoop(
   // Reads the live `planMode` closure var, so its verdict tracks a mid-turn
   // approval. Consulted before the shared PolicyEngine in the per-turn gate.
   const planModeClassifier = new PlanModeClassifier(() => planMode)
+
+  // Auto mode: auto-approve any action that would otherwise require human
+  // confirmation (require_approval → approved). Hard-blocks from classifiers
+  // (e.g. plan-mode) are never bypassed. MUTABLE: present_plan can activate it
+  // mid-turn when the user picks "Yes, approve and work in Auto mode". Available
+  // in every mode including chat — unlike plan mode it doesn't depend on the
+  // workspace toolset; chat's browser_navigate is a require_approval action auto
+  // mode suppresses too. The renderer only sends autoMode where a mode toggle is
+  // offered, so it's honored verbatim here.
+  let autoMode = !!opts.autoMode
 
   // Whether to surface the workspace index to the agent (plan 008/014): a
   // workspace-backed non-chat session with the "use index for context" setting on.
@@ -976,6 +998,9 @@ export async function runAgentLoop(
             })
           if (decision.level === "allow") return Promise.resolve("approved")
           if (decision.level === "hard_block") return Promise.resolve("blocked")
+          // Auto mode: automatically approve any action that would otherwise
+          // require human confirmation. Hard-blocks still block (handled above).
+          if (autoMode) return Promise.resolve("approved")
           const requestId = randomUUID()
           onEvent({
             type: "approval",
@@ -1050,6 +1075,11 @@ export async function runAgentLoop(
           setPlanMode: (on: boolean) => {
             planMode = on
             onEvent({ type: "plan_mode", enabled: on })
+          },
+          // present_plan calls this when the user picks "approve and Auto mode".
+          setAutoMode: (on: boolean) => {
+            autoMode = on
+            onEvent({ type: "auto_mode", enabled: on })
           },
         }
         const result =
@@ -1138,7 +1168,7 @@ export async function runAgentLoop(
 // task with a renderer attached; the durable task runner calls runAgentLoop
 // directly with its own task-keyed controller.
 export async function runChat(
-  { conversationId, message, workspace, attachments, planMode }: ChatRequest,
+  { conversationId, message, workspace, attachments, planMode, autoMode }: ChatRequest,
   onEvent: OnEvent = () => {},
   // Lets a live interactive/north_star turn hand work off to the background via
   // run_todos_in_background. Injected by the main-process IPC handler (which owns
@@ -1176,6 +1206,7 @@ export async function runChat(
       attachments,
       userMessage: message,
       planMode,
+      autoMode,
       onEvent,
       abort,
       enqueueTask,

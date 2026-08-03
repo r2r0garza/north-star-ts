@@ -81,11 +81,21 @@ export function QuestionPanel({
   const isLast = current === questions.length - 1
   const multiple = questions.length > 1
 
+  // When any question carries a body (e.g. plan approval), the panel title and
+  // question-text rendering change to match the plan-review context.
+  const isPlanReview = questions.some((q) => q.body)
+
   return (
     <div className="flex flex-col gap-3 rounded-lg border bg-card p-4 text-sm">
       <div className="flex items-center gap-2 font-medium text-foreground">
         <CircleHelp className="size-4 shrink-0 text-primary" />
-        <span>{multiple ? "A few questions" : "A quick question"}</span>
+        <span>
+          {isPlanReview
+            ? "Approve or keep working on the plan"
+            : multiple
+              ? "A few questions"
+              : "A quick question"}
+        </span>
       </div>
 
       {/* Header tabs — one per question; click to jump. A check marks answered
@@ -113,7 +123,11 @@ export function QuestionPanel({
 
       {/* Current question + its options. */}
       <div className="flex flex-col gap-2">
-        <span className="font-medium">{q.question}</span>
+        {/* Skip the question text when a body is present (plan approval) — the
+            body + panel title already provide full context. */}
+        {q.question && !q.body && (
+          <span className="font-medium">{q.question}</span>
+        )}
         {/* Optional Markdown context (e.g. the plan being approved), capped in
             height and scrolled internally so a long body never dominates. */}
         {q.body && (
@@ -157,7 +171,7 @@ export function QuestionPanel({
               </button>
             )
           })}
-          {/* Always-present free-form "Other" choice. */}
+          {/* Free-form choice — label customisable per question (e.g. "Refine Plan…"). */}
           <button
             type="button"
             onClick={() => toggle(current, OTHER, multi)}
@@ -178,7 +192,7 @@ export function QuestionPanel({
             >
               {otherSelected && <Check className="size-3" />}
             </span>
-            <span className="font-medium">Other…</span>
+            <span className="font-medium">{q.otherLabel ?? "Other…"}</span>
           </button>
           {otherSelected && (
             <textarea
@@ -192,7 +206,7 @@ export function QuestionPanel({
                 })
               }
               rows={2}
-              placeholder="Type your answer…"
+              placeholder={q.otherLabel ?? "Type your answer…"}
               className="field-sizing-content w-full resize-none rounded-md border border-input bg-transparent px-3 py-2 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
             />
           )}

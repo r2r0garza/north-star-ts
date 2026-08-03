@@ -3,16 +3,18 @@ import type { Tool, Question } from "./types"
 import { toolError } from "./output"
 import { planFilePath } from "./plan-file"
 
-const APPROVE_LABEL = "Yes, approved"
-const REFINE_LABEL = "Keep refining"
+const APPROVE_LABEL = "Yes, approve"
+const APPROVE_AUTO_LABEL = "Yes, approve and work in Auto mode"
 
 // Plan-mode's handoff: present the finished plan to the user for approval. Reads
 // back the saved plan file and asks a single question via ctx.ask —
-// "Yes, approved" / "Keep refining", plus the UI's automatic free-form "Other"
-// field for change requests. On approval it flips plan mode OFF for the current
-// turn (via ctx.setPlanMode), so the same turn can proceed to implement with the
-// full filesystem toolset restored. Otherwise it returns the user's feedback so
-// the model keeps refining the plan (plan mode stays on). Offered only in plan mode.
+// "Yes, approve" / "Yes, approve and work in Auto mode", plus a "Refine Plan…"
+// free-form field for change requests. On approval it flips plan mode OFF for
+// the current turn (via ctx.setPlanMode), so the same turn can proceed to
+// implement with the full filesystem toolset restored. "Approve and Auto" also
+// activates auto mode (via ctx.setAutoMode) so all subsequent gate decisions are
+// automatically approved. Free-form feedback keeps plan mode on and returns the
+// user's notes so the model keeps refining. Offered only in plan mode.
 export const presentPlanTool: Tool = {
   definition: {
     type: "function",
@@ -55,14 +57,19 @@ export const presentPlanTool: Tool = {
     }
 
     const question: Question = {
-      question: "Is this plan approved?",
+      // The question text is intentionally empty — the plan body and the
+      // panel title ("Approve or keep working on the plan") provide full
+      // context. An empty string avoids rendering a redundant heading.
+      question: "",
       header: "Plan",
       body: plan,
+      otherLabel: "Refine Plan…",
       options: [
         { label: APPROVE_LABEL, description: "Exit plan mode and implement it." },
         {
-          label: REFINE_LABEL,
-          description: "Keep working on the plan before implementing.",
+          label: APPROVE_AUTO_LABEL,
+          description:
+            "Exit plan mode and implement without asking for confirmations.",
         },
       ],
     }
@@ -76,13 +83,25 @@ export const presentPlanTool: Tool = {
     }
 
     const answer = result.answers[0]
-    const approved = answer?.selected.includes(APPROVE_LABEL) === true
+    const approveAuto = answer?.selected.includes(APPROVE_AUTO_LABEL) === true
+    const approveNormal = answer?.selected.includes(APPROVE_LABEL) === true
+    const approved = approveAuto || approveNormal
     const feedback = answer?.other?.trim()
 
     // Free-form feedback always means "keep refining", even if a button was also
     // selected — the user took the trouble to type changes.
     if (approved && !feedback) {
       ctx.setPlanMode?.(false)
+      if (approveAuto) {
+        ctx.setAutoMode?.(true)
+        return JSON.stringify({
+          approved: true,
+          autoMode: true,
+          message:
+            "Plan approved with Auto mode — plan mode is off and all subsequent " +
+            "actions are automatically approved. Implement the approved plan now.",
+        })
+      }
       return JSON.stringify({
         approved: true,
         message:

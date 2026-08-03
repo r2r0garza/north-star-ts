@@ -4,6 +4,7 @@ import { toast } from "sonner"
 import {
   ArrowUp,
   BrainCircuit,
+  ChevronDown,
   ClipboardList,
   FileText,
   FolderOpen,
@@ -17,6 +18,12 @@ import {
 import { Button } from "@/components/ui/button"
 import { Markdown } from "@/components/markdown"
 import { VIEW_TO_MODE, type View } from "@/components/sidebar"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import {
   MessageScrollerProvider,
   MessageScroller,
@@ -184,11 +191,17 @@ export default function App({
   const [gitBranch, setGitBranch] = useState<string | null>(null)
   const [attachments, setAttachments] = useState<string[]>([])
   const [message, setMessage] = useState("")
-  // Plan mode: a read-only planning turn (interactive/north_star only) where the
-  // agent may only write its plan file, until the user approves it. Session-only
-  // (NOT persisted) — resets on reload/restart. Cleared when a plan is approved
-  // (the present_plan question resolves with "Yes, approved").
-  const [planMode, setPlanMode] = useState(false)
+  // Agent mode: controls how the agent behaves on workspace views.
+  //   "default" — normal operation, confirms gated actions with the user.
+  //   "plan"    — read-only planning turn; agent writes a plan and presents it
+  //               for approval before touching the workspace.
+  //   "auto"    — like "default" but all gated actions are auto-approved (no
+  //               confirmation prompts).
+  // Session-only (NOT persisted) — resets on reload/restart. Cleared back to
+  // "default" when a plan is approved (plan_mode event), but NOT cleared when
+  // "auto" is activated (auto_mode event).
+  type AgentMode = "default" | "plan" | "auto"
+  const [agentMode, setAgentMode] = useState<AgentMode>("default")
   // Elements the user picked in the agent browser ("point at this button"). More
   // than one can accumulate — via the sticky picker button or Alt/Option+click on
   // a live page — so several can be sent in ONE turn. Held as pending chips above
@@ -360,11 +373,11 @@ export default function App({
       justCreatedRef.current = null
       return
     }
-    // A genuine switch to (or reset from) another conversation: plan mode is
+    // A genuine switch to (or reset from) another conversation: agent mode is
     // session-only and per-conversation, so clear it. This runs AFTER the
     // just-created guard above, so promoting a fresh conversation mid-send (which
-    // changes conversationId) does NOT clear the plan mode the turn was sent with.
-    setPlanMode(false)
+    // changes conversationId) does NOT clear the agent mode the turn was sent with.
+    setAgentMode("default")
     // Switching to a different conversation no longer wipes any live state: each
     // streaming turn's text/tools/approval/question is held per-conversation in
     // `liveTurns` and rendered by looking up the id on screen. Leaving a turn that
@@ -770,8 +783,11 @@ export default function App({
           // Chat sends no workspace and inlines attachments instead.
           workspace: isChat ? undefined : workspace.trim(),
           attachments: isChat ? sentAttachments : undefined,
-          // Plan mode is interactive/north_star only (never Chat).
-          planMode: !isChat && planMode,
+          // Plan mode is interactive/north_star only (never Chat); auto mode is
+          // available everywhere, including Chat (suppresses browser_navigate
+          // prompts).
+          planMode: !isChat && agentMode === "plan",
+          autoMode: agentMode === "auto",
         },
         // Events always route into THIS turn's own per-conversation live buffer
         // (keyed by turnConvoId), regardless of what's on screen. The render layer
@@ -847,7 +863,18 @@ export default function App({
             // Only the backend knows whether the configured execution environment
             // started successfully, so reflect its confirmed state instead of
             // optimistically clearing the toggle when approval is submitted.
-            setPlanMode(event.enabled)
+            // When plan mode turns off and we're still in "plan" mode (not "auto"),
+            // reset to "default". If auto_mode already fired this event cycle,
+            // agentMode is already "auto" — leave it alone.
+            if (!event.enabled) {
+              setAgentMode((prev) => (prev === "plan" ? "default" : prev))
+            } else {
+              setAgentMode("plan")
+            }
+          } else if (event.type === "auto_mode") {
+            // The user approved the plan with "Auto mode" — activate auto for
+            // the remainder of this turn and beyond (until conversation switch).
+            if (event.enabled) setAgentMode("auto")
           }
         }
       )
@@ -1005,6 +1032,13 @@ export default function App({
   // questions keep the answer-or-stop behavior unchanged.
   const questionCancellable =
     liveQuestion?.questions.some((q) => q.body) === true
+
+  // The mode the dropdown reflects. Plan mode is workspace-only; Chat has no Plan
+  // item, so a "plan" state carried into Chat (a fresh, still-null conversation
+  // shared across views never re-runs the reset effect) shows as Default —
+  // matching the send path, which never sends planMode in Chat.
+  const displayedMode: AgentMode =
+    isChat && agentMode === "plan" ? "default" : agentMode
 
   // What to actually render as the transcript. When a live turn is on screen, the
   // assistant response after the last user message is owned by the live buffer
@@ -1330,30 +1364,67 @@ export default function App({
             )}
             {!rightPanelOpen && modelPicker}
             {rightPanelOpen && modelPickerCompact}
-            {/* Plan mode toggle — workspace views only. Session-only; lit when
-                on. In plan mode the agent researches + drafts a plan and can't
-                touch the workspace until the user approves it. */}
-            {!isChat && (
-              <button
-                type="button"
-                onClick={() => setPlanMode((v) => !v)}
-                aria-pressed={planMode}
-                title={
-                  planMode
-                    ? "Plan mode on — agent plans before touching the workspace"
-                    : "Plan mode off"
-                }
-                className={cn(
-                  "flex items-center gap-1.5 rounded-md px-2 py-1 text-xs transition-colors",
-                  planMode
-                    ? "bg-accent text-foreground"
-                    : "text-muted-foreground hover:bg-accent hover:text-foreground"
+            {/* Agent mode dropdown. Session-only. "Default" = normal; "Plan" =
+                read-only planning turn until approved; "Auto" = all gated
+                actions auto-approved. Chat offers only Default/Auto — plan mode
+                needs the workspace toolset. In Chat a stale "plan" (carried from
+                a workspace view via a shared fresh conversation) displays as
+                Default, matching the send path which never sends planMode in Chat. */}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  type="button"
+                  aria-label={`Agent mode: ${displayedMode}`}
+                  title={
+                    displayedMode === "plan"
+                      ? "Plan mode on — agent plans before touching the workspace"
+                      : displayedMode === "auto"
+                        ? "Auto mode on — agent acts without asking for confirmations"
+                        : "Default mode — agent confirms actions before running them"
+                  }
+                  className={cn(
+                    "flex items-center gap-1 rounded-md px-2 py-1 text-xs transition-colors",
+                    displayedMode !== "default"
+                      ? "bg-accent text-foreground"
+                      : "text-muted-foreground hover:bg-accent hover:text-foreground"
+                  )}
+                >
+                  <ClipboardList className="size-4 shrink-0" />
+                  {!rightPanelOpen && (
+                    <span className="capitalize">{displayedMode}</span>
+                  )}
+                  <ChevronDown className="size-3 shrink-0 opacity-60" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start" className="min-w-36">
+                <DropdownMenuItem
+                  onClick={() => setAgentMode("default")}
+                  className={cn(
+                    displayedMode === "default" && "bg-accent font-medium"
+                  )}
+                >
+                  Default
+                </DropdownMenuItem>
+                {!isChat && (
+                  <DropdownMenuItem
+                    onClick={() => setAgentMode("plan")}
+                    className={cn(
+                      displayedMode === "plan" && "bg-accent font-medium"
+                    )}
+                  >
+                    Plan
+                  </DropdownMenuItem>
                 )}
-              >
-                <ClipboardList className="size-4" />
-                {!rightPanelOpen && <span>Plan</span>}
-              </button>
-            )}
+                <DropdownMenuItem
+                  onClick={() => setAgentMode("auto")}
+                  className={cn(
+                    displayedMode === "auto" && "bg-accent font-medium"
+                  )}
+                >
+                  Auto
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
           <div className="flex items-center gap-1.5">
             {/* Run the message as a durable background task (workspace views

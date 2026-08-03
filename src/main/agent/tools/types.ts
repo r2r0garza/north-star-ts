@@ -60,6 +60,9 @@ export interface Question {
   // prompt. Not model-facing: ask_user_question never sets it (it builds
   // Question from model args explicitly), so it stays out of that tool's schema.
   body?: string
+  // Custom label for the free-form "Other" choice. Defaults to "Other…" when
+  // absent. Used by present_plan to show "Refine Plan…" instead.
+  otherLabel?: string
 }
 // One question's answer: the chosen option labels, plus optional free-form text
 // the user typed into "Other".
@@ -120,6 +123,12 @@ export interface ToolContext {
   // toolset each iteration — so approving a plan (setPlanMode(false)) unlocks the
   // filesystem tools for the same turn. Absent where plan mode isn't in play.
   setPlanMode?: (on: boolean) => void
+  // Activate auto mode for the CURRENT turn (see present_plan_tool). When on,
+  // all require_approval gate decisions are automatically approved so the agent
+  // implements without any confirmation prompts. Set by present_plan when the
+  // user picks "Yes, approve and work in Auto mode". Absent where auto mode
+  // isn't in play.
+  setAutoMode?: (on: boolean) => void
 }
 
 // A tool the agent can call. `definition` is the OpenAI-compatible schema
