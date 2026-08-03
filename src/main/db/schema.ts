@@ -386,3 +386,28 @@ export const SCHEMA_V11 = `
 ALTER TABLE provider_accounts ADD COLUMN api_mode TEXT NOT NULL DEFAULT 'completions'
   CHECK (api_mode IN ('completions','responses'));
 `
+
+// v12: projects — a user-created way to GROUP conversations. A project optionally
+// carries a workspace (its default directory): with one, it can back Chat,
+// Interactive, and North Star conversations, and starting a fresh workspace-view
+// conversation in the project auto-adopts that directory (no per-session picker);
+// without one, the project is Chat-only (grouping only). `workspace_id` reuses the
+// existing deduped workspaces table, so the same row backs the project and its
+// conversations and indexing (keyed on workspace_id) works unchanged. ON DELETE
+// SET NULL so clearing a workspace just drops the project's default directory.
+//
+// conversations gains a nullable `project_id` (ON DELETE SET NULL, like V7's
+// source_conversation_id): existing rows read as NULL and surface under a "No
+// Project" bucket, so the migration is backward compatible. Deleting a project
+// keeps its conversations — they fall back to "No Project" — rather than cascading.
+export const SCHEMA_V12 = `
+CREATE TABLE projects (
+  id            TEXT PRIMARY KEY,
+  name          TEXT NOT NULL,
+  workspace_id  TEXT REFERENCES workspaces(id) ON DELETE SET NULL,
+  created_at    INTEGER NOT NULL,
+  updated_at    INTEGER NOT NULL
+);
+ALTER TABLE conversations ADD COLUMN project_id TEXT
+  REFERENCES projects(id) ON DELETE SET NULL;
+`

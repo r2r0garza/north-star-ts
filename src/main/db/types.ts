@@ -45,11 +45,28 @@ export interface Workspace {
   updatedAt: number
 }
 
+// A user-created grouping of conversations (SCHEMA_V12). `workspaceId` is the
+// project's optional default directory (a workspaces.id): with one, the project
+// backs Chat/Interactive/North Star and its fresh workspace-view conversations
+// auto-adopt the directory; without one, the project is Chat-only. Null = no
+// default directory. ON DELETE SET NULL, so clearing the workspace just drops it.
+export interface Project {
+  id: string
+  name: string
+  workspaceId: string | null
+  createdAt: number
+  updatedAt: number
+}
+
 export interface Conversation {
   id: string
   mode: Mode
   title: string | null
   workspaceId: string | null
+  // The project this conversation belongs to (SCHEMA_V12), or null for the "No
+  // Project" bucket. ON DELETE SET NULL — deleting a project keeps its
+  // conversations, moving them to "No Project".
+  projectId: string | null
   // Per-conversation LLM selection (SCHEMA_V6). Null = use the default from the
   // settings `llm` blob. `accountId` is a provider_accounts.id; `modelId` is the
   // model's gateway id string (not the models.id row id).

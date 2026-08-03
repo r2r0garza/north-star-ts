@@ -3,6 +3,7 @@ import {
   conversations,
   messages,
   workspaces,
+  projects,
   tasks,
   taskEvents,
   checkpoints,
@@ -65,7 +66,12 @@ export function registerDbHandlers(
     "db:conversations:create",
     (
       _e,
-      input: { mode: Mode; workspaceId?: string | null; title?: string | null }
+      input: {
+        mode: Mode
+        workspaceId?: string | null
+        projectId?: string | null
+        title?: string | null
+      }
     ) => {
       const conversation = conversations.createConversation(input)
       maybeAutoIndex(conversation, indexService)
@@ -84,7 +90,11 @@ export function registerDbHandlers(
     (
       _e,
       id: string,
-      patch: { title?: string | null; workspaceId?: string | null }
+      patch: {
+        title?: string | null
+        workspaceId?: string | null
+        projectId?: string | null
+      }
     ) => {
       const conversation = conversations.updateConversation(id, patch)
       maybeAutoIndex(conversation, indexService)
@@ -124,6 +134,27 @@ export function registerDbHandlers(
   )
   ipcMain.handle("db:workspaces:delete", (_e, id: string) =>
     workspaces.deleteWorkspace(id)
+  )
+
+  // Projects — a grouping of conversations with an optional default directory
+  // (workspace_id). Thin repository wrappers, like the other DB channels.
+  ipcMain.handle(
+    "db:projects:create",
+    (_e, input: { name: string; workspaceId?: string | null }) =>
+      projects.createProject(input)
+  )
+  ipcMain.handle("db:projects:list", () => projects.listProjects())
+  ipcMain.handle(
+    "db:projects:get",
+    (_e, id: string) => projects.getProject(id) ?? null
+  )
+  ipcMain.handle(
+    "db:projects:update",
+    (_e, id: string, patch: { name?: string; workspaceId?: string | null }) =>
+      projects.updateProject(id, patch)
+  )
+  ipcMain.handle("db:projects:delete", (_e, id: string) =>
+    projects.deleteProject(id)
   )
 
   // Tasks (storage-only)

@@ -134,6 +134,7 @@ function formatPickedElement(el: PickedElement): string {
 export default function App({
   view,
   conversationId,
+  pendingProjectId,
   onConversationCreated,
   onConversationChanged,
   onOpenSettings,
@@ -148,6 +149,10 @@ export default function App({
 }: {
   view: View
   conversationId: string | null
+  // The project a fresh (uncreated) conversation will belong to. Its directory
+  // (if any) is auto-adopted and locked for workspace views; project_id is
+  // stamped on the conversation at create time. Null = unassigned ("No Project").
+  pendingProjectId: string | null
   onConversationCreated: (id: string) => void
   onConversationChanged: () => void
   // Open the Settings sheet to a given tab (the composer's provider/model picker
@@ -185,6 +190,11 @@ export default function App({
   const isChat = view === "Chat"
 
   const [workspace, setWorkspace] = useState("")
+  // Whether the workspace is locked to a project's directory (the conversation
+  // belongs to — or is being started in — a project that has one). When true the
+  // composer's folder picker is hidden: the directory always comes from the
+  // project, not a per-conversation pick.
+  const [lockedWorkspace, setLockedWorkspace] = useState(false)
   // Current git branch for the selected workspace folder, or null when not a
   // git repo (or no folder is selected). Shown as a small badge next to the
   // folder name in the Interactive / North Star composer.
@@ -386,11 +396,30 @@ export default function App({
     // stranding it as a perpetual "Thinking…" spinner with no way to respond.
     if (!conversationId) {
       setTimeline([])
-      setWorkspace("")
       setAttachments([])
       // A fresh conversation starts from the default selection (null = inherit).
       setSelAccountId(null)
       setSelModelId(null)
+      // If starting in a project that has a directory, adopt + lock it; otherwise
+      // clear the picker (unassigned / directory-less project).
+      if (pendingProjectId) {
+        void window.cowork.db.projects.get(pendingProjectId).then(async (p) => {
+          if (cancelled) return
+          if (p?.workspaceId) {
+            const ws = await window.cowork.db.workspaces.list()
+            const match = ws.find((w) => w.id === p.workspaceId)
+            if (cancelled) return
+            setWorkspace(match?.path ?? "")
+            setLockedWorkspace(!!match)
+          } else {
+            setWorkspace("")
+            setLockedWorkspace(false)
+          }
+        })
+      } else {
+        setWorkspace("")
+        setLockedWorkspace(false)
+      }
       return
     }
     Promise.all([
@@ -403,18 +432,36 @@ export default function App({
       // Restore the conversation's own model selection (null falls back to default).
       setSelAccountId(convo?.accountId ?? null)
       setSelModelId(convo?.modelId ?? null)
-      if (convo?.workspaceId) {
-        const ws = await window.cowork.db.workspaces.list()
-        const match = ws.find((w) => w.id === convo.workspaceId)
-        if (!cancelled) setWorkspace(match?.path ?? "")
-      } else {
-        setWorkspace("")
+      // If the conversation belongs to a project with a directory, that directory
+      // is the source of truth and the picker is locked. Otherwise fall back to
+      // the conversation's own workspace_id (legacy / unassigned).
+      let locked = false
+      if (convo?.projectId) {
+        const project = await window.cowork.db.projects.get(convo.projectId)
+        if (cancelled) return
+        if (project?.workspaceId) {
+          const ws = await window.cowork.db.workspaces.list()
+          const match = ws.find((w) => w.id === project.workspaceId)
+          if (cancelled) return
+          setWorkspace(match?.path ?? "")
+          locked = !!match
+        }
+      }
+      setLockedWorkspace(locked)
+      if (!locked) {
+        if (convo?.workspaceId) {
+          const ws = await window.cowork.db.workspaces.list()
+          const match = ws.find((w) => w.id === convo.workspaceId)
+          if (!cancelled) setWorkspace(match?.path ?? "")
+        } else {
+          setWorkspace("")
+        }
       }
     })
     return () => {
       cancelled = true
     }
-  }, [conversationId])
+  }, [conversationId, pendingProjectId])
 
   // Fetch the skill catalog for the slash menu. Extracted so it can be re-run on
   // demand (see below): the main process reads skills fresh from disk every turn,
@@ -723,6 +770,8 @@ export default function App({
       const convo = await window.cowork.db.conversations.create({
         mode: VIEW_TO_MODE[view],
         workspaceId,
+        // Stamp the project the conversation was started in (null = "No Project").
+        projectId: pendingProjectId,
         // Persist the chosen model on the new conversation. Null means "inherit
         // the default" — only store an explicit pick that differs from default.
         accountId: selAccountId,
@@ -969,6 +1018,7 @@ export default function App({
       const convo = await window.cowork.db.conversations.create({
         mode: VIEW_TO_MODE[view],
         workspaceId,
+        projectId: pendingProjectId,
         accountId: selAccountId,
         modelId: selModelId,
       })
@@ -1336,19 +1386,35 @@ export default function App({
               </button>
             ) : (
               <>
-                <button
-                  type="button"
-                  onClick={pickWorkspace}
-                  title={workspace ? lastSegment(workspace) : "Select workspace folder"}
-                  className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-                >
-                  <FolderOpen className="size-4" />
-                  {workspace && !rightPanelOpen && (
-                    <span className="max-w-40 truncate">
-                      {lastSegment(workspace)}
-                    </span>
-                  )}
-                </button>
+                {lockedWorkspace ? (
+                  // The directory comes from the conversation's project and can't
+                  // be changed here — show it as a static, non-clickable label.
+                  <span
+                    title={`${lastSegment(workspace)} — set by the project`}
+                    className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground"
+                  >
+                    <FolderOpen className="size-4" />
+                    {workspace && !rightPanelOpen && (
+                      <span className="max-w-40 truncate">
+                        {lastSegment(workspace)}
+                      </span>
+                    )}
+                  </span>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={pickWorkspace}
+                    title={workspace ? lastSegment(workspace) : "Select workspace folder"}
+                    className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                  >
+                    <FolderOpen className="size-4" />
+                    {workspace && !rightPanelOpen && (
+                      <span className="max-w-40 truncate">
+                        {lastSegment(workspace)}
+                      </span>
+                    )}
+                  </button>
+                )}
                 {gitBranch && !rightPanelOpen && (
                   <span title={gitBranch} className="flex items-center gap-1 rounded bg-accent px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
                     <GitBranch className="size-3 shrink-0" />

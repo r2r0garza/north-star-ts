@@ -3,6 +3,7 @@
 export * as conversations from "./conversations"
 export * as messages from "./messages"
 export * as workspaces from "./workspaces"
+export * as projects from "./projects"
 export * as tasks from "./tasks"
 export * as taskEvents from "./task-events"
 export * as checkpoints from "./task-checkpoints"

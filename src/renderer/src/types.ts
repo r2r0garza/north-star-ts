@@ -6,6 +6,7 @@ export type {
   Conversation,
   Message,
   Mode,
+  Project,
   Task,
   TaskCheckpoint,
   TaskEvent,
