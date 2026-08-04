@@ -19,6 +19,8 @@ import { browserTypeTool } from "./browser/type"
 import { browserBackTool } from "./browser/back"
 import { browserCloseTool } from "./browser/close"
 import { browserHandoffTool } from "./browser/handoff"
+import { webSearchTool } from "./web/search"
+import { webFetchTool } from "./web/fetch"
 
 // Workspace-gated tools — offered only when the agent has a workspace (they
 // touch the filesystem). Add a new filesystem tool by importing it and listing
@@ -63,13 +65,24 @@ const browserTools: Tool[] = [
 ]
 export const browserToolDefinitions = browserTools.map((t) => t.definition)
 
+// Web tools — headless web access, offered in every mode independent of the
+// workspace or the visible browser (a Chat session can search/fetch too).
+// web_search is not gated; web_fetch routes through the approval gate (kind
+// "web"). Dispatchable via runTool; runChat adds their definitions from
+// `webToolDefinitions`.
+const webTools: Tool[] = [webSearchTool, webFetchTool]
+// Split so runChat can offer web_search in plan mode (read-only, like file
+// reads) while withholding web_fetch (a gated network side effect).
+export const webSearchDefinition = webSearchTool.definition
+export const webFetchDefinition = webFetchTool.definition
+
 // Schemas for the workspace-gated tools (the `tools` array when a workspace
 // exists). Mode-gated tools are added by runChat from their exported definition.
 export const toolDefinitions = workspaceTools.map((t) => t.definition)
 
 // Lookup by name, used to execute any tool the model asked for.
 const byName = new Map(
-  [...workspaceTools, ...otherTools, ...browserTools].map((t) => [
+  [...workspaceTools, ...otherTools, ...browserTools, ...webTools].map((t) => [
     t.definition.function.name,
     t,
   ])

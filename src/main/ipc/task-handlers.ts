@@ -67,7 +67,11 @@ export function registerTaskHandlers(runner: TaskRunner): void {
     "task:approve",
     (
       _e,
-      payload: { taskId: string; requestId: string; remember?: "workspace" }
+      payload: {
+        taskId: string
+        requestId: string
+        remember?: "workspace" | "conversation"
+      }
     ) => {
       resolveApproval(payload.requestId, "approved", payload.remember)
       runner.recordApprovalDecision(

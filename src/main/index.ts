@@ -207,7 +207,7 @@ ipcMain.handle(
     payload: {
       requestId: string
       decision: "approved" | "denied"
-      remember?: "workspace"
+      remember?: "workspace" | "conversation"
     }
   ) => {
     resolveApproval(payload.requestId, payload.decision, payload.remember)

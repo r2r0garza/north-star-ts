@@ -158,12 +158,13 @@ const api = {
     ipcRenderer.invoke("chat:stop", conversationId) as Promise<void>,
   // Resolve an in-flight approval request (from an "approval" ChatEvent). The
   // agent loop is paused until this is called. `requestId` is the token from the
-  // event. `remember: "workspace"` persists an allowlist rule so the same action
-  // is auto-approved next time.
+  // event. `remember` persists an allowlist rule so the same action is
+  // auto-approved next time — `"workspace"` for every session in this folder,
+  // `"conversation"` for just this session.
   chatApprove: (payload: {
     requestId: string
     decision: "approved" | "denied"
-    remember?: "workspace"
+    remember?: "workspace" | "conversation"
   }) => ipcRenderer.invoke("chat:approve", payload) as Promise<void>,
   // Answer an in-flight ask_user_question (from a "question" ChatEvent). The
   // agent loop is paused until this is called. `answers` is parallel to the
@@ -209,7 +210,7 @@ const api = {
     approve: (payload: {
       taskId: string
       requestId: string
-      remember?: "workspace"
+      remember?: "workspace" | "conversation"
     }) => ipcRenderer.invoke("task:approve", payload) as Promise<void>,
     deny: (payload: { taskId: string; requestId: string }) =>
       ipcRenderer.invoke("task:deny", payload) as Promise<void>,

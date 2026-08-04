@@ -28,12 +28,13 @@ import { cn } from "@/lib/utils"
 import { isErrorResult, type ToolUse } from "@/lib/timeline"
 
 // How the user resolved an inline approval. `requestId` is the token from the
-// approval event. `remember` persists a workspace allowlist rule so the same
-// action isn't prompted again.
+// approval event. `remember` persists an allowlist rule so the same action isn't
+// prompted again — `"workspace"` for every session in this folder,
+// `"conversation"` for just this session.
 export type ApprovalHandler = (
   requestId: string,
   decision: "approved" | "denied",
-  remember?: "workspace"
+  remember?: "workspace" | "conversation"
 ) => void
 
 // Icon per tool name; falls back to a generic wrench for anything unmapped.
@@ -195,6 +196,10 @@ export function ApprovalCard({
   // Delegation (handing work to a background task) is asked every time — there's
   // no "always allow" for it, so hide that affordance for delegate approvals.
   const allowRemember = approval.kind !== "delegate"
+  // Web access (web_fetch) is workspace-independent, so its "remember" is scoped
+  // to the session ("this conversation") rather than the workspace folder. Every
+  // other gated action remembers per workspace.
+  const isWeb = approval.kind === "web"
   return (
     <div className="flex flex-col gap-2 rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-xs">
       <div className="flex items-center gap-2 font-medium text-destructive">
@@ -206,17 +211,26 @@ export function ApprovalCard({
       </pre>
       <div className="flex flex-wrap gap-2">
         <Button size="xs" onClick={() => onApproval(requestId, "approved")}>
-          Approve
+          Approve once
         </Button>
-        {allowRemember && (
-          <Button
-            size="xs"
-            variant="outline"
-            onClick={() => onApproval(requestId, "approved", "workspace")}
-          >
-            Always allow in this workspace
-          </Button>
-        )}
+        {allowRemember &&
+          (isWeb ? (
+            <Button
+              size="xs"
+              variant="outline"
+              onClick={() => onApproval(requestId, "approved", "conversation")}
+            >
+              Approve for this session
+            </Button>
+          ) : (
+            <Button
+              size="xs"
+              variant="outline"
+              onClick={() => onApproval(requestId, "approved", "workspace")}
+            >
+              Always allow in this workspace
+            </Button>
+          ))}
         <Button
           size="xs"
           variant="destructive"
