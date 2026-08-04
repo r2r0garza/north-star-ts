@@ -362,6 +362,9 @@ export function AppSidebar({
   // shows a "needs you" indicator, which takes precedence over the spinner.
   waitingConvos: Set<string>
 }) {
+  // The main agent's brand name (MAIN_AGENT_NAME, e.g. "North Star"), read from
+  // the synchronous system bridge. Brands the North Star tab's label.
+  const agentName = window.cowork.system().mainAgentName
   const [conversations, setConversations] = useState<Conversation[]>([])
   const [projects, setProjects] = useState<Project[]>([])
   // The conversation awaiting delete confirmation, if any.
@@ -524,7 +527,9 @@ export function AppSidebar({
           dragging is handled by the top bar in Shell, not here — a drag region
           on the header would swallow the toggle button's clicks. */}
       <SidebarHeader className="h-12" />
-      {/* View switcher — Chat / Interactive / North Star. */}
+      {/* View switcher — Chat / Interactive / North Star. The North Star tab's
+          LABEL is branded from MAIN_AGENT_NAME (the "North Star" value stays the
+          internal key used for mode mapping). */}
       <div className="px-2 pb-2">
         <ButtonGroup className="w-full">
           {VIEWS.map((v) => (
@@ -536,7 +541,7 @@ export function AppSidebar({
               onClick={() => onViewChange(v)}
               className="flex-1"
             >
-              {v}
+              {v === "North Star" ? agentName : v}
             </Button>
           ))}
         </ButtonGroup>

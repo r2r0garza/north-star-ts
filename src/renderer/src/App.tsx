@@ -189,6 +189,12 @@ export default function App({
   // Interactive are workspace-backed and share the same behavior.
   const isChat = view === "Chat"
 
+  // The main agent's brand name (MAIN_AGENT_NAME, e.g. "North Star"), read once
+  // from the synchronous system bridge. Used to label the per-view empty-session
+  // heading — "<agent> - Chat", "<agent> - Interactive", "<agent> - Autonomous
+  // Tasks" (the North Star tab's heading is dynamic with the agent name).
+  const agentName = window.cowork.system().mainAgentName
+
   const [workspace, setWorkspace] = useState("")
   // Whether the workspace is locked to a project's directory (the conversation
   // belongs to — or is being started in — a project that has one). When true the
@@ -1546,14 +1552,25 @@ export default function App({
       <div className="relative flex h-svh w-full flex-col items-center justify-center overflow-hidden px-4">
         <div className="w-full max-w-[min(90%,48rem)]">
           <div className="mb-6 text-center text-sm text-muted-foreground">
-            {isChat ? (
+            {view === "Chat" ? (
               <>
-                <p className="font-medium text-foreground">Chat</p>
+                <p className="font-medium text-foreground">
+                  {agentName} - Chat
+                </p>
                 <p>Ask anything. Attach files with the + button.</p>
+              </>
+            ) : view === "Interactive" ? (
+              <>
+                <p className="font-medium text-foreground">
+                  {agentName} - Interactive
+                </p>
+                <p>Pick a workspace folder, then ask the agent about it.</p>
               </>
             ) : (
               <>
-                <p className="font-medium text-foreground">North Star</p>
+                <p className="font-medium text-foreground">
+                  {agentName} - Autonomous Tasks
+                </p>
                 <p>Pick a workspace folder, then ask the agent about it.</p>
               </>
             )}

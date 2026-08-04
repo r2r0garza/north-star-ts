@@ -47,3 +47,14 @@ export function systemDisplayName(): string {
 export function dataDirName(): string {
   return `.${systemSlug()}`
 }
+
+// The main agent's brand name (from MAIN_AGENT_NAME in .env.local), used to
+// label the per-view empty-session headings (e.g. "North Star - Chat"). Read
+// lazily for the same reason as rawName() above (ES imports hoist above
+// loadEnv()). Defaults to "North Star" so an unset var keeps the prior heading.
+const DEFAULT_AGENT_NAME = "North Star"
+
+export function mainAgentName(): string {
+  const value = process.env.MAIN_AGENT_NAME?.trim()
+  return value ? value : DEFAULT_AGENT_NAME
+}

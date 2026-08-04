@@ -49,7 +49,11 @@ import { SummaryService, SUMMARIZE_KIND } from "./summaries/service"
 import { BrowserManager } from "./browser/manager"
 import { seedProviderFromEnvIfEmpty } from "./settings/bootstrap"
 import { closeDb } from "./db/connection"
-import { dataDirName, systemDisplayName } from "./config/system-name"
+import {
+  dataDirName,
+  systemDisplayName,
+  mainAgentName,
+} from "./config/system-name"
 
 // The durable task runner — a singleton owned by the main process. Started in
 // app.whenReady (after the DB handlers register) and stopped on will-quit.
@@ -498,6 +502,7 @@ ipcMain.on("system:name", (event) => {
   event.returnValue = {
     displayName: systemDisplayName(),
     dataDirName: dataDirName(),
+    mainAgentName: mainAgentName(),
   }
 })
 

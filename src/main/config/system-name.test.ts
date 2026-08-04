@@ -1,13 +1,20 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest"
-import { systemSlug, systemDisplayName, dataDirName } from "./system-name"
+import {
+  systemSlug,
+  systemDisplayName,
+  dataDirName,
+  mainAgentName,
+} from "./system-name"
 
 // The env var is read lazily inside each function, so setting/clearing it
 // per-test is enough — no module cache to reset.
 beforeEach(() => {
   delete process.env.NEXT_system_name
+  delete process.env.MAIN_AGENT_NAME
 })
 afterEach(() => {
   delete process.env.NEXT_system_name
+  delete process.env.MAIN_AGENT_NAME
 })
 
 describe("system-name — defaults", () => {
@@ -15,6 +22,20 @@ describe("system-name — defaults", () => {
     expect(systemSlug()).toBe("cowork")
     expect(systemDisplayName()).toBe("Cowork")
     expect(dataDirName()).toBe(".cowork")
+  })
+
+  it("defaults the main agent name to North Star when unset", () => {
+    expect(mainAgentName()).toBe("North Star")
+  })
+
+  it("reads a custom main agent name (unmangled) and trims it", () => {
+    process.env.MAIN_AGENT_NAME = "  Acme Agent  "
+    expect(mainAgentName()).toBe("Acme Agent")
+  })
+
+  it("treats an empty/whitespace main agent name as unset", () => {
+    process.env.MAIN_AGENT_NAME = "   "
+    expect(mainAgentName()).toBe("North Star")
   })
 
   it("treats an empty/whitespace var as unset", () => {
