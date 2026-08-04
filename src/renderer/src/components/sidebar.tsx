@@ -54,7 +54,7 @@ import {
 import { Button } from "@/components/ui/button"
 import { ButtonGroup } from "@/components/ui/button-group"
 import { ProjectDialog } from "@/components/project-dialog"
-import type { Conversation, Mode, Project } from "@/types"
+import type { Conversation, Mode, Project, Workspace } from "@/types"
 
 export const VIEWS = ["Chat", "Interactive", "North Star"] as const
 export type View = (typeof VIEWS)[number]
@@ -367,11 +367,20 @@ export function AppSidebar({
   const agentName = window.cowork.system().mainAgentName
   const [conversations, setConversations] = useState<Conversation[]>([])
   const [projects, setProjects] = useState<Project[]>([])
+  // Workspaces, kept so a workspace_id can be resolved to a readable path for the
+  // "workspace mismatch" alert below.
+  const [workspaces, setWorkspaces] = useState<Workspace[]>([])
   // The conversation awaiting delete confirmation, if any.
   const [pendingDelete, setPendingDelete] = useState<Conversation | null>(null)
   // The project awaiting delete confirmation, if any.
   const [pendingProjectDelete, setPendingProjectDelete] =
     useState<Project | null>(null)
+  // A blocked "add to project" attempt: the conversation and target project
+  // work in different directories, so the move is refused with an explanation.
+  const [workspaceMismatch, setWorkspaceMismatch] = useState<{
+    conversation: Conversation
+    project: Project
+  } | null>(null)
   // Project create/edit dialog. `editingProject` null = create mode.
   const [projectDialogOpen, setProjectDialogOpen] = useState(false)
   const [editingProject, setEditingProject] = useState<Project | null>(null)
@@ -379,24 +388,28 @@ export function AppSidebar({
   // Fetch conversations + projects together. Re-run on the shell's refreshKey
   // (conversation changes) and after local project CRUD.
   const refetch = useCallback(async () => {
-    const [convos, projs] = await Promise.all([
+    const [convos, projs, ws] = await Promise.all([
       window.cowork.db.conversations.list(),
       window.cowork.db.projects.list(),
+      window.cowork.db.workspaces.list(),
     ])
     setConversations(convos)
     setProjects(projs)
+    setWorkspaces(ws)
   }, [])
 
   useEffect(() => {
     let cancelled = false
     void (async () => {
-      const [convos, projs] = await Promise.all([
+      const [convos, projs, ws] = await Promise.all([
         window.cowork.db.conversations.list(),
         window.cowork.db.projects.list(),
+        window.cowork.db.workspaces.list(),
       ])
       if (!cancelled) {
         setConversations(convos)
         setProjects(projs)
+        setWorkspaces(ws)
       }
     })()
     return () => {
@@ -441,6 +454,11 @@ export function AppSidebar({
   // Projects a conversation can be added to: any project it isn't already in,
   // minus — for workspace-view conversations — projects without a directory
   // (those are Chat-only and can't back Interactive/North Star).
+  //
+  // Projects whose directory DIFFERS from the conversation's own are still
+  // listed (not silently hidden) so the user gets an explicit explanation when
+  // they try — moveConversationToProject blocks the move with an alert. Chat
+  // conversations are grouping-only (no directory), so they're never restricted.
   function moveTargetsFor(conversation: Conversation): Project[] {
     return projects.filter(
       (p) =>
@@ -449,16 +467,46 @@ export function AppSidebar({
     )
   }
 
+  // Resolve a workspace_id to its absolute path for display (null/unknown → null).
+  function workspacePath(workspaceId: string | null | undefined): string | null {
+    if (!workspaceId) return null
+    return workspaces.find((w) => w.id === workspaceId)?.path ?? null
+  }
+
+  // Whether moving `conversation` into `project` would change its working
+  // directory. Only relevant for workspace-view conversations that already have a
+  // workspace: if the project's directory differs, the move is refused (a
+  // conversation's directory can't be silently switched out from under it).
+  function isWorkspaceMismatch(
+    conversation: Conversation,
+    project: Project
+  ): boolean {
+    return (
+      conversation.mode !== "chat" &&
+      !!conversation.workspaceId &&
+      !!project.workspaceId &&
+      conversation.workspaceId !== project.workspaceId
+    )
+  }
+
   // Add a conversation to a project (or remove it, projectId = null). A project
   // with a directory owns the workspace, so moving into it adopts that directory
   // and moving out clears it — keeping the "directory locked to project" rule.
+  // A workspace-view conversation can only join a project that shares its
+  // directory; a mismatch is refused with an explanatory alert (see above).
   async function moveConversationToProject(
     id: string,
     projectId: string | null
   ) {
+    const conversation = conversations.find((c) => c.id === id)
     const target = projectId
       ? projects.find((p) => p.id === projectId)
       : undefined
+    // Block a directory-changing move: explain why instead of silently switching.
+    if (conversation && target && isWorkspaceMismatch(conversation, target)) {
+      setWorkspaceMismatch({ conversation, project: target })
+      return
+    }
     const patch: {
       projectId: string | null
       workspaceId?: string | null
@@ -680,6 +728,39 @@ export function AppSidebar({
             >
               Delete
             </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Blocked "add to project": the conversation and the project work in
+          different directories. Explain why and offer only a close — a
+          conversation's working directory can't be silently reassigned. */}
+      <AlertDialog
+        open={workspaceMismatch !== null}
+        onOpenChange={(open) => {
+          if (!open) setWorkspaceMismatch(null)
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Can’t add to this project</AlertDialogTitle>
+            <AlertDialogDescription>
+              This conversation works in{" "}
+              <span className="font-mono">
+                {workspacePath(workspaceMismatch?.conversation.workspaceId) ??
+                  "its own folder"}
+              </span>
+              , but “{workspaceMismatch?.project.name}” is set to{" "}
+              <span className="font-mono">
+                {workspacePath(workspaceMismatch?.project.workspaceId) ??
+                  "a different folder"}
+              </span>
+              . A conversation can only be added to a project with the same
+              directory.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Close</AlertDialogCancel>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
