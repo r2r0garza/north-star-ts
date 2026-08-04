@@ -4,6 +4,8 @@ import { basename, isAbsolute } from "path"
 import {
   toolDefinitions,
   browserToolDefinitions,
+  webSearchDefinition,
+  webFetchDefinition,
   runTool,
   todoWriteTool,
   askUserQuestionTool,
@@ -68,6 +70,7 @@ import { RegexCommandClassifier } from "./approval/regex-classifier"
 import { FileActionClassifier } from "./approval/file-classifier"
 import { DelegationClassifier } from "./approval/delegation-classifier"
 import { BrowserActionClassifier } from "./approval/browser-classifier"
+import { WebActionClassifier } from "./approval/web-classifier"
 import { PlanModeClassifier } from "./approval/plan-mode-classifier"
 import type {
   ActionKind,
@@ -111,6 +114,9 @@ const policy = new PolicyEngine(
     // Browser navigation always prompts (no category → never sandbox-downgraded);
     // returns null for non-browser kinds, so placement is flexible.
     new BrowserActionClassifier(),
+    // web_fetch always prompts (no category → never sandbox-downgraded), like
+    // browser navigation; returns null for non-web kinds.
+    new WebActionClassifier(),
     new FileActionClassifier(() => settingsService.getPermissions()),
     new RegexCommandClassifier(),
   ],
@@ -177,22 +183,19 @@ export function stopChat(conversationId: string): void {
 // Called from the renderer over IPC ("chat:approve") to resolve a request the
 // gate is blocked on. `requestId` is a process-unique token (not the model's
 // tool-call id, which is only unique within a turn) so a decision can never
-// resolve a different conversation's pending gate. On "approved" with
-// remember:"workspace", the action is persisted to the allowlist so identical
-// future actions skip the prompt.
+// resolve a different conversation's pending gate. On "approved" with a
+// `remember` scope, the action is persisted to the allowlist so identical future
+// actions skip the prompt — `"workspace"` for every conversation in this folder,
+// `"conversation"` for just this session.
 export function resolveApproval(
   requestId: string,
   decision: "approved" | "denied",
-  remember?: "workspace"
+  remember?: "workspace" | "conversation"
 ): void {
   const pending = pendingApprovals.get(requestId)
   if (!pending) return
   pendingApprovals.delete(requestId)
-  if (
-    decision === "approved" &&
-    remember === "workspace" &&
-    pending.workspacePath
-  ) {
+  if (decision === "approved" && remember === "workspace" && pending.workspacePath) {
     actionAllowlist.addRule({
       tool: pending.action.tool,
       kind: pending.action.kind,
@@ -200,6 +203,22 @@ export function resolveApproval(
       scope: "workspace",
       workspacePath: pending.workspacePath,
       conversationId: pending.conversationId ?? null,
+    })
+  } else if (
+    decision === "approved" &&
+    remember === "conversation" &&
+    pending.conversationId
+  ) {
+    // Session scope: remember only for this conversation (matched by
+    // conversation_id in the allowlist). Used for web_fetch's "approve for this
+    // session" — a workspace-independent action, so it isn't workspace-scoped.
+    actionAllowlist.addRule({
+      tool: pending.action.tool,
+      kind: pending.action.kind,
+      identity: pending.action.identity,
+      scope: "conversation",
+      workspacePath: pending.workspacePath ?? null,
+      conversationId: pending.conversationId,
     })
   }
   pending.resolve(decision)
@@ -572,6 +591,12 @@ export async function runAgentLoop(
       : []),
     ...(useIndex ? [indexQueryTool.definition] : []),
     ...(browser ? browserToolDefinitions : []),
+    // Web tools are offered in every mode, independent of workspace/browser.
+    // web_search is read-only (like file reads) so it stays available even in
+    // plan mode; web_fetch is a gated network side effect (kind "web"), withheld
+    // in plan mode like the other mutating/side-effecting tools.
+    webSearchDefinition,
+    ...(planMode ? [] : [webFetchDefinition]),
     // Plan-mode tools: the only write (write_plan) + the approval handoff.
     ...(planMode
       ? [writePlanTool.definition, presentPlanTool.definition]

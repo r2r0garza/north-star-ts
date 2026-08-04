@@ -15,6 +15,9 @@ export type ActionKind =
   | "file_edit"
   | "delegate"
   | "browser"
+  // Headless web access to an arbitrary origin (web_fetch). A real network side
+  // effect, like `browser` navigation — see WebActionClassifier.
+  | "web"
 
 // A tool's request to do something gated. Tool-agnostic.
 export interface ToolAction {

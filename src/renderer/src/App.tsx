@@ -730,7 +730,7 @@ export default function App({
   function resolveApproval(
     requestId: string,
     decision: "approved" | "denied",
-    remember?: "workspace"
+    remember?: "workspace" | "conversation"
   ) {
     // The card is only shown for the conversation on screen, so flip its status
     // in that conversation's live turn (matched by requestId).

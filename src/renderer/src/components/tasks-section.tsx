@@ -87,7 +87,10 @@ function TaskRow({
   onResume: () => void
   onCancel: () => void
   onOpen: () => void
-  onApprove: (requestId: string, remember?: "workspace") => void
+  onApprove: (
+    requestId: string,
+    remember?: "workspace" | "conversation"
+  ) => void
   onDeny: (requestId: string) => void
   onAnswer: (requestId: string, answers: QuestionAnswer[]) => void
 }) {
@@ -286,7 +289,11 @@ export function TasksSection({
     await window.cowork.tasks.cancel(id)
     await refetch()
   }
-  function approve(taskId: string, requestId: string, remember?: "workspace") {
+  function approve(
+    taskId: string,
+    requestId: string,
+    remember?: "workspace" | "conversation"
+  ) {
     void window.cowork.tasks.approve({ taskId, requestId, remember })
     setGates((g) => ({ ...g, [taskId]: null }))
   }
