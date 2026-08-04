@@ -3,6 +3,7 @@ import type { KeyboardEvent } from "react"
 import { toast } from "sonner"
 import {
   ArrowUp,
+  Bot,
   BrainCircuit,
   ChevronDown,
   ClipboardList,
@@ -89,6 +90,7 @@ import type {
   LlmSettings,
   AccountWithModels,
   SkillSummary,
+  AgentSummary,
   PickedElement,
 } from "@/types"
 
@@ -234,6 +236,12 @@ export default function App({
   //     picked — the source of truth for which tokens get a badge and get expanded
   //     at send. A typed-but-unpicked `/foo` or `@bar` stays plain text.
   const [skills, setSkills] = useState<SkillSummary[]>([])
+  // User-invocable custom agents for the composer's agent picker, and this
+  // conversation's selection. `selAgentName` is null for the built-in main agent
+  // (default). Persisted onto the conversation row; for a not-yet-created
+  // conversation it's carried into create() on first send. Mirrors selModelId.
+  const [agents, setAgents] = useState<AgentSummary[]>([])
+  const [selAgentName, setSelAgentName] = useState<string | null>(null)
   const [menu, setMenu] = useState<{ kind: MentionKind; query: string } | null>(
     null
   )
@@ -406,6 +414,8 @@ export default function App({
       // A fresh conversation starts from the default selection (null = inherit).
       setSelAccountId(null)
       setSelModelId(null)
+      // No custom agent by default (null = built-in main agent).
+      setSelAgentName(null)
       // If starting in a project that has a directory, adopt + lock it; otherwise
       // clear the picker (unassigned / directory-less project).
       if (pendingProjectId) {
@@ -438,6 +448,8 @@ export default function App({
       // Restore the conversation's own model selection (null falls back to default).
       setSelAccountId(convo?.accountId ?? null)
       setSelModelId(convo?.modelId ?? null)
+      // Restore the conversation's selected custom agent (null = main agent).
+      setSelAgentName(convo?.agentName ?? null)
       // If the conversation belongs to a project with a directory, that directory
       // is the source of truth and the picker is locked. Otherwise fall back to
       // the conversation's own workspace_id (legacy / unassigned).
@@ -491,6 +503,24 @@ export default function App({
   // Initial load + reload on workspace change (project-level skills live under
   // <workspace>/.cowork/skills and <workspace>/.github/skills).
   useEffect(() => reloadSkills(), [reloadSkills])
+
+  // Load the user-invocable custom agents for the picker. Reloads on workspace
+  // change (workspace-level agents live under <workspace>/.cowork/agents and
+  // <workspace>/.github/agents), mirroring skills.
+  useEffect(() => {
+    let cancelled = false
+    window.cowork.agents
+      .list(workspace.trim() || undefined)
+      .then((list) => {
+        if (!cancelled) setAgents(list)
+      })
+      .catch(() => {
+        if (!cancelled) setAgents([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [workspace])
 
   // Report the workspace root up to the Shell so the sidebar Changes review + the
   // browser file:// opens can use it. Chat has no workspace → report empty.
@@ -782,6 +812,8 @@ export default function App({
         // the default" — only store an explicit pick that differs from default.
         accountId: selAccountId,
         modelId: selModelId,
+        // Persist the selected custom agent (null = built-in main agent).
+        agentName: selAgentName,
       })
       convoId = convo.id
       isNew = true
@@ -1027,6 +1059,7 @@ export default function App({
         projectId: pendingProjectId,
         accountId: selAccountId,
         modelId: selModelId,
+        agentName: selAgentName,
       })
       convoId = convo.id
       isNew = true
@@ -1145,6 +1178,15 @@ export default function App({
         accountId,
         modelId,
       })
+    }
+  }
+  // Select the custom agent for this conversation (null = built-in main agent).
+  // Persisted immediately when the conversation exists; otherwise carried into
+  // create() on first send, mirroring selectModel.
+  async function selectAgent(agentName: string | null) {
+    setSelAgentName(agentName)
+    if (conversationId) {
+      await window.cowork.db.conversations.update(conversationId, { agentName })
     }
   }
   // Combobox items use { value: "accountId::modelId", label } objects — Base UI
@@ -1271,6 +1313,68 @@ export default function App({
       <BrainCircuit className="size-4" />
     </button>
   )
+
+  // Custom agent picker. Only shown when the user has at least one invocable
+  // agent on disk (~/.cowork/agents or the workspace agent dirs). "Default (no
+  // agent)" clears the selection to run the built-in main agent. Compact
+  // (icon-only) when the right panel squeezes the toolbar, mirroring the model
+  // picker. The selected agent's system prompt is prepended to ours per turn.
+  const agentPicker =
+    agents.length > 0 ? (
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <button
+            type="button"
+            aria-label={
+              selAgentName ? `Agent: ${selAgentName}` : "Agent: default"
+            }
+            title={
+              selAgentName
+                ? `Custom agent: ${selAgentName}`
+                : "No custom agent — using the default agent"
+            }
+            className={cn(
+              "flex h-7 max-w-52 items-center gap-1 rounded-md px-2 text-xs transition-colors",
+              selAgentName
+                ? "bg-accent text-foreground"
+                : "text-muted-foreground hover:bg-accent hover:text-foreground"
+            )}
+          >
+            <Bot className="size-4 shrink-0" />
+            {!rightPanelOpen && (
+              <span className="truncate">{selAgentName ?? "Agent"}</span>
+            )}
+            <ChevronDown className="size-3 shrink-0 opacity-60" />
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="start" className="min-w-44 max-w-72">
+          <DropdownMenuItem
+            onClick={() => void selectAgent(null)}
+            className={cn(!selAgentName && "bg-accent font-medium")}
+          >
+            Default (no agent)
+          </DropdownMenuItem>
+          {agents.map((a) => (
+            <DropdownMenuItem
+              key={a.name}
+              onClick={() => void selectAgent(a.name)}
+              title={a.description}
+              className={cn(
+                "flex-col items-start gap-0.5",
+                selAgentName === a.name && "bg-accent font-medium"
+              )}
+            >
+              <span>{a.name}</span>
+              {a.description && (
+                <span className="line-clamp-2 text-[10px] font-normal text-muted-foreground">
+                  {a.description}
+                </span>
+              )}
+            </DropdownMenuItem>
+          ))}
+        </DropdownMenuContent>
+      </DropdownMenu>
+    ) : null
 
   // The composer (attachment chips + input box). Rendered both centered and
   // bottom-pinned, so it's defined once here.
@@ -1436,6 +1540,7 @@ export default function App({
             )}
             {!rightPanelOpen && modelPicker}
             {rightPanelOpen && modelPickerCompact}
+            {agentPicker}
             {/* Agent mode dropdown. Session-only. "Default" = normal; "Plan" =
                 read-only planning turn until approved; "Auto" = all gated
                 actions auto-approved. Chat offers only Default/Auto — plan mode

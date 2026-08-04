@@ -29,6 +29,17 @@ import { loadSkills } from "./skills/loader"
 import { buildSkillsPrompt } from "./skills/prompt"
 import { createReadSkillTool } from "./skills/tool"
 import { skillSources } from "./skills/sources"
+import { loadAgent, loadAgents } from "./agents/loader"
+import { agentSources } from "./agents/sources"
+import type { AgentDefinition } from "./agents/types"
+import { MAX_AGENT_DEPTH } from "./agents/types"
+import {
+  agentToolAllowlist,
+  agentToolsIncludeCategory,
+  isUniversalTool,
+} from "./agents/tool-categories"
+import { buildSubagentsPrompt } from "./agents/prompt"
+import { spawnSubagentTool } from "./tools/spawn_subagent"
 import { loadSystemPrompt } from "./system-prompt"
 import { logSystemPrompt } from "./prompt-log"
 import { buildIndexSummary } from "../index/summary"
@@ -58,9 +69,13 @@ import {
 import { appendMessage } from "../db/repositories/messages"
 import {
   getConversation,
+  createConversation,
   updateConversation,
 } from "../db/repositories/conversations"
 import { actionAllowlist } from "../db/repositories"
+import { getWorkspace } from "../db/repositories/workspaces"
+import { getProject } from "../db/repositories/projects"
+import type { Conversation } from "../db/types"
 import {
   PolicyEngine,
   type AllowlistLookup,
@@ -464,6 +479,47 @@ export interface RunAgentLoopOptions {
   // is a require_approval action). Can also be activated mid-turn when the user
   // picks "Yes, approve and work in Auto mode" in the plan approval question.
   autoMode?: boolean
+  // Subagent-tree depth of this run: 0 for a top-level (user- or task-driven)
+  // turn, incremented each time an agent spawns a child via spawn_subagent.
+  // Bounds recursion (MAX_AGENT_DEPTH). Defaults to 0.
+  agentDepth?: number
+  // The chain of custom-agent names from the root of the subagent tree down to
+  // (but not including) this run's own agent. Used to reject a spawn that would
+  // re-enter an ancestor (cycle guard). Defaults to []. The spawn helper appends
+  // the child's name when recursing.
+  agentAncestors?: string[]
+  // Explicit directory for DISCOVERING workspace-level custom agents, overriding
+  // the derivation from the confinement workspace / conversation. Set by the
+  // subagent spawn helper so a forked worker discovers agents from the same
+  // directory as its parent (a Chat worker inherits neither a confinement
+  // workspace nor the project link). Absent on top-level turns, which derive it.
+  agentDir?: string
+}
+
+// The on-disk directory associated with a conversation, used to discover
+// workspace-level custom agents (<dir>/.github/agents, <dir>/.cowork/agents).
+// Independent of the tool-confinement workspace: a Chat conversation runs with
+// no confinement workspace but can still belong to a directory-backed project,
+// and the user picks agents from that project's dirs. Resolution mirrors the
+// renderer's `workspace` derivation: the conversation's own linked workspace
+// first, then its project's default workspace. Returns undefined for a truly
+// directory-less conversation (only user-level ~/.cowork/agents apply then).
+function resolveConversationDir(
+  conversation: Conversation | undefined
+): string | undefined {
+  if (!conversation) return undefined
+  if (conversation.workspaceId) {
+    const ws = getWorkspace(conversation.workspaceId)
+    if (ws?.path) return ws.path
+  }
+  if (conversation.projectId) {
+    const project = getProject(conversation.projectId)
+    if (project?.workspaceId) {
+      const ws = getWorkspace(project.workspaceId)
+      if (ws?.path) return ws.path
+    }
+  }
+  return undefined
 }
 
 // The core agentic loop, shared by the live `chat` path (runChat) and the
@@ -496,12 +552,45 @@ export async function runAgentLoop(
     }
   }
 
-  // Load skills (app-bundled → user → project, last-wins), then build the
-  // read_skill tool and the Skills System prompt section. Only skill metadata
-  // enters the prompt; bodies are fetched on demand via the tool.
-  const skills = await loadSkills(
+  // Load the conversation once, here: its `mode` selects the base system prompt,
+  // gates the todo tool, names the selected custom agent, and is reused below for
+  // the title check. Defaults to "chat" if missing.
+  const conversation = getConversation(conversationId)
+
+  // The directory used to DISCOVER workspace-level agents (and the composer's
+  // agent picker). This is intentionally NOT the tool-confinement `workspace`
+  // (which Chat leaves undefined): a Chat conversation started inside a project
+  // still has a directory — the project's — where <dir>/.github/agents and
+  // <dir>/.cowork/agents live, and the user picked an agent from exactly that
+  // list. So resolve the conversation's directory independently: the confinement
+  // workspace if present, else the conversation's own linked workspace, else its
+  // project's default workspace. Mirrors how the renderer derives its `workspace`
+  // state (project dir → conversation workspace).
+  const agentDir =
+    opts.agentDir ??
+    (hasWorkspace ? workspace : resolveConversationDir(conversation))
+
+  // Resolve the selected custom "fleet" agent, if any. Its markdown body is
+  // prepended to the mode prompt, and its frontmatter narrows the tools/skills
+  // this turn is offered. Re-resolved from disk each turn (definitions are files,
+  // not DB rows). Null (no selection, or the file vanished) → the built-in main
+  // agent, exactly as before.
+  const agent = conversation?.agentName
+    ? await loadAgent(conversation.agentName, agentDir)
+    : null
+
+  // Load skills (user → workspace, last-wins), then build the read_skill tool and
+  // the Skills System prompt section. Only skill metadata enters the prompt;
+  // bodies are fetched on demand via the tool. When a custom agent declares a
+  // `skills` frontmatter, filter to its allowlist (tri-state: omitted → all;
+  // [] → none; [list] → only those) before building the tool + prompt.
+  const allSkills = await loadSkills(
     skillSources(hasWorkspace ? workspace : undefined)
   )
+  const skills =
+    agent?.skills === undefined
+      ? allSkills
+      : allSkills.filter((s) => agent.skills!.includes(s.name))
   const readSkillTool = createReadSkillTool(skills)
 
   // Filesystem tools are confined to a workspace, so the full set is only
@@ -509,11 +598,6 @@ export async function runAgentLoop(
   // just read_file_tool, scoped to the files the user attached (the attachment
   // list is the read allowlist — see read_file_tool's resolveReadable).
   const hasAttachments = !!attachments && attachments.length > 0
-
-  // Load the conversation once, here: its `mode` selects the base system prompt,
-  // gates the todo tool, and is reused below for the title check. Defaults to
-  // "chat" if missing.
-  const conversation = getConversation(conversationId)
 
   // This conversation's LLM selection (provider account + model). Null fields
   // fall back to the global default inside resolveLlm, so a session that never
@@ -559,6 +643,37 @@ export async function runAgentLoop(
   // to drive). Bound to this turn's signal so Stop unwinds an in-flight browser op.
   const browser = opts.provideBrowser?.(abort.signal)
 
+  // Custom-agent tool restriction. When the selected agent declares a `tools`
+  // frontmatter, this is the set of internal tool names it may be offered (plus
+  // the universal floor, handled in buildTools); null = no restriction (omitted
+  // frontmatter → full mode-appropriate toolset). Computed once — it doesn't
+  // change mid-turn like planMode does.
+  const agentToolNames = agentToolAllowlist(agent)
+
+  // Subagent spawning. The spawn_subagent tool is offered only when BOTH gates
+  // pass: the agent's `tools` includes the `agent` category AND its `children`
+  // key is present (tri-state: omitted → cannot spawn even with the category;
+  // [] → any loadable agent; [list] → only those). Resolve the concrete set of
+  // spawnable child definitions now, both to gate the offering and to list them
+  // in the Subagents prompt section. Depth is also a gate: a run already at the
+  // max depth can't offer the tool (its children could never spawn anyway).
+  const canSpawn =
+    !!agent &&
+    agentToolsIncludeCategory(agent, "agent") &&
+    agent.children !== undefined &&
+    (opts.agentDepth ?? 0) < MAX_AGENT_DEPTH
+  let spawnableChildren: AgentDefinition[] = []
+  if (canSpawn) {
+    const loadable = await loadAgents(agentSources(agentDir))
+    const allow = agent!.children!
+    spawnableChildren = loadable.filter(
+      (a) =>
+        a.name !== agent!.name && // never list self
+        (allow.length === 0 || allow.includes(a.name))
+    )
+  }
+  const offerSpawn = canSpawn && spawnableChildren.length > 0
+
   // Names of the filesystem-mutating workspace tools. In plan mode these are
   // dropped from the offered toolset (so the model can't call them) and also
   // hard-blocked at the gate (belt-and-suspenders); write_plan replaces them as
@@ -572,44 +687,71 @@ export async function runAgentLoop(
   // Build the per-turn toolset from the CURRENT plan-mode flag. Recomputed each
   // loop iteration: when the user approves a plan mid-turn, planMode flips false
   // and the next model round-trip regains the full filesystem toolset.
-  const buildTools = () => [
-    ...(hasWorkspace
-      ? planMode
-        ? toolDefinitions.filter(
-            (d) => !MUTATING_TOOL_NAMES.has(d.function.name)
-          )
-        : toolDefinitions
-      : hasAttachments
-        ? [readFileTool.definition]
+  //
+  // When a custom agent restricts tools (agentToolNames non-null), the offered
+  // set is intersected against it AFTER the mode/plan gating — an agent can only
+  // ever narrow, never widen (an agent granted `edit` in a bare Chat still gets
+  // no filesystem tools; plan mode still drops mutating tools). Universal tools
+  // (ask_user_question, read_skill, plan-mode handoff) bypass the allowlist.
+  const applyAgentTools = (defs: { function: { name: string } }[]) =>
+    agentToolNames === null
+      ? defs
+      : defs.filter(
+          (d) =>
+            isUniversalTool(d.function.name) ||
+            agentToolNames.has(d.function.name)
+        )
+  const buildTools = () =>
+    applyAgentTools([
+      ...(hasWorkspace
+        ? planMode
+          ? toolDefinitions.filter(
+              (d) => !MUTATING_TOOL_NAMES.has(d.function.name)
+            )
+          : toolDefinitions
+        : hasAttachments
+          ? [readFileTool.definition]
+          : []),
+      ...(showTodos
+        ? // run_todos_in_background delegates to a background writer, so it's
+          // withheld in plan mode along with the direct FS tools.
+          planMode
+          ? [todoWriteTool.definition]
+          : [todoWriteTool.definition, runTodosInBackgroundTool.definition]
         : []),
-    ...(showTodos
-      ? // run_todos_in_background delegates to a background writer, so it's
-        // withheld in plan mode along with the direct FS tools.
-        planMode
-        ? [todoWriteTool.definition]
-        : [todoWriteTool.definition, runTodosInBackgroundTool.definition]
-      : []),
-    ...(useIndex ? [indexQueryTool.definition] : []),
-    ...(browser ? browserToolDefinitions : []),
-    // Web tools are offered in every mode, independent of workspace/browser.
-    // web_search is read-only (like file reads) so it stays available even in
-    // plan mode; web_fetch is a gated network side effect (kind "web"), withheld
-    // in plan mode like the other mutating/side-effecting tools.
-    webSearchDefinition,
-    ...(planMode ? [] : [webFetchDefinition]),
-    // Plan-mode tools: the only write (write_plan) + the approval handoff.
-    ...(planMode
-      ? [writePlanTool.definition, presentPlanTool.definition]
-      : []),
-    // ask_user_question is offered in every mode — clarification is universal.
-    askUserQuestionTool.definition,
-    readSkillTool.definition,
-  ]
+      ...(useIndex ? [indexQueryTool.definition] : []),
+      ...(browser ? browserToolDefinitions : []),
+      // Web tools are offered in every mode, independent of workspace/browser.
+      // web_search is read-only (like file reads) so it stays available even in
+      // plan mode; web_fetch is a gated network side effect (kind "web"), withheld
+      // in plan mode like the other mutating/side-effecting tools.
+      webSearchDefinition,
+      ...(planMode ? [] : [webFetchDefinition]),
+      // spawn_subagent: offered only when the agent+children gates pass and there
+      // are children to spawn (offerSpawn). Withheld in plan mode like other
+      // side-effecting tools. Not intersected away by the allowlist — offerSpawn
+      // already required the `agent` category.
+      ...(offerSpawn && !planMode ? [spawnSubagentTool.definition] : []),
+      // Plan-mode tools: the only write (write_plan) + the approval handoff.
+      ...(planMode
+        ? [writePlanTool.definition, presentPlanTool.definition]
+        : []),
+      // ask_user_question is offered in every mode — clarification is universal.
+      askUserQuestionTool.definition,
+      readSkillTool.definition,
+    ])
   // The non-droppable base prompt (mode prompt). Everything else is a droppable
   // context SECTION handed to the ContextBuilder, which budgets + composes them
   // into the system block under one global budget with an explicit drop order
   // (plan 014). This replaces the previous pile of `systemPrompt +=` appends.
-  const baseSystemPrompt = await loadSystemPrompt(conversation?.mode)
+  //
+  // A selected custom agent's markdown body is PREPENDED to the mode prompt (and
+  // stays non-droppable): the agent's persona/instructions sit on top of ours so
+  // they frame everything the model reads, without discarding the mode behavior.
+  const modePrompt = await loadSystemPrompt(conversation?.mode)
+  const baseSystemPrompt = agent
+    ? `${agent.body.trim()}\n\n${modePrompt}`
+    : modePrompt
   const sections: ContextSection[] = []
 
   // Environment orientation: date + model always, and (when a workspace exists)
@@ -633,6 +775,21 @@ export async function runAgentLoop(
       priority: SECTION_PRIORITY.skills,
       content: skillsPrompt,
     })
+  }
+
+  // Subagents: the catalog of child agents this agent may spawn (only present
+  // when the spawn tool is offered). Same priority as skills — it advertises a
+  // capability the agent is told it has, so it shouldn't be dropped while the
+  // tool is on offer.
+  if (offerSpawn) {
+    const subagentsPrompt = buildSubagentsPrompt(spawnableChildren)
+    if (subagentsPrompt) {
+      sections.push({
+        name: "subagents",
+        priority: SECTION_PRIORITY.skills,
+        content: subagentsPrompt,
+      })
+    }
   }
 
   // Plan mode: the operating rules for a read-only planning turn. Highest
@@ -1106,6 +1263,31 @@ export async function runAgentLoop(
             autoMode = on
             onEvent({ type: "auto_mode", enabled: on })
           },
+          // Subagent spawning: wired only when the running agent may spawn, so
+          // the tool reports "unavailable" otherwise (it's also not offered).
+          // agentChildren is the authorization whitelist; depth/ancestors bound
+          // recursion. The child's name is appended to the ancestor chain here.
+          spawnSubagent: offerSpawn
+            ? (input: { agentName: string; prompt: string }) =>
+                spawnSubagent({
+                  agentName: input.agentName,
+                  prompt: input.prompt,
+                  parentWorkspace: hasWorkspace ? workspace : undefined,
+                  // Children discover agents from the same directory as this run
+                  // (Chat's project dir, not the confinement workspace).
+                  agentDir,
+                  parentConversation: conversation,
+                  parentSignal: abort.signal,
+                  depth: (opts.agentDepth ?? 0) + 1,
+                  ancestors: [
+                    ...(opts.agentAncestors ?? []),
+                    ...(agent ? [agent.name] : []),
+                  ],
+                })
+            : undefined,
+          agentChildren: agent?.children,
+          agentDepth: opts.agentDepth ?? 0,
+          agentAncestors: opts.agentAncestors ?? [],
         }
         const result =
           call.name === readSkillTool.definition.function.name
@@ -1191,6 +1373,94 @@ export async function runAgentLoop(
 // kicks off title generation, and owns the conversation-keyed AbortController so
 // the Stop button (chat:stop → stopChat) can cancel it. A "live turn" is just a
 // task with a renderer attached; the durable task runner calls runAgentLoop
+// Spawn a custom agent as a subagent and block for its final answer. Called
+// (indirectly, via ctx.spawnSubagent) from the spawn_subagent tool, which has
+// already enforced the depth/cycle/whitelist gates. Runs a NESTED runAgentLoop
+// synchronously in a forked worker conversation — NOT the durable TaskRunner
+// (which is fire-and-forget and can't return a specific task's result, and would
+// deadlock under its concurrency cap on a blocking wait). The worker is stamped
+// with the child agent's name so the nested loop resolves the child's prompt,
+// tools, and skills; it's backed by a completed `subagent` task row so it stays
+// out of the sidebar (listConversations hides task transcripts) and is reaped by
+// the session-delete cascade. The child's controller is chained to the parent's
+// signal, so a parent Stop unwinds the whole subtree.
+async function spawnSubagent(input: {
+  agentName: string
+  prompt: string
+  parentWorkspace?: string
+  // Directory to discover the child (and its own children) from — the parent's
+  // agent-discovery dir, which for a Chat parent is the project directory, not
+  // the confinement workspace.
+  agentDir?: string
+  parentConversation: Conversation | undefined
+  parentSignal: AbortSignal
+  depth: number
+  ancestors: string[]
+}): Promise<{ content?: string; error?: string; stopped?: boolean }> {
+  // Resolve the child definition up front so an unknown name fails cleanly
+  // without creating an orphan worker conversation. Discovery uses the parent's
+  // agentDir (not the confinement workspace) so a Chat child is found too.
+  const child = await loadAgent(input.agentName, input.agentDir)
+  if (!child) {
+    return { error: `Unknown agent '${input.agentName}'.` }
+  }
+
+  // Fork a private worker conversation, inheriting the parent's execution context
+  // (mode → tools/prompt gating, workspace, LLM selection) and stamped with the
+  // child agent so the nested loop applies its prompt/tools/skills.
+  const worker = createConversation({
+    mode: input.parentConversation?.mode ?? "interactive",
+    workspaceId: input.parentConversation?.workspaceId ?? null,
+    accountId: input.parentConversation?.accountId ?? null,
+    modelId: input.parentConversation?.modelId ?? null,
+    agentName: child.name,
+    title: `${child.name}: ${input.prompt.slice(0, 48)}`,
+  })
+  // Back the worker with a task row so it's not listed as a standalone chat and
+  // is cascade-deleted with its source session. Self-sourced when there's no live
+  // parent conversation (headless), else linked back to the parent.
+  createTask({
+    conversationId: worker.id,
+    sourceConversationId: input.parentConversation?.id ?? worker.id,
+    status: "completed",
+    title: child.name,
+    input: { kind: "subagent", agentName: child.name },
+  })
+
+  // Chain the child's controller to the parent's signal so parent Stop / shutdown
+  // unwinds the child too, preserving the shutdown-vs-stop distinction.
+  const childAbort = new AbortController()
+  if (input.parentSignal.aborted) childAbort.abort(input.parentSignal.reason)
+  else
+    input.parentSignal.addEventListener(
+      "abort",
+      () => childAbort.abort(input.parentSignal.reason),
+      { once: true }
+    )
+
+  try {
+    const result = await runAgentLoop({
+      conversationId: worker.id,
+      workspace: input.parentWorkspace,
+      // Pass the discovery dir explicitly: the worker conversation carries no
+      // project link and (for Chat) no confinement workspace, so it couldn't
+      // re-derive it. This keeps the child's own agent + grandchildren resolvable.
+      agentDir: input.agentDir,
+      userMessage: input.prompt,
+      abort: childAbort,
+      // No renderer for the child — its transcript is still persisted durably.
+      onEvent: () => {},
+      agentDepth: input.depth,
+      agentAncestors: input.ancestors,
+    })
+    if (result.stopped || childAbort.signal.aborted) return { stopped: true }
+    if (result.error) return { error: result.error }
+    return { content: result.content }
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : String(err) }
+  }
+}
+
 // directly with its own task-keyed controller.
 export async function runChat(
   { conversationId, message, workspace, attachments, planMode, autoMode }: ChatRequest,

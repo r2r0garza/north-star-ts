@@ -10,6 +10,7 @@ interface ConversationRow {
   project_id: string | null
   account_id: string | null
   model_id: string | null
+  agent_name: string | null
   created_at: number
   updated_at: number
 }
@@ -23,6 +24,7 @@ function toConversation(row: ConversationRow): Conversation {
     projectId: row.project_id,
     accountId: row.account_id,
     modelId: row.model_id,
+    agentName: row.agent_name,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   }
@@ -35,12 +37,13 @@ export function createConversation(input: {
   title?: string | null
   accountId?: string | null
   modelId?: string | null
+  agentName?: string | null
 }): Conversation {
   const id = randomUUID()
   const now = Date.now()
   getDb()
     .prepare(
-      "INSERT INTO conversations (id, mode, title, workspace_id, project_id, account_id, model_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+      "INSERT INTO conversations (id, mode, title, workspace_id, project_id, account_id, model_id, agent_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )
     .run(
       id,
@@ -50,6 +53,7 @@ export function createConversation(input: {
       input.projectId ?? null,
       input.accountId ?? null,
       input.modelId ?? null,
+      input.agentName ?? null,
       now,
       now
     )
@@ -93,6 +97,7 @@ export function updateConversation(
     projectId?: string | null
     accountId?: string | null
     modelId?: string | null
+    agentName?: string | null
   }
 ): Conversation {
   const now = Date.now()
@@ -117,6 +122,10 @@ export function updateConversation(
   if (patch.modelId !== undefined) {
     sets.push("model_id = ?")
     values.push(patch.modelId)
+  }
+  if (patch.agentName !== undefined) {
+    sets.push("agent_name = ?")
+    values.push(patch.agentName)
   }
   if (sets.length > 0) {
     sets.push("updated_at = ?")

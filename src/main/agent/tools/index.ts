@@ -21,6 +21,7 @@ import { browserCloseTool } from "./browser/close"
 import { browserHandoffTool } from "./browser/handoff"
 import { webSearchTool } from "./web/search"
 import { webFetchTool } from "./web/fetch"
+import { spawnSubagentTool } from "./spawn_subagent"
 
 // Workspace-gated tools — offered only when the agent has a workspace (they
 // touch the filesystem). Add a new filesystem tool by importing it and listing
@@ -48,6 +49,10 @@ const otherTools: Tool[] = [
   // toolDefinitions; dispatchable via runTool.
   writePlanTool,
   presentPlanTool,
+  // spawn_subagent: offered by runChat only when the running custom agent is
+  // permitted to spawn (agent tool category + children present). Not in
+  // toolDefinitions; dispatchable via runTool.
+  spawnSubagentTool,
 ]
 
 // Browser tools — offered when the conversation has an agent browser available,

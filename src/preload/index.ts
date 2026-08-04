@@ -110,6 +110,14 @@ export type SkillSummary = {
   description: string
 }
 
+// A custom agent as surfaced to the composer's agent picker — just what the
+// dropdown needs to display and match on. The full definition (body, tools,
+// skills, children) stays in the main process and is resolved per turn.
+export type AgentSummary = {
+  name: string
+  description: string
+}
+
 // The typed API exposed to the renderer as `window.cowork`.
 // This is the ONLY surface the UI can use to reach the main process.
 const api = {
@@ -275,6 +283,12 @@ const api = {
     write: (filePath: string, content: string) =>
       ipcRenderer.invoke("skills:write", filePath, content) as Promise<void>,
   },
+  // List the user-invocable custom agents (name + description) for the composer's
+  // agent picker. Pass the active workspace so workspace-level agents are included.
+  agents: {
+    list: (workspace?: string) =>
+      ipcRenderer.invoke("agents:list", workspace) as Promise<AgentSummary[]>,
+  },
   // List workspace files for the composer's `@`-mention menu, filtered by the
   // typed query (server-side). Returns workspace-relative POSIX paths, capped.
   // Resolves [] when there's no workspace (Chat mode).
@@ -414,6 +428,7 @@ const api = {
         title?: string | null
         accountId?: string | null
         modelId?: string | null
+        agentName?: string | null
       }) =>
         ipcRenderer.invoke(
           "db:conversations:create",
@@ -436,6 +451,7 @@ const api = {
           projectId?: string | null
           accountId?: string | null
           modelId?: string | null
+          agentName?: string | null
         }
       ) =>
         ipcRenderer.invoke(

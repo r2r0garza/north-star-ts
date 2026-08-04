@@ -72,6 +72,10 @@ export interface Conversation {
   // model's gateway id string (not the models.id row id).
   accountId: string | null
   modelId: string | null
+  // The custom agent selected for this conversation (SCHEMA_V13), by name — the
+  // on-disk identifier of a `<name>.agent.md` definition. Null = the built-in
+  // main agent (default behavior). Re-resolved from disk per turn.
+  agentName: string | null
   createdAt: number
   updatedAt: number
 }

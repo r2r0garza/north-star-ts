@@ -45,6 +45,9 @@ export type {
   SkillTree,
 } from "../../preload/index"
 
+// Custom agent summary for the composer's agent picker.
+export type { AgentSummary } from "../../preload/index"
+
 // Settings types, surfaced for the Settings pane.
 export type {
   ExecutionSettings,

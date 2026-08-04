@@ -35,6 +35,18 @@ export type EnqueueTask = (input: EnqueueTaskInput) => {
   status: string
 }
 
+// Spawn a custom agent as a subagent and BLOCK for its final answer. Unlike
+// EnqueueTask (fire-and-forget durable task), this runs a nested agent loop
+// inline and resolves with the child's result, so the parent can use the answer.
+// Passed via ToolContext (not imported) for the same cycle-avoidance as
+// EnqueueTask: the concrete implementation lives in the agent module and calls
+// runAgentLoop. Absent where spawning isn't wired (e.g. unit tests) — the
+// spawn_subagent tool then reports it's unavailable.
+export type SpawnSubagent = (input: {
+  agentName: string
+  prompt: string
+}) => Promise<{ content?: string; error?: string; stopped?: boolean }>
+
 // --- ask_user_question ---
 // The model asks the user one or more clarifying questions, each with preset
 // options; the UI always appends a free-form "Other" choice. These types are
@@ -129,6 +141,23 @@ export interface ToolContext {
   // user picks "Yes, approve and work in Auto mode". Absent where auto mode
   // isn't in play.
   setAutoMode?: (on: boolean) => void
+  // --- Subagent spawning (custom-agent fleet) ---
+  // Spawn a permitted child agent and block for its answer (see spawn_subagent).
+  // Set by the agent loop only when the running agent may spawn; absent otherwise.
+  spawnSubagent?: SpawnSubagent
+  // Which agents the RUNNING agent may spawn (its resolved `children` tri-state):
+  //   undefined → may not spawn any (spawn_subagent isn't offered)
+  //   []        → may spawn any loadable agent
+  //   [names]   → may spawn only these
+  // The spawn tool re-checks this as the authorization gate (no approval prompt).
+  agentChildren?: string[]
+  // Subagent-tree depth of THIS run (0 at the top level). The spawn tool rejects
+  // a spawn once this reaches MAX_AGENT_DEPTH.
+  agentDepth?: number
+  // Names of the agents from the tree root down to (not including) this run's own
+  // agent. The spawn tool rejects spawning any name already in this chain (cycle
+  // guard); the spawn helper appends the child's name when recursing.
+  agentAncestors?: string[]
 }
 
 // A tool the agent can call. `definition` is the OpenAI-compatible schema

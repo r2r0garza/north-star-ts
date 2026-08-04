@@ -71,6 +71,9 @@ export function registerDbHandlers(
         workspaceId?: string | null
         projectId?: string | null
         title?: string | null
+        accountId?: string | null
+        modelId?: string | null
+        agentName?: string | null
       }
     ) => {
       const conversation = conversations.createConversation(input)
@@ -94,6 +97,9 @@ export function registerDbHandlers(
         title?: string | null
         workspaceId?: string | null
         projectId?: string | null
+        accountId?: string | null
+        modelId?: string | null
+        agentName?: string | null
       }
     ) => {
       const conversation = conversations.updateConversation(id, patch)

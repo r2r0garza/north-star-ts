@@ -24,6 +24,8 @@ import {
   userSkillsDir,
 } from "./agent/skills/sources"
 import { loadSkills, listSource } from "./agent/skills/loader"
+import { agentSources } from "./agent/agents/sources"
+import { loadAgents } from "./agent/agents/loader"
 import type {
   SkillSourceRow,
   SkillSourceKind,
@@ -289,6 +291,17 @@ ipcMain.handle("pick-files", () => pickFiles())
 ipcMain.handle("skills:list", async (_event, workspace?: string) => {
   const skills = await loadSkills(skillSources(workspace))
   return skills.map(({ name, description }) => ({ name, description }))
+})
+
+// List the USER-INVOCABLE custom agents (name + description) for the composer's
+// agent picker. Resolves the same source dirs the agent loop uses at turn time,
+// so the dropdown shows exactly the agents a user may select. Non-invocable
+// agents are excluded here (they're only reachable as another agent's child).
+ipcMain.handle("agents:list", async (_event, workspace?: string) => {
+  const agents = await loadAgents(agentSources(workspace))
+  return agents
+    .filter((a) => a.userInvocable)
+    .map(({ name, description }) => ({ name, description }))
 })
 // The kind-tagged skill-source dirs for a workspace, in load order. Shared by
 // skills:sources (counts), skills:catalog (full skills), and skills:write (path

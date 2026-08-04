@@ -411,3 +411,16 @@ CREATE TABLE projects (
 ALTER TABLE conversations ADD COLUMN project_id TEXT
   REFERENCES projects(id) ON DELETE SET NULL;
 `
+
+// v13: custom agents — a conversation can select a user-defined agent (a
+// "fleet" member) whose definition lives in a `<name>.agent.md` file on disk
+// (discovered under ~/.<system>/agents, <workspace>/.github/agents, and
+// <workspace>/.<system>/agents). The selected agent's markdown body is prepended
+// to the mode system prompt, and its frontmatter narrows the tools/skills the
+// turn is offered. Stored by NAME (not an id/FK) because agent definitions are
+// files on disk, not DB rows — the name is the on-disk identifier and is
+// re-resolved per turn. Nullable: existing rows read NULL and run the built-in
+// main agent exactly as before, so the migration is backward compatible.
+export const SCHEMA_V13 = `
+ALTER TABLE conversations ADD COLUMN agent_name TEXT;
+`
