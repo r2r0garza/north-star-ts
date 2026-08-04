@@ -5,6 +5,8 @@ import {
   ChevronRight,
   FolderPlus,
   MoreHorizontal,
+  Pin,
+  PinOff,
   Plus,
   Settings,
 } from "lucide-react"
@@ -90,6 +92,7 @@ function SessionRow({
   onRename,
   onDelete,
   onMoveToProject,
+  onTogglePin,
 }: {
   conversation: Conversation
   isActive: boolean
@@ -107,6 +110,8 @@ function SessionRow({
   onDelete: () => void
   // Move the conversation to a project, or null to remove it from its project.
   onMoveToProject: (projectId: string | null) => void
+  // Toggle this conversation's pinned state (floats it to the top of its group).
+  onTogglePin: () => void
 }) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(conversation.title ?? "")
@@ -162,6 +167,10 @@ function SessionRow({
             onClick={onSelect}
             title={conversation.title ?? "Untitled"}
           >
+            {conversation.pinned && (
+              // At-a-glance marker for pinned conversations, left of the title.
+              <Pin className="size-3 shrink-0 text-muted-foreground" />
+            )}
             <span className="truncate">{conversation.title ?? "Untitled"}</span>
             {isWaiting ? (
               // Needs-you indicator — takes precedence over the spinner. Amber +
@@ -178,6 +187,19 @@ function SessionRow({
           </SidebarMenuButton>
         </ContextMenuTrigger>
         <ContextMenuContent>
+          <ContextMenuItem onSelect={onTogglePin}>
+            {conversation.pinned ? (
+              <>
+                <PinOff />
+                Unpin
+              </>
+            ) : (
+              <>
+                <Pin />
+                Pin
+              </>
+            )}
+          </ContextMenuItem>
           <ContextMenuItem onSelect={startRename}>Rename</ContextMenuItem>
           {conversation.projectId ? (
             <ContextMenuItem onSelect={() => onMoveToProject(null)}>
@@ -226,6 +248,7 @@ function ProjectSection({
   onRenameConversation,
   onDeleteConversation,
   onMoveToProject,
+  onTogglePin,
   onEditProject,
   onDeleteProject,
 }: {
@@ -249,6 +272,7 @@ function ProjectSection({
   onRenameConversation: (id: string, title: string) => void
   onDeleteConversation: (conversation: Conversation) => void
   onMoveToProject: (id: string, projectId: string | null) => void
+  onTogglePin: (id: string) => void
   onEditProject?: () => void
   onDeleteProject?: () => void
 }) {
@@ -321,6 +345,7 @@ function ProjectSection({
                   onMoveToProject={(projectId) =>
                     onMoveToProject(c.id, projectId)
                   }
+                  onTogglePin={() => onTogglePin(c.id)}
                 />
               ))}
             </SidebarMenu>
@@ -428,6 +453,13 @@ export function AppSidebar({
     if (list) list.push(c)
     else byProject.set(key, [c])
   }
+  // Float pinned conversations to the top of each group. Stable: V8's sort is
+  // stable and both partitions already arrive in updated_at DESC order, so this
+  // only lifts pinned above unpinned while preserving recency within each side
+  // (pinning is recency-preserving; manual reordering is a future follow-up).
+  for (const list of byProject.values()) {
+    list.sort((a, b) => Number(b.pinned) - Number(a.pinned))
+  }
   const noProjectItems = byProject.get(null) ?? []
 
   // A project can host new conversations in the active view when it's Chat (no
@@ -449,6 +481,18 @@ export function AppSidebar({
       prev.map((c) => (c.id === id ? { ...c, title } : c))
     )
     await window.cowork.db.conversations.update(id, { title })
+  }
+
+  // Pin or unpin a conversation. Optimistic flip, then persist via the dedicated
+  // setPinned channel (which leaves updated_at untouched so unpinning restores
+  // natural recency). Grouping + the pinned-first sort derive from `conversations`
+  // state each render, so flipping the flag re-renders the row into place.
+  async function togglePin(id: string) {
+    const next = !(conversations.find((c) => c.id === id)?.pinned ?? false)
+    setConversations((prev) =>
+      prev.map((c) => (c.id === id ? { ...c, pinned: next } : c))
+    )
+    await window.cowork.db.conversations.setPinned(id, next)
   }
 
   // Projects a conversation can be added to: any project it isn't already in,
@@ -635,6 +679,7 @@ export function AppSidebar({
             onRenameConversation={renameConversation}
             onDeleteConversation={setPendingDelete}
             onMoveToProject={moveConversationToProject}
+            onTogglePin={togglePin}
             onEditProject={() => openEditProject(p)}
             onDeleteProject={() => setPendingProjectDelete(p)}
           />
@@ -654,6 +699,7 @@ export function AppSidebar({
           onRenameConversation={renameConversation}
           onDeleteConversation={setPendingDelete}
           onMoveToProject={moveConversationToProject}
+          onTogglePin={togglePin}
         />
       </SidebarContent>
       <SidebarFooter className="p-2">

@@ -76,6 +76,10 @@ export interface Conversation {
   // on-disk identifier of a `<name>.agent.md` definition. Null = the built-in
   // main agent (default behavior). Re-resolved from disk per turn.
   agentName: string | null
+  // Whether this conversation is pinned to the top of its sidebar group
+  // (SCHEMA_V14). Pinning does NOT touch updated_at, so unpinning restores the
+  // conversation's natural recency position.
+  pinned: boolean
   createdAt: number
   updatedAt: number
 }

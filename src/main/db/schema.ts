@@ -424,3 +424,13 @@ ALTER TABLE conversations ADD COLUMN project_id TEXT
 export const SCHEMA_V13 = `
 ALTER TABLE conversations ADD COLUMN agent_name TEXT;
 `
+
+// v14: pinned conversations — a conversation can be pinned to float to the top of
+// its group in the sidebar (its project's section, or the ungrouped "No Project"
+// bucket). SQLite has no boolean; 0 = unpinned, 1 = pinned. NOT NULL DEFAULT 0 so
+// existing rows read as unpinned and keep their natural recency order — backward
+// compatible. Ordering among pinned items stays recency-preserving (sorted in the
+// renderer), so no ordering column is needed here.
+export const SCHEMA_V14 = `
+ALTER TABLE conversations ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0;
+`

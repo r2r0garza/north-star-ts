@@ -459,6 +459,15 @@ const api = {
           id,
           patch
         ) as Promise<Conversation>,
+      // Pin/unpin a conversation. Separate from `update` because it deliberately
+      // does not bump updated_at (see the main handler / repo), so unpinning
+      // restores the conversation's natural recency position.
+      setPinned: (id: string, pinned: boolean) =>
+        ipcRenderer.invoke(
+          "db:conversations:setPinned",
+          id,
+          pinned
+        ) as Promise<Conversation>,
       delete: (id: string) =>
         ipcRenderer.invoke("db:conversations:delete", id) as Promise<void>,
     },

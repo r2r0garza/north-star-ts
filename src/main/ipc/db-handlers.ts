@@ -107,6 +107,14 @@ export function registerDbHandlers(
       return conversation
     }
   )
+  // Pin/unpin: a dedicated channel (not the generic update) so it can leave
+  // updated_at untouched — the update path always bumps recency, which would
+  // break "unpin returns to natural position."
+  ipcMain.handle(
+    "db:conversations:setPinned",
+    (_e, id: string, pinned: boolean) =>
+      conversations.setConversationPinned(id, pinned)
+  )
   ipcMain.handle("db:conversations:delete", (_e, id: string) => {
     // Close the conversation's browser tab (if any) so a deleted conversation
     // doesn't leave an orphaned tab/renderer behind.

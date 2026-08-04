@@ -11,6 +11,7 @@ interface ConversationRow {
   account_id: string | null
   model_id: string | null
   agent_name: string | null
+  pinned: number
   created_at: number
   updated_at: number
 }
@@ -25,6 +26,7 @@ function toConversation(row: ConversationRow): Conversation {
     accountId: row.account_id,
     modelId: row.model_id,
     agentName: row.agent_name,
+    pinned: row.pinned === 1,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   }
@@ -134,6 +136,20 @@ export function updateConversation(
       .prepare(`UPDATE conversations SET ${sets.join(", ")} WHERE id = ?`)
       .run(...values)
   }
+  return getConversation(id)!
+}
+
+// Pin or unpin a conversation. Deliberately updates ONLY the `pinned` column and
+// leaves `updated_at` untouched — unlike updateConversation, which bumps recency
+// on every write. That's the whole point: unpinning must return the conversation
+// to its natural recency position, which a bumped updated_at would destroy.
+export function setConversationPinned(
+  id: string,
+  pinned: boolean
+): Conversation {
+  getDb()
+    .prepare("UPDATE conversations SET pinned = ? WHERE id = ?")
+    .run(pinned ? 1 : 0, id)
   return getConversation(id)!
 }
 
