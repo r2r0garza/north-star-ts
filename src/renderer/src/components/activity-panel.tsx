@@ -5,7 +5,10 @@ import {
   RotateCw,
   ExternalLink,
   SquareDashedMousePointer,
+  Sun,
+  Moon,
 } from "lucide-react"
+import { useTheme } from "next-themes"
 import { cn } from "@/lib/utils"
 import {
   SidebarHeader,
@@ -143,7 +146,8 @@ export function SidebarModeToggle({
   onModeChange: (mode: SidebarMode) => void
 }) {
   return (
-    <div className="absolute top-2 right-14 z-10 [-webkit-app-region:no-drag]">
+    <div className="absolute top-2 right-14 z-10 flex items-center gap-1 [-webkit-app-region:no-drag]">
+      <ThemeToggle />
       <Select value={mode} onValueChange={(v) => onModeChange(v as SidebarMode)}>
         <SelectTrigger size="sm" className="h-7">
           <SelectValue />
@@ -155,6 +159,36 @@ export function SidebarModeToggle({
         </SelectContent>
       </Select>
     </div>
+  )
+}
+
+// Light/dark toggle living just left of the mode dropdown in the drag bar.
+// Backed by next-themes (persists to localStorage, mirrors the "d" hotkey in
+// ThemeProvider). Flips between explicit light/dark off the resolved theme, so
+// the first click always does the visually-obvious thing even from "system".
+// Renders nothing until mounted to avoid an SSR/hydration icon flash.
+function ThemeToggle() {
+  const { resolvedTheme, setTheme } = useTheme()
+  const [mounted, setMounted] = React.useState(false)
+  React.useEffect(() => setMounted(true), [])
+  const isDark = resolvedTheme === "dark"
+  return (
+    <button
+      type="button"
+      onClick={() => setTheme(isDark ? "light" : "dark")}
+      aria-label={isDark ? "Switch to light mode" : "Switch to dark mode"}
+      title={isDark ? "Switch to light mode" : "Switch to dark mode"}
+      className={cn(
+        "flex size-7 items-center justify-center rounded-md",
+        "text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+      )}
+    >
+      {mounted && isDark ? (
+        <Sun className="size-4" />
+      ) : (
+        <Moon className="size-4" />
+      )}
+    </button>
   )
 }
 

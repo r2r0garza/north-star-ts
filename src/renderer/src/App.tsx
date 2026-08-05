@@ -1315,65 +1315,102 @@ export default function App({
   )
 
   // Custom agent picker. Only shown when the user has at least one invocable
-  // agent on disk (~/.cowork/agents or the workspace agent dirs). "Default (no
-  // agent)" clears the selection to run the built-in main agent. Compact
-  // (icon-only) when the right panel squeezes the toolbar, mirroring the model
-  // picker. The selected agent's system prompt is prepended to ours per turn.
+  // agent on disk (~/.cowork/agents or the workspace agent dirs). A type-to-filter
+  // combobox mirroring the model picker: a flat item list where value "" is the
+  // "Default (no agent)" entry (clears the selection → built-in main agent) and
+  // each other item is an agent (filtered by name). Compact (icon-only) when the
+  // right panel squeezes the toolbar. The selected agent's prompt is prepended
+  // to ours per turn.
+  const agentItems: { value: string; label: string; description?: string }[] = [
+    { value: "", label: "Default (no agent)" },
+    ...agents.map((a) => ({
+      value: a.name,
+      label: a.name,
+      description: a.description,
+    })),
+  ]
+  const selectedAgentItem =
+    agentItems.find((it) => it.value === (selAgentName ?? "")) ?? null
+  const renderAgentItem = (item: {
+    value: string
+    label: string
+    description?: string
+  }) => (
+    <ComboboxItem key={item.value || "__default__"} value={item}>
+      <span className="flex flex-col gap-0.5">
+        <span>{item.label}</span>
+        {item.description && (
+          <span className="line-clamp-2 text-[10px] text-muted-foreground">
+            {item.description}
+          </span>
+        )}
+      </span>
+    </ComboboxItem>
+  )
+  const onAgentValueChange = (item: { value: string } | null) => {
+    if (!item) return
+    void selectAgent(item.value || null)
+  }
   const agentPicker =
     agents.length > 0 ? (
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <button
-            type="button"
-            aria-label={
-              selAgentName ? `Agent: ${selAgentName}` : "Agent: default"
-            }
-            title={
-              selAgentName
-                ? `Custom agent: ${selAgentName}`
-                : "No custom agent — using the default agent"
-            }
-            className={cn(
-              "flex h-7 max-w-52 items-center gap-1 rounded-md px-2 text-xs transition-colors",
-              selAgentName
-                ? "bg-accent text-foreground"
-                : "text-muted-foreground hover:bg-accent hover:text-foreground"
+      <Combobox
+        items={agentItems}
+        value={selectedAgentItem}
+        isItemEqualToValue={(a, b) => a?.value === b?.value}
+        onValueChange={onAgentValueChange}
+      >
+        <ComboboxTrigger
+          className={cn(
+            "flex h-7 max-w-52 items-center gap-1 rounded-md px-2 text-xs transition-colors",
+            selAgentName
+              ? "bg-accent text-foreground"
+              : "text-muted-foreground hover:bg-accent hover:text-foreground"
+          )}
+        >
+          <Bot className="size-4 shrink-0" />
+          <ComboboxValue placeholder="Agent">
+            {(value: { value: string; label: string } | null) => (
+              <span className="truncate">
+                {value && value.value ? value.label : "Agent"}
+              </span>
             )}
-          >
-            <Bot className="size-4 shrink-0" />
-            {!rightPanelOpen && (
-              <span className="truncate">{selAgentName ?? "Agent"}</span>
-            )}
-            <ChevronDown className="size-3 shrink-0 opacity-60" />
-          </button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="start" className="min-w-44 max-w-72">
-          <DropdownMenuItem
-            onClick={() => void selectAgent(null)}
-            className={cn(!selAgentName && "bg-accent font-medium")}
-          >
-            Default (no agent)
-          </DropdownMenuItem>
-          {agents.map((a) => (
-            <DropdownMenuItem
-              key={a.name}
-              onClick={() => void selectAgent(a.name)}
-              title={a.description}
-              className={cn(
-                "flex-col items-start gap-0.5",
-                selAgentName === a.name && "bg-accent font-medium"
-              )}
-            >
-              <span>{a.name}</span>
-              {a.description && (
-                <span className="line-clamp-2 text-[10px] font-normal text-muted-foreground">
-                  {a.description}
-                </span>
-              )}
-            </DropdownMenuItem>
-          ))}
-        </DropdownMenuContent>
-      </DropdownMenu>
+          </ComboboxValue>
+        </ComboboxTrigger>
+        <ComboboxContent className="w-72 min-w-72">
+          <ComboboxInput placeholder="Search agents…" showTrigger={false} />
+          <ComboboxEmpty>No agents found.</ComboboxEmpty>
+          <ComboboxList>{renderAgentItem}</ComboboxList>
+        </ComboboxContent>
+      </Combobox>
+    ) : null
+
+  // Icon-only agent picker shown when the right panel is open (squeezes the
+  // toolbar). Same Combobox; renders only the Bot icon, selected agent as tooltip.
+  const agentPickerCompact =
+    agents.length > 0 ? (
+      <Combobox
+        items={agentItems}
+        value={selectedAgentItem}
+        isItemEqualToValue={(a, b) => a?.value === b?.value}
+        onValueChange={onAgentValueChange}
+      >
+        <ComboboxTrigger
+          title={selAgentName ? `Agent: ${selAgentName}` : "Select agent"}
+          className={cn(
+            "flex h-7 items-center rounded-md px-2 transition-colors",
+            selAgentName
+              ? "bg-accent text-foreground"
+              : "text-muted-foreground hover:bg-accent hover:text-foreground"
+          )}
+        >
+          <Bot className="size-4" />
+        </ComboboxTrigger>
+        <ComboboxContent className="w-72 min-w-72">
+          <ComboboxInput placeholder="Search agents…" showTrigger={false} />
+          <ComboboxEmpty>No agents found.</ComboboxEmpty>
+          <ComboboxList>{renderAgentItem}</ComboboxList>
+        </ComboboxContent>
+      </Combobox>
     ) : null
 
   // The composer (attachment chips + input box). Rendered both centered and
@@ -1540,7 +1577,8 @@ export default function App({
             )}
             {!rightPanelOpen && modelPicker}
             {rightPanelOpen && modelPickerCompact}
-            {agentPicker}
+            {!rightPanelOpen && agentPicker}
+            {rightPanelOpen && agentPickerCompact}
             {/* Agent mode dropdown. Session-only. "Default" = normal; "Plan" =
                 read-only planning turn until approved; "Auto" = all gated
                 actions auto-approved. Chat offers only Default/Auto — plan mode
@@ -1687,7 +1725,11 @@ export default function App({
   }
 
   return (
-    <div className="relative flex h-svh w-full flex-col overflow-hidden">
+    // pt-11 clears the Shell's floating top drag bar (h-11, holding the
+    // Info/Browser/Changes toggle): the scroll region starts BELOW it, so
+    // messages scrolling up are clipped at the bar's edge instead of passing
+    // under it. The composer sits inside this column, so it's unaffected.
+    <div className="relative flex h-svh w-full flex-col overflow-hidden pt-11">
       {/* Conversation — MessageScroller handles auto-follow + scroll-to-bottom.
           The window drag bar lives in Shell, above this column. */}
       <MessageScrollerProvider autoScroll defaultScrollPosition="last-anchor">
