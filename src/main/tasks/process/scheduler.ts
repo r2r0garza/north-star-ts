@@ -3,7 +3,11 @@ import {
   createApproval,
   listApprovals,
 } from "../../db/repositories/approvals"
-import { createCheckpoint } from "../../db/repositories/task-checkpoints"
+import {
+  createCheckpoint,
+  listCheckpoints,
+} from "../../db/repositories/task-checkpoints"
+import { getDb } from "../../db/connection"
 import * as processes from "../../db/repositories/processes"
 import type { TaskEventPayload } from "../runner"
 import type {
@@ -30,6 +34,13 @@ export const PER_RUN_CONCURRENCY = 4
 // Bounded retry for a phase whose worker returns a transient (retryable) error.
 const MAX_PHASE_ATTEMPTS = 3
 
+// The checkpoint label prefix for a fan-out parent's persisted sub-task prompts
+// (plan 025.1). One row per parent phase-run, written atomically with the child
+// rows so a crash can't leave prompt-less children. Recovered on resume so
+// children re-dispatch with their original briefing.
+const FANOUT_CHECKPOINT_LABEL = (parentRunId: string): string =>
+  `fanout:${parentRunId}`
+
 // Thrown to unwind the scheduler when an `approve` gate blocks the run. The
 // service maps it to { paused: true } so the process_run task settles `paused`
 // (a durable resume state) and frees its runner slot while awaiting approval.
@@ -49,12 +60,31 @@ export interface PhaseResult {
 }
 
 // Runs one phase to completion in its own worker. Injected so tests can stub it.
+// For a fan-out CHILD, `subtaskPrompt` carries the decomposed briefing; for a
+// normal phase it's absent (the service builds the generic kickoff).
 export type RunPhase = (input: {
   phaseRun: ProcessPhaseRun
   phase: ProcessPhase
+  subtaskPrompt?: string
   // Chained to the run's abort signal by the caller.
   signal: AbortSignal
 }) => Promise<PhaseResult>
+
+// The outcome of a fan-out phase's decomposition pass: a list of sub-task
+// briefings, or an error/stop like a normal phase (plan 025.1).
+export interface DecomposeResult {
+  subtasks?: string[]
+  error?: string
+  stopped?: boolean
+  retryable?: boolean
+}
+
+// Runs a fan-out phase's decomposition worker. Injected so tests can stub it.
+export type Decompose = (input: {
+  phaseRun: ProcessPhaseRun
+  phase: ProcessPhase
+  signal: AbortSignal
+}) => Promise<DecomposeResult>
 
 export interface SchedulerCtx {
   run: ProcessRun
@@ -64,6 +94,15 @@ export interface SchedulerCtx {
   signal: AbortSignal
   emit: (event: TaskEventPayload) => void
   runPhase: RunPhase
+  // Fan-out decomposition (plan 025.1). Optional so a graph with no fan-out
+  // phases needs no decomposer; a fan-out phase with no decomposer fails loudly.
+  decompose?: Decompose
+}
+
+// The state persisted in a fan-out parent's checkpoint (plan 025.1).
+interface FanoutCheckpointState {
+  parentPhaseRunId: string
+  subtasks: Array<{ phaseRunId: string; prompt: string }>
 }
 
 // A gate's durable approval request blob (stored on the approvals row).
@@ -94,13 +133,35 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
     }
   }
 
-  // A phase left `running`/`ready` by a crash is reset to `pending` so it
-  // re-dispatches (its partial worker transcript is orphaned, harmless). Done
-  // once, up front, before the loop derives the ready-set.
-  for (const pr of processes.listPhaseRuns({ runId: run.id, parentId: null })) {
-    if (pr.status === "running" || pr.status === "ready") {
-      processes.updatePhaseRun(pr.id, { status: "pending" })
+  // Recover any fan-out sub-task prompts persisted by a prior run BEFORE the
+  // reset, so we know which fan-out parents already decomposed (plan 025.1).
+  // createCheckpoint only ever INSERTs, so a re-decomposed parent can have >1 row
+  // per label — take the LATEST (listCheckpoints returns created_at ASC).
+  const childPrompts = new Map<string, string>() // childRunId → sub-task prompt
+  const decomposedParents = new Set<string>() // parent phase-run ids seen fanned
+  for (const cp of listCheckpoints(ctx.taskId)) {
+    if (!cp.label?.startsWith("fanout:")) continue
+    const state = cp.state as FanoutCheckpointState
+    if (!state?.parentPhaseRunId) continue
+    decomposedParents.add(state.parentPhaseRunId)
+    // Later rows overwrite earlier ones for the same child (ASC order → latest wins).
+    for (const st of state.subtasks ?? []) childPrompts.set(st.phaseRunId, st.prompt)
+  }
+
+  // Reset crash-orphaned rows to `pending` so they re-dispatch. Widened for
+  // fan-out (plan 025.1): children reset too; a fan-out parent WITH children is
+  // left `running` (its completion is derived from the children each iteration);
+  // a fan-out parent with NO children resets to `pending` to re-decompose.
+  for (const pr of processes.listPhaseRuns({ runId: run.id })) {
+    if (pr.status !== "running" && pr.status !== "ready") continue
+    const phase = phasesById.get(pr.phaseId)
+    const isFanoutParent =
+      pr.parentId === null && phase?.fanOut === true
+    if (isFanoutParent) {
+      const children = processes.listPhaseRuns({ runId: run.id, parentId: pr.id })
+      if (children.length > 0) continue // derivation resumes it; leave `running`
     }
+    processes.updatePhaseRun(pr.id, { status: "pending" })
   }
 
   // In-flight phase workers, keyed by phaseRunId → the settle promise. Each
@@ -199,6 +260,8 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
     })
   }
 
+  // Dispatch a normal top-level phase (parentId IS NULL). Keyed in inFlight by
+  // the phase's own top-level run id (via runByPhaseId).
   const dispatch = (phase: ProcessPhase): void => {
     const pr = runByPhaseId.get(phase.id)!
     processes.updatePhaseRun(pr.id, {
@@ -212,14 +275,182 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
       phaseKey: phase.key,
       agentName: pr.agentName,
       status: "running",
+      parentId: pr.parentId,
     })
     const promise = runPhaseWithRetry(phase, pr).then(() => pr.id)
     inFlight.set(pr.id, promise)
   }
 
+  // Dispatch a fan-out CHILD (plan 025.1). Keyed by the child's OWN run id — must
+  // NOT go through dispatch()/runByPhaseId, which resolve to the parent (children
+  // share the parent's phaseId). The child runs its stored sub-task briefing.
+  const dispatchChild = (childRun: ProcessPhaseRun): void => {
+    const phase = phasesById.get(childRun.phaseId)
+    if (!phase) return
+    processes.updatePhaseRun(childRun.id, {
+      status: "running",
+      startedAt: Date.now(),
+    })
+    ctx.emit({
+      type: "process_phase",
+      runId: run.id,
+      phaseRunId: childRun.id,
+      phaseKey: phase.key,
+      agentName: childRun.agentName,
+      status: "running",
+      parentId: childRun.parentId,
+    })
+    const prompt = childPrompts.get(childRun.id)
+    const promise = runPhaseWithRetry(phase, childRun, prompt).then(
+      () => childRun.id
+    )
+    inFlight.set(childRun.id, promise)
+  }
+
+  // Run a fan-out phase's DECOMPOSITION pass (plan 025.1): set the parent
+  // `running`, run the injected decomposer, and on success atomically create one
+  // pending child per sub-task + persist their prompts (so a crash can't orphan
+  // prompt-less children). The parent stays `running`; its completion is derived
+  // from the children each iteration. Keyed in inFlight by the parent's run id.
+  const dispatchDecompose = (phase: ProcessPhase): void => {
+    const pr = runByPhaseId.get(phase.id)!
+    processes.updatePhaseRun(pr.id, {
+      status: "running",
+      startedAt: Date.now(),
+    })
+    ctx.emit({
+      type: "process_phase",
+      runId: run.id,
+      phaseRunId: pr.id,
+      phaseKey: phase.key,
+      agentName: pr.agentName,
+      status: "running",
+      parentId: pr.parentId,
+    })
+    const promise = runDecomposeWithRetry(phase, pr).then(() => pr.id)
+    inFlight.set(pr.id, promise)
+  }
+
+  // Create N child phase-runs + persist their sub-task prompts in ONE transaction
+  // so a crash between the two can't leave prompt-less children. Populates the
+  // in-memory childPrompts map only AFTER the transaction commits.
+  const createChildrenAtomic = (
+    parentRun: ProcessPhaseRun,
+    subtasks: string[]
+  ): void => {
+    let created: Array<{ phaseRunId: string; prompt: string }> = []
+    const tx = getDb().transaction(() => {
+      created = subtasks.map((prompt) => {
+        const child = processes.createPhaseRun({
+          runId: run.id,
+          phaseId: parentRun.phaseId,
+          parentId: parentRun.id,
+          status: "pending",
+        })
+        return { phaseRunId: child.id, prompt }
+      })
+      createCheckpoint({
+        taskId: ctx.taskId,
+        label: FANOUT_CHECKPOINT_LABEL(parentRun.id),
+        state: {
+          parentPhaseRunId: parentRun.id,
+          subtasks: created,
+        } satisfies FanoutCheckpointState,
+      })
+    })
+    tx()
+    for (const c of created) childPrompts.set(c.phaseRunId, c.prompt)
+  }
+
+  const runDecomposeWithRetry = async (
+    phase: ProcessPhase,
+    parentRun: ProcessPhaseRun
+  ): Promise<void> => {
+    if (!ctx.decompose) {
+      processes.updatePhaseRun(parentRun.id, {
+        status: "failed",
+        error: "fan-out phase has no decomposer configured",
+        finishedAt: Date.now(),
+      })
+      emitPhase(phase, parentRun.id, "failed")
+      return
+    }
+    let attempt = 0
+    while (true) {
+      attempt++
+      const result = await ctx.decompose({
+        phaseRun: parentRun,
+        phase,
+        signal: ctx.signal,
+      })
+      if (result.stopped || ctx.signal.aborted) {
+        processes.updatePhaseRun(parentRun.id, {
+          status: "cancelled",
+          finishedAt: Date.now(),
+        })
+        emitPhase(phase, parentRun.id, "cancelled")
+        return
+      }
+      const subtasks = result.subtasks ?? []
+      if (result.error || subtasks.length === 0) {
+        const err = result.error ?? "fan-out produced no sub-tasks"
+        if (result.retryable && attempt < MAX_PHASE_ATTEMPTS) {
+          processes.updatePhaseRun(parentRun.id, { iteration: attempt })
+          continue
+        }
+        processes.updatePhaseRun(parentRun.id, {
+          status: "failed",
+          error: err,
+          finishedAt: Date.now(),
+          iteration: attempt,
+        })
+        emitPhase(phase, parentRun.id, "failed")
+        return
+      }
+      // Success: spawn children. The parent stays `running` — deriveFanoutParents
+      // settles it once every child is terminal.
+      createChildrenAtomic(parentRun, subtasks)
+      processes.updatePhaseRun(parentRun.id, { iteration: attempt })
+      return
+    }
+  }
+
+  // Settle a `running` fan-out parent once all its children are terminal (plan
+  // 025.1). R1 guard: only derive when children EXIST — a parent whose decompose
+  // promise is still in flight has zero children, and an empty `.every()` would
+  // vacuously settle it, orphaning the children about to be created.
+  const deriveFanoutParents = (): void => {
+    for (const phase of graph.phases) {
+      if (!phase.fanOut) continue
+      const pr = runByPhaseId.get(phase.id)!
+      if (processes.getPhaseRun(pr.id)?.status !== "running") continue
+      const children = processes.listPhaseRuns({
+        runId: run.id,
+        parentId: pr.id,
+      })
+      if (children.length === 0) continue // not yet decomposed — R1 guard
+      const isTerminal = (s: string): boolean =>
+        ["completed", "failed", "cancelled", "skipped"].includes(s)
+      if (!children.every((c) => isTerminal(c.status))) continue
+      const anyFailed = children.some((c) => c.status === "failed")
+      const anyCancelled = children.some((c) => c.status === "cancelled")
+      const derived = anyFailed
+        ? "failed"
+        : anyCancelled
+          ? "cancelled"
+          : "completed"
+      processes.updatePhaseRun(pr.id, {
+        status: derived,
+        finishedAt: Date.now(),
+      })
+      emitPhase(phase, pr.id, derived)
+    }
+  }
+
   const runPhaseWithRetry = async (
     phase: ProcessPhase,
-    phaseRun: ProcessPhaseRun
+    phaseRun: ProcessPhaseRun,
+    subtaskPrompt?: string
   ): Promise<void> => {
     let attempt = 0
     // Chain a child controller so run-level cancel unwinds the phase worker.
@@ -228,6 +459,7 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
       const result = await ctx.runPhase({
         phaseRun,
         phase,
+        subtaskPrompt,
         signal: ctx.signal,
       })
       const fresh = processes.getPhaseRun(phaseRun.id)!
@@ -277,6 +509,7 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
       phaseKey: phase.key,
       agentName: pr?.agentName ?? null,
       status,
+      parentId: pr?.parentId ?? null,
     })
   }
 
@@ -285,8 +518,28 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
     if (ctx.signal.aborted) {
       // Cancellation: in-flight phase workers observe the same signal and unwind
       // themselves; just stop scheduling. The service maps this to `stopped`.
+      // A fan-out parent's status isn't owned by any in-flight promise (its
+      // decompose already resolved), so settle non-terminal parents to cancelled
+      // here so the DAG isn't left with a dangling `running` parent (plan 025.1).
+      for (const phase of graph.phases) {
+        if (!phase.fanOut) continue
+        const pr = runByPhaseId.get(phase.id)!
+        const status = processes.getPhaseRun(pr.id)?.status
+        if (status === "running" || status === "pending") {
+          processes.updatePhaseRun(pr.id, {
+            status: "cancelled",
+            finishedAt: Date.now(),
+          })
+          emitPhase(phase, pr.id, "cancelled")
+        }
+      }
       return
     }
+
+    // Settle any fan-out parent whose children have all finished BEFORE gates and
+    // the ready-set — a fan-out parent counts as `completed` only via this step,
+    // and its dependents key off that completion (plan 025.1).
+    deriveFanoutParents()
 
     // Raise any pending gate BEFORE computing readiness — a gated completed phase
     // blocks its dependents until approved. raiseGate throws (GateBlockedError).
@@ -307,10 +560,25 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
       })
     })
 
-    // Dispatch ready phases up to the per-run pool budget.
+    // Dispatch ready phases up to the per-run pool budget. A fan-out phase whose
+    // deps are satisfied runs its decomposition pass first (dispatchDecompose);
+    // a normal phase runs directly.
     for (const phase of ready) {
       if (inFlight.size >= PER_RUN_CONCURRENCY) break
-      dispatch(phase)
+      if (phase.fanOut) dispatchDecompose(phase)
+      else dispatch(phase)
+    }
+
+    // Dispatch any pending fan-out CHILD (plan 025.1). Children have no edges —
+    // they're ready by construction once decompose created them — and share the
+    // per-run pool with sibling phases.
+    const pendingChildren = processes
+      .listPhaseRuns({ runId: run.id })
+      .filter((pr) => pr.parentId !== null && pr.status === "pending")
+    for (const child of pendingChildren) {
+      if (inFlight.size >= PER_RUN_CONCURRENCY) break
+      if (inFlight.has(child.id)) continue
+      dispatchChild(child)
     }
 
     if (inFlight.size === 0) {

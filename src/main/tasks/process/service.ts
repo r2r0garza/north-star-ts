@@ -13,10 +13,17 @@ import type {
   ProcessPhaseRun,
   ProcessRun,
 } from "../../db/types"
-import { kickoffPrompt, type UpstreamResult } from "./prompts"
+import {
+  fanOutDecomposePrompt,
+  kickoffPrompt,
+  parseDecomposition,
+  type UpstreamResult,
+} from "./prompts"
 import {
   GateBlockedError,
   runScheduler,
+  type Decompose,
+  type DecomposeResult,
   type PhaseResult,
   type RunPhase,
 } from "./scheduler"
@@ -91,6 +98,7 @@ export class ProcessService {
         signal,
         emit,
         runPhase: this.makeRunPhase(run),
+        decompose: this.makeDecompose(run),
       })
       processes.updateProcessRun(runId, {
         status: "completed",
@@ -125,7 +133,7 @@ export class ProcessService {
   // precedent), and return the outcome. Phases run in AUTO mode — the phase's
   // gate_policy is the human-in-the-loop control point, not per-tool prompts.
   private makeRunPhase(run: ProcessRun): RunPhase {
-    return async ({ phase, phaseRun, signal }) => {
+    return async ({ phase, phaseRun, subtaskPrompt, signal }) => {
       const source = run.sourceConversationId
         ? getConversation(run.sourceConversationId)
         : undefined
@@ -167,11 +175,15 @@ export class ProcessService {
           { once: true }
         )
 
-      const prompt = kickoffPrompt({
-        phase,
-        objective: run.objective ?? "",
-        upstream: this.collectUpstream(run, phase),
-      })
+      // A fan-out CHILD runs its decomposed sub-task briefing verbatim; a normal
+      // phase gets the generic self-contained kickoff (plan 025.1).
+      const prompt =
+        subtaskPrompt ??
+        kickoffPrompt({
+          phase,
+          objective: run.objective ?? "",
+          upstream: this.collectUpstream(run, phase),
+        })
 
       try {
         const result = await runAgentLoop({
@@ -189,6 +201,90 @@ export class ProcessService {
         if (result.error)
           return { error: result.error, retryable: result.retryable }
         return { content: result.content } satisfies PhaseResult
+      } catch (err) {
+        return { error: err instanceof Error ? err.message : String(err) }
+      }
+    }
+  }
+
+  // Build the DECOMPOSITION closure for a run (plan 025.1). A fan-out phase forks
+  // a worker (same shape as makeRunPhase, so it can inspect the workspace), runs
+  // an agent loop asking for a JSON array of sub-task briefings, and parses the
+  // final assistant message. Each briefing becomes a child phase-run.
+  private makeDecompose(run: ProcessRun): Decompose {
+    return async ({ phase, phaseRun, signal }) => {
+      const source = run.sourceConversationId
+        ? getConversation(run.sourceConversationId)
+        : undefined
+      const agentName = this.resolveAgent(phase)
+
+      const worker = createConversation({
+        mode: source?.mode ?? "interactive",
+        workspaceId: source?.workspaceId ?? null,
+        accountId: source?.accountId ?? null,
+        modelId: source?.modelId ?? null,
+        agentName,
+        title: `${phase.name} (decompose)${agentName ? `: ${agentName}` : ""}`,
+      })
+      const workerTask = createTask({
+        conversationId: worker.id,
+        sourceConversationId: run.sourceConversationId ?? worker.id,
+        status: "completed",
+        title: `${phase.name} (decompose)`,
+        input: {
+          kind: "process_phase_decompose",
+          phaseRunId: phaseRun.id,
+          agentName,
+        },
+      })
+      processes.updatePhaseRun(phaseRun.id, {
+        taskId: workerTask.id,
+        agentName,
+      })
+
+      const workspace = source?.workspaceId
+        ? getWorkspace(source.workspaceId)?.path
+        : undefined
+
+      const childAbort = new AbortController()
+      if (signal.aborted) childAbort.abort(signal.reason)
+      else
+        signal.addEventListener(
+          "abort",
+          () => childAbort.abort(signal.reason),
+          { once: true }
+        )
+
+      const prompt = fanOutDecomposePrompt({
+        phase,
+        objective: run.objective ?? "",
+        upstream: this.collectUpstream(run, phase),
+      })
+
+      try {
+        const result = await runAgentLoop({
+          conversationId: worker.id,
+          workspace,
+          agentDir: workspace,
+          userMessage: prompt,
+          abort: childAbort,
+          autoMode: true,
+          onEvent: () => {},
+        })
+        if (result.stopped || childAbort.signal.aborted)
+          return { stopped: true }
+        if (result.error)
+          return { error: result.error, retryable: result.retryable }
+        const subtasks = parseDecomposition(result.content ?? "")
+        if (subtasks.length === 0)
+          // A parse miss is deterministic given the same transcript — a retry
+          // re-runs the whole worker, which MAY produce parseable output, so
+          // mark it retryable (bounded by MAX_PHASE_ATTEMPTS in the scheduler).
+          return {
+            error: "decomposition produced no parseable sub-tasks",
+            retryable: true,
+          }
+        return { subtasks } satisfies DecomposeResult
       } catch (err) {
         return { error: err instanceof Error ? err.message : String(err) }
       }
@@ -221,12 +317,35 @@ export class ProcessService {
       const src = phasesById.get(sid)
       const pr = runByPhaseId.get(sid)
       if (!src || !pr || pr.status !== "completed") continue
-      results.push({
-        phaseName: src.name,
-        content: pr.taskId ? this.lastAssistantContent(pr) : null,
-      })
+      // A fan-out source's own worker only produced the sub-task list; the real
+      // output lives in its children. Aggregate the children's final content so
+      // a downstream phase gets a real digest, not the decomposition (R7, 025.1).
+      const content = src.fanOut
+        ? this.aggregateChildContent(run.id, pr.id)
+        : pr.taskId
+          ? this.lastAssistantContent(pr)
+          : null
+      results.push({ phaseName: src.name, content })
     }
     return results
+  }
+
+  // Concatenate the final assistant content of every child of a fan-out parent
+  // phase-run, labeled by index, for a downstream phase's upstream digest (025.1).
+  private aggregateChildContent(
+    runId: string,
+    parentPhaseRunId: string
+  ): string | null {
+    const children = processes.listPhaseRuns({
+      runId,
+      parentId: parentPhaseRunId,
+    })
+    const parts: string[] = []
+    children.forEach((child, i) => {
+      const content = child.taskId ? this.lastAssistantContent(child) : null
+      if (content) parts.push(`#### Sub-task ${i + 1}\n${content.trim()}`)
+    })
+    return parts.length > 0 ? parts.join("\n\n") : null
   }
 
   // The final assistant message of a phase's worker conversation (its "output").

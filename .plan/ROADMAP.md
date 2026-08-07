@@ -7,52 +7,49 @@ item is its plan file, not its rank.
 
 ## Next up
 
-1. **`025.1` — Process fan-out.** Runtime decomposition: a `fan_out` phase asks its agent to split
-   into N sub-tasks, each a child `process_phase_runs` row dispatched under the per-run pool; parent
-   completes when all children terminal. Additive on `SCHEMA_V15` (no migration).
-2. **`025.2` — Process `on_each_subtask`.** Partial-completion triggers (**depends on `025.1`**): a
+1. **`025.2` — Process `on_each_subtask`.** Partial-completion triggers (**depends on `025.1`**): a
    downstream phase starts per completed fan-out child (Validate picks up each Construct piece as it
    lands), via the scheduler's existing race-on-first-completion. Additive.
-3. **`025.3` — Process dispatch routing.** `routing:'dispatch'` + a `router.ts` LLM classifier over
+2. **`025.3` — Process dispatch routing.** `routing:'dispatch'` + a `router.ts` LLM classifier over
    the pool's agent `description`s selecting the best-fit agent per sub-task; `pool[0]` fallback.
    Additive. (Best paired with `027` so there are multiple authored agents to route between.)
-4. **`026` — Process UI.** The renderer for `025`: a **Process** entry in the sidebar view switcher
+3. **`026` — Process UI.** The renderer for `025`: a **Process** entry in the sidebar view switcher
    (`sidebar.tsx`; lean an overlay like the Skills screen, not a 4th `Mode`), a full-viewport
    `process-screen.tsx` listing definitions with New/edit/delete/run, a **DAG builder** (phases,
    edges, per-phase agent pool + skills/tools + routing + gate policy + fan-out), and a **run
    monitor** visualizing live phase status off the `process_phase` `task:event` tail with inline
    approval cards for gated phases. Depends on `025` (engine + `process:*` IPC) and `027` (agents to
    pick).
-5. **`027` — Agent management UI.** In-app create/edit/delete of the file-based `<name>.agent.md`
+4. **`027` — Agent management UI.** In-app create/edit/delete of the file-based `<name>.agent.md`
    agents (today: disk-only + a read-only folder table in Settings). Mirrors the skills editor
    (`skills-screen.tsx`, `skills:read`/`skills:write` behind `assertSkillPath`): new
    `agents:read`/`write`/`create`/`delete` IPC behind an `assertAgentPath`, structured tri-state
    tool/skill pickers over the 8 categories + skill catalog. Closes the loop so `025`/`026` phases
    can reference authored agents.
-6. **`028` — Skill authoring.** Extends the Skills view (already View + Edit) with **create** +
+5. **`028` — Skill authoring.** Extends the Skills view (already View + Edit) with **create** +
    **delete** — `skills:create`/`skills:delete` IPC guarded to **writable** roots (never a bundled
    seed), a New Skill scaffold + delete-with-confirm in `skills-screen.tsx`. Complements `027` (an
    agent's `skills[]` can only reference skills that exist).
-7. **`020` — Durable memories.** The cross-conversation memories section `014` reserved: small,
+6. **`020` — Durable memories.** The cross-conversation memories section `014` reserved: small,
    persisted facts the agent writes (a **gated, explicit** `remember` tool — no silent profiling)
    and that inject into future turns, **scoped** global / workspace / conversation (mirrors the
    `action_allowlist` scoping). New `memories` table + a list/delete surface (durable +
    cross-conversation ⇒ must be auditable/revocable); a `memoriesSection` renderer with an injection
    cap. Split out of `014` Q2.
-8. **`010` — Container runtime profiles.** Decouple Workspace (the files) from Runtime (the env a
+7. **`010` — Container runtime profiles.** Decouple Workspace (the files) from Runtime (the env a
    tool call executes in). Replace the raw container `image` string with a named **profile**
    (`node` | `python` | `fullstack`), resolved to an image in the env factory; default/fallback =
    `fullstack` (Node + Python) so a Node repo that later adds a Python backend doesn't wedge.
    One profile per conversation, user-overridable in settings. Kills the "one workspace = one image
    forever" assumption **without** building auto-routing or image management (both deferred). Small
    refactor of `env/factory.ts` + `container.ts` + execution settings (JSON blob — no migration).
-9. **`005.1` — ContainerEnvironment stop in-flight.** The deferred half of `005`: killing the host
+8. **`005.1` — ContainerEnvironment stop in-flight.** The deferred half of `005`: killing the host
    `docker/podman exec` client doesn't stop the in-container process. Needs its own kill mechanism
    (in-container PID tracking / `exec kill`, or marker `pkill`). Out of scope when `005` shipped.
-10. **`007` — Slash commands for skills.** Let users force a skill with `/skill-name …` (pre-inject
+9. **`007` — Slash commands for skills.** Let users force a skill with `/skill-name …` (pre-inject
    the `read_skill` call), keeping today's model-discretionary path for plain messages. Adds a
    `skills:list` IPC channel + composer autocomplete. Independent — schedule freely.
-11. **`018` — Agentic goal mode. ⚠️ SUPERSEDED by `025`** (the general Process engine — 018's fixed
+10. **`018` — Agentic goal mode. ⚠️ SUPERSEDED by `025`** (the general Process engine — 018's fixed
    pipeline becomes one built-in Process *template*; kept as a stable-ID file per convention, not
    built as its own orchestrator). An opt-in **execution mode** (orthogonal to chat/interactive/
    north_star): `simple` (today's one-pass behavior, default) vs `goal` (bounded **plan → execute →
@@ -66,7 +63,7 @@ item is its plan file, not its rank.
    PR (`/goal <request>` — reuses `007`'s composer slash-command affordance — + a "Run with review
    loop" button); the Always/Ask/Manual/Off **setting is deferred** to its own plan. Placed by `007`
    since both add `/`-command composer UI.
-12. **`024` — Index filesystem/git watcher.** The "live file watching" follow-up `008` deferred (and
+11. **`024` — Index filesystem/git watcher.** The "live file watching" follow-up `008` deferred (and
    `014` re-deferred). Today the workspace index — and the compact summary `buildIndexSummary`
    injects into the system prompt on every message send — only refreshes when `IndexService.
    ensureRunning` is called, which fires on conversation create/update or manual Start/Rebuild;
@@ -83,6 +80,38 @@ item is its plan file, not its rank.
 
 ## Done
 
+- **`025.1` — Process fan-out.** Built on `feat/process-engine-planning` (not yet merged to `main`).
+  Fast-follow on `025`, **no migration** (`process_phases.fan_out`, `process_phase_runs.parent_id`,
+  `idx_process_phase_runs_parent` were laid down in `SCHEMA_V15`). A `fan_out=1` phase runs a
+  **decomposition pass** — its own forked worker via `runAgentLoop` (so it can inspect the workspace),
+  whose final message is parsed for a JSON array of sub-task briefings (`fanOutDecomposePrompt` +
+  `parseDecomposition`, capped `MAX_FAN_OUT=8`) — and each briefing becomes a **child
+  `process_phase_runs` row** (`parent_id` set) backed by its own worker. **Key decision:** children are
+  **first-class dispatchable units in the existing ready-set loop**, sharing `PER_RUN_CONCURRENCY` and
+  the one `Promise.race`, so `025.2`'s `on_each_subtask` inherits child-completion reactivity with no
+  new machinery (vs. the simpler-but-limiting alternative of fanning out inside a phase's `runPhase`).
+  A `running` fan-out parent settles **completed** only when every child is terminal (a failed/cancelled
+  child fails/cancels the parent — v1). Four validated correctness fixes: **(R1)** parent-completion
+  derivation guards on `children.length > 0` so an in-flight decompose can't vacuously settle the parent
+  and orphan the children about to be created; **(R2)** empty/malformed decomposition fails the parent
+  (retryable), never a silent no-op; **(R3)** child rows + their prompt-checkpoint persist in one
+  `getDb().transaction`, so a crash can't orphan prompt-less children; **(R4)** resume recovers the
+  **latest** `fanout:<parentRunId>` checkpoint per label (`createCheckpoint` only inserts). Children are
+  dispatched off their **own** run id (never `dispatch()`/`runByPhaseId`, which resolve to the parent —
+  children share the parent's `phaseId`), and `collectUpstream` aggregates a fan-out source's
+  **children's** outputs so a downstream phase gets a real digest, not the sub-task list (R7). New in
+  `scheduler.ts` (`Decompose`/`DecomposeResult`, `dispatchDecompose`/`dispatchChild`,
+  `runDecomposeWithRetry`, `createChildrenAtomic`, `deriveFanoutParents`, widened crash-reset +
+  checkpoint recovery, cancellation settling fan-out parents), `service.ts` (`makeDecompose`,
+  subtask-prompt-aware `makeRunPhase`, `aggregateChildContent`), `prompts.ts` (fan-out prompt + parser).
+  The `process_phase` event now carries `parentId` on every transition (already in the `025` union) so
+  the `026` monitor can nest children. Verified: `pnpm typecheck` + `pnpm build` clean; `scheduler.test.ts`
+  **13 pass** (6 new: N-children/parent-completion, failed-child-fails-parent, empty-decomposition (R2),
+  in-flight-decompose-not-settled (R1), cancel-mid-fan-out, resume-without-re-decompose); full suite
+  **547 pass** (1 unrelated flaky real-process SIGKILL timing test in `local.test.ts` — passes in
+  isolation). DB suite run against a node-ABI `better-sqlite3` rebuild, Electron ABI restored after with
+  `@electron/rebuild`. Manual E2E deferred to the `026` UI. **Deferred to `025.2`/`025.3`:**
+  `on_each_subtask` partial-completion triggers; `dispatch` routing of each child.
 - **`025` — Process engine (v1 core).** Built on `feat/process-engine-planning` (commit `a06c7e4`;
   not yet merged to `main`). A user-defined **agentic DAG**: reusable Process *definitions* (phases +
   dependency edges + per-phase agent pool + skills/tools + routing + gate policy + fan-out) split from

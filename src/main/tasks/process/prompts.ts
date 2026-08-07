@@ -42,3 +42,85 @@ export function kickoffPrompt(input: {
   )
   return lines.join("\n")
 }
+
+// Upper bound on the number of sub-tasks a fan-out phase may spawn (plan 025.1,
+// Open Q #3 — agent-decided but bounded, to prevent runaway spawning). A
+// decomposition yielding more is truncated to this cap.
+export const MAX_FAN_OUT = 8
+
+// The kickoff for a FAN-OUT phase's decomposition pass (plan 025.1). The phase's
+// worker is asked to split the phase's work into N independent sub-tasks and emit
+// ONLY a JSON array of sub-task briefings as its final message — each becomes a
+// child phase-run with its own worker. Deliberately self-contained like
+// kickoffPrompt (the worker can't see the orchestrator conversation).
+export function fanOutDecomposePrompt(input: {
+  phase: ProcessPhase
+  objective: string
+  upstream: UpstreamResult[]
+}): string {
+  const { phase, objective, upstream } = input
+  const lines: string[] = []
+  lines.push(`# Process phase (fan-out): ${phase.name}`)
+  lines.push("")
+  lines.push(
+    "You are planning one phase of a larger multi-phase process. This phase " +
+      "FANS OUT: instead of doing the work yourself, split it into independent " +
+      "sub-tasks that will each run in parallel in their own worker."
+  )
+  lines.push("")
+  lines.push("## Overall objective")
+  lines.push(objective.trim() || "(no objective provided)")
+  lines.push("")
+  if (upstream.length > 0) {
+    lines.push("## Output of the phases that ran before you")
+    for (const u of upstream) {
+      lines.push(`### ${u.phaseName}`)
+      lines.push(u.content?.trim() || "(no textual output)")
+      lines.push("")
+    }
+  }
+  lines.push("## Your task")
+  lines.push(
+    `Decompose the "${phase.name}" phase into independent sub-tasks — one per ` +
+      `distinct piece of work that can proceed on its own. You may inspect the ` +
+      `workspace first to decide the split. Aim for at most ${MAX_FAN_OUT} ` +
+      `sub-tasks; fewer is fine.`
+  )
+  lines.push("")
+  lines.push(
+    "When you are done deciding, reply with ONLY a JSON array of strings — each " +
+      "string a complete, self-contained briefing for one sub-task worker (it " +
+      "cannot see this message or the other sub-tasks). No prose before or after " +
+      "the array."
+  )
+  lines.push("")
+  lines.push('Example: ["Implement the login form component", "Add the /session API route"]')
+  return lines.join("\n")
+}
+
+// Tolerant extraction of the sub-task list from a decomposition worker's final
+// assistant message (plan 025.1). Pulls the first JSON array out of the text
+// (tolerating ```json fences / surrounding prose), validates it's a non-empty
+// array of non-empty strings, trims + caps at MAX_FAN_OUT. Returns [] on any
+// miss — the caller treats an empty result as a decomposition failure.
+export function parseDecomposition(text: string): string[] {
+  if (!text) return []
+  // Prefer a fenced ```json block if present, else the first bracketed array.
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i)
+  const candidate = fenced ? fenced[1] : text
+  const start = candidate.indexOf("[")
+  const end = candidate.lastIndexOf("]")
+  if (start === -1 || end === -1 || end < start) return []
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(candidate.slice(start, end + 1))
+  } catch {
+    return []
+  }
+  if (!Array.isArray(parsed)) return []
+  const subtasks = parsed
+    .filter((s): s is string => typeof s === "string")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0)
+  return subtasks.slice(0, MAX_FAN_OUT)
+}
