@@ -10,6 +10,8 @@ interface ConversationRow {
   project_id: string | null
   account_id: string | null
   model_id: string | null
+  agent_name: string | null
+  pinned: number
   created_at: number
   updated_at: number
 }
@@ -23,6 +25,8 @@ function toConversation(row: ConversationRow): Conversation {
     projectId: row.project_id,
     accountId: row.account_id,
     modelId: row.model_id,
+    agentName: row.agent_name,
+    pinned: row.pinned === 1,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   }
@@ -35,12 +39,13 @@ export function createConversation(input: {
   title?: string | null
   accountId?: string | null
   modelId?: string | null
+  agentName?: string | null
 }): Conversation {
   const id = randomUUID()
   const now = Date.now()
   getDb()
     .prepare(
-      "INSERT INTO conversations (id, mode, title, workspace_id, project_id, account_id, model_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+      "INSERT INTO conversations (id, mode, title, workspace_id, project_id, account_id, model_id, agent_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )
     .run(
       id,
@@ -50,6 +55,7 @@ export function createConversation(input: {
       input.projectId ?? null,
       input.accountId ?? null,
       input.modelId ?? null,
+      input.agentName ?? null,
       now,
       now
     )
@@ -64,13 +70,23 @@ export function getConversation(id: string): Conversation | undefined {
 }
 
 // Lists user-facing conversations for the sidebar. Excludes private task
-// transcripts (a conversation that backs a durable task — i.e. is referenced by
-// tasks.conversation_id): those are background workers shown in the Workspace
-// Activity panel, not standalone chats. A task's progress surfaces under its
-// source conversation, so its forked transcript must not clutter the list.
+// transcripts — the FORKED worker conversations that back durable tasks (todo_run,
+// workspace_index, summarize, subagent, …), shown in the Workspace Activity panel,
+// not as standalone chats.
+//
+// The one exception is `inline_todos`: unlike every other kind, that task does not
+// fork a worker — it's a completed history marker written onto the REAL, live
+// conversation when it finishes an inline todo list (see agent/index.ts). So its
+// `conversation_id` is a genuine user conversation. The old filter hid every
+// conversation referenced by any task, which wrongly hid these real conversations
+// after a todo list ran (they vanished from the sidebar on the next load). Keying
+// on the task kind — hide task transcripts EXCEPT inline_todos markers — keeps the
+// forks hidden while leaving the real conversations visible. COALESCE mirrors the
+// default-kind handling in schema.ts (a missing kind is treated as agent_chat, a
+// fork, so it stays hidden).
 export function listConversations(opts?: { mode?: Mode }): Conversation[] {
   const notTaskTranscript =
-    "id NOT IN (SELECT conversation_id FROM tasks WHERE conversation_id IS NOT NULL)"
+    "id NOT IN (SELECT conversation_id FROM tasks WHERE conversation_id IS NOT NULL AND COALESCE(json_extract(input, '$.kind'), 'agent_chat') <> 'inline_todos')"
   const rows = opts?.mode
     ? (getDb()
         .prepare(
@@ -93,6 +109,7 @@ export function updateConversation(
     projectId?: string | null
     accountId?: string | null
     modelId?: string | null
+    agentName?: string | null
   }
 ): Conversation {
   const now = Date.now()
@@ -118,6 +135,10 @@ export function updateConversation(
     sets.push("model_id = ?")
     values.push(patch.modelId)
   }
+  if (patch.agentName !== undefined) {
+    sets.push("agent_name = ?")
+    values.push(patch.agentName)
+  }
   if (sets.length > 0) {
     sets.push("updated_at = ?")
     values.push(now, id)
@@ -125,6 +146,20 @@ export function updateConversation(
       .prepare(`UPDATE conversations SET ${sets.join(", ")} WHERE id = ?`)
       .run(...values)
   }
+  return getConversation(id)!
+}
+
+// Pin or unpin a conversation. Deliberately updates ONLY the `pinned` column and
+// leaves `updated_at` untouched — unlike updateConversation, which bumps recency
+// on every write. That's the whole point: unpinning must return the conversation
+// to its natural recency position, which a bumped updated_at would destroy.
+export function setConversationPinned(
+  id: string,
+  pinned: boolean
+): Conversation {
+  getDb()
+    .prepare("UPDATE conversations SET pinned = ? WHERE id = ?")
+    .run(pinned ? 1 : 0, id)
   return getConversation(id)!
 }
 

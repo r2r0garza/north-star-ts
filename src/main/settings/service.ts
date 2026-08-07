@@ -93,6 +93,15 @@ export interface SkillSourcesSettings {
   folders: string[]
 }
 
+// Extra agent-source folders the user registers in Settings → Capabilities, on
+// top of the built-in sources (~/.cowork/agents and the workspace dirs). Each is
+// an absolute path treated as a CONTAINER of `<name>.agent.md` files, exactly
+// like the built-ins. Applies across chat/interactive/north_star conversations.
+// See agent/agents/sources.ts.
+export interface AgentSourcesSettings {
+  folders: string[]
+}
+
 // Agent browser preferences. `revealOnAgentUse` controls whether the browser
 // window pops to the front when the agent navigates in the conversation you're
 // viewing: "always" reveals it, "never" keeps it hidden (the page still runs and
@@ -108,6 +117,23 @@ export interface BrowserSettings {
 // migration.
 export interface IdeSettings {
   ide: string
+}
+
+// Desktop (OS) notifications. `enabled` is the master switch; the per-event
+// flags let the user mute categories they don't care about. The renderer decides
+// whether to actually fire (it knows which conversation is on screen and whether
+// the window is focused); these flags gate which categories are eligible at all.
+// All default ON so notifications work out of the box once enabled.
+export interface NotificationSettings {
+  enabled: boolean
+  // Agent paused for a human decision (approval prompt or ask_user_question).
+  onNeedsInput: boolean
+  // A turn finished streaming its final answer.
+  onTurnComplete: boolean
+  // A turn failed (error or unavailable backend).
+  onTurnError: boolean
+  // A background task / delegated subagent completed.
+  onTaskComplete: boolean
 }
 
 // Default container image when a runtime is chosen but no image is set.
@@ -136,12 +162,22 @@ const DEFAULT_INDEXING: IndexingSettings = {
 
 const DEFAULT_SKILL_SOURCES: SkillSourcesSettings = { folders: [] }
 
+const DEFAULT_AGENT_SOURCES: AgentSourcesSettings = { folders: [] }
+
 const DEFAULT_BROWSER: BrowserSettings = {
   revealOnAgentUse: "always",
 }
 
 const DEFAULT_IDE: IdeSettings = {
   ide: "system",
+}
+
+const DEFAULT_NOTIFICATIONS: NotificationSettings = {
+  enabled: true,
+  onNeedsInput: true,
+  onTurnComplete: true,
+  onTurnError: true,
+  onTaskComplete: true,
 }
 
 function defaultExecution(): ExecutionSettings {
@@ -162,16 +198,20 @@ const KEY_PERMISSIONS = "permissions"
 const KEY_LLM = "llm"
 const KEY_INDEXING = "indexing"
 const KEY_SKILL_SOURCES = "skillSources"
+const KEY_AGENT_SOURCES = "agentSources"
 const KEY_BROWSER = "browser"
 const KEY_IDE = "ide"
+const KEY_NOTIFICATIONS = "notifications"
 
 let executionCache: ExecutionSettings | undefined
 let permissionsCache: PermissionSettings | undefined
 let llmCache: LlmSettings | undefined
 let indexingCache: IndexingSettings | undefined
 let skillSourcesCache: SkillSourcesSettings | undefined
+let agentSourcesCache: AgentSourcesSettings | undefined
 let browserCache: BrowserSettings | undefined
 let ideCache: IdeSettings | undefined
+let notificationsCache: NotificationSettings | undefined
 // Tracks whether an execution row exists, so getExecutionConfig can fall back to
 // the COWORK_ENV_RUNTIME env var until the user writes a backend choice.
 let executionPersisted = false
@@ -295,6 +335,26 @@ function loadSkillSources(): SkillSourcesSettings {
   return skillSourcesCache
 }
 
+function loadAgentSources(): AgentSourcesSettings {
+  if (agentSourcesCache) return agentSourcesCache
+  const raw = settingsRepo.getSetting(KEY_AGENT_SOURCES)
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw) as Partial<AgentSourcesSettings>
+      agentSourcesCache = {
+        folders: Array.isArray(parsed.folders)
+          ? parsed.folders.filter((f): f is string => typeof f === "string")
+          : DEFAULT_AGENT_SOURCES.folders,
+      }
+      return agentSourcesCache
+    } catch {
+      // Corrupt blob — fall through to defaults.
+    }
+  }
+  agentSourcesCache = { folders: [...DEFAULT_AGENT_SOURCES.folders] }
+  return agentSourcesCache
+}
+
 function loadBrowser(): BrowserSettings {
   if (browserCache) return browserCache
   const raw = settingsRepo.getSetting(KEY_BROWSER)
@@ -328,6 +388,30 @@ function loadIde(): IdeSettings {
   }
   ideCache = { ...DEFAULT_IDE }
   return ideCache
+}
+
+function loadNotifications(): NotificationSettings {
+  if (notificationsCache) return notificationsCache
+  const raw = settingsRepo.getSetting(KEY_NOTIFICATIONS)
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw) as Partial<NotificationSettings>
+      notificationsCache = {
+        enabled: parsed.enabled ?? DEFAULT_NOTIFICATIONS.enabled,
+        onNeedsInput: parsed.onNeedsInput ?? DEFAULT_NOTIFICATIONS.onNeedsInput,
+        onTurnComplete:
+          parsed.onTurnComplete ?? DEFAULT_NOTIFICATIONS.onTurnComplete,
+        onTurnError: parsed.onTurnError ?? DEFAULT_NOTIFICATIONS.onTurnError,
+        onTaskComplete:
+          parsed.onTaskComplete ?? DEFAULT_NOTIFICATIONS.onTaskComplete,
+      }
+      return notificationsCache
+    } catch {
+      // Corrupt blob — fall through to defaults.
+    }
+  }
+  notificationsCache = { ...DEFAULT_NOTIFICATIONS }
+  return notificationsCache
 }
 
 // ── Reads ────────────────────────────────────────────────────────────────────
@@ -368,12 +452,20 @@ export function getSkillSources(): SkillSourcesSettings {
   return loadSkillSources()
 }
 
+export function getAgentSources(): AgentSourcesSettings {
+  return loadAgentSources()
+}
+
 export function getBrowser(): BrowserSettings {
   return loadBrowser()
 }
 
 export function getIde(): IdeSettings {
   return loadIde()
+}
+
+export function getNotifications(): NotificationSettings {
+  return loadNotifications()
 }
 
 // Whether the sandbox policy auto-approves a given action category. Consulted by
@@ -415,6 +507,14 @@ export function setSkillSources(
   return next
 }
 
+export function setAgentSources(
+  next: AgentSourcesSettings
+): AgentSourcesSettings {
+  settingsRepo.setSetting(KEY_AGENT_SOURCES, JSON.stringify(next))
+  agentSourcesCache = next
+  return next
+}
+
 export function setBrowser(next: BrowserSettings): BrowserSettings {
   settingsRepo.setSetting(KEY_BROWSER, JSON.stringify(next))
   browserCache = next
@@ -424,6 +524,14 @@ export function setBrowser(next: BrowserSettings): BrowserSettings {
 export function setIde(next: IdeSettings): IdeSettings {
   settingsRepo.setSetting(KEY_IDE, JSON.stringify(next))
   ideCache = next
+  return next
+}
+
+export function setNotifications(
+  next: NotificationSettings
+): NotificationSettings {
+  settingsRepo.setSetting(KEY_NOTIFICATIONS, JSON.stringify(next))
+  notificationsCache = next
   return next
 }
 
@@ -451,7 +559,9 @@ export function _resetCacheForTests(): void {
   llmCache = undefined
   indexingCache = undefined
   skillSourcesCache = undefined
+  agentSourcesCache = undefined
   browserCache = undefined
   ideCache = undefined
+  notificationsCache = undefined
   executionPersisted = false
 }

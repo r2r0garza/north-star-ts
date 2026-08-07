@@ -46,11 +46,13 @@ import type {
   IndexingSettings,
   BrowserSettings,
   IdeSettings,
+  NotificationSettings,
   Backend,
   ApprovalCategory,
   Runtime,
   RuntimeStatus,
   SkillSourceRow,
+  AgentSourceRow,
 } from "@/types"
 
 // Human-readable labels + help for each sandbox category (mirrors the taxonomy
@@ -102,11 +104,48 @@ const SECTIONS: Array<{ value: string; label: string }> = [
   { value: "capabilities", label: "Capabilities" },
   { value: "browser", label: "Browser" },
   { value: "editor", label: "Editor" },
+  { value: "notifications", label: "Notifications" },
   { value: "sandbox", label: "Sandbox" },
+]
+
+// Per-event notification toggles, in display order. Labels + help mirror the
+// NotificationSettings flags in the main-process settings service.
+const NOTIFICATION_EVENTS: Array<{
+  key: Exclude<keyof NotificationSettings, "enabled">
+  label: string
+  help: string
+}> = [
+  {
+    key: "onNeedsInput",
+    label: "Needs your input",
+    help: "The agent paused for an approval or a question.",
+  },
+  {
+    key: "onTurnComplete",
+    label: "Turn complete",
+    help: "The agent finished responding.",
+  },
+  {
+    key: "onTurnError",
+    label: "Turn failed",
+    help: "A turn errored or the execution backend was unavailable.",
+  },
+  {
+    key: "onTaskComplete",
+    label: "Background task done",
+    help: "A background task or delegated subagent finished.",
+  },
 ]
 
 // Human-readable labels for the non-custom (locked) skill-source kinds.
 const SKILL_SOURCE_KIND_LABEL: Record<SkillSourceRow["kind"], string> = {
+  user: "User",
+  custom: "Custom",
+  github: "Workspace",
+  workspace: "Workspace",
+}
+
+const AGENT_SOURCE_KIND_LABEL: Record<AgentSourceRow["kind"], string> = {
   user: "User",
   custom: "Custom",
   github: "Workspace",
@@ -147,10 +186,16 @@ export function SettingsScreen({
   const [ideOptions, setIdeOptions] = useState<
     Array<{ id: string; label: string }>
   >([])
+  const [notifications, setNotifications] =
+    useState<NotificationSettings | null>(null)
   // Skill-source rows for the Capabilities tab (built-in + custom folders, each
   // with a live skill count). Loaded independently of the other settings so a
   // slow directory scan doesn't gate the whole screen.
   const [skillSources, setSkillSources] = useState<SkillSourceRow[] | null>(
+    null
+  )
+  // Agent-source rows for the Capabilities tab (same shape as skill sources).
+  const [agentSources, setAgentSources] = useState<AgentSourceRow[] | null>(
     null
   )
   const [runtimes, setRuntimes] = useState<Record<
@@ -176,8 +221,9 @@ export function SettingsScreen({
       window.cowork.settings.getBrowser(),
       window.cowork.settings.getIde(),
       window.cowork.settings.ideOptions(),
+      window.cowork.settings.getNotifications(),
       window.cowork.settings.checkRuntimes(),
-    ]).then(([exec, perms, idx, br, ideCfg, ideOpts, rt]) => {
+    ]).then(([exec, perms, idx, br, ideCfg, ideOpts, notif, rt]) => {
       if (cancelled) return
       setExecution(exec)
       setPermissions(perms)
@@ -185,6 +231,7 @@ export function SettingsScreen({
       setBrowser(br)
       setIde(ideCfg)
       setIdeOptions(ideOpts)
+      setNotifications(notif)
       setRuntimes(rt)
     })
     return () => {
@@ -233,6 +280,44 @@ export function SettingsScreen({
     await refreshSkillSources()
   }
 
+  // Agent sources — same independent-scan + read-modify-write pattern as skills.
+  // Custom folders registered here apply across chat/interactive/north_star.
+  useEffect(() => {
+    if (!open) return
+    let cancelled = false
+    setAgentSources(null)
+    window.cowork.agents.sources().then((rows) => {
+      if (!cancelled) setAgentSources(rows)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [open])
+
+  async function refreshAgentSources() {
+    setAgentSources(await window.cowork.agents.sources())
+  }
+
+  async function addAgentFolder() {
+    const picked = await window.cowork.pickWorkspace()
+    if (!picked.path) return
+    const current = await window.cowork.settings.getAgentSources()
+    if (current.folders.includes(picked.path)) return
+    if (agentSources?.some((r) => r.path === picked.path)) return
+    await window.cowork.settings.setAgentSources({
+      folders: [...current.folders, picked.path],
+    })
+    await refreshAgentSources()
+  }
+
+  async function removeAgentFolder(path: string) {
+    const current = await window.cowork.settings.getAgentSources()
+    await window.cowork.settings.setAgentSources({
+      folders: current.folders.filter((f) => f !== path),
+    })
+    await refreshAgentSources()
+  }
+
   // Persist execution + update local state together so the UI stays in sync.
   async function saveExecution(next: ExecutionSettings) {
     setExecution(next)
@@ -253,6 +338,10 @@ export function SettingsScreen({
   async function saveIde(next: IdeSettings) {
     setIde(next)
     await window.cowork.settings.setIde(next)
+  }
+  async function saveNotifications(next: NotificationSettings) {
+    setNotifications(next)
+    await window.cowork.settings.setNotifications(next)
   }
 
   function onBackendChange(value: string) {
@@ -323,514 +412,672 @@ export function SettingsScreen({
               </DialogPrimitive.Close>
             </div>
 
-            {execution && permissions && indexing && browser && ide && (
-              <Tabs
-                orientation="vertical"
-                defaultValue={initialTab}
-                className="flex min-h-0 flex-1 gap-0"
-              >
-                {/* Left nav rail — the six sections as a vertical list. */}
-                <TabsList
-                  variant="line"
-                  className="h-full w-56 shrink-0 items-stretch justify-start gap-0.5 overflow-y-auto border-r p-3"
+            {execution &&
+              permissions &&
+              indexing &&
+              browser &&
+              ide &&
+              notifications && (
+                <Tabs
+                  orientation="vertical"
+                  defaultValue={initialTab}
+                  className="flex min-h-0 flex-1 gap-0"
                 >
-                  {SECTIONS.map((s) => (
-                    <TabsTrigger
-                      key={s.value}
-                      value={s.value}
-                      disabled={s.value === "sandbox" && !isContainer}
-                      className="px-3 py-1.5"
-                    >
-                      {s.label}
-                    </TabsTrigger>
-                  ))}
-                </TabsList>
+                  {/* Left nav rail — the six sections as a vertical list. */}
+                  <TabsList
+                    variant="line"
+                    className="h-full w-56 shrink-0 items-stretch justify-start gap-0.5 overflow-y-auto border-r p-3"
+                  >
+                    {SECTIONS.map((s) => (
+                      <TabsTrigger
+                        key={s.value}
+                        value={s.value}
+                        disabled={s.value === "sandbox" && !isContainer}
+                        className="px-3 py-1.5"
+                      >
+                        {s.label}
+                      </TabsTrigger>
+                    ))}
+                  </TabsList>
 
-                {/* Content area — comfortable max-width so forms don't stretch
+                  {/* Content area — comfortable max-width so forms don't stretch
                     edge-to-edge on a wide monitor. Each TabsContent is the flex
                     child that scrolls its own overflow (as the bodies expect). */}
-                <div className="flex min-h-0 flex-1 justify-center overflow-hidden px-6">
-                  <div className="flex min-h-0 w-full max-w-2xl flex-col">
-                    <ProvidersTab state={llm} />
-                    <ModelsTab state={llm} />
+                  <div className="flex min-h-0 flex-1 justify-center overflow-hidden px-6">
+                    <div className="flex min-h-0 w-full max-w-2xl flex-col">
+                      <ProvidersTab state={llm} />
+                      <ModelsTab state={llm} />
 
-                    {/* Backend picker — Local / Docker / Podman, gated by availability. */}
-                    <TabsContent
-                      value="backend"
-                      className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto py-6"
-                    >
-                      <Field>
-                        <FieldLabel htmlFor="backend-select">
-                          Execution backend
-                        </FieldLabel>
-                        <Select
-                          value={execution.backend}
-                          onValueChange={onBackendChange}
-                        >
-                          <SelectTrigger id="backend-select">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="local">
-                              Local (this machine)
-                            </SelectItem>
-                            <SelectItem
-                              value="docker"
-                              disabled={runtimeOptionDisabled("docker")}
-                            >
-                              Docker
-                              {runtimes
-                                ? ` — ${RUNTIME_STATUS_LABEL[runtimes.docker]}`
-                                : ""}
-                            </SelectItem>
-                            <SelectItem
-                              value="podman"
-                              disabled={runtimeOptionDisabled("podman")}
-                            >
-                              Podman
-                              {runtimes
-                                ? ` — ${RUNTIME_STATUS_LABEL[runtimes.podman]}`
-                                : ""}
-                            </SelectItem>
-                          </SelectContent>
-                        </Select>
-                        <FieldDescription>
-                          {execution.backend === "local"
-                            ? "Tools run directly on your machine. Only file reads run without asking — every command and file write/edit needs your approval."
-                            : "Tools run in an isolated container with only the workspace mounted."}
-                        </FieldDescription>
-                      </Field>
-                    </TabsContent>
+                      {/* Backend picker — Local / Docker / Podman, gated by availability. */}
+                      <TabsContent
+                        value="backend"
+                        className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto py-6"
+                      >
+                        <Field>
+                          <FieldLabel htmlFor="backend-select">
+                            Execution backend
+                          </FieldLabel>
+                          <Select
+                            value={execution.backend}
+                            onValueChange={onBackendChange}
+                          >
+                            <SelectTrigger id="backend-select">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="local">
+                                Local (this machine)
+                              </SelectItem>
+                              <SelectItem
+                                value="docker"
+                                disabled={runtimeOptionDisabled("docker")}
+                              >
+                                Docker
+                                {runtimes
+                                  ? ` — ${RUNTIME_STATUS_LABEL[runtimes.docker]}`
+                                  : ""}
+                              </SelectItem>
+                              <SelectItem
+                                value="podman"
+                                disabled={runtimeOptionDisabled("podman")}
+                              >
+                                Podman
+                                {runtimes
+                                  ? ` — ${RUNTIME_STATUS_LABEL[runtimes.podman]}`
+                                  : ""}
+                              </SelectItem>
+                            </SelectContent>
+                          </Select>
+                          <FieldDescription>
+                            {execution.backend === "local"
+                              ? "Tools run directly on your machine. Only file reads run without asking — every command and file write/edit needs your approval."
+                              : "Tools run in an isolated container with only the workspace mounted."}
+                          </FieldDescription>
+                        </Field>
+                      </TabsContent>
 
-                    {/* File-permission toggles — flip "require approval" per kind. */}
-                    <TabsContent
-                      value="permissions"
-                      className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto py-6"
-                    >
-                      {execution.backend === "local" && (
-                        <FieldDescription>
-                          On the local backend every file write and edit already
-                          requires approval — these toggles take effect only when
-                          running in a container.
-                        </FieldDescription>
-                      )}
-                      <Field orientation="horizontal">
-                        <FieldContent>
-                          <FieldLabel htmlFor="perm-write">
-                            Require approval to write files
-                          </FieldLabel>
+                      {/* File-permission toggles — flip "require approval" per kind. */}
+                      <TabsContent
+                        value="permissions"
+                        className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto py-6"
+                      >
+                        {execution.backend === "local" && (
                           <FieldDescription>
-                            Prompt before creating or overwriting a file.
+                            On the local backend every file write and edit
+                            already requires approval — these toggles take
+                            effect only when running in a container.
                           </FieldDescription>
-                        </FieldContent>
-                        <Switch
-                          id="perm-write"
-                          checked={
-                            permissions.file_write === "require_approval"
-                          }
-                          onCheckedChange={(checked) =>
-                            savePermissions({
-                              ...permissions,
-                              file_write: checked ? "require_approval" : "auto",
-                            })
-                          }
-                        />
-                      </Field>
-                      <Field orientation="horizontal">
-                        <FieldContent>
-                          <FieldLabel htmlFor="perm-edit">
-                            Require approval to edit files
-                          </FieldLabel>
-                          <FieldDescription>
-                            Prompt before replacing text in an existing file.
-                          </FieldDescription>
-                        </FieldContent>
-                        <Switch
-                          id="perm-edit"
-                          checked={permissions.file_edit === "require_approval"}
-                          onCheckedChange={(checked) =>
-                            savePermissions({
-                              ...permissions,
-                              file_edit: checked ? "require_approval" : "auto",
-                            })
-                          }
-                        />
-                      </Field>
-                    </TabsContent>
+                        )}
+                        <Field orientation="horizontal">
+                          <FieldContent>
+                            <FieldLabel htmlFor="perm-write">
+                              Require approval to write files
+                            </FieldLabel>
+                            <FieldDescription>
+                              Prompt before creating or overwriting a file.
+                            </FieldDescription>
+                          </FieldContent>
+                          <Switch
+                            id="perm-write"
+                            checked={
+                              permissions.file_write === "require_approval"
+                            }
+                            onCheckedChange={(checked) =>
+                              savePermissions({
+                                ...permissions,
+                                file_write: checked
+                                  ? "require_approval"
+                                  : "auto",
+                              })
+                            }
+                          />
+                        </Field>
+                        <Field orientation="horizontal">
+                          <FieldContent>
+                            <FieldLabel htmlFor="perm-edit">
+                              Require approval to edit files
+                            </FieldLabel>
+                            <FieldDescription>
+                              Prompt before replacing text in an existing file.
+                            </FieldDescription>
+                          </FieldContent>
+                          <Switch
+                            id="perm-edit"
+                            checked={
+                              permissions.file_edit === "require_approval"
+                            }
+                            onCheckedChange={(checked) =>
+                              savePermissions({
+                                ...permissions,
+                                file_edit: checked
+                                  ? "require_approval"
+                                  : "auto",
+                              })
+                            }
+                          />
+                        </Field>
+                      </TabsContent>
 
-                    {/* Workspace Indexing (plan 008) — background index build + agent use. */}
-                    <TabsContent
-                      value="indexing"
-                      className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto py-6"
-                    >
-                      <Field orientation="horizontal">
-                        <FieldContent>
-                          <FieldLabel htmlFor="idx-auto">
-                            Automatically index new workspaces
-                          </FieldLabel>
-                          <FieldDescription>
-                            Build a background index when a workspace is opened,
-                            so the agent can answer about it right away.
-                            Per-workspace disable overrides this.
-                          </FieldDescription>
-                        </FieldContent>
-                        <Switch
-                          id="idx-auto"
-                          checked={indexing.autoIndexNewWorkspaces}
-                          onCheckedChange={(checked) =>
-                            saveIndexing({
-                              ...indexing,
-                              autoIndexNewWorkspaces: checked,
-                            })
-                          }
-                        />
-                      </Field>
-                      <Field orientation="horizontal">
-                        <FieldContent>
-                          <FieldLabel htmlFor="idx-context">
-                            Use index to improve agent context
-                          </FieldLabel>
-                          <FieldDescription>
-                            Feed a compact workspace summary into the agent. Off
-                            = the index still builds but the agent ignores it.
-                          </FieldDescription>
-                        </FieldContent>
-                        <Switch
-                          id="idx-context"
-                          checked={indexing.useIndexForContext}
-                          onCheckedChange={(checked) =>
-                            saveIndexing({
-                              ...indexing,
-                              useIndexForContext: checked,
-                            })
-                          }
-                        />
-                      </Field>
-                      <Field orientation="horizontal">
-                        <FieldContent>
-                          <FieldLabel htmlFor="idx-embed">
-                            Include embeddings
-                          </FieldLabel>
-                          <FieldDescription>
-                            Semantic search over the index — coming in a later
-                            release.
-                          </FieldDescription>
-                        </FieldContent>
-                        <Switch id="idx-embed" checked={false} disabled />
-                      </Field>
+                      {/* Workspace Indexing (plan 008) — background index build + agent use. */}
+                      <TabsContent
+                        value="indexing"
+                        className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto py-6"
+                      >
+                        <Field orientation="horizontal">
+                          <FieldContent>
+                            <FieldLabel htmlFor="idx-auto">
+                              Automatically index new workspaces
+                            </FieldLabel>
+                            <FieldDescription>
+                              Build a background index when a workspace is
+                              opened, so the agent can answer about it right
+                              away. Per-workspace disable overrides this.
+                            </FieldDescription>
+                          </FieldContent>
+                          <Switch
+                            id="idx-auto"
+                            checked={indexing.autoIndexNewWorkspaces}
+                            onCheckedChange={(checked) =>
+                              saveIndexing({
+                                ...indexing,
+                                autoIndexNewWorkspaces: checked,
+                              })
+                            }
+                          />
+                        </Field>
+                        <Field orientation="horizontal">
+                          <FieldContent>
+                            <FieldLabel htmlFor="idx-context">
+                              Use index to improve agent context
+                            </FieldLabel>
+                            <FieldDescription>
+                              Feed a compact workspace summary into the agent.
+                              Off = the index still builds but the agent ignores
+                              it.
+                            </FieldDescription>
+                          </FieldContent>
+                          <Switch
+                            id="idx-context"
+                            checked={indexing.useIndexForContext}
+                            onCheckedChange={(checked) =>
+                              saveIndexing({
+                                ...indexing,
+                                useIndexForContext: checked,
+                              })
+                            }
+                          />
+                        </Field>
+                        <Field orientation="horizontal">
+                          <FieldContent>
+                            <FieldLabel htmlFor="idx-embed">
+                              Include embeddings
+                            </FieldLabel>
+                            <FieldDescription>
+                              Semantic search over the index — coming in a later
+                              release.
+                            </FieldDescription>
+                          </FieldContent>
+                          <Switch id="idx-embed" checked={false} disabled />
+                        </Field>
 
-                      {/* Conversation-summary triggers (plan 019). A rolling
+                        {/* Conversation-summary triggers (plan 019). A rolling
                           digest regenerates when the un-summarized tail reaches
                           either threshold, whichever comes first. */}
-                      <Field orientation="horizontal">
-                        <FieldContent>
-                          <FieldLabel htmlFor="sum-msg">
-                            Summarize after N messages
-                          </FieldLabel>
-                          <FieldDescription>
-                            Regenerate the conversation summary once this many
-                            new messages accumulate. Set to 0 to trigger on
-                            tokens only.
-                          </FieldDescription>
-                        </FieldContent>
-                        <Input
-                          id="sum-msg"
-                          type="number"
-                          min={0}
-                          step={1}
-                          className="w-28"
-                          value={indexing.summarizeMessageThreshold}
-                          onChange={(e) =>
-                            saveIndexing({
-                              ...indexing,
-                              summarizeMessageThreshold: clampInt(
-                                e.target.value,
-                                0,
-                                Number.MAX_SAFE_INTEGER,
-                                indexing.summarizeMessageThreshold
-                              ),
-                            })
-                          }
-                        />
-                      </Field>
-                      <Field orientation="horizontal">
-                        <FieldContent>
-                          <FieldLabel htmlFor="sum-tok">
-                            Summarize after N tokens
-                          </FieldLabel>
-                          <FieldDescription>
-                            Regenerate the summary once the un-summarized turns
-                            reach this many tokens (whichever threshold is hit
-                            first). Range 6,000–150,000.
-                          </FieldDescription>
-                        </FieldContent>
-                        <Input
-                          id="sum-tok"
-                          type="number"
-                          min={6000}
-                          max={150000}
-                          step={1000}
-                          className="w-28"
-                          value={indexing.summarizeTokenThreshold}
-                          onChange={(e) =>
-                            saveIndexing({
-                              ...indexing,
-                              summarizeTokenThreshold: clampInt(
-                                e.target.value,
-                                6000,
-                                150000,
-                                indexing.summarizeTokenThreshold
-                              ),
-                            })
-                          }
-                        />
-                      </Field>
-                      <Field orientation="horizontal">
-                        <FieldContent>
-                          <FieldLabel htmlFor="log-sysprompt">
-                            Log system prompts
-                          </FieldLabel>
-                          <FieldDescription>
-                            Write each turn's assembled system prompt to
-                            system-prompt-logs/ for debugging. Off by default.
-                          </FieldDescription>
-                        </FieldContent>
-                        <Switch
-                          id="log-sysprompt"
-                          checked={indexing.logSystemPrompt}
-                          onCheckedChange={(checked) =>
-                            saveIndexing({
-                              ...indexing,
-                              logSystemPrompt: checked,
-                            })
-                          }
-                        />
-                      </Field>
-                    </TabsContent>
+                        <Field orientation="horizontal">
+                          <FieldContent>
+                            <FieldLabel htmlFor="sum-msg">
+                              Summarize after N messages
+                            </FieldLabel>
+                            <FieldDescription>
+                              Regenerate the conversation summary once this many
+                              new messages accumulate. Set to 0 to trigger on
+                              tokens only.
+                            </FieldDescription>
+                          </FieldContent>
+                          <Input
+                            id="sum-msg"
+                            type="number"
+                            min={0}
+                            step={1}
+                            className="w-28"
+                            value={indexing.summarizeMessageThreshold}
+                            onChange={(e) =>
+                              saveIndexing({
+                                ...indexing,
+                                summarizeMessageThreshold: clampInt(
+                                  e.target.value,
+                                  0,
+                                  Number.MAX_SAFE_INTEGER,
+                                  indexing.summarizeMessageThreshold
+                                ),
+                              })
+                            }
+                          />
+                        </Field>
+                        <Field orientation="horizontal">
+                          <FieldContent>
+                            <FieldLabel htmlFor="sum-tok">
+                              Summarize after N tokens
+                            </FieldLabel>
+                            <FieldDescription>
+                              Regenerate the summary once the un-summarized
+                              turns reach this many tokens (whichever threshold
+                              is hit first). Range 6,000–150,000.
+                            </FieldDescription>
+                          </FieldContent>
+                          <Input
+                            id="sum-tok"
+                            type="number"
+                            min={6000}
+                            max={150000}
+                            step={1000}
+                            className="w-28"
+                            value={indexing.summarizeTokenThreshold}
+                            onChange={(e) =>
+                              saveIndexing({
+                                ...indexing,
+                                summarizeTokenThreshold: clampInt(
+                                  e.target.value,
+                                  6000,
+                                  150000,
+                                  indexing.summarizeTokenThreshold
+                                ),
+                              })
+                            }
+                          />
+                        </Field>
+                        <Field orientation="horizontal">
+                          <FieldContent>
+                            <FieldLabel htmlFor="log-sysprompt">
+                              Log system prompts
+                            </FieldLabel>
+                            <FieldDescription>
+                              Write each turn's assembled system prompt to
+                              system-prompt-logs/ for debugging. Off by default.
+                            </FieldDescription>
+                          </FieldContent>
+                          <Switch
+                            id="log-sysprompt"
+                            checked={indexing.logSystemPrompt}
+                            onCheckedChange={(checked) =>
+                              saveIndexing({
+                                ...indexing,
+                                logSystemPrompt: checked,
+                              })
+                            }
+                          />
+                        </Field>
+                      </TabsContent>
 
-                    {/* Capabilities — skill-source folders. The built-in sources
+                      {/* Capabilities — skill-source folders. The built-in sources
                         are locked; the user can add/remove extra folders, each
                         scanned as a container of <name>/SKILL.md subfolders. */}
-                    <TabsContent
-                      value="capabilities"
-                      className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto py-6"
-                    >
-                      <div className="flex flex-col gap-1">
-                        <h3 className="text-sm font-medium">Skill folders</h3>
-                        <p className="text-sm text-muted-foreground">
-                          Folders scanned for skills. Each should contain
-                          per-skill subfolders with a <code>SKILL.md</code>{" "}
-                          inside. Built-in sources can't be removed. Workspace
-                          folders (<code>.github/skills</code>,{" "}
-                          <code>{window.cowork.system().dataDirName}/skills</code>
-                          ) are picked up automatically when a workspace is open.
-                        </p>
-                      </div>
-                      {skillSources === null ? (
-                        <p className="text-sm text-muted-foreground">
-                          Scanning…
-                        </p>
-                      ) : (
-                        <div className="overflow-hidden rounded-lg border">
-                          <Table>
-                            <TableHeader>
-                              <TableRow>
-                                <TableHead>Folder</TableHead>
-                                <TableHead className="w-24">Skills</TableHead>
-                                <TableHead className="w-24 text-right">
-                                  Kind
-                                </TableHead>
-                                <TableHead className="w-12" />
-                              </TableRow>
-                            </TableHeader>
-                            <TableBody>
-                              {skillSources.map((row) => (
-                                <TableRow key={row.path}>
-                                  <TableCell className="font-mono text-xs break-all">
-                                    {row.path}
-                                  </TableCell>
-                                  <TableCell className="text-muted-foreground">
-                                    {row.skillCount}
-                                  </TableCell>
-                                  <TableCell className="text-right text-muted-foreground">
-                                    {SKILL_SOURCE_KIND_LABEL[row.kind]}
-                                  </TableCell>
-                                  <TableCell className="text-right">
-                                    {row.kind === "custom" && (
-                                      <Button
-                                        type="button"
-                                        variant="ghost"
-                                        size="icon-sm"
-                                        onClick={() =>
-                                          removeSkillFolder(row.path)
-                                        }
-                                        aria-label={`Remove ${row.path}`}
-                                        title="Remove folder"
-                                      >
-                                        <Trash2 />
-                                      </Button>
-                                    )}
+                      <TabsContent
+                        value="capabilities"
+                        className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto py-6"
+                      >
+                        <div className="flex flex-col gap-1">
+                          <h3 className="text-sm font-medium">Skill folders</h3>
+                          <p className="text-sm text-muted-foreground">
+                            Folders scanned for skills. Each should contain
+                            per-skill subfolders with a <code>SKILL.md</code>{" "}
+                            inside. Built-in sources can't be removed. Workspace
+                            folders (<code>.github/skills</code>,{" "}
+                            <code>
+                              {window.cowork.system().dataDirName}/skills
+                            </code>
+                            ) are picked up automatically when a workspace is
+                            open.
+                          </p>
+                        </div>
+                        {skillSources === null ? (
+                          <p className="text-sm text-muted-foreground">
+                            Scanning…
+                          </p>
+                        ) : (
+                          <div className="overflow-hidden rounded-lg border">
+                            <Table>
+                              <TableHeader>
+                                <TableRow>
+                                  <TableHead>Folder</TableHead>
+                                  <TableHead className="w-24">Skills</TableHead>
+                                  <TableHead className="w-24 text-right">
+                                    Kind
+                                  </TableHead>
+                                  <TableHead className="w-12" />
+                                </TableRow>
+                              </TableHeader>
+                              <TableBody>
+                                {skillSources.map((row) => (
+                                  <TableRow key={row.path}>
+                                    <TableCell className="font-mono text-xs break-all">
+                                      {row.path}
+                                    </TableCell>
+                                    <TableCell className="text-muted-foreground">
+                                      {row.skillCount}
+                                    </TableCell>
+                                    <TableCell className="text-right text-muted-foreground">
+                                      {SKILL_SOURCE_KIND_LABEL[row.kind]}
+                                    </TableCell>
+                                    <TableCell className="text-right">
+                                      {row.kind === "custom" && (
+                                        <Button
+                                          type="button"
+                                          variant="ghost"
+                                          size="icon-sm"
+                                          onClick={() =>
+                                            removeSkillFolder(row.path)
+                                          }
+                                          aria-label={`Remove ${row.path}`}
+                                          title="Remove folder"
+                                        >
+                                          <Trash2 />
+                                        </Button>
+                                      )}
+                                    </TableCell>
+                                  </TableRow>
+                                ))}
+                              </TableBody>
+                              <TableFooter>
+                                <TableRow className="hover:bg-transparent">
+                                  <TableCell colSpan={4}>
+                                    <Button
+                                      type="button"
+                                      variant="ghost"
+                                      size="sm"
+                                      onClick={addSkillFolder}
+                                    >
+                                      <Plus />
+                                      Add folder
+                                    </Button>
                                   </TableCell>
                                 </TableRow>
-                              ))}
-                            </TableBody>
-                            <TableFooter>
-                              <TableRow className="hover:bg-transparent">
-                                <TableCell colSpan={4}>
-                                  <Button
-                                    type="button"
-                                    variant="ghost"
-                                    size="sm"
-                                    onClick={addSkillFolder}
-                                  >
-                                    <Plus />
-                                    Add folder
-                                  </Button>
-                                </TableCell>
-                              </TableRow>
-                            </TableFooter>
-                          </Table>
+                              </TableFooter>
+                            </Table>
+                          </div>
+                        )}
+
+                        {/* Agent-source folders — where <name>.agent.md files
+                          live. Custom folders registered here are pulled into
+                          every conversation (Chat, Interactive, North Star). */}
+                        <div className="flex flex-col gap-1">
+                          <h3 className="text-sm font-medium">Agent folders</h3>
+                          <p className="text-sm text-muted-foreground">
+                            Folders scanned for custom agents. Each should
+                            contain <code>&lt;name&gt;.agent.md</code> files.
+                            Registered folders apply across Chat, Interactive,
+                            and North Star. Built-in sources can't be removed.
+                            Workspace folders (<code>.github/agents</code>,{" "}
+                            <code>
+                              {window.cowork.system().dataDirName}/agents
+                            </code>
+                            ) are picked up automatically when a workspace is
+                            open.
+                          </p>
                         </div>
-                      )}
-                    </TabsContent>
+                        {agentSources === null ? (
+                          <p className="text-sm text-muted-foreground">
+                            Scanning…
+                          </p>
+                        ) : (
+                          <div className="overflow-hidden rounded-lg border">
+                            <Table>
+                              <TableHeader>
+                                <TableRow>
+                                  <TableHead>Folder</TableHead>
+                                  <TableHead className="w-24">Agents</TableHead>
+                                  <TableHead className="w-24 text-right">
+                                    Kind
+                                  </TableHead>
+                                  <TableHead className="w-12" />
+                                </TableRow>
+                              </TableHeader>
+                              <TableBody>
+                                {agentSources.map((row) => (
+                                  <TableRow key={row.path}>
+                                    <TableCell className="font-mono text-xs break-all">
+                                      {row.path}
+                                    </TableCell>
+                                    <TableCell className="text-muted-foreground">
+                                      {row.agentCount}
+                                    </TableCell>
+                                    <TableCell className="text-right text-muted-foreground">
+                                      {AGENT_SOURCE_KIND_LABEL[row.kind]}
+                                    </TableCell>
+                                    <TableCell className="text-right">
+                                      {row.kind === "custom" && (
+                                        <Button
+                                          type="button"
+                                          variant="ghost"
+                                          size="icon-sm"
+                                          onClick={() =>
+                                            removeAgentFolder(row.path)
+                                          }
+                                          aria-label={`Remove ${row.path}`}
+                                          title="Remove folder"
+                                        >
+                                          <Trash2 />
+                                        </Button>
+                                      )}
+                                    </TableCell>
+                                  </TableRow>
+                                ))}
+                              </TableBody>
+                              <TableFooter>
+                                <TableRow className="hover:bg-transparent">
+                                  <TableCell colSpan={4}>
+                                    <Button
+                                      type="button"
+                                      variant="ghost"
+                                      size="sm"
+                                      onClick={addAgentFolder}
+                                    >
+                                      <Plus />
+                                      Add folder
+                                    </Button>
+                                  </TableCell>
+                                </TableRow>
+                              </TableFooter>
+                            </Table>
+                          </div>
+                        )}
+                      </TabsContent>
 
-                    {/* Agent browser preferences. */}
-                    <TabsContent
-                      value="browser"
-                      className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto py-6"
-                    >
-                      <Field orientation="horizontal">
-                        <FieldContent>
-                          <FieldLabel htmlFor="browser-reveal">
-                            Show the browser when the agent uses it
-                          </FieldLabel>
-                          <FieldDescription>
-                            Bring the browser window to the front when the agent
-                            navigates in the conversation you're viewing. When
-                            off, the browser stays hidden and works in the
-                            background (a login or CAPTCHA still brings it up).
-                          </FieldDescription>
-                        </FieldContent>
-                        <Switch
-                          id="browser-reveal"
-                          checked={browser.revealOnAgentUse === "always"}
-                          onCheckedChange={(checked) =>
-                            saveBrowser({
-                              revealOnAgentUse: checked ? "always" : "never",
-                            })
-                          }
-                        />
-                      </Field>
-                    </TabsContent>
+                      {/* Agent browser preferences. */}
+                      <TabsContent
+                        value="browser"
+                        className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto py-6"
+                      >
+                        <Field orientation="horizontal">
+                          <FieldContent>
+                            <FieldLabel htmlFor="browser-reveal">
+                              Show the browser when the agent uses it
+                            </FieldLabel>
+                            <FieldDescription>
+                              Bring the browser window to the front when the
+                              agent navigates in the conversation you're
+                              viewing. When off, the browser stays hidden and
+                              works in the background (a login or CAPTCHA still
+                              brings it up).
+                            </FieldDescription>
+                          </FieldContent>
+                          <Switch
+                            id="browser-reveal"
+                            checked={browser.revealOnAgentUse === "always"}
+                            onCheckedChange={(checked) =>
+                              saveBrowser({
+                                revealOnAgentUse: checked ? "always" : "never",
+                              })
+                            }
+                          />
+                        </Field>
+                      </TabsContent>
 
-                    {/* Editor — which IDE a changed-file pill / "open in editor"
+                      {/* Editor — which IDE a changed-file pill / "open in editor"
                         launches. Opens the repo root first (focusing an existing
                         window), then the file. "System Default" uses the OS. */}
-                    <TabsContent
-                      value="editor"
-                      className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto py-6"
-                    >
-                      <Field orientation="horizontal">
-                        <FieldContent>
-                          <FieldLabel htmlFor="editor-ide">
-                            Open files in
-                          </FieldLabel>
-                          <FieldDescription>
-                            When you click a changed-file pill, open it here. The
-                            repo root opens first so an already-open window is
-                            reused; then the file opens in it. "System Default"
-                            uses your OS's default app for the file type.
-                          </FieldDescription>
-                        </FieldContent>
-                        <Select
-                          value={ide.ide}
-                          onValueChange={(value) => saveIde({ ide: value })}
-                        >
-                          <SelectTrigger id="editor-ide" className="w-48">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="system">
-                              System Default
-                            </SelectItem>
-                            {ideOptions.map((opt) => (
-                              <SelectItem key={opt.id} value={opt.id}>
-                                {opt.label}
+                      <TabsContent
+                        value="editor"
+                        className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto py-6"
+                      >
+                        <Field orientation="horizontal">
+                          <FieldContent>
+                            <FieldLabel htmlFor="editor-ide">
+                              Open files in
+                            </FieldLabel>
+                            <FieldDescription>
+                              When you click a changed-file pill, open it here.
+                              The repo root opens first so an already-open
+                              window is reused; then the file opens in it.
+                              "System Default" uses your OS's default app for
+                              the file type.
+                            </FieldDescription>
+                          </FieldContent>
+                          <Select
+                            value={ide.ide}
+                            onValueChange={(value) => saveIde({ ide: value })}
+                          >
+                            <SelectTrigger id="editor-ide" className="w-48">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="system">
+                                System Default
                               </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </Field>
-                    </TabsContent>
+                              {ideOptions.map((opt) => (
+                                <SelectItem key={opt.id} value={opt.id}>
+                                  {opt.label}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </Field>
+                      </TabsContent>
 
-                    {/* Sandbox auto-approve — master switch + per-category opt-ins.
-                        Only meaningful with a container backend (tab is disabled otherwise). */}
-                    <TabsContent
-                      value="sandbox"
-                      className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto py-6"
-                    >
-                      <Field orientation="horizontal">
-                        <FieldContent>
-                          <FieldLabel htmlFor="sandbox-master">
-                            Sandbox auto-approve
-                          </FieldLabel>
-                          <FieldDescription>
-                            Auto-approve selected actions while running in a
-                            container. Hard-blocked commands are never
-                            auto-approved.
-                          </FieldDescription>
-                        </FieldContent>
-                        <Switch
-                          id="sandbox-master"
-                          checked={execution.sandbox.autoApprove}
-                          onCheckedChange={(checked) =>
-                            saveExecution({
-                              ...execution,
-                              sandbox: {
-                                ...execution.sandbox,
-                                autoApprove: checked,
-                              },
-                            })
-                          }
-                        />
-                      </Field>
-
-                      {execution.sandbox.autoApprove &&
-                        CATEGORY_ORDER.map((cat) => (
-                          <Field key={cat} orientation="horizontal">
+                      {/* Desktop notifications — master switch + per-event opt-ins.
+                        The renderer only fires when the window is unfocused, or
+                        focused on a different conversation than the event is
+                        about, so these never interrupt what you're looking at. */}
+                      <TabsContent
+                        value="notifications"
+                        className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto py-6"
+                      >
+                        <Field orientation="horizontal">
+                          <FieldContent>
+                            <FieldLabel htmlFor="notif-enabled">
+                              Desktop notifications
+                            </FieldLabel>
+                            <FieldDescription>
+                              Show a system notification when the agent needs
+                              you or finishes work — but only while the app is
+                              in the background or you're viewing another
+                              conversation.
+                            </FieldDescription>
+                          </FieldContent>
+                          <Switch
+                            id="notif-enabled"
+                            checked={notifications.enabled}
+                            onCheckedChange={(checked) =>
+                              saveNotifications({
+                                ...notifications,
+                                enabled: checked,
+                              })
+                            }
+                          />
+                        </Field>
+                        {NOTIFICATION_EVENTS.map((evt) => (
+                          <Field key={evt.key} orientation="horizontal">
                             <FieldContent>
-                              <FieldLabel htmlFor={`cat-${cat}`}>
-                                {CATEGORY_META[cat].label}
+                              <FieldLabel htmlFor={`notif-${evt.key}`}>
+                                {evt.label}
                               </FieldLabel>
-                              <FieldDescription>
-                                {CATEGORY_META[cat].help}
-                              </FieldDescription>
+                              <FieldDescription>{evt.help}</FieldDescription>
                             </FieldContent>
                             <Switch
-                              id={`cat-${cat}`}
-                              checked={
-                                execution.sandbox.categories[cat] === true
-                              }
+                              id={`notif-${evt.key}`}
+                              // The per-event toggles are meaningless with the
+                              // master switch off — disable them to make that clear.
+                              disabled={!notifications.enabled}
+                              checked={notifications[evt.key]}
                               onCheckedChange={(checked) =>
-                                saveExecution({
-                                  ...execution,
-                                  sandbox: {
-                                    ...execution.sandbox,
-                                    categories: {
-                                      ...execution.sandbox.categories,
-                                      [cat]: checked,
-                                    },
-                                  },
+                                saveNotifications({
+                                  ...notifications,
+                                  [evt.key]: checked,
                                 })
                               }
                             />
                           </Field>
                         ))}
-                    </TabsContent>
+                      </TabsContent>
+
+                      {/* Sandbox auto-approve — master switch + per-category opt-ins.
+                        Only meaningful with a container backend (tab is disabled otherwise). */}
+                      <TabsContent
+                        value="sandbox"
+                        className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto py-6"
+                      >
+                        <Field orientation="horizontal">
+                          <FieldContent>
+                            <FieldLabel htmlFor="sandbox-master">
+                              Sandbox auto-approve
+                            </FieldLabel>
+                            <FieldDescription>
+                              Auto-approve selected actions while running in a
+                              container. Hard-blocked commands are never
+                              auto-approved.
+                            </FieldDescription>
+                          </FieldContent>
+                          <Switch
+                            id="sandbox-master"
+                            checked={execution.sandbox.autoApprove}
+                            onCheckedChange={(checked) =>
+                              saveExecution({
+                                ...execution,
+                                sandbox: {
+                                  ...execution.sandbox,
+                                  autoApprove: checked,
+                                },
+                              })
+                            }
+                          />
+                        </Field>
+
+                        {execution.sandbox.autoApprove &&
+                          CATEGORY_ORDER.map((cat) => (
+                            <Field key={cat} orientation="horizontal">
+                              <FieldContent>
+                                <FieldLabel htmlFor={`cat-${cat}`}>
+                                  {CATEGORY_META[cat].label}
+                                </FieldLabel>
+                                <FieldDescription>
+                                  {CATEGORY_META[cat].help}
+                                </FieldDescription>
+                              </FieldContent>
+                              <Switch
+                                id={`cat-${cat}`}
+                                checked={
+                                  execution.sandbox.categories[cat] === true
+                                }
+                                onCheckedChange={(checked) =>
+                                  saveExecution({
+                                    ...execution,
+                                    sandbox: {
+                                      ...execution.sandbox,
+                                      categories: {
+                                        ...execution.sandbox.categories,
+                                        [cat]: checked,
+                                      },
+                                    },
+                                  })
+                                }
+                              />
+                            </Field>
+                          ))}
+                      </TabsContent>
+                    </div>
                   </div>
-                </div>
-              </Tabs>
-            )}
+                </Tabs>
+              )}
           </DialogPrimitive.Content>
         </DialogPrimitive.Portal>
       </Dialog>

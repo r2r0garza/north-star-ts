@@ -26,14 +26,17 @@ import type {
   LlmSettings,
   IndexingSettings,
   SkillSourcesSettings,
+  AgentSourcesSettings,
   BrowserSettings,
   IdeSettings,
+  NotificationSettings,
 } from "../main/settings/service"
 import type {
   SkillSourceRow,
   SkillCatalogEntry,
   SkillTree,
 } from "../main/agent/skills/types"
+import type { AgentSourceRow } from "../main/agent/agents/types"
 import type { RuntimeStatus } from "../main/agent/env/runtime-check"
 import type { CreateAccountInput } from "../main/db/repositories/provider-accounts"
 import type { AddModelInput } from "../main/db/repositories/models"
@@ -110,6 +113,14 @@ export type SkillSummary = {
   description: string
 }
 
+// A custom agent as surfaced to the composer's agent picker — just what the
+// dropdown needs to display and match on. The full definition (body, tools,
+// skills, children) stays in the main process and is resolved per turn.
+export type AgentSummary = {
+  name: string
+  description: string
+}
+
 // The typed API exposed to the renderer as `window.cowork`.
 // This is the ONLY surface the UI can use to reach the main process.
 const api = {
@@ -156,6 +167,10 @@ const api = {
   // promise above then resolves with `{ stopped: true }`.
   chatStop: (conversationId: string) =>
     ipcRenderer.invoke("chat:stop", conversationId) as Promise<void>,
+  // Flip Auto mode on an already-running turn (the composer dropdown changed
+  // mid-turn). Turning it on also clears any pending approval for the turn.
+  chatSetAutoMode: (conversationId: string, on: boolean) =>
+    ipcRenderer.invoke("chat:setAutoMode", conversationId, on) as Promise<void>,
   // Resolve an in-flight approval request (from an "approval" ChatEvent). The
   // agent loop is paused until this is called. `requestId` is the token from the
   // event. `remember` persists an allowlist rule so the same action is
@@ -275,6 +290,19 @@ const api = {
     write: (filePath: string, content: string) =>
       ipcRenderer.invoke("skills:write", filePath, content) as Promise<void>,
   },
+  // List the user-invocable custom agents (name + description) for the composer's
+  // agent picker. Pass the active workspace so workspace-level agents are included.
+  agents: {
+    list: (workspace?: string) =>
+      ipcRenderer.invoke("agents:list", workspace) as Promise<AgentSummary[]>,
+    // Enumerate the agent-source folders (built-in + custom) with per-source
+    // agent counts, for Settings → Capabilities. Pass the workspace to include
+    // the workspace-scoped sources.
+    sources: (workspace?: string) =>
+      ipcRenderer.invoke("agents:sources", workspace) as Promise<
+        AgentSourceRow[]
+      >,
+  },
   // List workspace files for the composer's `@`-mention menu, filtered by the
   // typed query (server-side). Returns workspace-relative POSIX paths, capped.
   // Resolves [] when there's no workspace (Chat mode).
@@ -290,7 +318,11 @@ const api = {
     // Working-tree diff for one workspace-relative file (backs the changed-file
     // pills). Null when not a git repo; { diff: "" } when tracked but unchanged.
     diff: (workspace: string, relPath: string) =>
-      ipcRenderer.invoke("git:diff", workspace, relPath) as Promise<GitDiffResult | null>,
+      ipcRenderer.invoke(
+        "git:diff",
+        workspace,
+        relPath
+      ) as Promise<GitDiffResult | null>,
   },
   // Open a workspace file in the OS default app for its type (the user's IDE, if
   // that's the default). Resolves with "" on success or an error string.
@@ -330,6 +362,17 @@ const api = {
     return () => {
       ipcRenderer.removeListener("browser:activate-conversation", listener)
     }
+  },
+  // Show an OS desktop notification. The renderer gates WHETHER to fire (it knows
+  // the on-screen conversation + window focus); this just hands the payload to
+  // main. Clicking the notification focuses the window and, when conversationId
+  // is set, drives onActivateConversation to switch to it.
+  showNotification: (payload: {
+    title: string
+    body: string
+    conversationId?: string
+  }) => {
+    ipcRenderer.send("notifications:show", payload)
   },
   // Report the right-panel Browser slot's on-screen rectangle so the embedded
   // agent-browser view is laid out to match. Null hides the embed (panel closed /
@@ -414,6 +457,7 @@ const api = {
         title?: string | null
         accountId?: string | null
         modelId?: string | null
+        agentName?: string | null
       }) =>
         ipcRenderer.invoke(
           "db:conversations:create",
@@ -436,12 +480,22 @@ const api = {
           projectId?: string | null
           accountId?: string | null
           modelId?: string | null
+          agentName?: string | null
         }
       ) =>
         ipcRenderer.invoke(
           "db:conversations:update",
           id,
           patch
+        ) as Promise<Conversation>,
+      // Pin/unpin a conversation. Separate from `update` because it deliberately
+      // does not bump updated_at (see the main handler / repo), so unpinning
+      // restores the conversation's natural recency position.
+      setPinned: (id: string, pinned: boolean) =>
+        ipcRenderer.invoke(
+          "db:conversations:setPinned",
+          id,
+          pinned
         ) as Promise<Conversation>,
       delete: (id: string) =>
         ipcRenderer.invoke("db:conversations:delete", id) as Promise<void>,
@@ -485,7 +539,8 @@ const api = {
       update: (
         id: string,
         patch: { name?: string; workspaceId?: string | null }
-      ) => ipcRenderer.invoke("db:projects:update", id, patch) as Promise<Project>,
+      ) =>
+        ipcRenderer.invoke("db:projects:update", id, patch) as Promise<Project>,
       delete: (id: string) =>
         ipcRenderer.invoke("db:projects:delete", id) as Promise<void>,
     },
@@ -598,6 +653,15 @@ const api = {
         "settings:setSkillSources",
         next
       ) as Promise<SkillSourcesSettings>,
+    getAgentSources: () =>
+      ipcRenderer.invoke(
+        "settings:getAgentSources"
+      ) as Promise<AgentSourcesSettings>,
+    setAgentSources: (next: AgentSourcesSettings) =>
+      ipcRenderer.invoke(
+        "settings:setAgentSources",
+        next
+      ) as Promise<AgentSourcesSettings>,
     getBrowser: () =>
       ipcRenderer.invoke("settings:getBrowser") as Promise<BrowserSettings>,
     setBrowser: (next: BrowserSettings) =>
@@ -605,10 +669,18 @@ const api = {
         "settings:setBrowser",
         next
       ) as Promise<BrowserSettings>,
-    getIde: () =>
-      ipcRenderer.invoke("settings:getIde") as Promise<IdeSettings>,
+    getIde: () => ipcRenderer.invoke("settings:getIde") as Promise<IdeSettings>,
     setIde: (next: IdeSettings) =>
       ipcRenderer.invoke("settings:setIde", next) as Promise<IdeSettings>,
+    getNotifications: () =>
+      ipcRenderer.invoke(
+        "settings:getNotifications"
+      ) as Promise<NotificationSettings>,
+    setNotifications: (next: NotificationSettings) =>
+      ipcRenderer.invoke(
+        "settings:setNotifications",
+        next
+      ) as Promise<NotificationSettings>,
     // The selectable IDEs (id + label) for the Settings dropdown. Static list;
     // mirrored from the main-process IDE registry so the renderer needs no import.
     ideOptions: () =>
@@ -758,9 +830,11 @@ export type {
   LlmSettings,
   IndexingSettings,
   SkillSourcesSettings,
+  AgentSourcesSettings,
   BrowserSettings,
   BrowserReveal,
   IdeSettings,
+  NotificationSettings,
   Backend,
   FilePermission,
   ApprovalCategory,
@@ -773,6 +847,10 @@ export type {
   SkillFolder,
   SkillTree,
 } from "../main/agent/skills/types"
+export type {
+  AgentSourceRow,
+  AgentSourceKind,
+} from "../main/agent/agents/types"
 export type { RuntimeStatus, Runtime } from "../main/agent/env/runtime-check"
 // LLM provider/model types for the Providers & Models tabs and the composer.
 export type {

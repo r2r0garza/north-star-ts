@@ -71,6 +71,9 @@ export function registerDbHandlers(
         workspaceId?: string | null
         projectId?: string | null
         title?: string | null
+        accountId?: string | null
+        modelId?: string | null
+        agentName?: string | null
       }
     ) => {
       const conversation = conversations.createConversation(input)
@@ -94,12 +97,23 @@ export function registerDbHandlers(
         title?: string | null
         workspaceId?: string | null
         projectId?: string | null
+        accountId?: string | null
+        modelId?: string | null
+        agentName?: string | null
       }
     ) => {
       const conversation = conversations.updateConversation(id, patch)
       maybeAutoIndex(conversation, indexService)
       return conversation
     }
+  )
+  // Pin/unpin: a dedicated channel (not the generic update) so it can leave
+  // updated_at untouched — the update path always bumps recency, which would
+  // break "unpin returns to natural position."
+  ipcMain.handle(
+    "db:conversations:setPinned",
+    (_e, id: string, pinned: boolean) =>
+      conversations.setConversationPinned(id, pinned)
   )
   ipcMain.handle("db:conversations:delete", (_e, id: string) => {
     // Close the conversation's browser tab (if any) so a deleted conversation

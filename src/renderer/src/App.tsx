@@ -3,6 +3,7 @@ import type { KeyboardEvent } from "react"
 import { toast } from "sonner"
 import {
   ArrowUp,
+  Bot,
   BrainCircuit,
   ChevronDown,
   ClipboardList,
@@ -83,25 +84,132 @@ import {
   type ChangedFile,
 } from "@/lib/timeline"
 import { cn } from "@/lib/utils"
+import { maybeNotify } from "@/lib/notify"
 import type {
   Question,
   QuestionAnswer,
   LlmSettings,
   AccountWithModels,
   SkillSummary,
+  AgentSummary,
   PickedElement,
 } from "@/types"
 
+// One ordered piece of an in-flight turn: a run of streamed assistant text, or a
+// group of tool calls. Segments are appended in the order events arrive, so the
+// live turn interleaves text and tools exactly as it happened (a preamble, its
+// tools, the next preamble, its tools, …) — matching how buildTimeline lays out
+// the settled transcript. This replaces the old flat {text, tools}, which
+// rendered every tool first and all text after, regardless of real order.
+type LiveSegment =
+  | { kind: "text"; text: string }
+  | { kind: "tools"; calls: ToolUse[] }
+
 // The live, in-flight state of one streaming turn, held per-conversation in
 // `liveTurns` until the turn settles and reconciles into the persisted timeline.
-// A pending approval lives inside `tools` (on the matching call's `approval`),
-// so restoring a switched-away turn restores its approval card too.
+// A pending approval lives inside a tools segment (on the matching call's
+// `approval`), so restoring a switched-away turn restores its approval card too.
 interface LiveTurn {
-  text: string
-  tools: ToolUse[]
+  segments: LiveSegment[]
   question: { requestId: string; questions: Question[] } | null
 }
-const EMPTY_LIVE: LiveTurn = { text: "", tools: [], question: null }
+const EMPTY_LIVE: LiveTurn = { segments: [], question: null }
+
+// Append streamed assistant text. Extends the trailing text segment when the
+// last event was also text (so a token stream coalesces), otherwise starts a new
+// text segment after a tools group — which is what creates the interleaving.
+function appendLiveText(turn: LiveTurn, delta: string): LiveTurn {
+  const last = turn.segments[turn.segments.length - 1]
+  if (last?.kind === "text") {
+    return {
+      ...turn,
+      segments: [
+        ...turn.segments.slice(0, -1),
+        { kind: "text", text: last.text + delta },
+      ],
+    }
+  }
+  return {
+    ...turn,
+    segments: [...turn.segments, { kind: "text", text: delta }],
+  }
+}
+
+// Register a started tool call. Appends to the trailing tools group when the last
+// event was also a tool (back-to-back calls in one round group together, like
+// buildTimeline groups an assistant message's calls), else opens a new group.
+function addLiveToolStart(turn: LiveTurn, call: ToolUse): LiveTurn {
+  const last = turn.segments[turn.segments.length - 1]
+  if (last?.kind === "tools") {
+    return {
+      ...turn,
+      segments: [
+        ...turn.segments.slice(0, -1),
+        { kind: "tools", calls: [...last.calls, call] },
+      ],
+    }
+  }
+  return {
+    ...turn,
+    segments: [...turn.segments, { kind: "tools", calls: [call] }],
+  }
+}
+
+// Update a tool call by id wherever it lives (result/status/approval), leaving
+// all other segments untouched.
+function updateLiveTool(
+  turn: LiveTurn,
+  id: string,
+  fn: (call: ToolUse) => ToolUse
+): LiveTurn {
+  return {
+    ...turn,
+    segments: turn.segments.map((seg) =>
+      seg.kind === "tools"
+        ? {
+            ...seg,
+            calls: seg.calls.map((c) => (c.id === id ? fn(c) : c)),
+          }
+        : seg
+    ),
+  }
+}
+
+// All tool calls across a turn's segments, flattened in order — for derivations
+// that don't care about interleaving (pending-approval lookup, changed-files,
+// the "any tools yet?" check).
+function liveToolsOf(turn: LiveTurn | undefined): ToolUse[] {
+  if (!turn) return []
+  return turn.segments.flatMap((s) => (s.kind === "tools" ? s.calls : []))
+}
+
+// Append final/terminal text (error or stop note) to the turn. Reuses the text
+// coalescing so it lands after whatever streamed, with a separating blank line
+// when text already exists.
+function appendLiveFinalText(turn: LiveTurn, note: string): LiveTurn {
+  const hasText = turn.segments.some((s) => s.kind === "text" && s.text)
+  return appendLiveText(turn, hasText ? `\n\n${note}` : note)
+}
+
+// Collapse whitespace and clip to a single-line preview for a desktop
+// notification body (the OS truncates anyway; this keeps it tidy).
+function snippet(text: string, max = 140): string {
+  const flat = text.replace(/\s+/g, " ").trim()
+  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat
+}
+
+// True when a keystroke is landing in an editable field, so global single-key
+// shortcuts should stand down (don't hijack typing). Mirrors the guard in
+// theme-provider's hotkey (which is file-local there).
+function isTypingTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false
+  return (
+    target.isContentEditable ||
+    target.tagName === "INPUT" ||
+    target.tagName === "TEXTAREA" ||
+    target.tagName === "SELECT"
+  )
+}
 
 // Split a workspace-relative POSIX path (from the `@`-mention file list) into its
 // basename and parent dir for two-line display in the menu.
@@ -234,6 +342,12 @@ export default function App({
   //     picked — the source of truth for which tokens get a badge and get expanded
   //     at send. A typed-but-unpicked `/foo` or `@bar` stays plain text.
   const [skills, setSkills] = useState<SkillSummary[]>([])
+  // User-invocable custom agents for the composer's agent picker, and this
+  // conversation's selection. `selAgentName` is null for the built-in main agent
+  // (default). Persisted onto the conversation row; for a not-yet-created
+  // conversation it's carried into create() on first send. Mirrors selModelId.
+  const [agents, setAgents] = useState<AgentSummary[]>([])
+  const [selAgentName, setSelAgentName] = useState<string | null>(null)
   const [menu, setMenu] = useState<{ kind: MentionKind; query: string } | null>(
     null
   )
@@ -280,7 +394,7 @@ export default function App({
     for (const [id, turn] of liveTurns) {
       const blocked =
         turn.question !== null ||
-        turn.tools.some((t) => t.approval?.status === "pending")
+        liveToolsOf(turn).some((t) => t.approval?.status === "pending")
       if (blocked) waiting.add(id)
     }
     onWaitingConvosChange?.(waiting)
@@ -406,6 +520,8 @@ export default function App({
       // A fresh conversation starts from the default selection (null = inherit).
       setSelAccountId(null)
       setSelModelId(null)
+      // No custom agent by default (null = built-in main agent).
+      setSelAgentName(null)
       // If starting in a project that has a directory, adopt + lock it; otherwise
       // clear the picker (unassigned / directory-less project).
       if (pendingProjectId) {
@@ -438,6 +554,8 @@ export default function App({
       // Restore the conversation's own model selection (null falls back to default).
       setSelAccountId(convo?.accountId ?? null)
       setSelModelId(convo?.modelId ?? null)
+      // Restore the conversation's selected custom agent (null = main agent).
+      setSelAgentName(convo?.agentName ?? null)
       // If the conversation belongs to a project with a directory, that directory
       // is the source of truth and the picker is locked. Otherwise fall back to
       // the conversation's own workspace_id (legacy / unassigned).
@@ -492,6 +610,24 @@ export default function App({
   // <workspace>/.cowork/skills and <workspace>/.github/skills).
   useEffect(() => reloadSkills(), [reloadSkills])
 
+  // Load the user-invocable custom agents for the picker. Reloads on workspace
+  // change (workspace-level agents live under <workspace>/.cowork/agents and
+  // <workspace>/.github/agents), mirroring skills.
+  useEffect(() => {
+    let cancelled = false
+    window.cowork.agents
+      .list(workspace.trim() || undefined)
+      .then((list) => {
+        if (!cancelled) setAgents(list)
+      })
+      .catch(() => {
+        if (!cancelled) setAgents([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [workspace])
+
   // Report the workspace root up to the Shell so the sidebar Changes review + the
   // browser file:// opens can use it. Chat has no workspace → report empty.
   useEffect(() => {
@@ -499,7 +635,10 @@ export default function App({
   }, [workspace, isChat, onWorkspaceChange])
 
   // Fetch the git branch for the current workspace folder. Clears when the
-  // folder is deselected or when it's not a git repo.
+  // folder is deselected or when it's not a git repo. Also re-runs whenever the
+  // window regains focus: the branch can change out from under us (the user
+  // switches branches in their IDE while the app is in the background), and a
+  // one-shot read on folder-select would otherwise show a stale branch forever.
   useEffect(() => {
     const path = workspace.trim()
     if (!path || isChat) {
@@ -507,13 +646,21 @@ export default function App({
       return
     }
     let cancelled = false
-    window.cowork.git.branch(path).then((branch) => {
-      if (!cancelled) setGitBranch(branch)
-    }).catch(() => {
-      if (!cancelled) setGitBranch(null)
-    })
+    const refresh = () => {
+      window.cowork.git
+        .branch(path)
+        .then((branch) => {
+          if (!cancelled) setGitBranch(branch)
+        })
+        .catch(() => {
+          if (!cancelled) setGitBranch(null)
+        })
+    }
+    refresh()
+    window.addEventListener("focus", refresh)
     return () => {
       cancelled = true
+      window.removeEventListener("focus", refresh)
     }
   }, [workspace, isChat])
 
@@ -733,19 +880,67 @@ export default function App({
     remember?: "workspace" | "conversation"
   ) {
     // The card is only shown for the conversation on screen, so flip its status
-    // in that conversation's live turn (matched by requestId).
+    // in that conversation's live turn (matched by requestId, wherever its
+    // segment is).
     if (conversationId) {
       updateLive(conversationId, (turn) => ({
         ...turn,
-        tools: turn.tools.map((t) =>
-          t.approval?.requestId === requestId
-            ? { ...t, approval: { ...t.approval, status: decision } }
-            : t
+        segments: turn.segments.map((seg) =>
+          seg.kind === "tools"
+            ? {
+                ...seg,
+                calls: seg.calls.map((t) =>
+                  t.approval?.requestId === requestId
+                    ? { ...t, approval: { ...t.approval, status: decision } }
+                    : t
+                ),
+              }
+            : seg
         ),
       }))
     }
     void window.cowork.chatApprove({ requestId, decision, remember })
   }
+
+  // Change the agent mode from the composer dropdown. Updates session state and,
+  // when a turn is currently running, pushes the Auto flag to that live turn so
+  // switching to Auto mid-turn actually applies (the backend gate reads it live;
+  // turning Auto on there also clears any pending approval). Plan can't be
+  // toggled onto a running turn (it gates the toolset at turn start), so only the
+  // Auto flag is propagated — mode still updates locally for the next turn.
+  function changeAgentMode(mode: AgentMode) {
+    setAgentMode(mode)
+    if (loading && conversationId) {
+      void window.cowork.chatSetAutoMode(conversationId, mode === "auto")
+    }
+  }
+
+  // Fire a desktop notification about a turn in `convoId`, labeling it with the
+  // conversation's title when available. Self-gates on settings + focus/view (see
+  // maybeNotify): the window being focused on THIS conversation suppresses it.
+  const notify = useCallback(
+    async (
+      convoId: string,
+      kind: Parameters<typeof maybeNotify>[0]["kind"],
+      body: string
+    ) => {
+      let title = agentName
+      try {
+        const convo = await window.cowork.db.conversations.get(convoId)
+        if (convo?.title?.trim()) title = convo.title.trim()
+      } catch {
+        // Title lookup is best-effort — fall back to the agent name.
+      }
+      void maybeNotify({
+        kind,
+        title,
+        body,
+        conversationId: convoId,
+        isViewing: viewingRef.current === convoId,
+      })
+    },
+    [agentName]
+  )
 
   async function sendMessage() {
     if (!canSend) return
@@ -782,6 +977,8 @@ export default function App({
         // the default" — only store an explicit pick that differs from default.
         accountId: selAccountId,
         modelId: selModelId,
+        // Persist the selected custom agent (null = built-in main agent).
+        agentName: selAgentName,
       })
       convoId = convo.id
       isNew = true
@@ -851,59 +1048,51 @@ export default function App({
         // its tokens/tools/approval — they're preserved and restored on return.
         (event) => {
           if (event.type === "token") {
-            updateLive(turnConvoId, (turn) => ({
-              ...turn,
-              text: turn.text + event.delta,
-            }))
+            updateLive(turnConvoId, (turn) => appendLiveText(turn, event.delta))
           } else if (event.type === "tool" && event.phase === "start") {
-            // A tool started — add a running row (label derived from its args).
-            updateLive(turnConvoId, (turn) => ({
-              ...turn,
-              tools: [
-                ...turn.tools,
+            // A tool started — add a running row (label derived from its args) to
+            // the current tools segment, or open a new one after streamed text.
+            updateLive(turnConvoId, (turn) =>
+              addLiveToolStart(
+                turn,
                 toToolUse({
                   id: event.id,
                   name: event.name,
                   arguments: event.arguments,
-                }),
-              ],
-            }))
+                })
+              )
+            )
           } else if (event.type === "tool" && event.phase === "done") {
             // Its result arrived — attach it, clear any approval card, and flip
-            // status (matched by id).
-            updateLive(turnConvoId, (turn) => ({
-              ...turn,
-              tools: turn.tools.map((t) =>
-                t.id === event.id
-                  ? {
-                      ...t,
-                      result: event.result,
-                      status: isErrorResult(event.result) ? "error" : "done",
-                      approval: undefined,
-                    }
-                  : t
-              ),
-            }))
+            // status (matched by id, wherever its segment is).
+            updateLive(turnConvoId, (turn) =>
+              updateLiveTool(turn, event.id, (t) => ({
+                ...t,
+                result: event.result,
+                status: isErrorResult(event.result) ? "error" : "done",
+                approval: undefined,
+              }))
+            )
           } else if (event.type === "approval") {
             // The agent is paused waiting on a human decision — attach a pending
             // approval card to the matching (already-running) tool row.
-            updateLive(turnConvoId, (turn) => ({
-              ...turn,
-              tools: turn.tools.map((t) =>
-                t.id === event.id
-                  ? {
-                      ...t,
-                      approval: {
-                        requestId: event.requestId,
-                        summary: event.summary,
-                        reason: event.reason,
-                        status: "pending",
-                        kind: event.kind,
-                      },
-                    }
-                  : t
-              ),
-            }))
+            updateLive(turnConvoId, (turn) =>
+              updateLiveTool(turn, event.id, (t) => ({
+                ...t,
+                approval: {
+                  requestId: event.requestId,
+                  summary: event.summary,
+                  reason: event.reason,
+                  status: "pending",
+                  kind: event.kind,
+                },
+              }))
+            )
+            void notify(
+              turnConvoId,
+              "needsInput",
+              event.summary || "The agent needs your approval to continue."
+            )
           } else if (event.type === "question") {
             // The agent paused to ask the user — show the question panel above
             // the composer until answered.
@@ -914,6 +1103,12 @@ export default function App({
                 questions: event.questions,
               },
             }))
+            void notify(
+              turnConvoId,
+              "needsInput",
+              event.questions[0]?.question ||
+                "The agent has a question for you."
+            )
           } else if (event.type === "plan_mode") {
             // Only the backend knows whether the configured execution environment
             // started successfully, so reflect its confirmed state instead of
@@ -951,31 +1146,49 @@ export default function App({
             },
           })
         }
-        updateLive(turnConvoId, (turn) => ({
-          ...turn,
-          text: turn.text
-            ? `${turn.text}\n\n⚠️ ${data.error}`
-            : `Error: ${data.error}`,
-        }))
+        updateLive(turnConvoId, (turn) =>
+          appendLiveFinalText(
+            turn,
+            turn.segments.some((s) => s.kind === "text" && s.text)
+              ? `⚠️ ${data.error}`
+              : `Error: ${data.error}`
+          )
+        )
       } else if (data.stopped) {
         // Clean user cancel — the "⏹ Stopped by user." note is persisted and
         // shown by the reconcile below; append a transient marker meanwhile.
-        updateLive(turnConvoId, (turn) => ({
-          ...turn,
-          text: turn.text ? `${turn.text}\n\n⏹ Stopped` : "⏹ Stopped",
-        }))
+        updateLive(turnConvoId, (turn) =>
+          appendLiveFinalText(turn, "⏹ Stopped")
+        )
       } else if (data.content) {
-        updateLive(turnConvoId, (turn) => ({
-          ...turn,
-          text: turn.text || data.content!,
-        }))
+        // Final answer with no streamed text (rare): seed a text segment so the
+        // bubble isn't empty. If text already streamed, it's already shown.
+        updateLive(turnConvoId, (turn) =>
+          turn.segments.some((s) => s.kind === "text" && s.text)
+            ? turn
+            : appendLiveText(turn, data.content!)
+        )
+      }
+      // Desktop notification on settle: error vs done. A clean user-initiated
+      // stop is silent (the user is right here). The body is a short snippet of
+      // the outcome; maybeNotify suppresses it when the window is focused on this
+      // very conversation.
+      if (data.error) {
+        void notify(turnConvoId, "turnError", snippet(data.error))
+      } else if (!data.stopped) {
+        void notify(turnConvoId, "turnComplete", "The agent finished its turn.")
       }
     } catch (error) {
       const msg = error instanceof Error ? error.message : "Request failed"
-      updateLive(turnConvoId, (turn) => ({
-        ...turn,
-        text: turn.text ? `${turn.text}\n\n⚠️ ${msg}` : msg,
-      }))
+      updateLive(turnConvoId, (turn) =>
+        appendLiveFinalText(
+          turn,
+          turn.segments.some((s) => s.kind === "text" && s.text)
+            ? `⚠️ ${msg}`
+            : msg
+        )
+      )
+      void notify(turnConvoId, "turnError", snippet(msg))
     } finally {
       // Clear this conversation's running flag (drops its spinner/Stop button).
       setRunningConvos((prev) => {
@@ -1027,6 +1240,7 @@ export default function App({
         projectId: pendingProjectId,
         accountId: selAccountId,
         modelId: selModelId,
+        agentName: selAgentName,
       })
       convoId = convo.id
       isNew = true
@@ -1057,8 +1271,10 @@ export default function App({
   // this, so switching conversations just changes which entry we look up rather
   // than wiping a shared buffer.
   const liveTurn = conversationId ? liveTurns.get(conversationId) : undefined
-  const liveText = liveTurn?.text ?? ""
-  const liveTools = liveTurn?.tools ?? []
+  const liveSegments = liveTurn?.segments ?? []
+  // Flattened tool list — for the pending-approval lookup and the "any tools
+  // yet?" checks. Ordering is preserved in `liveSegments` for rendering.
+  const liveTools = liveToolsOf(liveTurn)
   const liveQuestion = liveTurn?.question ?? null
 
   // Submit the user's answers to a pending ask_user_question. Clear the panel
@@ -1130,6 +1346,55 @@ export default function App({
     (t) => t.approval?.status === "pending"
   )?.approval
 
+  // When an approval appears, pull focus out of the message box so the single-key
+  // approval shortcuts (Enter / S / Esc) work instead of typing into the composer.
+  useEffect(() => {
+    if (pendingApproval) textareaRef.current?.blur()
+  }, [pendingApproval])
+
+  // Likewise when a question panel appears: blur the composer so the panel's
+  // arrow/Enter navigation works instead of typing into the message box. Mirrors
+  // the approval blur above; the two are mutually exclusive (sequential gating).
+  useEffect(() => {
+    if (liveQuestion) textareaRef.current?.blur()
+  }, [liveQuestion])
+
+  // Keyboard shortcuts for the pending approval, active only while one is shown:
+  //   Enter → Approve once   S → Approve for session/workspace   Esc → Reject
+  // The "S" scope mirrors ApprovalCard exactly: no session option for delegate;
+  // "conversation" for web, "workspace" otherwise. Guarded by isTypingTarget so a
+  // focused field (e.g. an open question's Other box) keeps its own keys — though
+  // the blur above means the composer isn't focused while this is active.
+  useEffect(() => {
+    if (!pendingApproval) return
+    const { requestId, kind } = pendingApproval
+    // Global DOM KeyboardEvent (App imports React's KeyboardEvent type for the
+    // composer handler; this window listener needs the DOM one).
+    function onKeyDown(e: globalThis.KeyboardEvent) {
+      if (e.defaultPrevented || e.repeat) return
+      if (e.metaKey || e.ctrlKey || e.altKey) return
+      if (isTypingTarget(e.target)) return
+      if (e.key === "Enter") {
+        e.preventDefault()
+        resolveApproval(requestId, "approved")
+      } else if (e.key === "Escape") {
+        e.preventDefault()
+        resolveApproval(requestId, "denied")
+      } else if (e.key.toLowerCase() === "s") {
+        // Session/workspace approve — only when the card offers it (not delegate).
+        if (kind === "delegate") return
+        e.preventDefault()
+        resolveApproval(
+          requestId,
+          "approved",
+          kind === "web" ? "conversation" : "workspace"
+        )
+      }
+    }
+    window.addEventListener("keydown", onKeyDown)
+    return () => window.removeEventListener("keydown", onKeyDown)
+  }, [pendingApproval])
+
   // The composer's model picker. Spans every provider's models (grouped by
   // provider) in a type-to-filter combobox, so a session can switch provider+model
   // inline without visiting Settings. The choice is per-conversation: persisted
@@ -1145,6 +1410,15 @@ export default function App({
         accountId,
         modelId,
       })
+    }
+  }
+  // Select the custom agent for this conversation (null = built-in main agent).
+  // Persisted immediately when the conversation exists; otherwise carried into
+  // create() on first send, mirroring selectModel.
+  async function selectAgent(agentName: string | null) {
+    setSelAgentName(agentName)
+    if (conversationId) {
+      await window.cowork.db.conversations.update(conversationId, { agentName })
     }
   }
   // Combobox items use { value: "accountId::modelId", label } objects — Base UI
@@ -1272,6 +1546,105 @@ export default function App({
     </button>
   )
 
+  // Custom agent picker. Only shown when the user has at least one invocable
+  // agent on disk (~/.cowork/agents or the workspace agent dirs). A type-to-filter
+  // combobox mirroring the model picker: a flat item list where value "" is the
+  // "Default (no agent)" entry (clears the selection → built-in main agent) and
+  // each other item is an agent (filtered by name). Compact (icon-only) when the
+  // right panel squeezes the toolbar. The selected agent's prompt is prepended
+  // to ours per turn.
+  const agentItems: { value: string; label: string; description?: string }[] = [
+    { value: "", label: "Default (no agent)" },
+    ...agents.map((a) => ({
+      value: a.name,
+      label: a.name,
+      description: a.description,
+    })),
+  ]
+  const selectedAgentItem =
+    agentItems.find((it) => it.value === (selAgentName ?? "")) ?? null
+  const renderAgentItem = (item: {
+    value: string
+    label: string
+    description?: string
+  }) => (
+    <ComboboxItem key={item.value || "__default__"} value={item}>
+      <span className="flex flex-col gap-0.5">
+        <span>{item.label}</span>
+        {item.description && (
+          <span className="line-clamp-2 text-[10px] text-muted-foreground">
+            {item.description}
+          </span>
+        )}
+      </span>
+    </ComboboxItem>
+  )
+  const onAgentValueChange = (item: { value: string } | null) => {
+    if (!item) return
+    void selectAgent(item.value || null)
+  }
+  const agentPicker =
+    agents.length > 0 ? (
+      <Combobox
+        items={agentItems}
+        value={selectedAgentItem}
+        isItemEqualToValue={(a, b) => a?.value === b?.value}
+        onValueChange={onAgentValueChange}
+      >
+        <ComboboxTrigger
+          className={cn(
+            "flex h-7 max-w-52 items-center gap-1 rounded-md px-2 text-xs transition-colors",
+            selAgentName
+              ? "bg-accent text-foreground"
+              : "text-muted-foreground hover:bg-accent hover:text-foreground"
+          )}
+        >
+          <Bot className="size-4 shrink-0" />
+          <ComboboxValue placeholder="Agent">
+            {(value: { value: string; label: string } | null) => (
+              <span className="truncate">
+                {value && value.value ? value.label : "Agent"}
+              </span>
+            )}
+          </ComboboxValue>
+        </ComboboxTrigger>
+        <ComboboxContent className="w-72 min-w-72">
+          <ComboboxInput placeholder="Search agents…" showTrigger={false} />
+          <ComboboxEmpty>No agents found.</ComboboxEmpty>
+          <ComboboxList>{renderAgentItem}</ComboboxList>
+        </ComboboxContent>
+      </Combobox>
+    ) : null
+
+  // Icon-only agent picker shown when the right panel is open (squeezes the
+  // toolbar). Same Combobox; renders only the Bot icon, selected agent as tooltip.
+  const agentPickerCompact =
+    agents.length > 0 ? (
+      <Combobox
+        items={agentItems}
+        value={selectedAgentItem}
+        isItemEqualToValue={(a, b) => a?.value === b?.value}
+        onValueChange={onAgentValueChange}
+      >
+        <ComboboxTrigger
+          title={selAgentName ? `Agent: ${selAgentName}` : "Select agent"}
+          className={cn(
+            "flex h-7 items-center rounded-md px-2 transition-colors",
+            selAgentName
+              ? "bg-accent text-foreground"
+              : "text-muted-foreground hover:bg-accent hover:text-foreground"
+          )}
+        >
+          <Bot className="size-4" />
+        </ComboboxTrigger>
+        <ComboboxContent className="w-72 min-w-72">
+          <ComboboxInput placeholder="Search agents…" showTrigger={false} />
+          <ComboboxEmpty>No agents found.</ComboboxEmpty>
+          <ComboboxList>{renderAgentItem}</ComboboxList>
+        </ComboboxContent>
+      </Combobox>
+    ) : null
+
   // The composer (attachment chips + input box). Rendered both centered and
   // bottom-pinned, so it's defined once here.
   const composer = (
@@ -1295,9 +1668,7 @@ export default function App({
               <AttachmentActions>
                 <AttachmentAction
                   onClick={() =>
-                    setPickedElements((prev) =>
-                      prev.filter((_, j) => j !== i)
-                    )
+                    setPickedElements((prev) => prev.filter((_, j) => j !== i))
                   }
                   aria-label="Remove picked element"
                 >
@@ -1410,7 +1781,11 @@ export default function App({
                   <button
                     type="button"
                     onClick={pickWorkspace}
-                    title={workspace ? lastSegment(workspace) : "Select workspace folder"}
+                    title={
+                      workspace
+                        ? lastSegment(workspace)
+                        : "Select workspace folder"
+                    }
                     className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
                   >
                     <FolderOpen className="size-4" />
@@ -1422,13 +1797,19 @@ export default function App({
                   </button>
                 )}
                 {gitBranch && !rightPanelOpen && (
-                  <span title={gitBranch} className="flex items-center gap-1 rounded bg-accent px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+                  <span
+                    title={gitBranch}
+                    className="flex items-center gap-1 rounded bg-accent px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground"
+                  >
                     <GitBranch className="size-3 shrink-0" />
                     <span>{gitBranch}</span>
                   </span>
                 )}
                 {gitBranch && rightPanelOpen && (
-                  <span title={gitBranch} className="flex items-center rounded bg-accent p-1 text-muted-foreground">
+                  <span
+                    title={gitBranch}
+                    className="flex items-center rounded bg-accent p-1 text-muted-foreground"
+                  >
                     <GitBranch className="size-3" />
                   </span>
                 )}
@@ -1436,6 +1817,8 @@ export default function App({
             )}
             {!rightPanelOpen && modelPicker}
             {rightPanelOpen && modelPickerCompact}
+            {!rightPanelOpen && agentPicker}
+            {rightPanelOpen && agentPickerCompact}
             {/* Agent mode dropdown. Session-only. "Default" = normal; "Plan" =
                 read-only planning turn until approved; "Auto" = all gated
                 actions auto-approved. Chat offers only Default/Auto — plan mode
@@ -1470,7 +1853,7 @@ export default function App({
               </DropdownMenuTrigger>
               <DropdownMenuContent align="start" className="min-w-36">
                 <DropdownMenuItem
-                  onClick={() => setAgentMode("default")}
+                  onClick={() => changeAgentMode("default")}
                   className={cn(
                     displayedMode === "default" && "bg-accent font-medium"
                   )}
@@ -1479,7 +1862,7 @@ export default function App({
                 </DropdownMenuItem>
                 {!isChat && (
                   <DropdownMenuItem
-                    onClick={() => setAgentMode("plan")}
+                    onClick={() => changeAgentMode("plan")}
                     className={cn(
                       displayedMode === "plan" && "bg-accent font-medium"
                     )}
@@ -1488,7 +1871,7 @@ export default function App({
                   </DropdownMenuItem>
                 )}
                 <DropdownMenuItem
-                  onClick={() => setAgentMode("auto")}
+                  onClick={() => changeAgentMode("auto")}
                   className={cn(
                     displayedMode === "auto" && "bg-accent font-medium"
                   )}
@@ -1582,7 +1965,11 @@ export default function App({
   }
 
   return (
-    <div className="relative flex h-svh w-full flex-col overflow-hidden">
+    // pt-11 clears the Shell's floating top drag bar (h-11, holding the
+    // Info/Browser/Changes toggle): the scroll region starts BELOW it, so
+    // messages scrolling up are clipped at the bar's edge instead of passing
+    // under it. The composer sits inside this column, so it's unaffected.
+    <div className="relative flex h-svh w-full flex-col overflow-hidden pt-11">
       {/* Conversation — MessageScroller handles auto-follow + scroll-to-bottom.
           The window drag bar lives in Shell, above this column. */}
       <MessageScrollerProvider autoScroll defaultScrollPosition="last-anchor">
@@ -1635,35 +2022,41 @@ export default function App({
                 )
               })}
 
-              {/* The in-flight assistant turn: tool activity, then streamed text,
-                  with a "Thinking…" status for the gap before the first event. */}
+              {/* The in-flight assistant turn: text and tool activity rendered in
+                  the order they streamed (interleaved via segments), so it reads
+                  the same live as it does once settled. "Thinking…" fills the gap
+                  before the first event. */}
               {loading && (
                 <MessageScrollerItem key="live" scrollAnchor>
                   <Message align="start">
                     <MessageContent>
-                      {liveTools.length > 0 && <ToolGroup calls={liveTools} />}
-                      {liveTools.length > 0 && (
-                        <ChangedFilesBar
-                          calls={liveTools}
-                          workspace={workspace.trim()}
-                          onOpenHtml={(p) => onOpenHtml?.(p)}
-                          onReviewAll={(files) => onReviewChanges?.(files)}
-                        />
+                      {liveSegments.map((seg, si) =>
+                        seg.kind === "tools" ? (
+                          <div key={`s${si}`}>
+                            <ToolGroup calls={seg.calls} />
+                            <ChangedFilesBar
+                              calls={seg.calls}
+                              workspace={workspace.trim()}
+                              onOpenHtml={(p) => onOpenHtml?.(p)}
+                              onReviewAll={(files) => onReviewChanges?.(files)}
+                            />
+                          </div>
+                        ) : seg.text ? (
+                          <Bubble key={`s${si}`} align="start" variant="muted">
+                            <BubbleContent>
+                              <Markdown content={seg.text} />
+                            </BubbleContent>
+                          </Bubble>
+                        ) : null
                       )}
-                      {liveText ? (
-                        <Bubble align="start" variant="muted">
-                          <BubbleContent>
-                            <Markdown content={liveText} />
-                          </BubbleContent>
-                        </Bubble>
-                      ) : liveTools.length === 0 ? (
+                      {liveSegments.length === 0 && (
                         <Marker>
                           <MarkerIcon>
                             <Spinner />
                           </MarkerIcon>
                           <MarkerContent>Thinking…</MarkerContent>
                         </Marker>
-                      ) : null}
+                      )}
                     </MessageContent>
                   </Message>
                 </MessageScrollerItem>

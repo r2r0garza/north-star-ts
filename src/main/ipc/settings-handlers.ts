@@ -7,8 +7,10 @@ import type {
   PermissionSettings,
   IndexingSettings,
   SkillSourcesSettings,
+  AgentSourcesSettings,
   BrowserSettings,
   IdeSettings,
+  NotificationSettings,
 } from "../settings/service"
 
 // Registers the `settings:` IPC channels. All route through the settings service
@@ -40,6 +42,13 @@ export function registerSettingsHandlers(): void {
     settingsService.setSkillSources(next)
   )
 
+  ipcMain.handle("settings:getAgentSources", () =>
+    settingsService.getAgentSources()
+  )
+  ipcMain.handle("settings:setAgentSources", (_e, next: AgentSourcesSettings) =>
+    settingsService.setAgentSources(next)
+  )
+
   ipcMain.handle("settings:getBrowser", () => settingsService.getBrowser())
   ipcMain.handle("settings:setBrowser", (_e, next: BrowserSettings) =>
     settingsService.setBrowser(next)
@@ -48,6 +57,14 @@ export function registerSettingsHandlers(): void {
   ipcMain.handle("settings:getIde", () => settingsService.getIde())
   ipcMain.handle("settings:setIde", (_e, next: IdeSettings) =>
     settingsService.setIde(next)
+  )
+
+  ipcMain.handle("settings:getNotifications", () =>
+    settingsService.getNotifications()
+  )
+  ipcMain.handle(
+    "settings:setNotifications",
+    (_e, next: NotificationSettings) => settingsService.setNotifications(next)
   )
   // Static IDE registry (id + label) for the Settings dropdown.
   ipcMain.handle("settings:getIdeOptions", () =>
