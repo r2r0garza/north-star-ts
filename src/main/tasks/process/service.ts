@@ -8,6 +8,8 @@ import { listMessages } from "../../db/repositories/messages"
 import { getWorkspace } from "../../db/repositories/workspaces"
 import * as processes from "../../db/repositories/processes"
 import type { TaskRunner, TaskExecutor } from "../runner"
+import type { LlmSelection } from "../../agent/providers"
+import { route } from "./router"
 import type {
   ProcessPhase,
   ProcessPhaseRun,
@@ -140,7 +142,33 @@ export class ProcessService {
       const source = run.sourceConversationId
         ? getConversation(run.sourceConversationId)
         : undefined
-      const agentName = this.resolveAgent(phase)
+
+      const workspace = source?.workspaceId
+        ? getWorkspace(source.workspaceId)?.path
+        : undefined
+
+      // A fan-out CHILD runs its decomposed sub-task briefing verbatim; a normal
+      // phase gets the generic self-contained kickoff (plan 025.1).
+      const prompt =
+        subtaskPrompt ??
+        kickoffPrompt({
+          phase,
+          objective: run.objective ?? "",
+          upstream: this.collectUpstream(run, phase),
+        })
+
+      // Resolve the phase's agent BEFORE forking the worker: for a `dispatch`
+      // phase this routes over the pool per (sub-)task, using `prompt` as the
+      // classification signal (plan 025.3). `single` phases resolve pool[0].
+      const agentName = await this.resolveAgent(phase, {
+        taskPrompt: prompt,
+        selection: {
+          accountId: source?.accountId ?? null,
+          modelId: source?.modelId ?? null,
+        },
+        workspace,
+        signal,
+      })
 
       const worker = createConversation({
         mode: source?.mode ?? "interactive",
@@ -164,10 +192,6 @@ export class ProcessService {
         agentName,
       })
 
-      const workspace = source?.workspaceId
-        ? getWorkspace(source.workspaceId)?.path
-        : undefined
-
       // Chain a child controller so run-level cancel unwinds the phase worker.
       const childAbort = new AbortController()
       if (signal.aborted) childAbort.abort(signal.reason)
@@ -177,16 +201,6 @@ export class ProcessService {
           () => childAbort.abort(signal.reason),
           { once: true }
         )
-
-      // A fan-out CHILD runs its decomposed sub-task briefing verbatim; a normal
-      // phase gets the generic self-contained kickoff (plan 025.1).
-      const prompt =
-        subtaskPrompt ??
-        kickoffPrompt({
-          phase,
-          objective: run.objective ?? "",
-          upstream: this.collectUpstream(run, phase),
-        })
 
       try {
         const result = await runAgentLoop({
@@ -219,7 +233,9 @@ export class ProcessService {
       const source = run.sourceConversationId
         ? getConversation(run.sourceConversationId)
         : undefined
-      const agentName = this.resolveAgent(phase)
+      // The decomposition (planning) pass runs on pool[0]; each resulting CHILD
+      // routes independently over the pool in makeRunPhase (plan 025.3).
+      const agentName = await this.resolveAgent(phase)
 
       const worker = createConversation({
         mode: source?.mode ?? "interactive",
@@ -319,11 +335,31 @@ export class ProcessService {
     return graph?.phases.find((p) => p.id === phaseId)?.name ?? "upstream"
   }
 
-  // v1: single-agent phases. The pool's first agent (position 0) runs the phase.
-  // dispatch routing over N agents is the 025.3 fast-follow.
-  private resolveAgent(phase: ProcessPhase): string | null {
+  // Resolve which agent runs a phase (or one of its sub-tasks). `single` phases
+  // use the pool's first agent (position 0). `dispatch` phases (plan 025.3) route
+  // over the pool per (sub-)task via an LLM classifier when routing context is
+  // supplied; the classifier falls back to pool[0] internally so a dispatch phase
+  // never wedges. Without routing context (e.g. a fan-out phase's decomposition
+  // pass), or an empty pool, this is the plain pool[0] path.
+  private async resolveAgent(
+    phase: ProcessPhase,
+    routing?: {
+      taskPrompt: string
+      selection: LlmSelection
+      workspace?: string
+      signal: AbortSignal
+    }
+  ): Promise<string | null> {
     const pool = processes.listPhaseAgents(phase.id)
-    return pool[0]?.agentName ?? null
+    if (pool.length === 0) return null
+    if (phase.routing !== "dispatch" || !routing) return pool[0].agentName
+    return route({
+      pool,
+      taskPrompt: routing.taskPrompt,
+      selection: routing.selection,
+      workspace: routing.workspace,
+      signal: routing.signal,
+    })
   }
 
   // A digest of the completed upstream phases' final output, for the kickoff.
