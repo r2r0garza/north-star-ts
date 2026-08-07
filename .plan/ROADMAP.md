@@ -7,73 +7,52 @@ item is its plan file, not its rank.
 
 ## Next up
 
-1. **`025` — Process engine (v1 core). ✅ BUILT (not yet merged).** A user-defined **agentic DAG**:
-   reusable Process *definitions* (phases + dependency edges + per-phase agent pool + skills/tools +
-   routing + gate policy + fan-out) and *run* instances, driven by a new `process_run` task kind on
-   the runner's executor seam. The scheduler runs a **ready-set walk** over the edges — **sequential
-   chains, parallel independent phases, and multi-dependency joins** (Publish ← Construct AND
-   Validate) all fall out of the edge model and **shipped in v1**. Phases run **inline** via
-   `runAgentLoop` in forked worker conversations (the `spawnSubagent` precedent — the codebase's
-   documented ruling against re-enqueuing, which would deadlock under the concurrency cap), governed
-   by a per-run promise pool. Per-phase **human-in-the-loop gates** (`auto`/`approve`, reusing the
-   `012` durable-approval pipeline) give "approve each / approve specific / fully autonomous"
-   control; crash-resume at phase granularity is the **first real consumer of `task_checkpoints`**.
-   New `SCHEMA_V15` (all 6 tables — `process_definitions`/`process_phases`/`process_phase_agents`/
-   `process_edges`/`process_runs`/`process_phase_runs` — **laid down whole** so the fast-follows need
-   no migration) + a `src/main/tasks/process/` module (`service`/`scheduler`/`prompts`) + `process:*`
-   / `db:processes:*` IPC + preload. **Supersedes `018`** — 018's fixed
-   `plan→execute→review→fix→finalize` becomes one built-in Process template. **Deferred to
-   fast-follows** (schema already present): runtime **fan-out** → `025.1`; **`on_each_subtask`**
-   partial-completion triggers → `025.2`; **`dispatch` routing** across an agent pool → `025.3`.
-   Verified: `pnpm typecheck` + `pnpm build` clean; 541 tests pass (20 new — process repo v15/CRUD/
-   tri-state + scheduler ready-set/parallel/join/gate/resume/cancel + runner pause-resume gate
-   contract); stale `user_version` assertions bumped 10 → 15.
-2. **`025.1` — Process fan-out.** Runtime decomposition: a `fan_out` phase asks its agent to split
+1. **`025.1` — Process fan-out.** Runtime decomposition: a `fan_out` phase asks its agent to split
    into N sub-tasks, each a child `process_phase_runs` row dispatched under the per-run pool; parent
    completes when all children terminal. Additive on `SCHEMA_V15` (no migration).
-3. **`025.2` — Process `on_each_subtask`.** Partial-completion triggers (**depends on `025.1`**): a
+2. **`025.2` — Process `on_each_subtask`.** Partial-completion triggers (**depends on `025.1`**): a
    downstream phase starts per completed fan-out child (Validate picks up each Construct piece as it
    lands), via the scheduler's existing race-on-first-completion. Additive.
-4. **`025.3` — Process dispatch routing.** `routing:'dispatch'` + a `router.ts` LLM classifier over
+3. **`025.3` — Process dispatch routing.** `routing:'dispatch'` + a `router.ts` LLM classifier over
    the pool's agent `description`s selecting the best-fit agent per sub-task; `pool[0]` fallback.
    Additive. (Best paired with `027` so there are multiple authored agents to route between.)
-5. **`026` — Process UI.** The renderer for `025`: a **Process** entry in the sidebar view switcher
+4. **`026` — Process UI.** The renderer for `025`: a **Process** entry in the sidebar view switcher
    (`sidebar.tsx`; lean an overlay like the Skills screen, not a 4th `Mode`), a full-viewport
    `process-screen.tsx` listing definitions with New/edit/delete/run, a **DAG builder** (phases,
    edges, per-phase agent pool + skills/tools + routing + gate policy + fan-out), and a **run
    monitor** visualizing live phase status off the `process_phase` `task:event` tail with inline
    approval cards for gated phases. Depends on `025` (engine + `process:*` IPC) and `027` (agents to
    pick).
-6. **`027` — Agent management UI.** In-app create/edit/delete of the file-based `<name>.agent.md`
+5. **`027` — Agent management UI.** In-app create/edit/delete of the file-based `<name>.agent.md`
    agents (today: disk-only + a read-only folder table in Settings). Mirrors the skills editor
    (`skills-screen.tsx`, `skills:read`/`skills:write` behind `assertSkillPath`): new
    `agents:read`/`write`/`create`/`delete` IPC behind an `assertAgentPath`, structured tri-state
    tool/skill pickers over the 8 categories + skill catalog. Closes the loop so `025`/`026` phases
    can reference authored agents.
-7. **`028` — Skill authoring.** Extends the Skills view (already View + Edit) with **create** +
+6. **`028` — Skill authoring.** Extends the Skills view (already View + Edit) with **create** +
    **delete** — `skills:create`/`skills:delete` IPC guarded to **writable** roots (never a bundled
    seed), a New Skill scaffold + delete-with-confirm in `skills-screen.tsx`. Complements `027` (an
    agent's `skills[]` can only reference skills that exist).
-8. **`020` — Durable memories.** The cross-conversation memories section `014` reserved: small,
+7. **`020` — Durable memories.** The cross-conversation memories section `014` reserved: small,
    persisted facts the agent writes (a **gated, explicit** `remember` tool — no silent profiling)
    and that inject into future turns, **scoped** global / workspace / conversation (mirrors the
    `action_allowlist` scoping). New `memories` table + a list/delete surface (durable +
    cross-conversation ⇒ must be auditable/revocable); a `memoriesSection` renderer with an injection
    cap. Split out of `014` Q2.
-9. **`010` — Container runtime profiles.** Decouple Workspace (the files) from Runtime (the env a
+8. **`010` — Container runtime profiles.** Decouple Workspace (the files) from Runtime (the env a
    tool call executes in). Replace the raw container `image` string with a named **profile**
    (`node` | `python` | `fullstack`), resolved to an image in the env factory; default/fallback =
    `fullstack` (Node + Python) so a Node repo that later adds a Python backend doesn't wedge.
    One profile per conversation, user-overridable in settings. Kills the "one workspace = one image
    forever" assumption **without** building auto-routing or image management (both deferred). Small
    refactor of `env/factory.ts` + `container.ts` + execution settings (JSON blob — no migration).
-10. **`005.1` — ContainerEnvironment stop in-flight.** The deferred half of `005`: killing the host
+9. **`005.1` — ContainerEnvironment stop in-flight.** The deferred half of `005`: killing the host
    `docker/podman exec` client doesn't stop the in-container process. Needs its own kill mechanism
    (in-container PID tracking / `exec kill`, or marker `pkill`). Out of scope when `005` shipped.
-11. **`007` — Slash commands for skills.** Let users force a skill with `/skill-name …` (pre-inject
+10. **`007` — Slash commands for skills.** Let users force a skill with `/skill-name …` (pre-inject
    the `read_skill` call), keeping today's model-discretionary path for plain messages. Adds a
    `skills:list` IPC channel + composer autocomplete. Independent — schedule freely.
-12. **`018` — Agentic goal mode. ⚠️ SUPERSEDED by `025`** (the general Process engine — 018's fixed
+11. **`018` — Agentic goal mode. ⚠️ SUPERSEDED by `025`** (the general Process engine — 018's fixed
    pipeline becomes one built-in Process *template*; kept as a stable-ID file per convention, not
    built as its own orchestrator). An opt-in **execution mode** (orthogonal to chat/interactive/
    north_star): `simple` (today's one-pass behavior, default) vs `goal` (bounded **plan → execute →
@@ -87,7 +66,7 @@ item is its plan file, not its rank.
    PR (`/goal <request>` — reuses `007`'s composer slash-command affordance — + a "Run with review
    loop" button); the Always/Ask/Manual/Off **setting is deferred** to its own plan. Placed by `007`
    since both add `/`-command composer UI.
-13. **`024` — Index filesystem/git watcher.** The "live file watching" follow-up `008` deferred (and
+12. **`024` — Index filesystem/git watcher.** The "live file watching" follow-up `008` deferred (and
    `014` re-deferred). Today the workspace index — and the compact summary `buildIndexSummary`
    injects into the system prompt on every message send — only refreshes when `IndexService.
    ensureRunning` is called, which fires on conversation create/update or manual Start/Rebuild;
@@ -104,6 +83,39 @@ item is its plan file, not its rank.
 
 ## Done
 
+- **`025` — Process engine (v1 core).** Built on `feat/process-engine-planning` (commit `a06c7e4`;
+  not yet merged to `main`). A user-defined **agentic DAG**: reusable Process *definitions* (phases +
+  dependency edges + per-phase agent pool + skills/tools + routing + gate policy + fan-out) split from
+  *run* instances, driven by a new `process_run` task kind on the runner's **deterministic executor
+  seam**. The scheduler runs a **ready-set walk** over the edges — **sequential chains, parallel
+  independent phases, and multi-dependency joins** (Publish ← Construct AND Validate) all fall out of
+  the "every incoming edge satisfied" predicate, no special-casing. **Key decision:** phases run
+  **inline** via `runAgentLoop` in forked worker conversations (the `spawnSubagent` precedent — the
+  codebase's documented ruling against re-enqueuing, which "would deadlock under the concurrency cap on
+  a blocking wait"), governed by a per-run promise pool (`PER_RUN_CONCURRENCY = 4`) under the global
+  cap, so the whole run holds one global slot regardless of internal fan width. Per-phase
+  **human-in-the-loop gates** (`auto`/`approve`) reuse the `012` durable-approval dual-write on the
+  `process_run` task; a gate throws `GateBlockedError` → the task settles `paused` (freeing its slot),
+  and `process:approve` settles the row + resumes the task, which re-derives the ready-set and releases
+  the gated phase's dependents. **Crash-resume at phase granularity** is the **first real consumer of
+  `task_checkpoints`**: on `autoResume`, `completed` phases aren't re-run, a mid-flight phase resets to
+  `pending`, and a per-iteration frontier checkpoint accelerates re-derivation. New **`SCHEMA_V15`**
+  (all 6 tables — `process_definitions`/`process_phases`/`process_phase_agents`/`process_edges`/
+  `process_runs`/`process_phase_runs` — **laid down whole** so the fast-follows need no migration; bare
+  `TEXT` status columns validated in the repo layer to avoid a v8-style CHECK-widening rebuild) + a
+  `src/main/tasks/process/` module (`service`/`scheduler`/`prompts`) + `processes` repo + `process:*`
+  control / `db:processes:*` CRUD IPC + preload (`api.process` + `api.db.processes`). A new
+  `process_phase` `task_events` type rides the `process_run` task's tail (no new event channel — the
+  `026` monitor filters `task:event`). `enqueueKind` gained an optional `sourceConversationId` so a run
+  is user-facing (activity panel + completion notification). **Supersedes `018`** — 018's fixed
+  `plan→execute→review→fix→finalize` becomes one built-in Process *template* over this engine.
+  **Deferred to fast-follows** (additive on `SCHEMA_V15`, no migration): runtime **fan-out** → `025.1`;
+  **`on_each_subtask`** partial-completion triggers → `025.2`; **`dispatch` routing** across an agent
+  pool → `025.3` (v1 ships `routing:'single'`). Verified: `pnpm typecheck` + `pnpm build` clean; **541
+  tests pass** (20 new — process repo v15 migration/CRUD/tri-state skills-tools + scheduler
+  ready-set/parallel/multi-dep-join/approve-gate-block-then-release/resume-without-rerun/cancel/
+  failed-phase + a runner pause→resume gate-contract case); stale `user_version` assertions bumped
+  10 → 15 (they'd been dormant behind the SQLite-ABI test skip). Manual E2E deferred to the `026` UI.
 - **`019` — Conversation summaries.** Filled the rolling-summary section `014` reserved: a compact,
   periodically-regenerated digest of the turns scrolling out of the ContextBuilder's recent-message
   walk-back, so a long conversation keeps its early thread. **Storage** (`SCHEMA_V10`): a new
