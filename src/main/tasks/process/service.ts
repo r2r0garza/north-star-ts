@@ -14,6 +14,7 @@ import type {
   ProcessRun,
 } from "../../db/types"
 import {
+  eachSubtaskKickoffPrompt,
   fanOutDecomposePrompt,
   kickoffPrompt,
   parseDecomposition,
@@ -22,6 +23,7 @@ import {
 import {
   GateBlockedError,
   runScheduler,
+  type BuildEachSubtaskPrompt,
   type Decompose,
   type DecomposeResult,
   type PhaseResult,
@@ -99,6 +101,7 @@ export class ProcessService {
         emit,
         runPhase: this.makeRunPhase(run),
         decompose: this.makeDecompose(run),
+        buildEachSubtaskPrompt: this.makeBuildEachSubtaskPrompt(run),
       })
       processes.updateProcessRun(runId, {
         status: "completed",
@@ -291,6 +294,31 @@ export class ProcessService {
     }
   }
 
+  // Build the per-sub-task kickoff for an `on_each_subtask` consumer instance
+  // (plan 025.2). The consumer runs once per completed source sub-task, so the
+  // briefing carries THAT child's output alone — read from its worker's final
+  // assistant message — not the source phase's aggregate.
+  private makeBuildEachSubtaskPrompt(run: ProcessRun): BuildEachSubtaskPrompt {
+    return ({ phase, sourceChildRun }) => {
+      const source = sourceChildRun.phaseId
+        ? this.phaseName(run, sourceChildRun.phaseId)
+        : "upstream"
+      return eachSubtaskKickoffPrompt({
+        phase,
+        objective: run.objective ?? "",
+        sourcePhaseName: source,
+        subtaskContent: this.lastAssistantContent(sourceChildRun),
+      })
+    }
+  }
+
+  // The display name of a phase in this run's graph (for a kickoff briefing).
+  private phaseName(run: ProcessRun, phaseId: string): string {
+    if (!run.processId) return "upstream"
+    const graph = processes.getProcessGraph(run.processId)
+    return graph?.phases.find((p) => p.id === phaseId)?.name ?? "upstream"
+  }
+
   // v1: single-agent phases. The pool's first agent (position 0) runs the phase.
   // dispatch routing over N agents is the 025.3 fast-follow.
   private resolveAgent(phase: ProcessPhase): string | null {
@@ -317,10 +345,14 @@ export class ProcessService {
       const src = phasesById.get(sid)
       const pr = runByPhaseId.get(sid)
       if (!src || !pr || pr.status !== "completed") continue
-      // A fan-out source's own worker only produced the sub-task list; the real
-      // output lives in its children. Aggregate the children's final content so
-      // a downstream phase gets a real digest, not the decomposition (R7, 025.1).
-      const content = src.fanOut
+      // A CONTAINER source's own top-level worker produced no real output — the
+      // work lives in its children (fan-out sub-tasks (025.1) or on_each_subtask
+      // consumer instances (025.2)). Aggregate the children's final content so a
+      // downstream phase gets a real digest, not an empty parent (R7). A plain
+      // phase has no children → use its own worker's last assistant message.
+      const hasChildren =
+        processes.listPhaseRuns({ runId: run.id, parentId: pr.id }).length > 0
+      const content = hasChildren
         ? this.aggregateChildContent(run.id, pr.id)
         : pr.taskId
           ? this.lastAssistantContent(pr)

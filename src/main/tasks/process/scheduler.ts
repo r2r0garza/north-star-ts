@@ -41,6 +41,15 @@ const MAX_PHASE_ATTEMPTS = 3
 const FANOUT_CHECKPOINT_LABEL = (parentRunId: string): string =>
   `fanout:${parentRunId}`
 
+// The checkpoint label prefix for an `on_each_subtask` consumer's per-child
+// instances (plan 025.2). Unlike the fan-out label (one cumulative row per
+// parent, latest-wins), these are APPEND-ONLY — one row per triggered instance —
+// so recovery unions all rows for a label. Keyed by the consumer's top-level
+// (container) phase-run id. Each row records the source child that triggered it,
+// the created instance's run id, and the instance's kickoff prompt.
+const EACH_SUBTASK_CHECKPOINT_LABEL = (containerRunId: string): string =>
+  `eachsubtask:${containerRunId}`
+
 // Thrown to unwind the scheduler when an `approve` gate blocks the run. The
 // service maps it to { paused: true } so the process_run task settles `paused`
 // (a durable resume state) and frees its runner slot while awaiting approval.
@@ -86,6 +95,16 @@ export type Decompose = (input: {
   signal: AbortSignal
 }) => Promise<DecomposeResult>
 
+// Builds the kickoff briefing for one `on_each_subtask` consumer instance (plan
+// 025.2): the downstream phase V, plus the single completed fan-out child of the
+// source phase C that triggered this instance. Injected so tests can stub it.
+export type BuildEachSubtaskPrompt = (input: {
+  // The downstream (consumer) phase — V.
+  phase: ProcessPhase
+  // The source phase C's completed child phase-run that triggered this instance.
+  sourceChildRun: ProcessPhaseRun
+}) => string
+
 export interface SchedulerCtx {
   run: ProcessRun
   graph: ProcessGraph
@@ -97,12 +116,31 @@ export interface SchedulerCtx {
   // Fan-out decomposition (plan 025.1). Optional so a graph with no fan-out
   // phases needs no decomposer; a fan-out phase with no decomposer fails loudly.
   decompose?: Decompose
+  // Per-sub-task kickoff builder (plan 025.2). Optional so a graph with no
+  // `on_each_subtask` edges needs none; absent when an each-subtask instance is
+  // dispatched, the child falls back to no stored prompt (service builds one).
+  buildEachSubtaskPrompt?: BuildEachSubtaskPrompt
 }
 
 // The state persisted in a fan-out parent's checkpoint (plan 025.1).
 interface FanoutCheckpointState {
   parentPhaseRunId: string
   subtasks: Array<{ phaseRunId: string; prompt: string }>
+}
+
+// The state persisted per `on_each_subtask` instance (plan 025.2). One row per
+// triggered instance; recovery unions all rows for a container's label.
+interface EachSubtaskCheckpointState {
+  // The consumer phase's top-level (container) phase-run id.
+  containerPhaseRunId: string
+  // The source fan-out child whose completion triggered this instance.
+  sourceChildRunId: string
+  // The created consumer instance's phase-run id.
+  instanceRunId: string
+  // The instance's kickoff briefing (persisted so resume needn't rebuild it).
+  // Optional — absent when no prompt builder was injected (the run phase then
+  // builds a generic kickoff from the graph).
+  prompt?: string
 }
 
 // A gate's durable approval request blob (stored on the approvals row).
@@ -116,6 +154,28 @@ interface GateRequest {
 export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
   const { graph, run } = ctx
   const phasesById = new Map(graph.phases.map((p) => [p.id, p]))
+
+  // Phases that are the target of ≥1 `on_each_subtask` edge whose SOURCE is a
+  // fan-out phase (plan 025.2). These are "consumer" phases: their top-level run
+  // is a CONTAINER (like a fan-out parent) — never dispatched as a monolith;
+  // instead one child "instance" per completed source sub-task runs under it.
+  // The `source.fanOut` guard means a mis-authored on_each_subtask edge on a
+  // non-fan-out source is NOT treated as a consumer (it falls back to
+  // on_complete via onCompleteSources below).
+  const eachSubtaskConsumerPhaseIds = new Set<string>(
+    graph.edges
+      .filter((e) => {
+        if (e.trigger !== "on_each_subtask") return false
+        return phasesById.get(e.fromPhaseId)?.fanOut === true
+      })
+      .map((e) => e.toPhaseId)
+  )
+
+  // A CONTAINER phase's top-level run is settled by deriving from its children,
+  // not by an in-flight promise: fan-out parents (025.1) and on_each_subtask
+  // consumers (025.2) share this lifecycle (crash-reset, abort sweep, derivation).
+  const isContainer = (phase: ProcessPhase): boolean =>
+    phase.fanOut || eachSubtaskConsumerPhaseIds.has(phase.id)
 
   // Ensure a top-level phase_run row exists for every phase (idempotent across
   // resume: only create for phases that have no row yet). Fan-out children
@@ -139,25 +199,46 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
   // per label — take the LATEST (listCheckpoints returns created_at ASC).
   const childPrompts = new Map<string, string>() // childRunId → sub-task prompt
   const decomposedParents = new Set<string>() // parent phase-run ids seen fanned
+  // Which (sourceChildRunId → consumerPhaseId) pairs already spawned an instance,
+  // so an each-subtask trigger is idempotent across re-evaluation and resume (025.2).
+  const triggeredPairs = new Set<string>()
+  const triggeredKey = (sourceChildRunId: string, consumerPhaseId: string): string =>
+    `${sourceChildRunId}->${consumerPhaseId}`
   for (const cp of listCheckpoints(ctx.taskId)) {
-    if (!cp.label?.startsWith("fanout:")) continue
-    const state = cp.state as FanoutCheckpointState
-    if (!state?.parentPhaseRunId) continue
-    decomposedParents.add(state.parentPhaseRunId)
-    // Later rows overwrite earlier ones for the same child (ASC order → latest wins).
-    for (const st of state.subtasks ?? []) childPrompts.set(st.phaseRunId, st.prompt)
+    if (cp.label?.startsWith("fanout:")) {
+      const state = cp.state as FanoutCheckpointState
+      if (!state?.parentPhaseRunId) continue
+      decomposedParents.add(state.parentPhaseRunId)
+      // Later rows overwrite earlier ones for the same child (ASC → latest wins).
+      for (const st of state.subtasks ?? [])
+        childPrompts.set(st.phaseRunId, st.prompt)
+    } else if (cp.label?.startsWith("eachsubtask:")) {
+      // Append-only: one row per instance — UNION all rows (do NOT latest-wins).
+      const state = cp.state as EachSubtaskCheckpointState
+      if (!state?.instanceRunId) continue
+      if (state.prompt !== undefined)
+        childPrompts.set(state.instanceRunId, state.prompt)
+      const instance = processes.getPhaseRun(state.instanceRunId)
+      if (instance)
+        triggeredPairs.add(
+          triggeredKey(state.sourceChildRunId, instance.phaseId)
+        )
+    }
   }
 
   // Reset crash-orphaned rows to `pending` so they re-dispatch. Widened for
-  // fan-out (plan 025.1): children reset too; a fan-out parent WITH children is
-  // left `running` (its completion is derived from the children each iteration);
-  // a fan-out parent with NO children resets to `pending` to re-decompose.
+  // containers (plan 025.1/025.2): child/instance rows reset too; a CONTAINER
+  // top-level run WITH children is left `running` (its completion is derived from
+  // the children each iteration); a container with NO children resets to `pending`
+  // (a fan-out parent re-decomposes; an each-subtask consumer re-triggers). The
+  // atomic child/instance-creation tx guarantees `running` ⇒ ≥1 committed child,
+  // so leaving it `running` never strands a childless container.
   for (const pr of processes.listPhaseRuns({ runId: run.id })) {
     if (pr.status !== "running" && pr.status !== "ready") continue
     const phase = phasesById.get(pr.phaseId)
-    const isFanoutParent =
-      pr.parentId === null && phase?.fanOut === true
-    if (isFanoutParent) {
+    const isContainerParent =
+      pr.parentId === null && phase !== undefined && isContainer(phase)
+    if (isContainerParent) {
       const children = processes.listPhaseRuns({ runId: run.id, parentId: pr.id })
       if (children.length > 0) continue // derivation resumes it; leave `running`
     }
@@ -180,12 +261,21 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
   const statusOf = (phaseId: string): string =>
     processes.getPhaseRun(runByPhaseId.get(phaseId)!.id)?.status ?? "pending"
 
-  // Incoming on_complete edges for a phase (the dependency predicate). Edges with
-  // an on_each_subtask trigger are ignored here — they're a 025.2 concern and,
-  // absent fan-out, behave as a normal dependency once the source completes.
-  const incomingSources = (phaseId: string): string[] =>
+  // Incoming dependency sources for a phase's readiness (the "wait for the whole
+  // source" predicate). Includes on_complete edges AND on_each_subtask edges whose
+  // source is NOT a fan-out phase (graceful fallback: an each-subtask edge only
+  // has per-child meaning when the source fans out — otherwise it behaves as a
+  // normal on_complete dependency). Genuine on_each_subtask edges (fan-out source)
+  // are EXCLUDED here — they drive the consumer per-child via the fan-in trigger,
+  // not as a monolithic dependency (plan 025.2).
+  const onCompleteSources = (phaseId: string): string[] =>
     graph.edges
-      .filter((e) => e.toPhaseId === phaseId)
+      .filter((e) => {
+        if (e.toPhaseId !== phaseId) return false
+        if (e.trigger !== "on_each_subtask") return true
+        // on_each_subtask from a fan-out source → per-child, not a dep here.
+        return phasesById.get(e.fromPhaseId)?.fanOut !== true
+      })
       .map((e) => e.fromPhaseId)
 
   // Is the gate on a COMPLETED gated phase resolved? A phase with
@@ -362,6 +452,98 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
     for (const c of created) childPrompts.set(c.phaseRunId, c.prompt)
   }
 
+  // The `on_each_subtask` fan-in trigger (plan 025.2). For every on_each_subtask
+  // edge from a fan-out source C to a consumer V, spawn one V "instance" per
+  // completed C sub-task that hasn't triggered V yet — so V runs on each piece as
+  // it lands, not after C's whole parent completes. Each instance is a child row
+  // under V's top-level (container) run, dispatched by the SAME generic
+  // pendingChildren loop + dispatchChild that fan-out children use.
+  const triggerEachSubtask = (): void => {
+    for (const e of graph.edges) {
+      if (e.trigger !== "on_each_subtask") continue
+      const source = phasesById.get(e.fromPhaseId)
+      const consumer = phasesById.get(e.toPhaseId)
+      if (!source?.fanOut || !consumer) continue
+
+      // The consumer's container run must be live and its on_complete deps met.
+      const containerRun = runByPhaseId.get(consumer.id)!
+      const containerStatus = statusOf(consumer.id)
+      if (isTerminalStatus(containerStatus)) continue
+      const depsSatisfied = onCompleteSources(consumer.id).every((sid) => {
+        const src = phasesById.get(sid)
+        if (!src) return false
+        return statusOf(sid) === "completed" && gateResolved(src)
+      })
+      if (!depsSatisfied) continue
+
+      // One instance per not-yet-triggered COMPLETED child of the source.
+      const srcRun = runByPhaseId.get(source.id)!
+      const completed = processes
+        .listPhaseRuns({ runId: run.id, parentId: srcRun.id })
+        .filter((c) => c.status === "completed")
+      for (const child of completed) {
+        const key = triggeredKey(child.id, consumer.id)
+        if (triggeredPairs.has(key)) continue
+        // Fall back to undefined (NOT "") when no builder is injected, so the
+        // service's `subtaskPrompt ?? kickoffPrompt(...)` builds a real kickoff —
+        // an empty string is not nullish and would run the worker prompt-less.
+        const prompt = ctx.buildEachSubtaskPrompt
+          ? ctx.buildEachSubtaskPrompt({ phase: consumer, sourceChildRun: child })
+          : undefined
+        // Create instance + flip the container running (first transition only) +
+        // persist the instance's prompt in ONE tx, so a crash can't strand a
+        // prompt-less instance or a container without its instance row.
+        let instanceId = ""
+        const wasPending = statusOf(consumer.id) === "pending"
+        const tx = getDb().transaction(() => {
+          const instance = processes.createPhaseRun({
+            runId: run.id,
+            phaseId: consumer.id,
+            parentId: containerRun.id,
+            status: "pending",
+          })
+          instanceId = instance.id
+          if (wasPending)
+            processes.updatePhaseRun(containerRun.id, {
+              status: "running",
+              startedAt: Date.now(),
+            })
+          createCheckpoint({
+            taskId: ctx.taskId,
+            label: EACH_SUBTASK_CHECKPOINT_LABEL(containerRun.id),
+            state: {
+              containerPhaseRunId: containerRun.id,
+              sourceChildRunId: child.id,
+              instanceRunId: instance.id,
+              prompt,
+            } satisfies EachSubtaskCheckpointState,
+          })
+        })
+        tx()
+        if (prompt !== undefined) childPrompts.set(instanceId, prompt)
+        triggeredPairs.add(key)
+        // Emit the container's running transition once, on the first instance.
+        if (wasPending) emitContainerRunning(consumer, containerRun.id)
+      }
+    }
+  }
+
+  const emitContainerRunning = (
+    phase: ProcessPhase,
+    phaseRunId: string
+  ): void => {
+    const pr = processes.getPhaseRun(phaseRunId)
+    ctx.emit({
+      type: "process_phase",
+      runId: run.id,
+      phaseRunId,
+      phaseKey: phase.key,
+      agentName: pr?.agentName ?? null,
+      status: "running",
+      parentId: pr?.parentId ?? null,
+    })
+  }
+
   const runDecomposeWithRetry = async (
     phase: ProcessPhase,
     parentRun: ProcessPhaseRun
@@ -415,23 +597,102 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
     }
   }
 
-  // Settle a `running` fan-out parent once all its children are terminal (plan
-  // 025.1). R1 guard: only derive when children EXIST — a parent whose decompose
-  // promise is still in flight has zero children, and an empty `.every()` would
-  // vacuously settle it, orphaning the children about to be created.
-  const deriveFanoutParents = (): void => {
+  const isTerminalStatus = (s: string): boolean =>
+    ["completed", "failed", "cancelled", "skipped"].includes(s)
+
+  // The completed fan-out children of the source phases feeding a consumer via
+  // `on_each_subtask` edges — the set that each yields exactly one V instance
+  // (plan 025.2). Used both to gate the derive count guard and to enumerate the
+  // fan-in trigger's work. Also reports whether every such source is terminal.
+  const eachSubtaskSourceState = (
+    consumerPhaseId: string
+  ): { completedChildren: ProcessPhaseRun[]; allSourcesTerminal: boolean } => {
+    const completedChildren: ProcessPhaseRun[] = []
+    let allSourcesTerminal = true
+    for (const e of graph.edges) {
+      if (e.toPhaseId !== consumerPhaseId) continue
+      if (e.trigger !== "on_each_subtask") continue
+      const src = phasesById.get(e.fromPhaseId)
+      if (!src?.fanOut) continue
+      const srcRun = runByPhaseId.get(src.id)!
+      if (!isTerminalStatus(statusOf(src.id))) allSourcesTerminal = false
+      const children = processes.listPhaseRuns({
+        runId: run.id,
+        parentId: srcRun.id,
+      })
+      for (const c of children)
+        if (c.status === "completed") completedChildren.push(c)
+    }
+    return { completedChildren, allSourcesTerminal }
+  }
+
+  // Derive-settle a `running` CONTAINER top-level run from its children (plan
+  // 025.1 fan-out parents + plan 025.2 on_each_subtask consumers). Both settle
+  // via the same failed→cancelled→completed rule over terminal children.
+  //
+  // Run to a FIXPOINT: an each-subtask consumer's settle predicate reads its
+  // source's status, and a single graph.phases pass might visit the consumer
+  // BEFORE the source settles this iteration, leaving the consumer `running`
+  // right as the walk's terminal check runs and returns. Repeating until no row
+  // changes makes the result order-independent.
+  const deriveContainers = (): void => {
+    while (deriveContainersOnce()) {
+      // settled ≥1 container; repeat so a consumer whose source just settled in
+      // this same pass is re-evaluated before the walk's terminal check.
+    }
+  }
+
+  // One pass; returns whether it settled any container (drives the fixpoint).
+  const deriveContainersOnce = (): boolean => {
+    let settledAny = false
     for (const phase of graph.phases) {
-      if (!phase.fanOut) continue
+      if (!isContainer(phase)) continue
       const pr = runByPhaseId.get(phase.id)!
-      if (processes.getPhaseRun(pr.id)?.status !== "running") continue
+      const status = processes.getPhaseRun(pr.id)?.status
+      // Derive from `running` containers; also derive an each-subtask consumer
+      // that is still `pending` (never triggered) so it can settle `skipped` when
+      // its sources finish with nothing to validate. A pending fan-out parent
+      // hasn't decomposed yet — leave it for dispatch.
+      const eligible =
+        status === "running" ||
+        (status === "pending" && !phase.fanOut)
+      if (!eligible) continue
       const children = processes.listPhaseRuns({
         runId: run.id,
         parentId: pr.id,
       })
-      if (children.length === 0) continue // not yet decomposed — R1 guard
-      const isTerminal = (s: string): boolean =>
-        ["completed", "failed", "cancelled", "skipped"].includes(s)
-      if (!children.every((c) => isTerminal(c.status))) continue
+
+      if (phase.fanOut) {
+        // Fan-out parent (025.1). R1 guard: only derive when children EXIST — a
+        // parent whose decompose promise is still in flight has zero children, and
+        // an empty `.every()` would vacuously settle it, orphaning the children
+        // about to be created.
+        if (children.length === 0) continue
+      } else {
+        // on_each_subtask consumer (025.2). A consumer is settled only once its
+        // sources are ALL terminal — while a source is still producing sub-tasks,
+        // more instances are owed, so an early "all current instances terminal"
+        // must NOT settle it. Once sources are terminal: settle `skipped` if there
+        // was nothing to validate (no completed children); otherwise wait until
+        // one (now-terminal) instance exists per completed child (the count guard
+        // closes the race where the last child completed but the fan-in trigger
+        // hasn't created its instance yet).
+        const { completedChildren, allSourcesTerminal } =
+          eachSubtaskSourceState(phase.id)
+        if (!allSourcesTerminal) continue // sources still producing → more owed
+        if (completedChildren.length === 0) {
+          processes.updatePhaseRun(pr.id, {
+            status: "skipped",
+            finishedAt: Date.now(),
+          })
+          emitPhase(phase, pr.id, "skipped")
+          settledAny = true
+          continue
+        }
+        if (children.length < completedChildren.length) continue // owed a trigger
+      }
+
+      if (!children.every((c) => isTerminalStatus(c.status))) continue
       const anyFailed = children.some((c) => c.status === "failed")
       const anyCancelled = children.some((c) => c.status === "cancelled")
       const derived = anyFailed
@@ -444,7 +705,9 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
         finishedAt: Date.now(),
       })
       emitPhase(phase, pr.id, derived)
+      settledAny = true
     }
+    return settledAny
   }
 
   const runPhaseWithRetry = async (
@@ -499,7 +762,7 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
   const emitPhase = (
     phase: ProcessPhase,
     phaseRunId: string,
-    status: "completed" | "failed" | "cancelled"
+    status: "completed" | "failed" | "cancelled" | "skipped"
   ): void => {
     const pr = processes.getPhaseRun(phaseRunId)
     ctx.emit({
@@ -518,11 +781,12 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
     if (ctx.signal.aborted) {
       // Cancellation: in-flight phase workers observe the same signal and unwind
       // themselves; just stop scheduling. The service maps this to `stopped`.
-      // A fan-out parent's status isn't owned by any in-flight promise (its
-      // decompose already resolved), so settle non-terminal parents to cancelled
-      // here so the DAG isn't left with a dangling `running` parent (plan 025.1).
+      // A CONTAINER's status isn't owned by any in-flight promise (a fan-out
+      // parent's decompose already resolved; an each-subtask consumer is derived),
+      // so settle non-terminal containers to cancelled here so the DAG isn't left
+      // with a dangling `running` container (plan 025.1/025.2).
       for (const phase of graph.phases) {
-        if (!phase.fanOut) continue
+        if (!isContainer(phase)) continue
         const pr = runByPhaseId.get(phase.id)!
         const status = processes.getPhaseRun(pr.id)?.status
         if (status === "running" || status === "pending") {
@@ -536,10 +800,15 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
       return
     }
 
-    // Settle any fan-out parent whose children have all finished BEFORE gates and
-    // the ready-set — a fan-out parent counts as `completed` only via this step,
-    // and its dependents key off that completion (plan 025.1).
-    deriveFanoutParents()
+    // Settle any CONTAINER whose children have all finished BEFORE gates and the
+    // ready-set — a container counts as `completed` only via this step, and its
+    // dependents key off that completion (plan 025.1 fan-out / 025.2 consumers).
+    deriveContainers()
+
+    // Spawn any owed on_each_subtask instances (plan 025.2) BEFORE the ready-set
+    // and the terminal check: each completed source sub-task yields one consumer
+    // instance, dispatched below by the generic pendingChildren loop.
+    triggerEachSubtask()
 
     // Raise any pending gate BEFORE computing readiness — a gated completed phase
     // blocks its dependents until approved. raiseGate throws (GateBlockedError).
@@ -550,9 +819,12 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
     // Ready = pending phase whose every on_complete source is completed AND (if a
     // source is gated) its gate is resolved. Multi-dependency joins fall out of
     // the "every source" quantifier — a phase with two parents waits for both.
+    // on_each_subtask CONSUMER phases are excluded — they're driven per-child by
+    // triggerEachSubtask, never dispatched as a monolith (plan 025.2).
     const ready = graph.phases.filter((phase) => {
       if (statusOf(phase.id) !== "pending") return false
-      const sources = incomingSources(phase.id)
+      if (eachSubtaskConsumerPhaseIds.has(phase.id)) return false
+      const sources = onCompleteSources(phase.id)
       return sources.every((sid) => {
         const src = phasesById.get(sid)
         if (!src) return false

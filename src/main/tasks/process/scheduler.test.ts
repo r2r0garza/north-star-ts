@@ -21,6 +21,7 @@ import { listApprovals, resolveApproval } from "../../db/repositories/approvals"
 import {
   runScheduler,
   GateBlockedError,
+  type BuildEachSubtaskPrompt,
   type Decompose,
   type RunPhase,
   type SchedulerCtx,
@@ -41,10 +42,11 @@ function freshTask(): string {
   return taskId
 }
 
-// Build a process definition from a compact phase/edge spec.
+// Build a process definition from a compact phase/edge spec. An edge may carry a
+// trigger as a 3rd tuple element (defaults to 'on_complete').
 function buildProcess(spec: {
   phases: Array<{ key: string; gate?: "auto" | "approve"; fanOut?: boolean }>
-  edges?: Array<[string, string]>
+  edges?: Array<[string, string] | [string, string, "on_each_subtask"]>
 }): string {
   const def = processes.createProcessDefinition({ name: "T" })
   const byKey = new Map<string, string>()
@@ -64,11 +66,12 @@ function buildProcess(spec: {
       position: 0,
     })
   })
-  for (const [from, to] of spec.edges ?? []) {
+  for (const [from, to, trigger] of spec.edges ?? []) {
     processes.createEdge({
       processId: def.id,
       fromPhaseId: byKey.get(from)!,
       toPhaseId: byKey.get(to)!,
+      trigger,
     })
   }
   return def.id
@@ -79,7 +82,11 @@ function buildProcess(spec: {
 function makeCtx(
   processId: string,
   runPhase: RunPhase,
-  opts?: { abort?: AbortController; decompose?: Decompose }
+  opts?: {
+    abort?: AbortController
+    decompose?: Decompose
+    buildEachSubtaskPrompt?: BuildEachSubtaskPrompt
+  }
 ): { ctx: SchedulerCtx; events: TaskEventPayload[]; runId: string } {
   const taskId = freshTask()
   const run = processes.createProcessRun({
@@ -100,6 +107,7 @@ function makeCtx(
     emit: (e) => events.push(e),
     runPhase,
     decompose: opts?.decompose,
+    buildEachSubtaskPrompt: opts?.buildEachSubtaskPrompt,
   }
   return { ctx, events, runId: run.id }
 }
@@ -530,5 +538,262 @@ describe.skipIf(!sqliteLoads)("scheduler — fan-out", () => {
     expect(decomposeCalls).toBe(0) // never re-decomposed
     expect(ranPrompts.sort()).toEqual(["resumed 1", "resumed 2"]) // resumed prompts
     expect(processes.getPhaseRun(parent.id)!.status).toBe("completed")
+  })
+})
+
+describe.skipIf(!sqliteLoads)("scheduler — on_each_subtask (025.2)", () => {
+  // A trivial per-sub-task briefing builder for the tests.
+  const buildEachSubtaskPrompt: BuildEachSubtaskPrompt = ({ sourceChildRun }) =>
+    `validate:${sourceChildRun.id}`
+
+  it("fires one consumer instance per completed fan-out child", async () => {
+    // c (fanOut, 3 subtasks) --on_each_subtask--> v.
+    const pid = buildProcess({
+      phases: [{ key: "c", fanOut: true }, { key: "v" }],
+      edges: [["c", "v", "on_each_subtask"]],
+    })
+    const decompose: Decompose = async () => ({
+      subtasks: ["p1", "p2", "p3"],
+    })
+    let cParentSettled = false
+    const vStartedWhileCRunning: boolean[] = []
+    const runPhase: RunPhase = async ({ phase }) => {
+      if (phase.key === "v") {
+        // Record whether c's PARENT is still running when v starts — proving v
+        // fires per-child, not after the whole c phase completes.
+        vStartedWhileCRunning.push(!cParentSettled)
+      }
+      return { content: phase.key }
+    }
+    const { ctx, runId } = makeCtx(pid, runPhase, {
+      decompose,
+      buildEachSubtaskPrompt,
+    })
+    // Observe the parent's settle via events (completed on the c parent row).
+    const graph = processes.getProcessGraph(pid)!
+    const cParentId = processes
+      .listPhaseRuns({ runId, parentId: null })
+      .find(
+        (r) => r.phaseId === graph.phases.find((p) => p.key === "c")!.id
+      )
+    void cParentId
+    await runScheduler(ctx)
+
+    // Three v instances ran (one per completed c child).
+    const vRuns = runsForKey(runId, pid, "v")
+    const vInstances = vRuns.filter((r) => r.parentId !== null)
+    expect(vInstances).toHaveLength(3)
+    expect(vInstances.every((r) => r.status === "completed")).toBe(true)
+    // At least one v instance started before c's whole phase settled.
+    expect(vStartedWhileCRunning.some(Boolean)).toBe(true)
+    // The v CONTAINER completes once all instances are terminal.
+    expect(statusByKey(runId, pid).v).toBe("completed")
+    expect(statusByKey(runId, pid).c).toBe("completed")
+  })
+
+  it("settles the consumer only when every completed child has a terminal instance", async () => {
+    const pid = buildProcess({
+      phases: [{ key: "c", fanOut: true }, { key: "v" }],
+      edges: [["c", "v", "on_each_subtask"]],
+    })
+    const decompose: Decompose = async () => ({ subtasks: ["p1", "p2", "p3"] })
+    let vContainerStatusesSeen: string[] = []
+    const runPhase: RunPhase = async ({ phase }) => {
+      if (phase.key === "v") {
+        // Snapshot the v container's status while an instance runs — it must be
+        // `running`, never prematurely `completed`.
+        vContainerStatusesSeen.push(statusByKey(runId, pid).v)
+      }
+      return { content: phase.key }
+    }
+    const { ctx, runId } = makeCtx(pid, runPhase, {
+      decompose,
+      buildEachSubtaskPrompt,
+    })
+    await runScheduler(ctx)
+    expect(vContainerStatusesSeen.every((s) => s === "running")).toBe(true)
+    expect(statusByKey(runId, pid).v).toBe("completed")
+    const vInstances = runsForKey(runId, pid, "v").filter(
+      (r) => r.parentId !== null
+    )
+    expect(vInstances).toHaveLength(3)
+  })
+
+  it("skips the consumer when the source has no completed children", async () => {
+    // Every c child fails → c fails, no completed children → v is skipped.
+    const pid = buildProcess({
+      phases: [{ key: "c", fanOut: true }, { key: "v" }],
+      edges: [["c", "v", "on_each_subtask"]],
+    })
+    const decompose: Decompose = async () => ({ subtasks: ["p1", "p2"] })
+    const runPhase: RunPhase = async ({ phase, subtaskPrompt }) => {
+      if (phase.key === "c" && subtaskPrompt !== undefined)
+        return { error: "child failed", retryable: false }
+      return { content: phase.key }
+    }
+    const { ctx, runId } = makeCtx(pid, runPhase, {
+      decompose,
+      buildEachSubtaskPrompt,
+    })
+    // c fails → the DAG surfaces a run failure; v should be `skipped`, not run.
+    await expect(runScheduler(ctx)).rejects.toThrow(/failed/)
+    const vRuns = runsForKey(runId, pid, "v")
+    expect(vRuns.filter((r) => r.parentId !== null)).toHaveLength(0) // no instances
+    expect(statusByKey(runId, pid).v).toBe("skipped")
+  })
+
+  it("propagates a failed consumer instance to the consumer's derived status", async () => {
+    const pid = buildProcess({
+      phases: [{ key: "c", fanOut: true }, { key: "v" }],
+      edges: [["c", "v", "on_each_subtask"]],
+    })
+    const decompose: Decompose = async () => ({ subtasks: ["p1", "p2"] })
+    const runPhase: RunPhase = async ({ phase, subtaskPrompt }) => {
+      // The v instance triggered by the 2nd child fails.
+      if (phase.key === "v" && subtaskPrompt?.length)
+        return { error: "validate blew up", retryable: false }
+      return { content: phase.key }
+    }
+    const { ctx, runId } = makeCtx(pid, runPhase, {
+      decompose,
+      buildEachSubtaskPrompt,
+    })
+    await expect(runScheduler(ctx)).rejects.toThrow(/failed/)
+    expect(statusByKey(runId, pid).v).toBe("failed")
+  })
+
+  it("passes each triggering child's own briefing to its consumer instance", async () => {
+    const pid = buildProcess({
+      phases: [{ key: "c", fanOut: true }, { key: "v" }],
+      edges: [["c", "v", "on_each_subtask"]],
+    })
+    const decompose: Decompose = async () => ({ subtasks: ["p1", "p2"] })
+    const vPrompts: string[] = []
+    const runPhase: RunPhase = async ({ phase, subtaskPrompt }) => {
+      if (phase.key === "v") vPrompts.push(subtaskPrompt ?? "(none)")
+      return { content: phase.key }
+    }
+    const { ctx, runId } = makeCtx(pid, runPhase, {
+      decompose,
+      buildEachSubtaskPrompt,
+    })
+    await runScheduler(ctx)
+    // Each instance got a distinct validate:<childRunId> briefing.
+    expect(vPrompts).toHaveLength(2)
+    expect(new Set(vPrompts).size).toBe(2)
+    expect(vPrompts.every((p) => p.startsWith("validate:"))).toBe(true)
+    void runId
+  })
+
+  it("does not double-fire consumer instances on resume", async () => {
+    const pid = buildProcess({
+      phases: [{ key: "c", fanOut: true }, { key: "v" }],
+      edges: [["c", "v", "on_each_subtask"]],
+    })
+    const graph = processes.getProcessGraph(pid)!
+    const cPhase = graph.phases.find((p) => p.key === "c")!
+    const vPhase = graph.phases.find((p) => p.key === "v")!
+
+    // Simulate a prior run: c completed with two completed children; v container
+    // running with one already-triggered instance (child1) that completed. On
+    // resume, only child2 should trigger a fresh v instance — child1 must not.
+    const taskId = freshTask()
+    const run = processes.createProcessRun({
+      processId: pid,
+      sourceConversationId: null,
+      taskId,
+      objective: "obj",
+      status: "running",
+    })
+    const cParent = processes.createPhaseRun({
+      runId: run.id,
+      phaseId: cPhase.id,
+      status: "completed",
+    })
+    const cChild1 = processes.createPhaseRun({
+      runId: run.id,
+      phaseId: cPhase.id,
+      parentId: cParent.id,
+      status: "completed",
+    })
+    const cChild2 = processes.createPhaseRun({
+      runId: run.id,
+      phaseId: cPhase.id,
+      parentId: cParent.id,
+      status: "completed",
+    })
+    const vContainer = processes.createPhaseRun({
+      runId: run.id,
+      phaseId: vPhase.id,
+      status: "running",
+    })
+    const vInstance1 = processes.createPhaseRun({
+      runId: run.id,
+      phaseId: vPhase.id,
+      parentId: vContainer.id,
+      status: "completed",
+    })
+    const { createCheckpoint } = await import(
+      "../../db/repositories/task-checkpoints"
+    )
+    createCheckpoint({
+      taskId,
+      label: `eachsubtask:${vContainer.id}`,
+      state: {
+        containerPhaseRunId: vContainer.id,
+        sourceChildRunId: cChild1.id,
+        instanceRunId: vInstance1.id,
+        prompt: "resumed validate 1",
+      },
+    })
+
+    const vRanPrompts: string[] = []
+    const runPhase: RunPhase = async ({ phase, subtaskPrompt }) => {
+      if (phase.key === "v") vRanPrompts.push(subtaskPrompt ?? "(none)")
+      return { content: phase.key }
+    }
+    await runScheduler({
+      run: processes.getProcessRun(run.id)!,
+      graph,
+      taskId,
+      signal: new AbortController().signal,
+      emit: () => {},
+      runPhase,
+      buildEachSubtaskPrompt,
+    })
+
+    // child1's instance was NOT re-run (it was already completed); only child2's
+    // fresh instance ran. Total v instances = 2 (no duplicate for child1).
+    const vInstances = runsForKey(run.id, pid, "v").filter(
+      (r) => r.parentId !== null
+    )
+    expect(vInstances).toHaveLength(2)
+    expect(vRanPrompts).toEqual([`validate:${cChild2.id}`])
+    expect(processes.getPhaseRun(vContainer.id)!.status).toBe("completed")
+  })
+
+  it("cancels a non-terminal consumer container on abort", async () => {
+    const pid = buildProcess({
+      phases: [{ key: "c", fanOut: true }, { key: "v" }],
+      edges: [["c", "v", "on_each_subtask"]],
+    })
+    const abort = new AbortController()
+    const decompose: Decompose = async () => ({ subtasks: ["p1", "p2"] })
+    const runPhase: RunPhase = async ({ phase, signal }) => {
+      // The first v instance aborts the run.
+      if (phase.key === "v") {
+        abort.abort()
+        if (signal.aborted) return { stopped: true }
+      }
+      return { content: phase.key }
+    }
+    const { ctx, runId } = makeCtx(pid, runPhase, {
+      abort,
+      decompose,
+      buildEachSubtaskPrompt,
+    })
+    await runScheduler(ctx)
+    // The v container settled cancelled, not left dangling `running`.
+    expect(statusByKey(runId, pid).v).toBe("cancelled")
   })
 })

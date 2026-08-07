@@ -43,6 +43,42 @@ export function kickoffPrompt(input: {
   return lines.join("\n")
 }
 
+// The kickoff for an `on_each_subtask` consumer instance (plan 025.2). A phase V
+// joined to a fan-out phase C by an `on_each_subtask` edge runs ONCE PER completed
+// C sub-task — this briefing carries that single sub-task's output (not the whole
+// phase's aggregate) so V works on exactly the piece that just landed. Like
+// kickoffPrompt, it's self-contained (the worker can't see the orchestrator).
+export function eachSubtaskKickoffPrompt(input: {
+  phase: ProcessPhase
+  objective: string
+  sourcePhaseName: string
+  // The triggering sub-task's final output (its worker's last assistant message).
+  subtaskContent: string | null
+}): string {
+  const { phase, objective, sourcePhaseName, subtaskContent } = input
+  const lines: string[] = []
+  lines.push(`# Process phase: ${phase.name}`)
+  lines.push("")
+  lines.push(
+    "You are executing one phase of a larger multi-phase process. You are being " +
+      `run on a SINGLE sub-task produced by the "${sourcePhaseName}" phase — not ` +
+      "its whole output. Focus only on the piece below."
+  )
+  lines.push("")
+  lines.push("## Overall objective")
+  lines.push(objective.trim() || "(no objective provided)")
+  lines.push("")
+  lines.push(`## The "${sourcePhaseName}" sub-task to act on`)
+  lines.push(subtaskContent?.trim() || "(no textual output)")
+  lines.push("")
+  lines.push("## Your task")
+  lines.push(
+    `Carry out the "${phase.name}" phase for this one sub-task toward the overall ` +
+      `objective. When done, summarize what you produced.`
+  )
+  return lines.join("\n")
+}
+
 // Upper bound on the number of sub-tasks a fan-out phase may spawn (plan 025.1,
 // Open Q #3 — agent-decided but bounded, to prevent runaway spawning). A
 // decomposition yielding more is truncated to this cap.
