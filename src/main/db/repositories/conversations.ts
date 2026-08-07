@@ -70,13 +70,23 @@ export function getConversation(id: string): Conversation | undefined {
 }
 
 // Lists user-facing conversations for the sidebar. Excludes private task
-// transcripts (a conversation that backs a durable task — i.e. is referenced by
-// tasks.conversation_id): those are background workers shown in the Workspace
-// Activity panel, not standalone chats. A task's progress surfaces under its
-// source conversation, so its forked transcript must not clutter the list.
+// transcripts — the FORKED worker conversations that back durable tasks (todo_run,
+// workspace_index, summarize, subagent, …), shown in the Workspace Activity panel,
+// not as standalone chats.
+//
+// The one exception is `inline_todos`: unlike every other kind, that task does not
+// fork a worker — it's a completed history marker written onto the REAL, live
+// conversation when it finishes an inline todo list (see agent/index.ts). So its
+// `conversation_id` is a genuine user conversation. The old filter hid every
+// conversation referenced by any task, which wrongly hid these real conversations
+// after a todo list ran (they vanished from the sidebar on the next load). Keying
+// on the task kind — hide task transcripts EXCEPT inline_todos markers — keeps the
+// forks hidden while leaving the real conversations visible. COALESCE mirrors the
+// default-kind handling in schema.ts (a missing kind is treated as agent_chat, a
+// fork, so it stays hidden).
 export function listConversations(opts?: { mode?: Mode }): Conversation[] {
   const notTaskTranscript =
-    "id NOT IN (SELECT conversation_id FROM tasks WHERE conversation_id IS NOT NULL)"
+    "id NOT IN (SELECT conversation_id FROM tasks WHERE conversation_id IS NOT NULL AND COALESCE(json_extract(input, '$.kind'), 'agent_chat') <> 'inline_todos')"
   const rows = opts?.mode
     ? (getDb()
         .prepare(

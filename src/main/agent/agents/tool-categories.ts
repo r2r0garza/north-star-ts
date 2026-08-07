@@ -31,12 +31,13 @@ const CATEGORY_TOOLS: Record<string, string[]> = {
 const FLOOR = new Set([...CATEGORY_TOOLS.read, ...CATEGORY_TOOLS.search])
 
 // Universal infrastructure: never gated by an agent's `tools` list. Clarifying
-// (ask_user_question), reading skills (read_skill), and the plan-mode handoff
-// tools (write_plan/present_plan) are capabilities every agent keeps.
+// (ask_user_question), reading skills (read_skill), and the plan handoff tools
+// (write_plan/read_plan/present_plan) are capabilities every agent keeps.
 const UNIVERSAL = new Set([
   "ask_user_question",
   "read_skill",
   "write_plan",
+  "read_plan",
   "present_plan",
 ])
 

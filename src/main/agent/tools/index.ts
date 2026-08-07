@@ -10,6 +10,7 @@ import { askUserQuestionTool } from "./ask_user_question_tool"
 import { runTodosInBackgroundTool } from "./run_todos_in_background"
 import { indexQueryTool } from "./index_query_tool"
 import { writePlanTool } from "./write_plan_tool"
+import { readPlanTool } from "./read_plan_tool"
 import { presentPlanTool } from "./present_plan_tool"
 import { browserNavigateTool } from "./browser/navigate"
 import { browserSnapshotTool } from "./browser/snapshot"
@@ -46,8 +47,10 @@ const otherTools: Tool[] = [
   runTodosInBackgroundTool,
   indexQueryTool,
   // Plan-mode tools: offered by runChat only while plan mode is active. Not in
-  // toolDefinitions; dispatchable via runTool.
+  // toolDefinitions; dispatchable via runTool. read_plan is also offered after
+  // approval so the implementing turn can re-read the approved plan.
   writePlanTool,
+  readPlanTool,
   presentPlanTool,
   // spawn_subagent: offered by runChat only when the running custom agent is
   // permitted to spawn (agent tool category + children present). Not in
@@ -116,6 +119,7 @@ export { askUserQuestionTool } from "./ask_user_question_tool"
 export { runTodosInBackgroundTool } from "./run_todos_in_background"
 export { indexQueryTool } from "./index_query_tool"
 export { writePlanTool } from "./write_plan_tool"
+export { readPlanTool } from "./read_plan_tool"
 export { presentPlanTool } from "./present_plan_tool"
 
 export type { Tool, ToolContext } from "./types"

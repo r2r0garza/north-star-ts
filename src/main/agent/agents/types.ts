@@ -50,3 +50,16 @@ export interface AgentDefinition {
   // Which source dir this agent came from, for diagnostics.
   source: string
 }
+
+// One agent-source directory as surfaced to the Settings → Capabilities table.
+// `kind` distinguishes the built-in dirs from user-registered custom folders:
+//   user      — ~/.<system>/agents
+//   custom    — a folder the user registered in Settings (removable)
+//   github    — <workspace>/.github/agents (zero-config, workspace-scoped)
+//   workspace — <workspace>/.<system>/agents
+export type AgentSourceKind = "user" | "custom" | "github" | "workspace"
+export interface AgentSourceRow {
+  path: string
+  kind: AgentSourceKind
+  agentCount: number
+}

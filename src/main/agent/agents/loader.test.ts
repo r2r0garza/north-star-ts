@@ -8,6 +8,12 @@ import path from "path"
 let home = ""
 vi.mock("electron", () => ({ app: { getPath: () => home } }))
 vi.mock("../../config/system-name", () => ({ dataDirName: () => ".cowork" }))
+// agentSources() reads user-registered custom folders from the settings service;
+// stub it (no DB in unit tests) so these tests cover only the built-in sources.
+let customFolders: string[] = []
+vi.mock("../../settings/service", () => ({
+  getAgentSources: () => ({ folders: customFolders }),
+}))
 
 import { loadAgents, loadAgent } from "./loader"
 import { agentSources } from "./sources"

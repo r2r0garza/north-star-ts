@@ -73,6 +73,19 @@ export function QuestionPanel({
     onSubmit(answers)
   }
 
+  // Enter behavior: on the last question submit (only when everything's answered,
+  // matching the Submit button's gate); otherwise advance to the next question —
+  // but only once the current one is answered, so Enter never skips an unanswered
+  // question. Shared by the panel-level key handler and the Other textarea.
+  function advanceOrSubmit() {
+    const last = current === questions.length - 1
+    if (last) {
+      if (allAnswered) submit()
+      return
+    }
+    if (answered(current)) setCurrent((c) => Math.min(questions.length - 1, c + 1))
+  }
+
   const q = questions[current]
   const sel = selected[current]
   const otherSelected = sel.includes(OTHER)
@@ -86,7 +99,27 @@ export function QuestionPanel({
   const isPlanReview = questions.some((q) => q.body)
 
   return (
-    <div className="flex flex-col gap-3 rounded-lg border bg-card p-4 text-sm">
+    <div
+      className="flex flex-col gap-3 rounded-lg border bg-card p-4 text-sm"
+      onKeyDownCapture={(e) => {
+        // Enter advances to the next question or submits. Captured (not bubbled)
+        // and preventDefault'd so a focused option button's native Enter→click
+        // doesn't also toggle it off — Enter here means "advance", not "re-select".
+        // The Other textarea owns its own Enter (Shift+Enter=newline, Enter=advance
+        // via its handler), so it's excluded here. Modifier combos are left alone.
+        if (
+          e.key === "Enter" &&
+          !e.shiftKey &&
+          !e.metaKey &&
+          !e.ctrlKey &&
+          !e.altKey &&
+          !(e.target instanceof HTMLTextAreaElement)
+        ) {
+          e.preventDefault()
+          advanceOrSubmit()
+        }
+      }}
+    >
       <div className="flex items-center gap-2 font-medium text-foreground">
         <CircleHelp className="size-4 shrink-0 text-primary" />
         <span>
@@ -205,6 +238,14 @@ export function QuestionPanel({
                   return next
                 })
               }
+              onKeyDown={(e) => {
+                // Shift+Enter inserts a newline (default); plain Enter advances to
+                // the next question or submits, mirroring the composer's box.
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault()
+                  advanceOrSubmit()
+                }
+              }}
               rows={2}
               placeholder={q.otherLabel ?? "Type your answer…"}
               className="field-sizing-content w-full resize-none rounded-md border border-input bg-transparent px-3 py-2 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"

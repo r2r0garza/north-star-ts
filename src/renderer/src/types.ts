@@ -45,8 +45,13 @@ export type {
   SkillTree,
 } from "../../preload/index"
 
-// Custom agent summary for the composer's agent picker.
-export type { AgentSummary } from "../../preload/index"
+// Custom agent summary for the composer's agent picker; source rows for the
+// Settings → Capabilities "Agent folders" table.
+export type {
+  AgentSummary,
+  AgentSourceRow,
+  AgentSourceKind,
+} from "../../preload/index"
 
 // Settings types, surfaced for the Settings pane.
 export type {
@@ -55,9 +60,11 @@ export type {
   LlmSettings,
   IndexingSettings,
   SkillSourcesSettings,
+  AgentSourcesSettings,
   BrowserSettings,
   BrowserReveal,
   IdeSettings,
+  NotificationSettings,
   Backend,
   FilePermission,
   ApprovalCategory,

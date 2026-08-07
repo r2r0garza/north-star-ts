@@ -1,4 +1,4 @@
-import { app, shell, BrowserWindow, ipcMain } from "electron"
+import { app, shell, BrowserWindow, ipcMain, Notification } from "electron"
 import { join, resolve, basename, sep } from "path"
 import { readFile, writeFile } from "fs/promises"
 import { config as loadEnv } from "dotenv"
@@ -15,6 +15,7 @@ import {
   resolveApproval,
   resolveQuestion,
   stopChat,
+  setAutoModeForConversation,
   type ChatRequest,
 } from "./agent"
 import { pickWorkspace, pickFiles } from "./pick-workspace"
@@ -24,8 +25,11 @@ import {
   userSkillsDir,
 } from "./agent/skills/sources"
 import { loadSkills, listSource } from "./agent/skills/loader"
-import { agentSources } from "./agent/agents/sources"
-import { loadAgents } from "./agent/agents/loader"
+import { agentSources, userAgentsDir } from "./agent/agents/sources"
+import {
+  loadAgents,
+  listSource as listAgentSource,
+} from "./agent/agents/loader"
 import type {
   SkillSourceRow,
   SkillSourceKind,
@@ -33,6 +37,7 @@ import type {
   SkillTree,
   SkillFolder,
 } from "./agent/skills/types"
+import type { AgentSourceRow, AgentSourceKind } from "./agent/agents/types"
 import { listWorkspaces } from "./db/repositories/workspaces"
 import * as settingsService from "./settings/service"
 import { listWorkspaceFiles } from "./files/list"
@@ -235,11 +240,21 @@ ipcMain.handle(
 ipcMain.handle("chat:stop", (_event, conversationId: string) => {
   stopChat(conversationId)
 })
+// Flip Auto mode on an already-running turn (the composer dropdown, changed
+// mid-turn). Reaches the live loop's setAutoMode so the gate honors it on the
+// next gated action; turning Auto on also clears any pending approval prompt.
+ipcMain.handle(
+  "chat:setAutoMode",
+  (_event, conversationId: string, on: boolean) => {
+    setAutoModeForConversation(conversationId, on)
+  }
+)
 // Agent-browser chrome → main: user-driven navigation/reload from the secondary
 // window's URL bar. Fire-and-forget; not gated (the human is driving their own
 // browser). The chrome reaches these via its own preload bridge.
 ipcMain.handle("browser:navigate", (_event, url: string) => {
-  if (typeof url === "string" && url.trim()) browserManager.userNavigate(url.trim())
+  if (typeof url === "string" && url.trim())
+    browserManager.userNavigate(url.trim())
 })
 ipcMain.handle("browser:reload", () => browserManager.userReload())
 // Toggle element-pick mode from the chrome's "Pick element" button.
@@ -248,7 +263,8 @@ ipcMain.handle("browser:set-pick-mode", (_event, active: boolean) => {
 })
 // Chrome tab click → ask the app to switch to that conversation (bidirectional).
 ipcMain.handle("browser:activate-conversation", (_event, id: string) => {
-  if (typeof id === "string" && id) browserManager.requestConversationActivation(id)
+  if (typeof id === "string" && id)
+    browserManager.requestConversationActivation(id)
 })
 // Main app renderer → main: the user switched to this conversation; show its tab
 // (or hide if null / no tab). This drives which tab is visible.
@@ -303,6 +319,44 @@ ipcMain.handle("agents:list", async (_event, workspace?: string) => {
     .filter((a) => a.userInvocable)
     .map(({ name, description }) => ({ name, description }))
 })
+
+// The kind-tagged agent-source dirs for a workspace, in load order. Mirrors
+// skillSourceEntries: user + user-registered custom folders, plus the workspace
+// dirs when a workspace is passed. Backs agents:sources (counts) for the Settings
+// → Capabilities "Agent folders" table.
+function agentSourceEntries(
+  workspace?: string
+): Array<{ path: string; kind: AgentSourceKind }> {
+  const custom = settingsService.getAgentSources().folders
+  const dataDir = dataDirName()
+  const entries: Array<{ path: string; kind: AgentSourceKind }> = [
+    { path: userAgentsDir(), kind: "user" },
+    ...custom.map((path) => ({ path, kind: "custom" as const })),
+  ]
+  if (workspace) {
+    entries.push({ path: join(workspace, ".github", "agents"), kind: "github" })
+    entries.push({
+      path: join(workspace, dataDir, "agents"),
+      kind: "workspace",
+    })
+  }
+  return entries
+}
+
+// Enumerate the agent sources (user + custom) for Settings → Capabilities, each
+// tagged with its kind and its current agent count. Mirrors the load order.
+ipcMain.handle(
+  "agents:sources",
+  async (_event, workspace?: string): Promise<AgentSourceRow[]> => {
+    return Promise.all(
+      agentSourceEntries(workspace).map(async ({ path, kind }) => ({
+        path,
+        kind,
+        agentCount: (await listAgentSource(path)).length,
+      }))
+    )
+  }
+)
 // The kind-tagged skill-source dirs for a workspace, in load order. Shared by
 // skills:sources (counts), skills:catalog (full skills), and skills:write (path
 // allow-list). The app-bundled dir is intentionally absent — it only seeds the
@@ -319,7 +373,10 @@ function skillSourceEntries(
   ]
   if (workspace) {
     entries.push({ path: join(workspace, ".github", "skills"), kind: "github" })
-    entries.push({ path: join(workspace, dataDir, "skills"), kind: "workspace" })
+    entries.push({
+      path: join(workspace, dataDir, "skills"),
+      kind: "workspace",
+    })
   }
   return entries
 }
@@ -379,8 +436,16 @@ ipcMain.handle("skills:tree", async (): Promise<SkillTree> => {
       label: ws.name ?? baseName(ws.path),
       path: ws.path,
       folders: await Promise.all([
-        toFolder(join(ws.path, ".github", "skills"), ".github/skills", "github"),
-        toFolder(join(ws.path, dataDir, "skills"), `${dataDir}/skills`, "workspace"),
+        toFolder(
+          join(ws.path, ".github", "skills"),
+          ".github/skills",
+          "github"
+        ),
+        toFolder(
+          join(ws.path, dataDir, "skills"),
+          `${dataDir}/skills`,
+          "workspace"
+        ),
       ]),
     }))
   )
@@ -422,10 +487,7 @@ function baseName(p: string): string {
 // skills across every repo the app knows about.
 function allSkillRoots(): string[] {
   const dataDir = dataDirName()
-  const roots = [
-    userSkillsDir(),
-    ...settingsService.getSkillSources().folders,
-  ]
+  const roots = [userSkillsDir(), ...settingsService.getSkillSources().folders]
   for (const ws of listWorkspaces()) {
     roots.push(join(ws.path, ".github", "skills"))
     roots.push(join(ws.path, dataDir, "skills"))
@@ -460,15 +522,54 @@ ipcMain.handle(
   }
 )
 // Read the current git branch for a workspace folder. Returns the branch name
-// string, a short SHA when the HEAD is detached, or null when the folder is
-// not a git repo (no .git/HEAD). Zero-dependency: reads .git/HEAD directly.
+// string, a short SHA when the HEAD is detached, or null when the folder is not
+// a git repo. Prefers the `git` CLI (correct for worktrees/subdirs/packed refs),
+// falling back to a direct .git/HEAD read when git isn't on PATH.
 ipcMain.handle("git:branch", async (_event, path: string) => {
   if (!path?.trim()) return null
   const result = await readGitBranch(path.trim())
   if (!result) return null
-  const val = result.value as { branch?: string; detached?: boolean; sha?: string }
+  const val = result.value as {
+    branch?: string
+    detached?: boolean
+    sha?: string
+  }
   return val.branch ?? val.sha ?? null
 })
+// Show an OS desktop notification. The renderer decides WHETHER to notify (it
+// knows which conversation is on screen and whether the window is focused) and
+// calls this only when it wants one shown. Clicking the notification focuses the
+// app window and — when the payload names a conversation — asks the renderer to
+// switch to it (same channel the browser tab activator uses). No-ops silently if
+// the OS doesn't support notifications.
+ipcMain.on(
+  "notifications:show",
+  (
+    _event,
+    payload: { title: string; body: string; conversationId?: string }
+  ) => {
+    if (!Notification.isSupported()) return
+    const title = payload?.title?.trim()
+    if (!title) return
+    const n = new Notification({
+      title,
+      body: payload?.body ?? "",
+      silent: false,
+    })
+    n.on("click", () => {
+      const win = mainWindow
+      if (!win || win.isDestroyed()) return
+      if (win.isMinimized()) win.restore()
+      win.show()
+      win.focus()
+      const cid = payload?.conversationId
+      if (cid && !win.webContents.isDestroyed()) {
+        win.webContents.send("browser:activate-conversation", cid)
+      }
+    })
+    n.show()
+  }
+)
 // Git diff for one workspace-relative file, backing the changed-file pills'
 // hover + the sidebar "Changes" review. Returns null when the workspace isn't a
 // git repo (renderer falls back to current content) or the path escapes it.

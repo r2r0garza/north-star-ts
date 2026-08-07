@@ -16,7 +16,9 @@ import {
   createConversation,
   getConversation,
   updateConversation,
+  listConversations,
 } from "./conversations"
+import { createTask } from "./tasks"
 
 beforeEach(() => {
   if (!sqliteLoads) return
@@ -67,3 +69,51 @@ describe.skipIf(!sqliteLoads)(
     })
   }
 )
+
+describe.skipIf(!sqliteLoads)("listConversations — sidebar visibility", () => {
+  const has = (id: string) => listConversations().some((c) => c.id === id)
+
+  it("lists a plain conversation with no backing task", () => {
+    const c = createConversation({ mode: "chat" })
+    expect(has(c.id)).toBe(true)
+  })
+
+  it("hides a forked worker transcript (a non-inline_todos task's conversation)", () => {
+    const source = createConversation({ mode: "interactive" })
+    const worker = createConversation({ mode: "interactive" })
+    // A durable todo_run fork: its own conversation, sourced from `source`.
+    createTask({
+      conversationId: worker.id,
+      sourceConversationId: source.id,
+      status: "queued",
+      input: { kind: "todo_run" },
+    })
+    expect(has(worker.id)).toBe(false) // the worker fork is hidden
+    expect(has(source.id)).toBe(true) // the source stays visible
+  })
+
+  it("keeps a real conversation visible when it has an inline_todos marker", () => {
+    // Regression: finishing an inline todo list writes a self-sourced
+    // inline_todos task onto the REAL conversation. It must NOT be hidden.
+    const c = createConversation({ mode: "north_star" })
+    createTask({
+      conversationId: c.id,
+      status: "completed",
+      input: { kind: "inline_todos", todos: [] },
+    })
+    expect(has(c.id)).toBe(true)
+  })
+
+  it("hides workspace_index / summarize worker conversations", () => {
+    for (const kind of ["workspace_index", "summarize"]) {
+      const w = createConversation({ mode: "interactive" })
+      createTask({
+        conversationId: w.id,
+        sourceConversationId: null,
+        status: "completed",
+        input: { kind },
+      })
+      expect(has(w.id)).toBe(false)
+    }
+  })
+})

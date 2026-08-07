@@ -12,6 +12,7 @@ import {
   runTodosInBackgroundTool,
   indexQueryTool,
   writePlanTool,
+  readPlanTool,
   presentPlanTool,
 } from "./tools"
 import type { BrowserHandle } from "../browser/manager"
@@ -156,6 +157,15 @@ const pendingApprovals = new Map<string, PendingApproval>()
 // at most one controller; runChat clears it in `finally`.
 const abortControllers = new Map<string, AbortController>()
 
+// One auto-mode setter per in-flight LIVE turn, keyed by conversation. The
+// renderer's mode dropdown calls setAutoModeForConversation(id, true) when the
+// user flips to Auto mid-turn; that reaches the running loop's `setAutoMode`
+// closure (the same one present_plan uses), so the gate — which reads the live
+// `autoMode` var — honors it on the next gated action. Only live turns register
+// here (the durable runner and subagent spawns have no renderer to toggle from).
+// A turn owns at most one entry; runChat clears it in `finally`.
+const autoModeSetters = new Map<string, (on: boolean) => void>()
+
 // Reason passed to controller.abort() when the app is shutting down (will-quit),
 // as opposed to a user Stop/cancel. A user abort resolves a pending gate as
 // "denied" so the loop unwinds cleanly; a shutdown must instead leave the gate
@@ -184,6 +194,8 @@ work to the background are all disabled until the user approves your plan.
 - Research freely with the read/search/browser tools to understand the task.
 - Capture your plan with the write_plan tool (Markdown). Call it again to revise
   as you learn more — each call replaces the whole document.
+- Use read_plan to read back what you've saved (the plan lives outside the
+  workspace, so read_file_tool can't open it).
 - When the plan is ready, call present_plan to show it to the user for approval.
 - If the user requests changes, revise with write_plan and present_plan again.
 - Once the user approves, plan mode ends and the full toolset returns — then
@@ -193,6 +205,30 @@ work to the background are all disabled until the user approves your plan.
 // Idempotent and safe to call when nothing is running (no-op if no controller).
 export function stopChat(conversationId: string): void {
   abortControllers.get(conversationId)?.abort()
+}
+
+// Called from the renderer over IPC ("chat:setAutoMode") when the user flips the
+// mode dropdown while a turn is running. Flips the live turn's `autoMode` (via
+// the registered closure, which also emits the auto_mode event to keep the UI in
+// sync), and — when turning Auto ON — immediately approves any approval this
+// conversation is currently blocked on, so the pending prompt clears instead of
+// stranding the user (Auto means "stop asking me"). No-op if no live turn.
+export function setAutoModeForConversation(
+  conversationId: string,
+  on: boolean
+): void {
+  const setter = autoModeSetters.get(conversationId)
+  if (!setter) return
+  setter(on)
+  if (!on) return
+  // Auto-approve whatever this conversation is blocked on right now. Sequential
+  // gating means at most one pending approval per conversation, but resolve all
+  // matching just in case. No `remember` — Auto is a session stance, not a rule.
+  for (const [requestId, pending] of pendingApprovals) {
+    if (pending.conversationId === conversationId) {
+      resolveApproval(requestId, "approved")
+    }
+  }
 }
 
 // Called from the renderer over IPC ("chat:approve") to resolve a request the
@@ -210,7 +246,11 @@ export function resolveApproval(
   const pending = pendingApprovals.get(requestId)
   if (!pending) return
   pendingApprovals.delete(requestId)
-  if (decision === "approved" && remember === "workspace" && pending.workspacePath) {
+  if (
+    decision === "approved" &&
+    remember === "workspace" &&
+    pending.workspacePath
+  ) {
     actionAllowlist.addRule({
       tool: pending.action.tool,
       kind: pending.action.kind,
@@ -629,6 +669,20 @@ export async function runAgentLoop(
   // mode suppresses too. The renderer only sends autoMode where a mode toggle is
   // offered, so it's honored verbatim here.
   let autoMode = !!opts.autoMode
+  // The turn-level auto-mode mutator: flips the live var and notifies the UI.
+  // Shared by present_plan (via ctx.setAutoMode) and the mid-turn dropdown toggle
+  // (via the autoModeSetters registry). The gate reads `autoMode` live, so both
+  // paths take effect on the next gated action.
+  const setAutoMode = (on: boolean) => {
+    autoMode = on
+    onEvent({ type: "auto_mode", enabled: on })
+  }
+  // Expose this turn's setter for the renderer's mid-turn Auto toggle, but only
+  // for live turns (those with a renderer wired via provideBrowser). The durable
+  // task runner and subagent spawns have no dropdown to toggle from, and keying
+  // by conversation would let a background worker's entry clobber a live one.
+  const isLiveTurn = !!opts.provideBrowser
+  if (isLiveTurn) autoModeSetters.set(conversationId, setAutoMode)
 
   // Whether to surface the workspace index to the agent (plan 008/014): a
   // workspace-backed non-chat session with the "use index for context" setting on.
@@ -736,6 +790,12 @@ export async function runAgentLoop(
       ...(planMode
         ? [writePlanTool.definition, presentPlanTool.definition]
         : []),
+      // read_plan: reads the conversation's own plan file (outside the workspace,
+      // so read_file_tool can't). Offered whenever a plan CAN exist — both in
+      // plan mode (re-read the draft) and after approval (consult it while
+      // implementing). Withheld only where plans don't apply (Chat/subagents,
+      // which have no conversationId path into a plan file anyway).
+      ...(showTodos ? [readPlanTool.definition] : []),
       // ask_user_question is offered in every mode — clarification is universal.
       askUserQuestionTool.definition,
       readSkillTool.definition,
@@ -1259,10 +1319,8 @@ export async function runAgentLoop(
             onEvent({ type: "plan_mode", enabled: on })
           },
           // present_plan calls this when the user picks "approve and Auto mode".
-          setAutoMode: (on: boolean) => {
-            autoMode = on
-            onEvent({ type: "auto_mode", enabled: on })
-          },
+          // Shared with the mid-turn dropdown toggle (autoModeSetters registry).
+          setAutoMode,
           // Subagent spawning: wired only when the running agent may spawn, so
           // the tool reports "unavailable" otherwise (it's also not offered).
           // agentChildren is the authorization whitelist; depth/ancestors bound
@@ -1354,6 +1412,11 @@ export async function runAgentLoop(
     const retryable = isTransientError(error)
     return failTurn(conversationId, message, retryable)
   } finally {
+    // Drop this turn's auto-mode setter (only live turns registered one). Guard
+    // against a newer turn for the same conversation having replaced it.
+    if (isLiveTurn && autoModeSetters.get(conversationId) === setAutoMode) {
+      autoModeSetters.delete(conversationId)
+    }
     // Tear down this run's execution backend (stop+remove a container; no-op for
     // Local). Never let cleanup failure mask the run's real result. The abort
     // controller is owned by the caller (runChat / the task runner), so it's
@@ -1463,7 +1526,14 @@ async function spawnSubagent(input: {
 
 // directly with its own task-keyed controller.
 export async function runChat(
-  { conversationId, message, workspace, attachments, planMode, autoMode }: ChatRequest,
+  {
+    conversationId,
+    message,
+    workspace,
+    attachments,
+    planMode,
+    autoMode,
+  }: ChatRequest,
   onEvent: OnEvent = () => {},
   // Lets a live interactive/north_star turn hand work off to the background via
   // run_todos_in_background. Injected by the main-process IPC handler (which owns

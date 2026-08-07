@@ -23,6 +23,7 @@ import { TaskCompletionToasts } from "@/components/task-completion-toasts"
 import { Toaster } from "@/components/ui/sonner"
 import type { Mode, Task } from "@/types"
 import type { ChangedFile } from "@/lib/timeline"
+import { maybeNotify, refreshNotificationSettings } from "@/lib/notify"
 import App from "./App"
 
 // Tracks window fullscreen state so the sidebar toggle can reposition (the
@@ -151,6 +152,41 @@ function Shell() {
     })
   }, [])
 
+  // Desktop notifications for background tasks / delegated subagents finishing.
+  // Global (not conversation-scoped like TaskCompletionToasts): a task can finish
+  // for any conversation while you're looking at another. Resolve the task row for
+  // its title + source conversation, then let maybeNotify apply the focus/view
+  // gate (a task whose source conversation is on-screen and focused is silent).
+  useEffect(() => {
+    return window.cowork.tasks.onEvent((payload) => {
+      const kind = payload.event.type
+      if (kind !== "task_completed" && kind !== "task_failed") return
+      void window.cowork.db.tasks
+        .get(payload.taskId)
+        .then((task) => {
+          if (!task) return
+          // Source-less tasks are infrastructure with their own UI surface
+          // (workspace_index) — born sourceConversationId=null by design. They're
+          // not user-facing background work, so don't notify about them.
+          const convoId = task.sourceConversationId
+          if (!convoId) return
+          void maybeNotify({
+            kind: "taskComplete",
+            title: task.title?.trim() || "Background task",
+            body:
+              kind === "task_failed"
+                ? "A background task failed."
+                : "A background task finished.",
+            conversationId: convoId,
+            isViewing: activeConversationId === convoId,
+          })
+        })
+        .catch(() => {
+          // Best-effort — a lookup failure just means no notification.
+        })
+    })
+  }, [activeConversationId])
+
   // The agent navigated (with reveal-on-use) or a handoff needs the browser: open
   // the right panel in Browser mode. The sidebar equivalent of the separate
   // window revealing itself.
@@ -228,7 +264,10 @@ function Shell() {
           child of this region so macOS lets its click through. */}
       <div className="absolute inset-x-0 top-0 z-20 h-11 [-webkit-app-region:drag]">
         <SidebarToggle fullscreen={fullscreen} />
-        <SidebarModeToggle mode={sidebarMode} onModeChange={changeSidebarMode} />
+        <SidebarModeToggle
+          mode={sidebarMode}
+          onModeChange={changeSidebarMode}
+        />
         <ActivityToggle
           open={activityOpen}
           onToggle={() => setActivity(!activityOpen)}
@@ -295,7 +334,12 @@ function Shell() {
       />
       <SettingsScreen
         open={settingsOpen}
-        onOpenChange={setSettingsOpen}
+        onOpenChange={(open) => {
+          setSettingsOpen(open)
+          // Re-read notification settings when the sheet closes so a change to
+          // the toggles takes effect immediately (the renderer caches them).
+          if (!open) refreshNotificationSettings()
+        }}
         initialTab={settingsTab}
       />
       <SkillsScreen open={skillsOpen} onOpenChange={setSkillsOpen} />

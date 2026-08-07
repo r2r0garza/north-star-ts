@@ -23,6 +23,7 @@ import {
 import { Marker, MarkerIcon, MarkerContent } from "@/components/ui/marker"
 import { Bubble, BubbleContent } from "@/components/ui/bubble"
 import { Button } from "@/components/ui/button"
+import { Kbd } from "@/components/ui/kbd"
 import { Spinner } from "@/components/ui/spinner"
 import { cn } from "@/lib/utils"
 import { isErrorResult, type ToolUse } from "@/lib/timeline"
@@ -209,9 +210,10 @@ export function ApprovalCard({
       <pre className="overflow-x-auto rounded-md bg-muted px-2 py-1.5 text-muted-foreground">
         {approval.summary}
       </pre>
-      <div className="flex flex-wrap gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <Button size="xs" onClick={() => onApproval(requestId, "approved")}>
           Approve once
+          <Kbd className="ml-1.5">⏎</Kbd>
         </Button>
         {allowRemember &&
           (isWeb ? (
@@ -221,6 +223,7 @@ export function ApprovalCard({
               onClick={() => onApproval(requestId, "approved", "conversation")}
             >
               Approve for this session
+              <Kbd className="ml-1.5">S</Kbd>
             </Button>
           ) : (
             <Button
@@ -229,6 +232,7 @@ export function ApprovalCard({
               onClick={() => onApproval(requestId, "approved", "workspace")}
             >
               Always allow in this workspace
+              <Kbd className="ml-1.5">S</Kbd>
             </Button>
           ))}
         <Button
@@ -237,6 +241,7 @@ export function ApprovalCard({
           onClick={() => onApproval(requestId, "denied")}
         >
           Deny
+          <Kbd className="ml-1.5">Esc</Kbd>
         </Button>
       </div>
     </div>
