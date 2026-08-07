@@ -434,3 +434,98 @@ ALTER TABLE conversations ADD COLUMN agent_name TEXT;
 export const SCHEMA_V14 = `
 ALTER TABLE conversations ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0;
 `
+
+// v15: the Process engine (plan 025). A user-authored agentic DAG — reusable
+// process *definitions* (phases + dependency edges + per-phase agent pool +
+// routing/gate/fan-out) split from *run* instances (one per execution, each
+// carrying per-phase execution state). Pure CREATE TABLE, so it's safe under the
+// foreign_keys=OFF migration loop (no table rebuild). First real consumer of
+// task_checkpoints — the orchestrator snapshots its DAG frontier there.
+//
+// Notes on the shape:
+// - The definition/run split lets a Process be authored once and re-run many times.
+// - The run<->backing-task link is bidirectional but not circular: process_runs
+//   .task_id -> tasks.id (ON DELETE SET NULL) lets a control verb resolve a run's
+//   backing task; the task's input blob carries { kind, processRunId } (a JSON
+//   string, not an FK) so the executor finds its run on (re)start — the 015
+//   producer contract. tasks has no FK back to process_runs.
+// - status columns are bare TEXT (no CHECK): the tasks table needed a painful v8
+//   rebuild to widen a status CHECK, so process statuses are validated in the repo
+//   layer instead (mirrors the enums in types.ts).
+// - process_phase_agents is the agent POOL for a phase: one row (routing='single')
+//   or N rows (routing='dispatch'); skills/tools are JSON tri-state overrides
+//   (NULL = the agent's own, matching the .agent.md frontmatter semantics).
+// - process_phase_runs.parent_id + process_phases.fan_out + the on_each_subtask
+//   trigger are migrated now but only exercised by the 025.1/025.2 fast-follows.
+export const SCHEMA_V15 = `
+CREATE TABLE process_definitions (
+  id          TEXT PRIMARY KEY,
+  name        TEXT NOT NULL,
+  description TEXT,
+  created_at  INTEGER NOT NULL,
+  updated_at  INTEGER NOT NULL
+);
+
+CREATE TABLE process_phases (
+  id          TEXT PRIMARY KEY,
+  process_id  TEXT NOT NULL REFERENCES process_definitions(id) ON DELETE CASCADE,
+  key         TEXT NOT NULL,
+  name        TEXT NOT NULL,
+  routing     TEXT NOT NULL DEFAULT 'single' CHECK (routing IN ('single','dispatch')),
+  gate_policy TEXT NOT NULL DEFAULT 'auto'   CHECK (gate_policy IN ('auto','approve')),
+  fan_out     INTEGER NOT NULL DEFAULT 0,
+  position    INTEGER NOT NULL,
+  UNIQUE (process_id, key)
+);
+
+CREATE TABLE process_phase_agents (
+  id         TEXT PRIMARY KEY,
+  phase_id   TEXT NOT NULL REFERENCES process_phases(id) ON DELETE CASCADE,
+  agent_name TEXT NOT NULL,
+  skills     TEXT,
+  tools      TEXT,
+  position   INTEGER NOT NULL
+);
+
+CREATE TABLE process_edges (
+  id            TEXT PRIMARY KEY,
+  process_id    TEXT NOT NULL REFERENCES process_definitions(id) ON DELETE CASCADE,
+  from_phase_id TEXT NOT NULL REFERENCES process_phases(id) ON DELETE CASCADE,
+  to_phase_id   TEXT NOT NULL REFERENCES process_phases(id) ON DELETE CASCADE,
+  trigger       TEXT NOT NULL DEFAULT 'on_complete'
+                  CHECK (trigger IN ('on_complete','on_each_subtask'))
+);
+
+CREATE TABLE process_runs (
+  id                     TEXT PRIMARY KEY,
+  process_id             TEXT REFERENCES process_definitions(id) ON DELETE SET NULL,
+  source_conversation_id TEXT REFERENCES conversations(id) ON DELETE SET NULL,
+  task_id                TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+  objective              TEXT,
+  status                 TEXT NOT NULL,
+  started_at             INTEGER,
+  finished_at            INTEGER,
+  created_at             INTEGER NOT NULL
+);
+
+CREATE TABLE process_phase_runs (
+  id          TEXT PRIMARY KEY,
+  run_id      TEXT NOT NULL REFERENCES process_runs(id) ON DELETE CASCADE,
+  phase_id    TEXT NOT NULL REFERENCES process_phases(id),
+  parent_id   TEXT REFERENCES process_phase_runs(id) ON DELETE CASCADE,
+  status      TEXT NOT NULL,
+  task_id     TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+  agent_name  TEXT,
+  iteration   INTEGER NOT NULL DEFAULT 0,
+  error       TEXT,
+  started_at  INTEGER,
+  finished_at INTEGER
+);
+
+CREATE INDEX idx_process_phases_process ON process_phases(process_id);
+CREATE INDEX idx_process_phase_agents_phase ON process_phase_agents(phase_id);
+CREATE INDEX idx_process_edges_process ON process_edges(process_id);
+CREATE INDEX idx_process_runs_process ON process_runs(process_id);
+CREATE INDEX idx_process_phase_runs_run ON process_phase_runs(run_id);
+CREATE INDEX idx_process_phase_runs_parent ON process_phase_runs(parent_id);
+`

@@ -15,6 +15,18 @@ import type {
   TaskStatus,
   Todo,
   Workspace,
+  ProcessDefinition,
+  ProcessGraph,
+  ProcessPhase,
+  ProcessPhaseAgent,
+  ProcessEdge,
+  ProcessRun,
+  ProcessPhaseRun,
+  ProcessRunStatus,
+  PhaseRunStatus,
+  PhaseRouting,
+  PhaseGatePolicy,
+  EdgeTrigger,
 } from "../main/db/types"
 import type { ActionKind } from "../main/agent/approval/types"
 import type { PickedElement } from "../main/browser/types"
@@ -92,6 +104,18 @@ export type RunnerLifecycleEvent =
       stage: string
       filesScanned: number
       filesTotal: number
+    }
+  // A phase transition inside a process_run DAG (plan 025), emitted on the
+  // process_run task's tail so the 026 monitor can track live phase status.
+  | {
+      type: "process_phase"
+      runId: string
+      phaseRunId: string
+      phaseKey: string
+      agentName: string | null
+      status: PhaseRunStatus
+      parentId?: string | null
+      requestId?: string
     }
 
 // The full event vocabulary a task emits, live or replayed from task_events.
@@ -247,6 +271,32 @@ const api = {
         void ipcRenderer.invoke("task:unsubscribe")
       }
     },
+  },
+  // Process engine control verbs (plan 025). Runs stream their phase transitions
+  // on the tasks.onEvent tail (as `process_phase` events on the run's backing
+  // task), so there's no separate subscribe here — the 026 monitor filters
+  // tasks.onEvent by the run's task id.
+  process: {
+    // Start a new run of a definition. Resolves with the created ProcessRun.
+    startRun: (input: {
+      processId: string
+      sourceConversationId: string | null
+      objective: string
+    }) => ipcRenderer.invoke("process:startRun", input) as Promise<ProcessRun>,
+    // Cancel a run (aborts its backing task; running phases unwind).
+    cancel: (processRunId: string) =>
+      ipcRenderer.invoke("process:cancel", processRunId) as Promise<void>,
+    // Pause a run (durable resume state).
+    pause: (processRunId: string) =>
+      ipcRenderer.invoke("process:pause", processRunId) as Promise<void>,
+    // Approve a phase gate: settles the durable approval and resumes the run,
+    // which releases the gated phase's dependents. requestId comes from the
+    // waiting_for_approval process_phase event.
+    approve: (payload: { processRunId: string; requestId: string }) =>
+      ipcRenderer.invoke("process:approve", payload) as Promise<void>,
+    // Deny a phase gate: settles it denied; the run stays paused (v1 semantics).
+    deny: (payload: { processRunId: string; requestId: string }) =>
+      ipcRenderer.invoke("process:deny", payload) as Promise<void>,
   },
   pickWorkspace: () =>
     ipcRenderer.invoke("pick-workspace") as Promise<{
@@ -615,6 +665,128 @@ const api = {
           decision
         ) as Promise<Approval>,
     },
+    // Process engine authoring + run reads (plan 025). The control verbs
+    // (startRun/cancel/approve) are on the top-level `process` group above.
+    processes: {
+      create: (input: { name: string; description?: string | null }) =>
+        ipcRenderer.invoke(
+          "db:processes:create",
+          input
+        ) as Promise<ProcessDefinition>,
+      list: () =>
+        ipcRenderer.invoke("db:processes:list") as Promise<ProcessDefinition[]>,
+      // Returns the whole authored graph (definition + phases + agents + edges).
+      get: (id: string) =>
+        ipcRenderer.invoke("db:processes:get", id) as Promise<ProcessGraph | null>,
+      update: (id: string, patch: { name?: string; description?: string | null }) =>
+        ipcRenderer.invoke(
+          "db:processes:update",
+          id,
+          patch
+        ) as Promise<ProcessDefinition>,
+      delete: (id: string) =>
+        ipcRenderer.invoke("db:processes:delete", id) as Promise<void>,
+      phases: {
+        create: (input: {
+          processId: string
+          key: string
+          name: string
+          routing?: PhaseRouting
+          gatePolicy?: PhaseGatePolicy
+          fanOut?: boolean
+          position: number
+        }) =>
+          ipcRenderer.invoke(
+            "db:processes:phases:create",
+            input
+          ) as Promise<ProcessPhase>,
+        list: (processId: string) =>
+          ipcRenderer.invoke(
+            "db:processes:phases:list",
+            processId
+          ) as Promise<ProcessPhase[]>,
+        update: (
+          id: string,
+          patch: {
+            key?: string
+            name?: string
+            routing?: PhaseRouting
+            gatePolicy?: PhaseGatePolicy
+            fanOut?: boolean
+            position?: number
+          }
+        ) =>
+          ipcRenderer.invoke(
+            "db:processes:phases:update",
+            id,
+            patch
+          ) as Promise<ProcessPhase>,
+        delete: (id: string) =>
+          ipcRenderer.invoke("db:processes:phases:delete", id) as Promise<void>,
+      },
+      agents: {
+        create: (input: {
+          phaseId: string
+          agentName: string
+          skills?: string[] | null
+          tools?: string[] | null
+          position: number
+        }) =>
+          ipcRenderer.invoke(
+            "db:processes:agents:create",
+            input
+          ) as Promise<ProcessPhaseAgent>,
+        list: (phaseId: string) =>
+          ipcRenderer.invoke(
+            "db:processes:agents:list",
+            phaseId
+          ) as Promise<ProcessPhaseAgent[]>,
+        delete: (id: string) =>
+          ipcRenderer.invoke("db:processes:agents:delete", id) as Promise<void>,
+      },
+      edges: {
+        create: (input: {
+          processId: string
+          fromPhaseId: string
+          toPhaseId: string
+          trigger?: EdgeTrigger
+        }) =>
+          ipcRenderer.invoke(
+            "db:processes:edges:create",
+            input
+          ) as Promise<ProcessEdge>,
+        list: (processId: string) =>
+          ipcRenderer.invoke(
+            "db:processes:edges:list",
+            processId
+          ) as Promise<ProcessEdge[]>,
+        delete: (id: string) =>
+          ipcRenderer.invoke("db:processes:edges:delete", id) as Promise<void>,
+      },
+      runs: {
+        list: (opts?: { processId?: string; status?: ProcessRunStatus }) =>
+          ipcRenderer.invoke(
+            "db:processes:runs:list",
+            opts
+          ) as Promise<ProcessRun[]>,
+        get: (id: string) =>
+          ipcRenderer.invoke(
+            "db:processes:runs:get",
+            id
+          ) as Promise<ProcessRun | null>,
+      },
+      phaseRuns: {
+        list: (opts: {
+          runId?: string
+          parentId?: string | null
+          phaseId?: string
+        }) =>
+          ipcRenderer.invoke(
+            "db:processes:phaseRuns:list",
+            opts
+          ) as Promise<ProcessPhaseRun[]>,
+      },
+    },
   },
 
   // Persisted settings (execution backend + approval policy). Mirrors the
@@ -816,6 +988,18 @@ export type {
   Todo,
   TodoStatus,
   Workspace,
+  ProcessDefinition,
+  ProcessPhase,
+  ProcessPhaseAgent,
+  ProcessEdge,
+  ProcessRun,
+  ProcessPhaseRun,
+  ProcessGraph,
+  ProcessRunStatus,
+  PhaseRunStatus,
+  PhaseRouting,
+  PhaseGatePolicy,
+  EdgeTrigger,
 } from "../main/db/types"
 // Re-export the ask_user_question types so the renderer can type the panel.
 export type {

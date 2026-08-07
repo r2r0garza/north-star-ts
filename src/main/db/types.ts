@@ -310,3 +310,119 @@ export interface ModelEntry {
   createdAt: number
   updatedAt: number
 }
+
+// ── Process engine (plan 025) ───────────────────────────────────────────────
+// A user-authored agentic DAG. Definitions (the reusable template) are split
+// from runs (one per execution). See schema.ts SCHEMA_V15.
+
+// How a phase binds to its agent pool: 'single' runs its one agent directly;
+// 'dispatch' routes each (sub-)task to the best-fit agent in the pool (025.3).
+export type PhaseRouting = "single" | "dispatch"
+
+// Per-phase human-in-the-loop policy: 'auto' releases dependents on completion;
+// 'approve' inserts a durable approval gate before dependents dispatch.
+export type PhaseGatePolicy = "auto" | "approve"
+
+// A dependency edge fires either when the whole upstream phase completes
+// ('on_complete') or per completed fan-out sub-task ('on_each_subtask', 025.2).
+export type EdgeTrigger = "on_complete" | "on_each_subtask"
+
+// The orchestrator run's lifecycle. Mirrors the tasks table's states (the run is
+// backed by a process_run task) plus the DAG-specific waiting_for_approval.
+export type ProcessRunStatus =
+  | "queued"
+  | "running"
+  | "waiting_for_approval"
+  | "paused"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "interrupted"
+
+// A single phase's execution state within a run. 'pending' = not yet dispatchable
+// / awaiting dependencies; 'ready' is transient; 'skipped' reserved for denied-gate
+// dependents (025+).
+export type PhaseRunStatus =
+  | "pending"
+  | "ready"
+  | "running"
+  | "waiting_for_approval"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "skipped"
+
+export interface ProcessDefinition {
+  id: string
+  name: string
+  description: string | null
+  createdAt: number
+  updatedAt: number
+}
+
+export interface ProcessPhase {
+  id: string
+  processId: string
+  key: string
+  name: string
+  routing: PhaseRouting
+  gatePolicy: PhaseGatePolicy
+  fanOut: boolean
+  position: number
+}
+
+// tools/skills are tri-state JSON overrides: null = use the agent's own
+// definition; [] = none; [list] = exactly these (matches .agent.md frontmatter).
+export interface ProcessPhaseAgent {
+  id: string
+  phaseId: string
+  agentName: string
+  skills: string[] | null
+  tools: string[] | null
+  position: number
+}
+
+export interface ProcessEdge {
+  id: string
+  processId: string
+  fromPhaseId: string
+  toPhaseId: string
+  trigger: EdgeTrigger
+}
+
+export interface ProcessRun {
+  id: string
+  processId: string | null
+  sourceConversationId: string | null
+  // The process_run task that drives this run (holds the runner slot, anchors
+  // approval gates + checkpoints). SET NULL if the task is deleted.
+  taskId: string | null
+  objective: string | null
+  status: ProcessRunStatus
+  startedAt: number | null
+  finishedAt: number | null
+  createdAt: number
+}
+
+export interface ProcessPhaseRun {
+  id: string
+  runId: string
+  phaseId: string
+  parentId: string | null
+  status: PhaseRunStatus
+  taskId: string | null
+  agentName: string | null
+  iteration: number
+  error: string | null
+  startedAt: number | null
+  finishedAt: number | null
+}
+
+// The whole authored graph in one shape — the scheduler and the monitor both
+// consume it (repo getProcessGraph assembles it from three list queries).
+export interface ProcessGraph {
+  definition: ProcessDefinition
+  phases: ProcessPhase[]
+  agents: ProcessPhaseAgent[]
+  edges: ProcessEdge[]
+}

@@ -25,7 +25,12 @@ import {
 } from "../db/repositories/conversations"
 import { getWorkspace } from "../db/repositories/workspaces"
 import { replaceTodos } from "../db/repositories/todos"
-import type { Task, TaskStatus, TodoStatus } from "../db/types"
+import type {
+  PhaseRunStatus,
+  Task,
+  TaskStatus,
+  TodoStatus,
+} from "../db/types"
 
 // Runner-emitted lifecycle events, appended to task_events alongside the agent's
 // ChatEvents so a (re)attaching renderer can reconstruct a task's progress from
@@ -49,6 +54,21 @@ export type RunnerLifecycleEvent =
       stage: string
       filesScanned: number
       filesTotal: number
+    }
+  // A phase transition inside a process_run DAG (plan 025). Emitted by the
+  // process orchestrator on its OWN task's event tail (phases run inline via
+  // runAgentLoop, not as separate tasks), so the activity panel / 026 monitor
+  // reconstruct live phase status from the one process_run task without a new
+  // event channel. `requestId` is set on a waiting_for_approval gate event.
+  | {
+      type: "process_phase"
+      runId: string
+      phaseRunId: string
+      phaseKey: string
+      agentName: string | null
+      status: PhaseRunStatus
+      parentId?: string | null
+      requestId?: string
     }
 
 // The full vocabulary written to task_events / streamed on the live tail: the
@@ -393,22 +413,31 @@ export class TaskRunner {
   enqueueKind(input: {
     kind: string
     title?: string | null
+    // A deterministic kind is usually born source-less (workspace_index). A
+    // producer that wants the task to be user-facing — surfaced in the source
+    // conversation's activity panel and eligible for a completion notification —
+    // passes the originating conversation; the fork then inherits its execution
+    // context (mode/workspace/model) and links back (plan 025 process_run).
+    sourceConversationId?: string | null
     input: { workspaceId?: string; priority?: "low" | "high" } & Record<
       string,
       unknown
     >
   }): Task {
     const taskInput: TaskInput = { kind: input.kind, ...input.input }
+    const source = input.sourceConversationId
+      ? getConversation(input.sourceConversationId)
+      : undefined
     const taskConversation = createConversation({
-      mode: "interactive",
-      workspaceId: input.input.workspaceId ?? null,
-      accountId: null,
-      modelId: null,
+      mode: source?.mode ?? "interactive",
+      workspaceId: source?.workspaceId ?? input.input.workspaceId ?? null,
+      accountId: source?.accountId ?? null,
+      modelId: source?.modelId ?? null,
       title: input.title ?? input.kind,
     })
     const task = createTask({
       conversationId: taskConversation.id,
-      sourceConversationId: null,
+      sourceConversationId: source ? input.sourceConversationId : null,
       title: input.title ?? null,
       status: "queued",
       input: taskInput,

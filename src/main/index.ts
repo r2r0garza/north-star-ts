@@ -53,6 +53,8 @@ import { registerIndexHandlers } from "./ipc/index-handlers"
 import { TaskRunner } from "./tasks/runner"
 import { IndexService } from "./index/service"
 import { SummaryService, SUMMARIZE_KIND } from "./summaries/service"
+import { ProcessService, PROCESS_RUN_KIND } from "./tasks/process/service"
+import { registerProcessHandlers } from "./ipc/process-handlers"
 import { BrowserManager } from "./browser/manager"
 import { seedProviderFromEnvIfEmpty } from "./settings/bootstrap"
 import { closeDb } from "./db/connection"
@@ -71,6 +73,9 @@ const indexService = new IndexService(taskRunner)
 // The rolling conversation summarizer (plan 019), driven as a task kind on the
 // runner. Holds the runner reference so the post-turn trigger can enqueue.
 const summaryService = new SummaryService(taskRunner)
+// The Process engine (plan 025), driven as the deterministic `process_run` task
+// kind. Holds the runner reference so startRun can enqueue the orchestrator task.
+const processService = new ProcessService(taskRunner)
 // The agent's browser (secondary window + WebContentsView driven over CDP).
 // Owned here so runChat can hand each live turn a signal-bound handle; disposed
 // on will-quit. Lazily creates its window on first agent use.
@@ -657,8 +662,21 @@ app.whenReady().then(() => {
     autoResume: false,
     run: summaryService.execute,
   })
+  // process_run: the DAG orchestrator (plan 025). Deterministic executor seam —
+  // the orchestrator is scheduling logic; the phases it drives are LLM work run
+  // INLINE via runAgentLoop in forked workers (the spawnSubagent precedent), not
+  // re-enqueued (which would deadlock under the concurrency cap on a blocking
+  // wait). autoResume so a run interrupted by a quit resumes at its persisted
+  // per-phase frontier. hasIndependentSurface: a run may be started headlessly
+  // and is observable via the 026 monitor, so it's exempt from the 022 reaper.
+  taskRunner.registerKind(PROCESS_RUN_KIND, {
+    autoResume: true,
+    hasIndependentSurface: true,
+    run: processService.execute,
+  })
   taskRunner.start()
   registerTaskHandlers(taskRunner)
+  registerProcessHandlers(taskRunner, processService)
   registerIndexHandlers(taskRunner, indexService)
   // Migrate a pre-settings env-configured key into a stored provider account, so
   // existing dev setups keep working without re-entering it (no-op once any

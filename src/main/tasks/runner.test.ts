@@ -832,6 +832,34 @@ describe.skipIf(!sqliteLoads)(
       expect(seen).toBe("/tmp/seam-ws")
       await runner.stop()
     })
+
+    it("settles an executor's {paused:true} to paused and re-runs it on resume (process gate contract, plan 025)", async () => {
+      // A process_run executor returns {paused:true} when a phase gate blocks the
+      // run (not an abort). The runner must map that to `paused` (durable resume),
+      // and a resume must re-drive the executor — this is exactly how a gated
+      // Process run waits for approval then continues.
+      let attempts = 0
+      const runner = new TaskRunner()
+      runner.registerKind("gated", {
+        autoResume: true,
+        run: async () => {
+          attempts++
+          // First run blocks on a gate; second run (post-approval) completes.
+          return attempts === 1 ? { paused: true } : { content: "released" }
+        },
+      })
+      runner.start()
+      const task = runner.enqueueKind({ kind: "gated", input: {} })
+      await settle()
+      expect(attempts).toBe(1)
+      expect(getTask(task.id)?.status).toBe("paused")
+
+      runner.resume(task.id)
+      await settle()
+      expect(attempts).toBe(2)
+      expect(getTask(task.id)?.status).toBe("completed")
+      await runner.stop()
+    })
   }
 )
 

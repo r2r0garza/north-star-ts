@@ -85,11 +85,11 @@ function count(db: Database.Database, table: string): number {
 }
 
 describe.skipIf(!sqliteLoads)("runMigrations", () => {
-  it("brings a fresh DB to user_version = 10", () => {
+  it("brings a fresh DB to the latest user_version", () => {
     const db = new Database(":memory:")
     db.pragma("foreign_keys = ON")
     runMigrations(db)
-    expect(db.pragma("user_version", { simple: true })).toBe(10)
+    expect(db.pragma("user_version", { simple: true })).toBe(15)
     expect(db.pragma("foreign_key_check")).toHaveLength(0)
     db.close()
   })
@@ -137,7 +137,7 @@ describe.skipIf(!sqliteLoads)("SCHEMA_V9 — orphan reap (plan 022)", () => {
     // Apply V9 (the reaper) and any later migrations, up to the latest version.
     runMigrations(db)
 
-    expect(db.pragma("user_version", { simple: true })).toBe(10)
+    expect(db.pragma("user_version", { simple: true })).toBe(15)
 
     // Reaped: orphan + its nested descendant, and all their state.
     const taskIds = (
