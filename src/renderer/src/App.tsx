@@ -1352,6 +1352,13 @@ export default function App({
     if (pendingApproval) textareaRef.current?.blur()
   }, [pendingApproval])
 
+  // Likewise when a question panel appears: blur the composer so the panel's
+  // arrow/Enter navigation works instead of typing into the message box. Mirrors
+  // the approval blur above; the two are mutually exclusive (sequential gating).
+  useEffect(() => {
+    if (liveQuestion) textareaRef.current?.blur()
+  }, [liveQuestion])
+
   // Keyboard shortcuts for the pending approval, active only while one is shown:
   //   Enter → Approve once   S → Approve for session/workspace   Esc → Reject
   // The "S" scope mirrors ApprovalCard exactly: no session option for delegate;
