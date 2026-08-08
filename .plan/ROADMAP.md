@@ -34,26 +34,40 @@ item is its plan file, not its rank.
    The DAG has **no cycle guard** — a bound is mandatory. **Will likely split** on build (`025.x`
    pattern): `031.1` validator, `031.2` cross-phase flag-back + autonomous routing (the riskiest —
    sub-DAG-replay correctness with gates/fan-out). Build order: `029` → `031.1` → `031.2`.
-4. **`020` — Durable memories.** The cross-conversation memories section `014` reserved: small,
+4. **`032` — Process visual canvas.** The explicitly-deferred half of `026` (which shipped the
+   **list-based** DAG builder and recorded a **visual node/edge canvas** as "later"). Renderer-first +
+   one additive migration; **no engine/scheduling/routing change**. Phases become draggable **nodes**,
+   dependencies **edges** drawn between handles (same `on_complete`/`on_each_subtask` trigger, same
+   per-phase routing/gate/fan-out/agent-pool inspector), all mapping 1:1 onto the existing
+   `db:processes:*` CRUD (mutate-then-refetch). Net-new: `SCHEMA_V19` adds nullable `pos_x`/`pos_y` to
+   `process_phases` (a plain `ADD COLUMN` — the `025` tables avoid CHECK-rebuilds by design) so layout
+   persists, with deterministic **auto-layout** for legacy definitions (`NULL` coords) + a **Tidy**
+   action; a new `process-canvas.tsx` + the phase inspector extracted for reuse by both the list card
+   and the canvas node. Open Qs: canvas lib (lean **`@xyflow/react`** lazy-loaded, `dagre`/built-in for
+   layout — watch the ~2.6 MB renderer bundle) vs hand-rolled SVG; keep the list builder as a coexisting
+   toggle vs replace (lean **coexist**). The Radix-`Dialog` takeover means the inspector keeps
+   `NativeSelect` (the `023`/`026` `pointer-events:none` finding). **Live-run-on-canvas deferred** — v1
+   keeps the `026` nested-list monitor. Independent of `029`/`031`.
+5. **`020` — Durable memories.** The cross-conversation memories section `014` reserved: small,
    persisted facts the agent writes (a **gated, explicit** `remember` tool — no silent profiling)
    and that inject into future turns, **scoped** global / workspace / conversation (mirrors the
    `action_allowlist` scoping). New `memories` table + a list/delete surface (durable +
    cross-conversation ⇒ must be auditable/revocable); a `memoriesSection` renderer with an injection
    cap. Split out of `014` Q2.
-5. **`010` — Container runtime profiles.** Decouple Workspace (the files) from Runtime (the env a
+6. **`010` — Container runtime profiles.** Decouple Workspace (the files) from Runtime (the env a
    tool call executes in). Replace the raw container `image` string with a named **profile**
    (`node` | `python` | `fullstack`), resolved to an image in the env factory; default/fallback =
    `fullstack` (Node + Python) so a Node repo that later adds a Python backend doesn't wedge.
    One profile per conversation, user-overridable in settings. Kills the "one workspace = one image
    forever" assumption **without** building auto-routing or image management (both deferred). Small
    refactor of `env/factory.ts` + `container.ts` + execution settings (JSON blob — no migration).
-6. **`005.1` — ContainerEnvironment stop in-flight.** The deferred half of `005`: killing the host
+7. **`005.1` — ContainerEnvironment stop in-flight.** The deferred half of `005`: killing the host
    `docker/podman exec` client doesn't stop the in-container process. Needs its own kill mechanism
    (in-container PID tracking / `exec kill`, or marker `pkill`). Out of scope when `005` shipped.
-7. **`007` — Slash commands for skills.** Let users force a skill with `/skill-name …` (pre-inject
+8. **`007` — Slash commands for skills.** Let users force a skill with `/skill-name …` (pre-inject
    the `read_skill` call), keeping today's model-discretionary path for plain messages. Adds a
    `skills:list` IPC channel + composer autocomplete. Independent — schedule freely.
-8. **`018` — Agentic goal mode. ⚠️ SUPERSEDED by `025`** (the general Process engine — 018's fixed
+9. **`018` — Agentic goal mode. ⚠️ SUPERSEDED by `025`** (the general Process engine — 018's fixed
    pipeline becomes one built-in Process *template*; kept as a stable-ID file per convention, not
    built as its own orchestrator). An opt-in **execution mode** (orthogonal to chat/interactive/
    north_star): `simple` (today's one-pass behavior, default) vs `goal` (bounded **plan → execute →
@@ -67,7 +81,7 @@ item is its plan file, not its rank.
    PR (`/goal <request>` — reuses `007`'s composer slash-command affordance — + a "Run with review
    loop" button); the Always/Ask/Manual/Off **setting is deferred** to its own plan. Placed by `007`
    since both add `/`-command composer UI.
-9. **`024` — Index filesystem/git watcher.** The "live file watching" follow-up `008` deferred (and
+10. **`024` — Index filesystem/git watcher.** The "live file watching" follow-up `008` deferred (and
    `014` re-deferred). Today the workspace index — and the compact summary `buildIndexSummary`
    injects into the system prompt on every message send — only refreshes when `IndexService.
    ensureRunning` is called, which fires on conversation create/update or manual Start/Rebuild;
