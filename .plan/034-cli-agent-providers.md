@@ -35,6 +35,22 @@ selection has to fork the pipeline much earlier than `buildClient`:
   new-conversation gate is `mode === "chat" || !!project.workspaceId`). So a CLI provider is only valid
   in **Interactive / North Star ([agent-name])** where a workspace exists; **Chat is disabled** when a
   CLI provider is selected (and, symmetrically, a CLI provider can't be picked for a Chat conversation).
+- **None of our internal machinery runs.** Because we never enter `runAgentLoop`, a CLI turn uses
+  **NONE of our tools or agent scaffolding** — no `read_file`/`edit_file`/`run_shell`/`search`/`todo`/
+  `spawn_subagent`, no skills, no `index_query`, no `ContextBuilder` sections (summary/approvals/
+  task-state/skills/index), no per-tool approval gate. The CLI brings its **own** tools, system prompt,
+  context assembly, and (for Claude/Codex) its own skills/subagents/MCP config. Our job shrinks to:
+  spawn with the right flags + `cwd`, feed the user message, stream stdout back, persist the turn. This
+  also means our per-conversation **agent selection, skills/tools overrides, and model-context features
+  do not apply** to a CLI conversation — the UI should reflect that (hide/disable those controls).
+- **Always "auto" — there is no interactive posture.** A non-interactive subprocess has **no TTY**, so
+  the CLI physically cannot render an approval prompt. Every CLI turn therefore runs in **auto/allow
+  mode by construction** (`claude --permission-mode`+`--allowedTools`, `copilot --allow-all-tools`
+  which is *required*, `codex -s workspace-write`). There is no "Ask" option to offer the user — it's
+  auto-allow or the turn **errors** on the first action needing approval. This is inherent, not a
+  choice; the UI must make the auto posture explicit (a persistent "runs autonomously" indicator on CLI
+  conversations), and it's why the backend is Local-only (auto-running host tools in a folder the user
+  chose is the trust model — same as running the CLI in a terminal yourself).
 
 ## CLI behavior (researched + verified live 2026-08-07 — pin versions; flags shift between releases)
 
@@ -86,11 +102,16 @@ per-conversation "session token" is **assigned by us OR captured from turn 1**, 
   activity where the CLI surfaces it), and persists the turn like `runAgentLoop` does. Runs on the
   **`009` durable task** seam too, so a CLI turn can go background / resume (session id makes resume a
   natural `codex exec resume` / `--session-id` re-invoke).
-- **Approvals:** these CLIs run their own approval loop with **no TTY**, so v1 must pass the
-  non-interactive posture (`claude --permission-mode`/`--allowedTools`; `copilot --allow-all-tools`;
-  `codex -s workspace-write`). This **bypasses our `002`/`012` gate** for CLI turns — a deliberate,
-  documented v1 tradeoff (the CLI is the trust boundary), surfaced in the UI. Tightening (mapping our
-  allowlist onto per-tool flags) is deferred.
+- **Approvals — always auto, inherently:** a no-TTY subprocess can't prompt, so every CLI turn passes
+  the auto-allow posture (`claude --permission-mode`/`--allowedTools`; `copilot --allow-all-tools`,
+  *required*; `codex -s workspace-write`) and our `002`/`012` gate **does not participate** (we never
+  run our tools). This is a **constraint of the medium, not a v1 shortcut** — there's no "Ask" mode to
+  add later for a non-interactive CLI. The only knob is *how permissive* the auto posture is (e.g.
+  Codex `read-only` vs `workspace-write`, Copilot `--allow-tool` scoping). Surface the auto posture
+  clearly in the UI; the Local-only backend is the containing trust boundary.
+- **No tool/context bridging:** the runner does **not** inject our skills, index summary, or
+  `ContextBuilder` sections, and does not expose our tools — the CLI has its own. `buildArgs` may pass
+  a model and (Claude) an `--append-system-prompt` for light steering, but everything else is the CLI's.
 
 ### C. Routing, backend lock, mode gate
 - `runChat` (`agent/index.ts`) branches on `providerKindIsCli(conversation.provider)` → the CLI runner;
@@ -105,13 +126,19 @@ per-conversation "session token" is **assigned by us OR captured from turn 1**, 
 
 ### D. Settings / provider config UI
 - A CLI provider setup card: **binary path** (auto-detected via `which`, overridable), a **health
-  check** (`--version`), **model** default, and the **permission/sandbox posture** toggle. No key, no
-  base URL. "Coming soon"→"configured" mirrors the existing provider onboarding.
+  check** (`--version`), **model** default, and the **auto-posture permissiveness** control (how much
+  the always-auto run may do — e.g. Codex `read-only` vs `workspace-write`; not an ask/auto toggle,
+  since auto is inherent). No key, no base URL. A persistent note that CLI conversations **run
+  autonomously with the CLI's own tools** (ours don't apply). "Coming soon"→"configured" mirrors the
+  existing provider onboarding.
 
 ## Open questions to resolve BEFORE building
-1. **Approval posture in v1.** Accept that CLI turns bypass our gate (pass the non-interactive
-   auto-allow flags, CLI owns trust) vs. attempt to bridge prompts (hard — no TTY, each CLI differs).
-   Lean **bypass-with-clear-UI in v1**, allowlist-bridging deferred.
+1. **Default auto-posture permissiveness** (auto-allow itself is inherent — no TTY, so not a choice).
+   The knob is *how* permissive by default: Codex `workspace-write` (can edit in-workspace) vs
+   `read-only`; Copilot `--allow-all-tools` (required) vs `--allow-tool` scoping; Claude
+   `acceptEdits`-style vs a tighter `--allowedTools` list. Lean **workspace-write / edits-allowed by
+   default** (the point is an agent that does the work), with the posture shown and adjustable per
+   provider. Whether to expose per-conversation overrides is deferred.
 2. **Streaming fidelity.** Map each CLI's JSONL stream onto our `onEvent` richly (tool calls, reasoning)
    vs. v1 = **assistant text + final result only**. Lean **text-first**; richer mapping later. (Copilot
    JSONL field names are **unverified** — confirm against one authenticated run before parsing.)

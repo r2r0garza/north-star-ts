@@ -72,17 +72,20 @@ item is its plan file, not its rank.
    **in the project dir**). Selecting one **routes turns away from `runAgentLoop`** to a new subprocess
    runner (`agent/cli/`, per-CLI adapters behind one interface + `005`'s detached-process-group kill),
    **locks the backend to Local**, and **disables Chat mode** (these CLIs need a working directory;
-   Chat has no workspace). **Research done (verified live 2026-08-07; pin versions):** session
-   continuity is **non-uniform** — Claude + Copilot **self-assign** a UUID we generate
-   (`--session-id`), Codex **mints its own** `thread_id` we must **parse from turn-1 JSONL and resume**
-   (`codex exec resume <id>`). So a per-conversation **`cli_session_id`** (additive `SCHEMA_V20+`) is
-   assigned-by-us OR captured-from-turn-1. No API key — a **binary path + `--version` health check** +
-   default model/permission posture. Approvals: CLIs run non-interactive with **no TTY**, so v1 passes
-   their auto-allow posture (`--permission-mode`/`--allowedTools`; Copilot **requires**
-   `--allow-all-tools`; Codex `-s workspace-write`) — a documented **gate-bypass** tradeoff (the CLI is
-   the trust boundary). **Likely splits:** `034.1` Claude Code end-to-end (+ backend-lock + mode-gate),
-   `034.2` Copilot (same self-assign model), `034.3` Codex (extract-then-resume). Open Qs: approval
-   bridging (lean bypass-with-UI v1), streaming fidelity (text-first; Copilot JSONL fields unverified),
+   Chat has no workspace). Two consequences of never entering `runAgentLoop`: **(a) none of our
+   internal tools / skills / index / `ContextBuilder` sections / approval gate apply** — the CLI brings
+   its own tools, prompt, and context; **(b) every turn is always "auto"** — a no-TTY subprocess can't
+   prompt, so auto-allow is **inherent, not a choice** (no "Ask" mode to add later). Both surfaced in
+   the UI. **Research done (verified live 2026-08-07; pin versions):** session continuity is
+   **non-uniform** — Claude + Copilot **self-assign** a UUID we generate (`--session-id`), Codex
+   **mints its own** `thread_id` we must **parse from turn-1 JSONL and resume** (`codex exec resume
+   <id>`). So a per-conversation **`cli_session_id`** (additive `SCHEMA_V20+`) is assigned-by-us OR
+   captured-from-turn-1. No API key — a **binary path + `--version` health check** + default model +
+   auto-posture permissiveness (`--permission-mode`/`--allowedTools`; Copilot **requires**
+   `--allow-all-tools`; Codex `-s workspace-write`). **Likely splits:** `034.1` Claude Code end-to-end
+   (+ backend-lock + mode-gate + tools-bypass + auto UI), `034.2` Copilot (same self-assign model),
+   `034.3` Codex (extract-then-resume). Open Qs: default auto-posture permissiveness (lean
+   workspace-write/edits-allowed); streaming fidelity (text-first; Copilot JSONL fields unverified);
    out-of-band CLI auth. Independent of the Process cluster / dashboards.
 7. **`020` — Durable memories.** The cross-conversation memories section `014` reserved: small,
    persisted facts the agent writes (a **gated, explicit** `remember` tool — no silent profiling)
