@@ -34,7 +34,34 @@ item is its plan file, not its rank.
    The DAG has **no cycle guard** — a bound is mandatory. **Will likely split** on build (`025.x`
    pattern): `031.1` validator, `031.2` cross-phase flag-back + autonomous routing (the riskiest —
    sub-DAG-replay correctness with gates/fan-out). Build order: `029` → `031.1` → `031.2`.
-4. **`032` — Process visual canvas.** The explicitly-deferred half of `026` (which shipped the
+4. **`035` — Skill import.** Extends `028` (create/delete) with **import from disk**: a single
+   **`.md`** file (treated as a `SKILL.md` — parse frontmatter, derive/validate `name`, write
+   `<writable-root>/<name>/SKILL.md`) or a **`.zip`** of a skill folder (when the skill has supporting
+   files — extract under `<writable-root>/<name>/` with a **zip-slip guard** + size/entry caps).
+   Writable roots only (reuses `028`'s `writableSkillRoots()`/`assertSkillWritablePath` + the loader's
+   `parseSkill`/`validateName`); adds one small unzip dep (lean `adm-zip`, main-process only). An
+   **Import** affordance beside New skill; collision → **reject with a message** (Q1). Import-only (a
+   skill folder is already shareable on disk). Independent.
+5. **`036` — Agent import.** Extends `027` (create/edit/delete) with **import** of one-or-more
+   **`.agent.md`** files — validate each parses (`parseAgent`) and its frontmatter `name` **equals the
+   file stem** (the loader's hard rule), then **copy verbatim** (no `serializeAgent` round-trip — a
+   hand-tuned agent imports byte-for-byte) into a writable root (`027`'s `writableAgentRoots()`).
+   Simpler than `035` — an agent is a **single flat file, no zip**. Best-effort per file (one bad file
+   errors; the rest land). An **Import** affordance beside New agent; collision / name≠stem → **reject
+   that file, import the rest** (Q1/Q3). Import-only. Independent.
+6. **`037` — Process import / export.** Unlike `035`/`036` (files already on disk → import-only), a
+   Process lives **only in the DB** (`025` tables), so it needs an explicit **serialize ⇄ deserialize**
+   to be shareable — the sharing use case you called out. **JSON** interchange (`ProcessExport`,
+   `formatVersion`-guarded): **id-free**, edges reference phases by **`key`** (unique per process) so
+   import mints fresh ids collision-free; agent pool carried as **names**. **Export** = build from
+   `getProcessGraph`, drop ids, save dialog. **Import** = parse + validate (unique keys, every edge
+   endpoint resolves, enums valid) then **replay through the existing granular CRUD in one
+   transaction** (`createProcess`→`createPhase`×N→key→newId map→`createEdge`/`createPhaseAgent`) — no
+   new write path, same invariants as `026`. Round-trips (export→import ≡ original modulo ids). Missing
+   referenced agents → **import + warn** (names resolve at run time; `025.3` router falls back) (Q2).
+   Export is *definition only* (not run history). New `process/io.ts` + `processes:export`/`import` IPC +
+   builder affordances.
+7. **`032` — Process visual canvas.** The explicitly-deferred half of `026` (which shipped the
    **list-based** DAG builder and recorded a **visual node/edge canvas** as "later"). Renderer-first +
    one additive migration; **no engine/scheduling/routing change**. Phases become draggable **nodes**,
    dependencies **edges** drawn between handles (same `on_complete`/`on_each_subtask` trigger, same
@@ -48,7 +75,7 @@ item is its plan file, not its rank.
    toggle vs replace (lean **coexist**). The Radix-`Dialog` takeover means the inspector keeps
    `NativeSelect` (the `023`/`026` `pointer-events:none` finding). **Live-run-on-canvas deferred** — v1
    keeps the `026` nested-list monitor. Independent of `029`/`031`.
-5. **`033` — Live dashboards.** A new top-level surface (a **Dashboards** button in the sidebar footer,
+8. **`033` — Live dashboards.** A new top-level surface (a **Dashboards** button in the sidebar footer,
    the 5th overlay alongside Processes/Agents/Skills/Settings) where a user **prompts an agent to author
    a dashboard** — a saved layout of widgets + a per-widget **data-fetch recipe** describing *how to
    pull the data*. **Data-source-agnostic by construction:** the agent fetches through whatever tools it
@@ -66,7 +93,7 @@ item is its plan file, not its rank.
    **Crux Open Qs:** how re-runnable a recipe is without an LLM; approval/allowlist safety of a stored
    recipe re-running unattended on refresh; fixed grid vs drag-resize lib. Independent of the Process
    cluster.
-6. **`034` — CLI-agent providers (Claude Code / Codex / Copilot).** Three new **provider kinds** that
+9. **`034` — CLI-agent providers (Claude Code / Codex / Copilot).** Three new **provider kinds** that
    aren't LLM-API accounts but local **agentic CLIs** driven as subprocesses (`claude -p`,
    `codex exec`, `copilot -p`) — each *is* the agent (own loop + tools + approvals, editing files
    **in the project dir**). Selecting one **routes turns away from `runAgentLoop`** to a new subprocess
@@ -87,26 +114,26 @@ item is its plan file, not its rank.
    `034.3` Codex (extract-then-resume). Open Qs: default auto-posture permissiveness (lean
    workspace-write/edits-allowed); streaming fidelity (text-first; Copilot JSONL fields unverified);
    out-of-band CLI auth. Independent of the Process cluster / dashboards.
-7. **`020` — Durable memories.** The cross-conversation memories section `014` reserved: small,
+10. **`020` — Durable memories.** The cross-conversation memories section `014` reserved: small,
    persisted facts the agent writes (a **gated, explicit** `remember` tool — no silent profiling)
    and that inject into future turns, **scoped** global / workspace / conversation (mirrors the
    `action_allowlist` scoping). New `memories` table + a list/delete surface (durable +
    cross-conversation ⇒ must be auditable/revocable); a `memoriesSection` renderer with an injection
    cap. Split out of `014` Q2.
-8. **`010` — Container runtime profiles.** Decouple Workspace (the files) from Runtime (the env a
+11. **`010` — Container runtime profiles.** Decouple Workspace (the files) from Runtime (the env a
    tool call executes in). Replace the raw container `image` string with a named **profile**
    (`node` | `python` | `fullstack`), resolved to an image in the env factory; default/fallback =
    `fullstack` (Node + Python) so a Node repo that later adds a Python backend doesn't wedge.
    One profile per conversation, user-overridable in settings. Kills the "one workspace = one image
    forever" assumption **without** building auto-routing or image management (both deferred). Small
    refactor of `env/factory.ts` + `container.ts` + execution settings (JSON blob — no migration).
-9. **`005.1` — ContainerEnvironment stop in-flight.** The deferred half of `005`: killing the host
+12. **`005.1` — ContainerEnvironment stop in-flight.** The deferred half of `005`: killing the host
    `docker/podman exec` client doesn't stop the in-container process. Needs its own kill mechanism
    (in-container PID tracking / `exec kill`, or marker `pkill`). Out of scope when `005` shipped.
-10. **`007` — Slash commands for skills.** Let users force a skill with `/skill-name …` (pre-inject
+13. **`007` — Slash commands for skills.** Let users force a skill with `/skill-name …` (pre-inject
    the `read_skill` call), keeping today's model-discretionary path for plain messages. Adds a
    `skills:list` IPC channel + composer autocomplete. Independent — schedule freely.
-11. **`018` — Agentic goal mode. ⚠️ SUPERSEDED by `025`** (the general Process engine — 018's fixed
+14. **`018` — Agentic goal mode. ⚠️ SUPERSEDED by `025`** (the general Process engine — 018's fixed
    pipeline becomes one built-in Process *template*; kept as a stable-ID file per convention, not
    built as its own orchestrator). An opt-in **execution mode** (orthogonal to chat/interactive/
    north_star): `simple` (today's one-pass behavior, default) vs `goal` (bounded **plan → execute →
@@ -120,7 +147,7 @@ item is its plan file, not its rank.
    PR (`/goal <request>` — reuses `007`'s composer slash-command affordance — + a "Run with review
    loop" button); the Always/Ask/Manual/Off **setting is deferred** to its own plan. Placed by `007`
    since both add `/`-command composer UI.
-12. **`024` — Index filesystem/git watcher.** The "live file watching" follow-up `008` deferred (and
+15. **`024` — Index filesystem/git watcher.** The "live file watching" follow-up `008` deferred (and
    `014` re-deferred). Today the workspace index — and the compact summary `buildIndexSummary`
    injects into the system prompt on every message send — only refreshes when `IndexService.
    ensureRunning` is called, which fires on conversation create/update or manual Start/Rebuild;
