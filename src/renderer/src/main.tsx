@@ -18,6 +18,8 @@ import {
 } from "@/components/activity-panel"
 import { SettingsScreen } from "@/components/settings-screen"
 import { SkillsScreen } from "@/components/skills-screen"
+import { AgentsScreen } from "@/components/agents-screen"
+import { ProcessScreen } from "@/components/process-screen"
 import { TaskTranscriptSheet } from "@/components/task-transcript-sheet"
 import { TaskCompletionToasts } from "@/components/task-completion-toasts"
 import { Toaster } from "@/components/ui/sonner"
@@ -59,6 +61,12 @@ function Shell() {
   // Whether the Skills view is open (opened from the sidebar footer). A full-
   // viewport overlay like Settings; browses/edits SKILL.md files.
   const [skillsOpen, setSkillsOpen] = useState(false)
+  // Whether the Agents view is open (opened from the sidebar footer). A full-
+  // viewport overlay like Skills; authors <name>.agent.md agents.
+  const [agentsOpen, setAgentsOpen] = useState(false)
+  // Whether the Process view is open (opened from the sidebar footer). A full-
+  // viewport overlay like Skills; authors process DAGs + monitors live runs.
+  const [processOpen, setProcessOpen] = useState(false)
   // Which tab Settings opens on. First launch (no provider configured) opens
   // straight to Providers so the user can set one up.
   const [settingsTab, setSettingsTab] = useState("backend")
@@ -282,6 +290,8 @@ function Shell() {
         onConversationDeleted={handleConversationDeleted}
         onSettingsClick={() => openSettings()}
         onSkillsClick={() => setSkillsOpen(true)}
+        onAgentsClick={() => setAgentsOpen(true)}
+        onProcessClick={() => setProcessOpen(true)}
         refreshKey={refreshKey}
         runningConvos={runningConvos}
         waitingConvos={waitingConvos}
@@ -343,6 +353,8 @@ function Shell() {
         initialTab={settingsTab}
       />
       <SkillsScreen open={skillsOpen} onOpenChange={setSkillsOpen} />
+      <AgentsScreen open={agentsOpen} onOpenChange={setAgentsOpen} />
+      <ProcessScreen open={processOpen} onOpenChange={setProcessOpen} />
     </SidebarProvider>
   )
 }

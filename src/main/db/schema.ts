@@ -529,3 +529,36 @@ CREATE INDEX idx_process_runs_process ON process_runs(process_id);
 CREATE INDEX idx_process_phase_runs_run ON process_phase_runs(run_id);
 CREATE INDEX idx_process_phase_runs_parent ON process_phase_runs(parent_id);
 `
+
+// v16 (plan 026): give a process run its OWN workspace. A run started from the
+// Process screen has no source conversation (sourceConversationId = null), so its
+// phase workers resolved `workspace = undefined` and every file/shell tool failed
+// closed — the run had nowhere to write. Store the picked folder as a workspaces.id
+// (deduped on path via upsertWorkspace, like conversations/projects), resolved to a
+// directory for every phase worker. Nullable FK, ON DELETE SET NULL — matches
+// process_runs' existing FKs; old rows read NULL and still render. Pure ADD COLUMN,
+// safe under the foreign_keys=OFF migration loop (no table rebuild).
+export const SCHEMA_V16 = `
+ALTER TABLE process_runs ADD COLUMN workspace_id TEXT
+  REFERENCES workspaces(id) ON DELETE SET NULL;
+`
+
+// v17 (plan 026 pass 1): give a phase-run an optional display TITLE. Fan-out
+// children were all rendered "<phase> #1" — the "#1" was the retry-iteration
+// counter (always 1 on first success), not a child index. Each child's sub-task
+// briefing is a freeform string, so the scheduler derives a short title from it
+// at child-creation and stores it here, letting the monitor show the real work
+// (e.g. "Implement: counter component"). Null for ordinary (non-child) phase
+// runs. Pure ADD COLUMN — safe under the foreign_keys=OFF migration loop.
+export const SCHEMA_V17 = `
+ALTER TABLE process_phase_runs ADD COLUMN title TEXT;
+`
+
+// v18: give a process RUN an optional display TITLE — a short, LLM-generated
+// summary of the run's objective (mirrors how a conversation is titled from its
+// first message). The run selector previously showed the whole objective; the
+// title makes it scannable. Null for pre-existing runs (the renderer falls back
+// to the objective slice). Pure ADD COLUMN — safe under the foreign_keys=OFF loop.
+export const SCHEMA_V18 = `
+ALTER TABLE process_runs ADD COLUMN title TEXT;
+`

@@ -126,37 +126,125 @@ export function fanOutDecomposePrompt(input: {
   lines.push(
     "When you are done deciding, reply with ONLY a JSON array of strings — each " +
       "string a complete, self-contained briefing for one sub-task worker (it " +
-      "cannot see this message or the other sub-tasks). No prose before or after " +
-      "the array."
+      "cannot see this message or the other sub-tasks)."
+  )
+  lines.push(
+    "Strict format: a plain JSON array of double-quoted strings. NOT an array of " +
+      "objects. No trailing commas. No markdown code fences. No prose before or " +
+      "after the array — the array must be your entire reply."
   )
   lines.push("")
   lines.push('Example: ["Implement the login form component", "Add the /session API route"]')
   return lines.join("\n")
 }
 
+// Corrective coda appended to the decomposition prompt on a retry (plan: fan-out
+// robustness), after a previous attempt's reply failed to parse. Nudges the model
+// back to the strict contract parseDecomposition expects.
+export const decompositionRetryNote =
+  "\n\n## Important\nYour previous reply could not be parsed as a JSON array of " +
+  "strings. Reply with ONLY that array — a plain JSON array of double-quoted " +
+  "strings, no objects, no code fences, no prose."
+
+// String fields we'll accept off an object element, in preference order, when a
+// model "enriches" the array as `[{ "briefing": "…" }]` instead of plain strings.
+const BRIEFING_KEYS = [
+  "briefing",
+  "task",
+  "prompt",
+  "subtask",
+  "description",
+  "text",
+]
+
+// Coerce one array element to a sub-task briefing string, or null if it carries
+// none. Accepts a plain string, or an object with one of BRIEFING_KEYS (else its
+// sole string value).
+function elementToBriefing(el: unknown): string | null {
+  if (typeof el === "string") return el.trim() || null
+  if (el && typeof el === "object") {
+    const obj = el as Record<string, unknown>
+    for (const key of BRIEFING_KEYS) {
+      if (typeof obj[key] === "string" && obj[key].trim())
+        return (obj[key] as string).trim()
+    }
+    // Fall back to the sole string value, if the object has exactly one.
+    const strings = Object.values(obj).filter(
+      (v): v is string => typeof v === "string" && v.trim().length > 0
+    )
+    if (strings.length === 1) return strings[0].trim()
+  }
+  return null
+}
+
+// From `text` starting at `from`, find the balanced `]` matching the `[` at
+// `from`, tracking string literals so brackets inside strings don't miscount.
+// Returns the index of the closing `]`, or -1 if unbalanced.
+function matchBracket(text: string, from: number): number {
+  let depth = 0
+  let inString = false
+  let escaped = false
+  for (let i = from; i < text.length; i++) {
+    const c = text[i]
+    if (inString) {
+      if (escaped) escaped = false
+      else if (c === "\\") escaped = true
+      else if (c === '"') inString = false
+      continue
+    }
+    if (c === '"') inString = true
+    else if (c === "[") depth++
+    else if (c === "]") {
+      depth--
+      if (depth === 0) return i
+    }
+  }
+  return -1
+}
+
+// Try to parse a JSON array of briefings out of one candidate string: scan each
+// `[` and match its balanced `]`, JSON.parse the slice, and coerce elements to
+// briefing strings. Returns [] if no bracketed run parses into a non-empty list.
+function briefingsFromCandidate(candidate: string): string[] {
+  for (let start = candidate.indexOf("["); start !== -1; start = candidate.indexOf("[", start + 1)) {
+    const end = matchBracket(candidate, start)
+    if (end === -1) break
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(candidate.slice(start, end + 1))
+    } catch {
+      continue // this `[` didn't start a valid array — try the next one
+    }
+    if (!Array.isArray(parsed)) continue
+    const briefings = parsed
+      .map(elementToBriefing)
+      .filter((s): s is string => s !== null)
+    if (briefings.length > 0) return briefings
+  }
+  return []
+}
+
 // Tolerant extraction of the sub-task list from a decomposition worker's final
-// assistant message (plan 025.1). Pulls the first JSON array out of the text
-// (tolerating ```json fences / surrounding prose), validates it's a non-empty
-// array of non-empty strings, trims + caps at MAX_FAN_OUT. Returns [] on any
+// assistant message (plan 025.1). Real LLM output varies, so this is deliberately
+// forgiving: it scans every fenced code block AND the raw text for the first
+// bracketed run that JSON-parses into a non-empty array, matching brackets in a
+// string-aware way (so prose brackets / a leading non-JSON fence don't defeat it)
+// and accepting arrays of objects (pulling a briefing field) as well as plain
+// strings. Trims, drops empties, caps at MAX_FAN_OUT. Returns [] on a genuine
 // miss — the caller treats an empty result as a decomposition failure.
 export function parseDecomposition(text: string): string[] {
   if (!text) return []
-  // Prefer a fenced ```json block if present, else the first bracketed array.
-  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i)
-  const candidate = fenced ? fenced[1] : text
-  const start = candidate.indexOf("[")
-  const end = candidate.lastIndexOf("]")
-  if (start === -1 || end === -1 || end < start) return []
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(candidate.slice(start, end + 1))
-  } catch {
-    return []
+  // Candidates in priority order: each fenced block's body (a model may open with
+  // an explanatory fence before the JSON one), then the whole raw text.
+  const candidates: string[] = []
+  const fence = /```(?:json)?\s*([\s\S]*?)```/gi
+  let m: RegExpExecArray | null
+  while ((m = fence.exec(text)) !== null) candidates.push(m[1])
+  candidates.push(text)
+
+  for (const candidate of candidates) {
+    const briefings = briefingsFromCandidate(candidate)
+    if (briefings.length > 0) return briefings.slice(0, MAX_FAN_OUT)
   }
-  if (!Array.isArray(parsed)) return []
-  const subtasks = parsed
-    .filter((s): s is string => typeof s === "string")
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0)
-  return subtasks.slice(0, MAX_FAN_OUT)
+  return []
 }

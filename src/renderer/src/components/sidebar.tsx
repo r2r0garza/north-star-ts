@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import {
   BellDot,
   BookOpen,
+  Bot,
   ChevronRight,
   FolderPlus,
   MoreHorizontal,
@@ -9,6 +10,7 @@ import {
   PinOff,
   Plus,
   Settings,
+  Workflow,
 } from "lucide-react"
 import { Spinner } from "@/components/ui/spinner"
 import {
@@ -365,6 +367,8 @@ export function AppSidebar({
   onConversationDeleted,
   onSettingsClick,
   onSkillsClick,
+  onAgentsClick,
+  onProcessClick,
   refreshKey,
   runningConvos,
   waitingConvos,
@@ -379,6 +383,8 @@ export function AppSidebar({
   onConversationDeleted: (id: string) => void
   onSettingsClick: () => void
   onSkillsClick: () => void
+  onAgentsClick: () => void
+  onProcessClick: () => void
   // Bumped by the app whenever conversations change, so the list refetches.
   refreshKey: number
   // Conversations with a turn currently streaming — each shows a spinner.
@@ -703,6 +709,26 @@ export function AppSidebar({
         />
       </SidebarContent>
       <SidebarFooter className="p-2">
+        <Button
+          type="button"
+          size="sm"
+          variant="ghost"
+          onClick={onProcessClick}
+          className="w-full justify-start"
+        >
+          <Workflow className="size-4" />
+          Processes
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant="ghost"
+          onClick={onAgentsClick}
+          className="w-full justify-start"
+        >
+          <Bot className="size-4" />
+          Agents
+        </Button>
         <Button
           type="button"
           size="sm"

@@ -40,4 +40,39 @@ describe("isTransientError", () => {
     // A 400 with a transient-looking code is still deterministic.
     expect(isTransientError({ status: 400, code: "ECONNRESET" })).toBe(false)
   })
+
+  it("treats a mid-stream 'terminated' TypeError as transient (message + cause)", () => {
+    // undici surfaces a socket death as TypeError("terminated") with the real
+    // code on .cause — both the message and the cause must classify transient.
+    const withCause = Object.assign(new TypeError("terminated"), {
+      cause: { code: "UND_ERR_SOCKET" },
+    })
+    expect(isTransientError(withCause)).toBe(true)
+    // Bare "terminated" with no cause → still transient via the message match.
+    expect(isTransientError(new TypeError("terminated"))).toBe(true)
+    expect(isTransientError({ message: "terminated" })).toBe(true)
+  })
+
+  it("walks a nested cause chain to find a transient code", () => {
+    expect(
+      isTransientError({
+        message: "request failed",
+        cause: { cause: { code: "ECONNRESET" } },
+      })
+    ).toBe(true)
+  })
+
+  it("does not infinite-loop on a self-referential cause", () => {
+    const e: { message: string; cause?: unknown } = { message: "nope" }
+    e.cause = e
+    expect(isTransientError(e)).toBe(false)
+  })
+
+  it("keeps deterministic errors non-retryable despite the cause walk", () => {
+    expect(isTransientError({ status: 404, cause: { code: "ECONNRESET" } })).toBe(
+      false
+    ) // a real 4xx status short-circuits before the cause is consulted
+    expect(isTransientError(new Error("bad request"))).toBe(false)
+    expect(isTransientError({ message: "invalid argument" })).toBe(false)
+  })
 })

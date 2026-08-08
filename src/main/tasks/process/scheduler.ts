@@ -50,6 +50,25 @@ const FANOUT_CHECKPOINT_LABEL = (parentRunId: string): string =>
 const EACH_SUBTASK_CHECKPOINT_LABEL = (containerRunId: string): string =>
   `eachsubtask:${containerRunId}`
 
+// Derive a short display TITLE from a sub-task briefing (plan 026 pass 1). The
+// briefing is a freeform string; take its first non-empty line, strip a leading
+// list/heading marker, and cap at ~60 chars on a word boundary. Deterministic —
+// no LLM. Persisted on the child phase-run so the monitor shows the real work
+// (e.g. "counter component") instead of a meaningless "#1".
+export function subtaskTitle(briefing: string): string {
+  const firstLine =
+    briefing
+      .split("\n")
+      .map((l) => l.trim())
+      .find((l) => l.length > 0) ?? ""
+  const cleaned = firstLine.replace(/^(?:[-*+]|\d+[.)]|#{1,6})\s+/, "").trim()
+  const MAX = 60
+  if (cleaned.length <= MAX) return cleaned
+  const clipped = cleaned.slice(0, MAX)
+  const lastSpace = clipped.lastIndexOf(" ")
+  return `${(lastSpace > 20 ? clipped.slice(0, lastSpace) : clipped).trimEnd()}…`
+}
+
 // Thrown to unwind the scheduler when an `approve` gate blocks the run. The
 // service maps it to { paused: true } so the process_run task settles `paused`
 // (a durable resume state) and frees its runner slot while awaiting approval.
@@ -89,9 +108,12 @@ export interface DecomposeResult {
 }
 
 // Runs a fan-out phase's decomposition worker. Injected so tests can stub it.
+// `attempt` is 1-based; on a retry (>1) the runner appends a corrective note to
+// the prompt so the worker is nudged back to the strict parseable format.
 export type Decompose = (input: {
   phaseRun: ProcessPhaseRun
   phase: ProcessPhase
+  attempt: number
   signal: AbortSignal
 }) => Promise<DecomposeResult>
 
@@ -436,6 +458,7 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
           phaseId: parentRun.phaseId,
           parentId: parentRun.id,
           status: "pending",
+          title: subtaskTitle(prompt),
         })
         return { phaseRunId: child.id, prompt }
       })
@@ -501,6 +524,10 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
             phaseId: consumer.id,
             parentId: containerRun.id,
             status: "pending",
+            // Label the per-child instance by the source child it consumes (its
+            // title), else derive from the instance's own kickoff prompt.
+            title:
+              child.title ?? (prompt ? subtaskTitle(prompt) : null),
           })
           instanceId = instance.id
           if (wasPending)
@@ -563,6 +590,7 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
       const result = await ctx.decompose({
         phaseRun: parentRun,
         phase,
+        attempt,
         signal: ctx.signal,
       })
       if (result.stopped || ctx.signal.aborted) {

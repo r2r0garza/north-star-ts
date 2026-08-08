@@ -394,10 +394,19 @@ export interface ProcessRun {
   id: string
   processId: string | null
   sourceConversationId: string | null
+  // The run's working directory (plan 026): a workspaces.id, resolved to a path
+  // for every phase worker. A run started from the Process screen has no source
+  // conversation to inherit a workspace from, so it carries its own. Null = the
+  // run resolves its workspace from the source conversation (or none).
+  workspaceId: string | null
   // The process_run task that drives this run (holds the runner slot, anchors
   // approval gates + checkpoints). SET NULL if the task is deleted.
   taskId: string | null
   objective: string | null
+  // Short, LLM-generated display title summarizing the objective (like a
+  // conversation's title). Null for pre-existing runs and until generation lands
+  // — the renderer falls back to an objective slice.
+  title: string | null
   status: ProcessRunStatus
   startedAt: number | null
   finishedAt: number | null
@@ -412,6 +421,11 @@ export interface ProcessPhaseRun {
   status: PhaseRunStatus
   taskId: string | null
   agentName: string | null
+  // Optional display title (plan 026 pass 1). For a fan-out / on_each_subtask
+  // CHILD, a short label derived from its sub-task briefing (e.g. "counter
+  // component"); null for an ordinary top-level phase run (the monitor falls back
+  // to the phase name).
+  title: string | null
   iteration: number
   error: string | null
   startedAt: number | null

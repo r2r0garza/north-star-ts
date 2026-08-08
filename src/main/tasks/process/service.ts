@@ -1,12 +1,13 @@
-import { runAgentLoop } from "../../agent"
+import { runAgentLoop, generateTitle } from "../../agent"
 import {
   createConversation,
   getConversation,
 } from "../../db/repositories/conversations"
 import { createTask, getTask } from "../../db/repositories/tasks"
 import { listMessages } from "../../db/repositories/messages"
-import { getWorkspace } from "../../db/repositories/workspaces"
+import { getWorkspace, upsertWorkspace } from "../../db/repositories/workspaces"
 import * as processes from "../../db/repositories/processes"
+import { getDb } from "../../db/connection"
 import type { TaskRunner, TaskExecutor } from "../runner"
 import type { LlmSelection } from "../../agent/providers"
 import { route } from "./router"
@@ -16,6 +17,7 @@ import type {
   ProcessRun,
 } from "../../db/types"
 import {
+  decompositionRetryNote,
   eachSubtaskKickoffPrompt,
   fanOutDecomposePrompt,
   kickoffPrompt,
@@ -50,17 +52,26 @@ export class ProcessService {
   // Start a new run of a definition: create the run row, enqueue the backing
   // process_run task (sourced to the originating conversation so it's user-facing
   // and eligible for a completion notification), and link them. Returns the run.
-  startRun(input: {
+  async startRun(input: {
     processId: string
     sourceConversationId: string | null
     objective: string
-  }): ProcessRun {
+    // The run's working directory (plan 026). A run started from the Process
+    // screen has no source conversation to inherit a workspace from, so the
+    // picked folder is deduped into the workspaces table and stamped on the run.
+    workspacePath?: string | null
+  }): Promise<ProcessRun> {
     const definition = processes.getProcessDefinition(input.processId)
     if (!definition) throw new Error(`unknown process '${input.processId}'`)
+
+    const workspaceId = input.workspacePath?.trim()
+      ? upsertWorkspace(input.workspacePath.trim()).id
+      : null
 
     const run = processes.createProcessRun({
       processId: input.processId,
       sourceConversationId: input.sourceConversationId,
+      workspaceId,
       objective: input.objective,
       status: "queued",
     })
@@ -71,7 +82,93 @@ export class ProcessService {
       sourceConversationId: input.sourceConversationId,
       input: { processRunId: run.id } satisfies ProcessRunInput,
     })
-    return processes.updateProcessRun(run.id, { taskId: task.id })
+
+    // Generate a short display title from the objective (mirrors how a
+    // conversation is titled from its first message). The classifier model is
+    // inherited from the source conversation's selection; resolveLlm falls back
+    // to the global default when it has none. generateTitle never rejects (it
+    // falls back to a trimmed objective slice), so awaiting it can't fail the run.
+    const source = input.sourceConversationId
+      ? getConversation(input.sourceConversationId)
+      : null
+    const selection: LlmSelection = {
+      accountId: source?.accountId ?? null,
+      modelId: source?.modelId ?? null,
+    }
+    const title = input.objective.trim()
+      ? await generateTitle(input.objective, selection)
+      : null
+
+    return processes.updateProcessRun(run.id, { taskId: task.id, title })
+  }
+
+  // Retry a FAILED run from its failure frontier: reset the failed/cancelled
+  // phase-runs (and their container children) to re-runnable, flip the run back to
+  // running, and re-drive the SAME backing task (runner.restart) so its checkpoints
+  // — fan-out child prompts + each-subtask idempotency, keyed by task id — survive.
+  // Completed/skipped phases are left alone; the scheduler resumes from the reset
+  // frontier. No-op unless the run is `failed` with a backing task.
+  restartRun(runId: string): ProcessRun | undefined {
+    const run = processes.getProcessRun(runId)
+    if (!run || run.status !== "failed" || !run.taskId || !run.processId) return run
+    const graph = processes.getProcessGraph(run.processId)
+    if (!graph) return run
+    const phasesById = new Map(graph.phases.map((p) => [p.id, p]))
+
+    // A fan-out parent decomposes into children; an on_each_subtask consumer of a
+    // fan-out source runs one instance per completed child. Both are "containers"
+    // whose top-level status is DERIVED from their children — resetting such a
+    // parent to `pending` would re-decompose/re-trigger and duplicate children, so
+    // a container WITH children is reset to `running` (the derive path re-owns it)
+    // while its failed/cancelled children reset to `pending` to re-dispatch.
+    const eachSubtaskConsumers = new Set(
+      graph.edges
+        .filter(
+          (e) =>
+            e.trigger === "on_each_subtask" &&
+            phasesById.get(e.fromPhaseId)?.fanOut === true
+        )
+        .map((e) => e.toPhaseId)
+    )
+    const isContainer = (phaseId: string): boolean =>
+      phasesById.get(phaseId)?.fanOut === true ||
+      eachSubtaskConsumers.has(phaseId)
+
+    const resettable = (s: string): boolean => s === "failed" || s === "cancelled"
+    const toPending = { status: "pending" as const, error: null, startedAt: null, finishedAt: null }
+
+    const tx = getDb().transaction(() => {
+      const rows = processes.listPhaseRuns({ runId })
+      for (const pr of rows) {
+        if (pr.parentId !== null) continue // children handled with their container
+        if (!resettable(pr.status)) continue
+        if (isContainer(pr.phaseId)) {
+          const children = processes.listPhaseRuns({ runId, parentId: pr.id })
+          if (children.length > 0) {
+            // Re-own via derivation; re-dispatch just the broken children.
+            processes.updatePhaseRun(pr.id, {
+              status: "running",
+              error: null,
+              finishedAt: null,
+            })
+            for (const child of children)
+              if (resettable(child.status))
+                processes.updatePhaseRun(child.id, toPending)
+            continue
+          }
+          // No children (decompose/trigger itself failed) → re-decompose.
+        }
+        processes.updatePhaseRun(pr.id, toPending)
+      }
+    })
+    tx()
+
+    const updated = processes.updateProcessRun(runId, {
+      status: "running",
+      finishedAt: null,
+    })
+    this.runner.restart(run.taskId)
+    return updated
   }
 
   // The runner-invoked executor for the process_run kind. Registered:
@@ -143,8 +240,12 @@ export class ProcessService {
         ? getConversation(run.sourceConversationId)
         : undefined
 
-      const workspace = source?.workspaceId
-        ? getWorkspace(source.workspaceId)?.path
+      // Prefer the run's own picked workspace (plan 026), falling back to the
+      // source conversation's — so a folder chosen in the New Run modal wins, and
+      // runs launched from a conversation keep inheriting its workspace.
+      const workspaceId = run.workspaceId ?? source?.workspaceId ?? null
+      const workspace = workspaceId
+        ? getWorkspace(workspaceId)?.path
         : undefined
 
       // A fan-out CHILD runs its decomposed sub-task briefing verbatim; a normal
@@ -172,7 +273,7 @@ export class ProcessService {
 
       const worker = createConversation({
         mode: source?.mode ?? "interactive",
-        workspaceId: source?.workspaceId ?? null,
+        workspaceId,
         accountId: source?.accountId ?? null,
         modelId: source?.modelId ?? null,
         agentName,
@@ -229,7 +330,7 @@ export class ProcessService {
   // an agent loop asking for a JSON array of sub-task briefings, and parses the
   // final assistant message. Each briefing becomes a child phase-run.
   private makeDecompose(run: ProcessRun): Decompose {
-    return async ({ phase, phaseRun, signal }) => {
+    return async ({ phase, phaseRun, attempt, signal }) => {
       const source = run.sourceConversationId
         ? getConversation(run.sourceConversationId)
         : undefined
@@ -237,9 +338,16 @@ export class ProcessService {
       // routes independently over the pool in makeRunPhase (plan 025.3).
       const agentName = await this.resolveAgent(phase)
 
+      // Prefer the run's own picked workspace (plan 026), falling back to the
+      // source conversation's — same rule as makeRunPhase.
+      const workspaceId = run.workspaceId ?? source?.workspaceId ?? null
+      const workspace = workspaceId
+        ? getWorkspace(workspaceId)?.path
+        : undefined
+
       const worker = createConversation({
         mode: source?.mode ?? "interactive",
-        workspaceId: source?.workspaceId ?? null,
+        workspaceId,
         accountId: source?.accountId ?? null,
         modelId: source?.modelId ?? null,
         agentName,
@@ -261,10 +369,6 @@ export class ProcessService {
         agentName,
       })
 
-      const workspace = source?.workspaceId
-        ? getWorkspace(source.workspaceId)?.path
-        : undefined
-
       const childAbort = new AbortController()
       if (signal.aborted) childAbort.abort(signal.reason)
       else
@@ -274,11 +378,14 @@ export class ProcessService {
           { once: true }
         )
 
-      const prompt = fanOutDecomposePrompt({
-        phase,
-        objective: run.objective ?? "",
-        upstream: this.collectUpstream(run, phase),
-      })
+      // On a retry, append a corrective note so the worker is nudged back to the
+      // strict parseable format its previous attempt missed.
+      const prompt =
+        fanOutDecomposePrompt({
+          phase,
+          objective: run.objective ?? "",
+          upstream: this.collectUpstream(run, phase),
+        }) + (attempt > 1 ? decompositionRetryNote : "")
 
       try {
         const result = await runAgentLoop({

@@ -422,7 +422,7 @@ function contentToText(content: unknown): string {
 // Ask the model for a short (5-6 word) title summarizing the user's first
 // message. Non-streaming and capped low so it's cheap. Falls back to a trimmed
 // snippet on any failure so a conversation always gets a title.
-async function generateTitle(
+export async function generateTitle(
   message: string,
   sel: LlmSelection
 ): Promise<string> {

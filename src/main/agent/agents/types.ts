@@ -63,3 +63,24 @@ export interface AgentSourceRow {
   kind: AgentSourceKind
   agentCount: number
 }
+
+// One agent-source folder as a node in the Agents view's nested tree: a source dir
+// with a display label and its loaded agents. Mirrors the skills view's SkillFolder.
+// `kind` drives writability in the UI (user/custom editable; github/workspace
+// read-only).
+export interface AgentFolder {
+  path: string
+  label: string
+  kind: AgentSourceKind
+  agents: AgentDefinition[]
+}
+
+// The nested catalog for the Agents view. Global is the user dir; Workspace and
+// Custom each expand to a list of folders (one per known repo / registered custom
+// folder). Enumerates ALL known workspaces, not just the active conversation's, so
+// the view works with no active session. Mirrors SkillTree.
+export interface AgentTree {
+  global: AgentFolder[]
+  workspaces: Array<{ label: string; path: string; folders: AgentFolder[] }>
+  custom: AgentFolder[]
+}

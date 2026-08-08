@@ -1,10 +1,44 @@
 # PR26: Process UI — the sidebar view, DAG builder, and live run monitor
 
-> Status: **NOT STARTED**. Builds on `025` (the Process engine: definitions/runs schema, the
-> `process_run` task kind, `process:*` IPC — this PR is its renderer). Reuses the full-viewport
-> takeover pattern from `skills-screen.tsx` / `settings-screen.tsx` (`023`) and the activity-panel
-> approval-card affordance (`009`/`012`) for gated phases. Depends on `027` (agent authoring) for the
-> per-phase agent picker to have agents to pick, but degrades gracefully if none exist.
+> Status: **DONE** (renderer-only; typecheck + build clean). Built on `025` (the Process engine:
+> definitions/runs schema, the `process_run` task kind, `process:*` + `db:processes:*` IPC + the
+> preload bridge — all of which already existed; this PR is purely its renderer). Reuses the
+> full-viewport takeover pattern from `skills-screen.tsx` / `settings-screen.tsx` (`023`) and the
+> activity-panel approval-card affordance (`009`/`012`) for gated phases. The per-phase agent picker
+> reads the existing `agents:list` IPC (populated once `027`'s in-app authoring lands) and degrades
+> gracefully to a default-agent fallback when the pool is empty.
+>
+> ## What shipped
+> - **Placement decision: footer overlay** (Q1) — a **Processes** button in the sidebar footer
+>   (`Workflow` icon, above Skills), opening a full-viewport overlay via a `processOpen` boolean in
+>   `Shell()`. No touch to the `Mode` union / `conversations.mode` CHECK / `VIEW_TO_MODE` (a process
+>   is not a conversation).
+> - **Builder decision: list-based** (Q2) — phases as cards; dependencies as per-phase **"depends on"**
+>   checkboxes (the DAG is implicit in the edges) with a per-edge trigger dropdown (`on_complete` /
+>   `on_each_subtask`); a per-phase inspector for **routing** (`single`/`dispatch`), **gate policy**
+>   (`auto`/`approve`), **fan-out** toggle, and an **agent pool** (add/remove chips). No visual canvas.
+> - **Run monitor** — a run selector + pause/cancel controls; phase-run rows colored by status off the
+>   `process_phase` events on the run's backing task tail (`tasks.onEvent` filtered by `run.taskId` — no
+>   new channel), with fan-out / on_each_subtask **children nested** under their container. Gated phases
+>   render an **inline approval card** wired to `process.approve`/`process.deny`; the gate's `requestId`
+>   (carried only on the event, not the DB row) is reconstructed from the replayed + live task-event
+>   stream into a `phaseRunId → requestId` map (mirrors `tasks-section.tsx`'s `latestGate`).
+> - **Files:** new `src/renderer/src/components/process-screen.tsx`; wired into `main.tsx` (`processOpen`
+>   state + `<ProcessScreen>` render + `onProcessClick` prop) and `sidebar.tsx` (prop + footer button);
+>   Process types re-exported through `src/renderer/src/types.ts`.
+> - **Verified:** `pnpm typecheck` clean (the sole error, `src/main/ide/open.test.ts`, is pre-existing
+>   on clean HEAD and unrelated); `pnpm build` clean; `router.test.ts` (10) still passes. Renderer has
+>   no component test harness in-repo and the DB-backed process tests stay ABI-skipped. **Manual E2E in
+>   the running app deferred** to a live session (build the 8-phase example, run it, watch parallel +
+>   fan-out nesting update live, approve a gated phase).
+> - **Deferred (as planned):** a polished visual node/edge canvas; per-pool-agent skills/tools tri-state
+>   overrides (the `ProcessPhaseAgent.skills`/`tools` fields exist and default to the agent's own
+>   definition — the builder adds bare pool members for now); surfacing gate approvals in the activity
+>   panel too (Q3 — the monitor is the single surface for v1).
+
+---
+
+## Original plan (below)
 
 ## Context
 

@@ -48,7 +48,8 @@ import type {
   SkillCatalogEntry,
   SkillTree,
 } from "../main/agent/skills/types"
-import type { AgentSourceRow } from "../main/agent/agents/types"
+import type { AgentSourceRow, AgentTree } from "../main/agent/agents/types"
+import type { AgentFields } from "../main/agent/agents/loader"
 import type { RuntimeStatus } from "../main/agent/env/runtime-check"
 import type { CreateAccountInput } from "../main/db/repositories/provider-accounts"
 import type { AddModelInput } from "../main/db/repositories/models"
@@ -282,6 +283,10 @@ const api = {
       processId: string
       sourceConversationId: string | null
       objective: string
+      // The run's working directory (plan 026): a picked folder path, deduped
+      // into the workspaces table server-side and stamped on the run so its
+      // phase workers have a cwd (file/shell tools fail closed without one).
+      workspacePath?: string | null
     }) => ipcRenderer.invoke("process:startRun", input) as Promise<ProcessRun>,
     // Cancel a run (aborts its backing task; running phases unwind).
     cancel: (processRunId: string) =>
@@ -289,6 +294,12 @@ const api = {
     // Pause a run (durable resume state).
     pause: (processRunId: string) =>
       ipcRenderer.invoke("process:pause", processRunId) as Promise<void>,
+    // Retry a FAILED run from its failure frontier: resets the failed phases and
+    // re-drives the same backing task; completed phases are not re-run.
+    restart: (processRunId: string) =>
+      ipcRenderer.invoke("process:restart", processRunId) as Promise<
+        ProcessRun | undefined
+      >,
     // Approve a phase gate: settles the durable approval and resumes the run,
     // which releases the gated phase's dependents. requestId comes from the
     // waiting_for_approval process_phase event.
@@ -352,6 +363,24 @@ const api = {
       ipcRenderer.invoke("agents:sources", workspace) as Promise<
         AgentSourceRow[]
       >,
+    // Nested catalog for the Agents view: Global + one node per known workspace +
+    // one per custom folder, each with its agents. Enumerates all workspaces
+    // itself, so it needs no workspace arg and works with no active session.
+    tree: () => ipcRenderer.invoke("agents:tree") as Promise<AgentTree>,
+    // Read an agent's raw `<name>.agent.md` contents. The main process validates
+    // the path against all known agent sources.
+    read: (filePath: string) =>
+      ipcRenderer.invoke("agents:read", filePath) as Promise<string>,
+    // Save an edited agent from structured fields (serialized to YAML in main).
+    // Writable roots (user + custom) only — the main process validates the path.
+    save: (filePath: string, fields: AgentFields) =>
+      ipcRenderer.invoke("agents:save", filePath, fields) as Promise<void>,
+    // Scaffold a new agent into a writable source dir; returns the new file path.
+    create: (args: { dir: string; name: string; description: string }) =>
+      ipcRenderer.invoke("agents:create", args) as Promise<string>,
+    // Delete an agent file. Writable roots only; the renderer confirms first.
+    delete: (filePath: string) =>
+      ipcRenderer.invoke("agents:delete", filePath) as Promise<void>,
   },
   // List workspace files for the composer's `@`-mention menu, filtered by the
   // typed query (server-side). Returns workspace-relative POSIX paths, capped.
@@ -1034,7 +1063,11 @@ export type {
 export type {
   AgentSourceRow,
   AgentSourceKind,
+  AgentDefinition,
+  AgentFolder,
+  AgentTree,
 } from "../main/agent/agents/types"
+export type { AgentFields } from "../main/agent/agents/loader"
 export type { RuntimeStatus, Runtime } from "../main/agent/env/runtime-check"
 // LLM provider/model types for the Providers & Models tabs and the composer.
 export type {

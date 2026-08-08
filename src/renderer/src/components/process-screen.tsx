@@ -1,0 +1,1621 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { Dialog as DialogPrimitive } from "radix-ui"
+import {
+  ChevronRight,
+  Circle,
+  CheckCircle2,
+  XCircle,
+  FolderOpen,
+  Loader2,
+  Pause,
+  Play,
+  Plus,
+  RotateCcw,
+  ShieldAlert,
+  SkipForward,
+  Trash2,
+  XIcon,
+} from "lucide-react"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+import { TaskTranscriptSheet } from "@/components/task-transcript-sheet"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
+import { Button } from "@/components/ui/button"
+import { ButtonGroup } from "@/components/ui/button-group"
+import { Input } from "@/components/ui/input"
+import { Textarea } from "@/components/ui/textarea"
+import { Checkbox } from "@/components/ui/checkbox"
+import { Switch } from "@/components/ui/switch"
+import { Badge } from "@/components/ui/badge"
+import { Kbd } from "@/components/ui/kbd"
+import { ScrollArea } from "@/components/ui/scroll-area"
+import {
+  NativeSelect,
+  NativeSelectOption,
+} from "@/components/ui/native-select"
+import {
+  SidebarGroup,
+  SidebarGroupContent,
+  SidebarGroupLabel,
+  SidebarMenu,
+  SidebarMenuButton,
+  SidebarMenuItem,
+} from "@/components/ui/sidebar"
+import { toast } from "sonner"
+import { cn, formatRelativeTime } from "@/lib/utils"
+import type {
+  AgentSummary,
+  EdgeTrigger,
+  PhaseGatePolicy,
+  PhaseRouting,
+  PhaseRunStatus,
+  ProcessDefinition,
+  ProcessGraph,
+  ProcessPhase,
+  ProcessPhaseAgent,
+  ProcessPhaseRun,
+  ProcessRun,
+  Task,
+  TaskEventPayload,
+  TaskLiveEvent,
+} from "@/types"
+
+// The durable approval row's `request` blob for a process phase gate (mirrors
+// GateRequest in the scheduler). Carries the gated phase's own phaseRunId, which
+// keys the monitor's gate map — so we can drop a settled gate on reconcile.
+interface ProcessGateRequest {
+  kind: "process_phase_gate"
+  phaseKey: string
+  phaseRunId: string
+  requestId: string
+}
+
+// The Process view — a full-viewport takeover (same shell as SkillsScreen /
+// SettingsScreen) for the Process engine (plan 025). Three surfaces:
+//   • a left rail listing authored process DEFINITIONS (+ New / delete),
+//   • a list-based DAG BUILDER (phases + per-phase "depends on" multiselect +
+//     an inspector for agent pool / routing / gate policy / fan-out; the graph
+//     is rendered implicitly by the depends-on edges), and
+//   • a live run MONITOR that colors phases off the `process_phase` events on
+//     the run's backing task tail, with inline approval cards for gated phases.
+//
+// All engine internals (scheduling, routing, fan-out, resume) live in the main
+// process; this screen only authors definitions and drives/observes runs via
+// the `window.cowork.db.processes.*` CRUD + `window.cowork.process.*` verbs.
+
+// Which surface the main pane shows for the selected definition.
+type PaneMode = "builder" | "run"
+
+export function ProcessScreen({
+  open,
+  onOpenChange,
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+}) {
+  const [definitions, setDefinitions] = useState<ProcessDefinition[] | null>(
+    null
+  )
+  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [pane, setPane] = useState<PaneMode>("builder")
+  // The run being monitored (set when a run is started or opened from history).
+  const [activeRunId, setActiveRunId] = useState<string | null>(null)
+  // Available agents to populate each phase's pool picker. Empty until 027 lets
+  // users author agents in-app; the builder degrades gracefully (a free-text
+  // agent name still works via the pool row).
+  const [agents, setAgents] = useState<AgentSummary[]>([])
+  const [pendingDelete, setPendingDelete] =
+    useState<ProcessDefinition | null>(null)
+
+  const loadDefinitions = useCallback(() => {
+    window.cowork.db.processes.list().then(setDefinitions)
+  }, [])
+
+  // (Re)load the definition list whenever the view opens; reset transient state.
+  useEffect(() => {
+    if (!open) return
+    setDefinitions(null)
+    setActiveRunId(null)
+    setPane("builder")
+    loadDefinitions()
+    window.cowork.agents
+      .list()
+      .then(setAgents)
+      .catch(() => setAgents([]))
+  }, [open, loadDefinitions])
+
+  // Guard against acting on a definition that vanished from a refreshed list.
+  useEffect(() => {
+    if (
+      selectedId &&
+      definitions &&
+      !definitions.some((d) => d.id === selectedId)
+    ) {
+      setSelectedId(null)
+      setActiveRunId(null)
+    }
+  }, [definitions, selectedId])
+
+  const selected = useMemo(
+    () => definitions?.find((d) => d.id === selectedId) ?? null,
+    [definitions, selectedId]
+  )
+
+  async function createDefinition() {
+    try {
+      const def = await window.cowork.db.processes.create({
+        name: "New Process",
+      })
+      loadDefinitions()
+      setSelectedId(def.id)
+      setPane("builder")
+      setActiveRunId(null)
+    } catch (err) {
+      toast.error(`Could not create process: ${err}`)
+    }
+  }
+
+  async function confirmDelete() {
+    const target = pendingDelete
+    setPendingDelete(null)
+    if (!target) return
+    try {
+      await window.cowork.db.processes.delete(target.id)
+      if (selectedId === target.id) {
+        setSelectedId(null)
+        setActiveRunId(null)
+      }
+      loadDefinitions()
+      toast.success("Process deleted")
+    } catch (err) {
+      toast.error(`Could not delete process: ${err}`)
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogPrimitive.Portal>
+        {/* Full-viewport takeover — same treatment as SkillsScreen: raw Radix
+            primitive (focus-trap / Escape / portal) without the centered-modal
+            animation. No meaningful outside to click, so close is Escape / [X]. */}
+        <DialogPrimitive.Content
+          data-slot="process-screen"
+          aria-describedby={undefined}
+          onInteractOutside={(e) => e.preventDefault()}
+          className="fixed inset-0 z-50 flex h-screen w-screen flex-col bg-background text-sm text-foreground outline-none data-open:animate-in data-open:fade-in-0 data-open:slide-in-from-bottom-2 data-closed:animate-out data-closed:fade-out-0 data-closed:slide-out-to-bottom-2"
+        >
+          {/* Header row / window drag region (matches the app's h-11 top bar). */}
+          <div className="flex h-11 shrink-0 items-center justify-between border-b pr-3 pl-20 [-webkit-app-region:drag]">
+            <DialogTitle className="font-heading text-base font-medium">
+              Processes
+            </DialogTitle>
+            <DialogPrimitive.Close asChild>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                className="[-webkit-app-region:no-drag]"
+              >
+                <XIcon />
+                <span className="sr-only">Close</span>
+              </Button>
+            </DialogPrimitive.Close>
+          </div>
+
+          <div className="flex min-h-0 flex-1">
+            {/* Left rail — the definition list + New action. */}
+            <div className="flex w-72 shrink-0 flex-col border-r">
+              <div className="p-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={createDefinition}
+                  className="w-full justify-start"
+                >
+                  <Plus className="size-4" />
+                  New Process
+                </Button>
+              </div>
+              <div className="min-h-0 flex-1 overflow-y-auto pb-2">
+                <SidebarGroup>
+                  <SidebarGroupLabel>
+                    Definitions
+                    <span className="ml-1 text-muted-foreground">
+                      ({definitions === null ? "…" : definitions.length})
+                    </span>
+                  </SidebarGroupLabel>
+                  <SidebarGroupContent>
+                    <SidebarMenu>
+                      {definitions?.map((d) => (
+                        <DefinitionRow
+                          key={d.id}
+                          definition={d}
+                          active={d.id === selectedId}
+                          onSelect={() => {
+                            setSelectedId(d.id)
+                            setPane("builder")
+                            setActiveRunId(null)
+                          }}
+                          onDelete={() => setPendingDelete(d)}
+                        />
+                      ))}
+                      {definitions?.length === 0 && (
+                        <p className="px-2 py-1 text-xs text-muted-foreground">
+                          No processes yet. Create one to build a DAG.
+                        </p>
+                      )}
+                    </SidebarMenu>
+                  </SidebarGroupContent>
+                </SidebarGroup>
+              </div>
+            </div>
+
+            {/* Main pane — builder or run monitor for the selected definition. */}
+            <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+              {selected ? (
+                <>
+                  <div className="flex h-12 shrink-0 items-center justify-between gap-2 border-b px-4">
+                    <div className="min-w-0">
+                      <p className="truncate font-medium">{selected.name}</p>
+                      {selected.description && (
+                        <p className="truncate text-xs text-muted-foreground">
+                          {selected.description}
+                        </p>
+                      )}
+                    </div>
+                    <ButtonGroup>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant={pane === "builder" ? "default" : "outline"}
+                        onClick={() => setPane("builder")}
+                      >
+                        Builder
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant={pane === "run" ? "default" : "outline"}
+                        onClick={() => setPane("run")}
+                      >
+                        Runs
+                      </Button>
+                    </ButtonGroup>
+                  </div>
+                  {pane === "builder" ? (
+                    <ProcessBuilder
+                      key={selected.id}
+                      definition={selected}
+                      agents={agents}
+                      onDefinitionChanged={loadDefinitions}
+                    />
+                  ) : (
+                    <RunMonitor
+                      key={selected.id}
+                      definition={selected}
+                      activeRunId={activeRunId}
+                      onSelectRun={setActiveRunId}
+                    />
+                  )}
+                </>
+              ) : (
+                <div className="flex flex-1 items-center justify-center p-8 text-center text-muted-foreground">
+                  Select a process, or create one to build a DAG.
+                </div>
+              )}
+            </div>
+          </div>
+        </DialogPrimitive.Content>
+      </DialogPrimitive.Portal>
+
+      {/* Confirmation before deleting a definition — deletion is irreversible and
+          cascades to phases / agents / edges (but not past runs). */}
+      <AlertDialog
+        open={pendingDelete !== null}
+        onOpenChange={(o) => {
+          if (!o) setPendingDelete(null)
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete this process?</AlertDialogTitle>
+            <AlertDialogDescription>
+              “{pendingDelete?.name}” and its phases, agent pools, and edges will
+              be permanently deleted. This can’t be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction variant="destructive" onClick={confirmDelete}>
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </Dialog>
+  )
+}
+
+// The last path segment of a folder (its display name), trailing slashes
+// trimmed. The full path stays in the pill's title tooltip and is what's passed
+// to the run — this is display-only so a long path can't blow out the modal.
+function basename(path: string): string {
+  const trimmed = path.replace(/[/\\]+$/, "")
+  const seg = trimmed.split(/[/\\]/).pop()
+  return seg || trimmed || path
+}
+
+// A stable, human-ish phase key derived from a name (the scheduler keys events
+// on it). Kept lowercase-alnum-underscore so it reads in the monitor.
+function slugifyKey(name: string): string {
+  return (
+    name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "_")
+      .replace(/^_+|_+$/g, "")
+      .slice(0, 40) || "phase"
+  )
+}
+
+// ─── The DAG builder ────────────────────────────────────────────────────────
+// List-based (plan 026 v1): phases as cards, dependencies as per-phase "depends
+// on" checkboxes (the graph is implicit in the edges). Every mutation writes
+// through the `db.processes.*` CRUD then reloads the whole graph — the
+// mutate-then-refetch pattern from SkillsScreen — since agent-pool and edge rows
+// have no update verb (edit = delete + recreate).
+function ProcessBuilder({
+  definition,
+  agents,
+  onDefinitionChanged,
+}: {
+  definition: ProcessDefinition
+  agents: AgentSummary[]
+  onDefinitionChanged: () => void
+}) {
+  const [graph, setGraph] = useState<ProcessGraph | null>(null)
+
+  const reload = useCallback(() => {
+    window.cowork.db.processes.get(definition.id).then(setGraph)
+  }, [definition.id])
+
+  useEffect(() => {
+    setGraph(null)
+    reload()
+  }, [reload])
+
+  const phases = useMemo(
+    () => (graph ? [...graph.phases].sort((a, b) => a.position - b.position) : []),
+    [graph]
+  )
+
+  async function saveDefinition(patch: {
+    name?: string
+    description?: string | null
+  }) {
+    try {
+      await window.cowork.db.processes.update(definition.id, patch)
+      onDefinitionChanged()
+      reload()
+    } catch (err) {
+      toast.error(`Could not save process: ${err}`)
+    }
+  }
+
+  async function addPhase() {
+    const n = phases.length + 1
+    const name = `Phase ${n}`
+    try {
+      await window.cowork.db.processes.phases.create({
+        processId: definition.id,
+        key: slugifyKey(`${name}_${n}`),
+        name,
+        position: n,
+      })
+      reload()
+    } catch (err) {
+      toast.error(`Could not add phase: ${err}`)
+    }
+  }
+
+  if (graph === null) {
+    return (
+      <div className="flex flex-1 items-center justify-center text-muted-foreground">
+        <Loader2 className="size-4 animate-spin" />
+      </div>
+    )
+  }
+
+  return (
+    <ScrollArea className="min-h-0 flex-1">
+      <div className="mx-auto flex max-w-3xl flex-col gap-6 px-6 py-6">
+        {/* Definition meta. */}
+        <div className="flex flex-col gap-2">
+          <label className="text-xs font-medium text-muted-foreground">
+            Name
+          </label>
+          <Input
+            defaultValue={definition.name}
+            onBlur={(e) => {
+              const v = e.target.value.trim()
+              if (v && v !== definition.name) saveDefinition({ name: v })
+            }}
+          />
+          <label className="text-xs font-medium text-muted-foreground">
+            Description
+          </label>
+          <Textarea
+            defaultValue={definition.description ?? ""}
+            placeholder="What this process does…"
+            className="min-h-16 resize-y"
+            onBlur={(e) => {
+              const v = e.target.value.trim()
+              if (v !== (definition.description ?? "")) {
+                saveDefinition({ description: v || null })
+              }
+            }}
+          />
+        </div>
+
+        {/* Phases. */}
+        <div className="flex flex-col gap-3">
+          <div className="flex items-center justify-between">
+            <h3 className="font-heading text-sm font-medium">
+              Phases
+              <span className="ml-1 text-muted-foreground">
+                ({phases.length})
+              </span>
+            </h3>
+            <Button type="button" size="sm" variant="outline" onClick={addPhase}>
+              <Plus className="size-4" />
+              Add phase
+            </Button>
+          </div>
+          {phases.length === 0 && (
+            <p className="rounded-lg border border-dashed p-4 text-center text-xs text-muted-foreground">
+              No phases yet. Add one to start building the DAG.
+            </p>
+          )}
+          {phases.map((phase) => (
+            <PhaseCard
+              key={phase.id}
+              phase={phase}
+              phases={phases}
+              graph={graph}
+              agents={agents}
+              onChanged={reload}
+            />
+          ))}
+        </div>
+
+        <p className="text-xs text-muted-foreground">
+          Start runs from the <span className="font-medium">Runs</span> tab.
+        </p>
+      </div>
+    </ScrollArea>
+  )
+}
+
+// One phase card: name/key, routing / gate / fan-out toggles, the agent pool,
+// and the "depends on" edge selector.
+function PhaseCard({
+  phase,
+  phases,
+  graph,
+  agents,
+  onChanged,
+}: {
+  phase: ProcessPhase
+  phases: ProcessPhase[]
+  graph: ProcessGraph
+  agents: AgentSummary[]
+  onChanged: () => void
+}) {
+  // This phase's agent pool + its incoming edges (edges where to === this phase).
+  const pool = useMemo(
+    () =>
+      graph.agents
+        .filter((a) => a.phaseId === phase.id)
+        .sort((a, b) => a.position - b.position),
+    [graph.agents, phase.id]
+  )
+  const incoming = useMemo(
+    () => graph.edges.filter((e) => e.toPhaseId === phase.id),
+    [graph.edges, phase.id]
+  )
+  const upstreamCandidates = phases.filter((p) => p.id !== phase.id)
+  // Agents not already in the pool, for the add dropdown.
+  const poolNames = new Set(pool.map((a) => a.agentName))
+  const addable = agents.filter((a) => !poolNames.has(a.name))
+  const [addValue, setAddValue] = useState("")
+  // Collapsed by default — a built graph is mostly read; expand to edit.
+  const [expanded, setExpanded] = useState(false)
+  const depCount = incoming.length
+
+  async function patchPhase(patch: {
+    name?: string
+    key?: string
+    routing?: PhaseRouting
+    gatePolicy?: PhaseGatePolicy
+    fanOut?: boolean
+  }) {
+    try {
+      await window.cowork.db.processes.phases.update(phase.id, patch)
+      onChanged()
+    } catch (err) {
+      toast.error(`Could not update phase: ${err}`)
+    }
+  }
+
+  async function deletePhase() {
+    try {
+      await window.cowork.db.processes.phases.delete(phase.id)
+      onChanged()
+    } catch (err) {
+      toast.error(`Could not delete phase: ${err}`)
+    }
+  }
+
+  async function addPoolAgent(agentName: string) {
+    if (!agentName) return
+    try {
+      await window.cowork.db.processes.agents.create({
+        phaseId: phase.id,
+        agentName,
+        position: pool.length,
+      })
+      setAddValue("")
+      onChanged()
+    } catch (err) {
+      toast.error(`Could not add agent: ${err}`)
+    }
+  }
+
+  async function removePoolAgent(id: string) {
+    try {
+      await window.cowork.db.processes.agents.delete(id)
+      onChanged()
+    } catch (err) {
+      toast.error(`Could not remove agent: ${err}`)
+    }
+  }
+
+  // Toggle an incoming edge from `fromId`. Adding uses the current trigger
+  // default (on_complete); removing deletes the edge row.
+  async function toggleDependency(fromId: string, on: boolean) {
+    try {
+      if (on) {
+        await window.cowork.db.processes.edges.create({
+          processId: phase.processId,
+          fromPhaseId: fromId,
+          toPhaseId: phase.id,
+        })
+      } else {
+        const edge = incoming.find((e) => e.fromPhaseId === fromId)
+        if (edge) await window.cowork.db.processes.edges.delete(edge.id)
+      }
+      onChanged()
+    } catch (err) {
+      toast.error(`Could not update dependency: ${err}`)
+    }
+  }
+
+  // Change an existing edge's trigger — no update verb, so delete + recreate.
+  async function changeTrigger(fromId: string, trigger: EdgeTrigger) {
+    const edge = incoming.find((e) => e.fromPhaseId === fromId)
+    if (!edge) return
+    try {
+      await window.cowork.db.processes.edges.delete(edge.id)
+      await window.cowork.db.processes.edges.create({
+        processId: phase.processId,
+        fromPhaseId: fromId,
+        toPhaseId: phase.id,
+        trigger,
+      })
+      onChanged()
+    } catch (err) {
+      toast.error(`Could not change trigger: ${err}`)
+    }
+  }
+
+  return (
+    <Collapsible
+      open={expanded}
+      onOpenChange={setExpanded}
+      className="rounded-lg border bg-card"
+    >
+      {/* Summary row (always visible): chevron + name + at-a-glance badges +
+          delete. Click toggles expand; the delete button stops propagation. */}
+      <div className="flex items-center gap-2 px-3 py-2">
+        <CollapsibleTrigger asChild>
+          <button
+            type="button"
+            className="group/phase flex min-w-0 flex-1 items-center gap-2 text-left"
+          >
+            <ChevronRight className="size-3.5 shrink-0 text-muted-foreground transition-transform group-data-[state=open]/phase:rotate-90" />
+            <span className="truncate font-medium">{phase.name}</span>
+            <div className="flex shrink-0 flex-wrap items-center gap-1">
+              <Badge variant="outline" className="text-[10px]">
+                {phase.routing}
+              </Badge>
+              {phase.gatePolicy === "approve" && (
+                <Badge variant="outline" className="text-[10px]">
+                  gate
+                </Badge>
+              )}
+              {phase.fanOut && (
+                <Badge variant="outline" className="text-[10px]">
+                  fan-out
+                </Badge>
+              )}
+              <Badge variant="secondary" className="text-[10px]">
+                {pool.length} {pool.length === 1 ? "agent" : "agents"}
+              </Badge>
+              {depCount > 0 && (
+                <Badge variant="secondary" className="text-[10px]">
+                  {depCount} dep{depCount === 1 ? "" : "s"}
+                </Badge>
+              )}
+            </div>
+          </button>
+        </CollapsibleTrigger>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-sm"
+          onClick={deletePhase}
+          title="Delete phase"
+          className="shrink-0 text-muted-foreground hover:text-destructive"
+        >
+          <Trash2 className="size-3.5" />
+        </Button>
+      </div>
+
+      <CollapsibleContent>
+        <div className="flex flex-col gap-3 border-t p-3">
+          {/* Row 1: name + key. */}
+          <div className="flex items-start gap-2">
+            <div className="flex min-w-0 flex-1 flex-col gap-1">
+              <Input
+                defaultValue={phase.name}
+                className="h-8 font-medium"
+                onBlur={(e) => {
+                  const v = e.target.value.trim()
+                  if (v && v !== phase.name) patchPhase({ name: v })
+                }}
+              />
+            </div>
+            <div className="flex w-40 flex-col gap-1">
+              <Input
+                defaultValue={phase.key}
+                className="h-8 font-mono text-xs"
+                title="Phase key (used in run events)"
+                onBlur={(e) => {
+                  const v = slugifyKey(e.target.value)
+                  if (v && v !== phase.key) patchPhase({ key: v })
+                }}
+              />
+            </div>
+          </div>
+
+      {/* Row 2: routing / gate / fan-out. */}
+      <div className="flex flex-wrap items-center gap-4">
+        <label className="flex items-center gap-2 text-xs">
+          <span className="text-muted-foreground">Routing</span>
+          <NativeSelect
+            size="sm"
+            value={phase.routing}
+            onChange={(e) =>
+              patchPhase({ routing: e.target.value as PhaseRouting })
+            }
+          >
+            <NativeSelectOption value="single">single</NativeSelectOption>
+            <NativeSelectOption value="dispatch">dispatch</NativeSelectOption>
+          </NativeSelect>
+        </label>
+        <label className="flex items-center gap-2 text-xs">
+          <span className="text-muted-foreground">Gate</span>
+          <NativeSelect
+            size="sm"
+            value={phase.gatePolicy}
+            onChange={(e) =>
+              patchPhase({ gatePolicy: e.target.value as PhaseGatePolicy })
+            }
+          >
+            <NativeSelectOption value="auto">auto</NativeSelectOption>
+            <NativeSelectOption value="approve">approve</NativeSelectOption>
+          </NativeSelect>
+        </label>
+        <label className="flex items-center gap-2 text-xs">
+          <span className="text-muted-foreground">Fan-out</span>
+          <Switch
+            checked={phase.fanOut}
+            onCheckedChange={(v) => patchPhase({ fanOut: v })}
+          />
+        </label>
+      </div>
+
+      {/* Row 3: agent pool. */}
+      <div className="flex flex-col gap-1.5">
+        <span className="text-xs text-muted-foreground">
+          Agent pool
+          {phase.routing === "dispatch" && pool.length < 2 && (
+            <span className="ml-1 text-amber-600 dark:text-amber-500">
+              — dispatch routing needs 2+ agents
+            </span>
+          )}
+        </span>
+        <div className="flex flex-wrap items-center gap-1.5">
+          {pool.map((a) => (
+            <Badge key={a.id} variant="secondary" className="gap-1 pr-1">
+              {a.agentName}
+              <button
+                type="button"
+                onClick={() => removePoolAgent(a.id)}
+                className="rounded-sm p-0.5 hover:bg-background/60"
+                aria-label={`Remove ${a.agentName}`}
+              >
+                <XIcon className="size-3" />
+              </button>
+            </Badge>
+          ))}
+          {pool.length === 0 && (
+            <span className="text-xs text-muted-foreground">
+              No agents — the phase falls back to the default agent.
+            </span>
+          )}
+        </div>
+        {addable.length > 0 ? (
+          <NativeSelect
+            size="sm"
+            value={addValue}
+            className="w-full"
+            onChange={(e) => addPoolAgent(e.target.value)}
+          >
+            <NativeSelectOption value="">Add agent…</NativeSelectOption>
+            {addable.map((a) => (
+              <NativeSelectOption key={a.name} value={a.name}>
+                {a.name}
+              </NativeSelectOption>
+            ))}
+          </NativeSelect>
+        ) : (
+          agents.length === 0 && (
+            <span className="text-xs text-muted-foreground">
+              No authored agents available yet.
+            </span>
+          )
+        )}
+      </div>
+
+      {/* Row 4: dependencies (incoming edges). */}
+      {upstreamCandidates.length > 0 && (
+        <div className="flex flex-col gap-1.5">
+          <span className="text-xs text-muted-foreground">Depends on</span>
+          <div className="flex flex-col gap-1">
+            {upstreamCandidates.map((u) => {
+              const edge = incoming.find((e) => e.fromPhaseId === u.id)
+              const checked = edge !== undefined
+              return (
+                <div key={u.id} className="flex items-center gap-2 text-xs">
+                  <Checkbox
+                    id={`${phase.id}-dep-${u.id}`}
+                    checked={checked}
+                    onCheckedChange={(v) => toggleDependency(u.id, v === true)}
+                  />
+                  <label
+                    htmlFor={`${phase.id}-dep-${u.id}`}
+                    className="cursor-pointer truncate"
+                  >
+                    {u.name}
+                  </label>
+                  {checked && (
+                    <NativeSelect
+                      size="sm"
+                      value={edge?.trigger}
+                      className="ml-auto"
+                      onChange={(e) =>
+                        changeTrigger(u.id, e.target.value as EdgeTrigger)
+                      }
+                    >
+                      <NativeSelectOption value="on_complete">
+                        on complete
+                      </NativeSelectOption>
+                      <NativeSelectOption value="on_each_subtask">
+                        on each subtask
+                      </NativeSelectOption>
+                    </NativeSelect>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
+        </div>
+      </CollapsibleContent>
+    </Collapsible>
+  )
+}
+
+// One clickable definition row: name + description, with a hover delete button.
+function DefinitionRow({
+  definition,
+  active,
+  onSelect,
+  onDelete,
+}: {
+  definition: ProcessDefinition
+  active: boolean
+  onSelect: () => void
+  onDelete: () => void
+}) {
+  return (
+    <SidebarMenuItem className="group/def">
+      <SidebarMenuButton
+        isActive={active}
+        onClick={onSelect}
+        className={cn("h-auto flex-col items-start gap-0.5 py-1.5 pr-8")}
+      >
+        <div className="w-full truncate font-medium">{definition.name}</div>
+        {definition.description && (
+          <div className="line-clamp-2 w-full text-xs font-normal text-muted-foreground">
+            {definition.description}
+          </div>
+        )}
+      </SidebarMenuButton>
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation()
+          onDelete()
+        }}
+        className="absolute top-1.5 right-1.5 rounded-md p-1 text-muted-foreground opacity-0 transition-opacity group-hover/def:opacity-100 hover:bg-sidebar-accent hover:text-destructive"
+        title="Delete process"
+        aria-label="Delete process"
+      >
+        <Trash2 className="size-3.5" />
+      </button>
+    </SidebarMenuItem>
+  )
+}
+
+// ─── The run monitor ─────────────────────────────────────────────────────────
+// Picks a run for the definition, then colors its phases live. Phase-run rows
+// (status, agent, parent, timestamps) come from the DB and are refetched on any
+// `process_phase` event on the run's backing task; the requestId a gated phase
+// needs to approve/deny is carried only on the event (not the DB row), so it's
+// reconstructed from the task event stream (replay + live tail) into a
+// phaseRunId → requestId map. Reuses `window.cowork.tasks.onEvent` filtered by
+// the run's taskId (process runs ride the task tail — no separate channel).
+
+// Statuses that mean the run is still doing something (offer pause/cancel).
+const ACTIVE_RUN_STATUSES = new Set([
+  "queued",
+  "running",
+  "waiting_for_approval",
+  "paused",
+])
+
+function RunMonitor({
+  definition,
+  activeRunId,
+  onSelectRun,
+}: {
+  definition: ProcessDefinition
+  activeRunId: string | null
+  onSelectRun: (runId: string) => void
+}) {
+  const [runs, setRuns] = useState<ProcessRun[] | null>(null)
+  const [run, setRun] = useState<ProcessRun | null>(null)
+  const [phaseRuns, setPhaseRuns] = useState<ProcessPhaseRun[]>([])
+  const [graph, setGraph] = useState<ProcessGraph | null>(null)
+  // phaseRunId → the pending gate's requestId (derived from the event stream).
+  const [gates, setGates] = useState<Record<string, string>>({})
+  // The New Run modal (objective + required folder).
+  const [newRunOpen, setNewRunOpen] = useState(false)
+  // The phase-run whose worker transcript is open (null = closed). Resolved from
+  // the phase-run's taskId → the worker Task the read-only sheet renders.
+  const [viewingTask, setViewingTask] = useState<Task | null>(null)
+
+  // Open a phase/child's worker transcript. Fetches the backing Task by its id;
+  // no-op if the phase never spawned a worker (taskId null) or the task vanished.
+  async function openTranscript(phaseRun: ProcessPhaseRun) {
+    if (!phaseRun.taskId) return
+    const task = await window.cowork.db.tasks.get(phaseRun.taskId)
+    if (task) setViewingTask(task)
+  }
+
+  const loadRuns = useCallback(
+    () => window.cowork.db.processes.runs.list({ processId: definition.id }),
+    [definition.id]
+  )
+
+  // Latest run + phaseRuns fetch, kept in a ref so the event listener can call
+  // it without re-subscribing on every render.
+  const refetch = useCallback(async () => {
+    if (!activeRunId) return
+    const [r, prs] = await Promise.all([
+      window.cowork.db.processes.runs.get(activeRunId),
+      window.cowork.db.processes.phaseRuns.list({ runId: activeRunId }),
+    ])
+    setRun(r)
+    setPhaseRuns(prs)
+  }, [activeRunId])
+  const refetchRef = useRef(refetch)
+  refetchRef.current = refetch
+
+  // Load the run list for this definition when the monitor mounts / definition
+  // changes. Auto-select the newest run if none is active.
+  useEffect(() => {
+    let cancelled = false
+    loadRuns().then((rs) => {
+      if (cancelled) return
+      setRuns(rs)
+      if (!activeRunId && rs.length > 0) onSelectRun(rs[0].id)
+    })
+    window.cowork.db.processes.get(definition.id).then((g) => {
+      if (!cancelled) setGraph(g)
+    })
+    return () => {
+      cancelled = true
+    }
+    // onSelectRun/activeRunId intentionally excluded — only re-list on def change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [definition.id, loadRuns])
+
+  // Load the selected run + rebuild the gate map from its replayed event stream.
+  useEffect(() => {
+    setGates({})
+    if (!activeRunId) {
+      setRun(null)
+      setPhaseRuns([])
+      return
+    }
+    let cancelled = false
+    void refetch()
+    // Rebuild the gate map from the backing task's replayed events, then RECONCILE
+    // against the durable approvals table. Reconciliation is required because the
+    // engine emits no process_phase event for the gated phase on approve/resume
+    // (the phase is already `completed`; resume re-emits only its dependents), so
+    // the still-present `waiting_for_approval` event would otherwise resurrect a
+    // gate the user already resolved. An approval row that's approved/denied means
+    // the gate is settled → drop it.
+    window.cowork.db.processes.runs.get(activeRunId).then((r) => {
+      if (cancelled || !r?.taskId) return
+      const taskId = r.taskId
+      Promise.all([
+        window.cowork.db.taskEvents.list(taskId),
+        window.cowork.db.approvals.list({ taskId }),
+      ]).then(([events, approvals]) => {
+        if (cancelled) return
+        const gates = deriveGates(
+          events.map((e) => e.payload as TaskEventPayload)
+        )
+        for (const a of approvals) {
+          if (a.status === "pending") continue
+          const req = a.request as ProcessGateRequest | null
+          if (req?.kind === "process_phase_gate" && gates[req.phaseRunId]) {
+            delete gates[req.phaseRunId]
+          }
+        }
+        setGates(gates)
+      })
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [activeRunId, refetch])
+
+  // Live tail: filter to this run's backing task, fold process_phase events into
+  // the gate map, and refetch the phase-run rows on any of them.
+  useEffect(() => {
+    if (!run?.taskId) return
+    const taskId = run.taskId
+    const unsubscribe = window.cowork.tasks.onEvent((payload: TaskLiveEvent) => {
+      if (payload.taskId !== taskId) return
+      const ev = payload.event
+      if (ev.type === "process_phase") {
+        setGates((g) => foldGate(g, ev))
+        void refetchRef.current()
+      } else if (
+        ev.type === "status_change" ||
+        ev.type === "task_completed" ||
+        ev.type === "task_failed"
+      ) {
+        void refetchRef.current()
+      }
+    })
+    return unsubscribe
+  }, [run?.taskId])
+
+  const phaseName = useCallback(
+    (phaseId: string) =>
+      graph?.phases.find((p) => p.id === phaseId)?.name ?? phaseId,
+    [graph]
+  )
+
+  // Split into top-level phase runs (parentId null) and their children, so the
+  // monitor can nest fan-out / on_each_subtask instances under their container.
+  const { topLevel, childrenOf } = useMemo(() => {
+    const top: ProcessPhaseRun[] = []
+    const kids = new Map<string, ProcessPhaseRun[]>()
+    for (const pr of phaseRuns) {
+      if (pr.parentId) {
+        const list = kids.get(pr.parentId) ?? []
+        list.push(pr)
+        kids.set(pr.parentId, list)
+      } else {
+        top.push(pr)
+      }
+    }
+    return { topLevel: top, childrenOf: kids }
+  }, [phaseRuns])
+
+  // Drop a settled gate from the map. The engine emits no process_phase event for
+  // the gated phase on approve/deny (it stays `completed`), so the live tail won't
+  // clear it — we clear optimistically here.
+  const clearGate = (phaseRunId: string) =>
+    setGates((g) => {
+      const next = { ...g }
+      delete next[phaseRunId]
+      return next
+    })
+
+  async function approve(requestId: string, phaseRunId: string) {
+    if (!run) return
+    clearGate(phaseRunId)
+    try {
+      await window.cowork.process.approve({ processRunId: run.id, requestId })
+    } catch (err) {
+      toast.error(`Could not approve phase: ${err}`)
+    }
+  }
+  async function deny(requestId: string, phaseRunId: string) {
+    if (!run) return
+    clearGate(phaseRunId)
+    try {
+      await window.cowork.process.deny({ processRunId: run.id, requestId })
+    } catch (err) {
+      toast.error(`Could not deny phase: ${err}`)
+    }
+  }
+
+  // Start a new run of this definition (from the New Run modal). Refreshes the
+  // run list, selects the new run, and closes the modal.
+  async function startNewRun(objective: string, workspacePath: string) {
+    const started = await window.cowork.process.startRun({
+      processId: definition.id,
+      sourceConversationId: null,
+      objective: objective.trim(),
+      workspacePath: workspacePath.trim(),
+    })
+    setRuns(await loadRuns())
+    onSelectRun(started.id)
+    setNewRunOpen(false)
+    toast.success("Process run started")
+  }
+
+  const noPhases = (graph?.phases.length ?? 0) === 0
+
+  if (runs === null) {
+    return (
+      <div className="flex flex-1 items-center justify-center text-muted-foreground">
+        <Loader2 className="size-4 animate-spin" />
+      </div>
+    )
+  }
+
+  const runActive = run ? ACTIVE_RUN_STATUSES.has(run.status) : false
+
+  // No runs yet — an actionable empty state (the modal renders below either way).
+  if (runs.length === 0) {
+    return (
+      <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 p-8 text-center">
+        <p className="text-sm text-muted-foreground">No runs yet.</p>
+        <Button type="button" onClick={() => setNewRunOpen(true)} disabled={noPhases}>
+          <Plus className="size-4" />
+          New Run
+        </Button>
+        {noPhases && (
+          <p className="text-xs text-muted-foreground">
+            Add at least one phase in the Builder first.
+          </p>
+        )}
+        <NewRunModal
+          open={newRunOpen}
+          onOpenChange={setNewRunOpen}
+          onRun={startNewRun}
+        />
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      {/* Run selector + controls. */}
+      <div className="flex shrink-0 items-center gap-2 border-b px-4 py-2">
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          onClick={() => setNewRunOpen(true)}
+          disabled={noPhases}
+          title={noPhases ? "Add a phase in the Builder first" : undefined}
+        >
+          <Plus className="size-3.5" />
+          New Run
+        </Button>
+        <Select value={activeRunId ?? ""} onValueChange={onSelectRun}>
+          <SelectTrigger size="sm" className="min-w-0 flex-1">
+            <SelectValue placeholder="Select a run" />
+          </SelectTrigger>
+          <SelectContent>
+            {runs.map((r) => (
+              <SelectItem key={r.id} value={r.id}>
+                {runLabel(r)}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        {run && <RunStatusBadge status={run.status} />}
+        {run && runActive && (
+          <>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={() => window.cowork.process.pause(run.id)}
+              disabled={run.status === "paused"}
+            >
+              <Pause className="size-3.5" />
+              Pause
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="destructive"
+              onClick={() => window.cowork.process.cancel(run.id)}
+            >
+              Cancel
+            </Button>
+          </>
+        )}
+        {/* A failed run can retry from its failure frontier: the failed phase(s)
+            and blocked dependents re-run; completed phases don't. */}
+        {run && run.status === "failed" && (
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            onClick={() => window.cowork.process.restart(run.id)}
+          >
+            <RotateCcw className="size-3.5" />
+            Retry
+          </Button>
+        )}
+      </div>
+
+      <NewRunModal
+        open={newRunOpen}
+        onOpenChange={setNewRunOpen}
+        onRun={startNewRun}
+      />
+
+      {/* Phase list. */}
+      <ScrollArea className="min-h-0 flex-1">
+        <div className="mx-auto flex max-w-3xl flex-col gap-2 px-6 py-4">
+          {run?.objective && (
+            <p className="mb-2 rounded-md bg-muted px-3 py-2 text-xs text-muted-foreground">
+              {run.objective}
+            </p>
+          )}
+          {/* A paused run with no live gate = a denied gate (v1: deny records the
+              decision but doesn't resume). Explain the dead-end and the way out. */}
+          {run?.status === "paused" && Object.keys(gates).length === 0 && (
+            <p className="mb-2 rounded-md border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-xs text-amber-600 dark:text-amber-500">
+              A gate was denied — the run is paused and its downstream phases stay
+              blocked. Cancel the run to end it.
+            </p>
+          )}
+          {topLevel.length === 0 && (
+            <p className="py-8 text-center text-xs text-muted-foreground">
+              Waiting for phases to start…
+            </p>
+          )}
+          {topLevel.map((pr) => (
+            <PhaseRunItem
+              key={pr.id}
+              phaseRun={pr}
+              name={phaseName(pr.phaseId)}
+              gateRequestId={gates[pr.id]}
+              childRuns={childrenOf.get(pr.id) ?? []}
+              phaseName={phaseName}
+              onApprove={approve}
+              onDeny={deny}
+              onOpenTranscript={openTranscript}
+            />
+          ))}
+        </div>
+      </ScrollArea>
+
+      {/* Read-only transcript of a clicked phase/child's worker (its full agent
+          conversation — messages, tools, result). Portals above the takeover. */}
+      <TaskTranscriptSheet
+        task={viewingTask}
+        open={viewingTask !== null}
+        onOpenChange={(o) => {
+          if (!o) setViewingTask(null)
+        }}
+      />
+    </div>
+  )
+}
+
+// One top-level phase run row: status icon + name + agent, its inline approval
+// card when gated, and its nested children (fan-out / on_each_subtask instances).
+function PhaseRunItem({
+  phaseRun,
+  name,
+  gateRequestId,
+  childRuns,
+  phaseName,
+  onApprove,
+  onDeny,
+  onOpenTranscript,
+}: {
+  phaseRun: ProcessPhaseRun
+  name: string
+  gateRequestId: string | undefined
+  childRuns: ProcessPhaseRun[]
+  phaseName: (phaseId: string) => string
+  onApprove: (requestId: string, phaseRunId: string) => void
+  onDeny: (requestId: string, phaseRunId: string) => void
+  // Open a phase/child's worker transcript (only rows with a taskId).
+  onOpenTranscript: (phaseRun: ProcessPhaseRun) => void
+}) {
+  // A gated phase's own row stays `completed` in the DB — the gate is a run-level
+  // hold on its dependents (the requestId rides the event + a durable approval
+  // row, not the phase status). So drive the card off the gate map, not the
+  // phase-run status, and OVERRIDE the displayed status to read as awaiting.
+  const gated = gateRequestId !== undefined
+  const displayStatus = gated ? "waiting_for_approval" : phaseRun.status
+  const clickable = phaseRun.taskId !== null
+  return (
+    <div className="flex flex-col gap-2 rounded-lg border bg-card p-3">
+      <div
+        onClick={clickable ? () => onOpenTranscript(phaseRun) : undefined}
+        className={cn(
+          "-m-1 flex items-center gap-2 rounded-md p-1",
+          clickable && "cursor-pointer hover:bg-muted/60"
+        )}
+        title={clickable ? "View this phase's transcript" : undefined}
+      >
+        <StatusIcon status={displayStatus} />
+        <span className="min-w-0 flex-1 truncate font-medium">{name}</span>
+        {phaseRun.agentName && (
+          <Badge variant="outline" className="shrink-0 font-mono text-[10px]">
+            {phaseRun.agentName}
+          </Badge>
+        )}
+        <PhaseStatusLabel status={displayStatus} />
+      </div>
+
+      {phaseRun.error && (
+        <pre className="overflow-x-auto rounded-md bg-destructive/5 px-2 py-1.5 text-xs text-destructive">
+          {phaseRun.error}
+        </pre>
+      )}
+
+      {/* Inline approval card for an approve-gated phase (reuses the activity
+          panel affordance, wired to process.approve/deny). */}
+      {gated && (
+        <div className="flex flex-col gap-2 rounded-lg border border-amber-500/40 bg-amber-500/5 p-3 text-xs">
+          <div className="flex items-center gap-2 font-medium text-amber-600 dark:text-amber-500">
+            <ShieldAlert className="size-3.5 shrink-0" />
+            <span>“{name}” is done — approve to release its downstream phases.</span>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              size="xs"
+              onClick={() => onApprove(gateRequestId, phaseRun.id)}
+            >
+              Approve <Kbd className="ml-1.5">⏎</Kbd>
+            </Button>
+            <Button
+              size="xs"
+              variant="destructive"
+              onClick={() => onDeny(gateRequestId, phaseRun.id)}
+            >
+              Deny <Kbd className="ml-1.5">Esc</Kbd>
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {/* Nested children (fan-out sub-tasks / on_each_subtask instances). */}
+      {childRuns.length > 0 && (
+        <div className="flex flex-col gap-1 border-l-2 pl-3">
+          {childRuns.map((c, i) => {
+            const clickable = c.taskId !== null
+            return (
+              <div
+                key={c.id}
+                onClick={clickable ? () => onOpenTranscript(c) : undefined}
+                className={cn(
+                  "flex items-center gap-2 rounded-md px-1 py-0.5 text-xs",
+                  clickable && "cursor-pointer hover:bg-muted/60"
+                )}
+                title={clickable ? "View this sub-task's transcript" : undefined}
+              >
+                <StatusIcon status={c.status} />
+                <span className="min-w-0 flex-1 truncate">
+                  {c.title ?? `${phaseName(c.phaseId)} #${i + 1}`}
+                </span>
+                {c.agentName && (
+                  <Badge
+                    variant="outline"
+                    className="shrink-0 font-mono text-[10px]"
+                  >
+                    {c.agentName}
+                  </Badge>
+                )}
+                <PhaseStatusLabel status={c.status} />
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── New Run modal ───────────────────────────────────────────────────────────
+// A centered modal (sibling Dialog, not the takeover primitive) to start a run:
+// an objective + a REQUIRED working directory (a run's phase workers fail closed
+// without a cwd — plan 026). Mirrors project-dialog.tsx's folder-picker pattern.
+function NewRunModal({
+  open,
+  onOpenChange,
+  onRun,
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  onRun: (objective: string, workspacePath: string) => Promise<void>
+}) {
+  const [objective, setObjective] = useState("")
+  const [folder, setFolder] = useState("")
+  const [starting, setStarting] = useState(false)
+
+  // Reset the form whenever the modal opens, so a reopen starts clean.
+  useEffect(() => {
+    if (open) {
+      setObjective("")
+      setFolder("")
+      setStarting(false)
+    }
+  }, [open])
+
+  async function pickDir() {
+    const picked = await window.cowork.pickWorkspace()
+    if (picked.path) setFolder(picked.path)
+  }
+
+  async function run() {
+    if (!folder.trim()) return
+    setStarting(true)
+    try {
+      await onRun(objective, folder)
+    } catch (err) {
+      toast.error(`Could not start run: ${err}`)
+      setStarting(false)
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>New run</DialogTitle>
+          <DialogDescription>
+            Start a run of this process. Phases run in the chosen folder — a new
+            project from scratch, or an existing codebase to modify.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="flex flex-col gap-3">
+          <div className="flex flex-col gap-1.5">
+            <label className="text-xs font-medium text-muted-foreground">
+              Objective
+            </label>
+            <Textarea
+              value={objective}
+              onChange={(e) => setObjective(e.target.value)}
+              placeholder="Describe what this run should accomplish…"
+              className="min-h-20 resize-y"
+              autoFocus
+            />
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <label className="text-xs font-medium text-muted-foreground">
+              Working directory <span className="text-destructive">*</span>
+            </label>
+            {folder ? (
+              <div className="flex items-center gap-2">
+                <span
+                  className="flex min-w-0 flex-1 items-center gap-1.5 truncate rounded-md border bg-muted/40 px-2 py-1.5 font-mono text-xs"
+                  title={folder}
+                >
+                  <FolderOpen className="size-3.5 shrink-0 text-muted-foreground" />
+                  {basename(folder)}
+                </span>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={pickDir}
+                >
+                  Change
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-sm"
+                  onClick={() => setFolder("")}
+                  aria-label="Clear folder"
+                >
+                  <XIcon />
+                </Button>
+              </div>
+            ) : (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={pickDir}
+                className="justify-start"
+              >
+                <FolderOpen className="size-4" />
+                Choose folder…
+              </Button>
+            )}
+          </div>
+        </div>
+        <DialogFooter>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => onOpenChange(false)}
+            disabled={starting}
+          >
+            Cancel
+          </Button>
+          <Button
+            type="button"
+            onClick={run}
+            disabled={starting || !folder.trim()}
+          >
+            <Play className="size-4" />
+            {starting ? "Starting…" : "Run"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+// ─── Status helpers ──────────────────────────────────────────────────────────
+
+// Fold a single process_phase event into the gate map: a waiting_for_approval
+// event with a requestId sets the phase's gate; any other status for it clears.
+function foldGate(
+  gates: Record<string, string>,
+  ev: Extract<TaskEventPayload, { type: "process_phase" }>
+): Record<string, string> {
+  if (ev.status === "waiting_for_approval" && ev.requestId) {
+    return { ...gates, [ev.phaseRunId]: ev.requestId }
+  }
+  if (gates[ev.phaseRunId]) {
+    const next = { ...gates }
+    delete next[ev.phaseRunId]
+    return next
+  }
+  return gates
+}
+
+// Rebuild the whole gate map from a replayed event stream (newest wins per
+// phase). Used to recover pending gates after the monitor (re)mounts.
+function deriveGates(events: TaskEventPayload[]): Record<string, string> {
+  let gates: Record<string, string> = {}
+  for (const ev of events) {
+    if (ev.type === "process_phase") gates = foldGate(gates, ev)
+  }
+  return gates
+}
+
+function runLabel(run: ProcessRun): string {
+  const when = run.startedAt ?? run.createdAt
+  // Prefer the generated title; fall back to an objective slice for pre-existing
+  // (title-less) runs.
+  const obj = run.objective?.trim()
+  const label = run.title?.trim() || (obj ? obj.slice(0, 40) : "")
+  return `${formatRelativeTime(when)}${label ? ` — ${label}` : ""}`
+}
+
+function StatusIcon({ status }: { status: PhaseRunStatus }) {
+  switch (status) {
+    case "running":
+      return <Loader2 className="size-4 shrink-0 animate-spin text-blue-500" />
+    case "completed":
+      return <CheckCircle2 className="size-4 shrink-0 text-emerald-500" />
+    case "failed":
+      return <XCircle className="size-4 shrink-0 text-destructive" />
+    case "cancelled":
+      return <XCircle className="size-4 shrink-0 text-muted-foreground" />
+    case "skipped":
+      return <SkipForward className="size-4 shrink-0 text-muted-foreground" />
+    case "waiting_for_approval":
+      return <ShieldAlert className="size-4 shrink-0 text-amber-500" />
+    default:
+      // pending / ready
+      return <Circle className="size-4 shrink-0 text-muted-foreground" />
+  }
+}
+
+const PHASE_STATUS_LABEL: Record<PhaseRunStatus, string> = {
+  pending: "Pending",
+  ready: "Ready",
+  running: "Running",
+  waiting_for_approval: "Needs approval",
+  completed: "Done",
+  failed: "Failed",
+  cancelled: "Cancelled",
+  skipped: "Skipped",
+}
+
+function PhaseStatusLabel({ status }: { status: PhaseRunStatus }) {
+  return (
+    <span className="shrink-0 text-xs text-muted-foreground">
+      {PHASE_STATUS_LABEL[status]}
+    </span>
+  )
+}
+
+function RunStatusBadge({ status }: { status: ProcessRun["status"] }) {
+  const variant =
+    status === "completed"
+      ? "default"
+      : status === "failed" || status === "cancelled"
+        ? "destructive"
+        : "secondary"
+  return (
+    <Badge variant={variant} className="shrink-0 capitalize">
+      {status.replace(/_/g, " ")}
+    </Badge>
+  )
+}

@@ -189,3 +189,71 @@ describe.skipIf(!sqliteLoads)("ProcessService dispatch routing", () => {
     expect(phaseRun.agentName).toBe("planner")
   })
 })
+
+describe.skipIf(!sqliteLoads)("ProcessService restartRun", () => {
+  it("resets the failed frontier and re-drives the same task", async () => {
+    // A → B where B failed and its dependent C never ran (still pending).
+    const def = processes.createProcessDefinition({ name: "T" })
+    const a = processes.createPhase({ processId: def.id, key: "a", name: "A", position: 0 })
+    const b = processes.createPhase({ processId: def.id, key: "b", name: "B", position: 1 })
+    const c = processes.createPhase({ processId: def.id, key: "c", name: "C", position: 2 })
+    processes.createEdge({ processId: def.id, fromPhaseId: a.id, toPhaseId: b.id })
+    processes.createEdge({ processId: def.id, fromPhaseId: b.id, toPhaseId: c.id })
+
+    const { taskId } = seedTaskRow()
+    // The backing task is terminal-failed (as it would be after a phase failure).
+    db.prepare("UPDATE tasks SET status = 'failed' WHERE id = ?").run(taskId)
+    const run = processes.createProcessRun({
+      processId: def.id,
+      sourceConversationId: null,
+      taskId,
+      objective: "do it",
+      status: "failed",
+    })
+    const arun = processes.createPhaseRun({ runId: run.id, phaseId: a.id, status: "completed" })
+    const brun = processes.createPhaseRun({
+      runId: run.id,
+      phaseId: b.id,
+      status: "failed",
+      error: "terminated",
+    })
+    processes.createPhaseRun({ runId: run.id, phaseId: c.id, status: "pending" })
+
+    const restarted: string[] = []
+    const runner = {
+      enqueueKind: () => ({ id: "t" }),
+      restart: (id: string) => restarted.push(id),
+    } as never
+    const svc = new ProcessService(runner)
+    const updated = svc.restartRun(run.id)
+
+    // Failed phase reset to re-runnable (error cleared); completed one untouched.
+    expect(processes.getPhaseRun(brun.id)!.status).toBe("pending")
+    expect(processes.getPhaseRun(brun.id)!.error).toBeNull()
+    expect(processes.getPhaseRun(arun.id)!.status).toBe("completed")
+    // Run flipped back to running; the SAME task re-driven.
+    expect(updated?.status).toBe("running")
+    expect(restarted).toEqual([taskId])
+  })
+
+  it("is a no-op unless the run is failed", async () => {
+    const def = processes.createProcessDefinition({ name: "T" })
+    const { taskId } = seedTaskRow()
+    const run = processes.createProcessRun({
+      processId: def.id,
+      sourceConversationId: null,
+      taskId,
+      objective: "do it",
+      status: "running",
+    })
+    const restarted: string[] = []
+    const runner = {
+      enqueueKind: () => ({ id: "t" }),
+      restart: (id: string) => restarted.push(id),
+    } as never
+    const svc = new ProcessService(runner)
+    svc.restartRun(run.id)
+    expect(restarted).toEqual([])
+    expect(processes.getProcessRun(run.id)!.status).toBe("running")
+  })
+})

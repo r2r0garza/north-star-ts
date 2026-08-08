@@ -20,6 +20,7 @@ import * as processes from "../../db/repositories/processes"
 import { listApprovals, resolveApproval } from "../../db/repositories/approvals"
 import {
   runScheduler,
+  subtaskTitle,
   GateBlockedError,
   type BuildEachSubtaskPrompt,
   type Decompose,
@@ -373,6 +374,13 @@ describe.skipIf(!sqliteLoads)("scheduler — fan-out", () => {
     expect(children).toHaveLength(3)
     expect(children.every((r) => r.status === "completed")).toBe(true)
     expect(parent.status).toBe("completed")
+    // Each child carries a display title derived from its sub-task briefing
+    // (plan 026 pass 1) — not the retry counter.
+    expect(children.map((r) => r.title).sort()).toEqual([
+      "piece 1",
+      "piece 2",
+      "piece 3",
+    ])
     // The downstream phase ran only after the fan-out parent completed.
     expect(statusByKey(runId, pid).d).toBe("completed")
   })
@@ -412,6 +420,23 @@ describe.skipIf(!sqliteLoads)("scheduler — fan-out", () => {
     expect(cRuns.filter((r) => r.parentId !== null)).toHaveLength(0) // no children
     expect(cRuns.find((r) => r.parentId === null)!.status).toBe("failed")
     expect(ran).toEqual([]) // no child worker ever ran
+  })
+
+  it("threads a 1-based, incrementing attempt into decompose across retries", async () => {
+    const pid = buildProcess({ phases: [{ key: "c", fanOut: true }] })
+    const attempts: number[] = []
+    // Fail (retryable) on the first attempt, succeed on the second — so the
+    // runner retries and we observe the attempt counter advance.
+    const decompose: Decompose = async ({ attempt }) => {
+      attempts.push(attempt)
+      if (attempt === 1)
+        return { subtasks: [], error: "unparseable", retryable: true }
+      return { subtasks: ["p1"] }
+    }
+    const runPhase: RunPhase = async ({ phase }) => ({ content: phase.key })
+    const { ctx } = makeCtx(pid, runPhase, { decompose })
+    await runScheduler(ctx)
+    expect(attempts).toEqual([1, 2]) // 1-based, incremented on retry
   })
 
   it("does not prematurely settle a parent while decompose is in flight (R1)", async () => {
@@ -795,5 +820,35 @@ describe.skipIf(!sqliteLoads)("scheduler — on_each_subtask (025.2)", () => {
     await runScheduler(ctx)
     // The v container settled cancelled, not left dangling `running`.
     expect(statusByKey(runId, pid).v).toBe("cancelled")
+  })
+})
+
+// Pure helper — no SQLite, so it runs regardless of the native ABI.
+describe("subtaskTitle", () => {
+  it("takes the first non-empty line", () => {
+    expect(subtaskTitle("Build the login form\n\nmore detail here")).toBe(
+      "Build the login form"
+    )
+  })
+
+  it("strips a leading list/heading marker", () => {
+    expect(subtaskTitle("- Add the /session API route")).toBe(
+      "Add the /session API route"
+    )
+    expect(subtaskTitle("1. First task")).toBe("First task")
+    expect(subtaskTitle("## Heading task")).toBe("Heading task")
+  })
+
+  it("caps long briefings on a word boundary with an ellipsis", () => {
+    const long =
+      "Implement the character counter component with a red over-limit state and full accessibility"
+    const out = subtaskTitle(long)
+    expect(out.length).toBeLessThanOrEqual(61) // 60 + the ellipsis
+    expect(out.endsWith("…")).toBe(true)
+    expect(out.startsWith("Implement the character counter")).toBe(true)
+  })
+
+  it("handles leading blank lines and whitespace", () => {
+    expect(subtaskTitle("\n\n   Trimmed title  \n")).toBe("Trimmed title")
   })
 })

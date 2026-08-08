@@ -94,6 +94,48 @@ describe.skipIf(!sqliteLoads)("TaskRunner — reconcile on start", () => {
   })
 })
 
+describe.skipIf(!sqliteLoads)("TaskRunner — restart (retry a failed task)", () => {
+  it("re-queues and re-runs a failed task, keeping its id", async () => {
+    const conv = createConversation({ mode: "chat" })
+    const task = createTask({
+      conversationId: conv.id,
+      status: "failed",
+      error: "boom",
+      input: { kind: "agent_chat", message: "hi" },
+    })
+    const runner = new TaskRunner()
+    runner.start()
+    await settle()
+
+    runner.restart(task.id)
+    await settle()
+
+    // Same task id, re-run to completion.
+    expect(loopCalls).toHaveLength(1)
+    expect(getTask(task.id)?.status).toBe("completed")
+    await runner.stop()
+  })
+
+  it("is a no-op on a non-failed task", async () => {
+    const conv = createConversation({ mode: "chat" })
+    const task = createTask({
+      conversationId: conv.id,
+      status: "completed",
+      input: { kind: "agent_chat", message: "hi" },
+    })
+    const runner = new TaskRunner()
+    runner.start()
+    await settle()
+
+    runner.restart(task.id)
+    await settle()
+
+    expect(loopCalls).toHaveLength(0)
+    expect(getTask(task.id)?.status).toBe("completed")
+    await runner.stop()
+  })
+})
+
 describe.skipIf(!sqliteLoads)(
   "TaskRunner — registerKind (producer auto-resume opt-in)",
   () => {

@@ -467,6 +467,27 @@ export class TaskRunner {
     this.wakeup()
   }
 
+  // Re-queue a FAILED task in place, keeping its id (and therefore its
+  // checkpoints — process fan-out/each-subtask resume keys off the task id). This
+  // is the seam behind "Retry a failed process run": the process executor re-reads
+  // its run/graph and the scheduler resumes from the (caller-reset) failure
+  // frontier. Distinct from resume(), which only re-drives interrupted/paused
+  // tasks; a terminal `failed` task is otherwise never re-run. No-op otherwise.
+  restart(taskId: string): void {
+    const task = getTask(taskId)
+    if (!task || task.status !== "failed") return
+    // A fresh user-driven run gets the full retry allowance again.
+    this.attempts.delete(taskId)
+    updateTask(taskId, { status: "queued" })
+    this.emit(taskId, {
+      type: "status_change",
+      from: task.status,
+      to: "queued",
+    })
+    if (!this.queue.includes(taskId)) this.queue.push(taskId)
+    this.wakeup()
+  }
+
   // Pause a task (plan 008). A running task is aborted with PAUSE_ABORT_REASON so
   // runOne maps its {stopped} to `paused` (not `cancelled`); a still-queued task
   // is marked `paused` directly (and pulled from the queue). A paused task keeps

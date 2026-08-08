@@ -15,8 +15,9 @@ vi.mock("../../settings/service", () => ({
   getAgentSources: () => ({ folders: customFolders }),
 }))
 
-import { loadAgents, loadAgent } from "./loader"
+import { loadAgents, loadAgent, serializeAgent, validateName } from "./loader"
 import { agentSources } from "./sources"
+import { readFileSync } from "fs"
 
 let userDir = ""
 
@@ -131,5 +132,86 @@ describe("loadAgent", () => {
     writeAgent(userDir, "a", `---\nname: a\ndescription: d\n---\nb`)
     expect((await loadAgent("a"))?.name).toBe("a")
     expect(await loadAgent("missing")).toBeNull()
+  })
+})
+
+describe("serializeAgent round-trips through parseAgent", () => {
+  // Write a serialized agent to disk, load it, and return the parsed definition,
+  // so we assert the on-disk format is what the loader accepts.
+  async function roundTrip(fields: Parameters<typeof serializeAgent>[0]) {
+    writeFileSync(
+      path.join(userDir, `${fields.name}.agent.md`),
+      serializeAgent(fields)
+    )
+    const agents = await loadAgents(agentSources())
+    return agents.find((a) => a.name === fields.name)!
+  }
+
+  it("preserves the tri-state distinction (undefined omits, [] emits empty)", async () => {
+    const a = await roundTrip({
+      name: "tri",
+      description: "d",
+      tools: ["read", "edit"], // list
+      skills: [], // empty → key present but empty
+      // children omitted → undefined
+      userInvocable: true,
+      body: "body text",
+    })
+    expect(a.tools).toEqual(["read", "edit"])
+    expect(a.skills).toEqual([])
+    expect(a.children).toBeUndefined()
+    expect(a.userInvocable).toBe(true)
+    expect(a.body).toBe("body text")
+  })
+
+  it("omits an undefined list key entirely from the frontmatter", () => {
+    const text = serializeAgent({
+      name: "x",
+      description: "d",
+      userInvocable: false,
+      body: "b",
+    })
+    expect(text).not.toMatch(/tools:/)
+    expect(text).not.toMatch(/skills:/)
+    expect(text).not.toMatch(/children:/)
+    expect(text).toMatch(/user-invocable: false/)
+  })
+
+  it("uses the hyphenated user-invocable frontmatter key", async () => {
+    const a = await roundTrip({
+      name: "hyphen",
+      description: "d",
+      userInvocable: true,
+      body: "b",
+    })
+    expect(a.userInvocable).toBe(true)
+    const raw = readFileSync(path.join(userDir, "hyphen.agent.md"), "utf-8")
+    expect(raw).toMatch(/user-invocable: true/)
+    expect(raw).not.toMatch(/userInvocable/)
+  })
+
+  it("preserves a multi-line body verbatim after the closing fence", async () => {
+    const body = "# Heading\n\nLine one.\nLine two.\n"
+    const a = await roundTrip({
+      name: "multiline",
+      description: "d",
+      userInvocable: false,
+      body,
+    })
+    expect(a.body).toBe(body)
+  })
+})
+
+describe("validateName", () => {
+  it("accepts a valid lowercase-hyphen name matching the stem", () => {
+    expect(validateName("my-agent", "my-agent")).toBeNull()
+  })
+  it("rejects a name that doesn't match the file stem", () => {
+    expect(validateName("foo", "bar")).toMatch(/must match file/)
+  })
+  it("rejects uppercase, leading/trailing/double hyphens", () => {
+    expect(validateName("Foo", "Foo")).toMatch(/lowercase/)
+    expect(validateName("-foo", "-foo")).toMatch(/lowercase/)
+    expect(validateName("foo--bar", "foo--bar")).toMatch(/lowercase/)
   })
 })

@@ -26,6 +26,10 @@ const CATEGORY_TOOLS: Record<string, string[]> = {
   agent: ["spawn_subagent"],
 }
 
+// The friendly tool-category names, in display order, for the agent editor's
+// tools picker. Derived from CATEGORY_TOOLS so the two never drift.
+export const TOOL_CATEGORIES = Object.keys(CATEGORY_TOOLS)
+
 // The read-only floor: offered even for `tools: []`, per the tri-state contract
 // (empty list → read + search only). These names are always admitted.
 const FLOOR = new Set([...CATEGORY_TOOLS.read, ...CATEGORY_TOOLS.search])

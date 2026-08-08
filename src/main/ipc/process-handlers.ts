@@ -22,6 +22,7 @@ export function registerProcessHandlers(
         processId: string
         sourceConversationId: string | null
         objective: string
+        workspacePath?: string | null
       }
     ) => processService.startRun(input)
   )
@@ -38,6 +39,13 @@ export function registerProcessHandlers(
     const run = getProcessRun(processRunId)
     if (run?.taskId) runner.pause(run.taskId)
   })
+
+  // Retry a FAILED run from its failure frontier. Delegated to the service (it
+  // needs the graph to reset the failed phase-runs correctly), which resets the
+  // frontier and re-drives the same backing task.
+  ipcMain.handle("process:restart", (_e, processRunId: string) =>
+    processService.restartRun(processRunId)
+  )
 
   // Approve a phase gate. A process gate has no in-memory agent promise (the
   // scheduler threw and unwound, settling the task `paused`), so unlike

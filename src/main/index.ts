@@ -1,6 +1,7 @@
 import { app, shell, BrowserWindow, ipcMain, Notification } from "electron"
 import { join, resolve, basename, sep } from "path"
-import { readFile, writeFile } from "fs/promises"
+import { readFile, writeFile, unlink, mkdir } from "fs/promises"
+import { existsSync } from "fs"
 import { config as loadEnv } from "dotenv"
 
 // Load .env.local before anything reads process.env. The API key is no longer
@@ -29,6 +30,9 @@ import { agentSources, userAgentsDir } from "./agent/agents/sources"
 import {
   loadAgents,
   listSource as listAgentSource,
+  serializeAgent,
+  validateName as validateAgentName,
+  type AgentFields,
 } from "./agent/agents/loader"
 import type {
   SkillSourceRow,
@@ -37,7 +41,12 @@ import type {
   SkillTree,
   SkillFolder,
 } from "./agent/skills/types"
-import type { AgentSourceRow, AgentSourceKind } from "./agent/agents/types"
+import type {
+  AgentSourceRow,
+  AgentSourceKind,
+  AgentTree,
+  AgentFolder,
+} from "./agent/agents/types"
 import { listWorkspaces } from "./db/repositories/workspaces"
 import * as settingsService from "./settings/service"
 import { listWorkspaceFiles } from "./files/list"
@@ -362,6 +371,118 @@ ipcMain.handle(
     )
   }
 )
+// The nested catalog for the Agents view: Global (the user dir) + one node per
+// KNOWN workspace + one node per registered custom folder, each with its loaded
+// agents. Enumerates workspaces itself so the view populates with no active
+// conversation. Folders are included even when empty. Mirrors skills:tree.
+ipcMain.handle("agents:tree", async (): Promise<AgentTree> => {
+  const dataDir = dataDirName()
+  const toFolder = async (
+    path: string,
+    label: string,
+    kind: AgentFolder["kind"]
+  ): Promise<AgentFolder> => ({
+    path,
+    label,
+    kind,
+    agents: await listAgentSource(path),
+  })
+
+  const global = [await toFolder(userAgentsDir(), "Global", "user")]
+
+  const workspaces = await Promise.all(
+    listWorkspaces().map(async (ws) => ({
+      label: ws.name ?? baseName(ws.path),
+      path: ws.path,
+      folders: await Promise.all([
+        toFolder(
+          join(ws.path, ".github", "agents"),
+          ".github/agents",
+          "github"
+        ),
+        toFolder(
+          join(ws.path, dataDir, "agents"),
+          `${dataDir}/agents`,
+          "workspace"
+        ),
+      ]),
+    }))
+  )
+
+  const custom = await Promise.all(
+    settingsService
+      .getAgentSources()
+      .folders.map((folder) => toFolder(folder, baseName(folder), "custom"))
+  )
+
+  return { global, workspaces, custom }
+})
+// Read an agent's raw `<name>.agent.md` contents for the in-app editor. Any known
+// agent source (including read-only workspace/github dirs) is readable.
+ipcMain.handle(
+  "agents:read",
+  async (_event, filePath: string): Promise<string> => {
+    assertAgentPath(filePath)
+    return readFile(filePath, "utf-8")
+  }
+)
+// Save an edited agent. Takes structured fields (not raw YAML) — the serializer
+// lives in the main process so YAML construction never ships to the renderer. Only
+// paths inside a WRITABLE root (user + custom) are accepted; workspace/github
+// agents are read-only in this UI.
+ipcMain.handle(
+  "agents:save",
+  async (_event, filePath: string, fields: AgentFields): Promise<void> => {
+    assertAgentWritablePath(filePath)
+    // The name must match the file stem (the loader enforces this at read time);
+    // reject a mismatch up front so a save can't silently produce an agent that
+    // won't load under its own name.
+    const stem = basename(filePath).slice(0, -AGENT_SUFFIX.length)
+    const nameErr = validateAgentName(fields.name, stem)
+    if (nameErr) throw new Error(nameErr)
+    await writeFile(filePath, serializeAgent(fields), "utf-8")
+  }
+)
+// Create a new agent: scaffold a minimal valid `<name>.agent.md` into a writable
+// source dir. Validates the target dir is writable, the name matches the loader's
+// rules, and no same-name file already exists there. Returns the new file's path.
+ipcMain.handle(
+  "agents:create",
+  async (
+    _event,
+    { dir, name, description }: { dir: string; name: string; description: string }
+  ): Promise<string> => {
+    const resolvedDir = resolve(dir)
+    if (!writableAgentRoots().includes(resolvedDir)) {
+      throw new Error(`Refusing to create an agent outside a writable source: ${dir}`)
+    }
+    const nameErr = validateAgentName(name, name)
+    if (nameErr) throw new Error(nameErr)
+    const filePath = join(resolvedDir, `${name}${AGENT_SUFFIX}`)
+    // Reject a collision — createExclusive via the 'wx' flag would also work, but an
+    // explicit check gives a clearer error and matches the skills-create intent.
+    if (existsSync(filePath)) {
+      throw new Error(`An agent named '${name}' already exists here.`)
+    }
+    await mkdir(resolvedDir, { recursive: true })
+    const contents = serializeAgent({
+      name,
+      description: description || "Describe what this agent does and when to use it.",
+      // tools/skills omitted → "all" (the permissive default); children omitted →
+      // cannot spawn. userInvocable true so it shows in the picker immediately.
+      userInvocable: true,
+      body: `You are ${name}.\n\nDescribe the agent's role and instructions here.\n`,
+    })
+    await writeFile(filePath, contents, "utf-8")
+    return filePath
+  }
+)
+// Delete an agent file. Writable roots only (never a read-only workspace/github
+// agent). The renderer confirms before calling.
+ipcMain.handle("agents:delete", async (_event, filePath: string): Promise<void> => {
+  assertAgentWritablePath(filePath)
+  await unlink(filePath)
+})
 // The kind-tagged skill-source dirs for a workspace, in load order. Shared by
 // skills:sources (counts), skills:catalog (full skills), and skills:write (path
 // allow-list). The app-bundled dir is intentionally absent — it only seeds the
@@ -513,6 +634,58 @@ function assertSkillPath(filePath: string): void {
   )
   if (!inside) {
     throw new Error(`Refusing skill path outside known sources: ${filePath}`)
+  }
+}
+// Agent files are flat `<name>.agent.md` (a suffix, not a fixed basename like
+// SKILL.md), so the guards match on the suffix.
+const AGENT_SUFFIX = ".agent.md"
+// ALL agent-source roots the Agents view can read: user + custom + BOTH workspace
+// dirs for EVERY known workspace. Read is permitted everywhere; writes use the
+// narrower writableAgentRoots().
+function allAgentRoots(): string[] {
+  const dataDir = dataDirName()
+  const roots = [userAgentsDir(), ...settingsService.getAgentSources().folders]
+  for (const ws of listWorkspaces()) {
+    roots.push(join(ws.path, ".github", "agents"))
+    roots.push(join(ws.path, dataDir, "agents"))
+  }
+  return roots.map((r) => resolve(r))
+}
+// The WRITABLE agent roots: user dir + registered custom folders only. Workspace
+// (.github/agents, .<system>/agents) dirs are read-only in this UI — the app won't
+// drop files into a repo the user may not intend to commit to.
+function writableAgentRoots(): string[] {
+  return [
+    userAgentsDir(),
+    ...settingsService.getAgentSources().folders,
+  ].map((r) => resolve(r))
+}
+// Guard for agents:read. Basename must end with `.agent.md` and resolve inside a
+// known agent-source dir. Same traversal / sibling-prefix protection as skills.
+function assertAgentPath(filePath: string): void {
+  const resolved = resolve(filePath)
+  if (!basename(resolved).endsWith(AGENT_SUFFIX)) {
+    throw new Error(`Refusing non-.agent.md path: ${filePath}`)
+  }
+  const inside = allAgentRoots().some(
+    (root) => resolved === root || resolved.startsWith(root + sep)
+  )
+  if (!inside) {
+    throw new Error(`Refusing agent path outside known sources: ${filePath}`)
+  }
+}
+// Guard for agents:save/delete. Like assertAgentPath but restricted to WRITABLE
+// roots, so a read-only workspace/github agent can't be overwritten or deleted.
+function assertAgentWritablePath(filePath: string): void {
+  const resolved = resolve(filePath)
+  if (!basename(resolved).endsWith(AGENT_SUFFIX)) {
+    throw new Error(`Refusing non-.agent.md path: ${filePath}`)
+  }
+  const inside = writableAgentRoots().some(
+    (root) => resolved === root || resolved.startsWith(root + sep)
+  )
+  if (!inside) {
+    throw new Error(`Refusing to modify an agent outside a writable source: ${filePath}`)
   }
 }
 // List workspace files (relative POSIX paths) for the composer's `@`-mention

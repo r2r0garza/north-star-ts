@@ -106,8 +106,10 @@ interface ProcessRunRow {
   id: string
   process_id: string | null
   source_conversation_id: string | null
+  workspace_id: string | null
   task_id: string | null
   objective: string | null
+  title: string | null
   status: ProcessRunStatus
   started_at: number | null
   finished_at: number | null
@@ -119,8 +121,10 @@ function toRun(row: ProcessRunRow): ProcessRun {
     id: row.id,
     processId: row.process_id,
     sourceConversationId: row.source_conversation_id,
+    workspaceId: row.workspace_id,
     taskId: row.task_id,
     objective: row.objective,
+    title: row.title,
     status: row.status,
     startedAt: row.started_at,
     finishedAt: row.finished_at,
@@ -136,6 +140,7 @@ interface ProcessPhaseRunRow {
   status: PhaseRunStatus
   task_id: string | null
   agent_name: string | null
+  title: string | null
   iteration: number
   error: string | null
   started_at: number | null
@@ -151,6 +156,7 @@ function toPhaseRun(row: ProcessPhaseRunRow): ProcessPhaseRun {
     status: row.status,
     taskId: row.task_id,
     agentName: row.agent_name,
+    title: row.title,
     iteration: row.iteration,
     error: row.error,
     startedAt: row.started_at,
@@ -413,6 +419,7 @@ export function getProcessGraph(processId: string): ProcessGraph | undefined {
 export function createProcessRun(input: {
   processId: string | null
   sourceConversationId: string | null
+  workspaceId?: string | null
   taskId?: string | null
   objective?: string | null
   status?: ProcessRunStatus
@@ -421,12 +428,13 @@ export function createProcessRun(input: {
   const now = Date.now()
   getDb()
     .prepare(
-      "INSERT INTO process_runs (id, process_id, source_conversation_id, task_id, objective, status, started_at, finished_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+      "INSERT INTO process_runs (id, process_id, source_conversation_id, workspace_id, task_id, objective, status, started_at, finished_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )
     .run(
       id,
       input.processId,
       input.sourceConversationId,
+      input.workspaceId ?? null,
       input.taskId ?? null,
       input.objective ?? null,
       input.status ?? "queued",
@@ -470,6 +478,7 @@ export function updateProcessRun(
   patch: {
     status?: ProcessRunStatus
     taskId?: string | null
+    title?: string | null
     startedAt?: number | null
     finishedAt?: number | null
   }
@@ -479,6 +488,10 @@ export function updateProcessRun(
   if (patch.status !== undefined) {
     sets.push("status = ?")
     values.push(patch.status)
+  }
+  if (patch.title !== undefined) {
+    sets.push("title = ?")
+    values.push(patch.title)
   }
   if (patch.taskId !== undefined) {
     sets.push("task_id = ?")
@@ -509,11 +522,12 @@ export function createPhaseRun(input: {
   parentId?: string | null
   status?: PhaseRunStatus
   agentName?: string | null
+  title?: string | null
 }): ProcessPhaseRun {
   const id = randomUUID()
   getDb()
     .prepare(
-      "INSERT INTO process_phase_runs (id, run_id, phase_id, parent_id, status, task_id, agent_name, iteration, error, started_at, finished_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+      "INSERT INTO process_phase_runs (id, run_id, phase_id, parent_id, status, task_id, agent_name, title, iteration, error, started_at, finished_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )
     .run(
       id,
@@ -523,6 +537,7 @@ export function createPhaseRun(input: {
       input.status ?? "pending",
       null,
       input.agentName ?? null,
+      input.title ?? null,
       0,
       null,
       null,

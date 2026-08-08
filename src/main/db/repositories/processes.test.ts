@@ -64,8 +64,29 @@ describe.skipIf(!sqliteLoads)("v15 migration", () => {
     }
   })
 
-  it("reaches user_version 15", () => {
-    expect(db.pragma("user_version", { simple: true })).toBe(15)
+  it("reaches the latest user_version", () => {
+    expect(db.pragma("user_version", { simple: true })).toBe(18)
+  })
+
+  it("adds the v18 title column to process_runs", () => {
+    const cols = (
+      db.pragma("table_info(process_runs)") as Array<{ name: string }>
+    ).map((c) => c.name)
+    expect(cols).toContain("title")
+  })
+
+  it("adds the v16 workspace_id column to process_runs", () => {
+    const cols = (
+      db.pragma("table_info(process_runs)") as Array<{ name: string }>
+    ).map((c) => c.name)
+    expect(cols).toContain("workspace_id")
+  })
+
+  it("adds the v17 title column to process_phase_runs", () => {
+    const cols = (
+      db.pragma("table_info(process_phase_runs)") as Array<{ name: string }>
+    ).map((c) => c.name)
+    expect(cols).toContain("title")
   })
 })
 
@@ -207,6 +228,18 @@ describe.skipIf(!sqliteLoads)("runs + phase runs", () => {
     expect(listProcessRuns({ status: "running" }).map((r) => r.id)).toContain(
       run.id
     )
+  })
+
+  it("run title defaults null and round-trips through updateProcessRun", () => {
+    const def = createProcessDefinition({ name: "P" })
+    const run = createProcessRun({
+      processId: def.id,
+      sourceConversationId: null,
+      objective: "refactor the auth module",
+    })
+    expect(run.title).toBeNull()
+    updateProcessRun(run.id, { title: "Refactor auth module" })
+    expect(getProcessRun(run.id)!.title).toBe("Refactor auth module")
   })
 
   it("phase runs write status and filter by parent (null vs set)", () => {
