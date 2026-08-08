@@ -66,26 +66,44 @@ item is its plan file, not its rank.
    **Crux Open Qs:** how re-runnable a recipe is without an LLM; approval/allowlist safety of a stored
    recipe re-running unattended on refresh; fixed grid vs drag-resize lib. Independent of the Process
    cluster.
-6. **`020` — Durable memories.** The cross-conversation memories section `014` reserved: small,
+6. **`034` — CLI-agent providers (Claude Code / Codex / Copilot).** Three new **provider kinds** that
+   aren't LLM-API accounts but local **agentic CLIs** driven as subprocesses (`claude -p`,
+   `codex exec`, `copilot -p`) — each *is* the agent (own loop + tools + approvals, editing files
+   **in the project dir**). Selecting one **routes turns away from `runAgentLoop`** to a new subprocess
+   runner (`agent/cli/`, per-CLI adapters behind one interface + `005`'s detached-process-group kill),
+   **locks the backend to Local**, and **disables Chat mode** (these CLIs need a working directory;
+   Chat has no workspace). **Research done (verified live 2026-08-07; pin versions):** session
+   continuity is **non-uniform** — Claude + Copilot **self-assign** a UUID we generate
+   (`--session-id`), Codex **mints its own** `thread_id` we must **parse from turn-1 JSONL and resume**
+   (`codex exec resume <id>`). So a per-conversation **`cli_session_id`** (additive `SCHEMA_V20+`) is
+   assigned-by-us OR captured-from-turn-1. No API key — a **binary path + `--version` health check** +
+   default model/permission posture. Approvals: CLIs run non-interactive with **no TTY**, so v1 passes
+   their auto-allow posture (`--permission-mode`/`--allowedTools`; Copilot **requires**
+   `--allow-all-tools`; Codex `-s workspace-write`) — a documented **gate-bypass** tradeoff (the CLI is
+   the trust boundary). **Likely splits:** `034.1` Claude Code end-to-end (+ backend-lock + mode-gate),
+   `034.2` Copilot (same self-assign model), `034.3` Codex (extract-then-resume). Open Qs: approval
+   bridging (lean bypass-with-UI v1), streaming fidelity (text-first; Copilot JSONL fields unverified),
+   out-of-band CLI auth. Independent of the Process cluster / dashboards.
+7. **`020` — Durable memories.** The cross-conversation memories section `014` reserved: small,
    persisted facts the agent writes (a **gated, explicit** `remember` tool — no silent profiling)
    and that inject into future turns, **scoped** global / workspace / conversation (mirrors the
    `action_allowlist` scoping). New `memories` table + a list/delete surface (durable +
    cross-conversation ⇒ must be auditable/revocable); a `memoriesSection` renderer with an injection
    cap. Split out of `014` Q2.
-7. **`010` — Container runtime profiles.** Decouple Workspace (the files) from Runtime (the env a
+8. **`010` — Container runtime profiles.** Decouple Workspace (the files) from Runtime (the env a
    tool call executes in). Replace the raw container `image` string with a named **profile**
    (`node` | `python` | `fullstack`), resolved to an image in the env factory; default/fallback =
    `fullstack` (Node + Python) so a Node repo that later adds a Python backend doesn't wedge.
    One profile per conversation, user-overridable in settings. Kills the "one workspace = one image
    forever" assumption **without** building auto-routing or image management (both deferred). Small
    refactor of `env/factory.ts` + `container.ts` + execution settings (JSON blob — no migration).
-8. **`005.1` — ContainerEnvironment stop in-flight.** The deferred half of `005`: killing the host
+9. **`005.1` — ContainerEnvironment stop in-flight.** The deferred half of `005`: killing the host
    `docker/podman exec` client doesn't stop the in-container process. Needs its own kill mechanism
    (in-container PID tracking / `exec kill`, or marker `pkill`). Out of scope when `005` shipped.
-9. **`007` — Slash commands for skills.** Let users force a skill with `/skill-name …` (pre-inject
+10. **`007` — Slash commands for skills.** Let users force a skill with `/skill-name …` (pre-inject
    the `read_skill` call), keeping today's model-discretionary path for plain messages. Adds a
    `skills:list` IPC channel + composer autocomplete. Independent — schedule freely.
-10. **`018` — Agentic goal mode. ⚠️ SUPERSEDED by `025`** (the general Process engine — 018's fixed
+11. **`018` — Agentic goal mode. ⚠️ SUPERSEDED by `025`** (the general Process engine — 018's fixed
    pipeline becomes one built-in Process *template*; kept as a stable-ID file per convention, not
    built as its own orchestrator). An opt-in **execution mode** (orthogonal to chat/interactive/
    north_star): `simple` (today's one-pass behavior, default) vs `goal` (bounded **plan → execute →
@@ -99,7 +117,7 @@ item is its plan file, not its rank.
    PR (`/goal <request>` — reuses `007`'s composer slash-command affordance — + a "Run with review
    loop" button); the Always/Ask/Manual/Off **setting is deferred** to its own plan. Placed by `007`
    since both add `/`-command composer UI.
-11. **`024` — Index filesystem/git watcher.** The "live file watching" follow-up `008` deferred (and
+12. **`024` — Index filesystem/git watcher.** The "live file watching" follow-up `008` deferred (and
    `014` re-deferred). Today the workspace index — and the compact summary `buildIndexSummary`
    injects into the system prompt on every message send — only refreshes when `IndexService.
    ensureRunning` is called, which fires on conversation create/update or manual Start/Rebuild;
