@@ -1,6 +1,6 @@
 import { app, shell, BrowserWindow, ipcMain, Notification } from "electron"
-import { join, resolve, basename, sep } from "path"
-import { readFile, writeFile, unlink, mkdir } from "fs/promises"
+import { join, resolve, basename, dirname, sep } from "path"
+import { readFile, writeFile, unlink, mkdir, rm } from "fs/promises"
 import { existsSync } from "fs"
 import { config as loadEnv } from "dotenv"
 
@@ -25,7 +25,12 @@ import {
   initUserSkills,
   userSkillsDir,
 } from "./agent/skills/sources"
-import { loadSkills, listSource } from "./agent/skills/loader"
+import {
+  loadSkills,
+  listSource,
+  validateName as validateSkillName,
+  skillScaffold,
+} from "./agent/skills/loader"
 import { agentSources, userAgentsDir } from "./agent/agents/sources"
 import {
   loadAgents,
@@ -603,6 +608,47 @@ ipcMain.handle(
     await writeFile(filePath, content, "utf-8")
   }
 )
+// Create a new skill: scaffold a `<dir>/<name>/SKILL.md` with valid frontmatter
+// + a starter body into a writable source dir. Validates the target dir is
+// writable, the name matches the loader's rules (also enforcing name === the new
+// subdirectory), and no same-name skill folder already exists there. Returns the
+// new SKILL.md path so the renderer can drop straight into editing it.
+ipcMain.handle(
+  "skills:create",
+  async (
+    _event,
+    {
+      dir,
+      name,
+      description,
+      body,
+    }: { dir: string; name: string; description: string; body?: string }
+  ): Promise<string> => {
+    const resolvedDir = resolve(dir)
+    if (!writableSkillRoots().includes(resolvedDir)) {
+      throw new Error(`Refusing to create a skill outside a writable source: ${dir}`)
+    }
+    // validateName also enforces name === dirName, so the skill subdir is the name.
+    const nameErr = validateSkillName(name, name)
+    if (nameErr) throw new Error(nameErr)
+    const skillDir = join(resolvedDir, name)
+    if (existsSync(skillDir)) {
+      throw new Error(`A skill named '${name}' already exists here.`)
+    }
+    await mkdir(skillDir, { recursive: true })
+    const filePath = join(skillDir, "SKILL.md")
+    await writeFile(filePath, skillScaffold(name, description, body), "utf-8")
+    return filePath
+  }
+)
+// Delete a skill. Removes the whole skill FOLDER (the SKILL.md's parent dir),
+// writable roots only (never a read-only workspace/github skill). The renderer
+// passes the SKILL.md path and confirms before calling.
+ipcMain.handle("skills:delete", async (_event, filePath: string): Promise<void> => {
+  assertSkillWritablePath(filePath)
+  // filePath is <root>/<name>/SKILL.md — remove its parent folder, not just the file.
+  await rm(dirname(resolve(filePath)), { recursive: true, force: true })
+})
 // Basename of a path, tolerating a trailing separator (e.g. "/a/b/" -> "b").
 function baseName(p: string): string {
   return basename(p.replace(/[/\\]+$/, "")) || p
@@ -634,6 +680,32 @@ function assertSkillPath(filePath: string): void {
   )
   if (!inside) {
     throw new Error(`Refusing skill path outside known sources: ${filePath}`)
+  }
+}
+// The WRITABLE skill roots: user dir + registered custom folders only. Workspace
+// (.github/skills, .<system>/skills) dirs are read-only in this UI — the app won't
+// drop skill folders into a repo the user may not intend to commit to. Mirrors
+// writableAgentRoots().
+function writableSkillRoots(): string[] {
+  return [
+    userSkillsDir(),
+    ...settingsService.getSkillSources().folders,
+  ].map((r) => resolve(r))
+}
+// Guard for skills:delete. Like assertSkillPath (basename SKILL.md) but restricted
+// to WRITABLE roots, so a read-only workspace/github skill can't be deleted. The
+// deleted target is the SKILL.md's PARENT folder; requiring the parent to sit
+// under a writable root (and the file to be a SKILL.md) keeps the rm scoped.
+function assertSkillWritablePath(filePath: string): void {
+  const resolved = resolve(filePath)
+  if (basename(resolved) !== "SKILL.md") {
+    throw new Error(`Refusing non-SKILL.md path: ${filePath}`)
+  }
+  const inside = writableSkillRoots().some(
+    (root) => resolved.startsWith(root + sep)
+  )
+  if (!inside) {
+    throw new Error(`Refusing to modify a skill outside a writable source: ${filePath}`)
   }
 }
 // Agent files are flat `<name>.agent.md` (a suffix, not a fixed basename like

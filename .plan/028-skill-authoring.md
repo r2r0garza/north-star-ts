@@ -1,6 +1,7 @@
 # PR28: Skill authoring — create and delete skills in the Skills view
 
-> Status: **NOT STARTED**. Extends the existing Skills view (`skills-screen.tsx`, which already does
+> Status: **DONE** (on `feat/process-engine-planning`; see ROADMAP → Done for the shipped summary).
+> Extends the existing Skills view (`skills-screen.tsx`, which already does
 > View + **Edit** via `skills:read`/`skills:write` behind the `assertSkillPath` guard) with
 > **create** + **delete**. Complements `027` (agent authoring) — an agent's `skills[]` can only
 > reference skills that exist, so authoring skills in-app closes the loop for `025`/`026` phases.

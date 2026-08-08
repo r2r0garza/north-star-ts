@@ -7,25 +7,21 @@ item is its plan file, not its rank.
 
 ## Next up
 
-1. **`028` — Skill authoring.** Extends the Skills view (already View + Edit) with **create** +
-   **delete** — `skills:create`/`skills:delete` IPC guarded to **writable** roots (never a bundled
-   seed), a New Skill scaffold + delete-with-confirm in `skills-screen.tsx`. Complements `027` (an
-   agent's `skills[]` can only reference skills that exist).
-2. **`029` — Process review feedback loop.** A `026` follow-up. A gated phase is binary today
+1. **`029` — Process review feedback loop.** A `026` follow-up. A gated phase is binary today
    (Approve / Deny, and Deny dead-ends the run in `paused`); adds a third decision, **Request
    changes**, with a feedback note that re-runs the gated phase's own worker and re-gates — a real
    edit → re-review cycle, bounded by a rework-round cap. Builds the **reopen → inject feedback →
    bounded re-run** primitive that `031` generalizes. Net-new: re-opening a completed+gated phase
    (supersede/re-key the durable approval row — no `deleteApproval` today), a `rework_note` column +
    `process:requestChanges` verb, a third gate-card control. Engine + IPC + renderer.
-3. **`030` — Process artifacts: dot-folders + file chips.** A `026` follow-up; two paired
+2. **`030` — Process artifacts: dot-folders + file chips.** A `026` follow-up; two paired
    quality-of-life features, mostly renderer + one additive column. (a) A per-phase **dot-folder**
    toggle (`process_phases.dot_folder`) steering a phase's agent to write artifacts under
    `.<phase-key>/` (predictable path). (b) **File chips** on each phase card in the run monitor that
    open a produced file in the selected IDE (reuse `changedFilesFromCalls` off the phase worker's
    tool calls + `ChangedFilesBar`/`openInEditor`/`git.diff` — no new git machinery). No scheduler
    change. Independent of `029`/`031`.
-4. **`031` — Process rework: validator + cross-phase flag-back. ⚠️ DESIGN-PENDING.** The agent
+3. **`031` — Process rework: validator + cross-phase flag-back. ⚠️ DESIGN-PENDING.** The agent
    quality loop. Shares `029`'s reopen+feedback+bound primitive; generalizes the superseded `018`
    `review → fix → review` loop. Three capabilities: **flag-don't-fix** (a gated `flag_for_rework`
    tool), **send-back** (route a flag to the owning phase **or a single fan-out sub-task** — rework
@@ -38,26 +34,26 @@ item is its plan file, not its rank.
    The DAG has **no cycle guard** — a bound is mandatory. **Will likely split** on build (`025.x`
    pattern): `031.1` validator, `031.2` cross-phase flag-back + autonomous routing (the riskiest —
    sub-DAG-replay correctness with gates/fan-out). Build order: `029` → `031.1` → `031.2`.
-5. **`020` — Durable memories.** The cross-conversation memories section `014` reserved: small,
+4. **`020` — Durable memories.** The cross-conversation memories section `014` reserved: small,
    persisted facts the agent writes (a **gated, explicit** `remember` tool — no silent profiling)
    and that inject into future turns, **scoped** global / workspace / conversation (mirrors the
    `action_allowlist` scoping). New `memories` table + a list/delete surface (durable +
    cross-conversation ⇒ must be auditable/revocable); a `memoriesSection` renderer with an injection
    cap. Split out of `014` Q2.
-6. **`010` — Container runtime profiles.** Decouple Workspace (the files) from Runtime (the env a
+5. **`010` — Container runtime profiles.** Decouple Workspace (the files) from Runtime (the env a
    tool call executes in). Replace the raw container `image` string with a named **profile**
    (`node` | `python` | `fullstack`), resolved to an image in the env factory; default/fallback =
    `fullstack` (Node + Python) so a Node repo that later adds a Python backend doesn't wedge.
    One profile per conversation, user-overridable in settings. Kills the "one workspace = one image
    forever" assumption **without** building auto-routing or image management (both deferred). Small
    refactor of `env/factory.ts` + `container.ts` + execution settings (JSON blob — no migration).
-7. **`005.1` — ContainerEnvironment stop in-flight.** The deferred half of `005`: killing the host
+6. **`005.1` — ContainerEnvironment stop in-flight.** The deferred half of `005`: killing the host
    `docker/podman exec` client doesn't stop the in-container process. Needs its own kill mechanism
    (in-container PID tracking / `exec kill`, or marker `pkill`). Out of scope when `005` shipped.
-8. **`007` — Slash commands for skills.** Let users force a skill with `/skill-name …` (pre-inject
+7. **`007` — Slash commands for skills.** Let users force a skill with `/skill-name …` (pre-inject
    the `read_skill` call), keeping today's model-discretionary path for plain messages. Adds a
    `skills:list` IPC channel + composer autocomplete. Independent — schedule freely.
-9. **`018` — Agentic goal mode. ⚠️ SUPERSEDED by `025`** (the general Process engine — 018's fixed
+8. **`018` — Agentic goal mode. ⚠️ SUPERSEDED by `025`** (the general Process engine — 018's fixed
    pipeline becomes one built-in Process *template*; kept as a stable-ID file per convention, not
    built as its own orchestrator). An opt-in **execution mode** (orthogonal to chat/interactive/
    north_star): `simple` (today's one-pass behavior, default) vs `goal` (bounded **plan → execute →
@@ -71,7 +67,7 @@ item is its plan file, not its rank.
    PR (`/goal <request>` — reuses `007`'s composer slash-command affordance — + a "Run with review
    loop" button); the Always/Ask/Manual/Off **setting is deferred** to its own plan. Placed by `007`
    since both add `/`-command composer UI.
-10. **`024` — Index filesystem/git watcher.** The "live file watching" follow-up `008` deferred (and
+9. **`024` — Index filesystem/git watcher.** The "live file watching" follow-up `008` deferred (and
    `014` re-deferred). Today the workspace index — and the compact summary `buildIndexSummary`
    injects into the system prompt on every message send — only refreshes when `IndexService.
    ensureRunning` is called, which fires on conversation create/update or manual Start/Rebuild;
@@ -88,6 +84,32 @@ item is its plan file, not its rank.
 
 ## Done
 
+- **`028` — Skill authoring.** Built on `feat/process-engine-planning` (not yet merged to `main`).
+  Extended the Skills view (`skills-screen.tsx`, previously View + **Edit** only) with **create** +
+  **delete**, mirroring `027`'s agent editor and closing the loop so an authored agent's `skills[]` can
+  reference skills that exist. **Main:** `validateName` + a new **`skillScaffold`** exported from
+  `agent/skills/loader.ts` (kept beside the parser so a scaffold change and its round-trip test live
+  together; description YAML-serialized so special chars quote correctly, commented `allowed-tools`
+  hint); two IPC channels in `index.ts` — `skills:create` (scaffolds `<dir>/<name>/SKILL.md`, validates
+  the target dir is writable + the name matches the loader's rules + rejects a same-dir collision,
+  returns the new path) and `skills:delete` (removes the skill's whole **folder** via `rm -r`) — guarded
+  by a new `writableSkillRoots()` (**user + custom only**, mirroring `writableAgentRoots`) +
+  `assertSkillWritablePath` (basename `SKILL.md`, resolves under a writable root). **Decisions (Open
+  Qs):** target dir → **user default** with a source dropdown when custom folders exist; delete
+  protection → writable source kinds only (workspace/`.github` skills viewable but read-only); name
+  rules → reuse the loader's `validateName` + same-dir collision reject. **Renderer:** `skills-screen.tsx`
+  gained a **New skill** button + a create form (name / location `Select` / description) that scaffolds
+  then drops into the existing raw-text editor on the fresh file, and a hover **delete** (writable rows
+  only, with confirm) — the `SkillRow` now carries the folder `kind`, and `CatalogSkill` is tagged so
+  writability reads off the source. **Preload:** `skills.create`/`skills.delete` bridges. Verified:
+  `pnpm typecheck` + `pnpm build` clean (the three residual typecheck errors — `open.test.ts`,
+  `process/service.test.ts`, `runner.test.ts` — are **pre-existing on clean HEAD** and unrelated); new
+  `agent/skills/loader.test.ts` (**8** — `validateName` accept/reject cases + `skillScaffold` round-trips
+  through the real `listSource`, incl. a placeholder-description case and a YAML-special-char description
+  that still parses); the agent suite is otherwise green (sole failure is the known flaky real-process
+  SIGKILL timing test in `local.test.ts`, passes in isolation). Manual E2E in the running app deferred to
+  a live session. **Deferred (as planned):** editing skills in workspace roots; skill sharing /
+  import-export / marketplace.
 - **`027` — Agent management UI.** Built on `feat/process-engine-planning` (commit `a6e60cc`; not yet
   merged to `main`). In-app **create/edit/delete** of the file-based `<name>.agent.md` agents, mirroring
   the skills editor and closing the loop so `025`/`026` phases can reference authored agents (was

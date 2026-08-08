@@ -350,6 +350,18 @@ const api = {
     // Save an edited SKILL.md back to disk. The main process validates the path.
     write: (filePath: string, content: string) =>
       ipcRenderer.invoke("skills:write", filePath, content) as Promise<void>,
+    // Scaffold a new skill (<dir>/<name>/SKILL.md) into a writable source dir;
+    // returns the new SKILL.md path. Writable roots only — the main process
+    // validates the dir, the name, and rejects a collision.
+    create: (args: {
+      dir: string
+      name: string
+      description: string
+      body?: string
+    }) => ipcRenderer.invoke("skills:create", args) as Promise<string>,
+    // Delete a skill's folder. Writable roots only; the renderer confirms first.
+    delete: (filePath: string) =>
+      ipcRenderer.invoke("skills:delete", filePath) as Promise<void>,
   },
   // List the user-invocable custom agents (name + description) for the composer's
   // agent picker. Pass the active workspace so workspace-level agents are included.
