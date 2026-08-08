@@ -48,26 +48,44 @@ item is its plan file, not its rank.
    toggle vs replace (lean **coexist**). The Radix-`Dialog` takeover means the inspector keeps
    `NativeSelect` (the `023`/`026` `pointer-events:none` finding). **Live-run-on-canvas deferred** — v1
    keeps the `026` nested-list monitor. Independent of `029`/`031`.
-5. **`020` — Durable memories.** The cross-conversation memories section `014` reserved: small,
+5. **`033` — Live dashboards.** A new top-level surface (a **Dashboards** button in the sidebar footer,
+   the 5th overlay alongside Processes/Agents/Skills/Settings) where a user **prompts an agent to author
+   a dashboard** — a saved layout of widgets + a per-widget **data-fetch recipe** describing *how to
+   pull the data*. **Data-source-agnostic by construction:** the agent fetches through whatever tools it
+   has (today `run_shell`/Azure CLI, `web` fetch; **later MCP servers** — Jira, Azure DevOps), so
+   dashboards inherit new sources **for free** as they land — this plan builds **no connectors** (MCP is
+   its own effort). `recharts` is **already a dep** (no new chart lib). Mirrors `025`'s definition-vs-run
+   split + bare-`TEXT`-repo-validated statuses: new `dashboards`/`dashboard_widgets`/
+   `dashboard_widget_data` (cache) tables (additive, `SCHEMA_V20+`), a gated **`dashboard_write`** agent
+   tool (like `todo_write`/`present_plan`), and a `dashboard_refresh` `009` durable task kind that
+   **replays each widget's stored recipe** (deterministic-first, bounded-LLM-normalize only where
+   declared) into the cache the view reads. **v1 "live" = manual/on-open/poll-while-open** (true cron is
+   the backlog `cron` item). Full-viewport takeover (`dashboards-screen.tsx`, the `023` Radix pattern +
+   `NativeSelect`). **Likely splits** (`025.x` pattern): `033.1` storage + overlay + view + a
+   manually-authored widget; `033.2` the `dashboard_write` authoring tool; `033.3` the refresh executor.
+   **Crux Open Qs:** how re-runnable a recipe is without an LLM; approval/allowlist safety of a stored
+   recipe re-running unattended on refresh; fixed grid vs drag-resize lib. Independent of the Process
+   cluster.
+6. **`020` — Durable memories.** The cross-conversation memories section `014` reserved: small,
    persisted facts the agent writes (a **gated, explicit** `remember` tool — no silent profiling)
    and that inject into future turns, **scoped** global / workspace / conversation (mirrors the
    `action_allowlist` scoping). New `memories` table + a list/delete surface (durable +
    cross-conversation ⇒ must be auditable/revocable); a `memoriesSection` renderer with an injection
    cap. Split out of `014` Q2.
-6. **`010` — Container runtime profiles.** Decouple Workspace (the files) from Runtime (the env a
+7. **`010` — Container runtime profiles.** Decouple Workspace (the files) from Runtime (the env a
    tool call executes in). Replace the raw container `image` string with a named **profile**
    (`node` | `python` | `fullstack`), resolved to an image in the env factory; default/fallback =
    `fullstack` (Node + Python) so a Node repo that later adds a Python backend doesn't wedge.
    One profile per conversation, user-overridable in settings. Kills the "one workspace = one image
    forever" assumption **without** building auto-routing or image management (both deferred). Small
    refactor of `env/factory.ts` + `container.ts` + execution settings (JSON blob — no migration).
-7. **`005.1` — ContainerEnvironment stop in-flight.** The deferred half of `005`: killing the host
+8. **`005.1` — ContainerEnvironment stop in-flight.** The deferred half of `005`: killing the host
    `docker/podman exec` client doesn't stop the in-container process. Needs its own kill mechanism
    (in-container PID tracking / `exec kill`, or marker `pkill`). Out of scope when `005` shipped.
-8. **`007` — Slash commands for skills.** Let users force a skill with `/skill-name …` (pre-inject
+9. **`007` — Slash commands for skills.** Let users force a skill with `/skill-name …` (pre-inject
    the `read_skill` call), keeping today's model-discretionary path for plain messages. Adds a
    `skills:list` IPC channel + composer autocomplete. Independent — schedule freely.
-9. **`018` — Agentic goal mode. ⚠️ SUPERSEDED by `025`** (the general Process engine — 018's fixed
+10. **`018` — Agentic goal mode. ⚠️ SUPERSEDED by `025`** (the general Process engine — 018's fixed
    pipeline becomes one built-in Process *template*; kept as a stable-ID file per convention, not
    built as its own orchestrator). An opt-in **execution mode** (orthogonal to chat/interactive/
    north_star): `simple` (today's one-pass behavior, default) vs `goal` (bounded **plan → execute →
@@ -81,7 +99,7 @@ item is its plan file, not its rank.
    PR (`/goal <request>` — reuses `007`'s composer slash-command affordance — + a "Run with review
    loop" button); the Always/Ask/Manual/Off **setting is deferred** to its own plan. Placed by `007`
    since both add `/`-command composer UI.
-10. **`024` — Index filesystem/git watcher.** The "live file watching" follow-up `008` deferred (and
+11. **`024` — Index filesystem/git watcher.** The "live file watching" follow-up `008` deferred (and
    `014` re-deferred). Today the workspace index — and the compact summary `buildIndexSummary`
    injects into the system prompt on every message send — only refreshes when `IndexService.
    ensureRunning` is called, which fires on conversation create/update or manual Start/Rebuild;
