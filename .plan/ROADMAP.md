@@ -7,31 +7,25 @@ item is its plan file, not its rank.
 
 ## Next up
 
-1. **`027` — Agent management UI.** In-app create/edit/delete of the file-based `<name>.agent.md`
-   agents (today: disk-only + a read-only folder table in Settings). Mirrors the skills editor
-   (`skills-screen.tsx`, `skills:read`/`skills:write` behind `assertSkillPath`): new
-   `agents:read`/`write`/`create`/`delete` IPC behind an `assertAgentPath`, structured tri-state
-   tool/skill pickers over the 8 categories + skill catalog. Closes the loop so `025`/`026` phases
-   can reference authored agents.
-2. **`028` — Skill authoring.** Extends the Skills view (already View + Edit) with **create** +
+1. **`028` — Skill authoring.** Extends the Skills view (already View + Edit) with **create** +
    **delete** — `skills:create`/`skills:delete` IPC guarded to **writable** roots (never a bundled
    seed), a New Skill scaffold + delete-with-confirm in `skills-screen.tsx`. Complements `027` (an
    agent's `skills[]` can only reference skills that exist).
-3. **`029` — Process review feedback loop.** A `026` follow-up. A gated phase is binary today
+2. **`029` — Process review feedback loop.** A `026` follow-up. A gated phase is binary today
    (Approve / Deny, and Deny dead-ends the run in `paused`); adds a third decision, **Request
    changes**, with a feedback note that re-runs the gated phase's own worker and re-gates — a real
    edit → re-review cycle, bounded by a rework-round cap. Builds the **reopen → inject feedback →
    bounded re-run** primitive that `031` generalizes. Net-new: re-opening a completed+gated phase
    (supersede/re-key the durable approval row — no `deleteApproval` today), a `rework_note` column +
    `process:requestChanges` verb, a third gate-card control. Engine + IPC + renderer.
-4. **`030` — Process artifacts: dot-folders + file chips.** A `026` follow-up; two paired
+3. **`030` — Process artifacts: dot-folders + file chips.** A `026` follow-up; two paired
    quality-of-life features, mostly renderer + one additive column. (a) A per-phase **dot-folder**
    toggle (`process_phases.dot_folder`) steering a phase's agent to write artifacts under
    `.<phase-key>/` (predictable path). (b) **File chips** on each phase card in the run monitor that
    open a produced file in the selected IDE (reuse `changedFilesFromCalls` off the phase worker's
    tool calls + `ChangedFilesBar`/`openInEditor`/`git.diff` — no new git machinery). No scheduler
    change. Independent of `029`/`031`.
-5. **`031` — Process rework: validator + cross-phase flag-back. ⚠️ DESIGN-PENDING.** The agent
+4. **`031` — Process rework: validator + cross-phase flag-back. ⚠️ DESIGN-PENDING.** The agent
    quality loop. Shares `029`'s reopen+feedback+bound primitive; generalizes the superseded `018`
    `review → fix → review` loop. Three capabilities: **flag-don't-fix** (a gated `flag_for_rework`
    tool), **send-back** (route a flag to the owning phase **or a single fan-out sub-task** — rework
@@ -44,26 +38,26 @@ item is its plan file, not its rank.
    The DAG has **no cycle guard** — a bound is mandatory. **Will likely split** on build (`025.x`
    pattern): `031.1` validator, `031.2` cross-phase flag-back + autonomous routing (the riskiest —
    sub-DAG-replay correctness with gates/fan-out). Build order: `029` → `031.1` → `031.2`.
-6. **`020` — Durable memories.** The cross-conversation memories section `014` reserved: small,
+5. **`020` — Durable memories.** The cross-conversation memories section `014` reserved: small,
    persisted facts the agent writes (a **gated, explicit** `remember` tool — no silent profiling)
    and that inject into future turns, **scoped** global / workspace / conversation (mirrors the
    `action_allowlist` scoping). New `memories` table + a list/delete surface (durable +
    cross-conversation ⇒ must be auditable/revocable); a `memoriesSection` renderer with an injection
    cap. Split out of `014` Q2.
-7. **`010` — Container runtime profiles.** Decouple Workspace (the files) from Runtime (the env a
+6. **`010` — Container runtime profiles.** Decouple Workspace (the files) from Runtime (the env a
    tool call executes in). Replace the raw container `image` string with a named **profile**
    (`node` | `python` | `fullstack`), resolved to an image in the env factory; default/fallback =
    `fullstack` (Node + Python) so a Node repo that later adds a Python backend doesn't wedge.
    One profile per conversation, user-overridable in settings. Kills the "one workspace = one image
    forever" assumption **without** building auto-routing or image management (both deferred). Small
    refactor of `env/factory.ts` + `container.ts` + execution settings (JSON blob — no migration).
-8. **`005.1` — ContainerEnvironment stop in-flight.** The deferred half of `005`: killing the host
+7. **`005.1` — ContainerEnvironment stop in-flight.** The deferred half of `005`: killing the host
    `docker/podman exec` client doesn't stop the in-container process. Needs its own kill mechanism
    (in-container PID tracking / `exec kill`, or marker `pkill`). Out of scope when `005` shipped.
-9. **`007` — Slash commands for skills.** Let users force a skill with `/skill-name …` (pre-inject
+8. **`007` — Slash commands for skills.** Let users force a skill with `/skill-name …` (pre-inject
    the `read_skill` call), keeping today's model-discretionary path for plain messages. Adds a
    `skills:list` IPC channel + composer autocomplete. Independent — schedule freely.
-10. **`018` — Agentic goal mode. ⚠️ SUPERSEDED by `025`** (the general Process engine — 018's fixed
+9. **`018` — Agentic goal mode. ⚠️ SUPERSEDED by `025`** (the general Process engine — 018's fixed
    pipeline becomes one built-in Process *template*; kept as a stable-ID file per convention, not
    built as its own orchestrator). An opt-in **execution mode** (orthogonal to chat/interactive/
    north_star): `simple` (today's one-pass behavior, default) vs `goal` (bounded **plan → execute →
@@ -77,7 +71,7 @@ item is its plan file, not its rank.
    PR (`/goal <request>` — reuses `007`'s composer slash-command affordance — + a "Run with review
    loop" button); the Always/Ask/Manual/Off **setting is deferred** to its own plan. Placed by `007`
    since both add `/`-command composer UI.
-11. **`024` — Index filesystem/git watcher.** The "live file watching" follow-up `008` deferred (and
+10. **`024` — Index filesystem/git watcher.** The "live file watching" follow-up `008` deferred (and
    `014` re-deferred). Today the workspace index — and the compact summary `buildIndexSummary`
    injects into the system prompt on every message send — only refreshes when `IndexService.
    ensureRunning` is called, which fires on conversation create/update or manual Start/Rebuild;
@@ -94,6 +88,40 @@ item is its plan file, not its rank.
 
 ## Done
 
+- **`027` — Agent management UI.** Built on `feat/process-engine-planning` (commit `a6e60cc`; not yet
+  merged to `main`). In-app **create/edit/delete** of the file-based `<name>.agent.md` agents, mirroring
+  the skills editor and closing the loop so `025`/`026` phases can reference authored agents (was
+  disk-only + a read-only Settings folder table). **Main:** a new **`serializeAgent`** in
+  `agent/agents/loader.ts` (the exact inverse of `parseAgent` — preserves the load-bearing tri-state
+  `undefined`→omit / `[]`→empty-list, hyphenated `user-invocable` key, raw body; `validateName` exported
+  for hard name↔stem enforcement); `AgentFolder`/`AgentTree` types + an exported `TOOL_CATEGORIES`; and
+  five IPC channels in `index.ts` — `agents:tree`/`read`/`save`/`create`/`delete` — guarded by
+  `assertAgentPath` (any known root, read) and `assertAgentWritablePath` (**user + custom only**, write),
+  with `save` taking **structured fields** (serializer stays in main, no YAML in the renderer).
+  **Decisions (Open Qs):** editor style → **structured form** (not raw text); writable roots → **user +
+  custom only** (workspace/`.github` agents are viewable but read-only). **Renderer:** new
+  `agents-screen.tsx` — clones the Skills full-viewport takeover shell + two-level tree, with a
+  structured main pane: description Textarea, user-invocable Switch, **All/None/Choose** tri-state
+  pickers (shadcn `Select` + checkbox grids) for tools (8 categories) / skills (`skills:list`) /
+  children (agent names), a markdown body Textarea; **New agent** (full form) + hover **delete**
+  (writable rows only, with confirm). Mounted in `main.tsx`; a **Bot**-icon "Agents" footer button in
+  `sidebar.tsx` (between Processes and Skills); types re-exported via `renderer/src/types.ts`. Verified:
+  `pnpm typecheck` + `pnpm build` clean (sole error, `src/main/ide/open.test.ts`, is pre-existing +
+  unrelated); `loader.test.ts` **serializeAgent** round-trips (tri-state omit/[]/list, hyphenated key,
+  verbatim body) + `validateName` (23 pass). DB suite run against a node-ABI `better-sqlite3` rebuild,
+  Electron ABI restored after. Manual E2E in the running app deferred to a live session. **Deferred (as
+  planned):** editing agents in workspace roots; a per-agent `model` field; versioning/import-export.
+  **Shipped alongside** (same commit `a6e60cc`, from the same session): **process run titles** (a
+  `process_runs.title` column, `SCHEMA_V18`; `startRun` awaits `generateTitle` so the run selector shows
+  a short LLM title, not the raw objective), **fan-out decomposition robustness** (a tolerant
+  `parseDecomposition` — scans all fences, string-aware balanced-bracket match, accepts object arrays —
+  plus a tightened prompt + corrective-retry note), a **transient-turn retry fix** (`isTransientError`
+  now walks the error `cause` chain + matches transient messages, so a mid-stream "terminated" undici
+  socket death is retryable and a phase worker retries instead of failing on attempt 1), and **retry a
+  failed run** (`runner.restart` re-queues a failed task in place — preserving its `taskId`-keyed
+  checkpoints; `ProcessService.restartRun` resets the failure frontier — failed/cancelled phase-runs +
+  container children — and re-drives the same task; `process:restart` IPC + a **Retry** button on failed
+  runs in the monitor).
 - **`026` — Process UI.** Built on `feat/process-engine-planning` (not yet merged to `main`). The
   **renderer** for the `025` engine — purely additive, **no backend/IPC/schema change** (the
   `process:*` control verbs, `db:processes:*` CRUD, the `api.process` + `api.db.processes` preload
