@@ -374,6 +374,18 @@ export interface ProcessPhase {
   // When set, the phase's kickoff steers its agent to write artifacts under a
   // `.<key>/` folder at the workspace root — a predictable location (plan 030).
   dotFolder: boolean
+  // Per-phase VALIDATOR (plan 031.1): when true, a second agent reviews the
+  // phase's output after its worker completes and either approves it or sends it
+  // back with feedback (reusing the 029 rework channel), bounded; on exhaustion
+  // the phase escalates to a human gate.
+  validator: boolean
+  // The per-phase cap on validator review rounds. 0 = use the engine default
+  // (DEFAULT_VALIDATOR_ITERATIONS); a positive value overrides. Never unlimited —
+  // the DAG has no cycle guard, so a bound is mandatory.
+  validatorMaxIterations: number
+  // The dedicated reviewer agent name. Null falls back to the phase's own
+  // resolved agent (pool[0]).
+  validatorAgent: string | null
   position: number
 }
 
@@ -441,6 +453,10 @@ export interface ProcessPhaseRun {
   // back. reworkRound is the bound counter (how many times sent back).
   reworkNote: string | null
   reworkRound: number
+  // The validator's own round counter (plan 031.1): how many times the reviewer
+  // has sent this phase-run back. Kept SEPARATE from reworkRound (which drives the
+  // 029 count-based gate re-detection and must not be perturbed). Default 0.
+  validatorRound: number
 }
 
 // The whole authored graph in one shape — the scheduler and the monitor both

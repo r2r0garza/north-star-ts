@@ -589,3 +589,27 @@ ALTER TABLE process_phases ADD COLUMN max_rework_rounds INTEGER NOT NULL DEFAULT
 export const SCHEMA_V20 = `
 ALTER TABLE process_phases ADD COLUMN dot_folder INTEGER NOT NULL DEFAULT 0;
 `
+
+// v21: per-phase VALIDATOR — the automatic same-phase half of plan 031 (031.1).
+// When enabled, a second agent reviews the phase's output after its worker
+// completes and either approves it or sends it back with feedback (reusing the
+// 029 rework_note kickoff channel), bounded by an iteration cap; on exhaustion
+// the phase escalates to a human gate.
+//   - process_phases.validator: the toggle (0/1); default 0 preserves prior behavior.
+//   - process_phases.validator_max_iterations: the per-phase cap on review rounds.
+//     0 = use the engine default (DEFAULT_VALIDATOR_ITERATIONS); a positive value
+//     overrides. NEVER unlimited — the DAG has no cycle guard, so a bound is
+//     mandatory (unlike max_rework_rounds where 0 = unlimited).
+//   - process_phases.validator_agent: the dedicated reviewer agent name; NULL
+//     falls back to the phase's own resolved agent (pool[0]).
+//   - process_phase_runs.validator_round: the validator's own round counter, kept
+//     SEPARATE from rework_round (which drives the 029 count-based gate re-detection
+//     and must not be perturbed); default 0.
+// All four are pure ADD COLUMN — safe under the foreign_keys=OFF migration loop
+// (no table rebuild), matching the V16-V20 pattern.
+export const SCHEMA_V21 = `
+ALTER TABLE process_phases ADD COLUMN validator INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE process_phases ADD COLUMN validator_max_iterations INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE process_phases ADD COLUMN validator_agent TEXT;
+ALTER TABLE process_phase_runs ADD COLUMN validator_round INTEGER NOT NULL DEFAULT 0;
+`

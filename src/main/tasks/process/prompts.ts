@@ -286,3 +286,149 @@ export function parseDecomposition(text: string): string[] {
   }
   return []
 }
+
+// ── validator (plan 031.1) ───────────────────────────────────────────────────
+
+// The kickoff for a phase's VALIDATOR reviewer (plan 031.1). A second agent is
+// forked (like the phase's own worker, so it can inspect the workspace/files) and
+// asked to judge whether the phase's output meets the objective. It replies with
+// ONLY a JSON verdict object — approve, or reject with actionable feedback that
+// the engine injects into the phase's re-run kickoff (the 029 rework channel).
+// Self-contained like kickoffPrompt (the reviewer can't see the orchestrator).
+export function validatorPrompt(input: {
+  phase: ProcessPhase
+  objective: string
+  upstream: UpstreamResult[]
+  // The phase worker's final output (its last assistant message).
+  phaseOutput: string | null
+}): string {
+  const { phase, objective, upstream, phaseOutput } = input
+  const lines: string[] = []
+  lines.push(`# Review the "${phase.name}" phase`)
+  lines.push("")
+  lines.push(
+    "You are a REVIEWER for one phase of a larger multi-phase process. Another " +
+      `agent just carried out the "${phase.name}" phase. Your job is to check its ` +
+      "work — inspect the workspace and any files it produced — and decide whether " +
+      "it satisfies the objective, or whether it must be sent back for changes."
+  )
+  lines.push("")
+  lines.push("## Overall objective")
+  lines.push(objective.trim() || "(no objective provided)")
+  lines.push("")
+  if (upstream.length > 0) {
+    lines.push("## Output of the phases that ran before this one")
+    for (const u of upstream) {
+      lines.push(`### ${u.phaseName}`)
+      lines.push(u.content?.trim() || "(no textual output)")
+      lines.push("")
+    }
+  }
+  lines.push(`## What the "${phase.name}" phase reported`)
+  lines.push(phaseOutput?.trim() || "(no textual output)")
+  lines.push("")
+  lines.push("## Your verdict")
+  lines.push(
+    "Decide if this phase's work is acceptable. Be pragmatic: approve unless there " +
+      "is a concrete, fixable problem — do not nitpick style or ask for gold-plating."
+  )
+  lines.push(
+    "When done, reply with ONLY a JSON object — no markdown code fences, no prose " +
+      "before or after it. One of:"
+  )
+  lines.push('  {"approved": true}')
+  lines.push(
+    '  {"approved": false, "feedback": "<specific, actionable changes the phase must make>"}'
+  )
+  return lines.join("\n")
+}
+
+// A validator reviewer's parsed verdict (plan 031.1). `approved` gates whether the
+// phase settles completed; `feedback` (when rejected) is injected into the re-run.
+export interface ValidatorVerdict {
+  approved: boolean
+  feedback?: string
+}
+
+// From `text` starting at `from`, find the balanced `}` matching the `{` at
+// `from`, tracking string literals so braces inside strings don't miscount.
+// Returns the index of the closing `}`, or -1 if unbalanced. (Object analog of
+// matchBracket.)
+function matchBrace(text: string, from: number): number {
+  let depth = 0
+  let inString = false
+  let escaped = false
+  for (let i = from; i < text.length; i++) {
+    const c = text[i]
+    if (inString) {
+      if (escaped) escaped = false
+      else if (c === "\\") escaped = true
+      else if (c === '"') inString = false
+      continue
+    }
+    if (c === '"') inString = true
+    else if (c === "{") depth++
+    else if (c === "}") {
+      depth--
+      if (depth === 0) return i
+    }
+  }
+  return -1
+}
+
+// Coerce one parsed candidate object into a verdict, or null if it carries no
+// usable `approved` signal. Accepts a boolean `approved` (or a common string form
+// like "yes"/"true"/"approved"); pulls `feedback`/`reason` when rejected.
+function objectToVerdict(parsed: unknown): ValidatorVerdict | null {
+  if (!parsed || typeof parsed !== "object") return null
+  const obj = parsed as Record<string, unknown>
+  if (!("approved" in obj)) return null
+  const raw = obj.approved
+  let approved: boolean
+  if (typeof raw === "boolean") approved = raw
+  else if (typeof raw === "string")
+    approved = /^(true|yes|approve|approved|pass|ok)$/i.test(raw.trim())
+  else return null
+  if (approved) return { approved: true }
+  const feedback =
+    typeof obj.feedback === "string" && obj.feedback.trim()
+      ? obj.feedback.trim()
+      : typeof obj.reason === "string" && obj.reason.trim()
+        ? obj.reason.trim()
+        : undefined
+  return { approved: false, feedback }
+}
+
+// Tolerant extraction of a validator verdict from the reviewer's final message
+// (plan 031.1), mirroring parseDecomposition: scan every fenced block AND the raw
+// text for the first brace-run that JSON-parses into an object carrying an
+// `approved` field. Returns null on a genuine miss — the caller treats that as
+// fail-open (approve) so a broken reviewer never wedges the run.
+export function parseVerdict(text: string): ValidatorVerdict | null {
+  if (!text) return null
+  const candidates: string[] = []
+  const fence = /```(?:json)?\s*([\s\S]*?)```/gi
+  let m: RegExpExecArray | null
+  while ((m = fence.exec(text)) !== null) candidates.push(m[1])
+  candidates.push(text)
+
+  for (const candidate of candidates) {
+    for (
+      let start = candidate.indexOf("{");
+      start !== -1;
+      start = candidate.indexOf("{", start + 1)
+    ) {
+      const end = matchBrace(candidate, start)
+      if (end === -1) break
+      let parsed: unknown
+      try {
+        parsed = JSON.parse(candidate.slice(start, end + 1))
+      } catch {
+        continue
+      }
+      const verdict = objectToVerdict(parsed)
+      if (verdict) return verdict
+    }
+  }
+  return null
+}

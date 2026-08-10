@@ -745,6 +745,9 @@ const api = {
           fanOut?: boolean
           maxReworkRounds?: number
           dotFolder?: boolean
+          validator?: boolean
+          validatorMaxIterations?: number
+          validatorAgent?: string | null
           position: number
         }) =>
           ipcRenderer.invoke(
@@ -766,6 +769,9 @@ const api = {
             fanOut?: boolean
             maxReworkRounds?: number
             dotFolder?: boolean
+            validator?: boolean
+            validatorMaxIterations?: number
+            validatorAgent?: string | null
             position?: number
           }
         ) =>

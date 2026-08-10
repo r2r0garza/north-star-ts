@@ -1,12 +1,21 @@
 # PR31: Process rework — per-phase validator + cross-phase flag-back
 
-> Status: **DESIGN-PENDING** (core decisions settled below; a few sub-questions remain for the build
-> PR). The agent **quality loop** for the Process engine: a phase can be sent back to rework its
-> output — automatically by a **validator** (a second LLM reviewing the same phase) or by an agent's
-> **flag** targeting an *earlier* phase. Generalizes the superseded `018` `review → fix → review`
-> bounded loop, and shares the **reopen → inject feedback → bounded re-run** primitive with `029`
-> (the human, same-phase case). **Will likely SPLIT** on build (the `025.1/.2/.3` pattern):
-> `031.1` = validator, `031.2` = cross-phase flag-back + autonomous routing.
+> Status: **SPLIT.** `031.1` (per-phase validator) is **SHIPPED** on branch `feat/process-validator`
+> (see the Done entry in `ROADMAP.md`). `031.2` (cross-phase flag-back + autonomous routing) remains
+> **DESIGN-PENDING** — the riskier sub-DAG-replay half (see Open Q #5, the spike to run first).
+>
+> The agent **quality loop** for the Process engine: a phase can be sent back to rework its
+> output — automatically by a **validator** (a second agent reviewing the same phase — shipped) or by
+> an agent's **flag** targeting an *earlier* phase (`031.2`). Generalizes the superseded `018`
+> `review → fix → review` bounded loop, and shares the **reopen → inject feedback → bounded re-run**
+> primitive with `029` (the human, same-phase case).
+>
+> **`031.1` build notes (shipped):** reviewer identity = a **dedicated agent worker** (a real
+> `runAgentLoop` fork that can inspect files), not the bounded-`createCompletion` judge originally
+> leaned toward in Open Q #1 — chosen so the reviewer can verify artifacts on disk. On cap exhaustion
+> the phase **escalates to a human gate** (Open Q #3's "force a human gate"). Rework-round row model =
+> **reset-in-place** (Open Q #4), with a `validator_round` counter kept separate from `029`'s
+> `rework_round`. Non-fan-out phases only (containers are `031.2`).
 
 ## Context
 

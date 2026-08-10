@@ -589,6 +589,9 @@ function PhaseCard({
     fanOut?: boolean
     maxReworkRounds?: number
     dotFolder?: boolean
+    validator?: boolean
+    validatorMaxIterations?: number
+    validatorAgent?: string | null
   }) {
     try {
       await window.cowork.db.processes.phases.update(phase.id, patch)
@@ -708,6 +711,15 @@ function PhaseCard({
                   .{phase.key}/
                 </Badge>
               )}
+              {phase.validator && (
+                <Badge
+                  variant="outline"
+                  className="text-[10px]"
+                  title="A second agent reviews this phase's output (plan 031.1)"
+                >
+                  validator
+                </Badge>
+              )}
               <Badge variant="secondary" className="text-[10px]">
                 {pool.length} {pool.length === 1 ? "agent" : "agents"}
               </Badge>
@@ -806,6 +818,30 @@ function PhaseCard({
             onCheckedChange={(v) => patchPhase({ dotFolder: v })}
           />
         </label>
+        {/* Per-phase VALIDATOR (plan 031.1): a second agent reviews this phase's
+            output and sends it back with feedback until it passes, bounded. Not
+            offered for a fan-out phase (sub-DAG review is plan 031.2). */}
+        {!phase.fanOut && (
+          <label
+            className="flex items-center gap-2 text-xs"
+            title="After this phase completes, a second agent reviews its output and can send it back with feedback (bounded)"
+          >
+            <span className="text-muted-foreground">Validator</span>
+            <Switch
+              checked={phase.validator}
+              onCheckedChange={(v) =>
+                // Seed a concrete default cap (3) when enabling, so the field never
+                // sits at the 0 sentinel — the validator is bounded by construction.
+                patchPhase({
+                  validator: v,
+                  ...(v && phase.validatorMaxIterations < 1
+                    ? { validatorMaxIterations: 3 }
+                    : {}),
+                })
+              }
+            />
+          </label>
+        )}
         {/* The "Request changes" rework cap (plan 029), only meaningful for an
             approve gate. 0 = unlimited. */}
         {phase.gatePolicy === "approve" && !phase.fanOut && (
@@ -827,6 +863,57 @@ function PhaseCard({
           </label>
         )}
       </div>
+
+      {/* Validator config (plan 031.1): the reviewer agent + iteration cap, shown
+          only when the validator toggle is on. */}
+      {phase.validator && !phase.fanOut && (
+        <div className="flex flex-wrap items-center gap-4">
+          <label
+            className="flex items-center gap-2 text-xs"
+            title="The agent that reviews this phase's output. Defaults to the phase's own first pool agent."
+          >
+            <span className="text-muted-foreground">Reviewer</span>
+            <NativeSelect
+              size="sm"
+              value={phase.validatorAgent ?? ""}
+              onChange={(e) =>
+                patchPhase({ validatorAgent: e.target.value || null })
+              }
+            >
+              <NativeSelectOption value="">
+                Phase&apos;s own agent
+              </NativeSelectOption>
+              {agents.map((a) => (
+                <NativeSelectOption key={a.name} value={a.name}>
+                  {a.name}
+                </NativeSelectOption>
+              ))}
+            </NativeSelect>
+          </label>
+          <label
+            className="flex items-center gap-2 text-xs"
+            title="Max validator review rounds before escalating to a human gate"
+          >
+            <span className="text-muted-foreground">Max iterations</span>
+            <Input
+              type="number"
+              min={1}
+              className="h-7 w-16 text-xs"
+              // A legacy 0 (the engine's "use default" sentinel) reads as 3 here so
+              // the control never shows 0; the floor is 1 (never zero reviews).
+              value={
+                phase.validatorMaxIterations < 1
+                  ? 3
+                  : phase.validatorMaxIterations
+              }
+              onChange={(e) => {
+                const n = Math.max(1, Math.floor(Number(e.target.value) || 1))
+                patchPhase({ validatorMaxIterations: n })
+              }}
+            />
+          </label>
+        </div>
+      )}
 
       {/* Row 3: agent pool. */}
       <div className="flex flex-col gap-1.5">

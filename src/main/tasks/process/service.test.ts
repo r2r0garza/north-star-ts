@@ -18,6 +18,11 @@ try {
 // assert routing picked the right agent, and appends a final assistant message so
 // the run has "output".
 const loopCalls: { conversationId: string; userMessage?: string }[] = []
+// A validator reviewer's scripted replies (plan 031.1): each call to a REVIEW
+// prompt (validatorPrompt begins "# Review the") shifts one reply off this queue;
+// the reply is the reviewer worker's final message (a JSON verdict). Empty queue →
+// the default "done" (unparseable → the caller fails open, i.e. approves).
+const reviewReplies: string[] = []
 vi.mock("../../agent", () => ({
   runAgentLoop: async (input: {
     conversationId: string
@@ -27,11 +32,13 @@ vi.mock("../../agent", () => ({
       conversationId: input.conversationId,
       userMessage: input.userMessage,
     })
+    const isReview = input.userMessage?.startsWith("# Review the")
+    const content = isReview && reviewReplies.length ? reviewReplies.shift()! : "done"
     // Give the worker a final assistant message (its "output").
     db.prepare(
-      "INSERT INTO messages (id, conversation_id, seq, role, content, created_at) VALUES (?, ?, ?, 'assistant', 'done', ?)"
-    ).run(randomUUID(), input.conversationId, 1, Date.now())
-    return { content: "done" }
+      "INSERT INTO messages (id, conversation_id, seq, role, content, created_at) VALUES (?, ?, ?, 'assistant', ?, ?)"
+    ).run(randomUUID(), input.conversationId, 1, content, Date.now())
+    return { content }
   },
 }))
 
@@ -93,6 +100,7 @@ beforeEach(() => {
   db = new Database(":memory:")
   runMigrations(db)
   loopCalls.length = 0
+  reviewReplies.length = 0
   nextReply = ""
   for (const k of Object.keys(descriptions)) delete descriptions[k]
 })
@@ -434,5 +442,112 @@ describe.skipIf(!sqliteLoads)("ProcessService requestChanges (plan 029)", () => 
     expect(listApprovals({ taskId: run.taskId!, status: "pending" })).toHaveLength(
       1
     )
+  })
+})
+
+describe.skipIf(!sqliteLoads)("ProcessService validator (plan 031.1)", () => {
+  it("re-runs the phase with the reviewer's feedback, then completes on approve", async () => {
+    const def = processes.createProcessDefinition({ name: "T" })
+    const phase = processes.createPhase({
+      processId: def.id,
+      key: "impl",
+      name: "Implement",
+      validator: true,
+      position: 0,
+    })
+    processes.createPhaseAgent({
+      phaseId: phase.id,
+      agentName: "coder",
+      position: 0,
+    })
+    // The reviewer rejects the first attempt, approves the second.
+    reviewReplies.push(
+      '{"approved": false, "feedback": "handle the empty case"}',
+      '{"approved": true}'
+    )
+
+    const { taskId } = seedTaskRow()
+    const run = processes.createProcessRun({
+      processId: def.id,
+      sourceConversationId: null,
+      taskId,
+      objective: "build it",
+      status: "running",
+    })
+
+    const svc = new ProcessService(fakeRunner)
+    const result = await svc.execute({
+      task: { id: taskId, input: { processRunId: run.id } } as never,
+      signal: new AbortController().signal,
+      emit: () => {},
+      workspace: undefined,
+    })
+
+    expect((result as { content?: string }).content).toBe("process complete")
+    const phaseRun = processes
+      .listPhaseRuns({ runId: run.id, parentId: null })
+      .find((pr) => pr.phaseId === phase.id)!
+    expect(phaseRun.status).toBe("completed")
+    expect(phaseRun.validatorRound).toBe(1)
+
+    // The phase worker ran twice; the second kickoff carried the feedback (029
+    // rework channel). The reviewer ran twice too.
+    const workerRuns = loopCalls.filter((c) =>
+      c.userMessage?.startsWith("# Process phase")
+    )
+    expect(workerRuns).toHaveLength(2)
+    expect(workerRuns[1].userMessage).toContain("handle the empty case")
+    const reviewRuns = loopCalls.filter((c) =>
+      c.userMessage?.startsWith("# Review the")
+    )
+    expect(reviewRuns).toHaveLength(2)
+  })
+
+  it("fails open (completes) when the reviewer's verdict is unparseable", async () => {
+    const def = processes.createProcessDefinition({ name: "T" })
+    const phase = processes.createPhase({
+      processId: def.id,
+      key: "impl",
+      name: "Implement",
+      validator: true,
+      position: 0,
+    })
+    processes.createPhaseAgent({
+      phaseId: phase.id,
+      agentName: "coder",
+      position: 0,
+    })
+    // The reviewer replies with non-JSON prose → parseVerdict returns null →
+    // fail open (approve). (Empty reviewReplies also yields the "done" default,
+    // which is likewise unparseable — assert the explicit prose case here.)
+    reviewReplies.push("looks fine to me")
+
+    const { taskId } = seedTaskRow()
+    const run = processes.createProcessRun({
+      processId: def.id,
+      sourceConversationId: null,
+      taskId,
+      objective: "build it",
+      status: "running",
+    })
+
+    const svc = new ProcessService(fakeRunner)
+    await svc.execute({
+      task: { id: taskId, input: { processRunId: run.id } } as never,
+      signal: new AbortController().signal,
+      emit: () => {},
+      workspace: undefined,
+    })
+
+    const phaseRun = processes
+      .listPhaseRuns({ runId: run.id, parentId: null })
+      .find((pr) => pr.phaseId === phase.id)!
+    expect(phaseRun.status).toBe("completed")
+    // Approved on the first review → no re-run, validator round stays 0.
+    expect(phaseRun.validatorRound).toBe(0)
+    const workerRuns = loopCalls.filter((c) =>
+      c.userMessage?.startsWith("# Process phase")
+    )
+    expect(workerRuns).toHaveLength(1)
   })
 })

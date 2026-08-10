@@ -302,6 +302,9 @@ export function registerDbHandlers(
         fanOut?: boolean
         maxReworkRounds?: number
         dotFolder?: boolean
+        validator?: boolean
+        validatorMaxIterations?: number
+        validatorAgent?: string | null
         position: number
       }
     ) => processes.createPhase(input)
@@ -322,6 +325,9 @@ export function registerDbHandlers(
         fanOut?: boolean
         maxReworkRounds?: number
         dotFolder?: boolean
+        validator?: boolean
+        validatorMaxIterations?: number
+        validatorAgent?: string | null
         position?: number
       }
     ) => processes.updatePhase(id, patch)

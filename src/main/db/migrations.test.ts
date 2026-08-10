@@ -89,7 +89,7 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
     const db = new Database(":memory:")
     db.pragma("foreign_keys = ON")
     runMigrations(db)
-    expect(db.pragma("user_version", { simple: true })).toBe(20)
+    expect(db.pragma("user_version", { simple: true })).toBe(21)
     expect(db.pragma("foreign_key_check")).toHaveLength(0)
     db.close()
   })
@@ -146,6 +146,41 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
     ).toBe("0")
     db.close()
   })
+
+  it("adds the validator columns (v21, plan 031.1)", () => {
+    const db = new Database(":memory:")
+    db.pragma("foreign_keys = ON")
+    runMigrations(db)
+    const phaseCols = db.pragma("table_info(process_phases)") as Array<{
+      name: string
+      dflt_value: unknown
+    }>
+    const phaseNames = phaseCols.map((c) => c.name)
+    expect(phaseNames).toContain("validator")
+    expect(phaseNames).toContain("validator_max_iterations")
+    expect(phaseNames).toContain("validator_agent")
+    // SQLite reports the declared default verbatim as a string.
+    expect(
+      String(phaseCols.find((c) => c.name === "validator")?.dflt_value)
+    ).toBe("0")
+    expect(
+      String(
+        phaseCols.find((c) => c.name === "validator_max_iterations")?.dflt_value
+      )
+    ).toBe("0")
+
+    const phaseRunCols = db.pragma("table_info(process_phase_runs)") as Array<{
+      name: string
+      dflt_value: unknown
+    }>
+    expect(phaseRunCols.map((c) => c.name)).toContain("validator_round")
+    expect(
+      String(
+        phaseRunCols.find((c) => c.name === "validator_round")?.dflt_value
+      )
+    ).toBe("0")
+    db.close()
+  })
 })
 
 describe.skipIf(!sqliteLoads)("SCHEMA_V9 — orphan reap (plan 022)", () => {
@@ -190,7 +225,7 @@ describe.skipIf(!sqliteLoads)("SCHEMA_V9 — orphan reap (plan 022)", () => {
     // Apply V9 (the reaper) and any later migrations, up to the latest version.
     runMigrations(db)
 
-    expect(db.pragma("user_version", { simple: true })).toBe(20)
+    expect(db.pragma("user_version", { simple: true })).toBe(21)
 
     // Reaped: orphan + its nested descendant, and all their state.
     const taskIds = (

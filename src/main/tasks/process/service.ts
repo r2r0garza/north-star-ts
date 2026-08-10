@@ -23,6 +23,8 @@ import {
   fanOutDecomposePrompt,
   kickoffPrompt,
   parseDecomposition,
+  parseVerdict,
+  validatorPrompt,
   type UpstreamResult,
 } from "./prompts"
 import {
@@ -33,6 +35,7 @@ import {
   type DecomposeResult,
   type PhaseResult,
   type RunPhase,
+  type Validate,
 } from "./scheduler"
 
 // The DAG orchestrator task kind (plan 025). One ProcessService per app, holding
@@ -246,6 +249,10 @@ export class ProcessService {
         finishedAt: null,
         reworkNote: feedback,
         reworkRound: phaseRun.reworkRound + 1,
+        // Reset the validator's own counter (plan 031.1): a human send-back grants
+        // the re-run a fresh budget of automatic validator rounds. Harmless on a
+        // non-validator phase (stays 0).
+        validatorRound: 0,
       })
       processes.updateProcessRun(processRunId, {
         status: "running",
@@ -291,6 +298,7 @@ export class ProcessService {
         runPhase: this.makeRunPhase(run),
         decompose: this.makeDecompose(run),
         buildEachSubtaskPrompt: this.makeBuildEachSubtaskPrompt(run),
+        validate: this.makeValidate(run),
       })
       processes.updateProcessRun(runId, {
         status: "completed",
@@ -346,9 +354,14 @@ export class ProcessService {
           phase,
           objective: run.objective ?? "",
           upstream: this.collectUpstream(run, phase),
-          // A "Request changes" send-back (plan 029) stamped the feedback on the
-          // phase-run; surface it so the re-run addresses it. Null for a first run.
-          reworkNote: phaseRun.reworkNote ?? undefined,
+          // A "Request changes" send-back (plan 029) OR a validator rejection
+          // (plan 031.1) stamped feedback on the phase-run; surface it so the
+          // re-run addresses it. Re-read FRESH from the DB — a validator loop
+          // re-runs this closure within one runPhaseWithRetry call and stamps a new
+          // note each round, so the passed-in phaseRun object is stale. Null for a
+          // first run.
+          reworkNote:
+            processes.getPhaseRun(phaseRun.id)?.reworkNote ?? undefined,
         })
 
       // Resolve the phase's agent BEFORE forking the worker: for a `dispatch`
@@ -525,6 +538,104 @@ export class ProcessService {
         sourcePhaseName: source,
         subtaskContent: this.lastAssistantContent(sourceChildRun),
       })
+    }
+  }
+
+  // Build the VALIDATOR closure for a run (plan 031.1). A validator-enabled
+  // phase, after its worker completes, forks a REVIEWER worker (same shape as
+  // makeDecompose, so the reviewer can inspect the workspace/files) and asks it to
+  // judge the phase's output against the objective. The reviewer's own agent is
+  // `phase.validatorAgent` (else the phase's pool[0]); its conversation is
+  // separate from the phase worker's, so we do NOT overwrite the phase-run's
+  // taskId/agentName. Returns the parsed verdict; an unparseable reply FAILS OPEN
+  // (approved) so a broken reviewer never wedges the run.
+  private makeValidate(run: ProcessRun): Validate {
+    return async ({ phase, phaseRun, signal }) => {
+      const source = run.sourceConversationId
+        ? getConversation(run.sourceConversationId)
+        : undefined
+
+      // The phase worker's output is the review input — read it BEFORE forking the
+      // reviewer (the reviewer's conversation would otherwise be the latest).
+      const phaseOutput = this.lastAssistantContent(phaseRun)
+
+      // The dedicated reviewer agent, falling back to the phase's own resolved
+      // agent (pool[0]) when none is configured.
+      const pool = processes.listPhaseAgents(phase.id)
+      const agentName =
+        phase.validatorAgent ?? pool[0]?.agentName ?? null
+
+      const workspaceId = run.workspaceId ?? source?.workspaceId ?? null
+      const workspace = workspaceId
+        ? getWorkspace(workspaceId)?.path
+        : undefined
+
+      const worker = createConversation({
+        mode: source?.mode ?? "interactive",
+        workspaceId,
+        accountId: source?.accountId ?? null,
+        modelId: source?.modelId ?? null,
+        agentName,
+        title: `${phase.name} (review)${agentName ? `: ${agentName}` : ""}`,
+      })
+      createTask({
+        conversationId: worker.id,
+        sourceConversationId: run.sourceConversationId ?? worker.id,
+        status: "completed",
+        title: `${phase.name} (review)`,
+        input: {
+          kind: "process_phase_validate",
+          phaseRunId: phaseRun.id,
+          agentName,
+        },
+      })
+
+      const childAbort = new AbortController()
+      if (signal.aborted) childAbort.abort(signal.reason)
+      else
+        signal.addEventListener(
+          "abort",
+          () => childAbort.abort(signal.reason),
+          { once: true }
+        )
+
+      const prompt = validatorPrompt({
+        phase,
+        objective: run.objective ?? "",
+        upstream: this.collectUpstream(run, phase),
+        phaseOutput,
+      })
+
+      try {
+        const result = await runAgentLoop({
+          conversationId: worker.id,
+          workspace,
+          agentDir: workspace,
+          userMessage: prompt,
+          abort: childAbort,
+          autoMode: true,
+          onEvent: () => {},
+        })
+        if (result.stopped || childAbort.signal.aborted)
+          return { approved: false, stopped: true }
+        if (result.error)
+          return {
+            approved: false,
+            error: result.error,
+            retryable: result.retryable,
+          }
+        const verdict = parseVerdict(result.content ?? "")
+        // Unparseable verdict → fail open (approve). A broken/ambiguous reviewer
+        // must never wedge the run; the iteration cap already bounds real loops.
+        if (!verdict) return { approved: true }
+        return { approved: verdict.approved, feedback: verdict.feedback }
+      } catch (err) {
+        // A thrown reviewer is treated as an error (fail-open in the scheduler).
+        return {
+          approved: false,
+          error: err instanceof Error ? err.message : String(err),
+        }
+      }
     }
   }
 

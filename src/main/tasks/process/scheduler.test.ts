@@ -26,6 +26,7 @@ import {
   type Decompose,
   type RunPhase,
   type SchedulerCtx,
+  type Validate,
 } from "./scheduler"
 import type { TaskEventPayload } from "../runner"
 
@@ -46,7 +47,13 @@ function freshTask(): string {
 // Build a process definition from a compact phase/edge spec. An edge may carry a
 // trigger as a 3rd tuple element (defaults to 'on_complete').
 function buildProcess(spec: {
-  phases: Array<{ key: string; gate?: "auto" | "approve"; fanOut?: boolean }>
+  phases: Array<{
+    key: string
+    gate?: "auto" | "approve"
+    fanOut?: boolean
+    validator?: boolean
+    validatorMaxIterations?: number
+  }>
   edges?: Array<[string, string] | [string, string, "on_each_subtask"]>
 }): string {
   const def = processes.createProcessDefinition({ name: "T" })
@@ -58,6 +65,8 @@ function buildProcess(spec: {
       name: p.key.toUpperCase(),
       gatePolicy: p.gate ?? "auto",
       fanOut: p.fanOut ?? false,
+      validator: p.validator ?? false,
+      validatorMaxIterations: p.validatorMaxIterations ?? 0,
       position: i,
     })
     byKey.set(p.key, phase.id)
@@ -87,6 +96,7 @@ function makeCtx(
     abort?: AbortController
     decompose?: Decompose
     buildEachSubtaskPrompt?: BuildEachSubtaskPrompt
+    validate?: Validate
   }
 ): { ctx: SchedulerCtx; events: TaskEventPayload[]; runId: string } {
   const taskId = freshTask()
@@ -109,6 +119,7 @@ function makeCtx(
     runPhase,
     decompose: opts?.decompose,
     buildEachSubtaskPrompt: opts?.buildEachSubtaskPrompt,
+    validate: opts?.validate,
   }
   return { ctx, events, runId: run.id }
 }
@@ -927,6 +938,174 @@ describe.skipIf(!sqliteLoads)("scheduler — on_each_subtask (025.2)", () => {
     await runScheduler(ctx)
     // The v container settled cancelled, not left dangling `running`.
     expect(statusByKey(runId, pid).v).toBe("cancelled")
+  })
+})
+
+describe.skipIf(!sqliteLoads)("scheduler — validator (plan 031.1)", () => {
+  it("re-runs the phase once when the validator rejects, then completes on approve", async () => {
+    // a (validator) -> b. The reviewer rejects the first attempt with feedback,
+    // approves the second. a's worker runs twice; b runs once, after a completes.
+    const pid = buildProcess({
+      phases: [{ key: "a", validator: true }, { key: "b" }],
+      edges: [["a", "b"]],
+    })
+    const ran: string[] = []
+    const runPhase: RunPhase = async ({ phase, phaseRun }) => {
+      // Record whether the re-run saw the injected feedback (via reworkNote).
+      const fresh = processes.getPhaseRun(phaseRun.id)
+      ran.push(`${phase.key}${fresh?.reworkNote ? "*" : ""}`)
+      return { content: phase.key }
+    }
+    let reviews = 0
+    const validate: Validate = async () => {
+      reviews++
+      return reviews === 1
+        ? { approved: false, feedback: "add error handling" }
+        : { approved: true }
+    }
+    const { ctx, runId } = makeCtx(pid, runPhase, { validate })
+    await runScheduler(ctx)
+    // a ran twice (2nd time with the feedback stamped), b once.
+    expect(ran).toEqual(["a", "a*", "b"])
+    expect(reviews).toBe(2)
+    expect(statusByKey(runId, pid)).toEqual({ a: "completed", b: "completed" })
+    // The validator's own counter advanced; the 029 rework counter is untouched.
+    const aRun = runsForKey(runId, pid, "a").find((r) => r.parentId === null)!
+    expect(aRun.validatorRound).toBe(1)
+    expect(aRun.reworkRound).toBe(0)
+  })
+
+  it("escalates to a human gate when the validator exhausts its cap", async () => {
+    // a (validator, cap 2) -> b. The reviewer always rejects. a re-runs up to the
+    // cap, then the scheduler raises a gate (throws) and b never runs.
+    const pid = buildProcess({
+      phases: [
+        { key: "a", validator: true, validatorMaxIterations: 2 },
+        { key: "b" },
+      ],
+      edges: [["a", "b"]],
+    })
+    const ran: string[] = []
+    const runPhase: RunPhase = async ({ phase }) => {
+      ran.push(phase.key)
+      return { content: phase.key }
+    }
+    let reviews = 0
+    const validate: Validate = async () => {
+      reviews++
+      return { approved: false, feedback: `round ${reviews}` }
+    }
+    const { ctx, runId } = makeCtx(pid, runPhase, { validate })
+    await expect(runScheduler(ctx)).rejects.toBeInstanceOf(GateBlockedError)
+    // The worker ran twice (round 1 re-run, then round 2 hits the cap → gate).
+    expect(ran).toEqual(["a", "a"])
+    expect(reviews).toBe(2)
+    const aRun = runsForKey(runId, pid, "a").find((r) => r.parentId === null)!
+    expect(aRun.status).toBe("waiting_for_approval")
+    expect(aRun.validatorRound).toBe(2)
+    expect(aRun.reworkNote).toBe("round 2")
+    expect(statusByKey(runId, pid).b).toBe("pending") // b held
+
+    // The escalation raised exactly one pending gate.
+    const pending = listApprovals({ taskId: ctx.taskId, status: "pending" })
+    expect(pending).toHaveLength(1)
+  })
+
+  it("releases dependents after a human approves the exhaustion gate", async () => {
+    const pid = buildProcess({
+      phases: [
+        { key: "a", validator: true, validatorMaxIterations: 1 },
+        { key: "b" },
+      ],
+      edges: [["a", "b"]],
+    })
+    const ran: string[] = []
+    const runPhase: RunPhase = async ({ phase }) => {
+      ran.push(phase.key)
+      return { content: phase.key }
+    }
+    // cap 1 → the very first rejection exhausts and escalates.
+    const validate: Validate = async () => ({
+      approved: false,
+      feedback: "not good enough",
+    })
+    const { ctx, runId } = makeCtx(pid, runPhase, { validate })
+    await expect(runScheduler(ctx)).rejects.toBeInstanceOf(GateBlockedError)
+    expect(ran).toEqual(["a"]) // one attempt, then straight to the gate
+    expect(statusByKey(runId, pid).a).toBe("waiting_for_approval")
+
+    // Approve the exhaustion gate.
+    const pending = listApprovals({ taskId: ctx.taskId, status: "pending" })
+    expect(pending).toHaveLength(1)
+    resolveApproval(pending[0].id, { status: "approved" })
+
+    // Resume: reconcileValidatorGates flips a → completed, releasing b. The
+    // validator does NOT re-run (a is no longer re-running its worker).
+    const graph = processes.getProcessGraph(pid)!
+    const run2 = processes.getProcessRun(runId)!
+    await runScheduler({
+      run: run2,
+      graph,
+      taskId: ctx.taskId,
+      signal: new AbortController().signal,
+      emit: () => {},
+      runPhase,
+      validate,
+    })
+    expect(ran).toEqual(["a", "b"])
+    expect(statusByKey(runId, pid)).toEqual({ a: "completed", b: "completed" })
+  })
+
+  it("uses the engine default cap when no per-phase override is set", async () => {
+    // a (validator, no cap → DEFAULT_VALIDATOR_ITERATIONS = 3). Always-reject →
+    // the worker runs 3 times, then escalates.
+    const pid = buildProcess({
+      phases: [{ key: "a", validator: true }, { key: "b" }],
+      edges: [["a", "b"]],
+    })
+    let runs = 0
+    const runPhase: RunPhase = async ({ phase }) => {
+      if (phase.key === "a") runs++
+      return { content: phase.key }
+    }
+    const validate: Validate = async () => ({ approved: false, feedback: "no" })
+    const { ctx } = makeCtx(pid, runPhase, { validate })
+    await expect(runScheduler(ctx)).rejects.toBeInstanceOf(GateBlockedError)
+    expect(runs).toBe(3) // DEFAULT_VALIDATOR_ITERATIONS
+  })
+
+  it("fails open (completes) when the reviewer itself errors", async () => {
+    // A broken reviewer (error result) must not wedge the run — the phase settles
+    // completed and dependents proceed.
+    const pid = buildProcess({
+      phases: [{ key: "a", validator: true }, { key: "b" }],
+      edges: [["a", "b"]],
+    })
+    const runPhase: RunPhase = async ({ phase }) => ({ content: phase.key })
+    const validate: Validate = async () => ({
+      approved: false,
+      error: "reviewer blew up",
+    })
+    const { ctx, runId } = makeCtx(pid, runPhase, { validate })
+    await runScheduler(ctx)
+    expect(statusByKey(runId, pid)).toEqual({ a: "completed", b: "completed" })
+  })
+
+  it("does not review a phase with the validator toggle off", async () => {
+    const pid = buildProcess({
+      phases: [{ key: "a" }, { key: "b" }],
+      edges: [["a", "b"]],
+    })
+    const runPhase: RunPhase = async ({ phase }) => ({ content: phase.key })
+    let reviews = 0
+    const validate: Validate = async () => {
+      reviews++
+      return { approved: true }
+    }
+    const { ctx, runId } = makeCtx(pid, runPhase, { validate })
+    await runScheduler(ctx)
+    expect(reviews).toBe(0)
+    expect(statusByKey(runId, pid)).toEqual({ a: "completed", b: "completed" })
   })
 })
 

@@ -7,19 +7,23 @@ item is its plan file, not its rank.
 
 ## Next up
 
-1. **`031` — Process rework: validator + cross-phase flag-back. ⚠️ DESIGN-PENDING.** The agent
-   quality loop. Shares `029`'s reopen+feedback+bound primitive; generalizes the superseded `018`
-   `review → fix → review` loop. Three capabilities: **flag-don't-fix** (a gated `flag_for_rework`
-   tool), **send-back** (route a flag to the owning phase **or a single fan-out sub-task** — rework
-   is as granular as the target: re-run just the flawed child, not all N; and downstream re-runs as
-   granularly as it consumed — per-instance for `on_each_subtask`, whole for `on_complete`), and a
-   **per-phase validator** (a `validator` toggle → a second LLM reviews a phase and sends it back to
-   the same phase with feedback until it passes, bounded by `maxIterations`). A
-   global `human_approve` toggle gates whether a flag needs human confirmation or the agent routes
-   autonomously (the latter requires injecting each phase's upstream chain so it can name a target).
-   The DAG has **no cycle guard** — a bound is mandatory. **Will likely split** on build (`025.x`
-   pattern): `031.1` validator, `031.2` cross-phase flag-back + autonomous routing (the riskiest —
-   sub-DAG-replay correctness with gates/fan-out). Build order: `029` → `031.1` → `031.2`.
+1. **`031.2` — Process cross-phase flag-back + autonomous routing. ⚠️ DESIGN-PENDING.** The riskier
+   half of `031` (validator shipped as `031.1`, see Done). Generalizes `029`/`031.1`'s
+   reopen+feedback+bound primitive **backward across the DAG**. Two capabilities: **flag-don't-fix**
+   (a gated `flag_for_rework` tool — `{target, reason}` — added to the process-phase tool surface;
+   because phase workers run in `autoMode` where `ctx.gate` auto-approves, it must route through the
+   **process-level gate**, not `ctx.gate`) and **send-back** (route a flag to the owning phase **or a
+   single fan-out sub-task** — rework as granular as the target: re-run just the flawed child, not all
+   N; downstream re-runs as granularly as it consumed — per-instance for `on_each_subtask`, whole for
+   `on_complete`). A per-process `human_approve` toggle gates whether a flag needs human confirmation
+   or the agent routes autonomously (the latter requires **injecting each phase's upstream chain** so
+   it can name a valid target). The DAG has **no cycle guard** — a per-run flag-back bound is
+   mandatory. **The spike (`031` doc Open Q #5):** a reset child must flip its **container parent**
+   `completed → running` (a new *backward* container transition) so `deriveContainers` re-settles it;
+   a reset gated phase must re-gate; a reset whole fan-out parent must re-decompose; `on_each_subtask`
+   consumers must re-trigger only the affected instance — all cooperating with the existing
+   container/gate/checkpoint machinery. `requestChanges`' container-guard (`service.ts`) is the
+   explicit v1 boundary this lifts. Build order: `029` → `031.1` (done) → `031.2`.
 2. **`035` — Skill import.** Extends `028` (create/delete) with **import from disk**: a single
    **`.md`** file (treated as a `SKILL.md` — parse frontmatter, derive/validate `name`, write
    `<writable-root>/<name>/SKILL.md`) or a **`.zip`** of a skill folder (when the skill has supporting
@@ -177,6 +181,46 @@ item is its plan file, not its rank.
 
 ## Done
 
+- **`031.1` — Process per-phase validator.** Built on `feat/process-engine-planning` (branch
+  `feat/process-validator`; not yet merged to `main`). The automatic same-phase half of `031` (the
+  agent quality loop): an optional per-phase toggle runs a **second reviewer agent** after a phase's
+  worker completes; it either approves the output or sends it back with feedback (reusing `029`'s
+  `reworkNote` kickoff channel), bounded — on exhaustion the phase **escalates to a human gate**.
+  Generalizes the superseded `018` `review → fix → review` loop. **Storage** (`SCHEMA_V21`, four
+  additive `ADD COLUMN`s, no rebuild — the `029`/`030` pattern): `process_phases.validator` (toggle) +
+  `validator_max_iterations` (0 = engine default `DEFAULT_VALIDATOR_ITERATIONS`=3; **never unlimited**
+  — the DAG has no cycle guard) + `validator_agent` (the dedicated reviewer; NULL → the phase's
+  `pool[0]`), and `process_phase_runs.validator_round` (the review-round counter, kept **separate from
+  `rework_round`** so it never perturbs `029`'s count-based gate re-detection). **Engine:** a new
+  injected `ctx.validate` (optional, like `decompose`/`buildEachSubtaskPrompt`, so inert when unwired);
+  `makeValidate` forks a **reviewer worker** (mirrors `makeDecompose` — a real `runAgentLoop` so it can
+  inspect the workspace/files, a *separate* conversation that does **not** overwrite the phase-run's
+  taskId) and parses a strict JSON verdict (`validatorPrompt` + `parseVerdict`, a tolerant
+  brace-matched scan mirroring `parseDecomposition`); an **unparseable verdict / errored reviewer fails
+  OPEN (approve)** so a broken reviewer never wedges the run. The loop lives in `runPhaseWithRetry`'s
+  success branch: reject → stash feedback + bump `validatorRound` + re-run the worker (kickoff re-reads
+  `reworkNote` **fresh** from the DB); at the cap → `raiseValidatorGate` (a distinct
+  `process_validator_gate` approval kind so `gateRows`/`needsGate` never cross-count) parks the
+  phase-run `waiting_for_approval` and throws `GateBlockedError` (run settles `paused`). Dependents are
+  held by the non-`completed` status alone (no new ready-set predicate); a walk-top
+  `reconcileValidatorGates` flips an approved-gate phase → `completed` on resume. `requestChanges`
+  (`029`) also resets `validatorRound: 0` so a human send-back grants fresh review rounds. **Renderer:**
+  a **Validator** `Switch` in the phase inspector (non-fan-out only) revealing a reviewer-agent
+  `NativeSelect` (default "Phase's own agent") + a "Max iterations" `Input`, plus a `validator` summary
+  badge; threaded through the phases create/update CRUD (db-handlers + preload). Verified: `pnpm
+  typecheck` + `pnpm build` clean (the 3 residual typecheck errors — `open.test.ts`, `service.test.ts`
+  `createPhaseRun({error})`, `runner.test.ts` — are **pre-existing on clean HEAD** and unrelated); new
+  tests — `scheduler.test.ts` (**+7**: reject-then-approve re-run, cap-then-escalate-to-gate,
+  approve-gate-releases-dependents, engine-default cap, reviewer-error fails open, toggle-off no-op,
+  `validatorRound` bumped/`reworkRound` untouched), `service.test.ts` (**+2**: full-executor
+  reject-then-approve with feedback injected into the re-run kickoff; unparseable verdict fails open),
+  `prompts.test.ts` (**+8**: `validatorPrompt` shape, `parseVerdict` tolerant cases),
+  `migrations.test.ts` (v21 column presence + defaults); the latest-`user_version` assertions bumped
+  20 → 21 (×3, plus two long-dormant `settings.test.ts`/`index-runs.test.ts` assertions that surfaced
+  once the node-ABI rebuild let the DB suites run — 17 → 21). **Full suite 646 pass** against a node-ABI
+  `better-sqlite3` rebuild, Electron ABI restored after with `@electron/rebuild`. Manual E2E deferred to
+  a live session. **Deferred (as planned):** cross-phase flag-back + autonomous routing → `031.2`;
+  deterministic/tests-as-validator reviewer.
 - **`030` — Process artifacts: dot-folders + file chips + name-derived keys.** Built on
   `feat/process-engine-planning` (commit `882cdcc`; not yet merged to `main`). A `026` follow-up making
   a phase's *output* visible and openable, mostly renderer + one additive column. **030a — dot-folder

@@ -34,6 +34,12 @@ export const PER_RUN_CONCURRENCY = 4
 // Bounded retry for a phase whose worker returns a transient (retryable) error.
 const MAX_PHASE_ATTEMPTS = 3
 
+// Default cap on validator review rounds when a phase sets no explicit override
+// (plan 031.1). NEVER unlimited — the DAG has no cycle guard, so a reset →
+// re-run loop behind the validator must terminate. On exhaustion the phase
+// escalates to a human gate.
+export const DEFAULT_VALIDATOR_ITERATIONS = 3
+
 // The checkpoint label prefix for a fan-out parent's persisted sub-task prompts
 // (plan 025.1). One row per parent phase-run, written atomically with the child
 // rows so a crash can't leave prompt-less children. Recovered on resume so
@@ -127,6 +133,26 @@ export type BuildEachSubtaskPrompt = (input: {
   sourceChildRun: ProcessPhaseRun
 }) => string
 
+// The outcome of a phase's VALIDATOR review pass (plan 031.1). A second agent
+// judges a completed phase's output: `approved` gates whether the phase settles
+// completed; `feedback` (when rejected) is injected into the phase's re-run
+// kickoff (the 029 rework channel). error/stopped mirror a normal phase result
+// so a cancelled/failed review unwinds like the phase worker itself. Injected so
+// tests can stub the reviewer.
+export interface ValidateResult {
+  approved: boolean
+  feedback?: string
+  error?: string
+  stopped?: boolean
+  retryable?: boolean
+}
+
+export type Validate = (input: {
+  phase: ProcessPhase
+  phaseRun: ProcessPhaseRun
+  signal: AbortSignal
+}) => Promise<ValidateResult>
+
 export interface SchedulerCtx {
   run: ProcessRun
   graph: ProcessGraph
@@ -142,6 +168,11 @@ export interface SchedulerCtx {
   // `on_each_subtask` edges needs none; absent when an each-subtask instance is
   // dispatched, the child falls back to no stored prompt (service builds one).
   buildEachSubtaskPrompt?: BuildEachSubtaskPrompt
+  // Runs a phase's VALIDATOR review pass (plan 031.1). Optional so a graph with
+  // no validator phases needs none; a validator-enabled phase with no validator
+  // injected falls through to settling completed (no review), so the feature is
+  // safely inert when unwired.
+  validate?: Validate
 }
 
 // The state persisted in a fan-out parent's checkpoint (plan 025.1).
@@ -165,9 +196,15 @@ interface EachSubtaskCheckpointState {
   prompt?: string
 }
 
-// A gate's durable approval request blob (stored on the approvals row).
+// A gate's durable approval request blob (stored on the approvals row). Two
+// kinds share one shape but are accounted for SEPARATELY:
+//   - "process_phase_gate": the 029 approve-policy gate (count-based re-detection
+//     via needsGate/gateRows/rework_round). Never mixed with the validator's.
+//   - "process_validator_gate": the 031.1 exhaustion escalation — raised when a
+//     validator phase burns its iteration cap without approving. gateRows filters
+//     to the phase-gate kind ONLY, so a validator gate can't perturb 029 counting.
 interface GateRequest {
-  kind: "process_phase_gate"
+  kind: "process_phase_gate" | "process_validator_gate"
   phaseKey: string
   phaseRunId: string
   requestId: string
@@ -384,6 +421,75 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
       label: "frontier",
       state: { runId: run.id, phaseRuns: snapshot },
     })
+  }
+
+  // Validator gate rows for a phase-run (plan 031.1). Kept SEPARATE from gateRows
+  // (which is the 029 phase-gate kind) so the two gate kinds never cross-count.
+  const validatorGateRows = (phaseRunId: string) =>
+    listApprovals({ taskId: ctx.taskId }).filter((a) => {
+      const req = a.request as GateRequest | null
+      return (
+        req?.kind === "process_validator_gate" && req.phaseRunId === phaseRunId
+      )
+    })
+
+  // The VALIDATOR exhaustion escalation (plan 031.1). When a validator phase
+  // burns its iteration cap without approving, raise a human gate on the SAME
+  // phase-run (which is left `waiting_for_approval`, carrying the last feedback as
+  // its rework_note) so a human decides: approve as-is (→ the walk reconciles it
+  // to `completed`, releasing dependents) or request changes (029 path, which
+  // resets it for a fresh round of attempts). Mirrors raiseGate but with the
+  // validator kind and no dependents precondition — the phase-run itself is held
+  // by its non-completed status, so dependents wait without a gateResolved check.
+  const raiseValidatorGate = (
+    phase: ProcessPhase,
+    phaseRun: ProcessPhaseRun
+  ): never => {
+    const requestId = randomUUID()
+    const request: GateRequest = {
+      kind: "process_validator_gate",
+      phaseKey: phase.key,
+      phaseRunId: phaseRun.id,
+      requestId,
+    }
+    createApproval({ taskId: ctx.taskId, request })
+    processes.updateProcessRun(run.id, { status: "waiting_for_approval" })
+    ctx.emit({
+      type: "process_phase",
+      runId: run.id,
+      phaseRunId: phaseRun.id,
+      phaseKey: phase.key,
+      agentName: phaseRun.agentName,
+      status: "waiting_for_approval",
+      parentId: phaseRun.parentId,
+      requestId,
+    })
+    checkpoint()
+    throw new GateBlockedError()
+  }
+
+  // Reconcile any validator exhaustion gate that a human has settled (plan 031.1).
+  // A phase-run parked in `waiting_for_approval` by raiseValidatorGate has an
+  // approved validator gate row → settle it `completed` and emit, so the ready-set
+  // (which requires a source be `completed`) releases its dependents. Denied /
+  // still-pending rows are left as-is (a denied validator gate is a dead-end in
+  // v1, mirroring process:deny; a request-changes send-back resets the row to
+  // `pending` via the 029 path, so it won't match here). Idempotent — a row not in
+  // waiting_for_approval is skipped.
+  const reconcileValidatorGates = (): void => {
+    for (const phase of graph.phases) {
+      if (!phase.validator) continue
+      const pr = runByPhaseId.get(phase.id)
+      if (!pr) continue
+      const fresh = processes.getPhaseRun(pr.id)
+      if (fresh?.status !== "waiting_for_approval") continue
+      if (!validatorGateRows(pr.id).some((a) => a.status === "approved")) continue
+      processes.updatePhaseRun(pr.id, {
+        status: "completed",
+        finishedAt: Date.now(),
+      })
+      emitPhase(phase, pr.id, "completed")
+    }
   }
 
   // Dispatch a normal top-level phase (parentId IS NULL). Keyed in inFlight by
@@ -757,6 +863,11 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
     phaseRun: ProcessPhaseRun,
     subtaskPrompt?: string
   ): Promise<void> => {
+    // A validator (plan 031.1) reviews only a top-level, non-fan-out phase run —
+    // never a fan-out CHILD or on_each_subtask instance (subtaskPrompt present):
+    // sub-DAG / container replay is plan 031.2. Inert if no validator injected.
+    const runsValidator =
+      phase.validator && !!ctx.validate && subtaskPrompt === undefined
     let attempt = 0
     // Chain a child controller so run-level cancel unwinds the phase worker.
     while (true) {
@@ -767,7 +878,6 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
         subtaskPrompt,
         signal: ctx.signal,
       })
-      const fresh = processes.getPhaseRun(phaseRun.id)!
       if (result.stopped || ctx.signal.aborted) {
         processes.updatePhaseRun(phaseRun.id, {
           status: "cancelled",
@@ -790,13 +900,66 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
         emitPhase(phase, phaseRun.id, "failed")
         return
       }
+
+      // The worker succeeded. Before settling `completed`, run the validator
+      // review (plan 031.1) if enabled: an approval settles the phase; a rejection
+      // re-runs the worker with the feedback (via the 029 rework channel) until the
+      // iteration cap, at which point it escalates to a human gate.
+      if (runsValidator) {
+        const verdict = await ctx.validate!({
+          phase,
+          phaseRun,
+          signal: ctx.signal,
+        })
+        if (verdict.stopped || ctx.signal.aborted) {
+          processes.updatePhaseRun(phaseRun.id, {
+            status: "cancelled",
+            finishedAt: Date.now(),
+          })
+          emitPhase(phase, phaseRun.id, "cancelled")
+          return
+        }
+        // A non-approval verdict (`error` means the reviewer worker itself broke)
+        // sends the phase back — UNLESS the reviewer errored, in which case we
+        // FAIL OPEN (approve) so a broken reviewer never wedges the run. The
+        // iteration cap already bounds any productive rejection loop.
+        if (!verdict.approved && !verdict.error) {
+          const round =
+            (processes.getPhaseRun(phaseRun.id)?.validatorRound ?? 0) + 1
+          const cap =
+            phase.validatorMaxIterations > 0
+              ? phase.validatorMaxIterations
+              : DEFAULT_VALIDATOR_ITERATIONS
+          if (round >= cap) {
+            // Exhaustion → escalate to a human gate. Park the phase-run in
+            // waiting_for_approval carrying the last feedback; raiseValidatorGate
+            // throws to unwind the scheduler (the run settles paused).
+            processes.updatePhaseRun(phaseRun.id, {
+              status: "waiting_for_approval",
+              validatorRound: round,
+              reworkNote: verdict.feedback ?? null,
+            })
+            raiseValidatorGate(phase, processes.getPhaseRun(phaseRun.id)!)
+          }
+          // Under the cap: stash the feedback + bump the round, then re-run the
+          // worker. The re-run's kickoff reads reworkNote fresh (service.ts), so
+          // the worker sees the requested changes. Reset the transient-retry
+          // budget for the fresh worker run.
+          processes.updatePhaseRun(phaseRun.id, {
+            validatorRound: round,
+            reworkNote: verdict.feedback ?? null,
+          })
+          attempt = 0
+          continue
+        }
+      }
+
       processes.updatePhaseRun(phaseRun.id, {
         status: "completed",
         finishedAt: Date.now(),
         iteration: attempt,
       })
       emitPhase(phase, phaseRun.id, "completed")
-      void fresh
       return
     }
   }
@@ -841,6 +1004,11 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
       }
       return
     }
+
+    // Settle any validator EXHAUSTION gate a human has approved (plan 031.1):
+    // flip the parked phase `completed` so its dependents can become ready. Runs
+    // first — the resumed run (post-approval) must reconcile before readiness.
+    reconcileValidatorGates()
 
     // Settle any CONTAINER whose children have all finished BEFORE gates and the
     // ready-set — a container counts as `completed` only via this step, and its

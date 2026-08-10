@@ -49,6 +49,9 @@ interface ProcessPhaseRow {
   fan_out: number
   max_rework_rounds: number
   dot_folder: number
+  validator: number
+  validator_max_iterations: number
+  validator_agent: string | null
   position: number
 }
 
@@ -63,6 +66,9 @@ function toPhase(row: ProcessPhaseRow): ProcessPhase {
     fanOut: row.fan_out === 1,
     maxReworkRounds: row.max_rework_rounds,
     dotFolder: row.dot_folder === 1,
+    validator: row.validator === 1,
+    validatorMaxIterations: row.validator_max_iterations,
+    validatorAgent: row.validator_agent,
     position: row.position,
   }
 }
@@ -151,6 +157,7 @@ interface ProcessPhaseRunRow {
   finished_at: number | null
   rework_note: string | null
   rework_round: number
+  validator_round: number
 }
 
 function toPhaseRun(row: ProcessPhaseRunRow): ProcessPhaseRun {
@@ -169,6 +176,7 @@ function toPhaseRun(row: ProcessPhaseRunRow): ProcessPhaseRun {
     finishedAt: row.finished_at,
     reworkNote: row.rework_note,
     reworkRound: row.rework_round,
+    validatorRound: row.validator_round,
   }
 }
 
@@ -246,12 +254,15 @@ export function createPhase(input: {
   fanOut?: boolean
   maxReworkRounds?: number
   dotFolder?: boolean
+  validator?: boolean
+  validatorMaxIterations?: number
+  validatorAgent?: string | null
   position: number
 }): ProcessPhase {
   const id = randomUUID()
   getDb()
     .prepare(
-      "INSERT INTO process_phases (id, process_id, key, name, routing, gate_policy, fan_out, max_rework_rounds, dot_folder, position) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+      "INSERT INTO process_phases (id, process_id, key, name, routing, gate_policy, fan_out, max_rework_rounds, dot_folder, validator, validator_max_iterations, validator_agent, position) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )
     .run(
       id,
@@ -263,6 +274,9 @@ export function createPhase(input: {
       input.fanOut ? 1 : 0,
       input.maxReworkRounds ?? 0,
       input.dotFolder ? 1 : 0,
+      input.validator ? 1 : 0,
+      input.validatorMaxIterations ?? 0,
+      input.validatorAgent ?? null,
       input.position
     )
   return getPhase(id)!
@@ -294,6 +308,9 @@ export function updatePhase(
     fanOut?: boolean
     maxReworkRounds?: number
     dotFolder?: boolean
+    validator?: boolean
+    validatorMaxIterations?: number
+    validatorAgent?: string | null
     position?: number
   }
 ): ProcessPhase {
@@ -326,6 +343,18 @@ export function updatePhase(
   if (patch.dotFolder !== undefined) {
     sets.push("dot_folder = ?")
     values.push(patch.dotFolder ? 1 : 0)
+  }
+  if (patch.validator !== undefined) {
+    sets.push("validator = ?")
+    values.push(patch.validator ? 1 : 0)
+  }
+  if (patch.validatorMaxIterations !== undefined) {
+    sets.push("validator_max_iterations = ?")
+    values.push(patch.validatorMaxIterations)
+  }
+  if (patch.validatorAgent !== undefined) {
+    sets.push("validator_agent = ?")
+    values.push(patch.validatorAgent)
   }
   if (patch.position !== undefined) {
     sets.push("position = ?")
@@ -619,6 +648,7 @@ export function updatePhaseRun(
     finishedAt?: number | null
     reworkNote?: string | null
     reworkRound?: number
+    validatorRound?: number
   }
 ): ProcessPhaseRun {
   const sets: string[] = []
@@ -658,6 +688,10 @@ export function updatePhaseRun(
   if (patch.reworkRound !== undefined) {
     sets.push("rework_round = ?")
     values.push(patch.reworkRound)
+  }
+  if (patch.validatorRound !== undefined) {
+    sets.push("validator_round = ?")
+    values.push(patch.validatorRound)
   }
   if (sets.length > 0) {
     values.push(id)
