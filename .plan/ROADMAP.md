@@ -88,21 +88,7 @@ item is its plan file, not its rank.
    builder affordances. **Ordered after `038`** so the format carries a phase's `subprocess_id` — a
    sub-process reference exports **by definition identity** (name/a stable ref), and import resolves or
    flags a missing referenced sub-process (like `037`'s missing-agent warning).
-9. **`032` — Process visual canvas.** The explicitly-deferred half of `026` (which shipped the
-   **list-based** DAG builder and recorded a **visual node/edge canvas** as "later"). Renderer-first +
-   one additive migration; **no engine/scheduling/routing change**. Phases become draggable **nodes**,
-   dependencies **edges** drawn between handles (same `on_complete`/`on_each_subtask` trigger, same
-   per-phase routing/gate/fan-out/agent-pool inspector), all mapping 1:1 onto the existing
-   `db:processes:*` CRUD (mutate-then-refetch). Net-new: `SCHEMA_V19` adds nullable `pos_x`/`pos_y` to
-   `process_phases` (a plain `ADD COLUMN` — the `025` tables avoid CHECK-rebuilds by design) so layout
-   persists, with deterministic **auto-layout** for legacy definitions (`NULL` coords) + a **Tidy**
-   action; a new `process-canvas.tsx` + the phase inspector extracted for reuse by both the list card
-   and the canvas node. Open Qs: canvas lib (lean **`@xyflow/react`** lazy-loaded, `dagre`/built-in for
-   layout — watch the ~2.6 MB renderer bundle) vs hand-rolled SVG; keep the list builder as a coexisting
-   toggle vs replace (lean **coexist**). The Radix-`Dialog` takeover means the inspector keeps
-   `NativeSelect` (the `023`/`026` `pointer-events:none` finding). **Live-run-on-canvas deferred** — v1
-   keeps the `026` nested-list monitor. Independent of `029`/`031`.
-10. **`033` — Live dashboards.** A new top-level surface (a **Dashboards** button in the sidebar footer,
+9. **`033` — Live dashboards.** A new top-level surface (a **Dashboards** button in the sidebar footer,
    the 5th overlay alongside Processes/Agents/Skills/Settings) where a user **prompts an agent to author
    a dashboard** — a saved layout of widgets + a per-widget **data-fetch recipe** describing *how to
    pull the data*. **Data-source-agnostic by construction:** the agent fetches through whatever tools it
@@ -120,7 +106,7 @@ item is its plan file, not its rank.
    **Crux Open Qs:** how re-runnable a recipe is without an LLM; approval/allowlist safety of a stored
    recipe re-running unattended on refresh; fixed grid vs drag-resize lib. Independent of the Process
    cluster.
-11. **`034` — CLI-agent providers (Claude Code / Codex / Copilot).** Three new **provider kinds** that
+10. **`034` — CLI-agent providers (Claude Code / Codex / Copilot).** Three new **provider kinds** that
    aren't LLM-API accounts but local **agentic CLIs** driven as subprocesses (`claude -p`,
    `codex exec`, `copilot -p`) — each *is* the agent (own loop + tools + approvals, editing files
    **in the project dir**). Selecting one **routes turns away from `runAgentLoop`** to a new subprocess
@@ -141,6 +127,20 @@ item is its plan file, not its rank.
    `034.3` Codex (extract-then-resume). Open Qs: default auto-posture permissiveness (lean
    workspace-write/edits-allowed); streaming fidelity (text-first; Copilot JSONL fields unverified);
    out-of-band CLI auth. Independent of the Process cluster / dashboards.
+11. **`032` — Process visual canvas.** The explicitly-deferred half of `026` (which shipped the
+   **list-based** DAG builder and recorded a **visual node/edge canvas** as "later"). Renderer-first +
+   one additive migration; **no engine/scheduling/routing change**. Phases become draggable **nodes**,
+   dependencies **edges** drawn between handles (same `on_complete`/`on_each_subtask` trigger, same
+   per-phase routing/gate/fan-out/agent-pool inspector), all mapping 1:1 onto the existing
+   `db:processes:*` CRUD (mutate-then-refetch). Net-new: `SCHEMA_V19` adds nullable `pos_x`/`pos_y` to
+   `process_phases` (a plain `ADD COLUMN` — the `025` tables avoid CHECK-rebuilds by design) so layout
+   persists, with deterministic **auto-layout** for legacy definitions (`NULL` coords) + a **Tidy**
+   action; a new `process-canvas.tsx` + the phase inspector extracted for reuse by both the list card
+   and the canvas node. Open Qs: canvas lib (lean **`@xyflow/react`** lazy-loaded, `dagre`/built-in for
+   layout — watch the ~2.6 MB renderer bundle) vs hand-rolled SVG; keep the list builder as a coexisting
+   toggle vs replace (lean **coexist**). The Radix-`Dialog` takeover means the inspector keeps
+   `NativeSelect` (the `023`/`026` `pointer-events:none` finding). **Live-run-on-canvas deferred** — v1
+   keeps the `026` nested-list monitor. Independent of `029`/`031`.
 12. **`020` — Durable memories.** The cross-conversation memories section `014` reserved: small,
    persisted facts the agent writes (a **gated, explicit** `remember` tool — no silent profiling)
    and that inject into future turns, **scoped** global / workspace / conversation (mirrors the
