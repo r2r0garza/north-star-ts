@@ -11,6 +11,7 @@ const phase: ProcessPhase = {
   gatePolicy: "approve",
   fanOut: false,
   maxReworkRounds: 0,
+  dotFolder: false,
   position: 0,
 }
 
@@ -127,5 +128,22 @@ describe("kickoffPrompt — rework note (plan 029)", () => {
       reworkNote: "   ",
     })
     expect(p).not.toContain("## Requested changes")
+  })
+})
+
+describe("kickoffPrompt — dot-folder (plan 030)", () => {
+  it("omits the artifact-location section when dotFolder is off", () => {
+    const p = kickoffPrompt({ phase, objective: "ship it", upstream: [] })
+    expect(p).not.toContain("## Where to write files")
+  })
+
+  it("steers artifacts under `.<key>/` when dotFolder is on", () => {
+    const p = kickoffPrompt({
+      phase: { ...phase, dotFolder: true },
+      objective: "ship it",
+      upstream: [],
+    })
+    expect(p).toContain("## Where to write files")
+    expect(p).toContain("`.impl/`")
   })
 })

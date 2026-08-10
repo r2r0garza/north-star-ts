@@ -48,6 +48,7 @@ interface ProcessPhaseRow {
   gate_policy: PhaseGatePolicy
   fan_out: number
   max_rework_rounds: number
+  dot_folder: number
   position: number
 }
 
@@ -61,6 +62,7 @@ function toPhase(row: ProcessPhaseRow): ProcessPhase {
     gatePolicy: row.gate_policy,
     fanOut: row.fan_out === 1,
     maxReworkRounds: row.max_rework_rounds,
+    dotFolder: row.dot_folder === 1,
     position: row.position,
   }
 }
@@ -243,12 +245,13 @@ export function createPhase(input: {
   gatePolicy?: PhaseGatePolicy
   fanOut?: boolean
   maxReworkRounds?: number
+  dotFolder?: boolean
   position: number
 }): ProcessPhase {
   const id = randomUUID()
   getDb()
     .prepare(
-      "INSERT INTO process_phases (id, process_id, key, name, routing, gate_policy, fan_out, max_rework_rounds, position) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+      "INSERT INTO process_phases (id, process_id, key, name, routing, gate_policy, fan_out, max_rework_rounds, dot_folder, position) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )
     .run(
       id,
@@ -259,6 +262,7 @@ export function createPhase(input: {
       input.gatePolicy ?? "auto",
       input.fanOut ? 1 : 0,
       input.maxReworkRounds ?? 0,
+      input.dotFolder ? 1 : 0,
       input.position
     )
   return getPhase(id)!
@@ -289,6 +293,7 @@ export function updatePhase(
     gatePolicy?: PhaseGatePolicy
     fanOut?: boolean
     maxReworkRounds?: number
+    dotFolder?: boolean
     position?: number
   }
 ): ProcessPhase {
@@ -317,6 +322,10 @@ export function updatePhase(
   if (patch.maxReworkRounds !== undefined) {
     sets.push("max_rework_rounds = ?")
     values.push(patch.maxReworkRounds)
+  }
+  if (patch.dotFolder !== undefined) {
+    sets.push("dot_folder = ?")
+    values.push(patch.dotFolder ? 1 : 0)
   }
   if (patch.position !== undefined) {
     sets.push("position = ?")

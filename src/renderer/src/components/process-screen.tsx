@@ -37,6 +37,12 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { TaskTranscriptSheet } from "@/components/task-transcript-sheet"
+import { ChangedFilesBar } from "@/components/changed-files-bar"
+import {
+  buildTimeline,
+  changedFilesFromCalls,
+  type ChangedFile,
+} from "@/lib/timeline"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -384,6 +390,20 @@ function slugifyKey(name: string): string {
   )
 }
 
+// A phase's key is derived from its name (plan 030c) so the dot-folder path
+// (`.<key>/`) is human-readable (`.plan/`, not `.phase_1_1/`). Since the DB
+// enforces UNIQUE (process_id, key), a same-name collision appends `_<n>` until
+// unique against the OTHER phases' keys in the same process.
+function deriveKey(name: string, otherKeys: Iterable<string>): string {
+  const base = slugifyKey(name)
+  const taken = new Set(otherKeys)
+  if (!taken.has(base)) return base
+  for (let n = 2; ; n++) {
+    const candidate = `${base}_${n}`
+    if (!taken.has(candidate)) return candidate
+  }
+}
+
 // ─── The DAG builder ────────────────────────────────────────────────────────
 // List-based (plan 026 v1): phases as cards, dependencies as per-phase "depends
 // on" checkboxes (the graph is implicit in the edges). Every mutation writes
@@ -434,7 +454,10 @@ function ProcessBuilder({
     try {
       await window.cowork.db.processes.phases.create({
         processId: definition.id,
-        key: slugifyKey(`${name}_${n}`),
+        key: deriveKey(
+          name,
+          phases.map((p) => p.key)
+        ),
         name,
         position: n,
       })
@@ -565,6 +588,7 @@ function PhaseCard({
     gatePolicy?: PhaseGatePolicy
     fanOut?: boolean
     maxReworkRounds?: number
+    dotFolder?: boolean
   }) {
     try {
       await window.cowork.db.processes.phases.update(phase.id, patch)
@@ -675,6 +699,15 @@ function PhaseCard({
                   fan-out
                 </Badge>
               )}
+              {phase.dotFolder && (
+                <Badge
+                  variant="outline"
+                  className="font-mono text-[10px]"
+                  title="Artifacts written under this dot-folder"
+                >
+                  .{phase.key}/
+                </Badge>
+              )}
               <Badge variant="secondary" className="text-[10px]">
                 {pool.length} {pool.length === 1 ? "agent" : "agents"}
               </Badge>
@@ -700,7 +733,8 @@ function PhaseCard({
 
       <CollapsibleContent>
         <div className="flex flex-col gap-3 border-t p-3">
-          {/* Row 1: name + key. */}
+          {/* Row 1: name. The key auto-derives from the name (plan 030c) and is
+              shown read-only — it's the `.<key>/` dot-folder path (plan 030a). */}
           <div className="flex items-start gap-2">
             <div className="flex min-w-0 flex-1 flex-col gap-1">
               <Input
@@ -708,21 +742,23 @@ function PhaseCard({
                 className="h-8 font-medium"
                 onBlur={(e) => {
                   const v = e.target.value.trim()
-                  if (v && v !== phase.name) patchPhase({ name: v })
+                  if (!v || v === phase.name) return
+                  // Re-derive the key from the new name, unique against the OTHER
+                  // phases' keys in this process.
+                  const key = deriveKey(
+                    v,
+                    phases.filter((p) => p.id !== phase.id).map((p) => p.key)
+                  )
+                  patchPhase({ name: v, key })
                 }}
               />
             </div>
-            <div className="flex w-40 flex-col gap-1">
-              <Input
-                defaultValue={phase.key}
-                className="h-8 font-mono text-xs"
-                title="Phase key (used in run events)"
-                onBlur={(e) => {
-                  const v = slugifyKey(e.target.value)
-                  if (v && v !== phase.key) patchPhase({ key: v })
-                }}
-              />
-            </div>
+            <span
+              className="shrink-0 self-center font-mono text-xs text-muted-foreground"
+              title="Phase key (auto-derived from the name; used in run events and the dot-folder path)"
+            >
+              {phase.key}
+            </span>
           </div>
 
       {/* Row 2: routing / gate / fan-out. */}
@@ -758,6 +794,16 @@ function PhaseCard({
           <Switch
             checked={phase.fanOut}
             onCheckedChange={(v) => patchPhase({ fanOut: v })}
+          />
+        </label>
+        <label
+          className="flex items-center gap-2 text-xs"
+          title={`Steer this phase's agent to write artifacts under a .${phase.key}/ folder (plan 030)`}
+        >
+          <span className="text-muted-foreground">Dot-folder</span>
+          <Switch
+            checked={phase.dotFolder}
+            onCheckedChange={(v) => patchPhase({ dotFolder: v })}
           />
         </label>
         {/* The "Request changes" rework cap (plan 029), only meaningful for an
@@ -964,6 +1010,10 @@ function RunMonitor({
   // The phase-run whose worker transcript is open (null = closed). Resolved from
   // the phase-run's taskId → the worker Task the read-only sheet renders.
   const [viewingTask, setViewingTask] = useState<Task | null>(null)
+  // Absolute path of the run's workspace, resolved from run.workspaceId (there's
+  // no workspaces.get — list-and-find). Fed to the per-phase file chips (plan
+  // 030b) to build file:// URLs, git diffs, and open-in-editor. "" when unknown.
+  const [workspacePath, setWorkspacePath] = useState("")
 
   // Open a phase/child's worker transcript. Fetches the backing Task by its id;
   // no-op if the phase never spawned a worker (taskId null) or the task vanished.
@@ -1082,6 +1132,24 @@ function RunMonitor({
     })
     return unsubscribe
   }, [run?.taskId])
+
+  // Resolve the run's workspace path from its workspaceId (no workspaces.get →
+  // list-and-find), for the per-phase file chips (plan 030b).
+  useEffect(() => {
+    const wsId = run?.workspaceId
+    if (!wsId) {
+      setWorkspacePath("")
+      return
+    }
+    let cancelled = false
+    window.cowork.db.workspaces.list().then((wss) => {
+      if (cancelled) return
+      setWorkspacePath(wss.find((w) => w.id === wsId)?.path ?? "")
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [run?.workspaceId])
 
   const phaseName = useCallback(
     (phaseId: string) =>
@@ -1334,6 +1402,7 @@ function RunMonitor({
               phaseName={phaseName}
               maxReworkRounds={phaseMaxRework(pr.phaseId)}
               isContainer={phaseIsContainer(pr.phaseId)}
+              workspacePath={workspacePath}
               onApprove={approve}
               onDeny={deny}
               onRequestChanges={requestChanges}
@@ -1356,6 +1425,61 @@ function RunMonitor({
   )
 }
 
+// The files a phase-run's worker produced, shown as clickable chips (plan 030b).
+// Derives the list from the worker conversation's tool calls — the same source as
+// the chat UI's changed-file pills, no new git machinery: phaseRun.taskId →
+// task.conversationId → messages → buildTimeline → changedFilesFromCalls. Fetched
+// lazily per (taskId, status) so a still-running phase's chips refresh on
+// completion; renders nothing until files land (ChangedFilesBar returns null on
+// an empty list). Clicking a chip opens the file in the selected IDE; hovering
+// shows its git diff.
+function PhaseFileChips({
+  taskId,
+  status,
+  workspacePath,
+}: {
+  taskId: string
+  status: PhaseRunStatus
+  workspacePath: string
+}) {
+  const [files, setFiles] = useState<ChangedFile[]>([])
+
+  useEffect(() => {
+    if (!workspacePath) return
+    let cancelled = false
+    void (async () => {
+      const task = await window.cowork.db.tasks.get(taskId)
+      if (cancelled || !task) return
+      const rows = await window.cowork.db.messages.list(task.conversationId)
+      if (cancelled) return
+      const calls = buildTimeline(rows).flatMap((item) =>
+        item.kind === "tools" ? item.calls : []
+      )
+      setFiles(changedFilesFromCalls(calls))
+    })()
+    return () => {
+      cancelled = true
+    }
+    // Re-fetch on status change (a running phase's files grow as it works).
+  }, [taskId, status, workspacePath])
+
+  if (files.length === 0 || !workspacePath) return null
+  return (
+    <ChangedFilesBar
+      files={files}
+      workspace={workspacePath}
+      // The monitor has no in-app browser / Changes sidebar, so html opens in the
+      // editor too and "Review all" just opens each file. Keep it simple.
+      onOpenHtml={(relPath) => {
+        void window.cowork.openInEditor(workspacePath, relPath)
+      }}
+      onReviewAll={(fs) => {
+        for (const f of fs) void window.cowork.openInEditor(workspacePath, f.path)
+      }}
+    />
+  )
+}
+
 // One top-level phase run row: status icon + name + agent, its inline approval
 // card when gated, and its nested children (fan-out / on_each_subtask instances).
 function PhaseRunItem({
@@ -1366,6 +1490,7 @@ function PhaseRunItem({
   phaseName,
   maxReworkRounds,
   isContainer,
+  workspacePath,
   onApprove,
   onDeny,
   onRequestChanges,
@@ -1380,6 +1505,8 @@ function PhaseRunItem({
   // (fan-out / on_each_subtask), which can't be sent back in v1 (plan 029).
   maxReworkRounds: number
   isContainer: boolean
+  // The run's workspace path, for the per-phase file chips (plan 030b).
+  workspacePath: string
   onApprove: (requestId: string, phaseRunId: string) => void
   onDeny: (requestId: string, phaseRunId: string) => void
   onRequestChanges: (
@@ -1430,6 +1557,15 @@ function PhaseRunItem({
         <pre className="overflow-x-auto rounded-md bg-destructive/5 px-2 py-1.5 text-xs text-destructive">
           {phaseRun.error}
         </pre>
+      )}
+
+      {/* Files this phase's worker produced (plan 030b). */}
+      {phaseRun.taskId && (
+        <PhaseFileChips
+          taskId={phaseRun.taskId}
+          status={phaseRun.status}
+          workspacePath={workspacePath}
+        />
       )}
 
       {/* Inline approval card for an approve-gated phase (reuses the activity
@@ -1518,28 +1654,41 @@ function PhaseRunItem({
           {childRuns.map((c, i) => {
             const clickable = c.taskId !== null
             return (
-              <div
-                key={c.id}
-                onClick={clickable ? () => onOpenTranscript(c) : undefined}
-                className={cn(
-                  "flex items-center gap-2 rounded-md px-1 py-0.5 text-xs",
-                  clickable && "cursor-pointer hover:bg-muted/60"
+              <div key={c.id} className="flex flex-col gap-0.5">
+                <div
+                  onClick={clickable ? () => onOpenTranscript(c) : undefined}
+                  className={cn(
+                    "flex items-center gap-2 rounded-md px-1 py-0.5 text-xs",
+                    clickable && "cursor-pointer hover:bg-muted/60"
+                  )}
+                  title={
+                    clickable ? "View this sub-task's transcript" : undefined
+                  }
+                >
+                  <StatusIcon status={c.status} />
+                  <span className="min-w-0 flex-1 truncate">
+                    {c.title ?? `${phaseName(c.phaseId)} #${i + 1}`}
+                  </span>
+                  {c.agentName && (
+                    <Badge
+                      variant="outline"
+                      className="shrink-0 font-mono text-[10px]"
+                    >
+                      {c.agentName}
+                    </Badge>
+                  )}
+                  <PhaseStatusLabel status={c.status} />
+                </div>
+                {/* This sub-task's produced files (plan 030b). */}
+                {c.taskId && (
+                  <div className="pl-1">
+                    <PhaseFileChips
+                      taskId={c.taskId}
+                      status={c.status}
+                      workspacePath={workspacePath}
+                    />
+                  </div>
                 )}
-                title={clickable ? "View this sub-task's transcript" : undefined}
-              >
-                <StatusIcon status={c.status} />
-                <span className="min-w-0 flex-1 truncate">
-                  {c.title ?? `${phaseName(c.phaseId)} #${i + 1}`}
-                </span>
-                {c.agentName && (
-                  <Badge
-                    variant="outline"
-                    className="shrink-0 font-mono text-[10px]"
-                  >
-                    {c.agentName}
-                  </Badge>
-                )}
-                <PhaseStatusLabel status={c.status} />
               </div>
             )
           })}

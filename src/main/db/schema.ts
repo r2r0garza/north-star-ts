@@ -579,3 +579,13 @@ ALTER TABLE process_phase_runs ADD COLUMN rework_note TEXT;
 ALTER TABLE process_phase_runs ADD COLUMN rework_round INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE process_phases ADD COLUMN max_rework_rounds INTEGER NOT NULL DEFAULT 0;
 `
+
+// v20: per-phase dot-folder toggle (plan 030). When set, the phase's kickoff
+// steers its agent to write artifacts under a `.<phase.key>/` folder at the
+// workspace root — a predictable location (an agent convention, not FS-enforced),
+// so the run monitor's file chips are reliable and downstream phases know where
+// to look. Pure ADD COLUMN — safe under the foreign_keys=OFF loop (no rebuild),
+// matching the V16-V19 pattern. Default 0 preserves prior behavior.
+export const SCHEMA_V20 = `
+ALTER TABLE process_phases ADD COLUMN dot_folder INTEGER NOT NULL DEFAULT 0;
+`

@@ -371,6 +371,9 @@ export interface ProcessPhase {
   // The cap on "Request changes" rework rounds for a gated phase (plan 029).
   // 0 = unlimited (default). Only meaningful when gatePolicy === "approve".
   maxReworkRounds: number
+  // When set, the phase's kickoff steers its agent to write artifacts under a
+  // `.<key>/` folder at the workspace root — a predictable location (plan 030).
+  dotFolder: boolean
   position: number
 }
 

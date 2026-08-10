@@ -89,7 +89,7 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
     const db = new Database(":memory:")
     db.pragma("foreign_keys = ON")
     runMigrations(db)
-    expect(db.pragma("user_version", { simple: true })).toBe(19)
+    expect(db.pragma("user_version", { simple: true })).toBe(20)
     expect(db.pragma("foreign_key_check")).toHaveLength(0)
     db.close()
   })
@@ -127,6 +127,22 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
     expect(phaseCols.map((c) => c.name)).toContain("max_rework_rounds")
     expect(
       String(phaseCols.find((c) => c.name === "max_rework_rounds")?.dflt_value)
+    ).toBe("0")
+    db.close()
+  })
+
+  it("adds the process_phases.dot_folder column (v20, plan 030)", () => {
+    const db = new Database(":memory:")
+    db.pragma("foreign_keys = ON")
+    runMigrations(db)
+    const phaseCols = db.pragma("table_info(process_phases)") as Array<{
+      name: string
+      dflt_value: unknown
+    }>
+    expect(phaseCols.map((c) => c.name)).toContain("dot_folder")
+    // SQLite reports the declared default verbatim as a string.
+    expect(
+      String(phaseCols.find((c) => c.name === "dot_folder")?.dflt_value)
     ).toBe("0")
     db.close()
   })
@@ -174,7 +190,7 @@ describe.skipIf(!sqliteLoads)("SCHEMA_V9 — orphan reap (plan 022)", () => {
     // Apply V9 (the reaper) and any later migrations, up to the latest version.
     runMigrations(db)
 
-    expect(db.pragma("user_version", { simple: true })).toBe(19)
+    expect(db.pragma("user_version", { simple: true })).toBe(20)
 
     // Reaped: orphan + its nested descendant, and all their state.
     const taskIds = (

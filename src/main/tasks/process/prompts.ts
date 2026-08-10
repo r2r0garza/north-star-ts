@@ -53,7 +53,27 @@ export function kickoffPrompt(input: {
     `Carry out the "${phase.name}" phase toward the overall objective. When done, ` +
       `summarize what you produced so the next phase can build on it.`
   )
+  const dotFolder = dotFolderInstruction(phase)
+  if (dotFolder) {
+    lines.push("")
+    lines.push(dotFolder)
+  }
   return lines.join("\n")
+}
+
+// An optional artifact-location instruction (plan 030). When a phase has its
+// dot-folder toggle on, steer its agent to write files under a `.<key>/` folder
+// at the workspace root — a predictable location the run monitor's file chips
+// and downstream phases can rely on. A convention (agent-followed), not enforced.
+// Returns "" when the toggle is off.
+function dotFolderInstruction(phase: ProcessPhase): string {
+  if (!phase.dotFolder) return ""
+  return (
+    `## Where to write files\n` +
+    `Write any files you create for this phase under a \`.${phase.key}/\` folder ` +
+    `at the root of the workspace (create it if it doesn't already exist), so ` +
+    `this phase's artifacts have a predictable location.`
+  )
 }
 
 // The kickoff for an `on_each_subtask` consumer instance (plan 025.2). A phase V
@@ -89,6 +109,11 @@ export function eachSubtaskKickoffPrompt(input: {
     `Carry out the "${phase.name}" phase for this one sub-task toward the overall ` +
       `objective. When done, summarize what you produced.`
   )
+  const dotFolder = dotFolderInstruction(phase)
+  if (dotFolder) {
+    lines.push("")
+    lines.push(dotFolder)
+  }
   return lines.join("\n")
 }
 

@@ -744,6 +744,7 @@ const api = {
           gatePolicy?: PhaseGatePolicy
           fanOut?: boolean
           maxReworkRounds?: number
+          dotFolder?: boolean
           position: number
         }) =>
           ipcRenderer.invoke(
@@ -764,6 +765,7 @@ const api = {
             gatePolicy?: PhaseGatePolicy
             fanOut?: boolean
             maxReworkRounds?: number
+            dotFolder?: boolean
             position?: number
           }
         ) =>
