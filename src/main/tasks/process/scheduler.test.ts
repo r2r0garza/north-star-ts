@@ -274,6 +274,113 @@ describe.skipIf(!sqliteLoads)("scheduler — approval gate", () => {
     expect(ran).toEqual(["a", "b"])
     expect(statusByKey(runId, pid).b).toBe("completed")
   })
+
+  it("re-gates after a request-changes re-run, then releases (plan 029)", async () => {
+    // a (approve) -> b. Simulate "Request changes": settle the gate denied, reset
+    // a to pending, and re-run. needsGate must re-fire (a re-completed past its
+    // last gate row), block b again, then release once the fresh gate is approved.
+    const pid = buildProcess({
+      phases: [{ key: "a", gate: "approve" }, { key: "b" }],
+      edges: [["a", "b"]],
+    })
+    const ran: string[] = []
+    const runPhase: RunPhase = async ({ phase }) => {
+      ran.push(phase.key)
+      return { content: phase.key }
+    }
+    const { ctx, runId } = makeCtx(pid, runPhase)
+
+    // First pass: a completes, gate raised, b blocked.
+    await expect(runScheduler(ctx)).rejects.toBeInstanceOf(GateBlockedError)
+    expect(ran).toEqual(["a"])
+    const gate1 = listApprovals({ taskId: ctx.taskId, status: "pending" })
+    expect(gate1).toHaveLength(1)
+
+    // Request changes: settle the gate denied + reset a to pending (mirrors
+    // ProcessService.requestChanges' DB writes).
+    resolveApproval(gate1[0].id, {
+      status: "denied",
+      decision: { feedback: "tighten it", rework: true },
+    })
+    const aRun = runsForKey(runId, pid, "a").find((r) => r.parentId === null)!
+    processes.updatePhaseRun(aRun.id, {
+      status: "pending",
+      error: null,
+      startedAt: null,
+      finishedAt: null,
+      reworkNote: "tighten it",
+      reworkRound: 1,
+    })
+
+    // Resume: a re-runs, and needsGate re-fires (new finishedAt > denied row).
+    const run2 = processes.getProcessRun(runId)!
+    await expect(
+      runScheduler({
+        run: run2,
+        graph: processes.getProcessGraph(pid)!,
+        taskId: ctx.taskId,
+        signal: new AbortController().signal,
+        emit: () => {},
+        runPhase,
+      })
+    ).rejects.toBeInstanceOf(GateBlockedError)
+    expect(ran).toEqual(["a", "a"]) // a re-ran
+    expect(statusByKey(runId, pid).b).toBe("pending") // b still blocked
+    const gate2 = listApprovals({ taskId: ctx.taskId, status: "pending" })
+    expect(gate2).toHaveLength(1)
+    expect(gate2[0].id).not.toBe(gate1[0].id) // a FRESH gate row
+
+    // Approve the fresh gate → b releases.
+    resolveApproval(gate2[0].id, { status: "approved" })
+    const run3 = processes.getProcessRun(runId)!
+    await runScheduler({
+      run: run3,
+      graph: processes.getProcessGraph(pid)!,
+      taskId: ctx.taskId,
+      signal: new AbortController().signal,
+      emit: () => {},
+      runPhase,
+    })
+    expect(ran).toEqual(["a", "a", "b"])
+    expect(statusByKey(runId, pid).b).toBe("completed")
+  })
+
+  it("does not re-raise a gate for a denied-then-not-rerun phase (plan 029)", async () => {
+    // A stale denied row with NO re-run (finishedAt older than the row) must not
+    // re-fire the gate — the guard is `latestGate.requestedAt < finishedAt`.
+    const pid = buildProcess({
+      phases: [{ key: "a", gate: "approve" }, { key: "b" }],
+      edges: [["a", "b"]],
+    })
+    const ran: string[] = []
+    const runPhase: RunPhase = async ({ phase }) => {
+      ran.push(phase.key)
+      return { content: phase.key }
+    }
+    const { ctx, runId } = makeCtx(pid, runPhase)
+    await expect(runScheduler(ctx)).rejects.toBeInstanceOf(GateBlockedError)
+    const gate = listApprovals({ taskId: ctx.taskId, status: "pending" })[0]
+    // Deny WITHOUT resetting a (no re-run): a stays completed, finishedAt < the
+    // (now denied) row's requestedAt.
+    resolveApproval(gate.id, { status: "denied" })
+
+    const run2 = processes.getProcessRun(runId)!
+    // Should NOT throw (no fresh gate raised) and b stays blocked (denied ≠ approved).
+    await runScheduler({
+      run: run2,
+      graph: processes.getProcessGraph(pid)!,
+      taskId: ctx.taskId,
+      signal: new AbortController().signal,
+      emit: () => {},
+      runPhase,
+    })
+    expect(ran).toEqual(["a"]) // a not re-run, b never ran
+    expect(statusByKey(runId, pid).b).toBe("pending")
+    // No new pending gate row.
+    expect(listApprovals({ taskId: ctx.taskId, status: "pending" })).toHaveLength(
+      0
+    )
+  })
 })
 
 describe.skipIf(!sqliteLoads)("scheduler — resume", () => {

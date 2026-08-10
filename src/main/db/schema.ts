@@ -562,3 +562,20 @@ ALTER TABLE process_phase_runs ADD COLUMN title TEXT;
 export const SCHEMA_V18 = `
 ALTER TABLE process_runs ADD COLUMN title TEXT;
 `
+
+// v19: the process review feedback loop (plan 029). A gated phase (gate_policy
+// 'approve') gains a third decision — "Request changes" — that re-runs the
+// phase's own worker with a feedback note and re-gates, bounded per phase.
+//   - process_phase_runs.rework_note: the feedback text injected into the
+//     re-run's kickoff (read by makeRunPhase); null for a first/normal run.
+//   - process_phase_runs.rework_round: how many times this phase-run has been
+//     sent back (the bound counter); default 0.
+//   - process_phases.max_rework_rounds: the per-phase cap (0 = unlimited,
+//     preserving prior behavior); at the cap the gate card drops the control.
+// All three are pure ADD COLUMN — safe under the foreign_keys=OFF migration loop
+// (no table rebuild), matching the V16/V17/V18 pattern.
+export const SCHEMA_V19 = `
+ALTER TABLE process_phase_runs ADD COLUMN rework_note TEXT;
+ALTER TABLE process_phase_runs ADD COLUMN rework_round INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE process_phases ADD COLUMN max_rework_rounds INTEGER NOT NULL DEFAULT 0;
+`

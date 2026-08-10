@@ -7,6 +7,7 @@ import { createTask, getTask } from "../../db/repositories/tasks"
 import { listMessages } from "../../db/repositories/messages"
 import { getWorkspace, upsertWorkspace } from "../../db/repositories/workspaces"
 import * as processes from "../../db/repositories/processes"
+import { listApprovals, resolveApproval } from "../../db/repositories/approvals"
 import { getDb } from "../../db/connection"
 import type { TaskRunner, TaskExecutor } from "../runner"
 import type { LlmSelection } from "../../agent/providers"
@@ -171,6 +172,95 @@ export class ProcessService {
     return updated
   }
 
+  // Request changes on a gated phase (plan 029): the third gate decision beside
+  // approve/deny. Settle the pending gate `denied` (feedback stored in the
+  // decision blob for the review trail), reset the gated phase-run to `pending`
+  // with the feedback stamped as its rework_note + the round counter bumped, flip
+  // the run back to `running`, then resume the backing task. The scheduler
+  // re-derives from the DB, re-runs the phase's worker (kickoff carries the note),
+  // and re-gates once it re-completes (needsGate re-fires off the fresh finishedAt).
+  requestChanges(input: {
+    processRunId: string
+    requestId: string
+    feedback: string
+  }): ProcessRun | undefined {
+    const { processRunId, requestId, feedback } = input
+    const run = processes.getProcessRun(processRunId)
+    if (!run?.taskId) return run
+
+    // Find the pending gate row by its process-unique requestId, and read the
+    // gated phase-run off the durable request blob.
+    const approval = listApprovals({ taskId: run.taskId }).find((a) => {
+      const req = a.request as { requestId?: string } | null
+      return req?.requestId === requestId && a.status === "pending"
+    })
+    if (!approval) return run
+    const req = approval.request as { phaseRunId?: string } | null
+    const phaseRunId = req?.phaseRunId
+    if (!phaseRunId) return run
+
+    const phaseRun = processes.getPhaseRun(phaseRunId)
+    if (!phaseRun) return run
+    const phase = processes.getPhase(phaseRun.phaseId)
+    if (!phase) return run
+
+    // Reject a container phase (fan-out / on_each_subtask consumer of a fan-out
+    // source): resetting it to `pending` would re-decompose / re-trigger and
+    // duplicate children — sub-DAG replay is plan 031's concern. Same container
+    // predicate restartRun uses.
+    if (run.processId) {
+      const graph = processes.getProcessGraph(run.processId)
+      if (graph) {
+        const phasesById = new Map(graph.phases.map((p) => [p.id, p]))
+        const isEachSubtaskConsumer = graph.edges.some(
+          (e) =>
+            e.toPhaseId === phase.id &&
+            e.trigger === "on_each_subtask" &&
+            phasesById.get(e.fromPhaseId)?.fanOut === true
+        )
+        if (phase.fanOut || isEachSubtaskConsumer)
+          throw new Error(
+            "cannot request changes on a fan-out / on_each_subtask phase (v1)"
+          )
+      }
+    }
+
+    // Enforce the per-phase rework cap (0 = unlimited).
+    if (
+      phase.maxReworkRounds > 0 &&
+      phaseRun.reworkRound >= phase.maxReworkRounds
+    )
+      throw new Error(
+        `rework cap reached (${phase.maxReworkRounds}); approve or deny`
+      )
+
+    const tx = getDb().transaction(() => {
+      resolveApproval(approval.id, {
+        status: "denied",
+        decision: { feedback, rework: true },
+      })
+      processes.updatePhaseRun(phaseRunId, {
+        status: "pending",
+        error: null,
+        startedAt: null,
+        finishedAt: null,
+        reworkNote: feedback,
+        reworkRound: phaseRun.reworkRound + 1,
+      })
+      processes.updateProcessRun(processRunId, {
+        status: "running",
+        finishedAt: null,
+      })
+    })
+    tx()
+
+    // better-sqlite3 is synchronous, so the tx has committed — resume re-drives
+    // the (paused) backing task, which rebuilds runByPhaseId from the fresh DB.
+    const updated = processes.getProcessRun(processRunId)
+    this.runner.resume(run.taskId)
+    return updated
+  }
+
   // The runner-invoked executor for the process_run kind. Registered:
   //   runner.registerKind(PROCESS_RUN_KIND, { autoResume: true, run: svc.execute,
   //                                            hasIndependentSurface: true })
@@ -256,6 +346,9 @@ export class ProcessService {
           phase,
           objective: run.objective ?? "",
           upstream: this.collectUpstream(run, phase),
+          // A "Request changes" send-back (plan 029) stamped the feedback on the
+          // phase-run; surface it so the re-run addresses it. Null for a first run.
+          reworkNote: phaseRun.reworkNote ?? undefined,
         })
 
       // Resolve the phase's agent BEFORE forking the worker: for a `dispatch`

@@ -89,7 +89,7 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
     const db = new Database(":memory:")
     db.pragma("foreign_keys = ON")
     runMigrations(db)
-    expect(db.pragma("user_version", { simple: true })).toBe(18)
+    expect(db.pragma("user_version", { simple: true })).toBe(19)
     expect(db.pragma("foreign_key_check")).toHaveLength(0)
     db.close()
   })
@@ -102,6 +102,32 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
       db.pragma("table_info(process_runs)") as Array<{ name: string }>
     ).map((c) => c.name)
     expect(cols).toContain("title")
+    db.close()
+  })
+
+  it("adds the rework columns (v19, plan 029)", () => {
+    const db = new Database(":memory:")
+    db.pragma("foreign_keys = ON")
+    runMigrations(db)
+    const phaseRunCols = db.pragma(
+      "table_info(process_phase_runs)"
+    ) as Array<{ name: string; dflt_value: unknown }>
+    const prNames = phaseRunCols.map((c) => c.name)
+    expect(prNames).toContain("rework_note")
+    expect(prNames).toContain("rework_round")
+    // SQLite reports the declared default verbatim as a string.
+    expect(
+      String(phaseRunCols.find((c) => c.name === "rework_round")?.dflt_value)
+    ).toBe("0")
+
+    const phaseCols = db.pragma("table_info(process_phases)") as Array<{
+      name: string
+      dflt_value: unknown
+    }>
+    expect(phaseCols.map((c) => c.name)).toContain("max_rework_rounds")
+    expect(
+      String(phaseCols.find((c) => c.name === "max_rework_rounds")?.dflt_value)
+    ).toBe("0")
     db.close()
   })
 })
@@ -148,7 +174,7 @@ describe.skipIf(!sqliteLoads)("SCHEMA_V9 — orphan reap (plan 022)", () => {
     // Apply V9 (the reaper) and any later migrations, up to the latest version.
     runMigrations(db)
 
-    expect(db.pragma("user_version", { simple: true })).toBe(18)
+    expect(db.pragma("user_version", { simple: true })).toBe(19)
 
     // Reaped: orphan + its nested descendant, and all their state.
     const taskIds = (

@@ -300,18 +300,25 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
       })
       .map((e) => e.fromPhaseId)
 
+  // All gate rows for a phase-run (a re-gated phase has >1 — plan 029). Order is
+  // unspecified and NOT relied upon: gate detection is by count/status, not
+  // recency, so equal-millisecond requested_at ties (real in fast runs) are safe.
+  const gateRows = (phaseRunId: string) =>
+    listApprovals({ taskId: ctx.taskId }).filter((a) => {
+      const req = a.request as GateRequest | null
+      return req?.kind === "process_phase_gate" && req.phaseRunId === phaseRunId
+    })
+
   // Is the gate on a COMPLETED gated phase resolved? A phase with
-  // gate_policy='approve' holds back its dependents until its approval row is
-  // 'approved'. Reads the durable approvals table (resume-correct).
+  // gate_policy='approve' holds back its dependents until one of its gate rows is
+  // 'approved'. Reads the durable approvals table (resume-correct). A
+  // request-changes decision settles a row 'denied' (a denied row never becomes
+  // approved, and you can't request changes on an already-approved gate), so
+  // "any approved row" is exact and order-independent (plan 029).
   const gateResolved = (phase: ProcessPhase): boolean => {
     if (phase.gatePolicy !== "approve") return true
     const pr = runByPhaseId.get(phase.id)!
-    const rows = listApprovals({ taskId: ctx.taskId })
-    const gate = rows.find((a) => {
-      const req = a.request as GateRequest | null
-      return req?.kind === "process_phase_gate" && req.phaseRunId === pr.id
-    })
-    return gate?.status === "approved"
+    return gateRows(pr.id).some((a) => a.status === "approved")
   }
 
   // Create (once) the durable gate for a completed gated phase, flip the run to
@@ -345,20 +352,27 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
     throw new GateBlockedError()
   }
 
-  // Does a gated phase need a gate raised? True when it's completed, has an
-  // approve policy, at least one dependent, and no gate row exists yet.
+  // Does a gated phase need a (fresh) gate raised? True when it's completed, has
+  // an approve policy, at least one dependent, and the number of gate rows raised
+  // so far equals its rework_round — i.e. every prior send-back is accounted for
+  // and the phase has re-completed owing a new gate (plan 029 "Request changes").
+  // Each rework round settles exactly one gate row and bumps rework_round, and
+  // raiseGate inserts one row per raise, so:
+  //   rows == round        → owe a gate (first completion: 0 == 0; after a
+  //                          re-run: N settled rows == N rounds) → raise.
+  //   rows == round + 1    → the gate for this (re-)completion is already raised
+  //                          (pending or settled) → do not re-raise.
+  // This is exact at any timestamp resolution (unlike comparing finishedAt).
   const needsGate = (phase: ProcessPhase): boolean => {
     if (phase.gatePolicy !== "approve") return false
     if (statusOf(phase.id) !== "completed") return false
     const hasDependents = graph.edges.some((e) => e.fromPhaseId === phase.id)
     if (!hasDependents) return false
     const pr = runByPhaseId.get(phase.id)!
-    const rows = listApprovals({ taskId: ctx.taskId })
-    const gate = rows.find((a) => {
-      const req = a.request as GateRequest | null
-      return req?.kind === "process_phase_gate" && req.phaseRunId === pr.id
-    })
-    return !gate // no gate row yet → needs raising
+    // Re-read the phase-run: a request-changes re-run bumped rework_round after
+    // the cached row was loaded at scheduler entry.
+    const round = processes.getPhaseRun(pr.id)?.reworkRound ?? 0
+    return gateRows(pr.id).length <= round
   }
 
   const checkpoint = (): void => {

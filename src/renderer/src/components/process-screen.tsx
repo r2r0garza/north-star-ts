@@ -564,6 +564,7 @@ function PhaseCard({
     routing?: PhaseRouting
     gatePolicy?: PhaseGatePolicy
     fanOut?: boolean
+    maxReworkRounds?: number
   }) {
     try {
       await window.cowork.db.processes.phases.update(phase.id, patch)
@@ -759,6 +760,26 @@ function PhaseCard({
             onCheckedChange={(v) => patchPhase({ fanOut: v })}
           />
         </label>
+        {/* The "Request changes" rework cap (plan 029), only meaningful for an
+            approve gate. 0 = unlimited. */}
+        {phase.gatePolicy === "approve" && !phase.fanOut && (
+          <label
+            className="flex items-center gap-2 text-xs"
+            title="Max times a reviewer can send this phase back for changes (0 = unlimited)"
+          >
+            <span className="text-muted-foreground">Max rework</span>
+            <Input
+              type="number"
+              min={0}
+              className="h-7 w-16 text-xs"
+              value={phase.maxReworkRounds}
+              onChange={(e) => {
+                const n = Math.max(0, Math.floor(Number(e.target.value) || 0))
+                patchPhase({ maxReworkRounds: n })
+              }}
+            />
+          </label>
+        )}
       </div>
 
       {/* Row 3: agent pool. */}
@@ -1021,7 +1042,14 @@ function RunMonitor({
         for (const a of approvals) {
           if (a.status === "pending") continue
           const req = a.request as ProcessGateRequest | null
-          if (req?.kind === "process_phase_gate" && gates[req.phaseRunId]) {
+          // Drop the gate only if THIS settled row is the one the map is showing
+          // (match by requestId, not phaseRunId): after a "Request changes" round
+          // a phase-run has both a denied old row and a fresh pending gate — the
+          // denied row must not clear the live one (plan 029).
+          if (
+            req?.kind === "process_phase_gate" &&
+            gates[req.phaseRunId] === req.requestId
+          ) {
             delete gates[req.phaseRunId]
           }
         }
@@ -1058,6 +1086,33 @@ function RunMonitor({
   const phaseName = useCallback(
     (phaseId: string) =>
       graph?.phases.find((p) => p.id === phaseId)?.name ?? phaseId,
+    [graph]
+  )
+
+  // The per-phase rework cap (0 = unlimited) for gating the Request-changes
+  // control (plan 029).
+  const phaseMaxRework = useCallback(
+    (phaseId: string) =>
+      graph?.phases.find((p) => p.id === phaseId)?.maxReworkRounds ?? 0,
+    [graph]
+  )
+
+  // A container phase (fan-out, or an on_each_subtask consumer of a fan-out
+  // source) can't be sent back for changes in v1 — the backend rejects it, so
+  // hide the control. Mirrors the service's container predicate.
+  const phaseIsContainer = useCallback(
+    (phaseId: string) => {
+      if (!graph) return false
+      const phase = graph.phases.find((p) => p.id === phaseId)
+      if (!phase) return false
+      if (phase.fanOut) return true
+      return graph.edges.some(
+        (e) =>
+          e.toPhaseId === phaseId &&
+          e.trigger === "on_each_subtask" &&
+          graph.phases.find((p) => p.id === e.fromPhaseId)?.fanOut === true
+      )
+    },
     [graph]
   )
 
@@ -1104,6 +1159,26 @@ function RunMonitor({
       await window.cowork.process.deny({ processRunId: run.id, requestId })
     } catch (err) {
       toast.error(`Could not deny phase: ${err}`)
+    }
+  }
+  // Request changes: send the gated phase back to re-run with a feedback note,
+  // then re-gate (plan 029). Clear optimistically; a fresh gate re-appears via the
+  // live process_phase event when the re-run re-completes.
+  async function requestChanges(
+    requestId: string,
+    phaseRunId: string,
+    feedback: string
+  ) {
+    if (!run) return
+    clearGate(phaseRunId)
+    try {
+      await window.cowork.process.requestChanges({
+        processRunId: run.id,
+        requestId,
+        feedback,
+      })
+    } catch (err) {
+      toast.error(`Could not request changes: ${err}`)
     }
   }
 
@@ -1257,8 +1332,11 @@ function RunMonitor({
               gateRequestId={gates[pr.id]}
               childRuns={childrenOf.get(pr.id) ?? []}
               phaseName={phaseName}
+              maxReworkRounds={phaseMaxRework(pr.phaseId)}
+              isContainer={phaseIsContainer(pr.phaseId)}
               onApprove={approve}
               onDeny={deny}
+              onRequestChanges={requestChanges}
               onOpenTranscript={openTranscript}
             />
           ))}
@@ -1286,8 +1364,11 @@ function PhaseRunItem({
   gateRequestId,
   childRuns,
   phaseName,
+  maxReworkRounds,
+  isContainer,
   onApprove,
   onDeny,
+  onRequestChanges,
   onOpenTranscript,
 }: {
   phaseRun: ProcessPhaseRun
@@ -1295,8 +1376,17 @@ function PhaseRunItem({
   gateRequestId: string | undefined
   childRuns: ProcessPhaseRun[]
   phaseName: (phaseId: string) => string
+  // The per-phase rework cap (0 = unlimited) and whether the phase is a container
+  // (fan-out / on_each_subtask), which can't be sent back in v1 (plan 029).
+  maxReworkRounds: number
+  isContainer: boolean
   onApprove: (requestId: string, phaseRunId: string) => void
   onDeny: (requestId: string, phaseRunId: string) => void
+  onRequestChanges: (
+    requestId: string,
+    phaseRunId: string,
+    feedback: string
+  ) => void
   // Open a phase/child's worker transcript (only rows with a taskId).
   onOpenTranscript: (phaseRun: ProcessPhaseRun) => void
 }) {
@@ -1307,6 +1397,15 @@ function PhaseRunItem({
   const gated = gateRequestId !== undefined
   const displayStatus = gated ? "waiting_for_approval" : phaseRun.status
   const clickable = phaseRun.taskId !== null
+
+  // "Request changes" (plan 029): a collapsible feedback box. Hidden for a
+  // container phase (backend rejects it) or once the per-phase rework cap is hit
+  // (0 = unlimited) — then only Approve/Deny remain.
+  const [reworkOpen, setReworkOpen] = useState(false)
+  const [reworkText, setReworkText] = useState("")
+  const atReworkCap =
+    maxReworkRounds > 0 && phaseRun.reworkRound >= maxReworkRounds
+  const canRequestChanges = !isContainer && !atReworkCap
   return (
     <div className="flex flex-col gap-2 rounded-lg border bg-card p-3">
       <div
@@ -1355,7 +1454,61 @@ function PhaseRunItem({
             >
               Deny <Kbd className="ml-1.5">Esc</Kbd>
             </Button>
+            {canRequestChanges && !reworkOpen && (
+              <Button
+                size="xs"
+                variant="outline"
+                onClick={() => setReworkOpen(true)}
+              >
+                Request changes
+              </Button>
+            )}
           </div>
+          {atReworkCap && !isContainer && (
+            <p className="text-[11px] text-muted-foreground">
+              Rework limit reached ({maxReworkRounds}). Approve or deny to
+              continue.
+            </p>
+          )}
+          {canRequestChanges && reworkOpen && (
+            <div className="flex flex-col gap-2">
+              <Textarea
+                autoFocus
+                rows={3}
+                value={reworkText}
+                onChange={(e) => setReworkText(e.target.value)}
+                placeholder="What should change before this phase is approved?"
+                className="text-xs"
+              />
+              <div className="flex items-center gap-2">
+                <Button
+                  size="xs"
+                  disabled={reworkText.trim().length === 0}
+                  onClick={() => {
+                    onRequestChanges(
+                      gateRequestId,
+                      phaseRun.id,
+                      reworkText.trim()
+                    )
+                    setReworkText("")
+                    setReworkOpen(false)
+                  }}
+                >
+                  Send back
+                </Button>
+                <Button
+                  size="xs"
+                  variant="ghost"
+                  onClick={() => {
+                    setReworkText("")
+                    setReworkOpen(false)
+                  }}
+                >
+                  Cancel
+                </Button>
+              </div>
+            </div>
+          )}
         </div>
       )}
 

@@ -17,10 +17,16 @@ try {
 // agentName the forked worker conversation was stamped with, so the test can
 // assert routing picked the right agent, and appends a final assistant message so
 // the run has "output".
-const loopCalls: { conversationId: string }[] = []
+const loopCalls: { conversationId: string; userMessage?: string }[] = []
 vi.mock("../../agent", () => ({
-  runAgentLoop: async (input: { conversationId: string }) => {
-    loopCalls.push({ conversationId: input.conversationId })
+  runAgentLoop: async (input: {
+    conversationId: string
+    userMessage?: string
+  }) => {
+    loopCalls.push({
+      conversationId: input.conversationId,
+      userMessage: input.userMessage,
+    })
     // Give the worker a final assistant message (its "output").
     db.prepare(
       "INSERT INTO messages (id, conversation_id, seq, role, content, created_at) VALUES (?, ?, ?, 'assistant', 'done', ?)"
@@ -57,6 +63,11 @@ vi.mock("../../agent/agents/loader", () => ({
 }))
 
 import * as processes from "../../db/repositories/processes"
+import {
+  createApproval,
+  getApproval,
+  listApprovals,
+} from "../../db/repositories/approvals"
 import { ProcessService } from "./service"
 import type { TaskEventPayload } from "../runner"
 
@@ -255,5 +266,173 @@ describe.skipIf(!sqliteLoads)("ProcessService restartRun", () => {
     svc.restartRun(run.id)
     expect(restarted).toEqual([])
     expect(processes.getProcessRun(run.id)!.status).toBe("running")
+  })
+})
+
+describe.skipIf(!sqliteLoads)("ProcessService requestChanges (plan 029)", () => {
+  // A → B with a gated, completed A phase-run and a pending gate row. Returns the
+  // ids the test needs plus a resumed[] spy on the runner.
+  function seedGatedPhase(opts?: { maxReworkRounds?: number; fanOut?: boolean }) {
+    const def = processes.createProcessDefinition({ name: "T" })
+    const a = processes.createPhase({
+      processId: def.id,
+      key: "a",
+      name: "A",
+      gatePolicy: "approve",
+      fanOut: opts?.fanOut ?? false,
+      maxReworkRounds: opts?.maxReworkRounds ?? 0,
+      position: 0,
+    })
+    const b = processes.createPhase({
+      processId: def.id,
+      key: "b",
+      name: "B",
+      position: 1,
+    })
+    processes.createEdge({
+      processId: def.id,
+      fromPhaseId: a.id,
+      toPhaseId: b.id,
+      trigger: opts?.fanOut ? "on_each_subtask" : "on_complete",
+    })
+    const { taskId } = seedTaskRow()
+    const run = processes.createProcessRun({
+      processId: def.id,
+      sourceConversationId: null,
+      taskId,
+      objective: "do it",
+      status: "waiting_for_approval",
+    })
+    const aRun = processes.createPhaseRun({
+      runId: run.id,
+      phaseId: a.id,
+      status: "completed",
+    })
+    processes.updatePhaseRun(aRun.id, { finishedAt: Date.now() })
+    processes.createPhaseRun({ runId: run.id, phaseId: b.id, status: "pending" })
+    const requestId = randomUUID()
+    const approval = createApproval({
+      taskId,
+      request: {
+        kind: "process_phase_gate",
+        phaseKey: "a",
+        phaseRunId: aRun.id,
+        requestId,
+      },
+    })
+    return { run, aRun, requestId, taskId, approvalId: approval.id }
+  }
+
+  function makeRunner() {
+    const resumed: string[] = []
+    const runner = {
+      enqueueKind: () => ({ id: "t" }),
+      resume: (id: string) => resumed.push(id),
+    } as never
+    return { runner, resumed }
+  }
+
+  it("settles the gate denied, resets the phase with the note, resumes", () => {
+    const { run, aRun, requestId, approvalId } = seedGatedPhase()
+    const { runner, resumed } = makeRunner()
+    const svc = new ProcessService(runner)
+
+    const updated = svc.requestChanges({
+      processRunId: run.id,
+      requestId,
+      feedback: "tighten the copy",
+    })
+
+    // Gate row settled denied with the feedback blob (audit trail).
+    const settled = getApproval(approvalId)!
+    expect(settled.status).toBe("denied")
+    expect(settled.decision).toEqual({ feedback: "tighten the copy", rework: true })
+    // Phase-run reset to re-runnable with the note + bumped round.
+    const fresh = processes.getPhaseRun(aRun.id)!
+    expect(fresh.status).toBe("pending")
+    expect(fresh.finishedAt).toBeNull()
+    expect(fresh.reworkNote).toBe("tighten the copy")
+    expect(fresh.reworkRound).toBe(1)
+    // Run flipped back to running; the backing task resumed.
+    expect(updated?.status).toBe("running")
+    expect(resumed).toEqual([run.taskId])
+  })
+
+  it("rejects at the per-phase rework cap", () => {
+    const { run, aRun, requestId } = seedGatedPhase({ maxReworkRounds: 2 })
+    // Pretend it's already been sent back twice.
+    processes.updatePhaseRun(aRun.id, { reworkRound: 2 })
+    const { runner, resumed } = makeRunner()
+    const svc = new ProcessService(runner)
+
+    expect(() =>
+      svc.requestChanges({ processRunId: run.id, requestId, feedback: "again" })
+    ).toThrow(/rework cap/)
+    // Nothing mutated: still completed, task not resumed.
+    expect(processes.getPhaseRun(aRun.id)!.status).toBe("completed")
+    expect(resumed).toEqual([])
+  })
+
+  it("rejects a container (fan-out) phase", () => {
+    const { run, aRun, requestId } = seedGatedPhase({ fanOut: true })
+    const { runner, resumed } = makeRunner()
+    const svc = new ProcessService(runner)
+
+    expect(() =>
+      svc.requestChanges({ processRunId: run.id, requestId, feedback: "x" })
+    ).toThrow(/fan-out|on_each_subtask/)
+    expect(processes.getPhaseRun(aRun.id)!.status).toBe("completed")
+    expect(resumed).toEqual([])
+  })
+
+  it("re-runs the phase with the feedback in its kickoff (end to end)", async () => {
+    // Seed → requestChanges → drive the executor and assert the worker's kickoff
+    // message carried the '## Requested changes' section.
+    const { run, requestId } = seedGatedPhase()
+    // Give the gated phase a pool agent so the executor can resolve + fork it.
+    const graph = processes.getProcessGraph(run.processId!)!
+    const aPhase = graph.phases.find((p) => p.key === "a")!
+    processes.createPhaseAgent({
+      phaseId: aPhase.id,
+      agentName: "a-agent",
+      position: 0,
+    })
+    const { runner } = makeRunner()
+    const svc = new ProcessService(runner)
+    svc.requestChanges({
+      processRunId: run.id,
+      requestId,
+      feedback: "make it shorter",
+    })
+
+    // Drive the executor once — a re-runs (pending), b still gated.
+    await svc.execute({
+      task: { id: run.taskId, input: { processRunId: run.id } } as never,
+      signal: new AbortController().signal,
+      emit: () => {},
+      workspace: undefined,
+    }).catch(() => {}) // may throw GateBlockedError once a re-completes + re-gates
+
+    // The forked worker's kickoff (userMessage) carries the rework note.
+    expect(loopCalls.length).toBeGreaterThan(0)
+    const kickoff = loopCalls[0].userMessage ?? ""
+    expect(kickoff).toContain("## Requested changes")
+    expect(kickoff).toContain("make it shorter")
+  })
+
+  it("is a no-op for an unknown requestId", () => {
+    const { run } = seedGatedPhase()
+    const { runner, resumed } = makeRunner()
+    const svc = new ProcessService(runner)
+    svc.requestChanges({
+      processRunId: run.id,
+      requestId: "does-not-exist",
+      feedback: "x",
+    })
+    expect(resumed).toEqual([])
+    // The original gate row stays pending.
+    expect(listApprovals({ taskId: run.taskId!, status: "pending" })).toHaveLength(
+      1
+    )
   })
 })

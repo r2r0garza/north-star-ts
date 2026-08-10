@@ -300,6 +300,7 @@ export function registerDbHandlers(
         routing?: PhaseRouting
         gatePolicy?: PhaseGatePolicy
         fanOut?: boolean
+        maxReworkRounds?: number
         position: number
       }
     ) => processes.createPhase(input)
@@ -318,6 +319,7 @@ export function registerDbHandlers(
         routing?: PhaseRouting
         gatePolicy?: PhaseGatePolicy
         fanOut?: boolean
+        maxReworkRounds?: number
         position?: number
       }
     ) => processes.updatePhase(id, patch)

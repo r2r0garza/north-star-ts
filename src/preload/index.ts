@@ -308,6 +308,14 @@ const api = {
     // Deny a phase gate: settles it denied; the run stays paused (v1 semantics).
     deny: (payload: { processRunId: string; requestId: string }) =>
       ipcRenderer.invoke("process:deny", payload) as Promise<void>,
+    // Request changes on a phase gate (plan 029): settles the gate denied with the
+    // feedback, re-runs the phase's worker with the note injected, and re-gates.
+    // Rejects on a container phase or at the per-phase rework cap.
+    requestChanges: (payload: {
+      processRunId: string
+      requestId: string
+      feedback: string
+    }) => ipcRenderer.invoke("process:requestChanges", payload) as Promise<void>,
   },
   pickWorkspace: () =>
     ipcRenderer.invoke("pick-workspace") as Promise<{
@@ -735,6 +743,7 @@ const api = {
           routing?: PhaseRouting
           gatePolicy?: PhaseGatePolicy
           fanOut?: boolean
+          maxReworkRounds?: number
           position: number
         }) =>
           ipcRenderer.invoke(
@@ -754,6 +763,7 @@ const api = {
             routing?: PhaseRouting
             gatePolicy?: PhaseGatePolicy
             fanOut?: boolean
+            maxReworkRounds?: number
             position?: number
           }
         ) =>

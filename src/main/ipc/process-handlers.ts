@@ -79,4 +79,16 @@ export function registerProcessHandlers(
       runner.recordApprovalDecision(run.taskId, payload.requestId, "denied")
     }
   )
+
+  // Request changes on a phase gate (plan 029): the third decision. Delegated to
+  // the service — it settles the gate denied (with the feedback), resets the gated
+  // phase-run to re-run with the note, bumps the round counter, and resumes the
+  // task. Throws (rejecting the invoke) on a container phase or at the rework cap.
+  ipcMain.handle(
+    "process:requestChanges",
+    (
+      _e,
+      payload: { processRunId: string; requestId: string; feedback: string }
+    ) => processService.requestChanges(payload)
+  )
 }

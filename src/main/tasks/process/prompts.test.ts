@@ -1,5 +1,18 @@
 import { describe, it, expect } from "vitest"
-import { parseDecomposition, MAX_FAN_OUT } from "./prompts"
+import { parseDecomposition, MAX_FAN_OUT, kickoffPrompt } from "./prompts"
+import type { ProcessPhase } from "../../db/types"
+
+const phase: ProcessPhase = {
+  id: "p1",
+  processId: "def1",
+  key: "impl",
+  name: "Implement",
+  routing: "single",
+  gatePolicy: "approve",
+  fanOut: false,
+  maxReworkRounds: 0,
+  position: 0,
+}
 
 // parseDecomposition is deliberately tolerant of real-world LLM output. These
 // cases pin the accepted vs rejected input formats (previously uncovered — a
@@ -81,5 +94,38 @@ describe("parseDecomposition", () => {
 
   it("returns [] for an array of objects with no string field", () => {
     expect(parseDecomposition("[{\"n\": 1}, {\"n\": 2}]")).toEqual([])
+  })
+})
+
+describe("kickoffPrompt — rework note (plan 029)", () => {
+  it("omits the Requested changes section when there is no note", () => {
+    const p = kickoffPrompt({ phase, objective: "ship it", upstream: [] })
+    expect(p).not.toContain("## Requested changes")
+    expect(p).toContain("## Your task")
+  })
+
+  it("injects the note before the task section when present", () => {
+    const p = kickoffPrompt({
+      phase,
+      objective: "ship it",
+      upstream: [],
+      reworkNote: "shorten the summary",
+    })
+    expect(p).toContain("## Requested changes")
+    expect(p).toContain("shorten the summary")
+    // The feedback comes before the task instructions.
+    expect(p.indexOf("## Requested changes")).toBeLessThan(
+      p.indexOf("## Your task")
+    )
+  })
+
+  it("ignores a blank/whitespace note", () => {
+    const p = kickoffPrompt({
+      phase,
+      objective: "ship it",
+      upstream: [],
+      reworkNote: "   ",
+    })
+    expect(p).not.toContain("## Requested changes")
   })
 })

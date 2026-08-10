@@ -368,6 +368,9 @@ export interface ProcessPhase {
   routing: PhaseRouting
   gatePolicy: PhaseGatePolicy
   fanOut: boolean
+  // The cap on "Request changes" rework rounds for a gated phase (plan 029).
+  // 0 = unlimited (default). Only meaningful when gatePolicy === "approve".
+  maxReworkRounds: number
   position: number
 }
 
@@ -430,6 +433,11 @@ export interface ProcessPhaseRun {
   error: string | null
   startedAt: number | null
   finishedAt: number | null
+  // The "Request changes" feedback note injected into this phase-run's re-run
+  // kickoff (plan 029). Null for a first/normal run; set when a gate is sent
+  // back. reworkRound is the bound counter (how many times sent back).
+  reworkNote: string | null
+  reworkRound: number
 }
 
 // The whole authored graph in one shape — the scheduler and the monitor both

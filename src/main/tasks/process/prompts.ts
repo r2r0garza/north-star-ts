@@ -17,8 +17,11 @@ export function kickoffPrompt(input: {
   phase: ProcessPhase
   objective: string
   upstream: UpstreamResult[]
+  // A reviewer's "Request changes" feedback (plan 029): when this phase was
+  // gated and sent back, the note is surfaced so the re-run addresses it.
+  reworkNote?: string
 }): string {
-  const { phase, objective, upstream } = input
+  const { phase, objective, upstream, reworkNote } = input
   const lines: string[] = []
   lines.push(`# Process phase: ${phase.name}`)
   lines.push("")
@@ -34,6 +37,16 @@ export function kickoffPrompt(input: {
       lines.push(u.content?.trim() || "(no textual output)")
       lines.push("")
     }
+  }
+  if (reworkNote?.trim()) {
+    lines.push("## Requested changes")
+    lines.push(
+      "A reviewer looked at your previous attempt at this phase and asked for " +
+        "changes. Address this feedback before you finish:"
+    )
+    lines.push("")
+    lines.push(reworkNote.trim())
+    lines.push("")
   }
   lines.push("## Your task")
   lines.push(

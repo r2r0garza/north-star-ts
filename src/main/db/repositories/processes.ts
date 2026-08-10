@@ -47,6 +47,7 @@ interface ProcessPhaseRow {
   routing: PhaseRouting
   gate_policy: PhaseGatePolicy
   fan_out: number
+  max_rework_rounds: number
   position: number
 }
 
@@ -59,6 +60,7 @@ function toPhase(row: ProcessPhaseRow): ProcessPhase {
     routing: row.routing,
     gatePolicy: row.gate_policy,
     fanOut: row.fan_out === 1,
+    maxReworkRounds: row.max_rework_rounds,
     position: row.position,
   }
 }
@@ -145,6 +147,8 @@ interface ProcessPhaseRunRow {
   error: string | null
   started_at: number | null
   finished_at: number | null
+  rework_note: string | null
+  rework_round: number
 }
 
 function toPhaseRun(row: ProcessPhaseRunRow): ProcessPhaseRun {
@@ -161,6 +165,8 @@ function toPhaseRun(row: ProcessPhaseRunRow): ProcessPhaseRun {
     error: row.error,
     startedAt: row.started_at,
     finishedAt: row.finished_at,
+    reworkNote: row.rework_note,
+    reworkRound: row.rework_round,
   }
 }
 
@@ -236,12 +242,13 @@ export function createPhase(input: {
   routing?: PhaseRouting
   gatePolicy?: PhaseGatePolicy
   fanOut?: boolean
+  maxReworkRounds?: number
   position: number
 }): ProcessPhase {
   const id = randomUUID()
   getDb()
     .prepare(
-      "INSERT INTO process_phases (id, process_id, key, name, routing, gate_policy, fan_out, position) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+      "INSERT INTO process_phases (id, process_id, key, name, routing, gate_policy, fan_out, max_rework_rounds, position) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )
     .run(
       id,
@@ -251,6 +258,7 @@ export function createPhase(input: {
       input.routing ?? "single",
       input.gatePolicy ?? "auto",
       input.fanOut ? 1 : 0,
+      input.maxReworkRounds ?? 0,
       input.position
     )
   return getPhase(id)!
@@ -280,6 +288,7 @@ export function updatePhase(
     routing?: PhaseRouting
     gatePolicy?: PhaseGatePolicy
     fanOut?: boolean
+    maxReworkRounds?: number
     position?: number
   }
 ): ProcessPhase {
@@ -304,6 +313,10 @@ export function updatePhase(
   if (patch.fanOut !== undefined) {
     sets.push("fan_out = ?")
     values.push(patch.fanOut ? 1 : 0)
+  }
+  if (patch.maxReworkRounds !== undefined) {
+    sets.push("max_rework_rounds = ?")
+    values.push(patch.maxReworkRounds)
   }
   if (patch.position !== undefined) {
     sets.push("position = ?")
@@ -595,6 +608,8 @@ export function updatePhaseRun(
     error?: string | null
     startedAt?: number | null
     finishedAt?: number | null
+    reworkNote?: string | null
+    reworkRound?: number
   }
 ): ProcessPhaseRun {
   const sets: string[] = []
@@ -626,6 +641,14 @@ export function updatePhaseRun(
   if (patch.finishedAt !== undefined) {
     sets.push("finished_at = ?")
     values.push(patch.finishedAt)
+  }
+  if (patch.reworkNote !== undefined) {
+    sets.push("rework_note = ?")
+    values.push(patch.reworkNote)
+  }
+  if (patch.reworkRound !== undefined) {
+    sets.push("rework_round = ?")
+    values.push(patch.reworkRound)
   }
   if (sets.length > 0) {
     values.push(id)

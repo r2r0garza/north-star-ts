@@ -1,6 +1,8 @@
 # PR29: Process review feedback loop — "Request changes" + re-run
 
-> Status: **NOT STARTED**. Follow-up on `026` (Process UI) surfaced by live testing. A gated phase is
+> Status: **DONE** (built on `feat/process-engine-planning`; not yet merged to `main`). See the
+> ROADMAP "Done" entry for the shipped shape. Follow-up on `026` (Process UI) surfaced by live testing.
+> A gated phase is
 > binary today — Approve or Deny — and Deny is a dead-end (the run wedges `paused`, only Cancel
 > escapes). This adds a third gate decision, **Request changes**, that re-runs the gated phase's own
 > worker with a feedback note and re-gates. Builds the **reopen → inject feedback → bounded re-run**
