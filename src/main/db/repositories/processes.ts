@@ -197,7 +197,7 @@ export function getProcessDefinition(
 
 export function listProcessDefinitions(): ProcessDefinition[] {
   const rows = getDb()
-    .prepare("SELECT * FROM process_definitions ORDER BY updated_at DESC")
+    .prepare("SELECT * FROM process_definitions ORDER BY name COLLATE NOCASE ASC")
     .all() as ProcessDefinitionRow[]
   return rows.map(toDefinition)
 }
