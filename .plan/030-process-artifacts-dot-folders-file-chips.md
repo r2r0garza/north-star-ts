@@ -1,10 +1,13 @@
 # PR30: Process artifacts — per-phase dot-folders + file chips → open in IDE
 
-> Status: **NOT STARTED**. Follow-up on `026` (Process UI) surfaced by live testing. Two paired
-> quality-of-life features that make a phase's *output* visible and openable: (a) an optional
-> per-phase **dot-folder** convention so a phase's artifacts land in a predictable place, and (b)
-> **file chips** on each phase card in the run monitor that open a produced file in the user's IDE.
-> Mostly renderer + one small additive column; **no scheduler change**. Independent of `029`/`031`.
+> Status: **DONE** (commit `882cdcc` on `feat/process-engine-planning`; not yet merged to `main`).
+> Follow-up on `026` (Process UI) surfaced by live testing. Two paired quality-of-life features that
+> make a phase's *output* visible and openable: (a) an optional per-phase **dot-folder** convention so
+> a phase's artifacts land in a predictable place, and (b) **file chips** on each phase card in the run
+> monitor that open a produced file in the user's IDE. Shipped a third, **030c** — human-readable
+> phase keys derived from the phase name (so the dot-folder reads `.plan/`, not `.phase_1_1/`). Mostly
+> renderer + one small additive column; **no scheduler change**. Independent of `029`/`031`.
+> See the ROADMAP "Done" entry for the full build summary.
 
 ## Context
 
