@@ -9,8 +9,15 @@ import {
 } from "../../db/repositories/task-checkpoints"
 import { getDb } from "../../db/connection"
 import * as processes from "../../db/repositories/processes"
+import {
+  FANOUT_CHECKPOINT_LABEL,
+  EACH_SUBTASK_CHECKPOINT_LABEL,
+  type FanoutCheckpointState,
+  type EachSubtaskCheckpointState,
+} from "./checkpoints"
 import type { TaskEventPayload } from "../runner"
 import type {
+  ProcessFlag,
   ProcessGraph,
   ProcessPhase,
   ProcessPhaseRun,
@@ -41,21 +48,6 @@ const MAX_PHASE_ATTEMPTS = 3
 export const DEFAULT_VALIDATOR_ITERATIONS = 3
 
 // The checkpoint label prefix for a fan-out parent's persisted sub-task prompts
-// (plan 025.1). One row per parent phase-run, written atomically with the child
-// rows so a crash can't leave prompt-less children. Recovered on resume so
-// children re-dispatch with their original briefing.
-const FANOUT_CHECKPOINT_LABEL = (parentRunId: string): string =>
-  `fanout:${parentRunId}`
-
-// The checkpoint label prefix for an `on_each_subtask` consumer's per-child
-// instances (plan 025.2). Unlike the fan-out label (one cumulative row per
-// parent, latest-wins), these are APPEND-ONLY — one row per triggered instance —
-// so recovery unions all rows for a label. Keyed by the consumer's top-level
-// (container) phase-run id. Each row records the source child that triggered it,
-// the created instance's run id, and the instance's kickoff prompt.
-const EACH_SUBTASK_CHECKPOINT_LABEL = (containerRunId: string): string =>
-  `eachsubtask:${containerRunId}`
-
 // Derive a short display TITLE from a sub-task briefing (plan 026 pass 1). The
 // briefing is a freeform string; take its first non-empty line, strip a leading
 // list/heading marker, and cap at ~60 chars on a word boundary. Deterministic —
@@ -173,41 +165,41 @@ export interface SchedulerCtx {
   // injected falls through to settling completed (no review), so the feature is
   // safely inert when unwired.
   validate?: Validate
+  // Cross-phase flag-back routing (plan 031.2). When true (the process definition's
+  // require_flag_approval), a pending flag raises a human-confirmation gate before
+  // the send-back; when false, the scheduler applies the flag autonomously. Absent
+  // → treated as true (confirm), the safe default.
+  requireFlagApproval?: boolean
+  // Applies a confirmed/autonomous flag's reset (plan 031.2). Injected (rather than
+  // imported directly) so tests can stub the reset. Absent → flags are left pending
+  // (inert), so the feature is safe when unwired.
+  applyFlag?: (flag: ProcessFlag) => void
 }
 
-// The state persisted in a fan-out parent's checkpoint (plan 025.1).
-interface FanoutCheckpointState {
-  parentPhaseRunId: string
-  subtasks: Array<{ phaseRunId: string; prompt: string }>
-}
-
-// The state persisted per `on_each_subtask` instance (plan 025.2). One row per
-// triggered instance; recovery unions all rows for a container's label.
-interface EachSubtaskCheckpointState {
-  // The consumer phase's top-level (container) phase-run id.
-  containerPhaseRunId: string
-  // The source fan-out child whose completion triggered this instance.
-  sourceChildRunId: string
-  // The created consumer instance's phase-run id.
-  instanceRunId: string
-  // The instance's kickoff briefing (persisted so resume needn't rebuild it).
-  // Optional — absent when no prompt builder was injected (the run phase then
-  // builds a generic kickoff from the graph).
-  prompt?: string
-}
-
-// A gate's durable approval request blob (stored on the approvals row). Two
-// kinds share one shape but are accounted for SEPARATELY:
+// A gate's durable approval request blob (stored on the approvals row). Kinds
+// share one shape but are accounted for SEPARATELY (gateRows/validatorGateRows
+// filter by kind, so no kind cross-counts another):
 //   - "process_phase_gate": the 029 approve-policy gate (count-based re-detection
 //     via needsGate/gateRows/rework_round). Never mixed with the validator's.
 //   - "process_validator_gate": the 031.1 exhaustion escalation — raised when a
-//     validator phase burns its iteration cap without approving. gateRows filters
-//     to the phase-gate kind ONLY, so a validator gate can't perturb 029 counting.
+//     validator phase burns its iteration cap without approving.
+//   - "process_flag_gate": the 031.2 cross-phase flag confirmation — raised when a
+//     phase-worker flagged an upstream defect and the process requires human
+//     confirmation before the send-back. Carries the flagId to apply on approval.
 interface GateRequest {
-  kind: "process_phase_gate" | "process_validator_gate"
+  kind:
+    | "process_phase_gate"
+    | "process_validator_gate"
+    | "process_flag_gate"
   phaseKey: string
   phaseRunId: string
   requestId: string
+  // Set only on a process_flag_gate (plan 031.2): the durable process_flags row to
+  // apply on confirm, plus the target key + reason so the monitor can render the
+  // confirmation card off the approvals row alone (no separate flags IPC).
+  flagId?: string
+  flagTargetKey?: string
+  flagReason?: string
 }
 
 export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
@@ -490,6 +482,69 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
       })
       emitPhase(phase, pr.id, "completed")
     }
+  }
+
+  // Route pending cross-phase rework flags (plan 031.2). Called at QUIESCENCE
+  // (inFlight empty) — the only safe point to reset phases, since nothing is
+  // running and every phase is terminal or pending. Returns true if it changed
+  // state (a flag was applied → the walk must re-evaluate), false if there's
+  // nothing pending. Throws GateBlockedError when a flag needs human confirmation.
+  const routePendingFlags = (): boolean => {
+    const pending = processes.listFlags({ runId: run.id, status: "pending" })
+    if (pending.length === 0) return false
+
+    if (ctx.requireFlagApproval === false) {
+      // Autonomous: apply each pending flag's reset inline, mark it applied.
+      let changed = false
+      for (const flag of pending) {
+        if (ctx.applyFlag) {
+          ctx.applyFlag(flag)
+          changed = true
+        }
+        processes.updateFlagStatus(flag.id, "applied")
+      }
+      return changed
+    }
+
+    // Confirm: raise a human gate for the first pending flag (one at a time —
+    // approving/dismissing it resumes and re-routes the next). Throws to unwind.
+    return raiseFlagGate(pending[0])
+  }
+
+  // Raise a durable human-confirmation gate for a pending flag (plan 031.2). Near
+  // copy of raiseGate/raiseValidatorGate but keyed to the FLAGGING phase-run (so
+  // the monitor renders the card on the phase that raised it) and carrying the
+  // flagId to apply on approval. Flips the run waiting_for_approval + throws.
+  const raiseFlagGate = (flag: ProcessFlag): never => {
+    const flaggingRun = processes.getPhaseRun(flag.flaggingPhaseRunId)
+    const flaggingPhase = flaggingRun
+      ? phasesById.get(flaggingRun.phaseId)
+      : undefined
+    const targetPhase = phasesById.get(flag.targetPhaseId)
+    const requestId = randomUUID()
+    const request: GateRequest = {
+      kind: "process_flag_gate",
+      phaseKey: flaggingPhase?.key ?? "",
+      phaseRunId: flag.flaggingPhaseRunId,
+      requestId,
+      flagId: flag.id,
+      flagTargetKey: targetPhase?.key ?? "",
+      flagReason: flag.reason,
+    }
+    createApproval({ taskId: ctx.taskId, request })
+    processes.updateProcessRun(run.id, { status: "waiting_for_approval" })
+    ctx.emit({
+      type: "process_phase",
+      runId: run.id,
+      phaseRunId: flag.flaggingPhaseRunId,
+      phaseKey: flaggingPhase?.key ?? "",
+      agentName: flaggingRun?.agentName ?? null,
+      status: "waiting_for_approval",
+      parentId: flaggingRun?.parentId ?? null,
+      requestId,
+    })
+    checkpoint()
+    throw new GateBlockedError()
   }
 
   // Dispatch a normal top-level phase (parentId IS NULL). Keyed in inFlight by
@@ -1075,6 +1130,12 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
       const anyFailed = graph.phases.some((p) =>
         ["failed", "cancelled"].includes(statusOf(p.id))
       )
+      // Route any pending cross-phase rework flag (plan 031.2) at this quiescent
+      // point BEFORE concluding — but only on an otherwise-successful run (a failed
+      // phase wedges the DAG; a flag targeting a completed upstream can't unwedge
+      // it, so let the failure surface instead). Autonomous → applyFlag reset each
+      // (re-walk); confirm → raiseFlagGate throws GateBlockedError (run pauses).
+      if (allTerminal && !anyFailed && routePendingFlags()) continue
       if (!allTerminal || anyFailed) {
         // A dependency failed and blocks the rest → surface as a run failure.
         if (anyFailed) throw new Error("a process phase failed")

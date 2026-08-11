@@ -282,8 +282,15 @@ export function registerDbHandlers(
   )
   ipcMain.handle(
     "db:processes:update",
-    (_e, id: string, patch: { name?: string; description?: string | null }) =>
-      processes.updateProcessDefinition(id, patch)
+    (
+      _e,
+      id: string,
+      patch: {
+        name?: string
+        description?: string | null
+        requireFlagApproval?: boolean
+      }
+    ) => processes.updateProcessDefinition(id, patch)
   )
   ipcMain.handle("db:processes:delete", (_e, id: string) =>
     processes.deleteProcessDefinition(id)

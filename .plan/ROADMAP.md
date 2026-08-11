@@ -7,24 +7,7 @@ item is its plan file, not its rank.
 
 ## Next up
 
-1. **`031.2` — Process cross-phase flag-back + autonomous routing. ⚠️ DESIGN-PENDING.** The riskier
-   half of `031` (validator shipped as `031.1`, see Done). Generalizes `029`/`031.1`'s
-   reopen+feedback+bound primitive **backward across the DAG**. Two capabilities: **flag-don't-fix**
-   (a gated `flag_for_rework` tool — `{target, reason}` — added to the process-phase tool surface;
-   because phase workers run in `autoMode` where `ctx.gate` auto-approves, it must route through the
-   **process-level gate**, not `ctx.gate`) and **send-back** (route a flag to the owning phase **or a
-   single fan-out sub-task** — rework as granular as the target: re-run just the flawed child, not all
-   N; downstream re-runs as granularly as it consumed — per-instance for `on_each_subtask`, whole for
-   `on_complete`). A per-process `human_approve` toggle gates whether a flag needs human confirmation
-   or the agent routes autonomously (the latter requires **injecting each phase's upstream chain** so
-   it can name a valid target). The DAG has **no cycle guard** — a per-run flag-back bound is
-   mandatory. **The spike (`031` doc Open Q #5):** a reset child must flip its **container parent**
-   `completed → running` (a new *backward* container transition) so `deriveContainers` re-settles it;
-   a reset gated phase must re-gate; a reset whole fan-out parent must re-decompose; `on_each_subtask`
-   consumers must re-trigger only the affected instance — all cooperating with the existing
-   container/gate/checkpoint machinery. `requestChanges`' container-guard (`service.ts`) is the
-   explicit v1 boundary this lifts. Build order: `029` → `031.1` (done) → `031.2`.
-2. **`035` — Skill import.** Extends `028` (create/delete) with **import from disk**: a single
+1. **`035` — Skill import.** Extends `028` (create/delete) with **import from disk**: a single
    **`.md`** file (treated as a `SKILL.md` — parse frontmatter, derive/validate `name`, write
    `<writable-root>/<name>/SKILL.md`) or a **`.zip`** of a skill folder (when the skill has supporting
    files — extract under `<writable-root>/<name>/` with a **zip-slip guard** + size/entry caps).
@@ -32,14 +15,14 @@ item is its plan file, not its rank.
    `parseSkill`/`validateName`); adds one small unzip dep (lean `adm-zip`, main-process only). An
    **Import** affordance beside New skill; collision → **reject with a message** (Q1). Import-only (a
    skill folder is already shareable on disk). Independent.
-3. **`036` — Agent import.** Extends `027` (create/edit/delete) with **import** of one-or-more
+2. **`036` — Agent import.** Extends `027` (create/edit/delete) with **import** of one-or-more
    **`.agent.md`** files — validate each parses (`parseAgent`) and its frontmatter `name` **equals the
    file stem** (the loader's hard rule), then **copy verbatim** (no `serializeAgent` round-trip — a
    hand-tuned agent imports byte-for-byte) into a writable root (`027`'s `writableAgentRoots()`).
    Simpler than `035` — an agent is a **single flat file, no zip**. Best-effort per file (one bad file
    errors; the rest land). An **Import** affordance beside New agent; collision / name≠stem → **reject
    that file, import the rest** (Q1/Q3). Import-only. Independent.
-4. **`038` — Sub-processes. ⚠️ DESIGN-PENDING.** A Process **phase runs another Process** as a nested
+3. **`038` — Sub-processes. ⚠️ DESIGN-PENDING.** A Process **phase runs another Process** as a nested
    run (composition of `025` with itself) — e.g. an "Implement" phase delegates to a reusable
    best-practices sub-process. `process_phases.subprocess_id` (FK → a definition; mutually exclusive
    with the agent pool) + `process_runs.parent_phase_run_id` (additive `SCHEMA_V20+`). Dispatch branches
@@ -52,7 +35,7 @@ item is its plan file, not its rank.
    import/export accounts for the `subprocess_id` reference in its format. **Likely splits:** `038.1`
    end-to-end sub-process phase; `038.2` gates/fan-out edge cases + resume-reattach. Open Qs:
    inline-vs-enqueued (lean inline), depth/cycle bounds, per-fan-out-child invocation (deferred).
-5. **`039` — Inspectable agent-to-agent messaging. ⚠️ DESIGN-PENDING.** One phase-agent (B) **asks
+4. **`039` — Inspectable agent-to-agent messaging. ⚠️ DESIGN-PENDING.** One phase-agent (B) **asks
    another phase-agent (A) a question**, answered **from A's own context** — distinct from
    `spawn_subagent` (a fresh, context-less child). The `025` engine makes each phase-run's **worker
    conversation** addressable (`makeRunPhase` stamps a `taskId`/conversation per phase-run), so a gated
@@ -64,7 +47,7 @@ item is its plan file, not its rank.
    context, no mid-flight race); same-run targets only. Monitor renders the A↔B thread off a
    `process_phase`-style event (no new channel). **Likely splits:** `039.1` completed-target round-trip
    + storage + monitor; `039.2` asking a running agent (queued) + richer targeting. Open Qs above.
-6. **`037` — Process import / export.** Unlike `035`/`036` (files already on disk → import-only), a
+5. **`037` — Process import / export.** Unlike `035`/`036` (files already on disk → import-only), a
    Process lives **only in the DB** (`025` tables), so it needs an explicit **serialize ⇄ deserialize**
    to be shareable — the sharing use case you called out. **JSON** interchange (`ProcessExport`,
    `formatVersion`-guarded): **id-free**, edges reference phases by **`key`** (unique per process) so
@@ -78,7 +61,7 @@ item is its plan file, not its rank.
    builder affordances. **Ordered after `038`** so the format carries a phase's `subprocess_id` — a
    sub-process reference exports **by definition identity** (name/a stable ref), and import resolves or
    flags a missing referenced sub-process (like `037`'s missing-agent warning).
-7. **`033` — Live dashboards.** A new top-level surface (a **Dashboards** button in the sidebar footer,
+6. **`033` — Live dashboards.** A new top-level surface (a **Dashboards** button in the sidebar footer,
    the 5th overlay alongside Processes/Agents/Skills/Settings) where a user **prompts an agent to author
    a dashboard** — a saved layout of widgets + a per-widget **data-fetch recipe** describing *how to
    pull the data*. **Data-source-agnostic by construction:** the agent fetches through whatever tools it
@@ -96,7 +79,7 @@ item is its plan file, not its rank.
    **Crux Open Qs:** how re-runnable a recipe is without an LLM; approval/allowlist safety of a stored
    recipe re-running unattended on refresh; fixed grid vs drag-resize lib. Independent of the Process
    cluster.
-8. **`034` — CLI-agent providers (Claude Code / Codex / Copilot).** Three new **provider kinds** that
+7. **`034` — CLI-agent providers (Claude Code / Codex / Copilot).** Three new **provider kinds** that
    aren't LLM-API accounts but local **agentic CLIs** driven as subprocesses (`claude -p`,
    `codex exec`, `copilot -p`) — each *is* the agent (own loop + tools + approvals, editing files
    **in the project dir**). Selecting one **routes turns away from `runAgentLoop`** to a new subprocess
@@ -117,7 +100,7 @@ item is its plan file, not its rank.
    `034.3` Codex (extract-then-resume). Open Qs: default auto-posture permissiveness (lean
    workspace-write/edits-allowed); streaming fidelity (text-first; Copilot JSONL fields unverified);
    out-of-band CLI auth. Independent of the Process cluster / dashboards.
-9. **`032` — Process visual canvas.** The explicitly-deferred half of `026` (which shipped the
+8. **`032` — Process visual canvas.** The explicitly-deferred half of `026` (which shipped the
    **list-based** DAG builder and recorded a **visual node/edge canvas** as "later"). Renderer-first +
    one additive migration; **no engine/scheduling/routing change**. Phases become draggable **nodes**,
    dependencies **edges** drawn between handles (same `on_complete`/`on_each_subtask` trigger, same
@@ -131,26 +114,26 @@ item is its plan file, not its rank.
    toggle vs replace (lean **coexist**). The Radix-`Dialog` takeover means the inspector keeps
    `NativeSelect` (the `023`/`026` `pointer-events:none` finding). **Live-run-on-canvas deferred** — v1
    keeps the `026` nested-list monitor. Independent of `029`/`031`.
-10. **`020` — Durable memories.** The cross-conversation memories section `014` reserved: small,
+9. **`020` — Durable memories.** The cross-conversation memories section `014` reserved: small,
    persisted facts the agent writes (a **gated, explicit** `remember` tool — no silent profiling)
    and that inject into future turns, **scoped** global / workspace / conversation (mirrors the
    `action_allowlist` scoping). New `memories` table + a list/delete surface (durable +
    cross-conversation ⇒ must be auditable/revocable); a `memoriesSection` renderer with an injection
    cap. Split out of `014` Q2.
-11. **`010` — Container runtime profiles.** Decouple Workspace (the files) from Runtime (the env a
+10. **`010` — Container runtime profiles.** Decouple Workspace (the files) from Runtime (the env a
    tool call executes in). Replace the raw container `image` string with a named **profile**
    (`node` | `python` | `fullstack`), resolved to an image in the env factory; default/fallback =
    `fullstack` (Node + Python) so a Node repo that later adds a Python backend doesn't wedge.
    One profile per conversation, user-overridable in settings. Kills the "one workspace = one image
    forever" assumption **without** building auto-routing or image management (both deferred). Small
    refactor of `env/factory.ts` + `container.ts` + execution settings (JSON blob — no migration).
-12. **`005.1` — ContainerEnvironment stop in-flight.** The deferred half of `005`: killing the host
+11. **`005.1` — ContainerEnvironment stop in-flight.** The deferred half of `005`: killing the host
    `docker/podman exec` client doesn't stop the in-container process. Needs its own kill mechanism
    (in-container PID tracking / `exec kill`, or marker `pkill`). Out of scope when `005` shipped.
-13. **`007` — Slash commands for skills.** Let users force a skill with `/skill-name …` (pre-inject
+12. **`007` — Slash commands for skills.** Let users force a skill with `/skill-name …` (pre-inject
    the `read_skill` call), keeping today's model-discretionary path for plain messages. Adds a
    `skills:list` IPC channel + composer autocomplete. Independent — schedule freely.
-14. **`018` — Agentic goal mode. ⚠️ SUPERSEDED by `025`** (the general Process engine — 018's fixed
+13. **`018` — Agentic goal mode. ⚠️ SUPERSEDED by `025`** (the general Process engine — 018's fixed
    pipeline becomes one built-in Process *template*; kept as a stable-ID file per convention, not
    built as its own orchestrator). An opt-in **execution mode** (orthogonal to chat/interactive/
    north_star): `simple` (today's one-pass behavior, default) vs `goal` (bounded **plan → execute →
@@ -164,7 +147,7 @@ item is its plan file, not its rank.
    PR (`/goal <request>` — reuses `007`'s composer slash-command affordance — + a "Run with review
    loop" button); the Always/Ask/Manual/Off **setting is deferred** to its own plan. Placed by `007`
    since both add `/`-command composer UI.
-15. **`024` — Index filesystem/git watcher.** The "live file watching" follow-up `008` deferred (and
+14. **`024` — Index filesystem/git watcher.** The "live file watching" follow-up `008` deferred (and
    `014` re-deferred). Today the workspace index — and the compact summary `buildIndexSummary`
    injects into the system prompt on every message send — only refreshes when `IndexService.
    ensureRunning` is called, which fires on conversation create/update or manual Start/Rebuild;
@@ -181,6 +164,57 @@ item is its plan file, not its rank.
 
 ## Done
 
+- **`031.2` — Process cross-phase flag-back (+ autonomous routing, full container support).** Built on
+  `feat/process-validator` (branches off `feat/process-engine-planning`; not yet merged to `main`). The
+  riskier half of `031`: a phase-worker that finds a defect an **earlier** phase owns **flags it back**
+  instead of fixing out of lane; the engine resets the target phase (or a single fan-out sub-task) **and
+  everything transitively downstream** to `pending`, then re-walks. Generalizes the `029`/`031.1`
+  reopen→feedback→bounded-re-run primitive **backward across the DAG**. **Storage** (`SCHEMA_V22`, two
+  additive `ADD COLUMN`s + one new table, no rebuild — the `V19-V21` pattern):
+  `process_definitions.require_flag_approval` (per-process autonomy toggle, default 1 = confirm);
+  `process_phase_runs.source_child_run_id` (**first-class on_each_subtask lineage** — which source
+  fan-out child a consumer instance consumes; promoted from the append-only `eachsubtask:` checkpoint so
+  the **per-child** reset is a direct query); and a `process_flags` table (durable flag records, lifecycle
+  pending→applied|dismissed, bare-TEXT status). **The reset core** is a new **`flagback.ts`** — one code
+  path shared by the autonomous scheduler route and the human-confirm service route: `ancestorsOf`
+  (reject a forward/self/unknown target — flags only go upstream), `downstreamClosure` (forward-edge BFS
+  with a mandatory visited-set — the DAG has no cycle guard), `descendantChildRuns` (per-child downstream
+  via `source_child_run_id`), and `applyFlagBack` branching **per-child** (reset only the flagged child +
+  reopen its container `completed→running` + **delete** the descendant on_each_subtask instances so they
+  re-trigger fresh from the reworked child's new output — siblings untouched), **whole-phase** (reset +
+  `reworkNote`), and **whole-container** (delete children + `deleteCheckpoint` the `fanout:`/`eachsubtask:`
+  rows so it re-decomposes/re-triggers clean — the previously-unused `deleteCheckpoint` is the key
+  enabler). **Tool + threading:** a gated **`flag_for_rework({target, reason})`** tool (registered
+  `otherTools`, marked UNIVERSAL so a restricted agent keeps it, offered **only** to a phase worker via a
+  new `processRunId`/`processPhaseRunId` threaded through `RunAgentLoopOptions`→`ToolContext`→
+  `makeRunPhase`); it validates the target via `resolveTarget`, writes a pending flag, and enforces a
+  per-run cap (`MAX_FLAGS_PER_RUN=10`). Because a phase worker runs in `autoMode` (where `ctx.gate`
+  auto-approves), the flag is **recorded durably and processed by the deterministic scheduler**, never
+  resolved in the agent loop. Prompts gained a **"Phases you may flag for rework"** section listing
+  upstream phases by **`key`** (the stable target vocabulary; `UpstreamResult` gained `phaseKey`, and the
+  on_each_subtask kickoff carries its source phase's key). **Scheduler** routes pending flags at
+  **quiescence** (the terminal-check branch, on an otherwise-successful run): autonomous → `applyFlag`
+  inline + `continue`; confirm → `raiseFlagGate` (a distinct `process_flag_gate` approval kind carrying
+  target+reason, so `gateRows`/`validatorGateRows` never cross-count) + `GateBlockedError` (run pauses).
+  **Service** `confirmFlag`/`dismissFlag` (IPC `process:confirmFlag`/`dismissFlag` + preload) settle the
+  gate and apply/skip the reset then resume. **Renderer:** an **"Autonomous rework routing"** `Switch` in
+  the builder's definition meta, and a monitor **flag confirmation card** (target + reason + Approve
+  send-back / Dismiss) built off a `flagGates` map reconciled from the durable approvals, mirroring the
+  029 gate card. The `fanout:`/`eachsubtask:` checkpoint labels + state shapes were extracted to a shared
+  `checkpoints.ts` (no import cycle). Verified: `pnpm typecheck` + `pnpm build` clean (the 3 residual
+  errors — `open.test.ts`, `service.test.ts` `createPhaseRun({error})`, `runner.test.ts` — are
+  **pre-existing on clean HEAD** and unrelated); new tests — **`flagback.test.ts`** (the correctness
+  spike: traversal, target resolution incl. the per-child `sourceChildRunId` case, and all three reset
+  branches with checkpoint surgery), `scheduler.test.ts` (+3: autonomous apply, confirm-gate,
+  no-op-when-empty), `service.test.ts` (+3: confirm applies + resumes, dismiss leaves target intact,
+  unknown-requestId no-op), `flag_for_rework.test.ts` (records/validates/rejects/cap/unavailable),
+  `prompts.test.ts` (+2: flag section lists keys / omitted when no upstream), `migrations.test.ts` (v22
+  table + columns + defaults); the latest-`user_version` assertions bumped 21 → 22 (×5). **Full suite 671
+  pass** against a node-ABI `better-sqlite3` rebuild, Electron ABI restored after with
+  `@electron/rebuild` (the 1 flaky `local.test.ts` SIGKILL timing test passes in isolation). Manual E2E
+  deferred to a live session. **v1 scope-outs (documented):** mixed on_complete+on_each_subtask edges into
+  one phase fall back to a whole re-run; a flag may target only a **completed** upstream phase/sub-task;
+  LLM-agent flag sources only (no deterministic tests-as-flagger). **Completes `031`.**
 - **`031.1` — Process per-phase validator.** Built on `feat/process-engine-planning` (branch
   `feat/process-validator`; not yet merged to `main`). The automatic same-phase half of `031` (the
   agent quality loop): an optional per-phase toggle runs a **second reviewer agent** after a phase's

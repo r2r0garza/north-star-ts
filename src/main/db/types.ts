@@ -356,6 +356,10 @@ export interface ProcessDefinition {
   id: string
   name: string
   description: string | null
+  // Per-process autonomy toggle for cross-phase flag-back (plan 031.2). When true
+  // (default), an agent's flag_for_rework needs human confirmation before the
+  // send-back; when false, the engine routes the flag autonomously.
+  requireFlagApproval: boolean
   createdAt: number
   updatedAt: number
 }
@@ -457,6 +461,30 @@ export interface ProcessPhaseRun {
   // has sent this phase-run back. Kept SEPARATE from reworkRound (which drives the
   // 029 count-based gate re-detection and must not be perturbed). Default 0.
   validatorRound: number
+  // First-class on_each_subtask lineage (plan 031.2): the source fan-out CHILD
+  // this consumer instance consumes. Null for ordinary runs and fan-out children;
+  // set for on_each_subtask consumer instances. Lets flag-back reset only the
+  // instance tied to a reworked source sub-task (per-child, not the whole batch).
+  sourceChildRunId: string | null
+}
+
+// A cross-phase rework flag (plan 031.2): a phase-worker found a defect an earlier
+// phase owns and flagged it back. Lifecycle: pending → applied | dismissed.
+export type ProcessFlagStatus = "pending" | "applied" | "dismissed"
+
+export interface ProcessFlag {
+  id: string
+  runId: string
+  // The phase-run whose worker raised the flag.
+  flaggingPhaseRunId: string
+  // The upstream phase the flag targets.
+  targetPhaseId: string
+  // The specific fan-out sub-task (child run) targeted, when resolved — from the
+  // flagging instance's sourceChildRunId, or a key#N index. Null = the whole phase.
+  targetChildRunId: string | null
+  reason: string
+  status: ProcessFlagStatus
+  createdAt: number
 }
 
 // The whole authored graph in one shape — the scheduler and the monitor both

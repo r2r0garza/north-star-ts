@@ -157,12 +157,34 @@ describe("kickoffPrompt — dot-folder (plan 030)", () => {
   })
 })
 
+describe("kickoffPrompt — flag-for-rework section (plan 031.2)", () => {
+  it("lists upstream phases by KEY when there is upstream to flag", () => {
+    const p = kickoffPrompt({
+      phase,
+      objective: "ship it",
+      upstream: [
+        { phaseName: "Design", phaseKey: "design", content: "the spec" },
+        { phaseName: "Plan", phaseKey: "plan", content: "the plan" },
+      ],
+    })
+    expect(p).toContain("## Phases you may flag for rework")
+    expect(p).toContain("`design`")
+    expect(p).toContain("`plan`")
+    expect(p).toContain("flag_for_rework")
+  })
+
+  it("omits the section when there is nothing upstream", () => {
+    const p = kickoffPrompt({ phase, objective: "ship it", upstream: [] })
+    expect(p).not.toContain("## Phases you may flag for rework")
+  })
+})
+
 describe("validatorPrompt (plan 031.1)", () => {
   it("includes the objective, phase output, and the strict verdict format", () => {
     const p = validatorPrompt({
       phase,
       objective: "ship the counter",
-      upstream: [{ phaseName: "Design", content: "spec here" }],
+      upstream: [{ phaseName: "Design", phaseKey: "design", content: "spec here" }],
       phaseOutput: "I built the component",
     })
     expect(p).toContain("ship the counter")

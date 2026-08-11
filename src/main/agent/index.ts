@@ -41,6 +41,7 @@ import {
 } from "./agents/tool-categories"
 import { buildSubagentsPrompt } from "./agents/prompt"
 import { spawnSubagentTool } from "./tools/spawn_subagent"
+import { flagForReworkTool } from "./tools/flag_for_rework"
 import { loadSystemPrompt } from "./system-prompt"
 import { logSystemPrompt } from "./prompt-log"
 import { buildIndexSummary } from "../index/summary"
@@ -534,6 +535,11 @@ export interface RunAgentLoopOptions {
   // directory as its parent (a Chat worker inherits neither a confinement
   // workspace nor the project link). Absent on top-level turns, which derive it.
   agentDir?: string
+  // Process phase context (plan 031.2): set only when this turn is a Process phase
+  // worker (makeRunPhase). Threaded into ToolContext so flag_for_rework can reach
+  // the run's graph + record a durable cross-phase rework flag. Absent otherwise.
+  processRunId?: string
+  processPhaseRunId?: string
 }
 
 // The on-disk directory associated with a conversation, used to discover
@@ -786,6 +792,11 @@ export async function runAgentLoop(
       // side-effecting tools. Not intersected away by the allowlist — offerSpawn
       // already required the `agent` category.
       ...(offerSpawn && !planMode ? [spawnSubagentTool.definition] : []),
+      // flag_for_rework: offered only to a Process phase worker (plan 031.2 — when
+      // this run carries process context). Lets the worker send a defect back to an
+      // upstream phase instead of fixing out of lane. Not gated by the agent
+      // allowlist (it's a process-structural capability, like spawn).
+      ...(opts.processRunId && !planMode ? [flagForReworkTool.definition] : []),
       // Plan-mode tools: the only write (write_plan) + the approval handoff.
       ...(planMode
         ? [writePlanTool.definition, presentPlanTool.definition]
@@ -1346,6 +1357,8 @@ export async function runAgentLoop(
           agentChildren: agent?.children,
           agentDepth: opts.agentDepth ?? 0,
           agentAncestors: opts.agentAncestors ?? [],
+          processRunId: opts.processRunId,
+          processPhaseRunId: opts.processPhaseRunId,
         }
         const result =
           call.name === readSkillTool.definition.function.name

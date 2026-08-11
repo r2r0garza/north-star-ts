@@ -37,6 +37,7 @@ import {
   type RunPhase,
   type Validate,
 } from "./scheduler"
+import { applyFlagBack } from "./flagback"
 
 // The DAG orchestrator task kind (plan 025). One ProcessService per app, holding
 // the runner reference so startRun can enqueue the process_run task. The executor
@@ -268,6 +269,89 @@ export class ProcessService {
     return updated
   }
 
+  // Confirm a pending cross-phase rework flag (plan 031.2): the human approved the
+  // send-back raised by raiseFlagGate. Settle the gate approved, apply the flag's
+  // reset (target + downstream → pending, via the shared flagback module), mark the
+  // flag applied, flip the run running, then resume — the scheduler re-walks and
+  // re-runs the reset phases. Mirrors requestChanges' shape.
+  confirmFlag(input: {
+    processRunId: string
+    requestId: string
+  }): ProcessRun | undefined {
+    const { processRunId, requestId } = input
+    const run = processes.getProcessRun(processRunId)
+    if (!run?.taskId || !run.processId) return run
+    const graph = processes.getProcessGraph(run.processId)
+    if (!graph) return run
+
+    const approval = listApprovals({ taskId: run.taskId }).find((a) => {
+      const req = a.request as { requestId?: string } | null
+      return req?.requestId === requestId && a.status === "pending"
+    })
+    if (!approval) return run
+    const req = approval.request as { flagId?: string } | null
+    const flag = req?.flagId ? processes.getFlag(req.flagId) : undefined
+    if (!flag || flag.status !== "pending") return run
+
+    const tx = getDb().transaction(() => {
+      resolveApproval(approval.id, { status: "approved" })
+      applyFlagBack({
+        taskId: run.taskId!,
+        runId: processRunId,
+        graph,
+        target: {
+          targetPhaseId: flag.targetPhaseId,
+          targetChildRunId: flag.targetChildRunId ?? undefined,
+        },
+        reason: flag.reason,
+      })
+      processes.updateFlagStatus(flag.id, "applied")
+      processes.updateProcessRun(processRunId, {
+        status: "running",
+        finishedAt: null,
+      })
+    })
+    tx()
+
+    const updated = processes.getProcessRun(processRunId)
+    this.runner.resume(run.taskId)
+    return updated
+  }
+
+  // Dismiss a pending cross-phase rework flag (plan 031.2): the human rejected the
+  // send-back. Settle the gate denied, mark the flag dismissed, resume — the run
+  // continues as if unflagged (the flagging phase's output stands). The scheduler
+  // re-routes any OTHER pending flag on the next quiescence.
+  dismissFlag(input: {
+    processRunId: string
+    requestId: string
+  }): ProcessRun | undefined {
+    const { processRunId, requestId } = input
+    const run = processes.getProcessRun(processRunId)
+    if (!run?.taskId) return run
+
+    const approval = listApprovals({ taskId: run.taskId }).find((a) => {
+      const req = a.request as { requestId?: string } | null
+      return req?.requestId === requestId && a.status === "pending"
+    })
+    if (!approval) return run
+    const req = approval.request as { flagId?: string } | null
+
+    const tx = getDb().transaction(() => {
+      resolveApproval(approval.id, { status: "denied" })
+      if (req?.flagId) processes.updateFlagStatus(req.flagId, "dismissed")
+      processes.updateProcessRun(processRunId, {
+        status: "running",
+        finishedAt: null,
+      })
+    })
+    tx()
+
+    const updated = processes.getProcessRun(processRunId)
+    this.runner.resume(run.taskId)
+    return updated
+  }
+
   // The runner-invoked executor for the process_run kind. Registered:
   //   runner.registerKind(PROCESS_RUN_KIND, { autoResume: true, run: svc.execute,
   //                                            hasIndependentSurface: true })
@@ -299,6 +383,21 @@ export class ProcessService {
         decompose: this.makeDecompose(run),
         buildEachSubtaskPrompt: this.makeBuildEachSubtaskPrompt(run),
         validate: this.makeValidate(run),
+        // Cross-phase flag-back (plan 031.2): the definition's autonomy toggle, and
+        // the reset applier (delegated to flagback.ts — one reset code path shared
+        // with the confirm route).
+        requireFlagApproval: graph.definition.requireFlagApproval,
+        applyFlag: (flag) =>
+          applyFlagBack({
+            taskId: task.id,
+            runId,
+            graph,
+            target: {
+              targetPhaseId: flag.targetPhaseId,
+              targetChildRunId: flag.targetChildRunId ?? undefined,
+            },
+            reason: flag.reason,
+          }),
       })
       processes.updateProcessRun(runId, {
         status: "completed",
@@ -418,6 +517,10 @@ export class ProcessService {
           abort: childAbort,
           // Phases are autonomous; the phase gate is the HITL point.
           autoMode: true,
+          // Cross-phase flag-back context (plan 031.2): lets this worker's
+          // flag_for_rework tool reach the run's graph + record a durable flag.
+          processRunId: run.id,
+          processPhaseRunId: phaseRun.id,
           onEvent: () => {},
         })
         if (result.stopped || childAbort.signal.aborted)
@@ -536,6 +639,11 @@ export class ProcessService {
         phase,
         objective: run.objective ?? "",
         sourcePhaseName: source,
+        // The source fan-out phase's key — the flag_for_rework target if this
+        // sub-task's input is defective (plan 031.2).
+        sourcePhaseKey: sourceChildRun.phaseId
+          ? this.phaseKey(run, sourceChildRun.phaseId)
+          : undefined,
         subtaskContent: this.lastAssistantContent(sourceChildRun),
       })
     }
@@ -646,6 +754,14 @@ export class ProcessService {
     return graph?.phases.find((p) => p.id === phaseId)?.name ?? "upstream"
   }
 
+  // The stable key of a phase in this run's graph — the flag_for_rework target
+  // vocabulary (plan 031.2). "" when the phase can't be resolved.
+  private phaseKey(run: ProcessRun, phaseId: string): string {
+    if (!run.processId) return ""
+    const graph = processes.getProcessGraph(run.processId)
+    return graph?.phases.find((p) => p.id === phaseId)?.key ?? ""
+  }
+
   // Resolve which agent runs a phase (or one of its sub-tasks). `single` phases
   // use the pool's first agent (position 0). `dispatch` phases (plan 025.3) route
   // over the pool per (sub-)task via an LLM classifier when routing context is
@@ -704,7 +820,7 @@ export class ProcessService {
         : pr.taskId
           ? this.lastAssistantContent(pr)
           : null
-      results.push({ phaseName: src.name, content })
+      results.push({ phaseName: src.name, phaseKey: src.key, content })
     }
     return results
   }

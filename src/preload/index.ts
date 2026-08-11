@@ -316,6 +316,11 @@ const api = {
       requestId: string
       feedback: string
     }) => ipcRenderer.invoke("process:requestChanges", payload) as Promise<void>,
+    // Cross-phase rework flag confirmation (plan 031.2).
+    confirmFlag: (payload: { processRunId: string; requestId: string }) =>
+      ipcRenderer.invoke("process:confirmFlag", payload) as Promise<void>,
+    dismissFlag: (payload: { processRunId: string; requestId: string }) =>
+      ipcRenderer.invoke("process:dismissFlag", payload) as Promise<void>,
   },
   pickWorkspace: () =>
     ipcRenderer.invoke("pick-workspace") as Promise<{
@@ -727,7 +732,14 @@ const api = {
       // Returns the whole authored graph (definition + phases + agents + edges).
       get: (id: string) =>
         ipcRenderer.invoke("db:processes:get", id) as Promise<ProcessGraph | null>,
-      update: (id: string, patch: { name?: string; description?: string | null }) =>
+      update: (
+        id: string,
+        patch: {
+          name?: string
+          description?: string | null
+          requireFlagApproval?: boolean
+        }
+      ) =>
         ipcRenderer.invoke(
           "db:processes:update",
           id,

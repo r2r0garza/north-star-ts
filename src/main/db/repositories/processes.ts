@@ -7,6 +7,8 @@ import type {
   PhaseRunStatus,
   ProcessDefinition,
   ProcessEdge,
+  ProcessFlag,
+  ProcessFlagStatus,
   ProcessGraph,
   ProcessPhase,
   ProcessPhaseAgent,
@@ -25,6 +27,7 @@ interface ProcessDefinitionRow {
   id: string
   name: string
   description: string | null
+  require_flag_approval: number
   created_at: number
   updated_at: number
 }
@@ -34,6 +37,7 @@ function toDefinition(row: ProcessDefinitionRow): ProcessDefinition {
     id: row.id,
     name: row.name,
     description: row.description,
+    requireFlagApproval: row.require_flag_approval === 1,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   }
@@ -158,6 +162,7 @@ interface ProcessPhaseRunRow {
   rework_note: string | null
   rework_round: number
   validator_round: number
+  source_child_run_id: string | null
 }
 
 function toPhaseRun(row: ProcessPhaseRunRow): ProcessPhaseRun {
@@ -177,6 +182,7 @@ function toPhaseRun(row: ProcessPhaseRunRow): ProcessPhaseRun {
     reworkNote: row.rework_note,
     reworkRound: row.rework_round,
     validatorRound: row.validator_round,
+    sourceChildRunId: row.source_child_run_id,
   }
 }
 
@@ -214,7 +220,11 @@ export function listProcessDefinitions(): ProcessDefinition[] {
 
 export function updateProcessDefinition(
   id: string,
-  patch: { name?: string; description?: string | null }
+  patch: {
+    name?: string
+    description?: string | null
+    requireFlagApproval?: boolean
+  }
 ): ProcessDefinition {
   const sets: string[] = []
   const values: unknown[] = []
@@ -225,6 +235,10 @@ export function updateProcessDefinition(
   if (patch.description !== undefined) {
     sets.push("description = ?")
     values.push(patch.description)
+  }
+  if (patch.requireFlagApproval !== undefined) {
+    sets.push("require_flag_approval = ?")
+    values.push(patch.requireFlagApproval ? 1 : 0)
   }
   if (sets.length > 0) {
     sets.push("updated_at = ?")
@@ -574,11 +588,14 @@ export function createPhaseRun(input: {
   status?: PhaseRunStatus
   agentName?: string | null
   title?: string | null
+  // The source fan-out child this on_each_subtask consumer instance consumes
+  // (plan 031.2 lineage). Null/omitted for ordinary runs and fan-out children.
+  sourceChildRunId?: string | null
 }): ProcessPhaseRun {
   const id = randomUUID()
   getDb()
     .prepare(
-      "INSERT INTO process_phase_runs (id, run_id, phase_id, parent_id, status, task_id, agent_name, title, iteration, error, started_at, finished_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+      "INSERT INTO process_phase_runs (id, run_id, phase_id, parent_id, status, task_id, agent_name, title, iteration, error, started_at, finished_at, source_child_run_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )
     .run(
       id,
@@ -592,7 +609,8 @@ export function createPhaseRun(input: {
       0,
       null,
       null,
-      null
+      null,
+      input.sourceChildRunId ?? null
     )
   return getPhaseRun(id)!
 }
@@ -700,4 +718,93 @@ export function updatePhaseRun(
       .run(...values)
   }
   return getPhaseRun(id)!
+}
+
+// Delete a phase-run and its descendant children (the parent_id FK is
+// ON DELETE CASCADE, so children/instances go with it). Used by flag-back
+// (plan 031.2) to clear a container's stale children before a re-decompose /
+// re-trigger, so the container starts clean.
+export function deletePhaseRun(id: string): void {
+  getDb().prepare("DELETE FROM process_phase_runs WHERE id = ?").run(id)
+}
+
+// ── flags (plan 031.2) ───────────────────────────────────────────────────────
+
+interface ProcessFlagRow {
+  id: string
+  run_id: string
+  flagging_phase_run_id: string
+  target_phase_id: string
+  target_child_run_id: string | null
+  reason: string
+  status: ProcessFlagStatus
+  created_at: number
+}
+
+function toFlag(row: ProcessFlagRow): ProcessFlag {
+  return {
+    id: row.id,
+    runId: row.run_id,
+    flaggingPhaseRunId: row.flagging_phase_run_id,
+    targetPhaseId: row.target_phase_id,
+    targetChildRunId: row.target_child_run_id,
+    reason: row.reason,
+    status: row.status,
+    createdAt: row.created_at,
+  }
+}
+
+export function createFlag(input: {
+  runId: string
+  flaggingPhaseRunId: string
+  targetPhaseId: string
+  targetChildRunId?: string | null
+  reason: string
+}): ProcessFlag {
+  const id = randomUUID()
+  getDb()
+    .prepare(
+      "INSERT INTO process_flags (id, run_id, flagging_phase_run_id, target_phase_id, target_child_run_id, reason, status, created_at) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)"
+    )
+    .run(
+      id,
+      input.runId,
+      input.flaggingPhaseRunId,
+      input.targetPhaseId,
+      input.targetChildRunId ?? null,
+      input.reason,
+      Date.now()
+    )
+  return getFlag(id)!
+}
+
+export function getFlag(id: string): ProcessFlag | undefined {
+  const row = getDb()
+    .prepare("SELECT * FROM process_flags WHERE id = ?")
+    .get(id) as ProcessFlagRow | undefined
+  return row ? toFlag(row) : undefined
+}
+
+export function listFlags(opts: {
+  runId: string
+  status?: ProcessFlagStatus
+}): ProcessFlag[] {
+  const clauses = ["run_id = ?"]
+  const values: unknown[] = [opts.runId]
+  if (opts.status) {
+    clauses.push("status = ?")
+    values.push(opts.status)
+  }
+  const rows = getDb()
+    .prepare(
+      `SELECT * FROM process_flags WHERE ${clauses.join(" AND ")} ORDER BY created_at ASC`
+    )
+    .all(...values) as ProcessFlagRow[]
+  return rows.map(toFlag)
+}
+
+export function updateFlagStatus(id: string, status: ProcessFlagStatus): void {
+  getDb()
+    .prepare("UPDATE process_flags SET status = ? WHERE id = ?")
+    .run(status, id)
 }

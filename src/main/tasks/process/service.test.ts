@@ -551,3 +551,95 @@ describe.skipIf(!sqliteLoads)("ProcessService validator (plan 031.1)", () => {
     expect(workerRuns).toHaveLength(1)
   })
 })
+
+describe.skipIf(!sqliteLoads)("ProcessService confirm/dismiss flag (plan 031.2)", () => {
+  // A → B, both completed, with a pending flag (B flagged A) + a pending
+  // process_flag_gate approval. Returns the ids the test needs.
+  function seedFlag() {
+    const def = processes.createProcessDefinition({ name: "T" })
+    const a = processes.createPhase({ processId: def.id, key: "a", name: "A", position: 0 })
+    const b = processes.createPhase({ processId: def.id, key: "b", name: "B", position: 1 })
+    processes.createEdge({ processId: def.id, fromPhaseId: a.id, toPhaseId: b.id })
+    const { taskId } = seedTaskRow()
+    const run = processes.createProcessRun({
+      processId: def.id,
+      sourceConversationId: null,
+      taskId,
+      objective: "do it",
+      status: "waiting_for_approval",
+    })
+    const aRun = processes.createPhaseRun({ runId: run.id, phaseId: a.id, status: "completed" })
+    const bRun = processes.createPhaseRun({ runId: run.id, phaseId: b.id, status: "completed" })
+    const flag = processes.createFlag({
+      runId: run.id,
+      flaggingPhaseRunId: bRun.id,
+      targetPhaseId: a.id,
+      reason: "fix the bug",
+    })
+    const requestId = randomUUID()
+    const approval = createApproval({
+      taskId,
+      request: {
+        kind: "process_flag_gate",
+        phaseKey: "b",
+        phaseRunId: bRun.id,
+        requestId,
+        flagId: flag.id,
+        flagTargetKey: "a",
+        flagReason: "fix the bug",
+      },
+    })
+    return { run, aRun, bRun, flag, requestId, approvalId: approval.id }
+  }
+
+  function makeRunner() {
+    const resumed: string[] = []
+    const runner = {
+      enqueueKind: () => ({ id: "t" }),
+      resume: (id: string) => resumed.push(id),
+    } as never
+    return { runner, resumed }
+  }
+
+  it("confirmFlag applies the reset (target + downstream → pending), resumes", () => {
+    const { run, aRun, bRun, flag, requestId, approvalId } = seedFlag()
+    const { runner, resumed } = makeRunner()
+    const svc = new ProcessService(runner)
+
+    const updated = svc.confirmFlag({ processRunId: run.id, requestId })
+
+    expect(updated?.status).toBe("running")
+    // Target A + downstream B both reset to pending.
+    expect(processes.getPhaseRun(aRun.id)?.status).toBe("pending")
+    expect(processes.getPhaseRun(bRun.id)?.status).toBe("pending")
+    // A carries the reason as its rework note.
+    expect(processes.getPhaseRun(aRun.id)?.reworkNote).toBe("fix the bug")
+    // The flag is applied; the gate is approved; the task resumed.
+    expect(processes.getFlag(flag.id)?.status).toBe("applied")
+    expect(getApproval(approvalId)?.status).toBe("approved")
+    expect(resumed).toEqual([run.taskId])
+  })
+
+  it("dismissFlag leaves the target intact, marks the flag dismissed, resumes", () => {
+    const { run, aRun, flag, requestId, approvalId } = seedFlag()
+    const { runner, resumed } = makeRunner()
+    const svc = new ProcessService(runner)
+
+    const updated = svc.dismissFlag({ processRunId: run.id, requestId })
+
+    expect(updated?.status).toBe("running")
+    // The flagged target A is untouched (still completed).
+    expect(processes.getPhaseRun(aRun.id)?.status).toBe("completed")
+    expect(processes.getFlag(flag.id)?.status).toBe("dismissed")
+    expect(getApproval(approvalId)?.status).toBe("denied")
+    expect(resumed).toEqual([run.taskId])
+  })
+
+  it("confirmFlag is a no-op on an unknown requestId", () => {
+    const { run } = seedFlag()
+    const { runner, resumed } = makeRunner()
+    const svc = new ProcessService(runner)
+    svc.confirmFlag({ processRunId: run.id, requestId: "nope" })
+    expect(resumed).toEqual([])
+  })
+})

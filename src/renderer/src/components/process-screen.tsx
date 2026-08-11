@@ -93,14 +93,27 @@ import type {
   TaskLiveEvent,
 } from "@/types"
 
-// The durable approval row's `request` blob for a process phase gate (mirrors
+// The durable approval row's `request` blob for a process gate (mirrors
 // GateRequest in the scheduler). Carries the gated phase's own phaseRunId, which
-// keys the monitor's gate map — so we can drop a settled gate on reconcile.
+// keys the monitor's gate map — so we can drop a settled gate on reconcile. A
+// process_flag_gate (plan 031.2) additionally carries the flag's target + reason
+// so the monitor renders the confirmation card off the approvals row alone.
 interface ProcessGateRequest {
-  kind: "process_phase_gate"
+  kind: "process_phase_gate" | "process_validator_gate" | "process_flag_gate"
   phaseKey: string
   phaseRunId: string
   requestId: string
+  flagId?: string
+  flagTargetKey?: string
+  flagReason?: string
+}
+
+// A pending cross-phase rework flag awaiting human confirmation (plan 031.2),
+// rendered on the FLAGGING phase-run's card.
+interface FlagGateInfo {
+  requestId: string
+  targetKey: string
+  reason: string
 }
 
 // The Process view — a full-viewport takeover (same shell as SkillsScreen /
@@ -438,6 +451,7 @@ function ProcessBuilder({
   async function saveDefinition(patch: {
     name?: string
     description?: string | null
+    requireFlagApproval?: boolean
   }) {
     try {
       await window.cowork.db.processes.update(definition.id, patch)
@@ -504,6 +518,24 @@ function ProcessBuilder({
               }
             }}
           />
+          {/* Cross-phase flag-back autonomy (plan 031.2). When OFF (the default,
+              requireFlagApproval true), a phase's flag_for_rework raises a
+              confirmation card before the send-back; when ON, the engine routes
+              flags autonomously. */}
+          <label
+            className="mt-1 flex items-center gap-2 text-xs"
+            title="When on, a phase that flags an earlier phase for rework is routed automatically, with no confirmation card"
+          >
+            <Switch
+              checked={!definition.requireFlagApproval}
+              onCheckedChange={(v) =>
+                saveDefinition({ requireFlagApproval: !v })
+              }
+            />
+            <span className="text-muted-foreground">
+              Autonomous rework routing (skip flag confirmation)
+            </span>
+          </label>
         </div>
 
         {/* Phases. */}
@@ -1092,6 +1124,11 @@ function RunMonitor({
   const [graph, setGraph] = useState<ProcessGraph | null>(null)
   // phaseRunId → the pending gate's requestId (derived from the event stream).
   const [gates, setGates] = useState<Record<string, string>>({})
+  // phaseRunId → a pending cross-phase rework flag awaiting confirmation (plan
+  // 031.2): the flagging phase's card shows the target + reason with Approve
+  // send-back / Dismiss. Sourced from the durable approvals list (the flag gate's
+  // request blob carries target + reason), reconciled like `gates`.
+  const [flagGates, setFlagGates] = useState<Record<string, FlagGateInfo>>({})
   // The New Run modal (objective + required folder).
   const [newRunOpen, setNewRunOpen] = useState(false)
   // The phase-run whose worker transcript is open (null = closed). Resolved from
@@ -1176,21 +1213,30 @@ function RunMonitor({
         const gates = deriveGates(
           events.map((e) => e.payload as TaskEventPayload)
         )
+        const flagInfo: Record<string, FlagGateInfo> = {}
         for (const a of approvals) {
-          if (a.status === "pending") continue
           const req = a.request as ProcessGateRequest | null
+          if (a.status === "pending") {
+            // A pending flag gate: record its target + reason so PhaseRunItem can
+            // render the confirmation card (keyed by the flagging phase-run).
+            if (req?.kind === "process_flag_gate")
+              flagInfo[req.phaseRunId] = {
+                requestId: req.requestId,
+                targetKey: req.flagTargetKey ?? "",
+                reason: req.flagReason ?? "",
+              }
+            continue
+          }
           // Drop the gate only if THIS settled row is the one the map is showing
           // (match by requestId, not phaseRunId): after a "Request changes" round
           // a phase-run has both a denied old row and a fresh pending gate — the
-          // denied row must not clear the live one (plan 029).
-          if (
-            req?.kind === "process_phase_gate" &&
-            gates[req.phaseRunId] === req.requestId
-          ) {
+          // denied row must not clear the live one (plan 029). Applies to all gate
+          // kinds (phase / validator / flag).
+          if (req && gates[req.phaseRunId] === req.requestId)
             delete gates[req.phaseRunId]
-          }
         }
         setGates(gates)
+        setFlagGates(flagInfo)
       })
     })
     return () => {
@@ -1208,6 +1254,23 @@ function RunMonitor({
       const ev = payload.event
       if (ev.type === "process_phase") {
         setGates((g) => foldGate(g, ev))
+        // A flag gate rides the same waiting_for_approval event but its target +
+        // reason live on the durable approval row — refresh flagGates from it
+        // (plan 031.2). Cheap: only the pending flag rows are kept.
+        window.cowork.db.approvals.list({ taskId }).then((approvals) => {
+          const info: Record<string, FlagGateInfo> = {}
+          for (const a of approvals) {
+            if (a.status !== "pending") continue
+            const req = a.request as ProcessGateRequest | null
+            if (req?.kind === "process_flag_gate")
+              info[req.phaseRunId] = {
+                requestId: req.requestId,
+                targetKey: req.flagTargetKey ?? "",
+                reason: req.flagReason ?? "",
+              }
+          }
+          setFlagGates(info)
+        })
         void refetchRef.current()
       } else if (
         ev.type === "status_change" ||
@@ -1334,6 +1397,38 @@ function RunMonitor({
       })
     } catch (err) {
       toast.error(`Could not request changes: ${err}`)
+    }
+  }
+
+  // Clear a pending flag from the flagGates map (plan 031.2). Optimistic — like
+  // clearGate, the engine may not re-emit for this phase-run on resume.
+  const clearFlag = (phaseRunId: string) =>
+    setFlagGates((f) => {
+      const next = { ...f }
+      delete next[phaseRunId]
+      return next
+    })
+
+  // Confirm a cross-phase rework flag: apply the send-back (target + downstream
+  // re-run) then resume (plan 031.2).
+  async function confirmFlag(requestId: string, phaseRunId: string) {
+    if (!run) return
+    clearFlag(phaseRunId)
+    try {
+      await window.cowork.process.confirmFlag({ processRunId: run.id, requestId })
+    } catch (err) {
+      toast.error(`Could not confirm rework flag: ${err}`)
+    }
+  }
+  // Dismiss a cross-phase rework flag: the flagged phase's output stands; the run
+  // continues (plan 031.2).
+  async function dismissFlag(requestId: string, phaseRunId: string) {
+    if (!run) return
+    clearFlag(phaseRunId)
+    try {
+      await window.cowork.process.dismissFlag({ processRunId: run.id, requestId })
+    } catch (err) {
+      toast.error(`Could not dismiss rework flag: ${err}`)
     }
   }
 
@@ -1485,6 +1580,7 @@ function RunMonitor({
               phaseRun={pr}
               name={phaseName(pr.phaseId)}
               gateRequestId={gates[pr.id]}
+              flagGate={flagGates[pr.id]}
               childRuns={childrenOf.get(pr.id) ?? []}
               phaseName={phaseName}
               maxReworkRounds={phaseMaxRework(pr.phaseId)}
@@ -1493,6 +1589,8 @@ function RunMonitor({
               onApprove={approve}
               onDeny={deny}
               onRequestChanges={requestChanges}
+              onConfirmFlag={confirmFlag}
+              onDismissFlag={dismissFlag}
               onOpenTranscript={openTranscript}
             />
           ))}
@@ -1573,6 +1671,7 @@ function PhaseRunItem({
   phaseRun,
   name,
   gateRequestId,
+  flagGate,
   childRuns,
   phaseName,
   maxReworkRounds,
@@ -1581,11 +1680,16 @@ function PhaseRunItem({
   onApprove,
   onDeny,
   onRequestChanges,
+  onConfirmFlag,
+  onDismissFlag,
   onOpenTranscript,
 }: {
   phaseRun: ProcessPhaseRun
   name: string
   gateRequestId: string | undefined
+  // A pending cross-phase rework flag this phase raised, awaiting confirmation
+  // (plan 031.2). Undefined when there's none.
+  flagGate: FlagGateInfo | undefined
   childRuns: ProcessPhaseRun[]
   phaseName: (phaseId: string) => string
   // The per-phase rework cap (0 = unlimited) and whether the phase is a container
@@ -1601,6 +1705,8 @@ function PhaseRunItem({
     phaseRunId: string,
     feedback: string
   ) => void
+  onConfirmFlag: (requestId: string, phaseRunId: string) => void
+  onDismissFlag: (requestId: string, phaseRunId: string) => void
   // Open a phase/child's worker transcript (only rows with a taskId).
   onOpenTranscript: (phaseRun: ProcessPhaseRun) => void
 }) {
@@ -1732,6 +1838,50 @@ function PhaseRunItem({
               </div>
             </div>
           )}
+        </div>
+      )}
+
+      {/* Inline confirmation card for a cross-phase rework flag this phase raised
+          (plan 031.2). Wired to process.confirmFlag/dismissFlag. */}
+      {flagGate && (
+        <div className="flex flex-col gap-2 rounded-lg border border-amber-500/40 bg-amber-500/5 p-3 text-xs">
+          <div className="flex items-center gap-2 font-medium text-amber-600 dark:text-amber-500">
+            <ShieldAlert className="size-3.5 shrink-0" />
+            <span>
+              “{name}” flagged{" "}
+              {flagGate.targetKey ? (
+                <>
+                  <code className="font-mono">{flagGate.targetKey}</code> for
+                </>
+              ) : (
+                "an earlier phase for"
+              )}{" "}
+              rework.
+            </span>
+          </div>
+          {flagGate.reason && (
+            <p className="whitespace-pre-wrap text-muted-foreground">
+              {flagGate.reason}
+            </p>
+          )}
+          <p className="text-[11px] text-muted-foreground">
+            Approving re-runs that phase and everything built on it.
+          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              size="xs"
+              onClick={() => onConfirmFlag(flagGate.requestId, phaseRun.id)}
+            >
+              Approve send-back
+            </Button>
+            <Button
+              size="xs"
+              variant="outline"
+              onClick={() => onDismissFlag(flagGate.requestId, phaseRun.id)}
+            >
+              Dismiss
+            </Button>
+          </div>
         </div>
       )}
 

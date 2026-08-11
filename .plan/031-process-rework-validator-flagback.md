@@ -1,11 +1,11 @@
 # PR31: Process rework — per-phase validator + cross-phase flag-back
 
-> Status: **SPLIT.** `031.1` (per-phase validator) is **SHIPPED** on branch `feat/process-validator`
-> (see the Done entry in `ROADMAP.md`). `031.2` (cross-phase flag-back + autonomous routing) remains
-> **DESIGN-PENDING** — the riskier sub-DAG-replay half (see Open Q #5, the spike to run first).
+> Status: **BOTH HALVES SHIPPED** on branch `feat/process-validator` (see the two Done entries in
+> `ROADMAP.md`). `031.1` (per-phase validator) and `031.2` (cross-phase flag-back + autonomous routing +
+> full container support) are complete. Nothing merged to `main` yet.
 >
 > The agent **quality loop** for the Process engine: a phase can be sent back to rework its
-> output — automatically by a **validator** (a second agent reviewing the same phase — shipped) or by
+> output — automatically by a **validator** (a second agent reviewing the same phase — `031.1`) or by
 > an agent's **flag** targeting an *earlier* phase (`031.2`). Generalizes the superseded `018`
 > `review → fix → review` bounded loop, and shares the **reopen → inject feedback → bounded re-run**
 > primitive with `029` (the human, same-phase case).
@@ -16,6 +16,17 @@
 > the phase **escalates to a human gate** (Open Q #3's "force a human gate"). Rework-round row model =
 > **reset-in-place** (Open Q #4), with a `validator_round` counter kept separate from `029`'s
 > `rework_round`. Non-fan-out phases only (containers are `031.2`).
+>
+> **`031.2` build notes (shipped):** a gated **`flag_for_rework`** tool (routed via the deterministic
+> scheduler's durable gate, since a phase worker's `autoMode` `ctx.gate` auto-approves — resolving Open
+> Q's autonomy question). **Full container support** (Open Q #5, the spike): the reset (`flagback.ts`,
+> one shared code path) handles per-child fan-out sub-task targeting (reset the child + reopen its
+> container `completed→running` + delete descendant on_each_subtask instances), whole-container
+> re-decompose (delete children + `fanout:`/`eachsubtask:` checkpoints), and transitive downstream
+> closure. **Lineage** (Open Q #6): promoted to a first-class `process_phase_runs.source_child_run_id`
+> column so a Test instance resolves its Implement sub-task directly — the flagging agent names only the
+> phase `key`, the engine resolves the child. **Both confirmation modes** via a per-process
+> `require_flag_approval` toggle (default confirm), with a per-run flag cap (Open Q #3's per-run bound).
 
 ## Context
 

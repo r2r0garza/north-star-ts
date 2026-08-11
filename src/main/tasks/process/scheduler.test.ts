@@ -29,6 +29,7 @@ import {
   type Validate,
 } from "./scheduler"
 import type { TaskEventPayload } from "../runner"
+import type { ProcessFlag } from "../../db/types"
 
 // Create a backing task row so approvals/checkpoints (FK to tasks) can attach.
 function freshTask(): string {
@@ -97,6 +98,8 @@ function makeCtx(
     decompose?: Decompose
     buildEachSubtaskPrompt?: BuildEachSubtaskPrompt
     validate?: Validate
+    requireFlagApproval?: boolean
+    applyFlag?: (flag: ProcessFlag) => void
   }
 ): { ctx: SchedulerCtx; events: TaskEventPayload[]; runId: string } {
   const taskId = freshTask()
@@ -120,6 +123,8 @@ function makeCtx(
     decompose: opts?.decompose,
     buildEachSubtaskPrompt: opts?.buildEachSubtaskPrompt,
     validate: opts?.validate,
+    requireFlagApproval: opts?.requireFlagApproval,
+    applyFlag: opts?.applyFlag,
   }
   return { ctx, events, runId: run.id }
 }
@@ -1105,6 +1110,105 @@ describe.skipIf(!sqliteLoads)("scheduler — validator (plan 031.1)", () => {
     const { ctx, runId } = makeCtx(pid, runPhase, { validate })
     await runScheduler(ctx)
     expect(reviews).toBe(0)
+    expect(statusByKey(runId, pid)).toEqual({ a: "completed", b: "completed" })
+  })
+})
+
+describe.skipIf(!sqliteLoads)("scheduler — flag routing (plan 031.2)", () => {
+  // Helper: the phase id for a key in a run's graph.
+  const pidOf = (processId: string, key: string) =>
+    processes.getProcessGraph(processId)!.phases.find((p) => p.key === key)!.id
+
+  it("autonomous mode applies a pending flag inline and re-runs", async () => {
+    // a → b, both complete; b flags a. requireFlagApproval false → applyFlag runs
+    // at quiescence, and (since our stub resets a to pending) a re-runs.
+    const pid = buildProcess({
+      phases: [{ key: "a" }, { key: "b" }],
+      edges: [["a", "b"]],
+    })
+    const ran: string[] = []
+    const runPhase: RunPhase = async ({ phase }) => {
+      ran.push(phase.key)
+      return { content: phase.key }
+    }
+    const applied: string[] = []
+    const { ctx, runId } = makeCtx(pid, runPhase, {
+      requireFlagApproval: false,
+      applyFlag: (flag) => {
+        applied.push(flag.id)
+      },
+    })
+    // Seed run rows + a pending flag from b → a. (The scheduler also seeds top-level
+    // rows idempotently; these completed rows satisfy the flag's FKs and let the
+    // walk reach quiescence with everything terminal.)
+    processes.createPhaseRun({ runId, phaseId: pidOf(pid, "a"), status: "completed" })
+    const bRun = processes.createPhaseRun({ runId, phaseId: pidOf(pid, "b"), status: "completed" })
+    processes.createFlag({
+      runId,
+      flaggingPhaseRunId: bRun.id,
+      targetPhaseId: pidOf(pid, "a"),
+      reason: "fix it",
+    })
+
+    await runScheduler(ctx)
+    // The flag was applied inline and marked applied (no gate raised).
+    expect(applied).toHaveLength(1)
+    expect(processes.listFlags({ runId, status: "applied" })).toHaveLength(1)
+    expect(processes.listFlags({ runId, status: "pending" })).toHaveLength(0)
+    expect(listApprovals({ taskId: ctx.taskId, status: "pending" })).toHaveLength(0)
+  })
+
+  it("confirm mode raises a process_flag_gate and pauses", async () => {
+    const pid = buildProcess({
+      phases: [{ key: "a" }, { key: "b" }],
+      edges: [["a", "b"]],
+    })
+    const runPhase: RunPhase = async ({ phase }) => ({ content: phase.key })
+    const { ctx, runId } = makeCtx(pid, runPhase, {
+      requireFlagApproval: true,
+      applyFlag: () => {
+        throw new Error("applyFlag must NOT run in confirm mode")
+      },
+    })
+    // Seed run rows + a pending flag.
+    processes.createPhaseRun({ runId, phaseId: pidOf(pid, "a"), status: "completed" })
+    const bRun = processes.createPhaseRun({ runId, phaseId: pidOf(pid, "b"), status: "completed" })
+    processes.createFlag({
+      runId,
+      flaggingPhaseRunId: bRun.id,
+      targetPhaseId: pidOf(pid, "a"),
+      reason: "please fix",
+    })
+
+    await expect(runScheduler(ctx)).rejects.toBeInstanceOf(GateBlockedError)
+    // A pending process_flag_gate approval was raised, carrying target + reason.
+    const pending = listApprovals({ taskId: ctx.taskId, status: "pending" })
+    expect(pending).toHaveLength(1)
+    const req = pending[0].request as {
+      kind: string
+      flagTargetKey?: string
+      flagReason?: string
+    }
+    expect(req.kind).toBe("process_flag_gate")
+    expect(req.flagTargetKey).toBe("a")
+    expect(req.flagReason).toBe("please fix")
+    // The flag stays pending (confirmFlag applies it later).
+    expect(processes.listFlags({ runId, status: "pending" })).toHaveLength(1)
+  })
+
+  it("does nothing when there are no pending flags", async () => {
+    const pid = buildProcess({
+      phases: [{ key: "a" }, { key: "b" }],
+      edges: [["a", "b"]],
+    })
+    const runPhase: RunPhase = async ({ phase }) => ({ content: phase.key })
+    const { ctx, runId } = makeCtx(pid, runPhase, {
+      requireFlagApproval: false,
+      applyFlag: () => {
+        throw new Error("applyFlag must not run with no flags")
+      },
+    })
+    await runScheduler(ctx)
     expect(statusByKey(runId, pid)).toEqual({ a: "completed", b: "completed" })
   })
 })

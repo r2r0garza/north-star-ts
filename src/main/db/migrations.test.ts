@@ -89,7 +89,7 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
     const db = new Database(":memory:")
     db.pragma("foreign_keys = ON")
     runMigrations(db)
-    expect(db.pragma("user_version", { simple: true })).toBe(21)
+    expect(db.pragma("user_version", { simple: true })).toBe(22)
     expect(db.pragma("foreign_key_check")).toHaveLength(0)
     db.close()
   })
@@ -181,6 +181,52 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
     ).toBe("0")
     db.close()
   })
+
+  it("adds the flag-back schema (v22, plan 031.2)", () => {
+    const db = new Database(":memory:")
+    db.pragma("foreign_keys = ON")
+    runMigrations(db)
+
+    // process_definitions.require_flag_approval, default 1.
+    const defCols = db.pragma("table_info(process_definitions)") as Array<{
+      name: string
+      dflt_value: unknown
+    }>
+    expect(defCols.map((c) => c.name)).toContain("require_flag_approval")
+    expect(
+      String(defCols.find((c) => c.name === "require_flag_approval")?.dflt_value)
+    ).toBe("1")
+
+    // process_phase_runs.source_child_run_id.
+    const prCols = (
+      db.pragma("table_info(process_phase_runs)") as Array<{ name: string }>
+    ).map((c) => c.name)
+    expect(prCols).toContain("source_child_run_id")
+
+    // process_flags table + its index.
+    const flagsTable = db
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='process_flags'"
+      )
+      .get()
+    expect(flagsTable).toBeTruthy()
+    const flagCols = (
+      db.pragma("table_info(process_flags)") as Array<{ name: string }>
+    ).map((c) => c.name)
+    expect(flagCols).toEqual(
+      expect.arrayContaining([
+        "id",
+        "run_id",
+        "flagging_phase_run_id",
+        "target_phase_id",
+        "target_child_run_id",
+        "reason",
+        "status",
+        "created_at",
+      ])
+    )
+    db.close()
+  })
 })
 
 describe.skipIf(!sqliteLoads)("SCHEMA_V9 — orphan reap (plan 022)", () => {
@@ -225,7 +271,7 @@ describe.skipIf(!sqliteLoads)("SCHEMA_V9 — orphan reap (plan 022)", () => {
     // Apply V9 (the reaper) and any later migrations, up to the latest version.
     runMigrations(db)
 
-    expect(db.pragma("user_version", { simple: true })).toBe(21)
+    expect(db.pragma("user_version", { simple: true })).toBe(22)
 
     // Reaped: orphan + its nested descendant, and all their state.
     const taskIds = (

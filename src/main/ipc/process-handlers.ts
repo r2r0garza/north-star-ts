@@ -91,4 +91,18 @@ export function registerProcessHandlers(
       payload: { processRunId: string; requestId: string; feedback: string }
     ) => processService.requestChanges(payload)
   )
+
+  // Confirm / dismiss a cross-phase rework flag (plan 031.2). Delegated to the
+  // service: confirm applies the flag's reset (target + downstream) and resumes;
+  // dismiss settles the flag denied and resumes as if unflagged.
+  ipcMain.handle(
+    "process:confirmFlag",
+    (_e, payload: { processRunId: string; requestId: string }) =>
+      processService.confirmFlag(payload)
+  )
+  ipcMain.handle(
+    "process:dismissFlag",
+    (_e, payload: { processRunId: string; requestId: string }) =>
+      processService.dismissFlag(payload)
+  )
 }

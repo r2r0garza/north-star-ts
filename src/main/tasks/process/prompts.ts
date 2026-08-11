@@ -7,8 +7,28 @@ import type { ProcessPhase } from "../../db/types"
 
 export interface UpstreamResult {
   phaseName: string
+  // The upstream phase's stable key (unique per process) — the flag_for_rework
+  // target vocabulary (plan 031.2). Display names can collide; keys don't.
+  phaseKey: string
   // The upstream phase's final assistant content (its "output"), possibly null.
   content: string | null
+}
+
+// The "Phases you may flag for rework" section (plan 031.2): lists the upstream
+// phases by KEY so a worker that finds an upstream-owned defect can name a valid
+// flag_for_rework target. Returns "" when there's nothing upstream to flag.
+function flagForReworkSection(upstream: UpstreamResult[]): string {
+  if (upstream.length === 0) return ""
+  const lines: string[] = []
+  lines.push("## Phases you may flag for rework")
+  lines.push(
+    "If you find a defect that one of the EARLIER phases below owns, do NOT fix it " +
+      "yourself — call `flag_for_rework` with that phase's key and a specific reason. " +
+      "The engine will re-run that phase (and everything built on it). Prefer completing " +
+      "your own work when the issue is yours to fix."
+  )
+  for (const u of upstream) lines.push(`- \`${u.phaseKey}\` — ${u.phaseName}`)
+  return lines.join("\n")
 }
 
 // The message seeded into a phase's worker conversation. Deliberately plain: the
@@ -53,6 +73,11 @@ export function kickoffPrompt(input: {
     `Carry out the "${phase.name}" phase toward the overall objective. When done, ` +
       `summarize what you produced so the next phase can build on it.`
   )
+  const flag = flagForReworkSection(upstream)
+  if (flag) {
+    lines.push("")
+    lines.push(flag)
+  }
   const dotFolder = dotFolderInstruction(phase)
   if (dotFolder) {
     lines.push("")
@@ -85,10 +110,14 @@ export function eachSubtaskKickoffPrompt(input: {
   phase: ProcessPhase
   objective: string
   sourcePhaseName: string
+  // The source fan-out phase's key — the flag_for_rework target if this sub-task's
+  // input turns out to be defective (plan 031.2). Optional (older callers omit it).
+  sourcePhaseKey?: string
   // The triggering sub-task's final output (its worker's last assistant message).
   subtaskContent: string | null
 }): string {
-  const { phase, objective, sourcePhaseName, subtaskContent } = input
+  const { phase, objective, sourcePhaseName, sourcePhaseKey, subtaskContent } =
+    input
   const lines: string[] = []
   lines.push(`# Process phase: ${phase.name}`)
   lines.push("")
@@ -109,6 +138,14 @@ export function eachSubtaskKickoffPrompt(input: {
     `Carry out the "${phase.name}" phase for this one sub-task toward the overall ` +
       `objective. When done, summarize what you produced.`
   )
+  if (sourcePhaseKey) {
+    lines.push("")
+    lines.push(
+      flagForReworkSection([
+        { phaseName: sourcePhaseName, phaseKey: sourcePhaseKey, content: null },
+      ])
+    )
+  }
   const dotFolder = dotFolderInstruction(phase)
   if (dotFolder) {
     lines.push("")

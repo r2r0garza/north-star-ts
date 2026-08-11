@@ -613,3 +613,39 @@ ALTER TABLE process_phases ADD COLUMN validator_max_iterations INTEGER NOT NULL 
 ALTER TABLE process_phases ADD COLUMN validator_agent TEXT;
 ALTER TABLE process_phase_runs ADD COLUMN validator_round INTEGER NOT NULL DEFAULT 0;
 `
+
+// v22: cross-phase FLAG-BACK — the second half of plan 031 (031.2). A phase-worker
+// that finds a defect an EARLIER phase owns flags it back (a gated flag_for_rework
+// tool) instead of fixing out of lane; the engine resets the target phase (or a
+// single fan-out sub-task) AND everything downstream of it, then re-walks.
+//   - process_definitions.require_flag_approval: per-process autonomy toggle.
+//     1 (default) = a flag needs human confirmation before the send-back; 0 = the
+//     agent routes autonomously.
+//   - process_phase_runs.source_child_run_id: first-class on_each_subtask lineage —
+//     which source fan-out CHILD this consumer instance consumes (was only recorded
+//     in the append-only eachsubtask: checkpoint blob). NULL for ordinary runs and
+//     fan-out children; set for on_each_subtask consumer instances. Makes the
+//     per-child reset ("only the Test instance tied to the reworked Implement
+//     sub-task") a direct query. ON DELETE SET NULL mirrors the other self-FKs.
+//   - process_flags: durable flag records (lifecycle pending -> applied | dismissed),
+//     status bare TEXT validated in the repo (the V15 status pattern). target_child_
+//     run_id is the resolved specific sub-task (from the flagging instance's
+//     source_child_run_id, or a key#N index); NULL = the whole phase.
+// The two ALTERs are pure ADD COLUMN; the CREATE TABLE/INDEX are new objects — all
+// safe under the foreign_keys=OFF migration loop (no table rebuild).
+export const SCHEMA_V22 = `
+ALTER TABLE process_definitions ADD COLUMN require_flag_approval INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE process_phase_runs ADD COLUMN source_child_run_id TEXT
+  REFERENCES process_phase_runs(id) ON DELETE SET NULL;
+CREATE TABLE process_flags (
+  id                    TEXT PRIMARY KEY,
+  run_id                TEXT NOT NULL REFERENCES process_runs(id) ON DELETE CASCADE,
+  flagging_phase_run_id TEXT NOT NULL REFERENCES process_phase_runs(id) ON DELETE CASCADE,
+  target_phase_id       TEXT NOT NULL REFERENCES process_phases(id),
+  target_child_run_id   TEXT REFERENCES process_phase_runs(id) ON DELETE SET NULL,
+  reason                TEXT NOT NULL,
+  status                TEXT NOT NULL,
+  created_at            INTEGER NOT NULL
+);
+CREATE INDEX idx_process_flags_run ON process_flags(run_id);
+`
