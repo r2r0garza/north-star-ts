@@ -1196,6 +1196,43 @@ describe.skipIf(!sqliteLoads)("scheduler — flag routing (plan 031.2)", () => {
     expect(processes.listFlags({ runId, status: "pending" })).toHaveLength(1)
   })
 
+  it("holds the flagging phase's dependents until the flag routes (no early dispatch)", async () => {
+    // a → b → c. When b's worker raises a flag against a, c must NOT dispatch — the
+    // walk stops dispatching new phases while a flag is pending, drains to
+    // quiescence, and (confirm mode) raises the gate. Regression for the bug where
+    // c (Publish) ran before the flag routed.
+    const pid = buildProcess({
+      phases: [{ key: "a" }, { key: "b" }, { key: "c" }],
+      edges: [
+        ["a", "b"],
+        ["b", "c"],
+      ],
+    })
+    const ran: string[] = []
+    const runPhase: RunPhase = async ({ phase, phaseRun }) => {
+      ran.push(phase.key)
+      // b flags a as soon as it runs (simulating flag_for_rework mid-phase).
+      if (phase.key === "b")
+        processes.createFlag({
+          runId: phaseRun.runId,
+          flaggingPhaseRunId: phaseRun.id,
+          targetPhaseId: pidOf(pid, "a"),
+          reason: "a is broken",
+        })
+      return { content: phase.key }
+    }
+    const { ctx, runId } = makeCtx(pid, runPhase, { requireFlagApproval: true })
+
+    await expect(runScheduler(ctx)).rejects.toBeInstanceOf(GateBlockedError)
+    // c NEVER ran; only a and b did.
+    expect(ran).toEqual(["a", "b"])
+    expect(statusByKey(runId, pid).c).toBe("pending")
+    // A flag gate was raised.
+    expect(
+      listApprovals({ taskId: ctx.taskId, status: "pending" })
+    ).toHaveLength(1)
+  })
+
   it("does nothing when there are no pending flags", async () => {
     const pid = buildProcess({
       phases: [{ key: "a" }, { key: "b" }],

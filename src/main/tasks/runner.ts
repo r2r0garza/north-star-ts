@@ -69,6 +69,11 @@ export type RunnerLifecycleEvent =
       status: PhaseRunStatus
       parentId?: string | null
       requestId?: string
+      // Which gate kind a waiting_for_approval event represents (plan 031.2): a
+      // "phase" (029) / "validator" (031.1) gate uses the generic approve card;
+      // a "flag" gate uses the cross-phase rework confirmation card. Absent on
+      // non-gate events. Lets the monitor route the requestId to the right card.
+      gateKind?: "phase" | "validator" | "flag"
     }
 
 // The full vocabulary written to task_events / streamed on the live tail: the

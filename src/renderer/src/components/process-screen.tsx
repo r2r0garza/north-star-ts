@@ -2072,11 +2072,18 @@ function NewRunModal({
 
 // Fold a single process_phase event into the gate map: a waiting_for_approval
 // event with a requestId sets the phase's gate; any other status for it clears.
+// A FLAG gate (plan 031.2, gateKind "flag") is EXCLUDED — it's rendered by the
+// separate flagGates map / card, not the generic approve card, so it must not
+// land here (else a flagging phase would show both cards).
 function foldGate(
   gates: Record<string, string>,
   ev: Extract<TaskEventPayload, { type: "process_phase" }>
 ): Record<string, string> {
-  if (ev.status === "waiting_for_approval" && ev.requestId) {
+  if (
+    ev.status === "waiting_for_approval" &&
+    ev.requestId &&
+    ev.gateKind !== "flag"
+  ) {
     return { ...gates, [ev.phaseRunId]: ev.requestId }
   }
   if (gates[ev.phaseRunId]) {

@@ -376,6 +376,7 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
       agentName: pr.agentName,
       status: "waiting_for_approval",
       requestId,
+      gateKind: "phase",
     })
     checkpoint()
     throw new GateBlockedError()
@@ -455,6 +456,7 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
       status: "waiting_for_approval",
       parentId: phaseRun.parentId,
       requestId,
+      gateKind: "validator",
     })
     checkpoint()
     throw new GateBlockedError()
@@ -542,6 +544,7 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
       status: "waiting_for_approval",
       parentId: flaggingRun?.parentId ?? null,
       requestId,
+      gateKind: "flag",
     })
     checkpoint()
     throw new GateBlockedError()
@@ -1097,45 +1100,61 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
       })
     })
 
+    // A pending cross-phase rework flag (plan 031.2) means a rework is queued that
+    // will reset the flagged phase + its downstream. STOP dispatching new phases
+    // until it's routed — otherwise the flagging phase's dependents (e.g. Publish)
+    // would dispatch in the window before the terminal-check routes the flag, doing
+    // throwaway work on soon-to-be-invalidated output. In-flight phases drain, the
+    // walk reaches quiescence, and routePendingFlags handles it there.
+    const flagPending =
+      processes.listFlags({ runId: run.id, status: "pending" }).length > 0
+
     // Dispatch ready phases up to the per-run pool budget. A fan-out phase whose
     // deps are satisfied runs its decomposition pass first (dispatchDecompose);
     // a normal phase runs directly.
-    for (const phase of ready) {
-      if (inFlight.size >= PER_RUN_CONCURRENCY) break
-      if (phase.fanOut) dispatchDecompose(phase)
-      else dispatch(phase)
-    }
+    if (!flagPending)
+      for (const phase of ready) {
+        if (inFlight.size >= PER_RUN_CONCURRENCY) break
+        if (phase.fanOut) dispatchDecompose(phase)
+        else dispatch(phase)
+      }
 
     // Dispatch any pending fan-out CHILD (plan 025.1). Children have no edges —
     // they're ready by construction once decompose created them — and share the
     // per-run pool with sibling phases.
-    const pendingChildren = processes
-      .listPhaseRuns({ runId: run.id })
-      .filter((pr) => pr.parentId !== null && pr.status === "pending")
-    for (const child of pendingChildren) {
-      if (inFlight.size >= PER_RUN_CONCURRENCY) break
-      if (inFlight.has(child.id)) continue
-      dispatchChild(child)
+    if (!flagPending) {
+      const pendingChildren = processes
+        .listPhaseRuns({ runId: run.id })
+        .filter((pr) => pr.parentId !== null && pr.status === "pending")
+      for (const child of pendingChildren) {
+        if (inFlight.size >= PER_RUN_CONCURRENCY) break
+        if (inFlight.has(child.id)) continue
+        dispatchChild(child)
+      }
     }
 
     if (inFlight.size === 0) {
-      // Nothing running and nothing became ready. Either the run is complete
-      // (all phases terminal) or it's wedged (a failed/cancelled phase blocks its
-      // dependents forever). Both are terminal for the scheduler.
+      // Nothing running. Either the run is complete (all phases terminal), it's
+      // wedged (a failed phase blocks its dependents), OR a pending rework flag is
+      // holding back the flagging phase's dependents (they were left `pending` by
+      // the dispatch guard above). Distinguish these.
+      const anyFailed = graph.phases.some((p) =>
+        ["failed", "cancelled"].includes(statusOf(p.id))
+      )
+      // Route any pending cross-phase rework flag (plan 031.2) at this quiescent
+      // point BEFORE concluding — this is the only safe reset point (nothing
+      // in-flight). Skipped on a failed run (a failed phase wedges the DAG; a flag
+      // targeting a completed upstream can't unwedge it, so let the failure
+      // surface). Autonomous → applyFlag reset each (re-walk); confirm →
+      // raiseFlagGate throws GateBlockedError (run pauses). Not gated on
+      // allTerminal: the dispatch guard leaves the flagging phase's dependents
+      // `pending`, so they're intentionally NOT terminal here.
+      if (!anyFailed && routePendingFlags()) continue
       const allTerminal = graph.phases.every((p) =>
         ["completed", "failed", "cancelled", "skipped"].includes(
           statusOf(p.id)
         )
       )
-      const anyFailed = graph.phases.some((p) =>
-        ["failed", "cancelled"].includes(statusOf(p.id))
-      )
-      // Route any pending cross-phase rework flag (plan 031.2) at this quiescent
-      // point BEFORE concluding — but only on an otherwise-successful run (a failed
-      // phase wedges the DAG; a flag targeting a completed upstream can't unwedge
-      // it, so let the failure surface instead). Autonomous → applyFlag reset each
-      // (re-walk); confirm → raiseFlagGate throws GateBlockedError (run pauses).
-      if (allTerminal && !anyFailed && routePendingFlags()) continue
       if (!allTerminal || anyFailed) {
         // A dependency failed and blocks the rest → surface as a run failure.
         if (anyFailed) throw new Error("a process phase failed")
