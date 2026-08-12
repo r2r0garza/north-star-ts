@@ -732,6 +732,19 @@ describe.skipIf(!sqliteLoads)("scheduler — on_each_subtask (025.2)", () => {
     const vInstances = vRuns.filter((r) => r.parentId !== null)
     expect(vInstances).toHaveLength(3)
     expect(vInstances.every((r) => r.status === "completed")).toBe(true)
+    // Each instance is STAMPED with the c child it consumes (plan 031.2 lineage) —
+    // this is what lets a flag from the instance resolve to that specific child.
+    const cChildIds = new Set(
+      runsForKey(runId, pid, "c")
+        .filter((r) => r.parentId !== null)
+        .map((r) => r.id)
+    )
+    expect(vInstances.every((r) => r.sourceChildRunId !== null)).toBe(true)
+    expect(
+      vInstances.every((r) => cChildIds.has(r.sourceChildRunId!))
+    ).toBe(true)
+    // One instance per distinct child (no dupes, no shared lineage).
+    expect(new Set(vInstances.map((r) => r.sourceChildRunId)).size).toBe(3)
     // At least one v instance started before c's whole phase settled.
     expect(vStartedWhileCRunning.some(Boolean)).toBe(true)
     // The v CONTAINER completes once all instances are terminal.

@@ -706,6 +706,9 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
             // title), else derive from the instance's own kickoff prompt.
             title:
               child.title ?? (prompt ? subtaskTitle(prompt) : null),
+            // First-class lineage (plan 031.2): which source fan-out child this
+            // instance consumes, so a flag from it resolves to that specific child.
+            sourceChildRunId: child.id,
           })
           instanceId = instance.id
           if (wasPending)
