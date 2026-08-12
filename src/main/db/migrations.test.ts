@@ -89,7 +89,7 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
     const db = new Database(":memory:")
     db.pragma("foreign_keys = ON")
     runMigrations(db)
-    expect(db.pragma("user_version", { simple: true })).toBe(22)
+    expect(db.pragma("user_version", { simple: true })).toBe(23)
     expect(db.pragma("foreign_key_check")).toHaveLength(0)
     db.close()
   })
@@ -227,6 +227,39 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
     )
     db.close()
   })
+
+  it("a flag survives its flagging instance's deletion (v23, plan 031.2 follow-up)", () => {
+    const db = new Database(":memory:")
+    db.pragma("foreign_keys = ON")
+    runMigrations(db)
+
+    // Minimal graph + run + a flagging phase-run + a flag pointing at it.
+    db.prepare(
+      "INSERT INTO process_definitions (id, name, require_flag_approval, created_at, updated_at) VALUES ('def','D',1,0,0)"
+    ).run()
+    db.prepare(
+      "INSERT INTO process_phases (id, process_id, key, name, position) VALUES ('ph','def','k','K',0)"
+    ).run()
+    db.prepare(
+      "INSERT INTO process_runs (id, process_id, status, created_at) VALUES ('run','def','running',0)"
+    ).run()
+    db.prepare(
+      "INSERT INTO process_phase_runs (id, run_id, phase_id, status) VALUES ('pr','run','ph','completed')"
+    ).run()
+    db.prepare(
+      "INSERT INTO process_flags (id, run_id, flagging_phase_run_id, target_phase_id, reason, status, created_at) VALUES ('flag','run','pr','ph','r','applied',0)"
+    ).run()
+
+    // Deleting the flagging phase-run must NOT cascade the flag away — the flag
+    // survives with flagging_phase_run_id nulled (the durable audit record).
+    db.prepare("DELETE FROM process_phase_runs WHERE id = 'pr'").run()
+    const flag = db
+      .prepare("SELECT id, flagging_phase_run_id FROM process_flags WHERE id = 'flag'")
+      .get() as { id: string; flagging_phase_run_id: string | null } | undefined
+    expect(flag).toBeTruthy()
+    expect(flag!.flagging_phase_run_id).toBeNull()
+    db.close()
+  })
 })
 
 describe.skipIf(!sqliteLoads)("SCHEMA_V9 — orphan reap (plan 022)", () => {
@@ -271,7 +304,7 @@ describe.skipIf(!sqliteLoads)("SCHEMA_V9 — orphan reap (plan 022)", () => {
     // Apply V9 (the reaper) and any later migrations, up to the latest version.
     runMigrations(db)
 
-    expect(db.pragma("user_version", { simple: true })).toBe(22)
+    expect(db.pragma("user_version", { simple: true })).toBe(23)
 
     // Reaped: orphan + its nested descendant, and all their state.
     const taskIds = (

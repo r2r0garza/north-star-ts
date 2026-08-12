@@ -649,3 +649,34 @@ CREATE TABLE process_flags (
 );
 CREATE INDEX idx_process_flags_run ON process_flags(run_id);
 `
+
+// v23 (plan 031.2 follow-up): make the flag audit trail durable. process_flags
+// .flagging_phase_run_id was ON DELETE CASCADE, so a PER-CHILD send-back — which
+// DELETES the flagging on_each_subtask instance so it re-triggers fresh — cascaded
+// the flag row away with it. Applied/dismissed flags then vanished from the table,
+// leaving it an unreliable history (the durable record lived only on the approvals
+// table). Rebuild it with ON DELETE SET NULL so a flag row SURVIVES its flagging
+// instance's deletion (the column becomes nullable — a settled flag whose instance
+// was later re-triggered reads NULL there, which is fine; run_id still anchors it).
+// SQLite can't alter an FK in place, so this is a table rebuild (the V8 pattern),
+// safe under the foreign_keys=OFF migration loop. run_id keeps CASCADE (deleting a
+// run should still drop its flags); target_child_run_id already SET NULL.
+export const SCHEMA_V23 = `
+CREATE TABLE process_flags_new (
+  id                    TEXT PRIMARY KEY,
+  run_id                TEXT NOT NULL REFERENCES process_runs(id) ON DELETE CASCADE,
+  flagging_phase_run_id TEXT REFERENCES process_phase_runs(id) ON DELETE SET NULL,
+  target_phase_id       TEXT NOT NULL REFERENCES process_phases(id),
+  target_child_run_id   TEXT REFERENCES process_phase_runs(id) ON DELETE SET NULL,
+  reason                TEXT NOT NULL,
+  status                TEXT NOT NULL,
+  created_at            INTEGER NOT NULL
+);
+INSERT INTO process_flags_new
+  (id, run_id, flagging_phase_run_id, target_phase_id, target_child_run_id, reason, status, created_at)
+  SELECT id, run_id, flagging_phase_run_id, target_phase_id, target_child_run_id, reason, status, created_at
+  FROM process_flags;
+DROP TABLE process_flags;
+ALTER TABLE process_flags_new RENAME TO process_flags;
+CREATE INDEX idx_process_flags_run ON process_flags(run_id);
+`

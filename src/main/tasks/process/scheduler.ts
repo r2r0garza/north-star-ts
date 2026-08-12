@@ -518,7 +518,13 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
   // the monitor renders the card on the phase that raised it) and carrying the
   // flagId to apply on approval. Flips the run waiting_for_approval + throws.
   const raiseFlagGate = (flag: ProcessFlag): never => {
-    const flaggingRun = processes.getPhaseRun(flag.flaggingPhaseRunId)
+    // A pending flag being routed always still has its flagging instance (the
+    // SET-NULL only fires later, when a subsequent per-child reset deletes a
+    // SETTLED flag's instance). Fall back defensively so the event stays valid.
+    const flaggingRunId = flag.flaggingPhaseRunId ?? ""
+    const flaggingRun = flaggingRunId
+      ? processes.getPhaseRun(flaggingRunId)
+      : undefined
     const flaggingPhase = flaggingRun
       ? phasesById.get(flaggingRun.phaseId)
       : undefined
@@ -527,7 +533,7 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
     const request: GateRequest = {
       kind: "process_flag_gate",
       phaseKey: flaggingPhase?.key ?? "",
-      phaseRunId: flag.flaggingPhaseRunId,
+      phaseRunId: flaggingRunId,
       requestId,
       flagId: flag.id,
       flagTargetKey: targetPhase?.key ?? "",
@@ -538,7 +544,7 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
     ctx.emit({
       type: "process_phase",
       runId: run.id,
-      phaseRunId: flag.flaggingPhaseRunId,
+      phaseRunId: flaggingRunId,
       phaseKey: flaggingPhase?.key ?? "",
       agentName: flaggingRun?.agentName ?? null,
       status: "waiting_for_approval",

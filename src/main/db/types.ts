@@ -475,8 +475,11 @@ export type ProcessFlagStatus = "pending" | "applied" | "dismissed"
 export interface ProcessFlag {
   id: string
   runId: string
-  // The phase-run whose worker raised the flag.
-  flaggingPhaseRunId: string
+  // The phase-run whose worker raised the flag. Nullable (SET NULL) because a
+  // per-child send-back deletes the flagging on_each_subtask instance so it can
+  // re-trigger fresh; the flag row survives (as a durable audit record) with this
+  // reference cleared. Always set at creation; null only after the instance is gone.
+  flaggingPhaseRunId: string | null
   // The upstream phase the flag targets.
   targetPhaseId: string
   // The specific fan-out sub-task (child run) targeted, when resolved — from the

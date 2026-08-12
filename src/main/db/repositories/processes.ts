@@ -733,7 +733,7 @@ export function deletePhaseRun(id: string): void {
 interface ProcessFlagRow {
   id: string
   run_id: string
-  flagging_phase_run_id: string
+  flagging_phase_run_id: string | null
   target_phase_id: string
   target_child_run_id: string | null
   reason: string
