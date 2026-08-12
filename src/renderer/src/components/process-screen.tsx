@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { Dialog as DialogPrimitive } from "radix-ui"
 import {
+  ArrowLeft,
   ChevronRight,
   Circle,
   CheckCircle2,
@@ -29,6 +29,13 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible"
+import {
+  Card,
+  CardAction,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card"
 import {
   Select,
   SelectContent,
@@ -62,18 +69,7 @@ import { Switch } from "@/components/ui/switch"
 import { Badge } from "@/components/ui/badge"
 import { Kbd } from "@/components/ui/kbd"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import {
-  NativeSelect,
-  NativeSelectOption,
-} from "@/components/ui/native-select"
-import {
-  SidebarGroup,
-  SidebarGroupContent,
-  SidebarGroupLabel,
-  SidebarMenu,
-  SidebarMenuButton,
-  SidebarMenuItem,
-} from "@/components/ui/sidebar"
+import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select"
 import { toast } from "sonner"
 import { cn, formatRelativeTime } from "@/lib/utils"
 import type {
@@ -116,9 +112,12 @@ interface FlagGateInfo {
   reason: string
 }
 
-// The Process view — a full-viewport takeover (same shell as SkillsScreen /
-// SettingsScreen) for the Process engine (plan 025). Three surfaces:
-//   • a left rail listing authored process DEFINITIONS (+ New / delete),
+// The Process view — an in-panel destination (rendered in the center region of
+// the app shell, beside the still-visible sidebar) for the Process engine (plan
+// 025). Browsing is a card grid of authored process DEFINITIONS, grouped into
+// collapsible alphabetical sections (A, B, C…) by first letter — sections start
+// expanded. Selecting a card takes over the panel with that definition's two
+// surfaces:
 //   • a list-based DAG BUILDER (phases + per-phase "depends on" multiselect +
 //     an inspector for agent pool / routing / gate policy / fan-out; the graph
 //     is rendered implicitly by the depends-on edges), and
@@ -132,13 +131,14 @@ interface FlagGateInfo {
 // Which surface the main pane shows for the selected definition.
 type PaneMode = "builder" | "run"
 
-export function ProcessScreen({
-  open,
-  onOpenChange,
-}: {
-  open: boolean
-  onOpenChange: (open: boolean) => void
-}) {
+// The section letter a definition sorts under: its first letter uppercased, or
+// "#" for names that don't start with a letter.
+function sectionLetter(name: string): string {
+  const ch = name.trim().charAt(0).toUpperCase()
+  return /[A-Z]/.test(ch) ? ch : "#"
+}
+
+export function ProcessScreen({ onClose }: { onClose: () => void }) {
   const [definitions, setDefinitions] = useState<ProcessDefinition[] | null>(
     null
   )
@@ -150,25 +150,36 @@ export function ProcessScreen({
   // users author agents in-app; the builder degrades gracefully (a free-text
   // agent name still works via the pool row).
   const [agents, setAgents] = useState<AgentSummary[]>([])
-  const [pendingDelete, setPendingDelete] =
-    useState<ProcessDefinition | null>(null)
+  const [pendingDelete, setPendingDelete] = useState<ProcessDefinition | null>(
+    null
+  )
 
   const loadDefinitions = useCallback(() => {
     window.cowork.db.processes.list().then(setDefinitions)
   }, [])
 
-  // (Re)load the definition list whenever the view opens; reset transient state.
+  // Load on mount. The component is mounted only while the Process view is open
+  // (main.tsx renders it conditionally), so it starts fresh each time.
   useEffect(() => {
-    if (!open) return
-    setDefinitions(null)
-    setActiveRunId(null)
-    setPane("builder")
     loadDefinitions()
     window.cowork.agents
       .list()
       .then(setAgents)
       .catch(() => setAgents([]))
-  }, [open, loadDefinitions])
+  }, [loadDefinitions])
+
+  // Esc closes the view, dropping the user back to their last open conversation.
+  // Matches the sidebar-navigation behavior.
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault()
+        onClose()
+      }
+    }
+    window.addEventListener("keydown", onKeyDown)
+    return () => window.removeEventListener("keydown", onKeyDown)
+  }, [onClose])
 
   // Guard against acting on a definition that vanished from a refreshed list.
   useEffect(() => {
@@ -187,6 +198,25 @@ export function ProcessScreen({
     [definitions, selectedId]
   )
 
+  // Group definitions into alphabetical sections, each sorted by name. The list
+  // is already alphabetical from the DB; grouping preserves that order.
+  const sections = useMemo(() => {
+    if (!definitions) return []
+    const byLetter = new Map<string, ProcessDefinition[]>()
+    const sorted = [...definitions].sort((a, b) =>
+      a.name.localeCompare(b.name, undefined, { sensitivity: "base" })
+    )
+    for (const d of sorted) {
+      const letter = sectionLetter(d.name)
+      const list = byLetter.get(letter) ?? []
+      list.push(d)
+      byLetter.set(letter, list)
+    }
+    return [...byLetter.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([letter, items]) => ({ letter, items }))
+  }, [definitions])
+
   async function createDefinition() {
     try {
       const def = await window.cowork.db.processes.create({
@@ -199,6 +229,13 @@ export function ProcessScreen({
     } catch (err) {
       toast.error(`Could not create process: ${err}`)
     }
+  }
+
+  // Return from a builder/run takeover to the card browser.
+  function backToCards() {
+    setSelectedId(null)
+    setActiveRunId(null)
+    setPane("builder")
   }
 
   async function confirmDelete() {
@@ -219,140 +256,137 @@ export function ProcessScreen({
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogPrimitive.Portal>
-        {/* Full-viewport takeover — same treatment as SkillsScreen: raw Radix
-            primitive (focus-trap / Escape / portal) without the centered-modal
-            animation. No meaningful outside to click, so close is Escape / [X]. */}
-        <DialogPrimitive.Content
-          data-slot="process-screen"
-          aria-describedby={undefined}
-          onInteractOutside={(e) => e.preventDefault()}
-          className="fixed inset-0 z-50 flex h-screen w-screen flex-col bg-background text-sm text-foreground outline-none data-open:animate-in data-open:fade-in-0 data-open:slide-in-from-bottom-2 data-closed:animate-out data-closed:fade-out-0 data-closed:slide-out-to-bottom-2"
+    <div
+      data-slot="process-screen"
+      className="flex min-h-0 flex-1 flex-col bg-background pt-11 text-sm text-foreground"
+    >
+      {/* Header row (matches the app's h-11 top bar; the Shell drag bar sits
+          above via pt-11). */}
+      <div className="flex h-11 shrink-0 items-center justify-between border-b px-4">
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Close processes"
+          className="group/back flex items-center gap-2 rounded-md text-left"
         >
-          {/* Header row / window drag region (matches the app's h-11 top bar). */}
-          <div className="flex h-11 shrink-0 items-center justify-between border-b pr-3 pl-20 [-webkit-app-region:drag]">
-            <DialogTitle className="font-heading text-base font-medium">
-              Processes
-            </DialogTitle>
-            <DialogPrimitive.Close asChild>
+          <ArrowLeft className="size-4 text-muted-foreground transition-colors group-hover/back:text-foreground" />
+          <h1 className="font-heading text-base font-medium">Processes</h1>
+        </button>
+        <Button variant="ghost" size="icon-sm" onClick={onClose}>
+          <XIcon />
+          <span className="sr-only">Close</span>
+        </Button>
+      </div>
+
+      {selected ? (
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+          <div className="flex h-12 shrink-0 items-center justify-between gap-2 border-b px-4">
+            <div className="flex min-w-0 items-center gap-2">
               <Button
                 variant="ghost"
                 size="icon-sm"
-                className="[-webkit-app-region:no-drag]"
+                onClick={backToCards}
+                aria-label="Back to processes"
               >
-                <XIcon />
-                <span className="sr-only">Close</span>
+                <ArrowLeft />
               </Button>
-            </DialogPrimitive.Close>
-          </div>
-
-          <div className="flex min-h-0 flex-1">
-            {/* Left rail — the definition list + New action. */}
-            <div className="flex w-72 shrink-0 flex-col border-r">
-              <div className="p-2">
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  onClick={createDefinition}
-                  className="w-full justify-start"
-                >
-                  <Plus className="size-4" />
-                  New Process
-                </Button>
-              </div>
-              <div className="min-h-0 flex-1 overflow-y-auto pb-2">
-                <SidebarGroup>
-                  <SidebarGroupLabel>
-                    Definitions
-                    <span className="ml-1 text-muted-foreground">
-                      ({definitions === null ? "…" : definitions.length})
-                    </span>
-                  </SidebarGroupLabel>
-                  <SidebarGroupContent>
-                    <SidebarMenu>
-                      {definitions?.map((d) => (
-                        <DefinitionRow
-                          key={d.id}
-                          definition={d}
-                          active={d.id === selectedId}
-                          onSelect={() => {
-                            setSelectedId(d.id)
-                            setPane("builder")
-                            setActiveRunId(null)
-                          }}
-                          onDelete={() => setPendingDelete(d)}
-                        />
-                      ))}
-                      {definitions?.length === 0 && (
-                        <p className="px-2 py-1 text-xs text-muted-foreground">
-                          No processes yet. Create one to build a DAG.
-                        </p>
-                      )}
-                    </SidebarMenu>
-                  </SidebarGroupContent>
-                </SidebarGroup>
+              <div className="min-w-0">
+                <p className="truncate font-medium">{selected.name}</p>
+                {selected.description && (
+                  <p className="truncate text-xs text-muted-foreground">
+                    {selected.description}
+                  </p>
+                )}
               </div>
             </div>
+            <ButtonGroup>
+              <Button
+                type="button"
+                size="sm"
+                variant={pane === "builder" ? "default" : "outline"}
+                onClick={() => setPane("builder")}
+              >
+                Builder
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant={pane === "run" ? "default" : "outline"}
+                onClick={() => setPane("run")}
+              >
+                Runs
+              </Button>
+            </ButtonGroup>
+          </div>
+          {pane === "builder" ? (
+            <ProcessBuilder
+              key={selected.id}
+              definition={selected}
+              agents={agents}
+              onDefinitionChanged={loadDefinitions}
+            />
+          ) : (
+            <RunMonitor
+              key={selected.id}
+              definition={selected}
+              activeRunId={activeRunId}
+              onSelectRun={setActiveRunId}
+            />
+          )}
+        </div>
+      ) : (
+        <div className="flex min-h-0 flex-1 flex-col">
+          {/* Toolbar — New Process action + count. */}
+          <div className="flex shrink-0 items-center justify-between gap-2 border-b px-4 py-2">
+            <span className="text-xs text-muted-foreground">
+              {definitions === null
+                ? "…"
+                : `${definitions.length} ${definitions.length === 1 ? "process" : "processes"}`}
+            </span>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={createDefinition}
+            >
+              <Plus className="size-4" />
+              New Process
+            </Button>
+          </div>
 
-            {/* Main pane — builder or run monitor for the selected definition. */}
-            <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-              {selected ? (
-                <>
-                  <div className="flex h-12 shrink-0 items-center justify-between gap-2 border-b px-4">
-                    <div className="min-w-0">
-                      <p className="truncate font-medium">{selected.name}</p>
-                      {selected.description && (
-                        <p className="truncate text-xs text-muted-foreground">
-                          {selected.description}
-                        </p>
-                      )}
-                    </div>
-                    <ButtonGroup>
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant={pane === "builder" ? "default" : "outline"}
-                        onClick={() => setPane("builder")}
-                      >
-                        Builder
-                      </Button>
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant={pane === "run" ? "default" : "outline"}
-                        onClick={() => setPane("run")}
-                      >
-                        Runs
-                      </Button>
-                    </ButtonGroup>
-                  </div>
-                  {pane === "builder" ? (
-                    <ProcessBuilder
-                      key={selected.id}
-                      definition={selected}
-                      agents={agents}
-                      onDefinitionChanged={loadDefinitions}
-                    />
-                  ) : (
-                    <RunMonitor
-                      key={selected.id}
-                      definition={selected}
-                      activeRunId={activeRunId}
-                      onSelectRun={setActiveRunId}
-                    />
-                  )}
-                </>
-              ) : (
-                <div className="flex flex-1 items-center justify-center p-8 text-center text-muted-foreground">
-                  Select a process, or create one to build a DAG.
-                </div>
+          <ScrollArea className="min-h-0 flex-1">
+            <div className="space-y-1 p-4">
+              {definitions !== null && definitions.length === 0 && (
+                <p className="px-2 py-8 text-center text-xs text-muted-foreground">
+                  No processes yet. Create one to build a DAG.
+                </p>
               )}
+              {sections.map((section) => (
+                <LetterSection
+                  key={section.letter}
+                  letter={section.letter}
+                  count={section.items.length}
+                >
+                  <CardGrid>
+                    {section.items.map((d) => (
+                      <ProcessCard
+                        key={d.id}
+                        definition={d}
+                        onOpen={() => {
+                          setSelectedId(d.id)
+                          setPane("builder")
+                          setActiveRunId(null)
+                        }}
+                        onDelete={() => setPendingDelete(d)}
+                      />
+                    ))}
+                  </CardGrid>
+                </LetterSection>
+              ))}
             </div>
-          </div>
-        </DialogPrimitive.Content>
-      </DialogPrimitive.Portal>
+          </ScrollArea>
+        </div>
+      )}
 
       {/* Confirmation before deleting a definition — deletion is irreversible and
           cascades to phases / agents / edges (but not past runs). */}
@@ -366,8 +400,8 @@ export function ProcessScreen({
           <AlertDialogHeader>
             <AlertDialogTitle>Delete this process?</AlertDialogTitle>
             <AlertDialogDescription>
-              “{pendingDelete?.name}” and its phases, agent pools, and edges will
-              be permanently deleted. This can’t be undone.
+              “{pendingDelete?.name}” and its phases, agent pools, and edges
+              will be permanently deleted. This can’t be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -378,7 +412,98 @@ export function ProcessScreen({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </Dialog>
+    </div>
+  )
+}
+
+// A responsive grid of process cards.
+function CardGrid({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="grid grid-cols-[repeat(auto-fill,minmax(18rem,20rem))] gap-3">
+      {children}
+    </div>
+  )
+}
+
+// A collapsible alphabetical section (A, B, C…), expanded by default, holding
+// the process cards whose names start with that letter.
+function LetterSection({
+  letter,
+  count,
+  children,
+}: {
+  letter: string
+  count: number
+  children: React.ReactNode
+}) {
+  const [open, setOpen] = useState(true)
+  return (
+    <Collapsible open={open} onOpenChange={setOpen} className="border-b">
+      <CollapsibleTrigger asChild>
+        <button
+          type="button"
+          className="group/letter flex w-full items-center gap-1.5 rounded-md px-2 py-2 text-left hover:bg-accent"
+        >
+          <ChevronRight className="size-4 shrink-0 text-muted-foreground transition-transform group-data-[state=open]/letter:rotate-90" />
+          <span className="font-heading text-sm font-medium">{letter}</span>
+          <span className="ml-auto shrink-0 text-xs text-muted-foreground">
+            {count}
+          </span>
+        </button>
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        <div className="py-2 pl-6">{children}</div>
+      </CollapsibleContent>
+    </Collapsible>
+  )
+}
+
+// One clickable process card: name + (clamped) description, with a hover delete.
+function ProcessCard({
+  definition,
+  onOpen,
+  onDelete,
+}: {
+  definition: ProcessDefinition
+  onOpen: () => void
+  onDelete: () => void
+}) {
+  return (
+    <Card
+      size="sm"
+      role="button"
+      tabIndex={0}
+      onClick={onOpen}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault()
+          onOpen()
+        }
+      }}
+      className="cursor-pointer transition-shadow hover:ring-foreground/25 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+    >
+      <CardHeader>
+        <CardTitle className="truncate">{definition.name}</CardTitle>
+        <CardAction>
+          <button
+            type="button"
+            aria-label={`Delete ${definition.name}`}
+            onClick={(e) => {
+              e.stopPropagation()
+              onDelete()
+            }}
+            className="rounded p-1 text-muted-foreground opacity-0 transition-opacity group-hover/card:opacity-100 hover:bg-destructive/10 hover:text-destructive"
+          >
+            <Trash2 className="size-3.5" />
+          </button>
+        </CardAction>
+        {definition.description && (
+          <CardDescription className="line-clamp-2">
+            {definition.description}
+          </CardDescription>
+        )}
+      </CardHeader>
+    </Card>
   )
 }
 
@@ -444,7 +569,8 @@ function ProcessBuilder({
   }, [reload])
 
   const phases = useMemo(
-    () => (graph ? [...graph.phases].sort((a, b) => a.position - b.position) : []),
+    () =>
+      graph ? [...graph.phases].sort((a, b) => a.position - b.position) : [],
     [graph]
   )
 
@@ -547,7 +673,12 @@ function ProcessBuilder({
                 ({phases.length})
               </span>
             </h3>
-            <Button type="button" size="sm" variant="outline" onClick={addPhase}>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={addPhase}
+            >
               <Plus className="size-4" />
               Add phase
             </Button>
@@ -805,290 +936,258 @@ function PhaseCard({
             </span>
           </div>
 
-      {/* Row 2: routing / gate / fan-out. */}
-      <div className="flex flex-wrap items-center gap-4">
-        <label className="flex items-center gap-2 text-xs">
-          <span className="text-muted-foreground">Routing</span>
-          <NativeSelect
-            size="sm"
-            value={phase.routing}
-            onChange={(e) =>
-              patchPhase({ routing: e.target.value as PhaseRouting })
-            }
-          >
-            <NativeSelectOption value="single">single</NativeSelectOption>
-            <NativeSelectOption value="dispatch">dispatch</NativeSelectOption>
-          </NativeSelect>
-        </label>
-        <label className="flex items-center gap-2 text-xs">
-          <span className="text-muted-foreground">Gate</span>
-          <NativeSelect
-            size="sm"
-            value={phase.gatePolicy}
-            onChange={(e) =>
-              patchPhase({ gatePolicy: e.target.value as PhaseGatePolicy })
-            }
-          >
-            <NativeSelectOption value="auto">auto</NativeSelectOption>
-            <NativeSelectOption value="approve">approve</NativeSelectOption>
-          </NativeSelect>
-        </label>
-        <label className="flex items-center gap-2 text-xs">
-          <span className="text-muted-foreground">Fan-out</span>
-          <Switch
-            checked={phase.fanOut}
-            onCheckedChange={(v) => patchPhase({ fanOut: v })}
-          />
-        </label>
-        <label
-          className="flex items-center gap-2 text-xs"
-          title={`Steer this phase's agent to write artifacts under a .${phase.key}/ folder (plan 030)`}
-        >
-          <span className="text-muted-foreground">Dot-folder</span>
-          <Switch
-            checked={phase.dotFolder}
-            onCheckedChange={(v) => patchPhase({ dotFolder: v })}
-          />
-        </label>
-        {/* Per-phase VALIDATOR (plan 031.1): a second agent reviews this phase's
+          {/* Row 2: routing / gate / fan-out. */}
+          <div className="flex flex-wrap items-center gap-4">
+            <label className="flex items-center gap-2 text-xs">
+              <span className="text-muted-foreground">Routing</span>
+              <NativeSelect
+                size="sm"
+                value={phase.routing}
+                onChange={(e) =>
+                  patchPhase({ routing: e.target.value as PhaseRouting })
+                }
+              >
+                <NativeSelectOption value="single">single</NativeSelectOption>
+                <NativeSelectOption value="dispatch">
+                  dispatch
+                </NativeSelectOption>
+              </NativeSelect>
+            </label>
+            <label className="flex items-center gap-2 text-xs">
+              <span className="text-muted-foreground">Gate</span>
+              <NativeSelect
+                size="sm"
+                value={phase.gatePolicy}
+                onChange={(e) =>
+                  patchPhase({ gatePolicy: e.target.value as PhaseGatePolicy })
+                }
+              >
+                <NativeSelectOption value="auto">auto</NativeSelectOption>
+                <NativeSelectOption value="approve">approve</NativeSelectOption>
+              </NativeSelect>
+            </label>
+            <label className="flex items-center gap-2 text-xs">
+              <span className="text-muted-foreground">Fan-out</span>
+              <Switch
+                checked={phase.fanOut}
+                onCheckedChange={(v) => patchPhase({ fanOut: v })}
+              />
+            </label>
+            <label
+              className="flex items-center gap-2 text-xs"
+              title={`Steer this phase's agent to write artifacts under a .${phase.key}/ folder (plan 030)`}
+            >
+              <span className="text-muted-foreground">Dot-folder</span>
+              <Switch
+                checked={phase.dotFolder}
+                onCheckedChange={(v) => patchPhase({ dotFolder: v })}
+              />
+            </label>
+            {/* Per-phase VALIDATOR (plan 031.1): a second agent reviews this phase's
             output and sends it back with feedback until it passes, bounded. Not
             offered for a fan-out phase (sub-DAG review is plan 031.2). */}
-        {!phase.fanOut && (
-          <label
-            className="flex items-center gap-2 text-xs"
-            title="After this phase completes, a second agent reviews its output and can send it back with feedback (bounded)"
-          >
-            <span className="text-muted-foreground">Validator</span>
-            <Switch
-              checked={phase.validator}
-              onCheckedChange={(v) =>
-                // Seed a concrete default cap (3) when enabling, so the field never
-                // sits at the 0 sentinel — the validator is bounded by construction.
-                patchPhase({
-                  validator: v,
-                  ...(v && phase.validatorMaxIterations < 1
-                    ? { validatorMaxIterations: 3 }
-                    : {}),
-                })
-              }
-            />
-          </label>
-        )}
-        {/* The "Request changes" rework cap (plan 029), only meaningful for an
-            approve gate. 0 = unlimited. */}
-        {phase.gatePolicy === "approve" && !phase.fanOut && (
-          <label
-            className="flex items-center gap-2 text-xs"
-            title="Max times a reviewer can send this phase back for changes (0 = unlimited)"
-          >
-            <span className="text-muted-foreground">Max rework</span>
-            <Input
-              type="number"
-              min={0}
-              className="h-7 w-16 text-xs"
-              value={phase.maxReworkRounds}
-              onChange={(e) => {
-                const n = Math.max(0, Math.floor(Number(e.target.value) || 0))
-                patchPhase({ maxReworkRounds: n })
-              }}
-            />
-          </label>
-        )}
-      </div>
-
-      {/* Validator config (plan 031.1): the reviewer agent + iteration cap, shown
-          only when the validator toggle is on. */}
-      {phase.validator && !phase.fanOut && (
-        <div className="flex flex-wrap items-center gap-4">
-          <label
-            className="flex items-center gap-2 text-xs"
-            title="The agent that reviews this phase's output. Defaults to the phase's own first pool agent."
-          >
-            <span className="text-muted-foreground">Reviewer</span>
-            <NativeSelect
-              size="sm"
-              value={phase.validatorAgent ?? ""}
-              onChange={(e) =>
-                patchPhase({ validatorAgent: e.target.value || null })
-              }
-            >
-              <NativeSelectOption value="">
-                Phase&apos;s own agent
-              </NativeSelectOption>
-              {agents.map((a) => (
-                <NativeSelectOption key={a.name} value={a.name}>
-                  {a.name}
-                </NativeSelectOption>
-              ))}
-            </NativeSelect>
-          </label>
-          <label
-            className="flex items-center gap-2 text-xs"
-            title="Max validator review rounds before escalating to a human gate"
-          >
-            <span className="text-muted-foreground">Max iterations</span>
-            <Input
-              type="number"
-              min={1}
-              className="h-7 w-16 text-xs"
-              // A legacy 0 (the engine's "use default" sentinel) reads as 3 here so
-              // the control never shows 0; the floor is 1 (never zero reviews).
-              value={
-                phase.validatorMaxIterations < 1
-                  ? 3
-                  : phase.validatorMaxIterations
-              }
-              onChange={(e) => {
-                const n = Math.max(1, Math.floor(Number(e.target.value) || 1))
-                patchPhase({ validatorMaxIterations: n })
-              }}
-            />
-          </label>
-        </div>
-      )}
-
-      {/* Row 3: agent pool. */}
-      <div className="flex flex-col gap-1.5">
-        <span className="text-xs text-muted-foreground">
-          Agent pool
-          {phase.routing === "dispatch" && pool.length < 2 && (
-            <span className="ml-1 text-amber-600 dark:text-amber-500">
-              — dispatch routing needs 2+ agents
-            </span>
-          )}
-        </span>
-        <div className="flex flex-wrap items-center gap-1.5">
-          {pool.map((a) => (
-            <Badge key={a.id} variant="secondary" className="gap-1 pr-1">
-              {a.agentName}
-              <button
-                type="button"
-                onClick={() => removePoolAgent(a.id)}
-                className="rounded-sm p-0.5 hover:bg-background/60"
-                aria-label={`Remove ${a.agentName}`}
+            {!phase.fanOut && (
+              <label
+                className="flex items-center gap-2 text-xs"
+                title="After this phase completes, a second agent reviews its output and can send it back with feedback (bounded)"
               >
-                <XIcon className="size-3" />
-              </button>
-            </Badge>
-          ))}
-          {pool.length === 0 && (
-            <span className="text-xs text-muted-foreground">
-              No agents — the phase falls back to the default agent.
-            </span>
-          )}
-        </div>
-        {addable.length > 0 ? (
-          <NativeSelect
-            size="sm"
-            value={addValue}
-            className="w-full"
-            onChange={(e) => addPoolAgent(e.target.value)}
-          >
-            <NativeSelectOption value="">Add agent…</NativeSelectOption>
-            {addable.map((a) => (
-              <NativeSelectOption key={a.name} value={a.name}>
-                {a.name}
-              </NativeSelectOption>
-            ))}
-          </NativeSelect>
-        ) : (
-          agents.length === 0 && (
-            <span className="text-xs text-muted-foreground">
-              No authored agents available yet.
-            </span>
-          )
-        )}
-      </div>
-
-      {/* Row 4: dependencies (incoming edges). */}
-      {upstreamCandidates.length > 0 && (
-        <div className="flex flex-col gap-1.5">
-          <span className="text-xs text-muted-foreground">Depends on</span>
-          <div className="flex flex-col gap-1">
-            {upstreamCandidates.map((u) => {
-              const edge = incoming.find((e) => e.fromPhaseId === u.id)
-              const checked = edge !== undefined
-              return (
-                <div key={u.id} className="flex items-center gap-2 text-xs">
-                  <Checkbox
-                    id={`${phase.id}-dep-${u.id}`}
-                    checked={checked}
-                    onCheckedChange={(v) => toggleDependency(u.id, v === true)}
-                  />
-                  <label
-                    htmlFor={`${phase.id}-dep-${u.id}`}
-                    className="cursor-pointer truncate"
-                  >
-                    {u.name}
-                  </label>
-                  {checked && (
-                    <NativeSelect
-                      size="sm"
-                      value={edge?.trigger}
-                      className="ml-auto"
-                      onChange={(e) =>
-                        changeTrigger(u.id, e.target.value as EdgeTrigger)
-                      }
-                    >
-                      <NativeSelectOption value="on_complete">
-                        on complete
-                      </NativeSelectOption>
-                      <NativeSelectOption value="on_each_subtask">
-                        on each subtask
-                      </NativeSelectOption>
-                    </NativeSelect>
-                  )}
-                </div>
-              )
-            })}
+                <span className="text-muted-foreground">Validator</span>
+                <Switch
+                  checked={phase.validator}
+                  onCheckedChange={(v) =>
+                    // Seed a concrete default cap (3) when enabling, so the field never
+                    // sits at the 0 sentinel — the validator is bounded by construction.
+                    patchPhase({
+                      validator: v,
+                      ...(v && phase.validatorMaxIterations < 1
+                        ? { validatorMaxIterations: 3 }
+                        : {}),
+                    })
+                  }
+                />
+              </label>
+            )}
+            {/* The "Request changes" rework cap (plan 029), only meaningful for an
+            approve gate. 0 = unlimited. */}
+            {phase.gatePolicy === "approve" && !phase.fanOut && (
+              <label
+                className="flex items-center gap-2 text-xs"
+                title="Max times a reviewer can send this phase back for changes (0 = unlimited)"
+              >
+                <span className="text-muted-foreground">Max rework</span>
+                <Input
+                  type="number"
+                  min={0}
+                  className="h-7 w-16 text-xs"
+                  value={phase.maxReworkRounds}
+                  onChange={(e) => {
+                    const n = Math.max(
+                      0,
+                      Math.floor(Number(e.target.value) || 0)
+                    )
+                    patchPhase({ maxReworkRounds: n })
+                  }}
+                />
+              </label>
+            )}
           </div>
-        </div>
-      )}
+
+          {/* Validator config (plan 031.1): the reviewer agent + iteration cap, shown
+          only when the validator toggle is on. */}
+          {phase.validator && !phase.fanOut && (
+            <div className="flex flex-wrap items-center gap-4">
+              <label
+                className="flex items-center gap-2 text-xs"
+                title="The agent that reviews this phase's output. Defaults to the phase's own first pool agent."
+              >
+                <span className="text-muted-foreground">Reviewer</span>
+                <NativeSelect
+                  size="sm"
+                  value={phase.validatorAgent ?? ""}
+                  onChange={(e) =>
+                    patchPhase({ validatorAgent: e.target.value || null })
+                  }
+                >
+                  <NativeSelectOption value="">
+                    Phase&apos;s own agent
+                  </NativeSelectOption>
+                  {agents.map((a) => (
+                    <NativeSelectOption key={a.name} value={a.name}>
+                      {a.name}
+                    </NativeSelectOption>
+                  ))}
+                </NativeSelect>
+              </label>
+              <label
+                className="flex items-center gap-2 text-xs"
+                title="Max validator review rounds before escalating to a human gate"
+              >
+                <span className="text-muted-foreground">Max iterations</span>
+                <Input
+                  type="number"
+                  min={1}
+                  className="h-7 w-16 text-xs"
+                  // A legacy 0 (the engine's "use default" sentinel) reads as 3 here so
+                  // the control never shows 0; the floor is 1 (never zero reviews).
+                  value={
+                    phase.validatorMaxIterations < 1
+                      ? 3
+                      : phase.validatorMaxIterations
+                  }
+                  onChange={(e) => {
+                    const n = Math.max(
+                      1,
+                      Math.floor(Number(e.target.value) || 1)
+                    )
+                    patchPhase({ validatorMaxIterations: n })
+                  }}
+                />
+              </label>
+            </div>
+          )}
+
+          {/* Row 3: agent pool. */}
+          <div className="flex flex-col gap-1.5">
+            <span className="text-xs text-muted-foreground">
+              Agent pool
+              {phase.routing === "dispatch" && pool.length < 2 && (
+                <span className="ml-1 text-amber-600 dark:text-amber-500">
+                  — dispatch routing needs 2+ agents
+                </span>
+              )}
+            </span>
+            <div className="flex flex-wrap items-center gap-1.5">
+              {pool.map((a) => (
+                <Badge key={a.id} variant="secondary" className="gap-1 pr-1">
+                  {a.agentName}
+                  <button
+                    type="button"
+                    onClick={() => removePoolAgent(a.id)}
+                    className="rounded-sm p-0.5 hover:bg-background/60"
+                    aria-label={`Remove ${a.agentName}`}
+                  >
+                    <XIcon className="size-3" />
+                  </button>
+                </Badge>
+              ))}
+              {pool.length === 0 && (
+                <span className="text-xs text-muted-foreground">
+                  No agents — the phase falls back to the default agent.
+                </span>
+              )}
+            </div>
+            {addable.length > 0 ? (
+              <NativeSelect
+                size="sm"
+                value={addValue}
+                className="w-full"
+                onChange={(e) => addPoolAgent(e.target.value)}
+              >
+                <NativeSelectOption value="">Add agent…</NativeSelectOption>
+                {addable.map((a) => (
+                  <NativeSelectOption key={a.name} value={a.name}>
+                    {a.name}
+                  </NativeSelectOption>
+                ))}
+              </NativeSelect>
+            ) : (
+              agents.length === 0 && (
+                <span className="text-xs text-muted-foreground">
+                  No authored agents available yet.
+                </span>
+              )
+            )}
+          </div>
+
+          {/* Row 4: dependencies (incoming edges). */}
+          {upstreamCandidates.length > 0 && (
+            <div className="flex flex-col gap-1.5">
+              <span className="text-xs text-muted-foreground">Depends on</span>
+              <div className="flex flex-col gap-1">
+                {upstreamCandidates.map((u) => {
+                  const edge = incoming.find((e) => e.fromPhaseId === u.id)
+                  const checked = edge !== undefined
+                  return (
+                    <div key={u.id} className="flex items-center gap-2 text-xs">
+                      <Checkbox
+                        id={`${phase.id}-dep-${u.id}`}
+                        checked={checked}
+                        onCheckedChange={(v) =>
+                          toggleDependency(u.id, v === true)
+                        }
+                      />
+                      <label
+                        htmlFor={`${phase.id}-dep-${u.id}`}
+                        className="cursor-pointer truncate"
+                      >
+                        {u.name}
+                      </label>
+                      {checked && (
+                        <NativeSelect
+                          size="sm"
+                          value={edge?.trigger}
+                          className="ml-auto"
+                          onChange={(e) =>
+                            changeTrigger(u.id, e.target.value as EdgeTrigger)
+                          }
+                        >
+                          <NativeSelectOption value="on_complete">
+                            on complete
+                          </NativeSelectOption>
+                          <NativeSelectOption value="on_each_subtask">
+                            on each subtask
+                          </NativeSelectOption>
+                        </NativeSelect>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          )}
         </div>
       </CollapsibleContent>
     </Collapsible>
-  )
-}
-
-// One clickable definition row: name + description, with a hover delete button.
-function DefinitionRow({
-  definition,
-  active,
-  onSelect,
-  onDelete,
-}: {
-  definition: ProcessDefinition
-  active: boolean
-  onSelect: () => void
-  onDelete: () => void
-}) {
-  return (
-    <SidebarMenuItem className="group/def">
-      <SidebarMenuButton
-        isActive={active}
-        onClick={onSelect}
-        className={cn("h-auto flex-col items-start gap-0.5 py-1.5 pr-8")}
-      >
-        <div className="w-full truncate font-medium">{definition.name}</div>
-        {definition.description && (
-          <div className="line-clamp-2 w-full text-xs font-normal text-muted-foreground">
-            {definition.description}
-          </div>
-        )}
-      </SidebarMenuButton>
-      <button
-        type="button"
-        onClick={(e) => {
-          e.stopPropagation()
-          onDelete()
-        }}
-        className="absolute top-1.5 right-1.5 rounded-md p-1 text-muted-foreground opacity-0 transition-opacity group-hover/def:opacity-100 hover:bg-sidebar-accent hover:text-destructive"
-        title="Delete process"
-        aria-label="Delete process"
-      >
-        <Trash2 className="size-3.5" />
-      </button>
-    </SidebarMenuItem>
   )
 }
 
@@ -1249,37 +1348,39 @@ function RunMonitor({
   useEffect(() => {
     if (!run?.taskId) return
     const taskId = run.taskId
-    const unsubscribe = window.cowork.tasks.onEvent((payload: TaskLiveEvent) => {
-      if (payload.taskId !== taskId) return
-      const ev = payload.event
-      if (ev.type === "process_phase") {
-        setGates((g) => foldGate(g, ev))
-        // A flag gate rides the same waiting_for_approval event but its target +
-        // reason live on the durable approval row — refresh flagGates from it
-        // (plan 031.2). Cheap: only the pending flag rows are kept.
-        window.cowork.db.approvals.list({ taskId }).then((approvals) => {
-          const info: Record<string, FlagGateInfo> = {}
-          for (const a of approvals) {
-            if (a.status !== "pending") continue
-            const req = a.request as ProcessGateRequest | null
-            if (req?.kind === "process_flag_gate")
-              info[req.phaseRunId] = {
-                requestId: req.requestId,
-                targetKey: req.flagTargetKey ?? "",
-                reason: req.flagReason ?? "",
-              }
-          }
-          setFlagGates(info)
-        })
-        void refetchRef.current()
-      } else if (
-        ev.type === "status_change" ||
-        ev.type === "task_completed" ||
-        ev.type === "task_failed"
-      ) {
-        void refetchRef.current()
+    const unsubscribe = window.cowork.tasks.onEvent(
+      (payload: TaskLiveEvent) => {
+        if (payload.taskId !== taskId) return
+        const ev = payload.event
+        if (ev.type === "process_phase") {
+          setGates((g) => foldGate(g, ev))
+          // A flag gate rides the same waiting_for_approval event but its target +
+          // reason live on the durable approval row — refresh flagGates from it
+          // (plan 031.2). Cheap: only the pending flag rows are kept.
+          window.cowork.db.approvals.list({ taskId }).then((approvals) => {
+            const info: Record<string, FlagGateInfo> = {}
+            for (const a of approvals) {
+              if (a.status !== "pending") continue
+              const req = a.request as ProcessGateRequest | null
+              if (req?.kind === "process_flag_gate")
+                info[req.phaseRunId] = {
+                  requestId: req.requestId,
+                  targetKey: req.flagTargetKey ?? "",
+                  reason: req.flagReason ?? "",
+                }
+            }
+            setFlagGates(info)
+          })
+          void refetchRef.current()
+        } else if (
+          ev.type === "status_change" ||
+          ev.type === "task_completed" ||
+          ev.type === "task_failed"
+        ) {
+          void refetchRef.current()
+        }
       }
-    })
+    )
     return unsubscribe
   }, [run?.taskId])
 
@@ -1415,7 +1516,10 @@ function RunMonitor({
     if (!run) return
     clearFlag(phaseRunId)
     try {
-      await window.cowork.process.confirmFlag({ processRunId: run.id, requestId })
+      await window.cowork.process.confirmFlag({
+        processRunId: run.id,
+        requestId,
+      })
     } catch (err) {
       toast.error(`Could not confirm rework flag: ${err}`)
     }
@@ -1426,7 +1530,10 @@ function RunMonitor({
     if (!run) return
     clearFlag(phaseRunId)
     try {
-      await window.cowork.process.dismissFlag({ processRunId: run.id, requestId })
+      await window.cowork.process.dismissFlag({
+        processRunId: run.id,
+        requestId,
+      })
     } catch (err) {
       toast.error(`Could not dismiss rework flag: ${err}`)
     }
@@ -1464,7 +1571,11 @@ function RunMonitor({
     return (
       <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 p-8 text-center">
         <p className="text-sm text-muted-foreground">No runs yet.</p>
-        <Button type="button" onClick={() => setNewRunOpen(true)} disabled={noPhases}>
+        <Button
+          type="button"
+          onClick={() => setNewRunOpen(true)}
+          disabled={noPhases}
+        >
           <Plus className="size-4" />
           New Run
         </Button>
@@ -1565,8 +1676,8 @@ function RunMonitor({
               decision but doesn't resume). Explain the dead-end and the way out. */}
           {run?.status === "paused" && Object.keys(gates).length === 0 && (
             <p className="mb-2 rounded-md border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-xs text-amber-600 dark:text-amber-500">
-              A gate was denied — the run is paused and its downstream phases stay
-              blocked. Cancel the run to end it.
+              A gate was denied — the run is paused and its downstream phases
+              stay blocked. Cancel the run to end it.
             </p>
           )}
           {topLevel.length === 0 && (
@@ -1660,7 +1771,8 @@ function PhaseFileChips({
         void window.cowork.openInEditor(workspacePath, relPath)
       }}
       onReviewAll={(fs) => {
-        for (const f of fs) void window.cowork.openInEditor(workspacePath, f.path)
+        for (const f of fs)
+          void window.cowork.openInEditor(workspacePath, f.path)
       }}
     />
   )
@@ -1772,7 +1884,9 @@ function PhaseRunItem({
         <div className="flex flex-col gap-2 rounded-lg border border-amber-500/40 bg-amber-500/5 p-3 text-xs">
           <div className="flex items-center gap-2 font-medium text-amber-600 dark:text-amber-500">
             <ShieldAlert className="size-3.5 shrink-0" />
-            <span>“{name}” is done — approve to release its downstream phases.</span>
+            <span>
+              “{name}” is done — approve to release its downstream phases.
+            </span>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <Button

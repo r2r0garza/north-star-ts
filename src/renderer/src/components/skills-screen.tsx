@@ -1,21 +1,19 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
 import type { ReactNode } from "react"
-import { Dialog as DialogPrimitive } from "radix-ui"
-import { ChevronRight, Plus, Trash2, XIcon } from "lucide-react"
-import { Dialog, DialogTitle } from "@/components/ui/dialog"
+import { ArrowLeft, ChevronRight, Plus, Trash2, XIcon } from "lucide-react"
 import {
   Collapsible,
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible"
 import {
-  SidebarGroup,
-  SidebarGroupContent,
-  SidebarGroupLabel,
-  SidebarMenu,
-  SidebarMenuButton,
-  SidebarMenuItem,
-} from "@/components/ui/sidebar"
+  Card,
+  CardAction,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -30,23 +28,21 @@ import {
 } from "@/components/ui/select"
 import { Markdown } from "@/components/markdown"
 import { toast } from "sonner"
-import { cn } from "@/lib/utils"
 import type { SkillFolder, SkillMetadata, SkillTree } from "@/types"
 
-// The Skills view — a full-viewport takeover (same shell as SettingsScreen) for
-// browsing, editing, creating, and deleting SKILL.md files. The left rail is a
-// two-level tree: the top level is Global / Workspace / Custom; under Workspace
-// and Custom, a second collapsible level lists each folder (every known repo,
-// every custom folder), and under those, the folder's skills. Global is a single
-// flat list. Loaded via skills.tree(), which enumerates ALL known workspaces, so
-// the view is populated even with no active conversation.
-//
-// The main pane renders the selected skill's markdown with a View/Edit toggle,
-// or a small create form. Editing round-trips the RAW file (frontmatter + body),
-// not SkillMetadata.body (which has frontmatter stripped), so YAML stays intact.
+// The Skills view — an in-panel destination (rendered in the center region of
+// the app shell, beside the still-visible sidebar) for browsing, editing,
+// creating, and deleting SKILL.md files. Browsing is a 3-tab card grid
+// (Global / Workspace / Custom); Workspace groups skills into collapsed sections
+// per workspace. Selecting a card, editing, or creating takes over the panel:
+// the read-only view renders the skill's markdown; edit round-trips the RAW file
+// (frontmatter + body) so YAML stays intact; create is a small metadata + body
+// form. Loaded via skills.tree(), which enumerates ALL known workspaces, so the
+// view is populated even with no active conversation.
 //
 // Writability follows the folder kind: user + custom are editable/deletable;
-// github + workspace skills are read-only here (viewable only).
+// github + workspace skills are read-only here (viewable only). "Add new skill"
+// is disabled on the Workspace tab since workspace folders are not writable here.
 
 // A flat, addressable skill: its metadata + folder kind + a key that uniquely
 // identifies it across folders (source dir + name), since the same name can
@@ -74,13 +70,9 @@ type Mode =
       body: string
     }
 
-export function SkillsScreen({
-  open,
-  onOpenChange,
-}: {
-  open: boolean
-  onOpenChange: (open: boolean) => void
-}) {
+type SkillTab = "global" | "workspace" | "custom"
+
+export function SkillsScreen({ onClose }: { onClose: () => void }) {
   const [tree, setTree] = useState<SkillTree | null>(null)
   // Selected skill's key (source path + name), or null when nothing is selected.
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
@@ -88,6 +80,9 @@ export function SkillsScreen({
   // The raw SKILL.md text being edited (null until loaded / not editing).
   const [draft, setDraft] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+  // Which browse tab is active. Independent of the view/edit/create takeover, so
+  // Back/Cancel return the user to the tab they came from.
+  const [activeTab, setActiveTab] = useState<SkillTab>("global")
 
   // Flatten every folder's skills into one addressable list (tagged with kind),
   // so selection and the dirty-guard don't care about the tree's shape.
@@ -128,16 +123,24 @@ export function SkillsScreen({
     window.cowork.skills.tree().then(setTree)
   }, [])
 
-  // (Re)load the tree whenever the view opens. Reset the transient edit state so a
-  // reopen starts clean.
+  // Load on mount. The component is mounted only while the Skills view is open
+  // (main.tsx renders it conditionally), so it starts fresh each time.
   useEffect(() => {
-    if (!open) return
-    setTree(null)
-    setMode({ kind: "view" })
-    setDraft(null)
-    setSelectedKey(null)
     loadTree()
-  }, [open, loadTree])
+  }, [loadTree])
+
+  // Esc closes the view, dropping the user back to their last open conversation.
+  // Matches the sidebar-navigation behavior (no discard prompt).
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault()
+        onClose()
+      }
+    }
+    window.addEventListener("keydown", onKeyDown)
+    return () => window.removeEventListener("keydown", onKeyDown)
+  }, [onClose])
 
   // Guard against acting on a skill that vanished from a refreshed tree.
   useEffect(() => {
@@ -152,9 +155,7 @@ export function SkillsScreen({
   const dirty =
     (mode.kind === "edit" && draft !== null) ||
     (mode.kind === "create" &&
-      (!!mode.name.trim() ||
-        !!mode.description.trim() ||
-        !!mode.body.trim()))
+      (!!mode.name.trim() || !!mode.description.trim() || !!mode.body.trim()))
 
   function confirmDiscard(): boolean {
     return !dirty || window.confirm("Discard unsaved changes to this skill?")
@@ -165,6 +166,14 @@ export function SkillsScreen({
     if (key === selectedKey && mode.kind === "view") return
     if (!confirmDiscard()) return
     setSelectedKey(key)
+    setMode({ kind: "view" })
+    setDraft(null)
+  }
+
+  // Return from a view/edit takeover to the tabbed card browser.
+  function backToCards() {
+    if (!confirmDiscard()) return
+    setSelectedKey(null)
     setMode({ kind: "view" })
     setDraft(null)
   }
@@ -265,317 +274,273 @@ export function SkillsScreen({
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogPrimitive.Portal>
-        {/* Full-viewport takeover — same treatment as SettingsScreen: raw Radix
-            primitive (focus-trap / Escape / portal) without the centered-modal
-            animation. No meaningful outside to click, so close is Escape / [X]. */}
-        <DialogPrimitive.Content
-          data-slot="skills-screen"
-          aria-describedby={undefined}
-          onInteractOutside={(e) => e.preventDefault()}
-          className="fixed inset-0 z-50 flex h-screen w-screen flex-col bg-background text-sm text-foreground outline-none data-open:animate-in data-open:fade-in-0 data-open:slide-in-from-bottom-2 data-closed:animate-out data-closed:fade-out-0 data-closed:slide-out-to-bottom-2"
+    <div
+      data-slot="skills-screen"
+      className="flex min-h-0 flex-1 flex-col bg-background pt-11 text-sm text-foreground"
+    >
+      {/* Header row (matches the app's h-11 top bar; the Shell drag bar sits
+          above via pt-11). */}
+      <div className="flex h-11 shrink-0 items-center justify-between border-b px-4">
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Close skills"
+          className="group/back flex items-center gap-2 rounded-md text-left"
         >
-          {/* Header row / window drag region (matches the app's h-11 top bar). */}
-          <div className="flex h-11 shrink-0 items-center justify-between border-b pr-3 pl-20 [-webkit-app-region:drag]">
-            <DialogTitle className="font-heading text-base font-medium">
-              Skills
-            </DialogTitle>
-            <DialogPrimitive.Close asChild>
+          <ArrowLeft className="size-4 text-muted-foreground transition-colors group-hover/back:text-foreground" />
+          <h1 className="font-heading text-base font-medium">Skills</h1>
+        </button>
+        <Button variant="ghost" size="icon-sm" onClick={onClose}>
+          <XIcon />
+          <span className="sr-only">Close</span>
+        </Button>
+      </div>
+
+      {mode.kind === "create" ? (
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+          <div className="flex h-12 shrink-0 items-center justify-between gap-2 border-b px-4">
+            <p className="truncate font-medium">New skill</p>
+            <div className="flex shrink-0 items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={cancelEditing}
+                disabled={saving}
+              >
+                Cancel
+              </Button>
+              <Button
+                size="sm"
+                onClick={createSkill}
+                disabled={saving || !mode.name.trim() || !mode.dir}
+              >
+                {saving ? "Creating…" : "Create"}
+              </Button>
+            </div>
+          </div>
+          <ScrollArea className="min-h-0 flex-1">
+            <div className="max-w-2xl space-y-6 px-6 py-5">
+              <Field label="Location">
+                <Select
+                  value={mode.dir}
+                  onValueChange={(dir) => setMode({ ...mode, dir })}
+                >
+                  <SelectTrigger className="w-full">
+                    <SelectValue placeholder="Choose a location" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {writableDirs.map((d) => (
+                      <SelectItem key={d.path} value={d.path}>
+                        {d.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </Field>
+              <Field
+                label="Name"
+                hint="Lowercase letters, digits, and single hyphens. Becomes the folder name."
+              >
+                <Input
+                  value={mode.name}
+                  onChange={(e) => setMode({ ...mode, name: e.target.value })}
+                  placeholder="my-skill"
+                  autoFocus
+                />
+              </Field>
+              <Field
+                label="Description"
+                hint="What it does AND when to use it — this is what the agent sees when deciding to load the skill."
+              >
+                <Textarea
+                  value={mode.description}
+                  onChange={(e) =>
+                    setMode({ ...mode, description: e.target.value })
+                  }
+                  spellCheck={false}
+                  className="min-h-20 resize-y text-sm leading-relaxed"
+                  placeholder="Formats and validates CSV exports before upload."
+                />
+              </Field>
+              <Field
+                label="Skill instructions"
+                hint="The markdown body the agent reads once the skill is loaded. Leave blank for a starter template."
+              >
+                <Textarea
+                  value={mode.body}
+                  onChange={(e) => setMode({ ...mode, body: e.target.value })}
+                  spellCheck={false}
+                  className="min-h-64 resize-y font-mono text-xs leading-relaxed"
+                  placeholder={`# ${mode.name.trim() || "my-skill"}\n\n## When to use\n\n…\n\n## Steps\n\n1. …`}
+                />
+              </Field>
+            </div>
+          </ScrollArea>
+        </div>
+      ) : selected ? (
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+          <div className="flex h-12 shrink-0 items-center justify-between gap-2 border-b px-4">
+            <div className="flex min-w-0 items-center gap-2">
               <Button
                 variant="ghost"
                 size="icon-sm"
-                className="[-webkit-app-region:no-drag]"
+                onClick={backToCards}
+                aria-label="Back to skills"
               >
-                <XIcon />
-                <span className="sr-only">Close</span>
+                <ArrowLeft />
               </Button>
-            </DialogPrimitive.Close>
+              <div className="min-w-0">
+                <p className="truncate font-medium">{selected.name}</p>
+                <p className="truncate font-mono text-xs text-muted-foreground">
+                  {selected.path}
+                </p>
+              </div>
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              {mode.kind === "edit" ? (
+                <>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={cancelEditing}
+                    disabled={saving}
+                  >
+                    Cancel
+                  </Button>
+                  <Button size="sm" onClick={save} disabled={saving}>
+                    {saving ? "Saving…" : "Save"}
+                  </Button>
+                </>
+              ) : isWritable(selected.kind) ? (
+                <Button variant="outline" size="sm" onClick={startEditing}>
+                  Edit
+                </Button>
+              ) : (
+                <span className="text-xs text-muted-foreground">Read-only</span>
+              )}
+            </div>
+          </div>
+          {mode.kind === "edit" && draft !== null ? (
+            <Textarea
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              spellCheck={false}
+              className="min-h-0 flex-1 resize-none rounded-none border-0 font-mono text-xs leading-relaxed focus-visible:ring-0"
+            />
+          ) : (
+            <ScrollArea className="min-h-0 flex-1">
+              <div className="px-6 py-5">
+                <Markdown content={selected.body} />
+              </div>
+            </ScrollArea>
+          )}
+        </div>
+      ) : (
+        <Tabs
+          value={activeTab}
+          onValueChange={(v) => setActiveTab(v as SkillTab)}
+          className="flex min-h-0 flex-1 flex-col gap-0"
+        >
+          <div className="flex shrink-0 items-center justify-between gap-2 border-b px-4 py-2">
+            <TabsList variant="line" className="gap-1">
+              <TabsTrigger value="global">Global</TabsTrigger>
+              <TabsTrigger value="workspace">Workspace</TabsTrigger>
+              <TabsTrigger value="custom">Custom</TabsTrigger>
+            </TabsList>
+            {/* Shown on all tabs; disabled on Workspace (its folders aren't
+                writable here) and when there's no writable target dir. */}
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={startCreating}
+              disabled={
+                activeTab === "workspace" ||
+                tree === null ||
+                writableDirs.length === 0
+              }
+            >
+              <Plus className="size-4" />
+              Add new skill
+            </Button>
           </div>
 
-          <div className="flex min-h-0 flex-1">
-            {/* Left rail — New button + Global (flat) + Workspace/Custom (nested). */}
-            <div className="flex w-72 shrink-0 flex-col border-r">
-              <div className="shrink-0 border-b p-2">
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  onClick={startCreating}
-                  disabled={tree === null || writableDirs.length === 0}
-                  className="w-full justify-start"
-                >
-                  <Plus className="size-4" />
-                  New skill
-                </Button>
-              </div>
-              <div className="min-h-0 flex-1 overflow-y-auto py-2">
-                {/* Global: one flat list of the user dir's skills. */}
-                <SkillGroup
-                  label="Global"
-                  count={tree?.global.reduce((n, f) => n + f.skills.length, 0)}
-                  loading={tree === null}
-                >
+          <ScrollArea className="min-h-0 flex-1">
+            <div className="p-4">
+              <TabsContent value="global">
+                <CardGrid>
                   {tree?.global.flatMap((f) =>
                     f.skills.map((s) => (
-                      <SkillRow
+                      <SkillCard
                         key={skillKey(f.path, s.name)}
                         skill={{
                           ...s,
                           key: skillKey(f.path, s.name),
                           kind: f.kind,
                         }}
-                        active={skillKey(f.path, s.name) === selectedKey}
-                        onSelect={() => selectSkill(skillKey(f.path, s.name))}
+                        onOpen={() => selectSkill(skillKey(f.path, s.name))}
                         onDelete={deleteSkill}
                       />
                     ))
                   )}
-                  {tree !== null &&
-                    tree.global.every((f) => f.skills.length === 0) && (
-                      <EmptyLine>No skills.</EmptyLine>
+                </CardGrid>
+                {tree !== null &&
+                  tree.global.every((f) => f.skills.length === 0) && (
+                    <EmptyLine>No skills.</EmptyLine>
+                  )}
+              </TabsContent>
+
+              <TabsContent value="workspace" className="space-y-1">
+                {tree?.workspaces.length === 0 && (
+                  <EmptyLine>No workspaces opened yet.</EmptyLine>
+                )}
+                {tree?.workspaces.map((ws) => (
+                  <WorkspaceSection
+                    key={ws.path}
+                    ws={ws}
+                    onOpen={selectSkill}
+                    onDelete={deleteSkill}
+                  />
+                ))}
+              </TabsContent>
+
+              <TabsContent value="custom" className="space-y-4">
+                {tree?.custom.length === 0 && (
+                  <EmptyLine>No custom folders.</EmptyLine>
+                )}
+                {tree?.custom.map((folder) => (
+                  <div key={folder.path} className="space-y-2">
+                    {tree.custom.length > 1 && (
+                      <p className="px-1 text-xs font-medium text-muted-foreground">
+                        {folder.label}
+                      </p>
                     )}
-                </SkillGroup>
-
-                {/* Workspace: one collapsible folder node per known repo, each
-                    combining its .github/skills + .<system>/skills. */}
-                <SkillGroup
-                  label="Workspace"
-                  count={tree?.workspaces.reduce(
-                    (n, w) =>
-                      n + w.folders.reduce((m, f) => m + f.skills.length, 0),
-                    0
-                  )}
-                  loading={tree === null}
-                >
-                  {tree?.workspaces.length === 0 && (
-                    <EmptyLine>No workspaces opened yet.</EmptyLine>
-                  )}
-                  {tree?.workspaces.map((ws) => {
-                    const wsSkills = ws.folders.flatMap((f) =>
-                      f.skills.map((s) => ({ folder: f, skill: s }))
-                    )
-                    return (
-                      <SkillFolderNode
-                        key={ws.path}
-                        label={ws.label}
-                        count={wsSkills.length}
-                      >
-                        {wsSkills.map(({ folder, skill }) => (
-                          <SkillRow
-                            key={skillKey(folder.path, skill.name)}
-                            skill={{
-                              ...skill,
-                              key: skillKey(folder.path, skill.name),
-                              kind: folder.kind,
-                            }}
-                            active={
-                              skillKey(folder.path, skill.name) === selectedKey
-                            }
-                            onSelect={() =>
-                              selectSkill(skillKey(folder.path, skill.name))
-                            }
-                            onDelete={deleteSkill}
-                          />
-                        ))}
-                        {wsSkills.length === 0 && (
-                          <EmptyLine>No skills.</EmptyLine>
-                        )}
-                      </SkillFolderNode>
-                    )
-                  })}
-                </SkillGroup>
-
-                {/* Custom: one collapsible folder node per registered folder. */}
-                <SkillGroup
-                  label="Custom"
-                  count={tree?.custom.reduce((n, f) => n + f.skills.length, 0)}
-                  loading={tree === null}
-                >
-                  {tree?.custom.length === 0 && (
-                    <EmptyLine>No custom folders.</EmptyLine>
-                  )}
-                  {tree?.custom.map((folder) => (
-                    <SkillFolderNode
-                      key={folder.path}
-                      label={folder.label}
-                      count={folder.skills.length}
-                    >
+                    <CardGrid>
                       {folder.skills.map((s) => (
-                        <SkillRow
+                        <SkillCard
                           key={skillKey(folder.path, s.name)}
                           skill={{
                             ...s,
                             key: skillKey(folder.path, s.name),
                             kind: folder.kind,
                           }}
-                          active={skillKey(folder.path, s.name) === selectedKey}
-                          onSelect={() =>
+                          onOpen={() =>
                             selectSkill(skillKey(folder.path, s.name))
                           }
                           onDelete={deleteSkill}
                         />
                       ))}
-                      {folder.skills.length === 0 && (
-                        <EmptyLine>No skills.</EmptyLine>
-                      )}
-                    </SkillFolderNode>
-                  ))}
-                </SkillGroup>
-              </div>
-            </div>
-
-            {/* Main pane — create form / markdown view / raw-text editor. */}
-            <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-              {mode.kind === "create" ? (
-                <>
-                  <div className="flex h-12 shrink-0 items-center justify-between gap-2 border-b px-4">
-                    <p className="truncate font-medium">New skill</p>
-                    <div className="flex shrink-0 items-center gap-2">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={cancelEditing}
-                        disabled={saving}
-                      >
-                        Cancel
-                      </Button>
-                      <Button
-                        size="sm"
-                        onClick={createSkill}
-                        disabled={saving || !mode.name.trim() || !mode.dir}
-                      >
-                        {saving ? "Creating…" : "Create"}
-                      </Button>
-                    </div>
+                    </CardGrid>
+                    {folder.skills.length === 0 && (
+                      <EmptyLine>No skills.</EmptyLine>
+                    )}
                   </div>
-                  <ScrollArea className="min-h-0 flex-1">
-                    <div className="max-w-2xl space-y-6 px-6 py-5">
-                      <Field label="Location">
-                        <Select
-                          value={mode.dir}
-                          onValueChange={(dir) => setMode({ ...mode, dir })}
-                        >
-                          <SelectTrigger className="w-full">
-                            <SelectValue placeholder="Choose a location" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {writableDirs.map((d) => (
-                              <SelectItem key={d.path} value={d.path}>
-                                {d.label}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </Field>
-                      <Field
-                        label="Name"
-                        hint="Lowercase letters, digits, and single hyphens. Becomes the folder name."
-                      >
-                        <Input
-                          value={mode.name}
-                          onChange={(e) =>
-                            setMode({ ...mode, name: e.target.value })
-                          }
-                          placeholder="my-skill"
-                          autoFocus
-                        />
-                      </Field>
-                      <Field
-                        label="Description"
-                        hint="What it does AND when to use it — this is what the agent sees when deciding to load the skill."
-                      >
-                        <Textarea
-                          value={mode.description}
-                          onChange={(e) =>
-                            setMode({ ...mode, description: e.target.value })
-                          }
-                          spellCheck={false}
-                          className="min-h-20 resize-y text-sm leading-relaxed"
-                          placeholder="Formats and validates CSV exports before upload."
-                        />
-                      </Field>
-                      <Field
-                        label="Skill instructions"
-                        hint="The markdown body the agent reads once the skill is loaded. Leave blank for a starter template."
-                      >
-                        <Textarea
-                          value={mode.body}
-                          onChange={(e) =>
-                            setMode({ ...mode, body: e.target.value })
-                          }
-                          spellCheck={false}
-                          className="min-h-64 resize-y font-mono text-xs leading-relaxed"
-                          placeholder={`# ${mode.name.trim() || "my-skill"}\n\n## When to use\n\n…\n\n## Steps\n\n1. …`}
-                        />
-                      </Field>
-                    </div>
-                  </ScrollArea>
-                </>
-              ) : selected ? (
-                <>
-                  <div className="flex h-12 shrink-0 items-center justify-between gap-2 border-b px-4">
-                    <div className="min-w-0">
-                      <p className="truncate font-medium">{selected.name}</p>
-                      <p className="truncate font-mono text-xs text-muted-foreground">
-                        {selected.path}
-                      </p>
-                    </div>
-                    <div className="flex shrink-0 items-center gap-2">
-                      {mode.kind === "edit" ? (
-                        <>
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={cancelEditing}
-                            disabled={saving}
-                          >
-                            Cancel
-                          </Button>
-                          <Button size="sm" onClick={save} disabled={saving}>
-                            {saving ? "Saving…" : "Save"}
-                          </Button>
-                        </>
-                      ) : isWritable(selected.kind) ? (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={startEditing}
-                        >
-                          Edit
-                        </Button>
-                      ) : (
-                        <span className="text-xs text-muted-foreground">
-                          Read-only
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                  {mode.kind === "edit" && draft !== null ? (
-                    <Textarea
-                      value={draft}
-                      onChange={(e) => setDraft(e.target.value)}
-                      spellCheck={false}
-                      className="min-h-0 flex-1 resize-none rounded-none border-0 font-mono text-xs leading-relaxed focus-visible:ring-0"
-                    />
-                  ) : (
-                    <ScrollArea className="min-h-0 flex-1">
-                      <div className="px-6 py-5">
-                        <Markdown content={selected.body} />
-                      </div>
-                    </ScrollArea>
-                  )}
-                </>
-              ) : (
-                <div className="flex flex-1 items-center justify-center p-8 text-center text-muted-foreground">
-                  Select a skill to view, or create a new one.
-                </div>
-              )}
+                ))}
+              </TabsContent>
             </div>
-          </div>
-        </DialogPrimitive.Content>
-      </DialogPrimitive.Portal>
-    </Dialog>
+          </ScrollArea>
+        </Tabs>
+      )}
+    </div>
   )
 }
 
@@ -598,124 +563,124 @@ function Field({
   )
 }
 
-// A muted placeholder line inside a group/folder.
+// ── Card browser pieces ─────────────────────────────────────────────────────
+
 function EmptyLine({ children }: { children: ReactNode }) {
   return <p className="px-2 py-1 text-xs text-muted-foreground">{children}</p>
 }
 
-// A top-level collapsible group (Global / Workspace / Custom). Expanded by
-// default; the chevron rotates on open (the History-section pattern).
-function SkillGroup({
-  label,
-  count,
-  loading,
-  children,
-}: {
-  label: string
-  count: number | undefined
-  loading: boolean
-  children: ReactNode
-}) {
-  const [expanded, setExpanded] = useState(true)
+// A responsive grid of skill cards.
+function CardGrid({ children }: { children: ReactNode }) {
   return (
-    <Collapsible open={expanded} onOpenChange={setExpanded}>
-      <SidebarGroup>
-        <CollapsibleTrigger asChild>
-          <button
-            type="button"
-            className="group/skillgroup flex w-full items-center gap-1"
-          >
-            <ChevronRight className="size-3.5 text-muted-foreground transition-transform group-data-[state=open]/skillgroup:rotate-90" />
-            <SidebarGroupLabel className="cursor-pointer">
-              {label}
-              <span className="ml-1 text-muted-foreground">
-                ({loading ? "…" : (count ?? 0)})
-              </span>
-            </SidebarGroupLabel>
-          </button>
-        </CollapsibleTrigger>
-        <CollapsibleContent>
-          <SidebarGroupContent>
-            <SidebarMenu>{children}</SidebarMenu>
-          </SidebarGroupContent>
-        </CollapsibleContent>
-      </SidebarGroup>
-    </Collapsible>
+    <div className="grid grid-cols-[repeat(auto-fill,minmax(18rem,20rem))] gap-3">
+      {children}
+    </div>
   )
 }
 
-// A second-level collapsible folder node (a repo or a custom folder), nested
-// inside a group. Collapsed by default; its own chevron token rotates
-// independently of the parent group's. Indented so the hierarchy reads.
-function SkillFolderNode({
-  label,
-  count,
-  children,
+// One clickable skill card: name + (clamped) description. Writable (user/custom)
+// skills get a hover delete; read-only (github/workspace) ones show a badge.
+function SkillCard({
+  skill,
+  onOpen,
+  onDelete,
 }: {
-  label: string
-  count: number
-  children: ReactNode
+  skill: CatalogSkill
+  onOpen: () => void
+  onDelete: (s: CatalogSkill) => void
 }) {
-  const [expanded, setExpanded] = useState(false)
+  const writable = isWritable(skill.kind)
   return (
-    <Collapsible open={expanded} onOpenChange={setExpanded}>
+    <Card
+      size="sm"
+      role="button"
+      tabIndex={0}
+      onClick={onOpen}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault()
+          onOpen()
+        }
+      }}
+      className="cursor-pointer transition-shadow hover:ring-foreground/25 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+    >
+      <CardHeader>
+        <CardTitle className="truncate">{skill.name}</CardTitle>
+        <CardAction className="flex items-center gap-1">
+          {writable ? (
+            <button
+              type="button"
+              aria-label={`Delete ${skill.name}`}
+              onClick={(e) => {
+                e.stopPropagation()
+                onDelete(skill)
+              }}
+              className="rounded p-1 text-muted-foreground opacity-0 transition-opacity group-hover/card:opacity-100 hover:bg-destructive/10 hover:text-destructive"
+            >
+              <Trash2 className="size-3.5" />
+            </button>
+          ) : (
+            <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
+              Read-only
+            </span>
+          )}
+        </CardAction>
+        <CardDescription className="line-clamp-2">
+          {skill.description}
+        </CardDescription>
+      </CardHeader>
+    </Card>
+  )
+}
+
+// A collapsible section for one workspace (collapsed by default), holding the
+// cards for that workspace's skills.
+function WorkspaceSection({
+  ws,
+  onOpen,
+  onDelete,
+}: {
+  ws: SkillTree["workspaces"][number]
+  onOpen: (key: string) => void
+  onDelete: (s: CatalogSkill) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const wsSkills = ws.folders.flatMap((f) =>
+    f.skills.map((s) => ({ folder: f, skill: s }))
+  )
+  return (
+    <Collapsible open={open} onOpenChange={setOpen} className="border-b">
       <CollapsibleTrigger asChild>
         <button
           type="button"
-          className="group/skillfolder flex w-full items-center gap-1 rounded-md px-2 py-1 text-left text-sm hover:bg-sidebar-accent"
+          className="group/ws flex w-full items-center gap-1.5 rounded-md px-2 py-2 text-left hover:bg-accent"
         >
-          <ChevronRight className="size-3.5 shrink-0 text-muted-foreground transition-transform group-data-[state=open]/skillfolder:rotate-90" />
-          <span className="truncate">{label}</span>
+          <ChevronRight className="size-4 shrink-0 text-muted-foreground transition-transform group-data-[state=open]/ws:rotate-90" />
+          <span className="truncate font-medium">{ws.label}</span>
           <span className="ml-auto shrink-0 text-xs text-muted-foreground">
-            {count}
+            {wsSkills.length}
           </span>
         </button>
       </CollapsibleTrigger>
       <CollapsibleContent>
-        <div className="pl-3">{children}</div>
+        <div className="py-2 pl-6">
+          <CardGrid>
+            {wsSkills.map(({ folder, skill }) => (
+              <SkillCard
+                key={skillKey(folder.path, skill.name)}
+                skill={{
+                  ...skill,
+                  key: skillKey(folder.path, skill.name),
+                  kind: folder.kind,
+                }}
+                onOpen={() => onOpen(skillKey(folder.path, skill.name))}
+                onDelete={onDelete}
+              />
+            ))}
+          </CardGrid>
+          {wsSkills.length === 0 && <EmptyLine>No skills.</EmptyLine>}
+        </div>
       </CollapsibleContent>
     </Collapsible>
-  )
-}
-
-// One clickable skill row: name + (clamped) description, with a hover delete for
-// writable (user/custom) skills. `active` highlights the selected skill.
-function SkillRow({
-  skill,
-  active,
-  onSelect,
-  onDelete,
-}: {
-  skill: CatalogSkill
-  active: boolean
-  onSelect: () => void
-  onDelete: (s: CatalogSkill) => void
-}) {
-  return (
-    <SidebarMenuItem className="group/skillrow relative">
-      <SidebarMenuButton
-        isActive={active}
-        onClick={onSelect}
-        className={cn("h-auto flex-col items-start gap-0.5 py-1.5 pr-8")}
-      >
-        <div className="w-full truncate font-medium">{skill.name}</div>
-        <div className="line-clamp-2 w-full text-xs font-normal text-muted-foreground">
-          {skill.description}
-        </div>
-      </SidebarMenuButton>
-      {isWritable(skill.kind) && (
-        <button
-          type="button"
-          aria-label={`Delete ${skill.name}`}
-          onClick={(e) => {
-            e.stopPropagation()
-            onDelete(skill)
-          }}
-          className="absolute top-1.5 right-1.5 rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover/skillrow:opacity-100"
-        >
-          <Trash2 className="size-3.5" />
-        </button>
-      )}
-    </SidebarMenuItem>
   )
 }

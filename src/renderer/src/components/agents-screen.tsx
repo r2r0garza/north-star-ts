@@ -1,21 +1,19 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
 import type { ReactNode } from "react"
-import { Dialog as DialogPrimitive } from "radix-ui"
-import { ChevronRight, Plus, Trash2, XIcon } from "lucide-react"
-import { Dialog, DialogTitle } from "@/components/ui/dialog"
+import { ArrowLeft, ChevronRight, Plus, Trash2, XIcon } from "lucide-react"
 import {
   Collapsible,
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible"
 import {
-  SidebarGroup,
-  SidebarGroupContent,
-  SidebarGroupLabel,
-  SidebarMenu,
-  SidebarMenuButton,
-  SidebarMenuItem,
-} from "@/components/ui/sidebar"
+  Card,
+  CardAction,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -35,16 +33,19 @@ import { toast } from "sonner"
 import { cn } from "@/lib/utils"
 import type { AgentDefinition, AgentFolder, AgentTree } from "@/types"
 
-// The Agents view — a full-viewport takeover (same shell as SkillsScreen) for
-// browsing, editing, creating, and deleting `<name>.agent.md` agents. The left
-// rail is the same two-level tree (Global / Workspace / Custom). The main pane is
+// The Agents view — an in-panel destination (rendered in the center region of
+// the app shell, beside the still-visible sidebar) for browsing, editing,
+// creating, and deleting `<name>.agent.md` agents. Browsing is a 3-tab card grid
+// (Global / Workspace / Custom); Workspace groups agents into collapsed sections
+// per workspace. Selecting a card, editing, or creating takes over the panel with
 // a STRUCTURED form (not raw text): metadata inputs + All/None/Choose tri-state
 // pickers for tools / skills / children, so the load-bearing undefined-vs-[]
 // distinction is expressed as UI rather than hand-edited YAML. Serialization lives
 // in the main process (agents:save takes structured fields).
 //
 // Writability follows the folder kind: user + custom are editable/deletable;
-// github + workspace agents are read-only here (viewable only).
+// github + workspace agents are read-only here (viewable only). "Add new agent"
+// is disabled on the Workspace tab since workspace folders are not writable here.
 
 // The 8 friendly tool categories, in display order. Mirrors TOOL_CATEGORIES in
 // the main process (src/main/agent/agents/tool-categories.ts). Duplicated here
@@ -102,19 +103,18 @@ type Mode =
   | { kind: "edit" }
   | { kind: "create"; dir: string }
 
-export function AgentsScreen({
-  open,
-  onOpenChange,
-}: {
-  open: boolean
-  onOpenChange: (open: boolean) => void
-}) {
+type AgentTab = "global" | "workspace" | "custom"
+
+export function AgentsScreen({ onClose }: { onClose: () => void }) {
   const [tree, setTree] = useState<AgentTree | null>(null)
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
   const [mode, setMode] = useState<Mode>({ kind: "view" })
   const [draft, setDraft] = useState<Draft | null>(null)
   const [saving, setSaving] = useState(false)
-  // Skill names for the skills picker's "Choose" list. Loaded once per open.
+  // Which browse tab is active. Independent of the view/edit/create takeover, so
+  // Back/Cancel return the user to the tab they came from.
+  const [activeTab, setActiveTab] = useState<AgentTab>("global")
+  // Skill names for the skills picker's "Choose" list. Loaded once on mount.
   const [skillNames, setSkillNames] = useState<string[]>([])
 
   // Flatten every folder's agents into one addressable list (tagged with kind).
@@ -161,19 +161,28 @@ export function AgentsScreen({
     window.cowork.agents.tree().then(setTree)
   }, [])
 
-  // (Re)load whenever the view opens; reset transient edit/create state.
+  // Load on mount. The component is mounted only while the Agents view is open
+  // (main.tsx renders it conditionally), so it starts fresh each time.
   useEffect(() => {
-    if (!open) return
-    setTree(null)
-    setMode({ kind: "view" })
-    setDraft(null)
-    setSelectedKey(null)
     loadTree()
     window.cowork.skills
       .list()
       .then((rows) => setSkillNames(rows.map((s) => s.name)))
       .catch(() => setSkillNames([]))
-  }, [open, loadTree])
+  }, [loadTree])
+
+  // Esc closes the view, dropping the user back to their last open conversation.
+  // Matches the sidebar-navigation behavior (no discard prompt).
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault()
+        onClose()
+      }
+    }
+    window.addEventListener("keydown", onKeyDown)
+    return () => window.removeEventListener("keydown", onKeyDown)
+  }, [onClose])
 
   // Drop a selection that vanished from a refreshed tree.
   useEffect(() => {
@@ -207,6 +216,14 @@ export function AgentsScreen({
 
   function cancelForm() {
     if (!confirmDiscard()) return
+    setMode({ kind: "view" })
+    setDraft(null)
+  }
+
+  // Return from a view/edit takeover to the tabbed card browser.
+  function backToCards() {
+    if (!confirmDiscard()) return
+    setSelectedKey(null)
     setMode({ kind: "view" })
     setDraft(null)
   }
@@ -293,237 +310,204 @@ export function AgentsScreen({
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogPrimitive.Portal>
-        <DialogPrimitive.Content
-          data-slot="agents-screen"
-          aria-describedby={undefined}
-          onInteractOutside={(e) => e.preventDefault()}
-          className="fixed inset-0 z-50 flex h-screen w-screen flex-col bg-background text-sm text-foreground outline-none data-open:animate-in data-open:fade-in-0 data-open:slide-in-from-bottom-2 data-closed:animate-out data-closed:fade-out-0 data-closed:slide-out-to-bottom-2"
+    <div
+      data-slot="agents-screen"
+      className="flex min-h-0 flex-1 flex-col bg-background pt-11 text-sm text-foreground"
+    >
+      {/* Header row (matches the app's h-11 top bar; the Shell drag bar sits
+          above via pt-11). */}
+      <div className="flex h-11 shrink-0 items-center justify-between border-b px-4">
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Close agents"
+          className="group/back flex items-center gap-2 rounded-md text-left"
         >
-          {/* Header row / window drag region (matches the app's h-11 top bar). */}
-          <div className="flex h-11 shrink-0 items-center justify-between border-b pr-3 pl-20 [-webkit-app-region:drag]">
-            <DialogTitle className="font-heading text-base font-medium">
-              Agents
-            </DialogTitle>
-            <DialogPrimitive.Close asChild>
+          <ArrowLeft className="size-4 text-muted-foreground transition-colors group-hover/back:text-foreground" />
+          <h1 className="font-heading text-base font-medium">Agents</h1>
+        </button>
+        <Button variant="ghost" size="icon-sm" onClick={onClose}>
+          <XIcon />
+          <span className="sr-only">Close</span>
+        </Button>
+      </div>
+
+      {mode.kind === "create" && draft ? (
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+          <FormHeader
+            title="New agent"
+            saving={saving}
+            saveLabel={saving ? "Creating…" : "Create"}
+            canSave={!!draft.name.trim() && !!mode.dir}
+            onCancel={cancelForm}
+            onSave={createAgent}
+          />
+          <AgentForm
+            draft={draft}
+            onChange={setDraft}
+            skillNames={skillNames}
+            agentNames={agentNames}
+            nameEditable
+            dirs={writableDirs}
+            dir={mode.dir}
+            onDirChange={(dir) => setMode({ kind: "create", dir })}
+          />
+        </div>
+      ) : mode.kind === "edit" && draft && selected ? (
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+          <FormHeader
+            title={selected.name}
+            subtitle={selected.path}
+            saving={saving}
+            saveLabel={saving ? "Saving…" : "Save"}
+            canSave
+            onCancel={cancelForm}
+            onSave={save}
+          />
+          <AgentForm
+            draft={draft}
+            onChange={setDraft}
+            skillNames={skillNames}
+            agentNames={agentNames.filter((n) => n !== draft.name)}
+          />
+        </div>
+      ) : selected ? (
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+          <div className="flex h-12 shrink-0 items-center justify-between gap-2 border-b px-4">
+            <div className="flex min-w-0 items-center gap-2">
               <Button
                 variant="ghost"
                 size="icon-sm"
-                className="[-webkit-app-region:no-drag]"
+                onClick={backToCards}
+                aria-label="Back to agents"
               >
-                <XIcon />
-                <span className="sr-only">Close</span>
+                <ArrowLeft />
               </Button>
-            </DialogPrimitive.Close>
+              <div className="min-w-0">
+                <p className="truncate font-medium">{selected.name}</p>
+                <p className="truncate font-mono text-xs text-muted-foreground">
+                  {selected.path}
+                </p>
+              </div>
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              {isWritable(selected.kind) ? (
+                <Button variant="outline" size="sm" onClick={startEditing}>
+                  Edit
+                </Button>
+              ) : (
+                <span className="text-xs text-muted-foreground">Read-only</span>
+              )}
+            </div>
+          </div>
+          <AgentView agent={selected} />
+        </div>
+      ) : (
+        <Tabs
+          value={activeTab}
+          onValueChange={(v) => setActiveTab(v as AgentTab)}
+          className="flex min-h-0 flex-1 flex-col gap-0"
+        >
+          <div className="flex shrink-0 items-center justify-between gap-2 border-b px-4 py-2">
+            <TabsList variant="line" className="gap-1">
+              <TabsTrigger value="global">Global</TabsTrigger>
+              <TabsTrigger value="workspace">Workspace</TabsTrigger>
+              <TabsTrigger value="custom">Custom</TabsTrigger>
+            </TabsList>
+            {/* Shown on all tabs; disabled on Workspace (its folders aren't
+                writable here) and when there's no writable target dir. */}
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={startCreating}
+              disabled={
+                activeTab === "workspace" ||
+                tree === null ||
+                writableDirs.length === 0
+              }
+            >
+              <Plus className="size-4" />
+              Add new agent
+            </Button>
           </div>
 
-          <div className="flex min-h-0 flex-1">
-            {/* Left rail — New button + Global (flat) + Workspace/Custom (nested). */}
-            <div className="flex w-72 shrink-0 flex-col border-r">
-              <div className="shrink-0 border-b p-2">
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  onClick={startCreating}
-                  disabled={tree === null || writableDirs.length === 0}
-                  className="w-full justify-start"
-                >
-                  <Plus className="size-4" />
-                  New agent
-                </Button>
-              </div>
-              <div className="min-h-0 flex-1 overflow-y-auto py-2">
-                <AgentGroup
-                  label="Global"
-                  count={tree?.global.reduce((n, f) => n + f.agents.length, 0)}
-                  loading={tree === null}
-                >
+          <ScrollArea className="min-h-0 flex-1">
+            <div className="p-4">
+              <TabsContent value="global">
+                <CardGrid>
                   {tree?.global.flatMap((f) =>
                     f.agents.map((a) => (
-                      <AgentRow
+                      <AgentCard
                         key={agentKey(f.path, a.name)}
                         agent={{
                           ...a,
                           key: agentKey(f.path, a.name),
                           kind: f.kind,
                         }}
-                        active={agentKey(f.path, a.name) === selectedKey}
-                        onSelect={() => selectAgent(agentKey(f.path, a.name))}
+                        onOpen={() => selectAgent(agentKey(f.path, a.name))}
                         onDelete={deleteAgent}
                       />
                     ))
                   )}
-                  {tree !== null &&
-                    tree.global.every((f) => f.agents.length === 0) && (
-                      <EmptyLine>No agents.</EmptyLine>
+                </CardGrid>
+                {tree !== null &&
+                  tree.global.every((f) => f.agents.length === 0) && (
+                    <EmptyLine>No agents.</EmptyLine>
+                  )}
+              </TabsContent>
+
+              <TabsContent value="workspace" className="space-y-1">
+                {tree?.workspaces.length === 0 && (
+                  <EmptyLine>No workspaces opened yet.</EmptyLine>
+                )}
+                {tree?.workspaces.map((ws) => (
+                  <WorkspaceSection
+                    key={ws.path}
+                    ws={ws}
+                    onOpen={selectAgent}
+                    onDelete={deleteAgent}
+                  />
+                ))}
+              </TabsContent>
+
+              <TabsContent value="custom" className="space-y-4">
+                {tree?.custom.length === 0 && (
+                  <EmptyLine>No custom folders.</EmptyLine>
+                )}
+                {tree?.custom.map((folder) => (
+                  <div key={folder.path} className="space-y-2">
+                    {tree.custom.length > 1 && (
+                      <p className="px-1 text-xs font-medium text-muted-foreground">
+                        {folder.label}
+                      </p>
                     )}
-                </AgentGroup>
-
-                <AgentGroup
-                  label="Workspace"
-                  count={tree?.workspaces.reduce(
-                    (n, w) =>
-                      n + w.folders.reduce((m, f) => m + f.agents.length, 0),
-                    0
-                  )}
-                  loading={tree === null}
-                >
-                  {tree?.workspaces.length === 0 && (
-                    <EmptyLine>No workspaces opened yet.</EmptyLine>
-                  )}
-                  {tree?.workspaces.map((ws) => {
-                    const wsAgents = ws.folders.flatMap((f) =>
-                      f.agents.map((a) => ({ folder: f, agent: a }))
-                    )
-                    return (
-                      <AgentFolderNode
-                        key={ws.path}
-                        label={ws.label}
-                        count={wsAgents.length}
-                      >
-                        {wsAgents.map(({ folder, agent }) => (
-                          <AgentRow
-                            key={agentKey(folder.path, agent.name)}
-                            agent={{
-                              ...agent,
-                              key: agentKey(folder.path, agent.name),
-                              kind: folder.kind,
-                            }}
-                            active={
-                              agentKey(folder.path, agent.name) === selectedKey
-                            }
-                            onSelect={() =>
-                              selectAgent(agentKey(folder.path, agent.name))
-                            }
-                            onDelete={deleteAgent}
-                          />
-                        ))}
-                        {wsAgents.length === 0 && (
-                          <EmptyLine>No agents.</EmptyLine>
-                        )}
-                      </AgentFolderNode>
-                    )
-                  })}
-                </AgentGroup>
-
-                <AgentGroup
-                  label="Custom"
-                  count={tree?.custom.reduce((n, f) => n + f.agents.length, 0)}
-                  loading={tree === null}
-                >
-                  {tree?.custom.length === 0 && (
-                    <EmptyLine>No custom folders.</EmptyLine>
-                  )}
-                  {tree?.custom.map((folder) => (
-                    <AgentFolderNode
-                      key={folder.path}
-                      label={folder.label}
-                      count={folder.agents.length}
-                    >
+                    <CardGrid>
                       {folder.agents.map((a) => (
-                        <AgentRow
+                        <AgentCard
                           key={agentKey(folder.path, a.name)}
                           agent={{
                             ...a,
                             key: agentKey(folder.path, a.name),
                             kind: folder.kind,
                           }}
-                          active={agentKey(folder.path, a.name) === selectedKey}
-                          onSelect={() =>
+                          onOpen={() =>
                             selectAgent(agentKey(folder.path, a.name))
                           }
                           onDelete={deleteAgent}
                         />
                       ))}
-                      {folder.agents.length === 0 && (
-                        <EmptyLine>No agents.</EmptyLine>
-                      )}
-                    </AgentFolderNode>
-                  ))}
-                </AgentGroup>
-              </div>
-            </div>
-
-            {/* Main pane — full form (create/edit) or read-only view. */}
-            <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-              {mode.kind === "create" && draft ? (
-                <>
-                  <FormHeader
-                    title="New agent"
-                    saving={saving}
-                    saveLabel={saving ? "Creating…" : "Create"}
-                    canSave={!!draft.name.trim() && !!mode.dir}
-                    onCancel={cancelForm}
-                    onSave={createAgent}
-                  />
-                  <AgentForm
-                    draft={draft}
-                    onChange={setDraft}
-                    skillNames={skillNames}
-                    agentNames={agentNames}
-                    nameEditable
-                    dirs={writableDirs}
-                    dir={mode.dir}
-                    onDirChange={(dir) => setMode({ kind: "create", dir })}
-                  />
-                </>
-              ) : mode.kind === "edit" && draft && selected ? (
-                <>
-                  <FormHeader
-                    title={selected.name}
-                    subtitle={selected.path}
-                    saving={saving}
-                    saveLabel={saving ? "Saving…" : "Save"}
-                    canSave
-                    onCancel={cancelForm}
-                    onSave={save}
-                  />
-                  <AgentForm
-                    draft={draft}
-                    onChange={setDraft}
-                    skillNames={skillNames}
-                    agentNames={agentNames.filter((n) => n !== draft.name)}
-                  />
-                </>
-              ) : selected ? (
-                <>
-                  <div className="flex h-12 shrink-0 items-center justify-between gap-2 border-b px-4">
-                    <div className="min-w-0">
-                      <p className="truncate font-medium">{selected.name}</p>
-                      <p className="truncate font-mono text-xs text-muted-foreground">
-                        {selected.path}
-                      </p>
-                    </div>
-                    <div className="flex shrink-0 items-center gap-2">
-                      {isWritable(selected.kind) ? (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={startEditing}
-                        >
-                          Edit
-                        </Button>
-                      ) : (
-                        <span className="text-xs text-muted-foreground">
-                          Read-only
-                        </span>
-                      )}
-                    </div>
+                    </CardGrid>
+                    {folder.agents.length === 0 && (
+                      <EmptyLine>No agents.</EmptyLine>
+                    )}
                   </div>
-                  <AgentView agent={selected} />
-                </>
-              ) : (
-                <div className="flex flex-1 items-center justify-center p-8 text-center text-muted-foreground">
-                  Select an agent to view, or create a new one.
-                </div>
-              )}
+                ))}
+              </TabsContent>
             </div>
-          </div>
-        </DialogPrimitive.Content>
-      </DialogPrimitive.Portal>
-    </Dialog>
+          </ScrollArea>
+        </Tabs>
+      )}
+    </div>
   )
 }
 
@@ -571,7 +555,12 @@ function FormHeader({
         )}
       </div>
       <div className="flex shrink-0 items-center gap-2">
-        <Button variant="outline" size="sm" onClick={onCancel} disabled={saving}>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={onCancel}
+          disabled={saving}
+        >
           Cancel
         </Button>
         <Button size="sm" onClick={onSave} disabled={saving || !canSave}>
@@ -641,7 +630,9 @@ function AgentForm({
         <Field label="Description" hint="What it does and when to use it.">
           <Textarea
             value={draft.description}
-            onChange={(e) => onChange({ ...draft, description: e.target.value })}
+            onChange={(e) =>
+              onChange({ ...draft, description: e.target.value })
+            }
             spellCheck={false}
             className="min-h-20 resize-y text-sm leading-relaxed"
             placeholder="Reviews code for correctness and style."
@@ -694,7 +685,10 @@ function AgentForm({
           emptyOptionsNote="No other agents to choose."
         />
 
-        <Field label="System prompt" hint="The agent's instructions (markdown).">
+        <Field
+          label="System prompt"
+          hint="The agent's instructions (markdown)."
+        >
           <Textarea
             value={draft.body}
             onChange={(e) => onChange({ ...draft, body: e.target.value })}
@@ -876,120 +870,124 @@ function Field({
   )
 }
 
-// ── Left-rail tree pieces (mirror skills-screen) ────────────────────────────
+// ── Card browser pieces ─────────────────────────────────────────────────────
 
 function EmptyLine({ children }: { children: ReactNode }) {
   return <p className="px-2 py-1 text-xs text-muted-foreground">{children}</p>
 }
 
-function AgentGroup({
-  label,
-  count,
-  loading,
-  children,
-}: {
-  label: string
-  count: number | undefined
-  loading: boolean
-  children: ReactNode
-}) {
-  const [expanded, setExpanded] = useState(true)
+// A responsive grid of agent cards.
+function CardGrid({ children }: { children: ReactNode }) {
   return (
-    <Collapsible open={expanded} onOpenChange={setExpanded}>
-      <SidebarGroup>
-        <CollapsibleTrigger asChild>
-          <button
-            type="button"
-            className="group/agentgroup flex w-full items-center gap-1"
-          >
-            <ChevronRight className="size-3.5 text-muted-foreground transition-transform group-data-[state=open]/agentgroup:rotate-90" />
-            <SidebarGroupLabel className="cursor-pointer">
-              {label}
-              <span className="ml-1 text-muted-foreground">
-                ({loading ? "…" : (count ?? 0)})
-              </span>
-            </SidebarGroupLabel>
-          </button>
-        </CollapsibleTrigger>
-        <CollapsibleContent>
-          <SidebarGroupContent>
-            <SidebarMenu>{children}</SidebarMenu>
-          </SidebarGroupContent>
-        </CollapsibleContent>
-      </SidebarGroup>
-    </Collapsible>
+    <div className="grid grid-cols-[repeat(auto-fill,minmax(18rem,20rem))] gap-3">
+      {children}
+    </div>
   )
 }
 
-function AgentFolderNode({
-  label,
-  count,
-  children,
+// One clickable agent card: name + (clamped) description. Writable (user/custom)
+// agents get a hover delete; read-only (github/workspace) ones show a badge.
+function AgentCard({
+  agent,
+  onOpen,
+  onDelete,
 }: {
-  label: string
-  count: number
-  children: ReactNode
+  agent: CatalogAgent
+  onOpen: () => void
+  onDelete: (a: CatalogAgent) => void
 }) {
-  const [expanded, setExpanded] = useState(false)
+  const writable = isWritable(agent.kind)
   return (
-    <Collapsible open={expanded} onOpenChange={setExpanded}>
+    <Card
+      size="sm"
+      role="button"
+      tabIndex={0}
+      onClick={onOpen}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault()
+          onOpen()
+        }
+      }}
+      className="cursor-pointer transition-shadow hover:ring-foreground/25 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+    >
+      <CardHeader>
+        <CardTitle className="truncate">{agent.name}</CardTitle>
+        <CardAction className="flex items-center gap-1">
+          {writable ? (
+            <button
+              type="button"
+              aria-label={`Delete ${agent.name}`}
+              onClick={(e) => {
+                e.stopPropagation()
+                onDelete(agent)
+              }}
+              className="rounded p-1 text-muted-foreground opacity-0 transition-opacity group-hover/card:opacity-100 hover:bg-destructive/10 hover:text-destructive"
+            >
+              <Trash2 className="size-3.5" />
+            </button>
+          ) : (
+            <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
+              Read-only
+            </span>
+          )}
+        </CardAction>
+        <CardDescription className="line-clamp-2">
+          {agent.description}
+        </CardDescription>
+      </CardHeader>
+    </Card>
+  )
+}
+
+// A collapsible section for one workspace (collapsed by default), holding the
+// cards for that workspace's agents.
+function WorkspaceSection({
+  ws,
+  onOpen,
+  onDelete,
+}: {
+  ws: AgentTree["workspaces"][number]
+  onOpen: (key: string) => void
+  onDelete: (a: CatalogAgent) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const wsAgents = ws.folders.flatMap((f) =>
+    f.agents.map((a) => ({ folder: f, agent: a }))
+  )
+  return (
+    <Collapsible open={open} onOpenChange={setOpen} className="border-b">
       <CollapsibleTrigger asChild>
         <button
           type="button"
-          className="group/agentfolder flex w-full items-center gap-1 rounded-md px-2 py-1 text-left text-sm hover:bg-sidebar-accent"
+          className="group/ws flex w-full items-center gap-1.5 rounded-md px-2 py-2 text-left hover:bg-accent"
         >
-          <ChevronRight className="size-3.5 shrink-0 text-muted-foreground transition-transform group-data-[state=open]/agentfolder:rotate-90" />
-          <span className="truncate">{label}</span>
+          <ChevronRight className="size-4 shrink-0 text-muted-foreground transition-transform group-data-[state=open]/ws:rotate-90" />
+          <span className="truncate font-medium">{ws.label}</span>
           <span className="ml-auto shrink-0 text-xs text-muted-foreground">
-            {count}
+            {wsAgents.length}
           </span>
         </button>
       </CollapsibleTrigger>
       <CollapsibleContent>
-        <div className="pl-3">{children}</div>
+        <div className="py-2 pl-6">
+          <CardGrid>
+            {wsAgents.map(({ folder, agent }) => (
+              <AgentCard
+                key={agentKey(folder.path, agent.name)}
+                agent={{
+                  ...agent,
+                  key: agentKey(folder.path, agent.name),
+                  kind: folder.kind,
+                }}
+                onOpen={() => onOpen(agentKey(folder.path, agent.name))}
+                onDelete={onDelete}
+              />
+            ))}
+          </CardGrid>
+          {wsAgents.length === 0 && <EmptyLine>No agents.</EmptyLine>}
+        </div>
       </CollapsibleContent>
     </Collapsible>
-  )
-}
-
-// One clickable agent row: name + (clamped) description, with a hover delete for
-// writable (user/custom) agents.
-function AgentRow({
-  agent,
-  active,
-  onSelect,
-  onDelete,
-}: {
-  agent: CatalogAgent
-  active: boolean
-  onSelect: () => void
-  onDelete: (a: CatalogAgent) => void
-}) {
-  return (
-    <SidebarMenuItem className="group/agentrow relative">
-      <SidebarMenuButton
-        isActive={active}
-        onClick={onSelect}
-        className={cn("h-auto flex-col items-start gap-0.5 py-1.5 pr-8")}
-      >
-        <div className="w-full truncate font-medium">{agent.name}</div>
-        <div className="line-clamp-2 w-full text-xs font-normal text-muted-foreground">
-          {agent.description}
-        </div>
-      </SidebarMenuButton>
-      {isWritable(agent.kind) && (
-        <button
-          type="button"
-          aria-label={`Delete ${agent.name}`}
-          onClick={(e) => {
-            e.stopPropagation()
-            onDelete(agent)
-          }}
-          className="absolute top-1.5 right-1.5 rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover/agentrow:opacity-100"
-        >
-          <Trash2 className="size-3.5" />
-        </button>
-      )}
-    </SidebarMenuItem>
   )
 }
