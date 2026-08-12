@@ -1581,6 +1581,7 @@ function RunMonitor({
               name={phaseName(pr.phaseId)}
               gateRequestId={gates[pr.id]}
               flagGate={flagGates[pr.id]}
+              childFlagGates={flagGates}
               childRuns={childrenOf.get(pr.id) ?? []}
               phaseName={phaseName}
               maxReworkRounds={phaseMaxRework(pr.phaseId)}
@@ -1672,6 +1673,7 @@ function PhaseRunItem({
   name,
   gateRequestId,
   flagGate,
+  childFlagGates,
   childRuns,
   phaseName,
   maxReworkRounds,
@@ -1690,6 +1692,9 @@ function PhaseRunItem({
   // A pending cross-phase rework flag this phase raised, awaiting confirmation
   // (plan 031.2). Undefined when there's none.
   flagGate: FlagGateInfo | undefined
+  // The full flagGates map, so a nested child (an on_each_subtask INSTANCE that
+  // raised a per-child flag) can look up its own pending flag card (plan 031.2).
+  childFlagGates: Record<string, FlagGateInfo>
   childRuns: ProcessPhaseRun[]
   phaseName: (phaseId: string) => string
   // The per-phase rework cap (0 = unlimited) and whether the phase is a container
@@ -1844,45 +1849,12 @@ function PhaseRunItem({
       {/* Inline confirmation card for a cross-phase rework flag this phase raised
           (plan 031.2). Wired to process.confirmFlag/dismissFlag. */}
       {flagGate && (
-        <div className="flex flex-col gap-2 rounded-lg border border-amber-500/40 bg-amber-500/5 p-3 text-xs">
-          <div className="flex items-center gap-2 font-medium text-amber-600 dark:text-amber-500">
-            <ShieldAlert className="size-3.5 shrink-0" />
-            <span>
-              “{name}” flagged{" "}
-              {flagGate.targetKey ? (
-                <>
-                  <code className="font-mono">{flagGate.targetKey}</code> for
-                </>
-              ) : (
-                "an earlier phase for"
-              )}{" "}
-              rework.
-            </span>
-          </div>
-          {flagGate.reason && (
-            <p className="whitespace-pre-wrap text-muted-foreground">
-              {flagGate.reason}
-            </p>
-          )}
-          <p className="text-[11px] text-muted-foreground">
-            Approving re-runs that phase and everything built on it.
-          </p>
-          <div className="flex flex-wrap items-center gap-2">
-            <Button
-              size="xs"
-              onClick={() => onConfirmFlag(flagGate.requestId, phaseRun.id)}
-            >
-              Approve send-back
-            </Button>
-            <Button
-              size="xs"
-              variant="outline"
-              onClick={() => onDismissFlag(flagGate.requestId, phaseRun.id)}
-            >
-              Dismiss
-            </Button>
-          </div>
-        </div>
+        <FlagCard
+          flagGate={flagGate}
+          flaggerName={name}
+          onConfirm={() => onConfirmFlag(flagGate.requestId, phaseRun.id)}
+          onDismiss={() => onDismissFlag(flagGate.requestId, phaseRun.id)}
+        />
       )}
 
       {/* Nested children (fan-out sub-tasks / on_each_subtask instances). */}
@@ -1926,11 +1898,78 @@ function PhaseRunItem({
                     />
                   </div>
                 )}
+                {/* A per-child rework flag this INSTANCE raised (plan 031.2):
+                    an on_each_subtask consumer instance that flagged its source
+                    sub-task. Rendered here since the instance is a nested child,
+                    not a top-level row. */}
+                {childFlagGates[c.id] && (
+                  <div className="pl-1">
+                    <FlagCard
+                      flagGate={childFlagGates[c.id]}
+                      flaggerName={c.title ?? phaseName(c.phaseId)}
+                      onConfirm={() =>
+                        onConfirmFlag(childFlagGates[c.id].requestId, c.id)
+                      }
+                      onDismiss={() =>
+                        onDismissFlag(childFlagGates[c.id].requestId, c.id)
+                      }
+                    />
+                  </div>
+                )}
               </div>
             )
           })}
         </div>
       )}
+    </div>
+  )
+}
+
+// A cross-phase rework flag confirmation card (plan 031.2). Rendered on the
+// FLAGGING phase-run — a top-level row OR a nested on_each_subtask instance.
+function FlagCard({
+  flagGate,
+  flaggerName,
+  onConfirm,
+  onDismiss,
+}: {
+  flagGate: FlagGateInfo
+  flaggerName: string
+  onConfirm: () => void
+  onDismiss: () => void
+}) {
+  return (
+    <div className="flex flex-col gap-2 rounded-lg border border-amber-500/40 bg-amber-500/5 p-3 text-xs">
+      <div className="flex items-center gap-2 font-medium text-amber-600 dark:text-amber-500">
+        <ShieldAlert className="size-3.5 shrink-0" />
+        <span>
+          “{flaggerName}” flagged{" "}
+          {flagGate.targetKey ? (
+            <>
+              <code className="font-mono">{flagGate.targetKey}</code> for
+            </>
+          ) : (
+            "an earlier phase for"
+          )}{" "}
+          rework.
+        </span>
+      </div>
+      {flagGate.reason && (
+        <p className="whitespace-pre-wrap text-muted-foreground">
+          {flagGate.reason}
+        </p>
+      )}
+      <p className="text-[11px] text-muted-foreground">
+        Approving re-runs that phase and everything built on it.
+      </p>
+      <div className="flex flex-wrap items-center gap-2">
+        <Button size="xs" onClick={onConfirm}>
+          Approve send-back
+        </Button>
+        <Button size="xs" variant="outline" onClick={onDismiss}>
+          Dismiss
+        </Button>
+      </div>
     </div>
   )
 }
