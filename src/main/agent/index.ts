@@ -1230,7 +1230,43 @@ export async function runAgentLoop(
           name: call.name,
           arguments: call.arguments,
         })
-        const args = JSON.parse(call.arguments || "{}")
+        // The model's streamed tool-call arguments are occasionally malformed JSON
+        // even when the turn wasn't length-truncated (a mid-stream glitch, or an
+        // unescaped character in a large blob — e.g. a big write_file_tool payload).
+        // A raw JSON.parse throw here would abort the whole turn as an opaque
+        // "turn ended early: Unterminated string in JSON …". Instead, feed the tool
+        // call a structured error result (with its tool_call_id, so the transcript
+        // stays well-formed) and continue — the agent sees an actionable failure and
+        // can retry the call with valid arguments (or chunk a large write).
+        let args: Record<string, unknown>
+        try {
+          args = JSON.parse(call.arguments || "{}")
+        } catch {
+          const errResult =
+            "ERROR[bad_tool_arguments]: your tool-call arguments were not valid " +
+            "JSON (often an unescaped character or an over-large value). Retry this " +
+            "call with well-formed JSON; if a value is large, write it in smaller chunks."
+          onEvent({
+            type: "tool",
+            phase: "done",
+            id: call.id,
+            name: call.name,
+            result: errResult,
+          })
+          messages.push({
+            role: "tool",
+            tool_call_id: call.id,
+            content: errResult,
+          })
+          appendMessage({
+            conversationId,
+            role: "tool",
+            content: errResult,
+            toolCallId: call.id,
+            toolName: call.name,
+          })
+          continue
+        }
         // The approval gate for this tool call. `allow` and `hard_block` resolve
         // synchronously; `require_approval` emits an event and blocks until the
         // renderer calls resolveApproval over IPC. The event carries the tool-
