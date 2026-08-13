@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
 import type { ReactNode } from "react"
-import { ArrowLeft, ChevronRight, Plus, Trash2, XIcon } from "lucide-react"
+import {
+  ArrowLeft,
+  ChevronRight,
+  Plus,
+  Search,
+  Trash2,
+  XIcon,
+} from "lucide-react"
 import {
   Collapsible,
   CollapsibleContent,
@@ -58,6 +65,16 @@ function isWritable(kind: SkillFolder["kind"]): boolean {
   return kind === "user" || kind === "custom"
 }
 
+// Case-insensitive substring match over a skill's name + description. A blank
+// query matches everything.
+function matchesQuery(s: SkillMetadata, query: string): boolean {
+  const q = query.trim().toLowerCase()
+  if (!q) return true
+  return (
+    s.name.toLowerCase().includes(q) || s.description.toLowerCase().includes(q)
+  )
+}
+
 // The main pane is in one of three modes at a time.
 type Mode =
   | { kind: "view" }
@@ -83,6 +100,9 @@ export function SkillsScreen({ onClose }: { onClose: () => void }) {
   // Which browse tab is active. Independent of the view/edit/create takeover, so
   // Back/Cancel return the user to the tab they came from.
   const [activeTab, setActiveTab] = useState<SkillTab>("global")
+  // Free-text filter over the cards (matches name + description). Applies across
+  // all three tabs.
+  const [query, setQuery] = useState("")
 
   // Flatten every folder's skills into one addressable list (tagged with kind),
   // so selection and the dirty-guard don't care about the tree's shape.
@@ -464,29 +484,39 @@ export function SkillsScreen({ onClose }: { onClose: () => void }) {
             </Button>
           </div>
 
+          <div className="shrink-0 border-b px-4 py-2">
+            <FilterInput
+              value={query}
+              onChange={setQuery}
+              placeholder="Filter skills…"
+            />
+          </div>
+
           <ScrollArea className="min-h-0 flex-1">
             <div className="p-4">
               <TabsContent value="global">
-                <CardGrid>
-                  {tree?.global.flatMap((f) =>
-                    f.skills.map((s) => (
-                      <SkillCard
-                        key={skillKey(f.path, s.name)}
-                        skill={{
-                          ...s,
-                          key: skillKey(f.path, s.name),
-                          kind: f.kind,
-                        }}
-                        onOpen={() => selectSkill(skillKey(f.path, s.name))}
-                        onDelete={deleteSkill}
-                      />
-                    ))
-                  )}
-                </CardGrid>
-                {tree !== null &&
-                  tree.global.every((f) => f.skills.length === 0) && (
-                    <EmptyLine>No skills.</EmptyLine>
-                  )}
+                {(() => {
+                  const cards = (tree?.global ?? []).flatMap((f) =>
+                    f.skills
+                      .filter((s) => matchesQuery(s, query))
+                      .map((s) => (
+                        <SkillCard
+                          key={skillKey(f.path, s.name)}
+                          skill={{
+                            ...s,
+                            key: skillKey(f.path, s.name),
+                            kind: f.kind,
+                          }}
+                          onOpen={() => selectSkill(skillKey(f.path, s.name))}
+                          onDelete={deleteSkill}
+                        />
+                      ))
+                  )
+                  if (tree !== null && cards.length === 0) {
+                    return <EmptyLine>{emptyLabel(query)}</EmptyLine>
+                  }
+                  return <CardGrid>{cards}</CardGrid>
+                })()}
               </TabsContent>
 
               <TabsContent value="workspace" className="space-y-1">
@@ -497,6 +527,7 @@ export function SkillsScreen({ onClose }: { onClose: () => void }) {
                   <WorkspaceSection
                     key={ws.path}
                     ws={ws}
+                    query={query}
                     onOpen={selectSkill}
                     onDelete={deleteSkill}
                   />
@@ -507,34 +538,39 @@ export function SkillsScreen({ onClose }: { onClose: () => void }) {
                 {tree?.custom.length === 0 && (
                   <EmptyLine>No custom folders.</EmptyLine>
                 )}
-                {tree?.custom.map((folder) => (
-                  <div key={folder.path} className="space-y-2">
-                    {tree.custom.length > 1 && (
-                      <p className="px-1 text-xs font-medium text-muted-foreground">
-                        {folder.label}
-                      </p>
-                    )}
-                    <CardGrid>
-                      {folder.skills.map((s) => (
-                        <SkillCard
-                          key={skillKey(folder.path, s.name)}
-                          skill={{
-                            ...s,
-                            key: skillKey(folder.path, s.name),
-                            kind: folder.kind,
-                          }}
-                          onOpen={() =>
-                            selectSkill(skillKey(folder.path, s.name))
-                          }
-                          onDelete={deleteSkill}
-                        />
-                      ))}
-                    </CardGrid>
-                    {folder.skills.length === 0 && (
-                      <EmptyLine>No skills.</EmptyLine>
-                    )}
-                  </div>
-                ))}
+                {tree?.custom.map((folder) => {
+                  const matched = folder.skills.filter((s) =>
+                    matchesQuery(s, query)
+                  )
+                  return (
+                    <div key={folder.path} className="space-y-2">
+                      {tree.custom.length > 1 && (
+                        <p className="px-1 text-xs font-medium text-muted-foreground">
+                          {folder.label}
+                        </p>
+                      )}
+                      <CardGrid>
+                        {matched.map((s) => (
+                          <SkillCard
+                            key={skillKey(folder.path, s.name)}
+                            skill={{
+                              ...s,
+                              key: skillKey(folder.path, s.name),
+                              kind: folder.kind,
+                            }}
+                            onOpen={() =>
+                              selectSkill(skillKey(folder.path, s.name))
+                            }
+                            onDelete={deleteSkill}
+                          />
+                        ))}
+                      </CardGrid>
+                      {matched.length === 0 && (
+                        <EmptyLine>{emptyLabel(query)}</EmptyLine>
+                      )}
+                    </div>
+                  )
+                })}
               </TabsContent>
             </div>
           </ScrollArea>
@@ -567,6 +603,45 @@ function Field({
 
 function EmptyLine({ children }: { children: ReactNode }) {
   return <p className="px-2 py-1 text-xs text-muted-foreground">{children}</p>
+}
+
+// Empty-state text that reflects whether a filter is narrowing the results.
+function emptyLabel(query: string): string {
+  return query.trim() ? "No skills match your filter." : "No skills."
+}
+
+// The card-filter text field: a search icon + input, with a clear button once
+// the user has typed.
+function FilterInput({
+  value,
+  onChange,
+  placeholder,
+}: {
+  value: string
+  onChange: (v: string) => void
+  placeholder: string
+}) {
+  return (
+    <div className="relative">
+      <Search className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
+      <Input
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        className="h-8 pl-8"
+      />
+      {value && (
+        <button
+          type="button"
+          aria-label="Clear filter"
+          onClick={() => onChange("")}
+          className="absolute top-1/2 right-2 -translate-y-1/2 rounded p-0.5 text-muted-foreground hover:text-foreground"
+        >
+          <XIcon className="size-3.5" />
+        </button>
+      )}
+    </div>
+  )
 }
 
 // A responsive grid of skill cards.
@@ -634,26 +709,38 @@ function SkillCard({
 }
 
 // A collapsible section for one workspace (collapsed by default), holding the
-// cards for that workspace's skills.
+// cards for that workspace's skills. When a filter query is active it only shows
+// matching skills, auto-expands so matches are visible, and hides itself if it
+// has none.
 function WorkspaceSection({
   ws,
+  query,
   onOpen,
   onDelete,
 }: {
   ws: SkillTree["workspaces"][number]
+  query: string
   onOpen: (key: string) => void
   onDelete: (s: CatalogSkill) => void
 }) {
   const [open, setOpen] = useState(false)
-  const wsSkills = ws.folders.flatMap((f) =>
-    f.skills.map((s) => ({ folder: f, skill: s }))
-  )
+  const filtering = query.trim().length > 0
+  const wsSkills = ws.folders
+    .flatMap((f) => f.skills.map((s) => ({ folder: f, skill: s })))
+    .filter(({ skill }) => matchesQuery(skill, query))
+  // A filtered section with no matches drops out entirely.
+  if (filtering && wsSkills.length === 0) return null
   return (
-    <Collapsible open={open} onOpenChange={setOpen} className="border-b">
+    <Collapsible
+      open={filtering || open}
+      onOpenChange={setOpen}
+      disabled={filtering}
+      className="border-b"
+    >
       <CollapsibleTrigger asChild>
         <button
           type="button"
-          className="group/ws flex w-full items-center gap-1.5 rounded-md px-2 py-2 text-left hover:bg-accent"
+          className="group/ws flex w-full items-center gap-1.5 rounded-md px-2 py-2 text-left hover:bg-accent disabled:hover:bg-transparent"
         >
           <ChevronRight className="size-4 shrink-0 text-muted-foreground transition-transform group-data-[state=open]/ws:rotate-90" />
           <span className="truncate font-medium">{ws.label}</span>

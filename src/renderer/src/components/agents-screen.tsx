@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
 import type { ReactNode } from "react"
-import { ArrowLeft, ChevronRight, Plus, Trash2, XIcon } from "lucide-react"
+import {
+  ArrowLeft,
+  ChevronRight,
+  Plus,
+  Search,
+  Trash2,
+  XIcon,
+} from "lucide-react"
 import {
   Collapsible,
   CollapsibleContent,
@@ -74,6 +81,16 @@ function isWritable(kind: AgentFolder["kind"]): boolean {
   return kind === "user" || kind === "custom"
 }
 
+// Case-insensitive substring match over an agent's name + description. A blank
+// query matches everything.
+function matchesQuery(a: AgentDefinition, query: string): boolean {
+  const q = query.trim().toLowerCase()
+  if (!q) return true
+  return (
+    a.name.toLowerCase().includes(q) || a.description.toLowerCase().includes(q)
+  )
+}
+
 // The editable field set (mirrors the main-process AgentFields).
 type Draft = {
   name: string
@@ -114,6 +131,9 @@ export function AgentsScreen({ onClose }: { onClose: () => void }) {
   // Which browse tab is active. Independent of the view/edit/create takeover, so
   // Back/Cancel return the user to the tab they came from.
   const [activeTab, setActiveTab] = useState<AgentTab>("global")
+  // Free-text filter over the cards (matches name + description). Applies across
+  // all three tabs.
+  const [query, setQuery] = useState("")
   // Skill names for the skills picker's "Choose" list. Loaded once on mount.
   const [skillNames, setSkillNames] = useState<string[]>([])
 
@@ -431,29 +451,39 @@ export function AgentsScreen({ onClose }: { onClose: () => void }) {
             </Button>
           </div>
 
+          <div className="shrink-0 border-b px-4 py-2">
+            <FilterInput
+              value={query}
+              onChange={setQuery}
+              placeholder="Filter agents…"
+            />
+          </div>
+
           <ScrollArea className="min-h-0 flex-1">
             <div className="p-4">
               <TabsContent value="global">
-                <CardGrid>
-                  {tree?.global.flatMap((f) =>
-                    f.agents.map((a) => (
-                      <AgentCard
-                        key={agentKey(f.path, a.name)}
-                        agent={{
-                          ...a,
-                          key: agentKey(f.path, a.name),
-                          kind: f.kind,
-                        }}
-                        onOpen={() => selectAgent(agentKey(f.path, a.name))}
-                        onDelete={deleteAgent}
-                      />
-                    ))
-                  )}
-                </CardGrid>
-                {tree !== null &&
-                  tree.global.every((f) => f.agents.length === 0) && (
-                    <EmptyLine>No agents.</EmptyLine>
-                  )}
+                {(() => {
+                  const cards = (tree?.global ?? []).flatMap((f) =>
+                    f.agents
+                      .filter((a) => matchesQuery(a, query))
+                      .map((a) => (
+                        <AgentCard
+                          key={agentKey(f.path, a.name)}
+                          agent={{
+                            ...a,
+                            key: agentKey(f.path, a.name),
+                            kind: f.kind,
+                          }}
+                          onOpen={() => selectAgent(agentKey(f.path, a.name))}
+                          onDelete={deleteAgent}
+                        />
+                      ))
+                  )
+                  if (tree !== null && cards.length === 0) {
+                    return <EmptyLine>{emptyLabel(query)}</EmptyLine>
+                  }
+                  return <CardGrid>{cards}</CardGrid>
+                })()}
               </TabsContent>
 
               <TabsContent value="workspace" className="space-y-1">
@@ -464,6 +494,7 @@ export function AgentsScreen({ onClose }: { onClose: () => void }) {
                   <WorkspaceSection
                     key={ws.path}
                     ws={ws}
+                    query={query}
                     onOpen={selectAgent}
                     onDelete={deleteAgent}
                   />
@@ -474,34 +505,39 @@ export function AgentsScreen({ onClose }: { onClose: () => void }) {
                 {tree?.custom.length === 0 && (
                   <EmptyLine>No custom folders.</EmptyLine>
                 )}
-                {tree?.custom.map((folder) => (
-                  <div key={folder.path} className="space-y-2">
-                    {tree.custom.length > 1 && (
-                      <p className="px-1 text-xs font-medium text-muted-foreground">
-                        {folder.label}
-                      </p>
-                    )}
-                    <CardGrid>
-                      {folder.agents.map((a) => (
-                        <AgentCard
-                          key={agentKey(folder.path, a.name)}
-                          agent={{
-                            ...a,
-                            key: agentKey(folder.path, a.name),
-                            kind: folder.kind,
-                          }}
-                          onOpen={() =>
-                            selectAgent(agentKey(folder.path, a.name))
-                          }
-                          onDelete={deleteAgent}
-                        />
-                      ))}
-                    </CardGrid>
-                    {folder.agents.length === 0 && (
-                      <EmptyLine>No agents.</EmptyLine>
-                    )}
-                  </div>
-                ))}
+                {tree?.custom.map((folder) => {
+                  const matched = folder.agents.filter((a) =>
+                    matchesQuery(a, query)
+                  )
+                  return (
+                    <div key={folder.path} className="space-y-2">
+                      {tree.custom.length > 1 && (
+                        <p className="px-1 text-xs font-medium text-muted-foreground">
+                          {folder.label}
+                        </p>
+                      )}
+                      <CardGrid>
+                        {matched.map((a) => (
+                          <AgentCard
+                            key={agentKey(folder.path, a.name)}
+                            agent={{
+                              ...a,
+                              key: agentKey(folder.path, a.name),
+                              kind: folder.kind,
+                            }}
+                            onOpen={() =>
+                              selectAgent(agentKey(folder.path, a.name))
+                            }
+                            onDelete={deleteAgent}
+                          />
+                        ))}
+                      </CardGrid>
+                      {matched.length === 0 && (
+                        <EmptyLine>{emptyLabel(query)}</EmptyLine>
+                      )}
+                    </div>
+                  )
+                })}
               </TabsContent>
             </div>
           </ScrollArea>
@@ -876,6 +912,45 @@ function EmptyLine({ children }: { children: ReactNode }) {
   return <p className="px-2 py-1 text-xs text-muted-foreground">{children}</p>
 }
 
+// Empty-state text that reflects whether a filter is narrowing the results.
+function emptyLabel(query: string): string {
+  return query.trim() ? "No agents match your filter." : "No agents."
+}
+
+// The card-filter text field: a search icon + input, with a clear button once
+// the user has typed.
+function FilterInput({
+  value,
+  onChange,
+  placeholder,
+}: {
+  value: string
+  onChange: (v: string) => void
+  placeholder: string
+}) {
+  return (
+    <div className="relative">
+      <Search className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
+      <Input
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        className="h-8 pl-8"
+      />
+      {value && (
+        <button
+          type="button"
+          aria-label="Clear filter"
+          onClick={() => onChange("")}
+          className="absolute top-1/2 right-2 -translate-y-1/2 rounded p-0.5 text-muted-foreground hover:text-foreground"
+        >
+          <XIcon className="size-3.5" />
+        </button>
+      )}
+    </div>
+  )
+}
+
 // A responsive grid of agent cards.
 function CardGrid({ children }: { children: ReactNode }) {
   return (
@@ -941,26 +1016,38 @@ function AgentCard({
 }
 
 // A collapsible section for one workspace (collapsed by default), holding the
-// cards for that workspace's agents.
+// cards for that workspace's agents. When a filter query is active it only shows
+// matching agents, auto-expands so matches are visible, and hides itself if it
+// has none.
 function WorkspaceSection({
   ws,
+  query,
   onOpen,
   onDelete,
 }: {
   ws: AgentTree["workspaces"][number]
+  query: string
   onOpen: (key: string) => void
   onDelete: (a: CatalogAgent) => void
 }) {
   const [open, setOpen] = useState(false)
-  const wsAgents = ws.folders.flatMap((f) =>
-    f.agents.map((a) => ({ folder: f, agent: a }))
-  )
+  const filtering = query.trim().length > 0
+  const wsAgents = ws.folders
+    .flatMap((f) => f.agents.map((a) => ({ folder: f, agent: a })))
+    .filter(({ agent }) => matchesQuery(agent, query))
+  // A filtered section with no matches drops out entirely.
+  if (filtering && wsAgents.length === 0) return null
   return (
-    <Collapsible open={open} onOpenChange={setOpen} className="border-b">
+    <Collapsible
+      open={filtering || open}
+      onOpenChange={setOpen}
+      disabled={filtering}
+      className="border-b"
+    >
       <CollapsibleTrigger asChild>
         <button
           type="button"
-          className="group/ws flex w-full items-center gap-1.5 rounded-md px-2 py-2 text-left hover:bg-accent"
+          className="group/ws flex w-full items-center gap-1.5 rounded-md px-2 py-2 text-left hover:bg-accent disabled:hover:bg-transparent"
         >
           <ChevronRight className="size-4 shrink-0 text-muted-foreground transition-transform group-data-[state=open]/ws:rotate-90" />
           <span className="truncate font-medium">{ws.label}</span>

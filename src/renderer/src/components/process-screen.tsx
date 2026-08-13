@@ -11,6 +11,7 @@ import {
   Play,
   Plus,
   RotateCcw,
+  Search,
   ShieldAlert,
   SkipForward,
   Trash2,
@@ -69,7 +70,16 @@ import { Switch } from "@/components/ui/switch"
 import { Badge } from "@/components/ui/badge"
 import { Kbd } from "@/components/ui/kbd"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select"
+import {
+  Combobox,
+  ComboboxContent,
+  ComboboxEmpty,
+  ComboboxInput,
+  ComboboxItem,
+  ComboboxList,
+  ComboboxTrigger,
+  ComboboxValue,
+} from "@/components/ui/combobox"
 import { toast } from "sonner"
 import { cn, formatRelativeTime } from "@/lib/utils"
 import type {
@@ -131,6 +141,10 @@ interface FlagGateInfo {
 // Which surface the main pane shows for the selected definition.
 type PaneMode = "builder" | "run"
 
+// Sentinel for the validator "Reviewer" dropdown's default (the phase's own
+// agent). Radix Select forbids an empty-string item value, so null maps to this.
+const OWN_AGENT = "__own__"
+
 // The section letter a definition sorts under: its first letter uppercased, or
 // "#" for names that don't start with a letter.
 function sectionLetter(name: string): string {
@@ -153,6 +167,8 @@ export function ProcessScreen({ onClose }: { onClose: () => void }) {
   const [pendingDelete, setPendingDelete] = useState<ProcessDefinition | null>(
     null
   )
+  // Free-text filter over the process cards (matches name + description).
+  const [query, setQuery] = useState("")
 
   const loadDefinitions = useCallback(() => {
     window.cowork.db.processes.list().then(setDefinitions)
@@ -198,14 +214,23 @@ export function ProcessScreen({ onClose }: { onClose: () => void }) {
     [definitions, selectedId]
   )
 
-  // Group definitions into alphabetical sections, each sorted by name. The list
-  // is already alphabetical from the DB; grouping preserves that order.
+  // Group definitions into alphabetical sections, each sorted by name — after
+  // applying the free-text filter (matches name + description). The list is
+  // already alphabetical from the DB; grouping preserves that order.
   const sections = useMemo(() => {
     if (!definitions) return []
+    const q = query.trim().toLowerCase()
     const byLetter = new Map<string, ProcessDefinition[]>()
-    const sorted = [...definitions].sort((a, b) =>
-      a.name.localeCompare(b.name, undefined, { sensitivity: "base" })
-    )
+    const sorted = [...definitions]
+      .filter(
+        (d) =>
+          !q ||
+          d.name.toLowerCase().includes(q) ||
+          (d.description ?? "").toLowerCase().includes(q)
+      )
+      .sort((a, b) =>
+        a.name.localeCompare(b.name, undefined, { sensitivity: "base" })
+      )
     for (const d of sorted) {
       const letter = sectionLetter(d.name)
       const list = byLetter.get(letter) ?? []
@@ -215,7 +240,7 @@ export function ProcessScreen({ onClose }: { onClose: () => void }) {
     return [...byLetter.entries()]
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([letter, items]) => ({ letter, items }))
-  }, [definitions])
+  }, [definitions, query])
 
   async function createDefinition() {
     try {
@@ -354,6 +379,14 @@ export function ProcessScreen({ onClose }: { onClose: () => void }) {
             </Button>
           </div>
 
+          <div className="shrink-0 border-b px-4 py-2">
+            <FilterInput
+              value={query}
+              onChange={setQuery}
+              placeholder="Filter processes…"
+            />
+          </div>
+
           <ScrollArea className="min-h-0 flex-1">
             <div className="space-y-1 p-4">
               {definitions !== null && definitions.length === 0 && (
@@ -361,6 +394,13 @@ export function ProcessScreen({ onClose }: { onClose: () => void }) {
                   No processes yet. Create one to build a DAG.
                 </p>
               )}
+              {definitions !== null &&
+                definitions.length > 0 &&
+                sections.length === 0 && (
+                  <p className="px-2 py-8 text-center text-xs text-muted-foreground">
+                    No processes match your filter.
+                  </p>
+                )}
               {sections.map((section) => (
                 <LetterSection
                   key={section.letter}
@@ -412,6 +452,40 @@ export function ProcessScreen({ onClose }: { onClose: () => void }) {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+    </div>
+  )
+}
+
+// The card-filter text field: a search icon + input, with a clear button once
+// the user has typed.
+function FilterInput({
+  value,
+  onChange,
+  placeholder,
+}: {
+  value: string
+  onChange: (v: string) => void
+  placeholder: string
+}) {
+  return (
+    <div className="relative">
+      <Search className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
+      <Input
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        className="h-8 pl-8"
+      />
+      {value && (
+        <button
+          type="button"
+          aria-label="Clear filter"
+          onClick={() => onChange("")}
+          className="absolute top-1/2 right-2 -translate-y-1/2 rounded p-0.5 text-muted-foreground hover:text-foreground"
+        >
+          <XIcon className="size-3.5" />
+        </button>
+      )}
     </div>
   )
 }
@@ -739,7 +813,6 @@ function PhaseCard({
   // Agents not already in the pool, for the add dropdown.
   const poolNames = new Set(pool.map((a) => a.agentName))
   const addable = agents.filter((a) => !poolNames.has(a.name))
-  const [addValue, setAddValue] = useState("")
   // Collapsed by default — a built graph is mostly read; expand to edit.
   const [expanded, setExpanded] = useState(false)
   const depCount = incoming.length
@@ -781,7 +854,6 @@ function PhaseCard({
         agentName,
         position: pool.length,
       })
-      setAddValue("")
       onChanged()
     } catch (err) {
       toast.error(`Could not add agent: ${err}`)
@@ -940,31 +1012,37 @@ function PhaseCard({
           <div className="flex flex-wrap items-center gap-4">
             <label className="flex items-center gap-2 text-xs">
               <span className="text-muted-foreground">Routing</span>
-              <NativeSelect
-                size="sm"
+              <Select
                 value={phase.routing}
-                onChange={(e) =>
-                  patchPhase({ routing: e.target.value as PhaseRouting })
+                onValueChange={(v) =>
+                  patchPhase({ routing: v as PhaseRouting })
                 }
               >
-                <NativeSelectOption value="single">single</NativeSelectOption>
-                <NativeSelectOption value="dispatch">
-                  dispatch
-                </NativeSelectOption>
-              </NativeSelect>
+                <SelectTrigger size="sm" className="text-xs">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="single">single</SelectItem>
+                  <SelectItem value="dispatch">dispatch</SelectItem>
+                </SelectContent>
+              </Select>
             </label>
             <label className="flex items-center gap-2 text-xs">
               <span className="text-muted-foreground">Gate</span>
-              <NativeSelect
-                size="sm"
+              <Select
                 value={phase.gatePolicy}
-                onChange={(e) =>
-                  patchPhase({ gatePolicy: e.target.value as PhaseGatePolicy })
+                onValueChange={(v) =>
+                  patchPhase({ gatePolicy: v as PhaseGatePolicy })
                 }
               >
-                <NativeSelectOption value="auto">auto</NativeSelectOption>
-                <NativeSelectOption value="approve">approve</NativeSelectOption>
-              </NativeSelect>
+                <SelectTrigger size="sm" className="text-xs">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="auto">auto</SelectItem>
+                  <SelectItem value="approve">approve</SelectItem>
+                </SelectContent>
+              </Select>
             </label>
             <label className="flex items-center gap-2 text-xs">
               <span className="text-muted-foreground">Fan-out</span>
@@ -1041,22 +1119,30 @@ function PhaseCard({
                 title="The agent that reviews this phase's output. Defaults to the phase's own first pool agent."
               >
                 <span className="text-muted-foreground">Reviewer</span>
-                <NativeSelect
-                  size="sm"
-                  value={phase.validatorAgent ?? ""}
-                  onChange={(e) =>
-                    patchPhase({ validatorAgent: e.target.value || null })
+                <Select
+                  // Radix Select can't use an empty-string value, so the "own
+                  // agent" default (null) maps to a sentinel option.
+                  value={phase.validatorAgent ?? OWN_AGENT}
+                  onValueChange={(v) =>
+                    patchPhase({
+                      validatorAgent: v === OWN_AGENT ? null : v,
+                    })
                   }
                 >
-                  <NativeSelectOption value="">
-                    Phase&apos;s own agent
-                  </NativeSelectOption>
-                  {agents.map((a) => (
-                    <NativeSelectOption key={a.name} value={a.name}>
-                      {a.name}
-                    </NativeSelectOption>
-                  ))}
-                </NativeSelect>
+                  <SelectTrigger size="sm" className="text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={OWN_AGENT}>
+                      Phase&apos;s own agent
+                    </SelectItem>
+                    {agents.map((a) => (
+                      <SelectItem key={a.name} value={a.name}>
+                        {a.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </label>
               <label
                 className="flex items-center gap-2 text-xs"
@@ -1117,19 +1203,50 @@ function PhaseCard({
               )}
             </div>
             {addable.length > 0 ? (
-              <NativeSelect
-                size="sm"
-                value={addValue}
-                className="w-full"
-                onChange={(e) => addPoolAgent(e.target.value)}
+              // Type-to-filter agent picker (mirrors App.tsx's agent combobox).
+              // It's an action picker — selecting adds to the pool and the value
+              // stays unselected, so the trigger always reads "Add agent…".
+              <Combobox
+                items={addable.map((a) => ({
+                  value: a.name,
+                  label: a.name,
+                  description: a.description,
+                }))}
+                value={null}
+                isItemEqualToValue={(a, b) => a?.value === b?.value}
+                onValueChange={(item: { value: string } | null) => {
+                  if (item) void addPoolAgent(item.value)
+                }}
               >
-                <NativeSelectOption value="">Add agent…</NativeSelectOption>
-                {addable.map((a) => (
-                  <NativeSelectOption key={a.name} value={a.name}>
-                    {a.name}
-                  </NativeSelectOption>
-                ))}
-              </NativeSelect>
+                <ComboboxTrigger className="flex h-7 w-full items-center justify-between gap-1 rounded-[min(var(--radius-md),10px)] border border-input bg-transparent px-2.5 text-xs transition-colors hover:bg-accent/50 dark:bg-input/30">
+                  <ComboboxValue placeholder="Add agent…" />
+                </ComboboxTrigger>
+                <ComboboxContent className="w-(--anchor-width)">
+                  <ComboboxInput
+                    placeholder="Search agents…"
+                    showTrigger={false}
+                  />
+                  <ComboboxEmpty>No agents found.</ComboboxEmpty>
+                  <ComboboxList>
+                    {(item: {
+                      value: string
+                      label: string
+                      description?: string
+                    }) => (
+                      <ComboboxItem key={item.value} value={item}>
+                        <span className="flex flex-col gap-0.5">
+                          <span>{item.label}</span>
+                          {item.description && (
+                            <span className="line-clamp-2 text-[10px] text-muted-foreground">
+                              {item.description}
+                            </span>
+                          )}
+                        </span>
+                      </ComboboxItem>
+                    )}
+                  </ComboboxList>
+                </ComboboxContent>
+              </Combobox>
             ) : (
               agents.length === 0 && (
                 <span className="text-xs text-muted-foreground">
@@ -1162,22 +1279,25 @@ function PhaseCard({
                       >
                         {u.name}
                       </label>
-                      {checked && (
-                        <NativeSelect
-                          size="sm"
-                          value={edge?.trigger}
-                          className="ml-auto"
-                          onChange={(e) =>
-                            changeTrigger(u.id, e.target.value as EdgeTrigger)
+                      {checked && edge && (
+                        <Select
+                          value={edge.trigger}
+                          onValueChange={(v) =>
+                            changeTrigger(u.id, v as EdgeTrigger)
                           }
                         >
-                          <NativeSelectOption value="on_complete">
-                            on complete
-                          </NativeSelectOption>
-                          <NativeSelectOption value="on_each_subtask">
-                            on each subtask
-                          </NativeSelectOption>
-                        </NativeSelect>
+                          <SelectTrigger size="sm" className="ml-auto text-xs">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="on_complete">
+                              on complete
+                            </SelectItem>
+                            <SelectItem value="on_each_subtask">
+                              on each subtask
+                            </SelectItem>
+                          </SelectContent>
+                        </Select>
                       )}
                     </div>
                   )
