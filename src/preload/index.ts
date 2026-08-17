@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from "electron"
+import { contextBridge, ipcRenderer, webUtils } from "electron"
 import type { IpcRendererEvent } from "electron"
 // Type-only imports — erased at build time, so better-sqlite3 is never pulled
 // into the preload bundle. The renderer gets exact DB row types via these.
@@ -337,6 +337,10 @@ const api = {
       paths?: string[]
       canceled?: boolean
     }>,
+  // Resolve the absolute disk path of a File dropped onto a renderer drop zone.
+  // Electron 37 removed the non-standard File.path, so a dropped file's path must
+  // come from webUtils.getPathForFile (preload-only, synchronous, takes the File).
+  getPathForFile: (file: File): string => webUtils.getPathForFile(file),
   // List available skills (name + description) for the composer's slash menu.
   // Pass the active workspace so project-level skills are included.
   skills: {
@@ -364,6 +368,10 @@ const api = {
     // The main process validates the path against all known skill sources.
     read: (filePath: string) =>
       ipcRenderer.invoke("skills:read", filePath) as Promise<string>,
+    // Reveal a skill's SKILL.md in the OS file manager (Finder / Explorer), file
+    // selected. Path validated against known skill sources in the main process.
+    reveal: (filePath: string) =>
+      ipcRenderer.invoke("skills:reveal", filePath) as Promise<void>,
     // Save an edited SKILL.md back to disk. The main process validates the path.
     write: (filePath: string, content: string) =>
       ipcRenderer.invoke("skills:write", filePath, content) as Promise<void>,
@@ -376,6 +384,17 @@ const api = {
       description: string
       body?: string
     }) => ipcRenderer.invoke("skills:create", args) as Promise<string>,
+    // Open the native single-select .md/.zip picker for importing a skill.
+    pickImport: () =>
+      ipcRenderer.invoke("pick-skill-import") as Promise<{
+        paths?: string[]
+        canceled?: boolean
+      }>,
+    // Import a skill from disk (a .md SKILL.md or a .zip of a skill folder) into
+    // a writable source dir; returns the new SKILL.md path. The main process
+    // derives+validates the name, guards the target root, and rejects a collision.
+    import: (args: { sourcePath: string; dir: string }) =>
+      ipcRenderer.invoke("skills:import", args) as Promise<string>,
     // Delete a skill's folder. Writable roots only; the renderer confirms first.
     delete: (filePath: string) =>
       ipcRenderer.invoke("skills:delete", filePath) as Promise<void>,

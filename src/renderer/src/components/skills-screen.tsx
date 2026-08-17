@@ -3,9 +3,11 @@ import type { ReactNode } from "react"
 import {
   ArrowLeft,
   ChevronRight,
+  FolderOpen,
   Plus,
   Search,
   Trash2,
+  Upload,
   XIcon,
 } from "lucide-react"
 import {
@@ -34,6 +36,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Markdown } from "@/components/markdown"
+import { SkillUploadModal } from "@/components/skill-upload-modal"
 import { toast } from "sonner"
 import type { SkillFolder, SkillMetadata, SkillTree } from "@/types"
 
@@ -65,6 +68,15 @@ function isWritable(kind: SkillFolder["kind"]): boolean {
   return kind === "user" || kind === "custom"
 }
 
+// The OS file-manager name, for the reveal button label. shell.showItemInFolder
+// does the right thing on every platform; this is only the human-facing word.
+function fileManagerName(): string {
+  const ua = navigator.userAgent
+  if (ua.includes("Mac")) return "Finder"
+  if (ua.includes("Win")) return "Explorer"
+  return "file manager"
+}
+
 // Case-insensitive substring match over a skill's name + description. A blank
 // query matches everything.
 function matchesQuery(s: SkillMetadata, query: string): boolean {
@@ -75,7 +87,8 @@ function matchesQuery(s: SkillMetadata, query: string): boolean {
   )
 }
 
-// The main pane is in one of three modes at a time.
+// The main pane is in one of three modes at a time. (Import is a modal overlay,
+// not a pane mode — see importOpen + SkillUploadModal.)
 type Mode =
   | { kind: "view" }
   | { kind: "edit" }
@@ -94,6 +107,8 @@ export function SkillsScreen({ onClose }: { onClose: () => void }) {
   // Selected skill's key (source path + name), or null when nothing is selected.
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
   const [mode, setMode] = useState<Mode>({ kind: "view" })
+  // Whether the Upload-skill modal is open (import is an overlay, not a pane mode).
+  const [importOpen, setImportOpen] = useState(false)
   // The raw SKILL.md text being edited (null until loaded / not editing).
   const [draft, setDraft] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
@@ -216,6 +231,16 @@ export function SkillsScreen({ onClose }: { onClose: () => void }) {
     setDraft(null)
   }
 
+  // Reveal the selected skill's SKILL.md in the OS file manager (Finder/Explorer).
+  async function revealSkill() {
+    if (!selected) return
+    try {
+      await window.cowork.skills.reveal(selected.path)
+    } catch (err) {
+      toast.error(`Could not open the folder: ${err}`)
+    }
+  }
+
   // Open the blank create form, targeting the first writable dir.
   function startCreating() {
     if (!confirmDiscard()) return
@@ -272,6 +297,26 @@ export function SkillsScreen({ onClose }: { onClose: () => void }) {
     } finally {
       setSaving(false)
     }
+  }
+
+  // Open the Upload-skill modal (import runs there via picker or drag-and-drop).
+  function startImport() {
+    if (!confirmDiscard()) return
+    setImportOpen(true)
+  }
+
+  // After the modal imports a skill: refresh the tree, select the new skill (its
+  // folder name is the last segment of the returned <dir>/<name>/SKILL.md path),
+  // and drop to View.
+  function onImported(newPath: string, dir: string) {
+    const name = newPath
+      .replace(/[/\\]SKILL\.md$/, "")
+      .split(/[/\\]/)
+      .pop()!
+    loadTree()
+    setSelectedKey(skillKey(dir, name))
+    setMode({ kind: "view" })
+    setDraft(null)
   }
 
   async function deleteSkill(s: CatalogSkill) {
@@ -431,12 +476,27 @@ export function SkillsScreen({ onClose }: { onClose: () => void }) {
                     {saving ? "Saving…" : "Save"}
                   </Button>
                 </>
-              ) : isWritable(selected.kind) ? (
-                <Button variant="outline" size="sm" onClick={startEditing}>
-                  Edit
-                </Button>
               ) : (
-                <span className="text-xs text-muted-foreground">Read-only</span>
+                <>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={revealSkill}
+                    title={`Show in ${fileManagerName()}`}
+                  >
+                    <FolderOpen className="size-4" />
+                    Show in {fileManagerName()}
+                  </Button>
+                  {isWritable(selected.kind) ? (
+                    <Button variant="outline" size="sm" onClick={startEditing}>
+                      Edit
+                    </Button>
+                  ) : (
+                    <span className="text-xs text-muted-foreground">
+                      Read-only
+                    </span>
+                  )}
+                </>
               )}
             </div>
           </div>
@@ -469,19 +529,34 @@ export function SkillsScreen({ onClose }: { onClose: () => void }) {
             </TabsList>
             {/* Shown on all tabs; disabled on Workspace (its folders aren't
                 writable here) and when there's no writable target dir. */}
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={startCreating}
-              disabled={
-                activeTab === "workspace" ||
-                tree === null ||
-                writableDirs.length === 0
-              }
-            >
-              <Plus className="size-4" />
-              Add new skill
-            </Button>
+            <div className="flex shrink-0 items-center gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={startImport}
+                disabled={
+                  activeTab === "workspace" ||
+                  tree === null ||
+                  writableDirs.length === 0
+                }
+              >
+                <Upload className="size-4" />
+                Import
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={startCreating}
+                disabled={
+                  activeTab === "workspace" ||
+                  tree === null ||
+                  writableDirs.length === 0
+                }
+              >
+                <Plus className="size-4" />
+                Add new skill
+              </Button>
+            </div>
           </div>
 
           <div className="shrink-0 border-b px-4 py-2">
@@ -576,6 +651,13 @@ export function SkillsScreen({ onClose }: { onClose: () => void }) {
           </ScrollArea>
         </Tabs>
       )}
+
+      <SkillUploadModal
+        open={importOpen}
+        onOpenChange={setImportOpen}
+        writableDirs={writableDirs}
+        onImported={onImported}
+      />
     </div>
   )
 }

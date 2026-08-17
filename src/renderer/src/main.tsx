@@ -289,14 +289,21 @@ function Shell() {
           child of this region so macOS lets its click through. */}
       <div className="absolute inset-x-0 top-0 z-20 h-11 [-webkit-app-region:drag]">
         <SidebarToggle fullscreen={fullscreen} />
+        {/* The Info/Browser/Changes mode dropdown and the right-panel toggle are
+            conversation-specific, so hide them while a full-screen overlay
+            (Agents / Skills / Processes) is open. The theme toggle stays (it
+            lives inside SidebarModeToggle and is useful everywhere). */}
         <SidebarModeToggle
           mode={sidebarMode}
           onModeChange={changeSidebarMode}
+          showModeSelect={!(agentsOpen || skillsOpen || processOpen)}
         />
-        <ActivityToggle
-          open={activityOpen}
-          onToggle={() => setActivity(!activityOpen)}
-        />
+        {!(agentsOpen || skillsOpen || processOpen) && (
+          <ActivityToggle
+            open={activityOpen}
+            onToggle={() => setActivity(!activityOpen)}
+          />
+        )}
       </div>
       <AppSidebar
         view={view}

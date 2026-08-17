@@ -3,7 +3,9 @@ import path from "path"
 import * as yaml from "js-yaml"
 import type { SkillMetadata } from "./types"
 
-const MAX_SKILL_FILE_SIZE = 10 * 1024 * 1024 // 10MB DoS guard
+// 10MB DoS guard on a single SKILL.md. Exported so the import path can reuse the
+// same per-file ceiling (bare .md and per-zip-entry).
+export const MAX_SKILL_FILE_SIZE = 10 * 1024 * 1024
 const MAX_NAME = 64
 const MAX_DESCRIPTION = 1024
 const MAX_COMPATIBILITY = 500
@@ -68,7 +70,11 @@ Describe the situations where this skill applies.
 2. Second step.`
 }
 
-function parseSkill(
+// Parse a SKILL.md's raw content into SkillMetadata, or null if it lacks valid
+// frontmatter / a required name+description. Exported so the skills:import path
+// can validate a candidate file's frontmatter and derive its name up front
+// (import hard-rejects a bad name via validateName; the loader itself only warns).
+export function parseSkill(
   content: string,
   skillPath: string,
   dirName: string,

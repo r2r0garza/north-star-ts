@@ -6,7 +6,7 @@ import {
   Notification,
   nativeTheme,
 } from "electron"
-import { join, resolve, basename, dirname, sep } from "path"
+import { join, resolve, basename, dirname, sep, extname } from "path"
 import { readFile, writeFile, unlink, mkdir, rm } from "fs/promises"
 import { existsSync } from "fs"
 import { config as loadEnv } from "dotenv"
@@ -26,7 +26,7 @@ import {
   setAutoModeForConversation,
   type ChatRequest,
 } from "./agent"
-import { pickWorkspace, pickFiles } from "./pick-workspace"
+import { pickWorkspace, pickFiles, pickSkillImport } from "./pick-workspace"
 import {
   skillSources,
   initUserSkills,
@@ -38,6 +38,10 @@ import {
   validateName as validateSkillName,
   skillScaffold,
 } from "./agent/skills/loader"
+import {
+  importSkillFromMarkdown,
+  importSkillFromZip,
+} from "./agent/skills/import"
 import { agentSources, userAgentsDir } from "./agent/agents/sources"
 import {
   loadAgents,
@@ -338,6 +342,8 @@ ipcMain.handle("browser:set-surface", (_event, surface: string) => {
 })
 ipcMain.handle("pick-workspace", () => pickWorkspace())
 ipcMain.handle("pick-files", () => pickFiles())
+// Single-select .md/.zip picker for the Skills view's Import affordance.
+ipcMain.handle("pick-skill-import", () => pickSkillImport())
 // List available skills (name + description only) for the composer's slash
 // menu. Resolves the same source dirs the agent uses at turn time, so the
 // picker shows exactly what the model can read via read_skill. `body`/`path`
@@ -627,6 +633,16 @@ ipcMain.handle(
     return readFile(filePath, "utf-8")
   }
 )
+// Reveal a skill's SKILL.md in the OS file manager (Finder on macOS, Explorer on
+// Windows) with the file selected — a cross-platform one-liner via shell. Guarded
+// by assertSkillPath so only a SKILL.md inside a known skill source can be shown.
+ipcMain.handle(
+  "skills:reveal",
+  async (_event, filePath: string): Promise<void> => {
+    assertSkillPath(filePath)
+    shell.showItemInFolder(resolve(filePath))
+  }
+)
 // Save an edited SKILL.md back to disk. Validates the path is a SKILL.md inside a
 // known skill source before writing — the renderer only ever passes catalog
 // paths, but the handler must not trust arbitrary input.
@@ -670,6 +686,34 @@ ipcMain.handle(
     const filePath = join(skillDir, "SKILL.md")
     await writeFile(filePath, skillScaffold(name, description, body), "utf-8")
     return filePath
+  }
+)
+// Import a skill from disk into a writable source dir. `sourcePath` is a .md
+// (a SKILL.md) or a .zip of a skill folder; `dir` is the target writable root
+// (exact-match validated, like skills:create). The name is derived from the
+// SKILL.md frontmatter inside the import helpers; a collision / bad name / zip
+// problem throws a clear message the renderer surfaces via toast. Returns the
+// new SKILL.md path so the renderer can select it.
+ipcMain.handle(
+  "skills:import",
+  async (
+    _event,
+    { sourcePath, dir }: { sourcePath: string; dir: string }
+  ): Promise<string> => {
+    const resolvedDir = resolve(dir)
+    if (!writableSkillRoots().includes(resolvedDir)) {
+      throw new Error(
+        `Refusing to import a skill outside a writable source: ${dir}`
+      )
+    }
+    const ext = extname(sourcePath).toLowerCase()
+    if (ext === ".zip") {
+      return importSkillFromZip(sourcePath, resolvedDir)
+    }
+    if (ext === ".md" || ext === ".markdown") {
+      return importSkillFromMarkdown(sourcePath, resolvedDir)
+    }
+    throw new Error("Import a .md (SKILL.md) or a .zip of a skill folder.")
   }
 )
 // Delete a skill. Removes the whole skill FOLDER (the SKILL.md's parent dir),
