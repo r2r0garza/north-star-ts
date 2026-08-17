@@ -242,3 +242,34 @@ describe("settings service — browser (tabbed browser, plan: Phase 4)", () => {
     expect(service.getBrowser().revealOnAgentUse).toBe("always")
   })
 })
+
+describe("settings service — theme (brand colors)", () => {
+  it("defaults to no override (both channels null)", () => {
+    expect(service.getTheme()).toEqual({ accent: null, neutral: null })
+  })
+
+  it("round-trips a persisted accent + neutral", () => {
+    service.setTheme({ accent: "#2563eb", neutral: "#0a0a12" })
+    service._resetCacheForTests()
+    expect(service.getTheme()).toEqual({
+      accent: "#2563eb",
+      neutral: "#0a0a12",
+    })
+  })
+
+  it("keeps a partial override (one channel null)", () => {
+    service.setTheme({ accent: "#ff0000", neutral: null })
+    service._resetCacheForTests()
+    expect(service.getTheme()).toEqual({ accent: "#ff0000", neutral: null })
+  })
+
+  it("coerces non-string channels to null", () => {
+    store.set("theme", JSON.stringify({ accent: 123, neutral: true }))
+    expect(service.getTheme()).toEqual({ accent: null, neutral: null })
+  })
+
+  it("falls back to defaults on a corrupt blob", () => {
+    store.set("theme", "{not json")
+    expect(service.getTheme()).toEqual({ accent: null, neutral: null })
+  })
+})

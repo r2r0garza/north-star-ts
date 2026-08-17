@@ -46,6 +46,7 @@ import type {
   PermissionSettings,
   IndexingSettings,
   BrowserSettings,
+  ThemeSettings,
   IdeSettings,
   NotificationSettings,
   Backend,
@@ -55,6 +56,12 @@ import type {
   SkillSourceRow,
   AgentSourceRow,
 } from "@/types"
+import {
+  hexToOklch,
+  DEFAULT_ACCENT_HEX,
+  DEFAULT_NEUTRAL_HEX,
+} from "../../../shared/theme"
+import { applyThemeColors, applyThemeCss } from "@/lib/theme"
 
 // Human-readable labels + help for each sandbox category (mirrors the taxonomy
 // in the main-process settings service / regex classifier).
@@ -104,6 +111,7 @@ const SECTIONS: Array<{ value: string; label: string }> = [
   { value: "indexing", label: "Context" },
   { value: "capabilities", label: "Capabilities" },
   { value: "browser", label: "Browser" },
+  { value: "appearance", label: "Appearance" },
   { value: "editor", label: "Editor" },
   { value: "notifications", label: "Notifications" },
   { value: "sandbox", label: "Sandbox" },
@@ -189,6 +197,11 @@ export function SettingsScreen({
   >([])
   const [notifications, setNotifications] =
     useState<NotificationSettings | null>(null)
+  // The last-persisted theme override, and the in-progress draft the Appearance
+  // pickers edit. The draft drives a live preview; Save persists it, Reset clears
+  // the override, and closing without Save restores `savedTheme` (drops preview).
+  const [savedTheme, setSavedTheme] = useState<ThemeSettings | null>(null)
+  const [themeDraft, setThemeDraft] = useState<ThemeSettings | null>(null)
   // Skill-source rows for the Capabilities tab (built-in + custom folders, each
   // with a live skill count). Loaded independently of the other settings so a
   // slow directory scan doesn't gate the whole screen.
@@ -224,7 +237,8 @@ export function SettingsScreen({
       window.cowork.settings.ideOptions(),
       window.cowork.settings.getNotifications(),
       window.cowork.settings.checkRuntimes(),
-    ]).then(([exec, perms, idx, br, ideCfg, ideOpts, notif, rt]) => {
+      window.cowork.settings.getTheme(),
+    ]).then(([exec, perms, idx, br, ideCfg, ideOpts, notif, rt, theme]) => {
       if (cancelled) return
       setExecution(exec)
       setPermissions(perms)
@@ -234,6 +248,8 @@ export function SettingsScreen({
       setIdeOptions(ideOpts)
       setNotifications(notif)
       setRuntimes(rt)
+      setSavedTheme(theme)
+      setThemeDraft(theme)
     })
     return () => {
       cancelled = true
@@ -345,6 +361,46 @@ export function SettingsScreen({
     await window.cowork.settings.setNotifications(next)
   }
 
+  // Update the theme draft AND live-preview it immediately (recolor the whole
+  // app). Persistence waits for Save; this only paints.
+  function previewTheme(next: ThemeSettings) {
+    setThemeDraft(next)
+    applyThemeColors(next.accent, next.neutral)
+  }
+  // Persist the current draft as the override.
+  async function saveTheme() {
+    if (!themeDraft) return
+    const next = await window.cowork.settings.setTheme(themeDraft)
+    setSavedTheme(next)
+    setThemeDraft(next)
+  }
+  // Clear the in-app override (revert to the .env preset / default) and re-apply
+  // the resolved baseline the main process reports.
+  async function resetTheme() {
+    const cleared: ThemeSettings = { accent: null, neutral: null }
+    const next = await window.cowork.settings.setTheme(cleared)
+    setSavedTheme(next)
+    setThemeDraft(next)
+    applyThemeCss(window.cowork.system().theme)
+  }
+  // Drop an unsaved preview: restore the last-persisted theme's paint. Called on
+  // close so a previewed-but-unsaved color never lingers over the rest of the app.
+  function restoreSavedTheme() {
+    if (!savedTheme) return
+    setThemeDraft(savedTheme)
+    if (savedTheme.accent || savedTheme.neutral) {
+      applyThemeColors(savedTheme.accent, savedTheme.neutral)
+    } else {
+      applyThemeCss(window.cowork.system().theme)
+    }
+  }
+
+  // Close wrapper: drop any unsaved theme preview before the modal closes.
+  function handleOpenChange(next: boolean) {
+    if (!next) restoreSavedTheme()
+    onOpenChange(next)
+  }
+
   function onBackendChange(value: string) {
     if (!execution) return
     const backend = value as Backend
@@ -376,7 +432,7 @@ export function SettingsScreen({
 
   return (
     <>
-      <Dialog open={open} onOpenChange={onOpenChange}>
+      <Dialog open={open} onOpenChange={handleOpenChange}>
         <DialogPrimitive.Portal>
           {/* Clicking the backdrop closes Settings (alongside Escape and the
               [X]). We close from the overlay's own onClick rather than the
@@ -385,7 +441,7 @@ export function SettingsScreen({
               Select's dismiss resolves outside the dialog's content) — which would
               wrongly close Settings. A click that reaches the overlay element is
               unambiguously a real backdrop click. */}
-          <DialogOverlay onClick={() => onOpenChange(false)} />
+          <DialogOverlay onClick={() => handleOpenChange(false)} />
           {/* A large centered modal (nearly full-screen but inset, with a
               backdrop). Built on the raw Radix primitive so we get the focus-trap
               / Escape-to-close / portal for free, but WITHOUT the shared
@@ -915,6 +971,24 @@ export function SettingsScreen({
                         </Field>
                       </TabsContent>
 
+                      {/* Appearance — the brand accent + neutral colors. Editing
+                        a picker live-previews the whole app; Save persists (over
+                        the .env preset), Reset clears the override. */}
+                      <TabsContent
+                        value="appearance"
+                        className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto py-6"
+                      >
+                        {themeDraft && (
+                          <AppearanceSection
+                            draft={themeDraft}
+                            saved={savedTheme}
+                            onPreview={previewTheme}
+                            onSave={saveTheme}
+                            onReset={resetTheme}
+                          />
+                        )}
+                      </TabsContent>
+
                       {/* Editor — which IDE a changed-file pill / "open in editor"
                         launches. Opens the repo root first (focusing an existing
                         window), then the file. "System Default" uses the OS. */}
@@ -1111,4 +1185,138 @@ export function SettingsScreen({
       </Dialog>
     </>
   )
+}
+
+// The Appearance section body: two color rows (accent + neutral), each a native
+// swatch + a hex field, with live preview on change and Save / Reset actions.
+// `null` on a channel means "use the .env preset / default" — the swatch shows
+// that effective default. Save is disabled while a hex is invalid or nothing
+// changed; Reset clears the whole override.
+function AppearanceSection({
+  draft,
+  saved,
+  onPreview,
+  onSave,
+  onReset,
+}: {
+  draft: ThemeSettings
+  saved: ThemeSettings | null
+  onPreview: (next: ThemeSettings) => void
+  onSave: () => void
+  onReset: () => void
+}) {
+  const accentValid = draft.accent === null || hexToOklch(draft.accent) !== null
+  const neutralValid =
+    draft.neutral === null || hexToOklch(draft.neutral) !== null
+  const allValid = accentValid && neutralValid
+  const dirty =
+    (draft.accent ?? null) !== (saved?.accent ?? null) ||
+    (draft.neutral ?? null) !== (saved?.neutral ?? null)
+  const hasOverride = draft.accent !== null || draft.neutral !== null
+
+  return (
+    <div className="flex flex-col gap-6">
+      <ColorField
+        label="Accent color"
+        description="The brand / primary hue — buttons, links, active states."
+        fallbackHex={DEFAULT_ACCENT_HEX}
+        value={draft.accent}
+        valid={accentValid}
+        onChange={(accent) => onPreview({ ...draft, accent })}
+      />
+      <ColorField
+        label="Neutral color"
+        description="The surface base — backgrounds, cards, borders, muted text."
+        fallbackHex={DEFAULT_NEUTRAL_HEX}
+        value={draft.neutral}
+        valid={neutralValid}
+        onChange={(neutral) => onPreview({ ...draft, neutral })}
+      />
+      <p className="text-xs text-muted-foreground">
+        Changes preview live. Save to keep them (this overrides the preset colors
+        from the app config); Reset to preset clears your override.
+      </p>
+      <div className="flex items-center gap-2">
+        <Button size="sm" onClick={onSave} disabled={!allValid || !dirty}>
+          Save
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={onReset}
+          disabled={!hasOverride && !dirty}
+        >
+          Reset to preset
+        </Button>
+      </div>
+    </div>
+  )
+}
+
+// One color row: a native color swatch + a hex text field, kept in sync. The
+// swatch always shows a concrete hex (the value, or `fallbackHex` when the value
+// is null / invalid); typing in the field drives `onChange` (null when cleared).
+function ColorField({
+  label,
+  description,
+  fallbackHex,
+  value,
+  valid,
+  onChange,
+}: {
+  label: string
+  description: string
+  fallbackHex: string
+  value: string | null
+  valid: boolean
+  onChange: (next: string | null) => void
+}) {
+  // The swatch needs a full #rrggbb; fall back to the default when the field is
+  // empty or not yet a valid hex.
+  const swatchHex = value && hexToOklch(value) ? normalizeHex(value) : fallbackHex
+  return (
+    <Field orientation="horizontal">
+      <FieldContent>
+        <FieldLabel>{label}</FieldLabel>
+        <FieldDescription>{description}</FieldDescription>
+        {!valid && (
+          <p className="text-xs text-destructive">
+            Enter a valid hex color (e.g. #2563eb).
+          </p>
+        )}
+      </FieldContent>
+      <div className="flex shrink-0 items-center gap-2">
+        <input
+          type="color"
+          aria-label={`${label} swatch`}
+          value={swatchHex}
+          onChange={(e) => onChange(e.target.value)}
+          className="size-9 shrink-0 cursor-pointer rounded-md border bg-transparent p-0.5"
+        />
+        <Input
+          value={value ?? ""}
+          placeholder={fallbackHex}
+          spellCheck={false}
+          onChange={(e) => {
+            const v = e.target.value.trim()
+            onChange(v === "" ? null : v)
+          }}
+          aria-invalid={!valid}
+          className="w-32 font-mono text-xs"
+        />
+      </div>
+    </Field>
+  )
+}
+
+// Normalize a valid hex (expand #rgb → #rrggbb, add the hash) so <input
+// type="color"> accepts it. Assumes the input already passed hexToOklch.
+function normalizeHex(hex: string): string {
+  let h = hex.trim().replace(/^#/, "")
+  if (h.length === 3)
+    h = h
+      .split("")
+      .map((c) => c + c)
+      .join("")
+  return `#${h.toLowerCase()}`
 }

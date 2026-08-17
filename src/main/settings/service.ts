@@ -111,6 +111,16 @@ export interface BrowserSettings {
   revealOnAgentUse: BrowserReveal
 }
 
+// User-editable brand colors (Settings → Appearance), overriding the .env
+// presets (NEXT_accent_color / NEXT_neutral_color). Each is a hex string, or
+// null to defer to the env preset / built-in default for that channel. The
+// recolor math lives in src/shared/theme.ts; precedence is resolved in
+// src/main/config/theme.ts resolveBrandTheme (DB > env > default).
+export interface ThemeSettings {
+  accent: string | null
+  neutral: string | null
+}
+
 // Which IDE a changed-file pill / "open in editor" launches. "system" (default)
 // hands the file to the OS default app; otherwise it's a known IDE id (see
 // src/main/ide/open.ts IDES). Stored as a plain id string so adding IDEs needs no
@@ -168,6 +178,11 @@ const DEFAULT_BROWSER: BrowserSettings = {
   revealOnAgentUse: "always",
 }
 
+const DEFAULT_THEME: ThemeSettings = {
+  accent: null,
+  neutral: null,
+}
+
 const DEFAULT_IDE: IdeSettings = {
   ide: "system",
 }
@@ -200,6 +215,7 @@ const KEY_INDEXING = "indexing"
 const KEY_SKILL_SOURCES = "skillSources"
 const KEY_AGENT_SOURCES = "agentSources"
 const KEY_BROWSER = "browser"
+const KEY_THEME = "theme"
 const KEY_IDE = "ide"
 const KEY_NOTIFICATIONS = "notifications"
 
@@ -210,6 +226,7 @@ let indexingCache: IndexingSettings | undefined
 let skillSourcesCache: SkillSourcesSettings | undefined
 let agentSourcesCache: AgentSourcesSettings | undefined
 let browserCache: BrowserSettings | undefined
+let themeCache: ThemeSettings | undefined
 let ideCache: IdeSettings | undefined
 let notificationsCache: NotificationSettings | undefined
 // Tracks whether an execution row exists, so getExecutionConfig can fall back to
@@ -374,6 +391,25 @@ function loadBrowser(): BrowserSettings {
   return browserCache
 }
 
+function loadTheme(): ThemeSettings {
+  if (themeCache) return themeCache
+  const raw = settingsRepo.getSetting(KEY_THEME)
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw) as Partial<ThemeSettings>
+      themeCache = {
+        accent: typeof parsed.accent === "string" ? parsed.accent : null,
+        neutral: typeof parsed.neutral === "string" ? parsed.neutral : null,
+      }
+      return themeCache
+    } catch {
+      // Corrupt blob — fall through to defaults.
+    }
+  }
+  themeCache = { ...DEFAULT_THEME }
+  return themeCache
+}
+
 function loadIde(): IdeSettings {
   if (ideCache) return ideCache
   const raw = settingsRepo.getSetting(KEY_IDE)
@@ -460,6 +496,10 @@ export function getBrowser(): BrowserSettings {
   return loadBrowser()
 }
 
+export function getTheme(): ThemeSettings {
+  return loadTheme()
+}
+
 export function getIde(): IdeSettings {
   return loadIde()
 }
@@ -521,6 +561,12 @@ export function setBrowser(next: BrowserSettings): BrowserSettings {
   return next
 }
 
+export function setTheme(next: ThemeSettings): ThemeSettings {
+  settingsRepo.setSetting(KEY_THEME, JSON.stringify(next))
+  themeCache = next
+  return next
+}
+
 export function setIde(next: IdeSettings): IdeSettings {
   settingsRepo.setSetting(KEY_IDE, JSON.stringify(next))
   ideCache = next
@@ -561,6 +607,7 @@ export function _resetCacheForTests(): void {
   skillSourcesCache = undefined
   agentSourcesCache = undefined
   browserCache = undefined
+  themeCache = undefined
   ideCache = undefined
   notificationsCache = undefined
   executionPersisted = false
