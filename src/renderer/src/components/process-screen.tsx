@@ -124,10 +124,9 @@ interface FlagGateInfo {
 
 // The Process view — an in-panel destination (rendered in the center region of
 // the app shell, beside the still-visible sidebar) for the Process engine (plan
-// 025). Browsing is a card grid of authored process DEFINITIONS, grouped into
-// collapsible alphabetical sections (A, B, C…) by first letter — sections start
-// expanded. Selecting a card takes over the panel with that definition's two
-// surfaces:
+// 025). Browsing is a card grid of authored process DEFINITIONS, sorted
+// alphabetically by name and filterable by a free-text query. Selecting a card
+// takes over the panel with that definition's two surfaces:
 //   • a list-based DAG BUILDER (phases + per-phase "depends on" multiselect +
 //     an inspector for agent pool / routing / gate policy / fan-out; the graph
 //     is rendered implicitly by the depends-on edges), and
@@ -144,13 +143,6 @@ type PaneMode = "builder" | "run"
 // Sentinel for the validator "Reviewer" dropdown's default (the phase's own
 // agent). Radix Select forbids an empty-string item value, so null maps to this.
 const OWN_AGENT = "__own__"
-
-// The section letter a definition sorts under: its first letter uppercased, or
-// "#" for names that don't start with a letter.
-function sectionLetter(name: string): string {
-  const ch = name.trim().charAt(0).toUpperCase()
-  return /[A-Z]/.test(ch) ? ch : "#"
-}
 
 export function ProcessScreen({ onClose }: { onClose: () => void }) {
   const [definitions, setDefinitions] = useState<ProcessDefinition[] | null>(
@@ -214,14 +206,12 @@ export function ProcessScreen({ onClose }: { onClose: () => void }) {
     [definitions, selectedId]
   )
 
-  // Group definitions into alphabetical sections, each sorted by name — after
-  // applying the free-text filter (matches name + description). The list is
-  // already alphabetical from the DB; grouping preserves that order.
-  const sections = useMemo(() => {
+  // The definitions to show: filtered by the free-text query (matches name +
+  // description), sorted alphabetically by name.
+  const visible = useMemo(() => {
     if (!definitions) return []
     const q = query.trim().toLowerCase()
-    const byLetter = new Map<string, ProcessDefinition[]>()
-    const sorted = [...definitions]
+    return [...definitions]
       .filter(
         (d) =>
           !q ||
@@ -231,15 +221,6 @@ export function ProcessScreen({ onClose }: { onClose: () => void }) {
       .sort((a, b) =>
         a.name.localeCompare(b.name, undefined, { sensitivity: "base" })
       )
-    for (const d of sorted) {
-      const letter = sectionLetter(d.name)
-      const list = byLetter.get(letter) ?? []
-      list.push(d)
-      byLetter.set(letter, list)
-    }
-    return [...byLetter.entries()]
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([letter, items]) => ({ letter, items }))
   }, [definitions, query])
 
   async function createDefinition() {
@@ -388,7 +369,7 @@ export function ProcessScreen({ onClose }: { onClose: () => void }) {
           </div>
 
           <ScrollArea className="min-h-0 flex-1">
-            <div className="space-y-1 p-4">
+            <div className="p-4">
               {definitions !== null && definitions.length === 0 && (
                 <p className="px-2 py-8 text-center text-xs text-muted-foreground">
                   No processes yet. Create one to build a DAG.
@@ -396,33 +377,27 @@ export function ProcessScreen({ onClose }: { onClose: () => void }) {
               )}
               {definitions !== null &&
                 definitions.length > 0 &&
-                sections.length === 0 && (
+                visible.length === 0 && (
                   <p className="px-2 py-8 text-center text-xs text-muted-foreground">
                     No processes match your filter.
                   </p>
                 )}
-              {sections.map((section) => (
-                <LetterSection
-                  key={section.letter}
-                  letter={section.letter}
-                  count={section.items.length}
-                >
-                  <CardGrid>
-                    {section.items.map((d) => (
-                      <ProcessCard
-                        key={d.id}
-                        definition={d}
-                        onOpen={() => {
-                          setSelectedId(d.id)
-                          setPane("builder")
-                          setActiveRunId(null)
-                        }}
-                        onDelete={() => setPendingDelete(d)}
-                      />
-                    ))}
-                  </CardGrid>
-                </LetterSection>
-              ))}
+              {visible.length > 0 && (
+                <CardGrid>
+                  {visible.map((d) => (
+                    <ProcessCard
+                      key={d.id}
+                      definition={d}
+                      onOpen={() => {
+                        setSelectedId(d.id)
+                        setPane("builder")
+                        setActiveRunId(null)
+                      }}
+                      onDelete={() => setPendingDelete(d)}
+                    />
+                  ))}
+                </CardGrid>
+              )}
             </div>
           </ScrollArea>
         </div>
@@ -496,39 +471,6 @@ function CardGrid({ children }: { children: React.ReactNode }) {
     <div className="grid grid-cols-[repeat(auto-fill,minmax(18rem,20rem))] gap-3">
       {children}
     </div>
-  )
-}
-
-// A collapsible alphabetical section (A, B, C…), expanded by default, holding
-// the process cards whose names start with that letter.
-function LetterSection({
-  letter,
-  count,
-  children,
-}: {
-  letter: string
-  count: number
-  children: React.ReactNode
-}) {
-  const [open, setOpen] = useState(true)
-  return (
-    <Collapsible open={open} onOpenChange={setOpen} className="border-b">
-      <CollapsibleTrigger asChild>
-        <button
-          type="button"
-          className="group/letter flex w-full items-center gap-1.5 rounded-md px-2 py-2 text-left hover:bg-accent"
-        >
-          <ChevronRight className="size-4 shrink-0 text-muted-foreground transition-transform group-data-[state=open]/letter:rotate-90" />
-          <span className="font-heading text-sm font-medium">{letter}</span>
-          <span className="ml-auto shrink-0 text-xs text-muted-foreground">
-            {count}
-          </span>
-        </button>
-      </CollapsibleTrigger>
-      <CollapsibleContent>
-        <div className="py-2 pl-6">{children}</div>
-      </CollapsibleContent>
-    </Collapsible>
   )
 }
 
