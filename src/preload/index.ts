@@ -318,7 +318,8 @@ const api = {
       processRunId: string
       requestId: string
       feedback: string
-    }) => ipcRenderer.invoke("process:requestChanges", payload) as Promise<void>,
+    }) =>
+      ipcRenderer.invoke("process:requestChanges", payload) as Promise<void>,
     // Cross-phase rework flag confirmation (plan 031.2).
     confirmFlag: (payload: { processRunId: string; requestId: string }) =>
       ipcRenderer.invoke("process:confirmFlag", payload) as Promise<void>,
@@ -734,7 +735,10 @@ const api = {
         ipcRenderer.invoke("db:processes:list") as Promise<ProcessDefinition[]>,
       // Returns the whole authored graph (definition + phases + agents + edges).
       get: (id: string) =>
-        ipcRenderer.invoke("db:processes:get", id) as Promise<ProcessGraph | null>,
+        ipcRenderer.invoke(
+          "db:processes:get",
+          id
+        ) as Promise<ProcessGraph | null>,
       update: (
         id: string,
         patch: {
@@ -770,10 +774,9 @@ const api = {
             input
           ) as Promise<ProcessPhase>,
         list: (processId: string) =>
-          ipcRenderer.invoke(
-            "db:processes:phases:list",
-            processId
-          ) as Promise<ProcessPhase[]>,
+          ipcRenderer.invoke("db:processes:phases:list", processId) as Promise<
+            ProcessPhase[]
+          >,
         update: (
           id: string,
           patch: {
@@ -811,10 +814,9 @@ const api = {
             input
           ) as Promise<ProcessPhaseAgent>,
         list: (phaseId: string) =>
-          ipcRenderer.invoke(
-            "db:processes:agents:list",
-            phaseId
-          ) as Promise<ProcessPhaseAgent[]>,
+          ipcRenderer.invoke("db:processes:agents:list", phaseId) as Promise<
+            ProcessPhaseAgent[]
+          >,
         delete: (id: string) =>
           ipcRenderer.invoke("db:processes:agents:delete", id) as Promise<void>,
       },
@@ -830,19 +832,17 @@ const api = {
             input
           ) as Promise<ProcessEdge>,
         list: (processId: string) =>
-          ipcRenderer.invoke(
-            "db:processes:edges:list",
-            processId
-          ) as Promise<ProcessEdge[]>,
+          ipcRenderer.invoke("db:processes:edges:list", processId) as Promise<
+            ProcessEdge[]
+          >,
         delete: (id: string) =>
           ipcRenderer.invoke("db:processes:edges:delete", id) as Promise<void>,
       },
       runs: {
         list: (opts?: { processId?: string; status?: ProcessRunStatus }) =>
-          ipcRenderer.invoke(
-            "db:processes:runs:list",
-            opts
-          ) as Promise<ProcessRun[]>,
+          ipcRenderer.invoke("db:processes:runs:list", opts) as Promise<
+            ProcessRun[]
+          >,
         get: (id: string) =>
           ipcRenderer.invoke(
             "db:processes:runs:get",
@@ -855,10 +855,9 @@ const api = {
           parentId?: string | null
           phaseId?: string
         }) =>
-          ipcRenderer.invoke(
-            "db:processes:phaseRuns:list",
-            opts
-          ) as Promise<ProcessPhaseRun[]>,
+          ipcRenderer.invoke("db:processes:phaseRuns:list", opts) as Promise<
+            ProcessPhaseRun[]
+          >,
       },
     },
   },
@@ -1039,6 +1038,9 @@ const api = {
     displayName: string
     dataDirName: string
     mainAgentName: string
+    // The customizable brand theme's CSS custom-property declarations for `:root`
+    // and `.dark`, or null when no NEXT_accent_color / NEXT_neutral_color is set.
+    theme: { light: string; dark: string } | null
   } => ipcRenderer.sendSync("system:name"),
 }
 

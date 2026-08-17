@@ -77,6 +77,7 @@ import {
   systemDisplayName,
   mainAgentName,
 } from "./config/system-name"
+import { brandThemeCss } from "./config/theme"
 
 // The durable task runner — a singleton owned by the main process. Started in
 // app.whenReady (after the DB handlers register) and stopped on will-quit.
@@ -455,11 +456,17 @@ ipcMain.handle(
   "agents:create",
   async (
     _event,
-    { dir, name, description }: { dir: string; name: string; description: string }
+    {
+      dir,
+      name,
+      description,
+    }: { dir: string; name: string; description: string }
   ): Promise<string> => {
     const resolvedDir = resolve(dir)
     if (!writableAgentRoots().includes(resolvedDir)) {
-      throw new Error(`Refusing to create an agent outside a writable source: ${dir}`)
+      throw new Error(
+        `Refusing to create an agent outside a writable source: ${dir}`
+      )
     }
     const nameErr = validateAgentName(name, name)
     if (nameErr) throw new Error(nameErr)
@@ -472,7 +479,8 @@ ipcMain.handle(
     await mkdir(resolvedDir, { recursive: true })
     const contents = serializeAgent({
       name,
-      description: description || "Describe what this agent does and when to use it.",
+      description:
+        description || "Describe what this agent does and when to use it.",
       // tools/skills omitted → "all" (the permissive default); children omitted →
       // cannot spawn. userInvocable true so it shows in the picker immediately.
       userInvocable: true,
@@ -484,10 +492,13 @@ ipcMain.handle(
 )
 // Delete an agent file. Writable roots only (never a read-only workspace/github
 // agent). The renderer confirms before calling.
-ipcMain.handle("agents:delete", async (_event, filePath: string): Promise<void> => {
-  assertAgentWritablePath(filePath)
-  await unlink(filePath)
-})
+ipcMain.handle(
+  "agents:delete",
+  async (_event, filePath: string): Promise<void> => {
+    assertAgentWritablePath(filePath)
+    await unlink(filePath)
+  }
+)
 // The kind-tagged skill-source dirs for a workspace, in load order. Shared by
 // skills:sources (counts), skills:catalog (full skills), and skills:write (path
 // allow-list). The app-bundled dir is intentionally absent — it only seeds the
@@ -626,7 +637,9 @@ ipcMain.handle(
   ): Promise<string> => {
     const resolvedDir = resolve(dir)
     if (!writableSkillRoots().includes(resolvedDir)) {
-      throw new Error(`Refusing to create a skill outside a writable source: ${dir}`)
+      throw new Error(
+        `Refusing to create a skill outside a writable source: ${dir}`
+      )
     }
     // validateName also enforces name === dirName, so the skill subdir is the name.
     const nameErr = validateSkillName(name, name)
@@ -644,11 +657,14 @@ ipcMain.handle(
 // Delete a skill. Removes the whole skill FOLDER (the SKILL.md's parent dir),
 // writable roots only (never a read-only workspace/github skill). The renderer
 // passes the SKILL.md path and confirms before calling.
-ipcMain.handle("skills:delete", async (_event, filePath: string): Promise<void> => {
-  assertSkillWritablePath(filePath)
-  // filePath is <root>/<name>/SKILL.md — remove its parent folder, not just the file.
-  await rm(dirname(resolve(filePath)), { recursive: true, force: true })
-})
+ipcMain.handle(
+  "skills:delete",
+  async (_event, filePath: string): Promise<void> => {
+    assertSkillWritablePath(filePath)
+    // filePath is <root>/<name>/SKILL.md — remove its parent folder, not just the file.
+    await rm(dirname(resolve(filePath)), { recursive: true, force: true })
+  }
+)
 // Basename of a path, tolerating a trailing separator (e.g. "/a/b/" -> "b").
 function baseName(p: string): string {
   return basename(p.replace(/[/\\]+$/, "")) || p
@@ -687,10 +703,9 @@ function assertSkillPath(filePath: string): void {
 // drop skill folders into a repo the user may not intend to commit to. Mirrors
 // writableAgentRoots().
 function writableSkillRoots(): string[] {
-  return [
-    userSkillsDir(),
-    ...settingsService.getSkillSources().folders,
-  ].map((r) => resolve(r))
+  return [userSkillsDir(), ...settingsService.getSkillSources().folders].map(
+    (r) => resolve(r)
+  )
 }
 // Guard for skills:delete. Like assertSkillPath (basename SKILL.md) but restricted
 // to WRITABLE roots, so a read-only workspace/github skill can't be deleted. The
@@ -701,11 +716,13 @@ function assertSkillWritablePath(filePath: string): void {
   if (basename(resolved) !== "SKILL.md") {
     throw new Error(`Refusing non-SKILL.md path: ${filePath}`)
   }
-  const inside = writableSkillRoots().some(
-    (root) => resolved.startsWith(root + sep)
+  const inside = writableSkillRoots().some((root) =>
+    resolved.startsWith(root + sep)
   )
   if (!inside) {
-    throw new Error(`Refusing to modify a skill outside a writable source: ${filePath}`)
+    throw new Error(
+      `Refusing to modify a skill outside a writable source: ${filePath}`
+    )
   }
 }
 // Agent files are flat `<name>.agent.md` (a suffix, not a fixed basename like
@@ -727,10 +744,9 @@ function allAgentRoots(): string[] {
 // (.github/agents, .<system>/agents) dirs are read-only in this UI — the app won't
 // drop files into a repo the user may not intend to commit to.
 function writableAgentRoots(): string[] {
-  return [
-    userAgentsDir(),
-    ...settingsService.getAgentSources().folders,
-  ].map((r) => resolve(r))
+  return [userAgentsDir(), ...settingsService.getAgentSources().folders].map(
+    (r) => resolve(r)
+  )
 }
 // Guard for agents:read. Basename must end with `.agent.md` and resolve inside a
 // known agent-source dir. Same traversal / sibling-prefix protection as skills.
@@ -757,7 +773,9 @@ function assertAgentWritablePath(filePath: string): void {
     (root) => resolved === root || resolved.startsWith(root + sep)
   )
   if (!inside) {
-    throw new Error(`Refusing to modify an agent outside a writable source: ${filePath}`)
+    throw new Error(
+      `Refusing to modify an agent outside a writable source: ${filePath}`
+    )
   }
 }
 // List workspace files (relative POSIX paths) for the composer's `@`-mention
@@ -867,6 +885,9 @@ ipcMain.on("system:name", (event) => {
     displayName: systemDisplayName(),
     dataDirName: dataDirName(),
     mainAgentName: mainAgentName(),
+    // The customizable brand theme (from NEXT_accent_color / NEXT_neutral_color),
+    // or null when neither is configured (renderer then leaves globals.css as-is).
+    theme: brandThemeCss(),
   }
 })
 

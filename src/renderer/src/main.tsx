@@ -401,6 +401,21 @@ function Shell() {
   )
 }
 
+// Apply the customizable brand theme (from NEXT_accent_color / NEXT_neutral_color)
+// BEFORE the first render, so there's no flash of the default green. The main
+// process returns the recolored token declarations for `:root` and `.dark`; we
+// append them as a <style> after globals.css so they override the defaults while
+// next-themes keeps toggling the `.dark` class. Null when nothing is configured.
+function applyBrandTheme() {
+  const theme = window.cowork.system().theme
+  if (!theme) return
+  const style = document.createElement("style")
+  style.id = "brand-theme"
+  style.textContent = `:root { ${theme.light} }\n.dark { ${theme.dark} }`
+  document.head.appendChild(style)
+}
+applyBrandTheme()
+
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <ThemeProvider>
