@@ -10,7 +10,7 @@ const MAX_DESCRIPTION = 1024
 const FRONTMATTER = /^---\s*\n([\s\S]*?)\n---\s*\n?/
 const AGENT_SUFFIX = ".agent.md"
 
-function validateName(name: string, stem: string): string | null {
+export function validateName(name: string, stem: string): string | null {
   if (!name) return "name is required"
   if (name.length > MAX_NAME) return "name exceeds 64 characters"
   if (name.startsWith("-") || name.endsWith("-") || name.includes("--"))
@@ -99,6 +99,39 @@ function parseAgent(
     path: agentPath,
     source,
   }
+}
+
+// Fields a serialized agent carries. Mirrors AgentDefinition minus the runtime-only
+// `path`/`source` (derived from where the file lives, not written into it).
+export interface AgentFields {
+  name: string
+  description: string
+  tools?: string[]
+  skills?: string[]
+  children?: string[]
+  userInvocable: boolean
+  body: string
+}
+
+// Serialize an agent back to `<name>.agent.md` text. The exact inverse of
+// parseAgent: emits YAML frontmatter (name/description always; tri-state lists only
+// when present, so an omitted key round-trips to `undefined` and an empty list to
+// `[]`; `userInvocable` under the hyphenated `user-invocable` key) then the raw body.
+// The undefined-vs-[] distinction is load-bearing — never emit a key for `undefined`.
+export function serializeAgent(fields: AgentFields): string {
+  const fm: Record<string, unknown> = {
+    name: fields.name,
+    description: fields.description,
+  }
+  if (fields.tools !== undefined) fm.tools = fields.tools
+  if (fields.skills !== undefined) fm.skills = fields.skills
+  if (fields.children !== undefined) fm.children = fields.children
+  fm["user-invocable"] = fields.userInvocable
+
+  // flowLevel: -1 keeps YAML in block style; lineWidth: -1 disables line wrapping so
+  // long descriptions aren't folded. An empty array serializes as `key: []`.
+  const yamlText = yaml.dump(fm, { lineWidth: -1, flowLevel: -1 }).trimEnd()
+  return `---\n${yamlText}\n---\n${fields.body}`
 }
 
 // List agents in a single source directory. Reads flat `<name>.agent.md` files

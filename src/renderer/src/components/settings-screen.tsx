@@ -22,6 +22,7 @@ import {
   DialogDescription,
   DialogFooter,
   DialogHeader,
+  DialogOverlay,
   DialogTitle,
 } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
@@ -377,35 +378,36 @@ export function SettingsScreen({
     <>
       <Dialog open={open} onOpenChange={onOpenChange}>
         <DialogPrimitive.Portal>
-          {/* Full-viewport takeover. Built on the raw Radix primitive so we get
-              the focus-trap / Escape-to-close / portal for free, but WITHOUT the
-              centered-modal translate + zoom animation of the shared
-              DialogContent (twMerge can't strip tw-animate-css utilities). */}
+          {/* Clicking the backdrop closes Settings (alongside Escape and the
+              [X]). We close from the overlay's own onClick rather than the
+              content's onInteractOutside because the latter also fires when an
+              open Select dropdown is dismissed by a click INSIDE the modal (the
+              Select's dismiss resolves outside the dialog's content) — which would
+              wrongly close Settings. A click that reaches the overlay element is
+              unambiguously a real backdrop click. */}
+          <DialogOverlay onClick={() => onOpenChange(false)} />
+          {/* A large centered modal (nearly full-screen but inset, with a
+              backdrop). Built on the raw Radix primitive so we get the focus-trap
+              / Escape-to-close / portal for free, but WITHOUT the shared
+              DialogContent's zoom-to-small-box sizing. */}
           <DialogPrimitive.Content
             data-slot="settings-screen"
             aria-describedby={undefined}
-            // A full-screen takeover has no meaningful "outside" to click, so
-            // close is Escape / the [X] only. This also fixes a Radix quirk: an
-            // open modal Select sets `pointer-events: none` on the body, so a
-            // click dismissing the dropdown resolves its target to <body> — which
-            // the dialog would otherwise read as an outside-click and close on.
+            // Never close from an outside-interaction: an open modal Select sets
+            // `pointer-events: none` on the body, so dismissing its dropdown fires
+            // this with a target outside the dialog and would spuriously close
+            // Settings. Backdrop-close is handled by the overlay's onClick above.
             onInteractOutside={(e) => e.preventDefault()}
-            className="fixed inset-0 z-50 flex h-screen w-screen flex-col bg-background text-sm text-foreground outline-none data-open:animate-in data-open:fade-in-0 data-open:slide-in-from-bottom-2 data-closed:animate-out data-closed:fade-out-0 data-closed:slide-out-to-bottom-2"
+            className="fixed top-1/2 left-1/2 z-50 flex h-[calc(100vh-10rem)] w-[calc(100vw-10rem)] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-xl bg-background text-sm text-foreground ring-1 ring-foreground/10 outline-none data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95"
           >
-            {/* Header row. Doubles as the window drag region (matching the app's
-                h-11 top bar) so the window stays draggable; interactive children
-                opt out with no-drag. Left padding clears the macOS traffic
-                lights; the close button sits top-right. */}
-            <div className="flex h-11 shrink-0 items-center justify-between border-b pr-3 pl-20 [-webkit-app-region:drag]">
+            {/* Header row (no longer a window drag region — the modal is inset
+                from the window edge). */}
+            <div className="flex h-11 shrink-0 items-center justify-between border-b px-4">
               <DialogTitle className="font-heading text-base font-medium">
                 Settings
               </DialogTitle>
               <DialogPrimitive.Close asChild>
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  className="[-webkit-app-region:no-drag]"
-                >
+                <Button variant="ghost" size="icon-sm">
                   <XIcon />
                   <span className="sr-only">Close</span>
                 </Button>

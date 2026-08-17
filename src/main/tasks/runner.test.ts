@@ -94,6 +94,48 @@ describe.skipIf(!sqliteLoads)("TaskRunner — reconcile on start", () => {
   })
 })
 
+describe.skipIf(!sqliteLoads)("TaskRunner — restart (retry a failed task)", () => {
+  it("re-queues and re-runs a failed task, keeping its id", async () => {
+    const conv = createConversation({ mode: "chat" })
+    const task = createTask({
+      conversationId: conv.id,
+      status: "failed",
+      error: "boom",
+      input: { kind: "agent_chat", message: "hi" },
+    })
+    const runner = new TaskRunner()
+    runner.start()
+    await settle()
+
+    runner.restart(task.id)
+    await settle()
+
+    // Same task id, re-run to completion.
+    expect(loopCalls).toHaveLength(1)
+    expect(getTask(task.id)?.status).toBe("completed")
+    await runner.stop()
+  })
+
+  it("is a no-op on a non-failed task", async () => {
+    const conv = createConversation({ mode: "chat" })
+    const task = createTask({
+      conversationId: conv.id,
+      status: "completed",
+      input: { kind: "agent_chat", message: "hi" },
+    })
+    const runner = new TaskRunner()
+    runner.start()
+    await settle()
+
+    runner.restart(task.id)
+    await settle()
+
+    expect(loopCalls).toHaveLength(0)
+    expect(getTask(task.id)?.status).toBe("completed")
+    await runner.stop()
+  })
+})
+
 describe.skipIf(!sqliteLoads)(
   "TaskRunner — registerKind (producer auto-resume opt-in)",
   () => {
@@ -830,6 +872,34 @@ describe.skipIf(!sqliteLoads)(
       await settle()
 
       expect(seen).toBe("/tmp/seam-ws")
+      await runner.stop()
+    })
+
+    it("settles an executor's {paused:true} to paused and re-runs it on resume (process gate contract, plan 025)", async () => {
+      // A process_run executor returns {paused:true} when a phase gate blocks the
+      // run (not an abort). The runner must map that to `paused` (durable resume),
+      // and a resume must re-drive the executor — this is exactly how a gated
+      // Process run waits for approval then continues.
+      let attempts = 0
+      const runner = new TaskRunner()
+      runner.registerKind("gated", {
+        autoResume: true,
+        run: async () => {
+          attempts++
+          // First run blocks on a gate; second run (post-approval) completes.
+          return attempts === 1 ? { paused: true } : { content: "released" }
+        },
+      })
+      runner.start()
+      const task = runner.enqueueKind({ kind: "gated", input: {} })
+      await settle()
+      expect(attempts).toBe(1)
+      expect(getTask(task.id)?.status).toBe("paused")
+
+      runner.resume(task.id)
+      await settle()
+      expect(attempts).toBe(2)
+      expect(getTask(task.id)?.status).toBe("completed")
       await runner.stop()
     })
   }

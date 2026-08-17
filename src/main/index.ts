@@ -1,6 +1,7 @@
 import { app, shell, BrowserWindow, ipcMain, Notification } from "electron"
-import { join, resolve, basename, sep } from "path"
-import { readFile, writeFile } from "fs/promises"
+import { join, resolve, basename, dirname, sep } from "path"
+import { readFile, writeFile, unlink, mkdir, rm } from "fs/promises"
+import { existsSync } from "fs"
 import { config as loadEnv } from "dotenv"
 
 // Load .env.local before anything reads process.env. The API key is no longer
@@ -24,11 +25,19 @@ import {
   initUserSkills,
   userSkillsDir,
 } from "./agent/skills/sources"
-import { loadSkills, listSource } from "./agent/skills/loader"
+import {
+  loadSkills,
+  listSource,
+  validateName as validateSkillName,
+  skillScaffold,
+} from "./agent/skills/loader"
 import { agentSources, userAgentsDir } from "./agent/agents/sources"
 import {
   loadAgents,
   listSource as listAgentSource,
+  serializeAgent,
+  validateName as validateAgentName,
+  type AgentFields,
 } from "./agent/agents/loader"
 import type {
   SkillSourceRow,
@@ -37,7 +46,12 @@ import type {
   SkillTree,
   SkillFolder,
 } from "./agent/skills/types"
-import type { AgentSourceRow, AgentSourceKind } from "./agent/agents/types"
+import type {
+  AgentSourceRow,
+  AgentSourceKind,
+  AgentTree,
+  AgentFolder,
+} from "./agent/agents/types"
 import { listWorkspaces } from "./db/repositories/workspaces"
 import * as settingsService from "./settings/service"
 import { listWorkspaceFiles } from "./files/list"
@@ -53,6 +67,8 @@ import { registerIndexHandlers } from "./ipc/index-handlers"
 import { TaskRunner } from "./tasks/runner"
 import { IndexService } from "./index/service"
 import { SummaryService, SUMMARIZE_KIND } from "./summaries/service"
+import { ProcessService, PROCESS_RUN_KIND } from "./tasks/process/service"
+import { registerProcessHandlers } from "./ipc/process-handlers"
 import { BrowserManager } from "./browser/manager"
 import { seedProviderFromEnvIfEmpty } from "./settings/bootstrap"
 import { closeDb } from "./db/connection"
@@ -61,6 +77,7 @@ import {
   systemDisplayName,
   mainAgentName,
 } from "./config/system-name"
+import { brandThemeCss } from "./config/theme"
 
 // The durable task runner — a singleton owned by the main process. Started in
 // app.whenReady (after the DB handlers register) and stopped on will-quit.
@@ -71,6 +88,9 @@ const indexService = new IndexService(taskRunner)
 // The rolling conversation summarizer (plan 019), driven as a task kind on the
 // runner. Holds the runner reference so the post-turn trigger can enqueue.
 const summaryService = new SummaryService(taskRunner)
+// The Process engine (plan 025), driven as the deterministic `process_run` task
+// kind. Holds the runner reference so startRun can enqueue the orchestrator task.
+const processService = new ProcessService(taskRunner)
 // The agent's browser (secondary window + WebContentsView driven over CDP).
 // Owned here so runChat can hand each live turn a signal-bound handle; disposed
 // on will-quit. Lazily creates its window on first agent use.
@@ -357,6 +377,128 @@ ipcMain.handle(
     )
   }
 )
+// The nested catalog for the Agents view: Global (the user dir) + one node per
+// KNOWN workspace + one node per registered custom folder, each with its loaded
+// agents. Enumerates workspaces itself so the view populates with no active
+// conversation. Folders are included even when empty. Mirrors skills:tree.
+ipcMain.handle("agents:tree", async (): Promise<AgentTree> => {
+  const dataDir = dataDirName()
+  const toFolder = async (
+    path: string,
+    label: string,
+    kind: AgentFolder["kind"]
+  ): Promise<AgentFolder> => ({
+    path,
+    label,
+    kind,
+    agents: await listAgentSource(path),
+  })
+
+  const global = [await toFolder(userAgentsDir(), "Global", "user")]
+
+  const workspaces = await Promise.all(
+    listWorkspaces().map(async (ws) => ({
+      label: ws.name ?? baseName(ws.path),
+      path: ws.path,
+      folders: await Promise.all([
+        toFolder(
+          join(ws.path, ".github", "agents"),
+          ".github/agents",
+          "github"
+        ),
+        toFolder(
+          join(ws.path, dataDir, "agents"),
+          `${dataDir}/agents`,
+          "workspace"
+        ),
+      ]),
+    }))
+  )
+
+  const custom = await Promise.all(
+    settingsService
+      .getAgentSources()
+      .folders.map((folder) => toFolder(folder, baseName(folder), "custom"))
+  )
+
+  return { global, workspaces, custom }
+})
+// Read an agent's raw `<name>.agent.md` contents for the in-app editor. Any known
+// agent source (including read-only workspace/github dirs) is readable.
+ipcMain.handle(
+  "agents:read",
+  async (_event, filePath: string): Promise<string> => {
+    assertAgentPath(filePath)
+    return readFile(filePath, "utf-8")
+  }
+)
+// Save an edited agent. Takes structured fields (not raw YAML) — the serializer
+// lives in the main process so YAML construction never ships to the renderer. Only
+// paths inside a WRITABLE root (user + custom) are accepted; workspace/github
+// agents are read-only in this UI.
+ipcMain.handle(
+  "agents:save",
+  async (_event, filePath: string, fields: AgentFields): Promise<void> => {
+    assertAgentWritablePath(filePath)
+    // The name must match the file stem (the loader enforces this at read time);
+    // reject a mismatch up front so a save can't silently produce an agent that
+    // won't load under its own name.
+    const stem = basename(filePath).slice(0, -AGENT_SUFFIX.length)
+    const nameErr = validateAgentName(fields.name, stem)
+    if (nameErr) throw new Error(nameErr)
+    await writeFile(filePath, serializeAgent(fields), "utf-8")
+  }
+)
+// Create a new agent: scaffold a minimal valid `<name>.agent.md` into a writable
+// source dir. Validates the target dir is writable, the name matches the loader's
+// rules, and no same-name file already exists there. Returns the new file's path.
+ipcMain.handle(
+  "agents:create",
+  async (
+    _event,
+    {
+      dir,
+      name,
+      description,
+    }: { dir: string; name: string; description: string }
+  ): Promise<string> => {
+    const resolvedDir = resolve(dir)
+    if (!writableAgentRoots().includes(resolvedDir)) {
+      throw new Error(
+        `Refusing to create an agent outside a writable source: ${dir}`
+      )
+    }
+    const nameErr = validateAgentName(name, name)
+    if (nameErr) throw new Error(nameErr)
+    const filePath = join(resolvedDir, `${name}${AGENT_SUFFIX}`)
+    // Reject a collision — createExclusive via the 'wx' flag would also work, but an
+    // explicit check gives a clearer error and matches the skills-create intent.
+    if (existsSync(filePath)) {
+      throw new Error(`An agent named '${name}' already exists here.`)
+    }
+    await mkdir(resolvedDir, { recursive: true })
+    const contents = serializeAgent({
+      name,
+      description:
+        description || "Describe what this agent does and when to use it.",
+      // tools/skills omitted → "all" (the permissive default); children omitted →
+      // cannot spawn. userInvocable true so it shows in the picker immediately.
+      userInvocable: true,
+      body: `You are ${name}.\n\nDescribe the agent's role and instructions here.\n`,
+    })
+    await writeFile(filePath, contents, "utf-8")
+    return filePath
+  }
+)
+// Delete an agent file. Writable roots only (never a read-only workspace/github
+// agent). The renderer confirms before calling.
+ipcMain.handle(
+  "agents:delete",
+  async (_event, filePath: string): Promise<void> => {
+    assertAgentWritablePath(filePath)
+    await unlink(filePath)
+  }
+)
 // The kind-tagged skill-source dirs for a workspace, in load order. Shared by
 // skills:sources (counts), skills:catalog (full skills), and skills:write (path
 // allow-list). The app-bundled dir is intentionally absent — it only seeds the
@@ -477,6 +619,52 @@ ipcMain.handle(
     await writeFile(filePath, content, "utf-8")
   }
 )
+// Create a new skill: scaffold a `<dir>/<name>/SKILL.md` with valid frontmatter
+// + a starter body into a writable source dir. Validates the target dir is
+// writable, the name matches the loader's rules (also enforcing name === the new
+// subdirectory), and no same-name skill folder already exists there. Returns the
+// new SKILL.md path so the renderer can drop straight into editing it.
+ipcMain.handle(
+  "skills:create",
+  async (
+    _event,
+    {
+      dir,
+      name,
+      description,
+      body,
+    }: { dir: string; name: string; description: string; body?: string }
+  ): Promise<string> => {
+    const resolvedDir = resolve(dir)
+    if (!writableSkillRoots().includes(resolvedDir)) {
+      throw new Error(
+        `Refusing to create a skill outside a writable source: ${dir}`
+      )
+    }
+    // validateName also enforces name === dirName, so the skill subdir is the name.
+    const nameErr = validateSkillName(name, name)
+    if (nameErr) throw new Error(nameErr)
+    const skillDir = join(resolvedDir, name)
+    if (existsSync(skillDir)) {
+      throw new Error(`A skill named '${name}' already exists here.`)
+    }
+    await mkdir(skillDir, { recursive: true })
+    const filePath = join(skillDir, "SKILL.md")
+    await writeFile(filePath, skillScaffold(name, description, body), "utf-8")
+    return filePath
+  }
+)
+// Delete a skill. Removes the whole skill FOLDER (the SKILL.md's parent dir),
+// writable roots only (never a read-only workspace/github skill). The renderer
+// passes the SKILL.md path and confirms before calling.
+ipcMain.handle(
+  "skills:delete",
+  async (_event, filePath: string): Promise<void> => {
+    assertSkillWritablePath(filePath)
+    // filePath is <root>/<name>/SKILL.md — remove its parent folder, not just the file.
+    await rm(dirname(resolve(filePath)), { recursive: true, force: true })
+  }
+)
 // Basename of a path, tolerating a trailing separator (e.g. "/a/b/" -> "b").
 function baseName(p: string): string {
   return basename(p.replace(/[/\\]+$/, "")) || p
@@ -508,6 +696,86 @@ function assertSkillPath(filePath: string): void {
   )
   if (!inside) {
     throw new Error(`Refusing skill path outside known sources: ${filePath}`)
+  }
+}
+// The WRITABLE skill roots: user dir + registered custom folders only. Workspace
+// (.github/skills, .<system>/skills) dirs are read-only in this UI — the app won't
+// drop skill folders into a repo the user may not intend to commit to. Mirrors
+// writableAgentRoots().
+function writableSkillRoots(): string[] {
+  return [userSkillsDir(), ...settingsService.getSkillSources().folders].map(
+    (r) => resolve(r)
+  )
+}
+// Guard for skills:delete. Like assertSkillPath (basename SKILL.md) but restricted
+// to WRITABLE roots, so a read-only workspace/github skill can't be deleted. The
+// deleted target is the SKILL.md's PARENT folder; requiring the parent to sit
+// under a writable root (and the file to be a SKILL.md) keeps the rm scoped.
+function assertSkillWritablePath(filePath: string): void {
+  const resolved = resolve(filePath)
+  if (basename(resolved) !== "SKILL.md") {
+    throw new Error(`Refusing non-SKILL.md path: ${filePath}`)
+  }
+  const inside = writableSkillRoots().some((root) =>
+    resolved.startsWith(root + sep)
+  )
+  if (!inside) {
+    throw new Error(
+      `Refusing to modify a skill outside a writable source: ${filePath}`
+    )
+  }
+}
+// Agent files are flat `<name>.agent.md` (a suffix, not a fixed basename like
+// SKILL.md), so the guards match on the suffix.
+const AGENT_SUFFIX = ".agent.md"
+// ALL agent-source roots the Agents view can read: user + custom + BOTH workspace
+// dirs for EVERY known workspace. Read is permitted everywhere; writes use the
+// narrower writableAgentRoots().
+function allAgentRoots(): string[] {
+  const dataDir = dataDirName()
+  const roots = [userAgentsDir(), ...settingsService.getAgentSources().folders]
+  for (const ws of listWorkspaces()) {
+    roots.push(join(ws.path, ".github", "agents"))
+    roots.push(join(ws.path, dataDir, "agents"))
+  }
+  return roots.map((r) => resolve(r))
+}
+// The WRITABLE agent roots: user dir + registered custom folders only. Workspace
+// (.github/agents, .<system>/agents) dirs are read-only in this UI — the app won't
+// drop files into a repo the user may not intend to commit to.
+function writableAgentRoots(): string[] {
+  return [userAgentsDir(), ...settingsService.getAgentSources().folders].map(
+    (r) => resolve(r)
+  )
+}
+// Guard for agents:read. Basename must end with `.agent.md` and resolve inside a
+// known agent-source dir. Same traversal / sibling-prefix protection as skills.
+function assertAgentPath(filePath: string): void {
+  const resolved = resolve(filePath)
+  if (!basename(resolved).endsWith(AGENT_SUFFIX)) {
+    throw new Error(`Refusing non-.agent.md path: ${filePath}`)
+  }
+  const inside = allAgentRoots().some(
+    (root) => resolved === root || resolved.startsWith(root + sep)
+  )
+  if (!inside) {
+    throw new Error(`Refusing agent path outside known sources: ${filePath}`)
+  }
+}
+// Guard for agents:save/delete. Like assertAgentPath but restricted to WRITABLE
+// roots, so a read-only workspace/github agent can't be overwritten or deleted.
+function assertAgentWritablePath(filePath: string): void {
+  const resolved = resolve(filePath)
+  if (!basename(resolved).endsWith(AGENT_SUFFIX)) {
+    throw new Error(`Refusing non-.agent.md path: ${filePath}`)
+  }
+  const inside = writableAgentRoots().some(
+    (root) => resolved === root || resolved.startsWith(root + sep)
+  )
+  if (!inside) {
+    throw new Error(
+      `Refusing to modify an agent outside a writable source: ${filePath}`
+    )
   }
 }
 // List workspace files (relative POSIX paths) for the composer's `@`-mention
@@ -617,6 +885,9 @@ ipcMain.on("system:name", (event) => {
     displayName: systemDisplayName(),
     dataDirName: dataDirName(),
     mainAgentName: mainAgentName(),
+    // The customizable brand theme (from NEXT_accent_color / NEXT_neutral_color),
+    // or null when neither is configured (renderer then leaves globals.css as-is).
+    theme: brandThemeCss(),
   }
 })
 
@@ -657,8 +928,21 @@ app.whenReady().then(() => {
     autoResume: false,
     run: summaryService.execute,
   })
+  // process_run: the DAG orchestrator (plan 025). Deterministic executor seam —
+  // the orchestrator is scheduling logic; the phases it drives are LLM work run
+  // INLINE via runAgentLoop in forked workers (the spawnSubagent precedent), not
+  // re-enqueued (which would deadlock under the concurrency cap on a blocking
+  // wait). autoResume so a run interrupted by a quit resumes at its persisted
+  // per-phase frontier. hasIndependentSurface: a run may be started headlessly
+  // and is observable via the 026 monitor, so it's exempt from the 022 reaper.
+  taskRunner.registerKind(PROCESS_RUN_KIND, {
+    autoResume: true,
+    hasIndependentSurface: true,
+    run: processService.execute,
+  })
   taskRunner.start()
   registerTaskHandlers(taskRunner)
+  registerProcessHandlers(taskRunner, processService)
   registerIndexHandlers(taskRunner, indexService)
   // Migrate a pre-settings env-configured key into a stored provider account, so
   // existing dev setups keep working without re-entering it (no-op once any

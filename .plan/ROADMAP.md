@@ -7,26 +7,135 @@ item is its plan file, not its rank.
 
 ## Next up
 
-1. **`020` — Durable memories.** The cross-conversation memories section `014` reserved: small,
+1. **`035` — Skill import.** Extends `028` (create/delete) with **import from disk**: a single
+   **`.md`** file (treated as a `SKILL.md` — parse frontmatter, derive/validate `name`, write
+   `<writable-root>/<name>/SKILL.md`) or a **`.zip`** of a skill folder (when the skill has supporting
+   files — extract under `<writable-root>/<name>/` with a **zip-slip guard** + size/entry caps).
+   Writable roots only (reuses `028`'s `writableSkillRoots()`/`assertSkillWritablePath` + the loader's
+   `parseSkill`/`validateName`); adds one small unzip dep (lean `adm-zip`, main-process only). An
+   **Import** affordance beside New skill; collision → **reject with a message** (Q1). Import-only (a
+   skill folder is already shareable on disk). Independent.
+2. **`036` — Agent import.** Extends `027` (create/edit/delete) with **import** of one-or-more
+   **`.agent.md`** files — validate each parses (`parseAgent`) and its frontmatter `name` **equals the
+   file stem** (the loader's hard rule), then **copy verbatim** (no `serializeAgent` round-trip — a
+   hand-tuned agent imports byte-for-byte) into a writable root (`027`'s `writableAgentRoots()`).
+   Simpler than `035` — an agent is a **single flat file, no zip**. Best-effort per file (one bad file
+   errors; the rest land). An **Import** affordance beside New agent; collision / name≠stem → **reject
+   that file, import the rest** (Q1/Q3). Import-only. Independent.
+3. **`038` — Sub-processes. ⚠️ DESIGN-PENDING.** A Process **phase runs another Process** as a nested
+   run (composition of `025` with itself) — e.g. an "Implement" phase delegates to a reusable
+   best-practices sub-process. `process_phases.subprocess_id` (FK → a definition; mutually exclusive
+   with the agent pool) + `process_runs.parent_phase_run_id` (additive `SCHEMA_V20+`). Dispatch branches
+   in `makeRunPhase`: a sub-process phase starts a **nested run inline** (the `spawn_subagent` precedent
+   — no re-enqueue/deadlock, under the parent's `PER_RUN_CONCURRENCY` pool), whose aggregated output
+   becomes the phase's output for downstream `collectUpstream`; completion/fail propagates like a
+   fan-out parent. **Bounds mandatory** (the DAG has no cycle guard): a `MAX_PROCESS_DEPTH` counter +
+   an **author-time acyclicity check** on `subprocess_id` refs (reject a cycle) + runtime backstop.
+   Monitor nests the sub-process's phase-runs under the phase. **Ordered before `037`** so process
+   import/export accounts for the `subprocess_id` reference in its format. **Likely splits:** `038.1`
+   end-to-end sub-process phase; `038.2` gates/fan-out edge cases + resume-reattach. Open Qs:
+   inline-vs-enqueued (lean inline), depth/cycle bounds, per-fan-out-child invocation (deferred).
+4. **`039` — Inspectable agent-to-agent messaging. ⚠️ DESIGN-PENDING.** One phase-agent (B) **asks
+   another phase-agent (A) a question**, answered **from A's own context** — distinct from
+   `spawn_subagent` (a fresh, context-less child). The `025` engine makes each phase-run's **worker
+   conversation** addressable (`makeRunPhase` stamps a `taskId`/conversation per phase-run), so a gated
+   **`ask_agent`** tool: writes a durable `process_messages` row (`pending`), **injects the question
+   into A's existing conversation**, runs **A's `runAgentLoop` one turn** (A answers from its history),
+   then returns **{question + A's answer}** to B (B's transcript records both) while A's transcript keeps
+   the **{incoming question + answer}** — both sides retain full context. Inline + **bounded** (per-run
+   message cap + reentrancy/cycle depth guard — mandatory). v1 **asks only completed phases** (settled
+   context, no mid-flight race); same-run targets only. Monitor renders the A↔B thread off a
+   `process_phase`-style event (no new channel). **Likely splits:** `039.1` completed-target round-trip
+   + storage + monitor; `039.2` asking a running agent (queued) + richer targeting. Open Qs above.
+5. **`037` — Process import / export.** Unlike `035`/`036` (files already on disk → import-only), a
+   Process lives **only in the DB** (`025` tables), so it needs an explicit **serialize ⇄ deserialize**
+   to be shareable — the sharing use case you called out. **JSON** interchange (`ProcessExport`,
+   `formatVersion`-guarded): **id-free**, edges reference phases by **`key`** (unique per process) so
+   import mints fresh ids collision-free; agent pool carried as **names**. **Export** = build from
+   `getProcessGraph`, drop ids, save dialog. **Import** = parse + validate (unique keys, every edge
+   endpoint resolves, enums valid) then **replay through the existing granular CRUD in one
+   transaction** (`createProcess`→`createPhase`×N→key→newId map→`createEdge`/`createPhaseAgent`) — no
+   new write path, same invariants as `026`. Round-trips (export→import ≡ original modulo ids). Missing
+   referenced agents → **import + warn** (names resolve at run time; `025.3` router falls back) (Q2).
+   Export is *definition only* (not run history). New `process/io.ts` + `processes:export`/`import` IPC +
+   builder affordances. **Ordered after `038`** so the format carries a phase's `subprocess_id` — a
+   sub-process reference exports **by definition identity** (name/a stable ref), and import resolves or
+   flags a missing referenced sub-process (like `037`'s missing-agent warning).
+6. **`033` — Live dashboards.** A new top-level surface (a **Dashboards** button in the sidebar footer,
+   the 5th overlay alongside Processes/Agents/Skills/Settings) where a user **prompts an agent to author
+   a dashboard** — a saved layout of widgets + a per-widget **data-fetch recipe** describing *how to
+   pull the data*. **Data-source-agnostic by construction:** the agent fetches through whatever tools it
+   has (today `run_shell`/Azure CLI, `web` fetch; **later MCP servers** — Jira, Azure DevOps), so
+   dashboards inherit new sources **for free** as they land — this plan builds **no connectors** (MCP is
+   its own effort). `recharts` is **already a dep** (no new chart lib). Mirrors `025`'s definition-vs-run
+   split + bare-`TEXT`-repo-validated statuses: new `dashboards`/`dashboard_widgets`/
+   `dashboard_widget_data` (cache) tables (additive, `SCHEMA_V20+`), a gated **`dashboard_write`** agent
+   tool (like `todo_write`/`present_plan`), and a `dashboard_refresh` `009` durable task kind that
+   **replays each widget's stored recipe** (deterministic-first, bounded-LLM-normalize only where
+   declared) into the cache the view reads. **v1 "live" = manual/on-open/poll-while-open** (true cron is
+   the backlog `cron` item). Full-viewport takeover (`dashboards-screen.tsx`, the `023` Radix pattern +
+   `NativeSelect`). **Likely splits** (`025.x` pattern): `033.1` storage + overlay + view + a
+   manually-authored widget; `033.2` the `dashboard_write` authoring tool; `033.3` the refresh executor.
+   **Crux Open Qs:** how re-runnable a recipe is without an LLM; approval/allowlist safety of a stored
+   recipe re-running unattended on refresh; fixed grid vs drag-resize lib. Independent of the Process
+   cluster.
+7. **`034` — CLI-agent providers (Claude Code / Codex / Copilot).** Three new **provider kinds** that
+   aren't LLM-API accounts but local **agentic CLIs** driven as subprocesses (`claude -p`,
+   `codex exec`, `copilot -p`) — each *is* the agent (own loop + tools + approvals, editing files
+   **in the project dir**). Selecting one **routes turns away from `runAgentLoop`** to a new subprocess
+   runner (`agent/cli/`, per-CLI adapters behind one interface + `005`'s detached-process-group kill),
+   **locks the backend to Local**, and **disables Chat mode** (these CLIs need a working directory;
+   Chat has no workspace). Two consequences of never entering `runAgentLoop`: **(a) none of our
+   internal tools / skills / index / `ContextBuilder` sections / approval gate apply** — the CLI brings
+   its own tools, prompt, and context; **(b) every turn is always "auto"** — a no-TTY subprocess can't
+   prompt, so auto-allow is **inherent, not a choice** (no "Ask" mode to add later). Both surfaced in
+   the UI. **Research done (verified live 2026-08-07; pin versions):** session continuity is
+   **non-uniform** — Claude + Copilot **self-assign** a UUID we generate (`--session-id`), Codex
+   **mints its own** `thread_id` we must **parse from turn-1 JSONL and resume** (`codex exec resume
+   <id>`). So a per-conversation **`cli_session_id`** (additive `SCHEMA_V20+`) is assigned-by-us OR
+   captured-from-turn-1. No API key — a **binary path + `--version` health check** + default model +
+   auto-posture permissiveness (`--permission-mode`/`--allowedTools`; Copilot **requires**
+   `--allow-all-tools`; Codex `-s workspace-write`). **Likely splits:** `034.1` Claude Code end-to-end
+   (+ backend-lock + mode-gate + tools-bypass + auto UI), `034.2` Copilot (same self-assign model),
+   `034.3` Codex (extract-then-resume). Open Qs: default auto-posture permissiveness (lean
+   workspace-write/edits-allowed); streaming fidelity (text-first; Copilot JSONL fields unverified);
+   out-of-band CLI auth. Independent of the Process cluster / dashboards.
+8. **`032` — Process visual canvas.** The explicitly-deferred half of `026` (which shipped the
+   **list-based** DAG builder and recorded a **visual node/edge canvas** as "later"). Renderer-first +
+   one additive migration; **no engine/scheduling/routing change**. Phases become draggable **nodes**,
+   dependencies **edges** drawn between handles (same `on_complete`/`on_each_subtask` trigger, same
+   per-phase routing/gate/fan-out/agent-pool inspector), all mapping 1:1 onto the existing
+   `db:processes:*` CRUD (mutate-then-refetch). Net-new: `SCHEMA_V19` adds nullable `pos_x`/`pos_y` to
+   `process_phases` (a plain `ADD COLUMN` — the `025` tables avoid CHECK-rebuilds by design) so layout
+   persists, with deterministic **auto-layout** for legacy definitions (`NULL` coords) + a **Tidy**
+   action; a new `process-canvas.tsx` + the phase inspector extracted for reuse by both the list card
+   and the canvas node. Open Qs: canvas lib (lean **`@xyflow/react`** lazy-loaded, `dagre`/built-in for
+   layout — watch the ~2.6 MB renderer bundle) vs hand-rolled SVG; keep the list builder as a coexisting
+   toggle vs replace (lean **coexist**). The Radix-`Dialog` takeover means the inspector keeps
+   `NativeSelect` (the `023`/`026` `pointer-events:none` finding). **Live-run-on-canvas deferred** — v1
+   keeps the `026` nested-list monitor. Independent of `029`/`031`.
+9. **`020` — Durable memories.** The cross-conversation memories section `014` reserved: small,
    persisted facts the agent writes (a **gated, explicit** `remember` tool — no silent profiling)
    and that inject into future turns, **scoped** global / workspace / conversation (mirrors the
    `action_allowlist` scoping). New `memories` table + a list/delete surface (durable +
    cross-conversation ⇒ must be auditable/revocable); a `memoriesSection` renderer with an injection
    cap. Split out of `014` Q2.
-2. **`010` — Container runtime profiles.** Decouple Workspace (the files) from Runtime (the env a
+10. **`010` — Container runtime profiles.** Decouple Workspace (the files) from Runtime (the env a
    tool call executes in). Replace the raw container `image` string with a named **profile**
    (`node` | `python` | `fullstack`), resolved to an image in the env factory; default/fallback =
    `fullstack` (Node + Python) so a Node repo that later adds a Python backend doesn't wedge.
    One profile per conversation, user-overridable in settings. Kills the "one workspace = one image
    forever" assumption **without** building auto-routing or image management (both deferred). Small
    refactor of `env/factory.ts` + `container.ts` + execution settings (JSON blob — no migration).
-3. **`005.1` — ContainerEnvironment stop in-flight.** The deferred half of `005`: killing the host
+11. **`005.1` — ContainerEnvironment stop in-flight.** The deferred half of `005`: killing the host
    `docker/podman exec` client doesn't stop the in-container process. Needs its own kill mechanism
    (in-container PID tracking / `exec kill`, or marker `pkill`). Out of scope when `005` shipped.
-4. **`007` — Slash commands for skills.** Let users force a skill with `/skill-name …` (pre-inject
+12. **`007` — Slash commands for skills.** Let users force a skill with `/skill-name …` (pre-inject
    the `read_skill` call), keeping today's model-discretionary path for plain messages. Adds a
    `skills:list` IPC channel + composer autocomplete. Independent — schedule freely.
-5. **`018` — Agentic goal mode.** An opt-in **execution mode** (orthogonal to chat/interactive/
+13. **`018` — Agentic goal mode. ⚠️ SUPERSEDED by `025`** (the general Process engine — 018's fixed
+   pipeline becomes one built-in Process *template*; kept as a stable-ID file per convention, not
+   built as its own orchestrator). An opt-in **execution mode** (orthogonal to chat/interactive/
    north_star): `simple` (today's one-pass behavior, default) vs `goal` (bounded **plan → execute →
    review → fix → finalize**, capped by `maxIterations` — never unbounded). Modeled as a task-level
    orchestrator inside the runner's `runOne` (one task / one forked conversation, calling
@@ -38,7 +147,7 @@ item is its plan file, not its rank.
    PR (`/goal <request>` — reuses `007`'s composer slash-command affordance — + a "Run with review
    loop" button); the Always/Ask/Manual/Off **setting is deferred** to its own plan. Placed by `007`
    since both add `/`-command composer UI.
-6. **`024` — Index filesystem/git watcher.** The "live file watching" follow-up `008` deferred (and
+14. **`024` — Index filesystem/git watcher.** The "live file watching" follow-up `008` deferred (and
    `014` re-deferred). Today the workspace index — and the compact summary `buildIndexSummary`
    injects into the system prompt on every message send — only refreshes when `IndexService.
    ensureRunning` is called, which fires on conversation create/update or manual Start/Rebuild;
@@ -55,6 +164,373 @@ item is its plan file, not its rank.
 
 ## Done
 
+- **`031.2` — Process cross-phase flag-back (+ autonomous routing, full container support).** Built on
+  `feat/process-validator` (branches off `feat/process-engine-planning`; not yet merged to `main`). The
+  riskier half of `031`: a phase-worker that finds a defect an **earlier** phase owns **flags it back**
+  instead of fixing out of lane; the engine resets the target phase (or a single fan-out sub-task) **and
+  everything transitively downstream** to `pending`, then re-walks. Generalizes the `029`/`031.1`
+  reopen→feedback→bounded-re-run primitive **backward across the DAG**. **Storage** (`SCHEMA_V22`, two
+  additive `ADD COLUMN`s + one new table, no rebuild — the `V19-V21` pattern):
+  `process_definitions.require_flag_approval` (per-process autonomy toggle, default 1 = confirm);
+  `process_phase_runs.source_child_run_id` (**first-class on_each_subtask lineage** — which source
+  fan-out child a consumer instance consumes; promoted from the append-only `eachsubtask:` checkpoint so
+  the **per-child** reset is a direct query); and a `process_flags` table (durable flag records, lifecycle
+  pending→applied|dismissed, bare-TEXT status). **The reset core** is a new **`flagback.ts`** — one code
+  path shared by the autonomous scheduler route and the human-confirm service route: `ancestorsOf`
+  (reject a forward/self/unknown target — flags only go upstream), `downstreamClosure` (forward-edge BFS
+  with a mandatory visited-set — the DAG has no cycle guard), `descendantChildRuns` (per-child downstream
+  via `source_child_run_id`), and `applyFlagBack` branching **per-child** (reset only the flagged child +
+  reopen its container `completed→running` + **delete** the descendant on_each_subtask instances so they
+  re-trigger fresh from the reworked child's new output — siblings untouched), **whole-phase** (reset +
+  `reworkNote`), and **whole-container** (delete children + `deleteCheckpoint` the `fanout:`/`eachsubtask:`
+  rows so it re-decomposes/re-triggers clean — the previously-unused `deleteCheckpoint` is the key
+  enabler). **Tool + threading:** a gated **`flag_for_rework({target, reason})`** tool (registered
+  `otherTools`, marked UNIVERSAL so a restricted agent keeps it, offered **only** to a phase worker via a
+  new `processRunId`/`processPhaseRunId` threaded through `RunAgentLoopOptions`→`ToolContext`→
+  `makeRunPhase`); it validates the target via `resolveTarget`, writes a pending flag, and enforces a
+  per-run cap (`MAX_FLAGS_PER_RUN=10`). Because a phase worker runs in `autoMode` (where `ctx.gate`
+  auto-approves), the flag is **recorded durably and processed by the deterministic scheduler**, never
+  resolved in the agent loop. Prompts gained a **"Phases you may flag for rework"** section listing
+  upstream phases by **`key`** (the stable target vocabulary; `UpstreamResult` gained `phaseKey`, and the
+  on_each_subtask kickoff carries its source phase's key). **Scheduler** routes pending flags at
+  **quiescence** (the terminal-check branch, on an otherwise-successful run): autonomous → `applyFlag`
+  inline + `continue`; confirm → `raiseFlagGate` (a distinct `process_flag_gate` approval kind carrying
+  target+reason, so `gateRows`/`validatorGateRows` never cross-count) + `GateBlockedError` (run pauses).
+  **Service** `confirmFlag`/`dismissFlag` (IPC `process:confirmFlag`/`dismissFlag` + preload) settle the
+  gate and apply/skip the reset then resume. **Renderer:** an **"Autonomous rework routing"** `Switch` in
+  the builder's definition meta, and a monitor **flag confirmation card** (target + reason + Approve
+  send-back / Dismiss) built off a `flagGates` map reconciled from the durable approvals, mirroring the
+  029 gate card. The `fanout:`/`eachsubtask:` checkpoint labels + state shapes were extracted to a shared
+  `checkpoints.ts` (no import cycle). Verified: `pnpm typecheck` + `pnpm build` clean (the 3 residual
+  errors — `open.test.ts`, `service.test.ts` `createPhaseRun({error})`, `runner.test.ts` — are
+  **pre-existing on clean HEAD** and unrelated); new tests — **`flagback.test.ts`** (the correctness
+  spike: traversal, target resolution incl. the per-child `sourceChildRunId` case, and all three reset
+  branches with checkpoint surgery), `scheduler.test.ts` (+3: autonomous apply, confirm-gate,
+  no-op-when-empty), `service.test.ts` (+3: confirm applies + resumes, dismiss leaves target intact,
+  unknown-requestId no-op), `flag_for_rework.test.ts` (records/validates/rejects/cap/unavailable),
+  `prompts.test.ts` (+2: flag section lists keys / omitted when no upstream), `migrations.test.ts` (v22
+  table + columns + defaults); the latest-`user_version` assertions bumped 21 → 22 (×5). **Full suite 671
+  pass** against a node-ABI `better-sqlite3` rebuild, Electron ABI restored after with
+  `@electron/rebuild` (the 1 flaky `local.test.ts` SIGKILL timing test passes in isolation). Manual E2E
+  deferred to a live session. **v1 scope-outs (documented):** mixed on_complete+on_each_subtask edges into
+  one phase fall back to a whole re-run; a flag may target only a **completed** upstream phase/sub-task;
+  LLM-agent flag sources only (no deterministic tests-as-flagger). **Completes `031`.**
+- **`031.1` — Process per-phase validator.** Built on `feat/process-engine-planning` (branch
+  `feat/process-validator`; not yet merged to `main`). The automatic same-phase half of `031` (the
+  agent quality loop): an optional per-phase toggle runs a **second reviewer agent** after a phase's
+  worker completes; it either approves the output or sends it back with feedback (reusing `029`'s
+  `reworkNote` kickoff channel), bounded — on exhaustion the phase **escalates to a human gate**.
+  Generalizes the superseded `018` `review → fix → review` loop. **Storage** (`SCHEMA_V21`, four
+  additive `ADD COLUMN`s, no rebuild — the `029`/`030` pattern): `process_phases.validator` (toggle) +
+  `validator_max_iterations` (0 = engine default `DEFAULT_VALIDATOR_ITERATIONS`=3; **never unlimited**
+  — the DAG has no cycle guard) + `validator_agent` (the dedicated reviewer; NULL → the phase's
+  `pool[0]`), and `process_phase_runs.validator_round` (the review-round counter, kept **separate from
+  `rework_round`** so it never perturbs `029`'s count-based gate re-detection). **Engine:** a new
+  injected `ctx.validate` (optional, like `decompose`/`buildEachSubtaskPrompt`, so inert when unwired);
+  `makeValidate` forks a **reviewer worker** (mirrors `makeDecompose` — a real `runAgentLoop` so it can
+  inspect the workspace/files, a *separate* conversation that does **not** overwrite the phase-run's
+  taskId) and parses a strict JSON verdict (`validatorPrompt` + `parseVerdict`, a tolerant
+  brace-matched scan mirroring `parseDecomposition`); an **unparseable verdict / errored reviewer fails
+  OPEN (approve)** so a broken reviewer never wedges the run. The loop lives in `runPhaseWithRetry`'s
+  success branch: reject → stash feedback + bump `validatorRound` + re-run the worker (kickoff re-reads
+  `reworkNote` **fresh** from the DB); at the cap → `raiseValidatorGate` (a distinct
+  `process_validator_gate` approval kind so `gateRows`/`needsGate` never cross-count) parks the
+  phase-run `waiting_for_approval` and throws `GateBlockedError` (run settles `paused`). Dependents are
+  held by the non-`completed` status alone (no new ready-set predicate); a walk-top
+  `reconcileValidatorGates` flips an approved-gate phase → `completed` on resume. `requestChanges`
+  (`029`) also resets `validatorRound: 0` so a human send-back grants fresh review rounds. **Renderer:**
+  a **Validator** `Switch` in the phase inspector (non-fan-out only) revealing a reviewer-agent
+  `NativeSelect` (default "Phase's own agent") + a "Max iterations" `Input`, plus a `validator` summary
+  badge; threaded through the phases create/update CRUD (db-handlers + preload). Verified: `pnpm
+  typecheck` + `pnpm build` clean (the 3 residual typecheck errors — `open.test.ts`, `service.test.ts`
+  `createPhaseRun({error})`, `runner.test.ts` — are **pre-existing on clean HEAD** and unrelated); new
+  tests — `scheduler.test.ts` (**+7**: reject-then-approve re-run, cap-then-escalate-to-gate,
+  approve-gate-releases-dependents, engine-default cap, reviewer-error fails open, toggle-off no-op,
+  `validatorRound` bumped/`reworkRound` untouched), `service.test.ts` (**+2**: full-executor
+  reject-then-approve with feedback injected into the re-run kickoff; unparseable verdict fails open),
+  `prompts.test.ts` (**+8**: `validatorPrompt` shape, `parseVerdict` tolerant cases),
+  `migrations.test.ts` (v21 column presence + defaults); the latest-`user_version` assertions bumped
+  20 → 21 (×3, plus two long-dormant `settings.test.ts`/`index-runs.test.ts` assertions that surfaced
+  once the node-ABI rebuild let the DB suites run — 17 → 21). **Full suite 646 pass** against a node-ABI
+  `better-sqlite3` rebuild, Electron ABI restored after with `@electron/rebuild`. Manual E2E deferred to
+  a live session. **Deferred (as planned):** cross-phase flag-back + autonomous routing → `031.2`;
+  deterministic/tests-as-validator reviewer.
+- **`030` — Process artifacts: dot-folders + file chips + name-derived keys.** Built on
+  `feat/process-engine-planning` (commit `882cdcc`; not yet merged to `main`). A `026` follow-up making
+  a phase's *output* visible and openable, mostly renderer + one additive column. **030a — dot-folder
+  toggle:** additive `SCHEMA_V20` `process_phases.dot_folder INTEGER NOT NULL DEFAULT 0` (pure
+  `ADD COLUMN`, no rebuild — the `029` V19 pattern), threaded through `ProcessPhase`/repo (row/mapper/
+  `createPhase`/`updatePhase`)/IPC/preload + a builder **Dot-folder** `Switch` and a `.<key>/` summary
+  badge; `kickoffPrompt`/`eachSubtaskKickoffPrompt` gain an optional "Where to write files" section
+  steering the agent to write under `.<phase.key>/` (an **agent convention**, not FS-enforced).
+  **030b — file chips:** each phase card **and** each fan-out/on_each_subtask child row shows the files
+  that phase produced as clickable chips — click opens in the selected IDE, hover shows a git-diff
+  preview. **No new git machinery:** a new `PhaseFileChips` derives the list from the phase-run worker's
+  own transcript (`phaseRun.taskId` → `tasks.get` → `messages.list` → `buildTimeline` →
+  `changedFilesFromCalls`), fetched lazily per `(taskId, status)` so a running phase's chips refresh on
+  completion; `ChangedFilesBar` refactored to accept a precomputed `files: ChangedFile[]`
+  (backward-compatible with the two `App.tsx` `calls` call sites); `RunMonitor` resolves the run's
+  workspace path via `workspaces.list()` (no `get`). **030c — human-readable phase keys** (added in
+  build; drives 030a so the folder reads `.plan/` not `.phase_1_1/`): a `deriveKey(name, otherKeys)`
+  (reuses `slugifyKey`, collision-suffixes `_<n>` against the DB's `UNIQUE (process_id, key)`); `addPhase`
+  and the phase-name `onBlur` derive the key from the name, and the manual key field becomes a read-only
+  display. Safe because the key is only display/telemetry on the `process_phase` event — edges reference
+  phases by **id**, resume keys off `phaseRunId`/`taskId`. Verified: `pnpm typecheck` + `pnpm build` clean
+  (the three residual typecheck errors — `open.test.ts`, `service.test.ts`, `runner.test.ts` — are
+  **pre-existing on clean HEAD**, confirmed via `git stash`, and unrelated); DB suite **42 pass** (new
+  `dot_folder` v20 migration column-presence test; `processes.test.ts` latest-`user_version` bumped
+  19 → 20; +2 `prompts.test.ts` dot-folder section present/absent) + **66** process-module tests, run
+  against a node-ABI `better-sqlite3` rebuild with the Electron ABI restored after via `electron-rebuild`;
+  `migrations.test.ts` `user_version` assertions bumped 19 → 20 (×2). Manual E2E deferred to a live
+  session. **Deferred (as planned):** FS-enforcing the dot-folder; workspace-wide git-diff / shell-written
+  file detection (the noted chip gap); open-at-line in the IDE.
+- **`029` — Process review feedback loop.** Built on `feat/process-engine-planning` (not yet merged to
+  `main`). A `026` follow-up: a gated phase gains a third decision beside Approve/Deny — **Request
+  changes** — a feedback note that re-runs the gated phase's own worker (note injected into its kickoff)
+  and re-gates, bounded by a **per-phase** cap. **Storage** (`SCHEMA_V19`, three additive `ADD COLUMN`s,
+  no rebuild): `process_phase_runs.rework_note` (the feedback, read by `makeRunPhase`) +
+  `rework_round` (the bound counter), and `process_phases.max_rework_rounds` (0 = unlimited, editable in
+  the builder). **Gate re-detection is count-based, not timestamp-based** (the crux): `needsGate` raises
+  a fresh gate when `gateRows(phaseRun) <= reworkRound` — each send-back settles exactly one gate row and
+  bumps the round, so a re-completed phase owes a new gate; `gateResolved` releases dependents when **any**
+  gate row is `approved` (a denied row never flips; you can't request changes on an approved gate) — both
+  **exact at any millisecond resolution**, avoiding an initial `finishedAt` vs `requestedAt` comparison
+  that flaked on equal-ms ties. **No new `ApprovalStatus`**: `requestChanges` reuses `"denied"` with a
+  `decision` blob `{feedback, rework:true}` for the audit trail. New `ProcessService.requestChanges`
+  (modeled on `restartRun`): guards (reject a **container** fan-out/on_each_subtask phase — sub-DAG replay
+  is `031`; reject at the cap) → one transaction (settle the row denied + reset the phase-run to `pending`
+  with the note/round + flip the run to `running`) → `runner.resume` after commit (the paused task
+  re-derives from the DB and re-runs the phase). **Renderer** (`process-screen.tsx`): a collapsible
+  textarea + **Request changes** button in the gate card (hidden for a container or at the cap →
+  Approve/Deny only), a **Max rework** builder input (shown for approve gates), and a **fix to the remount
+  gate reconcile** — it dropped a re-raised gate because it keyed on `phaseRunId` alone (a phase-run now
+  has both a denied and a fresh-pending row); now matches the displayed `requestId`. New IPC
+  `process:requestChanges` + preload bridge; `maxReworkRounds` threaded through the phases create/update
+  CRUD (db-handlers + preload). Builds the **reopen → inject feedback → bounded re-run** primitive `031`
+  generalizes. Verified: `pnpm typecheck` + `pnpm build` clean (the three residual errors — `open.test.ts`,
+  `service.test.ts` `restartRun`'s `createPhaseRun({error})`, `runner.test.ts` — are **pre-existing on
+  clean HEAD** and unrelated); new tests — `scheduler.test.ts` (**27**; +2: full request-changes re-gate
+  cycle, and denied-without-rerun does-not-re-raise), `service.test.ts` (**+5**: requestChanges settles/
+  resets/resumes, rejects at cap, rejects a container, injects the note into the re-run kickoff end-to-end,
+  no-op on unknown requestId), `prompts.test.ts` (**+3**: kickoff rework-note section present/ordered/
+  blank-ignored), `migrations.test.ts` (v19 column presence + defaults); the three latest-`user_version`
+  assertions bumped 18 → 19. DB suite run against a node-ABI `better-sqlite3` rebuild, Electron ABI restored
+  after with `electron-rebuild`. Manual E2E deferred to a live session. **Deferred (as planned):**
+  cross-phase send-back + per-phase validator + autonomous rework → `031`; request-changes on a container
+  phase.
+- **`028` — Skill authoring.** Built on `feat/process-engine-planning` (not yet merged to `main`).
+  Extended the Skills view (`skills-screen.tsx`, previously View + **Edit** only) with **create** +
+  **delete**, mirroring `027`'s agent editor and closing the loop so an authored agent's `skills[]` can
+  reference skills that exist. **Main:** `validateName` + a new **`skillScaffold`** exported from
+  `agent/skills/loader.ts` (kept beside the parser so a scaffold change and its round-trip test live
+  together; description YAML-serialized so special chars quote correctly, commented `allowed-tools`
+  hint); two IPC channels in `index.ts` — `skills:create` (scaffolds `<dir>/<name>/SKILL.md`, validates
+  the target dir is writable + the name matches the loader's rules + rejects a same-dir collision,
+  returns the new path) and `skills:delete` (removes the skill's whole **folder** via `rm -r`) — guarded
+  by a new `writableSkillRoots()` (**user + custom only**, mirroring `writableAgentRoots`) +
+  `assertSkillWritablePath` (basename `SKILL.md`, resolves under a writable root). **Decisions (Open
+  Qs):** target dir → **user default** with a source dropdown when custom folders exist; delete
+  protection → writable source kinds only (workspace/`.github` skills viewable but read-only); name
+  rules → reuse the loader's `validateName` + same-dir collision reject. **Renderer:** `skills-screen.tsx`
+  gained a **New skill** button + a create form (name / location `Select` / description) that scaffolds
+  then drops into the existing raw-text editor on the fresh file, and a hover **delete** (writable rows
+  only, with confirm) — the `SkillRow` now carries the folder `kind`, and `CatalogSkill` is tagged so
+  writability reads off the source. **Preload:** `skills.create`/`skills.delete` bridges. Verified:
+  `pnpm typecheck` + `pnpm build` clean (the three residual typecheck errors — `open.test.ts`,
+  `process/service.test.ts`, `runner.test.ts` — are **pre-existing on clean HEAD** and unrelated); new
+  `agent/skills/loader.test.ts` (**8** — `validateName` accept/reject cases + `skillScaffold` round-trips
+  through the real `listSource`, incl. a placeholder-description case and a YAML-special-char description
+  that still parses); the agent suite is otherwise green (sole failure is the known flaky real-process
+  SIGKILL timing test in `local.test.ts`, passes in isolation). Manual E2E in the running app deferred to
+  a live session. **Deferred (as planned):** editing skills in workspace roots; skill sharing /
+  import-export / marketplace.
+- **`027` — Agent management UI.** Built on `feat/process-engine-planning` (commit `a6e60cc`; not yet
+  merged to `main`). In-app **create/edit/delete** of the file-based `<name>.agent.md` agents, mirroring
+  the skills editor and closing the loop so `025`/`026` phases can reference authored agents (was
+  disk-only + a read-only Settings folder table). **Main:** a new **`serializeAgent`** in
+  `agent/agents/loader.ts` (the exact inverse of `parseAgent` — preserves the load-bearing tri-state
+  `undefined`→omit / `[]`→empty-list, hyphenated `user-invocable` key, raw body; `validateName` exported
+  for hard name↔stem enforcement); `AgentFolder`/`AgentTree` types + an exported `TOOL_CATEGORIES`; and
+  five IPC channels in `index.ts` — `agents:tree`/`read`/`save`/`create`/`delete` — guarded by
+  `assertAgentPath` (any known root, read) and `assertAgentWritablePath` (**user + custom only**, write),
+  with `save` taking **structured fields** (serializer stays in main, no YAML in the renderer).
+  **Decisions (Open Qs):** editor style → **structured form** (not raw text); writable roots → **user +
+  custom only** (workspace/`.github` agents are viewable but read-only). **Renderer:** new
+  `agents-screen.tsx` — clones the Skills full-viewport takeover shell + two-level tree, with a
+  structured main pane: description Textarea, user-invocable Switch, **All/None/Choose** tri-state
+  pickers (shadcn `Select` + checkbox grids) for tools (8 categories) / skills (`skills:list`) /
+  children (agent names), a markdown body Textarea; **New agent** (full form) + hover **delete**
+  (writable rows only, with confirm). Mounted in `main.tsx`; a **Bot**-icon "Agents" footer button in
+  `sidebar.tsx` (between Processes and Skills); types re-exported via `renderer/src/types.ts`. Verified:
+  `pnpm typecheck` + `pnpm build` clean (sole error, `src/main/ide/open.test.ts`, is pre-existing +
+  unrelated); `loader.test.ts` **serializeAgent** round-trips (tri-state omit/[]/list, hyphenated key,
+  verbatim body) + `validateName` (23 pass). DB suite run against a node-ABI `better-sqlite3` rebuild,
+  Electron ABI restored after. Manual E2E in the running app deferred to a live session. **Deferred (as
+  planned):** editing agents in workspace roots; a per-agent `model` field; versioning/import-export.
+  **Shipped alongside** (same commit `a6e60cc`, from the same session): **process run titles** (a
+  `process_runs.title` column, `SCHEMA_V18`; `startRun` awaits `generateTitle` so the run selector shows
+  a short LLM title, not the raw objective), **fan-out decomposition robustness** (a tolerant
+  `parseDecomposition` — scans all fences, string-aware balanced-bracket match, accepts object arrays —
+  plus a tightened prompt + corrective-retry note), a **transient-turn retry fix** (`isTransientError`
+  now walks the error `cause` chain + matches transient messages, so a mid-stream "terminated" undici
+  socket death is retryable and a phase worker retries instead of failing on attempt 1), and **retry a
+  failed run** (`runner.restart` re-queues a failed task in place — preserving its `taskId`-keyed
+  checkpoints; `ProcessService.restartRun` resets the failure frontier — failed/cancelled phase-runs +
+  container children — and re-drives the same task; `process:restart` IPC + a **Retry** button on failed
+  runs in the monitor).
+- **`026` — Process UI.** Built on `feat/process-engine-planning` (not yet merged to `main`). The
+  **renderer** for the `025` engine — purely additive, **no backend/IPC/schema change** (the
+  `process:*` control verbs, `db:processes:*` CRUD, the `api.process` + `api.db.processes` preload
+  bridge, and the `process_phase` task event all already existed from `025`/025.x; this PR consumes
+  them). **Placement:** a **Processes** button in the sidebar footer (`Workflow` icon, above Skills)
+  opens a full-viewport **overlay** (`processOpen` boolean in `Shell()`, `<ProcessScreen>` rendered
+  alongside `<SkillsScreen>`) — the Skills-screen takeover pattern, **not** a 4th `Mode`/`View` (a
+  process isn't a conversation, so `Mode`/`conversations.mode`/`VIEW_TO_MODE` are untouched). **New
+  `src/renderer/src/components/process-screen.tsx`:** a left rail listing definitions (New + hover
+  delete-with-confirm), a **list-based DAG builder** (phases as cards; dependencies as per-phase
+  **"depends on"** checkboxes so the graph is implicit in the edges, each with an `on_complete` /
+  `on_each_subtask` trigger dropdown; a per-phase inspector for **routing** `single`/`dispatch`,
+  **gate** `auto`/`approve`, **fan-out** toggle, and an add/remove **agent pool** off `agents:list`),
+  and a **run monitor** (run selector + pause/cancel; phase-run rows colored by status off the
+  `process_phase` events on the run's backing task tail — `tasks.onEvent` filtered by `run.taskId`, no
+  new channel — with fan-out / on_each_subtask **children nested** under their container; gated phases
+  get an **inline approval card** wired to `process.approve`/`process.deny`, the gate `requestId`
+  reconstructed from the replayed + live task-event stream into a `phaseRunId → requestId` map, mirroring
+  `tasks-section.tsx`'s `latestGate`). Every builder mutation is **mutate-then-refetch** (agent-pool +
+  edge rows have no update verb → edit = delete+recreate). Uses `NativeSelect` (not the Radix `Select`)
+  to sidestep the modal-dialog `pointer-events:none` interaction the `023` takeover documented. Wired
+  through `main.tsx` (state + render + `onProcessClick`) and `sidebar.tsx` (prop + footer button);
+  Process types re-exported via `src/renderer/src/types.ts`. **Decisions (Open Qs):** Q1 → overlay;
+  Q2 → list-based builder; Q3 → monitor is the single gate surface for v1 (activity-panel echo
+  deferred); Q4 → footer button leaves the North Star brand-relabel untouched. Verified: `pnpm
+  typecheck` clean (sole error, `src/main/ide/open.test.ts`, is **pre-existing on clean HEAD** and
+  unrelated) + `pnpm build` clean; `router.test.ts` (10) still green; renderer has no in-repo component
+  test harness and DB-backed process tests stay ABI-skipped. **Manual E2E in the running app deferred**
+  to a live session. **Deferred (as planned):** a polished visual node/edge canvas; per-pool-agent
+  skills/tools tri-state overrides (fields exist, default to the agent's own definition — v1 adds bare
+  pool members); gate-approval echo in the activity panel.
+- **`025.3` — Process dispatch routing.** Built on `feat/process-engine-planning` (not yet merged to
+  `main`). Fast-follow on `025`/`025.1`/`025.2`, **no migration** (`process_phases.routing` +
+  the N-row `process_phase_agents` pool were laid down in `SCHEMA_V15`). A `routing:'dispatch'` phase
+  now picks the **best-fit agent per (sub-)task** via a new `src/main/tasks/process/router.ts`
+  `route()` — a single **bounded, non-streaming `createCompletion`** (mirrors `SummaryService`) over
+  the pool agents' `description`s + the (sub-)task prompt, returning the chosen `agent_name`.
+  **Deterministic fallback to `pool[0]`** on empty/parse-miss/unknown-name/`NoActiveProviderError`/
+  aborted-signal/any classifier error, so a `dispatch` phase never wedges; a **single-agent pool
+  short-circuits** (no LLM call). `matchAgent` is tolerant — exact case-insensitive match first, else a
+  whole-word token match (longest-name-first so a substring name can't shadow), handling
+  `"Agent: backend."`-style replies; an unloadable pool agent keeps its slot with an empty description
+  (stays selectable). **`service.ts`:** `resolveAgent` is now **async** and branches on `phase.routing`
+  — `single` (or no routing context, e.g. a fan-out phase's decomposition pass) → `pool[0]`; `dispatch`
+  → `route()`. `makeRunPhase` was reordered so the **kickoff/sub-task prompt is built first** (it's the
+  routing signal), then the agent is resolved, then the worker is forked + stamped. **Per-sub-task
+  granularity:** a fan-out **child** routes independently (the decomposition pass stays `pool[0]`); the
+  chosen `agent_name` is recorded on the phase-run and rides the `process_phase` event. Classifier model
+  **inherited** from the run's source-conversation selection. Rule-based routing stays deferred.
+  Verified: `pnpm typecheck` + `pnpm build` clean; new `router.test.ts` (**10**) + `service.test.ts`
+  (**2**, full-executor integration: a `dispatch` phase records the classifier's non-`pool[0]` pick on
+  its phase-run + event; a `single` phase ignores the classifier). Full suite **565 pass** (1 unrelated
+  flaky real-process SIGKILL timing test in `local.test.ts`, passes in isolation). DB suite run against
+  a node-ABI `better-sqlite3` rebuild, Electron ABI restored after with `@electron/rebuild`. Manual E2E
+  deferred to the `026` UI. **Completes the `025` fast-follow trilogy** (fan-out + on_each_subtask +
+  dispatch).
+- **`025.2` — Process `on_each_subtask`.** Built on `feat/process-engine-planning` (not yet merged to
+  `main`). Fast-follow on `025`/`025.1`, **no migration** (the `process_edges.trigger` enum +
+  `process_phase_runs.parent_id` were laid down in `SCHEMA_V15`). A downstream phase `V` joined to a
+  **fan-out** phase `C` by an `on_each_subtask` edge now runs **once per completed `C` sub-task** —
+  picking up each piece as it lands — instead of waiting for `C`'s whole phase. **Key decision:** each
+  per-child `V` run is a **child `process_phase_runs` row** (`parentId` = `V`'s own top-level
+  *container* run), so the existing generic `pendingChildren` loop + `dispatchChild` + `childPrompts`
+  dispatch them **verbatim** and the one-run-per-phase invariant (`runByPhaseId`/`statusOf`) stays
+  intact. **Unifying simplification:** `fanOut` was generalized to an `isContainer(phase)` predicate,
+  so fan-out parents (025.1) and each-subtask consumers share the container lifecycle — crash-reset,
+  abort sweep, and the derive-settle (`deriveFanoutParents` → `deriveContainers`, run to a **fixpoint**
+  so a consumer whose source settles in the same pass is re-evaluated before the walk's terminal
+  check). Reactivity is free off the scheduler's existing **race-on-first-completion**:
+  `triggerEachSubtask` spawns the owed `V`-instances when a `C` child lands. **Correctness guards:**
+  a **count guard** (settle a consumer only once sources are all terminal AND one terminal instance
+  exists per completed child — closes the last-child race); `skipped` only when sources are terminal
+  with **zero** completed children; the container `pending → running` event emits **once**; the fan-in
+  trigger creates the instance + flips the container + writes an **append-only**
+  `eachsubtask:<container>` checkpoint in **one transaction**, and recovery **unions all rows** (vs
+  fan-out's latest-wins) into `childPrompts` + a `triggeredPairs` dedupe set so resume never
+  double-fires; and an undefined-vs-empty-string prompt fallback. `collectUpstream` broadened from
+  `src.fanOut` to "source has children" so a phase downstream of any container gets a real aggregated
+  digest. **v1 scope-outs (graceful fallback, documented):** mixed `on_complete` + `on_each_subtask`
+  edges into one phase; a **gated** fan-out source (`needsGate` fires only after `C` fully completes,
+  so it can't hold `V` back). New in `scheduler.ts` (`eachSubtaskConsumerPhaseIds`/`isContainer`/
+  `onCompleteSources`, `triggerEachSubtask`, `deriveContainers` + `eachSubtaskSourceState`,
+  `EachSubtaskCheckpointState` + recovery, `BuildEachSubtaskPrompt`), `service.ts`
+  (`makeBuildEachSubtaskPrompt`, broadened `collectUpstream`), `prompts.ts` (`eachSubtaskKickoffPrompt`).
+  **Verified:** `pnpm typecheck` + `pnpm build` clean; `scheduler.test.ts` **20 pass** (7 new); full
+  suite **553 pass** (1 unrelated flaky real-process SIGKILL timing test in `local.test.ts`, passes in
+  isolation). DB suite run against a node-ABI `better-sqlite3` rebuild, Electron ABI restored after.
+  Manual E2E deferred to the `026` UI. **Deferred to `025.3`:** `dispatch` routing of each child.
+- **`025.1` — Process fan-out.** Built on `feat/process-engine-planning` (not yet merged to `main`).
+  Fast-follow on `025`, **no migration** (`process_phases.fan_out`, `process_phase_runs.parent_id`,
+  `idx_process_phase_runs_parent` were laid down in `SCHEMA_V15`). A `fan_out=1` phase runs a
+  **decomposition pass** — its own forked worker via `runAgentLoop` (so it can inspect the workspace),
+  whose final message is parsed for a JSON array of sub-task briefings (`fanOutDecomposePrompt` +
+  `parseDecomposition`, capped `MAX_FAN_OUT=8`) — and each briefing becomes a **child
+  `process_phase_runs` row** (`parent_id` set) backed by its own worker. **Key decision:** children are
+  **first-class dispatchable units in the existing ready-set loop**, sharing `PER_RUN_CONCURRENCY` and
+  the one `Promise.race`, so `025.2`'s `on_each_subtask` inherits child-completion reactivity with no
+  new machinery (vs. the simpler-but-limiting alternative of fanning out inside a phase's `runPhase`).
+  A `running` fan-out parent settles **completed** only when every child is terminal (a failed/cancelled
+  child fails/cancels the parent — v1). Four validated correctness fixes: **(R1)** parent-completion
+  derivation guards on `children.length > 0` so an in-flight decompose can't vacuously settle the parent
+  and orphan the children about to be created; **(R2)** empty/malformed decomposition fails the parent
+  (retryable), never a silent no-op; **(R3)** child rows + their prompt-checkpoint persist in one
+  `getDb().transaction`, so a crash can't orphan prompt-less children; **(R4)** resume recovers the
+  **latest** `fanout:<parentRunId>` checkpoint per label (`createCheckpoint` only inserts). Children are
+  dispatched off their **own** run id (never `dispatch()`/`runByPhaseId`, which resolve to the parent —
+  children share the parent's `phaseId`), and `collectUpstream` aggregates a fan-out source's
+  **children's** outputs so a downstream phase gets a real digest, not the sub-task list (R7). New in
+  `scheduler.ts` (`Decompose`/`DecomposeResult`, `dispatchDecompose`/`dispatchChild`,
+  `runDecomposeWithRetry`, `createChildrenAtomic`, `deriveFanoutParents`, widened crash-reset +
+  checkpoint recovery, cancellation settling fan-out parents), `service.ts` (`makeDecompose`,
+  subtask-prompt-aware `makeRunPhase`, `aggregateChildContent`), `prompts.ts` (fan-out prompt + parser).
+  The `process_phase` event now carries `parentId` on every transition (already in the `025` union) so
+  the `026` monitor can nest children. Verified: `pnpm typecheck` + `pnpm build` clean; `scheduler.test.ts`
+  **13 pass** (6 new: N-children/parent-completion, failed-child-fails-parent, empty-decomposition (R2),
+  in-flight-decompose-not-settled (R1), cancel-mid-fan-out, resume-without-re-decompose); full suite
+  **547 pass** (1 unrelated flaky real-process SIGKILL timing test in `local.test.ts` — passes in
+  isolation). DB suite run against a node-ABI `better-sqlite3` rebuild, Electron ABI restored after with
+  `@electron/rebuild`. Manual E2E deferred to the `026` UI. **Deferred to `025.2`/`025.3`:**
+  `on_each_subtask` partial-completion triggers; `dispatch` routing of each child.
+- **`025` — Process engine (v1 core).** Built on `feat/process-engine-planning` (commit `a06c7e4`;
+  not yet merged to `main`). A user-defined **agentic DAG**: reusable Process *definitions* (phases +
+  dependency edges + per-phase agent pool + skills/tools + routing + gate policy + fan-out) split from
+  *run* instances, driven by a new `process_run` task kind on the runner's **deterministic executor
+  seam**. The scheduler runs a **ready-set walk** over the edges — **sequential chains, parallel
+  independent phases, and multi-dependency joins** (Publish ← Construct AND Validate) all fall out of
+  the "every incoming edge satisfied" predicate, no special-casing. **Key decision:** phases run
+  **inline** via `runAgentLoop` in forked worker conversations (the `spawnSubagent` precedent — the
+  codebase's documented ruling against re-enqueuing, which "would deadlock under the concurrency cap on
+  a blocking wait"), governed by a per-run promise pool (`PER_RUN_CONCURRENCY = 4`) under the global
+  cap, so the whole run holds one global slot regardless of internal fan width. Per-phase
+  **human-in-the-loop gates** (`auto`/`approve`) reuse the `012` durable-approval dual-write on the
+  `process_run` task; a gate throws `GateBlockedError` → the task settles `paused` (freeing its slot),
+  and `process:approve` settles the row + resumes the task, which re-derives the ready-set and releases
+  the gated phase's dependents. **Crash-resume at phase granularity** is the **first real consumer of
+  `task_checkpoints`**: on `autoResume`, `completed` phases aren't re-run, a mid-flight phase resets to
+  `pending`, and a per-iteration frontier checkpoint accelerates re-derivation. New **`SCHEMA_V15`**
+  (all 6 tables — `process_definitions`/`process_phases`/`process_phase_agents`/`process_edges`/
+  `process_runs`/`process_phase_runs` — **laid down whole** so the fast-follows need no migration; bare
+  `TEXT` status columns validated in the repo layer to avoid a v8-style CHECK-widening rebuild) + a
+  `src/main/tasks/process/` module (`service`/`scheduler`/`prompts`) + `processes` repo + `process:*`
+  control / `db:processes:*` CRUD IPC + preload (`api.process` + `api.db.processes`). A new
+  `process_phase` `task_events` type rides the `process_run` task's tail (no new event channel — the
+  `026` monitor filters `task:event`). `enqueueKind` gained an optional `sourceConversationId` so a run
+  is user-facing (activity panel + completion notification). **Supersedes `018`** — 018's fixed
+  `plan→execute→review→fix→finalize` becomes one built-in Process *template* over this engine.
+  **Deferred to fast-follows** (additive on `SCHEMA_V15`, no migration): runtime **fan-out** → `025.1`;
+  **`on_each_subtask`** partial-completion triggers → `025.2`; **`dispatch` routing** across an agent
+  pool → `025.3` (v1 ships `routing:'single'`). Verified: `pnpm typecheck` + `pnpm build` clean; **541
+  tests pass** (20 new — process repo v15 migration/CRUD/tri-state skills-tools + scheduler
+  ready-set/parallel/multi-dep-join/approve-gate-block-then-release/resume-without-rerun/cancel/
+  failed-phase + a runner pause→resume gate-contract case); stale `user_version` assertions bumped
+  10 → 15 (they'd been dormant behind the SQLite-ABI test skip). Manual E2E deferred to the `026` UI.
 - **`019` — Conversation summaries.** Filled the rolling-summary section `014` reserved: a compact,
   periodically-regenerated digest of the turns scrolling out of the ContextBuilder's recent-message
   walk-back, so a long conversation keeps its early thread. **Storage** (`SCHEMA_V10`): a new

@@ -158,6 +158,14 @@ export interface ToolContext {
   // agent. The spawn tool rejects spawning any name already in this chain (cycle
   // guard); the spawn helper appends the child's name when recursing.
   agentAncestors?: string[]
+  // --- Process phase context (plan 031.2 cross-phase flag-back) ---
+  // Set ONLY when this turn is a Process phase worker (makeRunPhase forks the
+  // conversation with these). The flag_for_rework tool uses them to load the run's
+  // graph, validate the flagged target is a real upstream phase, and record a
+  // durable flag. Absent for ordinary chats/subagents — flag_for_rework then
+  // reports it's unavailable (and isn't offered).
+  processRunId?: string
+  processPhaseRunId?: string
 }
 
 // A tool the agent can call. `definition` is the OpenAI-compatible schema

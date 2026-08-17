@@ -344,23 +344,66 @@ const TRANSIENT_NETWORK_CODES = new Set([
   "UND_ERR_SOCKET",
 ])
 
-export function isTransientError(err: unknown): boolean {
-  if (!err || typeof err !== "object") return false
-  const e = err as { status?: unknown; code?: unknown; name?: unknown }
+// Transient failure MESSAGE patterns. A socket dying mid-stream surfaces from
+// undici's fetch as a bare `TypeError` whose `.message` is "terminated" (the real
+// code lives on `.cause` — see the cause walk below), with no status/code of its
+// own. These few patterns are kept deliberately tight so a deterministic 4xx
+// body text can't trip them.
+const TRANSIENT_MESSAGE = /\b(terminated|premature close|socket hang up)\b/i
 
-  // HTTP status present → classify by status. 408 (timeout), 429 (rate limit),
-  // and 5xx (gateway/server) are transient; any other 4xx is deterministic.
+// Classify a SINGLE error object (no cause walk) into a tri-state:
+//   "transient"     → a retryable infrastructure hiccup
+//   "deterministic" → an authoritative non-retryable signal (a real 4xx status);
+//                     stops the cause walk so a stray transient-looking cause
+//                     can't override a definite client error
+//   "unknown"       → no signal on this link; keep walking the cause chain
+function classifyLink(e: {
+  status?: unknown
+  code?: unknown
+  name?: unknown
+  message?: unknown
+}): "transient" | "deterministic" | "unknown" {
+  // HTTP status present → authoritative. 408 (timeout), 429 (rate limit), and 5xx
+  // (gateway/server) are transient; any other 4xx is deterministic.
   if (typeof e.status === "number") {
-    if (e.status === 408 || e.status === 429) return true
-    return e.status >= 500 && e.status <= 599
+    if (e.status === 408 || e.status === 429) return "transient"
+    return e.status >= 500 && e.status <= 599 ? "transient" : "deterministic"
   }
 
   // No status → connection layer. Match Node/undici codes or the OpenAI SDK's
   // connection error class names.
   const code = typeof e.code === "string" ? e.code : ""
-  if (TRANSIENT_NETWORK_CODES.has(code)) return true
+  if (TRANSIENT_NETWORK_CODES.has(code)) return "transient"
   const name = typeof e.name === "string" ? e.name : ""
-  return name === "APIConnectionError" || name === "APIConnectionTimeoutError"
+  if (name === "APIConnectionError" || name === "APIConnectionTimeoutError")
+    return "transient"
+
+  // The bare "terminated" (etc.) message from a mid-stream socket death that
+  // carries no code on this link.
+  const message = typeof e.message === "string" ? e.message : ""
+  if (TRANSIENT_MESSAGE.test(message)) return "transient"
+
+  return "unknown"
+}
+
+// Whether an error is a transient infrastructure hiccup worth a backoff retry.
+// Walks the `cause` chain: undici hangs the real socket code (UND_ERR_SOCKET /
+// ECONNRESET / …) on the `.cause` of an outer `TypeError("terminated")`, so a
+// single-link check would miss it and wrongly mark the turn non-retryable. A link
+// with an authoritative deterministic status stops the walk. Bounded depth + a
+// visited guard defend against a self-referential cause.
+export function isTransientError(err: unknown): boolean {
+  let current: unknown = err
+  const seen = new Set<unknown>()
+  for (let depth = 0; depth < 5 && current && typeof current === "object"; depth++) {
+    if (seen.has(current)) break
+    seen.add(current)
+    const verdict = classifyLink(current as Record<string, unknown>)
+    if (verdict === "transient") return true
+    if (verdict === "deterministic") return false
+    current = (current as { cause?: unknown }).cause
+  }
+  return false
 }
 
 // Build the chat-completions params with the correct output-token field for this

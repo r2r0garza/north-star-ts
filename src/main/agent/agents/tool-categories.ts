@@ -26,6 +26,10 @@ const CATEGORY_TOOLS: Record<string, string[]> = {
   agent: ["spawn_subagent"],
 }
 
+// The friendly tool-category names, in display order, for the agent editor's
+// tools picker. Derived from CATEGORY_TOOLS so the two never drift.
+export const TOOL_CATEGORIES = Object.keys(CATEGORY_TOOLS)
+
 // The read-only floor: offered even for `tools: []`, per the tri-state contract
 // (empty list → read + search only). These names are always admitted.
 const FLOOR = new Set([...CATEGORY_TOOLS.read, ...CATEGORY_TOOLS.search])
@@ -33,12 +37,17 @@ const FLOOR = new Set([...CATEGORY_TOOLS.read, ...CATEGORY_TOOLS.search])
 // Universal infrastructure: never gated by an agent's `tools` list. Clarifying
 // (ask_user_question), reading skills (read_skill), and the plan handoff tools
 // (write_plan/read_plan/present_plan) are capabilities every agent keeps.
+// flag_for_rework is a process-structural capability (plan 031.2): it's only
+// OFFERED to a Process phase worker (buildTools gates it on processRunId), but a
+// phase agent may restrict its `tools`, so it bypasses the allowlist to stay
+// available to whichever agent runs the phase.
 const UNIVERSAL = new Set([
   "ask_user_question",
   "read_skill",
   "write_plan",
   "read_plan",
   "present_plan",
+  "flag_for_rework",
 ])
 
 export function isUniversalTool(name: string): boolean {

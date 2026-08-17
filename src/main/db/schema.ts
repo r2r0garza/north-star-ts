@@ -434,3 +434,249 @@ ALTER TABLE conversations ADD COLUMN agent_name TEXT;
 export const SCHEMA_V14 = `
 ALTER TABLE conversations ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0;
 `
+
+// v15: the Process engine (plan 025). A user-authored agentic DAG — reusable
+// process *definitions* (phases + dependency edges + per-phase agent pool +
+// routing/gate/fan-out) split from *run* instances (one per execution, each
+// carrying per-phase execution state). Pure CREATE TABLE, so it's safe under the
+// foreign_keys=OFF migration loop (no table rebuild). First real consumer of
+// task_checkpoints — the orchestrator snapshots its DAG frontier there.
+//
+// Notes on the shape:
+// - The definition/run split lets a Process be authored once and re-run many times.
+// - The run<->backing-task link is bidirectional but not circular: process_runs
+//   .task_id -> tasks.id (ON DELETE SET NULL) lets a control verb resolve a run's
+//   backing task; the task's input blob carries { kind, processRunId } (a JSON
+//   string, not an FK) so the executor finds its run on (re)start — the 015
+//   producer contract. tasks has no FK back to process_runs.
+// - status columns are bare TEXT (no CHECK): the tasks table needed a painful v8
+//   rebuild to widen a status CHECK, so process statuses are validated in the repo
+//   layer instead (mirrors the enums in types.ts).
+// - process_phase_agents is the agent POOL for a phase: one row (routing='single')
+//   or N rows (routing='dispatch'); skills/tools are JSON tri-state overrides
+//   (NULL = the agent's own, matching the .agent.md frontmatter semantics).
+// - process_phase_runs.parent_id + process_phases.fan_out + the on_each_subtask
+//   trigger are migrated now but only exercised by the 025.1/025.2 fast-follows.
+export const SCHEMA_V15 = `
+CREATE TABLE process_definitions (
+  id          TEXT PRIMARY KEY,
+  name        TEXT NOT NULL,
+  description TEXT,
+  created_at  INTEGER NOT NULL,
+  updated_at  INTEGER NOT NULL
+);
+
+CREATE TABLE process_phases (
+  id          TEXT PRIMARY KEY,
+  process_id  TEXT NOT NULL REFERENCES process_definitions(id) ON DELETE CASCADE,
+  key         TEXT NOT NULL,
+  name        TEXT NOT NULL,
+  routing     TEXT NOT NULL DEFAULT 'single' CHECK (routing IN ('single','dispatch')),
+  gate_policy TEXT NOT NULL DEFAULT 'auto'   CHECK (gate_policy IN ('auto','approve')),
+  fan_out     INTEGER NOT NULL DEFAULT 0,
+  position    INTEGER NOT NULL,
+  UNIQUE (process_id, key)
+);
+
+CREATE TABLE process_phase_agents (
+  id         TEXT PRIMARY KEY,
+  phase_id   TEXT NOT NULL REFERENCES process_phases(id) ON DELETE CASCADE,
+  agent_name TEXT NOT NULL,
+  skills     TEXT,
+  tools      TEXT,
+  position   INTEGER NOT NULL
+);
+
+CREATE TABLE process_edges (
+  id            TEXT PRIMARY KEY,
+  process_id    TEXT NOT NULL REFERENCES process_definitions(id) ON DELETE CASCADE,
+  from_phase_id TEXT NOT NULL REFERENCES process_phases(id) ON DELETE CASCADE,
+  to_phase_id   TEXT NOT NULL REFERENCES process_phases(id) ON DELETE CASCADE,
+  trigger       TEXT NOT NULL DEFAULT 'on_complete'
+                  CHECK (trigger IN ('on_complete','on_each_subtask'))
+);
+
+CREATE TABLE process_runs (
+  id                     TEXT PRIMARY KEY,
+  process_id             TEXT REFERENCES process_definitions(id) ON DELETE SET NULL,
+  source_conversation_id TEXT REFERENCES conversations(id) ON DELETE SET NULL,
+  task_id                TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+  objective              TEXT,
+  status                 TEXT NOT NULL,
+  started_at             INTEGER,
+  finished_at            INTEGER,
+  created_at             INTEGER NOT NULL
+);
+
+CREATE TABLE process_phase_runs (
+  id          TEXT PRIMARY KEY,
+  run_id      TEXT NOT NULL REFERENCES process_runs(id) ON DELETE CASCADE,
+  phase_id    TEXT NOT NULL REFERENCES process_phases(id),
+  parent_id   TEXT REFERENCES process_phase_runs(id) ON DELETE CASCADE,
+  status      TEXT NOT NULL,
+  task_id     TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+  agent_name  TEXT,
+  iteration   INTEGER NOT NULL DEFAULT 0,
+  error       TEXT,
+  started_at  INTEGER,
+  finished_at INTEGER
+);
+
+CREATE INDEX idx_process_phases_process ON process_phases(process_id);
+CREATE INDEX idx_process_phase_agents_phase ON process_phase_agents(phase_id);
+CREATE INDEX idx_process_edges_process ON process_edges(process_id);
+CREATE INDEX idx_process_runs_process ON process_runs(process_id);
+CREATE INDEX idx_process_phase_runs_run ON process_phase_runs(run_id);
+CREATE INDEX idx_process_phase_runs_parent ON process_phase_runs(parent_id);
+`
+
+// v16 (plan 026): give a process run its OWN workspace. A run started from the
+// Process screen has no source conversation (sourceConversationId = null), so its
+// phase workers resolved `workspace = undefined` and every file/shell tool failed
+// closed — the run had nowhere to write. Store the picked folder as a workspaces.id
+// (deduped on path via upsertWorkspace, like conversations/projects), resolved to a
+// directory for every phase worker. Nullable FK, ON DELETE SET NULL — matches
+// process_runs' existing FKs; old rows read NULL and still render. Pure ADD COLUMN,
+// safe under the foreign_keys=OFF migration loop (no table rebuild).
+export const SCHEMA_V16 = `
+ALTER TABLE process_runs ADD COLUMN workspace_id TEXT
+  REFERENCES workspaces(id) ON DELETE SET NULL;
+`
+
+// v17 (plan 026 pass 1): give a phase-run an optional display TITLE. Fan-out
+// children were all rendered "<phase> #1" — the "#1" was the retry-iteration
+// counter (always 1 on first success), not a child index. Each child's sub-task
+// briefing is a freeform string, so the scheduler derives a short title from it
+// at child-creation and stores it here, letting the monitor show the real work
+// (e.g. "Implement: counter component"). Null for ordinary (non-child) phase
+// runs. Pure ADD COLUMN — safe under the foreign_keys=OFF migration loop.
+export const SCHEMA_V17 = `
+ALTER TABLE process_phase_runs ADD COLUMN title TEXT;
+`
+
+// v18: give a process RUN an optional display TITLE — a short, LLM-generated
+// summary of the run's objective (mirrors how a conversation is titled from its
+// first message). The run selector previously showed the whole objective; the
+// title makes it scannable. Null for pre-existing runs (the renderer falls back
+// to the objective slice). Pure ADD COLUMN — safe under the foreign_keys=OFF loop.
+export const SCHEMA_V18 = `
+ALTER TABLE process_runs ADD COLUMN title TEXT;
+`
+
+// v19: the process review feedback loop (plan 029). A gated phase (gate_policy
+// 'approve') gains a third decision — "Request changes" — that re-runs the
+// phase's own worker with a feedback note and re-gates, bounded per phase.
+//   - process_phase_runs.rework_note: the feedback text injected into the
+//     re-run's kickoff (read by makeRunPhase); null for a first/normal run.
+//   - process_phase_runs.rework_round: how many times this phase-run has been
+//     sent back (the bound counter); default 0.
+//   - process_phases.max_rework_rounds: the per-phase cap (0 = unlimited,
+//     preserving prior behavior); at the cap the gate card drops the control.
+// All three are pure ADD COLUMN — safe under the foreign_keys=OFF migration loop
+// (no table rebuild), matching the V16/V17/V18 pattern.
+export const SCHEMA_V19 = `
+ALTER TABLE process_phase_runs ADD COLUMN rework_note TEXT;
+ALTER TABLE process_phase_runs ADD COLUMN rework_round INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE process_phases ADD COLUMN max_rework_rounds INTEGER NOT NULL DEFAULT 0;
+`
+
+// v20: per-phase dot-folder toggle (plan 030). When set, the phase's kickoff
+// steers its agent to write artifacts under a `.<phase.key>/` folder at the
+// workspace root — a predictable location (an agent convention, not FS-enforced),
+// so the run monitor's file chips are reliable and downstream phases know where
+// to look. Pure ADD COLUMN — safe under the foreign_keys=OFF loop (no rebuild),
+// matching the V16-V19 pattern. Default 0 preserves prior behavior.
+export const SCHEMA_V20 = `
+ALTER TABLE process_phases ADD COLUMN dot_folder INTEGER NOT NULL DEFAULT 0;
+`
+
+// v21: per-phase VALIDATOR — the automatic same-phase half of plan 031 (031.1).
+// When enabled, a second agent reviews the phase's output after its worker
+// completes and either approves it or sends it back with feedback (reusing the
+// 029 rework_note kickoff channel), bounded by an iteration cap; on exhaustion
+// the phase escalates to a human gate.
+//   - process_phases.validator: the toggle (0/1); default 0 preserves prior behavior.
+//   - process_phases.validator_max_iterations: the per-phase cap on review rounds.
+//     0 = use the engine default (DEFAULT_VALIDATOR_ITERATIONS); a positive value
+//     overrides. NEVER unlimited — the DAG has no cycle guard, so a bound is
+//     mandatory (unlike max_rework_rounds where 0 = unlimited).
+//   - process_phases.validator_agent: the dedicated reviewer agent name; NULL
+//     falls back to the phase's own resolved agent (pool[0]).
+//   - process_phase_runs.validator_round: the validator's own round counter, kept
+//     SEPARATE from rework_round (which drives the 029 count-based gate re-detection
+//     and must not be perturbed); default 0.
+// All four are pure ADD COLUMN — safe under the foreign_keys=OFF migration loop
+// (no table rebuild), matching the V16-V20 pattern.
+export const SCHEMA_V21 = `
+ALTER TABLE process_phases ADD COLUMN validator INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE process_phases ADD COLUMN validator_max_iterations INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE process_phases ADD COLUMN validator_agent TEXT;
+ALTER TABLE process_phase_runs ADD COLUMN validator_round INTEGER NOT NULL DEFAULT 0;
+`
+
+// v22: cross-phase FLAG-BACK — the second half of plan 031 (031.2). A phase-worker
+// that finds a defect an EARLIER phase owns flags it back (a gated flag_for_rework
+// tool) instead of fixing out of lane; the engine resets the target phase (or a
+// single fan-out sub-task) AND everything downstream of it, then re-walks.
+//   - process_definitions.require_flag_approval: per-process autonomy toggle.
+//     1 (default) = a flag needs human confirmation before the send-back; 0 = the
+//     agent routes autonomously.
+//   - process_phase_runs.source_child_run_id: first-class on_each_subtask lineage —
+//     which source fan-out CHILD this consumer instance consumes (was only recorded
+//     in the append-only eachsubtask: checkpoint blob). NULL for ordinary runs and
+//     fan-out children; set for on_each_subtask consumer instances. Makes the
+//     per-child reset ("only the Test instance tied to the reworked Implement
+//     sub-task") a direct query. ON DELETE SET NULL mirrors the other self-FKs.
+//   - process_flags: durable flag records (lifecycle pending -> applied | dismissed),
+//     status bare TEXT validated in the repo (the V15 status pattern). target_child_
+//     run_id is the resolved specific sub-task (from the flagging instance's
+//     source_child_run_id, or a key#N index); NULL = the whole phase.
+// The two ALTERs are pure ADD COLUMN; the CREATE TABLE/INDEX are new objects — all
+// safe under the foreign_keys=OFF migration loop (no table rebuild).
+export const SCHEMA_V22 = `
+ALTER TABLE process_definitions ADD COLUMN require_flag_approval INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE process_phase_runs ADD COLUMN source_child_run_id TEXT
+  REFERENCES process_phase_runs(id) ON DELETE SET NULL;
+CREATE TABLE process_flags (
+  id                    TEXT PRIMARY KEY,
+  run_id                TEXT NOT NULL REFERENCES process_runs(id) ON DELETE CASCADE,
+  flagging_phase_run_id TEXT NOT NULL REFERENCES process_phase_runs(id) ON DELETE CASCADE,
+  target_phase_id       TEXT NOT NULL REFERENCES process_phases(id),
+  target_child_run_id   TEXT REFERENCES process_phase_runs(id) ON DELETE SET NULL,
+  reason                TEXT NOT NULL,
+  status                TEXT NOT NULL,
+  created_at            INTEGER NOT NULL
+);
+CREATE INDEX idx_process_flags_run ON process_flags(run_id);
+`
+
+// v23 (plan 031.2 follow-up): make the flag audit trail durable. process_flags
+// .flagging_phase_run_id was ON DELETE CASCADE, so a PER-CHILD send-back — which
+// DELETES the flagging on_each_subtask instance so it re-triggers fresh — cascaded
+// the flag row away with it. Applied/dismissed flags then vanished from the table,
+// leaving it an unreliable history (the durable record lived only on the approvals
+// table). Rebuild it with ON DELETE SET NULL so a flag row SURVIVES its flagging
+// instance's deletion (the column becomes nullable — a settled flag whose instance
+// was later re-triggered reads NULL there, which is fine; run_id still anchors it).
+// SQLite can't alter an FK in place, so this is a table rebuild (the V8 pattern),
+// safe under the foreign_keys=OFF migration loop. run_id keeps CASCADE (deleting a
+// run should still drop its flags); target_child_run_id already SET NULL.
+export const SCHEMA_V23 = `
+CREATE TABLE process_flags_new (
+  id                    TEXT PRIMARY KEY,
+  run_id                TEXT NOT NULL REFERENCES process_runs(id) ON DELETE CASCADE,
+  flagging_phase_run_id TEXT REFERENCES process_phase_runs(id) ON DELETE SET NULL,
+  target_phase_id       TEXT NOT NULL REFERENCES process_phases(id),
+  target_child_run_id   TEXT REFERENCES process_phase_runs(id) ON DELETE SET NULL,
+  reason                TEXT NOT NULL,
+  status                TEXT NOT NULL,
+  created_at            INTEGER NOT NULL
+);
+INSERT INTO process_flags_new
+  (id, run_id, flagging_phase_run_id, target_phase_id, target_child_run_id, reason, status, created_at)
+  SELECT id, run_id, flagging_phase_run_id, target_phase_id, target_child_run_id, reason, status, created_at
+  FROM process_flags;
+DROP TABLE process_flags;
+ALTER TABLE process_flags_new RENAME TO process_flags;
+CREATE INDEX idx_process_flags_run ON process_flags(run_id);
+`

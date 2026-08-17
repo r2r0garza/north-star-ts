@@ -85,12 +85,179 @@ function count(db: Database.Database, table: string): number {
 }
 
 describe.skipIf(!sqliteLoads)("runMigrations", () => {
-  it("brings a fresh DB to user_version = 10", () => {
+  it("brings a fresh DB to the latest user_version", () => {
     const db = new Database(":memory:")
     db.pragma("foreign_keys = ON")
     runMigrations(db)
-    expect(db.pragma("user_version", { simple: true })).toBe(10)
+    expect(db.pragma("user_version", { simple: true })).toBe(23)
     expect(db.pragma("foreign_key_check")).toHaveLength(0)
+    db.close()
+  })
+
+  it("adds the process_runs.title column (v18)", () => {
+    const db = new Database(":memory:")
+    db.pragma("foreign_keys = ON")
+    runMigrations(db)
+    const cols = (
+      db.pragma("table_info(process_runs)") as Array<{ name: string }>
+    ).map((c) => c.name)
+    expect(cols).toContain("title")
+    db.close()
+  })
+
+  it("adds the rework columns (v19, plan 029)", () => {
+    const db = new Database(":memory:")
+    db.pragma("foreign_keys = ON")
+    runMigrations(db)
+    const phaseRunCols = db.pragma(
+      "table_info(process_phase_runs)"
+    ) as Array<{ name: string; dflt_value: unknown }>
+    const prNames = phaseRunCols.map((c) => c.name)
+    expect(prNames).toContain("rework_note")
+    expect(prNames).toContain("rework_round")
+    // SQLite reports the declared default verbatim as a string.
+    expect(
+      String(phaseRunCols.find((c) => c.name === "rework_round")?.dflt_value)
+    ).toBe("0")
+
+    const phaseCols = db.pragma("table_info(process_phases)") as Array<{
+      name: string
+      dflt_value: unknown
+    }>
+    expect(phaseCols.map((c) => c.name)).toContain("max_rework_rounds")
+    expect(
+      String(phaseCols.find((c) => c.name === "max_rework_rounds")?.dflt_value)
+    ).toBe("0")
+    db.close()
+  })
+
+  it("adds the process_phases.dot_folder column (v20, plan 030)", () => {
+    const db = new Database(":memory:")
+    db.pragma("foreign_keys = ON")
+    runMigrations(db)
+    const phaseCols = db.pragma("table_info(process_phases)") as Array<{
+      name: string
+      dflt_value: unknown
+    }>
+    expect(phaseCols.map((c) => c.name)).toContain("dot_folder")
+    // SQLite reports the declared default verbatim as a string.
+    expect(
+      String(phaseCols.find((c) => c.name === "dot_folder")?.dflt_value)
+    ).toBe("0")
+    db.close()
+  })
+
+  it("adds the validator columns (v21, plan 031.1)", () => {
+    const db = new Database(":memory:")
+    db.pragma("foreign_keys = ON")
+    runMigrations(db)
+    const phaseCols = db.pragma("table_info(process_phases)") as Array<{
+      name: string
+      dflt_value: unknown
+    }>
+    const phaseNames = phaseCols.map((c) => c.name)
+    expect(phaseNames).toContain("validator")
+    expect(phaseNames).toContain("validator_max_iterations")
+    expect(phaseNames).toContain("validator_agent")
+    // SQLite reports the declared default verbatim as a string.
+    expect(
+      String(phaseCols.find((c) => c.name === "validator")?.dflt_value)
+    ).toBe("0")
+    expect(
+      String(
+        phaseCols.find((c) => c.name === "validator_max_iterations")?.dflt_value
+      )
+    ).toBe("0")
+
+    const phaseRunCols = db.pragma("table_info(process_phase_runs)") as Array<{
+      name: string
+      dflt_value: unknown
+    }>
+    expect(phaseRunCols.map((c) => c.name)).toContain("validator_round")
+    expect(
+      String(
+        phaseRunCols.find((c) => c.name === "validator_round")?.dflt_value
+      )
+    ).toBe("0")
+    db.close()
+  })
+
+  it("adds the flag-back schema (v22, plan 031.2)", () => {
+    const db = new Database(":memory:")
+    db.pragma("foreign_keys = ON")
+    runMigrations(db)
+
+    // process_definitions.require_flag_approval, default 1.
+    const defCols = db.pragma("table_info(process_definitions)") as Array<{
+      name: string
+      dflt_value: unknown
+    }>
+    expect(defCols.map((c) => c.name)).toContain("require_flag_approval")
+    expect(
+      String(defCols.find((c) => c.name === "require_flag_approval")?.dflt_value)
+    ).toBe("1")
+
+    // process_phase_runs.source_child_run_id.
+    const prCols = (
+      db.pragma("table_info(process_phase_runs)") as Array<{ name: string }>
+    ).map((c) => c.name)
+    expect(prCols).toContain("source_child_run_id")
+
+    // process_flags table + its index.
+    const flagsTable = db
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='process_flags'"
+      )
+      .get()
+    expect(flagsTable).toBeTruthy()
+    const flagCols = (
+      db.pragma("table_info(process_flags)") as Array<{ name: string }>
+    ).map((c) => c.name)
+    expect(flagCols).toEqual(
+      expect.arrayContaining([
+        "id",
+        "run_id",
+        "flagging_phase_run_id",
+        "target_phase_id",
+        "target_child_run_id",
+        "reason",
+        "status",
+        "created_at",
+      ])
+    )
+    db.close()
+  })
+
+  it("a flag survives its flagging instance's deletion (v23, plan 031.2 follow-up)", () => {
+    const db = new Database(":memory:")
+    db.pragma("foreign_keys = ON")
+    runMigrations(db)
+
+    // Minimal graph + run + a flagging phase-run + a flag pointing at it.
+    db.prepare(
+      "INSERT INTO process_definitions (id, name, require_flag_approval, created_at, updated_at) VALUES ('def','D',1,0,0)"
+    ).run()
+    db.prepare(
+      "INSERT INTO process_phases (id, process_id, key, name, position) VALUES ('ph','def','k','K',0)"
+    ).run()
+    db.prepare(
+      "INSERT INTO process_runs (id, process_id, status, created_at) VALUES ('run','def','running',0)"
+    ).run()
+    db.prepare(
+      "INSERT INTO process_phase_runs (id, run_id, phase_id, status) VALUES ('pr','run','ph','completed')"
+    ).run()
+    db.prepare(
+      "INSERT INTO process_flags (id, run_id, flagging_phase_run_id, target_phase_id, reason, status, created_at) VALUES ('flag','run','pr','ph','r','applied',0)"
+    ).run()
+
+    // Deleting the flagging phase-run must NOT cascade the flag away — the flag
+    // survives with flagging_phase_run_id nulled (the durable audit record).
+    db.prepare("DELETE FROM process_phase_runs WHERE id = 'pr'").run()
+    const flag = db
+      .prepare("SELECT id, flagging_phase_run_id FROM process_flags WHERE id = 'flag'")
+      .get() as { id: string; flagging_phase_run_id: string | null } | undefined
+    expect(flag).toBeTruthy()
+    expect(flag!.flagging_phase_run_id).toBeNull()
     db.close()
   })
 })
@@ -137,7 +304,7 @@ describe.skipIf(!sqliteLoads)("SCHEMA_V9 — orphan reap (plan 022)", () => {
     // Apply V9 (the reaper) and any later migrations, up to the latest version.
     runMigrations(db)
 
-    expect(db.pragma("user_version", { simple: true })).toBe(10)
+    expect(db.pragma("user_version", { simple: true })).toBe(23)
 
     // Reaped: orphan + its nested descendant, and all their state.
     const taskIds = (

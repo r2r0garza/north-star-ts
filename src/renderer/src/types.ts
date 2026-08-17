@@ -51,6 +51,10 @@ export type {
   AgentSummary,
   AgentSourceRow,
   AgentSourceKind,
+  AgentDefinition,
+  AgentFolder,
+  AgentTree,
+  AgentFields,
 } from "../../preload/index"
 
 // Settings types, surfaced for the Settings pane.
@@ -87,4 +91,21 @@ export type {
   ModelEntry,
   AccountView,
   AccountWithModels,
+} from "../../preload/index"
+
+// Process engine types (plans 025/026), surfaced for the Process screen — the
+// DAG builder + live run monitor.
+export type {
+  ProcessDefinition,
+  ProcessPhase,
+  ProcessPhaseAgent,
+  ProcessEdge,
+  ProcessRun,
+  ProcessPhaseRun,
+  ProcessGraph,
+  ProcessRunStatus,
+  PhaseRunStatus,
+  PhaseRouting,
+  PhaseGatePolicy,
+  EdgeTrigger,
 } from "../../preload/index"

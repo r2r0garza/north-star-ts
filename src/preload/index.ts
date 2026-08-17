@@ -15,6 +15,18 @@ import type {
   TaskStatus,
   Todo,
   Workspace,
+  ProcessDefinition,
+  ProcessGraph,
+  ProcessPhase,
+  ProcessPhaseAgent,
+  ProcessEdge,
+  ProcessRun,
+  ProcessPhaseRun,
+  ProcessRunStatus,
+  PhaseRunStatus,
+  PhaseRouting,
+  PhaseGatePolicy,
+  EdgeTrigger,
 } from "../main/db/types"
 import type { ActionKind } from "../main/agent/approval/types"
 import type { PickedElement } from "../main/browser/types"
@@ -36,7 +48,8 @@ import type {
   SkillCatalogEntry,
   SkillTree,
 } from "../main/agent/skills/types"
-import type { AgentSourceRow } from "../main/agent/agents/types"
+import type { AgentSourceRow, AgentTree } from "../main/agent/agents/types"
+import type { AgentFields } from "../main/agent/agents/loader"
 import type { RuntimeStatus } from "../main/agent/env/runtime-check"
 import type { CreateAccountInput } from "../main/db/repositories/provider-accounts"
 import type { AddModelInput } from "../main/db/repositories/models"
@@ -92,6 +105,21 @@ export type RunnerLifecycleEvent =
       stage: string
       filesScanned: number
       filesTotal: number
+    }
+  // A phase transition inside a process_run DAG (plan 025), emitted on the
+  // process_run task's tail so the 026 monitor can track live phase status.
+  | {
+      type: "process_phase"
+      runId: string
+      phaseRunId: string
+      phaseKey: string
+      agentName: string | null
+      status: PhaseRunStatus
+      parentId?: string | null
+      requestId?: string
+      // Which gate kind a waiting_for_approval event is (plan 031.2): "phase" /
+      // "validator" use the generic approve card; "flag" uses the rework card.
+      gateKind?: "phase" | "validator" | "flag"
     }
 
 // The full event vocabulary a task emits, live or replayed from task_events.
@@ -248,6 +276,56 @@ const api = {
       }
     },
   },
+  // Process engine control verbs (plan 025). Runs stream their phase transitions
+  // on the tasks.onEvent tail (as `process_phase` events on the run's backing
+  // task), so there's no separate subscribe here — the 026 monitor filters
+  // tasks.onEvent by the run's task id.
+  process: {
+    // Start a new run of a definition. Resolves with the created ProcessRun.
+    startRun: (input: {
+      processId: string
+      sourceConversationId: string | null
+      objective: string
+      // The run's working directory (plan 026): a picked folder path, deduped
+      // into the workspaces table server-side and stamped on the run so its
+      // phase workers have a cwd (file/shell tools fail closed without one).
+      workspacePath?: string | null
+    }) => ipcRenderer.invoke("process:startRun", input) as Promise<ProcessRun>,
+    // Cancel a run (aborts its backing task; running phases unwind).
+    cancel: (processRunId: string) =>
+      ipcRenderer.invoke("process:cancel", processRunId) as Promise<void>,
+    // Pause a run (durable resume state).
+    pause: (processRunId: string) =>
+      ipcRenderer.invoke("process:pause", processRunId) as Promise<void>,
+    // Retry a FAILED run from its failure frontier: resets the failed phases and
+    // re-drives the same backing task; completed phases are not re-run.
+    restart: (processRunId: string) =>
+      ipcRenderer.invoke("process:restart", processRunId) as Promise<
+        ProcessRun | undefined
+      >,
+    // Approve a phase gate: settles the durable approval and resumes the run,
+    // which releases the gated phase's dependents. requestId comes from the
+    // waiting_for_approval process_phase event.
+    approve: (payload: { processRunId: string; requestId: string }) =>
+      ipcRenderer.invoke("process:approve", payload) as Promise<void>,
+    // Deny a phase gate: settles it denied; the run stays paused (v1 semantics).
+    deny: (payload: { processRunId: string; requestId: string }) =>
+      ipcRenderer.invoke("process:deny", payload) as Promise<void>,
+    // Request changes on a phase gate (plan 029): settles the gate denied with the
+    // feedback, re-runs the phase's worker with the note injected, and re-gates.
+    // Rejects on a container phase or at the per-phase rework cap.
+    requestChanges: (payload: {
+      processRunId: string
+      requestId: string
+      feedback: string
+    }) =>
+      ipcRenderer.invoke("process:requestChanges", payload) as Promise<void>,
+    // Cross-phase rework flag confirmation (plan 031.2).
+    confirmFlag: (payload: { processRunId: string; requestId: string }) =>
+      ipcRenderer.invoke("process:confirmFlag", payload) as Promise<void>,
+    dismissFlag: (payload: { processRunId: string; requestId: string }) =>
+      ipcRenderer.invoke("process:dismissFlag", payload) as Promise<void>,
+  },
   pickWorkspace: () =>
     ipcRenderer.invoke("pick-workspace") as Promise<{
       path?: string
@@ -289,6 +367,18 @@ const api = {
     // Save an edited SKILL.md back to disk. The main process validates the path.
     write: (filePath: string, content: string) =>
       ipcRenderer.invoke("skills:write", filePath, content) as Promise<void>,
+    // Scaffold a new skill (<dir>/<name>/SKILL.md) into a writable source dir;
+    // returns the new SKILL.md path. Writable roots only — the main process
+    // validates the dir, the name, and rejects a collision.
+    create: (args: {
+      dir: string
+      name: string
+      description: string
+      body?: string
+    }) => ipcRenderer.invoke("skills:create", args) as Promise<string>,
+    // Delete a skill's folder. Writable roots only; the renderer confirms first.
+    delete: (filePath: string) =>
+      ipcRenderer.invoke("skills:delete", filePath) as Promise<void>,
   },
   // List the user-invocable custom agents (name + description) for the composer's
   // agent picker. Pass the active workspace so workspace-level agents are included.
@@ -302,6 +392,24 @@ const api = {
       ipcRenderer.invoke("agents:sources", workspace) as Promise<
         AgentSourceRow[]
       >,
+    // Nested catalog for the Agents view: Global + one node per known workspace +
+    // one per custom folder, each with its agents. Enumerates all workspaces
+    // itself, so it needs no workspace arg and works with no active session.
+    tree: () => ipcRenderer.invoke("agents:tree") as Promise<AgentTree>,
+    // Read an agent's raw `<name>.agent.md` contents. The main process validates
+    // the path against all known agent sources.
+    read: (filePath: string) =>
+      ipcRenderer.invoke("agents:read", filePath) as Promise<string>,
+    // Save an edited agent from structured fields (serialized to YAML in main).
+    // Writable roots (user + custom) only — the main process validates the path.
+    save: (filePath: string, fields: AgentFields) =>
+      ipcRenderer.invoke("agents:save", filePath, fields) as Promise<void>,
+    // Scaffold a new agent into a writable source dir; returns the new file path.
+    create: (args: { dir: string; name: string; description: string }) =>
+      ipcRenderer.invoke("agents:create", args) as Promise<string>,
+    // Delete an agent file. Writable roots only; the renderer confirms first.
+    delete: (filePath: string) =>
+      ipcRenderer.invoke("agents:delete", filePath) as Promise<void>,
   },
   // List workspace files for the composer's `@`-mention menu, filtered by the
   // typed query (server-side). Returns workspace-relative POSIX paths, capped.
@@ -615,6 +723,143 @@ const api = {
           decision
         ) as Promise<Approval>,
     },
+    // Process engine authoring + run reads (plan 025). The control verbs
+    // (startRun/cancel/approve) are on the top-level `process` group above.
+    processes: {
+      create: (input: { name: string; description?: string | null }) =>
+        ipcRenderer.invoke(
+          "db:processes:create",
+          input
+        ) as Promise<ProcessDefinition>,
+      list: () =>
+        ipcRenderer.invoke("db:processes:list") as Promise<ProcessDefinition[]>,
+      // Returns the whole authored graph (definition + phases + agents + edges).
+      get: (id: string) =>
+        ipcRenderer.invoke(
+          "db:processes:get",
+          id
+        ) as Promise<ProcessGraph | null>,
+      update: (
+        id: string,
+        patch: {
+          name?: string
+          description?: string | null
+          requireFlagApproval?: boolean
+        }
+      ) =>
+        ipcRenderer.invoke(
+          "db:processes:update",
+          id,
+          patch
+        ) as Promise<ProcessDefinition>,
+      delete: (id: string) =>
+        ipcRenderer.invoke("db:processes:delete", id) as Promise<void>,
+      phases: {
+        create: (input: {
+          processId: string
+          key: string
+          name: string
+          routing?: PhaseRouting
+          gatePolicy?: PhaseGatePolicy
+          fanOut?: boolean
+          maxReworkRounds?: number
+          dotFolder?: boolean
+          validator?: boolean
+          validatorMaxIterations?: number
+          validatorAgent?: string | null
+          position: number
+        }) =>
+          ipcRenderer.invoke(
+            "db:processes:phases:create",
+            input
+          ) as Promise<ProcessPhase>,
+        list: (processId: string) =>
+          ipcRenderer.invoke("db:processes:phases:list", processId) as Promise<
+            ProcessPhase[]
+          >,
+        update: (
+          id: string,
+          patch: {
+            key?: string
+            name?: string
+            routing?: PhaseRouting
+            gatePolicy?: PhaseGatePolicy
+            fanOut?: boolean
+            maxReworkRounds?: number
+            dotFolder?: boolean
+            validator?: boolean
+            validatorMaxIterations?: number
+            validatorAgent?: string | null
+            position?: number
+          }
+        ) =>
+          ipcRenderer.invoke(
+            "db:processes:phases:update",
+            id,
+            patch
+          ) as Promise<ProcessPhase>,
+        delete: (id: string) =>
+          ipcRenderer.invoke("db:processes:phases:delete", id) as Promise<void>,
+      },
+      agents: {
+        create: (input: {
+          phaseId: string
+          agentName: string
+          skills?: string[] | null
+          tools?: string[] | null
+          position: number
+        }) =>
+          ipcRenderer.invoke(
+            "db:processes:agents:create",
+            input
+          ) as Promise<ProcessPhaseAgent>,
+        list: (phaseId: string) =>
+          ipcRenderer.invoke("db:processes:agents:list", phaseId) as Promise<
+            ProcessPhaseAgent[]
+          >,
+        delete: (id: string) =>
+          ipcRenderer.invoke("db:processes:agents:delete", id) as Promise<void>,
+      },
+      edges: {
+        create: (input: {
+          processId: string
+          fromPhaseId: string
+          toPhaseId: string
+          trigger?: EdgeTrigger
+        }) =>
+          ipcRenderer.invoke(
+            "db:processes:edges:create",
+            input
+          ) as Promise<ProcessEdge>,
+        list: (processId: string) =>
+          ipcRenderer.invoke("db:processes:edges:list", processId) as Promise<
+            ProcessEdge[]
+          >,
+        delete: (id: string) =>
+          ipcRenderer.invoke("db:processes:edges:delete", id) as Promise<void>,
+      },
+      runs: {
+        list: (opts?: { processId?: string; status?: ProcessRunStatus }) =>
+          ipcRenderer.invoke("db:processes:runs:list", opts) as Promise<
+            ProcessRun[]
+          >,
+        get: (id: string) =>
+          ipcRenderer.invoke(
+            "db:processes:runs:get",
+            id
+          ) as Promise<ProcessRun | null>,
+      },
+      phaseRuns: {
+        list: (opts: {
+          runId?: string
+          parentId?: string | null
+          phaseId?: string
+        }) =>
+          ipcRenderer.invoke("db:processes:phaseRuns:list", opts) as Promise<
+            ProcessPhaseRun[]
+          >,
+      },
+    },
   },
 
   // Persisted settings (execution backend + approval policy). Mirrors the
@@ -793,6 +1038,9 @@ const api = {
     displayName: string
     dataDirName: string
     mainAgentName: string
+    // The customizable brand theme's CSS custom-property declarations for `:root`
+    // and `.dark`, or null when no NEXT_accent_color / NEXT_neutral_color is set.
+    theme: { light: string; dark: string } | null
   } => ipcRenderer.sendSync("system:name"),
 }
 
@@ -816,6 +1064,18 @@ export type {
   Todo,
   TodoStatus,
   Workspace,
+  ProcessDefinition,
+  ProcessPhase,
+  ProcessPhaseAgent,
+  ProcessEdge,
+  ProcessRun,
+  ProcessPhaseRun,
+  ProcessGraph,
+  ProcessRunStatus,
+  PhaseRunStatus,
+  PhaseRouting,
+  PhaseGatePolicy,
+  EdgeTrigger,
 } from "../main/db/types"
 // Re-export the ask_user_question types so the renderer can type the panel.
 export type {
@@ -850,7 +1110,11 @@ export type {
 export type {
   AgentSourceRow,
   AgentSourceKind,
+  AgentDefinition,
+  AgentFolder,
+  AgentTree,
 } from "../main/agent/agents/types"
+export type { AgentFields } from "../main/agent/agents/loader"
 export type { RuntimeStatus, Runtime } from "../main/agent/env/runtime-check"
 // LLM provider/model types for the Providers & Models tabs and the composer.
 export type {

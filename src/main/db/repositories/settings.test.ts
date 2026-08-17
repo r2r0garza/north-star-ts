@@ -24,7 +24,7 @@ beforeEach(() => {
 
 describe.skipIf(!sqliteLoads)("migrations", () => {
   it("brings a fresh DB to the latest user_version", () => {
-    expect(db.pragma("user_version", { simple: true })).toBe(10)
+    expect(db.pragma("user_version", { simple: true })).toBe(23)
   })
 })
 

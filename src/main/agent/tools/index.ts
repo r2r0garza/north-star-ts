@@ -23,6 +23,7 @@ import { browserHandoffTool } from "./browser/handoff"
 import { webSearchTool } from "./web/search"
 import { webFetchTool } from "./web/fetch"
 import { spawnSubagentTool } from "./spawn_subagent"
+import { flagForReworkTool } from "./flag_for_rework"
 
 // Workspace-gated tools — offered only when the agent has a workspace (they
 // touch the filesystem). Add a new filesystem tool by importing it and listing
@@ -56,6 +57,9 @@ const otherTools: Tool[] = [
   // permitted to spawn (agent tool category + children present). Not in
   // toolDefinitions; dispatchable via runTool.
   spawnSubagentTool,
+  // flag_for_rework: offered by runChat only to a Process phase worker (plan
+  // 031.2 — when opts.processRunId is set). Not in toolDefinitions.
+  flagForReworkTool,
 ]
 
 // Browser tools — offered when the conversation has an agent browser available,
@@ -121,5 +125,6 @@ export { indexQueryTool } from "./index_query_tool"
 export { writePlanTool } from "./write_plan_tool"
 export { readPlanTool } from "./read_plan_tool"
 export { presentPlanTool } from "./present_plan_tool"
+export { flagForReworkTool } from "./flag_for_rework"
 
 export type { Tool, ToolContext } from "./types"

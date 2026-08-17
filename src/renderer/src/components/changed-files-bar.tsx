@@ -88,11 +88,17 @@ function FilePreview({
 
 export function ChangedFilesBar({
   calls,
+  files: filesProp,
   workspace,
   onOpenHtml,
   onReviewAll,
 }: {
-  calls: ToolUse[]
+  // The turn's tool calls, from which changed files are derived. Optional when a
+  // precomputed `files` list is passed instead (e.g. the process run monitor,
+  // which derives files from a phase-run worker's whole transcript — plan 030b).
+  calls?: ToolUse[]
+  // A precomputed changed-file list; takes precedence over `calls` when given.
+  files?: ChangedFile[]
   // Absolute workspace root; needed to build file:// URLs and run git. When empty
   // (Chat mode / no workspace) the bar renders nothing.
   workspace: string
@@ -101,7 +107,10 @@ export function ChangedFilesBar({
   // Open the sidebar "Changes" review scoped to this turn's files.
   onReviewAll: (files: ChangedFile[]) => void
 }) {
-  const files = React.useMemo(() => changedFilesFromCalls(calls), [calls])
+  const files = React.useMemo(
+    () => filesProp ?? changedFilesFromCalls(calls ?? []),
+    [filesProp, calls]
+  )
   if (files.length === 0 || !workspace) return null
 
   const visible = files.slice(0, MAX_VISIBLE)

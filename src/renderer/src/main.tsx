@@ -18,12 +18,15 @@ import {
 } from "@/components/activity-panel"
 import { SettingsScreen } from "@/components/settings-screen"
 import { SkillsScreen } from "@/components/skills-screen"
+import { AgentsScreen } from "@/components/agents-screen"
+import { ProcessScreen } from "@/components/process-screen"
 import { TaskTranscriptSheet } from "@/components/task-transcript-sheet"
 import { TaskCompletionToasts } from "@/components/task-completion-toasts"
 import { Toaster } from "@/components/ui/sonner"
 import type { Mode, Task } from "@/types"
 import type { ChangedFile } from "@/lib/timeline"
 import { maybeNotify, refreshNotificationSettings } from "@/lib/notify"
+import { cn } from "@/lib/utils"
 import App from "./App"
 
 // Tracks window fullscreen state so the sidebar toggle can reposition (the
@@ -56,9 +59,16 @@ function Shell() {
   const [waitingConvos, setWaitingConvos] = useState<Set<string>>(new Set())
   // Whether the Settings sheet is open (opened from the sidebar gear).
   const [settingsOpen, setSettingsOpen] = useState(false)
-  // Whether the Skills view is open (opened from the sidebar footer). A full-
-  // viewport overlay like Settings; browses/edits SKILL.md files.
+  // Whether the Skills view is open (opened from the sidebar footer). An in-panel
+  // destination in the center region (sidebar stays visible); browses/edits
+  // SKILL.md files. Mutually exclusive with Agents/Processes.
   const [skillsOpen, setSkillsOpen] = useState(false)
+  // Whether the Agents view is open (opened from the sidebar footer). An in-panel
+  // destination in the center region; authors <name>.agent.md agents.
+  const [agentsOpen, setAgentsOpen] = useState(false)
+  // Whether the Process view is open (opened from the sidebar footer). An in-panel
+  // destination in the center region; authors process DAGs + monitors live runs.
+  const [processOpen, setProcessOpen] = useState(false)
   // Which tab Settings opens on. First launch (no provider configured) opens
   // straight to Providers so the user can set one up.
   const [settingsTab, setSettingsTab] = useState("backend")
@@ -212,6 +222,9 @@ function Shell() {
   function openSettings(tab = "backend") {
     setSettingsTab(tab)
     setSettingsOpen(true)
+    setAgentsOpen(false)
+    setSkillsOpen(false)
+    setProcessOpen(false)
   }
 
   // Cmd+, (macOS) / Ctrl+, (Windows/Linux) opens Settings — the platform's
@@ -221,6 +234,9 @@ function Shell() {
       if (event.key === "," && (event.metaKey || event.ctrlKey)) {
         event.preventDefault()
         setSettingsOpen(true)
+        setAgentsOpen(false)
+        setSkillsOpen(false)
+        setProcessOpen(false)
       }
     }
     window.addEventListener("keydown", onKeyDown)
@@ -233,6 +249,9 @@ function Shell() {
     setView(next)
     setActiveConversationId(null)
     setPendingProjectId(null)
+    setAgentsOpen(false)
+    setSkillsOpen(false)
+    setProcessOpen(false)
   }
 
   // Reopen a stored conversation — switch the view to match its mode. The
@@ -242,6 +261,9 @@ function Shell() {
     setView(MODE_TO_VIEW[mode])
     setActiveConversationId(id)
     setPendingProjectId(null)
+    setAgentsOpen(false)
+    setSkillsOpen(false)
+    setProcessOpen(false)
   }
 
   // Start a fresh conversation, optionally in a project (its directory is
@@ -249,6 +271,9 @@ function Shell() {
   function handleNewConversation(projectId: string | null = null) {
     setActiveConversationId(null)
     setPendingProjectId(projectId)
+    setAgentsOpen(false)
+    setSkillsOpen(false)
+    setProcessOpen(false)
   }
 
   // A session was deleted from the sidebar. If it was the active one, drop back
@@ -281,30 +306,60 @@ function Shell() {
         onNewConversation={handleNewConversation}
         onConversationDeleted={handleConversationDeleted}
         onSettingsClick={() => openSettings()}
-        onSkillsClick={() => setSkillsOpen(true)}
+        onSkillsClick={() => {
+          setSkillsOpen(true)
+          setAgentsOpen(false)
+          setProcessOpen(false)
+        }}
+        onAgentsClick={() => {
+          setAgentsOpen(true)
+          setSkillsOpen(false)
+          setProcessOpen(false)
+        }}
+        onProcessClick={() => {
+          setProcessOpen(true)
+          setAgentsOpen(false)
+          setSkillsOpen(false)
+        }}
         refreshKey={refreshKey}
         runningConvos={runningConvos}
         waitingConvos={waitingConvos}
       />
-      <App
-        view={view}
-        conversationId={activeConversationId}
-        pendingProjectId={pendingProjectId}
-        onConversationCreated={(id) => {
-          setActiveConversationId(id)
-          refreshConversations()
-        }}
-        onConversationChanged={refreshConversations}
-        onOpenSettings={openSettings}
-        settingsOpen={settingsOpen}
-        rightPanelOpen={activityOpen}
-        onWorkspaceChange={setWorkspacePath}
-        onReviewChanges={openChangesReview}
-        onOpenHtml={openHtmlInBrowser}
-        onRanInBackground={() => setActivity(true)}
-        onRunningConvosChange={setRunningConvos}
-        onWaitingConvosChange={setWaitingConvos}
-      />
+      {/* Center region: App and the Agents/Skills/Processes panels share this
+          flex slot, sitting between the sidebar gap and the activity-panel gap.
+          App stays mounted (hidden, not unmounted) when a panel is open so
+          streaming/turn state survives. */}
+      <div className="relative flex min-h-0 w-full flex-1">
+        <div
+          className={cn(
+            "flex min-h-0 flex-1",
+            (agentsOpen || skillsOpen || processOpen) && "hidden"
+          )}
+        >
+          <App
+            view={view}
+            conversationId={activeConversationId}
+            pendingProjectId={pendingProjectId}
+            onConversationCreated={(id) => {
+              setActiveConversationId(id)
+              refreshConversations()
+            }}
+            onConversationChanged={refreshConversations}
+            onOpenSettings={openSettings}
+            settingsOpen={settingsOpen}
+            rightPanelOpen={activityOpen}
+            onWorkspaceChange={setWorkspacePath}
+            onReviewChanges={openChangesReview}
+            onOpenHtml={openHtmlInBrowser}
+            onRanInBackground={() => setActivity(true)}
+            onRunningConvosChange={setRunningConvos}
+            onWaitingConvosChange={setWaitingConvos}
+          />
+        </div>
+        {agentsOpen && <AgentsScreen onClose={() => setAgentsOpen(false)} />}
+        {skillsOpen && <SkillsScreen onClose={() => setSkillsOpen(false)} />}
+        {processOpen && <ProcessScreen onClose={() => setProcessOpen(false)} />}
+      </div>
       <ActivityPanel
         conversationId={activeConversationId}
         open={activityOpen}
@@ -342,10 +397,24 @@ function Shell() {
         }}
         initialTab={settingsTab}
       />
-      <SkillsScreen open={skillsOpen} onOpenChange={setSkillsOpen} />
     </SidebarProvider>
   )
 }
+
+// Apply the customizable brand theme (from NEXT_accent_color / NEXT_neutral_color)
+// BEFORE the first render, so there's no flash of the default green. The main
+// process returns the recolored token declarations for `:root` and `.dark`; we
+// append them as a <style> after globals.css so they override the defaults while
+// next-themes keeps toggling the `.dark` class. Null when nothing is configured.
+function applyBrandTheme() {
+  const theme = window.cowork.system().theme
+  if (!theme) return
+  const style = document.createElement("style")
+  style.id = "brand-theme"
+  style.textContent = `:root { ${theme.light} }\n.dark { ${theme.dark} }`
+  document.head.appendChild(style)
+}
+applyBrandTheme()
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>

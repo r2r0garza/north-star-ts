@@ -310,3 +310,191 @@ export interface ModelEntry {
   createdAt: number
   updatedAt: number
 }
+
+// ── Process engine (plan 025) ───────────────────────────────────────────────
+// A user-authored agentic DAG. Definitions (the reusable template) are split
+// from runs (one per execution). See schema.ts SCHEMA_V15.
+
+// How a phase binds to its agent pool: 'single' runs its one agent directly;
+// 'dispatch' routes each (sub-)task to the best-fit agent in the pool (025.3).
+export type PhaseRouting = "single" | "dispatch"
+
+// Per-phase human-in-the-loop policy: 'auto' releases dependents on completion;
+// 'approve' inserts a durable approval gate before dependents dispatch.
+export type PhaseGatePolicy = "auto" | "approve"
+
+// A dependency edge fires either when the whole upstream phase completes
+// ('on_complete') or per completed fan-out sub-task ('on_each_subtask', 025.2).
+export type EdgeTrigger = "on_complete" | "on_each_subtask"
+
+// The orchestrator run's lifecycle. Mirrors the tasks table's states (the run is
+// backed by a process_run task) plus the DAG-specific waiting_for_approval.
+export type ProcessRunStatus =
+  | "queued"
+  | "running"
+  | "waiting_for_approval"
+  | "paused"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "interrupted"
+
+// A single phase's execution state within a run. 'pending' = not yet dispatchable
+// / awaiting dependencies; 'ready' is transient; 'skipped' reserved for denied-gate
+// dependents (025+).
+export type PhaseRunStatus =
+  | "pending"
+  | "ready"
+  | "running"
+  | "waiting_for_approval"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "skipped"
+
+export interface ProcessDefinition {
+  id: string
+  name: string
+  description: string | null
+  // Per-process autonomy toggle for cross-phase flag-back (plan 031.2). When true
+  // (default), an agent's flag_for_rework needs human confirmation before the
+  // send-back; when false, the engine routes the flag autonomously.
+  requireFlagApproval: boolean
+  createdAt: number
+  updatedAt: number
+}
+
+export interface ProcessPhase {
+  id: string
+  processId: string
+  key: string
+  name: string
+  routing: PhaseRouting
+  gatePolicy: PhaseGatePolicy
+  fanOut: boolean
+  // The cap on "Request changes" rework rounds for a gated phase (plan 029).
+  // 0 = unlimited (default). Only meaningful when gatePolicy === "approve".
+  maxReworkRounds: number
+  // When set, the phase's kickoff steers its agent to write artifacts under a
+  // `.<key>/` folder at the workspace root — a predictable location (plan 030).
+  dotFolder: boolean
+  // Per-phase VALIDATOR (plan 031.1): when true, a second agent reviews the
+  // phase's output after its worker completes and either approves it or sends it
+  // back with feedback (reusing the 029 rework channel), bounded; on exhaustion
+  // the phase escalates to a human gate.
+  validator: boolean
+  // The per-phase cap on validator review rounds. 0 = use the engine default
+  // (DEFAULT_VALIDATOR_ITERATIONS); a positive value overrides. Never unlimited —
+  // the DAG has no cycle guard, so a bound is mandatory.
+  validatorMaxIterations: number
+  // The dedicated reviewer agent name. Null falls back to the phase's own
+  // resolved agent (pool[0]).
+  validatorAgent: string | null
+  position: number
+}
+
+// tools/skills are tri-state JSON overrides: null = use the agent's own
+// definition; [] = none; [list] = exactly these (matches .agent.md frontmatter).
+export interface ProcessPhaseAgent {
+  id: string
+  phaseId: string
+  agentName: string
+  skills: string[] | null
+  tools: string[] | null
+  position: number
+}
+
+export interface ProcessEdge {
+  id: string
+  processId: string
+  fromPhaseId: string
+  toPhaseId: string
+  trigger: EdgeTrigger
+}
+
+export interface ProcessRun {
+  id: string
+  processId: string | null
+  sourceConversationId: string | null
+  // The run's working directory (plan 026): a workspaces.id, resolved to a path
+  // for every phase worker. A run started from the Process screen has no source
+  // conversation to inherit a workspace from, so it carries its own. Null = the
+  // run resolves its workspace from the source conversation (or none).
+  workspaceId: string | null
+  // The process_run task that drives this run (holds the runner slot, anchors
+  // approval gates + checkpoints). SET NULL if the task is deleted.
+  taskId: string | null
+  objective: string | null
+  // Short, LLM-generated display title summarizing the objective (like a
+  // conversation's title). Null for pre-existing runs and until generation lands
+  // — the renderer falls back to an objective slice.
+  title: string | null
+  status: ProcessRunStatus
+  startedAt: number | null
+  finishedAt: number | null
+  createdAt: number
+}
+
+export interface ProcessPhaseRun {
+  id: string
+  runId: string
+  phaseId: string
+  parentId: string | null
+  status: PhaseRunStatus
+  taskId: string | null
+  agentName: string | null
+  // Optional display title (plan 026 pass 1). For a fan-out / on_each_subtask
+  // CHILD, a short label derived from its sub-task briefing (e.g. "counter
+  // component"); null for an ordinary top-level phase run (the monitor falls back
+  // to the phase name).
+  title: string | null
+  iteration: number
+  error: string | null
+  startedAt: number | null
+  finishedAt: number | null
+  // The "Request changes" feedback note injected into this phase-run's re-run
+  // kickoff (plan 029). Null for a first/normal run; set when a gate is sent
+  // back. reworkRound is the bound counter (how many times sent back).
+  reworkNote: string | null
+  reworkRound: number
+  // The validator's own round counter (plan 031.1): how many times the reviewer
+  // has sent this phase-run back. Kept SEPARATE from reworkRound (which drives the
+  // 029 count-based gate re-detection and must not be perturbed). Default 0.
+  validatorRound: number
+  // First-class on_each_subtask lineage (plan 031.2): the source fan-out CHILD
+  // this consumer instance consumes. Null for ordinary runs and fan-out children;
+  // set for on_each_subtask consumer instances. Lets flag-back reset only the
+  // instance tied to a reworked source sub-task (per-child, not the whole batch).
+  sourceChildRunId: string | null
+}
+
+// A cross-phase rework flag (plan 031.2): a phase-worker found a defect an earlier
+// phase owns and flagged it back. Lifecycle: pending → applied | dismissed.
+export type ProcessFlagStatus = "pending" | "applied" | "dismissed"
+
+export interface ProcessFlag {
+  id: string
+  runId: string
+  // The phase-run whose worker raised the flag. Nullable (SET NULL) because a
+  // per-child send-back deletes the flagging on_each_subtask instance so it can
+  // re-trigger fresh; the flag row survives (as a durable audit record) with this
+  // reference cleared. Always set at creation; null only after the instance is gone.
+  flaggingPhaseRunId: string | null
+  // The upstream phase the flag targets.
+  targetPhaseId: string
+  // The specific fan-out sub-task (child run) targeted, when resolved — from the
+  // flagging instance's sourceChildRunId, or a key#N index. Null = the whole phase.
+  targetChildRunId: string | null
+  reason: string
+  status: ProcessFlagStatus
+  createdAt: number
+}
+
+// The whole authored graph in one shape — the scheduler and the monitor both
+// consume it (repo getProcessGraph assembles it from three list queries).
+export interface ProcessGraph {
+  definition: ProcessDefinition
+  phases: ProcessPhase[]
+  agents: ProcessPhaseAgent[]
+  edges: ProcessEdge[]
+}
