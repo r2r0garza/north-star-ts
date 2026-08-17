@@ -55,6 +55,7 @@ import {
   approvalsSection,
   summarySection,
   environmentSection,
+  browserStateSection,
 } from "./context/sections"
 import { repairDanglingToolCalls } from "./repair"
 import { createEnvironment } from "./env"
@@ -836,6 +837,19 @@ export async function runAgentLoop(
     llmSelection,
   })
   if (envSection) sections.push(envSection)
+
+  // Agent-browser state: whenever the browser is wired this turn AND its tools
+  // survived the agent allowlist, tell the model the authoritative current state
+  // — the open page's URL, or that nothing is open. Always emitted (not gated on
+  // a page being open): a page the user closed must produce an explicit "nothing
+  // open", else the model reports the last page it remembers from the history as
+  // if it were still open. state() is read-only and won't create a tab.
+  if (
+    browser &&
+    buildTools().some((d) => d.function.name.startsWith("browser_"))
+  ) {
+    sections.push(browserStateSection(browser.state()))
+  }
 
   // Skills: the read_skill catalog. Kept longest under budget pressure (highest
   // priority) — dropping it would hide capabilities the agent is told it has.

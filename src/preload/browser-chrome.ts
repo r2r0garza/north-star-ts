@@ -22,6 +22,10 @@ const api = {
   reload: (): void => {
     void ipcRenderer.invoke("browser:reload")
   },
+  // Close the active tab (the chrome's "×") when the page is no longer needed.
+  close: (): void => {
+    void ipcRenderer.invoke("browser:close")
+  },
   // Toggle element-pick mode (highlight + click-to-select on the active page).
   setPickMode: (active: boolean): void => {
     void ipcRenderer.invoke("browser:set-pick-mode", active)

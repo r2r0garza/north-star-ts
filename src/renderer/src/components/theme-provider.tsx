@@ -16,6 +16,7 @@ function ThemeProvider({
       {...props}
     >
       <ThemeHotkey />
+      <BrowserThemeSync />
       {children}
     </NextThemesProvider>
   )
@@ -64,6 +65,22 @@ function ThemeHotkey() {
       window.removeEventListener("keydown", onKeyDown)
     }
   }, [resolvedTheme, setTheme])
+
+  return null
+}
+
+// Mirrors the app's resolved light/dark theme to the main process, which drives
+// Electron's nativeTheme so the pop-out Agent Browser window's chrome follows
+// the app instead of the OS setting. Fires on mount and every theme change
+// (including "system" flips, since resolvedTheme collapses to light/dark).
+function BrowserThemeSync() {
+  const { resolvedTheme } = useTheme()
+
+  React.useEffect(() => {
+    if (resolvedTheme === "light" || resolvedTheme === "dark") {
+      window.cowork.setBrowserTheme(resolvedTheme)
+    }
+  }, [resolvedTheme])
 
   return null
 }

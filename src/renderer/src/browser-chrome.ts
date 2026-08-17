@@ -15,6 +15,7 @@ const tabsEl = document.getElementById("tabs") as HTMLDivElement
 const urlInput = document.getElementById("url") as HTMLInputElement
 const reloadBtn = document.getElementById("reload") as HTMLButtonElement
 const pickBtn = document.getElementById("pick") as HTMLButtonElement
+const closeBtn = document.getElementById("close") as HTMLButtonElement
 
 // Local mirror of pick-mode state; main is the source of truth (it pushes
 // browser:pick-mode when a pick completes or is cancelled).
@@ -51,6 +52,7 @@ urlInput.addEventListener("keydown", (e) => {
   }
 })
 reloadBtn.addEventListener("click", () => bridge.reload())
+closeBtn.addEventListener("click", () => bridge.close())
 
 pickBtn.addEventListener("click", () => {
   // Optimistically flip; main will confirm/correct via onPickMode.

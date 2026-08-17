@@ -1,4 +1,11 @@
-import { app, shell, BrowserWindow, ipcMain, Notification } from "electron"
+import {
+  app,
+  shell,
+  BrowserWindow,
+  ipcMain,
+  Notification,
+  nativeTheme,
+} from "electron"
 import { join, resolve, basename, dirname, sep } from "path"
 import { readFile, writeFile, unlink, mkdir, rm } from "fs/promises"
 import { existsSync } from "fs"
@@ -277,6 +284,17 @@ ipcMain.handle("browser:navigate", (_event, url: string) => {
     browserManager.userNavigate(url.trim())
 })
 ipcMain.handle("browser:reload", () => browserManager.userReload())
+// Chrome/panel "×" → main: user closes the active conversation's browser tab
+// when they no longer need it. Frees the view; a later navigate reopens a fresh
+// one. Fire-and-forget (the tab strip pushes the resulting empty state).
+ipcMain.handle("browser:close", () => browserManager.userClose())
+// Main app renderer → main: the app's resolved theme changed (light/dark). Drive
+// Electron's nativeTheme so the pop-out Agent Browser window's chrome — which
+// uses the `Canvas`/`CanvasText` system colors under `color-scheme: light dark`
+// (see src/renderer/browser.html) — follows the app instead of the OS setting.
+ipcMain.handle("browser:set-theme", (_event, theme: "light" | "dark") => {
+  nativeTheme.themeSource = theme === "dark" ? "dark" : "light"
+})
 // Toggle element-pick mode from the chrome's "Pick element" button.
 ipcMain.handle("browser:set-pick-mode", (_event, active: boolean) => {
   browserManager.setPickMode(!!active)

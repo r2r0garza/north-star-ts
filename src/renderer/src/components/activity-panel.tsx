@@ -7,6 +7,7 @@ import {
   SquareDashedMousePointer,
   Sun,
   Moon,
+  X,
 } from "lucide-react"
 import { useTheme } from "next-themes"
 import { cn } from "@/lib/utils"
@@ -62,6 +63,17 @@ const INFO_WIDTH = "18rem"
 const BROWSER_MIN_WIDTH = 360
 // Leave room for the chat column when the panel is dragged wide.
 const BROWSER_RIGHT_MARGIN = 320
+
+// Normalize a typed value into a navigable URL: bare hosts get https://, but
+// localhost / IPs / explicit ports keep http:// for convenience. Mirrors the
+// pop-out chrome's toUrl (src/renderer/browser-chrome.ts) — the two browser
+// chromes are separate builds, so this small helper is intentionally duplicated.
+function toUrl(raw: string): string {
+  const v = raw.trim()
+  if (/^[a-z]+:\/\//i.test(v) || v.startsWith("file:")) return v
+  if (/^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?/i.test(v)) return `http://${v}`
+  return `https://${v}`
+}
 
 function readCookie(name: string): string | undefined {
   return document.cookie
@@ -297,7 +309,7 @@ function BrowserPanel({
   const submitUrl = (e: React.FormEvent) => {
     e.preventDefault()
     const value = (draft ?? url).trim()
-    if (value) window.cowork.browserNavigate(value)
+    if (value) window.cowork.browserNavigate(toUrl(value))
     setDraft(null)
   }
 
@@ -358,6 +370,19 @@ function BrowserPanel({
         >
           <ExternalLink className="size-4" />
         </button>
+        {/* Close the tab — only shown when a page is actually open. The native
+            view is shared with the agent, so this frees it for both. */}
+        {url && (
+          <button
+            type="button"
+            onClick={() => window.cowork.browserClose()}
+            aria-label="Close browser tab"
+            title="Close browser tab"
+            className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+          >
+            <X className="size-4" />
+          </button>
+        )}
       </div>
       {poppedOut ? (
         <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 p-4 text-center">
