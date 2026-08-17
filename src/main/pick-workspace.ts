@@ -48,3 +48,23 @@ export async function pickFiles(): Promise<PickFilesResult> {
   }
   return { paths: result.filePaths }
 }
+
+// Opens the native OS file picker for importing a skill: a single .md (a
+// SKILL.md) or a .zip of a skill folder. Single-select + a type filter, so the
+// renderer only ever hands the import IPC a plausible file.
+export async function pickSkillImport(): Promise<PickFilesResult> {
+  const win = BrowserWindow.getFocusedWindow() ?? undefined
+  const options: OpenDialogOptions = {
+    title: "Import a skill",
+    properties: ["openFile"],
+    filters: [{ name: "Skill", extensions: ["md", "markdown", "zip"] }],
+  }
+  const result = win
+    ? await dialog.showOpenDialog(win, options)
+    : await dialog.showOpenDialog(options)
+
+  if (result.canceled || result.filePaths.length === 0) {
+    return { canceled: true }
+  }
+  return { paths: [result.filePaths[0]] }
+}

@@ -153,23 +153,32 @@ export function ActivityToggle({
 export function SidebarModeToggle({
   mode,
   onModeChange,
+  showModeSelect = true,
 }: {
   mode: SidebarMode
   onModeChange: (mode: SidebarMode) => void
+  // Hide the Info/Browser/Changes mode dropdown (it's conversation-specific)
+  // while keeping the theme toggle, e.g. on the Skills/Agents/Processes overlays.
+  showModeSelect?: boolean
 }) {
   return (
     <div className="absolute top-2 right-14 z-10 flex items-center gap-1 [-webkit-app-region:no-drag]">
       <ThemeToggle />
-      <Select value={mode} onValueChange={(v) => onModeChange(v as SidebarMode)}>
-        <SelectTrigger size="sm" className="h-7">
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent align="end">
-          <SelectItem value="info">Info</SelectItem>
-          <SelectItem value="browser">Browser</SelectItem>
-          <SelectItem value="changes">Changes</SelectItem>
-        </SelectContent>
-      </Select>
+      {showModeSelect && (
+        <Select
+          value={mode}
+          onValueChange={(v) => onModeChange(v as SidebarMode)}
+        >
+          <SelectTrigger size="sm" className="h-7">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent align="end">
+            <SelectItem value="info">Info</SelectItem>
+            <SelectItem value="browser">Browser</SelectItem>
+            <SelectItem value="changes">Changes</SelectItem>
+          </SelectContent>
+        </Select>
+      )}
     </div>
   )
 }
