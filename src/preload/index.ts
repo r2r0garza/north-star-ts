@@ -40,6 +40,7 @@ import type {
   SkillSourcesSettings,
   AgentSourcesSettings,
   BrowserSettings,
+  ThemeSettings,
   IdeSettings,
   NotificationSettings,
 } from "../main/settings/service"
@@ -943,6 +944,10 @@ const api = {
         "settings:setBrowser",
         next
       ) as Promise<BrowserSettings>,
+    getTheme: () =>
+      ipcRenderer.invoke("settings:getTheme") as Promise<ThemeSettings>,
+    setTheme: (next: ThemeSettings) =>
+      ipcRenderer.invoke("settings:setTheme", next) as Promise<ThemeSettings>,
     getIde: () => ipcRenderer.invoke("settings:getIde") as Promise<IdeSettings>,
     setIde: (next: IdeSettings) =>
       ipcRenderer.invoke("settings:setIde", next) as Promise<IdeSettings>,
@@ -1122,6 +1127,7 @@ export type {
   AgentSourcesSettings,
   BrowserSettings,
   BrowserReveal,
+  ThemeSettings,
   IdeSettings,
   NotificationSettings,
   Backend,

@@ -88,7 +88,7 @@ import {
   systemDisplayName,
   mainAgentName,
 } from "./config/system-name"
-import { brandThemeCss } from "./config/theme"
+import { resolveBrandTheme } from "./config/theme"
 
 // The durable task runner — a singleton owned by the main process. Started in
 // app.whenReady (after the DB handlers register) and stopped on will-quit.
@@ -947,9 +947,10 @@ ipcMain.on("system:name", (event) => {
     displayName: systemDisplayName(),
     dataDirName: dataDirName(),
     mainAgentName: mainAgentName(),
-    // The customizable brand theme (from NEXT_accent_color / NEXT_neutral_color),
-    // or null when neither is configured (renderer then leaves globals.css as-is).
-    theme: brandThemeCss(),
+    // The effective brand theme, resolving the persisted in-app override over the
+    // NEXT_accent_color / NEXT_neutral_color env presets over the built-in
+    // defaults (DB > env > default); null when nothing overrides globals.css.
+    theme: resolveBrandTheme(),
   }
 })
 

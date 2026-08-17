@@ -67,6 +67,7 @@ export type {
   AgentSourcesSettings,
   BrowserSettings,
   BrowserReveal,
+  ThemeSettings,
   IdeSettings,
   NotificationSettings,
   Backend,

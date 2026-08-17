@@ -9,6 +9,7 @@ import type {
   SkillSourcesSettings,
   AgentSourcesSettings,
   BrowserSettings,
+  ThemeSettings,
   IdeSettings,
   NotificationSettings,
 } from "../settings/service"
@@ -52,6 +53,11 @@ export function registerSettingsHandlers(): void {
   ipcMain.handle("settings:getBrowser", () => settingsService.getBrowser())
   ipcMain.handle("settings:setBrowser", (_e, next: BrowserSettings) =>
     settingsService.setBrowser(next)
+  )
+
+  ipcMain.handle("settings:getTheme", () => settingsService.getTheme())
+  ipcMain.handle("settings:setTheme", (_e, next: ThemeSettings) =>
+    settingsService.setTheme(next)
   )
 
   ipcMain.handle("settings:getIde", () => settingsService.getIde())

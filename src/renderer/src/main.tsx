@@ -26,6 +26,7 @@ import { Toaster } from "@/components/ui/sonner"
 import type { Mode, Task } from "@/types"
 import type { ChangedFile } from "@/lib/timeline"
 import { maybeNotify, refreshNotificationSettings } from "@/lib/notify"
+import { applyThemeCss } from "@/lib/theme"
 import { cn } from "@/lib/utils"
 import App from "./App"
 
@@ -408,18 +409,13 @@ function Shell() {
   )
 }
 
-// Apply the customizable brand theme (from NEXT_accent_color / NEXT_neutral_color)
+// Apply the effective brand theme (persisted override > env presets > defaults)
 // BEFORE the first render, so there's no flash of the default green. The main
-// process returns the recolored token declarations for `:root` and `.dark`; we
-// append them as a <style> after globals.css so they override the defaults while
-// next-themes keeps toggling the `.dark` class. Null when nothing is configured.
+// process resolves the precedence and returns the recolored token declarations
+// (or null when nothing overrides globals.css); applyThemeCss (shared with the
+// Settings → Appearance live preview) writes them into <style id="brand-theme">.
 function applyBrandTheme() {
-  const theme = window.cowork.system().theme
-  if (!theme) return
-  const style = document.createElement("style")
-  style.id = "brand-theme"
-  style.textContent = `:root { ${theme.light} }\n.dark { ${theme.dark} }`
-  document.head.appendChild(style)
+  applyThemeCss(window.cowork.system().theme)
 }
 applyBrandTheme()
 
