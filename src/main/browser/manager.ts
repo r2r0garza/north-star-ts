@@ -51,6 +51,17 @@ const SNAPSHOT_TIMEOUT_MS = 15_000
 const SCREENSHOT_TIMEOUT_MS = 15_000
 const INTERACT_TIMEOUT_MS = 15_000
 
+// A snapshot of the live page in this conversation's tab, for surfacing to the
+// agent WITHOUT it having to call a read tool. `state()` returns this when a
+// real page is open, or null when nothing is (no tab / closed / blank start
+// page). The section renderer states BOTH cases explicitly — see
+// browserStateSection — so a closed browser can't be reported as still open.
+export interface BrowserState {
+  url: string
+  title: string
+  loading: boolean
+}
+
 // The narrow surface the browser tools call, scoped to one conversation's tab.
 // Every method binds the turn's signal so Stop/shutdown unwinds an in-flight
 // browser op (see cdp.withDeadline).
@@ -66,6 +77,9 @@ export interface BrowserHandle {
   // Force the browser visible + show this conversation's tab (for a manual
   // handoff — captcha/login). Routes to whichever surface is active.
   reveal(): void
+  // The live page in this conversation's tab, or null if nothing is open
+  // (no tab / closed / blank). Read-only — must NOT create a tab.
+  state(): BrowserState | null
 }
 
 export class BrowserManager {
@@ -286,6 +300,20 @@ export class BrowserManager {
     this.appTabsEmitter = emit
   }
 
+  // Read the live page for a conversation's tab without creating one. Returns
+  // null when there's no tab, its contents are gone, or it's still on the blank
+  // start page (about:blank / empty) — i.e. nothing meaningful is open. Used to
+  // surface browser state to the agent (see handle.state()).
+  private stateFor(conversationId: string): BrowserState | null {
+    const session = this.tabs.get(conversationId)
+    if (!session) return null
+    const wc = session.webContents
+    if (wc.isDestroyed()) return null
+    const url = wc.getURL()
+    if (!url || url === "about:blank") return null
+    return { url, title: wc.getTitle() || url, loading: wc.isLoadingMainFrame() }
+  }
+
   // The renderer tells us which conversation the user is viewing; show its tab.
   setActiveConversation(conversationId: string | null): void {
     if (this.disposed) return
@@ -303,15 +331,28 @@ export class BrowserManager {
   }
 
   // User-driven navigation from a chrome/panel URL bar — applies to the active
-  // tab. Not gated (the human is driving). No-op if the active conversation has
-  // no tab.
+  // tab. Not gated (the human is driving). Creates the tab on demand: the human
+  // can open the Browser panel and type a URL before the agent has ever browsed
+  // in this conversation, so there may be no tab yet. Still a no-op without an
+  // active conversation (a fresh/unsaved one has no id to key a tab by).
   userNavigate(url: string): void {
     if (this.disposed || !this.activeConversationId) return
-    const session = this.tabs.get(this.activeConversationId)
-    if (!session) return
+    const session = this.ensureTab(this.activeConversationId)
+    // Bring the freshly-created tab onto the current surface (ensureTab only
+    // auto-shows when nothing was active; here the conversation IS active).
+    this.refreshActiveView()
     void session.webContents.loadURL(url).catch(() => {
       // Bad/aborted load — the strip stays in sync via the listeners above.
     })
+  }
+
+  // User-driven close from a chrome/panel — closes the active conversation's
+  // tab (the "×" the user clicks when they're done with the page). No-op if
+  // there's no active conversation or it has no tab. Returns true if a tab was
+  // actually closed, so the caller can reflect it.
+  userClose(): boolean {
+    if (this.disposed || !this.activeConversationId) return false
+    return this.closeTab(this.activeConversationId)
   }
 
   // User-driven reload from a chrome/panel — applies to the active tab.
@@ -323,7 +364,7 @@ export class BrowserManager {
   // Close a conversation's tab: dispose its session/view. If it was the last
   // tab, hide the window. Distinct from dispose() (permanent, app-quit) — the
   // manager stays usable. Returns true if a tab was open. Called by the handle's
-  // close() and by the conversation-delete hook.
+  // close(), the user's × (userClose), and the conversation-delete hook.
   closeTab(conversationId: string): boolean {
     if (this.disposed) return false
     const session = this.tabs.get(conversationId)
@@ -384,6 +425,10 @@ export class BrowserManager {
       // close() must NOT create a tab — it closes this conversation's tab (or
       // no-ops if none), so it calls closeTab directly.
       close: () => this.closeTab(conversationId),
+      // state() is read-only and must NOT create a tab — it reports whatever the
+      // conversation's existing tab shows (or null), so the agent can be told a
+      // page is open without having to call a read tool first.
+      state: () => this.stateFor(conversationId),
       // A handoff (captcha/login) needs the browser up so the user can act on it.
       // But it must NEVER yank the user out of whatever conversation they're in:
       // if conversation A hits a wall while the user is typing in conversation B,

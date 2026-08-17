@@ -8,6 +8,7 @@ import { resolveModelLabel } from "../providers"
 import type { LlmSelection } from "../providers"
 import type { ContextSection } from "./context-builder"
 import { SECTION_PRIORITY } from "./context-builder"
+import type { BrowserState } from "../../browser/manager"
 
 // Renderers for the ContextBuilder's droppable sections (plan 014). Each returns
 // a ContextSection or null (omitted). The builder budgets + composes them; these
@@ -43,6 +44,52 @@ export function taskStateSection(
     "Tasks you have running in the background for this session (don't re-start these):\n" +
     lines.join("\n")
   return { name: "task_state", priority: SECTION_PRIORITY.taskState, content }
+}
+
+// Live agent-browser state: what the conversation's browser tab is showing right
+// now. The tab is shared between the user (who can navigate/close from the
+// sidebar/pop-out chrome) and the agent (browser_navigate/browser_close) — both
+// keyed by conversationId — so a page the USER opened is visible here too.
+//
+// ALWAYS emits a section when the browser is available this turn (the caller
+// gates on that), stating one of two facts EXPLICITLY:
+//   - a page is open → name the current URL/title.
+//   - nothing is open → say so.
+// This is deliberately never omitted: a page opened and then closed (by the user
+// or browser_close), or a fresh app session where nothing is live, must produce
+// an explicit "nothing is open" — otherwise the model has no current fact to
+// consult and falls back to whatever page it last mentioned in the conversation
+// (reporting a stale, already-closed page as if it were still open).
+export function browserStateSection(state: BrowserState | null): ContextSection {
+  if (!state) {
+    return {
+      name: "browser_state",
+      priority: SECTION_PRIORITY.browserState,
+      content:
+        "## Agent browser\n" +
+        "No page is currently open in the agent browser. If the conversation " +
+        "history mentions a page, it has since been closed — do NOT report it as " +
+        "open. This line is the authoritative current state. Call browser_navigate " +
+        "to open a page.",
+    }
+  }
+  const lines = [`- Current page: ${state.url}`]
+  if (state.title && state.title !== state.url) {
+    lines.push(`- Title: ${state.title}`)
+  }
+  if (state.loading) lines.push("- Status: still loading")
+  const content =
+    "## Agent browser\n" +
+    "A browser tab is open for this conversation (the user may have opened it, " +
+    "or a previous turn did). This line is the authoritative current state — use " +
+    "browser_snapshot / browser_screenshot to read it, or browser_close if it's " +
+    "no longer needed:\n" +
+    lines.join("\n")
+  return {
+    name: "browser_state",
+    priority: SECTION_PRIORITY.browserState,
+    content,
+  }
 }
 
 // Prior approval context (plan 021): what the user has already GRANTED or DECIDED,

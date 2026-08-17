@@ -81,6 +81,7 @@ import {
   approvalsSection,
   summarySection,
   environmentSection,
+  browserStateSection,
 } from "./sections"
 import { SECTION_PRIORITY } from "./context-builder"
 import type { ConversationSummary } from "../../db/types"
@@ -270,6 +271,42 @@ describe("summarySection", () => {
     expect(section!.priority).toBeGreaterThan(SECTION_PRIORITY.skills)
     expect(section!.content).toContain("use sqlite")
     expect(section!.content).toContain("Conversation summary so far")
+  })
+})
+
+describe("browserStateSection", () => {
+  it("states 'nothing open' (never null) when no page is live", () => {
+    const section = browserStateSection(null)
+    expect(section.name).toBe("browser_state")
+    expect(section.priority).toBe(SECTION_PRIORITY.browserState)
+    expect(section.content).toContain("No page is currently open")
+    expect(section.content).toContain("authoritative current state")
+    // No stale URL should leak into a nothing-open section.
+    expect(section.content).not.toContain("http")
+  })
+
+  it("names the current page when a tab is open", () => {
+    const section = browserStateSection({
+      url: "https://www.google.com/search?q=deepagents+docs",
+      title: "deepagents docs - Google Search",
+      loading: false,
+    })
+    expect(section.priority).toBe(SECTION_PRIORITY.browserState)
+    expect(section.content).toContain(
+      "Current page: https://www.google.com/search?q=deepagents+docs"
+    )
+    expect(section.content).toContain("Title: deepagents docs - Google Search")
+    expect(section.content).not.toContain("still loading")
+  })
+
+  it("marks a still-loading page and omits a title equal to the URL", () => {
+    const section = browserStateSection({
+      url: "https://example.com",
+      title: "https://example.com",
+      loading: true,
+    })
+    expect(section.content).not.toContain("Title:")
+    expect(section.content).toContain("still loading")
   })
 })
 

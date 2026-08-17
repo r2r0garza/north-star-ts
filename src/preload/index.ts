@@ -503,8 +503,18 @@ const api = {
   browserReload: () => {
     void ipcRenderer.invoke("browser:reload")
   },
+  // Close the active conversation's browser tab (the panel's "×") when the user
+  // no longer needs the page. A later browserNavigate reopens a fresh tab.
+  browserClose: () => {
+    void ipcRenderer.invoke("browser:close")
+  },
   browserSetPickMode: (active: boolean) => {
     void ipcRenderer.invoke("browser:set-pick-mode", active)
+  },
+  // Report the app's resolved theme so the pop-out Agent Browser window's chrome
+  // follows light/dark along with the app (via Electron's nativeTheme).
+  setBrowserTheme: (theme: "light" | "dark") => {
+    void ipcRenderer.invoke("browser:set-theme", theme)
   },
   // Subscribe to a request to open the right panel in Browser mode (the sidebar
   // equivalent of the agent browser window revealing itself). Returns unsubscribe.

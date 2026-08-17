@@ -42,6 +42,7 @@ export interface ContextSection {
 // scattered across call sites.
 export const SECTION_PRIORITY = {
   environment: 5, // date/model/workspace/git orientation — small, most droppable
+  browserState: 8, // live agent-browser page (url/title) — small live orientation
   index: 10, // advisory workspace orientation — most droppable
   approvals: 20,
   taskState: 30,
