@@ -68,3 +68,24 @@ export async function pickSkillImport(): Promise<PickFilesResult> {
   }
   return { paths: [result.filePaths[0]] }
 }
+
+// Opens the native OS file picker for importing one-or-more agents. Multi-select
+// (an agent is a single flat `.agent.md` file, so a user can pick several at
+// once) + a type filter. Electron filters on the simple `md` extension; the
+// exact `.agent.md` check happens in the import module.
+export async function pickAgentImport(): Promise<PickFilesResult> {
+  const win = BrowserWindow.getFocusedWindow() ?? undefined
+  const options: OpenDialogOptions = {
+    title: "Import agents",
+    properties: ["openFile", "multiSelections"],
+    filters: [{ name: "Agent", extensions: ["md"] }],
+  }
+  const result = win
+    ? await dialog.showOpenDialog(win, options)
+    : await dialog.showOpenDialog(options)
+
+  if (result.canceled || result.filePaths.length === 0) {
+    return { canceled: true }
+  }
+  return { paths: result.filePaths }
+}

@@ -3,9 +3,11 @@ import type { ReactNode } from "react"
 import {
   ArrowLeft,
   ChevronRight,
+  FolderOpen,
   Plus,
   Search,
   Trash2,
+  Upload,
   XIcon,
 } from "lucide-react"
 import {
@@ -36,6 +38,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Markdown } from "@/components/markdown"
+import { AgentUploadModal } from "@/components/agent-upload-modal"
 import { toast } from "sonner"
 import { cn } from "@/lib/utils"
 import type { AgentDefinition, AgentFolder, AgentTree } from "@/types"
@@ -79,6 +82,15 @@ function agentKey(sourcePath: string, name: string): string {
 // Whether a folder kind is writable (editable/deletable) in this UI.
 function isWritable(kind: AgentFolder["kind"]): boolean {
   return kind === "user" || kind === "custom"
+}
+
+// The OS file-manager name, for the reveal button label. shell.showItemInFolder
+// does the right thing on every platform; this is only the human-facing word.
+function fileManagerName(): string {
+  const ua = navigator.userAgent
+  if (ua.includes("Mac")) return "Finder"
+  if (ua.includes("Win")) return "Explorer"
+  return "file manager"
 }
 
 // Case-insensitive substring match over an agent's name + description. A blank
@@ -136,6 +148,8 @@ export function AgentsScreen({ onClose }: { onClose: () => void }) {
   const [query, setQuery] = useState("")
   // Skill names for the skills picker's "Choose" list. Loaded once on mount.
   const [skillNames, setSkillNames] = useState<string[]>([])
+  // Whether the import (upload) modal is open.
+  const [importOpen, setImportOpen] = useState(false)
 
   // Flatten every folder's agents into one addressable list (tagged with kind).
   const allAgents = useMemo<CatalogAgent[]>(() => {
@@ -264,6 +278,37 @@ export function AgentsScreen({ onClose }: { onClose: () => void }) {
       body: "",
     })
     setMode({ kind: "create", dir: writableDirs[0]?.path ?? "" })
+  }
+
+  // Open the import (upload) modal, discarding any in-progress draft first.
+  function startImport() {
+    if (!confirmDiscard()) return
+    setImportOpen(true)
+  }
+
+  // After a best-effort import, refresh the tree and select the first agent that
+  // landed. `newPath` is `<dir>/<name>.agent.md`; derive the name from its stem.
+  function onImported(newPath: string, dir: string) {
+    loadTree()
+    const base = newPath.split(/[\\/]/).pop() ?? ""
+    const name = base.endsWith(".agent.md")
+      ? base.slice(0, -".agent.md".length)
+      : base
+    if (name) {
+      setSelectedKey(agentKey(dir, name))
+      setMode({ kind: "view" })
+      setDraft(null)
+    }
+  }
+
+  // Reveal the selected agent's file in the OS file manager.
+  async function revealAgent() {
+    if (!selected) return
+    try {
+      await window.cowork.agents.reveal(selected.path)
+    } catch (err) {
+      toast.error(`Could not reveal the agent: ${err}`)
+    }
   }
 
   async function save() {
@@ -411,6 +456,10 @@ export function AgentsScreen({ onClose }: { onClose: () => void }) {
               </div>
             </div>
             <div className="flex shrink-0 items-center gap-2">
+              <Button variant="outline" size="sm" onClick={revealAgent}>
+                <FolderOpen className="size-4" />
+                Show in {fileManagerName()}
+              </Button>
               {isWritable(selected.kind) ? (
                 <Button variant="outline" size="sm" onClick={startEditing}>
                   Edit
@@ -436,19 +485,34 @@ export function AgentsScreen({ onClose }: { onClose: () => void }) {
             </TabsList>
             {/* Shown on all tabs; disabled on Workspace (its folders aren't
                 writable here) and when there's no writable target dir. */}
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={startCreating}
-              disabled={
-                activeTab === "workspace" ||
-                tree === null ||
-                writableDirs.length === 0
-              }
-            >
-              <Plus className="size-4" />
-              Add new agent
-            </Button>
+            <div className="flex shrink-0 items-center gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={startImport}
+                disabled={
+                  activeTab === "workspace" ||
+                  tree === null ||
+                  writableDirs.length === 0
+                }
+              >
+                <Upload className="size-4" />
+                Import
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={startCreating}
+                disabled={
+                  activeTab === "workspace" ||
+                  tree === null ||
+                  writableDirs.length === 0
+                }
+              >
+                <Plus className="size-4" />
+                Add new agent
+              </Button>
+            </div>
           </div>
 
           <div className="shrink-0 border-b px-4 py-2">
@@ -543,6 +607,13 @@ export function AgentsScreen({ onClose }: { onClose: () => void }) {
           </ScrollArea>
         </Tabs>
       )}
+
+      <AgentUploadModal
+        open={importOpen}
+        onOpenChange={setImportOpen}
+        writableDirs={writableDirs}
+        onImported={onImported}
+      />
     </div>
   )
 }

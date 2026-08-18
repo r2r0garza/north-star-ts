@@ -26,7 +26,12 @@ import {
   setAutoModeForConversation,
   type ChatRequest,
 } from "./agent"
-import { pickWorkspace, pickFiles, pickSkillImport } from "./pick-workspace"
+import {
+  pickWorkspace,
+  pickFiles,
+  pickSkillImport,
+  pickAgentImport,
+} from "./pick-workspace"
 import {
   skillSources,
   initUserSkills,
@@ -50,6 +55,7 @@ import {
   validateName as validateAgentName,
   type AgentFields,
 } from "./agent/agents/loader"
+import { importAgentFromMarkdown } from "./agent/agents/import"
 import type {
   SkillSourceRow,
   SkillSourceKind,
@@ -344,6 +350,8 @@ ipcMain.handle("pick-workspace", () => pickWorkspace())
 ipcMain.handle("pick-files", () => pickFiles())
 // Single-select .md/.zip picker for the Skills view's Import affordance.
 ipcMain.handle("pick-skill-import", () => pickSkillImport())
+// Multi-select .agent.md picker for the Agents view's Import affordance.
+ipcMain.handle("pick-agent-import", () => pickAgentImport())
 // List available skills (name + description only) for the composer's slash
 // menu. Resolves the same source dirs the agent uses at turn time, so the
 // picker shows exactly what the model can read via read_skill. `body`/`path`
@@ -521,6 +529,38 @@ ipcMain.handle(
   async (_event, filePath: string): Promise<void> => {
     assertAgentWritablePath(filePath)
     await unlink(filePath)
+  }
+)
+// Import an agent from disk into a writable source dir. `sourcePath` is a
+// `.agent.md` file; `dir` is the target writable root (exact-match validated,
+// like agents:create). The file is copied verbatim; the name is derived+validated
+// (name === stem) inside the import helper — a bad file / name mismatch /
+// collision throws a clear message the renderer surfaces via toast. The renderer
+// calls this once per file for one-or-more (best-effort) import. Returns the new
+// file's path so the renderer can select it.
+ipcMain.handle(
+  "agents:import",
+  async (
+    _event,
+    { sourcePath, dir }: { sourcePath: string; dir: string }
+  ): Promise<string> => {
+    const resolvedDir = resolve(dir)
+    if (!writableAgentRoots().includes(resolvedDir)) {
+      throw new Error(
+        `Refusing to import an agent outside a writable source: ${dir}`
+      )
+    }
+    return importAgentFromMarkdown(sourcePath, resolvedDir)
+  }
+)
+// Reveal an agent file in the OS file manager (Finder on macOS, Explorer on
+// Windows) with the file selected. Guarded by assertAgentPath so only a
+// `.agent.md` inside a known agent source can be shown.
+ipcMain.handle(
+  "agents:reveal",
+  async (_event, filePath: string): Promise<void> => {
+    assertAgentPath(filePath)
+    shell.showItemInFolder(resolve(filePath))
   }
 )
 // The kind-tagged skill-source dirs for a workspace, in load order. Shared by
