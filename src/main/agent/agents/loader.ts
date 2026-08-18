@@ -4,7 +4,7 @@ import * as yaml from "js-yaml"
 import type { AgentDefinition } from "./types"
 import { agentSources } from "./sources"
 
-const MAX_AGENT_FILE_SIZE = 10 * 1024 * 1024 // 10MB DoS guard
+export const MAX_AGENT_FILE_SIZE = 10 * 1024 * 1024 // 10MB DoS guard
 const MAX_NAME = 64
 const MAX_DESCRIPTION = 1024
 const FRONTMATTER = /^---\s*\n([\s\S]*?)\n---\s*\n?/
@@ -41,7 +41,7 @@ function parseList(
   return raw.map((v) => String(v).trim()).filter(Boolean)
 }
 
-function parseAgent(
+export function parseAgent(
   content: string,
   agentPath: string,
   stem: string,

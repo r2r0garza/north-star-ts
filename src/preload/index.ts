@@ -430,6 +430,22 @@ const api = {
     // Delete an agent file. Writable roots only; the renderer confirms first.
     delete: (filePath: string) =>
       ipcRenderer.invoke("agents:delete", filePath) as Promise<void>,
+    // Reveal an agent's `.agent.md` in the OS file manager (Finder / Explorer),
+    // file selected. Path validated against known agent sources in the main process.
+    reveal: (filePath: string) =>
+      ipcRenderer.invoke("agents:reveal", filePath) as Promise<void>,
+    // Open the native multi-select `.agent.md` picker for importing agents.
+    pickImport: () =>
+      ipcRenderer.invoke("pick-agent-import") as Promise<{
+        paths?: string[]
+        canceled?: boolean
+      }>,
+    // Import a single `.agent.md` from disk into a writable source dir; returns
+    // the new file path. Copied verbatim; the main process derives+validates the
+    // name (name === stem), guards the target root, and rejects a collision. The
+    // renderer calls this once per file for one-or-more (best-effort) import.
+    import: (args: { sourcePath: string; dir: string }) =>
+      ipcRenderer.invoke("agents:import", args) as Promise<string>,
   },
   // List workspace files for the composer's `@`-mention menu, filtered by the
   // typed query (server-side). Returns workspace-relative POSIX paths, capped.
