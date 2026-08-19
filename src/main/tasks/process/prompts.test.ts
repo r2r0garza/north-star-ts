@@ -21,6 +21,7 @@ const phase: ProcessPhase = {
   validator: false,
   validatorMaxIterations: 0,
   validatorAgent: null,
+  subprocessId: null,
   position: 0,
 }
 

@@ -144,6 +144,10 @@ type PaneMode = "builder" | "run"
 // agent). Radix Select forbids an empty-string item value, so null maps to this.
 const OWN_AGENT = "__own__"
 
+// Sentinel for the sub-process picker's "none" option (plan 038.1) — same Radix
+// empty-value constraint as OWN_AGENT. Maps to null (an ordinary agent phase).
+const NO_SUBPROCESS = "__none__"
+
 export function ProcessScreen({ onClose }: { onClose: () => void }) {
   const [definitions, setDefinitions] = useState<ProcessDefinition[] | null>(
     null
@@ -329,6 +333,7 @@ export function ProcessScreen({ onClose }: { onClose: () => void }) {
               key={selected.id}
               definition={selected}
               agents={agents}
+              definitions={definitions ?? []}
               onDefinitionChanged={loadDefinitions}
             />
           ) : (
@@ -567,10 +572,12 @@ function deriveKey(name: string, otherKeys: Iterable<string>): string {
 function ProcessBuilder({
   definition,
   agents,
+  definitions,
   onDefinitionChanged,
 }: {
   definition: ProcessDefinition
   agents: AgentSummary[]
+  definitions: ProcessDefinition[]
   onDefinitionChanged: () => void
 }) {
   const [graph, setGraph] = useState<ProcessGraph | null>(null)
@@ -711,6 +718,7 @@ function ProcessBuilder({
               phases={phases}
               graph={graph}
               agents={agents}
+              definitions={definitions}
               onChanged={reload}
             />
           ))}
@@ -731,12 +739,14 @@ function PhaseCard({
   phases,
   graph,
   agents,
+  definitions,
   onChanged,
 }: {
   phase: ProcessPhase
   phases: ProcessPhase[]
   graph: ProcessGraph
   agents: AgentSummary[]
+  definitions: ProcessDefinition[]
   onChanged: () => void
 }) {
   // This phase's agent pool + its incoming edges (edges where to === this phase).
@@ -758,6 +768,15 @@ function PhaseCard({
   // Collapsed by default — a built graph is mostly read; expand to edit.
   const [expanded, setExpanded] = useState(false)
   const depCount = incoming.length
+  // Sub-process picker (plan 038.1): candidate definitions minus self (the repo
+  // hard-rejects self / cycles; this just avoids offering the trivial self-pick).
+  const subprocessCandidates = definitions.filter(
+    (d) => d.id !== phase.processId
+  )
+  const subprocessName = phase.subprocessId
+    ? (definitions.find((d) => d.id === phase.subprocessId)?.name ??
+      "(missing)")
+    : null
 
   async function patchPhase(patch: {
     name?: string
@@ -770,6 +789,7 @@ function PhaseCard({
     validator?: boolean
     validatorMaxIterations?: number
     validatorAgent?: string | null
+    subprocessId?: string | null
   }) {
     try {
       await window.cowork.db.processes.phases.update(phase.id, patch)
@@ -879,6 +899,15 @@ function PhaseCard({
                   fan-out
                 </Badge>
               )}
+              {subprocessName && (
+                <Badge
+                  variant="outline"
+                  className="text-[10px]"
+                  title={`Runs the "${subprocessName}" sub-process (plan 038.1)`}
+                >
+                  ⤷ {subprocessName}
+                </Badge>
+              )}
               {phase.dotFolder && (
                 <Badge
                   variant="outline"
@@ -986,13 +1015,41 @@ function PhaseCard({
                 </SelectContent>
               </Select>
             </label>
-            <label className="flex items-center gap-2 text-xs">
+            <label
+              className="flex items-center gap-2 text-xs"
+              title={
+                phase.subprocessId
+                  ? "Disabled: a sub-process phase can't also fan out"
+                  : undefined
+              }
+            >
               <span className="text-muted-foreground">Fan-out</span>
               <Switch
                 checked={phase.fanOut}
+                disabled={!!phase.subprocessId}
                 onCheckedChange={(v) => patchPhase({ fanOut: v })}
               />
             </label>
+            {/* SUB-PROCESS phase (plan 038.1): run another definition as a nested
+            run instead of an agent worker. Mutually exclusive with fan-out — hidden
+            while fan-out is on, and it disables fan-out when set. Only offered when
+            there's a candidate definition (any other process) to run. */}
+            {!phase.fanOut && subprocessCandidates.length > 0 && (
+              <label
+                className="flex items-center gap-2 text-xs"
+                title="Run another process definition as a nested run for this phase"
+              >
+                <span className="text-muted-foreground">Sub-process</span>
+                <Switch
+                  checked={!!phase.subprocessId}
+                  onCheckedChange={(v) =>
+                    patchPhase({
+                      subprocessId: v ? subprocessCandidates[0].id : null,
+                    })
+                  }
+                />
+              </label>
+            )}
             <label
               className="flex items-center gap-2 text-xs"
               title={`Steer this phase's agent to write artifacts under a .${phase.key}/ folder (plan 030)`}
@@ -1005,8 +1062,9 @@ function PhaseCard({
             </label>
             {/* Per-phase VALIDATOR (plan 031.1): a second agent reviews this phase's
             output and sends it back with feedback until it passes, bounded. Not
-            offered for a fan-out phase (sub-DAG review is plan 031.2). */}
-            {!phase.fanOut && (
+            offered for a fan-out phase (sub-DAG review is plan 031.2) or a
+            sub-process phase (its inner phases carry their own validators, 038.1). */}
+            {!phase.fanOut && !phase.subprocessId && (
               <label
                 className="flex items-center gap-2 text-xs"
                 title="After this phase completes, a second agent reviews its output and can send it back with feedback (bounded)"
@@ -1029,7 +1087,9 @@ function PhaseCard({
             )}
             {/* The "Request changes" rework cap (plan 029), only meaningful for an
             approve gate. 0 = unlimited. */}
-            {phase.gatePolicy === "approve" && !phase.fanOut && (
+            {phase.gatePolicy === "approve" &&
+              !phase.fanOut &&
+              !phase.subprocessId && (
               <label
                 className="flex items-center gap-2 text-xs"
                 title="Max times a reviewer can send this phase back for changes (0 = unlimited)"
@@ -1054,7 +1114,7 @@ function PhaseCard({
 
           {/* Validator config (plan 031.1): the reviewer agent + iteration cap, shown
           only when the validator toggle is on. */}
-          {phase.validator && !phase.fanOut && (
+          {phase.validator && !phase.fanOut && !phase.subprocessId && (
             <div className="flex flex-wrap items-center gap-4">
               <label
                 className="flex items-center gap-2 text-xs"
@@ -1114,7 +1174,46 @@ function PhaseCard({
             </div>
           )}
 
-          {/* Row 3: agent pool. */}
+          {/* Sub-process config (plan 038.1): the definition this phase runs as a
+          nested run, shown only when the sub-process toggle is on. Self is filtered
+          out; the repo hard-rejects a cyclic pick (surfaced via the patch toast). */}
+          {phase.subprocessId && (
+            <div className="flex flex-col gap-1.5">
+              <label
+                className="flex items-center gap-2 text-xs"
+                title="The process definition this phase runs as a nested run"
+              >
+                <span className="text-muted-foreground">Runs process</span>
+                <Select
+                  value={phase.subprocessId}
+                  onValueChange={(v) =>
+                    patchPhase({
+                      subprocessId: v === NO_SUBPROCESS ? null : v,
+                    })
+                  }
+                >
+                  <SelectTrigger size="sm" className="text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={NO_SUBPROCESS}>None</SelectItem>
+                    {subprocessCandidates.map((d) => (
+                      <SelectItem key={d.id} value={d.id}>
+                        {d.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </label>
+              <span className="text-[10px] text-muted-foreground">
+                This phase delegates to the nested process; its aggregated output
+                feeds downstream phases. The agent pool and routing are unused.
+              </span>
+            </div>
+          )}
+
+          {/* Row 3: agent pool. Hidden for a sub-process phase (no worker to pool). */}
+          {!phase.subprocessId && (
           <div className="flex flex-col gap-1.5">
             <span className="text-xs text-muted-foreground">
               Agent pool
@@ -1197,6 +1296,7 @@ function PhaseCard({
               )
             )}
           </div>
+          )}
 
           {/* Row 4: dependencies (incoming edges). */}
           {upstreamCandidates.length > 0 && (
@@ -1290,6 +1390,11 @@ function RunMonitor({
   // send-back / Dismiss. Sourced from the durable approvals list (the flag gate's
   // request blob carries target + reason), reconciled like `gates`.
   const [flagGates, setFlagGates] = useState<Record<string, FlagGateInfo>>({})
+  // A monotonically-increasing tick bumped on every live task event, threaded into
+  // the sub-process nested view so it re-fetches its child run's phase-runs as they
+  // progress (plan 038.1). A nested run rides the SAME task tail, but its rows live
+  // in a separate lazily-fetched component — this is how the live tail reaches it.
+  const [refreshTick, setRefreshTick] = useState(0)
   // The New Run modal (objective + required folder).
   const [newRunOpen, setNewRunOpen] = useState(false)
   // The phase-run whose worker transcript is open (null = closed). Resolved from
@@ -1434,12 +1539,14 @@ function RunMonitor({
             setFlagGates(info)
           })
           void refetchRef.current()
+          setRefreshTick((t) => t + 1)
         } else if (
           ev.type === "status_change" ||
           ev.type === "task_completed" ||
           ev.type === "task_failed"
         ) {
           void refetchRef.current()
+          setRefreshTick((t) => t + 1)
         }
       }
     )
@@ -1494,6 +1601,14 @@ function RunMonitor({
           graph.phases.find((p) => p.id === e.fromPhaseId)?.fanOut === true
       )
     },
+    [graph]
+  )
+
+  // Whether a phase runs a sub-process (plan 038.1) — its nested run is shown as an
+  // expandable block under the phase row.
+  const phaseIsSubProcess = useCallback(
+    (phaseId: string) =>
+      !!graph?.phases.find((p) => p.id === phaseId)?.subprocessId,
     [graph]
   )
 
@@ -1759,6 +1874,8 @@ function RunMonitor({
               phaseName={phaseName}
               maxReworkRounds={phaseMaxRework(pr.phaseId)}
               isContainer={phaseIsContainer(pr.phaseId)}
+              isSubProcess={phaseIsSubProcess(pr.phaseId)}
+              refreshTick={refreshTick}
               workspacePath={workspacePath}
               onApprove={approve}
               onDeny={deny}
@@ -1852,6 +1969,8 @@ function PhaseRunItem({
   phaseName,
   maxReworkRounds,
   isContainer,
+  isSubProcess,
+  refreshTick,
   workspacePath,
   onApprove,
   onDeny,
@@ -1875,6 +1994,12 @@ function PhaseRunItem({
   // (fan-out / on_each_subtask), which can't be sent back in v1 (plan 029).
   maxReworkRounds: number
   isContainer: boolean
+  // Whether this phase runs a sub-process (plan 038.1): its nested run is shown as
+  // an expandable block under the row.
+  isSubProcess: boolean
+  // Bumped on every live task event so the nested sub-process view re-fetches as
+  // its child phases progress (plan 038.1).
+  refreshTick: number
   // The run's workspace path, for the per-phase file chips (plan 030b).
   workspacePath: string
   onApprove: (requestId: string, phaseRunId: string) => void
@@ -2095,6 +2220,175 @@ function PhaseRunItem({
               </div>
             )
           })}
+        </div>
+      )}
+
+      {/* The nested run of a sub-process phase (plan 038.1): expandable, lazily
+          fetched, and recursively rendered against the CHILD definition's graph. */}
+      {isSubProcess && (
+        <SubProcessNestedRun
+          parentPhaseRunId={phaseRun.id}
+          workspacePath={workspacePath}
+          onOpenTranscript={onOpenTranscript}
+          refreshTick={refreshTick}
+          depth={0}
+        />
+      )}
+    </div>
+  )
+}
+
+// The nested run beneath a sub-process phase-run (plan 038.1). Collapsed by
+// default; on expand it lazily fetches the child run (by parent_phase_run_id), its
+// definition graph, and its phase-runs, then renders them as a compact tree —
+// top-level phases with their fan-out/on_each_subtask children indented, names
+// resolved against the CHILD graph. Recurses for a sub-process phase INSIDE the
+// child (bounded by MAX_PROCESS_DEPTH). Read-only: gates/flags inside a nested run
+// surface on the shared task tail at the top level (v1 scope, plan 038.2).
+const MAX_NESTED_DEPTH = 5
+function SubProcessNestedRun({
+  parentPhaseRunId,
+  workspacePath,
+  onOpenTranscript,
+  refreshTick,
+  depth,
+}: {
+  parentPhaseRunId: string
+  workspacePath: string
+  onOpenTranscript: (phaseRun: ProcessPhaseRun) => void
+  // Bumped by the monitor on every live task event; re-fetches the child run's
+  // rows while expanded so a running nested run's phases update live (plan 038.1).
+  refreshTick: number
+  depth: number
+}) {
+  const [open, setOpen] = useState(false)
+  const [graph, setGraph] = useState<ProcessGraph | null>(null)
+  const [phaseRuns, setPhaseRuns] = useState<ProcessPhaseRun[]>([])
+  const [loaded, setLoaded] = useState(false)
+
+  const load = useCallback(async () => {
+    const runs = await window.cowork.db.processes.runs.list({ parentPhaseRunId })
+    const childRun = runs[0]
+    if (!childRun) {
+      setLoaded(true)
+      return
+    }
+    const [g, prs] = await Promise.all([
+      childRun.processId
+        ? window.cowork.db.processes.get(childRun.processId)
+        : Promise.resolve(null),
+      window.cowork.db.processes.phaseRuns.list({ runId: childRun.id }),
+    ])
+    setGraph(g)
+    setPhaseRuns(prs)
+    setLoaded(true)
+  }, [parentPhaseRunId])
+
+  // Re-fetch whenever it's open, AND whenever the monitor's live tail ticks (a
+  // nested run rides the same task tail, so its rows change as parent events fire).
+  useEffect(() => {
+    if (open) void load()
+  }, [open, load, refreshTick])
+
+  const phaseName = useCallback(
+    (phaseId: string) =>
+      graph?.phases.find((p) => p.id === phaseId)?.name ?? phaseId,
+    [graph]
+  )
+  const isSubProcess = useCallback(
+    (phaseId: string) =>
+      !!graph?.phases.find((p) => p.id === phaseId)?.subprocessId,
+    [graph]
+  )
+
+  const { topLevel, childrenOf } = useMemo(() => {
+    const top: ProcessPhaseRun[] = []
+    const kids = new Map<string, ProcessPhaseRun[]>()
+    for (const pr of phaseRuns) {
+      if (pr.parentId) {
+        const list = kids.get(pr.parentId) ?? []
+        list.push(pr)
+        kids.set(pr.parentId, list)
+      } else {
+        top.push(pr)
+      }
+    }
+    return { topLevel: top, childrenOf: kids }
+  }, [phaseRuns])
+
+  return (
+    <div className="border-l-2 border-dashed pl-3">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+      >
+        <ChevronRight
+          className={cn("size-3.5 transition-transform", open && "rotate-90")}
+        />
+        Sub-process run
+      </button>
+      {open && (
+        <div className="mt-1 flex flex-col gap-1">
+          {loaded && topLevel.length === 0 && (
+            <p className="py-2 text-xs text-muted-foreground">
+              No nested phases yet.
+            </p>
+          )}
+          {topLevel.map((pr) => (
+            <div key={pr.id} className="flex flex-col gap-0.5">
+              <div
+                onClick={
+                  pr.taskId ? () => onOpenTranscript(pr) : undefined
+                }
+                className={cn(
+                  "flex items-center gap-2 rounded-md px-1 py-0.5 text-xs",
+                  pr.taskId && "cursor-pointer hover:bg-muted/60"
+                )}
+                title={pr.taskId ? "View this phase's transcript" : undefined}
+              >
+                <StatusIcon status={pr.status} />
+                <span className="min-w-0 flex-1 truncate">
+                  {pr.title ?? phaseName(pr.phaseId)}
+                </span>
+                {pr.agentName && (
+                  <Badge
+                    variant="outline"
+                    className="shrink-0 font-mono text-[10px]"
+                  >
+                    {pr.agentName}
+                  </Badge>
+                )}
+                <PhaseStatusLabel status={pr.status} />
+              </div>
+              {(childrenOf.get(pr.id) ?? []).map((c, i) => (
+                <div
+                  key={c.id}
+                  onClick={c.taskId ? () => onOpenTranscript(c) : undefined}
+                  className={cn(
+                    "ml-3 flex items-center gap-2 rounded-md border-l-2 px-1 py-0.5 pl-2 text-xs",
+                    c.taskId && "cursor-pointer hover:bg-muted/60"
+                  )}
+                >
+                  <StatusIcon status={c.status} />
+                  <span className="min-w-0 flex-1 truncate">
+                    {c.title ?? `${phaseName(c.phaseId)} #${i + 1}`}
+                  </span>
+                  <PhaseStatusLabel status={c.status} />
+                </div>
+              ))}
+              {/* A sub-process phase INSIDE the nested run recurses (bounded). */}
+              {isSubProcess(pr.phaseId) && depth + 1 < MAX_NESTED_DEPTH && (
+                <SubProcessNestedRun
+                  parentPhaseRunId={pr.id}
+                  workspacePath={workspacePath}
+                  onOpenTranscript={onOpenTranscript}
+                  refreshTick={refreshTick}
+                  depth={depth + 1}
+                />
+              )}
+            </div>
+          ))}
         </div>
       )}
     </div>

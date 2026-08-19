@@ -680,3 +680,25 @@ DROP TABLE process_flags;
 ALTER TABLE process_flags_new RENAME TO process_flags;
 CREATE INDEX idx_process_flags_run ON process_flags(run_id);
 `
+
+// v24 (plan 038.1 — sub-processes): a phase can run ANOTHER process definition as
+// a nested run.
+//   - process_phases.subprocess_id: the referenced definition a sub-process phase
+//     runs. A phase is EITHER an agent phase (pool + routing / fan-out) OR a
+//     sub-process phase (subprocess_id set) — mutually exclusive, validated in the
+//     repo layer (the V15 bare-TEXT ruling; no CHECK-rebuild). ON DELETE SET NULL:
+//     deleting a referenced definition leaves the phase orphaned (its dispatch then
+//     fails loudly at run time) rather than cascading the parent definition away.
+//   - process_runs.parent_phase_run_id: a NESTED run's caller. NULL for a top-level
+//     run; set to the sub-process phase-run that started it, so the monitor can nest
+//     the child run's phase-runs under the phase and crash-resume can re-attach to
+//     the in-flight nested run (find-by-parent) instead of restarting it. Mirrors the
+//     process_phase_runs.parent_id / source_child_run_id self-FKs.
+// Both are pure ADD COLUMN — safe under the foreign_keys=OFF migration loop (no
+// table rebuild), matching V16's nullable-FK precedent.
+export const SCHEMA_V24 = `
+ALTER TABLE process_phases ADD COLUMN subprocess_id TEXT
+  REFERENCES process_definitions(id) ON DELETE SET NULL;
+ALTER TABLE process_runs ADD COLUMN parent_phase_run_id TEXT
+  REFERENCES process_phase_runs(id) ON DELETE SET NULL;
+`

@@ -56,6 +56,7 @@ interface ProcessPhaseRow {
   validator: number
   validator_max_iterations: number
   validator_agent: string | null
+  subprocess_id: string | null
   position: number
 }
 
@@ -73,6 +74,7 @@ function toPhase(row: ProcessPhaseRow): ProcessPhase {
     validator: row.validator === 1,
     validatorMaxIterations: row.validator_max_iterations,
     validatorAgent: row.validator_agent,
+    subprocessId: row.subprocess_id,
     position: row.position,
   }
 }
@@ -124,6 +126,7 @@ interface ProcessRunRow {
   task_id: string | null
   objective: string | null
   title: string | null
+  parent_phase_run_id: string | null
   status: ProcessRunStatus
   started_at: number | null
   finished_at: number | null
@@ -139,6 +142,7 @@ function toRun(row: ProcessRunRow): ProcessRun {
     taskId: row.task_id,
     objective: row.objective,
     title: row.title,
+    parentPhaseRunId: row.parent_phase_run_id,
     status: row.status,
     startedAt: row.started_at,
     finishedAt: row.finished_at,
@@ -259,6 +263,61 @@ export function deleteProcessDefinition(id: string): void {
 
 // ── phases ──────────────────────────────────────────────────────────────────
 
+// Author-time acyclicity guard for sub-process references (plan 038.1): the DAG
+// engine has NO runtime cycle guard, so a definition must not (transitively) run
+// itself as a sub-process. Given a prospective edge (ownerProcessId runs
+// subprocessId), returns true if adding it would close a cycle — i.e. self-
+// reference, or ownerProcessId is already reachable FROM subprocessId via the
+// existing subprocess_id references. Callers reject with an error surfaced to the
+// builder. O(V+E) DFS over the (small) subprocess reference graph.
+export function wouldCloseSubprocessCycle(
+  ownerProcessId: string,
+  subprocessId: string
+): boolean {
+  if (ownerProcessId === subprocessId) return true
+  // Build processId → set of definitions it (directly) runs as sub-processes.
+  const edges = getDb()
+    .prepare(
+      "SELECT process_id, subprocess_id FROM process_phases WHERE subprocess_id IS NOT NULL"
+    )
+    .all() as Array<{ process_id: string; subprocess_id: string }>
+  const adj = new Map<string, Set<string>>()
+  for (const e of edges) {
+    if (!adj.has(e.process_id)) adj.set(e.process_id, new Set())
+    adj.get(e.process_id)!.add(e.subprocess_id)
+  }
+  // The prospective edge closes a cycle iff ownerProcessId is reachable from
+  // subprocessId (following existing edges), since owner → subprocess would then
+  // complete a loop back to owner.
+  const seen = new Set<string>()
+  const stack = [subprocessId]
+  while (stack.length > 0) {
+    const cur = stack.pop()!
+    if (cur === ownerProcessId) return true
+    if (seen.has(cur)) continue
+    seen.add(cur)
+    for (const next of adj.get(cur) ?? []) stack.push(next)
+  }
+  return false
+}
+
+// Validate a phase's would-be sub-process/fan-out configuration before a write:
+// the two are mutually exclusive (a phase runs EITHER a nested process OR fans
+// out to agent workers), and a sub-process reference must not close a cycle.
+// Throws on violation (the repo is the single chokepoint — both createPhase and
+// updatePhase route through it, so direct repo callers are covered too).
+function assertSubprocessValid(
+  ownerProcessId: string,
+  subprocessId: string | null | undefined,
+  fanOut: boolean | undefined
+): void {
+  if (!subprocessId) return
+  if (fanOut)
+    throw new Error("a phase cannot be both fan-out and a sub-process")
+  if (wouldCloseSubprocessCycle(ownerProcessId, subprocessId))
+    throw new Error("sub-process would create a cycle")
+}
+
 export function createPhase(input: {
   processId: string
   key: string
@@ -271,12 +330,14 @@ export function createPhase(input: {
   validator?: boolean
   validatorMaxIterations?: number
   validatorAgent?: string | null
+  subprocessId?: string | null
   position: number
 }): ProcessPhase {
+  assertSubprocessValid(input.processId, input.subprocessId, input.fanOut)
   const id = randomUUID()
   getDb()
     .prepare(
-      "INSERT INTO process_phases (id, process_id, key, name, routing, gate_policy, fan_out, max_rework_rounds, dot_folder, validator, validator_max_iterations, validator_agent, position) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+      "INSERT INTO process_phases (id, process_id, key, name, routing, gate_policy, fan_out, max_rework_rounds, dot_folder, validator, validator_max_iterations, validator_agent, subprocess_id, position) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )
     .run(
       id,
@@ -291,6 +352,7 @@ export function createPhase(input: {
       input.validator ? 1 : 0,
       input.validatorMaxIterations ?? 0,
       input.validatorAgent ?? null,
+      input.subprocessId ?? null,
       input.position
     )
   return getPhase(id)!
@@ -325,9 +387,25 @@ export function updatePhase(
     validator?: boolean
     validatorMaxIterations?: number
     validatorAgent?: string | null
+    subprocessId?: string | null
     position?: number
   }
 ): ProcessPhase {
+  // Validate the sub-process/fan-out combination against the EFFECTIVE state (the
+  // patch may set only one side, so read the current phase for the other) before
+  // any write (plan 038.1).
+  if (patch.subprocessId !== undefined || patch.fanOut !== undefined) {
+    const current = getPhase(id)
+    if (current) {
+      const nextSubprocessId =
+        patch.subprocessId !== undefined
+          ? patch.subprocessId
+          : current.subprocessId
+      const nextFanOut =
+        patch.fanOut !== undefined ? patch.fanOut : current.fanOut
+      assertSubprocessValid(current.processId, nextSubprocessId, nextFanOut)
+    }
+  }
   const sets: string[] = []
   const values: unknown[] = []
   if (patch.key !== undefined) {
@@ -369,6 +447,10 @@ export function updatePhase(
   if (patch.validatorAgent !== undefined) {
     sets.push("validator_agent = ?")
     values.push(patch.validatorAgent)
+  }
+  if (patch.subprocessId !== undefined) {
+    sets.push("subprocess_id = ?")
+    values.push(patch.subprocessId)
   }
   if (patch.position !== undefined) {
     sets.push("position = ?")
@@ -487,13 +569,15 @@ export function createProcessRun(input: {
   workspaceId?: string | null
   taskId?: string | null
   objective?: string | null
+  // A nested run's caller (plan 038.1): the sub-process phase-run that started it.
+  parentPhaseRunId?: string | null
   status?: ProcessRunStatus
 }): ProcessRun {
   const id = randomUUID()
   const now = Date.now()
   getDb()
     .prepare(
-      "INSERT INTO process_runs (id, process_id, source_conversation_id, workspace_id, task_id, objective, status, started_at, finished_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+      "INSERT INTO process_runs (id, process_id, source_conversation_id, workspace_id, task_id, objective, parent_phase_run_id, status, started_at, finished_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )
     .run(
       id,
@@ -502,12 +586,25 @@ export function createProcessRun(input: {
       input.workspaceId ?? null,
       input.taskId ?? null,
       input.objective ?? null,
+      input.parentPhaseRunId ?? null,
       input.status ?? "queued",
       null,
       null,
       now
     )
   return getProcessRun(id)!
+}
+
+// The nested run started by a sub-process phase-run (plan 038.1). At most one per
+// phase-run (the closure looks-up-or-creates), so crash-resume re-attaches to the
+// in-flight child run instead of restarting it.
+export function getProcessRunByParentPhaseRunId(
+  phaseRunId: string
+): ProcessRun | undefined {
+  const row = getDb()
+    .prepare("SELECT * FROM process_runs WHERE parent_phase_run_id = ? LIMIT 1")
+    .get(phaseRunId) as ProcessRunRow | undefined
+  return row ? toRun(row) : undefined
 }
 
 export function getProcessRun(id: string): ProcessRun | undefined {
@@ -520,6 +617,7 @@ export function getProcessRun(id: string): ProcessRun | undefined {
 export function listProcessRuns(opts?: {
   processId?: string
   status?: ProcessRunStatus
+  parentPhaseRunId?: string
 }): ProcessRun[] {
   const clauses: string[] = []
   const values: unknown[] = []
@@ -530,6 +628,10 @@ export function listProcessRuns(opts?: {
   if (opts?.status) {
     clauses.push("status = ?")
     values.push(opts.status)
+  }
+  if (opts?.parentPhaseRunId) {
+    clauses.push("parent_phase_run_id = ?")
+    values.push(opts.parentPhaseRunId)
   }
   const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : ""
   const rows = getDb()

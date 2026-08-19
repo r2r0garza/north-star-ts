@@ -25,6 +25,7 @@ import {
   type BuildEachSubtaskPrompt,
   type Decompose,
   type RunPhase,
+  type RunSubProcess,
   type SchedulerCtx,
   type Validate,
 } from "./scheduler"
@@ -54,6 +55,7 @@ function buildProcess(spec: {
     fanOut?: boolean
     validator?: boolean
     validatorMaxIterations?: number
+    subprocessId?: string
   }>
   edges?: Array<[string, string] | [string, string, "on_each_subtask"]>
 }): string {
@@ -68,6 +70,7 @@ function buildProcess(spec: {
       fanOut: p.fanOut ?? false,
       validator: p.validator ?? false,
       validatorMaxIterations: p.validatorMaxIterations ?? 0,
+      subprocessId: p.subprocessId,
       position: i,
     })
     byKey.set(p.key, phase.id)
@@ -100,6 +103,8 @@ function makeCtx(
     validate?: Validate
     requireFlagApproval?: boolean
     applyFlag?: (flag: ProcessFlag) => void
+    runSubProcess?: RunSubProcess
+    processDepth?: number
   }
 ): { ctx: SchedulerCtx; events: TaskEventPayload[]; runId: string } {
   const taskId = freshTask()
@@ -125,6 +130,8 @@ function makeCtx(
     validate: opts?.validate,
     requireFlagApproval: opts?.requireFlagApproval,
     applyFlag: opts?.applyFlag,
+    runSubProcess: opts?.runSubProcess,
+    processDepth: opts?.processDepth,
   }
   return { ctx, events, runId: run.id }
 }
@@ -1290,5 +1297,140 @@ describe("subtaskTitle", () => {
 
   it("handles leading blank lines and whitespace", () => {
     expect(subtaskTitle("\n\n   Trimmed title  \n")).toBe("Trimmed title")
+  })
+})
+
+describe.skipIf(!sqliteLoads)("scheduler — sub-process phase (plan 038.1)", () => {
+  // A parent process: a (sub-process) -> b. The sub-process is a separate
+  // definition; the scheduler dispatches phase `a` via the injected runSubProcess
+  // (never runPhase), settles it off the closure's result, then releases `b`.
+  const buildParentWithSubprocess = (): {
+    pid: string
+    subId: string
+    subPhaseId: string
+  } => {
+    const sub = buildProcess({ phases: [{ key: "inner" }] })
+    const subGraph = processes.getProcessGraph(sub)!
+    const pid = buildProcess({
+      phases: [{ key: "a", subprocessId: sub }, { key: "b" }],
+      edges: [["a", "b"]],
+    })
+    return { pid, subId: sub, subPhaseId: subGraph.phases[0].id }
+  }
+
+  it("runs a sub-process phase inline, completes it, and releases downstream", async () => {
+    const { pid } = buildParentWithSubprocess()
+    const ranWorker: string[] = []
+    const ranSub: string[] = []
+    // A sub-process phase must NEVER go through runPhase.
+    const runPhase: RunPhase = async ({ phase }) => {
+      ranWorker.push(phase.key)
+      return { content: phase.key }
+    }
+    const runSubProcess: RunSubProcess = async ({ phase }) => {
+      ranSub.push(phase.key)
+      return { content: "nested done" }
+    }
+    const { ctx, runId } = makeCtx(pid, runPhase, { runSubProcess })
+    await runScheduler(ctx)
+    expect(ranSub).toEqual(["a"]) // a ran as a sub-process
+    expect(ranWorker).toEqual(["b"]) // only b ran a worker
+    expect(statusByKey(runId, pid)).toEqual({
+      a: "completed",
+      b: "completed",
+    })
+  })
+
+  it("fails the parent phase when the nested run fails (non-retryable)", async () => {
+    const { pid } = buildParentWithSubprocess()
+    const runPhase: RunPhase = async ({ phase }) => ({ content: phase.key })
+    let calls = 0
+    const runSubProcess: RunSubProcess = async () => {
+      calls++
+      return { error: "sub-process run failed", retryable: false }
+    }
+    const { ctx, runId } = makeCtx(pid, runPhase, { runSubProcess })
+    await expect(runScheduler(ctx)).rejects.toThrow(/failed/)
+    expect(calls).toBe(1) // no retry
+    expect(statusByKey(runId, pid).a).toBe("failed")
+    expect(statusByKey(runId, pid).b).toBe("pending") // dependent never ran
+  })
+
+  it("fails loudly when no runSubProcess is injected", async () => {
+    const { pid } = buildParentWithSubprocess()
+    const runPhase: RunPhase = async ({ phase }) => ({ content: phase.key })
+    const { ctx, runId } = makeCtx(pid, runPhase) // no runSubProcess
+    await expect(runScheduler(ctx)).rejects.toThrow(/failed/)
+    expect(statusByKey(runId, pid).a).toBe("failed")
+  })
+
+  it("is not treated as a container: a running sub-process phase resets to pending on resume and re-dispatches", async () => {
+    const { pid } = buildParentWithSubprocess()
+    const runPhase: RunPhase = async ({ phase }) => ({ content: phase.key })
+    // Leave the sub-process phase-run `running` (simulate a crash mid-nested-run),
+    // then a fresh scheduler pass must reset it to pending and re-dispatch it — a
+    // container-with-children would instead be left running.
+    const { ctx, runId } = makeCtx(pid, runPhase, {
+      runSubProcess: async () => ({ content: "nested done" }),
+    })
+    // Seed the sub-process phase-run as `running` (a crash mid-nested-run leaves
+    // it so). Phase-runs are created lazily by the scheduler, so create it here.
+    const aPhaseId = processes
+      .getProcessGraph(pid)!
+      .phases.find((p) => p.key === "a")!.id
+    processes.createPhaseRun({
+      runId,
+      phaseId: aPhaseId,
+      status: "running",
+    })
+
+    const dispatched: string[] = []
+    await runScheduler({
+      run: processes.getProcessRun(runId)!,
+      graph: processes.getProcessGraph(pid)!,
+      taskId: ctx.taskId,
+      signal: new AbortController().signal,
+      emit: () => {},
+      runPhase,
+      runSubProcess: async ({ phase }) => {
+        dispatched.push(phase.key)
+        return { content: "nested done" }
+      },
+    })
+    expect(dispatched).toEqual(["a"]) // re-dispatched (was reset from running)
+    expect(statusByKey(runId, pid).a).toBe("completed")
+  })
+
+  it("blocks dependents on a gated sub-process phase until approved, then releases", async () => {
+    // a (sub-process, approve) -> b. The sub-process settles `completed` like a
+    // normal phase, so the approve gate fires and blocks b (plan 038.1 §6).
+    const sub = buildProcess({ phases: [{ key: "inner" }] })
+    const pid = buildProcess({
+      phases: [
+        { key: "a", subprocessId: sub, gate: "approve" },
+        { key: "b" },
+      ],
+      edges: [["a", "b"]],
+    })
+    const runPhase: RunPhase = async ({ phase }) => ({ content: phase.key })
+    const runSubProcess: RunSubProcess = async () => ({ content: "nested done" })
+    const { ctx, runId } = makeCtx(pid, runPhase, { runSubProcess })
+    await expect(runScheduler(ctx)).rejects.toBeInstanceOf(GateBlockedError)
+    expect(statusByKey(runId, pid).a).toBe("completed")
+    expect(statusByKey(runId, pid).b).toBe("pending")
+
+    const pending = listApprovals({ taskId: ctx.taskId, status: "pending" })
+    expect(pending).toHaveLength(1)
+    resolveApproval(pending[0].id, { status: "approved" })
+    await runScheduler({
+      run: processes.getProcessRun(runId)!,
+      graph: processes.getProcessGraph(pid)!,
+      taskId: ctx.taskId,
+      signal: new AbortController().signal,
+      emit: () => {},
+      runPhase,
+      runSubProcess,
+    })
+    expect(statusByKey(runId, pid).b).toBe("completed")
   })
 })

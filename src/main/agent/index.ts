@@ -541,6 +541,13 @@ export interface RunAgentLoopOptions {
   // the run's graph + record a durable cross-phase rework flag. Absent otherwise.
   processRunId?: string
   processPhaseRunId?: string
+  // Withhold the ask_user_question tool: this turn has NO interactive user to
+  // answer a clarifying question, so offering the tool only lets the worker stall
+  // until it's interrupted. Set by every Process worker fork (phase / decompose /
+  // validate) — they run headless with a swallowed onEvent, unlike a durable task,
+  // which surfaces the question in the activity panel. The worker proceeds on
+  // reasonable assumptions instead (its kickoff frames the work as self-contained).
+  suppressUserQuestions?: boolean
 }
 
 // The on-disk directory associated with a conversation, used to discover
@@ -808,8 +815,10 @@ export async function runAgentLoop(
       // implementing). Withheld only where plans don't apply (Chat/subagents,
       // which have no conversationId path into a plan file anyway).
       ...(showTodos ? [readPlanTool.definition] : []),
-      // ask_user_question is offered in every mode — clarification is universal.
-      askUserQuestionTool.definition,
+      // ask_user_question is offered in every mode — clarification is universal —
+      // EXCEPT a headless worker with no interactive user to answer (a Process
+      // phase/decompose/validate worker), where it can only stall until interrupted.
+      ...(opts.suppressUserQuestions ? [] : [askUserQuestionTool.definition]),
       readSkillTool.definition,
     ])
   // The non-droppable base prompt (mode prompt). Everything else is a droppable

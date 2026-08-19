@@ -23,8 +23,10 @@ import {
   updateProcessDefinition,
   deleteProcessDefinition,
   createPhase,
+  getPhase,
   listPhases,
   updatePhase,
+  wouldCloseSubprocessCycle,
   createPhaseAgent,
   listPhaseAgents,
   createEdge,
@@ -32,6 +34,7 @@ import {
   getProcessGraph,
   createProcessRun,
   getProcessRun,
+  getProcessRunByParentPhaseRunId,
   listProcessRuns,
   updateProcessRun,
   createPhaseRun,
@@ -65,7 +68,21 @@ describe.skipIf(!sqliteLoads)("v15 migration", () => {
   })
 
   it("reaches the latest user_version", () => {
-    expect(db.pragma("user_version", { simple: true })).toBe(23)
+    expect(db.pragma("user_version", { simple: true })).toBe(24)
+  })
+
+  it("adds the v24 subprocess_id column to process_phases", () => {
+    const cols = (
+      db.pragma("table_info(process_phases)") as Array<{ name: string }>
+    ).map((c) => c.name)
+    expect(cols).toContain("subprocess_id")
+  })
+
+  it("adds the v24 parent_phase_run_id column to process_runs", () => {
+    const cols = (
+      db.pragma("table_info(process_runs)") as Array<{ name: string }>
+    ).map((c) => c.name)
+    expect(cols).toContain("parent_phase_run_id")
   })
 
   it("adds the v18 title column to process_runs", () => {
@@ -299,5 +316,126 @@ describe.skipIf(!sqliteLoads)("runs + phase runs", () => {
     })
     deleteProcessDefinition(def.id)
     expect(getProcessRun(run.id)!.processId).toBeNull()
+  })
+})
+
+describe.skipIf(!sqliteLoads)("sub-processes (plan 038.1)", () => {
+  it("subprocess_id defaults null and round-trips through create/update", () => {
+    const parent = createProcessDefinition({ name: "Parent" })
+    const sub = createProcessDefinition({ name: "Sub" })
+    const phase = createPhase({
+      processId: parent.id,
+      key: "impl",
+      name: "Implement",
+      position: 0,
+    })
+    expect(getPhase(phase.id)!.subprocessId).toBeNull()
+    updatePhase(phase.id, { subprocessId: sub.id })
+    expect(getPhase(phase.id)!.subprocessId).toBe(sub.id)
+    updatePhase(phase.id, { subprocessId: null })
+    expect(getPhase(phase.id)!.subprocessId).toBeNull()
+  })
+
+  it("rejects a phase that is both fan-out and a sub-process", () => {
+    const parent = createProcessDefinition({ name: "Parent" })
+    const sub = createProcessDefinition({ name: "Sub" })
+    expect(() =>
+      createPhase({
+        processId: parent.id,
+        key: "impl",
+        name: "Implement",
+        fanOut: true,
+        subprocessId: sub.id,
+        position: 0,
+      })
+    ).toThrow(/both fan-out and a sub-process/)
+    // Also on update: a fan-out phase can't gain a subprocess_id.
+    const fan = createPhase({
+      processId: parent.id,
+      key: "fan",
+      name: "Fan",
+      fanOut: true,
+      position: 1,
+    })
+    expect(() => updatePhase(fan.id, { subprocessId: sub.id })).toThrow(
+      /both fan-out and a sub-process/
+    )
+  })
+
+  it("rejects a self-referential sub-process (cycle)", () => {
+    const def = createProcessDefinition({ name: "Self" })
+    expect(() =>
+      createPhase({
+        processId: def.id,
+        key: "a",
+        name: "A",
+        subprocessId: def.id,
+        position: 0,
+      })
+    ).toThrow(/cycle/)
+    expect(wouldCloseSubprocessCycle(def.id, def.id)).toBe(true)
+  })
+
+  it("rejects a 2-hop sub-process cycle but allows an acyclic chain", () => {
+    // A runs B, B runs C — acyclic. Then C running A would close a cycle.
+    const A = createProcessDefinition({ name: "A" })
+    const B = createProcessDefinition({ name: "B" })
+    const C = createProcessDefinition({ name: "C" })
+    createPhase({
+      processId: A.id,
+      key: "ab",
+      name: "AB",
+      subprocessId: B.id,
+      position: 0,
+    })
+    createPhase({
+      processId: B.id,
+      key: "bc",
+      name: "BC",
+      subprocessId: C.id,
+      position: 0,
+    })
+    // C -> A closes A -> B -> C -> A.
+    expect(wouldCloseSubprocessCycle(C.id, A.id)).toBe(true)
+    expect(() =>
+      createPhase({
+        processId: C.id,
+        key: "ca",
+        name: "CA",
+        subprocessId: A.id,
+        position: 0,
+      })
+    ).toThrow(/cycle/)
+    // C -> a brand-new definition D is fine (no cycle).
+    const D = createProcessDefinition({ name: "D" })
+    expect(wouldCloseSubprocessCycle(C.id, D.id)).toBe(false)
+  })
+
+  it("parent_phase_run_id round-trips and getProcessRunByParentPhaseRunId finds the nested run", () => {
+    const parent = createProcessDefinition({ name: "Parent" })
+    const sub = createProcessDefinition({ name: "Sub" })
+    const phase = createPhase({
+      processId: parent.id,
+      key: "impl",
+      name: "Implement",
+      subprocessId: sub.id,
+      position: 0,
+    })
+    const run = createProcessRun({
+      processId: parent.id,
+      sourceConversationId: null,
+    })
+    const implRun = createPhaseRun({ runId: run.id, phaseId: phase.id })
+    expect(getProcessRun(run.id)!.parentPhaseRunId).toBeNull()
+    const child = createProcessRun({
+      processId: sub.id,
+      sourceConversationId: null,
+      parentPhaseRunId: implRun.id,
+    })
+    expect(getProcessRun(child.id)!.parentPhaseRunId).toBe(implRun.id)
+    expect(getProcessRunByParentPhaseRunId(implRun.id)!.id).toBe(child.id)
+    expect(
+      listProcessRuns({ parentPhaseRunId: implRun.id }).map((r) => r.id)
+    ).toEqual([child.id])
   })
 })

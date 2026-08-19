@@ -41,6 +41,13 @@ export const PER_RUN_CONCURRENCY = 4
 // Bounded retry for a phase whose worker returns a transient (retryable) error.
 const MAX_PHASE_ATTEMPTS = 3
 
+// The max nesting depth for sub-process phases (plan 038.1): a sub-process phase
+// runs another definition inline, which can itself contain sub-process phases.
+// The DAG has no cycle guard, and the author-time acyclicity check can't catch a
+// definition edited after a run started, so this runtime backstop is mandatory.
+// Mirrors agents/types.ts MAX_AGENT_DEPTH (the spawn_subagent precedent).
+export const MAX_PROCESS_DEPTH = 5
+
 // Default cap on validator review rounds when a phase sets no explicit override
 // (plan 031.1). NEVER unlimited — the DAG has no cycle guard, so a reset →
 // re-run loop behind the validator must terminate. On exhaustion the phase
@@ -93,6 +100,20 @@ export type RunPhase = (input: {
   phase: ProcessPhase
   subtaskPrompt?: string
   // Chained to the run's abort signal by the caller.
+  signal: AbortSignal
+}) => Promise<PhaseResult>
+
+// Runs a SUB-PROCESS phase (plan 038.1): instead of a worker, the phase starts a
+// nested run of `phase.subprocessId` inline (recursively driving the child graph,
+// sharing this run's taskId/signal) and returns its aggregated outcome as a
+// PhaseResult. `depth` is the current nesting depth for the MAX_PROCESS_DEPTH
+// backstop. Injected so tests can stub it and a graph with no sub-process phases
+// needs none (a sub-process phase with no runner fails loudly, like a fan-out
+// phase with no decomposer).
+export type RunSubProcess = (input: {
+  phaseRun: ProcessPhaseRun
+  phase: ProcessPhase
+  depth: number
   signal: AbortSignal
 }) => Promise<PhaseResult>
 
@@ -174,6 +195,14 @@ export interface SchedulerCtx {
   // imported directly) so tests can stub the reset. Absent → flags are left pending
   // (inert), so the feature is safe when unwired.
   applyFlag?: (flag: ProcessFlag) => void
+  // Runs a SUB-PROCESS phase's nested run (plan 038.1). Optional so a graph with no
+  // sub-process phases needs none; a sub-process phase with no runner injected fails
+  // loudly (like a fan-out phase with no decomposer). Inert when unwired.
+  runSubProcess?: RunSubProcess
+  // The current sub-process nesting depth (plan 038.1). 0 for a top-level run; the
+  // service increments it for a nested run. Threaded to runSubProcess for the
+  // MAX_PROCESS_DEPTH backstop.
+  processDepth?: number
 }
 
 // A gate's durable approval request blob (stored on the approvals row). Kinds
@@ -627,6 +656,31 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
     inFlight.set(pr.id, promise)
   }
 
+  // Dispatch a SUB-PROCESS phase (plan 038.1): set the phase-run `running`, then run
+  // its nested run to completion inline via runSubProcessWithRetry. Unlike a fan-out
+  // parent, a sub-process phase-run has exactly ONE unit of in-flight work (the
+  // whole nested run), so it settles DIRECTLY off the closure's result — it is NOT a
+  // container (no derive/abort-sweep machinery). Keyed in inFlight by its own run id,
+  // exactly like a normal phase (dispatch), so it holds one PER_RUN_CONCURRENCY slot.
+  const dispatchSubProcess = (phase: ProcessPhase): void => {
+    const pr = runByPhaseId.get(phase.id)!
+    processes.updatePhaseRun(pr.id, {
+      status: "running",
+      startedAt: Date.now(),
+    })
+    ctx.emit({
+      type: "process_phase",
+      runId: run.id,
+      phaseRunId: pr.id,
+      phaseKey: phase.key,
+      agentName: pr.agentName,
+      status: "running",
+      parentId: pr.parentId,
+    })
+    const promise = runSubProcessWithRetry(phase, pr).then(() => pr.id)
+    inFlight.set(pr.id, promise)
+  }
+
   // Create N child phase-runs + persist their sub-task prompts in ONE transaction
   // so a crash between the two can't leave prompt-less children. Populates the
   // in-memory childPrompts map only AFTER the transaction commits.
@@ -1031,6 +1085,57 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
     }
   }
 
+  // Settle a SUB-PROCESS phase (plan 038.1) off its nested run's outcome. A trimmed
+  // runPhaseWithRetry: NO validator (a sub-process's own phases carry their own
+  // validators — the parent phase just aggregates), NO subtaskPrompt, and NO retry
+  // (re-driving the same child run is deterministic — the idempotent seed never
+  // resets a failed frontier, so recovery is parent-level restartRun, plan 038.2).
+  // A GateBlockedError from inside the nested run propagates uncaught (the whole run
+  // pauses on the shared task). Absent runner → fail loudly (mirrors the no-decomposer
+  // guard) so a mis-wired engine never silently completes a sub-process phase.
+  const runSubProcessWithRetry = async (
+    phase: ProcessPhase,
+    phaseRun: ProcessPhaseRun
+  ): Promise<void> => {
+    if (!ctx.runSubProcess) {
+      processes.updatePhaseRun(phaseRun.id, {
+        status: "failed",
+        error: "sub-process phase has no runner configured",
+        finishedAt: Date.now(),
+      })
+      emitPhase(phase, phaseRun.id, "failed")
+      return
+    }
+    const result = await ctx.runSubProcess({
+      phaseRun,
+      phase,
+      depth: ctx.processDepth ?? 0,
+      signal: ctx.signal,
+    })
+    if (result.stopped || ctx.signal.aborted) {
+      processes.updatePhaseRun(phaseRun.id, {
+        status: "cancelled",
+        finishedAt: Date.now(),
+      })
+      emitPhase(phase, phaseRun.id, "cancelled")
+      return
+    }
+    if (result.error) {
+      processes.updatePhaseRun(phaseRun.id, {
+        status: "failed",
+        error: result.error,
+        finishedAt: Date.now(),
+      })
+      emitPhase(phase, phaseRun.id, "failed")
+      return
+    }
+    processes.updatePhaseRun(phaseRun.id, {
+      status: "completed",
+      finishedAt: Date.now(),
+    })
+    emitPhase(phase, phaseRun.id, "completed")
+  }
+
   const emitPhase = (
     phase: ProcessPhase,
     phaseRunId: string,
@@ -1124,7 +1229,8 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
     if (!flagPending)
       for (const phase of ready) {
         if (inFlight.size >= PER_RUN_CONCURRENCY) break
-        if (phase.fanOut) dispatchDecompose(phase)
+        if (phase.subprocessId) dispatchSubProcess(phase)
+        else if (phase.fanOut) dispatchDecompose(phase)
         else dispatch(phase)
       }
 

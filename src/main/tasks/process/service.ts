@@ -13,6 +13,7 @@ import type { TaskRunner, TaskExecutor } from "../runner"
 import type { LlmSelection } from "../../agent/providers"
 import { route } from "./router"
 import type {
+  ProcessGraph,
   ProcessPhase,
   ProcessPhaseRun,
   ProcessRun,
@@ -29,12 +30,14 @@ import {
 } from "./prompts"
 import {
   GateBlockedError,
+  MAX_PROCESS_DEPTH,
   runScheduler,
   type BuildEachSubtaskPrompt,
   type Decompose,
   type DecomposeResult,
   type PhaseResult,
   type RunPhase,
+  type RunSubProcess,
   type Validate,
 } from "./scheduler"
 import { applyFlagBack } from "./flagback"
@@ -208,6 +211,13 @@ export class ProcessService {
     const phase = processes.getPhase(phaseRun.phaseId)
     if (!phase) return run
 
+    // Reject a sub-process phase (plan 038.1): a "Request changes" note has no
+    // worker to inject into — the phase's work is a nested run. Re-driving the child
+    // with feedback is deferred to 038.2. Guard explicitly (a sub-process phase is
+    // NOT caught by the container predicate below).
+    if (phase.subprocessId)
+      throw new Error("cannot request changes on a sub-process phase (v1)")
+
     // Reject a container phase (fan-out / on_each_subtask consumer of a fan-out
     // source): resetting it to `pending` would re-decompose / re-trigger and
     // duplicate children — sub-DAG replay is plan 031's concern. Same container
@@ -373,24 +383,65 @@ export class ProcessService {
     })
 
     try {
+      // The top-level run is at depth 0. A sub-process phase recurses via driveRun
+      // with depth+1 (plan 038.1), sharing this task's id/signal/emit.
+      await this.driveRun({ run, graph, taskId: task.id, signal, emit, depth: 0 })
+      return { content: "process complete" }
+    } catch (err) {
+      // An approval gate unwinds the scheduler: settle the task `paused` (durable
+      // resume). The run is already waiting_for_approval (raiseGate set it). A gate
+      // raised INSIDE a nested run (plan 038.1) propagates here the same way.
+      if (err instanceof GateBlockedError) return { paused: true }
+      // Cancellation: the signal aborted; driveRun already set the run cancelled.
+      if (signal.aborted) return { stopped: true }
+      // Scheduling failures (a failed phase blocking the DAG) are deterministic —
+      // a retry re-runs the same graph to the same wall, so don't retry. driveRun
+      // already set the run failed.
+      const message = err instanceof Error ? err.message : String(err)
+      return { error: message, retryable: false }
+    }
+  }
+
+  // Drive one process run to quiescence via the scheduler (plan 025), reusable for
+  // both the top-level run (execute) and a NESTED sub-process run (plan 038.1). All
+  // closures are rebuilt bound to THIS run + graph; the taskId/signal/emit are
+  // SHARED down the nesting chain (one runner slot, one abort cancels the tree, one
+  // event tail). Owns its run's terminal status: completed on clean return, failed
+  // on a scheduling error, cancelled on abort. A GateBlockedError is re-thrown
+  // WITHOUT setting a status (the phase-run is parked waiting_for_approval by
+  // raiseGate) so it propagates to the top-level execute and pauses the whole task.
+  private async driveRun(input: {
+    run: ProcessRun
+    graph: ProcessGraph
+    taskId: string
+    signal: AbortSignal
+    emit: Parameters<TaskExecutor>[0]["emit"]
+    depth: number
+  }): Promise<void> {
+    const { run, graph, taskId, signal, emit, depth } = input
+    try {
       await runScheduler({
         run,
         graph,
-        taskId: task.id,
+        taskId,
         signal,
         emit,
         runPhase: this.makeRunPhase(run),
         decompose: this.makeDecompose(run),
         buildEachSubtaskPrompt: this.makeBuildEachSubtaskPrompt(run),
         validate: this.makeValidate(run),
+        // Sub-process phases (plan 038.1): run a nested definition inline. The depth
+        // rides in so the closure enforces MAX_PROCESS_DEPTH and recurses at depth+1.
+        runSubProcess: this.makeRunSubProcess(run, taskId, emit),
+        processDepth: depth,
         // Cross-phase flag-back (plan 031.2): the definition's autonomy toggle, and
         // the reset applier (delegated to flagback.ts — one reset code path shared
         // with the confirm route).
         requireFlagApproval: graph.definition.requireFlagApproval,
         applyFlag: (flag) =>
           applyFlagBack({
-            taskId: task.id,
-            runId,
+            taskId,
+            runId: run.id,
             graph,
             target: {
               targetPhaseId: flag.targetPhaseId,
@@ -399,32 +450,130 @@ export class ProcessService {
             reason: flag.reason,
           }),
       })
-      processes.updateProcessRun(runId, {
+      processes.updateProcessRun(run.id, {
         status: "completed",
         finishedAt: Date.now(),
       })
-      return { content: "process complete" }
     } catch (err) {
-      // An approval gate unwinds the scheduler: settle the task `paused` (durable
-      // resume). The run is already waiting_for_approval (raiseGate set it).
-      if (err instanceof GateBlockedError) return { paused: true }
-      // Cancellation: the signal aborted; settle `stopped` (→ cancelled).
+      if (err instanceof GateBlockedError) throw err
       if (signal.aborted) {
-        processes.updateProcessRun(runId, {
+        processes.updateProcessRun(run.id, {
           status: "cancelled",
           finishedAt: Date.now(),
         })
-        return { stopped: true }
+      } else {
+        processes.updateProcessRun(run.id, {
+          status: "failed",
+          finishedAt: Date.now(),
+        })
       }
-      const message = err instanceof Error ? err.message : String(err)
-      processes.updateProcessRun(runId, {
-        status: "failed",
-        finishedAt: Date.now(),
-      })
-      // Scheduling failures (a failed phase blocking the DAG) are deterministic —
-      // a retry re-runs the same graph to the same wall, so don't retry.
-      return { error: message, retryable: false }
+      throw err
     }
+  }
+
+  // Build the RunSubProcess closure for a run (plan 038.1). When the scheduler
+  // dispatches a sub-process phase, this starts (or re-attaches to) a nested run of
+  // the phase's referenced definition and drives it inline via driveRun — sharing
+  // the parent's taskId/signal/emit, holding one PER_RUN_CONCURRENCY slot, never a
+  // second enqueued task (the spawn_subagent no-deadlock ruling). Returns the nested
+  // run's outcome as a PhaseResult so runSubProcessWithRetry settles the phase.
+  private makeRunSubProcess(
+    parentRun: ProcessRun,
+    taskId: string,
+    emit: Parameters<TaskExecutor>[0]["emit"]
+  ): RunSubProcess {
+    return async ({ phase, phaseRun, depth, signal }) => {
+      // Runtime cycle/depth backstop: the author-time acyclicity check can't cover a
+      // definition edited after a run started, so bound nesting here.
+      if (depth >= MAX_PROCESS_DEPTH)
+        return {
+          error: `max sub-process depth (${MAX_PROCESS_DEPTH}) reached`,
+          retryable: false,
+        }
+      if (!phase.subprocessId)
+        return { error: "sub-process phase has no subprocess_id", retryable: false }
+      const childGraph = processes.getProcessGraph(phase.subprocessId)
+      if (!childGraph)
+        return {
+          error: "sub-process definition not found (was it deleted?)",
+          retryable: false,
+        }
+
+      // Look-up-or-create the nested run linked to THIS phase-run. On crash-resume
+      // the phase-run reset to `pending` and re-dispatches; re-attaching to the
+      // existing child run (rather than creating a new one) lets its own scheduler
+      // resume its completed phases instead of restarting the sub-process.
+      let childRun = processes.getProcessRunByParentPhaseRunId(phaseRun.id)
+      if (!childRun) {
+        childRun = processes.createProcessRun({
+          processId: phase.subprocessId,
+          sourceConversationId: parentRun.sourceConversationId,
+          workspaceId: parentRun.workspaceId,
+          objective: parentRun.objective,
+          parentPhaseRunId: phaseRun.id,
+          taskId,
+          status: "running",
+        })
+      }
+
+      // Drive the nested run inline at depth+1, sharing the parent's task/signal/emit.
+      // A GateBlockedError inside propagates (pauses the whole run); an abort/failure
+      // sets the child run's status, which we map back to the parent phase-run below.
+      await this.driveRun({
+        run: childRun,
+        graph: childGraph,
+        taskId,
+        signal,
+        emit,
+        depth: depth + 1,
+      })
+
+      const settled = processes.getProcessRun(childRun.id)
+      if (signal.aborted || settled?.status === "cancelled")
+        return { stopped: true }
+      if (settled?.status !== "completed")
+        return { error: "sub-process run failed", retryable: false }
+      return { content: this.aggregateSubProcessContent(phaseRun.id) ?? undefined }
+    }
+  }
+
+  // The aggregated output of a sub-process phase (plan 038.1): concatenate the final
+  // content of the nested run's completed TOP-LEVEL phases, so a downstream phase's
+  // upstream digest is real. Reuses the same per-phase rule collectUpstream uses (a
+  // container phase → its children's aggregate; a plain phase → its worker's last
+  // assistant message). Null if the nested run is missing / not completed.
+  private aggregateSubProcessContent(
+    parentPhaseRunId: string
+  ): string | null {
+    const childRun = processes.getProcessRunByParentPhaseRunId(parentPhaseRunId)
+    if (!childRun || childRun.status !== "completed") return null
+    const phaseRuns = processes.listPhaseRuns({
+      runId: childRun.id,
+      parentId: null,
+    })
+    const childGraph = childRun.processId
+      ? processes.getProcessGraph(childRun.processId)
+      : undefined
+    const phasesById = new Map(
+      (childGraph?.phases ?? []).map((p) => [p.id, p])
+    )
+    const parts: string[] = []
+    for (const pr of phaseRuns) {
+      if (pr.status !== "completed") continue
+      const hasChildren =
+        processes.listPhaseRuns({ runId: childRun.id, parentId: pr.id }).length >
+        0
+      const content = hasChildren
+        ? this.aggregateChildContent(childRun.id, pr.id)
+        : pr.taskId
+          ? this.lastAssistantContent(pr)
+          : null
+      if (content) {
+        const label = phasesById.get(pr.phaseId)?.name ?? "Phase"
+        parts.push(`#### ${label}\n${content.trim()}`)
+      }
+    }
+    return parts.length > 0 ? parts.join("\n\n") : null
   }
 
   // Build the production RunPhase closure for a run: fork a worker conversation
@@ -521,6 +670,9 @@ export class ProcessService {
           // flag_for_rework tool reach the run's graph + record a durable flag.
           processRunId: run.id,
           processPhaseRunId: phaseRun.id,
+          // Headless worker: no user to answer a clarifying question (it would only
+          // stall until interrupted). The kickoff frames the work as self-contained.
+          suppressUserQuestions: true,
           onEvent: () => {},
         })
         if (result.stopped || childAbort.signal.aborted)
@@ -604,6 +756,8 @@ export class ProcessService {
           userMessage: prompt,
           abort: childAbort,
           autoMode: true,
+          // Headless worker — no user to answer a clarifying question.
+          suppressUserQuestions: true,
           onEvent: () => {},
         })
         if (result.stopped || childAbort.signal.aborted)
@@ -722,6 +876,8 @@ export class ProcessService {
           userMessage: prompt,
           abort: childAbort,
           autoMode: true,
+          // Headless reviewer — no user to answer a clarifying question.
+          suppressUserQuestions: true,
           onEvent: () => {},
         })
         if (result.stopped || childAbort.signal.aborted)
@@ -808,18 +964,21 @@ export class ProcessService {
       const src = phasesById.get(sid)
       const pr = runByPhaseId.get(sid)
       if (!src || !pr || pr.status !== "completed") continue
-      // A CONTAINER source's own top-level worker produced no real output — the
-      // work lives in its children (fan-out sub-tasks (025.1) or on_each_subtask
-      // consumer instances (025.2)). Aggregate the children's final content so a
-      // downstream phase gets a real digest, not an empty parent (R7). A plain
-      // phase has no children → use its own worker's last assistant message.
+      // A SUB-PROCESS source (plan 038.1) produced no worker output of its own — its
+      // work lives in the NESTED run linked by parent_phase_run_id. Aggregate that
+      // run's terminal phase outputs. A CONTAINER source's own top-level worker also
+      // produced no real output — the work lives in its children (fan-out sub-tasks
+      // (025.1) or on_each_subtask consumer instances (025.2)); aggregate them (R7).
+      // A plain phase has no children → use its own worker's last assistant message.
       const hasChildren =
         processes.listPhaseRuns({ runId: run.id, parentId: pr.id }).length > 0
-      const content = hasChildren
-        ? this.aggregateChildContent(run.id, pr.id)
-        : pr.taskId
-          ? this.lastAssistantContent(pr)
-          : null
+      const content = src.subprocessId
+        ? this.aggregateSubProcessContent(pr.id)
+        : hasChildren
+          ? this.aggregateChildContent(run.id, pr.id)
+          : pr.taskId
+            ? this.lastAssistantContent(pr)
+            : null
       results.push({ phaseName: src.name, phaseKey: src.key, content })
     }
     return results
