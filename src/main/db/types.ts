@@ -390,6 +390,11 @@ export interface ProcessPhase {
   // The dedicated reviewer agent name. Null falls back to the phase's own
   // resolved agent (pool[0]).
   validatorAgent: string | null
+  // SUB-PROCESS phase (plan 038.1): when set, this phase runs ANOTHER process
+  // definition as a nested run instead of an agent worker/fan-out. Mutually
+  // exclusive with fan_out (and the agent pool is unused) — validated in the repo.
+  // Null = an ordinary agent phase.
+  subprocessId: string | null
   position: number
 }
 
@@ -429,6 +434,10 @@ export interface ProcessRun {
   // conversation's title). Null for pre-existing runs and until generation lands
   // — the renderer falls back to an objective slice.
   title: string | null
+  // A NESTED run's caller (plan 038.1): the sub-process phase-run that started
+  // this run. Null for a top-level run. Lets the monitor nest the child run under
+  // the phase and crash-resume re-attach (find-by-parent) instead of restarting.
+  parentPhaseRunId: string | null
   status: ProcessRunStatus
   startedAt: number | null
   finishedAt: number | null

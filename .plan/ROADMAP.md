@@ -7,19 +7,31 @@ item is its plan file, not its rank.
 
 ## Next up
 
-1. **`038` — Sub-processes. ⚠️ DESIGN-PENDING.** A Process **phase runs another Process** as a nested
-   run (composition of `025` with itself) — e.g. an "Implement" phase delegates to a reusable
-   best-practices sub-process. `process_phases.subprocess_id` (FK → a definition; mutually exclusive
-   with the agent pool) + `process_runs.parent_phase_run_id` (additive `SCHEMA_V20+`). Dispatch branches
-   in `makeRunPhase`: a sub-process phase starts a **nested run inline** (the `spawn_subagent` precedent
-   — no re-enqueue/deadlock, under the parent's `PER_RUN_CONCURRENCY` pool), whose aggregated output
-   becomes the phase's output for downstream `collectUpstream`; completion/fail propagates like a
-   fan-out parent. **Bounds mandatory** (the DAG has no cycle guard): a `MAX_PROCESS_DEPTH` counter +
-   an **author-time acyclicity check** on `subprocess_id` refs (reject a cycle) + runtime backstop.
-   Monitor nests the sub-process's phase-runs under the phase. **Ordered before `037`** so process
-   import/export accounts for the `subprocess_id` reference in its format. **Likely splits:** `038.1`
-   end-to-end sub-process phase; `038.2` gates/fan-out edge cases + resume-reattach. Open Qs:
-   inline-vs-enqueued (lean inline), depth/cycle bounds, per-fan-out-child invocation (deferred).
+1. **`038.1` — Sub-processes (end-to-end phase). 🚧 IN PROGRESS** on `feat/sub-processes` (off `main`).
+   A Process **phase runs another Process** as a nested run (composition of `025` with itself) — e.g.
+   an "Implement" phase delegates to a reusable best-practices sub-process. `process_phases.subprocess_id`
+   (FK → a definition; mutually exclusive with fan-out/pool, repo-validated) + `process_runs.parent_phase_run_id`
+   (additive `SCHEMA_V24`). A sub-process phase recursively calls `runScheduler` on the child graph
+   **inline** (the `spawn_subagent` precedent — no re-enqueue/deadlock, sharing the parent's `taskId`/
+   `signal` under its `PER_RUN_CONCURRENCY` pool), settling **directly off the nested run's result**
+   (NOT a container — one unit of in-flight work); its aggregated output becomes the phase's output for
+   downstream `collectUpstream`; a failed nested run fails the parent **non-retryable**. **Bounds
+   mandatory** (the DAG has no cycle guard): a `MAX_PROCESS_DEPTH=5` counter (threaded like
+   `MAX_AGENT_DEPTH`) + an **author-time acyclicity check** on `subprocess_id` refs (reject a cycle,
+   repo chokepoint) + a runtime backstop. Builder gains a **sub-process toggle + definition picker**
+   (disables the conflicting fan-out/validator controls); monitor **lazily expands** the sub-process
+   phase-run to nest the child run's phase-runs (resolved against the child definition's graph).
+   **Ordered before `037`** so process import/export accounts for the `subprocess_id` reference.
+2. **`038.2` — Sub-processes: edge cases + resume hardening.** The riskier half of `038` deferred from
+   `038.1`. **Deep restart of a failed nested run** — parent `restartRun` currently resets only the
+   parent's failure frontier via the plain path, NOT the child run's own failed phases; needs a
+   recursive reset that re-drives the nested run's frontier. **Child-internal gate + fan-out
+   hardening** — a gate/validator/fan-out *inside* a sub-process interacting with the parent: a
+   child-internal gate propagates `GateBlockedError` up and pauses the whole shared task (approvals key
+   on the shared `taskId`, so the monitor surfaces it — not silently corrupt, but unhardened/untested
+   in `038.1`). **Per-fan-out-child sub-process invocation** — a sub-process run *per* fan-out sub-task
+   (the `025.2` granularity, deferred). **Checkpoint-accelerated resume** — a `subprocess:<parentRunId>`
+   checkpoint (the durable `parent_phase_run_id` FK is the `038.1` re-attach; this accelerates it).
 2. **`039` — Inspectable agent-to-agent messaging. ⚠️ DESIGN-PENDING.** One phase-agent (B) **asks
    another phase-agent (A) a question**, answered **from A's own context** — distinct from
    `spawn_subagent` (a fresh, context-less child). The `025` engine makes each phase-run's **worker

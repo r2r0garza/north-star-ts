@@ -312,6 +312,7 @@ export function registerDbHandlers(
         validator?: boolean
         validatorMaxIterations?: number
         validatorAgent?: string | null
+        subprocessId?: string | null
         position: number
       }
     ) => processes.createPhase(input)
@@ -335,6 +336,7 @@ export function registerDbHandlers(
         validator?: boolean
         validatorMaxIterations?: number
         validatorAgent?: string | null
+        subprocessId?: string | null
         position?: number
       }
     ) => processes.updatePhase(id, patch)
@@ -384,8 +386,14 @@ export function registerDbHandlers(
 
   ipcMain.handle(
     "db:processes:runs:list",
-    (_e, opts?: { processId?: string; status?: ProcessRunStatus }) =>
-      processes.listProcessRuns(opts)
+    (
+      _e,
+      opts?: {
+        processId?: string
+        status?: ProcessRunStatus
+        parentPhaseRunId?: string
+      }
+    ) => processes.listProcessRuns(opts)
   )
   ipcMain.handle(
     "db:processes:runs:get",

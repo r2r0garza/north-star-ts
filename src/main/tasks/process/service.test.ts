@@ -17,7 +17,11 @@ try {
 // agentName the forked worker conversation was stamped with, so the test can
 // assert routing picked the right agent, and appends a final assistant message so
 // the run has "output".
-const loopCalls: { conversationId: string; userMessage?: string }[] = []
+const loopCalls: {
+  conversationId: string
+  userMessage?: string
+  suppressUserQuestions?: boolean
+}[] = []
 // A validator reviewer's scripted replies (plan 031.1): each call to a REVIEW
 // prompt (validatorPrompt begins "# Review the") shifts one reply off this queue;
 // the reply is the reviewer worker's final message (a JSON verdict). Empty queue →
@@ -27,10 +31,12 @@ vi.mock("../../agent", () => ({
   runAgentLoop: async (input: {
     conversationId: string
     userMessage?: string
+    suppressUserQuestions?: boolean
   }) => {
     loopCalls.push({
       conversationId: input.conversationId,
       userMessage: input.userMessage,
+      suppressUserQuestions: input.suppressUserQuestions,
     })
     const isReview = input.userMessage?.startsWith("# Review the")
     const content = isReview && reviewReplies.length ? reviewReplies.shift()! : "done"
@@ -207,6 +213,49 @@ describe.skipIf(!sqliteLoads)("ProcessService dispatch routing", () => {
       .find((pr) => pr.phaseId === phase.id)!
     expect(phaseRun.agentName).toBe("planner")
   })
+
+  it("suppresses ask_user_question in headless workers (phase + validator forks)", async () => {
+    // A plain phase with a validator: the phase's own worker fork AND the reviewer
+    // (validate) worker fork both run headless. Both must suppress user questions —
+    // there's no interactive user to answer one (the tool would only stall).
+    const def = processes.createProcessDefinition({ name: "T" })
+    const phase = processes.createPhase({
+      processId: def.id,
+      key: "build",
+      name: "Build",
+      validator: true,
+      validatorMaxIterations: 1,
+      position: 0,
+    })
+    processes.createPhaseAgent({
+      phaseId: phase.id,
+      agentName: "builder",
+      position: 0,
+    })
+    // The reviewer approves so the phase settles cleanly.
+    reviewReplies.push('{"approved": true}')
+
+    const { taskId } = seedTaskRow()
+    const run = processes.createProcessRun({
+      processId: def.id,
+      sourceConversationId: null,
+      taskId,
+      objective: "build it",
+      status: "running",
+    })
+    const svc = new ProcessService(fakeRunner)
+    await svc.execute({
+      task: { id: taskId, input: { processRunId: run.id } } as never,
+      signal: new AbortController().signal,
+      emit: () => {},
+      workspace: undefined,
+    })
+
+    // Both the phase worker and the reviewer worker forked, and every fork
+    // suppressed user questions.
+    expect(loopCalls.length).toBeGreaterThanOrEqual(2)
+    expect(loopCalls.every((c) => c.suppressUserQuestions === true)).toBe(true)
+  })
 })
 
 describe.skipIf(!sqliteLoads)("ProcessService restartRun", () => {
@@ -274,6 +323,180 @@ describe.skipIf(!sqliteLoads)("ProcessService restartRun", () => {
     svc.restartRun(run.id)
     expect(restarted).toEqual([])
     expect(processes.getProcessRun(run.id)!.status).toBe("running")
+  })
+})
+
+describe.skipIf(!sqliteLoads)("ProcessService sub-processes (plan 038.1)", () => {
+  // Build a child (sub-process) definition with one phase, and a parent whose
+  // phase `impl` runs it, followed by a downstream `ship` phase.
+  function buildParentWithSub(): {
+    parentId: string
+    subId: string
+    implPhaseId: string
+    shipPhaseId: string
+  } {
+    const sub = processes.createProcessDefinition({ name: "Sub" })
+    processes.createPhase({
+      processId: sub.id,
+      key: "inner",
+      name: "Inner",
+      position: 0,
+    })
+    const parent = processes.createProcessDefinition({ name: "Parent" })
+    const impl = processes.createPhase({
+      processId: parent.id,
+      key: "impl",
+      name: "Implement",
+      subprocessId: sub.id,
+      position: 0,
+    })
+    const ship = processes.createPhase({
+      processId: parent.id,
+      key: "ship",
+      name: "Ship",
+      position: 1,
+    })
+    processes.createEdge({
+      processId: parent.id,
+      fromPhaseId: impl.id,
+      toPhaseId: ship.id,
+    })
+    return {
+      parentId: parent.id,
+      subId: sub.id,
+      implPhaseId: impl.id,
+      shipPhaseId: ship.id,
+    }
+  }
+
+  it("creates a nested run linked by parent_phase_run_id, inheriting workspace/objective, and completes it", async () => {
+    const { parentId, subId, implPhaseId } = buildParentWithSub()
+    const { taskId } = seedTaskRow()
+    const run = processes.createProcessRun({
+      processId: parentId,
+      sourceConversationId: null,
+      taskId,
+      objective: "ship the feature",
+      status: "running",
+    })
+
+    const svc = new ProcessService(fakeRunner)
+    const result = await svc.execute({
+      task: { id: taskId, input: { processRunId: run.id } } as never,
+      signal: new AbortController().signal,
+      emit: () => {},
+      workspace: undefined,
+    })
+    expect((result as { content?: string }).content).toBe("process complete")
+
+    // The impl phase-run drove a nested run linked back to it.
+    const implRun = processes
+      .listPhaseRuns({ runId: run.id, parentId: null })
+      .find((pr) => pr.phaseId === implPhaseId)!
+    expect(implRun.status).toBe("completed")
+    const child = processes.getProcessRunByParentPhaseRunId(implRun.id)!
+    expect(child).toBeDefined()
+    expect(child.processId).toBe(subId)
+    expect(child.parentPhaseRunId).toBe(implRun.id)
+    expect(child.objective).toBe("ship the feature") // inherited
+    expect(child.status).toBe("completed")
+    // The whole parent run completed (downstream `ship` ran too).
+    expect(processes.getProcessRun(run.id)!.status).toBe("completed")
+  })
+
+  it("re-attaches to the existing child run on resume (no duplicate)", async () => {
+    const { parentId, implPhaseId } = buildParentWithSub()
+    const { taskId } = seedTaskRow()
+    const run = processes.createProcessRun({
+      processId: parentId,
+      sourceConversationId: null,
+      taskId,
+      objective: "obj",
+      status: "running",
+    })
+    const svc = new ProcessService(fakeRunner)
+    const drive = () =>
+      svc.execute({
+        task: { id: taskId, input: { processRunId: run.id } } as never,
+        signal: new AbortController().signal,
+        emit: () => {},
+        workspace: undefined,
+      })
+    await drive()
+    const implRun = processes
+      .listPhaseRuns({ runId: run.id, parentId: null })
+      .find((pr) => pr.phaseId === implPhaseId)!
+    const childId = processes.getProcessRunByParentPhaseRunId(implRun.id)!.id
+
+    // Simulate a resume: reset the impl phase-run to pending (crash-orphan sweep
+    // would do this) and re-drive. The closure must re-attach, not create a 2nd run.
+    processes.updatePhaseRun(implRun.id, { status: "pending" })
+    await drive()
+    const children = processes.listProcessRuns({
+      parentPhaseRunId: implRun.id,
+    })
+    expect(children).toHaveLength(1)
+    expect(children[0].id).toBe(childId)
+  })
+
+  it("feeds the nested run's output into a downstream phase's kickoff", async () => {
+    const { parentId } = buildParentWithSub()
+    const { taskId } = seedTaskRow()
+    const run = processes.createProcessRun({
+      processId: parentId,
+      sourceConversationId: null,
+      taskId,
+      objective: "obj",
+      status: "running",
+    })
+    const svc = new ProcessService(fakeRunner)
+    await svc.execute({
+      task: { id: taskId, input: { processRunId: run.id } } as never,
+      signal: new AbortController().signal,
+      emit: () => {},
+      workspace: undefined,
+    })
+    // The downstream `ship` phase's worker kickoff includes the sub-process's
+    // aggregated output ("done" — the stubbed nested phase's final message).
+    const shipCall = loopCalls.find(
+      (c) => c.userMessage && c.userMessage.includes("SHIP")
+    )
+    // The kickoff for `ship` should reference the upstream Implement digest.
+    const kickoff = loopCalls.map((c) => c.userMessage ?? "").join("\n")
+    expect(shipCall ?? kickoff).toBeTruthy()
+    expect(kickoff).toMatch(/Implement/)
+  })
+
+  it("rejects request changes on a sub-process phase (v1)", async () => {
+    const { parentId, implPhaseId } = buildParentWithSub()
+    const { taskId } = seedTaskRow()
+    const run = processes.createProcessRun({
+      processId: parentId,
+      sourceConversationId: null,
+      taskId,
+      objective: "obj",
+      status: "running",
+    })
+    // A pending gate on the impl (sub-process) phase-run.
+    const implRun = processes.createPhaseRun({
+      runId: run.id,
+      phaseId: implPhaseId,
+      status: "completed",
+    })
+    const approval = createApproval({
+      taskId,
+      request: { requestId: "r1", phaseRunId: implRun.id },
+    })
+    expect(getApproval(approval.id)!.status).toBe("pending")
+
+    const svc = new ProcessService(fakeRunner)
+    expect(() =>
+      svc.requestChanges({
+        processRunId: run.id,
+        requestId: "r1",
+        feedback: "redo it",
+      })
+    ).toThrow(/sub-process/)
   })
 })
 

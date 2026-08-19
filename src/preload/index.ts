@@ -813,6 +813,7 @@ const api = {
           validator?: boolean
           validatorMaxIterations?: number
           validatorAgent?: string | null
+          subprocessId?: string | null
           position: number
         }) =>
           ipcRenderer.invoke(
@@ -836,6 +837,7 @@ const api = {
             validator?: boolean
             validatorMaxIterations?: number
             validatorAgent?: string | null
+            subprocessId?: string | null
             position?: number
           }
         ) =>
@@ -885,7 +887,11 @@ const api = {
           ipcRenderer.invoke("db:processes:edges:delete", id) as Promise<void>,
       },
       runs: {
-        list: (opts?: { processId?: string; status?: ProcessRunStatus }) =>
+        list: (opts?: {
+          processId?: string
+          status?: ProcessRunStatus
+          parentPhaseRunId?: string
+        }) =>
           ipcRenderer.invoke("db:processes:runs:list", opts) as Promise<
             ProcessRun[]
           >,
