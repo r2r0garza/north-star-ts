@@ -81,6 +81,26 @@ export function listApprovals(opts?: {
   return rows.map(toApproval)
 }
 
+// Delete every approval row for a task whose request blob targets one of
+// `phaseRunIds` (plan 038.2). Used by the whole-child reset (requestChanges on a
+// sub-process phase): the reworked child subtree's stale gate/validator rows would
+// otherwise leave the scheduler's count-based gate re-detection (needsGate) with a
+// non-zero baseline, so a re-completed child phase wouldn't re-gate. Clearing them
+// lets gate accounting restart from zero. The phaseRunId lives in the JSON request
+// blob (no column), so filter in JS and delete by id. No-op for an empty set.
+export function deleteApprovalsForPhaseRuns(
+  taskId: string,
+  phaseRunIds: Iterable<string>
+): void {
+  const targets = new Set(phaseRunIds)
+  if (targets.size === 0) return
+  const del = getDb().prepare("DELETE FROM approvals WHERE id = ?")
+  for (const a of listApprovals({ taskId })) {
+    const req = a.request as { phaseRunId?: string } | null
+    if (req?.phaseRunId && targets.has(req.phaseRunId)) del.run(a.id)
+  }
+}
+
 export function resolveApproval(
   id: string,
   decision: { status: "approved" | "denied"; decision?: unknown }

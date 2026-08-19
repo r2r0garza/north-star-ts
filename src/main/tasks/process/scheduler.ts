@@ -1,8 +1,5 @@
 import { randomUUID } from "crypto"
-import {
-  createApproval,
-  listApprovals,
-} from "../../db/repositories/approvals"
+import { createApproval, listApprovals } from "../../db/repositories/approvals"
 import {
   createCheckpoint,
   listCheckpoints,
@@ -216,10 +213,7 @@ export interface SchedulerCtx {
 //     phase-worker flagged an upstream defect and the process requires human
 //     confirmation before the send-back. Carries the flagId to apply on approval.
 interface GateRequest {
-  kind:
-    | "process_phase_gate"
-    | "process_validator_gate"
-    | "process_flag_gate"
+  kind: "process_phase_gate" | "process_validator_gate" | "process_flag_gate"
   phaseKey: string
   phaseRunId: string
   requestId: string
@@ -282,8 +276,10 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
   // Which (sourceChildRunId → consumerPhaseId) pairs already spawned an instance,
   // so an each-subtask trigger is idempotent across re-evaluation and resume (025.2).
   const triggeredPairs = new Set<string>()
-  const triggeredKey = (sourceChildRunId: string, consumerPhaseId: string): string =>
-    `${sourceChildRunId}->${consumerPhaseId}`
+  const triggeredKey = (
+    sourceChildRunId: string,
+    consumerPhaseId: string
+  ): string => `${sourceChildRunId}->${consumerPhaseId}`
   for (const cp of listCheckpoints(ctx.taskId)) {
     if (cp.label?.startsWith("fanout:")) {
       const state = cp.state as FanoutCheckpointState
@@ -319,7 +315,10 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
     const isContainerParent =
       pr.parentId === null && phase !== undefined && isContainer(phase)
     if (isContainerParent) {
-      const children = processes.listPhaseRuns({ runId: run.id, parentId: pr.id })
+      const children = processes.listPhaseRuns({
+        runId: run.id,
+        parentId: pr.id,
+      })
       if (children.length > 0) continue // derivation resumes it; leave `running`
     }
     processes.updatePhaseRun(pr.id, { status: "pending" })
@@ -379,6 +378,26 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
     return gateRows(pr.id).some((a) => a.status === "approved")
   }
 
+  // Flip THIS run and every ancestor run (up the parent_phase_run_id chain) to
+  // waiting_for_approval when a gate fires (plan 038.2). For a top-level run this is
+  // just run.id; for a NESTED sub-process run the parent phase-run's run must also
+  // show waiting_for_approval so the monitor badge + the paused-hint read correctly
+  // (038.1 flipped only this run's row, leaving the top-level stuck reading
+  // "running"). Bounded by MAX_PROCESS_DEPTH (the DAG has no cycle guard).
+  const markWaitingForApprovalToTop = (): void => {
+    let cur: ProcessRun | undefined = run
+    let depth = 0
+    while (cur && depth < MAX_PROCESS_DEPTH) {
+      processes.updateProcessRun(cur.id, { status: "waiting_for_approval" })
+      if (!cur.parentPhaseRunId) break
+      const parentPhaseRun = processes.getPhaseRun(cur.parentPhaseRunId)
+      cur = parentPhaseRun
+        ? processes.getProcessRun(parentPhaseRun.runId)
+        : undefined
+      depth++
+    }
+  }
+
   // Create (once) the durable gate for a completed gated phase, flip the run to
   // waiting_for_approval, emit, checkpoint, and throw to unwind.
   const raiseGate = (phase: ProcessPhase): never => {
@@ -391,7 +410,7 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
       requestId,
     }
     createApproval({ taskId: ctx.taskId, request })
-    processes.updateProcessRun(run.id, { status: "waiting_for_approval" })
+    markWaitingForApprovalToTop()
     // The phase itself stays `completed` — the gate is a run-level hold on its
     // dependents, not a change to the phase's own outcome. Keeping it `completed`
     // is also what makes resume correct: gateResolved()/needsGate() key off the
@@ -425,7 +444,16 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
   const needsGate = (phase: ProcessPhase): boolean => {
     if (phase.gatePolicy !== "approve") return false
     if (statusOf(phase.id) !== "completed") return false
-    const hasDependents = graph.edges.some((e) => e.fromPhaseId === phase.id)
+    // A gate holds back the phase's dependents. Normally a phase with NO downstream
+    // edge has nothing to hold, so it skips the gate. But in a NESTED sub-process run
+    // (plan 038.2) a terminal phase DOES have an implicit dependent — the parent
+    // phase that only advances once the whole nested run completes — so its gate must
+    // still fire (else the sub-process completes and the parent marches on without
+    // ever asking for approval, the reported bug). A run is nested iff it has a
+    // parent phase-run.
+    const isNestedRun = run.parentPhaseRunId !== null
+    const hasDependents =
+      isNestedRun || graph.edges.some((e) => e.fromPhaseId === phase.id)
     if (!hasDependents) return false
     const pr = runByPhaseId.get(phase.id)!
     // Re-read the phase-run: a request-changes re-run bumped rework_round after
@@ -475,7 +503,7 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
       requestId,
     }
     createApproval({ taskId: ctx.taskId, request })
-    processes.updateProcessRun(run.id, { status: "waiting_for_approval" })
+    markWaitingForApprovalToTop()
     ctx.emit({
       type: "process_phase",
       runId: run.id,
@@ -506,7 +534,8 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
       if (!pr) continue
       const fresh = processes.getPhaseRun(pr.id)
       if (fresh?.status !== "waiting_for_approval") continue
-      if (!validatorGateRows(pr.id).some((a) => a.status === "approved")) continue
+      if (!validatorGateRows(pr.id).some((a) => a.status === "approved"))
+        continue
       processes.updatePhaseRun(pr.id, {
         status: "completed",
         finishedAt: Date.now(),
@@ -569,7 +598,7 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
       flagReason: flag.reason,
     }
     createApproval({ taskId: ctx.taskId, request })
-    processes.updateProcessRun(run.id, { status: "waiting_for_approval" })
+    markWaitingForApprovalToTop()
     ctx.emit({
       type: "process_phase",
       runId: run.id,
@@ -749,7 +778,10 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
         // service's `subtaskPrompt ?? kickoffPrompt(...)` builds a real kickoff —
         // an empty string is not nullish and would run the worker prompt-less.
         const prompt = ctx.buildEachSubtaskPrompt
-          ? ctx.buildEachSubtaskPrompt({ phase: consumer, sourceChildRun: child })
+          ? ctx.buildEachSubtaskPrompt({
+              phase: consumer,
+              sourceChildRun: child,
+            })
           : undefined
         // Create instance + flip the container running (first transition only) +
         // persist the instance's prompt in ONE tx, so a crash can't strand a
@@ -764,8 +796,7 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
             status: "pending",
             // Label the per-child instance by the source child it consumes (its
             // title), else derive from the instance's own kickoff prompt.
-            title:
-              child.title ?? (prompt ? subtaskTitle(prompt) : null),
+            title: child.title ?? (prompt ? subtaskTitle(prompt) : null),
             // First-class lineage (plan 031.2): which source fan-out child this
             // instance consumes, so a flag from it resolves to that specific child.
             sourceChildRunId: child.id,
@@ -923,8 +954,7 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
       // its sources finish with nothing to validate. A pending fan-out parent
       // hasn't decomposed yet — leave it for dispatch.
       const eligible =
-        status === "running" ||
-        (status === "pending" && !phase.fanOut)
+        status === "running" || (status === "pending" && !phase.fanOut)
       if (!eligible) continue
       const children = processes.listPhaseRuns({
         runId: run.id,
@@ -1266,9 +1296,7 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
       // `pending`, so they're intentionally NOT terminal here.
       if (!anyFailed && routePendingFlags()) continue
       const allTerminal = graph.phases.every((p) =>
-        ["completed", "failed", "cancelled", "skipped"].includes(
-          statusOf(p.id)
-        )
+        ["completed", "failed", "cancelled", "skipped"].includes(statusOf(p.id))
       )
       if (!allTerminal || anyFailed) {
         // A dependency failed and blocks the rest → surface as a run failure.

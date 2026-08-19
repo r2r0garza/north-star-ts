@@ -28,6 +28,7 @@ import {
   descendantChildRuns,
   resolveTarget,
   applyFlagBack,
+  resetRunRecursive,
 } from "./flagback"
 import type { ProcessGraph } from "../../db/types"
 
@@ -235,7 +236,15 @@ function buildFanoutScenario(): {
     phaseId: publish,
     status: "completed",
   })
-  return { runId: run.id, pid, taskId, implRun: implRun.id, testRun: testRun.id, I, T }
+  return {
+    runId: run.id,
+    pid,
+    taskId,
+    implRun: implRun.id,
+    testRun: testRun.id,
+    I,
+    T,
+  }
 }
 
 describe.skipIf(!sqliteLoads)("flagback — resolveTarget", () => {
@@ -267,7 +276,9 @@ describe.skipIf(!sqliteLoads)("flagback — resolveTarget", () => {
     })
     expect("error" in res).toBe(false)
     expect("targetPhaseId" in res && res.targetPhaseId).toBe(phaseId(pid, "a"))
-    expect(("targetChildRunId" in res && res.targetChildRunId) || undefined).toBeUndefined()
+    expect(
+      ("targetChildRunId" in res && res.targetChildRunId) || undefined
+    ).toBeUndefined()
   })
 
   it("resolves an on_each_subtask instance's flag to its own source child", () => {
@@ -303,11 +314,20 @@ describe.skipIf(!sqliteLoads)("flagback — resolveTarget", () => {
       status: "pending",
     })
     // a flagging b (forward) → rejected.
-    expect("error" in resolveTarget(graphOf(pid), run.id, aRun, { targetPhaseKey: "b" })).toBe(true)
+    expect(
+      "error" in
+        resolveTarget(graphOf(pid), run.id, aRun, { targetPhaseKey: "b" })
+    ).toBe(true)
     // unknown key.
-    expect("error" in resolveTarget(graphOf(pid), run.id, aRun, { targetPhaseKey: "zzz" })).toBe(true)
+    expect(
+      "error" in
+        resolveTarget(graphOf(pid), run.id, aRun, { targetPhaseKey: "zzz" })
+    ).toBe(true)
     // self.
-    expect("error" in resolveTarget(graphOf(pid), run.id, aRun, { targetPhaseKey: "a" })).toBe(true)
+    expect(
+      "error" in
+        resolveTarget(graphOf(pid), run.id, aRun, { targetPhaseKey: "a" })
+    ).toBe(true)
   })
 
   it("rejects targeting a non-completed phase", () => {
@@ -334,7 +354,8 @@ describe.skipIf(!sqliteLoads)("flagback — resolveTarget", () => {
       status: "running",
     })
     expect(
-      "error" in resolveTarget(graphOf(pid), run.id, bRun, { targetPhaseKey: "a" })
+      "error" in
+        resolveTarget(graphOf(pid), run.id, bRun, { targetPhaseKey: "a" })
     ).toBe(true)
   })
 })
@@ -367,9 +388,21 @@ describe.skipIf(!sqliteLoads)("flagback — applyFlagBack", () => {
       objective: "o",
       status: "running",
     })
-    const a = processes.createPhaseRun({ runId: run.id, phaseId: phaseId(pid, "a"), status: "completed" })
-    const b = processes.createPhaseRun({ runId: run.id, phaseId: phaseId(pid, "b"), status: "completed" })
-    const c = processes.createPhaseRun({ runId: run.id, phaseId: phaseId(pid, "c"), status: "completed" })
+    const a = processes.createPhaseRun({
+      runId: run.id,
+      phaseId: phaseId(pid, "a"),
+      status: "completed",
+    })
+    const b = processes.createPhaseRun({
+      runId: run.id,
+      phaseId: phaseId(pid, "b"),
+      status: "completed",
+    })
+    const c = processes.createPhaseRun({
+      runId: run.id,
+      phaseId: phaseId(pid, "c"),
+      status: "completed",
+    })
 
     applyFlagBack({
       taskId,
@@ -394,7 +427,10 @@ describe.skipIf(!sqliteLoads)("flagback — applyFlagBack", () => {
       taskId: s.taskId,
       runId: s.runId,
       graph: graphOf(s.pid),
-      target: { targetPhaseId: phaseId(s.pid, "implement"), targetChildRunId: s.I[0] },
+      target: {
+        targetPhaseId: phaseId(s.pid, "implement"),
+        targetChildRunId: s.I[0],
+      },
       reason: "sub-task 1 is broken",
     })
 
@@ -421,8 +457,16 @@ describe.skipIf(!sqliteLoads)("flagback — applyFlagBack", () => {
     const eachRows = listCheckpoints(s.taskId).filter(
       (c) => c.label === EACH_SUBTASK_CHECKPOINT_LABEL(s.testRun)
     )
-    expect(eachRows.some((c) => (c.state as { instanceRunId?: string }).instanceRunId === s.T[0])).toBe(false)
-    expect(eachRows.some((c) => (c.state as { instanceRunId?: string }).instanceRunId === s.T[1])).toBe(true)
+    expect(
+      eachRows.some(
+        (c) => (c.state as { instanceRunId?: string }).instanceRunId === s.T[0]
+      )
+    ).toBe(false)
+    expect(
+      eachRows.some(
+        (c) => (c.state as { instanceRunId?: string }).instanceRunId === s.T[1]
+      )
+    ).toBe(true)
   })
 
   it("whole fan-out target: children deleted + fanout checkpoint cleared + parent pending", () => {
@@ -452,3 +496,150 @@ describe.skipIf(!sqliteLoads)("flagback — applyFlagBack", () => {
     expect(eachRows).toHaveLength(0)
   })
 })
+
+describe.skipIf(!sqliteLoads)(
+  "flagback — resetRunRecursive (plan 038.2)",
+  () => {
+    // A parent whose `impl` phase runs a two-phase sub-process (inner1 → inner2),
+    // with the nested run already driven to some terminal state. Returns the ids.
+    function buildParentWithSub(): {
+      taskId: string
+      parentRunId: string
+      subId: string
+      implRunId: string
+      childRunId: string
+      inner1RunId: string
+      inner2RunId: string
+    } {
+      const taskId = freshTask()
+      const sub = processes.createProcessDefinition({ name: "Sub" })
+      const in1 = processes.createPhase({
+        processId: sub.id,
+        key: "inner1",
+        name: "Inner1",
+        position: 0,
+      })
+      const in2 = processes.createPhase({
+        processId: sub.id,
+        key: "inner2",
+        name: "Inner2",
+        position: 1,
+      })
+      processes.createEdge({
+        processId: sub.id,
+        fromPhaseId: in1.id,
+        toPhaseId: in2.id,
+      })
+      const parent = processes.createProcessDefinition({ name: "Parent" })
+      const impl = processes.createPhase({
+        processId: parent.id,
+        key: "impl",
+        name: "Implement",
+        subprocessId: sub.id,
+        position: 0,
+      })
+      const parentRun = processes.createProcessRun({
+        processId: parent.id,
+        sourceConversationId: null,
+        taskId,
+        objective: "obj",
+        status: "failed",
+      })
+      const implRun = processes.createPhaseRun({
+        runId: parentRun.id,
+        phaseId: impl.id,
+        status: "running", // child threw → phase-run left running
+      })
+      const childRun = processes.createProcessRun({
+        processId: sub.id,
+        sourceConversationId: null,
+        taskId,
+        objective: "obj",
+        parentPhaseRunId: implRun.id,
+        status: "failed",
+      })
+      const inner1Run = processes.createPhaseRun({
+        runId: childRun.id,
+        phaseId: in1.id,
+        status: "completed",
+      })
+      const inner2Run = processes.createPhaseRun({
+        runId: childRun.id,
+        phaseId: in2.id,
+        status: "failed",
+      })
+      processes.updatePhaseRun(inner2Run.id, { error: "boom" })
+      return {
+        taskId,
+        parentRunId: parentRun.id,
+        subId: sub.id,
+        implRunId: implRun.id,
+        childRunId: childRun.id,
+        inner1RunId: inner1Run.id,
+        inner2RunId: inner2Run.id,
+      }
+    }
+
+    it("frontier mode resets a failed nested run's failed frontier, sparing completed child phases", () => {
+      const s = buildParentWithSub()
+      resetRunRecursive({
+        taskId: s.taskId,
+        run: processes.getProcessRun(s.parentRunId)!,
+        graph: graphOf(processes.getProcessRun(s.parentRunId)!.processId!),
+        mode: "frontier",
+      })
+      // The sub-process phase-run reset; the child run flipped running; the child's
+      // FAILED phase reset to pending; the child's COMPLETED phase left intact.
+      expect(processes.getPhaseRun(s.implRunId)!.status).toBe("pending")
+      expect(processes.getProcessRun(s.childRunId)!.status).toBe("running")
+      expect(processes.getPhaseRun(s.inner2RunId)!.status).toBe("pending")
+      expect(processes.getPhaseRun(s.inner2RunId)!.error).toBeNull()
+      expect(processes.getPhaseRun(s.inner1RunId)!.status).toBe("completed")
+    })
+
+    it("whole mode resets ALL nested phases and injects the note into the child's entry phase", () => {
+      const s = buildParentWithSub()
+      // Mark the child fully completed to prove `whole` resets even completed phases.
+      processes.updatePhaseRun(s.inner2RunId, {
+        status: "completed",
+        error: null,
+      })
+      processes.updateProcessRun(s.childRunId, { status: "completed" })
+
+      resetRunRecursive({
+        taskId: s.taskId,
+        run: processes.getProcessRun(s.parentRunId)!,
+        graph: graphOf(processes.getProcessRun(s.parentRunId)!.processId!),
+        mode: "whole",
+        note: "make it blue",
+      })
+      expect(processes.getPhaseRun(s.inner1RunId)!.status).toBe("pending")
+      expect(processes.getPhaseRun(s.inner2RunId)!.status).toBe("pending")
+      // inner1 is the child's ENTRY phase (no incoming edge) → carries the note;
+      // inner2 (downstream) gets a generic "upstream reworked" note, not the raw one.
+      expect(processes.getPhaseRun(s.inner1RunId)!.reworkNote).toBe(
+        "make it blue"
+      )
+      expect(processes.getPhaseRun(s.inner2RunId)!.reworkNote).not.toBe(
+        "make it blue"
+      )
+    })
+
+    it("skips recursion cleanly when the sub-process phase never spawned a child", () => {
+      const s = buildParentWithSub()
+      // Delete the child run so getProcessRunByParentPhaseRunId returns none.
+      db.prepare("DELETE FROM process_runs WHERE id = ?").run(s.childRunId)
+      // The impl phase-run is `running` (not resettable) and now has no child → it is
+      // left as-is in frontier mode, and the call does not throw.
+      expect(() =>
+        resetRunRecursive({
+          taskId: s.taskId,
+          run: processes.getProcessRun(s.parentRunId)!,
+          graph: graphOf(processes.getProcessRun(s.parentRunId)!.processId!),
+          mode: "frontier",
+        })
+      ).not.toThrow()
+      expect(processes.getPhaseRun(s.implRunId)!.status).toBe("running")
+    })
+  }
+)

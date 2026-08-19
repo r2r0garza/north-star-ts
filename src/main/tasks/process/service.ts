@@ -40,7 +40,11 @@ import {
   type RunSubProcess,
   type Validate,
 } from "./scheduler"
-import { applyFlagBack } from "./flagback"
+import {
+  applyFlagBack,
+  resetRunRecursive,
+  resetSubProcessChild,
+} from "./flagback"
 
 // The DAG orchestrator task kind (plan 025). One ProcessService per app, holding
 // the runner reference so startRun can enqueue the process_run task. The executor
@@ -116,58 +120,20 @@ export class ProcessService {
   // — fan-out child prompts + each-subtask idempotency, keyed by task id — survive.
   // Completed/skipped phases are left alone; the scheduler resumes from the reset
   // frontier. No-op unless the run is `failed` with a backing task.
+  //
+  // Sub-process phases (plan 038.2): resetRunRecursive descends into a failed
+  // sub-process phase-run's CHILD run (linked by parent_phase_run_id) and resets ITS
+  // failed frontier too, transitively — 038.1 re-attached to the child but never
+  // reset it, so a run that failed INSIDE a sub-process re-failed on every retry.
   restartRun(runId: string): ProcessRun | undefined {
     const run = processes.getProcessRun(runId)
-    if (!run || run.status !== "failed" || !run.taskId || !run.processId) return run
+    if (!run || run.status !== "failed" || !run.taskId || !run.processId)
+      return run
     const graph = processes.getProcessGraph(run.processId)
     if (!graph) return run
-    const phasesById = new Map(graph.phases.map((p) => [p.id, p]))
-
-    // A fan-out parent decomposes into children; an on_each_subtask consumer of a
-    // fan-out source runs one instance per completed child. Both are "containers"
-    // whose top-level status is DERIVED from their children — resetting such a
-    // parent to `pending` would re-decompose/re-trigger and duplicate children, so
-    // a container WITH children is reset to `running` (the derive path re-owns it)
-    // while its failed/cancelled children reset to `pending` to re-dispatch.
-    const eachSubtaskConsumers = new Set(
-      graph.edges
-        .filter(
-          (e) =>
-            e.trigger === "on_each_subtask" &&
-            phasesById.get(e.fromPhaseId)?.fanOut === true
-        )
-        .map((e) => e.toPhaseId)
-    )
-    const isContainer = (phaseId: string): boolean =>
-      phasesById.get(phaseId)?.fanOut === true ||
-      eachSubtaskConsumers.has(phaseId)
-
-    const resettable = (s: string): boolean => s === "failed" || s === "cancelled"
-    const toPending = { status: "pending" as const, error: null, startedAt: null, finishedAt: null }
 
     const tx = getDb().transaction(() => {
-      const rows = processes.listPhaseRuns({ runId })
-      for (const pr of rows) {
-        if (pr.parentId !== null) continue // children handled with their container
-        if (!resettable(pr.status)) continue
-        if (isContainer(pr.phaseId)) {
-          const children = processes.listPhaseRuns({ runId, parentId: pr.id })
-          if (children.length > 0) {
-            // Re-own via derivation; re-dispatch just the broken children.
-            processes.updatePhaseRun(pr.id, {
-              status: "running",
-              error: null,
-              finishedAt: null,
-            })
-            for (const child of children)
-              if (resettable(child.status))
-                processes.updatePhaseRun(child.id, toPending)
-            continue
-          }
-          // No children (decompose/trigger itself failed) → re-decompose.
-        }
-        processes.updatePhaseRun(pr.id, toPending)
-      }
+      resetRunRecursive({ taskId: run.taskId!, run, graph, mode: "frontier" })
     })
     tx()
 
@@ -186,57 +152,64 @@ export class ProcessService {
   // the run back to `running`, then resume the backing task. The scheduler
   // re-derives from the DB, re-runs the phase's worker (kickoff carries the note),
   // and re-gates once it re-completes (needsGate re-fires off the fresh finishedAt).
+  //
+  // Plan 038.2: the gated phase may belong to a NESTED sub-process run (a gate raised
+  // inside the child surfaces on the shared task). The gate's phase belongs to the
+  // OWNING run's graph, not necessarily processRunId's — resolve the owning run from
+  // phaseRun.runId and use ITS graph for the container guard. And a SUB-PROCESS phase
+  // itself is now sendable-back: reset the phase-run + whole-reset its child run with
+  // the feedback injected into the child's entry phases (was rejected in 038.1).
   requestChanges(input: {
     processRunId: string
     requestId: string
     feedback: string
   }): ProcessRun | undefined {
     const { processRunId, requestId, feedback } = input
-    const run = processes.getProcessRun(processRunId)
-    if (!run?.taskId) return run
+    const topRun = processes.getProcessRun(processRunId)
+    if (!topRun?.taskId) return topRun
+    const taskId = topRun.taskId
 
     // Find the pending gate row by its process-unique requestId, and read the
     // gated phase-run off the durable request blob.
-    const approval = listApprovals({ taskId: run.taskId }).find((a) => {
+    const approval = listApprovals({ taskId }).find((a) => {
       const req = a.request as { requestId?: string } | null
       return req?.requestId === requestId && a.status === "pending"
     })
-    if (!approval) return run
+    if (!approval) return topRun
     const req = approval.request as { phaseRunId?: string } | null
     const phaseRunId = req?.phaseRunId
-    if (!phaseRunId) return run
+    if (!phaseRunId) return topRun
 
     const phaseRun = processes.getPhaseRun(phaseRunId)
-    if (!phaseRun) return run
+    if (!phaseRun) return topRun
     const phase = processes.getPhase(phaseRun.phaseId)
-    if (!phase) return run
+    if (!phase) return topRun
 
-    // Reject a sub-process phase (plan 038.1): a "Request changes" note has no
-    // worker to inject into — the phase's work is a nested run. Re-driving the child
-    // with feedback is deferred to 038.2. Guard explicitly (a sub-process phase is
-    // NOT caught by the container predicate below).
-    if (phase.subprocessId)
-      throw new Error("cannot request changes on a sub-process phase (v1)")
+    // The run that OWNS this phase-run — the top-level run for a top-level gate, or a
+    // nested sub-process run for a child-internal gate. Its graph is the correct one
+    // for the container guard below.
+    const owningRun = processes.getProcessRun(phaseRun.runId)
+    if (!owningRun) return topRun
+    const owningGraph = owningRun.processId
+      ? processes.getProcessGraph(owningRun.processId)
+      : undefined
 
     // Reject a container phase (fan-out / on_each_subtask consumer of a fan-out
     // source): resetting it to `pending` would re-decompose / re-trigger and
-    // duplicate children — sub-DAG replay is plan 031's concern. Same container
-    // predicate restartRun uses.
-    if (run.processId) {
-      const graph = processes.getProcessGraph(run.processId)
-      if (graph) {
-        const phasesById = new Map(graph.phases.map((p) => [p.id, p]))
-        const isEachSubtaskConsumer = graph.edges.some(
-          (e) =>
-            e.toPhaseId === phase.id &&
-            e.trigger === "on_each_subtask" &&
-            phasesById.get(e.fromPhaseId)?.fanOut === true
+    // duplicate children — sub-DAG replay is plan 031's concern. Uses the OWNING
+    // run's graph so a child-internal container is judged correctly (plan 038.2).
+    if (owningGraph) {
+      const phasesById = new Map(owningGraph.phases.map((p) => [p.id, p]))
+      const isEachSubtaskConsumer = owningGraph.edges.some(
+        (e) =>
+          e.toPhaseId === phase.id &&
+          e.trigger === "on_each_subtask" &&
+          phasesById.get(e.fromPhaseId)?.fanOut === true
+      )
+      if (phase.fanOut || isEachSubtaskConsumer)
+        throw new Error(
+          "cannot request changes on a fan-out / on_each_subtask phase (v1)"
         )
-        if (phase.fanOut || isEachSubtaskConsumer)
-          throw new Error(
-            "cannot request changes on a fan-out / on_each_subtask phase (v1)"
-          )
-      }
     }
 
     // Enforce the per-phase rework cap (0 = unlimited).
@@ -265,18 +238,48 @@ export class ProcessService {
         // non-validator phase (stays 0).
         validatorRound: 0,
       })
-      processes.updateProcessRun(processRunId, {
-        status: "running",
-        finishedAt: null,
-      })
+      // A SUB-PROCESS phase (plan 038.2): the phase's work is a nested run, so the
+      // rework_note alone re-runs nothing. Whole-reset the child run with the
+      // feedback injected into its entry phases; the re-drive re-attaches to the
+      // child and re-executes it top-to-bottom. (v1 limitation: if a child entry
+      // phase is itself fan-out/sub-process, the note isn't read by its
+      // decompose/sub-process prompt — only plain entry phases surface it, but the
+      // whole reset still re-runs the entire child.)
+      if (phase.subprocessId) resetSubProcessChild(taskId, phaseRun, feedback)
+      // Flip the OWNING run (and every ancestor up to the top-level) running so the
+      // nested driveRun re-owns it on resume (plan 038.2). For a top-level gate this
+      // is just processRunId.
+      this.flipRunningToTop(owningRun)
     })
     tx()
 
     // better-sqlite3 is synchronous, so the tx has committed — resume re-drives
     // the (paused) backing task, which rebuilds runByPhaseId from the fresh DB.
     const updated = processes.getProcessRun(processRunId)
-    this.runner.resume(run.taskId)
+    this.runner.resume(taskId)
     return updated
+  }
+
+  // Flip a run and every ancestor run (up the parent_phase_run_id chain) to
+  // `running` (plan 038.2). A child-internal gate/flag left only the child run
+  // waiting_for_approval; on send-back the whole owning chain must be running so the
+  // nested driveRun re-derives it. Bounded by MAX_PROCESS_DEPTH (the DAG has no cycle
+  // guard). Idempotent on an already-running run.
+  private flipRunningToTop(run: ProcessRun): void {
+    let cur: ProcessRun | undefined = run
+    let depth = 0
+    while (cur && depth < MAX_PROCESS_DEPTH) {
+      processes.updateProcessRun(cur.id, {
+        status: "running",
+        finishedAt: null,
+      })
+      if (!cur.parentPhaseRunId) break
+      const parentPhaseRun = processes.getPhaseRun(cur.parentPhaseRunId)
+      cur = parentPhaseRun
+        ? processes.getProcessRun(parentPhaseRun.runId)
+        : undefined
+      depth++
+    }
   }
 
   // Confirm a pending cross-phase rework flag (plan 031.2): the human approved the
@@ -289,26 +292,37 @@ export class ProcessService {
     requestId: string
   }): ProcessRun | undefined {
     const { processRunId, requestId } = input
-    const run = processes.getProcessRun(processRunId)
-    if (!run?.taskId || !run.processId) return run
-    const graph = processes.getProcessGraph(run.processId)
-    if (!graph) return run
+    const topRun = processes.getProcessRun(processRunId)
+    if (!topRun?.taskId) return topRun
+    const taskId = topRun.taskId
 
-    const approval = listApprovals({ taskId: run.taskId }).find((a) => {
+    const approval = listApprovals({ taskId }).find((a) => {
       const req = a.request as { requestId?: string } | null
       return req?.requestId === requestId && a.status === "pending"
     })
-    if (!approval) return run
+    if (!approval) return topRun
     const req = approval.request as { flagId?: string } | null
     const flag = req?.flagId ? processes.getFlag(req.flagId) : undefined
-    if (!flag || flag.status !== "pending") return run
+    if (!flag || flag.status !== "pending") return topRun
+
+    // The flag targets a phase in the run that OWNS it — the top-level run for a
+    // top-level flag, or a nested sub-process run for a child-internal flag (plan
+    // 038.2). Resolve that run + graph from the durable flag's run_id; applyFlagBack
+    // scopes all its resets/checkpoint deletes to the passed runId/graph, so a
+    // child-internal flag resets the CHILD's phases (038.1 used the top graph — a
+    // genuine wrong-graph bug for a nested flag).
+    const owningRun = processes.getProcessRun(flag.runId)
+    const owningGraph = owningRun?.processId
+      ? processes.getProcessGraph(owningRun.processId)
+      : undefined
+    if (!owningRun || !owningGraph) return topRun
 
     const tx = getDb().transaction(() => {
       resolveApproval(approval.id, { status: "approved" })
       applyFlagBack({
-        taskId: run.taskId!,
-        runId: processRunId,
-        graph,
+        taskId,
+        runId: owningRun.id,
+        graph: owningGraph,
         target: {
           targetPhaseId: flag.targetPhaseId,
           targetChildRunId: flag.targetChildRunId ?? undefined,
@@ -316,15 +330,12 @@ export class ProcessService {
         reason: flag.reason,
       })
       processes.updateFlagStatus(flag.id, "applied")
-      processes.updateProcessRun(processRunId, {
-        status: "running",
-        finishedAt: null,
-      })
+      this.flipRunningToTop(owningRun)
     })
     tx()
 
     const updated = processes.getProcessRun(processRunId)
-    this.runner.resume(run.taskId)
+    this.runner.resume(taskId)
     return updated
   }
 
@@ -337,28 +348,35 @@ export class ProcessService {
     requestId: string
   }): ProcessRun | undefined {
     const { processRunId, requestId } = input
-    const run = processes.getProcessRun(processRunId)
-    if (!run?.taskId) return run
+    const topRun = processes.getProcessRun(processRunId)
+    if (!topRun?.taskId) return topRun
+    const taskId = topRun.taskId
 
-    const approval = listApprovals({ taskId: run.taskId }).find((a) => {
+    const approval = listApprovals({ taskId }).find((a) => {
       const req = a.request as { requestId?: string } | null
       return req?.requestId === requestId && a.status === "pending"
     })
-    if (!approval) return run
+    if (!approval) return topRun
     const req = approval.request as { flagId?: string } | null
+    const flag = req?.flagId ? processes.getFlag(req.flagId) : undefined
+    // The run that owns the flag (top-level or a nested sub-process run, plan
+    // 038.2) — flip it (and its ancestors) running so the owning driveRun resumes.
+    const owningRun = flag ? processes.getProcessRun(flag.runId) : topRun
 
     const tx = getDb().transaction(() => {
       resolveApproval(approval.id, { status: "denied" })
       if (req?.flagId) processes.updateFlagStatus(req.flagId, "dismissed")
-      processes.updateProcessRun(processRunId, {
-        status: "running",
-        finishedAt: null,
-      })
+      if (owningRun) this.flipRunningToTop(owningRun)
+      else
+        processes.updateProcessRun(processRunId, {
+          status: "running",
+          finishedAt: null,
+        })
     })
     tx()
 
     const updated = processes.getProcessRun(processRunId)
-    this.runner.resume(run.taskId)
+    this.runner.resume(taskId)
     return updated
   }
 
@@ -385,7 +403,14 @@ export class ProcessService {
     try {
       // The top-level run is at depth 0. A sub-process phase recurses via driveRun
       // with depth+1 (plan 038.1), sharing this task's id/signal/emit.
-      await this.driveRun({ run, graph, taskId: task.id, signal, emit, depth: 0 })
+      await this.driveRun({
+        run,
+        graph,
+        taskId: task.id,
+        signal,
+        emit,
+        depth: 0,
+      })
       return { content: "process complete" }
     } catch (err) {
       // An approval gate unwinds the scheduler: settle the task `paused` (durable
@@ -491,7 +516,10 @@ export class ProcessService {
           retryable: false,
         }
       if (!phase.subprocessId)
-        return { error: "sub-process phase has no subprocess_id", retryable: false }
+        return {
+          error: "sub-process phase has no subprocess_id",
+          retryable: false,
+        }
       const childGraph = processes.getProcessGraph(phase.subprocessId)
       if (!childGraph)
         return {
@@ -533,7 +561,9 @@ export class ProcessService {
         return { stopped: true }
       if (settled?.status !== "completed")
         return { error: "sub-process run failed", retryable: false }
-      return { content: this.aggregateSubProcessContent(phaseRun.id) ?? undefined }
+      return {
+        content: this.aggregateSubProcessContent(phaseRun.id) ?? undefined,
+      }
     }
   }
 
@@ -542,9 +572,7 @@ export class ProcessService {
   // upstream digest is real. Reuses the same per-phase rule collectUpstream uses (a
   // container phase → its children's aggregate; a plain phase → its worker's last
   // assistant message). Null if the nested run is missing / not completed.
-  private aggregateSubProcessContent(
-    parentPhaseRunId: string
-  ): string | null {
+  private aggregateSubProcessContent(parentPhaseRunId: string): string | null {
     const childRun = processes.getProcessRunByParentPhaseRunId(parentPhaseRunId)
     if (!childRun || childRun.status !== "completed") return null
     const phaseRuns = processes.listPhaseRuns({
@@ -554,15 +582,13 @@ export class ProcessService {
     const childGraph = childRun.processId
       ? processes.getProcessGraph(childRun.processId)
       : undefined
-    const phasesById = new Map(
-      (childGraph?.phases ?? []).map((p) => [p.id, p])
-    )
+    const phasesById = new Map((childGraph?.phases ?? []).map((p) => [p.id, p]))
     const parts: string[] = []
     for (const pr of phaseRuns) {
       if (pr.status !== "completed") continue
       const hasChildren =
-        processes.listPhaseRuns({ runId: childRun.id, parentId: pr.id }).length >
-        0
+        processes.listPhaseRuns({ runId: childRun.id, parentId: pr.id })
+          .length > 0
       const content = hasChildren
         ? this.aggregateChildContent(childRun.id, pr.id)
         : pr.taskId
@@ -824,8 +850,7 @@ export class ProcessService {
       // The dedicated reviewer agent, falling back to the phase's own resolved
       // agent (pool[0]) when none is configured.
       const pool = processes.listPhaseAgents(phase.id)
-      const agentName =
-        phase.validatorAgent ?? pool[0]?.agentName ?? null
+      const agentName = phase.validatorAgent ?? pool[0]?.agentName ?? null
 
       const workspaceId = run.workspaceId ?? source?.workspaceId ?? null
       const workspace = workspaceId
