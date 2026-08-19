@@ -7,24 +7,9 @@ item is its plan file, not its rank.
 
 ## Next up
 
-1. **`038.1` — Sub-processes (end-to-end phase). 🚧 IN PROGRESS** on `feat/sub-processes` (off `main`).
-   A Process **phase runs another Process** as a nested run (composition of `025` with itself) — e.g.
-   an "Implement" phase delegates to a reusable best-practices sub-process. `process_phases.subprocess_id`
-   (FK → a definition; mutually exclusive with fan-out/pool, repo-validated) + `process_runs.parent_phase_run_id`
-   (additive `SCHEMA_V24`). A sub-process phase recursively calls `runScheduler` on the child graph
-   **inline** (the `spawn_subagent` precedent — no re-enqueue/deadlock, sharing the parent's `taskId`/
-   `signal` under its `PER_RUN_CONCURRENCY` pool), settling **directly off the nested run's result**
-   (NOT a container — one unit of in-flight work); its aggregated output becomes the phase's output for
-   downstream `collectUpstream`; a failed nested run fails the parent **non-retryable**. **Bounds
-   mandatory** (the DAG has no cycle guard): a `MAX_PROCESS_DEPTH=5` counter (threaded like
-   `MAX_AGENT_DEPTH`) + an **author-time acyclicity check** on `subprocess_id` refs (reject a cycle,
-   repo chokepoint) + a runtime backstop. Builder gains a **sub-process toggle + definition picker**
-   (disables the conflicting fan-out/validator controls); monitor **lazily expands** the sub-process
-   phase-run to nest the child run's phase-runs (resolved against the child definition's graph).
-   **Ordered before `037`** so process import/export accounts for the `subprocess_id` reference.
-2. **`038.2` — Sub-processes: edge cases + resume hardening.** The riskier half of `038` deferred from
-   `038.1`. **Deep restart of a failed nested run** — parent `restartRun` currently resets only the
-   parent's failure frontier via the plain path, NOT the child run's own failed phases; needs a
+1. **`038.2` — Sub-processes: edge cases + resume hardening.** The riskier half of `038` deferred from
+   `038.1` (shipped). **Deep restart of a failed nested run** — parent `restartRun` currently resets only
+   the parent's failure frontier via the plain path, NOT the child run's own failed phases; needs a
    recursive reset that re-drives the nested run's frontier. **Child-internal gate + fan-out
    hardening** — a gate/validator/fan-out *inside* a sub-process interacting with the parent: a
    child-internal gate propagates `GateBlockedError` up and pauses the whole shared task (approvals key
@@ -32,6 +17,8 @@ item is its plan file, not its rank.
    in `038.1`). **Per-fan-out-child sub-process invocation** — a sub-process run *per* fan-out sub-task
    (the `025.2` granularity, deferred). **Checkpoint-accelerated resume** — a `subprocess:<parentRunId>`
    checkpoint (the durable `parent_phase_run_id` FK is the `038.1` re-attach; this accelerates it).
+   **Request-changes on a sub-process phase** — currently rejected in `038.1` (no worker to inject
+   feedback into); re-driving the child with feedback belongs here.
 2. **`039` — Inspectable agent-to-agent messaging. ⚠️ DESIGN-PENDING.** One phase-agent (B) **asks
    another phase-agent (A) a question**, answered **from A's own context** — distinct from
    `spawn_subagent` (a fresh, context-less child). The `025` engine makes each phase-run's **worker
@@ -161,6 +148,53 @@ item is its plan file, not its rank.
 
 ## Done
 
+- **`038.1` — Sub-processes (a phase runs another Process).** Built on `feat/sub-processes` (off `main`;
+  commit `df2914d`; not yet merged). A Process **phase runs another Process definition as a nested run**
+  (composition of the `025` engine with itself) — e.g. an "Implement" phase delegates to a reusable
+  "plan → code → self-review" sub-process. **Storage** (`SCHEMA_V24`, two additive nullable-FK
+  `ADD COLUMN`s, no rebuild — the `V16`/`V22` pattern): `process_phases.subprocess_id` (FK →
+  definition, `ON DELETE SET NULL`; **mutually exclusive with fan-out**, validated in the repo
+  chokepoint) + `process_runs.parent_phase_run_id` (FK → phase-run, so a nested run links to its caller
+  for monitor nesting + crash-resume re-attach). **Engine** (`scheduler.ts`): a sub-process phase
+  recursively calls `runScheduler` on the child graph **inline** — sharing the parent's
+  `taskId`/`signal`/`emit` under `PER_RUN_CONCURRENCY`, **never a second `enqueueKind`** (the
+  `spawn_subagent` no-deadlock ruling). New `RunSubProcess` closure + `SchedulerCtx` fields
+  (`runSubProcess`, `processDepth`), `dispatchSubProcess` + `runSubProcessWithRetry` — it settles
+  **directly off the nested run's result** (NOT a container — one unit of in-flight work, so no
+  derive/abort-sweep machinery); a failed nested run fails the parent **non-retryable**. **Bounds
+  mandatory** (the DAG has no cycle guard): `MAX_PROCESS_DEPTH=5` threaded like `MAX_AGENT_DEPTH` +
+  an **author-time acyclicity check** (`wouldCloseSubprocessCycle`, DFS over `subprocess_id` refs,
+  rejects self / transitive cycles at the repo chokepoint) + a runtime backstop. **Service**
+  (`service.ts`): `driveRun` factored out of `execute` for reuse; `makeRunSubProcess`
+  look-up-or-creates the child run (`getProcessRunByParentPhaseRunId`, inheriting
+  workspace/source/objective); `aggregateSubProcessContent` + a `collectUpstream` branch feed the
+  nested run's terminal-phase digest to downstream phases; `requestChanges` **rejects** a sub-process
+  phase (v1). **Builder** (`process-screen.tsx`): a **Sub-process toggle + definition picker** (Radix
+  `Select` w/ a `NO_SUBPROCESS` sentinel, self filtered out) that **disables the conflicting
+  fan-out/validator controls** (decision) + a `⤷` summary badge; `definitions` threaded down to
+  `PhaseCard`. **Monitor:** a sub-process phase-run **lazily expands** into a recursive
+  `SubProcessNestedRun` tree (fetched by `parent_phase_run_id`, names resolved against the **child**
+  definition's graph), **refreshed live** off the task tail via a `refreshTick` threaded from the
+  monitor (fixes a freeze where nested phases stayed "Running" after the parent finished). IPC/preload:
+  `subprocessId` on `phases:create`/`update`, `parentPhaseRunId` on `runs:list`. **Also shipped:**
+  `ask_user_question` **suppressed in headless Process workers** (phase/decompose/validate) — no
+  interactive user to answer, so it only stalled until interrupted (`suppressUserQuestions` on
+  `RunAgentLoopOptions`). **Decisions:** scope `038.1` only (edge cases → `038.2`, documented above);
+  disable the conflicting control (not auto-clear). Verified: `pnpm typecheck` + `pnpm build` clean
+  (the 3 residual errors — `open.test.ts`, `service.test.ts` `createPhaseRun({error})`,
+  `runner.test.ts` — are **pre-existing on `main`** and unrelated); new tests —
+  `scheduler.test.ts` (**+7**: inline run→complete→release, failed-nested fails parent non-retryable,
+  no-runner fails loudly, **not-a-container** reset-on-resume, gated sub-process blocks-then-releases,
+  depth cap), `service.test.ts` (**+5**: child-run link + inheritance, resume re-attach no-duplicate,
+  upstream digest, requestChanges reject, headless-worker `ask_user_question` suppression),
+  `processes.test.ts` (subprocess/parent-FK columns + `wouldCloseSubprocessCycle` self/2-hop/acyclic +
+  fan-out mutual-exclusivity), `migrations.test.ts` (v24 columns); the latest-`user_version` assertions
+  bumped 23 → 24 (×5). **Full suite 732 pass** against a node-ABI `better-sqlite3` rebuild, Electron ABI
+  restored after with `@electron/rebuild` (the 1 flaky `env/local.test.ts` SIGKILL timing test passes in
+  isolation). **Live-verified** by the user (nested run executes + feeds downstream; monitor nested
+  phases refresh live; `ask_user_question` no longer stalls). **Deferred (as planned):** everything in
+  `038.2` above (deep restart, child-internal gate/fan-out hardening, per-fan-out-child invocation,
+  checkpoint-accelerated resume, request-changes re-drive).
 - **`036` — Agent import (`.agent.md` from disk).** Built on `feat/agent-import` (off `main`; not yet
   merged). Extends `027`'s create/edit/delete with **import from disk**, mirroring `035` but **simpler**
   — an agent is a **single flat file** (no zip, no folder-layout normalize, no zip-bomb/zip-slip
