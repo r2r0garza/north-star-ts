@@ -1090,26 +1090,26 @@ function PhaseCard({
             {phase.gatePolicy === "approve" &&
               !phase.fanOut &&
               !phase.subprocessId && (
-              <label
-                className="flex items-center gap-2 text-xs"
-                title="Max times a reviewer can send this phase back for changes (0 = unlimited)"
-              >
-                <span className="text-muted-foreground">Max rework</span>
-                <Input
-                  type="number"
-                  min={0}
-                  className="h-7 w-16 text-xs"
-                  value={phase.maxReworkRounds}
-                  onChange={(e) => {
-                    const n = Math.max(
-                      0,
-                      Math.floor(Number(e.target.value) || 0)
-                    )
-                    patchPhase({ maxReworkRounds: n })
-                  }}
-                />
-              </label>
-            )}
+                <label
+                  className="flex items-center gap-2 text-xs"
+                  title="Max times a reviewer can send this phase back for changes (0 = unlimited)"
+                >
+                  <span className="text-muted-foreground">Max rework</span>
+                  <Input
+                    type="number"
+                    min={0}
+                    className="h-7 w-16 text-xs"
+                    value={phase.maxReworkRounds}
+                    onChange={(e) => {
+                      const n = Math.max(
+                        0,
+                        Math.floor(Number(e.target.value) || 0)
+                      )
+                      patchPhase({ maxReworkRounds: n })
+                    }}
+                  />
+                </label>
+              )}
           </div>
 
           {/* Validator config (plan 031.1): the reviewer agent + iteration cap, shown
@@ -1206,96 +1206,97 @@ function PhaseCard({
                 </Select>
               </label>
               <span className="text-[10px] text-muted-foreground">
-                This phase delegates to the nested process; its aggregated output
-                feeds downstream phases. The agent pool and routing are unused.
+                This phase delegates to the nested process; its aggregated
+                output feeds downstream phases. The agent pool and routing are
+                unused.
               </span>
             </div>
           )}
 
           {/* Row 3: agent pool. Hidden for a sub-process phase (no worker to pool). */}
           {!phase.subprocessId && (
-          <div className="flex flex-col gap-1.5">
-            <span className="text-xs text-muted-foreground">
-              Agent pool
-              {phase.routing === "dispatch" && pool.length < 2 && (
-                <span className="ml-1 text-amber-600 dark:text-amber-500">
-                  — dispatch routing needs 2+ agents
-                </span>
-              )}
-            </span>
-            <div className="flex flex-wrap items-center gap-1.5">
-              {pool.map((a) => (
-                <Badge key={a.id} variant="secondary" className="gap-1 pr-1">
-                  {a.agentName}
-                  <button
-                    type="button"
-                    onClick={() => removePoolAgent(a.id)}
-                    className="rounded-sm p-0.5 hover:bg-background/60"
-                    aria-label={`Remove ${a.agentName}`}
-                  >
-                    <XIcon className="size-3" />
-                  </button>
-                </Badge>
-              ))}
-              {pool.length === 0 && (
-                <span className="text-xs text-muted-foreground">
-                  No agents — the phase falls back to the default agent.
-                </span>
+            <div className="flex flex-col gap-1.5">
+              <span className="text-xs text-muted-foreground">
+                Agent pool
+                {phase.routing === "dispatch" && pool.length < 2 && (
+                  <span className="ml-1 text-amber-600 dark:text-amber-500">
+                    — dispatch routing needs 2+ agents
+                  </span>
+                )}
+              </span>
+              <div className="flex flex-wrap items-center gap-1.5">
+                {pool.map((a) => (
+                  <Badge key={a.id} variant="secondary" className="gap-1 pr-1">
+                    {a.agentName}
+                    <button
+                      type="button"
+                      onClick={() => removePoolAgent(a.id)}
+                      className="rounded-sm p-0.5 hover:bg-background/60"
+                      aria-label={`Remove ${a.agentName}`}
+                    >
+                      <XIcon className="size-3" />
+                    </button>
+                  </Badge>
+                ))}
+                {pool.length === 0 && (
+                  <span className="text-xs text-muted-foreground">
+                    No agents — the phase falls back to the default agent.
+                  </span>
+                )}
+              </div>
+              {addable.length > 0 ? (
+                // Type-to-filter agent picker (mirrors App.tsx's agent combobox).
+                // It's an action picker — selecting adds to the pool and the value
+                // stays unselected, so the trigger always reads "Add agent…".
+                <Combobox
+                  items={addable.map((a) => ({
+                    value: a.name,
+                    label: a.name,
+                    description: a.description,
+                  }))}
+                  value={null}
+                  isItemEqualToValue={(a, b) => a?.value === b?.value}
+                  onValueChange={(item: { value: string } | null) => {
+                    if (item) void addPoolAgent(item.value)
+                  }}
+                >
+                  <ComboboxTrigger className="flex h-7 w-full items-center justify-between gap-1 rounded-[min(var(--radius-md),10px)] border border-input bg-transparent px-2.5 text-xs transition-colors hover:bg-accent/50 dark:bg-input/30">
+                    <ComboboxValue placeholder="Add agent…" />
+                  </ComboboxTrigger>
+                  <ComboboxContent className="w-(--anchor-width)">
+                    <ComboboxInput
+                      placeholder="Search agents…"
+                      showTrigger={false}
+                    />
+                    <ComboboxEmpty>No agents found.</ComboboxEmpty>
+                    <ComboboxList>
+                      {(item: {
+                        value: string
+                        label: string
+                        description?: string
+                      }) => (
+                        <ComboboxItem key={item.value} value={item}>
+                          <span className="flex flex-col gap-0.5">
+                            <span>{item.label}</span>
+                            {item.description && (
+                              <span className="line-clamp-2 text-[10px] text-muted-foreground">
+                                {item.description}
+                              </span>
+                            )}
+                          </span>
+                        </ComboboxItem>
+                      )}
+                    </ComboboxList>
+                  </ComboboxContent>
+                </Combobox>
+              ) : (
+                agents.length === 0 && (
+                  <span className="text-xs text-muted-foreground">
+                    No authored agents available yet.
+                  </span>
+                )
               )}
             </div>
-            {addable.length > 0 ? (
-              // Type-to-filter agent picker (mirrors App.tsx's agent combobox).
-              // It's an action picker — selecting adds to the pool and the value
-              // stays unselected, so the trigger always reads "Add agent…".
-              <Combobox
-                items={addable.map((a) => ({
-                  value: a.name,
-                  label: a.name,
-                  description: a.description,
-                }))}
-                value={null}
-                isItemEqualToValue={(a, b) => a?.value === b?.value}
-                onValueChange={(item: { value: string } | null) => {
-                  if (item) void addPoolAgent(item.value)
-                }}
-              >
-                <ComboboxTrigger className="flex h-7 w-full items-center justify-between gap-1 rounded-[min(var(--radius-md),10px)] border border-input bg-transparent px-2.5 text-xs transition-colors hover:bg-accent/50 dark:bg-input/30">
-                  <ComboboxValue placeholder="Add agent…" />
-                </ComboboxTrigger>
-                <ComboboxContent className="w-(--anchor-width)">
-                  <ComboboxInput
-                    placeholder="Search agents…"
-                    showTrigger={false}
-                  />
-                  <ComboboxEmpty>No agents found.</ComboboxEmpty>
-                  <ComboboxList>
-                    {(item: {
-                      value: string
-                      label: string
-                      description?: string
-                    }) => (
-                      <ComboboxItem key={item.value} value={item}>
-                        <span className="flex flex-col gap-0.5">
-                          <span>{item.label}</span>
-                          {item.description && (
-                            <span className="line-clamp-2 text-[10px] text-muted-foreground">
-                              {item.description}
-                            </span>
-                          )}
-                        </span>
-                      </ComboboxItem>
-                    )}
-                  </ComboboxList>
-                </ComboboxContent>
-              </Combobox>
-            ) : (
-              agents.length === 0 && (
-                <span className="text-xs text-muted-foreground">
-                  No authored agents available yet.
-                </span>
-              )
-            )}
-          </div>
           )}
 
           {/* Row 4: dependencies (incoming edges). */}
@@ -1868,6 +1869,7 @@ function RunMonitor({
               phaseRun={pr}
               name={phaseName(pr.phaseId)}
               gateRequestId={gates[pr.id]}
+              gates={gates}
               flagGate={flagGates[pr.id]}
               childFlagGates={flagGates}
               childRuns={childrenOf.get(pr.id) ?? []}
@@ -1963,6 +1965,7 @@ function PhaseRunItem({
   phaseRun,
   name,
   gateRequestId,
+  gates,
   flagGate,
   childFlagGates,
   childRuns,
@@ -1982,6 +1985,9 @@ function PhaseRunItem({
   phaseRun: ProcessPhaseRun
   name: string
   gateRequestId: string | undefined
+  // The full phaseRunId → gate requestId map, threaded down so a nested sub-process
+  // run's own phase gates render actionable cards (plan 038.2).
+  gates: Record<string, string>
   // A pending cross-phase rework flag this phase raised, awaiting confirmation
   // (plan 031.2). Undefined when there's none.
   flagGate: FlagGateInfo | undefined
@@ -2022,14 +2028,6 @@ function PhaseRunItem({
   const displayStatus = gated ? "waiting_for_approval" : phaseRun.status
   const clickable = phaseRun.taskId !== null
 
-  // "Request changes" (plan 029): a collapsible feedback box. Hidden for a
-  // container phase (backend rejects it) or once the per-phase rework cap is hit
-  // (0 = unlimited) — then only Approve/Deny remain.
-  const [reworkOpen, setReworkOpen] = useState(false)
-  const [reworkText, setReworkText] = useState("")
-  const atReworkCap =
-    maxReworkRounds > 0 && phaseRun.reworkRound >= maxReworkRounds
-  const canRequestChanges = !isContainer && !atReworkCap
   return (
     <div className="flex flex-col gap-2 rounded-lg border bg-card p-3">
       <div
@@ -2068,83 +2066,17 @@ function PhaseRunItem({
       {/* Inline approval card for an approve-gated phase (reuses the activity
           panel affordance, wired to process.approve/deny). */}
       {gated && (
-        <div className="flex flex-col gap-2 rounded-lg border border-amber-500/40 bg-amber-500/5 p-3 text-xs">
-          <div className="flex items-center gap-2 font-medium text-amber-600 dark:text-amber-500">
-            <ShieldAlert className="size-3.5 shrink-0" />
-            <span>
-              “{name}” is done — approve to release its downstream phases.
-            </span>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <Button
-              size="xs"
-              onClick={() => onApprove(gateRequestId, phaseRun.id)}
-            >
-              Approve <Kbd className="ml-1.5">⏎</Kbd>
-            </Button>
-            <Button
-              size="xs"
-              variant="destructive"
-              onClick={() => onDeny(gateRequestId, phaseRun.id)}
-            >
-              Deny <Kbd className="ml-1.5">Esc</Kbd>
-            </Button>
-            {canRequestChanges && !reworkOpen && (
-              <Button
-                size="xs"
-                variant="outline"
-                onClick={() => setReworkOpen(true)}
-              >
-                Request changes
-              </Button>
-            )}
-          </div>
-          {atReworkCap && !isContainer && (
-            <p className="text-[11px] text-muted-foreground">
-              Rework limit reached ({maxReworkRounds}). Approve or deny to
-              continue.
-            </p>
-          )}
-          {canRequestChanges && reworkOpen && (
-            <div className="flex flex-col gap-2">
-              <Textarea
-                autoFocus
-                rows={3}
-                value={reworkText}
-                onChange={(e) => setReworkText(e.target.value)}
-                placeholder="What should change before this phase is approved?"
-                className="text-xs"
-              />
-              <div className="flex items-center gap-2">
-                <Button
-                  size="xs"
-                  disabled={reworkText.trim().length === 0}
-                  onClick={() => {
-                    onRequestChanges(
-                      gateRequestId,
-                      phaseRun.id,
-                      reworkText.trim()
-                    )
-                    setReworkText("")
-                    setReworkOpen(false)
-                  }}
-                >
-                  Send back
-                </Button>
-                <Button
-                  size="xs"
-                  variant="ghost"
-                  onClick={() => {
-                    setReworkText("")
-                    setReworkOpen(false)
-                  }}
-                >
-                  Cancel
-                </Button>
-              </div>
-            </div>
-          )}
-        </div>
+        <GateCard
+          name={name}
+          requestId={gateRequestId}
+          phaseRunId={phaseRun.id}
+          reworkRound={phaseRun.reworkRound}
+          maxReworkRounds={maxReworkRounds}
+          isContainer={isContainer}
+          onApprove={onApprove}
+          onDeny={onDeny}
+          onRequestChanges={onRequestChanges}
+        />
       )}
 
       {/* Inline confirmation card for a cross-phase rework flag this phase raised
@@ -2224,7 +2156,10 @@ function PhaseRunItem({
       )}
 
       {/* The nested run of a sub-process phase (plan 038.1): expandable, lazily
-          fetched, and recursively rendered against the CHILD definition's graph. */}
+          fetched, and recursively rendered against the CHILD definition's graph.
+          Gates/flags raised INSIDE the nested run surface on the shared task's
+          approvals (keyed by phase-run id in the gates/flagGates maps), so we thread
+          those maps + the control callbacks down for actionable cards (plan 038.2). */}
       {isSubProcess && (
         <SubProcessNestedRun
           parentPhaseRunId={phaseRun.id}
@@ -2232,7 +2167,121 @@ function PhaseRunItem({
           onOpenTranscript={onOpenTranscript}
           refreshTick={refreshTick}
           depth={0}
+          gates={gates}
+          flagGates={childFlagGates}
+          onApprove={onApprove}
+          onDeny={onDeny}
+          onRequestChanges={onRequestChanges}
+          onConfirmFlag={onConfirmFlag}
+          onDismissFlag={onDismissFlag}
         />
+      )}
+    </div>
+  )
+}
+
+// The inline approve-gate card (plan 029): Approve / Deny / Request changes with a
+// collapsible feedback box. Extracted from PhaseRunItem so a nested sub-process
+// run's own gated phases can render the same actionable card (plan 038.2). Request
+// changes is hidden for a container phase (backend rejects it) or at the per-phase
+// rework cap (0 = unlimited).
+function GateCard({
+  name,
+  requestId,
+  phaseRunId,
+  reworkRound,
+  maxReworkRounds,
+  isContainer,
+  onApprove,
+  onDeny,
+  onRequestChanges,
+}: {
+  name: string
+  requestId: string
+  phaseRunId: string
+  reworkRound: number
+  maxReworkRounds: number
+  isContainer: boolean
+  onApprove: (requestId: string, phaseRunId: string) => void
+  onDeny: (requestId: string, phaseRunId: string) => void
+  onRequestChanges: (
+    requestId: string,
+    phaseRunId: string,
+    feedback: string
+  ) => void
+}) {
+  const [reworkOpen, setReworkOpen] = useState(false)
+  const [reworkText, setReworkText] = useState("")
+  const atReworkCap = maxReworkRounds > 0 && reworkRound >= maxReworkRounds
+  const canRequestChanges = !isContainer && !atReworkCap
+  return (
+    <div className="flex flex-col gap-2 rounded-lg border border-amber-500/40 bg-amber-500/5 p-3 text-xs">
+      <div className="flex items-center gap-2 font-medium text-amber-600 dark:text-amber-500">
+        <ShieldAlert className="size-3.5 shrink-0" />
+        <span>
+          “{name}” is done — approve to release its downstream phases.
+        </span>
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <Button size="xs" onClick={() => onApprove(requestId, phaseRunId)}>
+          Approve <Kbd className="ml-1.5">⏎</Kbd>
+        </Button>
+        <Button
+          size="xs"
+          variant="destructive"
+          onClick={() => onDeny(requestId, phaseRunId)}
+        >
+          Deny <Kbd className="ml-1.5">Esc</Kbd>
+        </Button>
+        {canRequestChanges && !reworkOpen && (
+          <Button
+            size="xs"
+            variant="outline"
+            onClick={() => setReworkOpen(true)}
+          >
+            Request changes
+          </Button>
+        )}
+      </div>
+      {atReworkCap && !isContainer && (
+        <p className="text-[11px] text-muted-foreground">
+          Rework limit reached ({maxReworkRounds}). Approve or deny to continue.
+        </p>
+      )}
+      {canRequestChanges && reworkOpen && (
+        <div className="flex flex-col gap-2">
+          <Textarea
+            autoFocus
+            rows={3}
+            value={reworkText}
+            onChange={(e) => setReworkText(e.target.value)}
+            placeholder="What should change before this phase is approved?"
+            className="text-xs"
+          />
+          <div className="flex items-center gap-2">
+            <Button
+              size="xs"
+              disabled={reworkText.trim().length === 0}
+              onClick={() => {
+                onRequestChanges(requestId, phaseRunId, reworkText.trim())
+                setReworkText("")
+                setReworkOpen(false)
+              }}
+            >
+              Send back
+            </Button>
+            <Button
+              size="xs"
+              variant="ghost"
+              onClick={() => {
+                setReworkText("")
+                setReworkOpen(false)
+              }}
+            >
+              Cancel
+            </Button>
+          </div>
+        </div>
       )}
     </div>
   )
@@ -2243,8 +2292,10 @@ function PhaseRunItem({
 // definition graph, and its phase-runs, then renders them as a compact tree —
 // top-level phases with their fan-out/on_each_subtask children indented, names
 // resolved against the CHILD graph. Recurses for a sub-process phase INSIDE the
-// child (bounded by MAX_PROCESS_DEPTH). Read-only: gates/flags inside a nested run
-// surface on the shared task tail at the top level (v1 scope, plan 038.2).
+// child (bounded by MAX_PROCESS_DEPTH). A gate/flag raised INSIDE the nested run
+// surfaces on the shared task's approvals (keyed by phase-run id in the gates/
+// flagGates maps threaded from the monitor), so its phases render actionable
+// approve/deny/request-changes + flag-confirm cards (plan 038.2).
 const MAX_NESTED_DEPTH = 5
 function SubProcessNestedRun({
   parentPhaseRunId,
@@ -2252,6 +2303,13 @@ function SubProcessNestedRun({
   onOpenTranscript,
   refreshTick,
   depth,
+  gates,
+  flagGates,
+  onApprove,
+  onDeny,
+  onRequestChanges,
+  onConfirmFlag,
+  onDismissFlag,
 }: {
   parentPhaseRunId: string
   workspacePath: string
@@ -2260,6 +2318,19 @@ function SubProcessNestedRun({
   // rows while expanded so a running nested run's phases update live (plan 038.1).
   refreshTick: number
   depth: number
+  // The shared task's gate/flag maps (keyed by phase-run id) + control callbacks,
+  // threaded down so a nested run's own gates/flags are actionable (plan 038.2).
+  gates: Record<string, string>
+  flagGates: Record<string, FlagGateInfo>
+  onApprove: (requestId: string, phaseRunId: string) => void
+  onDeny: (requestId: string, phaseRunId: string) => void
+  onRequestChanges: (
+    requestId: string,
+    phaseRunId: string,
+    feedback: string
+  ) => void
+  onConfirmFlag: (requestId: string, phaseRunId: string) => void
+  onDismissFlag: (requestId: string, phaseRunId: string) => void
 }) {
   const [open, setOpen] = useState(false)
   const [graph, setGraph] = useState<ProcessGraph | null>(null)
@@ -2267,7 +2338,9 @@ function SubProcessNestedRun({
   const [loaded, setLoaded] = useState(false)
 
   const load = useCallback(async () => {
-    const runs = await window.cowork.db.processes.runs.list({ parentPhaseRunId })
+    const runs = await window.cowork.db.processes.runs.list({
+      parentPhaseRunId,
+    })
     const childRun = runs[0]
     if (!childRun) {
       setLoaded(true)
@@ -2298,6 +2371,28 @@ function SubProcessNestedRun({
   const isSubProcess = useCallback(
     (phaseId: string) =>
       !!graph?.phases.find((p) => p.id === phaseId)?.subprocessId,
+    [graph]
+  )
+  // Container / rework-cap predicates against the CHILD graph, so a nested gate's
+  // Request-changes control gates correctly (mirrors the top-level monitor helpers).
+  const isContainer = useCallback(
+    (phaseId: string) => {
+      if (!graph) return false
+      const phase = graph.phases.find((p) => p.id === phaseId)
+      if (!phase) return false
+      if (phase.fanOut) return true
+      return graph.edges.some(
+        (e) =>
+          e.toPhaseId === phaseId &&
+          e.trigger === "on_each_subtask" &&
+          graph.phases.find((p) => p.id === e.fromPhaseId)?.fanOut === true
+      )
+    },
+    [graph]
+  )
+  const maxRework = useCallback(
+    (phaseId: string) =>
+      graph?.phases.find((p) => p.id === phaseId)?.maxReworkRounds ?? 0,
     [graph]
   )
 
@@ -2335,60 +2430,118 @@ function SubProcessNestedRun({
               No nested phases yet.
             </p>
           )}
-          {topLevel.map((pr) => (
-            <div key={pr.id} className="flex flex-col gap-0.5">
-              <div
-                onClick={
-                  pr.taskId ? () => onOpenTranscript(pr) : undefined
-                }
-                className={cn(
-                  "flex items-center gap-2 rounded-md px-1 py-0.5 text-xs",
-                  pr.taskId && "cursor-pointer hover:bg-muted/60"
-                )}
-                title={pr.taskId ? "View this phase's transcript" : undefined}
-              >
-                <StatusIcon status={pr.status} />
-                <span className="min-w-0 flex-1 truncate">
-                  {pr.title ?? phaseName(pr.phaseId)}
-                </span>
-                {pr.agentName && (
-                  <Badge
-                    variant="outline"
-                    className="shrink-0 font-mono text-[10px]"
-                  >
-                    {pr.agentName}
-                  </Badge>
-                )}
-                <PhaseStatusLabel status={pr.status} />
-              </div>
-              {(childrenOf.get(pr.id) ?? []).map((c, i) => (
+          {topLevel.map((pr) => {
+            // A gate on this nested phase surfaces via the shared task's approvals
+            // (plan 038.2). An approve-gated phase stays `completed` in the DB, so
+            // override the displayed status to read as awaiting (as PhaseRunItem does).
+            const gateRequestId = gates[pr.id]
+            const displayStatus = gateRequestId
+              ? "waiting_for_approval"
+              : pr.status
+            return (
+              <div key={pr.id} className="flex flex-col gap-0.5">
                 <div
-                  key={c.id}
-                  onClick={c.taskId ? () => onOpenTranscript(c) : undefined}
+                  onClick={pr.taskId ? () => onOpenTranscript(pr) : undefined}
                   className={cn(
-                    "ml-3 flex items-center gap-2 rounded-md border-l-2 px-1 py-0.5 pl-2 text-xs",
-                    c.taskId && "cursor-pointer hover:bg-muted/60"
+                    "flex items-center gap-2 rounded-md px-1 py-0.5 text-xs",
+                    pr.taskId && "cursor-pointer hover:bg-muted/60"
                   )}
+                  title={pr.taskId ? "View this phase's transcript" : undefined}
                 >
-                  <StatusIcon status={c.status} />
+                  <StatusIcon status={displayStatus} />
                   <span className="min-w-0 flex-1 truncate">
-                    {c.title ?? `${phaseName(c.phaseId)} #${i + 1}`}
+                    {pr.title ?? phaseName(pr.phaseId)}
                   </span>
-                  <PhaseStatusLabel status={c.status} />
+                  {pr.agentName && (
+                    <Badge
+                      variant="outline"
+                      className="shrink-0 font-mono text-[10px]"
+                    >
+                      {pr.agentName}
+                    </Badge>
+                  )}
+                  <PhaseStatusLabel status={displayStatus} />
                 </div>
-              ))}
-              {/* A sub-process phase INSIDE the nested run recurses (bounded). */}
-              {isSubProcess(pr.phaseId) && depth + 1 < MAX_NESTED_DEPTH && (
-                <SubProcessNestedRun
-                  parentPhaseRunId={pr.id}
-                  workspacePath={workspacePath}
-                  onOpenTranscript={onOpenTranscript}
-                  refreshTick={refreshTick}
-                  depth={depth + 1}
-                />
-              )}
-            </div>
-          ))}
+                {/* An approve gate raised inside this nested run (plan 038.2). */}
+                {gateRequestId && (
+                  <GateCard
+                    name={pr.title ?? phaseName(pr.phaseId)}
+                    requestId={gateRequestId}
+                    phaseRunId={pr.id}
+                    reworkRound={pr.reworkRound}
+                    maxReworkRounds={maxRework(pr.phaseId)}
+                    isContainer={isContainer(pr.phaseId)}
+                    onApprove={onApprove}
+                    onDeny={onDeny}
+                    onRequestChanges={onRequestChanges}
+                  />
+                )}
+                {/* A cross-phase rework flag this nested phase raised (plan 038.2). */}
+                {flagGates[pr.id] && (
+                  <FlagCard
+                    flagGate={flagGates[pr.id]}
+                    flaggerName={pr.title ?? phaseName(pr.phaseId)}
+                    onConfirm={() =>
+                      onConfirmFlag(flagGates[pr.id].requestId, pr.id)
+                    }
+                    onDismiss={() =>
+                      onDismissFlag(flagGates[pr.id].requestId, pr.id)
+                    }
+                  />
+                )}
+                {(childrenOf.get(pr.id) ?? []).map((c, i) => (
+                  <div key={c.id} className="flex flex-col gap-0.5">
+                    <div
+                      onClick={c.taskId ? () => onOpenTranscript(c) : undefined}
+                      className={cn(
+                        "ml-3 flex items-center gap-2 rounded-md border-l-2 px-1 py-0.5 pl-2 text-xs",
+                        c.taskId && "cursor-pointer hover:bg-muted/60"
+                      )}
+                    >
+                      <StatusIcon status={c.status} />
+                      <span className="min-w-0 flex-1 truncate">
+                        {c.title ?? `${phaseName(c.phaseId)} #${i + 1}`}
+                      </span>
+                      <PhaseStatusLabel status={c.status} />
+                    </div>
+                    {/* A per-child rework flag a nested on_each_subtask instance
+                        raised (plan 038.2). */}
+                    {flagGates[c.id] && (
+                      <div className="ml-3">
+                        <FlagCard
+                          flagGate={flagGates[c.id]}
+                          flaggerName={c.title ?? phaseName(c.phaseId)}
+                          onConfirm={() =>
+                            onConfirmFlag(flagGates[c.id].requestId, c.id)
+                          }
+                          onDismiss={() =>
+                            onDismissFlag(flagGates[c.id].requestId, c.id)
+                          }
+                        />
+                      </div>
+                    )}
+                  </div>
+                ))}
+                {/* A sub-process phase INSIDE the nested run recurses (bounded). */}
+                {isSubProcess(pr.phaseId) && depth + 1 < MAX_NESTED_DEPTH && (
+                  <SubProcessNestedRun
+                    parentPhaseRunId={pr.id}
+                    workspacePath={workspacePath}
+                    onOpenTranscript={onOpenTranscript}
+                    refreshTick={refreshTick}
+                    depth={depth + 1}
+                    gates={gates}
+                    flagGates={flagGates}
+                    onApprove={onApprove}
+                    onDeny={onDeny}
+                    onRequestChanges={onRequestChanges}
+                    onConfirmFlag={onConfirmFlag}
+                    onDismissFlag={onDismissFlag}
+                  />
+                )}
+              </div>
+            )
+          })}
         </div>
       )}
     </div>

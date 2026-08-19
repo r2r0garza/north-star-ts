@@ -1,5 +1,6 @@
 import { getDb } from "../../db/connection"
 import * as processes from "../../db/repositories/processes"
+import { deleteApprovalsForPhaseRuns } from "../../db/repositories/approvals"
 import {
   createCheckpoint,
   deleteCheckpoint,
@@ -10,7 +11,13 @@ import {
   EACH_SUBTASK_CHECKPOINT_LABEL,
   type FanoutCheckpointState,
 } from "./checkpoints"
-import type { ProcessGraph, ProcessPhase, ProcessPhaseRun } from "../../db/types"
+import { MAX_PROCESS_DEPTH } from "./scheduler"
+import type {
+  ProcessGraph,
+  ProcessPhase,
+  ProcessPhaseRun,
+  ProcessRun,
+} from "../../db/types"
 
 // Cross-phase flag-back reset (plan 031.2). A phase-worker flagged a defect an
 // earlier phase owns; this module resolves the target, computes the transitive
@@ -67,7 +74,8 @@ export function ancestorsOf(graph: ProcessGraph, phaseId: string): Set<string> {
     const id = queue.shift()!
     if (seen.has(id)) continue
     seen.add(id)
-    for (const src of incoming.get(id) ?? []) if (!seen.has(src)) queue.push(src)
+    for (const src of incoming.get(id) ?? [])
+      if (!seen.has(src)) queue.push(src)
   }
   return seen
 }
@@ -152,7 +160,8 @@ export function resolveTarget(
   const topLevel = processes
     .listPhaseRuns({ runId, phaseId: target.id })
     .find((pr) => pr.parentId === null)
-  if (!topLevel) return { error: `no run found for phase "${input.targetPhaseKey}"` }
+  if (!topLevel)
+    return { error: `no run found for phase "${input.targetPhaseKey}"` }
   if (topLevel.status !== "completed")
     return {
       error: `phase "${input.targetPhaseKey}" has not completed; only a completed phase can be flagged`,
@@ -219,7 +228,7 @@ const toPending = {
 
 // Is a phase a container (fan-out parent or on_each_subtask consumer of a fan-out
 // source)? Mirrors the scheduler/service predicate.
-function isContainer(graph: ProcessGraph, phaseId: string): boolean {
+export function isContainer(graph: ProcessGraph, phaseId: string): boolean {
   const phase = graph.phases.find((p) => p.id === phaseId)
   if (!phase) return false
   if (phase.fanOut) return true
@@ -235,7 +244,10 @@ function isContainer(graph: ProcessGraph, phaseId: string): boolean {
 // Delete every fanout:/eachsubtask: checkpoint row for a container's top-level run
 // so the scheduler re-decomposes / re-triggers it clean (it rebuilds
 // decomposedParents/triggeredPairs from these on entry).
-function clearContainerCheckpoints(taskId: string, containerRunId: string): void {
+function clearContainerCheckpoints(
+  taskId: string,
+  containerRunId: string
+): void {
   const fanoutLabel = FANOUT_CHECKPOINT_LABEL(containerRunId)
   const eachLabel = EACH_SUBTASK_CHECKPOINT_LABEL(containerRunId)
   for (const cp of listCheckpoints(taskId))
@@ -245,13 +257,16 @@ function clearContainerCheckpoints(taskId: string, containerRunId: string): void
 
 // Reset a whole CONTAINER top-level run: delete its children (parent_id cascade)
 // + its checkpoints, then set it pending so it re-decomposes / re-triggers fresh.
-function resetContainerWhole(
+export function resetContainerWhole(
   taskId: string,
   runId: string,
   containerRun: ProcessPhaseRun,
   reworkNote: string | null
 ): void {
-  for (const child of processes.listPhaseRuns({ runId, parentId: containerRun.id }))
+  for (const child of processes.listPhaseRuns({
+    runId,
+    parentId: containerRun.id,
+  }))
     processes.deletePhaseRun(child.id)
   clearContainerCheckpoints(taskId, containerRun.id)
   processes.updatePhaseRun(containerRun.id, {
@@ -263,7 +278,7 @@ function resetContainerWhole(
 }
 
 // Reset a plain (non-container) phase-run in place (the requestChanges write shape).
-function resetPlain(
+export function resetPlain(
   phaseRun: ProcessPhaseRun,
   reworkNote: string | null
 ): void {
@@ -386,7 +401,8 @@ function resetAggregatingDownstream(
       .find((pr) => pr.parentId === null)
     if (!topLevel) continue
     const note = `An upstream sub-task was reworked; re-check your output.`
-    if (isContainer(graph, phaseId)) resetContainerWhole(taskId, runId, topLevel, note)
+    if (isContainer(graph, phaseId))
+      resetContainerWhole(taskId, runId, topLevel, note)
     else resetPlain(topLevel, note)
   }
 }
@@ -449,4 +465,168 @@ function deleteInstanceCheckpointRow(
     const state = cp.state as { instanceRunId?: string }
     if (state.instanceRunId === instanceRunId) deleteCheckpoint(cp.id)
   }
+}
+
+// ── recursive run reset (plan 038.2) ──────────────────────────────────────────
+//
+// Reset a run's top-level phase-run frontier, descending through any nested
+// SUB-PROCESS phase-runs into their child runs (linked by parent_phase_run_id).
+// ONE code path shared by two callers:
+//  - restartRun (mode "frontier"): retry a FAILED run — reset only failed/cancelled
+//    phase-runs. A sub-process phase-run whose CHILD run failed must reset the
+//    child's own failed frontier too (038.1 re-attaches to the child but never
+//    reset it, so the child re-failed immediately — the 038.2 bug this fixes).
+//  - requestChanges on a sub-process phase (mode "whole"): re-drive the WHOLE child
+//    run with feedback — reset ALL of the child's phase-runs so it re-executes from
+//    the top, injecting the feedback into the child graph's entry phases.
+//
+// Transaction-agnostic: the caller wraps it in its own getDb().transaction() (both
+// restartRun and requestChanges already open one). The container predicate is
+// rebuilt per child graph (each recursion uses its own `graph`), and recursion is
+// bounded by MAX_PROCESS_DEPTH as a backstop against a mis-authored cycle.
+export type ResetMode = "frontier" | "whole"
+
+export interface ResetRunRecursiveInput {
+  taskId: string
+  run: ProcessRun
+  graph: ProcessGraph
+  mode: ResetMode
+  // For mode "whole": the feedback note. Injected as reworkNote onto the ENTRY
+  // phases (no incoming edges) so their re-run kickoff surfaces it.
+  note?: string | null
+  depth?: number
+}
+
+const resettable = (s: string): boolean => s === "failed" || s === "cancelled"
+const frontierToPending = {
+  status: "pending" as const,
+  error: null,
+  startedAt: null,
+  finishedAt: null,
+}
+
+export function resetRunRecursive(input: ResetRunRecursiveInput): void {
+  const { taskId, run, graph, mode, note = null } = input
+  const depth = input.depth ?? 0
+  const phasesById = new Map(graph.phases.map((p) => [p.id, p]))
+
+  // Entry phases (no incoming edge) carry the feedback note on a whole reset.
+  const hasIncoming = new Set(graph.edges.map((e) => e.toPhaseId))
+
+  for (const pr of processes.listPhaseRuns({ runId: run.id, parentId: null })) {
+    const phase = phasesById.get(pr.phaseId)
+
+    // A sub-process phase-run (checked BEFORE the frontier-resettable skip): a run
+    // that failed INSIDE the nested run leaves THIS phase-run `running` (the child
+    // driveRun threw, so runSubProcessWithRetry never settled it) while the CHILD
+    // run + its own phases are `failed`. Frontier restart must reset the child's
+    // failed frontier — so recurse whenever the child run isn't completed, not just
+    // when this phase-run is itself resettable.
+    if (phase?.subprocessId) {
+      const childRun = processes.getProcessRunByParentPhaseRunId(pr.id)
+      const childNeedsReset = !!childRun && childRun.status !== "completed"
+      if (mode === "whole" || resettable(pr.status) || childNeedsReset) {
+        if (mode === "whole") {
+          const isEntry = !hasIncoming.has(phase.id)
+          resetPlain(pr, isEntry ? note : null)
+        } else {
+          processes.updatePhaseRun(pr.id, frontierToPending)
+        }
+        recurseIntoChild(taskId, pr, mode, note, depth)
+      }
+      continue
+    }
+
+    if (mode === "frontier" && !resettable(pr.status)) continue
+
+    // A container (fan-out parent / on_each_subtask consumer) WITH children.
+    if (phase && isContainer(graph, phase.id)) {
+      const children = processes.listPhaseRuns({
+        runId: run.id,
+        parentId: pr.id,
+      })
+      if (children.length > 0) {
+        if (mode === "whole") {
+          const isEntry = !hasIncoming.has(phase.id)
+          resetContainerWhole(taskId, run.id, pr, isEntry ? note : null)
+        } else {
+          // Frontier: re-own via derivation; re-dispatch only broken children.
+          processes.updatePhaseRun(pr.id, {
+            status: "running",
+            error: null,
+            finishedAt: null,
+          })
+          for (const child of children)
+            if (resettable(child.status))
+              processes.updatePhaseRun(child.id, frontierToPending)
+        }
+        continue
+      }
+      // No children (decompose/trigger itself failed) → fall through to re-decompose.
+    }
+
+    // A plain phase-run.
+    if (mode === "whole") {
+      const isEntry = phase ? !hasIncoming.has(phase.id) : false
+      resetPlain(pr, isEntry ? note : null)
+    } else {
+      processes.updatePhaseRun(pr.id, frontierToPending)
+    }
+  }
+}
+
+// Whole-reset the child run beneath a sub-process phase-run (plan 038.2), for
+// requestChanges on a sub-process phase: re-drive the entire nested run with the
+// feedback note injected into its entry phases. Reuses recurseIntoChild (flips the
+// child run running, clears its stale gate approvals, recurses into grandchildren).
+// No-op when the phase never spawned a child (getProcessRunByParentPhaseRunId none).
+export function resetSubProcessChild(
+  taskId: string,
+  parentPhaseRun: ProcessPhaseRun,
+  note: string | null
+): void {
+  recurseIntoChild(taskId, parentPhaseRun, "whole", note, 0)
+}
+
+// Descend into the child run beneath a sub-process phase-run. Skips cleanly when
+// the child run or its definition is gone (the phase failed before spawning a child,
+// or the sub-process definition was deleted). Flips the child run `running` so the
+// scheduler re-derives it, clears the reworked child subtree's stale gate approval
+// rows (so needsGate's count-based re-detection restarts from zero), then recurses.
+function recurseIntoChild(
+  taskId: string,
+  phaseRun: ProcessPhaseRun,
+  mode: ResetMode,
+  note: string | null,
+  depth: number
+): void {
+  if (depth + 1 >= MAX_PROCESS_DEPTH) return
+  const childRun = processes.getProcessRunByParentPhaseRunId(phaseRun.id)
+  if (!childRun?.processId) return
+  const childGraph = processes.getProcessGraph(childRun.processId)
+  if (!childGraph) return
+
+  processes.updateProcessRun(childRun.id, {
+    status: "running",
+    finishedAt: null,
+  })
+
+  // Clear the child subtree's stale gate/validator approval rows (R2) so a
+  // re-completed child gate re-fires. Only needed on a whole reset (frontier keeps
+  // completed phases + their settled gates intact).
+  if (mode === "whole") {
+    const childPhaseRunIds = processes
+      .listPhaseRuns({ runId: childRun.id })
+      .map((pr) => pr.id)
+    deleteApprovalsForPhaseRuns(taskId, childPhaseRunIds)
+  }
+
+  resetRunRecursive({
+    taskId,
+    run: childRun,
+    graph: childGraph,
+    mode,
+    note,
+    depth: depth + 1,
+  })
 }

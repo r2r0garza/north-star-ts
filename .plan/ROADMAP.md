@@ -7,18 +7,18 @@ item is its plan file, not its rank.
 
 ## Next up
 
-1. **`038.2` — Sub-processes: edge cases + resume hardening.** The riskier half of `038` deferred from
-   `038.1` (shipped). **Deep restart of a failed nested run** — parent `restartRun` currently resets only
-   the parent's failure frontier via the plain path, NOT the child run's own failed phases; needs a
-   recursive reset that re-drives the nested run's frontier. **Child-internal gate + fan-out
-   hardening** — a gate/validator/fan-out *inside* a sub-process interacting with the parent: a
-   child-internal gate propagates `GateBlockedError` up and pauses the whole shared task (approvals key
-   on the shared `taskId`, so the monitor surfaces it — not silently corrupt, but unhardened/untested
-   in `038.1`). **Per-fan-out-child sub-process invocation** — a sub-process run *per* fan-out sub-task
-   (the `025.2` granularity, deferred). **Checkpoint-accelerated resume** — a `subprocess:<parentRunId>`
-   checkpoint (the durable `parent_phase_run_id` FK is the `038.1` re-attach; this accelerates it).
-   **Request-changes on a sub-process phase** — currently rejected in `038.1` (no worker to inject
-   feedback into); re-driving the child with feedback belongs here.
+1. **`038.3` — Sub-processes: per-fan-out-child invocation + checkpoint-accelerated resume.** The two
+   sub-tasks deferred out of `038.2` (the recovery cluster — deep restart, child-internal gates,
+   request-changes — shipped, see Done). **Per-fan-out-child sub-process invocation** — a sub-process run
+   *per* fan-out sub-task (the `025.2` granularity): today `dispatchSubProcess` and `dispatchChild` are
+   mutually-exclusive dispatch paths (a phase is fan-out XOR sub-process, `assertSubprocessValid`), so a
+   fan-out child always runs a worker; running a sub-process per child needs a `phase.subprocessId ?
+   runSubProcess : runPhase` fork inside `dispatchChild` + a per-child `parentPhaseRunId` link (each
+   child's own run id, already compatible). **Checkpoint-accelerated resume** — a `subprocess:<parentRunId>`
+   checkpoint: the durable `parent_phase_run_id` FK re-attach (`038.1`) already makes resume correct;
+   this only accelerates re-derivation (nested runs currently write `frontier`/`fanout:`/`eachsubtask:`
+   rows under the shared `taskId`, recovered via the FK look-up-or-create). Lower priority — pure
+   optimization, no correctness gap.
 2. **`039` — Inspectable agent-to-agent messaging. ⚠️ DESIGN-PENDING.** One phase-agent (B) **asks
    another phase-agent (A) a question**, answered **from A's own context** — distinct from
    `spawn_subagent` (a fresh, context-less child). The `025` engine makes each phase-run's **worker
@@ -148,6 +148,47 @@ item is its plan file, not its rank.
 
 ## Done
 
+- **`038.2` — Sub-processes: recovery cluster (deep restart + child-internal gates + request-changes).**
+  Built on `feat/sub-processes-recovery` (off `main`; not yet merged). The three correctness/completeness
+  gaps of `038.2` that make nested runs safely recoverable + interactive (the remaining two —
+  per-fan-out-child invocation + checkpoint-accel — deferred to `038.3` above). **Core:** a new
+  transaction-agnostic **`resetRunRecursive`** in `flagback.ts` (`frontier` | `whole` mode) that resets a
+  run's phase-run frontier AND recurses through nested **sub-process phase-runs** into their child runs
+  (per child graph, `MAX_PROCESS_DEPTH`-bounded) — the shared primitive for restart + request-changes;
+  `resetContainerWhole`/`resetPlain`/`clearContainerCheckpoints`/`isContainer` exported for reuse.
+  **(1) Deep restart** — `restartRun` now calls `resetRunRecursive({mode:"frontier"})`, so a run that
+  failed *inside* a sub-process resets the CHILD run's failed frontier too (038.1 re-attached to the child
+  but never reset it → re-failed on every retry; the sub-process branch recurses whenever the child run
+  isn't `completed`, since a child-internal failure leaves the parent's sub-process phase-run `running`,
+  never settled). **(2) Child-internal gates** — a gate raised inside a nested run already surfaces on the
+  shared `taskId`'s approvals; the monitor's `SubProcessNestedRun` (was read-only) now renders actionable
+  **approve/deny/request-changes** gate cards + **flag** confirmation cards for nested phases (the extracted
+  shared `GateCard`; the `gates`/`flagGates` maps + callbacks threaded down recursively; a `gated →
+  waiting_for_approval` display override so a pending nested gate doesn't read "Done"). Approve/deny needed
+  no service change (they key on the shared task + `requestId`); the scheduler now propagates
+  `waiting_for_approval` up the `parent_phase_run_id` chain (was only the child run flipped, so the
+  top-level badge read "running"). **(3) Request-changes on a sub-process phase** — was hard-rejected;
+  now settles the gate denied, resets the phase-run w/ the feedback note, **whole-resets the child run**
+  (`resetSubProcessChild` → recurses, clears the child subtree's stale gate approvals via a new
+  `deleteApprovalsForPhaseRuns` repo helper so `needsGate` re-fires, injects the feedback as `reworkNote`
+  on the child graph's **entry** phases), flips the owning run chain running, resumes. **Graph-resolution
+  fix:** `requestChanges`/`confirmFlag`/`dismissFlag` now resolve the **owning** run from
+  `phaseRun.runId`/`flag.runId` (not the top-level `processRunId`) so a child-internal gate/flag uses the
+  CHILD graph (`confirmFlag` used the wrong graph — a genuine bug for a nested flag). **v1 limitation
+  (documented + tested):** feedback reaches only *plain* child entry phases (a fan-out/sub-process entry
+  phase's decompose/sub-process prompt doesn't read `reworkNote`), though the whole-reset still re-runs the
+  entire child. Verified: `pnpm typecheck` + `pnpm build` clean (the 3 residual errors — `open.test.ts`,
+  `service.test.ts`/`runner.test.ts` `createPhaseRun`/`createTask({error})` — are **pre-existing on
+  `main`** and unrelated); new tests — `service.test.ts` (**+2**: deep-restart of a run that failed inside
+  a sub-process; sub-process request-changes re-drives the whole child w/ feedback on the entry phase — the
+  old `/sub-process/`-rejection test replaced), `scheduler.test.ts` (**+1**: a gate raised inside the
+  nested run propagates `GateBlockedError` uncaught + completes on resume), `flagback.test.ts` (**+3**:
+  `resetRunRecursive` frontier spares completed child phases / whole resets all + notes the entry phase /
+  null-child recursion guard), new `approvals.test.ts` (**+3**: `deleteApprovalsForPhaseRuns` scoping).
+  **Full suite 741 pass** against a node-ABI `better-sqlite3` rebuild, Electron ABI restored after with
+  `@electron/rebuild` (the 1 flaky `env/local.test.ts` SIGKILL timing test passes in isolation). Manual
+  E2E deferred to a live session. **Deferred (as planned):** `038.3` — per-fan-out-child sub-process
+  invocation + checkpoint-accelerated resume.
 - **`038.1` — Sub-processes (a phase runs another Process).** Built on `feat/sub-processes` (off `main`;
   commit `df2914d`; not yet merged). A Process **phase runs another Process definition as a nested run**
   (composition of the `025` engine with itself) — e.g. an "Implement" phase delegates to a reusable
