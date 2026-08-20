@@ -55,6 +55,7 @@ import type {
   RuntimeStatus,
   SkillSourceRow,
   AgentSourceRow,
+  McpSourceRow,
 } from "@/types"
 import {
   hexToOklch,
@@ -161,6 +162,13 @@ const AGENT_SOURCE_KIND_LABEL: Record<AgentSourceRow["kind"], string> = {
   workspace: "Workspace",
 }
 
+const MCP_SOURCE_KIND_LABEL: Record<McpSourceRow["kind"], string> = {
+  user: "User",
+  custom: "Custom",
+  github: "Workspace",
+  workspace: "Workspace",
+}
+
 // Parse a numeric input to an integer clamped to [min, max]. A blank/NaN entry
 // (mid-edit) falls back to `fallback` so we never persist NaN into settings.
 function clampInt(
@@ -212,6 +220,8 @@ export function SettingsScreen({
   const [agentSources, setAgentSources] = useState<AgentSourceRow[] | null>(
     null
   )
+  // MCP-source rows for the Capabilities tab (same shape as agent sources).
+  const [mcpSources, setMcpSources] = useState<McpSourceRow[] | null>(null)
   const [runtimes, setRuntimes] = useState<Record<
     Runtime,
     RuntimeStatus
@@ -333,6 +343,43 @@ export function SettingsScreen({
       folders: current.folders.filter((f) => f !== path),
     })
     await refreshAgentSources()
+  }
+
+  // MCP sources — same independent-scan + read-modify-write pattern as agents.
+  useEffect(() => {
+    if (!open) return
+    let cancelled = false
+    setMcpSources(null)
+    window.cowork.mcp.sources().then((rows) => {
+      if (!cancelled) setMcpSources(rows)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [open])
+
+  async function refreshMcpSources() {
+    setMcpSources(await window.cowork.mcp.sources())
+  }
+
+  async function addMcpFolder() {
+    const picked = await window.cowork.pickWorkspace()
+    if (!picked.path) return
+    const current = await window.cowork.settings.getMcpSources()
+    if (current.folders.includes(picked.path)) return
+    if (mcpSources?.some((r) => r.path === picked.path)) return
+    await window.cowork.settings.setMcpSources({
+      folders: [...current.folders, picked.path],
+    })
+    await refreshMcpSources()
+  }
+
+  async function removeMcpFolder(path: string) {
+    const current = await window.cowork.settings.getMcpSources()
+    await window.cowork.settings.setMcpSources({
+      folders: current.folders.filter((f) => f !== path),
+    })
+    await refreshMcpSources()
   }
 
   // Persist execution + update local state together so the UI stays in sync.
@@ -929,6 +976,91 @@ export function SettingsScreen({
                                       variant="ghost"
                                       size="sm"
                                       onClick={addAgentFolder}
+                                    >
+                                      <Plus />
+                                      Add folder
+                                    </Button>
+                                  </TableCell>
+                                </TableRow>
+                              </TableFooter>
+                            </Table>
+                          </div>
+                        )}
+
+                        {/* MCP-source folders — where mcp.json config files live.
+                          Custom folders registered here are scanned alongside the
+                          user + workspace configs. Manage individual servers in the
+                          MCP view (sidebar). */}
+                        <div className="flex flex-col gap-1">
+                          <h3 className="text-sm font-medium">MCP folders</h3>
+                          <p className="text-sm text-muted-foreground">
+                            Folders scanned for an <code>mcp.json</code> config.
+                            Built-in sources can't be removed. Workspace configs (
+                            <code>.github/mcp.json</code>,{" "}
+                            <code>
+                              {window.cowork.system().dataDirName}/mcp.json
+                            </code>
+                            ) are picked up automatically when a workspace is open.
+                          </p>
+                        </div>
+                        {mcpSources === null ? (
+                          <p className="text-sm text-muted-foreground">
+                            Scanning…
+                          </p>
+                        ) : (
+                          <div className="overflow-hidden rounded-lg border">
+                            <Table>
+                              <TableHeader>
+                                <TableRow>
+                                  <TableHead>Folder</TableHead>
+                                  <TableHead className="w-24">
+                                    Servers
+                                  </TableHead>
+                                  <TableHead className="w-24 text-right">
+                                    Kind
+                                  </TableHead>
+                                  <TableHead className="w-12" />
+                                </TableRow>
+                              </TableHeader>
+                              <TableBody>
+                                {mcpSources.map((row) => (
+                                  <TableRow key={row.path}>
+                                    <TableCell className="font-mono text-xs break-all">
+                                      {row.path}
+                                    </TableCell>
+                                    <TableCell className="text-muted-foreground">
+                                      {row.serverCount}
+                                    </TableCell>
+                                    <TableCell className="text-right text-muted-foreground">
+                                      {MCP_SOURCE_KIND_LABEL[row.kind]}
+                                    </TableCell>
+                                    <TableCell className="text-right">
+                                      {row.kind === "custom" && (
+                                        <Button
+                                          type="button"
+                                          variant="ghost"
+                                          size="icon-sm"
+                                          onClick={() =>
+                                            removeMcpFolder(row.path)
+                                          }
+                                          aria-label={`Remove ${row.path}`}
+                                          title="Remove folder"
+                                        >
+                                          <Trash2 />
+                                        </Button>
+                                      )}
+                                    </TableCell>
+                                  </TableRow>
+                                ))}
+                              </TableBody>
+                              <TableFooter>
+                                <TableRow className="hover:bg-transparent">
+                                  <TableCell colSpan={4}>
+                                    <Button
+                                      type="button"
+                                      variant="ghost"
+                                      size="sm"
+                                      onClick={addMcpFolder}
                                     >
                                       <Plus />
                                       Add folder

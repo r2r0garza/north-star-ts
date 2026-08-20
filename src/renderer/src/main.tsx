@@ -19,6 +19,7 @@ import {
 import { SettingsScreen } from "@/components/settings-screen"
 import { SkillsScreen } from "@/components/skills-screen"
 import { AgentsScreen } from "@/components/agents-screen"
+import { McpScreen } from "@/components/mcp-screen"
 import { ProcessScreen } from "@/components/process-screen"
 import { TaskTranscriptSheet } from "@/components/task-transcript-sheet"
 import { TaskCompletionToasts } from "@/components/task-completion-toasts"
@@ -70,6 +71,9 @@ function Shell() {
   // Whether the Process view is open (opened from the sidebar footer). An in-panel
   // destination in the center region; authors process DAGs + monitors live runs.
   const [processOpen, setProcessOpen] = useState(false)
+  // Whether the MCP view is open (opened from the sidebar footer). An in-panel
+  // destination in the center region; browses/edits mcp.json server configs.
+  const [mcpOpen, setMcpOpen] = useState(false)
   // Which tab Settings opens on. First launch (no provider configured) opens
   // straight to Providers so the user can set one up.
   const [settingsTab, setSettingsTab] = useState("backend")
@@ -226,6 +230,7 @@ function Shell() {
     setAgentsOpen(false)
     setSkillsOpen(false)
     setProcessOpen(false)
+    setMcpOpen(false)
   }
 
   // Cmd+, (macOS) / Ctrl+, (Windows/Linux) opens Settings — the platform's
@@ -238,6 +243,7 @@ function Shell() {
         setAgentsOpen(false)
         setSkillsOpen(false)
         setProcessOpen(false)
+    setMcpOpen(false)
       }
     }
     window.addEventListener("keydown", onKeyDown)
@@ -253,6 +259,7 @@ function Shell() {
     setAgentsOpen(false)
     setSkillsOpen(false)
     setProcessOpen(false)
+    setMcpOpen(false)
   }
 
   // Reopen a stored conversation — switch the view to match its mode. The
@@ -265,6 +272,7 @@ function Shell() {
     setAgentsOpen(false)
     setSkillsOpen(false)
     setProcessOpen(false)
+    setMcpOpen(false)
   }
 
   // Start a fresh conversation, optionally in a project (its directory is
@@ -275,6 +283,7 @@ function Shell() {
     setAgentsOpen(false)
     setSkillsOpen(false)
     setProcessOpen(false)
+    setMcpOpen(false)
   }
 
   // A session was deleted from the sidebar. If it was the active one, drop back
@@ -297,9 +306,9 @@ function Shell() {
         <SidebarModeToggle
           mode={sidebarMode}
           onModeChange={changeSidebarMode}
-          showModeSelect={!(agentsOpen || skillsOpen || processOpen)}
+          showModeSelect={!(agentsOpen || skillsOpen || processOpen || mcpOpen)}
         />
-        {!(agentsOpen || skillsOpen || processOpen) && (
+        {!(agentsOpen || skillsOpen || processOpen || mcpOpen) && (
           <ActivityToggle
             open={activityOpen}
             onToggle={() => setActivity(!activityOpen)}
@@ -318,14 +327,23 @@ function Shell() {
           setSkillsOpen(true)
           setAgentsOpen(false)
           setProcessOpen(false)
+          setMcpOpen(false)
         }}
         onAgentsClick={() => {
           setAgentsOpen(true)
           setSkillsOpen(false)
           setProcessOpen(false)
+          setMcpOpen(false)
         }}
         onProcessClick={() => {
           setProcessOpen(true)
+          setAgentsOpen(false)
+          setSkillsOpen(false)
+          setMcpOpen(false)
+        }}
+        onMcpClick={() => {
+          setMcpOpen(true)
+          setProcessOpen(false)
           setAgentsOpen(false)
           setSkillsOpen(false)
         }}
@@ -341,7 +359,7 @@ function Shell() {
         <div
           className={cn(
             "flex min-h-0 flex-1",
-            (agentsOpen || skillsOpen || processOpen) && "hidden"
+            (agentsOpen || skillsOpen || processOpen || mcpOpen) && "hidden"
           )}
         >
           <App
@@ -367,6 +385,7 @@ function Shell() {
         {agentsOpen && <AgentsScreen onClose={() => setAgentsOpen(false)} />}
         {skillsOpen && <SkillsScreen onClose={() => setSkillsOpen(false)} />}
         {processOpen && <ProcessScreen onClose={() => setProcessOpen(false)} />}
+        {mcpOpen && <McpScreen onClose={() => setMcpOpen(false)} />}
       </div>
       <ActivityPanel
         conversationId={activeConversationId}

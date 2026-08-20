@@ -18,6 +18,9 @@ export type ActionKind =
   // Headless web access to an arbitrary origin (web_fetch). A real network side
   // effect, like `browser` navigation — see WebActionClassifier.
   | "web"
+  // A tool call routed to an external MCP server. A network/subprocess side
+  // effect on a third-party server, so it always prompts — see McpActionClassifier.
+  | "mcp"
 
 // A tool's request to do something gated. Tool-agnostic.
 export interface ToolAction {

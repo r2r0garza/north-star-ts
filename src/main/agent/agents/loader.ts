@@ -94,6 +94,7 @@ export function parseAgent(
     tools: parseList(data, "tools"),
     skills: parseList(data, "skills"),
     children: parseList(data, "children"),
+    mcpServers: parseList(data, "mcp-servers"),
     userInvocable: data["user-invocable"] === true,
     body: content.slice(match[0].length),
     path: agentPath,
@@ -109,6 +110,7 @@ export interface AgentFields {
   tools?: string[]
   skills?: string[]
   children?: string[]
+  mcpServers?: string[]
   userInvocable: boolean
   body: string
 }
@@ -126,6 +128,7 @@ export function serializeAgent(fields: AgentFields): string {
   if (fields.tools !== undefined) fm.tools = fields.tools
   if (fields.skills !== undefined) fm.skills = fields.skills
   if (fields.children !== undefined) fm.children = fields.children
+  if (fields.mcpServers !== undefined) fm["mcp-servers"] = fields.mcpServers
   fm["user-invocable"] = fields.userInvocable
 
   // flowLevel: -1 keeps YAML in block style; lineWidth: -1 disables line wrapping so

@@ -8,6 +8,7 @@ import {
   MoreHorizontal,
   Pin,
   PinOff,
+  Plug,
   Plus,
   Settings,
   Workflow,
@@ -369,6 +370,7 @@ export function AppSidebar({
   onSkillsClick,
   onAgentsClick,
   onProcessClick,
+  onMcpClick,
   refreshKey,
   runningConvos,
   waitingConvos,
@@ -385,6 +387,7 @@ export function AppSidebar({
   onSkillsClick: () => void
   onAgentsClick: () => void
   onProcessClick: () => void
+  onMcpClick: () => void
   // Bumped by the app whenever conversations change, so the list refetches.
   refreshKey: number
   // Conversations with a turn currently streaming — each shows a spinner.
@@ -728,6 +731,16 @@ export function AppSidebar({
         >
           <Bot className="size-4" />
           Agents
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant="ghost"
+          onClick={onMcpClick}
+          className="w-full justify-start"
+        >
+          <Plug className="size-4" />
+          MCP
         </Button>
         <Button
           type="button"

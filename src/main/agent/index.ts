@@ -40,6 +40,9 @@ import {
   isUniversalTool,
 } from "./agents/tool-categories"
 import { buildSubagentsPrompt } from "./agents/prompt"
+import { resolveMcpServers } from "./agents/mcp-access"
+import { getMcpManager, parsePrefixedName, enabledServerNames } from "./mcp"
+import type { McpToolDefinition } from "./mcp"
 import { spawnSubagentTool } from "./tools/spawn_subagent"
 import { flagForReworkTool } from "./tools/flag_for_rework"
 import { loadSystemPrompt } from "./system-prompt"
@@ -89,6 +92,7 @@ import { FileActionClassifier } from "./approval/file-classifier"
 import { DelegationClassifier } from "./approval/delegation-classifier"
 import { BrowserActionClassifier } from "./approval/browser-classifier"
 import { WebActionClassifier } from "./approval/web-classifier"
+import { McpActionClassifier } from "./approval/mcp-classifier"
 import { PlanModeClassifier } from "./approval/plan-mode-classifier"
 import type {
   ActionKind,
@@ -135,6 +139,9 @@ const policy = new PolicyEngine(
     // web_fetch always prompts (no category → never sandbox-downgraded), like
     // browser navigation; returns null for non-web kinds.
     new WebActionClassifier(),
+    // MCP tool calls always prompt (no category → never sandbox-downgraded), like
+    // web_fetch; returns null for non-mcp kinds.
+    new McpActionClassifier(),
     new FileActionClassifier(() => settingsService.getPermissions()),
     new RegexCommandClassifier(),
   ],
@@ -742,6 +749,30 @@ export async function runAgentLoop(
   }
   const offerSpawn = canSpawn && spawnableChildren.length > 0
 
+  // MCP tools. Resolve which enabled servers this agent may use (its `mcpServers`
+  // tri-state — omitted → all enabled; [] → none; [list] → only those), then ask
+  // the pooled manager for their tool definitions, namespaced mcp__<server>__<tool>.
+  // Governed separately from `agentToolNames` (which gates built-in categories);
+  // an MCP-restricted agent still keeps its full built-in toolset and vice-versa.
+  // Resilient: a server that fails to connect is skipped (logged), never aborting
+  // the turn. Fetched ONCE here (a network round-trip can't run inside the sync
+  // buildTools); inclusion is gated on !planMode there, like web_fetch — so a plan
+  // approved mid-turn regains MCP tools without a re-fetch.
+  const mcpWorkspace = hasWorkspace ? workspace : undefined
+  let mcpTools: McpToolDefinition[] = []
+  {
+    const enabledNames = await enabledServerNames(mcpWorkspace)
+    const allowedNames = resolveMcpServers(agent, enabledNames)
+    if (allowedNames.length > 0) {
+      mcpTools = await getMcpManager().listToolsFor(
+        allowedNames,
+        mcpWorkspace,
+        (server, err) =>
+          console.warn(`[mcp] server "${server}" unavailable this turn: ${err}`)
+      )
+    }
+  }
+
   // Names of the filesystem-mutating workspace tools. In plan mode these are
   // dropped from the offered toolset (so the model can't call them) and also
   // hard-blocked at the gate (belt-and-suspenders); write_plan replaces them as
@@ -820,7 +851,13 @@ export async function runAgentLoop(
       // phase/decompose/validate worker), where it can only stall until interrupted.
       ...(opts.suppressUserQuestions ? [] : [askUserQuestionTool.definition]),
       readSkillTool.definition,
-    ])
+    ]).concat(
+      // MCP tools bypass the built-in-category allowlist (applyAgentTools): MCP
+      // access is governed by the agent's separate `mcpServers` field, already
+      // resolved into `mcpTools`. Withheld in plan mode like web_fetch/spawn (a
+      // remote call is a side effect); regained the moment a plan is approved.
+      planMode ? [] : mcpTools
+    )
   // The non-droppable base prompt (mode prompt). Everything else is a droppable
   // context SECTION handed to the ContextBuilder, which budgets + composes them
   // into the system block under one global budget with an explicit drop order
@@ -1419,10 +1456,33 @@ export async function runAgentLoop(
           processRunId: opts.processRunId,
           processPhaseRunId: opts.processPhaseRunId,
         }
-        const result =
-          call.name === readSkillTool.definition.function.name
-            ? await readSkillTool.execute(args, ctx)
-            : await runTool(call.name, args, ctx)
+        // MCP tool calls (mcp__<server>__<tool>) route to the connection pool via
+        // the manager, not the static tool registry. Gate first: calling a
+        // third-party server is a side effect (kind "mcp"), so it prompts unless
+        // auto mode, exactly like web_fetch. The identity is the prefixed name so an
+        // "always allow" rule is scoped to that specific server tool.
+        const mcpCall = parsePrefixedName(call.name)
+        let result: string
+        if (mcpCall) {
+          const outcome = await gate({
+            tool: call.name,
+            kind: "mcp",
+            summary: `Call ${mcpCall.serverName} · ${mcpCall.toolName}`,
+            identity: call.name,
+            detail: { server: mcpCall.serverName, tool: mcpCall.toolName },
+          })
+          result =
+            outcome === "approved"
+              ? await getMcpManager().callTool(call.name, args, mcpWorkspace)
+              : `ERROR[mcp]: the user ${
+                  outcome === "blocked" ? "blocked" : "declined"
+                } the call to ${mcpCall.serverName} · ${mcpCall.toolName}.`
+        } else {
+          result =
+            call.name === readSkillTool.definition.function.name
+              ? await readSkillTool.execute(args, ctx)
+              : await runTool(call.name, args, ctx)
+        }
         onEvent({
           type: "tool",
           phase: "done",

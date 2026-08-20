@@ -311,6 +311,49 @@ export interface ModelEntry {
   updatedAt: number
 }
 
+// ── MCP servers (file-based, like agents/skills) ────────────────────────────
+// Which transport an MCP server speaks. `stdio` spawns a child process and talks
+// over its stdin/stdout; `http` connects to a Streamable HTTP endpoint (and may
+// require OAuth). Inferred from which fields the mcp.json entry carries (command
+// → stdio, url → http), validated in the loader.
+export type McpTransport = "stdio" | "http"
+
+// One MCP server DEFINITION as parsed from an mcp.json file. This is the
+// shareable, git-committable part — it carries NO per-machine state (no enabled
+// flag, no OAuth tokens): those live in the DB side-store keyed by `name`. The
+// file format mirrors the ecosystem standard:
+//   { "mcpServers": { "<name>": { command, args, env } | { url, headers } } }
+export interface McpServerDef {
+  // Stable slug used in the agent-facing tool prefix mcp__<name>__<tool> and as
+  // the side-store key. From the object key in mcp.json. Validated [a-z0-9-]+.
+  name: string
+  transport: McpTransport
+  // stdio transport:
+  command: string | null
+  args: string[]
+  env: Record<string, string>
+  // http transport:
+  url: string | null
+  headers: Record<string, string>
+}
+
+// A server definition joined with its per-machine side-store state and its
+// source file. This is the shape the UI and the manager consume.
+export interface McpServer extends McpServerDef {
+  // Absolute path to the mcp.json file this server was defined in (for edit/
+  // reveal and source-kind classification).
+  path: string
+  // The source dir this file was discovered under, for diagnostics.
+  source: string
+  // Whether this server is active. A newly-discovered server defaults ON; the
+  // side-store records only an explicit OFF (or an OAuth token set). See
+  // db/repositories/mcp-state.ts.
+  enabled: boolean
+  // Whether a completed OAuth token set is stored for this (http) server. Reduced
+  // from the encrypted side-store BLOB so ciphertext never crosses IPC.
+  hasOauth: boolean
+}
+
 // ── Process engine (plan 025) ───────────────────────────────────────────────
 // A user-authored agentic DAG. Definitions (the reusable template) are split
 // from runs (one per execution). See schema.ts SCHEMA_V15.
