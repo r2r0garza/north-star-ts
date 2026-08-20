@@ -6,6 +6,7 @@ import {
   CheckCircle2,
   XCircle,
   FolderOpen,
+  GripVertical,
   Loader2,
   Pause,
   Play,
@@ -17,6 +18,23 @@ import {
   Trash2,
   XIcon,
 } from "lucide-react"
+import {
+  DndContext,
+  PointerSensor,
+  KeyboardSensor,
+  useSensor,
+  useSensors,
+  closestCenter,
+  type DragEndEvent,
+} from "@dnd-kit/core"
+import {
+  SortableContext,
+  useSortable,
+  arrayMove,
+  sortableKeyboardCoordinates,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable"
+import { CSS } from "@dnd-kit/utilities"
 import {
   Dialog,
   DialogContent,
@@ -630,6 +648,47 @@ function ProcessBuilder({
     }
   }
 
+  // Drag-to-reorder. `position` is display/authoring order only (execution order
+  // is the process_edges DAG). On drop we renumber the whole list to 1..n, which
+  // also closes any gaps left behind by deletes. Positions have no UNIQUE
+  // constraint, so transient overlaps during the writes are safe.
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+    })
+  )
+
+  async function reorderPhases(event: DragEndEvent) {
+    const { active, over } = event
+    if (!over || active.id === over.id || !graph) return
+    const oldIndex = phases.findIndex((p) => p.id === active.id)
+    const newIndex = phases.findIndex((p) => p.id === over.id)
+    if (oldIndex === -1 || newIndex === -1) return
+
+    const prevPos = new Map(phases.map((p) => [p.id, p.position]))
+    const reordered = arrayMove(phases, oldIndex, newIndex)
+    // Optimistic: renumber to 1..n and reflect immediately.
+    const renumbered = reordered.map((p, i) => ({ ...p, position: i + 1 }))
+    setGraph({ ...graph, phases: renumbered })
+
+    try {
+      await Promise.all(
+        renumbered
+          .filter((p) => prevPos.get(p.id) !== p.position)
+          .map((p) =>
+            window.cowork.db.processes.phases.update(p.id, {
+              position: p.position,
+            })
+          )
+      )
+      reload()
+    } catch (err) {
+      toast.error(`Could not reorder phases: ${err}`)
+      reload()
+    }
+  }
+
   if (graph === null) {
     return (
       <div className="flex flex-1 items-center justify-center text-muted-foreground">
@@ -711,17 +770,28 @@ function ProcessBuilder({
               No phases yet. Add one to start building the DAG.
             </p>
           )}
-          {phases.map((phase) => (
-            <PhaseCard
-              key={phase.id}
-              phase={phase}
-              phases={phases}
-              graph={graph}
-              agents={agents}
-              definitions={definitions}
-              onChanged={reload}
-            />
-          ))}
+          <DndContext
+            sensors={sensors}
+            collisionDetection={closestCenter}
+            onDragEnd={reorderPhases}
+          >
+            <SortableContext
+              items={phases.map((p) => p.id)}
+              strategy={verticalListSortingStrategy}
+            >
+              {phases.map((phase) => (
+                <PhaseCard
+                  key={phase.id}
+                  phase={phase}
+                  phases={phases}
+                  graph={graph}
+                  agents={agents}
+                  definitions={definitions}
+                  onChanged={reload}
+                />
+              ))}
+            </SortableContext>
+          </DndContext>
         </div>
 
         <p className="text-xs text-muted-foreground">
@@ -777,6 +847,23 @@ function PhaseCard({
     ? (definitions.find((d) => d.id === phase.subprocessId)?.name ??
       "(missing)")
     : null
+
+  // Drag-to-reorder wiring. Only the grip handle gets the listeners so the
+  // collapsible trigger and inner inputs stay clickable.
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: phase.id })
+  const sortableStyle = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    zIndex: isDragging ? 1 : undefined,
+    opacity: isDragging ? 0.6 : undefined,
+  }
 
   async function patchPhase(patch: {
     name?: string
@@ -871,13 +958,25 @@ function PhaseCard({
 
   return (
     <Collapsible
+      ref={setNodeRef}
+      style={sortableStyle}
       open={expanded}
       onOpenChange={setExpanded}
       className="rounded-lg border bg-card"
     >
-      {/* Summary row (always visible): chevron + name + at-a-glance badges +
-          delete. Click toggles expand; the delete button stops propagation. */}
+      {/* Summary row (always visible): grip + chevron + name + at-a-glance badges
+          + delete. Click toggles expand; the delete button stops propagation. */}
       <div className="flex items-center gap-2 px-3 py-2">
+        <button
+          type="button"
+          className="-ml-1 shrink-0 cursor-grab touch-none text-muted-foreground hover:text-foreground active:cursor-grabbing"
+          title="Drag to reorder"
+          aria-label="Drag to reorder phase"
+          {...attributes}
+          {...listeners}
+        >
+          <GripVertical className="size-4" />
+        </button>
         <CollapsibleTrigger asChild>
           <button
             type="button"
