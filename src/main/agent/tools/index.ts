@@ -24,6 +24,7 @@ import { webSearchTool } from "./web/search"
 import { webFetchTool } from "./web/fetch"
 import { spawnSubagentTool } from "./spawn_subagent"
 import { flagForReworkTool } from "./flag_for_rework"
+import { dashboardWriteTool } from "./dashboard_write"
 
 // Workspace-gated tools — offered only when the agent has a workspace (they
 // touch the filesystem). Add a new filesystem tool by importing it and listing
@@ -60,6 +61,9 @@ const otherTools: Tool[] = [
   // flag_for_rework: offered by runChat only to a Process phase worker (plan
   // 031.2 — when opts.processRunId is set). Not in toolDefinitions.
   flagForReworkTool,
+  // dashboard_write: offered by runChat in interactive modes (plan 033.2 —
+  // gated on showTodos like todo_write). Writes only its own tables; not gated.
+  dashboardWriteTool,
 ]
 
 // Browser tools — offered when the conversation has an agent browser available,
@@ -126,5 +130,6 @@ export { writePlanTool } from "./write_plan_tool"
 export { readPlanTool } from "./read_plan_tool"
 export { presentPlanTool } from "./present_plan_tool"
 export { flagForReworkTool } from "./flag_for_rework"
+export { dashboardWriteTool } from "./dashboard_write"
 
 export type { Tool, ToolContext } from "./types"

@@ -27,6 +27,10 @@ import type {
   PhaseRouting,
   PhaseGatePolicy,
   EdgeTrigger,
+  Dashboard,
+  DashboardGraph,
+  DashboardWidget,
+  DashboardWidgetData,
 } from "../main/db/types"
 import type { ActionKind } from "../main/agent/approval/types"
 import type { PickedElement } from "../main/browser/types"
@@ -922,6 +926,95 @@ const api = {
           >,
       },
     },
+
+    // Live dashboards (plan 033). CRUD the dashboards view + the dashboard_write
+    // agent tool share. `graph` returns the whole dashboard in one call.
+    dashboards: {
+      create: (input: {
+        name: string
+        description?: string | null
+        layout?: unknown
+      }) =>
+        ipcRenderer.invoke("db:dashboards:create", input) as Promise<Dashboard>,
+      list: () =>
+        ipcRenderer.invoke("db:dashboards:list") as Promise<Dashboard[]>,
+      get: (id: string) =>
+        ipcRenderer.invoke("db:dashboards:get", id) as Promise<Dashboard | null>,
+      graph: (id: string) =>
+        ipcRenderer.invoke(
+          "db:dashboards:graph",
+          id
+        ) as Promise<DashboardGraph | null>,
+      update: (
+        id: string,
+        patch: { name?: string; description?: string | null; layout?: unknown }
+      ) =>
+        ipcRenderer.invoke(
+          "db:dashboards:update",
+          id,
+          patch
+        ) as Promise<Dashboard>,
+      delete: (id: string) =>
+        ipcRenderer.invoke("db:dashboards:delete", id) as Promise<void>,
+      widgets: {
+        list: (dashboardId: string) =>
+          ipcRenderer.invoke(
+            "db:dashboards:widgets:list",
+            dashboardId
+          ) as Promise<DashboardWidget[]>,
+        create: (input: {
+          dashboardId: string
+          title: string
+          type: unknown
+          config?: unknown
+          recipe?: unknown
+          pos?: unknown
+          position?: number
+        }) =>
+          ipcRenderer.invoke(
+            "db:dashboards:widgets:create",
+            input
+          ) as Promise<DashboardWidget>,
+        update: (
+          id: string,
+          patch: {
+            title?: string
+            type?: unknown
+            config?: unknown
+            recipe?: unknown
+            pos?: unknown
+            position?: number
+          }
+        ) =>
+          ipcRenderer.invoke(
+            "db:dashboards:widgets:update",
+            id,
+            patch
+          ) as Promise<DashboardWidget>,
+        delete: (id: string) =>
+          ipcRenderer.invoke(
+            "db:dashboards:widgets:delete",
+            id
+          ) as Promise<void>,
+      },
+      data: {
+        get: (widgetId: string) =>
+          ipcRenderer.invoke(
+            "db:dashboards:data:get",
+            widgetId
+          ) as Promise<DashboardWidgetData | null>,
+        upsert: (input: {
+          widgetId: string
+          data?: unknown
+          status?: unknown
+          error?: string | null
+        }) =>
+          ipcRenderer.invoke(
+            "db:dashboards:data:upsert",
+            input
+          ) as Promise<DashboardWidgetData>,
+      },
+    },
   },
 
   // Persisted settings (execution backend + approval policy). Mirrors the
@@ -1205,6 +1298,12 @@ export type {
   PhaseRouting,
   PhaseGatePolicy,
   EdgeTrigger,
+  Dashboard,
+  DashboardGraph,
+  DashboardWidget,
+  DashboardWidgetData,
+  DashboardWidgetType,
+  DashboardWidgetDataStatus,
 } from "../main/db/types"
 // Re-export the ask_user_question types so the renderer can type the panel.
 export type {

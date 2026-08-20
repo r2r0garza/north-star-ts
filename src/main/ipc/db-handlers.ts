@@ -10,6 +10,7 @@ import {
   approvals,
   todos,
   processes,
+  dashboards,
 } from "../db/repositories"
 import type {
   Conversation,
@@ -403,5 +404,88 @@ export function registerDbHandlers(
     "db:processes:phaseRuns:list",
     (_e, opts: { runId?: string; parentId?: string | null; phaseId?: string }) =>
       processes.listPhaseRuns(opts)
+  )
+
+  // Live dashboards (plan 033). Structured CRUD the dashboards view + the
+  // dashboard_write agent tool share. A dashboard is a top-level object (not
+  // conversation-scoped); widgets + their cached data hang off it.
+  ipcMain.handle(
+    "db:dashboards:create",
+    (_e, input: { name: string; description?: string | null; layout?: unknown }) =>
+      dashboards.createDashboard(input)
+  )
+  ipcMain.handle("db:dashboards:list", () => dashboards.listDashboards())
+  ipcMain.handle(
+    "db:dashboards:get",
+    (_e, id: string) => dashboards.getDashboard(id) ?? null
+  )
+  ipcMain.handle(
+    "db:dashboards:graph",
+    (_e, id: string) => dashboards.getDashboardGraph(id) ?? null
+  )
+  ipcMain.handle(
+    "db:dashboards:update",
+    (
+      _e,
+      id: string,
+      patch: { name?: string; description?: string | null; layout?: unknown }
+    ) => dashboards.updateDashboard(id, patch)
+  )
+  ipcMain.handle("db:dashboards:delete", (_e, id: string) =>
+    dashboards.deleteDashboard(id)
+  )
+
+  ipcMain.handle("db:dashboards:widgets:list", (_e, dashboardId: string) =>
+    dashboards.listWidgets(dashboardId)
+  )
+  ipcMain.handle(
+    "db:dashboards:widgets:create",
+    (
+      _e,
+      input: {
+        dashboardId: string
+        title: string
+        type: unknown
+        config?: unknown
+        recipe?: unknown
+        pos?: unknown
+        position?: number
+      }
+    ) => dashboards.createWidget(input)
+  )
+  ipcMain.handle(
+    "db:dashboards:widgets:update",
+    (
+      _e,
+      id: string,
+      patch: {
+        title?: string
+        type?: unknown
+        config?: unknown
+        recipe?: unknown
+        pos?: unknown
+        position?: number
+      }
+    ) => dashboards.updateWidget(id, patch)
+  )
+  ipcMain.handle("db:dashboards:widgets:delete", (_e, id: string) =>
+    dashboards.deleteWidget(id)
+  )
+
+  ipcMain.handle(
+    "db:dashboards:data:get",
+    (_e, widgetId: string) => dashboards.getWidgetData(widgetId) ?? null
+  )
+  ipcMain.handle(
+    "db:dashboards:data:upsert",
+    (
+      _e,
+      input: {
+        widgetId: string
+        data?: unknown
+        status?: unknown
+        error?: string | null
+      }
+    ) => dashboards.upsertWidgetData(input)
   )
 }

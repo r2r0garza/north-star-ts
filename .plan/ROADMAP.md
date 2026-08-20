@@ -45,24 +45,22 @@ item is its plan file, not its rank.
    builder affordances. **Ordered after `038`** so the format carries a phase's `subprocess_id` — a
    sub-process reference exports **by definition identity** (name/a stable ref), and import resolves or
    flags a missing referenced sub-process (like `037`'s missing-agent warning).
-4. **`033` — Live dashboards.** A new top-level surface (a **Dashboards** button in the sidebar footer,
-   the 5th overlay alongside Processes/Agents/Skills/Settings) where a user **prompts an agent to author
-   a dashboard** — a saved layout of widgets + a per-widget **data-fetch recipe** describing *how to
-   pull the data*. **Data-source-agnostic by construction:** the agent fetches through whatever tools it
-   has (today `run_shell`/Azure CLI, `web` fetch; **later MCP servers** — Jira, Azure DevOps), so
-   dashboards inherit new sources **for free** as they land — this plan builds **no connectors** (MCP is
-   its own effort). `recharts` is **already a dep** (no new chart lib). Mirrors `025`'s definition-vs-run
-   split + bare-`TEXT`-repo-validated statuses: new `dashboards`/`dashboard_widgets`/
-   `dashboard_widget_data` (cache) tables (additive, `SCHEMA_V20+`), a gated **`dashboard_write`** agent
-   tool (like `todo_write`/`present_plan`), and a `dashboard_refresh` `009` durable task kind that
-   **replays each widget's stored recipe** (deterministic-first, bounded-LLM-normalize only where
-   declared) into the cache the view reads. **v1 "live" = manual/on-open/poll-while-open** (true cron is
-   the backlog `cron` item). Full-viewport takeover (`dashboards-screen.tsx`, the `023` Radix pattern +
-   `NativeSelect`). **Likely splits** (`025.x` pattern): `033.1` storage + overlay + view + a
-   manually-authored widget; `033.2` the `dashboard_write` authoring tool; `033.3` the refresh executor.
-   **Crux Open Qs:** how re-runnable a recipe is without an LLM; approval/allowlist safety of a stored
-   recipe re-running unattended on refresh; fixed grid vs drag-resize lib. Independent of the Process
-   cluster.
+4. **`033.3` — Live dashboards: deterministic refresh executor.** The deferred half of `033` (`033.1` +
+   `033.2` shipped — see Done). A `dashboard_refresh` `009` durable task kind that **replays each
+   widget's stored `recipe`** (deterministic-first — run the stored shell command / fetch the URL —
+   with bounded-LLM-normalize only where the recipe declares it) into the `dashboard_widget_data` cache
+   the view reads, **without an LLM authoring turn**. Model on `IndexService` (a `TaskExecutor`
+   registered via `registerKind("dashboard_refresh", { autoResume, hasIndependentSurface, run })`,
+   enqueued through an idempotent `ensureRefresh(dashboardId)` like `ensureRunning`). **v1 "live" =
+   manual (the Refresh button) / on-open / poll-while-open** (true cron is the backlog `cron` item).
+   Today (`033.2`) the Refresh button only **reloads the cache from the DB** — it reflects an agent
+   re-authoring the dashboard in chat, but does not re-fetch on its own; `033.3` swaps that stopgap for
+   the deterministic replay (see the `TODO(033.3)` in `dashboards-screen.tsx`). **Crux Open Qs (the real
+   reason it was split out):** how re-runnable a recipe is without an LLM (a stored `run_shell` command
+   vs. a free-form fetch that needed model glue); **approval/allowlist safety of a stored recipe
+   re-running unattended** on refresh (the recipe was authored under a gated tool — re-running it
+   headless must respect the same allowlist, likely reusing the `action_allowlist`); poll interval +
+   backpressure. Independent of the Process cluster.
 5. **`034` — CLI-agent providers (Claude Code / Codex / Copilot).** Three new **provider kinds** that
    aren't LLM-API accounts but local **agentic CLIs** driven as subprocesses (`claude -p`,
    `codex exec`, `copilot -p`) — each *is* the agent (own loop + tools + approvals, editing files
@@ -148,6 +146,44 @@ item is its plan file, not its rank.
 
 ## Done
 
+- **`033.1` + `033.2` — Live dashboards (storage + overlay + view + `dashboard_write`).** Built on
+  `feat/live-dashboards` (off `main`; not yet merged). A new top-level **Dashboards** surface: a saved
+  layout of widgets, each a structured record with a **data-fetch `recipe`**. **Storage model = DB,
+  structured widgets** (decided with the user — no on-disk HTML artifacts, no arbitrary-JS surface;
+  sharing/export is a later item). **`SCHEMA_V26`** (three pure `CREATE TABLE`s, no rebuild — the V15/V25
+  pattern) mirrors `025`'s definition-vs-run split + bare-`TEXT`-repo-validated statuses: `dashboards` +
+  `dashboard_widgets` (definition; top-level, NOT conversation-scoped) + `dashboard_widget_data` (the
+  run/cache side, one row per widget, `ON DELETE CASCADE`). New `db/repositories/dashboards.ts` (row
+  types + mappers, `normalizeType`/`normalizeStatus` `ReadonlySet` coercion à la `todos.ts`, JSON-blob
+  serialize/parse with caps, CRUD + `getDashboardGraph` composite), barrel-registered; `db:dashboards:*`
+  IPC block + `api.db.dashboards` preload bridge (+`widgets`/`data` sub-objects). **`033.2` — gated-but-
+  ungated `dashboard_write` agent tool** (`agent/tools/dashboard_write.ts`, modeled on `todo_write`:
+  writes only its own tables so it does NOT route through the approval gate; the *fetching* it did
+  beforehand via `run_shell`/`web_fetch` was already gated). Whole-dashboard replace write in one
+  transaction (create/update + replace widgets + seed each widget's data cache). Registered in
+  `otherTools`; offered in `buildTools` on `showTodos && !planMode` (like `todo_write`); a new
+  `dashboard` tool-category so a restricted agent can opt in. **Renderer:** `dashboards-screen.tsx` — the
+  **in-panel** footer overlay (Pattern A, cloning `process-screen.tsx` — NOT the Settings Radix-dialog
+  takeover; the roadmap conflated the two). Left rail of dashboards; main pane = a **`react-grid-layout`**
+  (v1.5, +1 renderer dep) drag-resize grid of widget cards rendering `chart` (via the previously-unused
+  `ui/chart.tsx` recharts wrapper — this is its first consumer) / `stat` / `table`; drag/resize persists
+  `pos` (mutate-then-refetch). Manual **Add widget** form (title + type via `NativeSelect` inside the
+  Dialog per the `023` `pointer-events:none` finding + config/data JSON) proves the render path without an
+  agent. Wired through `sidebar.tsx` (footer **Dashboards** button, `LayoutDashboard` icon,
+  `onDashboardsClick`) + `main.tsx` (`dashboardsOpen` state, handler, 5 nav-reset sites, 3 overlay-open
+  guards, mount); types re-exported via `renderer/src/types.ts`. **Refresh button is a stopgap** — it
+  reloads the cache from the DB (reflecting an agent re-authoring in chat); the deterministic no-LLM
+  recipe replay is `033.3` (marked `TODO(033.3)`). Verified: `pnpm typecheck` + `pnpm build` clean (the 3
+  residual errors — `open.test.ts`, `service.test.ts`, `runner.test.ts` — are **pre-existing on `main`**
+  and unrelated); new tests — `dashboards.test.ts` (**9**: CRUD, JSON round-trip, type coercion,
+  auto-position, data upsert-replace, both cascades, `getDashboardGraph`, patch-only update),
+  `dashboard_write.test.ts` (**6**: create+seed, replace-on-update, type coercion, no-name reject,
+  not-found reject, JSON-string arg), `migrations.test.ts` (**+1**: v26 tables/columns); the stale
+  latest-`user_version` assertions bumped 24 → 26 (×5 — `migrations`/`processes`/`index-runs`/`settings`;
+  V25/MCP had shipped without bumping them). **Full suite 783 pass** against a node-ABI `better-sqlite3`
+  rebuild, Electron ABI restored after with `electron-rebuild` (the 1 flaky `env/local.test.ts` SIGKILL
+  timing test passes in isolation). Live E2E in the running app deferred to a live session. **Deferred (as
+  planned):** the deterministic `dashboard_refresh` executor → `033.3` (above); dashboard sharing/export.
 - **`038.2` — Sub-processes: recovery cluster (deep restart + child-internal gates + request-changes).**
   Built on `feat/sub-processes-recovery` (off `main`; not yet merged). The three correctness/completeness
   gaps of `038.2` that make nested runs safely recoverable + interactive (the remaining two —

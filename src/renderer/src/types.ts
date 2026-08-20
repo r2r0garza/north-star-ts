@@ -122,3 +122,13 @@ export type {
   PhaseGatePolicy,
   EdgeTrigger,
 } from "../../preload/index"
+
+// Live dashboard types (plan 033), surfaced for the Dashboards screen.
+export type {
+  Dashboard,
+  DashboardGraph,
+  DashboardWidget,
+  DashboardWidgetData,
+  DashboardWidgetType,
+  DashboardWidgetDataStatus,
+} from "../../preload/index"

@@ -89,7 +89,7 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
     const db = new Database(":memory:")
     db.pragma("foreign_keys = ON")
     runMigrations(db)
-    expect(db.pragma("user_version", { simple: true })).toBe(24)
+    expect(db.pragma("user_version", { simple: true })).toBe(26)
     expect(db.pragma("foreign_key_check")).toHaveLength(0)
     db.close()
   })
@@ -276,6 +276,28 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
     expect(db.pragma("foreign_key_check")).toHaveLength(0)
     db.close()
   })
+
+  it("adds the dashboards tables (v26, plan 033)", () => {
+    const db = new Database(":memory:")
+    db.pragma("foreign_keys = ON")
+    runMigrations(db)
+    const tables = (
+      db
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+        .all() as Array<{ name: string }>
+    ).map((t) => t.name)
+    expect(tables).toContain("dashboards")
+    expect(tables).toContain("dashboard_widgets")
+    expect(tables).toContain("dashboard_widget_data")
+    const widgetCols = (
+      db.pragma("table_info(dashboard_widgets)") as Array<{ name: string }>
+    ).map((c) => c.name)
+    expect(widgetCols).toEqual(
+      expect.arrayContaining(["type", "config", "recipe", "pos", "position"])
+    )
+    expect(db.pragma("foreign_key_check")).toHaveLength(0)
+    db.close()
+  })
 })
 
 describe.skipIf(!sqliteLoads)("SCHEMA_V9 — orphan reap (plan 022)", () => {
@@ -320,7 +342,7 @@ describe.skipIf(!sqliteLoads)("SCHEMA_V9 — orphan reap (plan 022)", () => {
     // Apply V9 (the reaper) and any later migrations, up to the latest version.
     runMigrations(db)
 
-    expect(db.pragma("user_version", { simple: true })).toBe(24)
+    expect(db.pragma("user_version", { simple: true })).toBe(26)
 
     // Reaped: orphan + its nested descendant, and all their state.
     const taskIds = (

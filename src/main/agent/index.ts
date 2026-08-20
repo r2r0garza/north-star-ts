@@ -45,6 +45,7 @@ import { getMcpManager, parsePrefixedName, enabledServerNames } from "./mcp"
 import type { McpToolDefinition } from "./mcp"
 import { spawnSubagentTool } from "./tools/spawn_subagent"
 import { flagForReworkTool } from "./tools/flag_for_rework"
+import { dashboardWriteTool } from "./tools/dashboard_write"
 import { loadSystemPrompt } from "./system-prompt"
 import { logSystemPrompt } from "./prompt-log"
 import { buildIndexSummary } from "../index/summary"
@@ -836,6 +837,10 @@ export async function runAgentLoop(
       // upstream phase instead of fixing out of lane. Not gated by the agent
       // allowlist (it's a process-structural capability, like spawn).
       ...(opts.processRunId && !planMode ? [flagForReworkTool.definition] : []),
+      // dashboard_write (plan 033.2): offered in interactive modes (like
+      // todo_write), withheld in plan mode as a side-effecting save. Subject to
+      // the agent tool allowlist via its `dashboard` category.
+      ...(showTodos && !planMode ? [dashboardWriteTool.definition] : []),
       // Plan-mode tools: the only write (write_plan) + the approval handoff.
       ...(planMode
         ? [writePlanTool.definition, presentPlanTool.definition]

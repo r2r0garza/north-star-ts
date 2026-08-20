@@ -20,6 +20,10 @@ const CATEGORY_TOOLS: Record<string, string[]> = {
     "browser_handoff",
   ],
   todo: ["todo_write", "run_todos_in_background"],
+  // `dashboard` → the live-dashboard authoring tool (plan 033.2). Offered in
+  // interactive modes (buildTools gates it on showTodos); this mapping lets a
+  // tool-restricted agent opt into authoring dashboards.
+  dashboard: ["dashboard_write"],
   // `agent` → the subagent-spawn tool. Its OFFERING has an extra gate (children
   // must also be present) applied in buildTools; this mapping just records the
   // name so an agent-scoped allowlist admits it.

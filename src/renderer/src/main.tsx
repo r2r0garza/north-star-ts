@@ -21,6 +21,7 @@ import { SkillsScreen } from "@/components/skills-screen"
 import { AgentsScreen } from "@/components/agents-screen"
 import { McpScreen } from "@/components/mcp-screen"
 import { ProcessScreen } from "@/components/process-screen"
+import { DashboardsScreen } from "@/components/dashboards-screen"
 import { TaskTranscriptSheet } from "@/components/task-transcript-sheet"
 import { TaskCompletionToasts } from "@/components/task-completion-toasts"
 import { Toaster } from "@/components/ui/sonner"
@@ -74,6 +75,10 @@ function Shell() {
   // Whether the MCP view is open (opened from the sidebar footer). An in-panel
   // destination in the center region; browses/edits mcp.json server configs.
   const [mcpOpen, setMcpOpen] = useState(false)
+  // Whether the Dashboards view is open (opened from the sidebar footer). An
+  // in-panel destination in the center region; authors/views live dashboards
+  // (plan 033). Mutually exclusive with the other footer overlays.
+  const [dashboardsOpen, setDashboardsOpen] = useState(false)
   // Which tab Settings opens on. First launch (no provider configured) opens
   // straight to Providers so the user can set one up.
   const [settingsTab, setSettingsTab] = useState("backend")
@@ -231,6 +236,7 @@ function Shell() {
     setSkillsOpen(false)
     setProcessOpen(false)
     setMcpOpen(false)
+    setDashboardsOpen(false)
   }
 
   // Cmd+, (macOS) / Ctrl+, (Windows/Linux) opens Settings — the platform's
@@ -243,7 +249,8 @@ function Shell() {
         setAgentsOpen(false)
         setSkillsOpen(false)
         setProcessOpen(false)
-    setMcpOpen(false)
+        setMcpOpen(false)
+        setDashboardsOpen(false)
       }
     }
     window.addEventListener("keydown", onKeyDown)
@@ -260,6 +267,7 @@ function Shell() {
     setSkillsOpen(false)
     setProcessOpen(false)
     setMcpOpen(false)
+    setDashboardsOpen(false)
   }
 
   // Reopen a stored conversation — switch the view to match its mode. The
@@ -273,6 +281,7 @@ function Shell() {
     setSkillsOpen(false)
     setProcessOpen(false)
     setMcpOpen(false)
+    setDashboardsOpen(false)
   }
 
   // Start a fresh conversation, optionally in a project (its directory is
@@ -284,6 +293,7 @@ function Shell() {
     setSkillsOpen(false)
     setProcessOpen(false)
     setMcpOpen(false)
+    setDashboardsOpen(false)
   }
 
   // A session was deleted from the sidebar. If it was the active one, drop back
@@ -306,9 +316,9 @@ function Shell() {
         <SidebarModeToggle
           mode={sidebarMode}
           onModeChange={changeSidebarMode}
-          showModeSelect={!(agentsOpen || skillsOpen || processOpen || mcpOpen)}
+          showModeSelect={!(agentsOpen || skillsOpen || processOpen || mcpOpen || dashboardsOpen)}
         />
-        {!(agentsOpen || skillsOpen || processOpen || mcpOpen) && (
+        {!(agentsOpen || skillsOpen || processOpen || mcpOpen || dashboardsOpen) && (
           <ActivityToggle
             open={activityOpen}
             onToggle={() => setActivity(!activityOpen)}
@@ -328,21 +338,32 @@ function Shell() {
           setAgentsOpen(false)
           setProcessOpen(false)
           setMcpOpen(false)
+          setDashboardsOpen(false)
         }}
         onAgentsClick={() => {
           setAgentsOpen(true)
           setSkillsOpen(false)
           setProcessOpen(false)
           setMcpOpen(false)
+          setDashboardsOpen(false)
         }}
         onProcessClick={() => {
           setProcessOpen(true)
           setAgentsOpen(false)
           setSkillsOpen(false)
           setMcpOpen(false)
+          setDashboardsOpen(false)
         }}
         onMcpClick={() => {
           setMcpOpen(true)
+          setProcessOpen(false)
+          setAgentsOpen(false)
+          setSkillsOpen(false)
+          setDashboardsOpen(false)
+        }}
+        onDashboardsClick={() => {
+          setDashboardsOpen(true)
+          setMcpOpen(false)
           setProcessOpen(false)
           setAgentsOpen(false)
           setSkillsOpen(false)
@@ -359,7 +380,7 @@ function Shell() {
         <div
           className={cn(
             "flex min-h-0 flex-1",
-            (agentsOpen || skillsOpen || processOpen || mcpOpen) && "hidden"
+            (agentsOpen || skillsOpen || processOpen || mcpOpen || dashboardsOpen) && "hidden"
           )}
         >
           <App
@@ -386,6 +407,9 @@ function Shell() {
         {skillsOpen && <SkillsScreen onClose={() => setSkillsOpen(false)} />}
         {processOpen && <ProcessScreen onClose={() => setProcessOpen(false)} />}
         {mcpOpen && <McpScreen onClose={() => setMcpOpen(false)} />}
+        {dashboardsOpen && (
+          <DashboardsScreen onClose={() => setDashboardsOpen(false)} />
+        )}
       </div>
       <ActivityPanel
         conversationId={activeConversationId}

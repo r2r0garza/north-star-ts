@@ -5,6 +5,7 @@ import {
   Bot,
   ChevronRight,
   FolderPlus,
+  LayoutDashboard,
   MoreHorizontal,
   Pin,
   PinOff,
@@ -371,6 +372,7 @@ export function AppSidebar({
   onAgentsClick,
   onProcessClick,
   onMcpClick,
+  onDashboardsClick,
   refreshKey,
   runningConvos,
   waitingConvos,
@@ -388,6 +390,7 @@ export function AppSidebar({
   onAgentsClick: () => void
   onProcessClick: () => void
   onMcpClick: () => void
+  onDashboardsClick: () => void
   // Bumped by the app whenever conversations change, so the list refetches.
   refreshKey: number
   // Conversations with a turn currently streaming — each shows a spinner.
@@ -712,6 +715,16 @@ export function AppSidebar({
         />
       </SidebarContent>
       <SidebarFooter className="p-2">
+        <Button
+          type="button"
+          size="sm"
+          variant="ghost"
+          onClick={onDashboardsClick}
+          className="w-full justify-start"
+        >
+          <LayoutDashboard className="size-4" />
+          Dashboards
+        </Button>
         <Button
           type="button"
           size="sm"

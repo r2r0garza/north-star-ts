@@ -550,3 +550,57 @@ export interface ProcessGraph {
   agents: ProcessPhaseAgent[]
   edges: ProcessEdge[]
 }
+
+// --- Live dashboards (plan 033) -------------------------------------------
+
+// A widget's render kind. Bare TEXT in the DB, coerced in the repo layer.
+export type DashboardWidgetType = "chart" | "stat" | "table"
+
+// The cache row's freshness. 'ok' = last fetch succeeded; 'error' = the recipe
+// run failed (see `error`); 'stale' = never fetched / needs a refresh.
+export type DashboardWidgetDataStatus = "ok" | "error" | "stale"
+
+// A saved dashboard — a top-level object (NOT conversation-scoped), so it
+// persists like a process definition. `layout` is a JSON blob for grid config
+// (column count / breakpoints) parsed by the renderer.
+export interface Dashboard {
+  id: string
+  name: string
+  description: string | null
+  layout: unknown | null
+  createdAt: number
+  updatedAt: number
+}
+
+// One widget on a dashboard. `config` is the render config (chart kind, data
+// keys, recharts options); `recipe` describes HOW to (re)fetch the data (a
+// command / URL / normalize hint — re-runnable replay is plan 033.3); `pos` is
+// the grid geometry {x,y,w,h}. All three are JSON blobs parsed by consumers.
+export interface DashboardWidget {
+  id: string
+  dashboardId: string
+  title: string
+  type: DashboardWidgetType
+  config: unknown | null
+  recipe: unknown | null
+  pos: unknown | null
+  position: number
+}
+
+// The cached data a widget renders — the run/cache side of the definition/run
+// split. One row per widget (PK = widgetId), replaced on each refresh.
+export interface DashboardWidgetData {
+  widgetId: string
+  data: unknown | null
+  status: DashboardWidgetDataStatus
+  error: string | null
+  fetchedAt: number
+}
+
+// The whole dashboard in one shape — the view loads it in a single call (repo
+// getDashboardGraph assembles it from the widget + cache list queries).
+export interface DashboardGraph {
+  dashboard: Dashboard
+  widgets: DashboardWidget[]
+  data: DashboardWidgetData[]
+}

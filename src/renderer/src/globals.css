@@ -137,3 +137,36 @@
     @apply font-sans;
     }
 }
+
+/* react-resizable handles (plan 033 dashboards grid). The react-resizable
+   package isn't top-level resolvable under pnpm, so its handle CSS is inlined
+   here (react-grid-layout/css/styles.css is imported directly by the screen).
+   The handle glyph is themed via currentColor rather than the packaged white
+   SVG so it reads in both light and dark. */
+.react-resizable {
+  position: relative;
+}
+.react-resizable-handle {
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  bottom: 0;
+  right: 0;
+  cursor: se-resize;
+  opacity: 0.4;
+  background-image: linear-gradient(
+    135deg,
+    transparent 0,
+    transparent 40%,
+    currentColor 40%,
+    currentColor 50%,
+    transparent 50%,
+    transparent 65%,
+    currentColor 65%,
+    currentColor 75%,
+    transparent 75%
+  );
+}
+.react-resizable-handle:hover {
+  opacity: 0.8;
+}
