@@ -1,5 +1,6 @@
 import { safeStorage } from "electron"
 import * as providerAccounts from "../db/repositories/provider-accounts"
+import * as mcpServers from "../db/repositories/mcp-servers"
 
 // Provider API-key secret handling. Keys are encrypted with Electron's
 // safeStorage (OS keychain–backed) and stored ONLY as ciphertext in the
@@ -72,4 +73,48 @@ export function getMaskedApiKey(accountId: string): string | undefined {
   if (!plaintext) return undefined
   const tail = plaintext.slice(-4)
   return `••••${tail}`
+}
+
+// ── MCP OAuth secrets ────────────────────────────────────────────────────────
+// An HTTP MCP server that completes the OAuth flow persists two JSON secrets: the
+// token set (access/refresh) and the dynamic client registration. Both are
+// encrypted with safeStorage and stored as BLOBs in the mcp_server_state row,
+// keyed by the server NAME (the mcp.json object key). Same strict policy as a
+// provider API key: no plaintext fallback.
+
+// Persist an MCP server's OAuth token JSON (encrypted). Throws if secure storage
+// is unavailable.
+export function setMcpOauthTokens(serverName: string, tokensJson: string): void {
+  assertAvailable()
+  mcpServers.setOauthTokens(serverName, safeStorage.encryptString(tokensJson))
+}
+
+// Decrypt an MCP server's OAuth token JSON for use inside the main process.
+// Returns undefined when none is stored. Throws if a blob is stored but can't be
+// decrypted (so the caller doesn't silently run unauthenticated).
+export function getMcpOauthTokens(serverName: string): string | undefined {
+  const ciphertext = mcpServers.getOauthTokens(serverName)
+  if (!ciphertext || ciphertext.length === 0) return undefined
+  assertAvailable()
+  return safeStorage.decryptString(ciphertext)
+}
+
+// Persist an MCP server's dynamic client-registration JSON (encrypted).
+export function setMcpOauthClient(serverName: string, clientJson: string): void {
+  assertAvailable()
+  mcpServers.setOauthClient(serverName, safeStorage.encryptString(clientJson))
+}
+
+// Decrypt an MCP server's dynamic client-registration JSON. Returns undefined
+// when none is stored.
+export function getMcpOauthClient(serverName: string): string | undefined {
+  const ciphertext = mcpServers.getOauthClient(serverName)
+  if (!ciphertext || ciphertext.length === 0) return undefined
+  assertAvailable()
+  return safeStorage.decryptString(ciphertext)
+}
+
+// Remove all stored OAuth secrets for an MCP server (re-auth from scratch).
+export function clearMcpOauth(serverName: string): void {
+  mcpServers.clearOauth(serverName)
 }

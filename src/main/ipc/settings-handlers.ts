@@ -8,6 +8,7 @@ import type {
   IndexingSettings,
   SkillSourcesSettings,
   AgentSourcesSettings,
+  McpSourcesSettings,
   BrowserSettings,
   ThemeSettings,
   IdeSettings,
@@ -48,6 +49,13 @@ export function registerSettingsHandlers(): void {
   )
   ipcMain.handle("settings:setAgentSources", (_e, next: AgentSourcesSettings) =>
     settingsService.setAgentSources(next)
+  )
+
+  ipcMain.handle("settings:getMcpSources", () =>
+    settingsService.getMcpSources()
+  )
+  ipcMain.handle("settings:setMcpSources", (_e, next: McpSourcesSettings) =>
+    settingsService.setMcpSources(next)
   )
 
   ipcMain.handle("settings:getBrowser", () => settingsService.getBrowser())

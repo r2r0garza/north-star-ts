@@ -102,6 +102,14 @@ export interface AgentSourcesSettings {
   folders: string[]
 }
 
+// Extra MCP-source folders the user registers in Settings → Capabilities, on top
+// of the built-in sources (~/.cowork and the workspace dirs). Each is an absolute
+// path treated as a CONTAINER of an mcp.json config file, like the built-ins.
+// See agent/mcp/sources.ts.
+export interface McpSourcesSettings {
+  folders: string[]
+}
+
 // Agent browser preferences. `revealOnAgentUse` controls whether the browser
 // window pops to the front when the agent navigates in the conversation you're
 // viewing: "always" reveals it, "never" keeps it hidden (the page still runs and
@@ -173,6 +181,7 @@ const DEFAULT_INDEXING: IndexingSettings = {
 const DEFAULT_SKILL_SOURCES: SkillSourcesSettings = { folders: [] }
 
 const DEFAULT_AGENT_SOURCES: AgentSourcesSettings = { folders: [] }
+const DEFAULT_MCP_SOURCES: McpSourcesSettings = { folders: [] }
 
 const DEFAULT_BROWSER: BrowserSettings = {
   revealOnAgentUse: "always",
@@ -214,6 +223,7 @@ const KEY_LLM = "llm"
 const KEY_INDEXING = "indexing"
 const KEY_SKILL_SOURCES = "skillSources"
 const KEY_AGENT_SOURCES = "agentSources"
+const KEY_MCP_SOURCES = "mcpSources"
 const KEY_BROWSER = "browser"
 const KEY_THEME = "theme"
 const KEY_IDE = "ide"
@@ -225,6 +235,7 @@ let llmCache: LlmSettings | undefined
 let indexingCache: IndexingSettings | undefined
 let skillSourcesCache: SkillSourcesSettings | undefined
 let agentSourcesCache: AgentSourcesSettings | undefined
+let mcpSourcesCache: McpSourcesSettings | undefined
 let browserCache: BrowserSettings | undefined
 let themeCache: ThemeSettings | undefined
 let ideCache: IdeSettings | undefined
@@ -372,6 +383,26 @@ function loadAgentSources(): AgentSourcesSettings {
   return agentSourcesCache
 }
 
+function loadMcpSources(): McpSourcesSettings {
+  if (mcpSourcesCache) return mcpSourcesCache
+  const raw = settingsRepo.getSetting(KEY_MCP_SOURCES)
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw) as Partial<McpSourcesSettings>
+      mcpSourcesCache = {
+        folders: Array.isArray(parsed.folders)
+          ? parsed.folders.filter((f): f is string => typeof f === "string")
+          : DEFAULT_MCP_SOURCES.folders,
+      }
+      return mcpSourcesCache
+    } catch {
+      // Corrupt blob — fall through to defaults.
+    }
+  }
+  mcpSourcesCache = { folders: [...DEFAULT_MCP_SOURCES.folders] }
+  return mcpSourcesCache
+}
+
 function loadBrowser(): BrowserSettings {
   if (browserCache) return browserCache
   const raw = settingsRepo.getSetting(KEY_BROWSER)
@@ -492,6 +523,10 @@ export function getAgentSources(): AgentSourcesSettings {
   return loadAgentSources()
 }
 
+export function getMcpSources(): McpSourcesSettings {
+  return loadMcpSources()
+}
+
 export function getBrowser(): BrowserSettings {
   return loadBrowser()
 }
@@ -555,6 +590,12 @@ export function setAgentSources(
   return next
 }
 
+export function setMcpSources(next: McpSourcesSettings): McpSourcesSettings {
+  settingsRepo.setSetting(KEY_MCP_SOURCES, JSON.stringify(next))
+  mcpSourcesCache = next
+  return next
+}
+
 export function setBrowser(next: BrowserSettings): BrowserSettings {
   settingsRepo.setSetting(KEY_BROWSER, JSON.stringify(next))
   browserCache = next
@@ -606,6 +647,7 @@ export function _resetCacheForTests(): void {
   indexingCache = undefined
   skillSourcesCache = undefined
   agentSourcesCache = undefined
+  mcpSourcesCache = undefined
   browserCache = undefined
   themeCache = undefined
   ideCache = undefined

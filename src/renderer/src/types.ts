@@ -94,6 +94,18 @@ export type {
   AccountWithModels,
 } from "../../preload/index"
 
+// MCP server types, surfaced for the MCP view + agent editor picker.
+export type {
+  McpServer,
+  McpServerDef,
+  McpTransport,
+  McpServerView,
+  McpTree,
+  McpFolder,
+  McpSourceRow,
+  McpSourceKind,
+} from "../../preload/index"
+
 // Process engine types (plans 025/026), surfaced for the Process screen — the
 // DAG builder + live run monitor.
 export type {

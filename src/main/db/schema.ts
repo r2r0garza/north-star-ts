@@ -702,3 +702,31 @@ ALTER TABLE process_phases ADD COLUMN subprocess_id TEXT
 ALTER TABLE process_runs ADD COLUMN parent_phase_run_id TEXT
   REFERENCES process_phase_runs(id) ON DELETE SET NULL;
 `
+
+// v25 (MCP servers — per-machine side-store): MCP server DEFINITIONS live in
+// file-based mcp.json configs (discovered from user/workspace/custom dirs, exactly
+// like agents/skills — see agent/mcp/), NOT in the DB. This table holds only the
+// two things that can't live in a shareable/committable file, keyed by the server
+// `name` (the mcp.json object key + tool prefix):
+//   - enabled: an EXPLICIT on/off OVERRIDE. A discovered server defaults ON; a row
+//     exists here only once the user has toggled it (or OAuth was stored). So the
+//     effective state is: row present → row.enabled; row absent → ON. Bare TEXT-free
+//     INTEGER; no CHECK.
+//   - oauth_tokens / oauth_client: safeStorage-encrypted BLOBs for an http server
+//     that completed the OAuth flow (tokens = access/refresh set; client = the
+//     dynamic client registration). Written only through settings/secrets.ts; never
+//     cross IPC (the UI sees a derived `hasOauth` boolean), mirroring
+//     provider_accounts.encrypted_key.
+// PK is the server name (global — an MCP server name is unique across the app's
+// discovery order by last-wins, so one state row per name is correct).
+// A plain CREATE TABLE — a new object, safe under the foreign_keys=OFF loop.
+export const SCHEMA_V25 = `
+CREATE TABLE mcp_server_state (
+  name          TEXT PRIMARY KEY,
+  enabled       INTEGER NOT NULL DEFAULT 1,
+  oauth_tokens  BLOB,
+  oauth_client  BLOB,
+  created_at    INTEGER NOT NULL,
+  updated_at    INTEGER NOT NULL
+);
+`

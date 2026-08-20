@@ -39,6 +39,7 @@ import type {
   IndexingSettings,
   SkillSourcesSettings,
   AgentSourcesSettings,
+  McpSourcesSettings,
   BrowserSettings,
   ThemeSettings,
   IdeSettings,
@@ -58,8 +59,17 @@ import type {
   AccountView,
   AccountWithModels,
 } from "../main/ipc/provider-handlers"
-import type { ModelEntry, IndexPriority } from "../main/db/types"
+import type {
+  ModelEntry,
+  IndexPriority,
+  McpServerDef,
+} from "../main/db/types"
 import type { IndexStatus } from "../main/ipc/index-handlers"
+import type {
+  McpServerView,
+  McpTree,
+  McpSourceRow,
+} from "../main/agent/mcp/types"
 
 // Streaming events emitted during a chat turn (mirrors ChatEvent in the agent).
 export type ChatEvent =
@@ -959,6 +969,15 @@ const api = {
         "settings:setAgentSources",
         next
       ) as Promise<AgentSourcesSettings>,
+    getMcpSources: () =>
+      ipcRenderer.invoke(
+        "settings:getMcpSources"
+      ) as Promise<McpSourcesSettings>,
+    setMcpSources: (next: McpSourcesSettings) =>
+      ipcRenderer.invoke(
+        "settings:setMcpSources",
+        next
+      ) as Promise<McpSourcesSettings>,
     getBrowser: () =>
       ipcRenderer.invoke("settings:getBrowser") as Promise<BrowserSettings>,
     setBrowser: (next: BrowserSettings) =>
@@ -1084,6 +1103,60 @@ const api = {
       }>,
   },
 
+  // External MCP servers (stdio + streamable HTTP). DEFINITIONS live in mcp.json
+  // files (like agents/skills); only the enabled toggle + OAuth secrets live in
+  // the DB side-store, keyed by server name. OAuth token ciphertext never crosses
+  // IPC — the server view carries only `hasOauth`. Writes target writable mcp.json
+  // files (user + custom); workspace/github configs are read-only.
+  mcp: {
+    // Whether secure (keychain) storage is usable — the UI checks before OAuth.
+    secureStorageAvailable: () =>
+      ipcRenderer.invoke("mcp:secureStorageAvailable") as Promise<boolean>,
+    // The nested catalog (Global / Workspace / Custom folders → servers).
+    tree: () => ipcRenderer.invoke("mcp:tree") as Promise<McpTree>,
+    // Kind-tagged source dirs with server counts, for Settings → Capabilities.
+    sources: (workspace?: string) =>
+      ipcRenderer.invoke("mcp:sources", workspace) as Promise<McpSourceRow[]>,
+    // Raw mcp.json contents (for diagnostics / "edit as JSON").
+    readConfig: (filePath: string) =>
+      ipcRenderer.invoke("mcp:readConfig", filePath) as Promise<string>,
+    // Create or replace ONE server entry in a writable mcp.json.
+    saveServer: (filePath: string, def: McpServerDef) =>
+      ipcRenderer.invoke(
+        "mcp:saveServer",
+        filePath,
+        def
+      ) as Promise<McpServerView>,
+    // Delete ONE server entry (by name) from a writable mcp.json.
+    deleteServer: (filePath: string, name: string) =>
+      ipcRenderer.invoke("mcp:deleteServer", filePath, name) as Promise<void>,
+    // Reveal an mcp.json in the OS file manager.
+    reveal: (filePath: string) =>
+      ipcRenderer.invoke("mcp:reveal", filePath) as Promise<void>,
+    // Whether an mcp.json path is a writable root (drives edit vs read-only UI).
+    isWritable: (filePath: string) =>
+      ipcRenderer.invoke("mcp:isWritable", filePath) as Promise<boolean>,
+    // Per-machine enabled override (keyed by server name).
+    setEnabled: (name: string, enabled: boolean) =>
+      ipcRenderer.invoke("mcp:setEnabled", name, enabled) as Promise<void>,
+    // Connect on demand and report the discovered tool count (or an error).
+    test: (name: string, workspace?: string) =>
+      ipcRenderer.invoke("mcp:test", name, workspace) as Promise<{
+        ok: boolean
+        toolCount?: number
+        error?: string
+      }>,
+    // Run the interactive OAuth flow (opens the system browser).
+    authorize: (name: string, workspace?: string) =>
+      ipcRenderer.invoke("mcp:authorize", name, workspace) as Promise<{
+        ok: boolean
+        error?: string
+      }>,
+    // Forget stored OAuth credentials so the server can be re-authorized.
+    clearOauth: (name: string) =>
+      ipcRenderer.invoke("mcp:clearOauth", name) as Promise<void>,
+  },
+
   // The customizable system name (from NEXT_system_name). Read synchronously so
   // the UI can brand the window title / skills-path hints without an async flash.
   // `displayName` is the human name (e.g. "Cowork"); `dataDirName` is the dotfile
@@ -1147,6 +1220,7 @@ export type {
   IndexingSettings,
   SkillSourcesSettings,
   AgentSourcesSettings,
+  McpSourcesSettings,
   BrowserSettings,
   BrowserReveal,
   ThemeSettings,
@@ -1184,6 +1258,15 @@ export type {
   AccountView,
   AccountWithModels,
 } from "../main/ipc/provider-handlers"
+// MCP server types for the MCP view + the agent editor picker.
+export type { McpServer, McpServerDef, McpTransport } from "../main/db/types"
+export type {
+  McpServerView,
+  McpTree,
+  McpFolder,
+  McpSourceRow,
+  McpSourceKind,
+} from "../main/agent/mcp/types"
 // Workspace indexing types (plan 008) for the status strip + settings tab.
 export type { IndexPriority, IndexStage } from "../main/db/types"
 export type { IndexStatus } from "../main/ipc/index-handlers"

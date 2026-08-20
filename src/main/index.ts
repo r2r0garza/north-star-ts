@@ -79,6 +79,8 @@ import { resolveInWorkspaceReal } from "./agent/tools/workspace"
 import { registerDbHandlers } from "./ipc/db-handlers"
 import { registerSettingsHandlers } from "./ipc/settings-handlers"
 import { registerProviderHandlers } from "./ipc/provider-handlers"
+import { registerMcpHandlers } from "./ipc/mcp-handlers"
+import { getMcpManager } from "./agent/mcp"
 import { registerTaskHandlers } from "./ipc/task-handlers"
 import { registerIndexHandlers } from "./ipc/index-handlers"
 import { TaskRunner } from "./tasks/runner"
@@ -1002,6 +1004,7 @@ app.whenReady().then(() => {
   )
   registerSettingsHandlers()
   registerProviderHandlers()
+  registerMcpHandlers()
   // Start the durable task runner now that the DB handlers are registered (it
   // reads the task tables synchronously). reconcile() marks any task left
   // mid-flight by a previous run as interrupted; the pump then drains the queue.
@@ -1081,5 +1084,8 @@ app.on("before-quit", () => {
 app.on("will-quit", () => {
   void taskRunner.stop()
   browserManager.dispose()
+  // Disconnect every pooled MCP client (stops spawned stdio processes / closes
+  // HTTP sessions). Fire-and-forget; the process is exiting.
+  void getMcpManager().disposeAll()
   closeDb()
 })

@@ -38,6 +38,12 @@ export interface AgentDefinition {
   //   []        → may spawn ANY loadable agent
   //   [list]    → may spawn only the listed agents
   children?: string[]
+  // Which configured MCP servers this agent may use (by server `name`). Governed
+  // separately from `tools` (which gates the built-in tool categories). Tri-state:
+  //   undefined → all ENABLED MCP servers (the default main-agent behavior)
+  //   []        → no MCP servers
+  //   [list]    → only the listed servers (that are also enabled)
+  mcpServers?: string[]
   // Whether the user may pick this agent directly in the UI. A non-invocable
   // agent is still loadable as another agent's child. Defaults to false when the
   // frontmatter key is omitted.

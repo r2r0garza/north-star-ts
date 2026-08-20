@@ -60,6 +60,7 @@ description: Reviews code
 tools: [read, search, edit]
 skills: [git-commit]
 children: [researcher]
+mcp-servers: [atlassian, github]
 user-invocable: true
 ---
 You are a careful reviewer.`
@@ -70,6 +71,7 @@ You are a careful reviewer.`
     expect(a.tools).toEqual(["read", "search", "edit"])
     expect(a.skills).toEqual(["git-commit"])
     expect(a.children).toEqual(["researcher"])
+    expect(a.mcpServers).toEqual(["atlassian", "github"])
     expect(a.userInvocable).toBe(true)
     expect(a.body).toBe("You are a careful reviewer.")
   })
@@ -91,6 +93,7 @@ body`
     expect(a.tools).toBeUndefined() // omitted → all tools
     expect(a.skills).toEqual([]) // empty → no skills
     expect(a.children).toEqual([]) // empty → any child
+    expect(a.mcpServers).toBeUndefined() // omitted → all enabled servers
   })
 
   it("defaults user-invocable to false when omitted", async () => {
@@ -174,7 +177,33 @@ describe("serializeAgent round-trips through parseAgent", () => {
     expect(text).not.toMatch(/tools:/)
     expect(text).not.toMatch(/skills:/)
     expect(text).not.toMatch(/children:/)
+    expect(text).not.toMatch(/mcp-servers:/)
     expect(text).toMatch(/user-invocable: false/)
+  })
+
+  it("round-trips mcp-servers via the hyphenated frontmatter key", async () => {
+    const a = await roundTrip({
+      name: "mcp-agent",
+      description: "d",
+      mcpServers: ["atlassian"],
+      userInvocable: false,
+      body: "b",
+    })
+    expect(a.mcpServers).toEqual(["atlassian"])
+    const raw = readFileSync(path.join(userDir, "mcp-agent.agent.md"), "utf-8")
+    expect(raw).toMatch(/mcp-servers:/)
+    expect(raw).not.toMatch(/mcpServers/)
+  })
+
+  it("emits mcp-servers: [] for a present-but-empty list (none)", async () => {
+    const a = await roundTrip({
+      name: "no-mcp",
+      description: "d",
+      mcpServers: [],
+      userInvocable: false,
+      body: "b",
+    })
+    expect(a.mcpServers).toEqual([])
   })
 
   it("uses the hyphenated user-invocable frontmatter key", async () => {

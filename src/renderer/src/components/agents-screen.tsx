@@ -110,6 +110,7 @@ type Draft = {
   tools?: string[]
   skills?: string[]
   children?: string[]
+  mcpServers?: string[]
   userInvocable: boolean
   body: string
 }
@@ -121,6 +122,7 @@ function draftFromAgent(a: AgentDefinition): Draft {
     tools: a.tools,
     skills: a.skills,
     children: a.children,
+    mcpServers: a.mcpServers,
     userInvocable: a.userInvocable,
     body: a.body,
   }
@@ -148,6 +150,8 @@ export function AgentsScreen({ onClose }: { onClose: () => void }) {
   const [query, setQuery] = useState("")
   // Skill names for the skills picker's "Choose" list. Loaded once on mount.
   const [skillNames, setSkillNames] = useState<string[]>([])
+  // Enabled MCP server names for the MCP-servers "Choose" picker.
+  const [mcpServerNames, setMcpServerNames] = useState<string[]>([])
   // Whether the import (upload) modal is open.
   const [importOpen, setImportOpen] = useState(false)
 
@@ -203,6 +207,23 @@ export function AgentsScreen({ onClose }: { onClose: () => void }) {
       .list()
       .then((rows) => setSkillNames(rows.map((s) => s.name)))
       .catch(() => setSkillNames([]))
+    // Enabled MCP servers feed the MCP-servers "Choose" picker. Discovered from
+    // mcp.json across all sources; a disabled server is omitted (an agent can't be
+    // scoped to a server it can't use). Deduped by name across sources.
+    window.cowork.mcp
+      .tree()
+      .then((t) => {
+        const names = new Set<string>()
+        const collect = (folders: { servers: { name: string; enabled: boolean }[] }[]) => {
+          for (const f of folders)
+            for (const s of f.servers) if (s.enabled) names.add(s.name)
+        }
+        collect(t.global)
+        for (const ws of t.workspaces) collect(ws.folders)
+        collect(t.custom)
+        setMcpServerNames([...names].sort())
+      })
+      .catch(() => setMcpServerNames([]))
   }, [loadTree])
 
   // Esc closes the view, dropping the user back to their last open conversation.
@@ -269,11 +290,12 @@ export function AgentsScreen({ onClose }: { onClose: () => void }) {
     setDraft({
       name: "",
       description: "",
-      // Permissive defaults, matching the scaffold: all tools, all skills, and
-      // no spawn (children undefined).
+      // Permissive defaults, matching the scaffold: all tools, all skills, all
+      // enabled MCP servers, and no spawn (children undefined).
       tools: undefined,
       skills: undefined,
       children: undefined,
+      mcpServers: undefined,
       userInvocable: true,
       body: "",
     })
@@ -412,6 +434,7 @@ export function AgentsScreen({ onClose }: { onClose: () => void }) {
             onChange={setDraft}
             skillNames={skillNames}
             agentNames={agentNames}
+            mcpServerNames={mcpServerNames}
             nameEditable
             dirs={writableDirs}
             dir={mode.dir}
@@ -434,6 +457,7 @@ export function AgentsScreen({ onClose }: { onClose: () => void }) {
             onChange={setDraft}
             skillNames={skillNames}
             agentNames={agentNames.filter((n) => n !== draft.name)}
+            mcpServerNames={mcpServerNames}
           />
         </div>
       ) : selected ? (
@@ -627,6 +651,7 @@ function toFields(d: Draft) {
     tools: d.tools,
     skills: d.skills,
     children: d.children,
+    mcpServers: d.mcpServers,
     userInvocable: d.userInvocable,
     body: d.body,
   }
@@ -685,6 +710,7 @@ function AgentForm({
   onChange,
   skillNames,
   agentNames,
+  mcpServerNames,
   nameEditable = false,
   dirs,
   dir,
@@ -694,6 +720,7 @@ function AgentForm({
   onChange: (d: Draft) => void
   skillNames: string[]
   agentNames: string[]
+  mcpServerNames: string[]
   // Create mode only: allow editing the name and choosing a target location.
   nameEditable?: boolean
   dirs?: Array<{ path: string; label: string }>
@@ -790,6 +817,17 @@ function AgentForm({
           value={draft.children}
           onChange={(children) => onChange({ ...draft, children })}
           emptyOptionsNote="No other agents to choose."
+        />
+
+        <TriStatePicker
+          label="MCP servers"
+          hint="Which configured MCP servers this agent may use."
+          allLabel="All enabled servers"
+          noneLabel="No MCP servers"
+          options={mcpServerNames}
+          value={draft.mcpServers}
+          onChange={(mcpServers) => onChange({ ...draft, mcpServers })}
+          emptyOptionsNote="No enabled MCP servers. Add one in Settings → MCP."
         />
 
         <Field
@@ -924,6 +962,14 @@ function AgentView({ agent }: { agent: AgentDefinition }) {
           <ViewRow
             label="Children"
             value={triSummary(agent.children, "Cannot spawn", "Any agent")}
+          />
+          <ViewRow
+            label="MCP servers"
+            value={triSummary(
+              agent.mcpServers,
+              "All enabled servers",
+              "None"
+            )}
           />
           <ViewRow
             label="User-invocable"
