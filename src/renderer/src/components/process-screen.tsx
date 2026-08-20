@@ -1017,27 +1017,22 @@ function PhaseCard({
             </label>
             <label
               className="flex items-center gap-2 text-xs"
-              title={
-                phase.subprocessId
-                  ? "Disabled: a sub-process phase can't also fan out"
-                  : undefined
-              }
+              title="Split this phase into independent sub-tasks. Combine with Sub-process to run the sub-process once per sub-task (plan 038.3)."
             >
               <span className="text-muted-foreground">Fan-out</span>
               <Switch
                 checked={phase.fanOut}
-                disabled={!!phase.subprocessId}
                 onCheckedChange={(v) => patchPhase({ fanOut: v })}
               />
             </label>
             {/* SUB-PROCESS phase (plan 038.1): run another definition as a nested
-            run instead of an agent worker. Mutually exclusive with fan-out — hidden
-            while fan-out is on, and it disables fan-out when set. Only offered when
-            there's a candidate definition (any other process) to run. */}
-            {!phase.fanOut && subprocessCandidates.length > 0 && (
+            run instead of an agent worker. Combinable with fan-out (plan 038.3): a
+            phase with both decomposes into sub-tasks and runs the sub-process once
+            per child. Only offered when there's a candidate definition to run. */}
+            {subprocessCandidates.length > 0 && (
               <label
                 className="flex items-center gap-2 text-xs"
-                title="Run another process definition as a nested run for this phase"
+                title="Run another process definition as a nested run for this phase (once per fan-out child when fan-out is also on)"
               >
                 <span className="text-muted-foreground">Sub-process</span>
                 <Switch
@@ -1206,15 +1201,17 @@ function PhaseCard({
                 </Select>
               </label>
               <span className="text-[10px] text-muted-foreground">
-                This phase delegates to the nested process; its aggregated
-                output feeds downstream phases. The agent pool and routing are
-                unused.
+                {phase.fanOut
+                  ? "This phase fans out into sub-tasks and runs the nested process once per sub-task (plan 038.3); the pool decomposes. Each child's aggregated output feeds downstream phases."
+                  : "This phase delegates to the nested process; its aggregated output feeds downstream phases. The agent pool and routing are unused."}
               </span>
             </div>
           )}
 
-          {/* Row 3: agent pool. Hidden for a sub-process phase (no worker to pool). */}
-          {!phase.subprocessId && (
+          {/* Row 3: agent pool. Hidden for a PURE sub-process phase (no worker to
+          pool). A combined fan-out + sub-process phase (plan 038.3) still needs the
+          pool for its decomposition pass, so show it when fan-out is on. */}
+          {(!phase.subprocessId || phase.fanOut) && (
             <div className="flex flex-col gap-1.5">
               <span className="text-xs text-muted-foreground">
                 Agent pool
@@ -1876,7 +1873,16 @@ function RunMonitor({
               phaseName={phaseName}
               maxReworkRounds={phaseMaxRework(pr.phaseId)}
               isContainer={phaseIsContainer(pr.phaseId)}
-              isSubProcess={phaseIsSubProcess(pr.phaseId)}
+              // A PURE sub-process phase shows its own nested run under the row. A
+              // COMBINED fan-out + sub-process phase (plan 038.3) is a container: the
+              // nested runs hang off its CHILDREN, not the container, so flag that
+              // instead via childrenAreSubProcess.
+              isSubProcess={
+                phaseIsSubProcess(pr.phaseId) && !phaseIsContainer(pr.phaseId)
+              }
+              childrenAreSubProcess={
+                phaseIsSubProcess(pr.phaseId) && phaseIsContainer(pr.phaseId)
+              }
               refreshTick={refreshTick}
               workspacePath={workspacePath}
               onApprove={approve}
@@ -1973,6 +1979,7 @@ function PhaseRunItem({
   maxReworkRounds,
   isContainer,
   isSubProcess,
+  childrenAreSubProcess,
   refreshTick,
   workspacePath,
   onApprove,
@@ -2003,6 +2010,9 @@ function PhaseRunItem({
   // Whether this phase runs a sub-process (plan 038.1): its nested run is shown as
   // an expandable block under the row.
   isSubProcess: boolean
+  // Whether this phase's CHILDREN each run a sub-process (a combined fan-out +
+  // sub-process phase, plan 038.3): each child row gets its own nested-run block.
+  childrenAreSubProcess: boolean
   // Bumped on every live task event so the nested sub-process view re-fetches as
   // its child phases progress (plan 038.1).
   refreshTick: number
@@ -2146,6 +2156,26 @@ function PhaseRunItem({
                       onDismiss={() =>
                         onDismissFlag(childFlagGates[c.id].requestId, c.id)
                       }
+                    />
+                  </div>
+                )}
+                {/* The nested run this fan-out child dispatched as a sub-process
+                    (a combined fan-out + sub-process phase, plan 038.3). */}
+                {childrenAreSubProcess && (
+                  <div className="pl-1">
+                    <SubProcessNestedRun
+                      parentPhaseRunId={c.id}
+                      workspacePath={workspacePath}
+                      onOpenTranscript={onOpenTranscript}
+                      refreshTick={refreshTick}
+                      depth={0}
+                      gates={gates}
+                      flagGates={childFlagGates}
+                      onApprove={onApprove}
+                      onDeny={onDeny}
+                      onRequestChanges={onRequestChanges}
+                      onConfirmFlag={onConfirmFlag}
+                      onDismissFlag={onDismissFlag}
                     />
                   </div>
                 )}
@@ -2520,25 +2550,50 @@ function SubProcessNestedRun({
                         />
                       </div>
                     )}
+                    {/* A combined fan-out + sub-process phase inside the nested run
+                        (plan 038.3): each child dispatched its own sub-process. */}
+                    {isSubProcess(pr.phaseId) &&
+                      isContainer(pr.phaseId) &&
+                      depth + 1 < MAX_NESTED_DEPTH && (
+                        <div className="ml-3">
+                          <SubProcessNestedRun
+                            parentPhaseRunId={c.id}
+                            workspacePath={workspacePath}
+                            onOpenTranscript={onOpenTranscript}
+                            refreshTick={refreshTick}
+                            depth={depth + 1}
+                            gates={gates}
+                            flagGates={flagGates}
+                            onApprove={onApprove}
+                            onDeny={onDeny}
+                            onRequestChanges={onRequestChanges}
+                            onConfirmFlag={onConfirmFlag}
+                            onDismissFlag={onDismissFlag}
+                          />
+                        </div>
+                      )}
                   </div>
                 ))}
-                {/* A sub-process phase INSIDE the nested run recurses (bounded). */}
-                {isSubProcess(pr.phaseId) && depth + 1 < MAX_NESTED_DEPTH && (
-                  <SubProcessNestedRun
-                    parentPhaseRunId={pr.id}
-                    workspacePath={workspacePath}
-                    onOpenTranscript={onOpenTranscript}
-                    refreshTick={refreshTick}
-                    depth={depth + 1}
-                    gates={gates}
-                    flagGates={flagGates}
-                    onApprove={onApprove}
-                    onDeny={onDeny}
-                    onRequestChanges={onRequestChanges}
-                    onConfirmFlag={onConfirmFlag}
-                    onDismissFlag={onDismissFlag}
-                  />
-                )}
+                {/* A PURE sub-process phase INSIDE the nested run recurses (bounded).
+                    A combined fan-out + sub-process phase renders per-child above. */}
+                {isSubProcess(pr.phaseId) &&
+                  !isContainer(pr.phaseId) &&
+                  depth + 1 < MAX_NESTED_DEPTH && (
+                    <SubProcessNestedRun
+                      parentPhaseRunId={pr.id}
+                      workspacePath={workspacePath}
+                      onOpenTranscript={onOpenTranscript}
+                      refreshTick={refreshTick}
+                      depth={depth + 1}
+                      gates={gates}
+                      flagGates={flagGates}
+                      onApprove={onApprove}
+                      onDeny={onDeny}
+                      onRequestChanges={onRequestChanges}
+                      onConfirmFlag={onConfirmFlag}
+                      onDismissFlag={onDismissFlag}
+                    />
+                  )}
               </div>
             )
           })}

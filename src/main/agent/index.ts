@@ -1,6 +1,7 @@
 import { randomUUID } from "crypto"
 import { stat } from "fs/promises"
 import { basename, isAbsolute } from "path"
+import { SHUTDOWN_ABORT_REASON } from "./abort"
 import {
   toolDefinitions,
   browserToolDefinitions,
@@ -137,7 +138,9 @@ const autoModeSetters = new Map<string, (on: boolean) => void>()
 // `waiting_for_approval` and the next boot reconciles it to `interrupted` and
 // re-prompts on resume (plan 012). Fabricating a denial here was the bug that
 // persisted a fake "ERROR[denied]" result and wedged resume.
-export const SHUTDOWN_ABORT_REASON = Symbol("agent:shutdown")
+// Defined in the leaf `./abort` module (no heavy imports) and re-exported here for
+// back-compat; import from `./abort` directly to avoid the agent-barrel cycle.
+export { SHUTDOWN_ABORT_REASON }
 
 // Max output tokens per model turn. The agent emits tool calls whose arguments
 // can be large (e.g. write_file_tool inlines a whole file as a JSON blob), so a

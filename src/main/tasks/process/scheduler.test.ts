@@ -22,6 +22,7 @@ import {
   runScheduler,
   subtaskTitle,
   GateBlockedError,
+  MAX_PROCESS_DEPTH,
   type BuildEachSubtaskPrompt,
   type Decompose,
   type RunPhase,
@@ -29,6 +30,7 @@ import {
   type SchedulerCtx,
   type Validate,
 } from "./scheduler"
+import { SHUTDOWN_ABORT_REASON } from "../../agent/abort"
 import type { TaskEventPayload } from "../runner"
 import type { ProcessFlag } from "../../db/types"
 
@@ -463,6 +465,48 @@ describe.skipIf(!sqliteLoads)("scheduler — cancellation", () => {
     // a ran (and was cancelled); b never dispatched.
     expect(ran).toEqual(["a"])
     expect(statusByKey(runId, pid).b).toBe("pending")
+  })
+
+  it("settles a phase-run left RUNNING mid-flight on a genuine cancel (plan 038.3)", async () => {
+    // Regression: a plain (non-container) phase-run still `running` when the abort
+    // branch runs used to be stranded (only containers were settled), so a nested
+    // sub-process's inner phase stayed "Running" forever. The worker here aborts the
+    // run and then never resolves, so the scheduler wakes on the abort (Promise.race)
+    // while the phase-run row is still `running` — the abort branch must settle it.
+    const pid = buildProcess({ phases: [{ key: "a" }] })
+    const abort = new AbortController()
+    const runPhase: RunPhase = ({ signal }) =>
+      new Promise((resolve) => {
+        abort.abort() // plain cancel, no reason
+        // Never resolve on our own; unwind only if the signal fires (it just did).
+        signal.addEventListener("abort", () => resolve({ stopped: true }), {
+          once: true,
+        })
+        // But DON'T let runPhaseWithRetry settle the row — resolve on a later tick so
+        // the scheduler's abort branch runs first while the row is still `running`.
+      })
+    const { ctx, runId } = makeCtx(pid, runPhase, { abort })
+    await runScheduler(ctx)
+    expect(statusByKey(runId, pid).a).toBe("cancelled")
+  })
+
+  it("does NOT terminally cancel an in-flight phase on a resumable (shutdown) abort (plan 038.3)", async () => {
+    // Regression for the resume-corruption bug: quitting (SHUTDOWN_ABORT_REASON) must
+    // leave an in-flight phase-run recoverable (NOT terminal `cancelled`) so the next
+    // boot's crash-reset can resume it (crash-reset only resets running/ready).
+    const pid = buildProcess({ phases: [{ key: "a" }] })
+    const abort = new AbortController()
+    const runPhase: RunPhase = ({ signal }) =>
+      new Promise((resolve) => {
+        abort.abort(SHUTDOWN_ABORT_REASON)
+        signal.addEventListener("abort", () => resolve({ stopped: true }), {
+          once: true,
+        })
+      })
+    const { ctx, runId } = makeCtx(pid, runPhase, { abort })
+    await runScheduler(ctx)
+    // Left recoverable — the abort branch skipped settling on a resumable abort.
+    expect(statusByKey(runId, pid).a).not.toBe("cancelled")
   })
 })
 
@@ -1565,6 +1609,187 @@ describe.skipIf(!sqliteLoads)(
         plan: "completed",
         review: "completed",
       })
+    })
+  }
+)
+
+describe.skipIf(!sqliteLoads)(
+  "scheduler — combined fan-out + sub-process phase (plan 038.3)",
+  () => {
+    // A phase with BOTH fan_out and subprocess_id: it decomposes into N sub-tasks,
+    // and each CHILD runs the sub-process (never a worker), seeded with the child's
+    // briefing as subtaskPrompt.
+    const buildCombined = (): { pid: string; subId: string } => {
+      const sub = buildProcess({ phases: [{ key: "inner" }] })
+      const pid = buildProcess({
+        phases: [{ key: "c", fanOut: true, subprocessId: sub }, { key: "d" }],
+        edges: [["c", "d"]],
+      })
+      return { pid, subId: sub }
+    }
+
+    it("decomposes then runs the sub-process per child (never a worker)", async () => {
+      const { pid } = buildCombined()
+      const decompose: Decompose = async () => ({
+        subtasks: ["piece 1", "piece 2", "piece 3"],
+      })
+      const ranWorker: string[] = []
+      const ranSubPrompts: string[] = []
+      const runPhase: RunPhase = async ({ phase }) => {
+        ranWorker.push(phase.key)
+        return { content: phase.key }
+      }
+      const runSubProcess: RunSubProcess = async ({ subtaskPrompt }) => {
+        ranSubPrompts.push(subtaskPrompt ?? "(none)")
+        return { content: "nested done" }
+      }
+      const { ctx, runId } = makeCtx(pid, runPhase, {
+        decompose,
+        runSubProcess,
+      })
+      await runScheduler(ctx)
+      // Each child ran through the sub-process, carrying its briefing; the only
+      // worker to run was the downstream phase d.
+      expect(ranSubPrompts.sort()).toEqual(["piece 1", "piece 2", "piece 3"])
+      expect(ranWorker).toEqual(["d"])
+      const cRuns = runsForKey(runId, pid, "c")
+      const children = cRuns.filter((r) => r.parentId !== null)
+      const parent = cRuns.find((r) => r.parentId === null)!
+      expect(children).toHaveLength(3)
+      expect(children.every((r) => r.status === "completed")).toBe(true)
+      expect(parent.status).toBe("completed")
+      expect(statusByKey(runId, pid).d).toBe("completed")
+    })
+
+    it("fails the parent when a per-child sub-process fails", async () => {
+      const { pid } = buildCombined()
+      const decompose: Decompose = async () => ({ subtasks: ["ok", "boom"] })
+      const runPhase: RunPhase = async ({ phase }) => ({ content: phase.key })
+      const runSubProcess: RunSubProcess = async ({ subtaskPrompt }) => {
+        if (subtaskPrompt === "boom")
+          return { error: "nested run failed", retryable: false }
+        return { content: "ok" }
+      }
+      const { ctx, runId } = makeCtx(pid, runPhase, {
+        decompose,
+        runSubProcess,
+      })
+      await expect(runScheduler(ctx)).rejects.toThrow(/failed/)
+      const parent = runsForKey(runId, pid, "c").find(
+        (r) => r.parentId === null
+      )!
+      expect(parent.status).toBe("failed")
+      expect(statusByKey(runId, pid).d).toBe("pending") // dependent never ran
+    })
+
+    it("resumes without re-decomposing: pending sub-process children re-dispatch", async () => {
+      const { pid } = buildCombined()
+      const graph = processes.getProcessGraph(pid)!
+      const cPhase = graph.phases.find((p) => p.key === "c")!
+
+      // Simulate a crash after decompose: parent running, two children pending.
+      const taskId = freshTask()
+      const run = processes.createProcessRun({
+        processId: pid,
+        sourceConversationId: null,
+        taskId,
+        objective: "obj",
+        status: "running",
+      })
+      const parent = processes.createPhaseRun({
+        runId: run.id,
+        phaseId: cPhase.id,
+        status: "running",
+      })
+      const child1 = processes.createPhaseRun({
+        runId: run.id,
+        phaseId: cPhase.id,
+        parentId: parent.id,
+        status: "pending",
+      })
+      const child2 = processes.createPhaseRun({
+        runId: run.id,
+        phaseId: cPhase.id,
+        parentId: parent.id,
+        status: "pending",
+      })
+      const { createCheckpoint } =
+        await import("../../db/repositories/task-checkpoints")
+      createCheckpoint({
+        taskId,
+        label: `fanout:${parent.id}`,
+        state: {
+          parentPhaseRunId: parent.id,
+          subtasks: [
+            { phaseRunId: child1.id, prompt: "resumed 1" },
+            { phaseRunId: child2.id, prompt: "resumed 2" },
+          ],
+        },
+      })
+
+      let decomposeCalls = 0
+      const decompose: Decompose = async () => {
+        decomposeCalls++
+        return { subtasks: ["should-not-happen"] }
+      }
+      const ranWorker: string[] = []
+      const runPhase: RunPhase = async ({ phase }) => {
+        ranWorker.push(phase.key)
+        return { content: phase.key }
+      }
+      const ranSubPrompts: string[] = []
+      const runSubProcess: RunSubProcess = async ({ subtaskPrompt }) => {
+        ranSubPrompts.push(subtaskPrompt ?? "(none)")
+        return { content: "nested" }
+      }
+
+      await runScheduler({
+        run: processes.getProcessRun(run.id)!,
+        graph,
+        taskId,
+        signal: new AbortController().signal,
+        emit: () => {},
+        runPhase,
+        decompose,
+        runSubProcess,
+      })
+
+      expect(decomposeCalls).toBe(0) // never re-decomposed
+      // The two children re-dispatched through the sub-process (not a worker).
+      expect(ranSubPrompts.sort()).toEqual(["resumed 1", "resumed 2"])
+      expect(ranWorker).toEqual(["d"]) // only the downstream worker ran
+      expect(processes.getPhaseRun(parent.id)!.status).toBe("completed")
+    })
+  }
+)
+
+describe.skipIf(!sqliteLoads)(
+  "scheduler — sub-process depth cap (plan 038.1/038.3)",
+  () => {
+    it("fails a sub-process phase when processDepth is at the cap", async () => {
+      // The runtime backstop lives in the service's makeRunSubProcess; here we
+      // assert the scheduler threads processDepth into the injected runSubProcess,
+      // and that a runner enforcing the cap fails the phase (non-retryable).
+      const sub = buildProcess({ phases: [{ key: "inner" }] })
+      const pid = buildProcess({ phases: [{ key: "a", subprocessId: sub }] })
+      const seenDepths: number[] = []
+      const runPhase: RunPhase = async ({ phase }) => ({ content: phase.key })
+      const runSubProcess: RunSubProcess = async ({ depth }) => {
+        seenDepths.push(depth)
+        if (depth >= MAX_PROCESS_DEPTH)
+          return {
+            error: `max sub-process depth (${MAX_PROCESS_DEPTH}) reached`,
+            retryable: false,
+          }
+        return { content: "nested" }
+      }
+      const { ctx, runId } = makeCtx(pid, runPhase, {
+        runSubProcess,
+        processDepth: MAX_PROCESS_DEPTH,
+      })
+      await expect(runScheduler(ctx)).rejects.toThrow(/failed/)
+      expect(seenDepths).toEqual([MAX_PROCESS_DEPTH])
+      expect(statusByKey(runId, pid).a).toBe("failed")
     })
   }
 )

@@ -32,7 +32,28 @@ const reviewReplies: string[] = []
 // test simulate a phase (incl. one inside a sub-process) failing then recovering on
 // restart (plan 038.2). Entries are consumed on first match.
 const failOnce: string[] = []
+// A fan-out decompose worker's scripted replies (plan 025.1/038.3): each JSON-array
+// string is one decomposition. Empty → the mock's default two-sub-task split.
+const decomposeReplies: string[] = []
+// Substrings that, when seen in a worker's userMessage, abort the shared run signal
+// (plan 038.3) — simulates a quit/cancel mid-run. Each entry carries the reason so a
+// test can exercise the resumable (shutdown) vs terminal (cancel) branches.
+const abortOnMessage: Array<{ match: string; reason?: symbol }> = []
+let runAbort: AbortController | null = null
+// A stable SHUTDOWN_ABORT_REASON identity. service.ts imports it from the leaf
+// `../../agent/abort` (mocked below with this same hoisted sentinel), so its
+// `signal.reason === SHUTDOWN_ABORT_REASON` check matches what the test aborts with.
+const { SHUTDOWN_ABORT_REASON, PAUSE_ABORT_REASON } = vi.hoisted(() => ({
+  SHUTDOWN_ABORT_REASON: Symbol("agent:shutdown"),
+  PAUSE_ABORT_REASON: Symbol("task:pause"),
+}))
+vi.mock("../../agent/abort", () => ({
+  SHUTDOWN_ABORT_REASON,
+  PAUSE_ABORT_REASON,
+}))
 vi.mock("../../agent", () => ({
+  SHUTDOWN_ABORT_REASON,
+  generateTitle: async () => "Title",
   runAgentLoop: async (input: {
     conversationId: string
     userMessage?: string
@@ -44,14 +65,28 @@ vi.mock("../../agent", () => ({
       suppressUserQuestions: input.suppressUserQuestions,
     })
     const msg = input.userMessage ?? ""
+    const abortIdx = abortOnMessage.findIndex((a) => msg.includes(a.match))
+    if (abortIdx !== -1) {
+      const { reason } = abortOnMessage.splice(abortIdx, 1)[0]
+      runAbort?.abort(reason)
+      return { stopped: true }
+    }
     const failIdx = failOnce.findIndex((s) => msg.includes(s))
     if (failIdx !== -1) {
       failOnce.splice(failIdx, 1)
       return { error: "boom", retryable: false }
     }
     const isReview = msg.startsWith("# Review the")
-    const content =
-      isReview && reviewReplies.length ? reviewReplies.shift()! : "done"
+    // A fan-out decomposition worker (plan 025.1) is asked to reply with ONLY a
+    // JSON array of sub-task briefings. `decomposeReplies` lets a test script the
+    // split; the default is two sub-tasks so a fan-out phase spawns children.
+    const isDecompose = msg.startsWith("# Process phase (fan-out):")
+    const content = isDecompose
+      ? (decomposeReplies.shift() ??
+        JSON.stringify(["sub-task 1", "sub-task 2"]))
+      : isReview && reviewReplies.length
+        ? reviewReplies.shift()!
+        : "done"
     // Give the worker a final assistant message (its "output").
     db.prepare(
       "INSERT INTO messages (id, conversation_id, seq, role, content, created_at) VALUES (?, ?, ?, 'assistant', ?, ?)"
@@ -120,6 +155,9 @@ beforeEach(() => {
   loopCalls.length = 0
   reviewReplies.length = 0
   failOnce.length = 0
+  decomposeReplies.length = 0
+  abortOnMessage.length = 0
+  runAbort = null
   nextReply = ""
   for (const k of Object.keys(descriptions)) delete descriptions[k]
 })
@@ -629,6 +667,139 @@ describe.skipIf(!sqliteLoads)(
       expect(updated?.status).toBe("running")
       expect(resumed).toEqual([task.taskId])
       expect(loopCalls.length).toBe(before) // requestChanges itself runs no worker
+    })
+
+    it("runs a sub-process PER fan-out child and feeds each nested run's output downstream (plan 038.3)", async () => {
+      // A combined fan-out + sub-process phase `impl` → `ship`. impl decomposes into
+      // two sub-tasks; each child runs the `Sub` definition as its own nested run
+      // (linked by that child's phase-run id), and ship's kickoff digests both.
+      const sub = processes.createProcessDefinition({ name: "Sub" })
+      processes.createPhase({
+        processId: sub.id,
+        key: "inner",
+        name: "Inner",
+        position: 0,
+      })
+      const parent = processes.createProcessDefinition({ name: "Parent" })
+      const impl = processes.createPhase({
+        processId: parent.id,
+        key: "impl",
+        name: "Implement",
+        fanOut: true,
+        subprocessId: sub.id,
+        position: 0,
+      })
+      const ship = processes.createPhase({
+        processId: parent.id,
+        key: "ship",
+        name: "Ship",
+        position: 1,
+      })
+      processes.createEdge({
+        processId: parent.id,
+        fromPhaseId: impl.id,
+        toPhaseId: ship.id,
+      })
+      decomposeReplies.push(JSON.stringify(["build the api", "build the ui"]))
+
+      const { taskId } = seedTaskRow()
+      const run = processes.createProcessRun({
+        processId: parent.id,
+        sourceConversationId: null,
+        taskId,
+        objective: "obj",
+        status: "running",
+      })
+      const svc = new ProcessService(fakeRunner)
+      const result = await svc.execute({
+        task: { id: taskId, input: { processRunId: run.id } } as never,
+        signal: new AbortController().signal,
+        emit: () => {},
+        workspace: undefined,
+      })
+      expect((result as { content?: string }).content).toBe("process complete")
+
+      // The fan-out parent completed with two children, each having spawned its OWN
+      // nested run (keyed by the child's distinct phase-run id).
+      const implParent = processes
+        .listPhaseRuns({ runId: run.id, parentId: null })
+        .find((pr) => pr.phaseId === impl.id)!
+      expect(implParent.status).toBe("completed")
+      const children = processes.listPhaseRuns({
+        runId: run.id,
+        parentId: implParent.id,
+      })
+      expect(children).toHaveLength(2)
+      for (const child of children) {
+        const nested = processes.getProcessRunByParentPhaseRunId(child.id)!
+        expect(nested).toBeDefined()
+        expect(nested.processId).toBe(sub.id)
+        expect(nested.parentPhaseRunId).toBe(child.id)
+        expect(nested.status).toBe("completed")
+      }
+      // Each child's nested run was seeded with that child's decomposed briefing.
+      const objectives = children
+        .map((c) => processes.getProcessRunByParentPhaseRunId(c.id)!.objective)
+        .sort()
+      expect(objectives).toEqual(["build the api", "build the ui"])
+      // The whole run completed (ship ran after impl's children all finished).
+      expect(processes.getProcessRun(run.id)!.status).toBe("completed")
+      // ship's kickoff digested the Implement phase (its per-child aggregate).
+      const kickoff = loopCalls.map((c) => c.userMessage ?? "").join("\n")
+      expect(kickoff).toMatch(/Implement/)
+    })
+
+    it("does NOT mark a run completed when a shutdown abort lands mid-run (plan 038.3)", async () => {
+      // Regression for the observed corruption: quitting mid-run left the top-level
+      // run `completed` while a phase was cancelled and a downstream phase pending.
+      // A SHUTDOWN abort must leave the run recoverable — never `completed`.
+      const { parentId } = buildParentWithSub()
+      const { taskId } = seedTaskRow()
+      const run = processes.createProcessRun({
+        processId: parentId,
+        sourceConversationId: null,
+        taskId,
+        objective: "obj",
+        status: "running",
+      })
+      runAbort = new AbortController()
+      // The sub-process's inner phase aborts the whole run (a quit) mid-flight.
+      abortOnMessage.push({ match: "Inner", reason: SHUTDOWN_ABORT_REASON })
+      const svc = new ProcessService(fakeRunner)
+      const result = await svc.execute({
+        task: { id: taskId, input: { processRunId: run.id } } as never,
+        signal: runAbort.signal,
+        emit: () => {},
+        workspace: undefined,
+      })
+      // Resumable → paused (durable), and the run is NOT completed/cancelled.
+      expect("paused" in result && result.paused).toBe(true)
+      expect(processes.getProcessRun(run.id)!.status).not.toBe("completed")
+      expect(processes.getProcessRun(run.id)!.status).not.toBe("cancelled")
+    })
+
+    it("marks a run cancelled on a genuine user cancel mid-run (plan 038.3)", async () => {
+      const { parentId } = buildParentWithSub()
+      const { taskId } = seedTaskRow()
+      const run = processes.createProcessRun({
+        processId: parentId,
+        sourceConversationId: null,
+        taskId,
+        objective: "obj",
+        status: "running",
+      })
+      runAbort = new AbortController()
+      // A plain abort (no reason) inside the nested run — a genuine user cancel.
+      abortOnMessage.push({ match: "Inner" })
+      const svc = new ProcessService(fakeRunner)
+      const result = await svc.execute({
+        task: { id: taskId, input: { processRunId: run.id } } as never,
+        signal: runAbort.signal,
+        emit: () => {},
+        workspace: undefined,
+      })
+      expect("stopped" in result && result.stopped).toBe(true)
+      expect(processes.getProcessRun(run.id)!.status).toBe("cancelled")
     })
   }
 )

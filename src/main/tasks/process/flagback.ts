@@ -9,6 +9,7 @@ import {
 import {
   FANOUT_CHECKPOINT_LABEL,
   EACH_SUBTASK_CHECKPOINT_LABEL,
+  SUBPROCESS_CHECKPOINT_LABEL,
   type FanoutCheckpointState,
 } from "./checkpoints"
 import { MAX_PROCESS_DEPTH } from "./scheduler"
@@ -243,15 +244,26 @@ export function isContainer(graph: ProcessGraph, phaseId: string): boolean {
 
 // Delete every fanout:/eachsubtask: checkpoint row for a container's top-level run
 // so the scheduler re-decomposes / re-triggers it clean (it rebuilds
-// decomposedParents/triggeredPairs from these on entry).
+// decomposedParents/triggeredPairs from these on entry). `childPhaseRunIds` are the
+// container's child rows about to be deleted (plan 038.3): a per-fan-out-child
+// sub-process wrote a subprocess:<childRunId> accelerator checkpoint per child, so
+// clear those too or a re-decomposed container would re-attach to stale nested runs.
 function clearContainerCheckpoints(
   taskId: string,
-  containerRunId: string
+  containerRunId: string,
+  childPhaseRunIds: string[] = []
 ): void {
   const fanoutLabel = FANOUT_CHECKPOINT_LABEL(containerRunId)
   const eachLabel = EACH_SUBTASK_CHECKPOINT_LABEL(containerRunId)
+  const subprocessLabels = new Set(
+    childPhaseRunIds.map((id) => SUBPROCESS_CHECKPOINT_LABEL(id))
+  )
   for (const cp of listCheckpoints(taskId))
-    if (cp.label === fanoutLabel || cp.label === eachLabel)
+    if (
+      cp.label === fanoutLabel ||
+      cp.label === eachLabel ||
+      (cp.label !== null && subprocessLabels.has(cp.label))
+    )
       deleteCheckpoint(cp.id)
 }
 
@@ -263,12 +275,16 @@ export function resetContainerWhole(
   containerRun: ProcessPhaseRun,
   reworkNote: string | null
 ): void {
-  for (const child of processes.listPhaseRuns({
+  const children = processes.listPhaseRuns({
     runId,
     parentId: containerRun.id,
-  }))
-    processes.deletePhaseRun(child.id)
-  clearContainerCheckpoints(taskId, containerRun.id)
+  })
+  for (const child of children) processes.deletePhaseRun(child.id)
+  clearContainerCheckpoints(
+    taskId,
+    containerRun.id,
+    children.map((c) => c.id)
+  )
   processes.updatePhaseRun(containerRun.id, {
     ...toPending,
     reworkNote,

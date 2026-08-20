@@ -68,7 +68,7 @@ describe.skipIf(!sqliteLoads)("v15 migration", () => {
   })
 
   it("reaches the latest user_version", () => {
-    expect(db.pragma("user_version", { simple: true })).toBe(26)
+    expect(db.pragma("user_version", { simple: true })).toBe(27)
   })
 
   it("adds the v24 subprocess_id column to process_phases", () => {
@@ -120,8 +120,18 @@ describe.skipIf(!sqliteLoads)("process definitions", () => {
 
   it("cascades phases, agents, and edges on delete", () => {
     const def = createProcessDefinition({ name: "P" })
-    const a = createPhase({ processId: def.id, key: "a", name: "A", position: 0 })
-    const b = createPhase({ processId: def.id, key: "b", name: "B", position: 1 })
+    const a = createPhase({
+      processId: def.id,
+      key: "a",
+      name: "A",
+      position: 0,
+    })
+    const b = createPhase({
+      processId: def.id,
+      key: "b",
+      name: "B",
+      position: 1,
+    })
     createPhaseAgent({ phaseId: a.id, agentName: "coder", position: 0 })
     createEdge({ processId: def.id, fromPhaseId: a.id, toPhaseId: b.id })
 
@@ -146,7 +156,12 @@ describe.skipIf(!sqliteLoads)("phases + agents", () => {
 
   it("updatePhase writes routing/gate/fanOut", () => {
     const def = createProcessDefinition({ name: "P" })
-    const p = createPhase({ processId: def.id, key: "a", name: "A", position: 0 })
+    const p = createPhase({
+      processId: def.id,
+      key: "a",
+      name: "A",
+      position: 0,
+    })
     updatePhase(p.id, {
       routing: "dispatch",
       gatePolicy: "approve",
@@ -160,7 +175,12 @@ describe.skipIf(!sqliteLoads)("phases + agents", () => {
 
   it("agent skills/tools are tri-state: null vs [] vs [list]", () => {
     const def = createProcessDefinition({ name: "P" })
-    const p = createPhase({ processId: def.id, key: "a", name: "A", position: 0 })
+    const p = createPhase({
+      processId: def.id,
+      key: "a",
+      name: "A",
+      position: 0,
+    })
     createPhaseAgent({ phaseId: p.id, agentName: "own", position: 0 }) // null
     createPhaseAgent({
       phaseId: p.id,
@@ -189,8 +209,18 @@ describe.skipIf(!sqliteLoads)("phases + agents", () => {
 describe.skipIf(!sqliteLoads)("edges + graph", () => {
   it("getProcessGraph assembles definition, phases, agents, edges", () => {
     const def = createProcessDefinition({ name: "P" })
-    const a = createPhase({ processId: def.id, key: "a", name: "A", position: 0 })
-    const b = createPhase({ processId: def.id, key: "b", name: "B", position: 1 })
+    const a = createPhase({
+      processId: def.id,
+      key: "a",
+      name: "A",
+      position: 0,
+    })
+    const b = createPhase({
+      processId: def.id,
+      key: "b",
+      name: "B",
+      position: 1,
+    })
     createPhaseAgent({ phaseId: a.id, agentName: "coder", position: 0 })
     const edge = createEdge({
       processId: def.id,
@@ -209,9 +239,23 @@ describe.skipIf(!sqliteLoads)("edges + graph", () => {
 
   it("edges default to on_complete", () => {
     const def = createProcessDefinition({ name: "P" })
-    const a = createPhase({ processId: def.id, key: "a", name: "A", position: 0 })
-    const b = createPhase({ processId: def.id, key: "b", name: "B", position: 1 })
-    const edge = createEdge({ processId: def.id, fromPhaseId: a.id, toPhaseId: b.id })
+    const a = createPhase({
+      processId: def.id,
+      key: "a",
+      name: "A",
+      position: 0,
+    })
+    const b = createPhase({
+      processId: def.id,
+      key: "b",
+      name: "B",
+      position: 1,
+    })
+    const edge = createEdge({
+      processId: def.id,
+      fromPhaseId: a.id,
+      toPhaseId: b.id,
+    })
     expect(edge.trigger).toBe("on_complete")
   })
 })
@@ -336,20 +380,22 @@ describe.skipIf(!sqliteLoads)("sub-processes (plan 038.1)", () => {
     expect(getPhase(phase.id)!.subprocessId).toBeNull()
   })
 
-  it("rejects a phase that is both fan-out and a sub-process", () => {
+  it("allows a phase that is both fan-out and a sub-process (plan 038.3)", () => {
+    // Relaxed in 038.3: a combined phase decomposes into N sub-tasks and runs the
+    // sub-process once per child instead of a single worker.
     const parent = createProcessDefinition({ name: "Parent" })
     const sub = createProcessDefinition({ name: "Sub" })
-    expect(() =>
-      createPhase({
-        processId: parent.id,
-        key: "impl",
-        name: "Implement",
-        fanOut: true,
-        subprocessId: sub.id,
-        position: 0,
-      })
-    ).toThrow(/both fan-out and a sub-process/)
-    // Also on update: a fan-out phase can't gain a subprocess_id.
+    const combined = createPhase({
+      processId: parent.id,
+      key: "impl",
+      name: "Implement",
+      fanOut: true,
+      subprocessId: sub.id,
+      position: 0,
+    })
+    expect(combined.fanOut).toBe(true)
+    expect(combined.subprocessId).toBe(sub.id)
+    // Also on update: a fan-out phase can gain a subprocess_id.
     const fan = createPhase({
       processId: parent.id,
       key: "fan",
@@ -357,9 +403,22 @@ describe.skipIf(!sqliteLoads)("sub-processes (plan 038.1)", () => {
       fanOut: true,
       position: 1,
     })
-    expect(() => updatePhase(fan.id, { subprocessId: sub.id })).toThrow(
-      /both fan-out and a sub-process/
-    )
+    updatePhase(fan.id, { subprocessId: sub.id })
+    expect(getPhase(fan.id)?.subprocessId).toBe(sub.id)
+  })
+
+  it("still rejects a cyclic sub-process even when fan-out is set (plan 038.3)", () => {
+    const def = createProcessDefinition({ name: "SelfFan" })
+    expect(() =>
+      createPhase({
+        processId: def.id,
+        key: "a",
+        name: "A",
+        fanOut: true,
+        subprocessId: def.id,
+        position: 0,
+      })
+    ).toThrow(/cycle/)
   })
 
   it("rejects a self-referential sub-process (cycle)", () => {

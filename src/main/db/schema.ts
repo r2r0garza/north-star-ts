@@ -684,9 +684,12 @@ CREATE INDEX idx_process_flags_run ON process_flags(run_id);
 // v24 (plan 038.1 — sub-processes): a phase can run ANOTHER process definition as
 // a nested run.
 //   - process_phases.subprocess_id: the referenced definition a sub-process phase
-//     runs. A phase is EITHER an agent phase (pool + routing / fan-out) OR a
-//     sub-process phase (subprocess_id set) — mutually exclusive, validated in the
-//     repo layer (the V15 bare-TEXT ruling; no CHECK-rebuild). ON DELETE SET NULL:
+//     runs. Originally mutually exclusive with fan-out; RELAXED in plan 038.3 —
+//     a phase may set BOTH, meaning it fans out into N sub-tasks and runs the
+//     sub-process once per child (seeded with that child's briefing) instead of a
+//     worker. Sub-process alone = one nested run; fan-out alone = a worker per
+//     child. Validated in the repo layer (the V15 bare-TEXT ruling; no
+//     CHECK-rebuild — only the acyclicity guard remains). ON DELETE SET NULL:
 //     deleting a referenced definition leaves the phase orphaned (its dispatch then
 //     fails loudly at run time) rather than cascading the parent definition away.
 //   - process_runs.parent_phase_run_id: a NESTED run's caller. NULL for a top-level

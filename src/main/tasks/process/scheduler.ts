@@ -11,7 +11,9 @@ import {
   EACH_SUBTASK_CHECKPOINT_LABEL,
   type FanoutCheckpointState,
   type EachSubtaskCheckpointState,
+  type SubprocessCheckpointState,
 } from "./checkpoints"
+import { SHUTDOWN_ABORT_REASON, PAUSE_ABORT_REASON } from "../../agent/abort"
 import type { TaskEventPayload } from "../runner"
 import type {
   ProcessFlag,
@@ -111,6 +113,14 @@ export type RunSubProcess = (input: {
   phaseRun: ProcessPhaseRun
   phase: ProcessPhase
   depth: number
+  // Present when this sub-process runs per fan-out child (plan 038.3): the child's
+  // decomposed briefing, which seeds the nested run's objective. Absent for a
+  // top-level (non-fan-out) sub-process phase, which inherits the parent run's objective.
+  subtaskPrompt?: string
+  // The nested run id recovered from a `subprocess:` checkpoint, if any (plan 038.3).
+  // An ACCELERATOR — the runner prefers it over the parent_phase_run_id FK query,
+  // falling back to the FK (the correctness path) when absent.
+  existingChildRunId?: string
   signal: AbortSignal
 }) => Promise<PhaseResult>
 
@@ -273,6 +283,10 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
   // per label — take the LATEST (listCheckpoints returns created_at ASC).
   const childPrompts = new Map<string, string>() // childRunId → sub-task prompt
   const decomposedParents = new Set<string>() // parent phase-run ids seen fanned
+  // parentPhaseRunId → nested childRunId (plan 038.3). An ACCELERATOR for resume:
+  // makeRunSubProcess consults this to skip the getProcessRunByParentPhaseRunId FK
+  // query. Not load-bearing — the FK re-attach remains the correctness path.
+  const nestedRunByPhaseRun = new Map<string, string>()
   // Which (sourceChildRunId → consumerPhaseId) pairs already spawned an instance,
   // so an each-subtask trigger is idempotent across re-evaluation and resume (025.2).
   const triggeredPairs = new Set<string>()
@@ -299,6 +313,12 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
         triggeredPairs.add(
           triggeredKey(state.sourceChildRunId, instance.phaseId)
         )
+    } else if (cp.label?.startsWith("subprocess:")) {
+      // Sub-process nested-run mapping (plan 038.3). Latest-wins (a whole-reset
+      // that re-creates the nested run writes a fresh row).
+      const state = cp.state as SubprocessCheckpointState
+      if (state?.parentPhaseRunId && state.childRunId)
+        nestedRunByPhaseRun.set(state.parentPhaseRunId, state.childRunId)
     }
   }
 
@@ -638,6 +658,9 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
   // Dispatch a fan-out CHILD (plan 025.1). Keyed by the child's OWN run id — must
   // NOT go through dispatch()/runByPhaseId, which resolve to the parent (children
   // share the parent's phaseId). The child runs its stored sub-task briefing.
+  // For a combined fan-out + sub-process phase (plan 038.3) each child runs the
+  // sub-process as its own nested run (seeded with the child's briefing) instead
+  // of a worker — mirroring the ready-set fork below.
   const dispatchChild = (childRun: ProcessPhaseRun): void => {
     const phase = phasesById.get(childRun.phaseId)
     if (!phase) return
@@ -655,9 +678,11 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
       parentId: childRun.parentId,
     })
     const prompt = childPrompts.get(childRun.id)
-    const promise = runPhaseWithRetry(phase, childRun, prompt).then(
-      () => childRun.id
-    )
+    const promise = (
+      phase.subprocessId
+        ? runSubProcessWithRetry(phase, childRun, prompt)
+        : runPhaseWithRetry(phase, childRun, prompt)
+    ).then(() => childRun.id)
     inFlight.set(childRun.id, promise)
   }
 
@@ -866,11 +891,7 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
         signal: ctx.signal,
       })
       if (result.stopped || ctx.signal.aborted) {
-        processes.updatePhaseRun(parentRun.id, {
-          status: "cancelled",
-          finishedAt: Date.now(),
-        })
-        emitPhase(phase, parentRun.id, "cancelled")
+        settleStoppedPhaseRun(phase, parentRun.id)
         return
       }
       const subtasks = result.subtasks ?? []
@@ -1030,11 +1051,7 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
         signal: ctx.signal,
       })
       if (result.stopped || ctx.signal.aborted) {
-        processes.updatePhaseRun(phaseRun.id, {
-          status: "cancelled",
-          finishedAt: Date.now(),
-        })
-        emitPhase(phase, phaseRun.id, "cancelled")
+        settleStoppedPhaseRun(phase, phaseRun.id)
         return
       }
       if (result.error) {
@@ -1063,11 +1080,7 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
           signal: ctx.signal,
         })
         if (verdict.stopped || ctx.signal.aborted) {
-          processes.updatePhaseRun(phaseRun.id, {
-            status: "cancelled",
-            finishedAt: Date.now(),
-          })
-          emitPhase(phase, phaseRun.id, "cancelled")
+          settleStoppedPhaseRun(phase, phaseRun.id)
           return
         }
         // A non-approval verdict (`error` means the reviewer worker itself broke)
@@ -1117,15 +1130,18 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
 
   // Settle a SUB-PROCESS phase (plan 038.1) off its nested run's outcome. A trimmed
   // runPhaseWithRetry: NO validator (a sub-process's own phases carry their own
-  // validators — the parent phase just aggregates), NO subtaskPrompt, and NO retry
-  // (re-driving the same child run is deterministic — the idempotent seed never
-  // resets a failed frontier, so recovery is parent-level restartRun, plan 038.2).
+  // validators — the parent phase just aggregates) and NO retry (re-driving the
+  // same child run is deterministic — the idempotent seed never resets a failed
+  // frontier, so recovery is parent-level restartRun, plan 038.2). `subtaskPrompt`
+  // is set when the sub-process runs per fan-out child (plan 038.3), seeding the
+  // nested run's objective; absent for a top-level sub-process phase.
   // A GateBlockedError from inside the nested run propagates uncaught (the whole run
   // pauses on the shared task). Absent runner → fail loudly (mirrors the no-decomposer
   // guard) so a mis-wired engine never silently completes a sub-process phase.
   const runSubProcessWithRetry = async (
     phase: ProcessPhase,
-    phaseRun: ProcessPhaseRun
+    phaseRun: ProcessPhaseRun,
+    subtaskPrompt?: string
   ): Promise<void> => {
     if (!ctx.runSubProcess) {
       processes.updatePhaseRun(phaseRun.id, {
@@ -1140,14 +1156,12 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
       phaseRun,
       phase,
       depth: ctx.processDepth ?? 0,
+      subtaskPrompt,
+      existingChildRunId: nestedRunByPhaseRun.get(phaseRun.id),
       signal: ctx.signal,
     })
     if (result.stopped || ctx.signal.aborted) {
-      processes.updatePhaseRun(phaseRun.id, {
-        status: "cancelled",
-        finishedAt: Date.now(),
-      })
-      emitPhase(phase, phaseRun.id, "cancelled")
+      settleStoppedPhaseRun(phase, phaseRun.id)
       return
     }
     if (result.error) {
@@ -1183,25 +1197,64 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
     })
   }
 
+  // Whether the current abort is RESUMABLE (app quit / pause) vs a genuine user
+  // cancel (plan 038.3). A resumable abort must NOT settle in-flight phase-runs to
+  // terminal `cancelled` — that would strand them (crash-reset only resets
+  // running/ready), leaving a run that can never complete on resume.
+  const resumableAbort = (): boolean =>
+    ctx.signal.reason === SHUTDOWN_ABORT_REASON ||
+    ctx.signal.reason === PAUSE_ABORT_REASON
+
+  // Settle a phase-run whose worker returned `stopped` (or observed the abort). On a
+  // genuine cancel → terminal `cancelled`. On a resumable abort → leave it as-is
+  // (`running`), so crash-reset resumes it on the next boot (plan 038.3).
+  const settleStoppedPhaseRun = (
+    phase: ProcessPhase,
+    phaseRunId: string
+  ): void => {
+    if (resumableAbort()) return
+    processes.updatePhaseRun(phaseRunId, {
+      status: "cancelled",
+      finishedAt: Date.now(),
+    })
+    emitPhase(phase, phaseRunId, "cancelled")
+  }
+
   // ── the walk ──────────────────────────────────────────────────────────────
   while (true) {
     if (ctx.signal.aborted) {
-      // Cancellation: in-flight phase workers observe the same signal and unwind
-      // themselves; just stop scheduling. The service maps this to `stopped`.
-      // A CONTAINER's status isn't owned by any in-flight promise (a fan-out
-      // parent's decompose already resolved; an each-subtask consumer is derived),
-      // so settle non-terminal containers to cancelled here so the DAG isn't left
-      // with a dangling `running` container (plan 025.1/025.2).
-      for (const phase of graph.phases) {
-        if (!isContainer(phase)) continue
-        const pr = runByPhaseId.get(phase.id)!
-        const status = processes.getPhaseRun(pr.id)?.status
-        if (status === "running" || status === "pending") {
+      // The signal aborted: stop scheduling. HOW we settle phase-runs depends on
+      // WHY (plan 038.3 — a quit used to permanently `cancel` in-flight phases):
+      //   • SHUTDOWN (app quit) / PAUSE — RESUMABLE. Leave non-terminal phase-runs as
+      //     they are; the next boot's reconcile flips the task interrupted→queued and
+      //     the crash-reset resets `running`→`pending` so the run resumes where it
+      //     left off. Settling them terminal-`cancelled` here would strand them (the
+      //     crash-reset only resets running/ready, never cancelled) → a run that can
+      //     never complete.
+      //   • A genuine user CANCEL (plain abort, no reason) — TERMINAL. Settle every
+      //     non-terminal phase-run of THIS run to cancelled so the DAG isn't left with
+      //     a dangling `running`/`pending` row. Covers a CONTAINER (status not owned by
+      //     any in-flight promise) AND a plain phase-run whose worker / nested
+      //     sub-process run was mid-flight (the nested run's own scheduler settles its
+      //     rows; this run's phase-run row is settled here).
+      if (!resumableAbort()) {
+        for (const pr of processes.listPhaseRuns({ runId: run.id })) {
+          const phase = phasesById.get(pr.phaseId)
+          // Settle any RUNNING phase-run — a plain worker / nested sub-process (plan
+          // 038.3) or a container — plus a still-PENDING container (its status isn't
+          // owned by an in-flight promise). A never-started plain `pending` phase is
+          // left as-is (unchanged behavior: it simply never ran).
+          const isContainerRow =
+            pr.parentId === null && phase !== undefined && isContainer(phase)
+          const settle =
+            pr.status === "running" ||
+            (pr.status === "pending" && isContainerRow)
+          if (!settle) continue
           processes.updatePhaseRun(pr.id, {
             status: "cancelled",
             finishedAt: Date.now(),
           })
-          emitPhase(phase, pr.id, "cancelled")
+          if (phase) emitPhase(phase, pr.id, "cancelled")
         }
       }
       return
@@ -1253,14 +1306,16 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
     const flagPending =
       processes.listFlags({ runId: run.id, status: "pending" }).length > 0
 
-    // Dispatch ready phases up to the per-run pool budget. A fan-out phase whose
-    // deps are satisfied runs its decomposition pass first (dispatchDecompose);
-    // a normal phase runs directly.
+    // Dispatch ready phases up to the per-run pool budget. Fan-out is checked
+    // FIRST (plan 038.3): a combined fan-out + sub-process phase decomposes at the
+    // parent, then each child dispatches the sub-process (dispatchChild forks). A
+    // pure sub-process phase (no fan-out) runs one nested run directly; a normal
+    // phase runs a worker directly.
     if (!flagPending)
       for (const phase of ready) {
         if (inFlight.size >= PER_RUN_CONCURRENCY) break
-        if (phase.subprocessId) dispatchSubProcess(phase)
-        else if (phase.fanOut) dispatchDecompose(phase)
+        if (phase.fanOut) dispatchDecompose(phase)
+        else if (phase.subprocessId) dispatchSubProcess(phase)
         else dispatch(phase)
       }
 
