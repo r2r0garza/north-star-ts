@@ -61,11 +61,18 @@ function makeRunner(): {
   return { runner, enqueued }
 }
 
-// Run the executor against a synthetic task carrying { dashboardId }.
-async function runExecute(service: DashboardService, dashboardId: string) {
+// Run the executor against a synthetic task carrying { dashboardId, maxAgeMs }.
+async function runExecute(
+  service: DashboardService,
+  dashboardId: string,
+  maxAgeMs = 0
+) {
   const signal = new AbortController().signal
   return service.execute({
-    task: { id: "t1", input: { kind: DASHBOARD_REFRESH_KIND, dashboardId } } as Task,
+    task: {
+      id: "t1",
+      input: { kind: DASHBOARD_REFRESH_KIND, dashboardId, maxAgeMs },
+    } as Task,
     signal,
     emit: () => {},
     workspace: undefined,
@@ -191,6 +198,39 @@ describe.skipIf(!sqliteLoads)("DashboardService.execute", () => {
     expect(result.content).toContain("refreshed 0/1")
     // Its data survives unchanged.
     expect(dashboards.getWidgetData(widget.id)?.data).toEqual([{ n: 5 }])
+  })
+
+  it("skips a fresh widget when maxAgeMs is set (on-open throttle)", async () => {
+    const { runner } = makeRunner()
+    const service = new DashboardService(runner)
+    const dash = dashboards.createDashboard({ name: "D" })
+    const cmd = "cat metrics.json"
+    const widget = dashboards.createWidget({
+      dashboardId: dash.id,
+      title: "M",
+      type: "table",
+      recipe: { command: cmd, cwd: "/repo" },
+    })
+    addRule({
+      tool: "run_shell_tool",
+      kind: "shell",
+      identity: normalizeCommand(cmd),
+      scope: "workspace",
+      workspacePath: "/repo",
+    })
+    // Seed fresh `ok` data (fetched_at = now).
+    dashboards.upsertWidgetData({ widgetId: widget.id, data: [{ a: 1 }], status: "ok" })
+    execStdout = JSON.stringify([{ a: 999 }]) // would overwrite if it ran
+
+    // With a generous staleness window, the fresh widget is skipped — no re-run.
+    await runExecute(service, dash.id, 60_000)
+    expect(execCalls).toEqual([])
+    expect(dashboards.getWidgetData(widget.id)?.data).toEqual([{ a: 1 }])
+
+    // A forced refresh (maxAgeMs = 0) re-runs it.
+    await runExecute(service, dash.id, 0)
+    expect(execCalls).toEqual([cmd])
+    expect(dashboards.getWidgetData(widget.id)?.data).toEqual([{ a: 999 }])
   })
 
   it("returns an error for a missing dashboardId / unknown dashboard", async () => {

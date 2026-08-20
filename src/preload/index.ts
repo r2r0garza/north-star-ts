@@ -1136,10 +1136,14 @@ const api = {
   // the dashboard-specific kickoffs. Each returns the refresh task id (or null).
   dashboard: {
     // Re-fetch every widget by replaying its stored recipe (no LLM). Idempotent.
-    refresh: (dashboardId: string) =>
-      ipcRenderer.invoke("dashboard:refresh", dashboardId) as Promise<
-        string | null
-      >,
+    // maxAgeMs > 0 skips widgets whose cached data is still fresh (on-open path);
+    // omitted forces a full re-run (the manual Refresh button).
+    refresh: (dashboardId: string, maxAgeMs?: number) =>
+      ipcRenderer.invoke(
+        "dashboard:refresh",
+        dashboardId,
+        maxAgeMs
+      ) as Promise<string | null>,
     // Bless a widget's recipe (writes a durable allowlist grant), then refresh.
     // Resolves { ok, taskId } or { ok: false, reason } so the UI can explain a
     // recipe that can't be blessed (e.g. a shell command with no captured cwd).

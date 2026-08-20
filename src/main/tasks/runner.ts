@@ -173,7 +173,9 @@ interface TaskInput {
   priority?: "low" | "high"
   // Per-kind config for the dashboard_refresh executor (033.3): which dashboard
   // to re-fetch. Each widget's recipe carries its own cwd, so no workspace here.
+  // maxAgeMs > 0 (on-open) skips widgets whose cached data is still fresh.
   dashboardId?: string
+  maxAgeMs?: number
 }
 
 function kindOf(task: Task): string {

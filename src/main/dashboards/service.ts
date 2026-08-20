@@ -2,6 +2,7 @@ import {
   listWidgets,
   upsertWidgetData,
   getWidget,
+  getWidgetData,
   getDashboard,
 } from "../db/repositories/dashboards"
 import { listTasks } from "../db/repositories/tasks"
@@ -111,11 +112,18 @@ export class DashboardService {
   // The executor the runner invokes for the `dashboard_refresh` kind. Registered
   // at app init: runner.registerKind(DASHBOARD_REFRESH_KIND, { run, ... }).
   readonly execute: TaskExecutor = async ({ task, signal, emit }) => {
-    const input = task.input as { dashboardId?: string } | null
+    const input = task.input as {
+      dashboardId?: string
+      maxAgeMs?: number
+    } | null
     const dashboardId = input?.dashboardId
     if (!dashboardId)
       return { error: "dashboard_refresh task missing dashboardId" }
     if (!getDashboard(dashboardId)) return { error: "dashboard not found" }
+    // On-open refresh passes maxAgeMs so a widget whose cached data is still
+    // fresh is skipped (no re-running its command/fetch on every glance). The
+    // manual Refresh button omits it → force a full re-run.
+    const maxAgeMs = typeof input?.maxAgeMs === "number" ? input.maxAgeMs : 0
 
     const widgets = listWidgets(dashboardId)
     const envConfig = settingsService.getExecutionConfig()
@@ -140,7 +148,13 @@ export class DashboardService {
     try {
       for (const widget of widgets) {
         if (signal.aborted) throw new AbortedError()
-        const result = await this.refreshWidget(widget, envConfig, signal, getEnv)
+        const result = await this.refreshWidget(
+          widget,
+          envConfig,
+          signal,
+          getEnv,
+          maxAgeMs
+        )
         if (result.kind === "ok") refreshed++
         done++
         emit({
@@ -167,10 +181,25 @@ export class DashboardService {
     widget: DashboardWidget,
     envConfig: EnvConfig,
     signal: AbortSignal,
-    getEnv: (cwd: string) => Promise<Environment>
+    getEnv: (cwd: string) => Promise<Environment>,
+    maxAgeMs: number
   ): Promise<WidgetOutcome> {
     const recipe = asRecipe(widget.recipe)
     if (!recipe) return { kind: "skip" } // manually-authored widget: leave its data
+
+    // Staleness throttle (on-open refresh): if the cached data is still `ok` and
+    // younger than maxAgeMs, skip the re-run. maxAgeMs = 0 (manual Refresh) always
+    // re-runs.
+    if (maxAgeMs > 0) {
+      const cached = getWidgetData(widget.id)
+      if (
+        cached &&
+        cached.status === "ok" &&
+        Date.now() - cached.fetchedAt < maxAgeMs
+      ) {
+        return { kind: "skip" }
+      }
+    }
 
     const action = actionFor(recipe)
     if (!action) {
@@ -264,13 +293,15 @@ export class DashboardService {
 
   // Ensure a dashboard has a live/queued refresh task. Idempotent: no-op if a
   // refresh for this dashboard is already in flight. Mirrors ensureRunning.
-  ensureRefresh(dashboardId: string): Task | null {
+  // maxAgeMs > 0 (the on-open path) skips widgets whose cached data is still
+  // fresh; 0/omitted (the manual Refresh button) forces a full re-run.
+  ensureRefresh(dashboardId: string, maxAgeMs = 0): Task | null {
     if (!getDashboard(dashboardId)) return null
     if (this.hasLiveTask(dashboardId)) return null
     return this.runner.enqueueKind({
       kind: DASHBOARD_REFRESH_KIND,
       title: "Refreshing dashboard",
-      input: { dashboardId },
+      input: { dashboardId, maxAgeMs },
     })
   }
 

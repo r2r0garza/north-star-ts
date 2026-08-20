@@ -69,6 +69,11 @@ const ResponsiveGrid = WidthProvider(GridLayout)
 const GRID_COLS = 12
 const ROW_HEIGHT = 40
 
+// On opening a dashboard, only auto-refresh widgets whose cached data is older
+// than this. Rapidly switching between dashboards won't re-run their recipes; the
+// manual Refresh button always forces a full re-run (maxAgeMs = 0).
+const ON_OPEN_MAX_AGE_MS = 60_000
+
 // A palette for chart series — CSS vars would be ideal, but a small fixed set
 // reads fine in both themes and keeps a manually-authored widget zero-config.
 const SERIES_COLORS = [
@@ -401,12 +406,15 @@ export function DashboardsScreen({ onClose }: { onClose: () => void }) {
 
   // Kick off the deterministic refresh executor (plan 033.3) — it replays each
   // widget's stored recipe (no LLM) into the cache — then re-read the graph when
-  // the task settles. Silent = true for the automatic on-open refresh (no toast).
+  // the task settles. Silent = the automatic on-open refresh (no toast + a
+  // staleness window so switching between dashboards doesn't re-run every recipe
+  // on each glance; the manual button forces a full re-run).
   const runRefresh = useCallback(
     async (id: string, opts?: { silent?: boolean }) => {
       setRefreshing(true)
       try {
-        const taskId = await window.cowork.dashboard.refresh(id)
+        const maxAgeMs = opts?.silent ? ON_OPEN_MAX_AGE_MS : 0
+        const taskId = await window.cowork.dashboard.refresh(id, maxAgeMs)
         // Null → nothing to refresh (no recipes) or a refresh was already live;
         // just re-read what's cached.
         if (taskId) await waitForTask(taskId)

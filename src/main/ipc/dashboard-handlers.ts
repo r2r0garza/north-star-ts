@@ -14,10 +14,13 @@ export function registerDashboardHandlers(
   // Idempotent: a no-op if a refresh for this dashboard is already in flight.
   // Returns the task id (or null when nothing was enqueued) so the renderer can
   // follow it on the task tail.
-  ipcMain.handle("dashboard:refresh", (_e, dashboardId: string) => {
-    const task = service.ensureRefresh(dashboardId)
-    return task ? task.id : null
-  })
+  ipcMain.handle(
+    "dashboard:refresh",
+    (_e, dashboardId: string, maxAgeMs?: number) => {
+      const task = service.ensureRefresh(dashboardId, maxAgeMs ?? 0)
+      return task ? task.id : null
+    }
+  )
 
   // Bless a widget's recipe so subsequent unattended refreshes are authorized:
   // writes a durable action_allowlist rule keyed by the reconstructed identity

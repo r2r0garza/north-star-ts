@@ -32,6 +32,11 @@ import { applyThemeCss } from "@/lib/theme"
 import { cn } from "@/lib/utils"
 import App from "./App"
 
+// Deterministic infrastructure task kinds that repaint their own UI in place and
+// run automatically (on open / poll), so a completion OS-notification would just
+// be noise. Excluded from the background-task notification handler below.
+const SILENT_TASK_KINDS = new Set(["dashboard_refresh", "workspace_index"])
+
 // Tracks window fullscreen state so the sidebar toggle can reposition (the
 // macOS traffic lights disappear in fullscreen, freeing the left edge).
 function Shell() {
@@ -185,6 +190,12 @@ function Shell() {
         .get(payload.taskId)
         .then((task) => {
           if (!task) return
+          // Deterministic infrastructure kinds update their own UI surface in
+          // place (a dashboard refresh repaints its widgets; an index updates the
+          // strip) and run on open / poll — notifying on each would spam. Never
+          // OS-notify for them, regardless of source.
+          const taskKind = (task.input as { kind?: string } | null)?.kind
+          if (taskKind && SILENT_TASK_KINDS.has(taskKind)) return
           // Source-less tasks are infrastructure with their own UI surface
           // (workspace_index) — born sourceConversationId=null by design. They're
           // not user-facing background work, so don't notify about them.
