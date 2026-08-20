@@ -21,6 +21,7 @@ import {
 import {
   FANOUT_CHECKPOINT_LABEL,
   EACH_SUBTASK_CHECKPOINT_LABEL,
+  SUBPROCESS_CHECKPOINT_LABEL,
 } from "./checkpoints"
 import {
   ancestorsOf,
@@ -28,6 +29,7 @@ import {
   descendantChildRuns,
   resolveTarget,
   applyFlagBack,
+  resetContainerWhole,
   resetRunRecursive,
 } from "./flagback"
 import type { ProcessGraph } from "../../db/types"
@@ -640,6 +642,64 @@ describe.skipIf(!sqliteLoads)(
         })
       ).not.toThrow()
       expect(processes.getPhaseRun(s.implRunId)!.status).toBe("running")
+    })
+  }
+)
+
+describe.skipIf(!sqliteLoads)(
+  "flagback — clearContainerCheckpoints (plan 038.3)",
+  () => {
+    it("resetContainerWhole clears each per-child subprocess: checkpoint", () => {
+      // A combined fan-out + sub-process container with two children, each having
+      // written a subprocess:<childRunId> accelerator checkpoint. A whole reset must
+      // delete those rows too (else a re-decomposed container re-attaches to stale
+      // nested runs).
+      const pid = buildProcess({ phases: [{ key: "c", fanOut: true }] })
+      const taskId = freshTask()
+      const run = processes.createProcessRun({
+        processId: pid,
+        sourceConversationId: null,
+        taskId,
+        objective: "o",
+        status: "running",
+      })
+      const container = processes.createPhaseRun({
+        runId: run.id,
+        phaseId: phaseId(pid, "c"),
+        status: "running",
+      })
+      const child1 = processes.createPhaseRun({
+        runId: run.id,
+        phaseId: phaseId(pid, "c"),
+        parentId: container.id,
+        status: "completed",
+      })
+      const child2 = processes.createPhaseRun({
+        runId: run.id,
+        phaseId: phaseId(pid, "c"),
+        parentId: container.id,
+        status: "completed",
+      })
+      createCheckpoint({
+        taskId,
+        label: FANOUT_CHECKPOINT_LABEL(container.id),
+        state: { parentPhaseRunId: container.id, subtasks: [] },
+      })
+      for (const child of [child1, child2])
+        createCheckpoint({
+          taskId,
+          label: SUBPROCESS_CHECKPOINT_LABEL(child.id),
+          state: { parentPhaseRunId: child.id, childRunId: randomUUID() },
+        })
+
+      resetContainerWhole(taskId, run.id, container, "re-plan")
+
+      // Children gone; container pending; fanout: + both subprocess: rows cleared.
+      expect(processes.getPhaseRun(child1.id)).toBeUndefined()
+      expect(processes.getPhaseRun(child2.id)).toBeUndefined()
+      expect(processes.getPhaseRun(container.id)!.status).toBe("pending")
+      const remaining = listCheckpoints(taskId)
+      expect(remaining).toHaveLength(0)
     })
   }
 )

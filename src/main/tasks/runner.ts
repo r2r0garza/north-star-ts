@@ -1,9 +1,5 @@
-import {
-  runAgentLoop,
-  SHUTDOWN_ABORT_REASON,
-  type ChatEvent,
-  type ChatResult,
-} from "../agent"
+import { runAgentLoop, type ChatEvent, type ChatResult } from "../agent"
+import { SHUTDOWN_ABORT_REASON, PAUSE_ABORT_REASON } from "../agent/abort"
 import {
   createTask,
   getTask,
@@ -25,12 +21,7 @@ import {
 } from "../db/repositories/conversations"
 import { getWorkspace } from "../db/repositories/workspaces"
 import { replaceTodos } from "../db/repositories/todos"
-import type {
-  PhaseRunStatus,
-  Task,
-  TaskStatus,
-  TodoStatus,
-} from "../db/types"
+import type { PhaseRunStatus, Task, TaskStatus, TodoStatus } from "../db/types"
 
 // Runner-emitted lifecycle events, appended to task_events alongside the agent's
 // ChatEvents so a (re)attaching renderer can reconstruct a task's progress from
@@ -149,10 +140,10 @@ export interface TaskKindCapability {
 // auto-resume via registerKind() at app init.
 const DEFAULT_KIND = "agent_chat"
 
-// Abort reason for a deliberate pause (plan 008). Distinct from a plain
-// cancel/stop so runOne can map the resulting {stopped} to `paused` (a durable
-// resume state) rather than `cancelled` (terminal). Mirrors SHUTDOWN_ABORT_REASON.
-export const PAUSE_ABORT_REASON = Symbol("task:pause")
+// PAUSE_ABORT_REASON (plan 008) is defined in the leaf `agent/abort` module (no
+// heavy imports) and imported above; re-exported here for back-compat. New callers
+// should import from `agent/abort` directly to avoid the runner-barrel cycle.
+export { PAUSE_ABORT_REASON }
 
 // A task's input blob carries its kind and the user message to run. Stored as
 // JSON on tasks.input by enqueue; read back on resume.
@@ -845,11 +836,23 @@ export class TaskRunner {
         })
       }
 
-      // A pause aborts the executor with PAUSE_ABORT_REASON: settle to `paused`
-      // (a durable resume state), not `cancelled`. Deterministic executors also
-      // signal it explicitly via {paused:true} so the mapping doesn't depend on
-      // the abort reason surviving.
-      if (
+      // A SHUTDOWN abort (app will-quit) must NOT settle the task terminally: leave
+      // the DB row `running` so the next boot's reconcile flips it (interrupted, or
+      // queued for an auto-resume kind) and it resumes where it left off. A fast
+      // deterministic executor (e.g. process_run) can resolve runOne BEFORE the
+      // process exits, so without this guard its {stopped}/{paused} return would
+      // settle the row terminal (cancelled/paused) and defeat auto-resume (plan
+      // 038.3 — a quit mid-run left the process_run task stuck `paused`, never
+      // resuming). The agent path tolerates this only because a shutdown usually
+      // kills the process before runOne returns.
+      if (abort.signal.reason === SHUTDOWN_ABORT_REASON) {
+        this.attempts.delete(taskId)
+        // Leave the status `running`; reconcile owns the transition on next boot.
+      } else if (
+        // A pause aborts the executor with PAUSE_ABORT_REASON: settle to `paused`
+        // (a durable resume state), not `cancelled`. Deterministic executors also
+        // signal it explicitly via {paused:true} so the mapping doesn't depend on
+        // the abort reason surviving.
         ("paused" in result && result.paused) ||
         abort.signal.reason === PAUSE_ABORT_REASON
       ) {

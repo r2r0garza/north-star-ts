@@ -7,19 +7,7 @@ item is its plan file, not its rank.
 
 ## Next up
 
-1. **`038.3` — Sub-processes: per-fan-out-child invocation + checkpoint-accelerated resume.** The two
-   sub-tasks deferred out of `038.2` (the recovery cluster — deep restart, child-internal gates,
-   request-changes — shipped, see Done). **Per-fan-out-child sub-process invocation** — a sub-process run
-   *per* fan-out sub-task (the `025.2` granularity): today `dispatchSubProcess` and `dispatchChild` are
-   mutually-exclusive dispatch paths (a phase is fan-out XOR sub-process, `assertSubprocessValid`), so a
-   fan-out child always runs a worker; running a sub-process per child needs a `phase.subprocessId ?
-   runSubProcess : runPhase` fork inside `dispatchChild` + a per-child `parentPhaseRunId` link (each
-   child's own run id, already compatible). **Checkpoint-accelerated resume** — a `subprocess:<parentRunId>`
-   checkpoint: the durable `parent_phase_run_id` FK re-attach (`038.1`) already makes resume correct;
-   this only accelerates re-derivation (nested runs currently write `frontier`/`fanout:`/`eachsubtask:`
-   rows under the shared `taskId`, recovered via the FK look-up-or-create). Lower priority — pure
-   optimization, no correctness gap.
-2. **`039` — Inspectable agent-to-agent messaging. ⚠️ DESIGN-PENDING.** One phase-agent (B) **asks
+1. **`039` — Inspectable agent-to-agent messaging. ⚠️ DESIGN-PENDING.** One phase-agent (B) **asks
    another phase-agent (A) a question**, answered **from A's own context** — distinct from
    `spawn_subagent` (a fresh, context-less child). The `025` engine makes each phase-run's **worker
    conversation** addressable (`makeRunPhase` stamps a `taskId`/conversation per phase-run), so a gated
@@ -31,7 +19,7 @@ item is its plan file, not its rank.
    context, no mid-flight race); same-run targets only. Monitor renders the A↔B thread off a
    `process_phase`-style event (no new channel). **Likely splits:** `039.1` completed-target round-trip
    + storage + monitor; `039.2` asking a running agent (queued) + richer targeting. Open Qs above.
-3. **`037` — Process import / export.** Unlike `035`/`036` (files already on disk → import-only), a
+2. **`037` — Process import / export.** Unlike `035`/`036` (files already on disk → import-only), a
    Process lives **only in the DB** (`025` tables), so it needs an explicit **serialize ⇄ deserialize**
    to be shareable — the sharing use case you called out. **JSON** interchange (`ProcessExport`,
    `formatVersion`-guarded): **id-free**, edges reference phases by **`key`** (unique per process) so
@@ -45,7 +33,7 @@ item is its plan file, not its rank.
    builder affordances. **Ordered after `038`** so the format carries a phase's `subprocess_id` — a
    sub-process reference exports **by definition identity** (name/a stable ref), and import resolves or
    flags a missing referenced sub-process (like `037`'s missing-agent warning).
-4. **`034` — CLI-agent providers (Claude Code / Codex / Copilot).** Three new **provider kinds** that
+3. **`034` — CLI-agent providers (Claude Code / Codex / Copilot).** Three new **provider kinds** that
    aren't LLM-API accounts but local **agentic CLIs** driven as subprocesses (`claude -p`,
    `codex exec`, `copilot -p`) — each *is* the agent (own loop + tools + approvals, editing files
    **in the project dir**). Selecting one **routes turns away from `runAgentLoop`** to a new subprocess
@@ -66,7 +54,7 @@ item is its plan file, not its rank.
    `034.3` Codex (extract-then-resume). Open Qs: default auto-posture permissiveness (lean
    workspace-write/edits-allowed); streaming fidelity (text-first; Copilot JSONL fields unverified);
    out-of-band CLI auth. Independent of the Process cluster / dashboards.
-5. **`032` — Process visual canvas.** The explicitly-deferred half of `026` (which shipped the
+4. **`032` — Process visual canvas.** The explicitly-deferred half of `026` (which shipped the
    **list-based** DAG builder and recorded a **visual node/edge canvas** as "later"). Renderer-first +
    one additive migration; **no engine/scheduling/routing change**. Phases become draggable **nodes**,
    dependencies **edges** drawn between handles (same `on_complete`/`on_each_subtask` trigger, same
@@ -80,26 +68,26 @@ item is its plan file, not its rank.
    toggle vs replace (lean **coexist**). The Radix-`Dialog` takeover means the inspector keeps
    `NativeSelect` (the `023`/`026` `pointer-events:none` finding). **Live-run-on-canvas deferred** — v1
    keeps the `026` nested-list monitor. Independent of `029`/`031`.
-6. **`020` — Durable memories.** The cross-conversation memories section `014` reserved: small,
+5. **`020` — Durable memories.** The cross-conversation memories section `014` reserved: small,
    persisted facts the agent writes (a **gated, explicit** `remember` tool — no silent profiling)
    and that inject into future turns, **scoped** global / workspace / conversation (mirrors the
    `action_allowlist` scoping). New `memories` table + a list/delete surface (durable +
    cross-conversation ⇒ must be auditable/revocable); a `memoriesSection` renderer with an injection
    cap. Split out of `014` Q2.
-7. **`010` — Container runtime profiles.** Decouple Workspace (the files) from Runtime (the env a
+6. **`010` — Container runtime profiles.** Decouple Workspace (the files) from Runtime (the env a
    tool call executes in). Replace the raw container `image` string with a named **profile**
    (`node` | `python` | `fullstack`), resolved to an image in the env factory; default/fallback =
    `fullstack` (Node + Python) so a Node repo that later adds a Python backend doesn't wedge.
    One profile per conversation, user-overridable in settings. Kills the "one workspace = one image
    forever" assumption **without** building auto-routing or image management (both deferred). Small
    refactor of `env/factory.ts` + `container.ts` + execution settings (JSON blob — no migration).
-8. **`005.1` — ContainerEnvironment stop in-flight.** The deferred half of `005`: killing the host
+7. **`005.1` — ContainerEnvironment stop in-flight.** The deferred half of `005`: killing the host
    `docker/podman exec` client doesn't stop the in-container process. Needs its own kill mechanism
    (in-container PID tracking / `exec kill`, or marker `pkill`). Out of scope when `005` shipped.
-9. **`007` — Slash commands for skills.** Let users force a skill with `/skill-name …` (pre-inject
+8. **`007` — Slash commands for skills.** Let users force a skill with `/skill-name …` (pre-inject
    the `read_skill` call), keeping today's model-discretionary path for plain messages. Adds a
    `skills:list` IPC channel + composer autocomplete. Independent — schedule freely.
-10. **`018` — Agentic goal mode. ⚠️ SUPERSEDED by `025`** (the general Process engine — 018's fixed
+9. **`018` — Agentic goal mode. ⚠️ SUPERSEDED by `025`** (the general Process engine — 018's fixed
    pipeline becomes one built-in Process *template*; kept as a stable-ID file per convention, not
    built as its own orchestrator). An opt-in **execution mode** (orthogonal to chat/interactive/
    north_star): `simple` (today's one-pass behavior, default) vs `goal` (bounded **plan → execute →
@@ -113,7 +101,7 @@ item is its plan file, not its rank.
    PR (`/goal <request>` — reuses `007`'s composer slash-command affordance — + a "Run with review
    loop" button); the Always/Ask/Manual/Off **setting is deferred** to its own plan. Placed by `007`
    since both add `/`-command composer UI.
-11. **`024` — Index filesystem/git watcher.** The "live file watching" follow-up `008` deferred (and
+10. **`024` — Index filesystem/git watcher.** The "live file watching" follow-up `008` deferred (and
    `014` re-deferred). Today the workspace index — and the compact summary `buildIndexSummary`
    injects into the system prompt on every message send — only refreshes when `IndexService.
    ensureRunning` is called, which fires on conversation create/update or manual Start/Rebuild;
@@ -130,6 +118,54 @@ item is its plan file, not its rank.
 
 ## Done
 
+- **`038.3` — Sub-processes: per-fan-out-child invocation + checkpoint-accelerated resume (+ a
+  quit-mid-run resume-corruption fix).** Built on `feat/subprocess-per-child` (off `main`; not yet
+  merged). Closes the two sub-tasks deferred out of `038.2`. **(1) Per-fan-out-child sub-process
+  invocation** — a phase may now be **both** fan-out AND sub-process: it decomposes into N sub-tasks and
+  runs the sub-process **once per child** (each child's briefing seeds that nested run's `objective`)
+  instead of a single worker. **No migration** — the `parent_phase_run_id` FK (`038.1`) already allows
+  one nested run per phase-run, and each fan-out child has a distinct phase-run id. The mutual-exclusivity
+  guard in `assertSubprocessValid` (`processes.ts`) was relaxed (fan-out + sub-process now legal; the
+  acyclicity check stays); the scheduler's ready-set dispatch precedence flipped so **fan-out wins at the
+  parent** (decompose), and `dispatchChild` gained a `phase.subprocessId ? runSubProcessWithRetry :
+  runPhaseWithRetry` fork; `RunSubProcess` gained a `subtaskPrompt`; `makeRunSubProcess` seeds the nested
+  run's objective from it; `aggregateChildContent` + `collectUpstream` unwrap a sub-process child's output
+  from its nested run (a container source is aggregated per-child, checked before the pure-sub-process
+  branch). **Builder UI** (`process-screen.tsx`): the Fan-out and Sub-process toggles now combine (the
+  pool stays visible for the decompose pass); the monitor renders **each fan-out child's own nested run**
+  (top-level + recursive `SubProcessNestedRun`), a container parent no longer renders an empty nested
+  block. **(2) Checkpoint-accelerated resume** — a new `subprocess:<parentPhaseRunId>` checkpoint
+  (`checkpoints.ts`) records the parent-phase-run→nested-run mapping so resume skips the FK query; the FK
+  re-attach remains the correctness path (the checkpoint is a pure accelerator). `clearContainerCheckpoints`
+  (`flagback.ts`) clears per-child `subprocess:` rows on a whole-container reset. **(3) Quit-mid-run
+  resume-corruption fix (found in live E2E — a real bug).** A run quit mid-flight came back **`completed`**
+  with a `cancelled` phase and a `pending` phase, plus a nested phase stuck `running`. Two causes, both
+  pre-existing but surfaced by the per-child nesting: (a) `driveRun`/`execute` stamped the run `completed`
+  on any clean scheduler return, even under an aborted signal — now they check `signal.aborted` first;
+  (b) the scheduler's abort branch + the four per-phase settle sites (`runPhaseWithRetry`,
+  `runSubProcessWithRetry`, `runDecomposeWithRetry`, validator) cancelled in-flight phases **terminally**
+  on *any* abort, but crash-reset only resets `running`/`ready` — so a **shutdown** (app quit) abort
+  permanently stranded them. Fixed by distinguishing a **resumable** abort (`SHUTDOWN_ABORT_REASON` /
+  `PAUSE_ABORT_REASON`) from a genuine user cancel: a resumable abort leaves in-flight phase-runs intact
+  (shared `settleStoppedPhaseRun`/`resumableAbort` helpers), and the **runner** now leaves a task
+  `running` on a shutdown abort (skipping the terminal settle) so the next boot's reconcile auto-resumes
+  it — a fast deterministic executor could otherwise settle it `paused`/`cancelled` before process exit
+  (the observed stuck-`paused` process_run). The two abort-reason `Symbol`s moved to a leaf
+  `agent/abort.ts` (re-exported from `agent/index.ts` + `tasks/runner.ts` for back-compat) to avoid the
+  import cycle the scheduler's new dependency on them would otherwise close through the tool graph.
+  Verified: `pnpm typecheck` + `pnpm build` clean (the 3 residual errors — `open.test.ts`,
+  `service.test.ts`/`runner.test.ts` `createPhaseRun`/`createTask({error})` — are **pre-existing on
+  `main`** and unrelated); new tests — `processes.test.ts` (combined phase allowed + cyclic-still-rejected,
+  replacing the old mutual-exclusion reject), `scheduler.test.ts` (**+4**: combined decompose→per-child
+  sub-process, failed child fails parent, resume-without-re-decompose, `MAX_PROCESS_DEPTH` cap; plus 2
+  cancel/shutdown-abort regressions), `service.test.ts` (**+3**: full-executor per-child nested runs +
+  seeded objectives + downstream digest, shutdown-abort not-completed, cancel→cancelled), `flagback.test.ts`
+  (**+1**: `subprocess:` checkpoint cleared on whole-reset), `runner.test.ts` (**+1**: shutdown abort
+  leaves a deterministic task `running` for reconcile). **Full suite 809 pass** on a node-ABI
+  `better-sqlite3` rebuild, Electron ABI restored after (the 1 flaky `env/local.test.ts` SIGKILL timing
+  test passes in isolation). Stale latest-`user_version` assertions bumped 26 → 27 (×5 — a v27 migration
+  had shipped without bumping them; unrelated to this change). **Live-verified** by the user (per-child
+  sub-processes execute; quit-mid-run then reopen resumes correctly on the fresh code). **Completes `038`.**
 - **`033.3` — Live dashboards: deterministic refresh executor.** Built on `feat/live-dashboards` (off
   `main`; not yet merged). Makes the **Refresh** button actually re-fetch: a new `dashboard_refresh`
   deterministic durable task kind (`DashboardService`, modeled on `IndexService`) that **replays each

@@ -217,7 +217,9 @@ export function getProcessDefinition(
 
 export function listProcessDefinitions(): ProcessDefinition[] {
   const rows = getDb()
-    .prepare("SELECT * FROM process_definitions ORDER BY name COLLATE NOCASE ASC")
+    .prepare(
+      "SELECT * FROM process_definitions ORDER BY name COLLATE NOCASE ASC"
+    )
     .all() as ProcessDefinitionRow[]
   return rows.map(toDefinition)
 }
@@ -248,9 +250,7 @@ export function updateProcessDefinition(
     sets.push("updated_at = ?")
     values.push(Date.now(), id)
     getDb()
-      .prepare(
-        `UPDATE process_definitions SET ${sets.join(", ")} WHERE id = ?`
-      )
+      .prepare(`UPDATE process_definitions SET ${sets.join(", ")} WHERE id = ?`)
       .run(...values)
   }
   return getProcessDefinition(id)!
@@ -301,19 +301,20 @@ export function wouldCloseSubprocessCycle(
   return false
 }
 
-// Validate a phase's would-be sub-process/fan-out configuration before a write:
-// the two are mutually exclusive (a phase runs EITHER a nested process OR fans
-// out to agent workers), and a sub-process reference must not close a cycle.
-// Throws on violation (the repo is the single chokepoint — both createPhase and
-// updatePhase route through it, so direct repo callers are covered too).
+// Validate a phase's would-be sub-process reference before a write: it must not
+// close a cycle. Fan-out + sub-process are NO LONGER mutually exclusive (plan
+// 038.3): a phase with both set decomposes into N sub-tasks and runs the
+// sub-process once PER child (seeded with that child's briefing) instead of a
+// single worker; fan-out alone runs a worker per child; sub-process alone runs
+// one nested run. Throws on violation (the repo is the single chokepoint — both
+// createPhase and updatePhase route through it, so direct repo callers are
+// covered too).
 function assertSubprocessValid(
   ownerProcessId: string,
   subprocessId: string | null | undefined,
-  fanOut: boolean | undefined
+  _fanOut: boolean | undefined
 ): void {
   if (!subprocessId) return
-  if (fanOut)
-    throw new Error("a phase cannot be both fan-out and a sub-process")
   if (wouldCloseSubprocessCycle(ownerProcessId, subprocessId))
     throw new Error("sub-process would create a cycle")
 }

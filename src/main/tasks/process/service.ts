@@ -1,4 +1,5 @@
 import { runAgentLoop, generateTitle } from "../../agent"
+import { SHUTDOWN_ABORT_REASON, PAUSE_ABORT_REASON } from "../../agent/abort"
 import {
   createConversation,
   getConversation,
@@ -9,6 +10,11 @@ import { getWorkspace, upsertWorkspace } from "../../db/repositories/workspaces"
 import * as processes from "../../db/repositories/processes"
 import { listApprovals, resolveApproval } from "../../db/repositories/approvals"
 import { getDb } from "../../db/connection"
+import { createCheckpoint } from "../../db/repositories/task-checkpoints"
+import {
+  SUBPROCESS_CHECKPOINT_LABEL,
+  type SubprocessCheckpointState,
+} from "./checkpoints"
 import type { TaskRunner, TaskExecutor } from "../runner"
 import type { LlmSelection } from "../../agent/providers"
 import { route } from "./router"
@@ -56,6 +62,35 @@ export const PROCESS_RUN_KIND = "process_run"
 // executor finds its run on first run AND on autoResume after a crash.
 interface ProcessRunInput {
   processRunId?: string
+}
+
+// Settle an aborted run's status by WHY it aborted (plan 038.3). A SHUTDOWN (app
+// quit) or PAUSE abort is RESUMABLE — leave the run `running` so the next boot's
+// reconcile flips it interrupted→queued and the scheduler resumes (the phase-runs
+// are likewise left untouched by the scheduler's resumable-abort branch). Only a
+// genuine user CANCEL (plain abort, no reason) is terminal → `cancelled`.
+function isResumableAbort(signal: AbortSignal): boolean {
+  return (
+    signal.reason === SHUTDOWN_ABORT_REASON ||
+    signal.reason === PAUSE_ABORT_REASON
+  )
+}
+
+function settleAbortedRun(runId: string, signal: AbortSignal): void {
+  if (isResumableAbort(signal)) return
+  processes.updateProcessRun(runId, {
+    status: "cancelled",
+    finishedAt: Date.now(),
+  })
+}
+
+// Map an aborted executor to a runner result by WHY it aborted (plan 038.3): a
+// resumable SHUTDOWN/PAUSE → `paused` (the runner leaves it recoverable — a
+// process_run auto-resumes), a genuine cancel → `stopped` (terminal `cancelled`).
+function abortedResult(
+  signal: AbortSignal
+): { paused: true } | { stopped: true } {
+  return isResumableAbort(signal) ? { paused: true } : { stopped: true }
 }
 
 export class ProcessService {
@@ -411,14 +446,20 @@ export class ProcessService {
         emit,
         depth: 0,
       })
+      // driveRun returns (not throws) on abort too (the scheduler stops walking), so
+      // a return under an aborted signal is NOT a completion — map it by WHY it
+      // aborted (plan 038.3): a SHUTDOWN/PAUSE is resumable → `paused` (a durable
+      // resume state; the run row is left running for reconcile), a genuine cancel →
+      // `stopped` (terminal). Mirrors driveRun's settleAbortedRun.
+      if (signal.aborted) return abortedResult(signal)
       return { content: "process complete" }
     } catch (err) {
       // An approval gate unwinds the scheduler: settle the task `paused` (durable
       // resume). The run is already waiting_for_approval (raiseGate set it). A gate
       // raised INSIDE a nested run (plan 038.1) propagates here the same way.
       if (err instanceof GateBlockedError) return { paused: true }
-      // Cancellation: the signal aborted; driveRun already set the run cancelled.
-      if (signal.aborted) return { stopped: true }
+      // Cancellation: the signal aborted; driveRun already set the run status.
+      if (signal.aborted) return abortedResult(signal)
       // Scheduling failures (a failed phase blocking the DAG) are deterministic —
       // a retry re-runs the same graph to the same wall, so don't retry. driveRun
       // already set the run failed.
@@ -475,23 +516,24 @@ export class ProcessService {
             reason: flag.reason,
           }),
       })
-      processes.updateProcessRun(run.id, {
-        status: "completed",
-        finishedAt: Date.now(),
-      })
-    } catch (err) {
-      if (err instanceof GateBlockedError) throw err
-      if (signal.aborted) {
+      // The scheduler RETURNS on abort (it stops walking), so a clean return under an
+      // aborted signal is NOT a completion — stamping `completed` here would corrupt
+      // the run (a completed run with cancelled/pending phases; plan 038.3 resume
+      // bug). Only a return with a non-aborted signal is a genuine completion.
+      if (signal.aborted) settleAbortedRun(run.id, signal)
+      else
         processes.updateProcessRun(run.id, {
-          status: "cancelled",
+          status: "completed",
           finishedAt: Date.now(),
         })
-      } else {
+    } catch (err) {
+      if (err instanceof GateBlockedError) throw err
+      if (signal.aborted) settleAbortedRun(run.id, signal)
+      else
         processes.updateProcessRun(run.id, {
           status: "failed",
           finishedAt: Date.now(),
         })
-      }
       throw err
     }
   }
@@ -507,7 +549,14 @@ export class ProcessService {
     taskId: string,
     emit: Parameters<TaskExecutor>[0]["emit"]
   ): RunSubProcess {
-    return async ({ phase, phaseRun, depth, signal }) => {
+    return async ({
+      phase,
+      phaseRun,
+      depth,
+      subtaskPrompt,
+      existingChildRunId,
+      signal,
+    }) => {
       // Runtime cycle/depth backstop: the author-time acyclicity check can't cover a
       // definition edited after a run started, so bound nesting here.
       if (depth >= MAX_PROCESS_DEPTH)
@@ -530,17 +579,37 @@ export class ProcessService {
       // Look-up-or-create the nested run linked to THIS phase-run. On crash-resume
       // the phase-run reset to `pending` and re-dispatches; re-attaching to the
       // existing child run (rather than creating a new one) lets its own scheduler
-      // resume its completed phases instead of restarting the sub-process.
-      let childRun = processes.getProcessRunByParentPhaseRunId(phaseRun.id)
+      // resume its completed phases instead of restarting the sub-process. The
+      // `subprocess:` checkpoint (plan 038.3) accelerates the re-attach; the FK
+      // look-up is the correctness fallback. For a per-fan-out-child sub-process
+      // (plan 038.3), `phaseRun` is an individual fan-out child, so each child gets
+      // its OWN nested run keyed by its distinct phase-run id.
+      let childRun =
+        (existingChildRunId
+          ? processes.getProcessRun(existingChildRunId)
+          : undefined) ?? processes.getProcessRunByParentPhaseRunId(phaseRun.id)
       if (!childRun) {
         childRun = processes.createProcessRun({
           processId: phase.subprocessId,
           sourceConversationId: parentRun.sourceConversationId,
           workspaceId: parentRun.workspaceId,
-          objective: parentRun.objective,
+          // A per-child sub-process is driven by the child's decomposed briefing;
+          // a top-level sub-process phase inherits the parent run's objective.
+          objective: subtaskPrompt ?? parentRun.objective,
           parentPhaseRunId: phaseRun.id,
           taskId,
           status: "running",
+        })
+        // Accelerator checkpoint (plan 038.3): record the mapping so resume skips
+        // the FK query. Written only on create (not on re-attach) — a fresh row per
+        // (re-)created nested run, latest-wins on recovery.
+        createCheckpoint({
+          taskId,
+          label: SUBPROCESS_CHECKPOINT_LABEL(phaseRun.id),
+          state: {
+            parentPhaseRunId: phaseRun.id,
+            childRunId: childRun.id,
+          } satisfies SubprocessCheckpointState,
         })
       }
 
@@ -989,18 +1058,22 @@ export class ProcessService {
       const src = phasesById.get(sid)
       const pr = runByPhaseId.get(sid)
       if (!src || !pr || pr.status !== "completed") continue
-      // A SUB-PROCESS source (plan 038.1) produced no worker output of its own — its
-      // work lives in the NESTED run linked by parent_phase_run_id. Aggregate that
-      // run's terminal phase outputs. A CONTAINER source's own top-level worker also
-      // produced no real output — the work lives in its children (fan-out sub-tasks
-      // (025.1) or on_each_subtask consumer instances (025.2)); aggregate them (R7).
-      // A plain phase has no children → use its own worker's last assistant message.
+      // A CONTAINER source (its own top-level worker produced no real output — the
+      // work lives in its children: fan-out sub-tasks (025.1), on_each_subtask
+      // consumer instances (025.2), or a per-child sub-process (038.3)) → aggregate
+      // the children (R7). Checked FIRST so a COMBINED fan-out + sub-process source
+      // (038.3) — where subprocessId is set but the work lives in per-child nested
+      // runs, not a nested run off the container parent — aggregates its children;
+      // aggregateChildContent detects and unwraps each sub-process child. A pure
+      // SUB-PROCESS source (038.1, no children) produced its work in the NESTED run
+      // linked by parent_phase_run_id → aggregate that run's terminal phases. A
+      // plain phase has no children → use its own worker's last assistant message.
       const hasChildren =
         processes.listPhaseRuns({ runId: run.id, parentId: pr.id }).length > 0
-      const content = src.subprocessId
-        ? this.aggregateSubProcessContent(pr.id)
-        : hasChildren
-          ? this.aggregateChildContent(run.id, pr.id)
+      const content = hasChildren
+        ? this.aggregateChildContent(run.id, pr.id)
+        : src.subprocessId
+          ? this.aggregateSubProcessContent(pr.id)
           : pr.taskId
             ? this.lastAssistantContent(pr)
             : null
@@ -1011,6 +1084,9 @@ export class ProcessService {
 
   // Concatenate the final assistant content of every child of a fan-out parent
   // phase-run, labeled by index, for a downstream phase's upstream digest (025.1).
+  // A per-fan-out-child SUB-PROCESS child (plan 038.3) has no worker message of its
+  // own — its output lives in its nested run — so pull the nested run's aggregate
+  // (mirroring collectUpstream's src.subprocessId branch).
   private aggregateChildContent(
     runId: string,
     parentPhaseRunId: string
@@ -1021,7 +1097,13 @@ export class ProcessService {
     })
     const parts: string[] = []
     children.forEach((child, i) => {
-      const content = child.taskId ? this.lastAssistantContent(child) : null
+      const isSubProcessChild =
+        processes.getProcessRunByParentPhaseRunId(child.id) !== undefined
+      const content = isSubProcessChild
+        ? this.aggregateSubProcessContent(child.id)
+        : child.taskId
+          ? this.lastAssistantContent(child)
+          : null
       if (content) parts.push(`#### Sub-task ${i + 1}\n${content.trim()}`)
     })
     return parts.length > 0 ? parts.join("\n\n") : null

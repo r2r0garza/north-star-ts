@@ -11,12 +11,17 @@ vi.mock("../db/connection", () => ({ getDb: () => db }))
 
 // Stub the agent core. Each test sets `loopImpl` to control what a "run" does:
 // emit events, return a result, or observe the options it was called with.
-// SHUTDOWN_ABORT_REASON is a real const the runner imports — re-export a stable
-// sentinel (via vi.hoisted so it exists when the hoisted mock factory runs) so
-// identity comparisons (signal.reason === SHUTDOWN_ABORT_REASON) hold across the
-// runner and the test.
-const { SHUTDOWN_ABORT_REASON } = vi.hoisted(() => ({
+// SHUTDOWN_ABORT_REASON/PAUSE_ABORT_REASON are real consts the runner imports from
+// the leaf `../agent/abort` module — re-export stable sentinels (via vi.hoisted so
+// they exist when the hoisted mock factory runs) so identity comparisons
+// (signal.reason === SHUTDOWN_ABORT_REASON) hold across the runner and the test.
+const { SHUTDOWN_ABORT_REASON, PAUSE_ABORT_REASON } = vi.hoisted(() => ({
   SHUTDOWN_ABORT_REASON: Symbol("agent:shutdown"),
+  PAUSE_ABORT_REASON: Symbol("task:pause"),
+}))
+vi.mock("../agent/abort", () => ({
+  SHUTDOWN_ABORT_REASON,
+  PAUSE_ABORT_REASON,
 }))
 let loopImpl: (opts: RunAgentLoopOptions) => Promise<ChatResult>
 const loopCalls: RunAgentLoopOptions[] = []
@@ -94,47 +99,50 @@ describe.skipIf(!sqliteLoads)("TaskRunner — reconcile on start", () => {
   })
 })
 
-describe.skipIf(!sqliteLoads)("TaskRunner — restart (retry a failed task)", () => {
-  it("re-queues and re-runs a failed task, keeping its id", async () => {
-    const conv = createConversation({ mode: "chat" })
-    const task = createTask({
-      conversationId: conv.id,
-      status: "failed",
-      error: "boom",
-      input: { kind: "agent_chat", message: "hi" },
+describe.skipIf(!sqliteLoads)(
+  "TaskRunner — restart (retry a failed task)",
+  () => {
+    it("re-queues and re-runs a failed task, keeping its id", async () => {
+      const conv = createConversation({ mode: "chat" })
+      const task = createTask({
+        conversationId: conv.id,
+        status: "failed",
+        error: "boom",
+        input: { kind: "agent_chat", message: "hi" },
+      })
+      const runner = new TaskRunner()
+      runner.start()
+      await settle()
+
+      runner.restart(task.id)
+      await settle()
+
+      // Same task id, re-run to completion.
+      expect(loopCalls).toHaveLength(1)
+      expect(getTask(task.id)?.status).toBe("completed")
+      await runner.stop()
     })
-    const runner = new TaskRunner()
-    runner.start()
-    await settle()
 
-    runner.restart(task.id)
-    await settle()
+    it("is a no-op on a non-failed task", async () => {
+      const conv = createConversation({ mode: "chat" })
+      const task = createTask({
+        conversationId: conv.id,
+        status: "completed",
+        input: { kind: "agent_chat", message: "hi" },
+      })
+      const runner = new TaskRunner()
+      runner.start()
+      await settle()
 
-    // Same task id, re-run to completion.
-    expect(loopCalls).toHaveLength(1)
-    expect(getTask(task.id)?.status).toBe("completed")
-    await runner.stop()
-  })
+      runner.restart(task.id)
+      await settle()
 
-  it("is a no-op on a non-failed task", async () => {
-    const conv = createConversation({ mode: "chat" })
-    const task = createTask({
-      conversationId: conv.id,
-      status: "completed",
-      input: { kind: "agent_chat", message: "hi" },
+      expect(loopCalls).toHaveLength(0)
+      expect(getTask(task.id)?.status).toBe("completed")
+      await runner.stop()
     })
-    const runner = new TaskRunner()
-    runner.start()
-    await settle()
-
-    runner.restart(task.id)
-    await settle()
-
-    expect(loopCalls).toHaveLength(0)
-    expect(getTask(task.id)?.status).toBe("completed")
-    await runner.stop()
-  })
-})
+  }
+)
 
 describe.skipIf(!sqliteLoads)(
   "TaskRunner — registerKind (producer auto-resume opt-in)",
@@ -849,6 +857,47 @@ describe.skipIf(!sqliteLoads)(
       await runner.stop()
     })
 
+    it("leaves a task RUNNING (for reconcile) when its executor returns during a shutdown abort (plan 038.3)", async () => {
+      // A fast deterministic executor (e.g. process_run) can resolve runOne BEFORE
+      // the process exits on quit. Its {stopped}/{paused} return must NOT settle the
+      // task terminal — the shutdown abort leaves the row `running` so the next
+      // boot's reconcile flips it (queued for an auto-resume kind) and it resumes.
+      // Regression: a quit mid-run left the process_run task stuck `paused`.
+      let observedShutdown = false
+      const runner = new TaskRunner()
+      runner.registerKind("slow_det", {
+        autoResume: true,
+        run: async ({ signal }) => {
+          // Wait for the shutdown abort, then return as the real executor would.
+          await new Promise<void>((resolve) => {
+            if (signal.aborted) return resolve()
+            signal.addEventListener("abort", () => resolve(), { once: true })
+          })
+          observedShutdown = signal.reason === SHUTDOWN_ABORT_REASON
+          return { stopped: true }
+        },
+      })
+      runner.start()
+      const task = runner.enqueueKind({ kind: "slow_det", input: {} })
+      // Let it start running.
+      for (
+        let i = 0;
+        i < 50 && getTask(task.id)?.status !== "running";
+        i++
+      ) {
+        await new Promise((r) => setTimeout(r, 5))
+      }
+      expect(getTask(task.id)?.status).toBe("running")
+
+      await runner.stop() // aborts with SHUTDOWN_ABORT_REASON; executor returns
+      // Give runOne a beat to run its settle block after the executor resolved.
+      await new Promise((r) => setTimeout(r, 20))
+
+      expect(observedShutdown).toBe(true)
+      // NOT cancelled / paused — left running for reconcile to auto-resume.
+      expect(getTask(task.id)?.status).toBe("running")
+    })
+
     it("passes the resolved workspace to the executor", async () => {
       // enqueueKind forks a conversation with the given workspaceId, but the task's
       // workspace is resolved via that conversation → workspace path. Seed a
@@ -1087,66 +1136,69 @@ describe.skipIf(!sqliteLoads)(
   }
 )
 
-describe.skipIf(!sqliteLoads)("TaskRunner — reapOrphans on start (plan 022)", () => {
-  // createTask coerces a null sourceConversationId to conversationId (self-sourced,
-  // tasks.ts). A genuine orphan has source_conversation_id NULL — the state the
-  // ON DELETE SET NULL leaves behind — so null it directly, as the real delete did.
-  function orphan(taskId: string): void {
-    db.prepare("UPDATE tasks SET source_conversation_id = NULL WHERE id = ?").run(
-      taskId
-    )
+describe.skipIf(!sqliteLoads)(
+  "TaskRunner — reapOrphans on start (plan 022)",
+  () => {
+    // createTask coerces a null sourceConversationId to conversationId (self-sourced,
+    // tasks.ts). A genuine orphan has source_conversation_id NULL — the state the
+    // ON DELETE SET NULL leaves behind — so null it directly, as the real delete did.
+    function orphan(taskId: string): void {
+      db.prepare(
+        "UPDATE tasks SET source_conversation_id = NULL WHERE id = ?"
+      ).run(taskId)
+    }
+
+    it("reaps a source-less task of a surface-less kind on boot (never requeues)", async () => {
+      // An orphan left by a pre-fix session delete: an auto-resume kind with NO
+      // independent surface, left `running` by a crash. reapOrphans must delete it
+      // before reconcile would flip it to queued and the pump run it.
+      const workerConv = createConversation({ mode: "interactive" })
+      const task = createTask({
+        conversationId: workerConv.id,
+        status: "running",
+        input: { kind: "todo_run", message: "orphaned list" },
+      })
+      orphan(task.id)
+
+      const runner = new TaskRunner()
+      runner.registerKind("todo_run", { autoResume: true })
+      runner.start()
+      await settle()
+
+      // Reaped before reconcile/seed could requeue it — gone, never ran.
+      expect(getTask(task.id)).toBeUndefined()
+      expect(getConversation(workerConv.id)).toBeUndefined()
+      expect(loopCalls).toHaveLength(0)
+      expect(db.pragma("foreign_key_check")).toHaveLength(0)
+      await runner.stop()
+    })
+
+    it("keeps a source-less workspace_index task (hasIndependentSurface) and auto-resumes it", async () => {
+      const workerConv = createConversation({ mode: "interactive" })
+      const task = createTask({
+        conversationId: workerConv.id,
+        status: "running",
+        input: { kind: "workspace_index", workspaceId: "w" },
+      })
+      orphan(task.id)
+
+      const runner = new TaskRunner()
+      let ran = false
+      runner.registerKind("workspace_index", {
+        autoResume: true,
+        hasIndependentSurface: true,
+        run: async () => {
+          ran = true
+          return { content: "indexed" }
+        },
+      })
+      runner.start()
+      await settle()
+
+      // Not reaped (independent surface); reconcile auto-resumed it and it ran.
+      expect(ran).toBe(true)
+      expect(getTask(task.id)?.status).toBe("completed")
+      await runner.stop()
+    })
   }
-
-  it("reaps a source-less task of a surface-less kind on boot (never requeues)", async () => {
-    // An orphan left by a pre-fix session delete: an auto-resume kind with NO
-    // independent surface, left `running` by a crash. reapOrphans must delete it
-    // before reconcile would flip it to queued and the pump run it.
-    const workerConv = createConversation({ mode: "interactive" })
-    const task = createTask({
-      conversationId: workerConv.id,
-      status: "running",
-      input: { kind: "todo_run", message: "orphaned list" },
-    })
-    orphan(task.id)
-
-    const runner = new TaskRunner()
-    runner.registerKind("todo_run", { autoResume: true })
-    runner.start()
-    await settle()
-
-    // Reaped before reconcile/seed could requeue it — gone, never ran.
-    expect(getTask(task.id)).toBeUndefined()
-    expect(getConversation(workerConv.id)).toBeUndefined()
-    expect(loopCalls).toHaveLength(0)
-    expect(db.pragma("foreign_key_check")).toHaveLength(0)
-    await runner.stop()
-  })
-
-  it("keeps a source-less workspace_index task (hasIndependentSurface) and auto-resumes it", async () => {
-    const workerConv = createConversation({ mode: "interactive" })
-    const task = createTask({
-      conversationId: workerConv.id,
-      status: "running",
-      input: { kind: "workspace_index", workspaceId: "w" },
-    })
-    orphan(task.id)
-
-    const runner = new TaskRunner()
-    let ran = false
-    runner.registerKind("workspace_index", {
-      autoResume: true,
-      hasIndependentSurface: true,
-      run: async () => {
-        ran = true
-        return { content: "indexed" }
-      },
-    })
-    runner.start()
-    await settle()
-
-    // Not reaped (independent surface); reconcile auto-resumed it and it ran.
-    expect(ran).toBe(true)
-    expect(getTask(task.id)?.status).toBe("completed")
-    await runner.stop()
-  })
-})
+)
