@@ -948,7 +948,12 @@ const api = {
         ) as Promise<DashboardGraph | null>,
       update: (
         id: string,
-        patch: { name?: string; description?: string | null; layout?: unknown }
+        patch: {
+          name?: string
+          description?: string | null
+          layout?: unknown
+          pinned?: boolean
+        }
       ) =>
         ipcRenderer.invoke(
           "db:dashboards:update",

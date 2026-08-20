@@ -775,3 +775,11 @@ CREATE TABLE dashboard_widget_data (
 
 CREATE INDEX idx_dashboard_widgets_dashboard ON dashboard_widgets(dashboard_id);
 `
+
+// v27 (plan 033 follow-up): pin dashboards to the top of the list. A bare
+// INTEGER 0/1 flag (SQLite has no boolean), coerced to/from a JS boolean in the
+// repo. NOT NULL DEFAULT 0 so existing rows migrate as unpinned. The list order
+// becomes `pinned DESC, updated_at DESC`.
+export const SCHEMA_V27 = `
+ALTER TABLE dashboards ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0;
+`

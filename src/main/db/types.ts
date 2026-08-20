@@ -568,6 +568,7 @@ export interface Dashboard {
   name: string
   description: string | null
   layout: unknown | null
+  pinned: boolean
   createdAt: number
   updatedAt: number
 }

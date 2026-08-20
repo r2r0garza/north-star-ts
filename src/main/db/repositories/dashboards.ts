@@ -80,6 +80,7 @@ interface DashboardRow {
   name: string
   description: string | null
   layout: string | null
+  pinned: number
   created_at: number
   updated_at: number
 }
@@ -90,6 +91,7 @@ function toDashboard(row: DashboardRow): Dashboard {
     name: row.name,
     description: row.description,
     layout: fromJsonText(row.layout),
+    pinned: row.pinned === 1,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   }
@@ -170,7 +172,9 @@ export function getDashboard(id: string): Dashboard | null {
 
 export function listDashboards(): Dashboard[] {
   const rows = getDb()
-    .prepare("SELECT * FROM dashboards ORDER BY updated_at DESC")
+    .prepare(
+      "SELECT * FROM dashboards ORDER BY pinned DESC, updated_at DESC"
+    )
     .all() as DashboardRow[]
   return rows.map(toDashboard)
 }
@@ -181,6 +185,7 @@ export function updateDashboard(
     name?: string
     description?: string | null
     layout?: unknown
+    pinned?: boolean
   }
 ): Dashboard {
   const sets: string[] = []
@@ -196,6 +201,10 @@ export function updateDashboard(
   if (patch.layout !== undefined) {
     sets.push("layout = ?")
     values.push(toJsonText(patch.layout))
+  }
+  if (patch.pinned !== undefined) {
+    sets.push("pinned = ?")
+    values.push(patch.pinned ? 1 : 0)
   }
   if (sets.length > 0) {
     sets.push("updated_at = ?")
