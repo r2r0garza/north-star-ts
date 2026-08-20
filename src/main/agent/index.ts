@@ -45,6 +45,7 @@ import { getMcpManager, parsePrefixedName, enabledServerNames } from "./mcp"
 import type { McpToolDefinition } from "./mcp"
 import { spawnSubagentTool } from "./tools/spawn_subagent"
 import { flagForReworkTool } from "./tools/flag_for_rework"
+import { dashboardWriteTool } from "./tools/dashboard_write"
 import { loadSystemPrompt } from "./system-prompt"
 import { logSystemPrompt } from "./prompt-log"
 import { buildIndexSummary } from "../index/summary"
@@ -82,17 +83,7 @@ import { actionAllowlist } from "../db/repositories"
 import { getWorkspace } from "../db/repositories/workspaces"
 import { getProject } from "../db/repositories/projects"
 import type { Conversation } from "../db/types"
-import {
-  PolicyEngine,
-  type AllowlistLookup,
-  type SandboxPolicyLookup,
-} from "./approval/policy"
-import { RegexCommandClassifier } from "./approval/regex-classifier"
-import { FileActionClassifier } from "./approval/file-classifier"
-import { DelegationClassifier } from "./approval/delegation-classifier"
-import { BrowserActionClassifier } from "./approval/browser-classifier"
-import { WebActionClassifier } from "./approval/web-classifier"
-import { McpActionClassifier } from "./approval/mcp-classifier"
+import { makePolicyEngine } from "./approval/engine"
 import { PlanModeClassifier } from "./approval/plan-mode-classifier"
 import type {
   ActionKind,
@@ -108,46 +99,10 @@ import type {
   QuestionAnswer,
 } from "./tools/types"
 
-// The single approval policy, shared across turns. The allowlist lookup is
-// backed by the action_allowlist table; classifiers are tried in order (file
-// first since it returns null for shell, then the regex command classifier).
-const allowlistLookup: AllowlistLookup = {
-  isAllowed(action: ToolAction, ctx) {
-    return !!actionAllowlist.findMatch(action.kind, action.identity, {
-      workspacePath: ctx.workspacePath,
-      conversationId: ctx.conversationId,
-    })
-  },
-}
-// The sandbox policy reads live settings at decision time (like the file
-// classifier), so a settings change takes effect on the next action without
-// rebuilding the engine.
-const sandboxPolicy: SandboxPolicyLookup = {
-  autoApproves(category) {
-    return settingsService.sandboxAutoApproves(category)
-  },
-}
-const policy = new PolicyEngine(
-  [
-    // Delegation first: a `delegate` action always requires approval and is never
-    // sandbox-downgraded or allowlisted (no category), so classify it before the
-    // file/shell classifiers (which return null for it anyway).
-    new DelegationClassifier(),
-    // Browser navigation always prompts (no category → never sandbox-downgraded);
-    // returns null for non-browser kinds, so placement is flexible.
-    new BrowserActionClassifier(),
-    // web_fetch always prompts (no category → never sandbox-downgraded), like
-    // browser navigation; returns null for non-web kinds.
-    new WebActionClassifier(),
-    // MCP tool calls always prompt (no category → never sandbox-downgraded), like
-    // web_fetch; returns null for non-mcp kinds.
-    new McpActionClassifier(),
-    new FileActionClassifier(() => settingsService.getPermissions()),
-    new RegexCommandClassifier(),
-  ],
-  allowlistLookup,
-  sandboxPolicy
-)
+// The single approval policy, shared across turns. Built by the shared factory
+// (approval/engine.ts) so the deterministic dashboard-refresh executor (033.3)
+// authorizes headless side effects through the exact same engine + classifiers.
+const policy = makePolicyEngine()
 
 // Decision for one pending approval, set by resolveApproval and awaited inside
 // the gate. `remember` persists an allowlist rule when the human chose "always".
@@ -836,6 +791,10 @@ export async function runAgentLoop(
       // upstream phase instead of fixing out of lane. Not gated by the agent
       // allowlist (it's a process-structural capability, like spawn).
       ...(opts.processRunId && !planMode ? [flagForReworkTool.definition] : []),
+      // dashboard_write (plan 033.2): offered in interactive modes (like
+      // todo_write), withheld in plan mode as a side-effecting save. Subject to
+      // the agent tool allowlist via its `dashboard` category.
+      ...(showTodos && !planMode ? [dashboardWriteTool.definition] : []),
       // Plan-mode tools: the only write (write_plan) + the approval handoff.
       ...(planMode
         ? [writePlanTool.definition, presentPlanTool.definition]

@@ -55,6 +55,15 @@ export type RunnerLifecycleEvent =
       filesScanned: number
       filesTotal: number
     }
+  // Deterministic dashboard-refresh progress (plan 033.3). Emitted per widget by
+  // the dashboard_refresh executor and forwarded on the live tail so the view can
+  // render progress and re-read the cache when the task settles.
+  | {
+      type: "dashboard_refresh_progress"
+      dashboardId: string
+      widgetsDone: number
+      widgetsTotal: number
+    }
   // A phase transition inside a process_run DAG (plan 025). Emitted by the
   // process orchestrator on its OWN task's event tail (phases run inline via
   // runAgentLoop, not as separate tasks), so the activity panel / 026 monitor
@@ -162,6 +171,11 @@ interface TaskInput {
   // producer contract rather than as new columns.
   workspaceId?: string
   priority?: "low" | "high"
+  // Per-kind config for the dashboard_refresh executor (033.3): which dashboard
+  // to re-fetch. Each widget's recipe carries its own cwd, so no workspace here.
+  // maxAgeMs > 0 (on-open) skips widgets whose cached data is still fresh.
+  dashboardId?: string
+  maxAgeMs?: number
 }
 
 function kindOf(task: Task): string {

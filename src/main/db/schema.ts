@@ -730,3 +730,48 @@ CREATE TABLE mcp_server_state (
   updated_at    INTEGER NOT NULL
 );
 `
+
+// v26 (plan 033 — Live dashboards): a saved layout of widgets, each backed by a
+// data-fetch RECIPE describing how to pull its data. Mirrors the 025 process
+// engine's definition-vs-run split and bare-TEXT-statuses-validated-in-the-repo
+// convention (no CHECK — the v8 tasks rebuild to widen a CHECK was painful):
+//   - dashboards + dashboard_widgets = the DEFINITION (top-level objects, NOT
+//     conversation-scoped, so a dashboard persists like a process definition).
+//   - dashboard_widget_data = the RUN/CACHE side: the last fetched rows the view
+//     renders, one row per widget (PK = widget_id), replaced on each refresh.
+// A widget's `type` (chart|stat|table) and the cache `status` (ok|error|stale)
+// are bare TEXT, validated/coerced in repositories/dashboards.ts (mirrors the
+// unions in types.ts). JSON blobs (layout/config/recipe/pos/data) are TEXT.
+// The data-fetch recipe re-runnability + deterministic replay is plan 033.3.
+// Three plain CREATE TABLEs — new objects, safe under the foreign_keys=OFF loop.
+export const SCHEMA_V26 = `
+CREATE TABLE dashboards (
+  id          TEXT PRIMARY KEY,
+  name        TEXT NOT NULL,
+  description TEXT,
+  layout      TEXT,
+  created_at  INTEGER NOT NULL,
+  updated_at  INTEGER NOT NULL
+);
+
+CREATE TABLE dashboard_widgets (
+  id           TEXT PRIMARY KEY,
+  dashboard_id TEXT NOT NULL REFERENCES dashboards(id) ON DELETE CASCADE,
+  title        TEXT NOT NULL,
+  type         TEXT NOT NULL,
+  config       TEXT,
+  recipe       TEXT,
+  pos          TEXT,
+  position     INTEGER NOT NULL
+);
+
+CREATE TABLE dashboard_widget_data (
+  widget_id  TEXT PRIMARY KEY REFERENCES dashboard_widgets(id) ON DELETE CASCADE,
+  data       TEXT,
+  status     TEXT NOT NULL DEFAULT 'ok',
+  error      TEXT,
+  fetched_at INTEGER NOT NULL
+);
+
+CREATE INDEX idx_dashboard_widgets_dashboard ON dashboard_widgets(dashboard_id);
+`

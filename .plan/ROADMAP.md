@@ -45,25 +45,7 @@ item is its plan file, not its rank.
    builder affordances. **Ordered after `038`** so the format carries a phase's `subprocess_id` — a
    sub-process reference exports **by definition identity** (name/a stable ref), and import resolves or
    flags a missing referenced sub-process (like `037`'s missing-agent warning).
-4. **`033` — Live dashboards.** A new top-level surface (a **Dashboards** button in the sidebar footer,
-   the 5th overlay alongside Processes/Agents/Skills/Settings) where a user **prompts an agent to author
-   a dashboard** — a saved layout of widgets + a per-widget **data-fetch recipe** describing *how to
-   pull the data*. **Data-source-agnostic by construction:** the agent fetches through whatever tools it
-   has (today `run_shell`/Azure CLI, `web` fetch; **later MCP servers** — Jira, Azure DevOps), so
-   dashboards inherit new sources **for free** as they land — this plan builds **no connectors** (MCP is
-   its own effort). `recharts` is **already a dep** (no new chart lib). Mirrors `025`'s definition-vs-run
-   split + bare-`TEXT`-repo-validated statuses: new `dashboards`/`dashboard_widgets`/
-   `dashboard_widget_data` (cache) tables (additive, `SCHEMA_V20+`), a gated **`dashboard_write`** agent
-   tool (like `todo_write`/`present_plan`), and a `dashboard_refresh` `009` durable task kind that
-   **replays each widget's stored recipe** (deterministic-first, bounded-LLM-normalize only where
-   declared) into the cache the view reads. **v1 "live" = manual/on-open/poll-while-open** (true cron is
-   the backlog `cron` item). Full-viewport takeover (`dashboards-screen.tsx`, the `023` Radix pattern +
-   `NativeSelect`). **Likely splits** (`025.x` pattern): `033.1` storage + overlay + view + a
-   manually-authored widget; `033.2` the `dashboard_write` authoring tool; `033.3` the refresh executor.
-   **Crux Open Qs:** how re-runnable a recipe is without an LLM; approval/allowlist safety of a stored
-   recipe re-running unattended on refresh; fixed grid vs drag-resize lib. Independent of the Process
-   cluster.
-5. **`034` — CLI-agent providers (Claude Code / Codex / Copilot).** Three new **provider kinds** that
+4. **`034` — CLI-agent providers (Claude Code / Codex / Copilot).** Three new **provider kinds** that
    aren't LLM-API accounts but local **agentic CLIs** driven as subprocesses (`claude -p`,
    `codex exec`, `copilot -p`) — each *is* the agent (own loop + tools + approvals, editing files
    **in the project dir**). Selecting one **routes turns away from `runAgentLoop`** to a new subprocess
@@ -84,7 +66,7 @@ item is its plan file, not its rank.
    `034.3` Codex (extract-then-resume). Open Qs: default auto-posture permissiveness (lean
    workspace-write/edits-allowed); streaming fidelity (text-first; Copilot JSONL fields unverified);
    out-of-band CLI auth. Independent of the Process cluster / dashboards.
-6. **`032` — Process visual canvas.** The explicitly-deferred half of `026` (which shipped the
+5. **`032` — Process visual canvas.** The explicitly-deferred half of `026` (which shipped the
    **list-based** DAG builder and recorded a **visual node/edge canvas** as "later"). Renderer-first +
    one additive migration; **no engine/scheduling/routing change**. Phases become draggable **nodes**,
    dependencies **edges** drawn between handles (same `on_complete`/`on_each_subtask` trigger, same
@@ -98,26 +80,26 @@ item is its plan file, not its rank.
    toggle vs replace (lean **coexist**). The Radix-`Dialog` takeover means the inspector keeps
    `NativeSelect` (the `023`/`026` `pointer-events:none` finding). **Live-run-on-canvas deferred** — v1
    keeps the `026` nested-list monitor. Independent of `029`/`031`.
-7. **`020` — Durable memories.** The cross-conversation memories section `014` reserved: small,
+6. **`020` — Durable memories.** The cross-conversation memories section `014` reserved: small,
    persisted facts the agent writes (a **gated, explicit** `remember` tool — no silent profiling)
    and that inject into future turns, **scoped** global / workspace / conversation (mirrors the
    `action_allowlist` scoping). New `memories` table + a list/delete surface (durable +
    cross-conversation ⇒ must be auditable/revocable); a `memoriesSection` renderer with an injection
    cap. Split out of `014` Q2.
-8. **`010` — Container runtime profiles.** Decouple Workspace (the files) from Runtime (the env a
+7. **`010` — Container runtime profiles.** Decouple Workspace (the files) from Runtime (the env a
    tool call executes in). Replace the raw container `image` string with a named **profile**
    (`node` | `python` | `fullstack`), resolved to an image in the env factory; default/fallback =
    `fullstack` (Node + Python) so a Node repo that later adds a Python backend doesn't wedge.
    One profile per conversation, user-overridable in settings. Kills the "one workspace = one image
    forever" assumption **without** building auto-routing or image management (both deferred). Small
    refactor of `env/factory.ts` + `container.ts` + execution settings (JSON blob — no migration).
-9. **`005.1` — ContainerEnvironment stop in-flight.** The deferred half of `005`: killing the host
+8. **`005.1` — ContainerEnvironment stop in-flight.** The deferred half of `005`: killing the host
    `docker/podman exec` client doesn't stop the in-container process. Needs its own kill mechanism
    (in-container PID tracking / `exec kill`, or marker `pkill`). Out of scope when `005` shipped.
-10. **`007` — Slash commands for skills.** Let users force a skill with `/skill-name …` (pre-inject
+9. **`007` — Slash commands for skills.** Let users force a skill with `/skill-name …` (pre-inject
    the `read_skill` call), keeping today's model-discretionary path for plain messages. Adds a
    `skills:list` IPC channel + composer autocomplete. Independent — schedule freely.
-11. **`018` — Agentic goal mode. ⚠️ SUPERSEDED by `025`** (the general Process engine — 018's fixed
+10. **`018` — Agentic goal mode. ⚠️ SUPERSEDED by `025`** (the general Process engine — 018's fixed
    pipeline becomes one built-in Process *template*; kept as a stable-ID file per convention, not
    built as its own orchestrator). An opt-in **execution mode** (orthogonal to chat/interactive/
    north_star): `simple` (today's one-pass behavior, default) vs `goal` (bounded **plan → execute →
@@ -131,7 +113,7 @@ item is its plan file, not its rank.
    PR (`/goal <request>` — reuses `007`'s composer slash-command affordance — + a "Run with review
    loop" button); the Always/Ask/Manual/Off **setting is deferred** to its own plan. Placed by `007`
    since both add `/`-command composer UI.
-12. **`024` — Index filesystem/git watcher.** The "live file watching" follow-up `008` deferred (and
+11. **`024` — Index filesystem/git watcher.** The "live file watching" follow-up `008` deferred (and
    `014` re-deferred). Today the workspace index — and the compact summary `buildIndexSummary`
    injects into the system prompt on every message send — only refreshes when `IndexService.
    ensureRunning` is called, which fires on conversation create/update or manual Start/Rebuild;
@@ -148,6 +130,78 @@ item is its plan file, not its rank.
 
 ## Done
 
+- **`033.3` — Live dashboards: deterministic refresh executor.** Built on `feat/live-dashboards` (off
+  `main`; not yet merged). Makes the **Refresh** button actually re-fetch: a new `dashboard_refresh`
+  deterministic durable task kind (`DashboardService`, modeled on `IndexService`) that **replays each
+  widget's stored `recipe` with no LLM** into the `dashboard_widget_data` cache the view reads — the
+  **first** deterministic executor to perform a *gated-in-origin* side effect headless. **Decisions
+  (with the user):** (1) **Dashboards stay top-level / source-agnostic — no workspace binding, no
+  migration.** The working directory a shell recipe needs belongs to the **recipe**, not the dashboard:
+  the recipe blob gained an optional `cwd` (`{ command?, url?, cwd?, note? }`), captured by
+  `dashboard_write` from `ctx.workspace` at author time (a `withCwd` helper; URL recipes omit it). (2)
+  **Safety = reuse `action_allowlist`.** The executor reconstructs the *same* `ToolAction` the origin
+  tool built (shell → `normalizeCommand(cmd)`, web → `web_fetch:${url.href}`) and runs it through the
+  shared `PolicyEngine` — extracted into a new **`agent/approval/engine.ts` `makePolicyEngine()`** so the
+  loop and the executor build one identical engine (preserving the `hard_block` invariant). **Fails
+  closed:** any non-`allow` verdict → widget marked `stale` with a reason, never run; a shell recipe with
+  no `cwd` is also stale. A one-click **"Approve this recipe"** in the widget writes a durable
+  `action_allowlist` rule (`workspace`-scoped via `recipe.cwd` for shell; **`global`** for a web URL,
+  since a headless refresh has no conversation to scope to) then re-refreshes. (3) **Output → rows =
+  deterministic JSON only.** The executor `JSON.parse`s stdout/body (array, or a lone object wrapped);
+  non-JSON → widget `error`. `dashboard_write` guidance updated to steer JSON-emitting recipes (`… -o
+  json`, `--json`, `jq`). (4) **Trigger = manual + on-open** (poll-while-open deferred). New
+  `RunnerLifecycleEvent` `dashboard_refresh_progress` variant; `dashboard_refresh` registered
+  `autoResume:false` + `hasIndependentSurface:true`; new `ipc/dashboard-handlers.ts`
+  (`dashboard:refresh`/`dashboard:approveRecipe`) + `api.dashboard` preload bridge; renderer swaps the
+  `TODO(033.3)` stopgap for the real executor call (following the task tail to completion via a
+  `waitForTask` helper on the shared `task:event` channel), fires an on-open refresh, and renders the
+  `stale` "Approve this recipe" affordance. Verified: `pnpm typecheck` + `pnpm build` clean (the 3
+  residual errors pre-existing); new `dashboards/service.test.ts` (**10**: allowlisted shell → `ok`,
+  non-allowlisted → `stale` never-run, no-cwd → `stale`, non-JSON → `error`, recipe-less widget
+  untouched, missing/unknown dashboard, `ensureRefresh` enqueue + unknown no-op, `approveRecipe`
+  workspace/global rule). **Full suite 793 pass** on a node-ABI `better-sqlite3` rebuild, Electron ABI
+  restored after (the 1 flaky `env/local.test.ts` SIGKILL timing test passes in isolation). Live E2E
+  deferred to a live session. **Deferred:** poll-while-open (timer + backpressure) → fast-follow;
+  per-widget refresh scoping; bounded-LLM-normalize for messy output (deliberately cut). **Completes
+  `033`.**
+- **`033.1` + `033.2` — Live dashboards (storage + overlay + view + `dashboard_write`).** Built on
+  `feat/live-dashboards` (off `main`; not yet merged). A new top-level **Dashboards** surface: a saved
+  layout of widgets, each a structured record with a **data-fetch `recipe`**. **Storage model = DB,
+  structured widgets** (decided with the user — no on-disk HTML artifacts, no arbitrary-JS surface;
+  sharing/export is a later item). **`SCHEMA_V26`** (three pure `CREATE TABLE`s, no rebuild — the V15/V25
+  pattern) mirrors `025`'s definition-vs-run split + bare-`TEXT`-repo-validated statuses: `dashboards` +
+  `dashboard_widgets` (definition; top-level, NOT conversation-scoped) + `dashboard_widget_data` (the
+  run/cache side, one row per widget, `ON DELETE CASCADE`). New `db/repositories/dashboards.ts` (row
+  types + mappers, `normalizeType`/`normalizeStatus` `ReadonlySet` coercion à la `todos.ts`, JSON-blob
+  serialize/parse with caps, CRUD + `getDashboardGraph` composite), barrel-registered; `db:dashboards:*`
+  IPC block + `api.db.dashboards` preload bridge (+`widgets`/`data` sub-objects). **`033.2` — gated-but-
+  ungated `dashboard_write` agent tool** (`agent/tools/dashboard_write.ts`, modeled on `todo_write`:
+  writes only its own tables so it does NOT route through the approval gate; the *fetching* it did
+  beforehand via `run_shell`/`web_fetch` was already gated). Whole-dashboard replace write in one
+  transaction (create/update + replace widgets + seed each widget's data cache). Registered in
+  `otherTools`; offered in `buildTools` on `showTodos && !planMode` (like `todo_write`); a new
+  `dashboard` tool-category so a restricted agent can opt in. **Renderer:** `dashboards-screen.tsx` — the
+  **in-panel** footer overlay (Pattern A, cloning `process-screen.tsx` — NOT the Settings Radix-dialog
+  takeover; the roadmap conflated the two). Left rail of dashboards; main pane = a **`react-grid-layout`**
+  (v1.5, +1 renderer dep) drag-resize grid of widget cards rendering `chart` (via the previously-unused
+  `ui/chart.tsx` recharts wrapper — this is its first consumer) / `stat` / `table`; drag/resize persists
+  `pos` (mutate-then-refetch). Manual **Add widget** form (title + type via `NativeSelect` inside the
+  Dialog per the `023` `pointer-events:none` finding + config/data JSON) proves the render path without an
+  agent. Wired through `sidebar.tsx` (footer **Dashboards** button, `LayoutDashboard` icon,
+  `onDashboardsClick`) + `main.tsx` (`dashboardsOpen` state, handler, 5 nav-reset sites, 3 overlay-open
+  guards, mount); types re-exported via `renderer/src/types.ts`. **Refresh button is a stopgap** — it
+  reloads the cache from the DB (reflecting an agent re-authoring in chat); the deterministic no-LLM
+  recipe replay is `033.3` (marked `TODO(033.3)`). Verified: `pnpm typecheck` + `pnpm build` clean (the 3
+  residual errors — `open.test.ts`, `service.test.ts`, `runner.test.ts` — are **pre-existing on `main`**
+  and unrelated); new tests — `dashboards.test.ts` (**9**: CRUD, JSON round-trip, type coercion,
+  auto-position, data upsert-replace, both cascades, `getDashboardGraph`, patch-only update),
+  `dashboard_write.test.ts` (**6**: create+seed, replace-on-update, type coercion, no-name reject,
+  not-found reject, JSON-string arg), `migrations.test.ts` (**+1**: v26 tables/columns); the stale
+  latest-`user_version` assertions bumped 24 → 26 (×5 — `migrations`/`processes`/`index-runs`/`settings`;
+  V25/MCP had shipped without bumping them). **Full suite 783 pass** against a node-ABI `better-sqlite3`
+  rebuild, Electron ABI restored after with `electron-rebuild` (the 1 flaky `env/local.test.ts` SIGKILL
+  timing test passes in isolation). Live E2E in the running app deferred to a live session. **Deferred (as
+  planned):** the deterministic `dashboard_refresh` executor → `033.3` (above); dashboard sharing/export.
 - **`038.2` — Sub-processes: recovery cluster (deep restart + child-internal gates + request-changes).**
   Built on `feat/sub-processes-recovery` (off `main`; not yet merged). The three correctness/completeness
   gaps of `038.2` that make nested runs safely recoverable + interactive (the remaining two —

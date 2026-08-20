@@ -88,6 +88,8 @@ import { IndexService } from "./index/service"
 import { SummaryService, SUMMARIZE_KIND } from "./summaries/service"
 import { ProcessService, PROCESS_RUN_KIND } from "./tasks/process/service"
 import { registerProcessHandlers } from "./ipc/process-handlers"
+import { DashboardService, DASHBOARD_REFRESH_KIND } from "./dashboards/service"
+import { registerDashboardHandlers } from "./ipc/dashboard-handlers"
 import { BrowserManager } from "./browser/manager"
 import { seedProviderFromEnvIfEmpty } from "./settings/bootstrap"
 import { closeDb } from "./db/connection"
@@ -110,6 +112,9 @@ const summaryService = new SummaryService(taskRunner)
 // The Process engine (plan 025), driven as the deterministic `process_run` task
 // kind. Holds the runner reference so startRun can enqueue the orchestrator task.
 const processService = new ProcessService(taskRunner)
+// Deterministic dashboard refresh (plan 033.3): re-runs each widget's stored
+// recipe headless. Holds the runner reference so ensureRefresh can enqueue.
+const dashboardService = new DashboardService(taskRunner)
 // The agent's browser (secondary window + WebContentsView driven over CDP).
 // Owned here so runChat can hand each live turn a signal-bound handle; disposed
 // on will-quit. Lazily creates its window on first agent use.
@@ -1046,10 +1051,22 @@ app.whenReady().then(() => {
     hasIndependentSurface: true,
     run: processService.execute,
   })
+  // dashboard_refresh: deterministic (no LLM) executor that replays each widget's
+  // stored recipe into the data cache (plan 033.3). autoResume:false — a stale
+  // dashboard is harmless and refresh is manual/on-open, so there's no need to
+  // resume across a restart. hasIndependentSurface: born source-less (driven from
+  // the Dashboards view, not a conversation) and observable there, so it's exempt
+  // from the plan 022 orphan reaper.
+  taskRunner.registerKind(DASHBOARD_REFRESH_KIND, {
+    autoResume: false,
+    hasIndependentSurface: true,
+    run: dashboardService.execute,
+  })
   taskRunner.start()
   registerTaskHandlers(taskRunner)
   registerProcessHandlers(taskRunner, processService)
   registerIndexHandlers(taskRunner, indexService)
+  registerDashboardHandlers(taskRunner, dashboardService)
   // Migrate a pre-settings env-configured key into a stored provider account, so
   // existing dev setups keep working without re-entering it (no-op once any
   // account exists). After this, the stored key is the source of truth.

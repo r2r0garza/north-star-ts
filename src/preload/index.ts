@@ -27,6 +27,10 @@ import type {
   PhaseRouting,
   PhaseGatePolicy,
   EdgeTrigger,
+  Dashboard,
+  DashboardGraph,
+  DashboardWidget,
+  DashboardWidgetData,
 } from "../main/db/types"
 import type { ActionKind } from "../main/agent/approval/types"
 import type { PickedElement } from "../main/browser/types"
@@ -65,6 +69,7 @@ import type {
   McpServerDef,
 } from "../main/db/types"
 import type { IndexStatus } from "../main/ipc/index-handlers"
+import type { ApproveResult } from "../main/dashboards/service"
 import type {
   McpServerView,
   McpTree,
@@ -922,6 +927,95 @@ const api = {
           >,
       },
     },
+
+    // Live dashboards (plan 033). CRUD the dashboards view + the dashboard_write
+    // agent tool share. `graph` returns the whole dashboard in one call.
+    dashboards: {
+      create: (input: {
+        name: string
+        description?: string | null
+        layout?: unknown
+      }) =>
+        ipcRenderer.invoke("db:dashboards:create", input) as Promise<Dashboard>,
+      list: () =>
+        ipcRenderer.invoke("db:dashboards:list") as Promise<Dashboard[]>,
+      get: (id: string) =>
+        ipcRenderer.invoke("db:dashboards:get", id) as Promise<Dashboard | null>,
+      graph: (id: string) =>
+        ipcRenderer.invoke(
+          "db:dashboards:graph",
+          id
+        ) as Promise<DashboardGraph | null>,
+      update: (
+        id: string,
+        patch: { name?: string; description?: string | null; layout?: unknown }
+      ) =>
+        ipcRenderer.invoke(
+          "db:dashboards:update",
+          id,
+          patch
+        ) as Promise<Dashboard>,
+      delete: (id: string) =>
+        ipcRenderer.invoke("db:dashboards:delete", id) as Promise<void>,
+      widgets: {
+        list: (dashboardId: string) =>
+          ipcRenderer.invoke(
+            "db:dashboards:widgets:list",
+            dashboardId
+          ) as Promise<DashboardWidget[]>,
+        create: (input: {
+          dashboardId: string
+          title: string
+          type: unknown
+          config?: unknown
+          recipe?: unknown
+          pos?: unknown
+          position?: number
+        }) =>
+          ipcRenderer.invoke(
+            "db:dashboards:widgets:create",
+            input
+          ) as Promise<DashboardWidget>,
+        update: (
+          id: string,
+          patch: {
+            title?: string
+            type?: unknown
+            config?: unknown
+            recipe?: unknown
+            pos?: unknown
+            position?: number
+          }
+        ) =>
+          ipcRenderer.invoke(
+            "db:dashboards:widgets:update",
+            id,
+            patch
+          ) as Promise<DashboardWidget>,
+        delete: (id: string) =>
+          ipcRenderer.invoke(
+            "db:dashboards:widgets:delete",
+            id
+          ) as Promise<void>,
+      },
+      data: {
+        get: (widgetId: string) =>
+          ipcRenderer.invoke(
+            "db:dashboards:data:get",
+            widgetId
+          ) as Promise<DashboardWidgetData | null>,
+        upsert: (input: {
+          widgetId: string
+          data?: unknown
+          status?: unknown
+          error?: string | null
+        }) =>
+          ipcRenderer.invoke(
+            "db:dashboards:data:upsert",
+            input
+          ) as Promise<DashboardWidgetData>,
+      },
+    },
   },
 
   // Persisted settings (execution backend + approval policy). Mirrors the
@@ -1035,6 +1129,29 @@ const api = {
       enabled: boolean
       priority?: IndexPriority
     }) => ipcRenderer.invoke("index:setEnabled", payload) as Promise<void>,
+  },
+
+  // Deterministic dashboard refresh (plan 033.3). Control (pause/cancel) + live
+  // progress reuse the generic `tasks.*` verbs and the task event tail; these are
+  // the dashboard-specific kickoffs. Each returns the refresh task id (or null).
+  dashboard: {
+    // Re-fetch every widget by replaying its stored recipe (no LLM). Idempotent.
+    // maxAgeMs > 0 skips widgets whose cached data is still fresh (on-open path);
+    // omitted forces a full re-run (the manual Refresh button).
+    refresh: (dashboardId: string, maxAgeMs?: number) =>
+      ipcRenderer.invoke(
+        "dashboard:refresh",
+        dashboardId,
+        maxAgeMs
+      ) as Promise<string | null>,
+    // Bless a widget's recipe (writes a durable allowlist grant), then refresh.
+    // Resolves { ok, taskId } or { ok: false, reason } so the UI can explain a
+    // recipe that can't be blessed (e.g. a shell command with no captured cwd).
+    approveRecipe: (widgetId: string) =>
+      ipcRenderer.invoke(
+        "dashboard:approveRecipe",
+        widgetId
+      ) as Promise<ApproveResult>,
   },
 
   // LLM provider accounts, their models, API keys, and the active selection.
@@ -1205,6 +1322,12 @@ export type {
   PhaseRouting,
   PhaseGatePolicy,
   EdgeTrigger,
+  Dashboard,
+  DashboardGraph,
+  DashboardWidget,
+  DashboardWidgetData,
+  DashboardWidgetType,
+  DashboardWidgetDataStatus,
 } from "../main/db/types"
 // Re-export the ask_user_question types so the renderer can type the panel.
 export type {
@@ -1270,5 +1393,6 @@ export type {
 // Workspace indexing types (plan 008) for the status strip + settings tab.
 export type { IndexPriority, IndexStage } from "../main/db/types"
 export type { IndexStatus } from "../main/ipc/index-handlers"
+export type { ApproveResult } from "../main/dashboards/service"
 export type { PickedElement } from "../main/browser/types"
 export type { GitDiffResult } from "../main/git/diff"
