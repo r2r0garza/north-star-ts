@@ -541,8 +541,9 @@ export function DashboardsScreen({ onClose }: { onClose: () => void }) {
     setRefreshing(true)
     try {
       const result = await window.cowork.dashboard.approveRecipe(widgetId)
-      if (!result.ok) {
-        toast.error(result.reason)
+      if (!result?.ok) {
+        // Always show text — never a blank toast, even on an unexpected shape.
+        toast.error(result?.reason || "Could not approve this recipe.")
         return
       }
       if (result.taskId) await waitForTask(result.taskId)
