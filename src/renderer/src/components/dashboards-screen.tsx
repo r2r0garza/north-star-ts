@@ -2,6 +2,9 @@ import { useCallback, useEffect, useMemo, useState } from "react"
 import {
   ArrowLeft,
   Loader2,
+  Pencil,
+  Pin,
+  PinOff,
   Plus,
   RefreshCw,
   ShieldCheck,
@@ -55,6 +58,13 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu"
 import { cn } from "@/lib/utils"
 import { toast } from "sonner"
 import type {
@@ -387,6 +397,7 @@ export function DashboardsScreen({ onClose }: { onClose: () => void }) {
   const [addOpen, setAddOpen] = useState(false)
   const [createOpen, setCreateOpen] = useState(false)
   const [pendingDelete, setPendingDelete] = useState<Dashboard | null>(null)
+  const [pendingRename, setPendingRename] = useState<Dashboard | null>(null)
 
   const refreshList = useCallback(async () => {
     const list = await window.cowork.db.dashboards.list()
@@ -485,11 +496,30 @@ export function DashboardsScreen({ onClose }: { onClose: () => void }) {
   )
 
   // window.prompt is unavailable in Electron's renderer — use a dialog instead.
-  async function createDashboard(name: string) {
-    const dash = await window.cowork.db.dashboards.create({ name })
+  async function createDashboard(name: string, description: string) {
+    const dash = await window.cowork.db.dashboards.create({
+      name,
+      description: description || null,
+    })
     setCreateOpen(false)
     await refreshList()
     setSelectedId(dash.id)
+  }
+
+  async function renameDashboard(id: string, name: string) {
+    await window.cowork.db.dashboards.update(id, { name })
+    setPendingRename(null)
+    await refreshList()
+    // Keep the open dashboard's header in sync if it's the one renamed.
+    setSelectedId((cur) => {
+      if (cur === id) void loadGraph(id)
+      return cur
+    })
+  }
+
+  async function togglePin(d: Dashboard) {
+    await window.cowork.db.dashboards.update(d.id, { pinned: !d.pinned })
+    await refreshList()
   }
 
   async function confirmDelete() {
@@ -562,7 +592,7 @@ export function DashboardsScreen({ onClose }: { onClose: () => void }) {
   return (
     <div
       data-slot="dashboards-screen"
-      className="flex min-h-0 flex-1 flex-col bg-background pt-11 text-sm text-foreground"
+      className="flex min-h-0 min-w-0 flex-1 flex-col bg-background pt-11 text-sm text-foreground"
     >
       <div className="flex h-11 shrink-0 items-center justify-between border-b px-4">
         <button
@@ -580,7 +610,7 @@ export function DashboardsScreen({ onClose }: { onClose: () => void }) {
         </Button>
       </div>
 
-      <div className="flex min-h-0 flex-1">
+      <div className="flex min-h-0 min-w-0 flex-1">
         {/* Left rail: dashboard list */}
         <div className="flex w-60 shrink-0 flex-col border-r">
           <div className="flex h-12 shrink-0 items-center justify-between px-3">
@@ -599,31 +629,56 @@ export function DashboardsScreen({ onClose }: { onClose: () => void }) {
           <ScrollArea className="min-h-0 flex-1">
             <div className="flex flex-col gap-0.5 px-2 pb-2">
               {dashboards.map((d) => (
-                <div
-                  key={d.id}
-                  className={cn(
-                    "group/row flex items-center justify-between rounded-md px-2 py-1.5",
-                    d.id === selectedId
-                      ? "bg-accent text-accent-foreground"
-                      : "hover:bg-accent/50"
-                  )}
-                >
-                  <button
-                    type="button"
-                    className="min-w-0 flex-1 truncate text-left"
-                    onClick={() => setSelectedId(d.id)}
-                  >
-                    {d.name}
-                  </button>
-                  <button
-                    type="button"
-                    className="ml-1 shrink-0 opacity-0 transition-opacity group-hover/row:opacity-100"
-                    onClick={() => setPendingDelete(d)}
-                    aria-label={`Delete ${d.name}`}
-                  >
-                    <Trash2 className="size-3.5 text-muted-foreground hover:text-destructive" />
-                  </button>
-                </div>
+                <ContextMenu key={d.id}>
+                  <ContextMenuTrigger asChild>
+                    <div
+                      className={cn(
+                        "group/row flex items-center justify-between rounded-md px-2 py-1.5",
+                        d.id === selectedId
+                          ? "bg-accent text-accent-foreground"
+                          : "hover:bg-accent/50"
+                      )}
+                    >
+                      <button
+                        type="button"
+                        className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
+                        onClick={() => setSelectedId(d.id)}
+                      >
+                        {d.pinned ? (
+                          <Pin className="size-3 shrink-0 fill-current text-muted-foreground" />
+                        ) : null}
+                        <span className="min-w-0 flex-1 truncate">{d.name}</span>
+                      </button>
+                    </div>
+                  </ContextMenuTrigger>
+                  <ContextMenuContent>
+                    <ContextMenuItem onSelect={() => togglePin(d)}>
+                      {d.pinned ? (
+                        <>
+                          <PinOff className="size-4" />
+                          Unpin
+                        </>
+                      ) : (
+                        <>
+                          <Pin className="size-4" />
+                          Pin to top
+                        </>
+                      )}
+                    </ContextMenuItem>
+                    <ContextMenuItem onSelect={() => setPendingRename(d)}>
+                      <Pencil className="size-4" />
+                      Rename
+                    </ContextMenuItem>
+                    <ContextMenuSeparator />
+                    <ContextMenuItem
+                      variant="destructive"
+                      onSelect={() => setPendingDelete(d)}
+                    >
+                      <Trash2 className="size-4" />
+                      Delete
+                    </ContextMenuItem>
+                  </ContextMenuContent>
+                </ContextMenu>
               ))}
               {dashboards.length === 0 ? (
                 <p className="px-2 py-4 text-xs text-muted-foreground">
@@ -635,35 +690,40 @@ export function DashboardsScreen({ onClose }: { onClose: () => void }) {
         </div>
 
         {/* Main: the selected dashboard's grid */}
-        <div className="flex min-h-0 flex-1 flex-col">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
           {selectedId && graph ? (
             <>
-              <div className="flex h-12 shrink-0 items-center justify-between border-b px-4">
-                <div className="min-w-0">
-                  <p className="truncate font-medium">{graph.dashboard.name}</p>
-                  {graph.dashboard.description ? (
-                    <p className="truncate text-xs text-muted-foreground">
-                      {String(graph.dashboard.description)}
-                    </p>
-                  ) : null}
+              <div className="flex min-h-12 shrink-0 flex-col justify-center gap-0.5 border-b px-4 py-2">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="min-w-0 truncate font-medium">
+                    {graph.dashboard.name}
+                  </p>
+                  <div className="flex shrink-0 items-center gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={refresh}
+                      disabled={refreshing}
+                    >
+                      <RefreshCw
+                        className={cn("size-4", refreshing && "animate-spin")}
+                      />
+                      Refresh
+                    </Button>
+                    <Button size="sm" onClick={() => setAddOpen(true)}>
+                      <Plus className="size-4" />
+                      Add widget
+                    </Button>
+                  </div>
                 </div>
-                <div className="flex shrink-0 items-center gap-2">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={refresh}
-                    disabled={refreshing}
+                {graph.dashboard.description ? (
+                  <p
+                    className="truncate text-xs text-muted-foreground"
+                    title={String(graph.dashboard.description)}
                   >
-                    <RefreshCw
-                      className={cn("size-4", refreshing && "animate-spin")}
-                    />
-                    Refresh
-                  </Button>
-                  <Button size="sm" onClick={() => setAddOpen(true)}>
-                    <Plus className="size-4" />
-                    Add widget
-                  </Button>
-                </div>
+                    {String(graph.dashboard.description)}
+                  </p>
+                ) : null}
               </div>
               <ScrollArea className="min-h-0 flex-1">
                 {graph.widgets.length === 0 ? (
@@ -731,6 +791,14 @@ export function DashboardsScreen({ onClose }: { onClose: () => void }) {
         />
       ) : null}
 
+      {pendingRename ? (
+        <RenameDashboardDialog
+          dashboard={pendingRename}
+          onClose={() => setPendingRename(null)}
+          onRename={(name) => renameDashboard(pendingRename.id, name)}
+        />
+      ) : null}
+
       {addOpen && selectedId ? (
         <AddWidgetDialog
           dashboardId={selectedId}
@@ -769,16 +837,18 @@ export function DashboardsScreen({ onClose }: { onClose: () => void }) {
   )
 }
 
-// A small name prompt for creating a dashboard (window.prompt is unavailable in
-// Electron's renderer). Enter submits, Escape/backdrop closes.
+// A small prompt for creating a dashboard (window.prompt is unavailable in
+// Electron's renderer). Name is required; description is optional. Enter in the
+// name field submits; Escape/backdrop closes.
 function NewDashboardDialog({
   onClose,
   onCreate,
 }: {
   onClose: () => void
-  onCreate: (name: string) => void | Promise<void>
+  onCreate: (name: string, description: string) => void | Promise<void>
 }) {
   const [name, setName] = useState("")
+  const [description, setDescription] = useState("")
   const [saving, setSaving] = useState(false)
 
   async function submit() {
@@ -786,7 +856,7 @@ function NewDashboardDialog({
     if (!trimmed) return
     setSaving(true)
     try {
-      await onCreate(trimmed)
+      await onCreate(trimmed, description.trim())
     } finally {
       setSaving(false)
     }
@@ -798,13 +868,92 @@ function NewDashboardDialog({
         <DialogHeader>
           <DialogTitle>New dashboard</DialogTitle>
         </DialogHeader>
+        <div className="space-y-4">
+          <div className="space-y-1.5">
+            <Label htmlFor="dashboard-name">Name</Label>
+            <Input
+              id="dashboard-name"
+              autoFocus
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault()
+                  void submit()
+                }
+              }}
+              placeholder="Ops overview"
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="dashboard-description">
+              Description{" "}
+              <span className="text-muted-foreground">(optional)</span>
+            </Label>
+            <Textarea
+              id="dashboard-description"
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="What this dashboard tracks"
+              className="h-20"
+            />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose} disabled={saving}>
+            Cancel
+          </Button>
+          <Button onClick={submit} disabled={saving || !name.trim()}>
+            {saving ? "Creating…" : "Create"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+// Rename an existing dashboard. Pre-fills the current name, selected for quick
+// overwrite. Enter submits, Escape/backdrop closes. Empty/unchanged is a no-op.
+function RenameDashboardDialog({
+  dashboard,
+  onClose,
+  onRename,
+}: {
+  dashboard: Dashboard
+  onClose: () => void
+  onRename: (name: string) => void | Promise<void>
+}) {
+  const [name, setName] = useState(dashboard.name)
+  const [saving, setSaving] = useState(false)
+
+  async function submit() {
+    const trimmed = name.trim()
+    if (!trimmed || trimmed === dashboard.name) {
+      onClose()
+      return
+    }
+    setSaving(true)
+    try {
+      await onRename(trimmed)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="max-w-sm">
+        <DialogHeader>
+          <DialogTitle>Rename dashboard</DialogTitle>
+        </DialogHeader>
         <div className="space-y-1.5">
-          <Label htmlFor="dashboard-name">Name</Label>
+          <Label htmlFor="dashboard-rename">Name</Label>
           <Input
-            id="dashboard-name"
+            id="dashboard-rename"
             autoFocus
             value={name}
             onChange={(e) => setName(e.target.value)}
+            onFocus={(e) => e.target.select()}
             onKeyDown={(e) => {
               if (e.key === "Enter") {
                 e.preventDefault()
@@ -819,7 +968,7 @@ function NewDashboardDialog({
             Cancel
           </Button>
           <Button onClick={submit} disabled={saving || !name.trim()}>
-            {saving ? "Creating…" : "Create"}
+            {saving ? "Saving…" : "Save"}
           </Button>
         </DialogFooter>
       </DialogContent>

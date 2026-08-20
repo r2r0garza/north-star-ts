@@ -428,7 +428,12 @@ export function registerDbHandlers(
     (
       _e,
       id: string,
-      patch: { name?: string; description?: string | null; layout?: unknown }
+      patch: {
+        name?: string
+        description?: string | null
+        layout?: unknown
+        pinned?: boolean
+      }
     ) => dashboards.updateDashboard(id, patch)
   )
   ipcMain.handle("db:dashboards:delete", (_e, id: string) =>

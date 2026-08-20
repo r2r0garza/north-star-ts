@@ -52,6 +52,26 @@ describe.skipIf(!sqliteLoads)("dashboards repo", () => {
     expect(listDashboards()).toHaveLength(0)
   })
 
+  it("defaults to unpinned and sorts pinned dashboards to the top", () => {
+    const a = createDashboard({ name: "A" })
+    const b = createDashboard({ name: "B" })
+    const c = createDashboard({ name: "C" })
+    expect(a.pinned).toBe(false)
+
+    // Pin the oldest (a). Regardless of updated_at tiebreaks, a pinned dashboard
+    // always sorts ahead of every unpinned one.
+    const pinnedA = updateDashboard(a.id, { pinned: true })
+    expect(pinnedA.pinned).toBe(true)
+    expect(listDashboards()[0]?.id).toBe(a.id)
+
+    // Unpinning drops it back among the unpinned rows.
+    expect(updateDashboard(a.id, { pinned: false }).pinned).toBe(false)
+    const ids = listDashboards().map((d) => d.id)
+    expect(ids).toContain(a.id)
+    expect(ids).toContain(b.id)
+    expect(ids).toContain(c.id)
+  })
+
   it("round-trips JSON blobs (layout/config/recipe/pos)", () => {
     const dash = createDashboard({ name: "D", layout: { cols: 12 } })
     expect(getDashboard(dash.id)?.layout).toEqual({ cols: 12 })
