@@ -587,6 +587,18 @@ export interface DashboardWidget {
   position: number
 }
 
+// A widget's data-fetch recipe (stored inside the opaque `recipe` JSON blob).
+// The deterministic refresh executor (plan 033.3) re-runs it with no LLM: run
+// `command` in `cwd` (captured at author time), OR fetch `url`; the output MUST
+// be a JSON array of flat objects (the row shape the view renders). `note` is a
+// freeform authoring hint. All fields optional — validated at refresh time.
+export interface DashboardRecipe {
+  command?: string
+  url?: string
+  cwd?: string
+  note?: string
+}
+
 // The cached data a widget renders — the run/cache side of the definition/run
 // split. One row per widget (PK = widgetId), replaced on each refresh.
 export interface DashboardWidgetData {

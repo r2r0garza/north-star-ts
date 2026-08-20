@@ -69,6 +69,7 @@ import type {
   McpServerDef,
 } from "../main/db/types"
 import type { IndexStatus } from "../main/ipc/index-handlers"
+import type { ApproveResult } from "../main/dashboards/service"
 import type {
   McpServerView,
   McpTree,
@@ -1130,6 +1131,25 @@ const api = {
     }) => ipcRenderer.invoke("index:setEnabled", payload) as Promise<void>,
   },
 
+  // Deterministic dashboard refresh (plan 033.3). Control (pause/cancel) + live
+  // progress reuse the generic `tasks.*` verbs and the task event tail; these are
+  // the dashboard-specific kickoffs. Each returns the refresh task id (or null).
+  dashboard: {
+    // Re-fetch every widget by replaying its stored recipe (no LLM). Idempotent.
+    refresh: (dashboardId: string) =>
+      ipcRenderer.invoke("dashboard:refresh", dashboardId) as Promise<
+        string | null
+      >,
+    // Bless a widget's recipe (writes a durable allowlist grant), then refresh.
+    // Resolves { ok, taskId } or { ok: false, reason } so the UI can explain a
+    // recipe that can't be blessed (e.g. a shell command with no captured cwd).
+    approveRecipe: (widgetId: string) =>
+      ipcRenderer.invoke(
+        "dashboard:approveRecipe",
+        widgetId
+      ) as Promise<ApproveResult>,
+  },
+
   // LLM provider accounts, their models, API keys, and the active selection.
   // The renderer never receives a plaintext key — only `hasKey`/`maskedKey`.
   // All secret handling stays in the main process.
@@ -1369,5 +1389,6 @@ export type {
 // Workspace indexing types (plan 008) for the status strip + settings tab.
 export type { IndexPriority, IndexStage } from "../main/db/types"
 export type { IndexStatus } from "../main/ipc/index-handlers"
+export type { ApproveResult } from "../main/dashboards/service"
 export type { PickedElement } from "../main/browser/types"
 export type { GitDiffResult } from "../main/git/diff"

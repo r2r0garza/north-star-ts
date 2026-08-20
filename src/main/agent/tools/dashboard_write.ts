@@ -35,7 +35,13 @@ export const dashboardWriteTool: Tool = {
         "- data: the rows to render now — an array of flat objects (e.g. " +
         "[{ month: 'Jan', count: 12 }]). For a stat, a single object works.\n" +
         "- recipe: how to re-fetch this widget's data later — { command?, url?, note? }. " +
-        "Store the exact shell command or URL you used so the dashboard can refresh.\n\n" +
+        "Store the exact shell command or URL you used so the dashboard can refresh " +
+        "WITHOUT you. CRITICAL: the recipe must emit a JSON ARRAY OF FLAT OBJECTS (the " +
+        "same shape as `data`) to stdout / as the response body — refresh runs it " +
+        "deterministically with no LLM to reshape the output. Prefer JSON-native flags " +
+        "and pipe through jq, e.g. `az ... -o json`, `gh ... --json field1,field2`, or " +
+        "`some-cmd | jq '[.items[] | {name, count}]'`. A command that prints a table or " +
+        "prose will fail to refresh.\n\n" +
         "Returns the saved dashboard id and a per-widget summary.",
       parameters: {
         type: "object",
@@ -73,7 +79,11 @@ export const dashboardWriteTool: Tool = {
                 recipe: {
                   type: "object",
                   description:
-                    "How to re-fetch this widget's data ({ command?, url?, note? }).",
+                    "How to re-fetch this widget's data, emitting a JSON array of flat " +
+                    "objects: { command?, url?, note? }. `command` is a shell command run " +
+                    "in the workspace; `url` is an http(s) endpoint returning JSON. Provide " +
+                    "one of command/url. (The workspace directory is captured automatically " +
+                    "for a command — no need to set it.)",
                 },
                 data: {
                   type: "array",
@@ -90,7 +100,7 @@ export const dashboardWriteTool: Tool = {
       },
     },
   },
-  execute: async (args) => {
+  execute: async (args, ctx) => {
     const {
       dashboardId,
       name,
@@ -169,7 +179,7 @@ export const dashboardWriteTool: Tool = {
           title: String(item.title ?? `Widget ${i + 1}`),
           type: item.type,
           config: item.config ?? null,
-          recipe: item.recipe ?? null,
+          recipe: withCwd(item.recipe, ctx.workspace),
           position: i,
         })
         if (item.data !== undefined && item.data !== null) {
@@ -195,4 +205,18 @@ export const dashboardWriteTool: Tool = {
       })),
     })
   },
+}
+
+// Capture the authoring working directory into a `command` recipe so the
+// deterministic refresh executor (033.3) can re-run the command from the same
+// place AND match the workspace-scoped allowlist grant the agent's own run_shell
+// earned. A recipe with only a `url` (or no command) is left untouched — a web
+// fetch needs no directory. An explicit `cwd` the model set is preserved.
+function withCwd(recipe: unknown, workspace: string | undefined): unknown {
+  if (!recipe || typeof recipe !== "object") return recipe ?? null
+  const r = recipe as Record<string, unknown>
+  if (typeof r.command === "string" && !r.cwd && workspace) {
+    return { ...r, cwd: workspace }
+  }
+  return recipe
 }

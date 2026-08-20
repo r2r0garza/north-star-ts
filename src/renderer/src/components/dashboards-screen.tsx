@@ -4,6 +4,7 @@ import {
   Loader2,
   Plus,
   RefreshCw,
+  ShieldCheck,
   Trash2,
   XIcon,
 } from "lucide-react"
@@ -105,6 +106,50 @@ function asRows(data: unknown): Array<Record<string, unknown>> {
   if (data && typeof data === "object")
     return [data as Record<string, unknown>]
   return []
+}
+
+const TERMINAL_TASK_STATUSES = new Set([
+  "completed",
+  "failed",
+  "cancelled",
+  "paused",
+])
+
+// Resolve when a task reaches a terminal state, watching the shared task event
+// tail (the same channel the indexing strip uses). Falls back to a poll so a
+// task that settled before we subscribed still resolves; a timeout guards against
+// a lost event. Used to know when a dashboard_refresh executor has finished so
+// the view can re-read the cache.
+function waitForTask(taskId: string): Promise<void> {
+  return new Promise<void>((resolve) => {
+    let done = false
+    const finish = () => {
+      if (done) return
+      done = true
+      unsub()
+      clearInterval(poll)
+      clearTimeout(timeout)
+      resolve()
+    }
+    const unsub = window.cowork.tasks.onEvent(({ taskId: id, event }) => {
+      if (id !== taskId) return
+      if (
+        event.type === "task_completed" ||
+        event.type === "task_failed" ||
+        (event.type === "status_change" &&
+          TERMINAL_TASK_STATUSES.has(event.to))
+      ) {
+        finish()
+      }
+    })
+    // Poll as a backstop (the task may already be terminal, or an event missed).
+    const poll = setInterval(async () => {
+      const task = await window.cowork.db.tasks.get(taskId)
+      if (task && TERMINAL_TASK_STATUSES.has(task.status)) finish()
+    }, 400)
+    // Never hang the UI on a lost signal.
+    const timeout = setTimeout(finish, 30_000)
+  })
 }
 
 // ── widget renderers ──────────────────────────────────────────────────────────
@@ -263,10 +308,38 @@ function TableWidget({
 function WidgetBody({
   widget,
   data,
+  onApprove,
 }: {
   widget: DashboardWidget
   data: DashboardWidgetData | undefined
+  onApprove: (widgetId: string) => void
 }) {
+  // `stale` = the recipe needs approval to re-run headless (fail-closed). Offer a
+  // one-click bless-and-refresh, but ONLY when approving can actually help: a
+  // `url`, or a `command` that carries a `cwd`. A command with no cwd (e.g. a
+  // recipe authored before 033.3) can't be scoped/run — show re-author guidance
+  // instead of a dead button.
+  if (data?.status === "stale") {
+    const recipe = (widget.recipe ?? {}) as {
+      command?: string
+      url?: string
+      cwd?: string
+    }
+    const approvable = !!recipe.url || (!!recipe.command && !!recipe.cwd)
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-2 p-3 text-center">
+        <p className="text-xs text-muted-foreground">
+          {data.error ?? "This recipe needs approval to refresh."}
+        </p>
+        {approvable ? (
+          <Button size="sm" variant="outline" onClick={() => onApprove(widget.id)}>
+            <ShieldCheck className="size-4" />
+            Approve this recipe
+          </Button>
+        ) : null}
+      </div>
+    )
+  }
   if (data?.status === "error") {
     return (
       <div className="flex h-full items-center justify-center p-2 text-center text-xs text-destructive">
@@ -326,14 +399,44 @@ export function DashboardsScreen({ onClose }: { onClose: () => void }) {
     }
   }, [])
 
+  // Kick off the deterministic refresh executor (plan 033.3) — it replays each
+  // widget's stored recipe (no LLM) into the cache — then re-read the graph when
+  // the task settles. Silent = true for the automatic on-open refresh (no toast).
+  const runRefresh = useCallback(
+    async (id: string, opts?: { silent?: boolean }) => {
+      setRefreshing(true)
+      try {
+        const taskId = await window.cowork.dashboard.refresh(id)
+        // Null → nothing to refresh (no recipes) or a refresh was already live;
+        // just re-read what's cached.
+        if (taskId) await waitForTask(taskId)
+        // Only reload if this dashboard is still the one on screen.
+        setSelectedId((cur) => {
+          if (cur === id) void loadGraph(id)
+          return cur
+        })
+        if (!opts?.silent) toast.success("Dashboard refreshed")
+      } finally {
+        setRefreshing(false)
+      }
+    },
+    [loadGraph]
+  )
+
   useEffect(() => {
     void refreshList()
   }, [refreshList])
 
   useEffect(() => {
-    if (selectedId) void loadGraph(selectedId)
-    else setGraph(null)
-  }, [selectedId, loadGraph])
+    if (!selectedId) {
+      setGraph(null)
+      return
+    }
+    // Show cached data immediately, then re-fetch in the background (on-open
+    // refresh). ensureRefresh dedups, and a recipe-less dashboard is a no-op.
+    void loadGraph(selectedId)
+    void runRefresh(selectedId, { silent: true })
+  }, [selectedId, loadGraph, runRefresh])
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -421,16 +524,22 @@ export function DashboardsScreen({ onClose }: { onClose: () => void }) {
     if (changed && selectedId) void loadGraph(selectedId)
   }
 
-  // Refresh reloads each widget's cached data from the DB. The deterministic
-  // recipe re-run (no-LLM replay of the stored recipe) is plan 033.3; today an
-  // agent re-authoring the dashboard in chat updates the cache, and this button
-  // picks that up. TODO(033.3): call a dashboard_refresh executor here instead.
   async function refresh() {
+    if (selectedId) await runRefresh(selectedId)
+  }
+
+  async function approveRecipe(widgetId: string) {
     if (!selectedId) return
     setRefreshing(true)
     try {
+      const result = await window.cowork.dashboard.approveRecipe(widgetId)
+      if (!result.ok) {
+        toast.error(result.reason)
+        return
+      }
+      if (result.taskId) await waitForTask(result.taskId)
       await loadGraph(selectedId)
-      toast.success("Dashboard refreshed")
+      toast.success("Recipe approved")
     } finally {
       setRefreshing(false)
     }
@@ -585,6 +694,7 @@ export function DashboardsScreen({ onClose }: { onClose: () => void }) {
                           <WidgetBody
                             widget={w}
                             data={dataByWidget.get(w.id)}
+                            onApprove={approveRecipe}
                           />
                         </div>
                       </div>
