@@ -30,7 +30,6 @@ import {
   Table,
   TableBody,
   TableCell,
-  TableFooter,
   TableHead,
   TableHeader,
   TableRow,
@@ -821,26 +820,40 @@ export function SettingsScreen({
                         value="capabilities"
                         className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto py-6"
                       >
-                        <div className="flex flex-col gap-1">
-                          <h3 className="text-sm font-medium">Skill folders</h3>
-                          <p className="text-sm text-muted-foreground">
-                            Folders scanned for skills. Each should contain
-                            per-skill subfolders with a <code>SKILL.md</code>{" "}
-                            inside. Built-in sources can't be removed. Workspace
-                            folders (<code>.github/skills</code>,{" "}
-                            <code>
-                              {window.cowork.system().dataDirName}/skills
-                            </code>
-                            ) are picked up automatically when a workspace is
-                            open.
-                          </p>
+                        <div className="flex items-start justify-between gap-4">
+                          <div className="flex flex-col gap-1">
+                            <h3 className="text-sm font-medium">
+                              Skill folders
+                            </h3>
+                            <p className="text-sm text-muted-foreground">
+                              Folders scanned for skills. Each should contain
+                              per-skill subfolders with a <code>SKILL.md</code>{" "}
+                              inside. Built-in sources can't be removed.
+                              Workspace folders (<code>.github/skills</code>,{" "}
+                              <code>
+                                {window.cowork.system().dataDirName}/skills
+                              </code>
+                              ) are picked up automatically when a workspace is
+                              open.
+                            </p>
+                          </div>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            className="shrink-0"
+                            onClick={addSkillFolder}
+                          >
+                            <Plus />
+                            Add folder
+                          </Button>
                         </div>
                         {skillSources === null ? (
                           <p className="text-sm text-muted-foreground">
                             Scanning…
                           </p>
                         ) : (
-                          <div className="overflow-hidden rounded-lg border">
+                          <div className="shrink-0 overflow-hidden rounded-lg border">
                             <Table>
                               <TableHeader>
                                 <TableRow>
@@ -883,21 +896,6 @@ export function SettingsScreen({
                                   </TableRow>
                                 ))}
                               </TableBody>
-                              <TableFooter>
-                                <TableRow className="hover:bg-transparent">
-                                  <TableCell colSpan={4}>
-                                    <Button
-                                      type="button"
-                                      variant="ghost"
-                                      size="sm"
-                                      onClick={addSkillFolder}
-                                    >
-                                      <Plus />
-                                      Add folder
-                                    </Button>
-                                  </TableCell>
-                                </TableRow>
-                              </TableFooter>
                             </Table>
                           </div>
                         )}
@@ -905,27 +903,41 @@ export function SettingsScreen({
                         {/* Agent-source folders — where <name>.agent.md files
                           live. Custom folders registered here are pulled into
                           every conversation (Chat, Interactive, North Star). */}
-                        <div className="flex flex-col gap-1">
-                          <h3 className="text-sm font-medium">Agent folders</h3>
-                          <p className="text-sm text-muted-foreground">
-                            Folders scanned for custom agents. Each should
-                            contain <code>&lt;name&gt;.agent.md</code> files.
-                            Registered folders apply across Chat, Interactive,
-                            and North Star. Built-in sources can't be removed.
-                            Workspace folders (<code>.github/agents</code>,{" "}
-                            <code>
-                              {window.cowork.system().dataDirName}/agents
-                            </code>
-                            ) are picked up automatically when a workspace is
-                            open.
-                          </p>
+                        <div className="flex items-start justify-between gap-4">
+                          <div className="flex flex-col gap-1">
+                            <h3 className="text-sm font-medium">
+                              Agent folders
+                            </h3>
+                            <p className="text-sm text-muted-foreground">
+                              Folders scanned for custom agents. Each should
+                              contain <code>&lt;name&gt;.agent.md</code> files.
+                              Registered folders apply across Chat, Interactive,
+                              and North Star. Built-in sources can't be removed.
+                              Workspace folders (<code>.github/agents</code>,{" "}
+                              <code>
+                                {window.cowork.system().dataDirName}/agents
+                              </code>
+                              ) are picked up automatically when a workspace is
+                              open.
+                            </p>
+                          </div>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            className="shrink-0"
+                            onClick={addAgentFolder}
+                          >
+                            <Plus />
+                            Add folder
+                          </Button>
                         </div>
                         {agentSources === null ? (
                           <p className="text-sm text-muted-foreground">
                             Scanning…
                           </p>
                         ) : (
-                          <div className="overflow-hidden rounded-lg border">
+                          <div className="shrink-0 overflow-hidden rounded-lg border">
                             <Table>
                               <TableHeader>
                                 <TableRow>
@@ -968,21 +980,6 @@ export function SettingsScreen({
                                   </TableRow>
                                 ))}
                               </TableBody>
-                              <TableFooter>
-                                <TableRow className="hover:bg-transparent">
-                                  <TableCell colSpan={4}>
-                                    <Button
-                                      type="button"
-                                      variant="ghost"
-                                      size="sm"
-                                      onClick={addAgentFolder}
-                                    >
-                                      <Plus />
-                                      Add folder
-                                    </Button>
-                                  </TableCell>
-                                </TableRow>
-                              </TableFooter>
                             </Table>
                           </div>
                         )}
@@ -991,24 +988,37 @@ export function SettingsScreen({
                           Custom folders registered here are scanned alongside the
                           user + workspace configs. Manage individual servers in the
                           MCP view (sidebar). */}
-                        <div className="flex flex-col gap-1">
-                          <h3 className="text-sm font-medium">MCP folders</h3>
-                          <p className="text-sm text-muted-foreground">
-                            Folders scanned for an <code>mcp.json</code> config.
-                            Built-in sources can't be removed. Workspace configs (
-                            <code>.github/mcp.json</code>,{" "}
-                            <code>
-                              {window.cowork.system().dataDirName}/mcp.json
-                            </code>
-                            ) are picked up automatically when a workspace is open.
-                          </p>
+                        <div className="flex items-start justify-between gap-4">
+                          <div className="flex flex-col gap-1">
+                            <h3 className="text-sm font-medium">MCP folders</h3>
+                            <p className="text-sm text-muted-foreground">
+                              Folders scanned for an <code>mcp.json</code>{" "}
+                              config. Built-in sources can't be removed.
+                              Workspace configs (<code>.github/mcp.json</code>,{" "}
+                              <code>
+                                {window.cowork.system().dataDirName}/mcp.json
+                              </code>
+                              ) are picked up automatically when a workspace is
+                              open.
+                            </p>
+                          </div>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            className="shrink-0"
+                            onClick={addMcpFolder}
+                          >
+                            <Plus />
+                            Add folder
+                          </Button>
                         </div>
                         {mcpSources === null ? (
                           <p className="text-sm text-muted-foreground">
                             Scanning…
                           </p>
                         ) : (
-                          <div className="overflow-hidden rounded-lg border">
+                          <div className="shrink-0 overflow-hidden rounded-lg border">
                             <Table>
                               <TableHeader>
                                 <TableRow>
@@ -1053,21 +1063,6 @@ export function SettingsScreen({
                                   </TableRow>
                                 ))}
                               </TableBody>
-                              <TableFooter>
-                                <TableRow className="hover:bg-transparent">
-                                  <TableCell colSpan={4}>
-                                    <Button
-                                      type="button"
-                                      variant="ghost"
-                                      size="sm"
-                                      onClick={addMcpFolder}
-                                    >
-                                      <Plus />
-                                      Add folder
-                                    </Button>
-                                  </TableCell>
-                                </TableRow>
-                              </TableFooter>
                             </Table>
                           </div>
                         )}
