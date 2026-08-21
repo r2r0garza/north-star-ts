@@ -125,6 +125,24 @@ const browserManager = new BrowserManager()
 // Assigned in createWindow; the browser manager reads it via the forwarder below.
 let mainWindow: BrowserWindow | null = null
 
+const TITLE_BAR_OVERLAY_HEIGHT = 44
+
+function titleBarOverlayForTheme(theme: "light" | "dark") {
+  return {
+    color: theme === "dark" ? "#111111" : "#ffffff",
+    symbolColor: theme === "dark" ? "#a1a1aa" : "#52525b",
+    height: TITLE_BAR_OVERLAY_HEIGHT,
+  }
+}
+
+function setAppTheme(theme: "light" | "dark") {
+  nativeTheme.themeSource = theme === "dark" ? "dark" : "light"
+
+  if (process.platform !== "darwin") {
+    mainWindow?.setTitleBarOverlay(titleBarOverlayForTheme(theme))
+  }
+}
+
 // Route picked elements from the agent browser to the main app renderer, where
 // they surface as a pending composer chip. Reads mainWindow lazily so it works
 // regardless of creation order; no-ops if the window is gone.
@@ -177,11 +195,9 @@ function createWindow(): void {
       ? { titleBarStyle: "hiddenInset", trafficLightPosition: { x: 16, y: 18 } }
       : {
           titleBarStyle: "hidden",
-          titleBarOverlay: {
-            color: "#111111",
-            symbolColor: "#a1a1aa",
-            height: 44,
-          },
+          titleBarOverlay: titleBarOverlayForTheme(
+            nativeTheme.shouldUseDarkColors ? "dark" : "light"
+          ),
         }),
     webPreferences: {
       preload: join(__dirname, "../preload/index.js"),
@@ -312,11 +328,10 @@ ipcMain.handle("browser:reload", () => browserManager.userReload())
 // one. Fire-and-forget (the tab strip pushes the resulting empty state).
 ipcMain.handle("browser:close", () => browserManager.userClose())
 // Main app renderer → main: the app's resolved theme changed (light/dark). Drive
-// Electron's nativeTheme so the pop-out Agent Browser window's chrome — which
-// uses the `Canvas`/`CanvasText` system colors under `color-scheme: light dark`
-// (see src/renderer/browser.html) — follows the app instead of the OS setting.
+// Electron's nativeTheme for secondary browser chrome and keep the Windows/Linux
+// main-window titlebar overlay buttons aligned with the app instead of the OS.
 ipcMain.handle("browser:set-theme", (_event, theme: "light" | "dark") => {
-  nativeTheme.themeSource = theme === "dark" ? "dark" : "light"
+  setAppTheme(theme === "dark" ? "dark" : "light")
 })
 // Toggle element-pick mode from the chrome's "Pick element" button.
 ipcMain.handle("browser:set-pick-mode", (_event, active: boolean) => {
