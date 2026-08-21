@@ -171,12 +171,18 @@ function createWindow(): void {
     autoHideMenuBar: true,
     // Remove the OS title bar so the sidebar/chat reach the top. On macOS,
     // `hiddenInset` keeps the traffic-light buttons floating over the top-left
-    // (i.e. over the sidebar); other platforms get a frameless top via
-    // `titleBarStyle: "hidden"`.
-    titleBarStyle: "hidden",
+    // (i.e. over the sidebar); Windows/Linux need titleBarOverlay to restore the
+    // native window controls after hiding the title bar.
     ...(process.platform === "darwin"
       ? { titleBarStyle: "hiddenInset", trafficLightPosition: { x: 16, y: 18 } }
-      : {}),
+      : {
+          titleBarStyle: "hidden",
+          titleBarOverlay: {
+            color: "#111111",
+            symbolColor: "#a1a1aa",
+            height: 44,
+          },
+        }),
     webPreferences: {
       preload: join(__dirname, "../preload/index.js"),
       sandbox: false,

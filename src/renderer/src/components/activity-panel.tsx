@@ -126,9 +126,11 @@ function clampBrowserWidth(width: number): number {
 export function ActivityToggle({
   open,
   onToggle,
+  reserveWindowControls = false,
 }: {
   open: boolean
   onToggle: () => void
+  reserveWindowControls?: boolean
 }) {
   return (
     <button
@@ -137,7 +139,8 @@ export function ActivityToggle({
       aria-label={open ? "Collapse activity panel" : "Expand activity panel"}
       title={open ? "Collapse activity panel" : "Expand activity panel"}
       className={cn(
-        "absolute top-2.5 right-4 z-10 [-webkit-app-region:no-drag]",
+        "absolute top-2.5 z-10 [-webkit-app-region:no-drag]",
+        reserveWindowControls ? "right-[8.75rem]" : "right-4",
         "flex size-7 items-center justify-center rounded-md",
         "text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
       )}
@@ -154,15 +157,22 @@ export function SidebarModeToggle({
   mode,
   onModeChange,
   showModeSelect = true,
+  reserveWindowControls = false,
 }: {
   mode: SidebarMode
   onModeChange: (mode: SidebarMode) => void
   // Hide the Info/Browser/Changes mode dropdown (it's conversation-specific)
   // while keeping the theme toggle, e.g. on the Skills/Agents/Processes overlays.
   showModeSelect?: boolean
+  reserveWindowControls?: boolean
 }) {
   return (
-    <div className="absolute top-2 right-14 z-10 flex items-center gap-1 [-webkit-app-region:no-drag]">
+    <div
+      className={cn(
+        "absolute top-2 z-10 flex items-center gap-1 [-webkit-app-region:no-drag]",
+        reserveWindowControls ? "right-[11.25rem]" : "right-14"
+      )}
+    >
       <ThemeToggle />
       {showModeSelect && (
         <Select
