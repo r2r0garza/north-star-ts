@@ -15,8 +15,8 @@ export interface ChatMessage {
   tool_call_id?: string
 }
 
-// Default history budget in (approximate) tokens. Conservative relative to the
-// model's real context window because the counter is a heuristic.
+// Fallback budget for optional system sections when no configured summarization
+// threshold is supplied. Stored history is not truncated against this value.
 const DEFAULT_TOKEN_BUDGET = 12000
 
 // Fraction of the total budget that droppable context sections (skills, todos,
@@ -63,9 +63,10 @@ export interface ContextBuilderOptions {
 }
 
 // Assembles the message array sent to the LLM for a turn: a system block (the
-// base prompt + budget-admitted context sections) followed by a token-budgeted
-// walk-back over stored history (which already ends with the just-persisted user
-// message). The rest of the app calls `build` and stays unaware of the strategy.
+// base prompt + budget-admitted context sections) followed by stored history
+// (which already ends with the just-persisted user message). Before a summary
+// exists the complete transcript is replayed; afterward the summary explicitly
+// replaces messages through its coverage boundary and the complete tail follows.
 // Sections are the extension point for summaries, memories, workspace/task state,
 // etc. — each rendered by the caller, budgeted and composed here.
 export class ContextBuilder {
@@ -84,24 +85,31 @@ export class ContextBuilder {
 
   // `baseSystemPrompt` is the non-droppable core prompt (mode prompt). `sections`
   // are optional droppable context slices folded into the system block by
-  // priority under a share of the budget. Passing just `{ baseSystemPrompt }`
-  // reproduces the pre-014 behavior (system prompt + walk-back).
+  // priority under a share of the budget.
   build(
     conversationId: string,
-    opts: { baseSystemPrompt: string; sections?: ContextSection[] }
+    opts: {
+      baseSystemPrompt: string
+      sections?: ContextSection[]
+      historyAfterSeq?: number
+      tokenBudget?: number
+    }
   ): ChatMessage[] {
+    const budget = opts.tokenBudget ?? this.budget
     const systemContent = this.composeSystemBlock(
       opts.baseSystemPrompt,
-      opts.sections ?? []
+      opts.sections ?? [],
+      budget
     )
-    const history = listMessages(conversationId)
-    const included = this.walkBack(
-      history,
-      this.budget - this.counter.count(systemContent)
+    // A summary explicitly replaces messages through historyAfterSeq. Without a
+    // summary, replay the entire stored transcript; never silently discard old
+    // messages behind a second, unrelated context limit.
+    const history = listMessages(conversationId).filter(
+      (message) => message.seq > (opts.historyAfterSeq ?? 0)
     )
     return [
       { role: "system", content: systemContent },
-      ...included.map(toChatMessage),
+      ...history.map(toChatMessage),
     ]
   }
 
@@ -111,10 +119,11 @@ export class ContextBuilder {
   // Logs exactly what was included and dropped (no silent truncation).
   private composeSystemBlock(
     baseSystemPrompt: string,
-    sections: ContextSection[]
+    sections: ContextSection[],
+    budget: number
   ): string {
     const present = sections.filter((s) => s.content.trim().length > 0)
-    const sectionBudget = Math.floor(this.budget * this.sectionBudgetShare)
+    const sectionBudget = Math.floor(budget * this.sectionBudgetShare)
     const byPriority = [...present].sort((a, b) => b.priority - a.priority)
 
     const admitted = new Set<string>()
@@ -144,57 +153,7 @@ export class ContextBuilder {
     }
     return blocks.join("\n\n")
   }
-
-  // Walk the stored history newest → oldest in *turn groups*, admitting whole
-  // groups while the budget allows. Groups keep tool-call integrity intact: an
-  // assistant message with tool_calls always travels with all of its tool
-  // results, so the API never sees an orphaned tool message (which would 400).
-  private walkBack(history: Message[], budget: number): Message[] {
-    const groups = groupTurns(history)
-    const chosen: Message[][] = []
-    let remaining = budget
-    for (let i = groups.length - 1; i >= 0; i--) {
-      const group = groups[i]
-      const cost = group.reduce((sum, m) => sum + this.cost(m), 0)
-      if (cost > remaining) break
-      remaining -= cost
-      chosen.unshift(group)
-    }
-    return chosen.flat()
-  }
-
-  private cost(m: Message): number {
-    if (m.tokenEstimate != null) return m.tokenEstimate
-    let text = m.content ?? ""
-    if (m.toolCalls?.length) text += JSON.stringify(m.toolCalls)
-    return this.counter.count(text)
-  }
 }
-
-// Group a chronological message list into turn groups. An assistant message
-// bearing tool_calls starts a group that absorbs the following tool-result
-// messages; every other message is its own single-element group.
-function groupTurns(history: Message[]): Message[][] {
-  const groups: Message[][] = []
-  let i = 0
-  while (i < history.length) {
-    const m = history[i]
-    if (m.role === "assistant" && m.toolCalls?.length) {
-      const group = [m]
-      i++
-      while (i < history.length && history[i].role === "tool") {
-        group.push(history[i])
-        i++
-      }
-      groups.push(group)
-    } else {
-      groups.push([m])
-      i++
-    }
-  }
-  return groups
-}
-
 // Map a stored message to the OpenAI-compatible shape (inverse of how runChat
 // persists turns).
 function toChatMessage(m: Message): ChatMessage {

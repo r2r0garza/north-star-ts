@@ -42,14 +42,32 @@ describe("ContextBuilder — base behavior (pre-014 parity)", () => {
     expect(out.map((m) => m.content)).toEqual(["SYS", "hi", "hello"])
   })
 
-  it("drops oldest turn groups when history exceeds the budget", () => {
-    // Tiny budget so only the newest message fits.
+  it("keeps all history even when it exceeds the section budget", () => {
     history = [msg(1, "user", "x".repeat(400)), msg(2, "user", "y".repeat(4))]
     const b = new ContextBuilder({ tokenBudget: 20 })
     const out = b.build("c1", { baseSystemPrompt: "S" })
     const contents = out.slice(1).map((m) => m.content)
     expect(contents).toContain("y".repeat(4))
-    expect(contents).not.toContain("x".repeat(400))
+    expect(contents).toContain("x".repeat(400))
+  })
+
+  it("replays only the complete tail after a summary boundary", () => {
+    history = [
+      msg(1, "user", "already summarized"),
+      msg(2, "assistant", "also summarized"),
+      msg(3, "user", "new question"),
+      msg(4, "assistant", "new answer"),
+    ]
+    const b = new ContextBuilder()
+    const out = b.build("c1", {
+      baseSystemPrompt: "SYS",
+      historyAfterSeq: 2,
+    })
+    expect(out.map((m) => m.content)).toEqual([
+      "SYS",
+      "new question",
+      "new answer",
+    ])
   })
 })
 

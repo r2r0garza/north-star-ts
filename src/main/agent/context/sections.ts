@@ -162,10 +162,12 @@ export function approvalsSection(opts: {
 // constraints, open threads). Generated out of band by the `summarize` task and
 // read here each turn. Highest priority of the built-in sections — dropping it
 // under budget pressure loses context the conversation can't otherwise recover.
-// Additive to the walk-back (not a replacement): a slight overlap with the most
-// recent turns is harmless; there's never a gap. Returns null when no summary
-// exists yet (short conversation, or the first summarize task hasn't run).
-export function summarySection(conversationId: string): ContextSection | null {
+// The summary replaces stored messages through `coversThrough`; the context
+// builder appends every later message verbatim, so there is no overlap or gap.
+// Returns null when no summary exists yet.
+export function summarySection(
+  conversationId: string
+): (ContextSection & { coversThrough: number }) | null {
   const record = getConversationSummary(conversationId)
   if (!record || record.summary.trim().length === 0) return null
   const content =
@@ -174,7 +176,12 @@ export function summarySection(conversationId: string): ContextSection | null {
     "have scrolled out of the window below). Treat it as background context, not " +
     "the latest word — the recent messages are authoritative where they differ.\n\n" +
     record.summary
-  return { name: "summary", priority: SECTION_PRIORITY.summary, content }
+  return {
+    name: "summary",
+    priority: SECTION_PRIORITY.summary,
+    content,
+    coversThrough: record.coversThrough,
+  }
 }
 
 // Run a short git command in `cwd` and return its trimmed stdout, or null if it
