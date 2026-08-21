@@ -444,6 +444,7 @@ function Shell() {
         conversationId={activeConversationId}
         open={activityOpen}
         mode={sidebarMode}
+        reserveWindowControls={reserveWindowControls}
         browserObscured={settingsOpen || viewingTask !== null}
         workspace={workspacePath}
         changedFiles={reviewFiles}
