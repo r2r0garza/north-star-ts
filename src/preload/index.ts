@@ -489,6 +489,7 @@ const api = {
     ipcRenderer.invoke("open-in-editor", workspace, relPath) as Promise<string>,
   // Whether the window is currently fullscreen (macOS traffic lights hidden).
   isFullScreen: () => ipcRenderer.invoke("is-fullscreen") as Promise<boolean>,
+  platform: process.platform,
   // Subscribe to fullscreen changes. Returns an unsubscribe function.
   onFullScreenChange: (cb: (value: boolean) => void) => {
     const listener = (_e: IpcRendererEvent, value: boolean) => cb(value)

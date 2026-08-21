@@ -40,6 +40,8 @@ const SILENT_TASK_KINDS = new Set(["dashboard_refresh", "workspace_index"])
 // Tracks window fullscreen state so the sidebar toggle can reposition (the
 // macOS traffic lights disappear in fullscreen, freeing the left edge).
 function Shell() {
+  const isMac = window.cowork.platform === "darwin"
+  const reserveWindowControls = !isMac
   const [fullscreen, setFullscreen] = useState(false)
   // The active view, switched from the sidebar button group. North Star and
   // Interactive share the workspace-backed panel; Chat has its own.
@@ -319,7 +321,7 @@ function Shell() {
       {/* Top drag bar (replaces the OS title bar). The toggle is a no-drag
           child of this region so macOS lets its click through. */}
       <div className="absolute inset-x-0 top-0 z-20 h-11 [-webkit-app-region:drag]">
-        <SidebarToggle fullscreen={fullscreen} />
+        <SidebarToggle fullscreen={fullscreen} isMac={isMac} />
         {/* The Info/Browser/Changes mode dropdown and the right-panel toggle are
             conversation-specific, so hide them while a full-screen overlay
             (Agents / Skills / Processes) is open. The theme toggle stays (it
@@ -327,12 +329,28 @@ function Shell() {
         <SidebarModeToggle
           mode={sidebarMode}
           onModeChange={changeSidebarMode}
-          showModeSelect={!(agentsOpen || skillsOpen || processOpen || mcpOpen || dashboardsOpen)}
+          showModeSelect={
+            !(
+              agentsOpen ||
+              skillsOpen ||
+              processOpen ||
+              mcpOpen ||
+              dashboardsOpen
+            )
+          }
+          reserveWindowControls={reserveWindowControls}
         />
-        {!(agentsOpen || skillsOpen || processOpen || mcpOpen || dashboardsOpen) && (
+        {!(
+          agentsOpen ||
+          skillsOpen ||
+          processOpen ||
+          mcpOpen ||
+          dashboardsOpen
+        ) && (
           <ActivityToggle
             open={activityOpen}
             onToggle={() => setActivity(!activityOpen)}
+            reserveWindowControls={reserveWindowControls}
           />
         )}
       </div>
