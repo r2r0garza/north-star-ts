@@ -1,3 +1,4 @@
+import { spawn } from "child_process"
 import type { ChildProcess } from "child_process"
 import type { ExecResult, ExecOptions } from "./types"
 
@@ -50,6 +51,27 @@ export function captureSpawn(
     // already gone, so swallow it and fall back to killing the child directly.
     const terminate = () => {
       if (opts.killGroup && child.pid) {
+        if (process.platform === "win32") {
+          const killer = spawn(
+            "taskkill",
+            ["/pid", String(child.pid), "/T", "/F"],
+            {
+              stdio: "ignore",
+            }
+          )
+          const fallback = () => {
+            try {
+              child.kill("SIGKILL")
+            } catch {
+              // child already dead — nothing to do
+            }
+          }
+          killer.on("error", fallback)
+          killer.on("close", (code) => {
+            if (code !== 0) fallback()
+          })
+          return
+        }
         try {
           process.kill(-child.pid, "SIGKILL")
           return
