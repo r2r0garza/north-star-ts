@@ -71,7 +71,11 @@ export function ToolGroup({ calls }: { calls: ToolUse[] }) {
   const [open, setOpen] = useState(false)
 
   return (
-    <Collapsible className="w-full" open={open} onOpenChange={setOpen}>
+    <Collapsible
+      className="w-full min-w-0 max-w-full"
+      open={open}
+      onOpenChange={setOpen}
+    >
       <CollapsibleTrigger asChild>
         <button type="button" className="group/tg w-full text-left">
           <Marker>
@@ -88,8 +92,8 @@ export function ToolGroup({ calls }: { calls: ToolUse[] }) {
           </Marker>
         </button>
       </CollapsibleTrigger>
-      <CollapsibleContent>
-        <div className="mt-1 flex flex-col gap-1 pl-2">
+      <CollapsibleContent className="min-w-0 max-w-full">
+        <div className="mt-1 flex min-w-0 max-w-full flex-col gap-1 pl-2">
           {calls.map((c) => (
             <ToolUseRow key={c.id} use={c} />
           ))}
@@ -109,8 +113,8 @@ function ToolUseRow({ use }: { use: ToolUse }) {
   const interrupted = use.status === "interrupted"
   const awaiting = use.approval?.status === "pending"
   return (
-    <div className="flex flex-col gap-1">
-      <Collapsible className="w-full">
+    <div className="flex min-w-0 max-w-full flex-col gap-1">
+      <Collapsible className="w-full min-w-0 max-w-full">
         <CollapsibleTrigger asChild>
           <button type="button" className="group/row w-full text-left">
             <Marker
@@ -149,10 +153,10 @@ function ToolUseRow({ use }: { use: ToolUse }) {
             </Marker>
           </button>
         </CollapsibleTrigger>
-        <CollapsibleContent>
-          <div className="mt-1 flex flex-col gap-2 pl-6 text-xs">
+        <CollapsibleContent className="min-w-0 max-w-full">
+          <div className="mt-1 flex min-w-0 max-w-full flex-col gap-2 pl-6 text-xs">
             {(use.args || use.rawArgs) && (
-              <pre className="overflow-x-auto rounded-md bg-muted px-2 py-1.5 text-muted-foreground">
+              <pre className="w-full min-w-0 max-w-full overflow-x-auto rounded-md bg-muted px-2 py-1.5 text-muted-foreground">
                 {use.args ? JSON.stringify(use.args, null, 2) : use.rawArgs}
               </pre>
             )}
