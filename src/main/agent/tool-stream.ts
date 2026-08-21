@@ -69,3 +69,67 @@ export function accumulateToolCalls(
 
   return calls
 }
+
+// Some OpenAI-compatible endpoints leak tool calls as assistant text instead of
+// structured `delta.tool_calls`, e.g.
+//   [TOOL_CALL:toolu_123] browser_snapshot({"": ""})
+// Recover those turns so the agent executes the intended tool instead of
+// showing the raw marker to the user. The parser is deliberately strict about
+// the envelope and only extracts calls whose parenthesized argument payload is
+// complete; normal prose stays as text.
+export function extractTextToolCalls(text: string): {
+  text: string
+  toolCalls: ToolCallRecord[]
+} {
+  const toolCalls: ToolCallRecord[] = []
+  const spans: Array<[number, number]> = []
+  const marker = /\[TOOL_CALL:([^\]\s]+)\]\s*([A-Za-z_][\w.-]*)\s*\(/g
+  let match: RegExpExecArray | null
+
+  while ((match = marker.exec(text))) {
+    const argsStart = marker.lastIndex
+    let i = argsStart
+    let inString = false
+    let escaped = false
+
+    for (; i < text.length; i++) {
+      const ch = text[i]
+      if (escaped) {
+        escaped = false
+        continue
+      }
+      if (ch === "\\") {
+        escaped = true
+        continue
+      }
+      if (ch === '"') {
+        inString = !inString
+        continue
+      }
+      if (!inString && ch === ")") break
+    }
+
+    if (i >= text.length || text[i] !== ")") continue
+
+    const rawArgs = text.slice(argsStart, i).trim()
+    toolCalls.push({
+      id: match[1],
+      name: match[2],
+      arguments: rawArgs || "{}",
+    })
+    spans.push([match.index, i + 1])
+    marker.lastIndex = i + 1
+  }
+
+  if (toolCalls.length === 0) return { text, toolCalls }
+
+  let cleaned = ""
+  let cursor = 0
+  for (const [start, end] of spans) {
+    cleaned += text.slice(cursor, start)
+    cursor = end
+  }
+  cleaned += text.slice(cursor)
+
+  return { text: cleaned.trim(), toolCalls }
+}

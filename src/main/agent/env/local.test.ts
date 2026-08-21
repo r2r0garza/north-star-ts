@@ -3,7 +3,11 @@ import { execSync } from "child_process"
 import { mkdtemp, rm, readFile, writeFile, mkdir } from "fs/promises"
 import { tmpdir } from "os"
 import { join } from "path"
-import { LocalEnvironment } from "./local"
+import {
+  LocalEnvironment,
+  materializePythonHeredocCommand,
+  normalizeHostShellCommand,
+} from "./local"
 
 let workspace: string
 let env: LocalEnvironment
@@ -139,6 +143,59 @@ describe("LocalEnvironment.exec", () => {
       }
     }
   )
+})
+
+describe("normalizeHostShellCommand", () => {
+  it("uses the Python Launcher for python3 on Windows", () => {
+    expect(normalizeHostShellCommand('python3 -c "print(1)"', "win32")).toBe(
+      'py -3 -c "print(1)"'
+    )
+    expect(normalizeHostShellCommand("  python3.exe script.py", "win32")).toBe(
+      "  py -3 script.py"
+    )
+  })
+
+  it("does not rewrite python3 on non-Windows platforms", () => {
+    expect(normalizeHostShellCommand("python3 -V", "darwin")).toBe("python3 -V")
+  })
+})
+
+describe("materializePythonHeredocCommand", () => {
+  it("turns a Windows python3 heredoc into a script-file command", () => {
+    expect(
+      materializePythonHeredocCommand(
+        "python3 - <<'PY'\nprint('hello')\nPY",
+        "C:\\Temp\\script.py",
+        "win32"
+      )
+    ).toEqual({
+      command: 'py -3 "C:\\Temp\\script.py"',
+      script: "print('hello')",
+    })
+  })
+
+  it("supports unquoted heredoc delimiters", () => {
+    expect(
+      materializePythonHeredocCommand(
+        "python - <<PY\nprint(1)\nPY",
+        "C:\\Temp\\script.py",
+        "win32"
+      )
+    ).toEqual({
+      command: 'python "C:\\Temp\\script.py"',
+      script: "print(1)",
+    })
+  })
+
+  it("leaves heredocs alone on non-Windows platforms", () => {
+    expect(
+      materializePythonHeredocCommand(
+        "python3 - <<'PY'\nprint('hello')\nPY",
+        "/tmp/script.py",
+        "darwin"
+      )
+    ).toBeNull()
+  })
 })
 
 describe("LocalEnvironment file ops", () => {

@@ -19,7 +19,7 @@ import {
 import type { BrowserHandle } from "../browser/manager"
 import type { ToolImage } from "./tools/types"
 import { readFileTool } from "./tools/read_file_tool"
-import { accumulateToolCalls } from "./tool-stream"
+import { accumulateToolCalls, extractTextToolCalls } from "./tool-stream"
 import type { ToolCallDelta } from "./tool-stream"
 import {
   listTodos,
@@ -1131,6 +1131,7 @@ export async function runAgentLoop(
       // fragments arrive piecemeal and are collected here, then reassembled by
       // `accumulateToolCalls` (which handles providers that omit `index`).
       let text = ""
+      let withheldText = false
       const toolFragments: ToolCallDelta[] = []
       // The provider's reason for ending the turn (last non-null wins). "length"
       // means the output hit the token cap — the response (and any tool-call JSON
@@ -1149,11 +1150,23 @@ export async function runAgentLoop(
 
         const piece = contentToText(delta.content)
         if (piece) {
-          // First visible token of a later turn: separate it from prior text.
-          if (!text && streamedText) onEvent({ type: "token", delta: "\n\n" })
           text += piece
+          const trimmed = text.trimStart()
+          const mayBeTextToolCall =
+            !streamedText &&
+            ("[TOOL_CALL:".startsWith(trimmed) ||
+              trimmed.startsWith("[TOOL_CALL:"))
+          if (mayBeTextToolCall) {
+            withheldText = true
+            continue
+          }
+          const visiblePiece = withheldText ? text : piece
+          withheldText = false
+          // First visible token of a later turn: separate it from prior text.
+          if (text === visiblePiece && streamedText)
+            onEvent({ type: "token", delta: "\n\n" })
           streamedText = true
-          onEvent({ type: "token", delta: piece })
+          onEvent({ type: "token", delta: visiblePiece })
         }
 
         for (const tc of (delta.tool_calls ?? []) as ToolCallDelta[]) {
@@ -1175,7 +1188,15 @@ export async function runAgentLoop(
         return { stopped: true }
       }
 
-      const toolCalls = accumulateToolCalls(toolFragments)
+      const structuredToolCalls = accumulateToolCalls(toolFragments)
+      const recovered = extractTextToolCalls(text)
+      text = recovered.text
+      const toolCalls = [...structuredToolCalls, ...recovered.toolCalls]
+      if (withheldText && recovered.toolCalls.length === 0 && text) {
+        if (streamedText) onEvent({ type: "token", delta: "\n\n" })
+        onEvent({ type: "token", delta: text })
+        streamedText = true
+      }
 
       // The turn hit the output-token ceiling. If it was cut off mid tool-call,
       // the accumulated arguments are partial/invalid JSON — parsing them below
