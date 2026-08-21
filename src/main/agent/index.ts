@@ -958,15 +958,13 @@ export async function runAgentLoop(
     if (approvals) sections.push(approvals)
   }
 
-  // Rolling conversation summary (plan 019): a compact digest of earlier turns
-  // that have scrolled out of the walk-back, so a long conversation keeps its
-  // early thread. Generated out of band by the `summarize` task; read here each
-  // turn (possibly one generation stale — the recent messages cover the seam).
-  // Highest-priority section (last dropped). Mode-gated like the others.
-  if (showTodos) {
-    const summary = summarySection(conversationId)
-    if (summary) sections.push(summary)
-  }
+  // Rolling conversation summary (plan 019): a compact digest of earlier turns.
+  // Generated out of band by the `summarize` task; its exact coverage boundary
+  // below determines where verbatim history resumes.
+  // Highest-priority section (last dropped). Conversation memory applies to
+  // every mode, including Chat, independently of the available toolset.
+  const summary = summarySection(conversationId)
+  if (summary) sections.push(summary)
 
   // Workspace-index summary (plan 008): cheap structured orientation. Advisory,
   // most droppable. Gated by the "use index for context" setting + a workspace.
@@ -1018,13 +1016,16 @@ export async function runAgentLoop(
     appendMessage({ conversationId, role: "user", content: userContent })
   }
 
-  // Assemble the prompt via the ContextBuilder: system prompt + a token-budgeted
-  // walk-back over stored history (which already ends with the user message just
-  // persisted). The array grows in-memory as the agent calls tools and we feed
+  // Assemble the prompt via the ContextBuilder: system prompt + the complete
+  // stored transcript until summarization, or summary + complete uncovered tail
+  // afterward. The array grows in-memory as the agent calls tools and we feed
   // results back; those turns are also persisted as they complete (below).
   const messages: any[] = contextBuilder.build(conversationId, {
     baseSystemPrompt,
     sections,
+    historyAfterSeq: summary?.coversThrough,
+    tokenBudget:
+      settingsService.getIndexing().summarizeTokenThreshold || undefined,
   })
 
   // Debug aid (settings.logSystemPrompt): dump the verbatim system block for this
