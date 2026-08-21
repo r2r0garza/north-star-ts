@@ -207,7 +207,7 @@ export function ApprovalCard({
         <ShieldAlert className="size-3.5 shrink-0" />
         <span>Approval required — {approval.reason}</span>
       </div>
-      <pre className="overflow-x-auto rounded-md bg-muted px-2 py-1.5 text-muted-foreground">
+      <pre className="max-w-full overflow-hidden rounded-md bg-muted px-2 py-1.5 break-words whitespace-pre-wrap text-muted-foreground">
         {approval.summary}
       </pre>
       <div className="flex flex-wrap items-center gap-2">

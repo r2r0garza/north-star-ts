@@ -1,8 +1,19 @@
 import { spawn } from "child_process"
-import { readFile, writeFile, rename, mkdir, stat, readdir } from "fs/promises"
-import { resolveInWorkspace, resolveInWorkspaceReal } from "../tools/workspace"
+import { randomUUID } from "crypto"
+import {
+  readFile,
+  writeFile,
+  rename,
+  mkdir,
+  stat,
+  readdir,
+  unlink,
+} from "fs/promises"
+import { join } from "path"
+import { tmpdir } from "os"
 import { captureSpawn } from "./spawn-util"
 import { walkFiles, isBinaryBuffer } from "./walk"
+import { resolveInWorkspace, resolveInWorkspaceReal } from "../tools/workspace"
 import type {
   Environment,
   ExecResult,
@@ -13,6 +24,53 @@ import type {
   SearchResult,
   SearchMatch,
 } from "./types"
+
+export function normalizeHostShellCommand(
+  command: string,
+  platform: NodeJS.Platform = process.platform
+): string {
+  if (platform !== "win32") return command
+  // Windows commonly has no `python3.exe` on PATH, or has the Microsoft Store
+  // app-execution alias that exits without useful captured output. Prefer the
+  // Python Launcher, which is the standard way to request Python 3 on Windows.
+  return command.replace(/^(\s*)python3(?:\.exe)?\b/i, "$1py -3")
+}
+
+function quoteWindowsArg(arg: string): string {
+  return `"${arg.replace(/"/g, '\\"')}"`
+}
+
+export function materializePythonHeredocCommand(
+  command: string,
+  scriptPath: string,
+  platform: NodeJS.Platform = process.platform
+): { command: string; script: string } | null {
+  if (platform !== "win32") return null
+
+  const start = command.match(
+    /^\s*(python3(?:\.exe)?|python(?:\.exe)?|py(?:\.exe)?(?:\s+-3)?)\s+-\s+<<-?\s*(?:"([^"]+)"|'([^']+)'|([^\s]+))[ \t]*(?:\r?\n)/i
+  )
+  if (!start) return null
+
+  const interpreter = start[1]
+  const delimiter = start[2] ?? start[3] ?? start[4]
+  const rest = command.slice(start[0].length)
+  const lines = rest.split(/\r?\n/)
+  const end = lines.findIndex((line) => line.trim() === delimiter)
+  if (end < 0) return null
+
+  const trailing = lines
+    .slice(end + 1)
+    .join("\n")
+    .trim()
+  if (trailing) return null
+
+  const runner = normalizeHostShellCommand(
+    `${interpreter} ${quoteWindowsArg(scriptPath)}`,
+    platform
+  )
+  return { command: runner, script: lines.slice(0, end).join("\n") }
+}
 
 // The default backend: runs commands and file ops directly on the host, confined
 // to `workspace`. A behavior-preserving wrapper over exactly what the tools did
@@ -70,14 +128,33 @@ export class LocalEnvironment implements Environment {
   // can make simple commands appear to run while returning no captured bytes.
   // Keep the shell attached on Windows and let captureSpawn use taskkill for
   // timeout/abort cleanup.
-  exec(command: string, opts: ExecOptions): Promise<ExecResult> {
-    const child = spawn(command, {
+  async exec(command: string, opts: ExecOptions): Promise<ExecResult> {
+    let cleanupPath: string | null = null
+    let commandToRun = normalizeHostShellCommand(command)
+    const scriptPath = join(
+      tmpdir(),
+      `cowork-python-heredoc-${randomUUID()}.py`
+    )
+    const materialized = materializePythonHeredocCommand(command, scriptPath)
+    if (materialized) {
+      await writeFile(scriptPath, materialized.script, "utf8")
+      cleanupPath = scriptPath
+      commandToRun = materialized.command
+    }
+
+    const child = spawn(commandToRun, {
       cwd: opts.cwd,
       shell: true,
       detached: process.platform !== "win32",
       stdio: ["ignore", "pipe", "pipe"],
     })
-    return captureSpawn(child, { ...opts, killGroup: true })
+    try {
+      return await captureSpawn(child, { ...opts, killGroup: true })
+    } finally {
+      if (cleanupPath) {
+        await unlink(cleanupPath).catch(() => {})
+      }
+    }
   }
 
   // Grep the workspace by walking the tree (shared walkFiles — same prune/size
