@@ -19,6 +19,8 @@ import {
 import type { BrowserHandle } from "../browser/manager"
 import type { ToolImage } from "./tools/types"
 import { readFileTool } from "./tools/read_file_tool"
+import { accumulateToolCalls } from "./tool-stream"
+import type { ToolCallDelta } from "./tool-stream"
 import {
   listTodos,
   replaceTodos,
@@ -1126,12 +1128,10 @@ export async function runAgentLoop(
       )
 
       // Reassemble the streamed turn. Text deltas are forwarded live; tool-call
-      // fragments arrive piecemeal and are accumulated by their `index`.
+      // fragments arrive piecemeal and are collected here, then reassembled by
+      // `accumulateToolCalls` (which handles providers that omit `index`).
       let text = ""
-      const toolAcc = new Map<
-        number,
-        { id: string; name: string; arguments: string }
-      >()
+      const toolFragments: ToolCallDelta[] = []
       // The provider's reason for ending the turn (last non-null wins). "length"
       // means the output hit the token cap — the response (and any tool-call JSON
       // mid-stream) is truncated, so we must NOT try to parse it as complete.
@@ -1156,16 +1156,8 @@ export async function runAgentLoop(
           onEvent({ type: "token", delta: piece })
         }
 
-        for (const tc of (delta.tool_calls ?? []) as any[]) {
-          const slot = toolAcc.get(tc.index) ?? {
-            id: "",
-            name: "",
-            arguments: "",
-          }
-          if (tc.id) slot.id = tc.id
-          if (tc.function?.name) slot.name = tc.function.name
-          if (tc.function?.arguments) slot.arguments += tc.function.arguments
-          toolAcc.set(tc.index, slot)
+        for (const tc of (delta.tool_calls ?? []) as ToolCallDelta[]) {
+          toolFragments.push(tc)
         }
       }
 
@@ -1183,9 +1175,7 @@ export async function runAgentLoop(
         return { stopped: true }
       }
 
-      const toolCalls = [...toolAcc.entries()]
-        .sort(([a], [b]) => a - b)
-        .map(([, v]) => v)
+      const toolCalls = accumulateToolCalls(toolFragments)
 
       // The turn hit the output-token ceiling. If it was cut off mid tool-call,
       // the accumulated arguments are partial/invalid JSON — parsing them below
@@ -1255,6 +1245,9 @@ export async function runAgentLoop(
         // The model's streamed tool-call arguments are occasionally malformed JSON
         // even when the turn wasn't length-truncated (a mid-stream glitch, or an
         // unescaped character in a large blob — e.g. a big write_file_tool payload).
+        // (Concatenated JSON from providers that omit the streaming `index` is now
+        // reassembled correctly upstream by accumulateToolCalls; this catch remains
+        // as defense-in-depth for genuinely malformed/truncated arguments.)
         // A raw JSON.parse throw here would abort the whole turn as an opaque
         // "turn ended early: Unterminated string in JSON …". Instead, feed the tool
         // call a structured error result (with its tool_call_id, so the transcript
