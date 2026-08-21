@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest"
 import { tmpdir } from "os"
+import { execFileSync } from "child_process"
+import { mkdtempSync } from "fs"
+import { rm } from "fs/promises"
+import { join } from "path"
 import { runShellTool } from "./run_shell_tool"
 import type { ToolContext } from "./types"
 
@@ -7,6 +11,16 @@ import type { ToolContext } from "./types"
 const approveAll: ToolContext = {
   workspace: tmpdir(),
   gate: async () => "approved",
+}
+
+const nodeCmd = (code: string) =>
+  `${JSON.stringify(process.execPath)} -e ${JSON.stringify(code)}`
+
+let hasGit = true
+try {
+  execFileSync("git", ["--version"], { stdio: "ignore" })
+} catch {
+  hasGit = false
 }
 
 describe("run_shell_tool", () => {
@@ -48,10 +62,34 @@ describe("run_shell_tool", () => {
     expect(result).toContain("exit code 0")
   })
 
+  it.skipIf(!hasGit)(
+    "captures git config output from the workspace",
+    async () => {
+      const workspace = mkdtempSync(join(tmpdir(), "run-shell-git-"))
+      try {
+        execFileSync("git", ["init"], { cwd: workspace, stdio: "ignore" })
+        execFileSync("git", ["config", "user.email", "dev@example.com"], {
+          cwd: workspace,
+          stdio: "ignore",
+        })
+
+        const result = await runShellTool.execute(
+          { command: "git config user.email" },
+          { workspace, gate: async () => "approved" }
+        )
+
+        expect(result).toContain("exit code 0")
+        expect(result).toContain("dev@example.com")
+      } finally {
+        await rm(workspace, { recursive: true, force: true })
+      }
+    }
+  )
+
   it("preserves multibyte UTF-8 output (no per-chunk corruption)", async () => {
-    // A string with multibyte chars; printed via printf so no trailing newline noise.
+    // A string with multibyte chars and no trailing newline noise.
     const result = await runShellTool.execute(
-      { command: "printf '日本語 — café 🚀'" },
+      { command: nodeCmd("process.stdout.write('日本語 — café 🚀')") },
       approveAll
     )
     expect(result).toContain("日本語 — café 🚀")
@@ -59,13 +97,16 @@ describe("run_shell_tool", () => {
   })
 
   it("reports a nonzero exit code", async () => {
-    const result = await runShellTool.execute({ command: "exit 3" }, approveAll)
+    const result = await runShellTool.execute(
+      { command: nodeCmd("process.exit(3)") },
+      approveAll
+    )
     expect(result).toContain("exit code 3")
   })
 
   it("times out a long-running command", async () => {
     const result = await runShellTool.execute(
-      { command: "sleep 5", timeout_ms: 100 },
+      { command: nodeCmd("setTimeout(() => {}, 5000)"), timeout_ms: 100 },
       approveAll
     )
     expect(result).toContain("timed out")

@@ -64,11 +64,17 @@ export class LocalEnvironment implements Environment {
   // would orphan them when only the sh wrapper is killed. We keep stdio piped (the
   // parent holds the handles) and deliberately do NOT call child.unref(): the child
   // stays tied to this turn, not surviving it.
+  //
+  // Windows does not support POSIX process groups/negative-PID kills. More
+  // importantly, `detached: true` gives the shell a separate console there, which
+  // can make simple commands appear to run while returning no captured bytes.
+  // Keep the shell attached on Windows and let captureSpawn use taskkill for
+  // timeout/abort cleanup.
   exec(command: string, opts: ExecOptions): Promise<ExecResult> {
     const child = spawn(command, {
       cwd: opts.cwd,
       shell: true,
-      detached: true,
+      detached: process.platform !== "win32",
       stdio: ["ignore", "pipe", "pipe"],
     })
     return captureSpawn(child, { ...opts, killGroup: true })

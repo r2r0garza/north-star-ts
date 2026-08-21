@@ -7,6 +7,17 @@ import { LocalEnvironment } from "./local"
 
 let workspace: string
 let env: LocalEnvironment
+let canInspectProcesses = process.platform !== "win32"
+if (canInspectProcesses) {
+  try {
+    execSync("ps -eo pid,command", { stdio: "ignore" })
+  } catch {
+    canInspectProcesses = false
+  }
+}
+
+const nodeCmd = (code: string) =>
+  `${JSON.stringify(process.execPath)} -e ${JSON.stringify(code)}`
 
 beforeEach(async () => {
   workspace = await mkdtemp(join(tmpdir(), "env-local-"))
@@ -29,7 +40,7 @@ describe("LocalEnvironment.exec", () => {
   })
 
   it("reports a nonzero exit code", async () => {
-    const r = await env.exec("exit 3", {
+    const r = await env.exec(nodeCmd("process.exit(3)"), {
       cwd: workspace,
       timeoutMs: 5000,
       maxOutputBytes: 1024 * 1024,
@@ -38,7 +49,7 @@ describe("LocalEnvironment.exec", () => {
   })
 
   it("times out a long-running command", async () => {
-    const r = await env.exec("sleep 5", {
+    const r = await env.exec(nodeCmd("setTimeout(() => {}, 5000)"), {
       cwd: workspace,
       timeoutMs: 100,
       maxOutputBytes: 1024 * 1024,
@@ -47,11 +58,14 @@ describe("LocalEnvironment.exec", () => {
   })
 
   it("preserves multibyte UTF-8 (decodes the Buffer once)", async () => {
-    const r = await env.exec("printf '日本語 — café 🚀'", {
-      cwd: workspace,
-      timeoutMs: 5000,
-      maxOutputBytes: 1024 * 1024,
-    })
+    const r = await env.exec(
+      nodeCmd("process.stdout.write('日本語 — café 🚀')"),
+      {
+        cwd: workspace,
+        timeoutMs: 5000,
+        maxOutputBytes: 1024 * 1024,
+      }
+    )
     const out = r.stdout.toString("utf8")
     expect(out).toContain("日本語 — café 🚀")
     expect(out).not.toContain("�") // no replacement chars
@@ -59,7 +73,7 @@ describe("LocalEnvironment.exec", () => {
 
   it("kills the command when the signal aborts (and only then)", async () => {
     const ac = new AbortController()
-    const p = env.exec("sleep 5", {
+    const p = env.exec(nodeCmd("setTimeout(() => {}, 5000)"), {
       cwd: workspace,
       timeoutMs: 5000,
       maxOutputBytes: 1024 * 1024,
@@ -69,7 +83,7 @@ describe("LocalEnvironment.exec", () => {
     const r = await p
     // Killed before the 5s timeout fired.
     expect(r.timedOut).toBe(false)
-    expect(r.signal).toBe("SIGKILL")
+    if (process.platform !== "win32") expect(r.signal).toBe("SIGKILL")
   })
 
   // A pipeline forces the shell to STAY as a parent of two children (it can't exec
@@ -84,41 +98,47 @@ describe("LocalEnvironment.exec", () => {
       .some((line) => line.includes(marker) && !line.includes("ps -eo"))
   }
 
-  it("reaps the whole process group on abort (no orphaned grandchild)", async () => {
-    const marker = "envlocal-abort-marker-9f3a"
-    const ac = new AbortController()
-    const p = env.exec(`sleep 30 | grep ${marker}`, {
-      cwd: workspace,
-      timeoutMs: 30_000,
-      maxOutputBytes: 1024 * 1024,
-      signal: ac.signal,
-    })
-    setTimeout(() => ac.abort(), 100)
-    const r = await p
-    expect(r.signal).toBe("SIGKILL")
-    expect(r.timedOut).toBe(false)
-    // Give the OS a beat to tear the group down before we look.
-    await new Promise((res) => setTimeout(res, 200))
-    if (markerSurvives(marker)) {
-      execSync(`pkill -f ${marker} || true`)
-      throw new Error("orphaned grandchild survived abort")
+  it.skipIf(!canInspectProcesses)(
+    "reaps the whole process group on abort (no orphaned grandchild)",
+    async () => {
+      const marker = "envlocal-abort-marker-9f3a"
+      const ac = new AbortController()
+      const p = env.exec(`sleep 30 | grep ${marker}`, {
+        cwd: workspace,
+        timeoutMs: 30_000,
+        maxOutputBytes: 1024 * 1024,
+        signal: ac.signal,
+      })
+      setTimeout(() => ac.abort(), 100)
+      const r = await p
+      expect(r.signal).toBe("SIGKILL")
+      expect(r.timedOut).toBe(false)
+      // Give the OS a beat to tear the group down before we look.
+      await new Promise((res) => setTimeout(res, 200))
+      if (markerSurvives(marker)) {
+        execSync(`pkill -f ${marker} || true`)
+        throw new Error("orphaned grandchild survived abort")
+      }
     }
-  })
+  )
 
-  it("reaps the whole process group on timeout (no orphaned grandchild)", async () => {
-    const marker = "envlocal-timeout-marker-7b21"
-    const r = await env.exec(`sleep 30 | grep ${marker}`, {
-      cwd: workspace,
-      timeoutMs: 100,
-      maxOutputBytes: 1024 * 1024,
-    })
-    expect(r.timedOut).toBe(true)
-    await new Promise((res) => setTimeout(res, 200))
-    if (markerSurvives(marker)) {
-      execSync(`pkill -f ${marker} || true`)
-      throw new Error("orphaned grandchild survived timeout")
+  it.skipIf(!canInspectProcesses)(
+    "reaps the whole process group on timeout (no orphaned grandchild)",
+    async () => {
+      const marker = "envlocal-timeout-marker-7b21"
+      const r = await env.exec(`sleep 30 | grep ${marker}`, {
+        cwd: workspace,
+        timeoutMs: 100,
+        maxOutputBytes: 1024 * 1024,
+      })
+      expect(r.timedOut).toBe(true)
+      await new Promise((res) => setTimeout(res, 200))
+      if (markerSurvives(marker)) {
+        execSync(`pkill -f ${marker} || true`)
+        throw new Error("orphaned grandchild survived timeout")
+      }
     }
-  })
+  )
 })
 
 describe("LocalEnvironment file ops", () => {
