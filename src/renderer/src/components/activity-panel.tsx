@@ -427,6 +427,7 @@ export function ActivityPanel({
   conversationId,
   open,
   mode,
+  reserveWindowControls = false,
   browserObscured,
   workspace,
   changedFiles,
@@ -445,6 +446,9 @@ export function ActivityPanel({
   // Which content the panel shows (owned by the Shell so the drag-bar dropdown
   // and the agent's request-open can drive it).
   mode: SidebarMode
+  // Windows/Linux window controls live in the same drag row as the panel mode
+  // controls. The narrow Info rail needs its title below that row.
+  reserveWindowControls?: boolean
   // True while a DOM overlay (Settings / task transcript) is open. The native
   // browser view paints over the DOM, so it must hide while obscured.
   browserObscured: boolean
@@ -515,6 +519,13 @@ export function ActivityPanel({
   // The native view is embedded here only when the panel is genuinely visible in
   // browser mode and nothing is drawing over it.
   const embedded = open && mode === "browser" && !browserObscured
+  const title =
+    mode === "browser"
+      ? "Browser"
+      : mode === "changes"
+        ? "Changes"
+        : "Workspace Activity"
+  const titleBelowChrome = reserveWindowControls && mode === "info"
 
   return (
     // Layout gap that the main content flexes against (width animates to 0 when
@@ -545,13 +556,11 @@ export function ActivityPanel({
         )}
         {/* Clears the top drag bar / toggle row. */}
         <SidebarHeader className="h-12 justify-center px-4">
-          <span className="text-xs font-medium text-sidebar-foreground/70">
-            {mode === "browser"
-              ? "Browser"
-              : mode === "changes"
-                ? "Changes"
-                : "Workspace Activity"}
-          </span>
+          {!titleBelowChrome && (
+            <span className="truncate text-xs font-medium text-sidebar-foreground/70">
+              {title}
+            </span>
+          )}
         </SidebarHeader>
         {mode === "browser" ? (
           <div className="min-h-0 flex-1">
@@ -572,6 +581,13 @@ export function ActivityPanel({
           </div>
         ) : (
           <SidebarContent>
+            {titleBelowChrome && (
+              <div className="px-4 pb-1">
+                <h2 className="truncate text-xs font-medium text-sidebar-foreground/70">
+                  {title}
+                </h2>
+              </div>
+            )}
             <ActivitySection title="Tasks">
               <TasksSection
                 conversationId={conversationId}
