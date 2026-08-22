@@ -451,6 +451,12 @@ export default function App({
   // The effective selection = the conversation's own pick, else the default.
   const effAccountId = selAccountId ?? defaultLlm?.activeAccountId ?? null
   const effModelId = selModelId ?? defaultLlm?.activeModelId ?? null
+  const effectiveAccount = effAccountId
+    ? accountsWithModels.find((a) => a.account.id === effAccountId)
+    : null
+  const effectiveModel = effectiveAccount?.models.find(
+    (m) => m.modelId === effModelId
+  )
 
   // The conversation the panel is currently showing. Updated synchronously when
   // the prop changes (in the load effect) so streaming callbacks can tell, at the
@@ -469,7 +475,11 @@ export default function App({
   // A usable provider + model must be selected before any turn. Mirrors the
   // main-process resolveLlm gate (the backstop there returns the same error if a
   // stale selection slips through).
-  const hasLlm = !!effAccountId && !!effModelId
+  const hasLlm = !!effAccountId && !!effModelId && !!effectiveModel
+  const hasSelectableModels = accountsWithModels.some(
+    (account) => account.models.length > 0
+  )
+  const hasEnabledProviders = accountsWithModels.length > 0
   // Chat needs only a message (a file is optional); the workspace views need a
   // selected folder as well. All views need an LLM selection.
   const canSend =
@@ -1401,7 +1411,9 @@ export default function App({
   // onto the conversation row if it exists, else held in state and carried into
   // create() on first send. Each item value encodes account + model
   // (`accountId::modelId`) to disambiguate the same model id across providers.
-  // When nothing is configured it's a button to Settings → Providers.
+  // Fallback state:
+  // - no enabled providers: send the user to Settings → Providers
+  // - enabled providers but no models: send the user to Settings → Models
   async function selectModel(accountId: string, modelId: string) {
     setSelAccountId(accountId)
     setSelModelId(modelId)
@@ -1439,7 +1451,11 @@ export default function App({
           .flatMap((g) => g.items)
           .find((it) => it.value === `${effAccountId}::${effModelId}`) ?? null)
       : null
-  const modelPicker = hasLlm ? (
+  const configureModelTarget = hasEnabledProviders ? "models" : "providers"
+  const configureModelLabel = hasEnabledProviders
+    ? "Configure model…"
+    : "Configure provider…"
+  const modelPicker = hasSelectableModels ? (
     <Combobox
       items={modelGroups}
       value={selectedItem}
@@ -1484,17 +1500,17 @@ export default function App({
   ) : (
     <button
       type="button"
-      onClick={() => onOpenSettings("providers")}
+      onClick={() => onOpenSettings(configureModelTarget)}
       className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
     >
-      Configure model…
+      {configureModelLabel}
     </button>
   )
 
   // Icon-only model picker shown when the right panel is open (squeezes the
   // toolbar). Uses the same Combobox but renders only the BrainCircuit icon;
   // the selected model name appears as a native tooltip.
-  const modelPickerCompact = hasLlm ? (
+  const modelPickerCompact = hasSelectableModels ? (
     <Combobox
       items={modelGroups}
       value={selectedItem}
@@ -1538,8 +1554,8 @@ export default function App({
   ) : (
     <button
       type="button"
-      title="Configure model"
-      onClick={() => onOpenSettings("providers")}
+      title={configureModelLabel.replace("…", "")}
+      onClick={() => onOpenSettings(configureModelTarget)}
       className="flex items-center rounded-md px-2 py-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
     >
       <BrainCircuit className="size-4" />

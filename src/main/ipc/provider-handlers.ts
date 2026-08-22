@@ -53,10 +53,19 @@ export function registerProviderHandlers(): void {
     (
       _e,
       id: string,
-      patch: { displayName?: string; baseUrl?: string | null }
+      patch: {
+        displayName?: string
+        baseUrl?: string | null
+        enabled?: boolean
+      }
     ) => {
       const account = providerAccountsRepo.updateAccount(id, patch)
-      invalidateProviderClient() // base_url may have changed
+      const llm = settingsService.getLlm()
+      if (!account.enabled && llm.activeAccountId === id) {
+        settingsService.setLlm({ activeAccountId: null, activeModelId: null })
+      } else {
+        invalidateProviderClient() // base_url or enabled may have changed
+      }
       return toView(account)
     }
   )
@@ -108,12 +117,27 @@ export function registerProviderHandlers(): void {
   )
   ipcMain.handle(
     "models:update",
-    (_e, id: string, patch: { modelId?: string; modelName?: string | null }) =>
-      modelsRepo.updateModel(id, patch)
+    (
+      _e,
+      id: string,
+      patch: { modelId?: string; modelName?: string | null; favorite?: boolean }
+    ) => modelsRepo.updateModel(id, patch)
   )
   ipcMain.handle("models:delete", (_e, id: string) => {
     modelsRepo.deleteModel(id)
     invalidateProviderClient() // the active model may have been removed
+  })
+  ipcMain.handle("models:deleteForAccount", (_e, accountId: string) => {
+    modelsRepo.deleteModelsForAccount(accountId)
+    const llm = settingsService.getLlm()
+    if (llm.activeAccountId === accountId) {
+      settingsService.setLlm({
+        activeAccountId: accountId,
+        activeModelId: null,
+      })
+    } else {
+      invalidateProviderClient()
+    }
   })
 
   // Import the gateway catalog and merge it into the local list. On failure
@@ -140,10 +164,13 @@ export function registerProviderHandlers(): void {
   // Every account paired with its models, for the composer's grouped model
   // picker (so a user can switch provider+model per session without Settings).
   ipcMain.handle("providers:listWithModels", (): AccountWithModels[] =>
-    providerAccountsRepo.listAccounts().map((account) => ({
-      account: toView(account),
-      models: modelsRepo.listModels(account.id),
-    }))
+    providerAccountsRepo
+      .listAccounts()
+      .filter((account) => account.enabled)
+      .map((account) => ({
+        account: toView(account),
+        models: modelsRepo.listModels(account.id),
+      }))
   )
 
   // ── Default selection (the starting point for new conversations) ────────────

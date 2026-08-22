@@ -15,6 +15,7 @@ interface ProviderAccountRow {
   base_url: string | null
   encrypted_key: Buffer | null
   api_mode: ApiMode
+  enabled: number
   created_at: number
   last_used_at: number | null
 }
@@ -28,6 +29,7 @@ function toAccount(row: ProviderAccountRow): ProviderAccount {
     displayName: row.display_name,
     baseUrl: row.base_url,
     hasKey: row.encrypted_key != null && row.encrypted_key.length > 0,
+    enabled: row.enabled === 1,
     apiMode: row.api_mode,
     createdAt: row.created_at,
     lastUsedAt: row.last_used_at,
@@ -79,7 +81,12 @@ export function createAccount(input: CreateAccountInput): ProviderAccount {
 // clearKey so secret handling stays in one place.
 export function updateAccount(
   id: string,
-  patch: { displayName?: string; baseUrl?: string | null; apiMode?: ApiMode }
+  patch: {
+    displayName?: string
+    baseUrl?: string | null
+    apiMode?: ApiMode
+    enabled?: boolean
+  }
 ): ProviderAccount {
   const sets: string[] = []
   const args: unknown[] = []
@@ -94,6 +101,10 @@ export function updateAccount(
   if (patch.apiMode !== undefined) {
     sets.push("api_mode = ?")
     args.push(patch.apiMode)
+  }
+  if (patch.enabled !== undefined) {
+    sets.push("enabled = ?")
+    args.push(patch.enabled ? 1 : 0)
   }
   if (sets.length > 0) {
     args.push(id)

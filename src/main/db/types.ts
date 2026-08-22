@@ -292,6 +292,7 @@ export interface ProviderAccount {
   displayName: string
   baseUrl: string | null
   hasKey: boolean
+  enabled: boolean
   // The OpenAI wire API this account speaks. Defaults to "completions"; only
   // consulted for openai/openai_compatible accounts (portkey ignores it).
   apiMode: ApiMode
@@ -307,6 +308,7 @@ export interface ModelEntry {
   modelId: string
   modelName: string | null
   origin: ModelOrigin
+  favorite: boolean
   createdAt: number
   updatedAt: number
 }

@@ -63,11 +63,7 @@ import type {
   AccountView,
   AccountWithModels,
 } from "../main/ipc/provider-handlers"
-import type {
-  ModelEntry,
-  IndexPriority,
-  McpServerDef,
-} from "../main/db/types"
+import type { ModelEntry, IndexPriority, McpServerDef } from "../main/db/types"
 import type { IndexStatus } from "../main/ipc/index-handlers"
 import type { ApproveResult } from "../main/dashboards/service"
 import type {
@@ -941,7 +937,10 @@ const api = {
       list: () =>
         ipcRenderer.invoke("db:dashboards:list") as Promise<Dashboard[]>,
       get: (id: string) =>
-        ipcRenderer.invoke("db:dashboards:get", id) as Promise<Dashboard | null>,
+        ipcRenderer.invoke(
+          "db:dashboards:get",
+          id
+        ) as Promise<Dashboard | null>,
       graph: (id: string) =>
         ipcRenderer.invoke(
           "db:dashboards:graph",
@@ -1145,11 +1144,9 @@ const api = {
     // maxAgeMs > 0 skips widgets whose cached data is still fresh (on-open path);
     // omitted forces a full re-run (the manual Refresh button).
     refresh: (dashboardId: string, maxAgeMs?: number) =>
-      ipcRenderer.invoke(
-        "dashboard:refresh",
-        dashboardId,
-        maxAgeMs
-      ) as Promise<string | null>,
+      ipcRenderer.invoke("dashboard:refresh", dashboardId, maxAgeMs) as Promise<
+        string | null
+      >,
     // Bless a widget's recipe (writes a durable allowlist grant), then refresh.
     // Resolves { ok, taskId } or { ok: false, reason } so the UI can explain a
     // recipe that can't be blessed (e.g. a shell command with no captured cwd).
@@ -1174,7 +1171,11 @@ const api = {
       ipcRenderer.invoke("providers:create", input) as Promise<AccountView>,
     update: (
       id: string,
-      patch: { displayName?: string; baseUrl?: string | null }
+      patch: {
+        displayName?: string
+        baseUrl?: string | null
+        enabled?: boolean
+      }
     ) =>
       ipcRenderer.invoke("providers:update", id, patch) as Promise<AccountView>,
     delete: (id: string) =>
@@ -1214,10 +1215,12 @@ const api = {
       ipcRenderer.invoke("models:add", input) as Promise<ModelEntry>,
     update: (
       id: string,
-      patch: { modelId?: string; modelName?: string | null }
+      patch: { modelId?: string; modelName?: string | null; favorite?: boolean }
     ) => ipcRenderer.invoke("models:update", id, patch) as Promise<ModelEntry>,
     delete: (id: string) =>
       ipcRenderer.invoke("models:delete", id) as Promise<void>,
+    deleteForAccount: (accountId: string) =>
+      ipcRenderer.invoke("models:deleteForAccount", accountId) as Promise<void>,
     // Fetch the gateway catalog and merge it in. { ok } / { ok:false, error }.
     importFromGateway: (accountId: string) =>
       ipcRenderer.invoke("models:importFromGateway", accountId) as Promise<{
