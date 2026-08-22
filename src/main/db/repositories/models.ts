@@ -15,6 +15,7 @@ interface ModelRow {
   model_id: string
   model_name: string | null
   origin: ModelOrigin
+  favorite: number
   created_at: number
   updated_at: number
 }
@@ -26,6 +27,7 @@ function toModel(row: ModelRow): ModelEntry {
     modelId: row.model_id,
     modelName: row.model_name,
     origin: row.origin,
+    favorite: row.favorite === 1,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   }
@@ -41,7 +43,7 @@ export function getModel(id: string): ModelEntry | undefined {
 export function listModels(accountId: string): ModelEntry[] {
   const rows = getDb()
     .prepare(
-      "SELECT * FROM models WHERE account_id = ? ORDER BY created_at ASC"
+      "SELECT * FROM models WHERE account_id = ? ORDER BY favorite DESC, created_at ASC"
     )
     .all(accountId) as ModelRow[]
   return rows.map(toModel)
@@ -84,7 +86,7 @@ export function addModel(input: AddModelInput): ModelEntry {
 // untouched (a user-renamed gateway id is still "gateway").
 export function updateModel(
   id: string,
-  patch: { modelId?: string; modelName?: string | null }
+  patch: { modelId?: string; modelName?: string | null; favorite?: boolean }
 ): ModelEntry {
   const sets: string[] = []
   const args: unknown[] = []
@@ -95,6 +97,10 @@ export function updateModel(
   if (patch.modelName !== undefined) {
     sets.push("model_name = ?")
     args.push(patch.modelName)
+  }
+  if (patch.favorite !== undefined) {
+    sets.push("favorite = ?")
+    args.push(patch.favorite ? 1 : 0)
   }
   if (sets.length > 0) {
     sets.push("updated_at = ?")
@@ -109,6 +115,10 @@ export function updateModel(
 
 export function deleteModel(id: string): void {
   getDb().prepare("DELETE FROM models WHERE id = ?").run(id)
+}
+
+export function deleteModelsForAccount(accountId: string): void {
+  getDb().prepare("DELETE FROM models WHERE account_id = ?").run(accountId)
 }
 
 // Merge gateway-fetched ids into the account's list. Each id is inserted as

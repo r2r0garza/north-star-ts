@@ -199,6 +199,11 @@ export function resolveLlm(
       "The selected LLM provider no longer exists. Pick one in the composer or Settings."
     )
   }
+  if (!account.enabled) {
+    throw new NoActiveProviderError(
+      "The selected LLM provider is disabled. Enable it in Settings or pick another provider."
+    )
+  }
   if (!modelId) {
     throw new NoActiveProviderError(
       "No model is selected. Choose a model in the composer or Settings."
@@ -254,7 +259,8 @@ export function hasActiveProvider(): boolean {
   try {
     const usable = (accountId: string, modelId?: string | null): boolean => {
       const account = providerAccountsRepo.getAccount(accountId)
-      if (!account || !account.hasKey || !account.baseUrl) return false
+      if (!account || !account.enabled || !account.hasKey) return false
+      if (!account.baseUrl && account.provider !== "openai") return false
       const models = modelsRepo.listModels(account.id)
       return modelId
         ? models.some((m) => m.modelId === modelId)
@@ -395,7 +401,11 @@ function classifyLink(e: {
 export function isTransientError(err: unknown): boolean {
   let current: unknown = err
   const seen = new Set<unknown>()
-  for (let depth = 0; depth < 5 && current && typeof current === "object"; depth++) {
+  for (
+    let depth = 0;
+    depth < 5 && current && typeof current === "object";
+    depth++
+  ) {
     if (seen.has(current)) break
     seen.add(current)
     const verdict = classifyLink(current as Record<string, unknown>)

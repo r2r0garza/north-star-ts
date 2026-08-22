@@ -786,3 +786,14 @@ CREATE INDEX idx_dashboard_widgets_dashboard ON dashboard_widgets(dashboard_id);
 export const SCHEMA_V27 = `
 ALTER TABLE dashboards ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0;
 `
+
+// v28: provider visibility + model favorites.
+// Provider accounts can be disabled without deleting credentials or models. A
+// disabled account is hidden from the composer model picker and ignored by LLM
+// resolution/active-provider checks. Models can be favorited so provider-local
+// pickers place preferred models first. Both are bare INTEGER booleans, coerced
+// by repositories.
+export const SCHEMA_V28 = `
+ALTER TABLE provider_accounts ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE models ADD COLUMN favorite INTEGER NOT NULL DEFAULT 0;
+`

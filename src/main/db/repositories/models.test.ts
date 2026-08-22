@@ -18,6 +18,7 @@ import {
   listModels,
   updateModel,
   deleteModel,
+  deleteModelsForAccount,
   mergeGatewayModels,
 } from "./models"
 
@@ -36,6 +37,7 @@ describe.skipIf(!sqliteLoads)("models repo", () => {
     const m = addModel({ accountId, modelId: "gpt-x" })
     expect(m.origin).toBe("manual")
     expect(m.modelName).toBeNull()
+    expect(m.favorite).toBe(false)
   })
 
   it("stores a custom display name", () => {
@@ -53,11 +55,41 @@ describe.skipIf(!sqliteLoads)("models repo", () => {
 
   it("updates id and name; deletes", () => {
     const m = addModel({ accountId, modelId: "old" })
-    updateModel(m.id, { modelId: "new", modelName: "Renamed" })
+    updateModel(m.id, {
+      modelId: "new",
+      modelName: "Renamed",
+      favorite: true,
+    })
     expect(getOnly(accountId).modelId).toBe("new")
     expect(getOnly(accountId).modelName).toBe("Renamed")
+    expect(getOnly(accountId).favorite).toBe(true)
     deleteModel(m.id)
     expect(listModels(accountId)).toHaveLength(0)
+  })
+
+  it("lists favorite models first within a provider", () => {
+    addModel({ accountId, modelId: "first" })
+    const second = addModel({ accountId, modelId: "second" })
+    addModel({ accountId, modelId: "third" })
+    updateModel(second.id, { favorite: true })
+    expect(listModels(accountId).map((m) => m.modelId)).toEqual([
+      "second",
+      "first",
+      "third",
+    ])
+  })
+
+  it("deletes all models for one provider account", () => {
+    const otherAccountId = createAccount({
+      provider: "openai",
+      displayName: "B",
+    }).id
+    addModel({ accountId, modelId: "a1" })
+    addModel({ accountId, modelId: "a2" })
+    addModel({ accountId: otherAccountId, modelId: "b1" })
+    deleteModelsForAccount(accountId)
+    expect(listModels(accountId)).toHaveLength(0)
+    expect(listModels(otherAccountId).map((m) => m.modelId)).toEqual(["b1"])
   })
 
   it("merges gateway ids without clobbering existing rows", () => {

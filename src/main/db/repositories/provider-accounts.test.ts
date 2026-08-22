@@ -40,6 +40,7 @@ describe.skipIf(!sqliteLoads)("provider-accounts repo", () => {
     })
     expect(a.provider).toBe("portkey")
     expect(a.hasKey).toBe(false)
+    expect(a.enabled).toBe(true)
     expect(getAccount(a.id)?.baseUrl).toBe("https://x/v1")
   })
 
@@ -70,6 +71,14 @@ describe.skipIf(!sqliteLoads)("provider-accounts repo", () => {
     const list = listAccounts()
     expect(list.map((x) => x.displayName)).toEqual(["A2", "B"])
     expect(list[0].baseUrl).toBe("https://y/v1")
+  })
+
+  it("updates the enabled flag", () => {
+    const a = createAccount({ provider: "portkey", displayName: "A" })
+    updateAccount(a.id, { enabled: false })
+    expect(getAccount(a.id)?.enabled).toBe(false)
+    updateAccount(a.id, { enabled: true })
+    expect(getAccount(a.id)?.enabled).toBe(true)
   })
 
   it("deleting an account cascades to its models", () => {

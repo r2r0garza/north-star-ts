@@ -3,6 +3,7 @@ import { TabsContent } from "@/components/ui/tabs"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
+import { Switch } from "@/components/ui/switch"
 import { Field, FieldDescription, FieldLabel } from "@/components/ui/field"
 import {
   Collapsible,
@@ -23,7 +24,7 @@ import {
   EmptyTitle,
 } from "@/components/ui/empty"
 import { Spinner } from "@/components/ui/spinner"
-import { ChevronDown, Plus, Trash2, X } from "lucide-react"
+import { ChevronDown, Plus, Search, Star, Trash2, X } from "lucide-react"
 import { cn } from "@/lib/utils"
 import type {
   AccountView,
@@ -170,8 +171,9 @@ export function ProvidersTab({ state }: { state: LlmState }) {
               </SelectTrigger>
               <SelectContent>
                 {accounts.map((a) => (
-                  <SelectItem key={a.id} value={a.id}>
+                  <SelectItem key={a.id} value={a.id} disabled={!a.enabled}>
                     {a.displayName}
+                    {!a.enabled ? " — off" : ""}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -269,6 +271,11 @@ function AccountCard({
     await onChange()
   }
 
+  async function setEnabled(enabled: boolean) {
+    await window.cowork.providers.update(account.id, { enabled })
+    await onChange()
+  }
+
   return (
     <Collapsible
       open={open}
@@ -287,24 +294,39 @@ function AccountCard({
             {account.displayName}
           </span>
           <Badge variant="secondary">{providerLabel(account.provider)}</Badge>
+          {!account.enabled && (
+            <Badge variant="outline" className="shrink-0">
+              off
+            </Badge>
+          )}
           {!account.hasKey && (
             <Badge variant="destructive" className="shrink-0">
               no key
             </Badge>
           )}
         </CollapsibleTrigger>
-        <Button
-          variant="ghost"
-          size="icon"
-          className="size-7 shrink-0 text-muted-foreground hover:text-destructive"
-          title="Delete provider"
-          onClick={async () => {
-            await window.cowork.providers.delete(account.id)
-            await onChange()
-          }}
-        >
-          <Trash2 className="size-4" />
-        </Button>
+        <div className="flex shrink-0 items-center gap-2">
+          <Switch
+            checked={account.enabled}
+            size="sm"
+            aria-label={`${account.enabled ? "Disable" : "Enable"} provider`}
+            title={`${account.enabled ? "Disable" : "Enable"} provider`}
+            onClick={(e) => e.stopPropagation()}
+            onCheckedChange={(checked) => void setEnabled(checked)}
+          />
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-7 text-muted-foreground hover:text-destructive"
+            title="Delete provider"
+            onClick={async () => {
+              await window.cowork.providers.delete(account.id)
+              await onChange()
+            }}
+          >
+            <Trash2 className="size-4" />
+          </Button>
+        </div>
       </div>
 
       <CollapsibleContent className="flex flex-col gap-3 px-3 pb-3">
@@ -531,6 +553,11 @@ export function ModelsTab({ state }: { state: LlmState }) {
             setActive(next)
             await window.cowork.providers.setDefault(next)
           }}
+          onModelsCleared={async () => {
+            if (active?.activeAccountId !== account.id) return
+            const next = { activeAccountId: account.id, activeModelId: null }
+            setActive(next)
+          }}
         />
       ))}
     </TabsContent>
@@ -544,16 +571,19 @@ function AccountModelsSection({
   open,
   onToggle,
   onSelectActive,
+  onModelsCleared,
 }: {
   account: AccountView
   active: LlmSettings | null
   open: boolean
   onToggle: () => void
   onSelectActive: (modelId: string) => Promise<void>
+  onModelsCleared: () => Promise<void>
 }) {
   const [models, setModels] = useState<ModelEntry[] | null>(null)
   const [importing, setImporting] = useState(false)
   const [importError, setImportError] = useState<string | null>(null)
+  const [query, setQuery] = useState("")
   const [newId, setNewId] = useState("")
   const [newName, setNewName] = useState("")
 
@@ -591,8 +621,31 @@ function AccountModelsSection({
     await loadModels()
   }
 
+  async function deleteAllModels() {
+    if (!models || models.length === 0) return
+    const ok = window.confirm(
+      `Delete all ${models.length} ${models.length === 1 ? "model" : "models"} from ${account.displayName}?`
+    )
+    if (!ok) return
+    await window.cowork.models.deleteForAccount(account.id)
+    await onModelsCleared()
+    await loadModels()
+  }
+
   const isActiveAccount = active?.activeAccountId === account.id
   const count = models?.length ?? 0
+  const normalizedQuery = query.trim().toLowerCase()
+  const visibleModels = models
+    ? normalizedQuery
+      ? models.filter((m) => {
+          const label = modelLabel(m).toLowerCase()
+          return (
+            label.includes(normalizedQuery) ||
+            m.modelId.toLowerCase().includes(normalizedQuery)
+          )
+        })
+      : models
+    : null
 
   return (
     <Collapsible
@@ -619,23 +672,43 @@ function AccountModelsSection({
       </CollapsibleTrigger>
 
       <CollapsibleContent className="flex flex-col gap-3 px-3 pb-3">
-        <div className="flex justify-end">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={runImport}
-            disabled={importing}
-          >
-            {importing ? <Spinner /> : "Import from gateway"}
-          </Button>
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <div className="relative sm:max-w-72 sm:flex-1">
+            <Search className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search models"
+              className="h-8 pl-8"
+            />
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="text-destructive hover:text-destructive"
+              onClick={deleteAllModels}
+              disabled={!models || models.length === 0}
+            >
+              <Trash2 className="size-4" /> Delete all
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={runImport}
+              disabled={importing}
+            >
+              {importing ? <Spinner /> : "Import from gateway"}
+            </Button>
+          </div>
         </div>
         {importError && (
           <p className="text-xs text-destructive">{importError}</p>
         )}
 
-        {models && models.length > 0 ? (
+        {visibleModels && visibleModels.length > 0 ? (
           <div className="flex flex-col gap-2">
-            {models.map((m) => (
+            {visibleModels.map((m) => (
               <ModelRow
                 key={m.id}
                 model={m}
@@ -647,6 +720,10 @@ function AccountModelsSection({
               />
             ))}
           </div>
+        ) : models && models.length > 0 ? (
+          <p className="text-sm text-muted-foreground">
+            No models match that search.
+          </p>
         ) : (
           <p className="text-sm text-muted-foreground">
             No models yet. Add one below or import from the gateway.
@@ -704,6 +781,13 @@ function ModelRow({
     await onChange()
   }
 
+  async function toggleFavorite() {
+    await window.cowork.models.update(model.id, {
+      favorite: !model.favorite,
+    })
+    await onChange()
+  }
+
   return (
     <div
       className={cn(
@@ -749,6 +833,18 @@ function ModelRow({
       <div className="flex shrink-0 items-center gap-1.5">
         {isActive && <Badge>default</Badge>}
         <Badge variant="outline">{ORIGIN_LABEL[model.origin]}</Badge>
+        <Button
+          variant="ghost"
+          size="icon"
+          className={cn(
+            "size-7 text-muted-foreground",
+            model.favorite && "text-amber-500 hover:text-amber-500"
+          )}
+          title={model.favorite ? "Remove favorite" : "Favorite model"}
+          onClick={toggleFavorite}
+        >
+          <Star className={cn("size-4", model.favorite && "fill-current")} />
+        </Button>
         <Button
           variant="ghost"
           size="icon"
