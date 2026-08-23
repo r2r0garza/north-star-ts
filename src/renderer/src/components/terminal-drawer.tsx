@@ -22,7 +22,25 @@ import type { TerminalProfile, TerminalSessionView } from "@/types"
 
 const TERMINAL_KEYBOARD_SHORTCUT = "j"
 const NEW_TERMINAL_KEYBOARD_SHORTCUT = "t"
+const APP_KEYBOARD_SHORTCUTS = new Set(["b", "j", "k", "t"])
 const DEFAULT_HEIGHT = 320
+
+function isAppKeyboardShortcut(event: KeyboardEvent): boolean {
+  return (
+    event.type === "keydown" &&
+    (event.metaKey || event.ctrlKey) &&
+    APP_KEYBOARD_SHORTCUTS.has(event.key.toLowerCase())
+  )
+}
+
+function isTerminalCopyShortcut(event: KeyboardEvent): boolean {
+  return (
+    event.type === "keydown" &&
+    event.ctrlKey &&
+    event.shiftKey &&
+    event.key.toLowerCase() === "c"
+  )
+}
 
 export function TerminalToggle({
   open,
@@ -530,6 +548,25 @@ function TerminalPane({
     const fit = new FitAddon()
     term.loadAddon(fit)
     term.open(host)
+    term.attachCustomKeyEventHandler((event) => {
+      // xterm listens during the capture phase, before the app-level shortcut
+      // handlers on window. Returning false lets those events continue through
+      // the DOM without xterm translating them into terminal input.
+      if (isAppKeyboardShortcut(event)) return false
+
+      if (isTerminalCopyShortcut(event)) {
+        event.preventDefault()
+        const selection = term.getSelection()
+        if (selection) {
+          void navigator.clipboard.writeText(selection).catch(() => {
+            toast.error("Could not copy terminal selection")
+          })
+        }
+        return false
+      }
+
+      return true
+    })
     term.onData((data) => {
       void window.cowork.terminal.write(session.id, data)
     })
