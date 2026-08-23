@@ -70,6 +70,8 @@ export type {
   ExecutionSettings,
   PermissionSettings,
   LlmSettings,
+  MemorySettings,
+  TitleGenerationSettings,
   IndexingSettings,
   SkillSourcesSettings,
   AgentSourcesSettings,

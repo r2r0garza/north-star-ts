@@ -11,6 +11,19 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import {
+  Combobox,
+  ComboboxCollection,
+  ComboboxContent,
+  ComboboxEmpty,
+  ComboboxGroup,
+  ComboboxInput,
+  ComboboxItem,
+  ComboboxLabel,
+  ComboboxList,
+  ComboboxTrigger,
+  ComboboxValue,
+} from "@/components/ui/combobox"
+import {
   Field,
   FieldContent,
   FieldDescription,
@@ -43,6 +56,8 @@ import {
 import type {
   ExecutionSettings,
   PermissionSettings,
+  MemorySettings,
+  TitleGenerationSettings,
   IndexingSettings,
   BrowserSettings,
   ThemeSettings,
@@ -55,6 +70,7 @@ import type {
   SkillSourceRow,
   AgentSourceRow,
   McpSourceRow,
+  AccountWithModels,
 } from "@/types"
 import {
   hexToOklch,
@@ -109,6 +125,7 @@ const SECTIONS: Array<{ value: string; label: string }> = [
   { value: "backend", label: "Backend" },
   { value: "permissions", label: "Permissions" },
   { value: "indexing", label: "Context" },
+  { value: "conversations", label: "Conversations" },
   { value: "capabilities", label: "Capabilities" },
   { value: "browser", label: "Browser" },
   { value: "appearance", label: "Appearance" },
@@ -170,6 +187,7 @@ const MCP_SOURCE_KIND_LABEL: Record<McpSourceRow["kind"], string> = {
 
 const SUMMARY_TOKEN_MIN = 6000
 const SUMMARY_TOKEN_MAX = 150000
+const DEFAULT_MODEL_VALUE = "__default__"
 
 function digitsOnly(raw: string): string {
   return raw.replace(/\D/g, "")
@@ -189,6 +207,140 @@ function clampInt(raw: string, min: number, max: number): number | null {
   return Math.min(max, Math.max(min, n))
 }
 
+function modelSettingValue(
+  setting: { accountId: string | null; modelId: string | null } | null
+): string {
+  if (!setting?.accountId || !setting.modelId) return DEFAULT_MODEL_VALUE
+  return `${setting.accountId}::${setting.modelId}`
+}
+
+function splitModelSettingValue(value: string): {
+  accountId: string | null
+  modelId: string | null
+} {
+  if (value === DEFAULT_MODEL_VALUE) return { accountId: null, modelId: null }
+  const idx = value.indexOf("::")
+  if (idx < 0) return { accountId: null, modelId: null }
+  return {
+    accountId: value.slice(0, idx) || null,
+    modelId: value.slice(idx + 2) || null,
+  }
+}
+
+function modelDisplayName(model: {
+  modelId: string
+  modelName: string | null
+}) {
+  return model.modelName?.trim() || model.modelId
+}
+
+function modelItemValue(accountId: string, modelId: string): string {
+  return `${accountId}::${modelId}`
+}
+
+type ModelPickerItem = { value: string; label: string; modelId?: string }
+type ModelPickerGroup = {
+  value: string
+  label: string
+  items: ModelPickerItem[]
+}
+
+function modelPickerGroups(
+  options: AccountWithModels[] | null
+): ModelPickerGroup[] {
+  return [
+    {
+      value: "default",
+      label: "Default",
+      items: [{ value: DEFAULT_MODEL_VALUE, label: "Default chat model" }],
+    },
+    ...(options ?? [])
+      .filter(({ models }) => models.length > 0)
+      .map(({ account, models }) => ({
+        value: account.id,
+        label: account.displayName,
+        items: models.map((model) => ({
+          value: modelItemValue(account.id, model.modelId),
+          label: modelDisplayName(model),
+          modelId: model.modelId,
+        })),
+      })),
+  ]
+}
+
+function selectedModelPickerItem(
+  groups: ModelPickerGroup[],
+  value: string
+): ModelPickerItem | null {
+  return (
+    groups
+      .flatMap((group) => group.items)
+      .find((item) => item.value === value) ?? null
+  )
+}
+
+function ConversationModelPicker({
+  id,
+  value,
+  options,
+  onChange,
+}: {
+  id: string
+  value: string
+  options: AccountWithModels[] | null
+  onChange: (value: string) => void
+}) {
+  const groups = modelPickerGroups(options)
+  const selected = selectedModelPickerItem(groups, value)
+  return (
+    <Combobox
+      items={groups}
+      value={selected}
+      isItemEqualToValue={(a, b) => a?.value === b?.value}
+      onValueChange={(item) => {
+        if (!item) return
+        onChange(item.value)
+      }}
+    >
+      <ComboboxTrigger
+        id={id}
+        className="flex h-8 w-full items-center justify-between gap-2 rounded-lg border border-input bg-transparent px-2.5 text-left text-sm transition-colors outline-none hover:bg-accent focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+      >
+        <ComboboxValue placeholder="Default chat model">
+          {(item: ModelPickerItem | null) => (
+            <span className="truncate">
+              {item?.label ?? "Default chat model"}
+            </span>
+          )}
+        </ComboboxValue>
+      </ComboboxTrigger>
+      <ComboboxContent className="w-96 min-w-96">
+        <ComboboxInput placeholder="Search models..." showTrigger={false} />
+        <ComboboxEmpty>No models found.</ComboboxEmpty>
+        <ComboboxList>
+          {(group: ModelPickerGroup) => (
+            <ComboboxGroup key={group.value} items={group.items}>
+              <ComboboxLabel>{group.label}</ComboboxLabel>
+              <ComboboxCollection>
+                {(item: ModelPickerItem) => (
+                  <ComboboxItem key={item.value} value={item}>
+                    <span className="truncate">{item.label}</span>
+                    {item.modelId && item.modelId !== item.label && (
+                      <span className="ml-auto max-w-40 truncate font-mono text-xs text-muted-foreground">
+                        {item.modelId}
+                      </span>
+                    )}
+                  </ComboboxItem>
+                )}
+              </ComboboxCollection>
+            </ComboboxGroup>
+          )}
+        </ComboboxList>
+      </ComboboxContent>
+    </Combobox>
+  )
+}
+
 export function SettingsScreen({
   open,
   onOpenChange,
@@ -205,6 +357,12 @@ export function SettingsScreen({
     null
   )
   const [indexing, setIndexing] = useState<IndexingSettings | null>(null)
+  const [memory, setMemory] = useState<MemorySettings | null>(null)
+  const [titleGeneration, setTitleGeneration] =
+    useState<TitleGenerationSettings | null>(null)
+  const [memoryModelOptions, setMemoryModelOptions] = useState<
+    AccountWithModels[] | null
+  >(null)
   const [summaryMessageDraft, setSummaryMessageDraft] = useState("")
   const [summaryTokenDraft, setSummaryTokenDraft] = useState("")
   const [browser, setBrowser] = useState<BrowserSettings | null>(null)
@@ -251,27 +409,48 @@ export function SettingsScreen({
       window.cowork.settings.getExecution(),
       window.cowork.settings.getPermissions(),
       window.cowork.settings.getIndexing(),
+      window.cowork.settings.getMemory(),
+      window.cowork.settings.getTitleGeneration(),
+      window.cowork.providers.listWithModels(),
       window.cowork.settings.getBrowser(),
       window.cowork.settings.getIde(),
       window.cowork.settings.ideOptions(),
       window.cowork.settings.getNotifications(),
       window.cowork.settings.checkRuntimes(),
       window.cowork.settings.getTheme(),
-    ]).then(([exec, perms, idx, br, ideCfg, ideOpts, notif, rt, theme]) => {
-      if (cancelled) return
-      setExecution(exec)
-      setPermissions(perms)
-      setIndexing(idx)
-      setSummaryMessageDraft(String(idx.summarizeMessageThreshold))
-      setSummaryTokenDraft(String(idx.summarizeTokenThreshold))
-      setBrowser(br)
-      setIde(ideCfg)
-      setIdeOptions(ideOpts)
-      setNotifications(notif)
-      setRuntimes(rt)
-      setSavedTheme(theme)
-      setThemeDraft(theme)
-    })
+    ]).then(
+      ([
+        exec,
+        perms,
+        idx,
+        mem,
+        titleGen,
+        memoryModels,
+        br,
+        ideCfg,
+        ideOpts,
+        notif,
+        rt,
+        theme,
+      ]) => {
+        if (cancelled) return
+        setExecution(exec)
+        setPermissions(perms)
+        setIndexing(idx)
+        setMemory(mem)
+        setTitleGeneration(titleGen)
+        setMemoryModelOptions(memoryModels)
+        setSummaryMessageDraft(String(idx.summarizeMessageThreshold))
+        setSummaryTokenDraft(String(idx.summarizeTokenThreshold))
+        setBrowser(br)
+        setIde(ideCfg)
+        setIdeOptions(ideOpts)
+        setNotifications(notif)
+        setRuntimes(rt)
+        setSavedTheme(theme)
+        setThemeDraft(theme)
+      }
+    )
     return () => {
       cancelled = true
     }
@@ -405,6 +584,14 @@ export function SettingsScreen({
   async function saveIndexing(next: IndexingSettings) {
     setIndexing(next)
     await window.cowork.settings.setIndexing(next)
+  }
+  async function saveMemory(next: MemorySettings) {
+    setMemory(next)
+    await window.cowork.settings.setMemory(next)
+  }
+  async function saveTitleGeneration(next: TitleGenerationSettings) {
+    setTitleGeneration(next)
+    await window.cowork.settings.setTitleGeneration(next)
   }
 
   function restoreSummaryDrafts() {
@@ -557,6 +744,8 @@ export function SettingsScreen({
             {execution &&
               permissions &&
               indexing &&
+              memory &&
+              titleGeneration &&
               browser &&
               ide &&
               notifications && (
@@ -760,6 +949,70 @@ export function SettingsScreen({
                             </FieldDescription>
                           </FieldContent>
                           <Switch id="idx-embed" checked={false} disabled />
+                        </Field>
+                      </TabsContent>
+
+                      {/* Conversation lifecycle — memory, summarization, and prompt logs. */}
+                      <TabsContent
+                        value="conversations"
+                        className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto py-6"
+                      >
+                        <Field orientation="horizontal">
+                          <FieldContent>
+                            <FieldLabel htmlFor="memory-enabled">
+                              Automatic memory
+                            </FieldLabel>
+                            <FieldDescription>
+                              Extract durable facts after completed turns and
+                              maintain managed memory skills. Workspace memory
+                              is ignored by git by default.
+                            </FieldDescription>
+                          </FieldContent>
+                          <Switch
+                            id="memory-enabled"
+                            checked={memory.enabled}
+                            onCheckedChange={(checked) =>
+                              saveMemory({ ...memory, enabled: checked })
+                            }
+                          />
+                        </Field>
+                        <Field>
+                          <FieldLabel htmlFor="memory-model">
+                            Memory model
+                          </FieldLabel>
+                          <ConversationModelPicker
+                            id="memory-model"
+                            value={modelSettingValue(memory)}
+                            options={memoryModelOptions}
+                            onChange={(value) => {
+                              const selection = splitModelSettingValue(value)
+                              saveMemory({ ...memory, ...selection })
+                            }}
+                          />
+                          <FieldDescription>
+                            Used only by the background memory writer. The main
+                            agent reads memory through normal skill progressive
+                            disclosure.
+                          </FieldDescription>
+                        </Field>
+                        <Field>
+                          <FieldLabel htmlFor="title-model">
+                            Title generation model
+                          </FieldLabel>
+                          <ConversationModelPicker
+                            id="title-model"
+                            value={modelSettingValue(titleGeneration)}
+                            options={memoryModelOptions}
+                            onChange={(value) => {
+                              const selection = splitModelSettingValue(value)
+                              saveTitleGeneration(selection)
+                            }}
+                          />
+                          <FieldDescription>
+                            Used only for automatic conversation titles. Pick a
+                            cheaper model here without changing the main chat
+                            model.
+                          </FieldDescription>
                         </Field>
 
                         {/* Conversation-summary triggers (plan 019). A rolling
@@ -1399,8 +1652,8 @@ function AppearanceSection({
         onChange={(neutral) => onPreview({ ...draft, neutral })}
       />
       <p className="text-xs text-muted-foreground">
-        Changes preview live. Save to keep them (this overrides the preset colors
-        from the app config); Reset to preset clears your override.
+        Changes preview live. Save to keep them (this overrides the preset
+        colors from the app config); Reset to preset clears your override.
       </p>
       <div className="flex items-center gap-2">
         <Button size="sm" onClick={onSave} disabled={!allValid || !dirty}>
@@ -1439,7 +1692,8 @@ function ColorField({
 }) {
   // The swatch needs a full #rrggbb; fall back to the default when the field is
   // empty or not yet a valid hex.
-  const swatchHex = value && hexToOklch(value) ? normalizeHex(value) : fallbackHex
+  const swatchHex =
+    value && hexToOklch(value) ? normalizeHex(value) : fallbackHex
   return (
     <Field orientation="horizontal">
       <FieldContent>

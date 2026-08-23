@@ -40,6 +40,8 @@ import type {
   ExecutionSettings,
   PermissionSettings,
   LlmSettings,
+  MemorySettings,
+  TitleGenerationSettings,
   IndexingSettings,
   SkillSourcesSettings,
   AgentSourcesSettings,
@@ -1113,6 +1115,19 @@ const api = {
         "settings:setIndexing",
         next
       ) as Promise<IndexingSettings>,
+    getMemory: () =>
+      ipcRenderer.invoke("settings:getMemory") as Promise<MemorySettings>,
+    setMemory: (next: MemorySettings) =>
+      ipcRenderer.invoke("settings:setMemory", next) as Promise<MemorySettings>,
+    getTitleGeneration: () =>
+      ipcRenderer.invoke(
+        "settings:getTitleGeneration"
+      ) as Promise<TitleGenerationSettings>,
+    setTitleGeneration: (next: TitleGenerationSettings) =>
+      ipcRenderer.invoke(
+        "settings:setTitleGeneration",
+        next
+      ) as Promise<TitleGenerationSettings>,
     getSkillSources: () =>
       ipcRenderer.invoke(
         "settings:getSkillSources"
@@ -1412,6 +1427,8 @@ export type {
   ExecutionSettings,
   PermissionSettings,
   LlmSettings,
+  MemorySettings,
+  TitleGenerationSettings,
   IndexingSettings,
   SkillSourcesSettings,
   AgentSourcesSettings,

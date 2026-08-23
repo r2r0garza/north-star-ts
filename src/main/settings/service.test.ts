@@ -101,6 +101,68 @@ describe("settings service — llm selection", () => {
   })
 })
 
+describe("settings service — memory", () => {
+  it("defaults to disabled and follows the default model", () => {
+    expect(service.getMemory()).toEqual({
+      enabled: false,
+      accountId: null,
+      modelId: null,
+    })
+  })
+
+  it("round-trips the memory model selection", () => {
+    service.setMemory({
+      enabled: true,
+      accountId: "acc-1",
+      modelId: "model-1",
+    })
+    service._resetCacheForTests()
+    expect(service.getMemory()).toEqual({
+      enabled: true,
+      accountId: "acc-1",
+      modelId: "model-1",
+    })
+  })
+
+  it("falls back to defaults on a corrupt blob", () => {
+    store.set("memory", "{not json")
+    expect(service.getMemory()).toEqual({
+      enabled: false,
+      accountId: null,
+      modelId: null,
+    })
+  })
+})
+
+describe("settings service — title generation", () => {
+  it("defaults to the default chat model", () => {
+    expect(service.getTitleGeneration()).toEqual({
+      accountId: null,
+      modelId: null,
+    })
+  })
+
+  it("round-trips the title generation model selection", () => {
+    service.setTitleGeneration({
+      accountId: "acc-title",
+      modelId: "cheap-title-model",
+    })
+    service._resetCacheForTests()
+    expect(service.getTitleGeneration()).toEqual({
+      accountId: "acc-title",
+      modelId: "cheap-title-model",
+    })
+  })
+
+  it("falls back to defaults on a corrupt blob", () => {
+    store.set("titleGeneration", "{not json")
+    expect(service.getTitleGeneration()).toEqual({
+      accountId: null,
+      modelId: null,
+    })
+  })
+})
+
 describe("settings service — sandboxAutoApproves", () => {
   it("returns false when auto-approve is off", () => {
     service.setExecution({

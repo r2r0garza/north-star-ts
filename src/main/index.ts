@@ -99,6 +99,7 @@ import {
   mainAgentName,
 } from "./config/system-name"
 import { resolveBrandTheme } from "./config/theme"
+import { reconcilePendingMemoryOnStartup } from "./agent/memory/service"
 
 // The durable task runner — a singleton owned by the main process. Started in
 // app.whenReady (after the DB handlers register) and stopped on will-quit.
@@ -387,7 +388,9 @@ ipcMain.handle("pick-agent-import", () => pickAgentImport())
 // are dropped — the renderer only needs to display and match on name/desc.
 ipcMain.handle("skills:list", async (_event, workspace?: string) => {
   const skills = await loadSkills(skillSources(workspace))
-  return skills.map(({ name, description }) => ({ name, description }))
+  return skills
+    .filter((skill) => !isManagedMemorySkillPath(skill.path))
+    .map(({ name, description }) => ({ name, description }))
 })
 
 // List the USER-INVOCABLE custom agents (name + description) for the composer's
@@ -719,6 +722,7 @@ ipcMain.handle(
   "skills:write",
   async (_event, filePath: string, content: string): Promise<void> => {
     assertSkillPath(filePath)
+    assertNotManagedMemorySkill(filePath)
     await writeFile(filePath, content, "utf-8")
   }
 )
@@ -747,6 +751,9 @@ ipcMain.handle(
     // validateName also enforces name === dirName, so the skill subdir is the name.
     const nameErr = validateSkillName(name, name)
     if (nameErr) throw new Error(nameErr)
+    if (isMemorySkillName(name)) {
+      throw new Error("memory-* skills are managed by automatic memory.")
+    }
     const skillDir = join(resolvedDir, name)
     if (existsSync(skillDir)) {
       throw new Error(`A skill named '${name}' already exists here.`)
@@ -792,6 +799,7 @@ ipcMain.handle(
   "skills:delete",
   async (_event, filePath: string): Promise<void> => {
     assertSkillWritablePath(filePath)
+    assertNotManagedMemorySkill(filePath)
     // filePath is <root>/<name>/SKILL.md — remove its parent folder, not just the file.
     await rm(dirname(resolve(filePath)), { recursive: true, force: true })
   }
@@ -827,6 +835,18 @@ function assertSkillPath(filePath: string): void {
   )
   if (!inside) {
     throw new Error(`Refusing skill path outside known sources: ${filePath}`)
+  }
+}
+function isMemorySkillName(name: string): boolean {
+  return name.startsWith("memory-")
+}
+function isManagedMemorySkillPath(filePath: string): boolean {
+  const resolved = resolve(filePath)
+  return isMemorySkillName(basename(dirname(resolved)))
+}
+function assertNotManagedMemorySkill(filePath: string): void {
+  if (isManagedMemorySkillPath(filePath)) {
+    throw new Error("memory-* skills are managed by automatic memory.")
   }
 }
 // The WRITABLE skill roots: user dir + registered custom folders only. Workspace
@@ -1094,6 +1114,9 @@ app.whenReady().then(() => {
   // launch only, seed it with the app-bundled skills so users get editable
   // copies of the built-ins.
   initUserSkills()
+  void reconcilePendingMemoryOnStartup().catch((err) =>
+    console.warn("[memory] startup reconcile failed:", err)
+  )
   createWindow()
 
   app.on("activate", () => {
