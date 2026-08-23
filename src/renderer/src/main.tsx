@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from "react"
+import React, { useCallback, useEffect, useRef, useState } from "react"
 import ReactDOM from "react-dom/client"
 
 import "./globals.css"
@@ -35,7 +35,7 @@ import type { ChangedFile } from "@/lib/timeline"
 import { maybeNotify, refreshNotificationSettings } from "@/lib/notify"
 import { applyThemeCss } from "@/lib/theme"
 import { cn } from "@/lib/utils"
-import App from "./App"
+import App, { type AppHandle } from "./App"
 
 // Deterministic infrastructure task kinds that repaint their own UI in place and
 // run automatically (on open / poll), so a completion OS-notification would just
@@ -102,6 +102,7 @@ function Shell() {
   const [terminalOpenByConversation, setTerminalOpenByConversation] = useState<
     Record<string, boolean>
   >({})
+  const appRef = useRef<AppHandle | null>(null)
   const setActivity = (open: boolean) => {
     setActivityOpen(open)
     writeActivityOpen(open)
@@ -465,6 +466,7 @@ function Shell() {
           )}
         >
           <App
+            ref={appRef}
             view={view}
             conversationId={activeConversationId}
             pendingProjectId={pendingProjectId}
@@ -496,6 +498,9 @@ function Shell() {
           conversationId={activeConversationId}
           workspace={workspacePath}
           onOpenChange={setTerminalOpenForActive}
+          onAddSelectionToMessage={(text) =>
+            appRef.current?.appendTerminalSelection(text)
+          }
         />
       </div>
       <ActivityPanel

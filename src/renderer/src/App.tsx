@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from "react"
+import {
+  forwardRef,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useRef,
+  useState,
+} from "react"
 import type { KeyboardEvent } from "react"
 import { toast } from "sonner"
 import {
@@ -239,22 +246,11 @@ function formatPickedElement(el: PickedElement): string {
   return `[User pointed at a browser element — ${parts.join(", ")}]`
 }
 
-export default function App({
-  view,
-  conversationId,
-  pendingProjectId,
-  onConversationCreated,
-  onConversationChanged,
-  onOpenSettings,
-  settingsOpen,
-  rightPanelOpen,
-  onWorkspaceChange,
-  onReviewChanges,
-  onOpenHtml,
-  onRanInBackground,
-  onRunningConvosChange,
-  onWaitingConvosChange,
-}: {
+export type AppHandle = {
+  appendTerminalSelection: (text: string) => void
+}
+
+type AppProps = {
   view: View
   conversationId: string | null
   // The project a fresh (uncreated) conversation will belong to. Its directory
@@ -292,7 +288,27 @@ export default function App({
   // as approval/question events). Distinct from running: these need the user to
   // act, so the sidebar shows a "needs you" indicator instead of the spinner.
   onWaitingConvosChange?: (ids: Set<string>) => void
-}) {
+}
+
+function App(
+  {
+    view,
+    conversationId,
+    pendingProjectId,
+    onConversationCreated,
+    onConversationChanged,
+    onOpenSettings,
+    settingsOpen,
+    rightPanelOpen,
+    onWorkspaceChange,
+    onReviewChanges,
+    onOpenHtml,
+    onRanInBackground,
+    onRunningConvosChange,
+    onWaitingConvosChange,
+  }: AppProps,
+  ref: React.Ref<AppHandle>
+) {
   // Chat runs without a workspace and attaches files instead; North Star and
   // Interactive are workspace-backed and share the same behavior.
   const isChat = view === "Chat"
@@ -749,6 +765,29 @@ export default function App({
     reconcileConfirmed(setConfirmedSkills, present, "skill")
     reconcileConfirmed(setConfirmedFiles, present, "file")
   }
+
+  const appendTerminalSelection = useCallback((text: string) => {
+    if (!text.trim()) return
+    const block = `<user_terminal_text>\n${text}\n</user_terminal_text>`
+    setMessage((prev) => (prev.trim() ? `${prev}\n\n${block}` : block))
+    setMenu(null)
+    setMenuActive(null)
+    requestAnimationFrame(() => {
+      const node = textareaRef.current
+      if (!node) return
+      node.focus()
+      const end = node.value.length
+      node.setSelectionRange(end, end)
+    })
+  }, [])
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      appendTerminalSelection,
+    }),
+    [appendTerminalSelection]
+  )
 
   // Drop confirmed values of one kind whose marker no longer appears in `present`
   // (the segmented mention tokens still in the text).
@@ -2112,3 +2151,5 @@ export default function App({
     </div>
   )
 }
+
+export default forwardRef<AppHandle, AppProps>(App)
