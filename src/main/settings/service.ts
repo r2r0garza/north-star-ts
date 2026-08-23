@@ -62,6 +62,22 @@ export interface LlmSettings {
   activeModelId: string | null
 }
 
+// Dedicated model for automatic memory maintenance. Null account/model means
+// "use the default chat model"; disabling keeps existing memory files readable
+// but stops all background writes.
+export interface MemorySettings {
+  enabled: boolean
+  accountId: string | null
+  modelId: string | null
+}
+
+// Dedicated model for cheap conversation title generation. Null account/model
+// means "use the default chat model".
+export interface TitleGenerationSettings {
+  accountId: string | null
+  modelId: string | null
+}
+
 // Workspace Indexing (plan 008). Global defaults; a per-workspace disable lives
 // on index_runs.enabled, not here.
 export interface IndexingSettings {
@@ -167,6 +183,17 @@ const DEFAULT_LLM: LlmSettings = {
   activeModelId: null,
 }
 
+const DEFAULT_MEMORY: MemorySettings = {
+  enabled: false,
+  accountId: null,
+  modelId: null,
+}
+
+const DEFAULT_TITLE_GENERATION: TitleGenerationSettings = {
+  accountId: null,
+  modelId: null,
+}
+
 const DEFAULT_INDEXING: IndexingSettings = {
   autoIndexNewWorkspaces: true,
   useIndexForContext: true,
@@ -220,6 +247,8 @@ function defaultExecution(): ExecutionSettings {
 const KEY_EXECUTION = "execution"
 const KEY_PERMISSIONS = "permissions"
 const KEY_LLM = "llm"
+const KEY_MEMORY = "memory"
+const KEY_TITLE_GENERATION = "titleGeneration"
 const KEY_INDEXING = "indexing"
 const KEY_SKILL_SOURCES = "skillSources"
 const KEY_AGENT_SOURCES = "agentSources"
@@ -232,6 +261,8 @@ const KEY_NOTIFICATIONS = "notifications"
 let executionCache: ExecutionSettings | undefined
 let permissionsCache: PermissionSettings | undefined
 let llmCache: LlmSettings | undefined
+let memoryCache: MemorySettings | undefined
+let titleGenerationCache: TitleGenerationSettings | undefined
 let indexingCache: IndexingSettings | undefined
 let skillSourcesCache: SkillSourcesSettings | undefined
 let agentSourcesCache: AgentSourcesSettings | undefined
@@ -309,6 +340,47 @@ function loadLlm(): LlmSettings {
   }
   llmCache = { ...DEFAULT_LLM }
   return llmCache
+}
+
+function loadMemory(): MemorySettings {
+  if (memoryCache) return memoryCache
+  const raw = settingsRepo.getSetting(KEY_MEMORY)
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw) as Partial<MemorySettings>
+      memoryCache = {
+        enabled: parsed.enabled ?? DEFAULT_MEMORY.enabled,
+        accountId:
+          typeof parsed.accountId === "string" ? parsed.accountId : null,
+        modelId: typeof parsed.modelId === "string" ? parsed.modelId : null,
+      }
+      return memoryCache
+    } catch {
+      // Corrupt blob — fall through to defaults.
+    }
+  }
+  memoryCache = { ...DEFAULT_MEMORY }
+  return memoryCache
+}
+
+function loadTitleGeneration(): TitleGenerationSettings {
+  if (titleGenerationCache) return titleGenerationCache
+  const raw = settingsRepo.getSetting(KEY_TITLE_GENERATION)
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw) as Partial<TitleGenerationSettings>
+      titleGenerationCache = {
+        accountId:
+          typeof parsed.accountId === "string" ? parsed.accountId : null,
+        modelId: typeof parsed.modelId === "string" ? parsed.modelId : null,
+      }
+      return titleGenerationCache
+    } catch {
+      // Corrupt blob — fall through to defaults.
+    }
+  }
+  titleGenerationCache = { ...DEFAULT_TITLE_GENERATION }
+  return titleGenerationCache
 }
 
 function loadIndexing(): IndexingSettings {
@@ -511,6 +583,14 @@ export function getLlm(): LlmSettings {
   return loadLlm()
 }
 
+export function getMemory(): MemorySettings {
+  return loadMemory()
+}
+
+export function getTitleGeneration(): TitleGenerationSettings {
+  return loadTitleGeneration()
+}
+
 export function getIndexing(): IndexingSettings {
   return loadIndexing()
 }
@@ -639,11 +719,27 @@ export function setLlm(next: LlmSettings): LlmSettings {
   return next
 }
 
+export function setMemory(next: MemorySettings): MemorySettings {
+  settingsRepo.setSetting(KEY_MEMORY, JSON.stringify(next))
+  memoryCache = next
+  return next
+}
+
+export function setTitleGeneration(
+  next: TitleGenerationSettings
+): TitleGenerationSettings {
+  settingsRepo.setSetting(KEY_TITLE_GENERATION, JSON.stringify(next))
+  titleGenerationCache = next
+  return next
+}
+
 // Test hook: drop the in-memory cache so the next read re-hits the repo.
 export function _resetCacheForTests(): void {
   executionCache = undefined
   permissionsCache = undefined
   llmCache = undefined
+  memoryCache = undefined
+  titleGenerationCache = undefined
   indexingCache = undefined
   skillSourcesCache = undefined
   agentSourcesCache = undefined

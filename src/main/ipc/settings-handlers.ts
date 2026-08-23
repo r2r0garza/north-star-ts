@@ -5,6 +5,8 @@ import { IDES } from "../ide/open"
 import type {
   ExecutionSettings,
   PermissionSettings,
+  MemorySettings,
+  TitleGenerationSettings,
   IndexingSettings,
   SkillSourcesSettings,
   AgentSourcesSettings,
@@ -35,6 +37,19 @@ export function registerSettingsHandlers(): void {
   ipcMain.handle("settings:getIndexing", () => settingsService.getIndexing())
   ipcMain.handle("settings:setIndexing", (_e, next: IndexingSettings) =>
     settingsService.setIndexing(next)
+  )
+
+  ipcMain.handle("settings:getMemory", () => settingsService.getMemory())
+  ipcMain.handle("settings:setMemory", (_e, next: MemorySettings) =>
+    settingsService.setMemory(next)
+  )
+  ipcMain.handle("settings:getTitleGeneration", () =>
+    settingsService.getTitleGeneration()
+  )
+  ipcMain.handle(
+    "settings:setTitleGeneration",
+    (_e, next: TitleGenerationSettings) =>
+      settingsService.setTitleGeneration(next)
   )
 
   ipcMain.handle("settings:getSkillSources", () =>

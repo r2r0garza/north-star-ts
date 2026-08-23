@@ -2,6 +2,7 @@ import { spawn } from "child_process"
 import { relative, posix } from "path"
 import { resolveInWorkspace } from "../tools/workspace"
 import { captureSpawn } from "./spawn-util"
+import { hostCliEnv } from "./host-cli-env"
 import { systemSlug } from "../../config/system-name"
 import type {
   Environment,
@@ -56,9 +57,11 @@ export class ContainerEnvironment implements Environment {
   // Spawn the runtime binary with raw args, capturing stdout (as a Buffer, for
   // binary-safe file reads), stderr, and the exit code. `input` is written to the
   // child's stdin when provided (used by writeFile's base64 pipe).
-  private runtimeCli(args: string[], input?: string): Promise<CliResult> {
+  private async runtimeCli(args: string[], input?: string): Promise<CliResult> {
+    const env = await hostCliEnv()
     return new Promise((resolve) => {
       const child = spawn(this.cfg.runtime, args, {
+        env,
         stdio: [input != null ? "pipe" : "ignore", "pipe", "pipe"],
       })
       const out: Buffer[] = []
@@ -281,7 +284,7 @@ export class ContainerEnvironment implements Environment {
       })
   }
 
-  exec(command: string, opts: ExecOptions): Promise<ExecResult> {
+  async exec(command: string, opts: ExecOptions): Promise<ExecResult> {
     // Run the model's command in the container shell, in the mapped cwd. The
     // inner command's exit code propagates through `docker exec`. Capture/cap/
     // timeout/abort are shared with the local backend via captureSpawn.
@@ -290,6 +293,7 @@ export class ContainerEnvironment implements Environment {
     // abort) does not stop the in-container process. The signal seam is wired and
     // we intentionally do NOT pass killGroup here — the docker/podman exec client
     // is not a detached group leader; an in-container kill needs its own design.
+    const env = await hostCliEnv()
     const child = spawn(
       this.cfg.runtime,
       [
@@ -301,7 +305,7 @@ export class ContainerEnvironment implements Environment {
         "-c",
         command,
       ],
-      { stdio: ["ignore", "pipe", "pipe"] }
+      { env, stdio: ["ignore", "pipe", "pipe"] }
     )
     return captureSpawn(child, opts)
   }

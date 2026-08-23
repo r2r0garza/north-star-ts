@@ -33,6 +33,7 @@ import { loadSkills } from "./skills/loader"
 import { buildSkillsPrompt } from "./skills/prompt"
 import { createReadSkillTool } from "./skills/tool"
 import { skillSources } from "./skills/sources"
+import { recordMemoryTurn } from "./memory/service"
 import { loadAgent, loadAgents } from "./agents/loader"
 import { agentSources } from "./agents/sources"
 import type { AgentDefinition } from "./agents/types"
@@ -393,7 +394,7 @@ function contentToText(content: unknown): string {
 // snippet on any failure so a conversation always gets a title.
 export async function generateTitle(
   message: string,
-  sel: LlmSelection
+  sel: LlmSelection = settingsService.getTitleGeneration()
 ): Promise<string> {
   const fallback = titleFromMessage(message)
   try {
@@ -605,9 +606,7 @@ export async function runAgentLoop(
   // bodies are fetched on demand via the tool. When a custom agent declares a
   // `skills` frontmatter, filter to its allowlist (tri-state: omitted → all;
   // [] → none; [list] → only those) before building the tool + prompt.
-  const allSkills = await loadSkills(
-    skillSources(hasWorkspace ? workspace : undefined)
-  )
+  const allSkills = await loadSkills(skillSources(agentDir))
   const skills =
     agent?.skills === undefined
       ? allSkills
@@ -1005,6 +1004,7 @@ export async function runAgentLoop(
   // the append and let the loop continue from stored history. List any attached
   // files by name (contents are NOT inlined: the model reads them on demand via
   // read_file_tool, scoped to this attachment list, which supports paging).
+  let persistedUserContent: string | undefined
   if (userMessage !== undefined) {
     let userContent = userMessage || "What files are in the workspace?"
     if (hasAttachments) {
@@ -1012,6 +1012,7 @@ export async function runAgentLoop(
       const note = `Attached files (read with read_file_tool when needed): ${names}`
       userContent = userContent ? `${userContent}\n\n${note}` : note
     }
+    persistedUserContent = userContent
     // With attachments inlined, so history reflects what the model actually saw.
     appendMessage({ conversationId, role: "user", content: userContent })
   }
@@ -1222,6 +1223,17 @@ export async function runAgentLoop(
         // No tool calls — this is the final answer. Persist it so the next turn
         // (and a reopened conversation) has the full transcript.
         appendMessage({ conversationId, role: "assistant", content: text })
+        if (
+          persistedUserContent !== undefined &&
+          (opts.agentDepth ?? 0) === 0
+        ) {
+          void recordMemoryTurn({
+            conversationId,
+            userText: persistedUserContent,
+            assistantText: text,
+            workspaceDir: agentDir,
+          }).catch((err) => console.warn("[memory] turn record failed:", err))
+        }
         return { content: text }
       }
 
@@ -1663,7 +1675,7 @@ export async function runChat(
   }
   const titlePromise =
     conversation && !conversation.title && message.trim()
-      ? generateTitle(message, llmSelection).then((title) =>
+      ? generateTitle(message).then((title) =>
           updateConversation(conversationId, { title })
         )
       : null

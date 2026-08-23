@@ -29,6 +29,37 @@ function toView(account: ProviderAccount): AccountView {
   return { ...account, maskedKey: secrets.getMaskedApiKey(account.id) ?? null }
 }
 
+function clearMemoryForAccount(accountId: string): void {
+  const memory = settingsService.getMemory()
+  if (memory.accountId === accountId) {
+    settingsService.setMemory({ ...memory, accountId: null, modelId: null })
+  }
+}
+
+function clearTitleGenerationForAccount(accountId: string): void {
+  const title = settingsService.getTitleGeneration()
+  if (title.accountId === accountId) {
+    settingsService.setTitleGeneration({ accountId: null, modelId: null })
+  }
+}
+
+function clearMemoryForModel(accountId: string, modelId: string): void {
+  const memory = settingsService.getMemory()
+  if (memory.accountId === accountId && memory.modelId === modelId) {
+    settingsService.setMemory({ ...memory, accountId: null, modelId: null })
+  }
+}
+
+function clearTitleGenerationForModel(
+  accountId: string,
+  modelId: string
+): void {
+  const title = settingsService.getTitleGeneration()
+  if (title.accountId === accountId && title.modelId === modelId) {
+    settingsService.setTitleGeneration({ accountId: null, modelId: null })
+  }
+}
+
 // An account plus its models — the unit the composer's grouped picker renders.
 export interface AccountWithModels {
   account: AccountView
@@ -66,6 +97,8 @@ export function registerProviderHandlers(): void {
       } else {
         invalidateProviderClient() // base_url or enabled may have changed
       }
+      if (!account.enabled) clearMemoryForAccount(id)
+      if (!account.enabled) clearTitleGenerationForAccount(id)
       return toView(account)
     }
   )
@@ -79,6 +112,8 @@ export function registerProviderHandlers(): void {
     } else {
       invalidateProviderClient()
     }
+    clearMemoryForAccount(id)
+    clearTitleGenerationForAccount(id)
   })
 
   // ── API key (safeStorage; plaintext never leaves main) ──────────────────────
@@ -121,10 +156,21 @@ export function registerProviderHandlers(): void {
       _e,
       id: string,
       patch: { modelId?: string; modelName?: string | null; favorite?: boolean }
-    ) => modelsRepo.updateModel(id, patch)
+    ) => {
+      const before = modelsRepo.getModel(id)
+      const updated = modelsRepo.updateModel(id, patch)
+      if (before && before.modelId !== updated.modelId) {
+        clearMemoryForModel(before.accountId, before.modelId)
+        clearTitleGenerationForModel(before.accountId, before.modelId)
+      }
+      return updated
+    }
   )
   ipcMain.handle("models:delete", (_e, id: string) => {
+    const model = modelsRepo.getModel(id)
     modelsRepo.deleteModel(id)
+    if (model) clearMemoryForModel(model.accountId, model.modelId)
+    if (model) clearTitleGenerationForModel(model.accountId, model.modelId)
     invalidateProviderClient() // the active model may have been removed
   })
   ipcMain.handle("models:deleteForAccount", (_e, accountId: string) => {
@@ -138,6 +184,8 @@ export function registerProviderHandlers(): void {
     } else {
       invalidateProviderClient()
     }
+    clearMemoryForAccount(accountId)
+    clearTitleGenerationForAccount(accountId)
   })
 
   // Import the gateway catalog and merge it into the local list. On failure

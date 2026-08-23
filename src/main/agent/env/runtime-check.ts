@@ -1,4 +1,5 @@
 import { spawn } from "child_process"
+import { hostCliEnv } from "./host-cli-env"
 
 // Lightweight availability probe for a container runtime, so the Settings UI can
 // show whether Docker/Podman can actually be selected. This is a UX aid, NOT a
@@ -22,9 +23,13 @@ interface ProbeResult {
 // Run `<runtime> <args>` and resolve its exit code; flag ENOENT (not installed)
 // distinctly from a nonzero exit (installed but failed). stdio ignored — we only
 // care about success/failure, with a short timeout so a wedged daemon can't hang.
-function probe(runtime: Runtime, args: string[]): Promise<ProbeResult> {
+async function probe(runtime: Runtime, args: string[]): Promise<ProbeResult> {
+  const env = await hostCliEnv()
   return new Promise((resolve) => {
-    const child = spawn(runtime, args, { stdio: "ignore" })
+    const child = spawn(runtime, args, {
+      env,
+      stdio: "ignore",
+    })
     let settled = false
     const done = (r: ProbeResult) => {
       if (settled) return
