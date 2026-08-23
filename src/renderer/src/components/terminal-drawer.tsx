@@ -89,11 +89,13 @@ export function TerminalDrawer({
   conversationId,
   workspace,
   onOpenChange,
+  onAddSelectionToMessage,
 }: {
   open: boolean
   conversationId: string | null
   workspace: string
   onOpenChange: (open: boolean) => void
+  onAddSelectionToMessage: (text: string) => void
 }) {
   const [profiles, setProfiles] = React.useState<TerminalProfile[]>([])
   const [sessions, setSessions] = React.useState<TerminalSessionView[]>([])
@@ -499,6 +501,7 @@ export function TerminalDrawer({
             session={session}
             active={session.id === activeSession?.id && open}
             registerWriter={registerWriter}
+            onAddSelectionToMessage={onAddSelectionToMessage}
           />
         ))}
         {!activeSession && (
@@ -517,14 +520,17 @@ function TerminalPane({
   session,
   active,
   registerWriter,
+  onAddSelectionToMessage,
 }: {
   session: TerminalSessionView
   active: boolean
   registerWriter: (id: string, write: (data: string) => void) => () => void
+  onAddSelectionToMessage: (text: string) => void
 }) {
   const hostRef = React.useRef<HTMLDivElement | null>(null)
   const termRef = React.useRef<XtermTerminal | null>(null)
   const fitRef = React.useRef<FitAddon | null>(null)
+  const [selectedText, setSelectedText] = React.useState("")
 
   React.useEffect(() => {
     const host = hostRef.current
@@ -570,6 +576,9 @@ function TerminalPane({
     term.onData((data) => {
       void window.cowork.terminal.write(session.id, data)
     })
+    const selectionDisposable = term.onSelectionChange(() => {
+      setSelectedText(term.hasSelection() ? term.getSelection() : "")
+    })
 
     termRef.current = term
     fitRef.current = fit
@@ -589,10 +598,12 @@ function TerminalPane({
 
     return () => {
       observer.disconnect()
+      selectionDisposable.dispose()
       unregister()
       term.dispose()
       termRef.current = null
       fitRef.current = null
+      setSelectedText("")
     }
   }, [registerWriter, session.id])
 
@@ -615,11 +626,28 @@ function TerminalPane({
 
   return (
     <div
-      ref={hostRef}
-      className={cn(
-        "absolute inset-0 size-full p-2",
-        active ? "block" : "hidden"
+      className={cn("absolute inset-0 size-full", active ? "block" : "hidden")}
+    >
+      <div ref={hostRef} className="size-full p-2" />
+      {active && selectedText.trim() && (
+        <Button
+          type="button"
+          size="sm"
+          variant="secondary"
+          className="absolute top-3 right-3 z-10 h-7 px-2 text-xs shadow-md"
+          onMouseDown={(event) => {
+            event.preventDefault()
+            event.stopPropagation()
+          }}
+          onClick={() => {
+            onAddSelectionToMessage(selectedText)
+            termRef.current?.clearSelection()
+            setSelectedText("")
+          }}
+        >
+          Add to message
+        </Button>
       )}
-    />
+    </div>
   )
 }
