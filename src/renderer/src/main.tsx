@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react"
+import React, { useCallback, useEffect, useState } from "react"
 import ReactDOM from "react-dom/client"
 
 import "./globals.css"
@@ -24,6 +24,11 @@ import { ProcessScreen } from "@/components/process-screen"
 import { DashboardsScreen } from "@/components/dashboards-screen"
 import { TaskTranscriptSheet } from "@/components/task-transcript-sheet"
 import { TaskCompletionToasts } from "@/components/task-completion-toasts"
+import {
+  TerminalDrawer,
+  TerminalToggle,
+  useTerminalShortcut,
+} from "@/components/terminal-drawer"
 import { Toaster } from "@/components/ui/sonner"
 import type { Mode, Task } from "@/types"
 import type { ChangedFile } from "@/lib/timeline"
@@ -94,6 +99,9 @@ function Shell() {
   // elements that merely overlap it) and "Run in background" can reveal it when
   // a task starts. Seeded from — and persisted back to — the panel's cookie.
   const [activityOpen, setActivityOpen] = useState(readActivityOpen)
+  const [terminalOpenByConversation, setTerminalOpenByConversation] = useState<
+    Record<string, boolean>
+  >({})
   const setActivity = (open: boolean) => {
     setActivityOpen(open)
     writeActivityOpen(open)
@@ -110,6 +118,29 @@ function Shell() {
   // The active conversation's workspace root, reported up from App. Needed by the
   // sidebar's Changes review (git diffs + file:// previews) and browser opens.
   const [workspacePath, setWorkspacePath] = useState("")
+  const terminalAvailable =
+    view !== "Chat" &&
+    activeConversationId !== null &&
+    workspacePath.trim() !== ""
+  const terminalOpen =
+    terminalAvailable && activeConversationId
+      ? (terminalOpenByConversation[activeConversationId] ?? false)
+      : false
+  const setTerminalOpenForActive = useCallback(
+    (open: boolean | ((open: boolean) => boolean)) => {
+      if (!activeConversationId) return
+      setTerminalOpenByConversation((state) => {
+        const current = state[activeConversationId] ?? false
+        const next = typeof open === "function" ? open(current) : open
+        return { ...state, [activeConversationId]: next }
+      })
+    },
+    [activeConversationId]
+  )
+  const toggleTerminal = useCallback(() => {
+    if (!terminalAvailable) return
+    setTerminalOpenForActive((open) => !open)
+  }, [setTerminalOpenForActive, terminalAvailable])
   // Files under review in the sidebar's Changes mode, set when a transcript turn's
   // "Review all" / "+N more" is clicked.
   const [reviewFiles, setReviewFiles] = useState<ChangedFile[]>([])
@@ -150,6 +181,8 @@ function Shell() {
   const handleBrowserPoppedOutChange = (poppedOut: boolean) => {
     setActivity(!poppedOut)
   }
+
+  useTerminalShortcut(terminalAvailable, toggleTerminal)
 
   useEffect(() => {
     window.cowork.isFullScreen().then(setFullscreen)
@@ -340,6 +373,20 @@ function Shell() {
           }
           reserveWindowControls={reserveWindowControls}
         />
+        {terminalAvailable &&
+          !(
+            agentsOpen ||
+            skillsOpen ||
+            processOpen ||
+            mcpOpen ||
+            dashboardsOpen
+          ) && (
+            <TerminalToggle
+              open={terminalOpen}
+              onToggle={toggleTerminal}
+              reserveWindowControls={reserveWindowControls}
+            />
+          )}
         {!(
           agentsOpen ||
           skillsOpen ||
@@ -405,11 +452,16 @@ function Shell() {
           flex slot, sitting between the sidebar gap and the activity-panel gap.
           App stays mounted (hidden, not unmounted) when a panel is open so
           streaming/turn state survives. */}
-      <div className="relative flex min-h-0 w-full min-w-0 flex-1">
+      <div className="relative flex h-svh min-h-0 w-full min-w-0 flex-1 flex-col overflow-hidden">
         <div
           className={cn(
             "flex min-h-0 min-w-0 flex-1 overflow-hidden",
-            (agentsOpen || skillsOpen || processOpen || mcpOpen || dashboardsOpen) && "hidden"
+            (agentsOpen ||
+              skillsOpen ||
+              processOpen ||
+              mcpOpen ||
+              dashboardsOpen) &&
+              "hidden"
           )}
         >
           <App
@@ -439,6 +491,12 @@ function Shell() {
         {dashboardsOpen && (
           <DashboardsScreen onClose={() => setDashboardsOpen(false)} />
         )}
+        <TerminalDrawer
+          open={terminalAvailable && terminalOpen}
+          conversationId={activeConversationId}
+          workspace={workspacePath}
+          onOpenChange={setTerminalOpenForActive}
+        />
       </div>
       <ActivityPanel
         conversationId={activeConversationId}

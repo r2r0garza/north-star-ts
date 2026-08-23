@@ -1948,7 +1948,7 @@ export default function App({
   // start typing right away.
   if (isEmpty) {
     return (
-      <div className="relative flex h-svh w-full flex-col items-center justify-center overflow-hidden px-4">
+      <div className="relative flex h-full w-full flex-col items-center justify-center overflow-hidden px-4">
         <div className="w-full max-w-[min(90%,48rem)]">
           <div className="mb-6 text-center text-sm text-muted-foreground">
             {view === "Chat" ? (
@@ -1985,7 +1985,7 @@ export default function App({
     // Info/Browser/Changes toggle): the scroll region starts BELOW it, so
     // messages scrolling up are clipped at the bar's edge instead of passing
     // under it. The composer sits inside this column, so it's unaffected.
-    <div className="relative flex h-svh w-full flex-col overflow-hidden pt-11">
+    <div className="relative flex h-full w-full flex-col overflow-hidden pt-11">
       {/* Conversation — MessageScroller handles auto-follow + scroll-to-bottom.
           The window drag bar lives in Shell, above this column. */}
       <MessageScrollerProvider autoScroll defaultScrollPosition="last-anchor">

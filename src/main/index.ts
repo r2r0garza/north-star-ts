@@ -91,6 +91,8 @@ import { registerProcessHandlers } from "./ipc/process-handlers"
 import { DashboardService, DASHBOARD_REFRESH_KIND } from "./dashboards/service"
 import { registerDashboardHandlers } from "./ipc/dashboard-handlers"
 import { BrowserManager } from "./browser/manager"
+import { registerTerminalHandlers } from "./ipc/terminal-handlers"
+import { TerminalService } from "./terminal/service"
 import { seedProviderFromEnvIfEmpty } from "./settings/bootstrap"
 import { closeDb } from "./db/connection"
 import {
@@ -115,6 +117,7 @@ const processService = new ProcessService(taskRunner)
 // Deterministic dashboard refresh (plan 033.3): re-runs each widget's stored
 // recipe headless. Holds the runner reference so ensureRefresh can enqueue.
 const dashboardService = new DashboardService(taskRunner)
+const terminalService = new TerminalService()
 // The agent's browser (secondary window + WebContentsView driven over CDP).
 // Owned here so runChat can hand each live turn a signal-bound handle; disposed
 // on will-quit. Lazily creates its window on first agent use.
@@ -1088,6 +1091,7 @@ app.whenReady().then(() => {
   registerProcessHandlers(taskRunner, processService)
   registerIndexHandlers(taskRunner, indexService)
   registerDashboardHandlers(taskRunner, dashboardService)
+  registerTerminalHandlers(terminalService)
   // Migrate a pre-settings env-configured key into a stored provider account, so
   // existing dev setups keep working without re-entering it (no-op once any
   // account exists). After this, the stored key is the source of truth.
@@ -1122,6 +1126,7 @@ app.on("before-quit", () => {
 app.on("will-quit", () => {
   void taskRunner.stop()
   browserManager.dispose()
+  terminalService.dispose()
   // Disconnect every pooled MCP client (stops spawned stdio processes / closes
   // HTTP sessions). Fire-and-forget; the process is exiting.
   void getMcpManager().disposeAll()

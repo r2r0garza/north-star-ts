@@ -1,0 +1,68 @@
+import { ipcMain, type WebContents } from "electron"
+import type { TerminalService } from "../terminal/service"
+import type { TerminalDataEvent, TerminalExitEvent } from "../terminal/types"
+
+export function registerTerminalHandlers(terminals: TerminalService): void {
+  ipcMain.handle("terminal:profiles", () => terminals.profiles())
+  ipcMain.handle("terminal:list", () => terminals.list())
+  ipcMain.handle(
+    "terminal:create",
+    (
+      _event,
+      input: {
+        conversationId: string
+        workspace: string
+        profileId?: string
+        cols?: number
+        rows?: number
+      }
+    ) => terminals.create(input)
+  )
+  ipcMain.handle("terminal:write", (_event, id: string, data: string) => {
+    terminals.write(id, data)
+  })
+  ipcMain.handle(
+    "terminal:resize",
+    (_event, id: string, cols: number, rows: number) => {
+      terminals.resize(id, cols, rows)
+    }
+  )
+  ipcMain.handle("terminal:kill", (_event, id: string) => {
+    terminals.kill(id)
+  })
+
+  const subscriptions = new Map<
+    WebContents,
+    {
+      onData: (event: TerminalDataEvent) => void
+      onExit: (event: TerminalExitEvent) => void
+    }
+  >()
+  ipcMain.handle("terminal:subscribe", (event) => {
+    const sender = event.sender
+    if (subscriptions.has(sender)) return
+    const listeners = {
+      onData: (payload: TerminalDataEvent) => {
+        if (!sender.isDestroyed()) sender.send("terminal:data", payload)
+      },
+      onExit: (payload: TerminalExitEvent) => {
+        if (!sender.isDestroyed()) sender.send("terminal:exit", payload)
+      },
+    }
+    terminals.on("data", listeners.onData)
+    terminals.on("exit", listeners.onExit)
+    subscriptions.set(sender, listeners)
+    sender.once("destroyed", () => {
+      terminals.off("data", listeners.onData)
+      terminals.off("exit", listeners.onExit)
+      subscriptions.delete(sender)
+    })
+  })
+  ipcMain.handle("terminal:unsubscribe", (event) => {
+    const listeners = subscriptions.get(event.sender)
+    if (!listeners) return
+    terminals.off("data", listeners.onData)
+    terminals.off("exit", listeners.onExit)
+    subscriptions.delete(event.sender)
+  })
+}
