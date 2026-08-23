@@ -168,16 +168,24 @@ const MCP_SOURCE_KIND_LABEL: Record<McpSourceRow["kind"], string> = {
   workspace: "Workspace",
 }
 
-// Parse a numeric input to an integer clamped to [min, max]. A blank/NaN entry
-// (mid-edit) falls back to `fallback` so we never persist NaN into settings.
-function clampInt(
-  raw: string,
-  min: number,
-  max: number,
-  fallback: number
-): number {
+const SUMMARY_TOKEN_MIN = 6000
+const SUMMARY_TOKEN_MAX = 150000
+
+function digitsOnly(raw: string): string {
+  return raw.replace(/\D/g, "")
+}
+
+function parseIntOrNull(raw: string): number | null {
   const n = Number.parseInt(raw, 10)
-  if (Number.isNaN(n)) return fallback
+  if (Number.isNaN(n)) return null
+  return n
+}
+
+// Parse a numeric input to an integer clamped to [min, max]. A blank/NaN entry
+// (mid-edit) returns null so we never persist NaN into settings.
+function clampInt(raw: string, min: number, max: number): number | null {
+  const n = parseIntOrNull(raw)
+  if (n === null) return null
   return Math.min(max, Math.max(min, n))
 }
 
@@ -197,6 +205,8 @@ export function SettingsScreen({
     null
   )
   const [indexing, setIndexing] = useState<IndexingSettings | null>(null)
+  const [summaryMessageDraft, setSummaryMessageDraft] = useState("")
+  const [summaryTokenDraft, setSummaryTokenDraft] = useState("")
   const [browser, setBrowser] = useState<BrowserSettings | null>(null)
   const [ide, setIde] = useState<IdeSettings | null>(null)
   const [ideOptions, setIdeOptions] = useState<
@@ -252,6 +262,8 @@ export function SettingsScreen({
       setExecution(exec)
       setPermissions(perms)
       setIndexing(idx)
+      setSummaryMessageDraft(String(idx.summarizeMessageThreshold))
+      setSummaryTokenDraft(String(idx.summarizeTokenThreshold))
       setBrowser(br)
       setIde(ideCfg)
       setIdeOptions(ideOpts)
@@ -393,6 +405,32 @@ export function SettingsScreen({
   async function saveIndexing(next: IndexingSettings) {
     setIndexing(next)
     await window.cowork.settings.setIndexing(next)
+  }
+
+  function restoreSummaryDrafts() {
+    if (!indexing) return
+    setSummaryMessageDraft(String(indexing.summarizeMessageThreshold))
+    setSummaryTokenDraft(String(indexing.summarizeTokenThreshold))
+  }
+
+  function saveSummaryMessageThreshold(raw: string) {
+    if (!indexing) return
+    const n = clampInt(raw, 0, Number.MAX_SAFE_INTEGER)
+    if (n === null) return
+    saveIndexing({
+      ...indexing,
+      summarizeMessageThreshold: n,
+    })
+  }
+
+  function saveSummaryTokenThreshold(raw: string) {
+    if (!indexing) return
+    const n = parseIntOrNull(raw)
+    if (n === null || n < SUMMARY_TOKEN_MIN || n > SUMMARY_TOKEN_MAX) return
+    saveIndexing({
+      ...indexing,
+      summarizeTokenThreshold: n,
+    })
   }
   async function saveBrowser(next: BrowserSettings) {
     setBrowser(next)
@@ -740,22 +778,22 @@ export function SettingsScreen({
                           </FieldContent>
                           <Input
                             id="sum-msg"
-                            type="number"
-                            min={0}
-                            step={1}
+                            type="text"
+                            inputMode="numeric"
+                            pattern="[0-9]*"
                             className="w-28"
-                            value={indexing.summarizeMessageThreshold}
-                            onChange={(e) =>
-                              saveIndexing({
-                                ...indexing,
-                                summarizeMessageThreshold: clampInt(
-                                  e.target.value,
-                                  0,
-                                  Number.MAX_SAFE_INTEGER,
-                                  indexing.summarizeMessageThreshold
-                                ),
-                              })
-                            }
+                            value={summaryMessageDraft}
+                            onBlur={restoreSummaryDrafts}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") {
+                                e.currentTarget.blur()
+                              }
+                            }}
+                            onChange={(e) => {
+                              const next = digitsOnly(e.target.value)
+                              setSummaryMessageDraft(next)
+                              saveSummaryMessageThreshold(next)
+                            }}
                           />
                         </Field>
                         <Field orientation="horizontal">
@@ -771,23 +809,24 @@ export function SettingsScreen({
                           </FieldContent>
                           <Input
                             id="sum-tok"
-                            type="number"
-                            min={6000}
-                            max={150000}
-                            step={1000}
+                            type="text"
+                            inputMode="numeric"
+                            pattern="[0-9]*"
                             className="w-28"
-                            value={indexing.summarizeTokenThreshold}
-                            onChange={(e) =>
-                              saveIndexing({
-                                ...indexing,
-                                summarizeTokenThreshold: clampInt(
-                                  e.target.value,
-                                  6000,
-                                  150000,
-                                  indexing.summarizeTokenThreshold
-                                ),
-                              })
-                            }
+                            value={summaryTokenDraft}
+                            onBlur={restoreSummaryDrafts}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") {
+                                e.currentTarget.blur()
+                              }
+                            }}
+                            onChange={(e) => {
+                              const next = digitsOnly(e.target.value)
+                              const n = parseIntOrNull(next)
+                              if (n !== null && n > SUMMARY_TOKEN_MAX) return
+                              setSummaryTokenDraft(next)
+                              saveSummaryTokenThreshold(next)
+                            }}
                           />
                         </Field>
                         <Field orientation="horizontal">
