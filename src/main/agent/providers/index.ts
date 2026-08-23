@@ -29,12 +29,6 @@ import type { ApiMode, ProviderAccount } from "../../db/types"
 // `openai` (the SDK defaults to api.openai.com) and required for openai_compatible.
 // The remaining providers are reserved (disabled in the UI) until wired here.
 
-// Seed defaults, used only when seeding a brand-new Portkey account so the dev
-// setup keeps working. They are NOT a runtime fallback for a configured account.
-export const DEFAULT_PORTKEY_BASE_URL =
-  "https://portkeygateway.perficient.com/v1"
-export const DEFAULT_MODEL = "@aws-bedrock-use2/us.anthropic.claude-sonnet-4-6"
-
 export class NoActiveProviderError extends Error {
   constructor(message: string) {
     super(message)

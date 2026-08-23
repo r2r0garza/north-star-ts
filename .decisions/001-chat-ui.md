@@ -15,7 +15,7 @@ read-only response box) with a proper chat interface:
   then scrolls. **Enter** sends; **Shift+Enter** inserts a newline.
 - The workspace path text field was removed. A folder icon under the composer
   opens the native picker; once chosen, only the **last path segment** is shown
-  (e.g. `/Users/me/perficient` → `perficient`).
+  (e.g. `/Users/me/folder` → `folder`).
 - A round send button (↑), disabled until there's both a message and a selected
   workspace.
 

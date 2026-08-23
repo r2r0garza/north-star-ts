@@ -16,8 +16,8 @@
     "postinstall": "electron-rebuild -f -w better-sqlite3 -w node-pty"
   },
   "build": {
-    "appId": "com.perficient.cowork",
-    "productName": "Cowork",
+    "appId": "com.agentic.north-star",
+    "productName": "North Star",
     "files": [
       "out/**/*",
       "skills/**/*",

@@ -11,11 +11,10 @@ import { readFile, writeFile, unlink, mkdir, rm } from "fs/promises"
 import { existsSync } from "fs"
 import { config as loadEnv } from "dotenv"
 
-// Load .env.local before anything reads process.env. The API key is no longer
-// read from env at runtime (it's stored per provider account, encrypted via
-// safeStorage), but a key found here on first launch is migrated into a seeded
-// Portkey account by seedProviderFromEnvIfEmpty so existing dev setups keep
-// working. Other env-driven config (e.g. COWORK_ENV_RUNTIME) still relies on this.
+// Load .env.local before anything reads process.env. Provider API keys are
+// configured by the user in Settings and stored per provider account, encrypted
+// via safeStorage. Other env-driven config (e.g. COWORK_ENV_RUNTIME) still relies
+// on this.
 loadEnv({ path: join(app.getAppPath(), ".env.local") })
 
 import {
@@ -93,7 +92,6 @@ import { registerDashboardHandlers } from "./ipc/dashboard-handlers"
 import { BrowserManager } from "./browser/manager"
 import { registerTerminalHandlers } from "./ipc/terminal-handlers"
 import { TerminalService } from "./terminal/service"
-import { seedProviderFromEnvIfEmpty } from "./settings/bootstrap"
 import { closeDb } from "./db/connection"
 import {
   dataDirName,
@@ -1092,10 +1090,6 @@ app.whenReady().then(() => {
   registerIndexHandlers(taskRunner, indexService)
   registerDashboardHandlers(taskRunner, dashboardService)
   registerTerminalHandlers(terminalService)
-  // Migrate a pre-settings env-configured key into a stored provider account, so
-  // existing dev setups keep working without re-entering it (no-op once any
-  // account exists). After this, the stored key is the source of truth.
-  seedProviderFromEnvIfEmpty()
   // Materialize the user-level skills dir (~/.<system>/skills) and, on first
   // launch only, seed it with the app-bundled skills so users get editable
   // copies of the built-ins.

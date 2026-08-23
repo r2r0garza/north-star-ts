@@ -59,7 +59,7 @@ const displayName = raw
   .filter(Boolean)
   .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
   .join(" ")
-const appId = `com.perficient.${slug}`
+const appId = `com.agentic.${slug}`
 
 console.log(
   `[dist] Packaging as productName="${displayName}" appId="${appId}" (from NEXT_system_name="${raw}")`
