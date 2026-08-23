@@ -16,7 +16,7 @@
 
 # electron-builder packaged apps
 /dist/
-/build
+# /build
 
 # misc
 .DS_Store

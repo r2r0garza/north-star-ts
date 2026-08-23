@@ -1,5 +1,5 @@
 {
-  "name": "north-star-2",
+  "name": "north-star",
   "version": "0.0.1",
   "private": true,
   "main": "./out/main/index.js",
@@ -29,13 +29,16 @@
       "**/node_modules/node-pty/**"
     ],
     "mac": {
-      "target": "dmg"
+      "target": "dmg",
+      "icon": "build/icon.icns"
     },
     "win": {
-      "target": "nsis"
+      "target": "nsis",
+      "icon": "build/icon.ico"
     },
     "linux": {
-      "target": "AppImage"
+      "target": "AppImage",
+      "icon": "build/icon.png"
     }
   },
   "dependencies": {

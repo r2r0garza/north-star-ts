@@ -1,11 +1,13 @@
+import { app } from "electron"
+
 // Single source of truth for the app's customizable "system name". Set
 // NEXT_system_name in .env.local (loaded by dotenv in index.ts before any of
-// these run) to rebrand the app without touching code: it drives the on-disk
-// data dir (~/.<slug>), the skills lookup dirs (<root>/.<slug>/skills), the
-// SQLite filename (<slug>.db), the agent container name prefix, and the display
-// name (window title). The *packaged* app identity (productName / appId) is
-// rebranded separately at build time by scripts/dist.mjs, which parses the same
-// variable — keep the slug/display derivation there in sync with this file.
+// these run) to override the name during development. In packaged builds,
+// electron-builder bakes the productName into Electron's app name, so when the
+// env var is absent we derive the runtime paths from app.getName(). The name
+// drives the on-disk data dir (~/.<slug>), the skills lookup dirs
+// (<root>/.<slug>/skills), the SQLite filename (<slug>.db), the agent container
+// name prefix, and the display name (window title).
 //
 // IMPORTANT: read the env var lazily (inside these functions), never at module
 // top-level. ES imports are hoisted above index.ts's loadEnv() call, so a
@@ -16,7 +18,14 @@ const DEFAULT_NAME = "cowork"
 
 function rawName(): string {
   const value = process.env.NEXT_system_name?.trim()
-  return value ? value : DEFAULT_NAME
+  if (value) return value
+  try {
+    const appName = app.getName?.().trim()
+    if (appName) return appName
+  } catch {
+    // Some test/runtime harnesses provide a partial Electron app shim.
+  }
+  return DEFAULT_NAME
 }
 
 // Filesystem- and identifier-safe slug: lowercased, with any run of characters

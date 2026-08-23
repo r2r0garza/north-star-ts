@@ -71,7 +71,11 @@ const steps = [
   ["electron-vite", ["build"]],
   [
     "electron-builder",
-    [`-c.productName=${displayName}`, `-c.appId=${appId}`],
+    [
+      `-c.productName=${displayName}`,
+      `-c.appId=${appId}`,
+      `-c.extraMetadata.productName=${displayName}`,
+    ],
   ],
 ]
 

@@ -1,4 +1,15 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest"
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
+
+const electronMock = vi.hoisted(() => ({
+  appName: "Cowork",
+}))
+
+vi.mock("electron", () => ({
+  app: {
+    getName: () => electronMock.appName,
+  },
+}))
+
 import {
   systemSlug,
   systemDisplayName,
@@ -11,14 +22,24 @@ import {
 beforeEach(() => {
   delete process.env.NEXT_system_name
   delete process.env.MAIN_AGENT_NAME
+  electronMock.appName = "Cowork"
 })
 afterEach(() => {
   delete process.env.NEXT_system_name
   delete process.env.MAIN_AGENT_NAME
+  electronMock.appName = "Cowork"
 })
 
 describe("system-name — defaults", () => {
-  it("defaults to cowork when the var is unset", () => {
+  it("uses Electron's app name when the var is unset", () => {
+    electronMock.appName = "North Star"
+    expect(systemSlug()).toBe("north-star")
+    expect(systemDisplayName()).toBe("North Star")
+    expect(dataDirName()).toBe(".north-star")
+  })
+
+  it("falls back to cowork when both the var and Electron app name are unset", () => {
+    electronMock.appName = "   "
     expect(systemSlug()).toBe("cowork")
     expect(systemDisplayName()).toBe("Cowork")
     expect(dataDirName()).toBe(".cowork")
@@ -39,9 +60,10 @@ describe("system-name — defaults", () => {
   })
 
   it("treats an empty/whitespace var as unset", () => {
+    electronMock.appName = "North Star"
     process.env.NEXT_system_name = "   "
-    expect(systemSlug()).toBe("cowork")
-    expect(systemDisplayName()).toBe("Cowork")
+    expect(systemSlug()).toBe("north-star")
+    expect(systemDisplayName()).toBe("North Star")
   })
 })
 
