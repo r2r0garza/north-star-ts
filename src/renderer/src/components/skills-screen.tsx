@@ -341,7 +341,7 @@ export function SkillsScreen({ onClose }: { onClose: () => void }) {
   return (
     <div
       data-slot="skills-screen"
-      className="flex min-h-0 flex-1 flex-col bg-background pt-11 text-sm text-foreground"
+      className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background pt-11 text-sm text-foreground"
     >
       {/* Header row (matches the app's h-11 top bar; the Shell drag bar sits
           above via pt-11). */}
@@ -362,7 +362,7 @@ export function SkillsScreen({ onClose }: { onClose: () => void }) {
       </div>
 
       {mode.kind === "create" ? (
-        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
           <div className="flex h-12 shrink-0 items-center justify-between gap-2 border-b px-4">
             <p className="truncate font-medium">New skill</p>
             <div className="flex shrink-0 items-center gap-2">
@@ -383,8 +383,8 @@ export function SkillsScreen({ onClose }: { onClose: () => void }) {
               </Button>
             </div>
           </div>
-          <ScrollArea className="min-h-0 flex-1">
-            <div className="max-w-2xl space-y-6 px-6 py-5">
+          <ScrollArea className="min-h-0 min-w-0 flex-1">
+            <div className="max-w-2xl min-w-0 space-y-6 px-6 py-5">
               <Field label="Location">
                 <Select
                   value={mode.dir}
@@ -443,9 +443,9 @@ export function SkillsScreen({ onClose }: { onClose: () => void }) {
           </ScrollArea>
         </div>
       ) : selected ? (
-        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
           <div className="flex h-12 shrink-0 items-center justify-between gap-2 border-b px-4">
-            <div className="flex min-w-0 items-center gap-2">
+            <div className="flex min-w-0 flex-1 items-center gap-2">
               <Button
                 variant="ghost"
                 size="icon-sm"
@@ -508,8 +508,8 @@ export function SkillsScreen({ onClose }: { onClose: () => void }) {
               className="min-h-0 flex-1 resize-none rounded-none border-0 font-mono text-xs leading-relaxed focus-visible:ring-0"
             />
           ) : (
-            <ScrollArea className="min-h-0 flex-1">
-              <div className="px-6 py-5">
+            <ScrollArea className="min-h-0 min-w-0 flex-1">
+              <div className="max-w-full min-w-0 px-6 py-5">
                 <Markdown content={selected.body} />
               </div>
             </ScrollArea>
@@ -519,7 +519,7 @@ export function SkillsScreen({ onClose }: { onClose: () => void }) {
         <Tabs
           value={activeTab}
           onValueChange={(v) => setActiveTab(v as SkillTab)}
-          className="flex min-h-0 flex-1 flex-col gap-0"
+          className="flex min-h-0 min-w-0 flex-1 flex-col gap-0"
         >
           <div className="flex shrink-0 items-center justify-between gap-2 border-b px-4 py-2">
             <TabsList variant="line" className="gap-1">
@@ -567,8 +567,8 @@ export function SkillsScreen({ onClose }: { onClose: () => void }) {
             />
           </div>
 
-          <ScrollArea className="min-h-0 flex-1">
-            <div className="p-4">
+          <ScrollArea className="min-h-0 min-w-0 flex-1">
+            <div className="min-w-0 p-4">
               <TabsContent value="global">
                 {(() => {
                   const cards = (tree?.global ?? []).flatMap((f) =>
@@ -729,7 +729,7 @@ function FilterInput({
 // A responsive grid of skill cards.
 function CardGrid({ children }: { children: ReactNode }) {
   return (
-    <div className="grid grid-cols-[repeat(auto-fill,minmax(18rem,20rem))] gap-3">
+    <div className="grid min-w-0 grid-cols-[repeat(auto-fill,minmax(min(18rem,100%),20rem))] gap-3">
       {children}
     </div>
   )
@@ -759,10 +759,10 @@ function SkillCard({
           onOpen()
         }
       }}
-      className="cursor-pointer transition-shadow hover:ring-foreground/25 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+      className="min-w-0 cursor-pointer transition-shadow hover:ring-foreground/25 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
     >
       <CardHeader>
-        <CardTitle className="truncate">{skill.name}</CardTitle>
+        <CardTitle className="min-w-0 truncate">{skill.name}</CardTitle>
         <CardAction className="flex items-center gap-1">
           {writable ? (
             <button
@@ -782,7 +782,7 @@ function SkillCard({
             </span>
           )}
         </CardAction>
-        <CardDescription className="line-clamp-2">
+        <CardDescription className="line-clamp-2 break-words">
           {skill.description}
         </CardDescription>
       </CardHeader>
@@ -832,7 +832,7 @@ function WorkspaceSection({
         </button>
       </CollapsibleTrigger>
       <CollapsibleContent>
-        <div className="py-2 pl-6">
+        <div className="min-w-0 py-2 pl-6">
           <CardGrid>
             {wsSkills.map(({ folder, skill }) => (
               <SkillCard

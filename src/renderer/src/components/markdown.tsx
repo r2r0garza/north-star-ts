@@ -32,7 +32,7 @@ const components: Components = {
     if (!isBlock) {
       return (
         <code
-          className="rounded bg-muted px-1.5 py-0.5 font-mono text-[0.85em]"
+          className="rounded bg-muted px-1.5 py-0.5 font-mono text-[0.85em] break-words"
           {...props}
         >
           {children}
@@ -61,7 +61,7 @@ const components: Components = {
     if (/language-mermaid/.test(lang)) return <>{children}</>
     return (
       <pre
-        className="my-3 overflow-x-auto rounded-lg bg-[#0d1117] p-3 text-xs leading-relaxed text-zinc-100"
+        className="my-3 max-w-full overflow-x-auto rounded-lg bg-[#0d1117] p-3 text-xs leading-relaxed text-zinc-100"
         {...props}
       >
         {children}
@@ -83,7 +83,7 @@ const components: Components = {
   },
   table({ children, ...props }) {
     return (
-      <div className="my-3 overflow-x-auto">
+      <div className="my-3 max-w-full overflow-x-auto">
         <table className="w-full border-collapse text-sm" {...props}>
           {children}
         </table>
@@ -104,6 +104,7 @@ export const Markdown = memo(function Markdown({
     <div
       className={cn(
         "prose prose-sm max-w-none dark:prose-invert",
+        "max-w-full min-w-0 [overflow-wrap:anywhere]",
         "prose-pre:bg-transparent prose-pre:p-0", // <pre> styling handled above
         "prose-headings:font-semibold prose-p:leading-relaxed"
       )}
