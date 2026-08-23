@@ -48,7 +48,7 @@ import type { Task } from "@/types"
 // component shares one SidebarContext (a single open state, Cmd+B, and the
 // `sidebar_state` cookie) across every instance, so a right Sidebar would
 // collapse in lockstep with the left one. This panel keeps its own collapse
-// state (controlled by the Shell), shortcut (Cmd/Ctrl+J), and cookie, and only
+// state (controlled by the Shell), shortcut (Cmd/Ctrl+K), and cookie, and only
 // reuses the left sidebar's visual primitives (which are plain styled divs).
 
 export type SidebarMode = "info" | "browser" | "changes"
@@ -57,7 +57,7 @@ const ACTIVITY_COOKIE_NAME = "activity_state"
 const MODE_COOKIE_NAME = "sidebar_mode"
 const BROWSER_WIDTH_COOKIE_NAME = "sidebar_browser_width"
 const COOKIE_MAX_AGE = 60 * 60 * 24 * 7
-const ACTIVITY_KEYBOARD_SHORTCUT = "j"
+const ACTIVITY_KEYBOARD_SHORTCUT = "k"
 // Info mode is a fixed narrow rail; browser mode is wider and resizable.
 const INFO_WIDTH = "18rem"
 const BROWSER_MIN_WIDTH = 360
@@ -115,7 +115,10 @@ function readBrowserWidth(): number {
 }
 
 function clampBrowserWidth(width: number): number {
-  const max = Math.max(BROWSER_MIN_WIDTH, window.innerWidth - BROWSER_RIGHT_MARGIN)
+  const max = Math.max(
+    BROWSER_MIN_WIDTH,
+    window.innerWidth - BROWSER_RIGHT_MARGIN
+  )
   return Math.min(Math.max(width, BROWSER_MIN_WIDTH), max)
 }
 
@@ -370,9 +373,7 @@ function BrowserPanel({
           title="Pick element"
           className={cn(
             "flex size-7 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-accent hover:text-foreground",
-            picking
-              ? "bg-accent text-foreground"
-              : "text-muted-foreground"
+            picking ? "bg-accent text-foreground" : "text-muted-foreground"
           )}
         >
           <SquareDashedMousePointer className="size-4" />
@@ -476,7 +477,7 @@ export function ActivityPanel({
 }) {
   const [browserWidth, setBrowserWidth] = React.useState(readBrowserWidth)
 
-  // Cmd/Ctrl+J toggles the panel (the left sidebar owns Cmd/Ctrl+B).
+  // Cmd/Ctrl+K toggles the panel (the left sidebar owns Cmd/Ctrl+B).
   React.useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (

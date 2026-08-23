@@ -71,6 +71,12 @@ import type {
   McpTree,
   McpSourceRow,
 } from "../main/agent/mcp/types"
+import type {
+  TerminalDataEvent,
+  TerminalExitEvent,
+  TerminalProfile,
+  TerminalSessionView,
+} from "../main/terminal/types"
 
 // Streaming events emitted during a chat turn (mirrors ChatEvent in the agent).
 export type ChatEvent =
@@ -159,6 +165,19 @@ export type SkillSummary = {
 export type AgentSummary = {
   name: string
   description: string
+}
+
+let terminalSubscriptionCount = 0
+function retainTerminalSubscription(): void {
+  if (terminalSubscriptionCount++ === 0) {
+    void ipcRenderer.invoke("terminal:subscribe")
+  }
+}
+function releaseTerminalSubscription(): void {
+  terminalSubscriptionCount = Math.max(0, terminalSubscriptionCount - 1)
+  if (terminalSubscriptionCount === 0) {
+    void ipcRenderer.invoke("terminal:unsubscribe")
+  }
 }
 
 // The typed API exposed to the renderer as `window.cowork`.
@@ -609,6 +628,50 @@ const api = {
     return () => {
       ipcRenderer.removeListener("browser:tabs", listener)
     }
+  },
+
+  terminal: {
+    profiles: () =>
+      ipcRenderer.invoke("terminal:profiles") as Promise<TerminalProfile[]>,
+    list: () =>
+      ipcRenderer.invoke("terminal:list") as Promise<TerminalSessionView[]>,
+    create: (input: {
+      conversationId: string
+      workspace: string
+      profileId?: string
+      cols?: number
+      rows?: number
+    }) =>
+      ipcRenderer.invoke(
+        "terminal:create",
+        input
+      ) as Promise<TerminalSessionView>,
+    write: (id: string, data: string) =>
+      ipcRenderer.invoke("terminal:write", id, data) as Promise<void>,
+    resize: (id: string, cols: number, rows: number) =>
+      ipcRenderer.invoke("terminal:resize", id, cols, rows) as Promise<void>,
+    kill: (id: string) =>
+      ipcRenderer.invoke("terminal:kill", id) as Promise<void>,
+    onData: (cb: (event: TerminalDataEvent) => void) => {
+      const listener = (_e: IpcRendererEvent, event: TerminalDataEvent) =>
+        cb(event)
+      ipcRenderer.on("terminal:data", listener)
+      retainTerminalSubscription()
+      return () => {
+        ipcRenderer.removeListener("terminal:data", listener)
+        releaseTerminalSubscription()
+      }
+    },
+    onExit: (cb: (event: TerminalExitEvent) => void) => {
+      const listener = (_e: IpcRendererEvent, event: TerminalExitEvent) =>
+        cb(event)
+      ipcRenderer.on("terminal:exit", listener)
+      retainTerminalSubscription()
+      return () => {
+        ipcRenderer.removeListener("terminal:exit", listener)
+        releaseTerminalSubscription()
+      }
+    },
   },
 
   // Durable local state (SQLite, owned by the main process). Thin invoke
@@ -1405,3 +1468,9 @@ export type { IndexStatus } from "../main/ipc/index-handlers"
 export type { ApproveResult } from "../main/dashboards/service"
 export type { PickedElement } from "../main/browser/types"
 export type { GitDiffResult } from "../main/git/diff"
+export type {
+  TerminalDataEvent,
+  TerminalExitEvent,
+  TerminalProfile,
+  TerminalSessionView,
+} from "../main/terminal/types"

@@ -33,6 +33,14 @@ export type { PickedElement } from "../../preload/index"
 // Git diff result (changed-file pills + sidebar Changes review).
 export type { GitDiffResult } from "../../preload/index"
 
+// Terminal profiles/sessions for the ephemeral workspace terminal drawer.
+export type {
+  TerminalDataEvent,
+  TerminalExitEvent,
+  TerminalProfile,
+  TerminalSessionView,
+} from "../../preload/index"
+
 // Skill types: summary for the composer's slash menu; metadata + catalog entry
 // for the Skills view (browse + edit SKILL.md).
 export type {
