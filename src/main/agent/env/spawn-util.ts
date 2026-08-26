@@ -28,24 +28,25 @@ export function captureSpawn(
   }
 ): Promise<ExecResult> {
   return new Promise((resolve) => {
-    const stdoutChunks: Buffer[] = []
+    const combinedChunks: Buffer[] = []
     const stderrChunks: Buffer[] = []
     let bytes = 0
     let timedOut = false
     let aborted = opts.signal?.aborted === true
     let settled = false
 
-    const capture = (target: Buffer[], chunk: Buffer) => {
+    const capture = (chunk: Buffer, stream: "stdout" | "stderr") => {
       if (bytes >= opts.maxOutputBytes) return
       const room = opts.maxOutputBytes - bytes
       // Keep at most `room` bytes of this chunk, then ignore the rest. Slicing the
       // Buffer (byte-indexed) is correct; decoding happens once in the caller.
       const keep = chunk.length > room ? chunk.subarray(0, room) : chunk
-      target.push(keep)
+      combinedChunks.push(keep)
+      if (stream === "stderr") stderrChunks.push(keep)
       bytes += keep.length
     }
-    child.stdout?.on("data", (chunk: Buffer) => capture(stdoutChunks, chunk))
-    child.stderr?.on("data", (chunk: Buffer) => capture(stderrChunks, chunk))
+    child.stdout?.on("data", (chunk: Buffer) => capture(chunk, "stdout"))
+    child.stderr?.on("data", (chunk: Buffer) => capture(chunk, "stderr"))
 
     // The one kill path shared by the timeout and the abort seam. With killGroup,
     // SIGKILL the whole process group (negative pid) so a shell wrapper's forked
@@ -126,10 +127,9 @@ export function captureSpawn(
       })
     })
     child.on("close", (code, signal) => {
-      const stdout = Buffer.concat(stdoutChunks)
       const stderr = Buffer.concat(stderrChunks)
       finish({
-        stdout: Buffer.concat([stdout, stderr]),
+        stdout: Buffer.concat(combinedChunks),
         stderr,
         exitCode: code,
         signal,
