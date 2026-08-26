@@ -53,9 +53,21 @@ function asRecipe(raw: unknown): DashboardRecipe | null {
     command: pick(r.command),
     url: pick(r.url),
     cwd: pick(r.cwd),
+    workspace: pick(r.workspace),
     note: pick(r.note),
   }
   return recipe.command || recipe.url ? recipe : null
+}
+
+function validateCommandWorkspace(recipe: DashboardRecipe): string | null {
+  if (!recipe.command) return null
+  if (!recipe.cwd || !recipe.workspace) {
+    return "recipe has no verified workspace — re-author it to refresh"
+  }
+  if (recipe.cwd !== recipe.workspace) {
+    return "recipe working directory does not match its captured workspace — re-author it to refresh"
+  }
+  return null
 }
 
 // Reconstruct the SAME ToolAction the origin tool built, so the policy engine's
@@ -208,21 +220,21 @@ export class DashboardService {
       return this.markStale(widget.id, "recipe has no runnable command or URL")
     }
 
-    // A shell command needs a working directory to run in AND to match the
-    // workspace-scoped allowlist grant. No cwd → fail closed.
-    if (action.kind === "shell" && !recipe.cwd) {
-      return this.markStale(
-        widget.id,
-        "recipe has no working directory — re-author it to refresh"
-      )
+    // A shell command needs a server-captured workspace to run in AND to match
+    // the workspace-scoped allowlist grant. Missing or mismatched legacy values
+    // fail closed so a stored recipe cannot move execution to another host path.
+    if (action.kind === "shell") {
+      const workspaceError = validateCommandWorkspace(recipe)
+      if (workspaceError) return this.markStale(widget.id, workspaceError)
     }
 
     // Authorize through the SAME engine the agent loop uses. hard_block always
-    // wins; a workspace-scoped grant matches via recipe.cwd; a global grant (from
-    // "Approve this recipe" on a web recipe) matches with no scope inputs. Any
-    // non-allow verdict fails closed — no human is watching a headless refresh.
+    // wins; a workspace-scoped grant matches via the server-captured workspace;
+    // a global grant (from "Approve this recipe" on a web recipe) matches with
+    // no scope inputs. Any non-allow verdict fails closed — no human is watching
+    // a headless refresh.
     const decision = this.policy.decide(action, {
-      workspacePath: recipe.cwd,
+      workspacePath: recipe.workspace,
       sandboxed: envConfig.kind === "container",
       localProfile:
         envConfig.kind === "local"
@@ -241,9 +253,9 @@ export class DashboardService {
     let output: string
     try {
       if (action.kind === "shell") {
-        const env = await getEnv(recipe.cwd!)
+        const env = await getEnv(recipe.workspace!)
         const result = await env.exec(recipe.command!, {
-          cwd: recipe.cwd!,
+          cwd: recipe.workspace!,
           timeoutMs: EXEC_TIMEOUT_MS,
           maxOutputBytes: MAX_OUTPUT_BYTES,
           signal,
@@ -340,11 +352,11 @@ export class DashboardService {
     }
 
     if (action.kind === "shell") {
-      if (!recipe.cwd) {
+      const workspaceError = validateCommandWorkspace(recipe)
+      if (workspaceError) {
         return {
           ok: false,
-          reason:
-            "this recipe has no working directory — re-author the dashboard so its command is captured with a workspace",
+          reason: workspaceError,
         }
       }
       addRule({
@@ -352,7 +364,7 @@ export class DashboardService {
         kind: action.kind,
         identity: action.identity,
         scope: "workspace",
-        workspacePath: recipe.cwd,
+        workspacePath: recipe.workspace,
       })
     } else {
       addRule({

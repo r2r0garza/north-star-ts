@@ -155,6 +155,13 @@ export const dashboardWriteTool: Tool = {
         `A dashboard can have at most ${dashboards.MAX_WIDGETS} widgets (got ${items.length}).`
       )
     }
+    const workspace = ctx.workspace?.trim() || undefined
+    if (items.some((raw) => hasCommandRecipe(raw) && !workspace)) {
+      return toolError(
+        "bad_args",
+        "Command recipes require an active workspace so refresh can run from a server-owned working directory."
+      )
+    }
 
     // Create/update the definition, then replace its widgets + seed each
     // widget's data cache — all in one transaction so a partial write can't
@@ -182,7 +189,7 @@ export const dashboardWriteTool: Tool = {
           title: String(item.title ?? `Widget ${i + 1}`),
           type: item.type,
           config: item.config ?? null,
-          recipe: withCwd(item.recipe, ctx.workspace),
+          recipe: withCwd(item.recipe, workspace),
           position: i,
         })
         if (item.data !== undefined && item.data !== null) {
@@ -210,16 +217,27 @@ export const dashboardWriteTool: Tool = {
   },
 }
 
+function hasCommandRecipe(raw: unknown): boolean {
+  if (!raw || typeof raw !== "object") return false
+  const recipe = (raw as Record<string, unknown>).recipe
+  return (
+    !!recipe &&
+    typeof recipe === "object" &&
+    typeof (recipe as Record<string, unknown>).command === "string"
+  )
+}
+
 // Capture the authoring working directory into a `command` recipe so the
 // deterministic refresh executor (033.3) can re-run the command from the same
 // place AND match the workspace-scoped allowlist grant the agent's own run_shell
 // earned. A recipe with only a `url` (or no command) is left untouched — a web
-// fetch needs no directory. An explicit `cwd` the model set is preserved.
+// fetch needs no directory. Model-supplied cwd values are ignored: the workspace
+// is server-owned state, not authorable recipe input.
 function withCwd(recipe: unknown, workspace: string | undefined): unknown {
   if (!recipe || typeof recipe !== "object") return recipe ?? null
   const r = recipe as Record<string, unknown>
-  if (typeof r.command === "string" && !r.cwd && workspace) {
-    return { ...r, cwd: workspace }
+  if (typeof r.command === "string" && workspace) {
+    return { ...r, cwd: workspace, workspace }
   }
   return recipe
 }

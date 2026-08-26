@@ -12,23 +12,29 @@ vi.mock("../db/connection", () => ({ getDb: () => db }))
 // wants. Preserve the rest of the module (envConfigFromEnv is used by settings).
 let execStdout = "[]"
 let execCalls: string[] = []
+let createEnvironmentCalls: string[] = []
+let execCwds: string[] = []
 const disposed = vi.fn()
 vi.mock("../agent/env/factory", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../agent/env/factory")>()
   return {
     ...actual,
-    createEnvironment: vi.fn(async () => ({
-      exec: async (command: string) => {
-        execCalls.push(command)
-        return {
-          stdout: Buffer.from(execStdout, "utf8"),
-          exitCode: 0,
-          signal: null,
-          timedOut: false,
-        }
-      },
-      dispose: disposed,
-    })),
+    createEnvironment: vi.fn(async (workspace: string) => {
+      createEnvironmentCalls.push(workspace)
+      return {
+        exec: async (command: string, opts?: { cwd?: string }) => {
+          execCalls.push(command)
+          if (opts?.cwd) execCwds.push(opts.cwd)
+          return {
+            stdout: Buffer.from(execStdout, "utf8"),
+            exitCode: 0,
+            signal: null,
+            timedOut: false,
+          }
+        },
+        dispose: disposed,
+      }
+    }),
   }
 })
 
@@ -86,6 +92,8 @@ beforeEach(() => {
   runMigrations(db)
   execStdout = "[]"
   execCalls = []
+  createEnvironmentCalls = []
+  execCwds = []
   disposed.mockClear()
 })
 
@@ -104,7 +112,7 @@ describe.skipIf(!sqliteLoads)("DashboardService.execute", () => {
       dashboardId: dash.id,
       title: "M",
       type: "table",
-      recipe: { command: cmd, cwd: "/repo" },
+      recipe: { command: cmd, cwd: "/repo", workspace: "/repo" },
     })
     // Bless the command at workspace scope (as author-time "always allow" would).
     addRule({
@@ -119,6 +127,8 @@ describe.skipIf(!sqliteLoads)("DashboardService.execute", () => {
     const result = await runExecute(service, dash.id)
     expect(result.content).toContain("refreshed 1/1")
     expect(execCalls).toEqual([cmd])
+    expect(createEnvironmentCalls).toEqual(["/repo"])
+    expect(execCwds).toEqual(["/repo"])
     const cached = dashboards.getWidgetData(widget.id)
     expect(cached?.status).toBe("ok")
     expect(cached?.data).toEqual([{ a: 1 }, { a: 2 }])
@@ -132,7 +142,7 @@ describe.skipIf(!sqliteLoads)("DashboardService.execute", () => {
       dashboardId: dash.id,
       title: "M",
       type: "table",
-      recipe: { command: "cat secrets.json", cwd: "/repo" },
+      recipe: { command: "cat secrets.json", cwd: "/repo", workspace: "/repo" },
     })
 
     await runExecute(service, dash.id)
@@ -142,7 +152,7 @@ describe.skipIf(!sqliteLoads)("DashboardService.execute", () => {
     expect(cached?.error).toMatch(/approv/i)
   })
 
-  it("marks a shell recipe with no cwd stale (fail closed)", async () => {
+  it("marks a shell recipe with no verified workspace stale (fail closed)", async () => {
     const { runner } = makeRunner()
     const service = new DashboardService(runner)
     const dash = dashboards.createDashboard({ name: "D" })
@@ -156,6 +166,36 @@ describe.skipIf(!sqliteLoads)("DashboardService.execute", () => {
     await runExecute(service, dash.id)
     expect(execCalls).toEqual([])
     expect(dashboards.getWidgetData(widget.id)?.status).toBe("stale")
+    expect(dashboards.getWidgetData(widget.id)?.error).toMatch(
+      /verified workspace/i
+    )
+  })
+
+  it("marks a legacy command recipe with mismatched cwd and workspace stale", async () => {
+    const { runner } = makeRunner()
+    const service = new DashboardService(runner)
+    const dash = dashboards.createDashboard({ name: "D" })
+    const cmd = "cat secrets.json"
+    const widget = dashboards.createWidget({
+      dashboardId: dash.id,
+      title: "M",
+      type: "table",
+      recipe: { command: cmd, cwd: "/tmp/outside", workspace: "/repo" },
+    })
+    addRule({
+      tool: "run_shell_tool",
+      kind: "shell",
+      identity: normalizeCommand(cmd),
+      scope: "workspace",
+      workspacePath: "/tmp/outside",
+    })
+
+    await runExecute(service, dash.id)
+    expect(execCalls).toEqual([])
+    expect(createEnvironmentCalls).toEqual([])
+    const cached = dashboards.getWidgetData(widget.id)
+    expect(cached?.status).toBe("stale")
+    expect(cached?.error).toMatch(/does not match/i)
   })
 
   it("marks a widget error when the recipe output is not JSON rows", async () => {
@@ -167,7 +207,7 @@ describe.skipIf(!sqliteLoads)("DashboardService.execute", () => {
       dashboardId: dash.id,
       title: "M",
       type: "table",
-      recipe: { command: cmd, cwd: "/repo" },
+      recipe: { command: cmd, cwd: "/repo", workspace: "/repo" },
     })
     addRule({
       tool: "run_shell_tool",
@@ -240,7 +280,7 @@ describe.skipIf(!sqliteLoads)("DashboardService.execute", () => {
       dashboardId: dash.id,
       title: "M",
       type: "table",
-      recipe: { command: cmd, cwd: "/repo" },
+      recipe: { command: cmd, cwd: "/repo", workspace: "/repo" },
     })
     addRule({
       tool: "run_shell_tool",
@@ -313,7 +353,7 @@ describe.skipIf(!sqliteLoads)("DashboardService.approveRecipe", () => {
       dashboardId: dash.id,
       title: "M",
       type: "table",
-      recipe: { command: cmd, cwd: "/repo" },
+      recipe: { command: cmd, cwd: "/repo", workspace: "/repo" },
     })
     const result = service.approveRecipe(widget.id)
     expect(result.ok).toBe(true)
@@ -333,7 +373,7 @@ describe.skipIf(!sqliteLoads)("DashboardService.approveRecipe", () => {
     expect(enqueued).toHaveLength(1)
   })
 
-  it("fails (no rule, ok:false) for a shell recipe with no cwd", () => {
+  it("fails (no rule, ok:false) for a shell recipe with no verified workspace", () => {
     const { runner, enqueued } = makeRunner()
     const service = new DashboardService(runner)
     const dash = dashboards.createDashboard({ name: "D" })
@@ -345,7 +385,7 @@ describe.skipIf(!sqliteLoads)("DashboardService.approveRecipe", () => {
     })
     const result = service.approveRecipe(widget.id)
     expect(result.ok).toBe(false)
-    if (!result.ok) expect(result.reason).toMatch(/working directory/i)
+    if (!result.ok) expect(result.reason).toMatch(/verified workspace/i)
     // No grant written, no refresh enqueued.
     expect(db.prepare("SELECT * FROM action_allowlist").all()).toHaveLength(0)
     expect(enqueued).toHaveLength(0)
