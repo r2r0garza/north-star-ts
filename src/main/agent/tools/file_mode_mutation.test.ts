@@ -101,6 +101,34 @@ describe.skipIf(process.platform === "win32")(
       expect(await modeBits(target)).toBe(executableMode)
     })
 
+    it("rejects a concurrent mode change when apply_patch_tool updates a file", async () => {
+      const target = join(workspace, "script.sh")
+      await writeFile(target, "#!/bin/sh\necho old\n", "utf8")
+      await chmod(target, 0o644)
+
+      const result = await applyPatchTool.execute(
+        {
+          operations: [
+            {
+              type: "update",
+              path: "script.sh",
+              hunks: [{ old_string: "old", new_string: "new" }],
+            },
+          ],
+        },
+        {
+          ...ctx,
+          gate: async () => {
+            await chmod(target, executableMode)
+            return "approved"
+          },
+        }
+      )
+
+      expect(result).toContain("ERROR[stale_file]")
+      expect(await modeBits(target)).toBe(executableMode)
+    })
+
     it("preserves source executable bits when apply_patch_tool moves a file with hunks", async () => {
       const source = await makeExecutable("old.sh", "#!/bin/sh\necho old\n")
       const destination = join(workspace, "new.sh")
@@ -122,6 +150,37 @@ describe.skipIf(process.platform === "win32")(
       expect(result).toContain("Applied patch")
       await expect(stat(source)).rejects.toThrow()
       expect(await modeBits(destination)).toBe(executableMode)
+    })
+
+    it("rejects a concurrent source mode change when apply_patch_tool moves a file with hunks", async () => {
+      const source = join(workspace, "old.sh")
+      const destination = join(workspace, "new.sh")
+      await writeFile(source, "#!/bin/sh\necho old\n", "utf8")
+      await chmod(source, 0o644)
+
+      const result = await applyPatchTool.execute(
+        {
+          operations: [
+            {
+              type: "move",
+              path: "old.sh",
+              new_path: "new.sh",
+              hunks: [{ old_string: "old", new_string: "new" }],
+            },
+          ],
+        },
+        {
+          ...ctx,
+          gate: async () => {
+            await chmod(source, executableMode)
+            return "approved"
+          },
+        }
+      )
+
+      expect(result).toContain("ERROR[stale_file]")
+      expect(await modeBits(source)).toBe(executableMode)
+      await expect(stat(destination)).rejects.toThrow()
     })
 
     it("uses the backend default mode for newly-added files", async () => {

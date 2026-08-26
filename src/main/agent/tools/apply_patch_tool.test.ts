@@ -6,12 +6,15 @@ import type { Environment, StatInfo } from "../env/types"
 
 function fakeEnv(): Environment & {
   files: Map<string, string>
+  modes: Map<string, number>
   failNextRenameTo?: string
   createBeforeInstallTo?: string
 } {
   const files = new Map<string, string>()
+  const modes = new Map<string, number>()
   const env = {
     files,
+    modes,
     failNextRenameTo: undefined as string | undefined,
     createBeforeInstallTo: undefined as string | undefined,
     resolve: async (p: string) => p,
@@ -26,8 +29,12 @@ function fakeEnv(): Environment & {
     },
     writeFile: async (p: string, data: string) => {
       files.set(p, data)
+      if (!modes.has(p)) modes.set(p, 0o644)
     },
-    chmod: async () => {},
+    chmod: async (p: string, mode: number) => {
+      if (!files.has(p)) throw new Error("ENOENT")
+      modes.set(p, mode & 0o7777)
+    },
     rename: async (from: string, to: string) => {
       if (env.failNextRenameTo === to) {
         env.failNextRenameTo = undefined
@@ -36,20 +43,29 @@ function fakeEnv(): Environment & {
       const content = files.get(from)
       if (content === undefined) throw new Error("ENOENT")
       files.set(to, content)
+      const mode = modes.get(from)
+      if (mode !== undefined) modes.set(to, mode)
+      else modes.delete(to)
       files.delete(from)
+      modes.delete(from)
     },
     installFileNoReplace: async (from: string, to: string) => {
       if (env.createBeforeInstallTo === to) {
         env.createBeforeInstallTo = undefined
         files.set(to, "external\n")
+        modes.set(to, 0o644)
       }
       const content = files.get(from)
       if (content === undefined) throw new Error("ENOENT")
       if (files.has(to)) throw new Error("EEXIST")
       files.set(to, content)
+      const mode = modes.get(from)
+      if (mode !== undefined) modes.set(to, mode)
+      else modes.delete(to)
     },
     removeFile: async (p: string) => {
       files.delete(p)
+      modes.delete(p)
     },
     mkdirp: async () => {},
     stat: async (p: string): Promise<StatInfo> => {
@@ -57,6 +73,7 @@ function fakeEnv(): Environment & {
       if (content === undefined) throw new Error("ENOENT")
       return {
         size: Buffer.byteLength(content, "utf8"),
+        mode: modes.get(p) ?? 0o644,
         isFile: () => true,
         isDirectory: () => false,
       }
@@ -243,6 +260,103 @@ describe("apply_patch_tool", () => {
 
     expect(result).toContain("ERROR[stale_file]")
     expect(env.files.get("a.txt")).toBe("external\n")
+  })
+
+  it("rejects a concurrent mode change after approval without overwriting it", async () => {
+    const env = fakeEnv()
+    env.files.set("script.sh", "#!/bin/sh\necho old\n")
+    env.modes.set("script.sh", 0o644)
+
+    const result = await applyPatchTool.execute(
+      {
+        operations: [
+          {
+            type: "update",
+            path: "script.sh",
+            hunks: [{ old_string: "old", new_string: "new" }],
+          },
+        ],
+      },
+      {
+        workspace: "/ws",
+        env,
+        gate: async () => {
+          env.modes.set("script.sh", 0o755)
+          return "approved"
+        },
+      }
+    )
+
+    expect(result).toContain("ERROR[stale_file]")
+    expect(result).toContain("Current mode: 755")
+    expect(env.files.get("script.sh")).toBe("#!/bin/sh\necho old\n")
+    expect(env.modes.get("script.sh")).toBe(0o755)
+    expect(
+      [...env.files.keys()].filter((p) => p.includes(".north-star-"))
+    ).toEqual([])
+  })
+
+  it("rejects a concurrent source mode change before moving with hunks", async () => {
+    const env = fakeEnv()
+    env.files.set("old.sh", "#!/bin/sh\necho old\n")
+    env.modes.set("old.sh", 0o644)
+
+    const result = await applyPatchTool.execute(
+      {
+        operations: [
+          {
+            type: "move",
+            path: "old.sh",
+            new_path: "new.sh",
+            hunks: [{ old_string: "old", new_string: "new" }],
+          },
+        ],
+      },
+      {
+        workspace: "/ws",
+        env,
+        gate: async () => {
+          env.modes.set("old.sh", 0o755)
+          return "approved"
+        },
+      }
+    )
+
+    expect(result).toContain("ERROR[stale_file]")
+    expect(env.files.get("old.sh")).toBe("#!/bin/sh\necho old\n")
+    expect(env.modes.get("old.sh")).toBe(0o755)
+    expect(env.files.has("new.sh")).toBe(false)
+    expect(env.modes.has("new.sh")).toBe(false)
+    expect(
+      [...env.files.keys()].filter((p) => p.includes(".north-star-"))
+    ).toEqual([])
+  })
+
+  it("preserves unchanged modes when applying an approved patch", async () => {
+    const env = fakeEnv()
+    env.files.set("script.sh", "#!/bin/sh\necho old\n")
+    env.modes.set("script.sh", 0o755)
+
+    const result = await applyPatchTool.execute(
+      {
+        operations: [
+          {
+            type: "update",
+            path: "script.sh",
+            hunks: [{ old_string: "old", new_string: "new" }],
+          },
+        ],
+      },
+      {
+        workspace: "/ws",
+        env,
+        gate: async () => "approved",
+      }
+    )
+
+    expect(result).toContain("Applied patch:")
+    expect(env.files.get("script.sh")).toBe("#!/bin/sh\necho new\n")
+    expect(env.modes.get("script.sh")).toBe(0o755)
   })
 
   it("rolls back files when a commit rename fails", async () => {

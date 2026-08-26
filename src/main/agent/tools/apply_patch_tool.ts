@@ -153,9 +153,13 @@ export const applyPatchTool: Tool = {
     const committed = await commitPatch(env, planned)
     if (committed !== "ok") {
       if (committed.code === "stale_file") {
+        const mode =
+          committed.currentMode === undefined
+            ? ""
+            : ` Current mode: ${committed.currentMode.toString(8)}; expected mode: ${committed.expectedMode?.toString(8) ?? "unknown"}.`
         return toolError(
           "stale_file",
-          `${committed.path} changed before the patch could be saved. Current revision: ${committed.current ?? "missing"}.`,
+          `${committed.path} changed before the patch could be saved. Current revision: ${committed.current ?? "missing"}.${mode}`,
           "re-read the affected files and rebase the patch"
         )
       }

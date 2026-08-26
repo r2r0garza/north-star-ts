@@ -4,6 +4,7 @@ import {
   buildDiffPreview,
   fileRevision,
   makeTempPath,
+  readFileMode,
   readRevision,
   revisionOfText,
   validRevision,
@@ -469,7 +470,13 @@ export async function commitPatch(
   planned: PlannedPatch
 ): Promise<
   | "ok"
-  | { code: "stale_file"; path: string; current?: string }
+  | {
+      code: "stale_file"
+      path: string
+      current?: string
+      currentMode?: number
+      expectedMode?: number
+    }
   | { code: "commit_failed"; error: string }
   | { code: "rollback_failed"; error: string }
 > {
@@ -478,6 +485,18 @@ export async function commitPatch(
     const current = await readRevision(env, sourceTarget)
     if (current !== file.beforeRevision) {
       return { code: "stale_file", path: file.sourcePath ?? file.path, current }
+    }
+    if (file.mode !== undefined) {
+      const currentMode = await readFileMode(env, sourceTarget)
+      if (currentMode !== file.mode) {
+        return {
+          code: "stale_file",
+          path: file.sourcePath ?? file.path,
+          current,
+          currentMode,
+          expectedMode: file.mode,
+        }
+      }
     }
     if (file.sourceTarget) {
       const destination = await readRevision(env, file.target)
