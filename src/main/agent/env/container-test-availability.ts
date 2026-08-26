@@ -24,14 +24,16 @@ export interface ContainerTestAvailability {
 
 export const CONTAINER_TEST_PROBE_TIMEOUT_MS = 5_000
 
-function defaultProbe(
-  runtime: ContainerTestRuntime,
-  args: string[]
+export function runContainerTestProbe(
+  executable: string,
+  args: string[],
+  timeoutMs = CONTAINER_TEST_PROBE_TIMEOUT_MS
 ): ContainerTestProbeResult {
   try {
-    execFileSync(runtime, args, {
+    execFileSync(executable, args, {
       stdio: "ignore",
-      timeout: CONTAINER_TEST_PROBE_TIMEOUT_MS,
+      timeout: timeoutMs,
+      killSignal: "SIGKILL",
     })
     return { code: 0, stderr: "", enoent: false }
   } catch (err) {
@@ -46,9 +48,16 @@ function defaultProbe(
       stderr: e.stderr?.toString("utf8").trim() ?? e.message ?? "",
       enoent: e.code === "ENOENT",
       timedOut,
-      timeoutMs: timedOut ? CONTAINER_TEST_PROBE_TIMEOUT_MS : undefined,
+      timeoutMs: timedOut ? timeoutMs : undefined,
     }
   }
+}
+
+function defaultProbe(
+  runtime: ContainerTestRuntime,
+  args: string[]
+): ContainerTestProbeResult {
+  return runContainerTestProbe(runtime, args)
 }
 
 function envEnabled(value: string | undefined): boolean | null {

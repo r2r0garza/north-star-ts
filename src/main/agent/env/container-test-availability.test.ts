@@ -191,31 +191,43 @@ describe("checkContainerTestAvailability", () => {
     expect(availability.reason).toContain("docker info timed out after 1234ms")
   })
 
-  it("runs each default subprocess probe with a finite timeout", () => {
-    execFileSyncMock.mockReturnValue(Buffer.from(""))
+  it.each(["docker", "podman"] as const)(
+    "runs each %s subprocess probe with a hard timeout",
+    (runtime) => {
+      execFileSyncMock.mockReturnValue(Buffer.from(""))
 
-    const availability = checkContainerTestAvailability(
-      "docker",
-      "node:20-bookworm"
-    )
+      const availability = checkContainerTestAvailability(
+        runtime,
+        "node:20-bookworm"
+      )
 
-    expect(availability.available).toBe(true)
-    expect(execFileSyncMock).toHaveBeenCalledTimes(3)
-    expect(execFileSyncMock).toHaveBeenNthCalledWith(
-      1,
-      "docker",
-      ["--version"],
-      { stdio: "ignore", timeout: CONTAINER_TEST_PROBE_TIMEOUT_MS }
-    )
-    expect(execFileSyncMock).toHaveBeenNthCalledWith(2, "docker", ["info"], {
-      stdio: "ignore",
-      timeout: CONTAINER_TEST_PROBE_TIMEOUT_MS,
-    })
-    expect(execFileSyncMock).toHaveBeenNthCalledWith(
-      3,
-      "docker",
-      ["image", "inspect", "node:20-bookworm"],
-      { stdio: "ignore", timeout: CONTAINER_TEST_PROBE_TIMEOUT_MS }
-    )
-  })
+      expect(availability.available).toBe(true)
+      expect(execFileSyncMock).toHaveBeenCalledTimes(3)
+      expect(execFileSyncMock).toHaveBeenNthCalledWith(
+        1,
+        runtime,
+        ["--version"],
+        {
+          stdio: "ignore",
+          timeout: CONTAINER_TEST_PROBE_TIMEOUT_MS,
+          killSignal: "SIGKILL",
+        }
+      )
+      expect(execFileSyncMock).toHaveBeenNthCalledWith(2, runtime, ["info"], {
+        stdio: "ignore",
+        timeout: CONTAINER_TEST_PROBE_TIMEOUT_MS,
+        killSignal: "SIGKILL",
+      })
+      expect(execFileSyncMock).toHaveBeenNthCalledWith(
+        3,
+        runtime,
+        ["image", "inspect", "node:20-bookworm"],
+        {
+          stdio: "ignore",
+          timeout: CONTAINER_TEST_PROBE_TIMEOUT_MS,
+          killSignal: "SIGKILL",
+        }
+      )
+    }
+  )
 })
