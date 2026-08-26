@@ -466,13 +466,21 @@ function App(
 
   // The effective selection = the conversation's own pick, else the default.
   const effAccountId = selAccountId ?? defaultLlm?.activeAccountId ?? null
-  const effModelId = selModelId ?? defaultLlm?.activeModelId ?? null
   const effectiveAccount = effAccountId
     ? accountsWithModels.find((a) => a.account.id === effAccountId)
     : null
+  const configuredModelId =
+    selModelId ?? (selAccountId === null ? defaultLlm?.activeModelId : null)
+  const effModelId =
+    effectiveAccount?.account.provider === "claude_code"
+      ? !configuredModelId || configuredModelId === "claude-code"
+        ? "sonnet"
+        : configuredModelId
+      : configuredModelId
   const effectiveModel = effectiveAccount?.models.find(
     (m) => m.modelId === effModelId
   )
+  const effectiveIsCli = effectiveAccount?.account.provider === "claude_code"
 
   // The conversation the panel is currently showing. Updated synchronously when
   // the prop changes (in the load effect) so streaming callbacks can tell, at the
@@ -1456,10 +1464,18 @@ function App(
   async function selectModel(accountId: string, modelId: string) {
     setSelAccountId(accountId)
     setSelModelId(modelId)
+    const cli =
+      accountsWithModels.find((entry) => entry.account.id === accountId)
+        ?.account.provider === "claude_code"
+    if (cli) {
+      setAgentMode("default")
+      setSelAgentName(null)
+    }
     if (conversationId) {
       await window.cowork.db.conversations.update(conversationId, {
         accountId,
         modelId,
+        ...(cli ? { agentName: null } : {}),
       })
     }
   }
@@ -1872,74 +1888,76 @@ function App(
             )}
             {!rightPanelOpen && modelPicker}
             {rightPanelOpen && modelPickerCompact}
-            {!rightPanelOpen && agentPicker}
-            {rightPanelOpen && agentPickerCompact}
+            {!effectiveIsCli && !rightPanelOpen && agentPicker}
+            {!effectiveIsCli && rightPanelOpen && agentPickerCompact}
             {/* Agent mode dropdown. Session-only. "Default" = normal; "Plan" =
                 read-only planning turn until approved; "Auto" = all gated
                 actions auto-approved. Chat offers only Default/Auto — plan mode
                 needs the workspace toolset. In Chat a stale "plan" (carried from
                 a workspace view via a shared fresh conversation) displays as
                 Default, matching the send path which never sends planMode in Chat. */}
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <button
-                  type="button"
-                  aria-label={`Agent mode: ${displayedMode}`}
-                  title={
-                    displayedMode === "plan"
-                      ? "Plan mode on — agent plans before touching the workspace"
-                      : displayedMode === "auto"
-                        ? "Auto mode on — agent acts without asking for confirmations"
-                        : "Default mode — agent confirms actions before running them"
-                  }
-                  className={cn(
-                    "flex items-center gap-1 rounded-md px-2 py-1 text-xs transition-colors",
-                    displayedMode !== "default"
-                      ? "bg-accent text-foreground"
-                      : "text-muted-foreground hover:bg-accent hover:text-foreground"
-                  )}
-                >
-                  <ClipboardList className="size-4 shrink-0" />
-                  {!rightPanelOpen && (
-                    <span className="capitalize">{displayedMode}</span>
-                  )}
-                  <ChevronDown className="size-3 shrink-0 opacity-60" />
-                </button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="start" className="min-w-36">
-                <DropdownMenuItem
-                  onClick={() => changeAgentMode("default")}
-                  className={cn(
-                    displayedMode === "default" && "bg-accent font-medium"
-                  )}
-                >
-                  Default
-                </DropdownMenuItem>
-                {!isChat && (
-                  <DropdownMenuItem
-                    onClick={() => changeAgentMode("plan")}
+            {!effectiveIsCli && (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <button
+                    type="button"
+                    aria-label={`Agent mode: ${displayedMode}`}
+                    title={
+                      displayedMode === "plan"
+                        ? "Plan mode on — agent plans before touching the workspace"
+                        : displayedMode === "auto"
+                          ? "Auto mode on — agent acts without asking for confirmations"
+                          : "Default mode — agent confirms actions before running them"
+                    }
                     className={cn(
-                      displayedMode === "plan" && "bg-accent font-medium"
+                      "flex items-center gap-1 rounded-md px-2 py-1 text-xs transition-colors",
+                      displayedMode !== "default"
+                        ? "bg-accent text-foreground"
+                        : "text-muted-foreground hover:bg-accent hover:text-foreground"
                     )}
                   >
-                    Plan
+                    <ClipboardList className="size-4 shrink-0" />
+                    {!rightPanelOpen && (
+                      <span className="capitalize">{displayedMode}</span>
+                    )}
+                    <ChevronDown className="size-3 shrink-0 opacity-60" />
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start" className="min-w-36">
+                  <DropdownMenuItem
+                    onClick={() => changeAgentMode("default")}
+                    className={cn(
+                      displayedMode === "default" && "bg-accent font-medium"
+                    )}
+                  >
+                    Default
                   </DropdownMenuItem>
-                )}
-                <DropdownMenuItem
-                  onClick={() => changeAgentMode("auto")}
-                  className={cn(
-                    displayedMode === "auto" && "bg-accent font-medium"
+                  {!isChat && (
+                    <DropdownMenuItem
+                      onClick={() => changeAgentMode("plan")}
+                      className={cn(
+                        displayedMode === "plan" && "bg-accent font-medium"
+                      )}
+                    >
+                      Plan
+                    </DropdownMenuItem>
                   )}
-                >
-                  Auto
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
+                  <DropdownMenuItem
+                    onClick={() => changeAgentMode("auto")}
+                    className={cn(
+                      displayedMode === "auto" && "bg-accent font-medium"
+                    )}
+                  >
+                    Auto
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            )}
           </div>
           <div className="flex items-center gap-1.5">
             {/* Run the message as a durable background task (workspace views
                 only). Lives next to Send; disabled by the same gate. */}
-            {!isChat && !loading && (
+            {!isChat && !loading && !effectiveIsCli && (
               <Button
                 type="button"
                 size="icon"

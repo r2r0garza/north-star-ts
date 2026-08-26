@@ -24,7 +24,33 @@ import {
   EmptyTitle,
 } from "@/components/ui/empty"
 import { Spinner } from "@/components/ui/spinner"
-import { ChevronDown, Plus, Search, Star, Trash2, X } from "lucide-react"
+import {
+  ChevronDown,
+  GripVertical,
+  Plus,
+  Search,
+  Star,
+  Trash2,
+  X,
+} from "lucide-react"
+import {
+  DndContext,
+  KeyboardSensor,
+  PointerSensor,
+  closestCenter,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from "@dnd-kit/core"
+import {
+  SortableContext,
+  arrayMove,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable"
+import { CSS } from "@dnd-kit/utilities"
+import { toast } from "sonner"
 import { cn } from "@/lib/utils"
 import type {
   AccountView,
@@ -43,6 +69,7 @@ const PROVIDERS: Array<{ value: Provider; label: string; enabled: boolean }> = [
   { value: "portkey", label: "Portkey", enabled: true },
   { value: "openai_compatible", label: "OpenAI-compatible", enabled: true },
   { value: "openai", label: "OpenAI", enabled: true },
+  { value: "claude_code", label: "Claude Code CLI", enabled: true },
   { value: "anthropic", label: "Anthropic", enabled: false },
   { value: "google", label: "Google", enabled: false },
   { value: "azure_openai", label: "Azure OpenAI", enabled: false },
@@ -51,7 +78,11 @@ const PROVIDERS: Array<{ value: Provider; label: string; enabled: boolean }> = [
 // Native OpenAI can omit a base URL (the SDK defaults to api.openai.com); every
 // other wired provider is a gateway that requires one.
 function requiresBaseUrl(provider: Provider): boolean {
-  return provider !== "openai"
+  return provider !== "openai" && provider !== "claude_code"
+}
+
+function isCliProvider(provider: Provider): boolean {
+  return provider === "claude_code"
 }
 
 function providerLabel(provider: Provider): string {
@@ -98,7 +129,7 @@ export function useLlmSettings(open: boolean) {
     }
   }, [open, reload])
 
-  return { accounts, active, secureOk, setActive, reload }
+  return { accounts, active, secureOk, setAccounts, setActive, reload }
 }
 
 type LlmState = ReturnType<typeof useLlmSettings>
@@ -111,11 +142,17 @@ const TAB_SCROLL =
 // ── Providers tab ────────────────────────────────────────────────────────────
 
 export function ProvidersTab({ state }: { state: LlmState }) {
-  const { accounts, active, secureOk, reload, setActive } = state
+  const { accounts, active, secureOk, reload, setAccounts, setActive } = state
   const [adding, setAdding] = useState(false)
   // Which account cards are expanded. Saved accounts default collapsed; a card is
   // opened explicitly (toggle) or when freshly created (so its key can be set).
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+    })
+  )
 
   const toggle = (id: string) =>
     setExpanded((prev) => {
@@ -123,6 +160,27 @@ export function ProvidersTab({ state }: { state: LlmState }) {
       next.has(id) ? next.delete(id) : next.add(id)
       return next
     })
+
+  async function reorderProviders(event: DragEndEvent) {
+    const { active: dragged, over } = event
+    if (!over || dragged.id === over.id || accounts == null) return
+    const oldIndex = accounts.findIndex((account) => account.id === dragged.id)
+    const newIndex = accounts.findIndex((account) => account.id === over.id)
+    if (oldIndex === -1 || newIndex === -1) return
+    const reordered = arrayMove(accounts, oldIndex, newIndex).map(
+      (account, position) => ({ ...account, position })
+    )
+    setAccounts(reordered)
+    try {
+      await window.cowork.providers.reorder(
+        reordered.map((account) => account.id)
+      )
+      await reload()
+    } catch (error) {
+      toast.error(`Could not reorder providers: ${error}`)
+      await reload()
+    }
+  }
 
   if (accounts == null) {
     return (
@@ -160,8 +218,12 @@ export function ProvidersTab({ state }: { state: LlmState }) {
             <Select
               value={active?.activeAccountId ?? ""}
               onValueChange={async (id) => {
-                // Switching account clears the default model until one is picked.
-                const next = { activeAccountId: id, activeModelId: null }
+                const provider = accounts.find((account) => account.id === id)
+                const next = {
+                  activeAccountId: id,
+                  activeModelId:
+                    provider?.provider === "claude_code" ? "sonnet" : null,
+                }
                 setActive(next)
                 await window.cowork.providers.setDefault(next)
               }}
@@ -185,18 +247,29 @@ export function ProvidersTab({ state }: { state: LlmState }) {
             </FieldDescription>
           </Field>
 
-          <div className="flex flex-col gap-2">
-            {accounts.map((account) => (
-              <AccountCard
-                key={account.id}
-                account={account}
-                secureOk={secureOk}
-                open={expanded.has(account.id)}
-                onToggle={() => toggle(account.id)}
-                onChange={reload}
-              />
-            ))}
-          </div>
+          <DndContext
+            sensors={sensors}
+            collisionDetection={closestCenter}
+            onDragEnd={reorderProviders}
+          >
+            <SortableContext
+              items={accounts.map((account) => account.id)}
+              strategy={verticalListSortingStrategy}
+            >
+              <div className="flex flex-col gap-2">
+                {accounts.map((account) => (
+                  <AccountCard
+                    key={account.id}
+                    account={account}
+                    secureOk={secureOk}
+                    open={expanded.has(account.id)}
+                    onToggle={() => toggle(account.id)}
+                    onChange={reload}
+                  />
+                ))}
+              </div>
+            </SortableContext>
+          </DndContext>
 
           {adding ? (
             <NewAccountForm
@@ -233,11 +306,35 @@ function AccountCard({
   onToggle: () => void
   onChange: () => Promise<void>
 }) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: account.id })
+  const sortableStyle = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    zIndex: isDragging ? 1 : undefined,
+    opacity: isDragging ? 0.6 : undefined,
+  }
   const [baseUrl, setBaseUrl] = useState(account.baseUrl ?? "")
   const [keyInput, setKeyInput] = useState("")
   const [editingKey, setEditingKey] = useState(!account.hasKey)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const [cliStatus, setCliStatus] = useState<{
+    installed: boolean
+    version?: string
+    error?: string
+  } | null>(null)
+
+  useEffect(() => {
+    if (!open || !isCliProvider(account.provider)) return
+    void window.cowork.providers.detectClaudeCode().then(setCliStatus)
+  }, [open, account.provider])
 
   async function saveBaseUrl() {
     if (baseUrl === (account.baseUrl ?? "")) return
@@ -278,11 +375,23 @@ function AccountCard({
 
   return (
     <Collapsible
+      ref={setNodeRef}
+      style={sortableStyle}
       open={open}
       onOpenChange={onToggle}
       className="rounded-lg border border-border"
     >
       <div className="flex items-center justify-between p-3">
+        <button
+          type="button"
+          className="mr-1 cursor-grab touch-none text-muted-foreground hover:text-foreground active:cursor-grabbing"
+          title="Drag to reorder"
+          aria-label={`Drag to reorder ${account.displayName}`}
+          {...attributes}
+          {...listeners}
+        >
+          <GripVertical className="size-4" />
+        </button>
         <CollapsibleTrigger className="flex min-w-0 flex-1 items-center gap-2 text-left">
           <ChevronDown
             className={cn(
@@ -299,7 +408,7 @@ function AccountCard({
               off
             </Badge>
           )}
-          {!account.hasKey && (
+          {!isCliProvider(account.provider) && !account.hasKey && (
             <Badge variant="destructive" className="shrink-0">
               no key
             </Badge>
@@ -330,76 +439,88 @@ function AccountCard({
       </div>
 
       <CollapsibleContent className="flex flex-col gap-3 px-3 pb-3">
-        <Field>
-          <FieldLabel htmlFor={`base-${account.id}`}>Base URL</FieldLabel>
-          <Input
-            id={`base-${account.id}`}
-            value={baseUrl}
-            onChange={(e) => setBaseUrl(e.target.value)}
-            onBlur={saveBaseUrl}
-            placeholder="https://gateway.example.com/v1"
-          />
-        </Field>
-
-        <Field>
-          <FieldLabel htmlFor={`key-${account.id}`}>API key</FieldLabel>
-          {editingKey ? (
-            <div className="flex items-center gap-2">
+        {isCliProvider(account.provider) ? (
+          <div className="rounded-md bg-muted px-3 py-2 text-xs">
+            {cliStatus == null
+              ? "Checking for Claude Code…"
+              : cliStatus.installed
+                ? `Installed: ${cliStatus.version ?? "Claude Code"}`
+                : `Not available: ${cliStatus.error ?? "claude was not found on PATH."}`}
+          </div>
+        ) : (
+          <>
+            <Field>
+              <FieldLabel htmlFor={`base-${account.id}`}>Base URL</FieldLabel>
               <Input
-                id={`key-${account.id}`}
-                type="password"
-                value={keyInput}
-                onChange={(e) => setKeyInput(e.target.value)}
-                placeholder="Paste API key"
-                disabled={!secureOk}
-                autoComplete="off"
+                id={`base-${account.id}`}
+                value={baseUrl}
+                onChange={(e) => setBaseUrl(e.target.value)}
+                onBlur={saveBaseUrl}
+                placeholder="https://gateway.example.com/v1"
               />
-              <Button
-                size="sm"
-                onClick={saveKey}
-                disabled={!secureOk || busy || !keyInput.trim()}
-              >
-                {busy ? <Spinner /> : "Save"}
-              </Button>
-              {account.hasKey && (
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="size-8"
-                  onClick={() => setEditingKey(false)}
-                >
-                  <X className="size-4" />
-                </Button>
+            </Field>
+
+            <Field>
+              <FieldLabel htmlFor={`key-${account.id}`}>API key</FieldLabel>
+              {editingKey ? (
+                <div className="flex items-center gap-2">
+                  <Input
+                    id={`key-${account.id}`}
+                    type="password"
+                    value={keyInput}
+                    onChange={(e) => setKeyInput(e.target.value)}
+                    placeholder="Paste API key"
+                    disabled={!secureOk}
+                    autoComplete="off"
+                  />
+                  <Button
+                    size="sm"
+                    onClick={saveKey}
+                    disabled={!secureOk || busy || !keyInput.trim()}
+                  >
+                    {busy ? <Spinner /> : "Save"}
+                  </Button>
+                  {account.hasKey && (
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="size-8"
+                      onClick={() => setEditingKey(false)}
+                    >
+                      <X className="size-4" />
+                    </Button>
+                  )}
+                </div>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <span className="font-mono text-sm text-muted-foreground">
+                    {account.maskedKey ?? "•••• set"}
+                  </span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setEditingKey(true)}
+                  >
+                    Replace
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="text-destructive"
+                    onClick={clearKey}
+                  >
+                    Clear
+                  </Button>
+                </div>
               )}
-            </div>
-          ) : (
-            <div className="flex items-center gap-2">
-              <span className="font-mono text-sm text-muted-foreground">
-                {account.maskedKey ?? "•••• set"}
-              </span>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setEditingKey(true)}
-              >
-                Replace
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="text-destructive"
-                onClick={clearKey}
-              >
-                Clear
-              </Button>
-            </div>
-          )}
-          {error && (
-            <FieldDescription className="text-destructive">
-              {error}
-            </FieldDescription>
-          )}
-        </Field>
+              {error && (
+                <FieldDescription className="text-destructive">
+                  {error}
+                </FieldDescription>
+              )}
+            </Field>
+          </>
+        )}
       </CollapsibleContent>
     </Collapsible>
   )
@@ -463,21 +584,23 @@ function NewAccountForm({
           placeholder="e.g. Work Portkey"
         />
       </Field>
-      <Field>
-        <FieldLabel htmlFor="new-base">
-          Base URL{needsBaseUrl ? "" : " (optional)"}
-        </FieldLabel>
-        <Input
-          id="new-base"
-          value={baseUrl}
-          onChange={(e) => setBaseUrl(e.target.value)}
-          placeholder={
-            needsBaseUrl
-              ? "https://gateway.example.com/v1"
-              : "Leave blank for api.openai.com"
-          }
-        />
-      </Field>
+      {!isCliProvider(provider) && (
+        <Field>
+          <FieldLabel htmlFor="new-base">
+            Base URL{needsBaseUrl ? "" : " (optional)"}
+          </FieldLabel>
+          <Input
+            id="new-base"
+            value={baseUrl}
+            onChange={(e) => setBaseUrl(e.target.value)}
+            placeholder={
+              needsBaseUrl
+                ? "https://gateway.example.com/v1"
+                : "Leave blank for api.openai.com"
+            }
+          />
+        </Field>
+      )}
       <div className="flex justify-end gap-2">
         <Button variant="outline" size="sm" onClick={onDone}>
           Cancel
@@ -672,88 +795,132 @@ function AccountModelsSection({
       </CollapsibleTrigger>
 
       <CollapsibleContent className="flex flex-col gap-3 px-3 pb-3">
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-          <div className="relative sm:max-w-72 sm:flex-1">
-            <Search className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search models"
-              className="h-8 pl-8"
-            />
-          </div>
-          <div className="flex justify-end gap-2">
-            <Button
-              variant="ghost"
-              size="sm"
-              className="text-destructive hover:text-destructive"
-              onClick={deleteAllModels}
-              disabled={!models || models.length === 0}
-            >
-              <Trash2 className="size-4" /> Delete all
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={runImport}
-              disabled={importing}
-            >
-              {importing ? <Spinner /> : "Import from gateway"}
-            </Button>
-          </div>
-        </div>
-        {importError && (
-          <p className="text-xs text-destructive">{importError}</p>
-        )}
-
-        {visibleModels && visibleModels.length > 0 ? (
-          <div className="flex flex-col gap-2">
-            {visibleModels.map((m) => (
-              <ModelRow
-                key={m.id}
-                model={m}
-                isActive={
-                  isActiveAccount && active?.activeModelId === m.modelId
-                }
-                onSelect={() => onSelectActive(m.modelId)}
-                onChange={loadModels}
-              />
-            ))}
-          </div>
-        ) : models && models.length > 0 ? (
-          <p className="text-sm text-muted-foreground">
-            No models match that search.
-          </p>
+        {isCliProvider(account.provider) ? (
+          <>
+            <p className="text-xs text-muted-foreground">
+              Claude Code manages model availability. Choose a durable alias;
+              Sonnet is used when no explicit alias is selected.
+            </p>
+            <div className="flex flex-col gap-2">
+              {["sonnet", "haiku", "opus", "fable"].map((alias) => {
+                const model = models?.find((entry) => entry.modelId === alias)
+                const selected =
+                  isActiveAccount &&
+                  (active?.activeModelId === alias ||
+                    (!active?.activeModelId && alias === "sonnet"))
+                return (
+                  <button
+                    key={alias}
+                    type="button"
+                    className={cn(
+                      "flex items-center justify-between rounded-lg border p-2.5 text-left",
+                      selected
+                        ? "border-ring bg-accent/40"
+                        : "border-border hover:bg-accent/30"
+                    )}
+                    onClick={() => onSelectActive(alias)}
+                    disabled={!model}
+                  >
+                    <span className="text-sm font-medium capitalize">
+                      {alias}
+                    </span>
+                    <span className="flex items-center gap-2">
+                      {alias === "sonnet" && (
+                        <Badge variant="outline">fallback</Badge>
+                      )}
+                      {selected && <Badge>default</Badge>}
+                    </span>
+                  </button>
+                )
+              })}
+            </div>
+          </>
         ) : (
-          <p className="text-sm text-muted-foreground">
-            No models yet. Add one below or import from the gateway.
-          </p>
-        )}
+          <>
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <div className="relative sm:max-w-72 sm:flex-1">
+                <Search className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder="Search models"
+                  className="h-8 pl-8"
+                />
+              </div>
+              <div className="flex justify-end gap-2">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="text-destructive hover:text-destructive"
+                  onClick={deleteAllModels}
+                  disabled={!models || models.length === 0}
+                >
+                  <Trash2 className="size-4" /> Delete all
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={runImport}
+                  disabled={importing}
+                >
+                  {importing ? <Spinner /> : "Import from gateway"}
+                </Button>
+              </div>
+            </div>
+            {importError && (
+              <p className="text-xs text-destructive">{importError}</p>
+            )}
 
-        <div className="flex flex-col gap-2 rounded-lg border border-dashed border-border p-3">
-          <FieldLabel htmlFor={`new-model-${account.id}`}>
-            Add a model
-          </FieldLabel>
-          <Input
-            id={`new-model-${account.id}`}
-            value={newId}
-            onChange={(e) => setNewId(e.target.value)}
-            placeholder="Model id (e.g. @provider/model-name)"
-          />
-          <Input
-            value={newName}
-            onChange={(e) => setNewName(e.target.value)}
-            placeholder="Custom display name (optional)"
-          />
-          <Button
-            size="sm"
-            className="self-end"
-            onClick={addModel}
-            disabled={!newId.trim()}
-          >
-            <Plus className="size-4" /> Add
-          </Button>
-        </div>
+            {visibleModels && visibleModels.length > 0 ? (
+              <div className="flex flex-col gap-2">
+                {visibleModels.map((m) => (
+                  <ModelRow
+                    key={m.id}
+                    model={m}
+                    isActive={
+                      isActiveAccount && active?.activeModelId === m.modelId
+                    }
+                    onSelect={() => onSelectActive(m.modelId)}
+                    onChange={loadModels}
+                  />
+                ))}
+              </div>
+            ) : models && models.length > 0 ? (
+              <p className="text-sm text-muted-foreground">
+                No models match that search.
+              </p>
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                No models yet. Add one below or import from the gateway.
+              </p>
+            )}
+
+            <div className="flex flex-col gap-2 rounded-lg border border-dashed border-border p-3">
+              <FieldLabel htmlFor={`new-model-${account.id}`}>
+                Add a model
+              </FieldLabel>
+              <Input
+                id={`new-model-${account.id}`}
+                value={newId}
+                onChange={(e) => setNewId(e.target.value)}
+                placeholder="Model id (e.g. @provider/model-name)"
+              />
+              <Input
+                value={newName}
+                onChange={(e) => setNewName(e.target.value)}
+                placeholder="Custom display name (optional)"
+              />
+              <Button
+                size="sm"
+                className="self-end"
+                onClick={addModel}
+                disabled={!newId.trim()}
+              >
+                <Plus className="size-4" /> Add
+              </Button>
+            </div>
+          </>
+        )}
       </CollapsibleContent>
     </Collapsible>
   )

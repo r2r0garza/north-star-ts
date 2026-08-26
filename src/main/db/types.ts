@@ -267,6 +267,7 @@ export type Provider =
   | "portkey"
   | "openai_compatible"
   | "openai"
+  | "claude_code"
   | "anthropic"
   | "google"
   | "azure_openai"
@@ -293,6 +294,8 @@ export interface ProviderAccount {
   baseUrl: string | null
   hasKey: boolean
   enabled: boolean
+  // User-authored display order (SCHEMA_V30), shared by Settings and pickers.
+  position: number
   // The OpenAI wire API this account speaks. Defaults to "completions"; only
   // consulted for openai/openai_compatible accounts (portkey ignores it).
   apiMode: ApiMode
@@ -309,6 +312,16 @@ export interface ModelEntry {
   modelName: string | null
   origin: ModelOrigin
   favorite: boolean
+  createdAt: number
+  updatedAt: number
+}
+
+// External agent CLI continuity (SCHEMA_V29). The provider owns its native
+// transcript; North Star stores only the stable reference needed to resume.
+export interface CliSession {
+  conversationId: string
+  provider: "claude_code"
+  sessionId: string
   createdAt: number
   updatedAt: number
 }

@@ -797,3 +797,94 @@ export const SCHEMA_V28 = `
 ALTER TABLE provider_accounts ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1;
 ALTER TABLE models ADD COLUMN favorite INTEGER NOT NULL DEFAULT 0;
 `
+
+// v29 (plan 041): widen provider_accounts for the first local autonomous CLI
+// provider and persist its per-conversation native session reference. SQLite
+// cannot alter a CHECK constraint, so rebuild the provider table while foreign
+// keys are disabled by the migration runner.
+export const SCHEMA_V29 = `
+CREATE TABLE provider_accounts_v29 (
+  id            TEXT PRIMARY KEY,
+  provider      TEXT NOT NULL CHECK (provider IN
+                  ('portkey','openai_compatible','openai','claude_code','anthropic','google','azure_openai')),
+  display_name  TEXT NOT NULL,
+  base_url      TEXT,
+  encrypted_key BLOB,
+  api_mode      TEXT NOT NULL DEFAULT 'completions'
+                  CHECK (api_mode IN ('completions','responses')),
+  enabled       INTEGER NOT NULL DEFAULT 1,
+  created_at    INTEGER NOT NULL,
+  last_used_at  INTEGER
+);
+INSERT INTO provider_accounts_v29
+  (id, provider, display_name, base_url, encrypted_key, api_mode, enabled, created_at, last_used_at)
+SELECT id, provider, display_name, base_url, encrypted_key, api_mode, enabled, created_at, last_used_at
+FROM provider_accounts;
+DROP TABLE provider_accounts;
+ALTER TABLE provider_accounts_v29 RENAME TO provider_accounts;
+
+CREATE TABLE cli_sessions (
+  conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  provider        TEXT NOT NULL CHECK (provider IN ('claude_code')),
+  session_id      TEXT NOT NULL,
+  created_at      INTEGER NOT NULL,
+  updated_at      INTEGER NOT NULL,
+  PRIMARY KEY (conversation_id, provider),
+  UNIQUE (provider, session_id)
+);
+CREATE INDEX idx_cli_sessions_provider_session
+  ON cli_sessions(provider, session_id);
+`
+
+// v30 (plans 041.1 + 044): Claude Code exposes durable model aliases rather
+// than our OpenAI-style gateway catalog, and provider accounts gain an authored
+// display position shared by Settings and every conversation model picker.
+// Legacy provider rows all start at position 0; created_at remains the stable
+// tie-breaker until the user performs their first reorder.
+export const SCHEMA_V30 = `
+ALTER TABLE provider_accounts ADD COLUMN position INTEGER NOT NULL DEFAULT 0;
+
+UPDATE conversations
+SET model_id = 'sonnet'
+WHERE model_id = 'claude-code'
+  AND account_id IN (
+    SELECT id FROM provider_accounts WHERE provider = 'claude_code'
+  );
+
+UPDATE settings
+SET value = json_set(value, '$.activeModelId', 'sonnet')
+WHERE key = 'llm'
+  AND json_extract(value, '$.activeAccountId') IN (
+    SELECT id FROM provider_accounts WHERE provider = 'claude_code'
+  )
+  AND (
+    json_extract(value, '$.activeModelId') IS NULL OR
+    json_extract(value, '$.activeModelId') = 'claude-code'
+  );
+
+DELETE FROM models
+WHERE model_id = 'claude-code'
+  AND account_id IN (
+    SELECT id FROM provider_accounts WHERE provider = 'claude_code'
+  );
+
+INSERT OR IGNORE INTO models
+  (id, account_id, model_id, model_name, origin, favorite, created_at, updated_at)
+SELECT lower(hex(randomblob(16))), id, 'sonnet', 'Sonnet', 'seeded', 1,
+       CAST(strftime('%s','now') AS INTEGER) * 1000,
+       CAST(strftime('%s','now') AS INTEGER) * 1000
+FROM provider_accounts WHERE provider = 'claude_code';
+
+INSERT OR IGNORE INTO models
+  (id, account_id, model_id, model_name, origin, favorite, created_at, updated_at)
+SELECT lower(hex(randomblob(16))), provider_accounts.id, alias.id, alias.name, 'seeded', 0,
+       CAST(strftime('%s','now') AS INTEGER) * 1000 + alias.seq,
+       CAST(strftime('%s','now') AS INTEGER) * 1000 + alias.seq
+FROM provider_accounts
+JOIN (
+  SELECT 'haiku' AS id, 'Haiku' AS name, 1 AS seq
+  UNION ALL SELECT 'opus', 'Opus', 2
+  UNION ALL SELECT 'fable', 'Fable', 3
+) AS alias
+WHERE provider = 'claude_code';
+`

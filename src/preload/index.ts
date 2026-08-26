@@ -1283,6 +1283,16 @@ const api = {
       ipcRenderer.invoke("providers:setDefault", next) as Promise<LlmSettings>,
     hasActive: () =>
       ipcRenderer.invoke("providers:hasActive") as Promise<boolean>,
+    detectClaudeCode: () =>
+      ipcRenderer.invoke("providers:detectClaudeCode") as Promise<{
+        installed: boolean
+        version?: string
+        error?: string
+      }>,
+    reorder: (orderedIds: string[]) =>
+      ipcRenderer.invoke("providers:reorder", orderedIds) as Promise<
+        AccountView[]
+      >,
   },
 
   // Models belonging to a provider account.
