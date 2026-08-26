@@ -6,6 +6,12 @@ import { editFileTool } from "./edit_file_tool"
 import { writeFileTool } from "./write_file_tool"
 import { applyPatchTool } from "./apply_patch_tool"
 import { runShellTool } from "./run_shell_tool"
+import {
+  execCommandTool,
+  pollCommandTool,
+  terminateCommandTool,
+  writeStdinTool,
+} from "./command_session_tools"
 import { todoWriteTool } from "./todo_tool"
 import { askUserQuestionTool } from "./ask_user_question_tool"
 import { runTodosInBackgroundTool } from "./run_todos_in_background"
@@ -37,6 +43,10 @@ const workspaceTools: Tool[] = [
   editFileTool,
   writeFileTool,
   applyPatchTool,
+  execCommandTool,
+  writeStdinTool,
+  pollCommandTool,
+  terminateCommandTool,
   runShellTool,
 ]
 

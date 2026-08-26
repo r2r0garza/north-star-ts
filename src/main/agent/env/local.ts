@@ -1,5 +1,7 @@
 import { spawn } from "child_process"
+import type { ChildProcess } from "child_process"
 import { randomUUID } from "crypto"
+import { EventEmitter } from "events"
 import {
   readFile,
   writeFile,
@@ -11,6 +13,8 @@ import {
 } from "fs/promises"
 import { join } from "path"
 import { tmpdir } from "os"
+import { StringDecoder } from "string_decoder"
+import * as pty from "node-pty"
 import { captureSpawn } from "./spawn-util"
 import { readHostTextLines } from "./read-text-lines"
 import { buildRipgrepArgs, parseRipgrepJson } from "./ripgrep"
@@ -25,6 +29,10 @@ import type {
   SearchResult,
   ReadTextLinesOptions,
   ReadTextLinesResult,
+  SpawnCommandOptions,
+  CommandSessionHandle,
+  CommandChunk,
+  CommandExit,
 } from "./types"
 
 export function normalizeHostShellCommand(
@@ -53,6 +61,19 @@ function resolveRipgrepPath(): string {
     // Fall through to PATH lookup for development and focused tests.
   }
   return "rg"
+}
+
+function shellForCommand(
+  command: string,
+  platform: NodeJS.Platform = process.platform
+): { file: string; args: string[] } {
+  if (platform === "win32") {
+    return {
+      file: process.env.ComSpec || "cmd.exe",
+      args: ["/d", "/s", "/c", command],
+    }
+  }
+  return { file: process.env.SHELL || "sh", args: ["-lc", command] }
 }
 
 export function materializePythonHeredocCommand(
@@ -183,6 +204,35 @@ export class LocalEnvironment implements Environment {
     }
   }
 
+  async spawnCommand(
+    command: string,
+    opts: SpawnCommandOptions
+  ): Promise<CommandSessionHandle> {
+    const commandToRun = normalizeHostShellCommand(command)
+    if (opts.tty) {
+      const shell = shellForCommand(commandToRun)
+      const term = pty.spawn(shell.file, shell.args, {
+        name: "xterm-256color",
+        cols: 80,
+        rows: 24,
+        cwd: opts.cwd,
+        env: { ...process.env, TERM: "xterm-256color" },
+      })
+      return new PtyCommandHandle(term, opts.signal)
+    }
+
+    const child = spawn(commandToRun, {
+      cwd: opts.cwd,
+      shell: true,
+      detached: process.platform !== "win32",
+      stdio: ["pipe", "pipe", "pipe"],
+    })
+    return new ChildProcessCommandHandle(child, {
+      killGroup: true,
+      signal: opts.signal,
+    })
+  }
+
   // Grep the workspace through ripgrep, parsing `--json` so file names and
   // content are never split with ad-hoc delimiters. Patterns/globs are argv data.
   async search(opts: SearchOptions): Promise<SearchResult> {
@@ -208,4 +258,184 @@ export class LocalEnvironment implements Environment {
   async dispose(): Promise<void> {
     // Nothing to clean up on the host.
   }
+}
+
+class ChildProcessCommandHandle
+  extends EventEmitter<{
+    data: [CommandChunk]
+    exit: [CommandExit]
+  }>
+  implements CommandSessionHandle
+{
+  private readonly stdoutDecoder = new StringDecoder("utf8")
+  private readonly stderrDecoder = new StringDecoder("utf8")
+  private closed = false
+
+  constructor(
+    private readonly child: ChildProcess,
+    private readonly opts: { killGroup: boolean; signal?: AbortSignal }
+  ) {
+    super()
+    child.stdout?.on("data", (chunk: Buffer) =>
+      this.emitDecoded("stdout", chunk, this.stdoutDecoder)
+    )
+    child.stderr?.on("data", (chunk: Buffer) =>
+      this.emitDecoded("stderr", chunk, this.stderrDecoder)
+    )
+    child.on("error", (err) => {
+      this.emit("data", {
+        stream: "stderr",
+        data: Buffer.from(`Failed to start command: ${err.message}`),
+      })
+    })
+    child.on("close", (exitCode, signal) => {
+      this.closed = true
+      this.flushDecoder("stdout", this.stdoutDecoder)
+      this.flushDecoder("stderr", this.stderrDecoder)
+      this.opts.signal?.removeEventListener("abort", this.onAbort)
+      this.emit("exit", { exitCode, signal })
+    })
+    if (opts.signal) {
+      if (opts.signal.aborted) this.kill()
+      else opts.signal.addEventListener("abort", this.onAbort, { once: true })
+    }
+  }
+
+  onData(cb: (chunk: CommandChunk) => void): void {
+    this.on("data", cb)
+  }
+
+  onExit(cb: (exit: CommandExit) => void): void {
+    this.on("exit", cb)
+  }
+
+  write(data: string): void {
+    if (!this.closed && this.child.stdin?.writable) this.child.stdin.write(data)
+  }
+
+  closeStdin(): void {
+    if (!this.closed && this.child.stdin?.writable) this.child.stdin.end()
+  }
+
+  interrupt(): void {
+    if (this.closed) return
+    if (process.platform === "win32") {
+      this.kill()
+      return
+    }
+    try {
+      if (this.opts.killGroup && this.child.pid) {
+        process.kill(-this.child.pid, "SIGINT")
+      } else {
+        this.child.kill("SIGINT")
+      }
+    } catch {
+      this.child.kill("SIGINT")
+    }
+  }
+
+  kill(): void {
+    if (this.closed) return
+    if (this.opts.killGroup && this.child.pid) {
+      if (process.platform === "win32") {
+        spawn("taskkill", ["/pid", String(this.child.pid), "/T", "/F"], {
+          stdio: "ignore",
+        }).on("error", () => this.child.kill("SIGKILL"))
+        return
+      }
+      try {
+        process.kill(-this.child.pid, "SIGKILL")
+        return
+      } catch {
+        // Fall back to killing the direct child.
+      }
+    }
+    try {
+      this.child.kill("SIGKILL")
+    } catch {
+      // Already dead.
+    }
+  }
+
+  private readonly onAbort = () => this.kill()
+
+  private emitDecoded(
+    stream: "stdout" | "stderr",
+    chunk: Buffer,
+    decoder: StringDecoder
+  ): void {
+    const decoded = decoder.write(chunk)
+    if (decoded) this.emit("data", { stream, data: Buffer.from(decoded) })
+  }
+
+  private flushDecoder(
+    stream: "stdout" | "stderr",
+    decoder: StringDecoder
+  ): void {
+    const decoded = decoder.end()
+    if (decoded) this.emit("data", { stream, data: Buffer.from(decoded) })
+  }
+}
+
+class PtyCommandHandle
+  extends EventEmitter<{
+    data: [CommandChunk]
+    exit: [CommandExit]
+  }>
+  implements CommandSessionHandle
+{
+  private closed = false
+
+  constructor(
+    private readonly term: pty.IPty,
+    private readonly signal?: AbortSignal
+  ) {
+    super()
+    term.onData((data) =>
+      this.emit("data", { stream: "pty", data: Buffer.from(data) })
+    )
+    term.onExit(({ exitCode, signal }) => {
+      this.closed = true
+      this.signal?.removeEventListener("abort", this.onAbort)
+      this.emit("exit", {
+        exitCode,
+        signal: typeof signal === "string" ? signal : null,
+      })
+    })
+    if (signal) {
+      if (signal.aborted) this.kill()
+      else signal.addEventListener("abort", this.onAbort, { once: true })
+    }
+  }
+
+  onData(cb: (chunk: CommandChunk) => void): void {
+    this.on("data", cb)
+  }
+
+  onExit(cb: (exit: CommandExit) => void): void {
+    this.on("exit", cb)
+  }
+
+  write(data: string): void {
+    if (!this.closed) this.term.write(data)
+  }
+
+  closeStdin(): void {
+    if (!this.closed) this.term.write("\x04")
+  }
+
+  interrupt(): void {
+    if (!this.closed) this.term.write("\x03")
+  }
+
+  kill(): void {
+    if (this.closed) return
+    try {
+      this.term.kill()
+    } catch {
+      // Already dead.
+    }
+  }
+
+  private readonly onAbort = () => this.kill()
 }

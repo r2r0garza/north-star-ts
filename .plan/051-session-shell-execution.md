@@ -1,6 +1,6 @@
 # PR51: Session-oriented shell execution
 
-> Status: **NOT STARTED**. Depends on `049` effect metadata. Reuses the existing
+> Status: **DONE**. Depends on `049` effect metadata. Reuses the existing
 > `node-pty`/TerminalService foundation. No DB migration in the first slice.
 
 ## Context

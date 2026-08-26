@@ -1,5 +1,8 @@
 import { spawn } from "child_process"
+import type { ChildProcess } from "child_process"
+import { EventEmitter } from "events"
 import { relative, posix } from "path"
+import { StringDecoder } from "string_decoder"
 import { resolveInWorkspace } from "../tools/workspace"
 import { captureSpawn } from "./spawn-util"
 import { hostCliEnv } from "./host-cli-env"
@@ -15,6 +18,10 @@ import type {
   SearchResult,
   ReadTextLinesOptions,
   ReadTextLinesResult,
+  SpawnCommandOptions,
+  CommandSessionHandle,
+  CommandChunk,
+  CommandExit,
 } from "./types"
 
 export interface ContainerConfig {
@@ -450,6 +457,29 @@ PY
     return captureSpawn(child, opts)
   }
 
+  async spawnCommand(
+    command: string,
+    opts: SpawnCommandOptions
+  ): Promise<CommandSessionHandle> {
+    const env = await hostCliEnv()
+    const args = [
+      "exec",
+      "-i",
+      ...(opts.tty ? ["-t"] : []),
+      "-w",
+      this.toContainerPath(opts.cwd),
+      this.name,
+      "sh",
+      "-c",
+      command,
+    ]
+    const child = spawn(this.cfg.runtime, args, {
+      env,
+      stdio: ["pipe", "pipe", "pipe"],
+    })
+    return new ContainerCommandHandle(child, opts.signal)
+  }
+
   // Bulk content search as ONE in-container command (vs. hundreds of per-file
   // exec round-trips). Prefers ripgrep with JSON events. If rg is absent, uses a
   // bounded Python fallback that receives all model-supplied data as argv.
@@ -609,6 +639,7 @@ result = {
     "capped": capped,
     "reducedFeatures": ["container image does not include rg; Python fallback does not support .gitignore files"],
 }
+
 print(json.dumps(result))
 PY
 `
@@ -658,4 +689,99 @@ PY
 // spaces or quotes, so they must be quoted before interpolation.
 function shq(s: string): string {
   return `'${s.replace(/'/g, `'\\''`)}'`
+}
+
+class ContainerCommandHandle
+  extends EventEmitter<{
+    data: [CommandChunk]
+    exit: [CommandExit]
+  }>
+  implements CommandSessionHandle
+{
+  private readonly stdoutDecoder = new StringDecoder("utf8")
+  private readonly stderrDecoder = new StringDecoder("utf8")
+  private closed = false
+
+  constructor(
+    private readonly child: ChildProcess,
+    private readonly signal?: AbortSignal
+  ) {
+    super()
+    child.stdout?.on("data", (chunk: Buffer) =>
+      this.emitDecoded("stdout", chunk, this.stdoutDecoder)
+    )
+    child.stderr?.on("data", (chunk: Buffer) =>
+      this.emitDecoded("stderr", chunk, this.stderrDecoder)
+    )
+    child.on("error", (err) => {
+      this.emit("data", {
+        stream: "stderr",
+        data: Buffer.from(`Failed to start command: ${err.message}`),
+      })
+    })
+    child.on("close", (exitCode, signal) => {
+      this.closed = true
+      this.flushDecoder("stdout", this.stdoutDecoder)
+      this.flushDecoder("stderr", this.stderrDecoder)
+      this.signal?.removeEventListener("abort", this.onAbort)
+      this.emit("exit", { exitCode, signal })
+    })
+    if (signal) {
+      if (signal.aborted) this.kill()
+      else signal.addEventListener("abort", this.onAbort, { once: true })
+    }
+  }
+
+  onData(cb: (chunk: CommandChunk) => void): void {
+    this.on("data", cb)
+  }
+
+  onExit(cb: (exit: CommandExit) => void): void {
+    this.on("exit", cb)
+  }
+
+  write(data: string): void {
+    if (!this.closed && this.child.stdin?.writable) this.child.stdin.write(data)
+  }
+
+  closeStdin(): void {
+    if (!this.closed && this.child.stdin?.writable) this.child.stdin.end()
+  }
+
+  interrupt(): void {
+    if (this.closed) return
+    try {
+      this.child.kill("SIGINT")
+    } catch {
+      // Already dead.
+    }
+  }
+
+  kill(): void {
+    if (this.closed) return
+    try {
+      this.child.kill("SIGKILL")
+    } catch {
+      // Already dead.
+    }
+  }
+
+  private readonly onAbort = () => this.kill()
+
+  private emitDecoded(
+    stream: "stdout" | "stderr",
+    chunk: Buffer,
+    decoder: StringDecoder
+  ): void {
+    const decoded = decoder.write(chunk)
+    if (decoded) this.emit("data", { stream, data: Buffer.from(decoded) })
+  }
+
+  private flushDecoder(
+    stream: "stdout" | "stderr",
+    decoder: StringDecoder
+  ): void {
+    const decoded = decoder.end()
+    if (decoded) this.emit("data", { stream, data: Buffer.from(decoded) })
+  }
 }

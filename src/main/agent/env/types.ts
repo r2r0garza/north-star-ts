@@ -33,6 +33,36 @@ export interface ExecOptions {
   signal?: AbortSignal
 }
 
+export type CommandStream = "stdout" | "stderr" | "pty"
+
+export interface CommandChunk {
+  stream: CommandStream
+  data: Buffer
+}
+
+export interface CommandExit {
+  exitCode: number | null
+  signal: NodeJS.Signals | null
+}
+
+export interface CommandSessionHandle {
+  onData(cb: (chunk: CommandChunk) => void): void
+  onExit(cb: (exit: CommandExit) => void): void
+  write(data: string): void
+  closeStdin(): void
+  interrupt(): void
+  kill(): void
+}
+
+export interface SpawnCommandOptions {
+  // Absolute working directory within this environment's filesystem view.
+  cwd: string
+  // Use a PTY when the backend supports it. PTY output is one stream.
+  tty: boolean
+  // Abort seam: Stop/app cleanup terminates the command session.
+  signal?: AbortSignal
+}
+
 // The subset of fs.Dirent the tools consume. Real fs.Dirent satisfies this, so
 // LocalEnvironment returns Dirents directly; ContainerEnvironment synthesizes
 // objects of this shape from `ls` output.
@@ -147,6 +177,14 @@ export interface Environment {
   readdir(path: string): Promise<DirEntry[]>
 
   exec(command: string, opts: ExecOptions): Promise<ExecResult>
+
+  // Spawn a command session that can be polled and written to. Implementations
+  // return immediately with a live handle; the agent session manager owns output
+  // buffering, timeouts, and lifecycle cleanup.
+  spawnCommand(
+    command: string,
+    opts: SpawnCommandOptions
+  ): Promise<CommandSessionHandle>
 
   // Bulk content search under `opts.root`. This is a first-class env operation
   // (not a tool-side walk over readdir/stat/readFile) because search fans out

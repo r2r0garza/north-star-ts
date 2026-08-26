@@ -1,13 +1,9 @@
 import { TOOL_EFFECTS, type Tool, type ToolContext } from "./types"
-import type { ToolAction } from "../approval/types"
-import { normalizeCommand } from "../approval/normalize"
-import { stripAnsi } from "../approval/ansi"
-import { truncateForModel, toolError } from "./output"
-import { LocalEnvironment } from "../env/local"
+import { toolError } from "./output"
+import { runShellCompatibility } from "./command_session_tools"
 
 const DEFAULT_TIMEOUT_MS = 30_000
 const MAX_TIMEOUT_MS = 600_000
-const MAX_OUTPUT_BYTES = 1024 * 1024 // 1 MB hard cap on captured output
 
 // Runs a shell command in the workspace. Gated through the shared approval
 // pipeline (ctx.gate): catastrophic commands are hard-blocked and never spawn,
@@ -56,59 +52,15 @@ export const runShellTool: Tool = {
       return toolError("no_workspace", "Shell commands require a workspace.")
     }
 
-    // A non-positive or non-finite timeout falls back to the default rather than
-    // collapsing to an instant kill (Math.max(1, 0) would SIGKILL after 1ms).
-    const requested =
-      typeof args.timeout_ms === "number" && args.timeout_ms > 0
-        ? args.timeout_ms
-        : DEFAULT_TIMEOUT_MS
-    const timeoutMs = Math.min(requested, MAX_TIMEOUT_MS)
-
-    const action: ToolAction = {
-      tool: "run_shell_tool",
-      kind: "shell",
-      summary: `$ ${command}`,
-      identity: normalizeCommand(command),
-      detail: { command },
-    }
-
-    // Route through the shared approval pipeline. Fail-closed: if no gate is
-    // wired, never run a command that would otherwise need approval — but a
-    // gate is always present in the real agent loop.
-    const outcome = ctx.gate ? await ctx.gate(action) : ("denied" as const)
-
-    if (outcome === "blocked") {
-      return toolError(
-        "blocked",
-        "This command is on the unconditional blocklist and was not run.",
-        "run it yourself in a terminal outside the agent if you truly need it"
-      )
-    }
-    if (outcome === "denied") {
-      return toolError(
-        "denied",
-        "The user denied approval to run this command."
-      )
-    }
-
-    // Run through the turn's execution backend (host or container). The byte cap
-    // and multibyte-once decode live in the env; decode the returned Buffer once.
-    const env = ctx.env ?? new LocalEnvironment(ctx.workspace)
-    const result = await env.exec(command, {
-      cwd: ctx.workspace,
-      timeoutMs,
-      maxOutputBytes: MAX_OUTPUT_BYTES,
-      signal: ctx.signal,
-    })
-    const cleaned = stripAnsi(result.stdout.toString("utf8"))
-    const body = truncateForModel(cleaned).text
-
-    const status = result.timedOut
-      ? `timed out after ${timeoutMs}ms (killed)`
-      : result.signal
-        ? `terminated by signal ${result.signal}`
-        : `exit code ${result.exitCode ?? "unknown"}`
-
-    return `[${status}]\n${body}`.trimEnd()
+    return runShellCompatibility(
+      {
+        ...args,
+        timeout_ms:
+          typeof args.timeout_ms === "number" && args.timeout_ms > 0
+            ? Math.min(args.timeout_ms, MAX_TIMEOUT_MS)
+            : DEFAULT_TIMEOUT_MS,
+      },
+      ctx
+    )
   },
 }

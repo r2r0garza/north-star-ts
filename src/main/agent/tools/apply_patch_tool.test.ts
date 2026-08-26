@@ -55,6 +55,9 @@ function fakeEnv(): Environment & {
       signal: null,
       timedOut: false,
     }),
+    spawnCommand: async () => {
+      throw new Error("not implemented")
+    },
     search: async () => ({
       engine: "rg" as const,
       result: "content" as const,

@@ -45,6 +45,9 @@ function fakeEnv(): Environment & { files: Map<string, string> } {
       signal: null,
       timedOut: false,
     }),
+    spawnCommand: async () => {
+      throw new Error("not implemented")
+    },
     search: async () => ({
       engine: "rg",
       result: "content",

@@ -91,8 +91,9 @@ describe("tool batch scheduler", () => {
     await runToolCallBatches([call("1", "read"), call("2", "write")], {
       effectsFor: (name) => (name === "read" ? readEffects : writeEffects),
       onStart: (c) => events.push(`start:${c.id}`),
-      onBatchSettled: (results) =>
-        events.push(`settled:${results.map((r) => r.call.id).join(",")}`),
+      onBatchSettled: (results) => {
+        events.push(`settled:${results.map((r) => r.call.id).join(",")}`)
+      },
       execute: async (c) => ({ result: c.id }),
     })
 
