@@ -582,7 +582,13 @@ export async function commitPatch(
             entry.file.sourceTarget ?? entry.file.target
           )
         } else if (!entry.existed && entry.installed) {
-          await env.removeFile(entry.file.target).catch(() => {})
+          try {
+            await env.removeFile(entry.file.target)
+          } catch (removeErr) {
+            const message =
+              removeErr instanceof Error ? removeErr.message : String(removeErr)
+            throw new Error(`remove_failed:${entry.file.path}: ${message}`)
+          }
         }
       } catch (rollbackErr) {
         errors.push(

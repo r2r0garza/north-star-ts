@@ -12,6 +12,7 @@ function fakeEnv(): Environment & {
   failRename?: (from: string, to: string) => boolean
   failNextRenameTo?: string
   failNextChmod: boolean
+  failRemove?: (path: string) => boolean
   createBeforeInstallTo?: string
   onWriteFile?: (path: string) => void
 } {
@@ -29,6 +30,7 @@ function fakeEnv(): Environment & {
       | ((from: string, to: string) => boolean),
     failNextRenameTo: undefined as string | undefined,
     failNextChmod: false,
+    failRemove: undefined as undefined | ((path: string) => boolean),
     createBeforeInstallTo: undefined as string | undefined,
     onWriteFile: undefined as undefined | ((path: string) => void),
     resolve: async (p: string) => p,
@@ -88,6 +90,9 @@ function fakeEnv(): Environment & {
       else modes.delete(to)
     },
     removeFile: async (p: string) => {
+      if (env.failRemove?.(p)) {
+        throw new Error(`injected remove failure for ${p}`)
+      }
       files.delete(p)
       modes.delete(p)
     },
@@ -801,6 +806,68 @@ describe("apply_patch_tool", () => {
     expect(result).toContain("ERROR[commit_failed]")
     expect(env.files.get("a.txt")).toBe("old a\n")
     expect(env.files.get("b.txt")).toBe("old b\n")
+    expect(
+      [...env.files.keys()].filter((p) => p.includes(".north-star-"))
+    ).toEqual([])
+  })
+
+  it("reports rollback_failed when removing an installed add destination fails", async () => {
+    const env = fakeEnv()
+    env.files.set("z.txt", "old z\n")
+    env.failNextRenameTo = "z.txt"
+    env.failRemove = (path) => path === "a.txt"
+
+    const result = await applyPatchTool.execute(
+      {
+        operations: [
+          { type: "add", path: "a.txt", content: "created\n" },
+          {
+            type: "update",
+            path: "z.txt",
+            hunks: [{ old_string: "old z", new_string: "new z" }],
+          },
+        ],
+      },
+      { workspace: "/ws", env }
+    )
+
+    expect(result).toContain("ERROR[rollback_failed]")
+    expect(result).toContain("remove_failed:a.txt")
+    expect(result).toContain("injected remove failure for a.txt")
+    expect(env.files.get("a.txt")).toBe("created\n")
+    expect(env.files.get("z.txt")).toBe("old z\n")
+    expect(
+      [...env.files.keys()].filter((p) => p.includes(".north-star-"))
+    ).toEqual([])
+  })
+
+  it("reports rollback_failed when removing an installed move destination fails", async () => {
+    const env = fakeEnv()
+    env.files.set("old.txt", "move me\n")
+    env.files.set("z.txt", "old z\n")
+    env.failNextRenameTo = "z.txt"
+    env.failRemove = (path) => path === "a-moved.txt"
+
+    const result = await applyPatchTool.execute(
+      {
+        operations: [
+          { type: "move", path: "old.txt", new_path: "a-moved.txt" },
+          {
+            type: "update",
+            path: "z.txt",
+            hunks: [{ old_string: "old z", new_string: "new z" }],
+          },
+        ],
+      },
+      { workspace: "/ws", env }
+    )
+
+    expect(result).toContain("ERROR[rollback_failed]")
+    expect(result).toContain("remove_failed:a-moved.txt")
+    expect(result).toContain("injected remove failure for a-moved.txt")
+    expect(env.files.get("a-moved.txt")).toBe("move me\n")
+    expect(env.files.get("old.txt")).toBe("move me\n")
+    expect(env.files.get("z.txt")).toBe("old z\n")
     expect(
       [...env.files.keys()].filter((p) => p.includes(".north-star-"))
     ).toEqual([])
