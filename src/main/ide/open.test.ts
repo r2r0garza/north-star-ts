@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest"
 
 // Mock the OS-default opener and the process launcher. execFile is promisified in
 // open.ts, so the mock must call the callback (promisify wraps a callback API).
-const openPath = vi.fn(async () => "")
+const openPath = vi.fn(async (_path: string) => "")
 vi.mock("electron", () => ({ shell: { openPath: (p: string) => openPath(p) } }))
 
 const execFileCalls: Array<{ cmd: string; args: string[] }> = []

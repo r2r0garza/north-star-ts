@@ -70,8 +70,8 @@ function fakeEnv(): Environment & {
       throw new Error("not implemented")
     },
     search: async () => ({
-      engine: "rg",
-      result: "content",
+      engine: "rg" as const,
+      result: "content" as const,
       matches: [],
       files: [],
       counts: [],

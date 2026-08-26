@@ -41,7 +41,12 @@ try {
 }
 
 import { TaskRunner } from "./runner"
-import { createTask, getTask, listTasks } from "../db/repositories/tasks"
+import {
+  createTask,
+  getTask,
+  listTasks,
+  updateTask,
+} from "../db/repositories/tasks"
 import { appendMessage, listMessages } from "../db/repositories/messages"
 import { listEvents } from "../db/repositories/task-events"
 import { createApproval, listApprovals } from "../db/repositories/approvals"
@@ -107,9 +112,9 @@ describe.skipIf(!sqliteLoads)(
       const task = createTask({
         conversationId: conv.id,
         status: "failed",
-        error: "boom",
         input: { kind: "agent_chat", message: "hi" },
       })
+      updateTask(task.id, { error: "boom" })
       const runner = new TaskRunner()
       runner.start()
       await settle()
@@ -880,11 +885,7 @@ describe.skipIf(!sqliteLoads)(
       runner.start()
       const task = runner.enqueueKind({ kind: "slow_det", input: {} })
       // Let it start running.
-      for (
-        let i = 0;
-        i < 50 && getTask(task.id)?.status !== "running";
-        i++
-      ) {
+      for (let i = 0; i < 50 && getTask(task.id)?.status !== "running"; i++) {
         await new Promise((r) => setTimeout(r, 5))
       }
       expect(getTask(task.id)?.status).toBe("running")

@@ -361,8 +361,8 @@ describe.skipIf(!sqliteLoads)("ProcessService restartRun", () => {
       runId: run.id,
       phaseId: b.id,
       status: "failed",
-      error: "terminated",
     })
+    processes.updatePhaseRun(brun.id, { error: "terminated" })
     processes.createPhaseRun({
       runId: run.id,
       phaseId: c.id,
