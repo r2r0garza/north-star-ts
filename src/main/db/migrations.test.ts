@@ -10,6 +10,7 @@ import {
   SCHEMA_V6,
   SCHEMA_V7,
   SCHEMA_V8,
+  SCHEMA_V30,
 } from "./schema"
 
 let sqliteLoads = true
@@ -89,8 +90,56 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
     const db = new Database(":memory:")
     db.pragma("foreign_keys = ON")
     runMigrations(db)
-    expect(db.pragma("user_version", { simple: true })).toBe(27)
+    expect(db.pragma("user_version", { simple: true })).toBe(30)
     expect(db.pragma("foreign_key_check")).toHaveLength(0)
+    db.close()
+  })
+
+  it("migrates Claude Code aliases and legacy defaults (v30)", () => {
+    const db = new Database(":memory:")
+    db.exec(`
+      CREATE TABLE provider_accounts (id TEXT PRIMARY KEY, provider TEXT NOT NULL);
+      CREATE TABLE conversations (id TEXT PRIMARY KEY, account_id TEXT, model_id TEXT);
+      CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL);
+      CREATE TABLE models (
+        id TEXT PRIMARY KEY, account_id TEXT NOT NULL, model_id TEXT NOT NULL,
+        model_name TEXT, origin TEXT NOT NULL, favorite INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+        UNIQUE (account_id, model_id)
+      );
+      INSERT INTO provider_accounts VALUES ('claude', 'claude_code');
+      INSERT INTO conversations VALUES ('conversation', 'claude', 'claude-code');
+      INSERT INTO settings VALUES (
+        'llm', '{"activeAccountId":"claude","activeModelId":"claude-code"}', 0
+      );
+      INSERT INTO models VALUES (
+        'legacy', 'claude', 'claude-code', 'Claude Code', 'seeded', 0, 0, 0
+      );
+    `)
+    db.exec(SCHEMA_V30)
+
+    const aliases = db
+      .prepare(
+        "SELECT model_id FROM models WHERE account_id = 'claude' ORDER BY favorite DESC, created_at ASC"
+      )
+      .all() as Array<{ model_id: string }>
+    expect(aliases.map((row) => row.model_id)).toEqual([
+      "sonnet",
+      "haiku",
+      "opus",
+      "fable",
+    ])
+    expect(db.prepare("SELECT model_id FROM conversations").pluck().get()).toBe(
+      "sonnet"
+    )
+    expect(
+      JSON.parse(
+        db
+          .prepare("SELECT value FROM settings WHERE key = 'llm'")
+          .pluck()
+          .get() as string
+      ).activeModelId
+    ).toBe("sonnet")
     db.close()
   })
 
@@ -109,9 +158,10 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
     const db = new Database(":memory:")
     db.pragma("foreign_keys = ON")
     runMigrations(db)
-    const phaseRunCols = db.pragma(
-      "table_info(process_phase_runs)"
-    ) as Array<{ name: string; dflt_value: unknown }>
+    const phaseRunCols = db.pragma("table_info(process_phase_runs)") as Array<{
+      name: string
+      dflt_value: unknown
+    }>
     const prNames = phaseRunCols.map((c) => c.name)
     expect(prNames).toContain("rework_note")
     expect(prNames).toContain("rework_round")
@@ -175,9 +225,7 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
     }>
     expect(phaseRunCols.map((c) => c.name)).toContain("validator_round")
     expect(
-      String(
-        phaseRunCols.find((c) => c.name === "validator_round")?.dflt_value
-      )
+      String(phaseRunCols.find((c) => c.name === "validator_round")?.dflt_value)
     ).toBe("0")
     db.close()
   })
@@ -194,7 +242,9 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
     }>
     expect(defCols.map((c) => c.name)).toContain("require_flag_approval")
     expect(
-      String(defCols.find((c) => c.name === "require_flag_approval")?.dflt_value)
+      String(
+        defCols.find((c) => c.name === "require_flag_approval")?.dflt_value
+      )
     ).toBe("1")
 
     // process_phase_runs.source_child_run_id.
@@ -254,7 +304,9 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
     // survives with flagging_phase_run_id nulled (the durable audit record).
     db.prepare("DELETE FROM process_phase_runs WHERE id = 'pr'").run()
     const flag = db
-      .prepare("SELECT id, flagging_phase_run_id FROM process_flags WHERE id = 'flag'")
+      .prepare(
+        "SELECT id, flagging_phase_run_id FROM process_flags WHERE id = 'flag'"
+      )
       .get() as { id: string; flagging_phase_run_id: string | null } | undefined
     expect(flag).toBeTruthy()
     expect(flag!.flagging_phase_run_id).toBeNull()
@@ -342,7 +394,7 @@ describe.skipIf(!sqliteLoads)("SCHEMA_V9 — orphan reap (plan 022)", () => {
     // Apply V9 (the reaper) and any later migrations, up to the latest version.
     runMigrations(db)
 
-    expect(db.pragma("user_version", { simple: true })).toBe(27)
+    expect(db.pragma("user_version", { simple: true })).toBe(30)
 
     // Reaped: orphan + its nested descendant, and all their state.
     const taskIds = (
@@ -353,9 +405,7 @@ describe.skipIf(!sqliteLoads)("SCHEMA_V9 — orphan reap (plan 022)", () => {
     const convIds = (
       db.prepare("SELECT id FROM conversations").all() as { id: string }[]
     ).map((r) => r.id)
-    expect(convIds.sort()).toEqual(
-      ["conv-live", "wc-index", "wc-live"].sort()
-    )
+    expect(convIds.sort()).toEqual(["conv-live", "wc-index", "wc-live"].sort())
 
     // Children of reaped tasks are gone (2 reaped → each had 1 of each child row).
     // Survivors: 2 tasks × (1 event, 1 approval, 1 checkpoint, 1 message).

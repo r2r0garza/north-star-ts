@@ -1,4 +1,4 @@
-import { ipcMain } from "electron"
+import { app, ipcMain } from "electron"
 import * as providerAccountsRepo from "../db/repositories/provider-accounts"
 import * as modelsRepo from "../db/repositories/models"
 import * as secrets from "../settings/secrets"
@@ -12,6 +12,7 @@ import type { CreateAccountInput } from "../db/repositories/provider-accounts"
 import type { AddModelInput } from "../db/repositories/models"
 import type { LlmSettings } from "../settings/service"
 import type { ModelEntry, ProviderAccount } from "../db/types"
+import { CLAUDE_CODE_MODELS, detectClaudeCode } from "../agent/cli/claude"
 
 // IPC for LLM provider accounts, their models, API keys (safeStorage), and the
 // active selection. The renderer NEVER receives a plaintext key — only `hasKey`
@@ -76,8 +77,26 @@ export function registerProviderHandlers(): void {
   ipcMain.handle("providers:list", () =>
     providerAccountsRepo.listAccounts().map(toView)
   )
-  ipcMain.handle("providers:create", (_e, input: CreateAccountInput) =>
-    toView(providerAccountsRepo.createAccount(input))
+  ipcMain.handle("providers:create", (_e, input: CreateAccountInput) => {
+    const account = providerAccountsRepo.createAccount(input)
+    if (account.provider === "claude_code") {
+      for (const model of CLAUDE_CODE_MODELS) {
+        const added = modelsRepo.addModel({
+          accountId: account.id,
+          modelId: model.id,
+          modelName: model.name,
+          origin: "seeded",
+        })
+        if (model.favorite) modelsRepo.updateModel(added.id, { favorite: true })
+      }
+    }
+    return toView(account)
+  })
+  ipcMain.handle("providers:detectClaudeCode", () =>
+    detectClaudeCode(app.getPath("userData"))
+  )
+  ipcMain.handle("providers:reorder", (_e, orderedIds: string[]) =>
+    providerAccountsRepo.reorderAccounts(orderedIds).map(toView)
   )
   ipcMain.handle(
     "providers:update",

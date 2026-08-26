@@ -40,3 +40,4 @@ claude-prompts/
 system-prompt-logs/
 
 agent-memory/
+cli_probes/

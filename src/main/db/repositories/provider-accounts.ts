@@ -16,6 +16,7 @@ interface ProviderAccountRow {
   encrypted_key: Buffer | null
   api_mode: ApiMode
   enabled: number
+  position: number
   created_at: number
   last_used_at: number | null
 }
@@ -30,6 +31,7 @@ function toAccount(row: ProviderAccountRow): ProviderAccount {
     baseUrl: row.base_url,
     hasKey: row.encrypted_key != null && row.encrypted_key.length > 0,
     enabled: row.enabled === 1,
+    position: row.position,
     apiMode: row.api_mode,
     createdAt: row.created_at,
     lastUsedAt: row.last_used_at,
@@ -45,7 +47,9 @@ export function getAccount(id: string): ProviderAccount | undefined {
 
 export function listAccounts(): ProviderAccount[] {
   const rows = getDb()
-    .prepare("SELECT * FROM provider_accounts ORDER BY created_at ASC")
+    .prepare(
+      "SELECT * FROM provider_accounts ORDER BY position ASC, created_at ASC"
+    )
     .all() as ProviderAccountRow[]
   return rows.map(toAccount)
 }
@@ -61,10 +65,14 @@ export interface CreateAccountInput {
 export function createAccount(input: CreateAccountInput): ProviderAccount {
   const id = randomUUID()
   const now = Date.now()
+  const max = getDb()
+    .prepare("SELECT MAX(position) AS value FROM provider_accounts")
+    .get() as { value: number | null }
+  const position = (max.value ?? -1) + 1
   getDb()
     .prepare(
-      `INSERT INTO provider_accounts (id, provider, display_name, base_url, encrypted_key, api_mode, created_at, last_used_at)
-       VALUES (?, ?, ?, ?, NULL, ?, ?, NULL)`
+      `INSERT INTO provider_accounts (id, provider, display_name, base_url, encrypted_key, api_mode, position, created_at, last_used_at)
+       VALUES (?, ?, ?, ?, NULL, ?, ?, ?, NULL)`
     )
     .run(
       id,
@@ -72,9 +80,35 @@ export function createAccount(input: CreateAccountInput): ProviderAccount {
       input.displayName,
       input.baseUrl ?? null,
       input.apiMode ?? "completions",
+      position,
       now
     )
   return getAccount(id)!
+}
+
+// Persist a complete provider ordering atomically. Requiring the exact current
+// id set prevents a stale renderer from silently dropping or duplicating an
+// account if another write landed before its drag ended.
+export function reorderAccounts(orderedIds: string[]): ProviderAccount[] {
+  const db = getDb()
+  db.transaction(() => {
+    const existing = db
+      .prepare("SELECT id FROM provider_accounts")
+      .all() as Array<{ id: string }>
+    const expected = new Set(existing.map((row) => row.id))
+    if (
+      orderedIds.length !== expected.size ||
+      new Set(orderedIds).size !== orderedIds.length ||
+      orderedIds.some((id) => !expected.has(id))
+    ) {
+      throw new Error("Provider order is stale; reload Settings and try again.")
+    }
+    const update = db.prepare(
+      "UPDATE provider_accounts SET position = ? WHERE id = ?"
+    )
+    orderedIds.forEach((id, position) => update.run(position, id))
+  })()
+  return listAccounts()
 }
 
 // Update the non-secret fields. The key is changed only via setEncryptedKey/

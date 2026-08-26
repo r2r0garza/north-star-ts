@@ -21,6 +21,7 @@ import {
   setEncryptedKey,
   getEncryptedKey,
   clearKey,
+  reorderAccounts,
 } from "./provider-accounts"
 import { addModel, listModels } from "./models"
 
@@ -41,7 +42,21 @@ describe.skipIf(!sqliteLoads)("provider-accounts repo", () => {
     expect(a.provider).toBe("portkey")
     expect(a.hasKey).toBe(false)
     expect(a.enabled).toBe(true)
+    expect(a.position).toBe(0)
     expect(getAccount(a.id)?.baseUrl).toBe("https://x/v1")
+  })
+
+  it("accepts the Claude Code CLI provider without credentials", () => {
+    const account = createAccount({
+      provider: "claude_code",
+      displayName: "Claude Code CLI",
+    })
+    expect(account.provider).toBe("claude_code")
+    expect(account.hasKey).toBe(false)
+    addModel({ accountId: account.id, modelId: "claude-code" })
+    expect(listModels(account.id).map((model) => model.modelId)).toEqual([
+      "claude-code",
+    ])
   })
 
   it("stores ciphertext as a BLOB and reflects hasKey, never leaking the blob", () => {
@@ -71,6 +86,19 @@ describe.skipIf(!sqliteLoads)("provider-accounts repo", () => {
     const list = listAccounts()
     expect(list.map((x) => x.displayName)).toEqual(["A2", "B"])
     expect(list[0].baseUrl).toBe("https://y/v1")
+  })
+
+  it("persists an atomic authored provider order", () => {
+    const a = createAccount({ provider: "portkey", displayName: "A" })
+    const b = createAccount({ provider: "openai", displayName: "B" })
+    const c = createAccount({ provider: "claude_code", displayName: "C" })
+    expect([a.position, b.position, c.position]).toEqual([0, 1, 2])
+    expect(reorderAccounts([c.id, a.id, b.id]).map((row) => row.id)).toEqual([
+      c.id,
+      a.id,
+      b.id,
+    ])
+    expect(() => reorderAccounts([a.id, b.id])).toThrow(/stale/i)
   })
 
   it("updates the enabled flag", () => {

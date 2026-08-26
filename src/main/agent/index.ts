@@ -86,7 +86,10 @@ import {
 import { actionAllowlist } from "../db/repositories"
 import { getWorkspace } from "../db/repositories/workspaces"
 import { getProject } from "../db/repositories/projects"
+import { getAccount } from "../db/repositories/provider-accounts"
 import type { Conversation } from "../db/types"
+import { runClaudeConversation } from "./cli"
+import { normalizeClaudeModel } from "./cli/claude"
 import { makePolicyEngine } from "./approval/engine"
 import { PlanModeClassifier } from "./approval/plan-mode-classifier"
 import type {
@@ -578,6 +581,33 @@ export async function runAgentLoop(
   // gates the todo tool, names the selected custom agent, and is reused below for
   // the title check. Defaults to "chat" if missing.
   const conversation = getConversation(conversationId)
+
+  // Autonomous CLI providers own their complete agent loop. Branch before
+  // loading skills, tools, MCP, index context, approvals, or an Environment so
+  // none of North Star's internal orchestration leaks into the external CLI.
+  const defaultLlm = settingsService.getLlm()
+  const effectiveAccountId =
+    conversation?.accountId ?? defaultLlm.activeAccountId
+  const effectiveAccount = effectiveAccountId
+    ? getAccount(effectiveAccountId)
+    : undefined
+  if (effectiveAccount?.provider === "claude_code") {
+    if (!conversation) return { error: "Conversation not found." }
+    if (!effectiveAccount.enabled) {
+      return { error: "The selected Claude Code provider is disabled." }
+    }
+    return runClaudeConversation({
+      conversation,
+      workspace,
+      userMessage,
+      model: normalizeClaudeModel(
+        conversation.modelId ??
+          (conversation.accountId === null ? defaultLlm.activeModelId : null)
+      ),
+      abort,
+      onEvent,
+    })
+  }
 
   // The directory used to DISCOVER workspace-level agents (and the composer's
   // agent picker). This is intentionally NOT the tool-confinement `workspace`
