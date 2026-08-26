@@ -17,6 +17,7 @@ brief becomes a prerequisite for an earlier fix.
 | 9 | P2 | Open | [Patch commit ignores concurrent mode changes](./009-patch-commit-ignores-concurrent-mode-changes.md) | Multi-file patch transaction |
 | 10 | P2 | Open | [Container oversized-line reads are unbounded](./010-container-oversized-line-reads-are-unbounded.md) | Pageable reads |
 | 11 | P3 | Open | [Container test availability probe is incomplete](./011-container-test-availability-probe-is-incomplete.md) | Test infrastructure |
+| 12 | P2 | Fixed | [Patch commit staging window allows stale overwrite](./012-patch-commit-staging-window-allows-stale-overwrite.md) | Multi-file patch transaction |
 
 New briefs start in **OPEN** state. When fixing one, add the regression test
 described by its acceptance criteria before marking it resolved.

@@ -7,16 +7,21 @@ import type { Environment, StatInfo } from "../env/types"
 function fakeEnv(): Environment & {
   files: Map<string, string>
   modes: Map<string, number>
+  renameCalls: Array<{ from: string; to: string }>
   failNextRenameTo?: string
   createBeforeInstallTo?: string
+  onWriteFile?: (path: string) => void
 } {
   const files = new Map<string, string>()
   const modes = new Map<string, number>()
+  const renameCalls: Array<{ from: string; to: string }> = []
   const env = {
     files,
     modes,
+    renameCalls,
     failNextRenameTo: undefined as string | undefined,
     createBeforeInstallTo: undefined as string | undefined,
+    onWriteFile: undefined as undefined | ((path: string) => void),
     resolve: async (p: string) => p,
     resolveLexical: (p: string) => p,
     readFile: async (p: string) => {
@@ -30,6 +35,7 @@ function fakeEnv(): Environment & {
     writeFile: async (p: string, data: string) => {
       files.set(p, data)
       if (!modes.has(p)) modes.set(p, 0o644)
+      env.onWriteFile?.(p)
     },
     chmod: async (p: string, mode: number) => {
       if (!files.has(p)) throw new Error("ENOENT")
@@ -48,6 +54,7 @@ function fakeEnv(): Environment & {
       else modes.delete(to)
       files.delete(from)
       modes.delete(from)
+      renameCalls.push({ from, to })
     },
     installFileNoReplace: async (from: string, to: string) => {
       if (env.createBeforeInstallTo === to) {
@@ -296,6 +303,91 @@ describe("apply_patch_tool", () => {
     ).toEqual([])
   })
 
+  it("rejects a content change during patch staging before any backup rename", async () => {
+    const env = fakeEnv()
+    env.files.set("a.txt", "old a\n")
+    env.files.set("b.txt", "old b\n")
+    let stagedWrites = 0
+    env.onWriteFile = (path) => {
+      if (!path.includes(".north-star-")) return
+      stagedWrites += 1
+      if (stagedWrites === 2) {
+        env.files.set("a.txt", "external a\n")
+      }
+    }
+
+    const result = await applyPatchTool.execute(
+      {
+        operations: [
+          {
+            type: "update",
+            path: "a.txt",
+            hunks: [{ old_string: "old a", new_string: "new a" }],
+          },
+          {
+            type: "update",
+            path: "b.txt",
+            hunks: [{ old_string: "old b", new_string: "new b" }],
+          },
+        ],
+      },
+      { workspace: "/ws", env }
+    )
+
+    expect(result).toContain("ERROR[stale_file]")
+    expect(env.renameCalls).toEqual([])
+    expect(env.files.get("a.txt")).toBe("external a\n")
+    expect(env.files.get("b.txt")).toBe("old b\n")
+    expect(
+      [...env.files.keys()].filter((p) => p.includes(".north-star-"))
+    ).toEqual([])
+  })
+
+  it("rejects a mode change during patch staging before any backup rename", async () => {
+    const env = fakeEnv()
+    env.files.set("a.sh", "#!/bin/sh\necho old a\n")
+    env.files.set("b.sh", "#!/bin/sh\necho old b\n")
+    env.modes.set("a.sh", 0o644)
+    env.modes.set("b.sh", 0o644)
+    let stagedWrites = 0
+    env.onWriteFile = (path) => {
+      if (!path.includes(".north-star-")) return
+      stagedWrites += 1
+      if (stagedWrites === 2) {
+        env.modes.set("a.sh", 0o755)
+      }
+    }
+
+    const result = await applyPatchTool.execute(
+      {
+        operations: [
+          {
+            type: "update",
+            path: "a.sh",
+            hunks: [{ old_string: "old a", new_string: "new a" }],
+          },
+          {
+            type: "update",
+            path: "b.sh",
+            hunks: [{ old_string: "old b", new_string: "new b" }],
+          },
+        ],
+      },
+      { workspace: "/ws", env }
+    )
+
+    expect(result).toContain("ERROR[stale_file]")
+    expect(result).toContain("Current mode: 755")
+    expect(env.renameCalls).toEqual([])
+    expect(env.files.get("a.sh")).toBe("#!/bin/sh\necho old a\n")
+    expect(env.files.get("b.sh")).toBe("#!/bin/sh\necho old b\n")
+    expect(env.modes.get("a.sh")).toBe(0o755)
+    expect(env.modes.get("b.sh")).toBe(0o644)
+    expect(
+      [...env.files.keys()].filter((p) => p.includes(".north-star-"))
+    ).toEqual([])
+  })
+
   it("rejects a concurrent source mode change before moving with hunks", async () => {
     const env = fakeEnv()
     env.files.set("old.sh", "#!/bin/sh\necho old\n")
@@ -332,6 +424,48 @@ describe("apply_patch_tool", () => {
     ).toEqual([])
   })
 
+  it("rejects a moved source content change during staging before any backup rename", async () => {
+    const env = fakeEnv()
+    env.files.set("a.txt", "old a\n")
+    env.files.set("old.txt", "move old\n")
+    let stagedWrites = 0
+    env.onWriteFile = (path) => {
+      if (!path.includes(".north-star-")) return
+      stagedWrites += 1
+      if (stagedWrites === 2) {
+        env.files.set("old.txt", "external move\n")
+      }
+    }
+
+    const result = await applyPatchTool.execute(
+      {
+        operations: [
+          {
+            type: "update",
+            path: "a.txt",
+            hunks: [{ old_string: "old a", new_string: "new a" }],
+          },
+          {
+            type: "move",
+            path: "old.txt",
+            new_path: "z.txt",
+            hunks: [{ old_string: "old", new_string: "new" }],
+          },
+        ],
+      },
+      { workspace: "/ws", env }
+    )
+
+    expect(result).toContain("ERROR[stale_file]")
+    expect(env.renameCalls).toEqual([])
+    expect(env.files.get("a.txt")).toBe("old a\n")
+    expect(env.files.get("old.txt")).toBe("external move\n")
+    expect(env.files.has("z.txt")).toBe(false)
+    expect(
+      [...env.files.keys()].filter((p) => p.includes(".north-star-"))
+    ).toEqual([])
+  })
+
   it("preserves unchanged modes when applying an approved patch", async () => {
     const env = fakeEnv()
     env.files.set("script.sh", "#!/bin/sh\necho old\n")
@@ -357,6 +491,37 @@ describe("apply_patch_tool", () => {
     expect(result).toContain("Applied patch:")
     expect(env.files.get("script.sh")).toBe("#!/bin/sh\necho new\n")
     expect(env.modes.get("script.sh")).toBe(0o755)
+  })
+
+  it("commits normally when final validation sees no staging-time changes", async () => {
+    const env = fakeEnv()
+    env.files.set("a.txt", "old a\n")
+    env.files.set("b.txt", "old b\n")
+
+    const result = await applyPatchTool.execute(
+      {
+        operations: [
+          {
+            type: "update",
+            path: "a.txt",
+            hunks: [{ old_string: "old a", new_string: "new a" }],
+          },
+          {
+            type: "update",
+            path: "b.txt",
+            hunks: [{ old_string: "old b", new_string: "new b" }],
+          },
+        ],
+      },
+      { workspace: "/ws", env }
+    )
+
+    expect(result).toContain("Applied patch:")
+    expect(env.files.get("a.txt")).toBe("new a\n")
+    expect(env.files.get("b.txt")).toBe("new b\n")
+    expect(
+      [...env.files.keys()].filter((p) => p.includes(".north-star-"))
+    ).toEqual([])
   })
 
   it("rolls back files when a commit rename fails", async () => {

@@ -431,6 +431,14 @@ interface StagedFile {
   installed: boolean
 }
 
+type StalePatchFile = {
+  code: "stale_file"
+  path: string
+  current?: string
+  currentMode?: number
+  expectedMode?: number
+}
+
 class DestinationChangedError extends Error {
   constructor(
     readonly path: string,
@@ -465,21 +473,10 @@ async function installStagedFile(
   }
 }
 
-export async function commitPatch(
+async function validatePlannedPatch(
   env: Environment,
   planned: PlannedPatch
-): Promise<
-  | "ok"
-  | {
-      code: "stale_file"
-      path: string
-      current?: string
-      currentMode?: number
-      expectedMode?: number
-    }
-  | { code: "commit_failed"; error: string }
-  | { code: "rollback_failed"; error: string }
-> {
+): Promise<StalePatchFile | undefined> {
   for (const file of planned.files) {
     const sourceTarget = file.sourceTarget ?? file.target
     const current = await readRevision(env, sourceTarget)
@@ -505,6 +502,20 @@ export async function commitPatch(
       }
     }
   }
+  return undefined
+}
+
+export async function commitPatch(
+  env: Environment,
+  planned: PlannedPatch
+): Promise<
+  | "ok"
+  | StalePatchFile
+  | { code: "commit_failed"; error: string }
+  | { code: "rollback_failed"; error: string }
+> {
+  const staleBeforeStaging = await validatePlannedPatch(env, planned)
+  if (staleBeforeStaging) return staleBeforeStaging
 
   const staged: StagedFile[] = []
   let commitError: unknown
@@ -524,6 +535,14 @@ export async function commitPatch(
         entry.backup = makeTempPath(file.sourceTarget ?? file.target)
       }
       staged.push(entry)
+    }
+
+    const staleBeforeMutation = await validatePlannedPatch(env, planned)
+    if (staleBeforeMutation) {
+      for (const entry of staged) {
+        if (entry.staged) await env.removeFile(entry.staged).catch(() => {})
+      }
+      return staleBeforeMutation
     }
 
     for (const entry of staged) {
