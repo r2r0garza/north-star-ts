@@ -2,6 +2,32 @@ import { spawn } from "child_process"
 import type { ChildProcess } from "child_process"
 import type { ExecResult, ExecOptions } from "./types"
 
+export interface CapturedProcessResult {
+  stdout: Buffer
+  stderr: Buffer
+  exitCode: number | null
+  signal: NodeJS.Signals | null
+  timedOut: boolean
+  aborted?: boolean
+  spawnError?: string
+  outputTruncated?: boolean
+  capturedOutputBytes?: number
+  observedOutputBytes?: number
+}
+
+type CaptureOptions = Pick<
+  ExecOptions,
+  "timeoutMs" | "maxOutputBytes" | "signal"
+> & {
+  // When true, kill the child's whole process group instead of just the child.
+  // LocalEnvironment spawns `detached` (the child leads its own group), so a
+  // group kill reaps grandchildren a `shell: true` command forked (a pipeline,
+  // `npm run build` → node, etc.) — a bare child.kill would orphan them. The
+  // container backend spawns a non-detached `docker exec` client and leaves this
+  // off (process.kill(-pid) on a non-leader would hit the wrong group).
+  killGroup?: boolean
+}
+
 // Capture a spawned child's combined stdout+stderr, enforce a timeout, cap the
 // captured bytes, and honor an abort signal — then resolve an ExecResult. This
 // is the byte-for-byte logic from run_shell_tool's original `run()`, factored
@@ -17,18 +43,29 @@ import type { ExecResult, ExecOptions } from "./types"
 // caller's concern (run_shell closes it; container writeFile pipes to it).
 export function captureSpawn(
   child: ChildProcess,
-  opts: Pick<ExecOptions, "timeoutMs" | "maxOutputBytes" | "signal"> & {
-    // When true, kill the child's whole process group instead of just the child.
-    // LocalEnvironment spawns `detached` (the child leads its own group), so a
-    // group kill reaps grandchildren a `shell: true` command forked (a pipeline,
-    // `npm run build` → node, etc.) — a bare child.kill would orphan them. The
-    // container backend spawns a non-detached `docker exec` client and leaves this
-    // off (process.kill(-pid) on a non-leader would hit the wrong group).
-    killGroup?: boolean
-  }
+  opts: CaptureOptions
 ): Promise<ExecResult> {
+  return captureChildProcess(child, opts, { combineOutput: true })
+}
+
+// Same supervision contract as captureSpawn, but stdout and stderr remain
+// separate. Runtime CLI helpers use this shape because they parse stdout (JSON,
+// base64, stat output) and must never mix diagnostics into parseable data.
+export function captureProcess(
+  child: ChildProcess,
+  opts: CaptureOptions
+): Promise<CapturedProcessResult> {
+  return captureChildProcess(child, opts, { combineOutput: false })
+}
+
+function captureChildProcess<T extends ExecResult | CapturedProcessResult>(
+  child: ChildProcess,
+  opts: CaptureOptions,
+  mode: { combineOutput: boolean }
+): Promise<T> {
   return new Promise((resolve) => {
     const combinedChunks: Buffer[] = []
+    const stdoutChunks: Buffer[] = []
     const stderrChunks: Buffer[] = []
     let bytes = 0
     let observedBytes = 0
@@ -49,6 +86,7 @@ export function captureSpawn(
       const keep = chunk.length > room ? chunk.subarray(0, room) : chunk
       if (keep.length < chunk.length) outputTruncated = true
       combinedChunks.push(keep)
+      if (stream === "stdout") stdoutChunks.push(keep)
       if (stream === "stderr") stderrChunks.push(keep)
       bytes += keep.length
     }
@@ -118,14 +156,16 @@ export function captureSpawn(
       settled = true
       clearTimeout(timer)
       opts.signal?.removeEventListener("abort", onAbort)
-      resolve(result)
+      resolve(result as T)
     }
 
     child.on("error", (err) => {
       const message = `Failed to start command: ${err.message}`
+      const stdout = mode.combineOutput ? Buffer.from(message) : Buffer.alloc(0)
+      const stderr = Buffer.from(message)
       finish({
-        stdout: Buffer.from(message),
-        stderr: Buffer.from(message),
+        stdout,
+        stderr,
         exitCode: null,
         signal: null,
         timedOut,
@@ -137,9 +177,12 @@ export function captureSpawn(
       })
     })
     child.on("close", (code, signal) => {
+      const stdout = mode.combineOutput
+        ? Buffer.concat(combinedChunks)
+        : Buffer.concat(stdoutChunks)
       const stderr = Buffer.concat(stderrChunks)
       finish({
-        stdout: Buffer.concat(combinedChunks),
+        stdout,
         stderr,
         exitCode: code,
         signal,

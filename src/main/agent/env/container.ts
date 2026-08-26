@@ -4,7 +4,7 @@ import { EventEmitter } from "events"
 import { relative, posix } from "path"
 import { StringDecoder } from "string_decoder"
 import { resolveInWorkspace } from "../tools/workspace"
-import { captureSpawn } from "./spawn-util"
+import { captureProcess, captureSpawn } from "./spawn-util"
 import { hostCliEnv } from "./host-cli-env"
 import {
   buildRipgrepArgs,
@@ -39,6 +39,11 @@ export interface ContainerConfig {
   // Stable per-conversation id so the same container is reused across turns.
   conversationId: string
   searchMaxOutputBytes?: number
+  runtimeCliTimeoutMs?: number
+  runtimeCliMaxOutputBytes?: number
+  runtimeCliReadFileMaxOutputBytes?: number
+  runtimeSpawn?: typeof spawn
+  hostCliEnv?: typeof hostCliEnv
 }
 
 // Fixed in-container mount point for the workspace. The host workspace is bound
@@ -51,7 +56,30 @@ interface CliResult {
   stdout: Buffer
   stderr: string
   code: number | null
+  signal: NodeJS.Signals | null
+  timedOut: boolean
+  aborted?: boolean
+  spawnError?: string
+  outputTruncated?: boolean
+  capturedOutputBytes?: number
+  observedOutputBytes?: number
 }
+
+interface RuntimeCliOptions {
+  timeoutMs?: number
+  maxOutputBytes?: number
+  signal?: AbortSignal
+}
+
+// Production runtime CLI bounds. Ordinary Docker/Podman calls get 30s and 1 MiB;
+// `run` gets 60s for container startup, `pull` gets 5m/4 MiB for progress output,
+// and full-file base64 reads get 16 MiB before failing as truncated.
+const RUNTIME_CLI_TIMEOUT_MS = 30_000
+const RUNTIME_CLI_START_TIMEOUT_MS = 60_000
+const RUNTIME_CLI_PULL_TIMEOUT_MS = 300_000
+const RUNTIME_CLI_MAX_OUTPUT_BYTES = 1024 * 1024
+const RUNTIME_CLI_PULL_MAX_OUTPUT_BYTES = 4 * 1024 * 1024
+const RUNTIME_CLI_READ_FILE_MAX_OUTPUT_BYTES = 16 * 1024 * 1024
 
 // Runs commands and file ops inside an OCI container, with the workspace bind-
 // mounted so changes flow live to the host (no file-sync subsystem needed). A
@@ -72,31 +100,89 @@ export class ContainerEnvironment implements Environment {
   // Spawn the runtime binary with raw args, capturing stdout (as a Buffer, for
   // binary-safe file reads), stderr, and the exit code. `input` is written to the
   // child's stdin when provided (used by writeFile's base64 pipe).
-  private async runtimeCli(args: string[], input?: string): Promise<CliResult> {
-    const env = await hostCliEnv()
-    return new Promise((resolve) => {
-      const child = spawn(this.cfg.runtime, args, {
-        env,
-        stdio: [input != null ? "pipe" : "ignore", "pipe", "pipe"],
-      })
-      const out: Buffer[] = []
-      const err: Buffer[] = []
-      child.stdout?.on("data", (c: Buffer) => out.push(c))
-      child.stderr?.on("data", (c: Buffer) => err.push(c))
-      child.on("error", (e) =>
-        resolve({ stdout: Buffer.alloc(0), stderr: e.message, code: null })
-      )
-      child.on("close", (code) =>
-        resolve({
-          stdout: Buffer.concat(out),
-          stderr: Buffer.concat(err).toString("utf8"),
-          code,
-        })
-      )
-      if (input != null) {
-        child.stdin?.end(input)
-      }
+  private async runtimeCli(
+    args: string[],
+    input?: string,
+    opts: RuntimeCliOptions = {}
+  ): Promise<CliResult> {
+    const env = await (this.cfg.hostCliEnv ?? hostCliEnv)()
+    const child = (this.cfg.runtimeSpawn ?? spawn)(this.cfg.runtime, args, {
+      env,
+      stdio: [input != null ? "pipe" : "ignore", "pipe", "pipe"],
     })
+    if (input != null) {
+      child.stdin?.end(input)
+    }
+    const res = await captureProcess(child, {
+      timeoutMs:
+        opts.timeoutMs ??
+        this.cfg.runtimeCliTimeoutMs ??
+        RUNTIME_CLI_TIMEOUT_MS,
+      maxOutputBytes:
+        opts.maxOutputBytes ??
+        this.cfg.runtimeCliMaxOutputBytes ??
+        RUNTIME_CLI_MAX_OUTPUT_BYTES,
+      signal: opts.signal,
+    })
+    return {
+      stdout: res.stdout,
+      stderr: res.stderr.toString("utf8"),
+      code: res.exitCode,
+      signal: res.signal,
+      timedOut: res.timedOut,
+      aborted: res.aborted,
+      spawnError: res.spawnError,
+      outputTruncated: res.outputTruncated,
+      capturedOutputBytes: res.capturedOutputBytes,
+      observedOutputBytes: res.observedOutputBytes,
+    }
+  }
+
+  private ensureCompleteCliResult(res: CliResult, fallback: string): void {
+    if (res.timedOut) {
+      throw new Error(`${fallback} timed out after runtime CLI deadline`)
+    }
+    if (res.aborted) {
+      throw new Error(`${fallback} was aborted`)
+    }
+    if (res.outputTruncated) {
+      const captured =
+        typeof res.capturedOutputBytes === "number"
+          ? ` after ${res.capturedOutputBytes} captured bytes`
+          : ""
+      throw new Error(`${fallback} exceeded runtime CLI output cap${captured}`)
+    }
+    if (res.spawnError) {
+      throw new Error(`${fallback}: ${res.spawnError}`)
+    }
+  }
+
+  private throwForCliFailure(res: CliResult, fallback: string): void {
+    this.ensureCompleteCliResult(res, fallback)
+    if (res.code !== 0) {
+      throw new Error(res.stderr.trim() || fallback)
+    }
+  }
+
+  private parseCliJson<T>(res: CliResult, fallback: string): T {
+    this.ensureCompleteCliResult(res, fallback)
+    try {
+      return JSON.parse(res.stdout.toString("utf8")) as T
+    } catch (error) {
+      throw new Error(
+        `${fallback}: invalid runtime CLI JSON output: ${(error as Error).message}`
+      )
+    }
+  }
+
+  private cliFailureMessage(res: CliResult, fallback: string): string {
+    if (res.timedOut) return `${fallback} timed out after runtime CLI deadline`
+    if (res.aborted) return `${fallback} was aborted`
+    if (res.outputTruncated) {
+      return `${fallback} exceeded runtime CLI output cap`
+    }
+    if (res.spawnError) return `${fallback}: ${res.spawnError}`
+    return res.stderr.trim() || fallback
   }
 
   // Map an in-environment absolute path (under MOUNT) — or a model-supplied
@@ -115,6 +201,7 @@ export class ContainerEnvironment implements Environment {
   // unavailable so the caller can fail closed and fall back to Local.
   async start(): Promise<void> {
     const version = await this.runtimeCli(["--version"])
+    this.ensureCompleteCliResult(version, `${this.cfg.runtime} --version`)
     if (version.code !== 0) {
       throw new Error(
         `${this.cfg.runtime} is not available on this machine` +
@@ -129,6 +216,10 @@ export class ContainerEnvironment implements Environment {
       "{{.State.Running}}",
       this.name,
     ])
+    this.ensureCompleteCliResult(
+      running,
+      `${this.cfg.runtime} inspect ${this.name}`
+    )
     if (
       running.code === 0 &&
       running.stdout.toString("utf8").trim() === "true"
@@ -138,34 +229,49 @@ export class ContainerEnvironment implements Environment {
 
     // Ensure the image exists locally (basics only: inspect, else pull).
     const img = await this.runtimeCli(["image", "inspect", this.cfg.image])
+    this.ensureCompleteCliResult(
+      img,
+      `${this.cfg.runtime} image inspect ${this.cfg.image}`
+    )
     if (img.code !== 0) {
-      const pull = await this.runtimeCli(["pull", this.cfg.image])
+      const pull = await this.runtimeCli(["pull", this.cfg.image], undefined, {
+        timeoutMs: RUNTIME_CLI_PULL_TIMEOUT_MS,
+        maxOutputBytes: RUNTIME_CLI_PULL_MAX_OUTPUT_BYTES,
+      })
       if (pull.code !== 0) {
         throw new Error(
-          `failed to pull image ${this.cfg.image}: ${pull.stderr.trim()}`
+          this.cliFailureMessage(pull, `failed to pull image ${this.cfg.image}`)
         )
       }
     }
 
     // A stopped-but-present container would make `run --name` collide; remove any
     // leftover before creating a fresh one.
-    await this.runtimeCli(["rm", "-f", this.name])
+    const removed = await this.runtimeCli(["rm", "-f", this.name])
+    this.ensureCompleteCliResult(
+      removed,
+      `${this.cfg.runtime} rm -f ${this.name}`
+    )
 
-    const run = await this.runtimeCli([
-      "run",
-      "-d",
-      "--name",
-      this.name,
-      "-v",
-      `${this.cfg.workspace}:${MOUNT}`,
-      "-w",
-      MOUNT,
-      this.cfg.image,
-      "sleep",
-      "infinity",
-    ])
+    const run = await this.runtimeCli(
+      [
+        "run",
+        "-d",
+        "--name",
+        this.name,
+        "-v",
+        `${this.cfg.workspace}:${MOUNT}`,
+        "-w",
+        MOUNT,
+        this.cfg.image,
+        "sleep",
+        "infinity",
+      ],
+      undefined,
+      { timeoutMs: RUNTIME_CLI_START_TIMEOUT_MS }
+    )
     if (run.code !== 0) {
-      throw new Error(`failed to start container: ${run.stderr.trim()}`)
+      throw new Error(this.cliFailureMessage(run, "failed to start container"))
     }
   }
 
@@ -216,19 +322,21 @@ while True:
       MOUNT,
       target,
     ])
-    if (res.code !== 0) {
-      throw new Error(
-        res.stderr.trim() || `Path "${path}" could not be validated.`
-      )
-    }
-    const parsed = JSON.parse(res.stdout.toString("utf8")) as
-      | { path: string }
-      | { error: string }
+    this.ensureCompleteCliResult(res, `Path "${path}" could not be validated.`)
+    const parsed = this.parseCliJson<{ path: string } | { error: string }>(
+      res,
+      `Path "${path}" could not be validated.`
+    )
     if ("error" in parsed) {
       throw new Error(
         parsed.error === "outside"
           ? `Path "${path}" resolves (via symlink) outside the workspace and is not allowed.`
           : `Path "${path}" could not be validated against the workspace.`
+      )
+    }
+    if (res.code !== 0) {
+      throw new Error(
+        res.stderr.trim() || `Path "${path}" could not be validated.`
       )
     }
     return parsed.path
@@ -238,16 +346,16 @@ while True:
     // base64 over the pipe is binary-safe (no encoding/NUL corruption), so the
     // tool's binary detection and utf8 decode behave exactly as on the host.
     const p = this.toContainerPath(path)
-    const res = await this.runtimeCli([
-      "exec",
-      this.name,
-      "sh",
-      "-c",
-      `base64 < ${shq(p)}`,
-    ])
-    if (res.code !== 0) {
-      throw new Error(res.stderr.trim() || `cannot read ${path}`)
-    }
+    const res = await this.runtimeCli(
+      ["exec", this.name, "sh", "-c", `base64 < ${shq(p)}`],
+      undefined,
+      {
+        maxOutputBytes:
+          this.cfg.runtimeCliReadFileMaxOutputBytes ??
+          RUNTIME_CLI_READ_FILE_MAX_OUTPUT_BYTES,
+      }
+    )
+    this.throwForCliFailure(res, `cannot read ${path}`)
     return Buffer.from(res.stdout.toString("utf8"), "base64")
   }
 
@@ -438,12 +546,11 @@ PY
       String(limit),
       String(maxBytes),
     ])
-    if (res.code !== 0) {
-      throw new Error(res.stderr.trim() || `cannot read ${path}`)
-    }
-    const parsed = JSON.parse(res.stdout.toString("utf8")) as
-      | ReadTextLinesResult
-      | { error: string }
+    this.throwForCliFailure(res, `cannot read ${path}`)
+    const parsed = this.parseCliJson<ReadTextLinesResult | { error: string }>(
+      res,
+      `cannot read ${path}`
+    )
     if ("error" in parsed) {
       throw new Error(parsed.error === "binary" ? "BINARY_FILE" : parsed.error)
     }
@@ -459,9 +566,7 @@ PY
       ["exec", "-i", this.name, "sh", "-c", `base64 -d > ${shq(p)}`],
       b64
     )
-    if (res.code !== 0) {
-      throw new Error(res.stderr.trim() || `cannot write ${path}`)
-    }
+    this.throwForCliFailure(res, `cannot write ${path}`)
   }
 
   async chmod(path: string, mode: number): Promise<void> {
@@ -474,9 +579,7 @@ PY
       normalized,
       p,
     ])
-    if (res.code !== 0) {
-      throw new Error(res.stderr.trim() || `cannot chmod ${path}`)
-    }
+    this.throwForCliFailure(res, `cannot chmod ${path}`)
   }
 
   async rename(from: string, to: string): Promise<void> {
@@ -488,9 +591,7 @@ PY
       this.toContainerPath(from),
       this.toContainerPath(to),
     ])
-    if (res.code !== 0) {
-      throw new Error(res.stderr.trim() || `cannot rename ${from} -> ${to}`)
-    }
+    this.throwForCliFailure(res, `cannot rename ${from} -> ${to}`)
   }
 
   async installFileNoReplace(from: string, to: string): Promise<void> {
@@ -502,11 +603,10 @@ PY
       this.toContainerPath(from),
       this.toContainerPath(to),
     ])
-    if (res.code !== 0) {
-      throw new Error(
-        res.stderr.trim() || `cannot install ${from} without replacing ${to}`
-      )
-    }
+    this.throwForCliFailure(
+      res,
+      `cannot install ${from} without replacing ${to}`
+    )
   }
 
   async removeFile(path: string): Promise<void> {
@@ -517,9 +617,7 @@ PY
       "-f",
       this.toContainerPath(path),
     ])
-    if (res.code !== 0) {
-      throw new Error(res.stderr.trim() || `cannot remove ${path}`)
-    }
+    this.throwForCliFailure(res, `cannot remove ${path}`)
   }
 
   async mkdirp(path: string): Promise<void> {
@@ -530,9 +628,7 @@ PY
       "-p",
       this.toContainerPath(path),
     ])
-    if (res.code !== 0) {
-      throw new Error(res.stderr.trim() || `cannot mkdir ${path}`)
-    }
+    this.throwForCliFailure(res, `cannot mkdir ${path}`)
   }
 
   async stat(path: string): Promise<StatInfo> {
@@ -547,9 +643,7 @@ PY
       "-c",
       `stat -c '%s %F %a' ${shq(p)}`,
     ])
-    if (res.code !== 0) {
-      throw new Error(res.stderr.trim() || `no such file: ${path}`)
-    }
+    this.throwForCliFailure(res, `no such file: ${path}`)
     const text = res.stdout.toString("utf8").trim()
     const sp = text.indexOf(" ")
     const size = Number(text.slice(0, sp))
@@ -581,9 +675,7 @@ PY
       "-c",
       `ls -Ap1 ${shq(p)}`,
     ])
-    if (res.code !== 0) {
-      throw new Error(res.stderr.trim() || `cannot list ${path}`)
-    }
+    this.throwForCliFailure(res, `cannot list ${path}`)
     return res.stdout
       .toString("utf8")
       .split("\n")
@@ -653,13 +745,12 @@ PY
   // bounded Python fallback that receives all model-supplied data as argv.
   async search(opts: SearchOptions): Promise<SearchResult> {
     const root = this.toContainerPath(opts.root)
-    const hasRg = await this.runtimeCli([
-      "exec",
-      this.name,
-      "sh",
-      "-c",
-      "command -v rg >/dev/null 2>&1",
-    ])
+    const hasRg = await this.runtimeCli(
+      ["exec", this.name, "sh", "-c", "command -v rg >/dev/null 2>&1"],
+      undefined,
+      { signal: opts.signal }
+    )
+    this.ensureCompleteCliResult(hasRg, "container rg capability probe")
 
     if (hasRg.code === 0) {
       const env = await hostCliEnv()
@@ -811,35 +902,41 @@ result = {
 print(json.dumps(result))
 PY
 `
-    const res = await this.runtimeCli([
-      "exec",
-      this.name,
-      "sh",
-      "-c",
-      script,
-      "search-fallback",
-      opts.root,
-      opts.query,
-      opts.mode,
-      opts.case,
-      opts.result,
-      String(opts.beforeContext),
-      String(opts.afterContext),
-      opts.includeHidden ? "1" : "0",
-      String(opts.maxResults),
-      String(opts.maxFileBytes),
-      JSON.stringify(opts.globs),
-    ])
-    if (res.code !== 0) {
-      throw new Error(res.stderr.trim() || "search fallback failed")
-    }
-    const parsed = JSON.parse(res.stdout.toString("utf8")) as
-      | SearchResult
-      | { error: string }
+    const res = await this.runtimeCli(
+      [
+        "exec",
+        this.name,
+        "sh",
+        "-c",
+        script,
+        "search-fallback",
+        opts.root,
+        opts.query,
+        opts.mode,
+        opts.case,
+        opts.result,
+        String(opts.beforeContext),
+        String(opts.afterContext),
+        opts.includeHidden ? "1" : "0",
+        String(opts.maxResults),
+        String(opts.maxFileBytes),
+        JSON.stringify(opts.globs),
+      ],
+      undefined,
+      { signal: opts.signal }
+    )
+    this.ensureCompleteCliResult(res, "search fallback failed")
+    const parsed = this.parseCliJson<SearchResult | { error: string }>(
+      res,
+      "search fallback failed"
+    )
     if ("error" in parsed) {
       throw new SearchPatternError(
         `Invalid regular expression: ${parsed.error}`
       )
+    }
+    if (res.code !== 0) {
+      throw new Error(res.stderr.trim() || "search fallback failed")
     }
     return parsed
   }
@@ -850,7 +947,8 @@ PY
     // `sleep infinity`, which ignores SIGTERM, so `stop` would block on its full
     // grace period before killing. `rm -f` kills immediately. (Keeping the
     // container warm across turns is a possible later optimization — out of scope.)
-    await this.runtimeCli(["rm", "-f", this.name])
+    const res = await this.runtimeCli(["rm", "-f", this.name])
+    this.throwForCliFailure(res, `cannot dispose container ${this.name}`)
   }
 }
 

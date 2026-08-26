@@ -1,12 +1,130 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest"
+import { describe, it, expect, beforeAll, afterAll, vi } from "vitest"
 import { mkdtemp, rm, readFile, writeFile, symlink } from "fs/promises"
 import { hostname, tmpdir } from "os"
 import { join } from "path"
+import { EventEmitter } from "events"
+import { PassThrough } from "stream"
+import { spawn } from "child_process"
+import type { ChildProcess } from "child_process"
 import { ContainerEnvironment } from "./container"
 import { checkContainerTestAvailability } from "./container-test-availability"
 import { applyPatchTool } from "../tools/apply_patch_tool"
 
 const IMAGE = process.env.COWORK_ENV_IMAGE || "node:20-bookworm"
+
+type FakeRuntimeChild = ChildProcess & {
+  stdout: PassThrough
+  stderr: PassThrough
+  stdin: PassThrough
+  kill: ReturnType<typeof vi.fn>
+}
+
+function fakeRuntimeChild(opts: {
+  stdout?: string
+  stderr?: string
+  code?: number
+  neverExit?: boolean
+}): FakeRuntimeChild {
+  const child = new EventEmitter() as FakeRuntimeChild
+  child.stdout = new PassThrough()
+  child.stderr = new PassThrough()
+  child.stdin = new PassThrough()
+  Object.defineProperty(child, "pid", {
+    value: Math.floor(Math.random() * 10_000) + 1_000,
+  })
+  child.kill = vi.fn((signal?: NodeJS.Signals | number) => {
+    setImmediate(() => {
+      child.stdout.end()
+      child.stderr.end()
+      child.emit("close", null, typeof signal === "string" ? signal : "SIGKILL")
+    })
+    return true
+  })
+  setImmediate(() => {
+    if (opts.stdout) child.stdout.write(opts.stdout)
+    if (opts.stderr) child.stderr.write(opts.stderr)
+    if (!opts.neverExit) {
+      child.stdout.end()
+      child.stderr.end()
+      child.emit("close", opts.code ?? 0, null)
+    }
+  })
+  return child
+}
+
+function testContainer(
+  runtimeSpawn: (...args: Parameters<typeof spawn>) => ChildProcess,
+  cfg: Partial<ConstructorParameters<typeof ContainerEnvironment>[0]> = {}
+): ContainerEnvironment {
+  return new ContainerEnvironment({
+    runtime: "docker",
+    image: IMAGE,
+    workspace: "/tmp/workspace",
+    conversationId: `unit-${Math.random()}`,
+    hostCliEnv: async () => ({}),
+    runtimeSpawn: runtimeSpawn as typeof spawn,
+    ...cfg,
+  })
+}
+
+describe("ContainerEnvironment runtime CLI supervision", () => {
+  it("times out and reaps a hung startup probe", async () => {
+    const child = fakeRuntimeChild({ neverExit: true })
+    const env = testContainer(() => child, { runtimeCliTimeoutMs: 10 })
+
+    await expect(env.start()).rejects.toThrow(/timed out/)
+
+    expect(child.kill).toHaveBeenCalledWith("SIGKILL")
+  })
+
+  it("rejects truncated JSON instead of parsing it as complete", async () => {
+    const env = testContainer(
+      () => fakeRuntimeChild({ stdout: '{"path": "/workspace/file.txt"}' }),
+      { runtimeCliMaxOutputBytes: 8 }
+    )
+
+    await expect(env.resolve("file.txt")).rejects.toThrow(/output cap/)
+  })
+
+  it("rejects truncated base64 file output instead of returning partial bytes", async () => {
+    const env = testContainer(
+      () =>
+        fakeRuntimeChild({ stdout: Buffer.from("abcdef").toString("base64") }),
+      { runtimeCliReadFileMaxOutputBytes: 4 }
+    )
+
+    await expect(env.readFile("/workspace/file.txt")).rejects.toThrow(
+      /output cap/
+    )
+  })
+
+  it("propagates search aborts to the runtime CLI probe", async () => {
+    const child = fakeRuntimeChild({ neverExit: true })
+    const env = testContainer(() => child)
+    const ac = new AbortController()
+    ac.abort()
+
+    await expect(
+      env.search({
+        root: "/workspace",
+        query: "needle",
+        mode: "fixed",
+        case: "smart",
+        globs: [],
+        result: "content",
+        beforeContext: 0,
+        afterContext: 0,
+        includeHidden: false,
+        respectIgnore: true,
+        maxFileBytes: 1024,
+        maxResults: 10,
+        signal: ac.signal,
+      })
+    ).rejects.toThrow(/aborted/)
+
+    expect(child.kill).toHaveBeenCalledWith("SIGKILL")
+  })
+})
 
 // One shared suite body, run once per available runtime.
 for (const runtime of ["docker", "podman"] as const) {
