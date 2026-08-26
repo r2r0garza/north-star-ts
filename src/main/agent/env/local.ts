@@ -2,23 +2,12 @@ import { spawn } from "child_process"
 import type { ChildProcess } from "child_process"
 import { randomUUID } from "crypto"
 import { EventEmitter } from "events"
-import {
-  readFile,
-  writeFile,
-  chmod,
-  rename,
-  link,
-  mkdir,
-  stat,
-  readdir,
-  unlink,
-} from "fs/promises"
+import { writeFile, unlink } from "fs/promises"
 import { isAbsolute, relative, resolve, join } from "path"
 import { tmpdir } from "os"
 import { StringDecoder } from "string_decoder"
 import * as pty from "node-pty"
 import { captureSpawn } from "./spawn-util"
-import { readHostTextLines } from "./read-text-lines"
 import {
   buildRipgrepArgs,
   parseRipgrepJson,
@@ -67,6 +56,7 @@ type SpawnFn = typeof spawn
 interface LocalEnvironmentDeps {
   resolveRipgrepPath?: () => string
   spawn?: SpawnFn
+  pythonPath?: string
   searchTimeoutMs?: number
   searchMaxOutputBytes?: number
 }
@@ -158,6 +148,7 @@ export class LocalEnvironment implements Environment {
   }
 
   resolve(path: string): Promise<string> {
+    assertScopedFsSupported()
     return resolveInWorkspaceReal(this.workspace, path)
   }
 
@@ -166,60 +157,78 @@ export class LocalEnvironment implements Environment {
   }
 
   readFile(path: string): Promise<Buffer> {
-    return readFile(path)
+    return safeReadFile(this.workspace, path, this.deps.pythonPath)
   }
 
   readTextLines(
     path: string,
     opts: ReadTextLinesOptions
   ): Promise<ReadTextLinesResult> {
-    return readHostTextLines(path, opts)
+    return readTextLinesFromBuffer(
+      safeReadFile(this.workspace, path, this.deps.pythonPath),
+      opts
+    )
   }
 
   writeFile(path: string, data: string): Promise<void> {
     this.assertWritable(path)
-    return writeFile(path, data, "utf8")
+    return runSafeFs(
+      this.workspace,
+      "write_file",
+      { path, data },
+      this.deps.pythonPath
+    )
   }
 
   chmod(path: string, mode: number): Promise<void> {
     this.assertWritable(path)
-    return chmod(path, mode)
+    return runSafeFs(
+      this.workspace,
+      "chmod",
+      { path, mode },
+      this.deps.pythonPath
+    )
   }
 
   rename(from: string, to: string): Promise<void> {
     this.assertWritable(from)
     this.assertWritable(to)
-    return rename(from, to)
+    return runSafeFs(
+      this.workspace,
+      "rename",
+      { from, to },
+      this.deps.pythonPath
+    )
   }
 
   installFileNoReplace(from: string, to: string): Promise<void> {
     this.assertWritable(from)
     this.assertWritable(to)
-    return link(from, to)
+    return runSafeFs(this.workspace, "link", { from, to }, this.deps.pythonPath)
   }
 
   removeFile(path: string): Promise<void> {
     this.assertWritable(path)
-    return unlink(path)
+    return runSafeFs(this.workspace, "unlink", { path }, this.deps.pythonPath)
   }
 
   async mkdirp(path: string): Promise<void> {
     this.assertWritable(path)
-    await mkdir(path, { recursive: true })
+    await runSafeFs(this.workspace, "mkdirp", { path }, this.deps.pythonPath)
   }
 
   async stat(path: string): Promise<StatInfo> {
-    const info = await stat(path)
+    const info = await safeStat(this.workspace, path, this.deps.pythonPath)
     return {
       size: info.size,
-      mode: info.mode & 0o7777,
-      isFile: () => info.isFile(),
-      isDirectory: () => info.isDirectory(),
+      mode: info.mode,
+      isFile: () => info.type === "file",
+      isDirectory: () => info.type === "dir",
     }
   }
 
   readdir(path: string): Promise<DirEntry[]> {
-    return readdir(path, { withFileTypes: true })
+    return safeReaddir(this.workspace, path, this.deps.pythonPath)
   }
 
   // Run `command` through the user's shell with `opts.cwd` as its working
@@ -300,10 +309,17 @@ export class LocalEnvironment implements Environment {
   async search(opts: SearchOptions): Promise<SearchResult> {
     const spawnFn = this.deps.spawn ?? spawn
     const child = spawnFn(
-      (this.deps.resolveRipgrepPath ?? resolveRipgrepPath)(),
-      buildRipgrepArgs(opts),
+      this.deps.pythonPath ?? "python3",
+      [
+        "-c",
+        SAFE_RG_SCRIPT,
+        this.workspace,
+        opts.root,
+        (this.deps.resolveRipgrepPath ?? resolveRipgrepPath)(),
+        ...buildRipgrepArgs(opts),
+      ],
       {
-        cwd: opts.root,
+        cwd: this.workspace,
         shell: false,
         detached: process.platform !== "win32",
         stdio: ["ignore", "pipe", "pipe"],
@@ -315,8 +331,21 @@ export class LocalEnvironment implements Environment {
       signal: opts.signal,
       killGroup: true,
     })
-    throwForRipgrepExecutionFailure(res)
-    return parseRipgrepJson(res.stdout, opts, res)
+    throwForRipgrepExecutionFailure(
+      res.exitCode === 127
+        ? {
+            ...res,
+            exitCode: null,
+            spawnError:
+              res.stderr?.toString("utf8").trim() ||
+              res.stdout.toString("utf8").trim(),
+          }
+        : res
+    )
+    return absolutizeSearchPaths(
+      parseRipgrepJson(res.stdout, opts, res),
+      opts.root
+    )
   }
 
   async dispose(): Promise<void> {
@@ -383,6 +412,390 @@ export class LocalEnvironment implements Environment {
 function isInside(parent: string, child: string): boolean {
   const rel = relative(resolve(parent), resolve(child))
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel))
+}
+
+function assertScopedFsSupported(): void {
+  if (process.platform === "win32") {
+    throw new Error(
+      "Local filesystem tools require no-follow directory-relative operations, which are unavailable on this platform."
+    )
+  }
+}
+
+const SAFE_FS_SCRIPT = String.raw`
+import base64, json, os, stat, sys
+
+def fail_closed(message):
+    raise RuntimeError(message)
+
+def rel_parts(root, target):
+    root_abs = os.path.realpath(root)
+    target_abs = os.path.realpath(target)
+    rel = os.path.relpath(target_abs, root_abs)
+    if rel == os.curdir:
+        return []
+    if rel == os.pardir or rel.startswith(os.pardir + os.sep) or os.path.isabs(rel):
+        fail_closed("path is outside the workspace")
+    return [p for p in rel.split(os.sep) if p and p != os.curdir]
+
+def open_root(root):
+    return os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+
+def open_dir_child(parent_fd, name):
+    return os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent_fd)
+
+def open_parent(root, target):
+    parts = rel_parts(root, target)
+    root_fd = open_root(root)
+    fds = [root_fd]
+    try:
+        current = root_fd
+        for part in parts[:-1]:
+            current = open_dir_child(current, part)
+            fds.append(current)
+        return fds, current, (parts[-1] if parts else ".")
+    except BaseException:
+        close_all(fds)
+        raise
+
+def close_all(fds):
+    for fd in reversed(fds):
+        try: os.close(fd)
+        except OSError: pass
+
+def read_file(root, path):
+    fds, parent, name = open_parent(root, path)
+    try:
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent)
+        try:
+            chunks = []
+            while True:
+                chunk = os.read(fd, 1024 * 1024)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+            return {"data": base64.b64encode(b"".join(chunks)).decode("ascii")}
+        finally:
+            os.close(fd)
+    finally:
+        close_all(fds)
+
+def write_file(root, path, data):
+    fds, parent, name = open_parent(root, path)
+    try:
+        fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o666, dir_fd=parent)
+        try:
+            os.write(fd, data.encode("utf-8"))
+        finally:
+            os.close(fd)
+        return {}
+    finally:
+        close_all(fds)
+
+def chmod_file(root, path, mode):
+    fds, parent, name = open_parent(root, path)
+    try:
+        os.chmod(name, int(mode), dir_fd=parent, follow_symlinks=False)
+        return {}
+    finally:
+        close_all(fds)
+
+def rename_file(root, src, dst):
+    src_fds, src_parent, src_name = open_parent(root, src)
+    dst_fds, dst_parent, dst_name = open_parent(root, dst)
+    try:
+        os.rename(src_name, dst_name, src_dir_fd=src_parent, dst_dir_fd=dst_parent)
+        return {}
+    finally:
+        close_all(dst_fds)
+        close_all(src_fds)
+
+def link_file(root, src, dst):
+    src_fds, src_parent, src_name = open_parent(root, src)
+    dst_fds, dst_parent, dst_name = open_parent(root, dst)
+    try:
+        os.link(src_name, dst_name, src_dir_fd=src_parent, dst_dir_fd=dst_parent, follow_symlinks=False)
+        return {}
+    finally:
+        close_all(dst_fds)
+        close_all(src_fds)
+
+def unlink_file(root, path):
+    fds, parent, name = open_parent(root, path)
+    try:
+        os.unlink(name, dir_fd=parent)
+        return {}
+    finally:
+        close_all(fds)
+
+def mkdirp(root, path):
+    parts = rel_parts(root, path)
+    root_fd = open_root(root)
+    fds = [root_fd]
+    try:
+        current = root_fd
+        for part in parts:
+            try:
+                os.mkdir(part, 0o777, dir_fd=current)
+            except FileExistsError:
+                pass
+            current = open_dir_child(current, part)
+            fds.append(current)
+        return {}
+    finally:
+        close_all(fds)
+
+def stat_path(root, path):
+    fds, parent, name = open_parent(root, path)
+    try:
+        st = os.stat(name, dir_fd=parent, follow_symlinks=False)
+        typ = "dir" if stat.S_ISDIR(st.st_mode) else "file" if stat.S_ISREG(st.st_mode) else "other"
+        return {"size": st.st_size, "mode": stat.S_IMODE(st.st_mode), "type": typ}
+    finally:
+        close_all(fds)
+
+def readdir_path(root, path):
+    fd = open_root(root)
+    fds = [fd]
+    try:
+        current = fd
+        for part in rel_parts(root, path):
+            current = open_dir_child(current, part)
+            fds.append(current)
+        entries = []
+        for name in os.listdir(current):
+            try:
+                st = os.stat(name, dir_fd=current, follow_symlinks=False)
+                typ = "dir" if stat.S_ISDIR(st.st_mode) else "file" if stat.S_ISREG(st.st_mode) else "other"
+            except OSError:
+                typ = "other"
+            entries.append({"name": name, "type": typ})
+        return {"entries": entries}
+    finally:
+        close_all(fds)
+
+req = json.load(sys.stdin)
+root = req["root"]
+op = req["op"]
+args = req.get("args", {})
+if op == "read_file":
+    result = read_file(root, args["path"])
+elif op == "write_file":
+    result = write_file(root, args["path"], args["data"])
+elif op == "chmod":
+    result = chmod_file(root, args["path"], args["mode"])
+elif op == "rename":
+    result = rename_file(root, args["from"], args["to"])
+elif op == "link":
+    result = link_file(root, args["from"], args["to"])
+elif op == "unlink":
+    result = unlink_file(root, args["path"])
+elif op == "mkdirp":
+    result = mkdirp(root, args["path"])
+elif op == "stat":
+    result = stat_path(root, args["path"])
+elif op == "readdir":
+    result = readdir_path(root, args["path"])
+else:
+    fail_closed("unknown op")
+json.dump(result, sys.stdout)
+`
+
+const SAFE_RG_SCRIPT = String.raw`
+import os, sys
+
+def fail_closed(message):
+    raise RuntimeError(message)
+
+def rel_parts(root, target):
+    root_abs = os.path.realpath(root)
+    target_abs = os.path.realpath(target)
+    rel = os.path.relpath(target_abs, root_abs)
+    if rel == os.curdir:
+        return []
+    if rel == os.pardir or rel.startswith(os.pardir + os.sep) or os.path.isabs(rel):
+        fail_closed("path is outside the workspace")
+    return [p for p in rel.split(os.sep) if p and p != os.curdir]
+
+try:
+    fd = os.open(sys.argv[1], os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    fds = [fd]
+    current = fd
+    for part in rel_parts(sys.argv[1], sys.argv[2]):
+        current = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=current)
+        fds.append(current)
+    os.fchdir(current)
+    rg = sys.argv[3]
+    args = [rg] + [("." if arg == sys.argv[2] else arg) for arg in sys.argv[4:]]
+    try:
+        os.execv(rg, args)
+    except OSError as exc:
+        print(str(exc), file=sys.stderr)
+        os._exit(127)
+except BaseException as exc:
+    print(str(exc), file=sys.stderr)
+    os._exit(127)
+finally:
+    for item in reversed(fds):
+        try: os.close(item)
+        except OSError: pass
+`
+
+async function runSafeFs<T>(
+  workspace: string,
+  op: string,
+  args: Record<string, unknown>,
+  pythonPath = "python3"
+): Promise<T> {
+  assertScopedFsSupported()
+  const child = spawn(pythonPath, ["-c", SAFE_FS_SCRIPT], {
+    cwd: workspace,
+    shell: false,
+    stdio: ["pipe", "pipe", "pipe"],
+  })
+  child.stdin.end(JSON.stringify({ root: workspace, op, args }))
+  const res = await captureSpawn(child, {
+    timeoutMs: 30_000,
+    maxOutputBytes: 32 * 1024 * 1024,
+    killGroup: false,
+  })
+  if (res.exitCode !== 0) {
+    const message =
+      res.stderr?.toString("utf8").trim() ||
+      res.stdout.toString("utf8").trim() ||
+      res.spawnError ||
+      "safe local filesystem operation failed"
+    throw new Error(message)
+  }
+  return JSON.parse(res.stdout.toString("utf8") || "{}") as T
+}
+
+async function safeReadFile(
+  workspace: string,
+  path: string,
+  pythonPath?: string
+): Promise<Buffer> {
+  const result = await runSafeFs<{ data: string }>(
+    workspace,
+    "read_file",
+    { path },
+    pythonPath
+  )
+  return Buffer.from(result.data, "base64")
+}
+
+async function safeStat(
+  workspace: string,
+  path: string,
+  pythonPath?: string
+): Promise<{ size: number; mode: number; type: string }> {
+  return runSafeFs(workspace, "stat", { path }, pythonPath)
+}
+
+async function safeReaddir(
+  workspace: string,
+  path: string,
+  pythonPath?: string
+): Promise<DirEntry[]> {
+  const result = await runSafeFs<{
+    entries: Array<{ name: string; type: string }>
+  }>(workspace, "readdir", { path }, pythonPath)
+  return result.entries.map((entry) => ({
+    name: entry.name,
+    isFile: () => entry.type === "file",
+    isDirectory: () => entry.type === "dir",
+  }))
+}
+
+function absolutizeSearchPaths(
+  result: SearchResult,
+  root: string
+): SearchResult {
+  const absolute = (path: string) =>
+    isAbsolute(path) ? path : resolve(root, path)
+  return {
+    ...result,
+    matches: result.matches.map((match) => ({
+      ...match,
+      path: absolute(match.path),
+    })),
+    files: result.files.map(absolute),
+    counts: result.counts.map((count) => ({
+      ...count,
+      path: absolute(count.path),
+    })),
+  }
+}
+
+async function readTextLinesFromBuffer(
+  bytes: Promise<Buffer>,
+  opts: ReadTextLinesOptions
+): Promise<ReadTextLinesResult> {
+  const { createHash } = await import("crypto")
+  const data = await bytes
+  if (data.subarray(0, 8000).includes(0)) throw new Error("BINARY_FILE")
+  const text = data.toString("utf8")
+  const lines =
+    text === ""
+      ? [""]
+      : text.endsWith("\n")
+        ? text.slice(0, -1).split("\n")
+        : text.split("\n")
+  const offset = Math.max(1, Math.floor(opts.offset))
+  const limit = Math.max(1, Math.floor(opts.limit))
+  const maxBytes = Math.max(1, Math.floor(opts.maxBytes))
+  const selected: string[] = []
+  let returnedBytes = 0
+  let truncated = false
+  let lineTooLong = false
+  let skippedLineRemainder = false
+  for (let i = offset - 1; i < lines.length && selected.length < limit; i++) {
+    const line = lines[i] ?? ""
+    const separatorBytes = selected.length > 0 ? 1 : 0
+    const lineBytes = Buffer.byteLength(line, "utf8")
+    if (returnedBytes + separatorBytes + lineBytes > maxBytes) {
+      truncated = true
+      if (selected.length === 0) {
+        const prefix = utf8Prefix(line, maxBytes)
+        selected.push(prefix)
+        returnedBytes = Buffer.byteLength(prefix, "utf8")
+        lineTooLong = true
+        skippedLineRemainder = true
+      }
+      break
+    }
+    selected.push(line)
+    returnedBytes += separatorBytes + lineBytes
+  }
+  const endLine = selected.length ? offset + selected.length - 1 : offset - 1
+  const hasMore = truncated || offset - 1 + selected.length < lines.length
+  return {
+    text: selected.join("\n"),
+    startLine: offset,
+    endLine,
+    hasMore,
+    nextOffset: hasMore ? endLine + 1 : undefined,
+    fileBytes: data.length,
+    truncated,
+    revision: hasMore
+      ? undefined
+      : createHash("sha256").update(data).digest("hex"),
+    lineTooLong: lineTooLong || undefined,
+    skippedLineRemainder: skippedLineRemainder || undefined,
+  }
+}
+
+function utf8Prefix(text: string, maxBytes: number): string {
+  if (Buffer.byteLength(text, "utf8") <= maxBytes) return text
+  let out = ""
+  let bytes = 0
+  for (const char of text) {
+    const next = Buffer.byteLength(char, "utf8")
+    if (bytes + next > maxBytes) break
+    out += char
+    bytes += next
+  }
+  return out
 }
 
 class ChildProcessCommandHandle

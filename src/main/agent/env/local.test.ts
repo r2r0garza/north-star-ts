@@ -1,6 +1,14 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest"
 import { execSync } from "child_process"
-import { mkdtemp, rm, readFile, writeFile, mkdir, chmod } from "fs/promises"
+import {
+  mkdtemp,
+  rm,
+  readFile,
+  writeFile,
+  mkdir,
+  chmod,
+  symlink,
+} from "fs/promises"
 import { tmpdir } from "os"
 import { join } from "path"
 import {
@@ -351,6 +359,71 @@ describe("LocalEnvironment file ops", () => {
     expect(() => env.resolveLexical("/etc/passwd")).toThrow()
   })
 
+  it.skipIf(process.platform === "win32")(
+    "does not read through a parent swapped to an external symlink after resolve",
+    async () => {
+      const external = await mkdtemp(join(tmpdir(), "env-local-external-"))
+      try {
+        await mkdir(join(workspace, "safe"))
+        await writeFile(join(workspace, "safe", "sentinel.txt"), "inside")
+        await writeFile(join(external, "sentinel.txt"), "outside")
+        const target = await env.resolve("safe/sentinel.txt")
+
+        await rm(join(workspace, "safe"), { recursive: true, force: true })
+        await symlink(external, join(workspace, "safe"))
+
+        await expect(env.readFile(target)).rejects.toThrow()
+        expect(await readFile(join(external, "sentinel.txt"), "utf8")).toBe(
+          "outside"
+        )
+      } finally {
+        await rm(external, { recursive: true, force: true })
+      }
+    }
+  )
+
+  it.skipIf(process.platform === "win32")(
+    "does not write through a parent swapped to an external symlink after resolve",
+    async () => {
+      const external = await mkdtemp(join(tmpdir(), "env-local-external-"))
+      try {
+        await mkdir(join(workspace, "safe"))
+        await writeFile(join(workspace, "safe", "sentinel.txt"), "inside")
+        await writeFile(join(external, "sentinel.txt"), "outside")
+        const target = await env.resolve("safe/sentinel.txt")
+
+        await rm(join(workspace, "safe"), { recursive: true, force: true })
+        await symlink(external, join(workspace, "safe"))
+
+        await expect(env.writeFile(target, "escaped")).rejects.toThrow()
+        expect(await readFile(join(external, "sentinel.txt"), "utf8")).toBe(
+          "outside"
+        )
+      } finally {
+        await rm(external, { recursive: true, force: true })
+      }
+    }
+  )
+
+  it.skipIf(process.platform === "win32")(
+    "does not list through a parent swapped to an external symlink after resolve",
+    async () => {
+      const external = await mkdtemp(join(tmpdir(), "env-local-external-"))
+      try {
+        await mkdir(join(workspace, "safe"))
+        await writeFile(join(external, "external.txt"), "outside")
+        const target = await env.resolve("safe")
+
+        await rm(join(workspace, "safe"), { recursive: true, force: true })
+        await symlink(external, join(workspace, "safe"))
+
+        await expect(env.readdir(target)).rejects.toThrow()
+      } finally {
+        await rm(external, { recursive: true, force: true })
+      }
+    }
+  )
+
   it.skipIf(!localProfileCapabilities("read-only").supported)(
     "blocks filesystem writes in the read-only profile",
     async () => {
@@ -532,6 +605,31 @@ describe("LocalEnvironment.search", () => {
     expect(matches[0]).toMatchObject({ line: 2, text: "needle here" })
     expect(matches[0].path).toBe(join(workspace, "a.txt"))
   })
+
+  it.skipIf(process.platform === "win32")(
+    "does not search through a parent swapped to an external symlink after resolve",
+    async () => {
+      const external = await mkdtemp(join(tmpdir(), "env-local-external-"))
+      try {
+        await mkdir(join(workspace, "safe"))
+        await writeFile(join(external, "sentinel.txt"), "needle outside")
+        const root = await env.resolve("safe")
+
+        await rm(join(workspace, "safe"), { recursive: true, force: true })
+        await symlink(external, join(workspace, "safe"))
+
+        await expect(
+          env.search({
+            root,
+            query: "needle",
+            ...baseOpts,
+          })
+        ).rejects.toThrow()
+      } finally {
+        await rm(external, { recursive: true, force: true })
+      }
+    }
+  )
 
   it("honors ripgrep include/exclude globs", async () => {
     await mkdir(join(workspace, "node_modules"))
