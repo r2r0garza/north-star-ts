@@ -45,7 +45,14 @@ function fakeEnv(): Environment & { files: Map<string, string> } {
       signal: null,
       timedOut: false,
     }),
-    search: async () => ({ matches: [], capped: false }),
+    search: async () => ({
+      engine: "rg",
+      result: "content",
+      matches: [],
+      files: [],
+      counts: [],
+      capped: false,
+    }),
     dispose: async () => {},
   }
 }

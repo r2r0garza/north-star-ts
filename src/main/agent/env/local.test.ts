@@ -335,34 +335,42 @@ describe("LocalEnvironment.readTextLines", () => {
 
 describe("LocalEnvironment.search", () => {
   const baseOpts = {
-    skipDirs: [".git", "node_modules"],
     maxFileBytes: 1024 * 1024,
     maxResults: 100,
+    mode: "fixed" as const,
+    case: "smart" as const,
+    globs: [] as string[],
+    result: "content" as const,
+    beforeContext: 0,
+    afterContext: 0,
+    includeHidden: false,
+    respectIgnore: true,
   }
 
   it("finds a matching line and reports its path + line number", async () => {
     await writeFile(join(workspace, "a.txt"), "first\nneedle here\nthird")
     const { matches, capped } = await env.search({
       root: workspace,
-      pattern: "needle",
+      query: "needle",
       ...baseOpts,
     })
     expect(capped).toBe(false)
+    expect(matches[0].column).toBe(1)
     expect(matches).toHaveLength(1)
     expect(matches[0]).toMatchObject({ line: 2, text: "needle here" })
     expect(matches[0].path).toBe(join(workspace, "a.txt"))
   })
 
-  it("prunes skipDirs and honors the glob filter", async () => {
+  it("honors ripgrep include/exclude globs", async () => {
     await mkdir(join(workspace, "node_modules"))
     await writeFile(join(workspace, "node_modules", "dep.ts"), "match")
     await writeFile(join(workspace, "keep.ts"), "match")
     await writeFile(join(workspace, "keep.md"), "match")
     const { matches } = await env.search({
       root: workspace,
-      pattern: "match",
-      glob: ".ts",
+      query: "match",
       ...baseOpts,
+      globs: ["*.ts", "!**/node_modules/**"],
     })
     expect(matches).toHaveLength(1)
     expect(matches[0].path).toBe(join(workspace, "keep.ts"))
@@ -372,7 +380,7 @@ describe("LocalEnvironment.search", () => {
     await writeFile(join(workspace, "many.txt"), "x\nx\nx\nx\nx")
     const { matches, capped } = await env.search({
       root: workspace,
-      pattern: "x",
+      query: "x",
       ...baseOpts,
       maxResults: 3,
     })
@@ -384,9 +392,61 @@ describe("LocalEnvironment.search", () => {
     await writeFile(join(workspace, "bin.dat"), Buffer.from([0x6d, 0x00, 0x6d]))
     const { matches } = await env.search({
       root: workspace,
-      pattern: "m",
+      query: "m",
       ...baseOpts,
     })
     expect(matches).toHaveLength(0)
+  })
+
+  it("treats fixed queries with regex and shell metacharacters as data", async () => {
+    await writeFile(join(workspace, "literal.txt"), "a+b $(echo nope) --flag")
+    const { matches } = await env.search({
+      root: workspace,
+      query: "a+b $(echo nope) --flag",
+      ...baseOpts,
+    })
+    expect(matches).toHaveLength(1)
+    expect(matches[0].text).toBe("a+b $(echo nope) --flag")
+  })
+
+  it("supports regex mode and smart case", async () => {
+    await writeFile(join(workspace, "regex.txt"), "alpha-123\nAlpha-456")
+    const { matches } = await env.search({
+      root: workspace,
+      query: "alpha-\\d+",
+      ...baseOpts,
+      mode: "regex",
+      case: "smart",
+    })
+    expect(matches.map((m) => m.text)).toEqual(["alpha-123", "Alpha-456"])
+  })
+
+  it("returns files and count result modes", async () => {
+    await writeFile(join(workspace, "one.txt"), "needle needle\n")
+    await writeFile(join(workspace, "two.txt"), "needle\n")
+
+    const files = await env.search({
+      root: workspace,
+      query: "needle",
+      ...baseOpts,
+      result: "files",
+    })
+    const count = await env.search({
+      root: workspace,
+      query: "needle",
+      ...baseOpts,
+      result: "count",
+    })
+
+    expect(files.files.map((p) => p.split(/[\\/]/).pop()).sort()).toEqual([
+      "one.txt",
+      "two.txt",
+    ])
+    expect(count.totalMatches).toBe(3)
+    expect(
+      Object.fromEntries(
+        count.counts.map((c) => [c.path.split(/[\\/]/).pop(), c.matches])
+      )
+    ).toEqual({ "one.txt": 2, "two.txt": 1 })
   })
 })

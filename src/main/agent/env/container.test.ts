@@ -103,8 +103,15 @@ for (const runtime of ["docker", "podman"] as const) {
         )
         const { matches, capped } = await env.search({
           root: await env.resolve(""),
-          pattern: "84f2348602b2",
-          skipDirs: [".git", "node_modules"],
+          query: "84f2348602b2",
+          mode: "fixed",
+          case: "smart",
+          globs: [],
+          result: "content",
+          beforeContext: 0,
+          afterContext: 0,
+          includeHidden: false,
+          respectIgnore: true,
           maxFileBytes: 1024 * 1024,
           maxResults: 100,
         })
@@ -123,9 +130,15 @@ for (const runtime of ["docker", "podman"] as const) {
         await env.writeFile(await env.resolve("keep.md"), "marker")
         const { matches } = await env.search({
           root: await env.resolve(""),
-          pattern: "marker",
-          glob: ".ts",
-          skipDirs: [".git", "node_modules"],
+          query: "marker",
+          mode: "fixed",
+          case: "smart",
+          result: "content",
+          beforeContext: 0,
+          afterContext: 0,
+          includeHidden: false,
+          respectIgnore: true,
+          globs: ["*.ts", "!**/node_modules/**"],
           maxFileBytes: 1024 * 1024,
           maxResults: 100,
         })

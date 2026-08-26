@@ -7,33 +7,28 @@ item is its plan file, not its rank.
 
 ## Next up
 
-1. **`048` — Ripgrep-backed workspace search.** Replace the sequential Local Node file walk and
-   substring-only “glob” with packaged `@vscode/ripgrep`, parsed `rg --json`, real include/exclude
-   globs, fixed/regex and smart-case modes, context/files/count results, and honest caps. Unpack the
-   binary for Electron production; containers use `rg` when present and declare a bounded reduced
-   fallback when absent. Patterns always travel as argv data, never shell interpolation.
-2. **`049` — Tool effect metadata and parallel read-only execution.** Make every built-in tool declare
+1. **`049` — Tool effect metadata and parallel read-only execution.** Make every built-in tool declare
    read-only/parallel-safe/idempotent/destructive/open-world effects, then extract a bounded batch
    scheduler from `runAgentLoop`: consecutive safe reads execute concurrently while mutations,
    questions, browser actions, shell, delegation, and unannotated MCP calls remain ordering barriers.
    Events reflect real timing; transcript/DB tool results retain the model's original call order.
-3. **`050` — Transactional multi-file patching.** Add a provider-neutral `apply_patch_tool` for bounded
+2. **`050` — Transactional multi-file patching.** Add a provider-neutral `apply_patch_tool` for bounded
    add/update/move/delete operation sets with exact-context hunks and `047` revisions. Validate the
    complete patch before mutation, present one combined diff/approval, stage all outputs, and use a
    tested rollback transaction so any invalid hunk, stale file, abort, or commit failure changes
    nothing—or reports retained recovery artifacts if rollback itself fails.
-4. **`051` — Session-oriented shell execution.** Reuse the shipped `node-pty`/TerminalService core to
+3. **`051` — Session-oriented shell execution.** Reuse the shipped `node-pty`/TerminalService core to
    add agent-owned `exec_command`, `write_stdin`, `poll_command`, and `terminate_command`: quick commands
    complete inline; watchers/servers/REPLs yield a scoped session id, cursor-based bounded output, and
    deterministic Stop/timeout/app-quit cleanup. Keep `run_shell_tool` as a compatibility wrapper;
    container sessions receive an equivalent backend abstraction.
-5. **`052` — Local shell confinement and syntax-aware command policy.** Build on `051`'s single spawn
+4. **`052` — Local shell confinement and syntax-aware command policy.** Build on `051`'s single spawn
    seam. Parse command segments/pipelines/substitutions/redirects conservatively, retain the current
    hardline regex corpus as defense in depth, and route unknown syntax toward approval. Separate exec,
    outside-workspace, and network decisions; accurately label Local as host access unless a tested OS
    adapter enforces `read-only`/`workspace-write`. Unsupported platforms offer container/explicit host
    access rather than a pretend sandbox.
-6. **`042` — Codex CLI provider.** Second concrete split from `034`. Adds **Codex CLI** as a
+5. **`042` — Codex CLI provider.** Second concrete split from `034`. Adds **Codex CLI** as a
    workspace-backed local subprocess provider, routed away from `runAgentLoop` into the same
    `agent/cli/` adapter layer. Uses `codex exec --json <message>` for the first turn, parses
    `thread.started.thread_id`, stores it, then resumes with `codex exec --json resume <thread_id>
@@ -44,7 +39,7 @@ item is its plan file, not its rank.
    sha, omit `--skip-git-repo-check`; if it returns null, include it. This applies to Chat,
    Interactive, and North Star because users may point Codex at ordinary non-git folders. Backend stays
    Local, and our internal tool loop and mode controls are disabled.
-7. **`045` — North Star MCP bridge for CLI providers.** After `042`, make North Star a second, distinct
+6. **`045` — North Star MCP bridge for CLI providers.** After `042`, make North Star a second, distinct
    MCP role: it remains a client of user-configured external servers, and also hosts a lazy,
    authenticated Streamable HTTP server on an ephemeral `127.0.0.1` port for the Claude Code and Codex
    subprocesses we launch. Inject the endpoint per turn (`claude --mcp-config`; Codex transient `-c`
@@ -53,7 +48,7 @@ item is its plan file, not its rank.
    North-Star-specific `index_query`; `045.2` adapts the existing renderer-backed
    `ask_user_question` round trip. Explicit adapters only—no blanket `runTool()` export, no external
    MCP proxy, and no duplicate filesystem/shell tools. Side-effect policy remains enforced server-side.
-8. **`039` — Inspectable agent-to-agent messaging. ⚠️ DESIGN-PENDING.** One phase-agent (B) **asks
+7. **`039` — Inspectable agent-to-agent messaging. ⚠️ DESIGN-PENDING.** One phase-agent (B) **asks
    another phase-agent (A) a question**, answered **from A's own context** — distinct from
    `spawn_subagent` (a fresh, context-less child). The `025` engine makes each phase-run's **worker
    conversation** addressable (`makeRunPhase` stamps a `taskId`/conversation per phase-run), so a gated
@@ -65,7 +60,7 @@ item is its plan file, not its rank.
    context, no mid-flight race); same-run targets only. Monitor renders the A↔B thread off a
    `process_phase`-style event (no new channel). **Likely splits:** `039.1` completed-target round-trip
    + storage + monitor; `039.2` asking a running agent (queued) + richer targeting. Open Qs above.
-9. **`037` — Process import / export.** Unlike `035`/`036` (files already on disk → import-only), a
+8. **`037` — Process import / export.** Unlike `035`/`036` (files already on disk → import-only), a
    Process lives **only in the DB** (`025` tables), so it needs an explicit **serialize ⇄ deserialize**
    to be shareable — the sharing use case you called out. **JSON** interchange (`ProcessExport`,
    `formatVersion`-guarded): **id-free**, edges reference phases by **`key`** (unique per process) so
@@ -79,7 +74,7 @@ item is its plan file, not its rank.
    builder affordances. **Ordered after `038`** so the format carries a phase's `subprocess_id` — a
    sub-process reference exports **by definition identity** (name/a stable ref), and import resolves or
    flags a missing referenced sub-process (like `037`'s missing-agent warning).
-10. **`032` — Process visual canvas.** The explicitly-deferred half of `026` (which shipped the
+9. **`032` — Process visual canvas.** The explicitly-deferred half of `026` (which shipped the
    **list-based** DAG builder and recorded a **visual node/edge canvas** as "later"). Renderer-first +
    one additive migration; **no engine/scheduling/routing change**. Phases become draggable **nodes**,
    dependencies **edges** drawn between handles (same `on_complete`/`on_each_subtask` trigger, same
@@ -93,26 +88,26 @@ item is its plan file, not its rank.
    toggle vs replace (lean **coexist**). The Radix-`Dialog` takeover means the inspector keeps
    `NativeSelect` (the `023`/`026` `pointer-events:none` finding). **Live-run-on-canvas deferred** — v1
    keeps the `026` nested-list monitor. Independent of `029`/`031`.
-11. **`020` — Durable memories.** The cross-conversation memories section `014` reserved: small,
+10. **`020` — Durable memories.** The cross-conversation memories section `014` reserved: small,
    persisted facts the agent writes (a **gated, explicit** `remember` tool — no silent profiling)
    and that inject into future turns, **scoped** global / workspace / conversation (mirrors the
    `action_allowlist` scoping). New `memories` table + a list/delete surface (durable +
    cross-conversation ⇒ must be auditable/revocable); a `memoriesSection` renderer with an injection
    cap. Split out of `014` Q2.
-12. **`010` — Container runtime profiles.** Decouple Workspace (the files) from Runtime (the env a
+11. **`010` — Container runtime profiles.** Decouple Workspace (the files) from Runtime (the env a
    tool call executes in). Replace the raw container `image` string with a named **profile**
    (`node` | `python` | `fullstack`), resolved to an image in the env factory; default/fallback =
    `fullstack` (Node + Python) so a Node repo that later adds a Python backend doesn't wedge.
    One profile per conversation, user-overridable in settings. Kills the "one workspace = one image
    forever" assumption **without** building auto-routing or image management (both deferred). Small
    refactor of `env/factory.ts` + `container.ts` + execution settings (JSON blob — no migration).
-13. **`005.1` — ContainerEnvironment stop in-flight.** The deferred half of `005`: killing the host
+12. **`005.1` — ContainerEnvironment stop in-flight.** The deferred half of `005`: killing the host
    `docker/podman exec` client doesn't stop the in-container process. Needs its own kill mechanism
    (in-container PID tracking / `exec kill`, or marker `pkill`). Out of scope when `005` shipped.
-14. **`007` — Slash commands for skills.** Let users force a skill with `/skill-name …` (pre-inject
+13. **`007` — Slash commands for skills.** Let users force a skill with `/skill-name …` (pre-inject
    the `read_skill` call), keeping today's model-discretionary path for plain messages. Adds a
    `skills:list` IPC channel + composer autocomplete. Independent — schedule freely.
-15. **`018` — Agentic goal mode. ⚠️ SUPERSEDED by `025`** (the general Process engine — 018's fixed
+14. **`018` — Agentic goal mode. ⚠️ SUPERSEDED by `025`** (the general Process engine — 018's fixed
    pipeline becomes one built-in Process *template*; kept as a stable-ID file per convention, not
    built as its own orchestrator). An opt-in **execution mode** (orthogonal to chat/interactive/
    north_star): `simple` (today's one-pass behavior, default) vs `goal` (bounded **plan → execute →
@@ -126,7 +121,7 @@ item is its plan file, not its rank.
    PR (`/goal <request>` — reuses `007`'s composer slash-command affordance — + a "Run with review
    loop" button); the Always/Ask/Manual/Off **setting is deferred** to its own plan. Placed by `007`
    since both add `/`-command composer UI.
-16. **`024` — Index filesystem/git watcher.** The "live file watching" follow-up `008` deferred (and
+15. **`024` — Index filesystem/git watcher.** The "live file watching" follow-up `008` deferred (and
    `014` re-deferred). Today the workspace index — and the compact summary `buildIndexSummary`
    injects into the system prompt on every message send — only refreshes when `IndexService.
    ensureRunning` is called, which fires on conversation create/update or manual Start/Rebuild;
@@ -140,7 +135,7 @@ item is its plan file, not its rank.
    gated by a new **"Watch workspace for changes"** toggle in the Workspace Indexing settings group
    (global store, no migration). Open Qs: watcher mechanism (`chokidar` vs core `fs.watch` vs
    `@parcel/watcher`), watch scope/lifetime, debounce window, churn backpressure. Placed after `018`.
-17. **`043` — Copilot CLI provider. DEFERRED.** Split out of `034` but parked at the bottom for now.
+16. **`043` — Copilot CLI provider. DEFERRED.** Split out of `034` but parked at the bottom for now.
    Probes under `cli_probes/copilot/` confirmed no-tool JSONL streaming, caller-assigned
    `--session-id`, resume, assistant message deltas, final `assistant.message`, and final `result`.
    Tool support is deliberately deferred: a shell-tool probe with `--allow-tool=shell` was rejected as
@@ -149,6 +144,16 @@ item is its plan file, not its rank.
 
 ## Done
 
+- **`048` — Ripgrep-backed workspace search.** Replaced the Local sequential Node file walk with
+  packaged `@vscode/ripgrep` and a shared `rg --json` parser/argv builder. `search_tool` now advertises
+  `query`, fixed/regex mode, smart/sensitive/insensitive case, real include/exclude `globs`, context
+  lines, hidden/ignore policy, and `content`/`files`/`count` result modes while preserving legacy
+  `pattern`/`glob` inputs. Container search probes in-container `rg` and otherwise uses a bounded
+  Python fallback that reports `engine:"grep"` and reduced-feature metadata. Electron packaging unpacks
+  the ripgrep binary from ASAR. Verified: focused LocalEnvironment and tool tests pass; production build
+  passes; `pnpm typecheck` reaches only the known pre-existing three test type errors; container
+  integration tests could not start here because Docker credential access and Podman socket access are
+  unavailable.
 - **`047` — Stale-safe file edits and diff previews.** Added shared SHA-256 revision and bounded
   unified-diff helpers for text mutations. `edit_file_tool` and `write_file_tool` now accept optional
   `expected_revision`, validate caller-supplied revisions before approval, re-read/re-hash after any

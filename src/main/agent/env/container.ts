@@ -3,6 +3,7 @@ import { relative, posix } from "path"
 import { resolveInWorkspace } from "../tools/workspace"
 import { captureSpawn } from "./spawn-util"
 import { hostCliEnv } from "./host-cli-env"
+import { buildRipgrepArgs, parseRipgrepJson } from "./ripgrep"
 import { systemSlug } from "../../config/system-name"
 import type {
   Environment,
@@ -12,7 +13,6 @@ import type {
   StatInfo,
   SearchOptions,
   SearchResult,
-  SearchMatch,
   ReadTextLinesOptions,
   ReadTextLinesResult,
 } from "./types"
@@ -451,62 +451,196 @@ PY
   }
 
   // Bulk content search as ONE in-container command (vs. hundreds of per-file
-  // exec round-trips). Prefers ripgrep; falls back to `grep -R` driven by `find`
-  // when rg isn't in the image. Both emit `path:line:text`, capped by `head`.
-  // Confinement holds (search runs under the mapped root, inside the mount);
-  // ignore rules match the host walk (prune skipDirs, size cap, skip binary,
-  // include dotfiles); the caller applies output truncation to the result.
+  // exec round-trips). Prefers ripgrep with JSON events. If rg is absent, uses a
+  // bounded Python fallback that receives all model-supplied data as argv.
   async search(opts: SearchOptions): Promise<SearchResult> {
     const root = this.toContainerPath(opts.root)
-    const pattern = shq(opts.pattern)
+    const hasRg = await this.runtimeCli([
+      "exec",
+      this.name,
+      "sh",
+      "-c",
+      "command -v rg >/dev/null 2>&1",
+    ])
 
-    // ripgrep: --no-ignore + --hidden so it walks like the host (no .gitignore
-    // handling, dotfiles included); we prune only the explicit skipDirs.
-    const rgExcludes = opts.skipDirs.map((d) => `-g ${shq(`!${d}`)}`).join(" ")
-    const rgGlob = opts.glob ? ` --iglob ${shq(`*${opts.glob}*`)}` : ""
-    const rg =
-      `rg --line-number --no-heading --with-filename --color never ` +
-      `--hidden --no-ignore --max-filesize ${opts.maxFileBytes} ` +
-      `${rgExcludes}${rgGlob} -e ${pattern} ${shq(root)}`
-
-    // grep fallback: find prunes skipDirs and bounds file size, xargs feeds grep
-    // -I (skip binary) -n -H -E. /dev/null guarantees a filename prefix.
-    const prune = opts.skipDirs.map((d) => `-name ${shq(d)}`).join(" -o ")
-    const findGlob = opts.glob ? ` -iname ${shq(`*${opts.glob}*`)}` : ""
-    const grep =
-      `find ${shq(root)} ${prune ? `\\( ${prune} \\) -prune -o ` : ""}` +
-      `-type f${findGlob} -size -${opts.maxFileBytes + 1}c -print0 ` +
-      `| xargs -0 -r grep -I -n -H -E -e ${pattern} /dev/null`
-
-    // Try rg, else grep. `head` enforces the global cap. rg/grep exit 1 on "no
-    // matches" (not an error); only treat a missing-everything case as failure.
-    const script =
-      `if command -v rg >/dev/null 2>&1; then ${rg}; else ${grep}; fi ` +
-      `| head -n ${opts.maxResults}`
-    const res = await this.runtimeCli(["exec", this.name, "sh", "-c", script])
-
-    const out = res.stdout.toString("utf8")
-    // A nonzero exit with no output is the "no matches" case — return empty.
-    if (!out) return { matches: [], capped: false }
-
-    const matches: SearchMatch[] = []
-    for (const raw of out.split("\n")) {
-      if (!raw) continue
-      // `path:line:text` — split on the first two colons only (text may contain
-      // colons; the path is absolute under the mount so the first colon is safe).
-      const c1 = raw.indexOf(":")
-      if (c1 < 0) continue
-      const c2 = raw.indexOf(":", c1 + 1)
-      if (c2 < 0) continue
-      const line = Number(raw.slice(c1 + 1, c2))
-      if (!Number.isFinite(line)) continue
-      matches.push({
-        path: raw.slice(0, c1),
-        line,
-        text: raw.slice(c2 + 1).trim(),
+    if (hasRg.code === 0) {
+      const env = await hostCliEnv()
+      const child = spawn(
+        this.cfg.runtime,
+        ["exec", this.name, "rg", ...buildRipgrepArgs({ ...opts, root })],
+        { env, stdio: ["ignore", "pipe", "pipe"] }
+      )
+      const res = await captureSpawn(child, {
+        timeoutMs: 30_000,
+        maxOutputBytes: 16 * 1024 * 1024,
+        signal: opts.signal,
       })
+      if (res.exitCode != null && res.exitCode > 1) {
+        const message = res.stdout.toString("utf8").trim()
+        throw new Error(message || "ripgrep failed")
+      }
+      return parseRipgrepJson(res.stdout, { ...opts, root })
     }
-    return { matches, capped: matches.length >= opts.maxResults }
+
+    return this.searchWithPythonFallback({ ...opts, root })
+  }
+
+  private async searchWithPythonFallback(
+    opts: SearchOptions
+  ): Promise<SearchResult> {
+    const script = `
+python3 - "$@" <<'PY'
+import fnmatch, json, os, re, sys
+
+root, query, mode, case_mode, result_mode = sys.argv[1:6]
+before = int(sys.argv[6])
+after = int(sys.argv[7])
+include_hidden = sys.argv[8] == "1"
+max_results = int(sys.argv[9])
+max_file_bytes = int(sys.argv[10])
+globs = json.loads(sys.argv[11])
+
+flags = 0
+if case_mode == "insensitive" or (case_mode == "smart" and query.lower() == query):
+    flags = re.IGNORECASE
+pattern = re.escape(query) if mode == "fixed" else query
+try:
+    regex = re.compile(pattern, flags)
+except re.error as e:
+    print(json.dumps({"error": str(e)}))
+    raise SystemExit(2)
+
+def posix_rel(path):
+    return os.path.relpath(path, root).replace(os.sep, "/")
+
+def hidden_path(rel):
+    return any(part.startswith(".") for part in rel.split("/") if part not in ("", "."))
+
+def glob_allowed(rel):
+    if not globs:
+        return True
+    included = False
+    has_include = any(not g.startswith("!") for g in globs)
+    if not has_include:
+        included = True
+    for glob in globs:
+        neg = glob.startswith("!")
+        pat = glob[1:] if neg else glob
+        if fnmatch.fnmatch(rel, pat) or fnmatch.fnmatch(os.path.basename(rel), pat):
+            included = not neg
+    return included
+
+matches = []
+files = []
+file_set = set()
+counts = {}
+total = 0
+capped = False
+
+for dirpath, dirnames, filenames in os.walk(root):
+    rel_dir = posix_rel(dirpath)
+    if not include_hidden:
+        dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+    for name in filenames:
+        path = os.path.join(dirpath, name)
+        rel = posix_rel(path)
+        if not include_hidden and hidden_path(rel):
+            continue
+        if not glob_allowed(rel):
+            continue
+        try:
+            if os.path.getsize(path) > max_file_bytes:
+                continue
+            with open(path, "rb") as f:
+                data = f.read()
+            if b"\\0" in data[:8000]:
+                continue
+            text = data.decode("utf-8")
+        except Exception:
+            continue
+
+        lines = text.splitlines()
+        matched_lines = []
+        for idx, line in enumerate(lines):
+            found = list(regex.finditer(line))
+            if not found:
+                continue
+            total += len(found)
+            counts[path] = counts.get(path, 0) + len(found)
+            if path not in file_set:
+                if result_mode == "files" and len(files) >= max_results:
+                    capped = True
+                else:
+                    file_set.add(path)
+                    files.append(path)
+            matched_lines.append((idx, found[0].start() + 1))
+
+        if result_mode == "content" and matched_lines:
+            emitted = set()
+            for idx, col in matched_lines:
+                start = max(0, idx - before)
+                end = min(len(lines), idx + after + 1)
+                for out_idx in range(start, end):
+                    if out_idx in emitted:
+                        continue
+                    emitted.add(out_idx)
+                    if len(matches) >= max_results:
+                        capped = True
+                        break
+                    matches.append({
+                        "path": path,
+                        "line": out_idx + 1,
+                        "column": col if out_idx == idx else None,
+                        "text": lines[out_idx],
+                        "kind": "match" if out_idx == idx else "context",
+                    })
+                if capped:
+                    break
+        if result_mode == "count" and len(counts) > max_results:
+            capped = True
+
+result = {
+    "engine": "grep",
+    "result": result_mode,
+    "matches": matches,
+    "files": files[:max_results],
+    "counts": [{"path": p, "matches": c} for p, c in list(counts.items())[:max_results]],
+    "totalMatches": total,
+    "capped": capped,
+    "reducedFeatures": ["container image does not include rg; Python fallback does not support .gitignore files"],
+}
+print(json.dumps(result))
+PY
+`
+    const res = await this.runtimeCli([
+      "exec",
+      this.name,
+      "sh",
+      "-c",
+      script,
+      "search-fallback",
+      opts.root,
+      opts.query,
+      opts.mode,
+      opts.case,
+      opts.result,
+      String(opts.beforeContext),
+      String(opts.afterContext),
+      opts.includeHidden ? "1" : "0",
+      String(opts.maxResults),
+      String(opts.maxFileBytes),
+      JSON.stringify(opts.globs),
+    ])
+    if (res.code !== 0) {
+      throw new Error(res.stderr.trim() || "search fallback failed")
+    }
+    const parsed = JSON.parse(res.stdout.toString("utf8")) as
+      | SearchResult
+      | { error: string }
+    if ("error" in parsed) {
+      throw new Error(`Invalid regular expression: ${parsed.error}`)
+    }
+    return parsed
   }
 
   async dispose(): Promise<void> {

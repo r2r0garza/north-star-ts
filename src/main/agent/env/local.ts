@@ -12,8 +12,8 @@ import {
 import { join } from "path"
 import { tmpdir } from "os"
 import { captureSpawn } from "./spawn-util"
-import { walkFiles, isBinaryBuffer } from "./walk"
 import { readHostTextLines } from "./read-text-lines"
+import { buildRipgrepArgs, parseRipgrepJson } from "./ripgrep"
 import { resolveInWorkspace, resolveInWorkspaceReal } from "../tools/workspace"
 import type {
   Environment,
@@ -23,7 +23,6 @@ import type {
   StatInfo,
   SearchOptions,
   SearchResult,
-  SearchMatch,
   ReadTextLinesOptions,
   ReadTextLinesResult,
 } from "./types"
@@ -41,6 +40,19 @@ export function normalizeHostShellCommand(
 
 function quoteWindowsArg(arg: string): string {
   return `"${arg.replace(/"/g, '\\"')}"`
+}
+
+function resolveRipgrepPath(): string {
+  try {
+    // Dynamic require keeps dev/test usable before node_modules is installed and
+    // lets electron-builder unpack the packaged binary from node_modules.
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const mod = require("@vscode/ripgrep") as { rgPath?: string }
+    if (mod.rgPath) return mod.rgPath
+  } catch {
+    // Fall through to PATH lookup for development and focused tests.
+  }
+  return "rg"
 }
 
 export function materializePythonHeredocCommand(
@@ -171,46 +183,26 @@ export class LocalEnvironment implements Environment {
     }
   }
 
-  // Grep the workspace by walking the tree (shared walkFiles — same prune/size
-  // rules the indexer uses) and regexing each line of every text file. In-process
-  // fs calls, so this stays as fast as before on the host. The glob/binary/cap
-  // logic that's search-specific stays here on top of the shared traversal.
+  // Grep the workspace through ripgrep, parsing `--json` so file names and
+  // content are never split with ad-hoc delimiters. Patterns/globs are argv data.
   async search(opts: SearchOptions): Promise<SearchResult> {
-    const regex = new RegExp(opts.pattern)
-    const matches: SearchMatch[] = []
-    let capped = false
-
-    for await (const file of walkFiles({
-      root: opts.root,
-      skipDirs: opts.skipDirs,
-      maxFileBytes: opts.maxFileBytes,
-    })) {
-      if (capped) break
-      const name = file.relPath.split("/").pop() ?? ""
-      if (opts.glob && !name.toLowerCase().includes(opts.glob)) continue
-      try {
-        const buf = await readFile(file.path)
-        if (isBinaryBuffer(buf)) continue
-        const lines = buf.toString("utf8").split("\n")
-        for (let i = 0; i < lines.length; i++) {
-          if (regex.test(lines[i])) {
-            matches.push({
-              path: file.path,
-              line: i + 1,
-              text: lines[i].trim(),
-            })
-            if (matches.length >= opts.maxResults) {
-              capped = true
-              break
-            }
-          }
-        }
-      } catch {
-        // Unreadable file — skip.
-      }
+    const child = spawn(resolveRipgrepPath(), buildRipgrepArgs(opts), {
+      cwd: opts.root,
+      shell: false,
+      detached: process.platform !== "win32",
+      stdio: ["ignore", "pipe", "pipe"],
+    })
+    const res = await captureSpawn(child, {
+      timeoutMs: 30_000,
+      maxOutputBytes: 16 * 1024 * 1024,
+      signal: opts.signal,
+      killGroup: true,
+    })
+    if (res.exitCode != null && res.exitCode > 1) {
+      const message = res.stdout.toString("utf8").trim()
+      throw new Error(message || "ripgrep failed")
     }
-
-    return { matches, capped }
+    return parseRipgrepJson(res.stdout, opts)
   }
 
   async dispose(): Promise<void> {

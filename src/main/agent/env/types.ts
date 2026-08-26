@@ -70,38 +70,59 @@ export interface ReadTextLinesResult {
   lineTooLong?: boolean
 }
 
+export type SearchMode = "regex" | "fixed"
+export type SearchCase = "smart" | "sensitive" | "insensitive"
+export type SearchResultMode = "content" | "files" | "count"
+
 // Inputs for a content search. Backend-agnostic: the tool resolves `root` in the
-// env's filesystem view and passes its constants (skip list, per-file size cap),
-// so both backends honor the same ignore rules and bounds.
+// env's filesystem view and passes concrete search policy, so both backends honor
+// the same mode, glob, ignore, hidden-file, context, and cap contract.
 export interface SearchOptions {
   // Absolute path (in this env's view) to search under.
   root: string
-  // The pattern. Validated as a JS RegExp by the caller; the Local backend uses
-  // it as a JS RegExp, the Container backend hands it to rg/grep (whose engines
-  // are close but not identical — literals and simple patterns behave the same).
-  pattern: string
-  // Optional case-insensitive substring filter on file names (e.g. ".ts").
-  glob?: string
-  // Stop after this many matching lines (the caller surfaces a "stopped" note).
+  // The pattern/query, passed to ripgrep as argv data.
+  query: string
+  mode: SearchMode
+  case: SearchCase
+  // Real ripgrep include/exclude globs. Legacy `glob` is normalized by the tool.
+  globs: string[]
+  result: SearchResultMode
+  beforeContext: number
+  afterContext: number
+  includeHidden: boolean
+  respectIgnore: boolean
+  // Stop after this many result items (content lines, files, or count rows).
   maxResults: number
-  // Directory names to prune anywhere in the tree (e.g. .git, node_modules).
-  skipDirs: string[]
-  // Skip files larger than this many bytes.
+  // Skip files larger than this many bytes where the engine supports it.
   maxFileBytes: number
+  signal?: AbortSignal
 }
 
-// One matching line. `path` is absolute in the env's filesystem view; the tool
-// renders it relative to the workspace root for display.
+// One matching or context line. `path` is absolute in the env's filesystem view;
+// the tool renders it relative to the workspace root for display.
 export interface SearchMatch {
   path: string
   line: number
+  column?: number
   text: string
+  kind?: "match" | "context"
+}
+
+export interface SearchCount {
+  path: string
+  matches: number
 }
 
 export interface SearchResult {
+  engine: "rg" | "grep"
+  result: SearchResultMode
   matches: SearchMatch[]
-  // True when the search stopped at maxResults (more matches exist).
+  files: string[]
+  counts: SearchCount[]
+  totalMatches?: number
+  // True when the search stopped at maxResults (more results may exist).
   capped: boolean
+  reducedFeatures?: string[]
 }
 
 export interface Environment {
