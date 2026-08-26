@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest"
 import { execFileSync } from "child_process"
-import { mkdtemp, rm, readFile } from "fs/promises"
+import { mkdtemp, rm, readFile, writeFile } from "fs/promises"
 import { hostname, tmpdir } from "os"
 import { join } from "path"
 import { ContainerEnvironment } from "./container"
@@ -250,6 +250,49 @@ for (const runtime of ["docker", "podman"] as const) {
           skippedLineRemainder: true,
         })
         expect(first.text).not.toContain("�")
+        expect(next).toMatchObject({
+          text: "second",
+          startLine: 2,
+          endLine: 2,
+          hasMore: false,
+          truncated: false,
+        })
+      })
+
+      it("streams through oversized physical lines larger than the read chunk", async () => {
+        await writeFile(
+          join(workspace, "huge-line.txt"),
+          `${"a".repeat(2 * 1024 * 1024)}\nsecond\n`,
+          "utf8"
+        )
+
+        const first = await env.readTextLines(
+          await env.resolve("huge-line.txt"),
+          {
+            offset: 1,
+            limit: 10,
+            maxBytes: 32,
+          }
+        )
+        const next = await env.readTextLines(
+          await env.resolve("huge-line.txt"),
+          {
+            offset: first.nextOffset!,
+            limit: 10,
+            maxBytes: 32,
+          }
+        )
+
+        expect(first.text).toBe("a".repeat(32))
+        expect(first).toMatchObject({
+          startLine: 1,
+          endLine: 1,
+          hasMore: true,
+          nextOffset: 2,
+          truncated: true,
+          lineTooLong: true,
+          skippedLineRemainder: true,
+        })
         expect(next).toMatchObject({
           text: "second",
           startLine: 2,

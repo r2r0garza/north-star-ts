@@ -210,13 +210,23 @@ export class ContainerEnvironment implements Environment {
     const maxBytes = Math.max(1, Math.floor(opts.maxBytes))
     const script = `
 python3 - "$1" "$2" "$3" "$4" <<'PY'
-import hashlib, json, os, sys
+import codecs, hashlib, json, os, sys
 
 path = sys.argv[1]
 offset = max(1, int(sys.argv[2]))
 limit = max(1, int(sys.argv[3]))
 max_bytes = max(1, int(sys.argv[4]))
 sniff = 8000
+chunk_size = 65536
+
+def utf8_safe_prefix(raw, byte_limit):
+    prefix = raw[:byte_limit]
+    while prefix:
+        try:
+            return prefix.decode("utf-8"), len(prefix)
+        except UnicodeDecodeError:
+            prefix = prefix[:-1]
+    return "", 0
 
 with open(path, "rb") as f:
     head = f.read(sniff)
@@ -233,58 +243,118 @@ with open(path, "rb") as f:
     truncated = False
     line_too_long = False
     skipped_line_remainder = False
-    reached_eof = True
-    raw = b""
+    reached_eof = False
+    stopped = False
+    pending = b""
+    line_bytes = 0
+    line_parts = []
+    prefix = bytearray()
+    decoder = codecs.getincrementaldecoder("utf-8")()
+    discarding_requested_line = False
 
-    for raw in f:
-        digest.update(raw)
-        try:
-            line = raw[:-1] if raw.endswith(b"\\n") else raw
-            text = line.decode("utf-8")
-        except UnicodeDecodeError:
-            print(json.dumps({"error": "decode"}))
-            raise SystemExit(0)
+    def reset_line():
+        global line_bytes, line_parts, prefix, decoder, discarding_requested_line
+        line_bytes = 0
+        line_parts = []
+        prefix = bytearray()
+        decoder = codecs.getincrementaldecoder("utf-8")()
+        discarding_requested_line = False
+
+    def append_requested(raw):
+        global line_bytes, line_parts, prefix, discarding_requested_line
+        if discarding_requested_line:
+            line_bytes += len(raw)
+            return
+        sep = 1 if lines else 0
+        if returned_bytes + sep + line_bytes + len(raw) <= max_bytes:
+            if not lines and len(prefix) < max_bytes:
+                prefix.extend(raw[: max_bytes - len(prefix)])
+            try:
+                text = decoder.decode(raw, final=False)
+            except UnicodeDecodeError:
+                print(json.dumps({"error": "decode"}))
+                raise SystemExit(0)
+            if text:
+                line_parts.append(text)
+            line_bytes += len(raw)
+            return
+
+        if not lines:
+            take = max(0, max_bytes - len(prefix))
+            if take:
+                prefix.extend(raw[:take])
+            line_bytes += len(raw)
+            discarding_requested_line = True
+            return
+
+        line_bytes += len(raw)
+        discarding_requested_line = True
+
+    def finish_line():
+        global current, end_line, returned_bytes, has_more, truncated
+        global line_too_long, skipped_line_remainder, stopped
 
         if current < offset:
             current += 1
-            continue
+            reset_line()
+            return
 
         if len(lines) >= limit:
             has_more = True
-            reached_eof = False
-            break
+            stopped = True
+            return
 
         sep = 1 if lines else 0
-        if returned_bytes + sep + len(line) > max_bytes:
+        if returned_bytes + sep + line_bytes > max_bytes:
             truncated = True
             has_more = True
-            reached_eof = False
             if not lines:
-                prefix = line[:max_bytes]
-                while prefix:
-                    try:
-                        text = prefix.decode("utf-8")
-                        break
-                    except UnicodeDecodeError:
-                        prefix = prefix[:-1]
-                else:
-                    text = ""
+                text, used = utf8_safe_prefix(bytes(prefix), max_bytes)
                 lines.append(text)
-                returned_bytes = len(prefix)
+                returned_bytes = used
                 end_line = current
                 line_too_long = True
                 skipped_line_remainder = True
-            break
+                current += 1
+            stopped = True
+            reset_line()
+            return
 
-        lines.append(text)
-        returned_bytes += sep + len(line)
+        try:
+            tail = decoder.decode(b"", final=True)
+        except UnicodeDecodeError:
+            print(json.dumps({"error": "decode"}))
+            raise SystemExit(0)
+        if tail:
+            line_parts.append(tail)
+        lines.append("".join(line_parts))
+        returned_bytes += sep + line_bytes
         end_line = current
         current += 1
+        reset_line()
 
-    if reached_eof:
-        tail = f.read()
-        if tail:
-            digest.update(tail)
+    while True:
+        chunk = f.read(chunk_size)
+        if not chunk:
+            reached_eof = True
+            break
+        digest.update(chunk)
+        pending += chunk
+        while pending and not stopped:
+            nl = pending.find(b"\\n")
+            if nl >= 0:
+                part = pending[:nl]
+                pending = pending[nl + 1:]
+                append_requested(part)
+                finish_line()
+            else:
+                append_requested(pending)
+                pending = b""
+        if stopped:
+            break
+
+    if reached_eof and (line_bytes > 0 or os.stat(path).st_size == 0):
+        finish_line()
 
 result = {
     "text": "\\n".join(lines),
