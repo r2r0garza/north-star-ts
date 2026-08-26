@@ -10,6 +10,8 @@ const DEFAULT_MAX_LINES = 2000
 export interface TruncateOptions {
   maxBytes?: number
   maxLines?: number
+  recoveryHint?: string
+  metadata?: Record<string, unknown>
 }
 
 export interface TruncateResult {
@@ -57,8 +59,14 @@ export function truncateForModel(
 
   if (!truncated) return { text: out, truncated: false }
 
-  const note = `[truncated: ${reason} — use read_file with offset to see more]`
+  const metadata = opts.metadata ? ` ${JSON.stringify(opts.metadata)}` : ""
+  const recovery = opts.recoveryHint ? ` — ${opts.recoveryHint}` : ""
+  const note = `[truncated: ${reason}${recovery}${metadata}]`
   return { text: `${out}\n${note}`, truncated: true, note }
+}
+
+export function renderMetadata(metadata: Record<string, unknown>): string {
+  return `[metadata] ${JSON.stringify(metadata)}`
 }
 
 // A consistent error format tools return for *expected* failures (file not

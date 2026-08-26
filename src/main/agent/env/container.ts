@@ -13,6 +13,8 @@ import type {
   SearchOptions,
   SearchResult,
   SearchMatch,
+  ReadTextLinesOptions,
+  ReadTextLinesResult,
 } from "./types"
 
 export interface ContainerConfig {
@@ -183,6 +185,131 @@ export class ContainerEnvironment implements Environment {
       throw new Error(res.stderr.trim() || `cannot read ${path}`)
     }
     return Buffer.from(res.stdout.toString("utf8"), "base64")
+  }
+
+  async readTextLines(
+    path: string,
+    opts: ReadTextLinesOptions
+  ): Promise<ReadTextLinesResult> {
+    const p = this.toContainerPath(path)
+    const offset = Math.max(1, Math.floor(opts.offset))
+    const limit = Math.max(1, Math.floor(opts.limit))
+    const maxBytes = Math.max(1, Math.floor(opts.maxBytes))
+    const script = `
+python3 - "$1" "$2" "$3" "$4" <<'PY'
+import hashlib, json, os, sys
+
+path = sys.argv[1]
+offset = max(1, int(sys.argv[2]))
+limit = max(1, int(sys.argv[3]))
+max_bytes = max(1, int(sys.argv[4]))
+sniff = 8000
+
+with open(path, "rb") as f:
+    head = f.read(sniff)
+    if b"\\0" in head:
+        print(json.dumps({"error": "binary"}))
+        raise SystemExit(0)
+    f.seek(0)
+    digest = hashlib.sha256()
+    lines = []
+    current = 1
+    end_line = 0
+    returned_bytes = 0
+    has_more = False
+    truncated = False
+    line_too_long = False
+    reached_eof = True
+    raw = b""
+
+    for raw in f:
+        digest.update(raw)
+        try:
+            line = raw[:-1] if raw.endswith(b"\\n") else raw
+            text = line.decode("utf-8")
+        except UnicodeDecodeError:
+            print(json.dumps({"error": "decode"}))
+            raise SystemExit(0)
+
+        if current < offset:
+            current += 1
+            continue
+
+        if len(lines) >= limit:
+            has_more = True
+            reached_eof = False
+            break
+
+        sep = 1 if lines else 0
+        if returned_bytes + sep + len(line) > max_bytes:
+            truncated = True
+            has_more = True
+            reached_eof = False
+            if not lines:
+                prefix = line[:max_bytes]
+                while prefix:
+                    try:
+                        text = prefix.decode("utf-8")
+                        break
+                    except UnicodeDecodeError:
+                        prefix = prefix[:-1]
+                else:
+                    text = ""
+                lines.append(text)
+                returned_bytes = len(prefix)
+                end_line = current
+                line_too_long = True
+            break
+
+        lines.append(text)
+        returned_bytes += sep + len(line)
+        end_line = current
+        current += 1
+
+    if reached_eof:
+        tail = f.read()
+        if tail:
+            digest.update(tail)
+
+result = {
+    "text": "\\n".join(lines),
+    "startLine": offset,
+    "endLine": end_line if lines else offset - 1,
+    "hasMore": has_more,
+    "fileBytes": os.stat(path).st_size,
+    "truncated": truncated,
+}
+if has_more:
+    result["nextOffset"] = end_line if line_too_long else end_line + 1
+if reached_eof:
+    result["revision"] = digest.hexdigest()
+if line_too_long:
+    result["lineTooLong"] = True
+print(json.dumps(result))
+PY
+`
+    const res = await this.runtimeCli([
+      "exec",
+      this.name,
+      "sh",
+      "-c",
+      script,
+      "read-text-lines",
+      p,
+      String(offset),
+      String(limit),
+      String(maxBytes),
+    ])
+    if (res.code !== 0) {
+      throw new Error(res.stderr.trim() || `cannot read ${path}`)
+    }
+    const parsed = JSON.parse(res.stdout.toString("utf8")) as
+      | ReadTextLinesResult
+      | { error: string }
+    if ("error" in parsed) {
+      throw new Error(parsed.error === "binary" ? "BINARY_FILE" : parsed.error)
+    }
+    return parsed
   }
 
   async writeFile(path: string, data: string): Promise<void> {

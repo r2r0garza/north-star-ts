@@ -1,13 +1,16 @@
-import { readFile as hostReadFile, stat as hostStat } from "fs/promises"
+import { stat as hostStat } from "fs/promises"
 import { basename } from "path"
 import type { Tool, ToolContext } from "./types"
 import { LocalEnvironment } from "../env/local"
 import type { Environment, StatInfo } from "../env/types"
-import { truncateForModel, toolError } from "./output"
+import { readHostTextLines } from "../env/read-text-lines"
+import { renderMetadata, toolError } from "./output"
 
 // Largest file we'll read into context. Matches the attachment cap in
 // agent/index.ts so the agent's two file-ingestion paths are bounded alike.
 const MAX_READ_BYTES = 256 * 1024
+const DEFAULT_LIMIT = 2000
+const MAX_LIMIT = 2000
 
 // Where a readable file lives: inside the env (workspace) or on the host (a Chat
 // attachment, which is an arbitrary absolute host path the env doesn't apply to).
@@ -42,7 +45,7 @@ async function resolveReadable(
 
 // Reads a UTF-8 text file inside the workspace, returning it with cat -n-style
 // line numbers so the model (and edit_file) can reference exact lines. Supports
-// offset/limit pagination for large files and refuses oversized/binary files.
+// real offset/limit pagination for large files and returns continuation metadata.
 export const readFileTool: Tool = {
   definition: {
     type: "function",
@@ -79,16 +82,32 @@ export const readFileTool: Tool = {
     if (!path) return toolError("bad_args", "A `path` is required.")
 
     const env = ctx.env ?? new LocalEnvironment(ctx.workspace)
-    const readable = await resolveReadable(ctx, env, path)
+    let readable
+    try {
+      readable = await resolveReadable(ctx, env, path)
+    } catch (error) {
+      return toolError("not_allowed", (error as Error).message)
+    }
 
     // Workspace reads go through the env (host or container); a Chat attachment is
     // an arbitrary host path, so it's read directly from the host fs.
     const statAt = (p: string): Promise<StatInfo> =>
       readable.source === "env" ? env.stat(p) : hostStat(p)
-    const readAt = (p: string): Promise<Buffer> =>
-      readable.source === "env" ? env.readFile(p) : hostReadFile(p)
-
     const target = readable.path
+    const offset =
+      typeof args.offset === "number" && args.offset > 0
+        ? Math.floor(args.offset)
+        : 1
+    const requestedLimit =
+      typeof args.limit === "number" && args.limit > 0
+        ? Math.floor(args.limit)
+        : DEFAULT_LIMIT
+    const limit = Math.min(requestedLimit, MAX_LIMIT)
+    const readOpts = { offset, limit, maxBytes: MAX_READ_BYTES }
+    const readTextAt = (p: string) =>
+      readable.source === "env"
+        ? env.readTextLines(p, readOpts)
+        : readHostTextLines(p, readOpts)
 
     let info
     try {
@@ -99,47 +118,49 @@ export const readFileTool: Tool = {
     if (!info.isFile()) {
       return toolError("not_a_file", `Not a regular file: ${path}`)
     }
-    if (info.size > MAX_READ_BYTES) {
+
+    let window
+    try {
+      window = await readTextAt(target)
+    } catch (error) {
+      if ((error as Error).message === "BINARY_FILE") {
+        return toolError(
+          "binary",
+          `File appears to be binary, not text: ${path}`
+        )
+      }
       return toolError(
-        "too_large",
-        `File is ${info.size} bytes, over the ${MAX_READ_BYTES}-byte read limit.`,
-        "read a smaller file, or use offset/limit to page through it"
+        "read_failed",
+        `Could not read ${path}: ${(error as Error).message}`
       )
     }
 
-    const buf = await readAt(target)
-    // Binary detection: a NUL byte in the first chunk means this isn't text.
-    if (buf.subarray(0, 8000).includes(0)) {
-      return toolError("binary", `File appears to be binary, not text: ${path}`)
-    }
-
-    const content = buf.toString("utf8")
-    const allLines = content.split("\n")
-
-    const offset =
-      typeof args.offset === "number" && args.offset > 0
-        ? Math.floor(args.offset)
-        : 1
-    const limit =
-      typeof args.limit === "number" && args.limit > 0
-        ? Math.floor(args.limit)
-        : 2000
-
-    const start = offset - 1
-    const slice = allLines.slice(start, start + limit)
-    if (slice.length === 0) {
+    if (!window.text && window.endLine < window.startLine) {
       return toolError(
         "out_of_range",
-        `offset ${offset} is past the end of the file (${allLines.length} lines).`
+        `offset ${offset} is past the end of the file.`
       )
     }
 
     // cat -n style: right-aligned line numbers + tab + content.
-    const width = String(start + slice.length).length
-    const numbered = slice
-      .map((line, i) => `${String(start + i + 1).padStart(width)}\t${line}`)
+    const lines = window.text.split("\n")
+    const width = String(window.endLine).length
+    const numbered = lines
+      .map(
+        (line, i) => `${String(window.startLine + i).padStart(width)}\t${line}`
+      )
       .join("\n")
 
-    return truncateForModel(numbered).text
+    return `${numbered}\n${renderMetadata({
+      startLine: window.startLine,
+      endLine: window.endLine,
+      hasMore: window.hasMore,
+      nextOffset: window.nextOffset,
+      fileBytes: window.fileBytes,
+      truncated: window.truncated,
+      revision: window.revision,
+      lineTooLong: window.lineTooLong,
+      limitCapped: requestedLimit !== limit || undefined,
+    })}`
   },
 }

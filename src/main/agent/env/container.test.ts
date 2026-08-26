@@ -134,6 +134,39 @@ for (const runtime of ["docker", "podman"] as const) {
         expect(names.some((p) => p.includes("node_modules"))).toBe(false)
         expect(names.some((p) => p.endsWith("keep.md"))).toBe(false)
       })
+
+      it("reads bounded line windows inside the container", async () => {
+        await env.writeFile(
+          await env.resolve("page.txt"),
+          "one\n日本語 café 🚀\nthree\nfour\n"
+        )
+        const first = await env.readTextLines(await env.resolve("page.txt"), {
+          offset: 2,
+          limit: 2,
+          maxBytes: 256 * 1024,
+        })
+        const next = await env.readTextLines(await env.resolve("page.txt"), {
+          offset: first.nextOffset!,
+          limit: 2,
+          maxBytes: 256 * 1024,
+        })
+
+        expect(first).toMatchObject({
+          text: "日本語 café 🚀\nthree",
+          startLine: 2,
+          endLine: 3,
+          hasMore: true,
+          nextOffset: 4,
+        })
+        expect(first.text).not.toContain("�")
+        expect(next).toMatchObject({
+          text: "four",
+          startLine: 4,
+          endLine: 4,
+          hasMore: false,
+          truncated: false,
+        })
+      })
     }
   )
 }

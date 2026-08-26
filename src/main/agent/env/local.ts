@@ -13,6 +13,7 @@ import { join } from "path"
 import { tmpdir } from "os"
 import { captureSpawn } from "./spawn-util"
 import { walkFiles, isBinaryBuffer } from "./walk"
+import { readHostTextLines } from "./read-text-lines"
 import { resolveInWorkspace, resolveInWorkspaceReal } from "../tools/workspace"
 import type {
   Environment,
@@ -23,6 +24,8 @@ import type {
   SearchOptions,
   SearchResult,
   SearchMatch,
+  ReadTextLinesOptions,
+  ReadTextLinesResult,
 } from "./types"
 
 export function normalizeHostShellCommand(
@@ -89,6 +92,13 @@ export class LocalEnvironment implements Environment {
 
   readFile(path: string): Promise<Buffer> {
     return readFile(path)
+  }
+
+  readTextLines(
+    path: string,
+    opts: ReadTextLinesOptions
+  ): Promise<ReadTextLinesResult> {
+    return readHostTextLines(path, opts)
   }
 
   writeFile(path: string, data: string): Promise<void> {

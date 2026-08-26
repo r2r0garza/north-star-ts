@@ -18,6 +18,9 @@ function fakeEnv(): Environment & { files: Map<string, string> } {
       if (content === undefined) throw new Error("ENOENT")
       return Buffer.from(content, "utf8")
     },
+    readTextLines: async () => {
+      throw new Error("not implemented")
+    },
     writeFile: async (p: string, data: string) => {
       files.set(p, data)
     },

@@ -245,6 +245,94 @@ describe("LocalEnvironment file ops", () => {
   })
 })
 
+describe("LocalEnvironment.readTextLines", () => {
+  it("pages through files larger than the old whole-file cap", async () => {
+    const lines = Array.from({ length: 12_000 }, (_, i) => `line-${i + 1}`)
+    await writeFile(join(workspace, "large.txt"), `${lines.join("\n")}\n`)
+
+    const first = await env.readTextLines(join(workspace, "large.txt"), {
+      offset: 1,
+      limit: 3,
+      maxBytes: 256 * 1024,
+    })
+    const middle = await env.readTextLines(join(workspace, "large.txt"), {
+      offset: first.nextOffset!,
+      limit: 3,
+      maxBytes: 256 * 1024,
+    })
+    const final = await env.readTextLines(join(workspace, "large.txt"), {
+      offset: 11_999,
+      limit: 3,
+      maxBytes: 256 * 1024,
+    })
+
+    expect(first).toMatchObject({
+      text: "line-1\nline-2\nline-3",
+      startLine: 1,
+      endLine: 3,
+      hasMore: true,
+      nextOffset: 4,
+    })
+    expect(middle.text).toBe("line-4\nline-5\nline-6")
+    expect(final).toMatchObject({
+      text: "line-11999\nline-12000",
+      startLine: 11999,
+      endLine: 12000,
+      hasMore: false,
+      truncated: false,
+    })
+    expect(final.revision).toMatch(/^[a-f0-9]{64}$/)
+  })
+
+  it("preserves UTF-8 characters and reports byte truncation metadata", async () => {
+    await writeFile(join(workspace, "utf8.txt"), "alpha\n日本語 café 🚀\nomega")
+    const result = await env.readTextLines(join(workspace, "utf8.txt"), {
+      offset: 2,
+      limit: 10,
+      maxBytes: 20,
+    })
+    expect(result.text).toBe("日本語 café 🚀")
+    expect(result).toMatchObject({
+      startLine: 2,
+      endLine: 2,
+      hasMore: true,
+      nextOffset: 3,
+      truncated: true,
+    })
+    expect(result.text).not.toContain("�")
+  })
+
+  it("returns a bounded UTF-8 prefix for a single oversized line", async () => {
+    await writeFile(join(workspace, "long.txt"), "日本語".repeat(1000))
+    const result = await env.readTextLines(join(workspace, "long.txt"), {
+      offset: 1,
+      limit: 10,
+      maxBytes: 14,
+    })
+    expect(Buffer.byteLength(result.text, "utf8")).toBeLessThanOrEqual(14)
+    expect(result).toMatchObject({
+      startLine: 1,
+      endLine: 1,
+      hasMore: true,
+      nextOffset: 1,
+      truncated: true,
+      lineTooLong: true,
+    })
+    expect(result.text).not.toContain("�")
+  })
+
+  it("rejects binary files based on the initial chunk", async () => {
+    await writeFile(join(workspace, "bin.dat"), Buffer.from([65, 0, 66]))
+    await expect(
+      env.readTextLines(join(workspace, "bin.dat"), {
+        offset: 1,
+        limit: 10,
+        maxBytes: 1024,
+      })
+    ).rejects.toThrow("BINARY_FILE")
+  })
+})
+
 describe("LocalEnvironment.search", () => {
   const baseOpts = {
     skipDirs: [".git", "node_modules"],

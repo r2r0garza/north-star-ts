@@ -49,6 +49,27 @@ export interface StatInfo {
   isDirectory(): boolean
 }
 
+export interface ReadTextLinesOptions {
+  // 1-based line number to start at.
+  offset: number
+  // Maximum complete lines to return.
+  limit: number
+  // Maximum UTF-8 bytes of file content to return.
+  maxBytes: number
+}
+
+export interface ReadTextLinesResult {
+  text: string
+  startLine: number
+  endLine: number
+  hasMore: boolean
+  nextOffset?: number
+  fileBytes: number
+  truncated: boolean
+  revision?: string
+  lineTooLong?: boolean
+}
+
 // Inputs for a content search. Backend-agnostic: the tool resolves `root` in the
 // env's filesystem view and passes its constants (skip list, per-file size cap),
 // so both backends honor the same ignore rules and bounds.
@@ -91,6 +112,10 @@ export interface Environment {
   resolveLexical(path: string): string
 
   readFile(path: string): Promise<Buffer>
+  readTextLines(
+    path: string,
+    opts: ReadTextLinesOptions
+  ): Promise<ReadTextLinesResult>
   // Write utf8 text. Combined with `rename` this lets tools keep their atomic-
   // write orchestration (write temp sibling, then rename over the target).
   writeFile(path: string, data: string): Promise<void>
