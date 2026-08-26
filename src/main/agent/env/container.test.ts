@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest"
-import { mkdtemp, rm, readFile, writeFile } from "fs/promises"
+import { mkdtemp, rm, readFile, writeFile, symlink } from "fs/promises"
 import { hostname, tmpdir } from "os"
 import { join } from "path"
 import { ContainerEnvironment } from "./container"
@@ -53,6 +53,14 @@ for (const runtime of ["docker", "podman"] as const) {
         await env.writeFile(target, "from-container")
         const onHost = await readFile(join(workspace, "probe.txt"), "utf8")
         expect(onHost).toBe("from-container")
+      })
+
+      it("rejects paths whose in-container realpath leaves the mount", async () => {
+        await symlink("/tmp", join(workspace, "external-link"))
+
+        await expect(env.resolve("external-link")).rejects.toThrow(
+          "outside the workspace"
+        )
       })
 
       it("installs a file only when the destination is absent", async () => {

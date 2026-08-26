@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest"
 import { tmpdir } from "os"
+import { mkdtemp, rm, symlink } from "fs/promises"
+import { isAbsolute, join, relative, resolve } from "path"
 import {
   execCommandTool,
   pollCommandTool,
@@ -71,17 +73,37 @@ class FakeCommandHandle implements CommandSessionHandle {
   }
 }
 
-function fakeEnv(chunks: CommandChunk[]): Environment {
+function fakeEnv(chunks: CommandChunk[]): Environment & {
+  spawnedCwds: string[]
+  resolvedPaths: string[]
+} {
+  const spawnedCwds: string[] = []
+  const resolvedPaths: string[] = []
   return {
+    spawnedCwds,
+    resolvedPaths,
+    async resolve(path: string): Promise<string> {
+      const resolved = resolve("/workspace", path || ".")
+      resolvedPaths.push(resolved)
+      const rel = relative("/workspace", resolved)
+      if (rel.startsWith("..") || isAbsolute(rel)) {
+        throw new Error("outside the workspace")
+      }
+      return resolved
+    },
+    resolveLexical(path: string): string {
+      return resolve("/workspace", path || ".")
+    },
     async spawnCommand(
       _command: string,
-      _opts: SpawnCommandOptions
+      opts: SpawnCommandOptions
     ): Promise<CommandSessionHandle> {
+      spawnedCwds.push(opts.cwd)
       const handle = new FakeCommandHandle(chunks)
       handle.start()
       return handle
     },
-  } as Environment
+  } as Environment & { spawnedCwds: string[]; resolvedPaths: string[] }
 }
 
 afterEach(() => {
@@ -129,6 +151,63 @@ describe("command session tools", () => {
     expect(analysis?.candidateWritePaths?.[0]).toContain("out.txt")
     expect(analysis?.segments?.map((s) => s.executable)).toEqual(["echo"])
   })
+
+  it("resolves cwd through the environment before approval and spawn", async () => {
+    const env = fakeEnv([
+      { stream: "stdout", data: Buffer.from("ok\n", "utf8") },
+    ])
+    const seen: Array<{ cwd?: string; workspace?: string }> = []
+
+    await execCommandTool.execute(
+      { command: "pwd", cwd: "nested", yield_ms: 10 },
+      ctx({
+        env,
+        gate: async (action) => {
+          const detail = action.detail as
+            | { cwd?: string; workspace?: string }
+            | undefined
+          seen.push({
+            cwd: detail?.cwd,
+            workspace: detail?.workspace,
+          })
+          return "approved"
+        },
+      })
+    )
+
+    expect(seen).toEqual([{ cwd: "/workspace/nested", workspace: "/workspace" }])
+    expect(env.spawnedCwds).toEqual(["/workspace/nested"])
+  })
+
+  it.skipIf(process.platform === "win32")(
+    "rejects a cwd symlink that resolves outside the workspace before approval",
+    async () => {
+      const workspace = await mkdtemp(join(tmpdir(), "cmd-cwd-ws-"))
+      const external = await mkdtemp(join(tmpdir(), "cmd-cwd-external-"))
+      let gateCalls = 0
+      try {
+        await symlink(external, join(workspace, "link"))
+
+        const result = await execCommandTool.execute(
+          { command: "pwd", cwd: "link", yield_ms: 10 },
+          ctx({
+            workspace,
+            gate: async () => {
+              gateCalls += 1
+              return "approved"
+            },
+          })
+        )
+
+        expect(result).toContain("ERROR[bad_cwd]")
+        expect(gateCalls).toBe(0)
+        expect(testCommandSessions.size).toBe(0)
+      } finally {
+        await rm(workspace, { recursive: true, force: true })
+        await rm(external, { recursive: true, force: true })
+      }
+    }
+  )
 
   it("returns a running session and polls without duplicate output", async () => {
     const started = parseResult(

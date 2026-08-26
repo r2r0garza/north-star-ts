@@ -104,7 +104,7 @@ export class ContainerEnvironment implements Environment {
   // cwd produce MOUNT-rooted paths, so this is mostly identity; it also maps a
   // host workspace path (exec passes ctx.workspace as cwd) back under MOUNT.
   private toContainerPath(p: string): string {
-    if (p.startsWith(MOUNT)) return p
+    if (isInsideContainerPath(MOUNT, p)) return p
     // A host path inside the workspace → MOUNT + relative segment.
     const rel = relative(this.cfg.workspace, p)
     return rel ? posix.join(MOUNT, rel.split(/[\\/]/).join("/")) : MOUNT
@@ -178,9 +178,60 @@ export class ContainerEnvironment implements Environment {
   }
 
   async resolve(path: string): Promise<string> {
-    // MVP: lexical guard only. Full realpath-in-container parity is a follow-up
-    // (see .plan/006) — the mount boundary already confines real access to MOUNT.
-    return this.resolveLexical(path)
+    const target = this.resolveLexical(path)
+    const script = `
+import json, os, sys
+
+mount = sys.argv[1]
+target = sys.argv[2]
+
+def inside(parent, child):
+    rel = os.path.relpath(child, parent)
+    return rel == "." or (not rel.startswith("..") and not os.path.isabs(rel))
+
+probe = target
+suffix = []
+while True:
+    try:
+        real = os.path.realpath(probe)
+        if not inside(mount, real):
+            print(json.dumps({"error": "outside"}))
+            sys.exit(2)
+        print(json.dumps({"path": os.path.normpath(os.path.join(real, *reversed(suffix)))}))
+        sys.exit(0)
+    except OSError:
+        parent = os.path.dirname(probe)
+        if parent == probe:
+            print(json.dumps({"error": "unvalidated"}))
+            sys.exit(3)
+        suffix.append(os.path.basename(probe))
+        probe = parent
+`
+    const res = await this.runtimeCli([
+      "exec",
+      this.name,
+      "python3",
+      "-c",
+      script,
+      MOUNT,
+      target,
+    ])
+    if (res.code !== 0) {
+      throw new Error(
+        res.stderr.trim() || `Path "${path}" could not be validated.`
+      )
+    }
+    const parsed = JSON.parse(res.stdout.toString("utf8")) as
+      | { path: string }
+      | { error: string }
+    if ("error" in parsed) {
+      throw new Error(
+        parsed.error === "outside"
+          ? `Path "${path}" resolves (via symlink) outside the workspace and is not allowed.`
+          : `Path "${path}" could not be validated against the workspace.`
+      )
+    }
+    return parsed.path
   }
 
   async readFile(path: string): Promise<Buffer> {
@@ -808,6 +859,11 @@ PY
 // spaces or quotes, so they must be quoted before interpolation.
 function shq(s: string): string {
   return `'${s.replace(/'/g, `'\\''`)}'`
+}
+
+function isInsideContainerPath(parent: string, child: string): boolean {
+  const rel = posix.relative(parent, child)
+  return rel === "" || (!rel.startsWith("..") && !posix.isAbsolute(rel))
 }
 
 class ContainerCommandHandle

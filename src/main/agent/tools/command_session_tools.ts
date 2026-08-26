@@ -5,7 +5,6 @@ import { LocalEnvironment } from "../env/local"
 import type { CommandExit, CommandSessionHandle } from "../env/types"
 import type { ToolAction } from "../approval/types"
 import { truncateForModel, toolError } from "./output"
-import { resolveInWorkspace } from "./workspace"
 import { TOOL_EFFECTS, type Tool, type ToolContext } from "./types"
 
 const DEFAULT_TIMEOUT_MS = 30_000
@@ -250,10 +249,25 @@ async function startCommand(
   const timeoutMs = timeoutArg(args.timeout_ms)
   const maxOutputBytes = outputCap(args.max_output_bytes, DEFAULT_OUTPUT_BYTES)
   const cwdArg = typeof args.cwd === "string" ? args.cwd : ""
-  const cwd = cwdArg ? resolveInWorkspace(ctx.workspace, cwdArg) : ctx.workspace
+  const env = ctx.env ?? new LocalEnvironment(ctx.workspace)
+  let workspaceRoot: string
+  let cwd: string
+  try {
+    workspaceRoot = await env.resolve("")
+    cwd = cwdArg ? await env.resolve(cwdArg) : workspaceRoot
+  } catch (err) {
+    return {
+      error: toolError(
+        "bad_cwd",
+        err instanceof Error
+          ? err.message
+          : "Working directory is outside the workspace."
+      ),
+    }
+  }
   const shellAnalysis = analyzeShellCommand(command, process.platform, {
     cwd,
-    workspace: ctx.workspace,
+    workspace: workspaceRoot,
   })
   const envProfile =
     ctx.env instanceof LocalEnvironment
@@ -266,7 +280,13 @@ async function startCommand(
     kind: "shell",
     summary: `$ ${command}`,
     identity: shellAnalysis.identity,
-    detail: { command, cwd, shellAnalysis, runtimeProfile: envProfile },
+    detail: {
+      command,
+      cwd,
+      workspace: workspaceRoot,
+      shellAnalysis,
+      runtimeProfile: envProfile,
+    },
   }
   const outcome = ctx.gate ? await ctx.gate(action) : ("denied" as const)
   if (outcome === "blocked") {
@@ -287,9 +307,29 @@ async function startCommand(
     }
   }
 
-  const env = ctx.env ?? new LocalEnvironment(ctx.workspace)
+  let spawnCwd: string
+  try {
+    spawnCwd = cwdArg ? await env.resolve(cwdArg) : await env.resolve("")
+    if (spawnCwd !== cwd) {
+      return {
+        error: toolError(
+          "bad_cwd",
+          "Working directory changed after approval and was not run."
+        ),
+      }
+    }
+  } catch (err) {
+    return {
+      error: toolError(
+        "bad_cwd",
+        err instanceof Error
+          ? err.message
+          : "Working directory is outside the workspace."
+      ),
+    }
+  }
   const handle = await env.spawnCommand(command, {
-    cwd,
+    cwd: spawnCwd,
     tty: args.tty === true,
     signal: ctx.signal,
   })
@@ -601,6 +641,10 @@ function numberArg(value: unknown, fallback: number): number {
 }
 
 export const testCommandSessions = {
+  get size(): number {
+    return sessions.size
+  },
+
   clear(): void {
     for (const session of sessions.values()) {
       clearTimeout(session.timeout)
