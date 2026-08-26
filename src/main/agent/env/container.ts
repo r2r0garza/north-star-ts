@@ -231,6 +231,7 @@ with open(path, "rb") as f:
     has_more = False
     truncated = False
     line_too_long = False
+    skipped_line_remainder = False
     reached_eof = True
     raw = b""
 
@@ -271,6 +272,7 @@ with open(path, "rb") as f:
                 returned_bytes = len(prefix)
                 end_line = current
                 line_too_long = True
+                skipped_line_remainder = True
             break
 
         lines.append(text)
@@ -292,11 +294,13 @@ result = {
     "truncated": truncated,
 }
 if has_more:
-    result["nextOffset"] = end_line if line_too_long else end_line + 1
+    result["nextOffset"] = end_line + 1
 if reached_eof:
     result["revision"] = digest.hexdigest()
 if line_too_long:
     result["lineTooLong"] = True
+if skipped_line_remainder:
+    result["skippedLineRemainder"] = True
 print(json.dumps(result))
 PY
 `

@@ -222,6 +222,42 @@ for (const runtime of ["docker", "podman"] as const) {
           truncated: false,
         })
       })
+
+      it("advances past oversized lines inside the container", async () => {
+        await env.writeFile(
+          await env.resolve("long.txt"),
+          `${"日本語".repeat(1000)}\nsecond`
+        )
+        const first = await env.readTextLines(await env.resolve("long.txt"), {
+          offset: 1,
+          limit: 10,
+          maxBytes: 14,
+        })
+        const next = await env.readTextLines(await env.resolve("long.txt"), {
+          offset: first.nextOffset!,
+          limit: 10,
+          maxBytes: 14,
+        })
+
+        expect(Buffer.byteLength(first.text, "utf8")).toBeLessThanOrEqual(14)
+        expect(first).toMatchObject({
+          startLine: 1,
+          endLine: 1,
+          hasMore: true,
+          nextOffset: 2,
+          truncated: true,
+          lineTooLong: true,
+          skippedLineRemainder: true,
+        })
+        expect(first.text).not.toContain("�")
+        expect(next).toMatchObject({
+          text: "second",
+          startLine: 2,
+          endLine: 2,
+          hasMore: false,
+          truncated: false,
+        })
+      })
     }
   )
 }

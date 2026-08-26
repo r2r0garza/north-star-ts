@@ -40,6 +40,7 @@ export async function readHostTextLines(
   let hasMore = false
   let truncated = false
   let lineTooLong = false
+  let skippedLineRemainder = false
   let reachedEof = false
   let stoppedEarly = false
 
@@ -71,6 +72,7 @@ export async function readHostTextLines(
         returnedBytes = Buffer.byteLength(prefix, "utf8")
         endLine = currentLine
         lineTooLong = true
+        skippedLineRemainder = true
       }
       stop()
       return false
@@ -144,10 +146,11 @@ export async function readHostTextLines(
     startLine: offset,
     endLine,
     hasMore,
-    nextOffset: hasMore ? endLine + (lineTooLong ? 0 : 1) : undefined,
+    nextOffset: hasMore ? endLine + 1 : undefined,
     fileBytes: info.size,
     truncated,
     revision: reachedEof ? hash.digest("hex") : undefined,
     lineTooLong: lineTooLong || undefined,
+    skippedLineRemainder: skippedLineRemainder || undefined,
   }
 }

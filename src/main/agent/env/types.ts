@@ -117,6 +117,7 @@ export interface ReadTextLinesResult {
   truncated: boolean
   revision?: string
   lineTooLong?: boolean
+  skippedLineRemainder?: boolean
 }
 
 export type SearchMode = "regex" | "fixed"

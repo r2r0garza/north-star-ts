@@ -388,23 +388,41 @@ describe("LocalEnvironment.readTextLines", () => {
     expect(result.text).not.toContain("�")
   })
 
-  it("returns a bounded UTF-8 prefix for a single oversized line", async () => {
-    await writeFile(join(workspace, "long.txt"), "日本語".repeat(1000))
-    const result = await env.readTextLines(join(workspace, "long.txt"), {
+  it("returns a bounded UTF-8 prefix and advances past an oversized line", async () => {
+    await writeFile(
+      join(workspace, "long.txt"),
+      `${"日本語".repeat(1000)}\nsecond`
+    )
+    const first = await env.readTextLines(join(workspace, "long.txt"), {
       offset: 1,
       limit: 10,
       maxBytes: 14,
     })
-    expect(Buffer.byteLength(result.text, "utf8")).toBeLessThanOrEqual(14)
-    expect(result).toMatchObject({
+    const next = await env.readTextLines(join(workspace, "long.txt"), {
+      offset: first.nextOffset!,
+      limit: 10,
+      maxBytes: 14,
+    })
+
+    expect(Buffer.byteLength(first.text, "utf8")).toBeLessThanOrEqual(14)
+    expect(first).toMatchObject({
       startLine: 1,
       endLine: 1,
       hasMore: true,
-      nextOffset: 1,
+      nextOffset: 2,
       truncated: true,
       lineTooLong: true,
+      skippedLineRemainder: true,
     })
-    expect(result.text).not.toContain("�")
+    expect(first.text).not.toContain("�")
+    expect(next).toMatchObject({
+      text: "second",
+      startLine: 2,
+      endLine: 2,
+      hasMore: false,
+      truncated: false,
+    })
+    expect(next.text).not.toContain("�")
   })
 
   it("rejects binary files based on the initial chunk", async () => {

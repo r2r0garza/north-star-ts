@@ -161,6 +161,7 @@ export const readFileTool: Tool = {
       truncated: window.truncated,
       revision: window.revision,
       lineTooLong: window.lineTooLong,
+      skippedLineRemainder: window.skippedLineRemainder,
       limitCapped: requestedLimit !== limit || undefined,
     })}`
   },

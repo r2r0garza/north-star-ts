@@ -73,6 +73,28 @@ describe("read_file_tool", () => {
     expect(denied).toContain("not an attached file")
   })
 
+  it("exposes an advancing cursor for oversized attachment lines", async () => {
+    const attached = join(workspace, "long-attachment.txt")
+    await writeFile(attached, `${"日本語".repeat(100_000)}\nsecond`)
+
+    const first = await readFileTool.execute(
+      { path: basename(attached), offset: 1 },
+      { workspace: "", attachments: [attached] }
+    )
+    const next = await readFileTool.execute(
+      { path: basename(attached), offset: 2 },
+      { workspace: "", attachments: [attached] }
+    )
+
+    expect(first).toContain('"hasMore":true')
+    expect(first).toContain('"nextOffset":2')
+    expect(first).toContain('"lineTooLong":true')
+    expect(first).toContain('"skippedLineRemainder":true')
+    expect(first).not.toContain("�")
+    expect(next).toContain("2\tsecond")
+    expect(next).toContain('"hasMore":false')
+  })
+
   it("fails closed for binary files", async () => {
     await writeFile(join(workspace, "bin.dat"), Buffer.from([1, 0, 2]))
     const result = await readFileTool.execute(
