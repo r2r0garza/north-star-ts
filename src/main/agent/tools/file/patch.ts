@@ -427,6 +427,7 @@ interface StagedFile {
   file: PlannedPatchFile
   staged?: string
   backup?: string
+  backedUp: boolean
   existed: boolean
   installed: boolean
 }
@@ -522,7 +523,13 @@ export async function commitPatch(
   try {
     for (const file of planned.files) {
       const existed = file.before !== undefined && file.status !== "moved"
-      const entry: StagedFile = { file, existed, installed: false }
+      const entry: StagedFile = {
+        file,
+        existed,
+        backedUp: false,
+        installed: false,
+      }
+      staged.push(entry)
       if (file.after !== undefined) {
         await env.mkdirp(dirname(file.target))
         entry.staged = makeTempPath(file.target)
@@ -534,7 +541,6 @@ export async function commitPatch(
       if (existed) {
         entry.backup = makeTempPath(file.sourceTarget ?? file.target)
       }
-      staged.push(entry)
     }
 
     const staleBeforeMutation = await validatePlannedPatch(env, planned)
@@ -551,6 +557,7 @@ export async function commitPatch(
           entry.file.sourceTarget ?? entry.file.target,
           entry.backup
         )
+        entry.backedUp = true
       }
     }
     for (const entry of staged) {
@@ -569,7 +576,7 @@ export async function commitPatch(
     for (const entry of [...staged].reverse()) {
       if (entry.staged) await env.removeFile(entry.staged).catch(() => {})
       try {
-        if (entry.backup) {
+        if (entry.backup && entry.backedUp) {
           await env.rename(
             entry.backup,
             entry.file.sourceTarget ?? entry.file.target

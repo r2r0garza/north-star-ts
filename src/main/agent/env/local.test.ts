@@ -9,6 +9,7 @@ import {
   normalizeHostShellCommand,
 } from "./local"
 import { SearchExecutionError, SearchPatternError } from "./ripgrep"
+import { applyPatchTool } from "../tools/apply_patch_tool"
 import {
   buildDarwinSandboxProfile,
   localProfileCapabilities,
@@ -256,6 +257,73 @@ describe("LocalEnvironment file ops", () => {
     expect((await readFile(join(workspace, "staged.txt"))).toString()).toBe(
       "staged"
     )
+  })
+
+  it("cleans a patch temp file when a local write persists and then fails", async () => {
+    await writeFile(join(workspace, "a.txt"), "old\n")
+    const writeThrough = env.writeFile.bind(env)
+    env.writeFile = async (path, data) => {
+      await writeThrough(path, data)
+      if (path.includes(".north-star-")) {
+        throw new Error("injected local write failure after persist")
+      }
+    }
+
+    const result = await applyPatchTool.execute(
+      {
+        operations: [
+          {
+            type: "update",
+            path: "a.txt",
+            hunks: [{ old_string: "old", new_string: "new" }],
+          },
+        ],
+      },
+      { workspace, env }
+    )
+
+    expect(result).toContain("ERROR[commit_failed]")
+    expect(await readFile(join(workspace, "a.txt"), "utf8")).toBe("old\n")
+    expect(
+      (await env.readdir(workspace)).filter((entry) =>
+        entry.name.includes(".north-star-")
+      )
+    ).toEqual([])
+  })
+
+  it("cleans a patch temp file when local chmod fails", async () => {
+    const source = join(workspace, "script.sh")
+    await writeFile(source, "#!/bin/sh\necho old\n")
+    await chmod(source, 0o755)
+    const chmodThrough = env.chmod.bind(env)
+    env.chmod = async (path, mode) => {
+      if (path.includes(".north-star-")) {
+        throw new Error("injected local chmod failure")
+      }
+      await chmodThrough(path, mode)
+    }
+
+    const result = await applyPatchTool.execute(
+      {
+        operations: [
+          {
+            type: "update",
+            path: "script.sh",
+            hunks: [{ old_string: "old", new_string: "new" }],
+          },
+        ],
+      },
+      { workspace, env }
+    )
+
+    expect(result).toContain("ERROR[commit_failed]")
+    expect(await readFile(source, "utf8")).toBe("#!/bin/sh\necho old\n")
+    expect((await env.stat(source)).mode).toBe(0o755)
+    expect(
+      (await env.readdir(workspace)).filter((entry) =>
+        entry.name.includes(".north-star-")
+      )
+    ).toEqual([])
   })
 
   it("stat reports size and isFile", async () => {

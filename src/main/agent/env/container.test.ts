@@ -4,6 +4,7 @@ import { hostname, tmpdir } from "os"
 import { join } from "path"
 import { ContainerEnvironment } from "./container"
 import { checkContainerTestAvailability } from "./container-test-availability"
+import { applyPatchTool } from "../tools/apply_patch_tool"
 
 const IMAGE = process.env.COWORK_ENV_IMAGE || "node:20-bookworm"
 
@@ -85,6 +86,39 @@ for (const runtime of ["docker", "podman"] as const) {
         expect(
           await readFile(join(workspace, "blocked-staged.txt"), "utf8")
         ).toBe("staged")
+      })
+
+      it("cleans a patch temp file when a container write persists and then fails", async () => {
+        const source = await env.resolve("patch-source.txt")
+        await env.writeFile(source, "old\n")
+        const writeThrough = env.writeFile.bind(env)
+        env.writeFile = async (path, data) => {
+          await writeThrough(path, data)
+          if (path.includes(".north-star-")) {
+            throw new Error("injected container write failure after persist")
+          }
+        }
+
+        const result = await applyPatchTool.execute(
+          {
+            operations: [
+              {
+                type: "update",
+                path: "patch-source.txt",
+                hunks: [{ old_string: "old", new_string: "new" }],
+              },
+            ],
+          },
+          { workspace, env }
+        )
+
+        expect(result).toContain("ERROR[commit_failed]")
+        expect(await env.readFile(source)).toEqual(Buffer.from("old\n"))
+        expect(
+          (await env.readdir(await env.resolve(""))).filter((entry) =>
+            entry.name.includes(".north-star-")
+          )
+        ).toEqual([])
       })
 
       it("round-trips tricky utf8 content through the base64 pipe", async () => {

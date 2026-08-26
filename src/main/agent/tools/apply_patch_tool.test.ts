@@ -9,6 +9,7 @@ function fakeEnv(): Environment & {
   modes: Map<string, number>
   renameCalls: Array<{ from: string; to: string }>
   failNextRenameTo?: string
+  failNextChmod: boolean
   createBeforeInstallTo?: string
   onWriteFile?: (path: string) => void
 } {
@@ -20,6 +21,7 @@ function fakeEnv(): Environment & {
     modes,
     renameCalls,
     failNextRenameTo: undefined as string | undefined,
+    failNextChmod: false,
     createBeforeInstallTo: undefined as string | undefined,
     onWriteFile: undefined as undefined | ((path: string) => void),
     resolve: async (p: string) => p,
@@ -39,6 +41,10 @@ function fakeEnv(): Environment & {
     },
     chmod: async (p: string, mode: number) => {
       if (!files.has(p)) throw new Error("ENOENT")
+      if (env.failNextChmod) {
+        env.failNextChmod = false
+        throw new Error(`injected chmod failure for ${p}`)
+      }
       modes.set(p, mode & 0o7777)
     },
     rename: async (from: string, to: string) => {
@@ -519,6 +525,110 @@ describe("apply_patch_tool", () => {
     expect(result).toContain("Applied patch:")
     expect(env.files.get("a.txt")).toBe("new a\n")
     expect(env.files.get("b.txt")).toBe("new b\n")
+    expect(
+      [...env.files.keys()].filter((p) => p.includes(".north-star-"))
+    ).toEqual([])
+  })
+
+  it("removes a staged file when writing it persists content and then fails", async () => {
+    const env = fakeEnv()
+    env.files.set("a.txt", "old\n")
+    env.modes.set("a.txt", 0o644)
+    env.onWriteFile = (path) => {
+      if (path.includes(".north-star-")) {
+        throw new Error("injected write failure after persist")
+      }
+    }
+
+    const result = await applyPatchTool.execute(
+      {
+        operations: [
+          {
+            type: "update",
+            path: "a.txt",
+            hunks: [{ old_string: "old", new_string: "new" }],
+          },
+        ],
+      },
+      { workspace: "/ws", env }
+    )
+
+    expect(result).toContain("ERROR[commit_failed]")
+    expect(result).toContain("injected write failure after persist")
+    expect(env.files.get("a.txt")).toBe("old\n")
+    expect(env.modes.get("a.txt")).toBe(0o644)
+    expect(
+      [...env.files.keys()].filter((p) => p.includes(".north-star-"))
+    ).toEqual([])
+  })
+
+  it("removes a staged file when preserving its mode fails", async () => {
+    const env = fakeEnv()
+    env.files.set("script.sh", "#!/bin/sh\necho old\n")
+    env.modes.set("script.sh", 0o755)
+    env.failNextChmod = true
+
+    const result = await applyPatchTool.execute(
+      {
+        operations: [
+          {
+            type: "update",
+            path: "script.sh",
+            hunks: [{ old_string: "old", new_string: "new" }],
+          },
+        ],
+      },
+      { workspace: "/ws", env }
+    )
+
+    expect(result).toContain("ERROR[commit_failed]")
+    expect(result).toContain("injected chmod failure")
+    expect(env.files.get("script.sh")).toBe("#!/bin/sh\necho old\n")
+    expect(env.modes.get("script.sh")).toBe(0o755)
+    expect(
+      [...env.files.keys()].filter((p) => p.includes(".north-star-"))
+    ).toEqual([])
+  })
+
+  it("removes every staged file when writing a later entry fails", async () => {
+    const env = fakeEnv()
+    env.files.set("a.txt", "old a\n")
+    env.files.set("b.txt", "old b\n")
+    env.modes.set("a.txt", 0o600)
+    env.modes.set("b.txt", 0o640)
+    let stagedWrites = 0
+    env.onWriteFile = (path) => {
+      if (!path.includes(".north-star-")) return
+      stagedWrites += 1
+      if (stagedWrites === 2) {
+        throw new Error("injected later write failure after persist")
+      }
+    }
+
+    const result = await applyPatchTool.execute(
+      {
+        operations: [
+          {
+            type: "update",
+            path: "a.txt",
+            hunks: [{ old_string: "old a", new_string: "new a" }],
+          },
+          {
+            type: "update",
+            path: "b.txt",
+            hunks: [{ old_string: "old b", new_string: "new b" }],
+          },
+        ],
+      },
+      { workspace: "/ws", env }
+    )
+
+    expect(result).toContain("ERROR[commit_failed]")
+    expect(env.files.get("a.txt")).toBe("old a\n")
+    expect(env.files.get("b.txt")).toBe("old b\n")
+    expect(env.modes.get("a.txt")).toBe(0o600)
+    expect(env.modes.get("b.txt")).toBe(0o640)
+    expect(env.renameCalls).toEqual([])
     expect(
       [...env.files.keys()].filter((p) => p.includes(".north-star-"))
     ).toEqual([])
