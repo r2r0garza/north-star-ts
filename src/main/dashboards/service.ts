@@ -15,6 +15,7 @@ import { stripAnsi } from "../agent/approval/ansi"
 import { makePolicyEngine } from "../agent/approval/engine"
 import { createEnvironment, type EnvConfig } from "../agent/env/factory"
 import type { Environment } from "../agent/env/types"
+import { safeFetch } from "../agent/tools/web/safe-fetch"
 import * as settingsService from "../settings/service"
 
 export const DASHBOARD_REFRESH_KIND = "dashboard_refresh"
@@ -249,10 +250,9 @@ export class DashboardService {
         })
         output = stripAnsi(result.stdout.toString("utf8"))
       } else {
-        const res = await fetch(recipe.url!, {
+        const res = await safeFetch(recipe.url!, {
           headers: { "User-Agent": USER_AGENT, Accept: "application/json,*/*" },
           signal,
-          redirect: "follow",
         })
         if (!res.ok) {
           return this.markError(

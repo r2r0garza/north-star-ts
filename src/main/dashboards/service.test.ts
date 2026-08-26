@@ -90,6 +90,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  vi.restoreAllMocks()
   if (sqliteLoads) db.close()
 })
 
@@ -183,6 +184,32 @@ describe.skipIf(!sqliteLoads)("DashboardService.execute", () => {
     expect(cached?.error).toMatch(/JSON rows/i)
   })
 
+  it("rejects an allowlisted web recipe whose URL is local or private", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+    const { runner } = makeRunner()
+    const service = new DashboardService(runner)
+    const dash = dashboards.createDashboard({ name: "D" })
+    const url = "http://169.254.169.254/latest/meta-data"
+    const widget = dashboards.createWidget({
+      dashboardId: dash.id,
+      title: "W",
+      type: "table",
+      recipe: { url },
+    })
+    addRule({
+      tool: "web_fetch",
+      kind: "web",
+      identity: `web_fetch:${url}`,
+      scope: "global",
+    })
+
+    await runExecute(service, dash.id)
+    expect(fetchMock).not.toHaveBeenCalled()
+    const cached = dashboards.getWidgetData(widget.id)
+    expect(cached?.status).toBe("error")
+    expect(cached?.error).toMatch(/private|local|metadata/i)
+  })
+
   it("leaves a recipe-less (manual) widget untouched", async () => {
     const { runner } = makeRunner()
     const service = new DashboardService(runner)
@@ -192,7 +219,11 @@ describe.skipIf(!sqliteLoads)("DashboardService.execute", () => {
       title: "manual",
       type: "stat",
     })
-    dashboards.upsertWidgetData({ widgetId: widget.id, data: [{ n: 5 }], status: "ok" })
+    dashboards.upsertWidgetData({
+      widgetId: widget.id,
+      data: [{ n: 5 }],
+      status: "ok",
+    })
 
     const result = await runExecute(service, dash.id)
     expect(result.content).toContain("refreshed 0/1")
@@ -219,7 +250,11 @@ describe.skipIf(!sqliteLoads)("DashboardService.execute", () => {
       workspacePath: "/repo",
     })
     // Seed fresh `ok` data (fetched_at = now).
-    dashboards.upsertWidgetData({ widgetId: widget.id, data: [{ a: 1 }], status: "ok" })
+    dashboards.upsertWidgetData({
+      widgetId: widget.id,
+      data: [{ a: 1 }],
+      status: "ok",
+    })
     execStdout = JSON.stringify([{ a: 999 }]) // would overwrite if it ran
 
     // With a generous staleness window, the fresh widget is skipped — no re-run.
@@ -283,9 +318,12 @@ describe.skipIf(!sqliteLoads)("DashboardService.approveRecipe", () => {
     const result = service.approveRecipe(widget.id)
     expect(result.ok).toBe(true)
     // The identity is the normalized command, scoped to the recipe's cwd.
-    const rows = db
-      .prepare("SELECT * FROM action_allowlist")
-      .all() as Array<{ kind: string; identity: string; scope: string; workspace_path: string }>
+    const rows = db.prepare("SELECT * FROM action_allowlist").all() as Array<{
+      kind: string
+      identity: string
+      scope: string
+      workspace_path: string
+    }>
     expect(rows).toHaveLength(1)
     expect(rows[0].kind).toBe("shell")
     expect(rows[0].identity).toBe(normalizeCommand(cmd))
@@ -324,9 +362,11 @@ describe.skipIf(!sqliteLoads)("DashboardService.approveRecipe", () => {
       recipe: { url: "https://api.example.com/data" },
     })
     service.approveRecipe(widget.id)
-    const rows = db
-      .prepare("SELECT * FROM action_allowlist")
-      .all() as Array<{ kind: string; identity: string; scope: string }>
+    const rows = db.prepare("SELECT * FROM action_allowlist").all() as Array<{
+      kind: string
+      identity: string
+      scope: string
+    }>
     expect(rows).toHaveLength(1)
     expect(rows[0].kind).toBe("web")
     expect(rows[0].identity).toBe("web_fetch:https://api.example.com/data")

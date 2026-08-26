@@ -2,6 +2,7 @@ import { TOOL_EFFECTS, type Tool, type ToolContext } from "../types"
 import type { ToolAction } from "../../approval/types"
 import { toolError, truncateForModel } from "../output"
 import { extractReadable } from "./extract"
+import { safeFetch } from "./safe-fetch"
 
 const USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 " +
@@ -74,10 +75,9 @@ export const webFetchTool: Tool = {
     }
 
     try {
-      const res = await fetch(parsed.href, {
+      const res = await safeFetch(parsed.href, {
         headers: { "User-Agent": USER_AGENT, Accept: "text/html,*/*" },
         signal: ctx.signal,
-        redirect: "follow",
       })
       if (!res.ok) {
         return toolError(
