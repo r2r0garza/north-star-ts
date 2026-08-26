@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest"
 import { writeFileTool } from "./write_file_tool"
-import { revisionOfText } from "./file/mutation"
+import { MUTATION_SOURCE_LIMITS, revisionOfText } from "./file/mutation"
 import type { ToolContext } from "./types"
 import type { Environment } from "../env/types"
 import type { ToolAction, GateOutcome } from "../approval/types"
@@ -8,15 +8,24 @@ import type { ToolAction, GateOutcome } from "../approval/types"
 // A tiny in-memory Environment so the test exercises mode/append logic and the
 // atomic-write orchestration (temp sibling → rename) without touching the host
 // filesystem. Only the primitives write_file_tool uses are implemented.
-function fakeEnv(): Environment & { files: Map<string, string> } {
+function fakeEnv(): Environment & {
+  files: Map<string, string>
+  statSizes: Map<string, number>
+  readFileCalls: string[]
+} {
   const files = new Map<string, string>()
+  const statSizes = new Map<string, number>()
+  const readFileCalls: string[] = []
   const enoent = (p: string) =>
     Object.assign(new Error(`ENOENT: ${p}`), { code: "ENOENT" })
   return {
     files,
+    statSizes,
+    readFileCalls,
     resolve: async (p: string) => p,
     resolveLexical: (p: string) => p,
     readFile: async (p: string) => {
+      readFileCalls.push(p)
       const content = files.get(p)
       if (content === undefined) throw enoent(p)
       return Buffer.from(content, "utf8")
@@ -46,8 +55,15 @@ function fakeEnv(): Environment & { files: Map<string, string> } {
       files.delete(p)
     },
     mkdirp: async () => {},
-    stat: async () => {
-      throw new Error("not implemented")
+    stat: async (p: string) => {
+      const content = files.get(p)
+      if (content === undefined) throw enoent(p)
+      return {
+        size: statSizes.get(p) ?? Buffer.byteLength(content, "utf8"),
+        mode: 0o644,
+        isFile: () => true,
+        isDirectory: () => false,
+      }
     },
     readdir: async () => [],
     exec: async () => ({
@@ -117,6 +133,35 @@ describe("write_file_tool", () => {
     )
     expect(result).toContain("Appended 5 bytes to a.txt.")
     expect(env.files.get("a.txt")).toBe("part1part2")
+  })
+
+  it("rejects an oversized overwrite source before reading file content", async () => {
+    env.files.set("huge.txt", "small placeholder")
+    env.statSizes.set("huge.txt", MUTATION_SOURCE_LIMITS.maxFileBytes + 1)
+
+    const result = await writeFileTool.execute(
+      { path: "huge.txt", content: "new", mode: "overwrite" },
+      ctx
+    )
+
+    expect(result).toContain("ERROR[file_too_large]")
+    expect(result).toContain("read_file_tool")
+    expect(env.files.get("huge.txt")).toBe("small placeholder")
+    expect(env.readFileCalls).toEqual([])
+  })
+
+  it("rejects an oversized append source before reading file content", async () => {
+    env.files.set("huge.txt", "small placeholder")
+    env.statSizes.set("huge.txt", MUTATION_SOURCE_LIMITS.maxFileBytes + 1)
+
+    const result = await writeFileTool.execute(
+      { path: "huge.txt", content: "new", mode: "append" },
+      ctx
+    )
+
+    expect(result).toContain("ERROR[file_too_large]")
+    expect(env.files.get("huge.txt")).toBe("small placeholder")
+    expect(env.readFileCalls).toEqual([])
   })
 
   it("treats append to a missing file as a create (no error)", async () => {
@@ -282,6 +327,7 @@ describe("write_file_tool", () => {
   })
 
   it("does not treat an unreadable destination as safely absent", async () => {
+    env.files.set("a.txt", "old")
     env.readFile = async (p) => {
       if (p === "a.txt") {
         throw Object.assign(new Error("EACCES: a.txt"), { code: "EACCES" })
@@ -294,12 +340,12 @@ describe("write_file_tool", () => {
     }
 
     const result = await writeFileTool.execute(
-      { path: "a.txt", content: "new", mode: "create" },
+      { path: "a.txt", content: "new", mode: "overwrite" },
       ctx
     )
 
     expect(result).toContain("ERROR[read_failed]")
-    expect(env.files.has("a.txt")).toBe(false)
+    expect(env.files.get("a.txt")).toBe("old")
     expect([...env.files.keys()].filter((p) => p.includes(".tmp"))).toEqual([])
   })
 

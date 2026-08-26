@@ -6,8 +6,10 @@ import { toolError } from "./output"
 import {
   atomicWriteChecked,
   buildDiffPreview,
+  fileTooLargeMessage,
   fileRevision,
   isNotFoundError,
+  MUTATION_SOURCE_LIMITS,
   revisionOfText,
   validRevision,
 } from "./file/mutation"
@@ -89,28 +91,63 @@ export const writeFileTool: Tool = {
     const env = ctx.env ?? new LocalEnvironment(ctx.workspace)
     const target = await env.resolve(path)
 
-    let existingBytes: Buffer | undefined
+    let existingInfo
     try {
-      existingBytes = await env.readFile(target)
+      existingInfo = await env.stat(target)
     } catch (error) {
       if (!isNotFoundError(error)) {
         return toolError(
           "read_failed",
-          `Could not read ${path}: ${(error as Error).message}`
+          `Could not inspect ${path}: ${(error as Error).message}`
         )
       }
     }
-    const initialRevision = existingBytes
-      ? fileRevision(existingBytes)
-      : undefined
-
-    if (mode === "create" && existingBytes) {
+    if (existingInfo && !existingInfo.isFile()) {
+      return toolError("not_a_file", `Not a regular file: ${path}`)
+    }
+    if (mode === "create" && existingInfo) {
       return toolError(
         "already_exists",
         `${path} already exists.`,
         'use mode "overwrite" with the current revision if replacement is intended'
       )
     }
+    if (mode === "overwrite" && !existingInfo) {
+      return toolError("not_found", `No such file to overwrite: ${path}`)
+    }
+    if (
+      existingInfo &&
+      existingInfo.size > MUTATION_SOURCE_LIMITS.maxFileBytes
+    ) {
+      return toolError(
+        "file_too_large",
+        fileTooLargeMessage({
+          code: "file_too_large",
+          path,
+          size: existingInfo.size,
+          limit: MUTATION_SOURCE_LIMITS.maxFileBytes,
+          scope: "file",
+        })
+      )
+    }
+
+    let existingBytes: Buffer | undefined
+    if (existingInfo) {
+      try {
+        existingBytes = await env.readFile(target)
+      } catch (error) {
+        if (!isNotFoundError(error)) {
+          return toolError(
+            "read_failed",
+            `Could not read ${path}: ${(error as Error).message}`
+          )
+        }
+      }
+    }
+    const initialRevision = existingBytes
+      ? fileRevision(existingBytes)
+      : undefined
+
     if (expectedRevision && expectedRevision !== initialRevision) {
       return toolError(
         "stale_file",
@@ -118,10 +155,6 @@ export const writeFileTool: Tool = {
         "re-read the file and rebase the write"
       )
     }
-    if (mode === "overwrite" && !existingBytes) {
-      return toolError("not_found", `No such file to overwrite: ${path}`)
-    }
-
     let finalContent = content
     if (mode === "append") {
       const existing = existingBytes?.toString("utf8") ?? ""
@@ -174,9 +207,14 @@ export const writeFileTool: Tool = {
       expectedRevision: initialRevision,
     })
     if (write !== "ok") {
+      if ("code" in write && write.code === "file_too_large") {
+        return toolError("file_too_large", fileTooLargeMessage(write))
+      }
+      const staleRevision =
+        "staleRevision" in write ? write.staleRevision : null
       return toolError(
         "stale_file",
-        `${path} changed before the write could be saved. Current revision: ${write.staleRevision ?? "missing"}.`,
+        `${path} changed before the write could be saved. Current revision: ${staleRevision ?? "missing"}.`,
         "re-read the file and rebase the write"
       )
     }

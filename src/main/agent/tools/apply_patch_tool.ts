@@ -8,6 +8,7 @@ import {
   planPatch,
   type PlannedPatch,
 } from "./file/patch"
+import { FileTooLargeError, fileTooLargeMessage } from "./file/mutation"
 
 function errorFromMessage(message: string): string {
   const [code, ...rest] = message.split(":")
@@ -22,6 +23,7 @@ function errorFromMessage(message: string): string {
     code === "conflict" ||
     code === "case_collision" ||
     code === "too_many_files" ||
+    code === "file_too_large" ||
     code === "result_too_large" ||
     code === "no_op"
   ) {
@@ -120,6 +122,9 @@ export const applyPatchTool: Tool = {
     try {
       planned = await planPatch(env, operations)
     } catch (err) {
+      if (err instanceof FileTooLargeError) {
+        return toolError("file_too_large", fileTooLargeMessage(err))
+      }
       return errorFromMessage(err instanceof Error ? err.message : String(err))
     }
 
@@ -152,6 +157,9 @@ export const applyPatchTool: Tool = {
 
     const committed = await commitPatch(env, planned)
     if (committed !== "ok") {
+      if (committed.code === "file_too_large") {
+        return toolError("file_too_large", fileTooLargeMessage(committed))
+      }
       if (committed.code === "stale_file") {
         const mode =
           committed.currentMode === undefined

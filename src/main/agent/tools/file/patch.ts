@@ -1,9 +1,12 @@
 import { dirname } from "path"
-import type { Environment } from "../../env/types"
+import type { Environment, StatInfo } from "../../env/types"
 import {
   buildDiffPreview,
+  type FileTooLarge,
+  FileTooLargeError,
   fileRevision,
   makeTempPath,
+  MUTATION_SOURCE_LIMITS,
   readFileMode,
   readRevision,
   revisionOfText,
@@ -74,6 +77,11 @@ interface SourceFile {
   content: string
   revision: string
   mode?: number
+}
+
+interface SourcePreflight {
+  target: string
+  stat: StatInfo
 }
 
 function bytes(value: string): number {
@@ -231,16 +239,10 @@ function applyHunks(path: string, content: string, hunks: PatchHunk[]): string {
 async function readSource(
   env: Environment,
   path: string,
-  expectedRevision?: string
+  expectedRevision: string | undefined,
+  preflight: SourcePreflight
 ): Promise<SourceFile> {
-  const target = await env.resolve(path)
-  let stat
-  try {
-    stat = await env.stat(target)
-  } catch {
-    throw new Error(`not_found:${path}`)
-  }
-  if (!stat.isFile()) throw new Error(`not_a_file:${path}`)
+  const { target, stat } = preflight
   const file = await env.readFile(target)
   if (isBinary(file)) throw new Error(`binary_file:${path}`)
   const revision = fileRevision(file)
@@ -255,6 +257,47 @@ async function readSource(
     revision,
     mode: stat.mode === undefined ? undefined : stat.mode & 0o7777,
   }
+}
+
+async function preflightSourceSizes(
+  env: Environment,
+  operations: PatchOperation[]
+): Promise<Map<string, SourcePreflight>> {
+  const sourcePaths = new Set<string>()
+  for (const op of operations) {
+    if (op.type !== "add") sourcePaths.add(op.path)
+  }
+
+  const preflight = new Map<string, SourcePreflight>()
+  let totalBytes = 0
+  for (const path of sourcePaths) {
+    const target = await env.resolve(path)
+    let stat
+    try {
+      stat = await env.stat(target)
+    } catch {
+      throw new Error(`not_found:${path}`)
+    }
+    if (!stat.isFile()) throw new Error(`not_a_file:${path}`)
+    if (stat.size > MUTATION_SOURCE_LIMITS.maxFileBytes) {
+      throw new FileTooLargeError(
+        path,
+        stat.size,
+        MUTATION_SOURCE_LIMITS.maxFileBytes
+      )
+    }
+    totalBytes += stat.size
+    if (totalBytes > MUTATION_SOURCE_LIMITS.maxTransactionBytes) {
+      throw new FileTooLargeError(
+        path,
+        totalBytes,
+        MUTATION_SOURCE_LIMITS.maxTransactionBytes,
+        "transaction"
+      )
+    }
+    preflight.set(path, { target, stat })
+  }
+  return preflight
 }
 
 async function targetExists(
@@ -289,6 +332,7 @@ export async function planPatch(
   const finalByPath = new Map<string, PlannedPatchFile>()
   const finalPaths = new Set<string>()
   const deletedSources = new Set<string>()
+  const sourcePreflight = await preflightSourceSizes(env, operations)
 
   async function sourceFor(path: string, expectedRevision?: string) {
     const cached = sourceByPath.get(path)
@@ -301,7 +345,9 @@ export async function planPatch(
       }
       return cached
     }
-    const source = await readSource(env, path, expectedRevision)
+    const preflight = sourcePreflight.get(path)
+    if (!preflight) throw new Error(`not_found:${path}`)
+    const source = await readSource(env, path, expectedRevision, preflight)
     sourceByPath.set(path, source)
     return source
   }
@@ -477,10 +523,20 @@ async function installStagedFile(
 async function validatePlannedPatch(
   env: Environment,
   planned: PlannedPatch
-): Promise<StalePatchFile | undefined> {
+): Promise<StalePatchFile | FileTooLarge | undefined> {
   for (const file of planned.files) {
     const sourceTarget = file.sourceTarget ?? file.target
-    const current = await readRevision(env, sourceTarget)
+    let current
+    try {
+      current = await readRevision(
+        env,
+        sourceTarget,
+        file.sourcePath ?? file.path
+      )
+    } catch (error) {
+      if (error instanceof FileTooLargeError) return error
+      throw error
+    }
     if (current !== file.beforeRevision) {
       return { code: "stale_file", path: file.sourcePath ?? file.path, current }
     }
@@ -497,7 +553,13 @@ async function validatePlannedPatch(
       }
     }
     if (file.sourceTarget) {
-      const destination = await readRevision(env, file.target)
+      let destination
+      try {
+        destination = await readRevision(env, file.target, file.path)
+      } catch (error) {
+        if (error instanceof FileTooLargeError) return error
+        throw error
+      }
       if (destination !== undefined) {
         return { code: "stale_file", path: file.path, current: destination }
       }
@@ -512,6 +574,7 @@ export async function commitPatch(
 ): Promise<
   | "ok"
   | StalePatchFile
+  | FileTooLarge
   | { code: "commit_failed"; error: string }
   | { code: "rollback_failed"; error: string }
 > {

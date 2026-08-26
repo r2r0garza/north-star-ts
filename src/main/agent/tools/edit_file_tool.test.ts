@@ -1,23 +1,30 @@
 import { describe, it, expect } from "vitest"
 import { editFileTool } from "./edit_file_tool"
-import { revisionOfText } from "./file/mutation"
+import { MUTATION_SOURCE_LIMITS, revisionOfText } from "./file/mutation"
 import type { Environment } from "../env/types"
 import type { ToolAction } from "../approval/types"
 
 function fakeEnv(): Environment & {
   files: Map<string, string>
   modes: Map<string, number>
+  statSizes: Map<string, number>
+  readFileCalls: string[]
   failNextChmod: boolean
 } {
   const files = new Map<string, string>()
   const modes = new Map<string, number>()
+  const statSizes = new Map<string, number>()
+  const readFileCalls: string[] = []
   const env = {
     files,
     modes,
+    statSizes,
+    readFileCalls,
     failNextChmod: false,
     resolve: async (p: string) => p,
     resolveLexical: (p: string) => p,
     readFile: async (p: string) => {
+      readFileCalls.push(p)
       const content = files.get(p)
       if (content === undefined) throw new Error("ENOENT")
       return Buffer.from(content, "utf8")
@@ -53,7 +60,7 @@ function fakeEnv(): Environment & {
     stat: async (p: string) => {
       if (!files.has(p)) throw new Error("ENOENT")
       return {
-        size: Buffer.byteLength(files.get(p) ?? "", "utf8"),
+        size: statSizes.get(p) ?? Buffer.byteLength(files.get(p) ?? "", "utf8"),
         mode: modes.get(p) ?? 0o644,
         isFile: () => true,
         isDirectory: () => false,
@@ -130,6 +137,22 @@ describe("edit_file_tool", () => {
     expect(result).toContain("ERROR[stale_file]")
     expect(env.files.get("a.txt")).toBe("current")
     expect(seen).toHaveLength(0)
+  })
+
+  it("rejects an oversized source before reading file content", async () => {
+    const env = fakeEnv()
+    env.files.set("huge.txt", "small placeholder")
+    env.statSizes.set("huge.txt", MUTATION_SOURCE_LIMITS.maxFileBytes + 1)
+
+    const result = await editFileTool.execute(
+      { path: "huge.txt", old_string: "small", new_string: "large" },
+      { workspace: "/ws", env }
+    )
+
+    expect(result).toContain("ERROR[file_too_large]")
+    expect(result).toContain("read_file_tool")
+    expect(env.files.get("huge.txt")).toBe("small placeholder")
+    expect(env.readFileCalls).toEqual([])
   })
 
   it("rejects a concurrent change while waiting for approval", async () => {

@@ -1,12 +1,14 @@
 import { describe, expect, it } from "vitest"
 import { applyPatchTool } from "./apply_patch_tool"
-import { revisionOfText } from "./file/mutation"
+import { MUTATION_SOURCE_LIMITS, revisionOfText } from "./file/mutation"
 import type { ToolAction } from "../approval/types"
 import type { Environment, StatInfo } from "../env/types"
 
 function fakeEnv(): Environment & {
   files: Map<string, string>
   modes: Map<string, number>
+  statSizes: Map<string, number>
+  readFileCalls: string[]
   renameCalls: Array<{ from: string; to: string }>
   renameAttempts: Array<{ from: string; to: string }>
   failRename?: (from: string, to: string) => boolean
@@ -18,11 +20,15 @@ function fakeEnv(): Environment & {
 } {
   const files = new Map<string, string>()
   const modes = new Map<string, number>()
+  const statSizes = new Map<string, number>()
+  const readFileCalls: string[] = []
   const renameCalls: Array<{ from: string; to: string }> = []
   const renameAttempts: Array<{ from: string; to: string }> = []
   const env = {
     files,
     modes,
+    statSizes,
+    readFileCalls,
     renameCalls,
     renameAttempts,
     failRename: undefined as
@@ -36,6 +42,7 @@ function fakeEnv(): Environment & {
     resolve: async (p: string) => p,
     resolveLexical: (p: string) => p,
     readFile: async (p: string) => {
+      readFileCalls.push(p)
       const content = files.get(p)
       if (content === undefined) throw new Error("ENOENT")
       return Buffer.from(content, "utf8")
@@ -101,7 +108,7 @@ function fakeEnv(): Environment & {
       const content = files.get(p)
       if (content === undefined) throw new Error("ENOENT")
       return {
-        size: Buffer.byteLength(content, "utf8"),
+        size: statSizes.get(p) ?? Buffer.byteLength(content, "utf8"),
         mode: modes.get(p) ?? 0o644,
         isFile: () => true,
         isDirectory: () => false,
@@ -230,6 +237,59 @@ describe("apply_patch_tool", () => {
     expect(result).toContain("ERROR[no_match]")
     expect(env.files.get("a.txt")).toBe("one\ntwo\n")
     expect(env.files.get("b.txt")).toBe("alpha\n")
+  })
+
+  it("rejects an oversized source before reading file content", async () => {
+    const env = fakeEnv()
+    env.files.set("huge.txt", "small placeholder\n")
+    env.statSizes.set("huge.txt", MUTATION_SOURCE_LIMITS.maxFileBytes + 1)
+
+    const result = await applyPatchTool.execute(
+      {
+        operations: [
+          {
+            type: "update",
+            path: "huge.txt",
+            hunks: [{ old_string: "placeholder", new_string: "replacement" }],
+          },
+        ],
+      },
+      { workspace: "/ws", env }
+    )
+
+    expect(result).toContain("ERROR[file_too_large]")
+    expect(result).toContain("read_file_tool")
+    expect(env.files.get("huge.txt")).toBe("small placeholder\n")
+    expect(env.readFileCalls).toEqual([])
+  })
+
+  it("rejects aggregate oversized patch sources before reading file content", async () => {
+    const env = fakeEnv()
+    const perFile = Math.floor(MUTATION_SOURCE_LIMITS.maxFileBytes * 0.9)
+    const fileCount =
+      Math.floor(MUTATION_SOURCE_LIMITS.maxTransactionBytes / perFile) + 1
+    const operations = Array.from({ length: fileCount }, (_, index) => {
+      const path = `source-${index}.txt`
+      env.files.set(path, `old ${index}\n`)
+      env.statSizes.set(path, perFile)
+      return {
+        type: "update" as const,
+        path,
+        hunks: [{ old_string: `old ${index}`, new_string: `new ${index}` }],
+      }
+    })
+
+    const result = await applyPatchTool.execute(
+      { operations },
+      { workspace: "/ws", env }
+    )
+
+    expect(result).toContain("ERROR[file_too_large]")
+    expect(result).toContain("Patch source files total")
+    expect(env.readFileCalls).toEqual([])
+    for (let index = 0; index < fileCount; index++) {
+      expect(env.files.get(`source-${index}.txt`)).toBe(`old ${index}\n`)
+    }
   })
 
   it("rejects a stale revision before approval", async () => {

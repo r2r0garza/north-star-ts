@@ -5,7 +5,9 @@ import { toolError } from "./output"
 import {
   atomicWriteChecked,
   buildDiffPreview,
+  fileTooLargeMessage,
   fileRevision,
+  MUTATION_SOURCE_LIMITS,
   validRevision,
 } from "./file/mutation"
 
@@ -101,6 +103,18 @@ export const editFileTool: Tool = {
     if (!info.isFile()) {
       return toolError("not_a_file", `Not a regular file: ${path}`)
     }
+    if (info.size > MUTATION_SOURCE_LIMITS.maxFileBytes) {
+      return toolError(
+        "file_too_large",
+        fileTooLargeMessage({
+          code: "file_too_large",
+          path,
+          size: info.size,
+          limit: MUTATION_SOURCE_LIMITS.maxFileBytes,
+          scope: "file",
+        })
+      )
+    }
 
     const initialBytes = await env.readFile(target)
     const initialRevision = fileRevision(initialBytes)
@@ -174,9 +188,14 @@ export const editFileTool: Tool = {
       expectedRevision: initialRevision,
     })
     if (write !== "ok") {
+      if ("code" in write && write.code === "file_too_large") {
+        return toolError("file_too_large", fileTooLargeMessage(write))
+      }
+      const staleRevision =
+        "staleRevision" in write ? write.staleRevision : null
       return toolError(
         "stale_file",
-        `${path} changed before the edit could be written. Current revision: ${write.staleRevision ?? "missing"}.`,
+        `${path} changed before the edit could be written. Current revision: ${staleRevision ?? "missing"}.`,
         "re-read the file and rebase the edit"
       )
     }

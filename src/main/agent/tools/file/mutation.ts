@@ -20,6 +20,40 @@ const MAX_DIFF_LINES = 120
 const MAX_DIFF_BYTES = 12 * 1024
 const DIFF_CONTEXT_LINES = 3
 
+export const MUTATION_SOURCE_LIMITS = {
+  maxFileBytes: 1024 * 1024,
+  maxTransactionBytes: 4 * 1024 * 1024,
+} as const
+
+export interface FileTooLarge {
+  code: "file_too_large"
+  path: string
+  size: number
+  limit: number
+  scope: "file" | "transaction"
+}
+
+export class FileTooLargeError extends Error implements FileTooLarge {
+  readonly code = "file_too_large"
+
+  constructor(
+    readonly path: string,
+    readonly size: number,
+    readonly limit: number,
+    readonly scope: "file" | "transaction" = "file"
+  ) {
+    super(
+      fileTooLargeMessage({ code: "file_too_large", path, size, limit, scope })
+    )
+  }
+}
+
+export function fileTooLargeMessage(error: FileTooLarge): string {
+  const subject =
+    error.scope === "transaction" ? "Patch source files total" : "Source file"
+  return `${subject} for ${error.path} is ${error.size} bytes, above the supported ${error.limit} byte limit. Use read_file_tool to inspect bounded ranges, then split the mutation into smaller files or use a streaming large-file workflow.`
+}
+
 export function fileRevision(bytes: Buffer): string {
   return createHash("sha256").update(bytes).digest("hex")
 }
@@ -49,7 +83,7 @@ export async function atomicWriteChecked(opts: {
   target: string
   content: string
   expectedRevision?: string
-}): Promise<"ok" | { staleRevision: string | null }> {
+}): Promise<"ok" | { staleRevision: string | null } | FileTooLarge> {
   const current = await readRevision(opts.env, opts.target)
   if (current !== opts.expectedRevision) {
     return { staleRevision: current ?? null }
@@ -86,7 +120,10 @@ export async function atomicWriteChecked(opts: {
         let staleRevision: string | null = null
         try {
           staleRevision = (await readRevision(opts.env, opts.target)) ?? null
-        } catch {
+        } catch (error) {
+          if (error instanceof FileTooLargeError) {
+            return error
+          }
           staleRevision = null
         }
         return { staleRevision }
@@ -101,11 +138,19 @@ export async function atomicWriteChecked(opts: {
 
 export async function readRevision(
   env: Environment,
-  target: string
+  target: string,
+  displayPath = target,
+  maxBytes = MUTATION_SOURCE_LIMITS.maxFileBytes
 ): Promise<string | undefined> {
   try {
+    const info = await env.stat(target)
+    if (!info.isFile()) return undefined
+    if (info.size > maxBytes) {
+      throw new FileTooLargeError(displayPath, info.size, maxBytes)
+    }
     return fileRevision(await env.readFile(target))
   } catch (error) {
+    if (error instanceof FileTooLargeError) throw error
     if (!isNotFoundError(error)) throw error
     return undefined
   }
