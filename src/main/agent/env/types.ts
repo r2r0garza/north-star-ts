@@ -16,10 +16,16 @@
 // stdout+stderr as a Buffer — the caller decodes utf8 ONCE, because decoding
 // per-chunk would corrupt a multibyte character straddling a chunk boundary.
 export interface ExecResult {
+  // Historical compatibility: stdout contains the combined stdout+stderr bytes.
   stdout: Buffer
+  // Stream-specific stderr for callers that need to distinguish diagnostics from
+  // parseable stdout. Older mocks may omit this.
+  stderr?: Buffer
   exitCode: number | null
   signal: NodeJS.Signals | null
   timedOut: boolean
+  aborted?: boolean
+  spawnError?: string
 }
 
 export interface ExecOptions {

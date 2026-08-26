@@ -19,7 +19,11 @@ import { StringDecoder } from "string_decoder"
 import * as pty from "node-pty"
 import { captureSpawn } from "./spawn-util"
 import { readHostTextLines } from "./read-text-lines"
-import { buildRipgrepArgs, parseRipgrepJson } from "./ripgrep"
+import {
+  buildRipgrepArgs,
+  parseRipgrepJson,
+  throwForRipgrepExecutionFailure,
+} from "./ripgrep"
 import {
   assertLocalProfileSupported,
   buildDarwinSandboxProfile,
@@ -56,6 +60,14 @@ export function normalizeHostShellCommand(
 
 function quoteWindowsArg(arg: string): string {
   return `"${arg.replace(/"/g, '\\"')}"`
+}
+
+type SpawnFn = typeof spawn
+
+interface LocalEnvironmentDeps {
+  resolveRipgrepPath?: () => string
+  spawn?: SpawnFn
+  searchTimeoutMs?: number
 }
 
 function resolveRipgrepPath(): string {
@@ -134,7 +146,8 @@ export function materializePythonHeredocCommand(
 export class LocalEnvironment implements Environment {
   constructor(
     private readonly workspace: string,
-    private readonly profile: LocalRuntimeProfile = "host-access"
+    private readonly profile: LocalRuntimeProfile = "host-access",
+    private readonly deps: LocalEnvironmentDeps = {}
   ) {
     assertLocalProfileSupported(profile)
   }
@@ -284,22 +297,24 @@ export class LocalEnvironment implements Environment {
   // Grep the workspace through ripgrep, parsing `--json` so file names and
   // content are never split with ad-hoc delimiters. Patterns/globs are argv data.
   async search(opts: SearchOptions): Promise<SearchResult> {
-    const child = spawn(resolveRipgrepPath(), buildRipgrepArgs(opts), {
-      cwd: opts.root,
-      shell: false,
-      detached: process.platform !== "win32",
-      stdio: ["ignore", "pipe", "pipe"],
-    })
+    const spawnFn = this.deps.spawn ?? spawn
+    const child = spawnFn(
+      (this.deps.resolveRipgrepPath ?? resolveRipgrepPath)(),
+      buildRipgrepArgs(opts),
+      {
+        cwd: opts.root,
+        shell: false,
+        detached: process.platform !== "win32",
+        stdio: ["ignore", "pipe", "pipe"],
+      }
+    )
     const res = await captureSpawn(child, {
-      timeoutMs: 30_000,
+      timeoutMs: this.deps.searchTimeoutMs ?? 30_000,
       maxOutputBytes: 16 * 1024 * 1024,
       signal: opts.signal,
       killGroup: true,
     })
-    if (res.exitCode != null && res.exitCode > 1) {
-      const message = res.stdout.toString("utf8").trim()
-      throw new Error(message || "ripgrep failed")
-    }
+    throwForRipgrepExecutionFailure(res)
     return parseRipgrepJson(res.stdout, opts)
   }
 

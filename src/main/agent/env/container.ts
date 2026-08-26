@@ -6,7 +6,12 @@ import { StringDecoder } from "string_decoder"
 import { resolveInWorkspace } from "../tools/workspace"
 import { captureSpawn } from "./spawn-util"
 import { hostCliEnv } from "./host-cli-env"
-import { buildRipgrepArgs, parseRipgrepJson } from "./ripgrep"
+import {
+  buildRipgrepArgs,
+  parseRipgrepJson,
+  SearchPatternError,
+  throwForRipgrepExecutionFailure,
+} from "./ripgrep"
 import { systemSlug } from "../../config/system-name"
 import type {
   Environment,
@@ -542,10 +547,7 @@ PY
         maxOutputBytes: 16 * 1024 * 1024,
         signal: opts.signal,
       })
-      if (res.exitCode != null && res.exitCode > 1) {
-        const message = res.stdout.toString("utf8").trim()
-        throw new Error(message || "ripgrep failed")
-      }
+      throwForRipgrepExecutionFailure(res)
       return parseRipgrepJson(res.stdout, { ...opts, root })
     }
 
@@ -709,7 +711,9 @@ PY
       | SearchResult
       | { error: string }
     if ("error" in parsed) {
-      throw new Error(`Invalid regular expression: ${parsed.error}`)
+      throw new SearchPatternError(
+        `Invalid regular expression: ${parsed.error}`
+      )
     }
     return parsed
   }

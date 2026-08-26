@@ -28,22 +28,24 @@ export function captureSpawn(
   }
 ): Promise<ExecResult> {
   return new Promise((resolve) => {
-    const chunks: Buffer[] = []
+    const stdoutChunks: Buffer[] = []
+    const stderrChunks: Buffer[] = []
     let bytes = 0
     let timedOut = false
+    let aborted = opts.signal?.aborted === true
     let settled = false
 
-    const capture = (chunk: Buffer) => {
+    const capture = (target: Buffer[], chunk: Buffer) => {
       if (bytes >= opts.maxOutputBytes) return
       const room = opts.maxOutputBytes - bytes
       // Keep at most `room` bytes of this chunk, then ignore the rest. Slicing the
       // Buffer (byte-indexed) is correct; decoding happens once in the caller.
       const keep = chunk.length > room ? chunk.subarray(0, room) : chunk
-      chunks.push(keep)
+      target.push(keep)
       bytes += keep.length
     }
-    child.stdout?.on("data", capture)
-    child.stderr?.on("data", capture)
+    child.stdout?.on("data", (chunk: Buffer) => capture(stdoutChunks, chunk))
+    child.stderr?.on("data", (chunk: Buffer) => capture(stderrChunks, chunk))
 
     // The one kill path shared by the timeout and the abort seam. With killGroup,
     // SIGKILL the whole process group (negative pid) so a shell wrapper's forked
@@ -94,7 +96,10 @@ export function captureSpawn(
     // Abort seam: a fired signal kills the child the same way a timeout does. The
     // listener is removed on close so an aborted-after-completion signal can't
     // reach a dead child.
-    const onAbort = () => terminate()
+    const onAbort = () => {
+      aborted = true
+      terminate()
+    }
     if (opts.signal) {
       if (opts.signal.aborted) terminate()
       else opts.signal.addEventListener("abort", onAbort, { once: true })
@@ -109,19 +114,27 @@ export function captureSpawn(
     }
 
     child.on("error", (err) => {
+      const message = `Failed to start command: ${err.message}`
       finish({
-        stdout: Buffer.from(`Failed to start command: ${err.message}`),
+        stdout: Buffer.from(message),
+        stderr: Buffer.from(message),
         exitCode: null,
         signal: null,
         timedOut,
+        aborted,
+        spawnError: err.message,
       })
     })
     child.on("close", (code, signal) => {
+      const stdout = Buffer.concat(stdoutChunks)
+      const stderr = Buffer.concat(stderrChunks)
       finish({
-        stdout: Buffer.concat(chunks),
+        stdout: Buffer.concat([stdout, stderr]),
+        stderr,
         exitCode: code,
         signal,
         timedOut,
+        aborted,
       })
     })
   })

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest"
 import { execSync } from "child_process"
-import { mkdtemp, rm, readFile, writeFile, mkdir } from "fs/promises"
+import { mkdtemp, rm, readFile, writeFile, mkdir, chmod } from "fs/promises"
 import { tmpdir } from "os"
 import { join } from "path"
 import {
@@ -8,6 +8,7 @@ import {
   materializePythonHeredocCommand,
   normalizeHostShellCommand,
 } from "./local"
+import { SearchExecutionError, SearchPatternError } from "./ripgrep"
 import {
   buildDarwinSandboxProfile,
   localProfileCapabilities,
@@ -504,6 +505,109 @@ describe("LocalEnvironment.search", () => {
       case: "smart",
     })
     expect(matches.map((m) => m.text)).toEqual(["alpha-123", "Alpha-456"])
+  })
+
+  it("reports missing ripgrep as search infrastructure unavailable", async () => {
+    const missing = new LocalEnvironment(workspace, "host-access", {
+      resolveRipgrepPath: () => join(workspace, "missing-rg"),
+    })
+
+    await expect(
+      missing.search({ root: workspace, query: "x", ...baseOpts })
+    ).rejects.toMatchObject({
+      code: "search_unavailable",
+    } satisfies Partial<SearchExecutionError>)
+  })
+
+  it.skipIf(process.platform === "win32")(
+    "reports non-executable ripgrep as search infrastructure unavailable",
+    async () => {
+      const blockedPath = join(workspace, "blocked-rg")
+      await writeFile(blockedPath, "#!/bin/sh\nexit 0\n")
+      await chmod(blockedPath, 0o644)
+      const blocked = new LocalEnvironment(workspace, "host-access", {
+        resolveRipgrepPath: () => blockedPath,
+      })
+
+      await expect(
+        blocked.search({ root: workspace, query: "x", ...baseOpts })
+      ).rejects.toMatchObject({
+        code: "search_unavailable",
+      } satisfies Partial<SearchExecutionError>)
+    }
+  )
+
+  it.skipIf(process.platform === "win32")(
+    "reports timed-out ripgrep as a failed search",
+    async () => {
+      const slowPath = join(workspace, "slow-rg")
+      await writeFile(
+        slowPath,
+        `#!${process.execPath}\nsetTimeout(() => {}, 10_000)\n`
+      )
+      await chmod(slowPath, 0o755)
+      const slow = new LocalEnvironment(workspace, "host-access", {
+        resolveRipgrepPath: () => slowPath,
+        searchTimeoutMs: 50,
+      })
+
+      await expect(
+        slow.search({ root: workspace, query: "x", ...baseOpts })
+      ).rejects.toMatchObject({
+        code: "search_failed",
+      } satisfies Partial<SearchExecutionError>)
+    }
+  )
+
+  it.skipIf(process.platform === "win32")(
+    "reports aborted ripgrep as cancellation",
+    async () => {
+      const slowPath = join(workspace, "aborted-rg")
+      await writeFile(
+        slowPath,
+        `#!${process.execPath}\nsetTimeout(() => {}, 10_000)\n`
+      )
+      await chmod(slowPath, 0o755)
+      const ac = new AbortController()
+      const aborted = new LocalEnvironment(workspace, "host-access", {
+        resolveRipgrepPath: () => slowPath,
+        searchTimeoutMs: 30_000,
+      })
+      const search = aborted.search({
+        root: workspace,
+        query: "x",
+        ...baseOpts,
+        signal: ac.signal,
+      })
+      setTimeout(() => ac.abort(), 50)
+
+      await expect(search).rejects.toMatchObject({
+        code: "aborted",
+      } satisfies Partial<SearchExecutionError>)
+    }
+  )
+
+  it("reports ripgrep regex parse failures as pattern errors", async () => {
+    await expect(
+      env.search({
+        root: workspace,
+        query: "[",
+        ...baseOpts,
+        mode: "regex",
+      })
+    ).rejects.toBeInstanceOf(SearchPatternError)
+  })
+
+  it("treats invalid regex syntax as data in fixed-string mode", async () => {
+    await writeFile(join(workspace, "literal-regex.txt"), "[")
+    const { matches } = await env.search({
+      root: workspace,
+      query: "[",
+      ...baseOpts,
+      mode: "fixed",
+    })
+    expect(matches).toHaveLength(1)
+    expect(matches[0].text).toBe("[")
   })
 
   it("returns files and count result modes", async () => {

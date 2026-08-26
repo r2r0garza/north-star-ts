@@ -1,6 +1,10 @@
 import { TOOL_EFFECTS, type Tool } from "./types"
 import { LocalEnvironment } from "../env/local"
-import { legacyGlobToRipgrepGlob } from "../env/ripgrep"
+import {
+  isSearchExecutionError,
+  isSearchPatternError,
+  legacyGlobToRipgrepGlob,
+} from "../env/ripgrep"
 import { truncateForModel, toolError } from "./output"
 import type {
   SearchCase,
@@ -161,12 +165,19 @@ export const searchTool: Tool = {
         },
       }).text
     } catch (err) {
-      if (mode === "regex") {
+      if (isSearchPatternError(err)) {
         return toolError(
           "bad_regex",
-          `Invalid regular expression or regex engine error: ${
+          `Invalid regular expression: ${
             err instanceof Error ? err.message : query
           }`
+        )
+      }
+      if (isSearchExecutionError(err)) {
+        return toolError(
+          err.code,
+          err.message,
+          "Search infrastructure failed; retry after repairing the search backend."
         )
       }
       throw err

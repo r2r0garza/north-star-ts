@@ -1,4 +1,5 @@
 import type {
+  ExecResult,
   SearchCase,
   SearchCount,
   SearchMatch,
@@ -6,6 +7,33 @@ import type {
   SearchOptions,
   SearchResult,
 } from "./types"
+
+export class SearchExecutionError extends Error {
+  constructor(
+    readonly code: "search_unavailable" | "search_failed" | "aborted",
+    message: string
+  ) {
+    super(message)
+    this.name = "SearchExecutionError"
+  }
+}
+
+export class SearchPatternError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = "SearchPatternError"
+  }
+}
+
+export function isSearchExecutionError(
+  err: unknown
+): err is SearchExecutionError {
+  return err instanceof SearchExecutionError
+}
+
+export function isSearchPatternError(err: unknown): err is SearchPatternError {
+  return err instanceof SearchPatternError
+}
 
 interface RgText {
   text: string
@@ -144,6 +172,39 @@ export function parseRipgrepJson(
   }
 }
 
+export function throwForRipgrepExecutionFailure(
+  res: ExecResult,
+  fallbackMessage = "ripgrep failed"
+): void {
+  const stderr = res.stderr?.toString("utf8").trim()
+  const message = stderr || res.stdout.toString("utf8").trim()
+  if (res.aborted) {
+    throw new SearchExecutionError("aborted", "The search was cancelled.")
+  }
+  if (res.timedOut) {
+    throw new SearchExecutionError("search_failed", "ripgrep search timed out")
+  }
+  if (res.exitCode === null) {
+    const detail = res.spawnError || message
+    throw new SearchExecutionError(
+      "search_unavailable",
+      detail ? `ripgrep could not start: ${detail}` : "ripgrep could not start"
+    )
+  }
+  if (res.signal) {
+    throw new SearchExecutionError(
+      "search_failed",
+      `ripgrep terminated by signal ${res.signal}`
+    )
+  }
+  if (res.exitCode > 1) {
+    if (isRipgrepRegexParseError(message)) {
+      throw new SearchPatternError(message)
+    }
+    throw new SearchExecutionError("search_failed", message || fallbackMessage)
+  }
+}
+
 export function legacyGlobToRipgrepGlob(glob: string): string {
   if (!glob) return glob
   if (
@@ -159,4 +220,8 @@ export function legacyGlobToRipgrepGlob(glob: string): string {
 
 function trimLineEnding(text: string): string {
   return text.replace(/\r?\n$/, "")
+}
+
+function isRipgrepRegexParseError(message: string): boolean {
+  return /\brg: regex parse error:/i.test(message)
 }
