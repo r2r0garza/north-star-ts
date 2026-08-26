@@ -190,7 +190,8 @@ export interface Environment {
   // Resolve a model-supplied, workspace-relative path to a safe absolute path in
   // this environment's filesystem view. Symlink-safe (realpath-based) variant.
   resolve(path: string): Promise<string>
-  // Lexical-only resolve (no realpath) — used by list_files, as today.
+  // Lexical-only resolve (no realpath) for operations that do not dereference
+  // the resulting path.
   resolveLexical(path: string): string
 
   readFile(path: string): Promise<Buffer>

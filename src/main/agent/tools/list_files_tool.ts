@@ -27,7 +27,7 @@ export const listFilesTool: Tool = {
   execute: async (args, ctx) => {
     const path = typeof args.path === "string" ? args.path : ""
     const env = ctx.env ?? new LocalEnvironment(ctx.workspace)
-    const target = env.resolveLexical(path)
+    const target = await env.resolve(path)
     const entries = await env.readdir(target)
     return entries
       .map((e) => (e.isDirectory() ? `${e.name}/` : e.name))
