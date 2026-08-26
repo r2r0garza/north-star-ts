@@ -5,6 +5,7 @@ import {
   type FileTooLarge,
   FileTooLargeError,
   fileRevision,
+  isNotFoundError,
   makeTempPath,
   MUTATION_SOURCE_LIMITS,
   readFileMode,
@@ -484,6 +485,20 @@ type StalePatchFile = {
   current?: string
   currentMode?: number
   expectedMode?: number
+  cleanupErrors?: CleanupError[]
+}
+
+type CleanupPhase = "staging" | "success" | "rollback"
+
+export interface CleanupError {
+  phase: CleanupPhase
+  path: string
+  filePath: string
+  error: string
+}
+
+type FileTooLargeWithCleanup = FileTooLarge & {
+  cleanupErrors?: CleanupError[]
 }
 
 class DestinationChangedError extends Error {
@@ -568,20 +583,42 @@ async function validatePlannedPatch(
   return undefined
 }
 
+async function removeCleanupFile(
+  env: Environment,
+  cleanupErrors: CleanupError[],
+  phase: CleanupPhase,
+  path: string,
+  filePath: string
+): Promise<void> {
+  try {
+    await env.removeFile(path)
+  } catch (error) {
+    if (isNotFoundError(error)) return
+    cleanupErrors.push({
+      phase,
+      path,
+      filePath,
+      error: error instanceof Error ? error.message : String(error),
+    })
+  }
+}
+
 export async function commitPatch(
   env: Environment,
   planned: PlannedPatch
 ): Promise<
   | "ok"
   | StalePatchFile
-  | FileTooLarge
-  | { code: "commit_failed"; error: string }
-  | { code: "rollback_failed"; error: string }
+  | FileTooLargeWithCleanup
+  | { code: "commit_failed"; error: string; cleanupErrors?: CleanupError[] }
+  | { code: "rollback_failed"; error: string; cleanupErrors?: CleanupError[] }
+  | { code: "cleanup_failed"; committed: true; cleanupErrors: CleanupError[] }
 > {
   const staleBeforeStaging = await validatePlannedPatch(env, planned)
   if (staleBeforeStaging) return staleBeforeStaging
 
   const staged: StagedFile[] = []
+  const cleanupErrors: CleanupError[] = []
   let commitError: unknown
   try {
     for (const file of planned.files) {
@@ -609,7 +646,18 @@ export async function commitPatch(
     const staleBeforeMutation = await validatePlannedPatch(env, planned)
     if (staleBeforeMutation) {
       for (const entry of staged) {
-        if (entry.staged) await env.removeFile(entry.staged).catch(() => {})
+        if (entry.staged) {
+          await removeCleanupFile(
+            env,
+            cleanupErrors,
+            "staging",
+            entry.staged,
+            entry.file.path
+          )
+        }
+      }
+      if (cleanupErrors.length > 0) {
+        return { ...staleBeforeMutation, cleanupErrors }
       }
       return staleBeforeMutation
     }
@@ -629,15 +677,46 @@ export async function commitPatch(
       }
     }
     for (const entry of staged) {
-      if (entry.staged) await env.removeFile(entry.staged).catch(() => {})
-      if (entry.backup) await env.removeFile(entry.backup).catch(() => {})
+      if (entry.staged) {
+        await removeCleanupFile(
+          env,
+          cleanupErrors,
+          "success",
+          entry.staged,
+          entry.file.path
+        )
+      }
+      if (entry.backup) {
+        await removeCleanupFile(
+          env,
+          cleanupErrors,
+          "success",
+          entry.backup,
+          entry.file.path
+        )
+      }
+    }
+    if (cleanupErrors.length > 0) {
+      return {
+        code: "cleanup_failed",
+        committed: true,
+        cleanupErrors,
+      }
     }
     return "ok"
   } catch (err) {
     commitError = err
     const errors: string[] = []
     for (const entry of [...staged].reverse()) {
-      if (entry.staged) await env.removeFile(entry.staged).catch(() => {})
+      if (entry.staged) {
+        await removeCleanupFile(
+          env,
+          cleanupErrors,
+          "rollback",
+          entry.staged,
+          entry.file.path
+        )
+      }
       try {
         if (entry.backup && entry.backedUp) {
           await env.rename(
@@ -665,6 +744,7 @@ export async function commitPatch(
       return {
         code: "rollback_failed",
         error: `${err instanceof Error ? err.message : String(err)}; rollback: ${errors.join("; ")}`,
+        ...(cleanupErrors.length > 0 ? { cleanupErrors } : {}),
       }
     }
     if (commitError instanceof DestinationChangedError) {
@@ -672,11 +752,13 @@ export async function commitPatch(
         code: "stale_file",
         path: commitError.path,
         current: commitError.current,
+        ...(cleanupErrors.length > 0 ? { cleanupErrors } : {}),
       }
     }
     return {
       code: "commit_failed",
       error: err instanceof Error ? err.message : String(err),
+      ...(cleanupErrors.length > 0 ? { cleanupErrors } : {}),
     }
   }
 }

@@ -6,6 +6,7 @@ import {
   commitPatch,
   parsePatchOperations,
   planPatch,
+  type CleanupError,
   type PlannedPatch,
 } from "./file/patch"
 import { FileTooLargeError, fileTooLargeMessage } from "./file/mutation"
@@ -48,6 +49,16 @@ function summarizePatch(planned: PlannedPatch): string {
 
 function combinedDiff(planned: PlannedPatch): string {
   return planned.diffs.map((diff) => diff.diff).join("\n")
+}
+
+function cleanupMessage(cleanupErrors?: CleanupError[]): string {
+  if (!cleanupErrors || cleanupErrors.length === 0) return ""
+  return ` Cleanup failed for retained paths: ${cleanupErrors
+    .map(
+      (error) =>
+        `${error.path} (${error.phase} cleanup for ${error.filePath}: ${error.error})`
+    )
+    .join("; ")}.`
 }
 
 export const applyPatchTool: Tool = {
@@ -158,7 +169,10 @@ export const applyPatchTool: Tool = {
     const committed = await commitPatch(env, planned)
     if (committed !== "ok") {
       if (committed.code === "file_too_large") {
-        return toolError("file_too_large", fileTooLargeMessage(committed))
+        return toolError(
+          "file_too_large",
+          `${fileTooLargeMessage(committed)}${cleanupMessage(committed.cleanupErrors)}`
+        )
       }
       if (committed.code === "stale_file") {
         const mode =
@@ -167,19 +181,25 @@ export const applyPatchTool: Tool = {
             : ` Current mode: ${committed.currentMode.toString(8)}; expected mode: ${committed.expectedMode?.toString(8) ?? "unknown"}.`
         return toolError(
           "stale_file",
-          `${committed.path} changed before the patch could be saved. Current revision: ${committed.current ?? "missing"}.${mode}`,
+          `${committed.path} changed before the patch could be saved. Current revision: ${committed.current ?? "missing"}.${mode}${cleanupMessage(committed.cleanupErrors)}`,
           "re-read the affected files and rebase the patch"
         )
       }
       if (committed.code === "commit_failed") {
         return toolError(
           "commit_failed",
-          `Patch commit failed and all staged changes were rolled back: ${committed.error}`
+          `Patch commit failed and all staged content changes were rolled back: ${committed.error}${cleanupMessage(committed.cleanupErrors)}`
+        )
+      }
+      if (committed.code === "cleanup_failed") {
+        return toolError(
+          "cleanup_failed",
+          `Patch content was applied, but cleanup failed.${cleanupMessage(committed.cleanupErrors)} Manual cleanup is required for the retained paths.`
         )
       }
       return toolError(
         "rollback_failed",
-        `Patch commit failed and rollback did not fully recover: ${committed.error}`
+        `Patch commit failed and rollback did not fully recover: ${committed.error}${cleanupMessage(committed.cleanupErrors)}`
       )
     }
 

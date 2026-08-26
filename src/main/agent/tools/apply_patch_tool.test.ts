@@ -97,6 +97,9 @@ function fakeEnv(): Environment & {
       else modes.delete(to)
     },
     removeFile: async (p: string) => {
+      if (!files.has(p)) {
+        throw Object.assign(new Error(`ENOENT: ${p}`), { code: "ENOENT" })
+      }
       if (env.failRemove?.(p)) {
         throw new Error(`injected remove failure for ${p}`)
       }
@@ -606,6 +609,100 @@ describe("apply_patch_tool", () => {
     ).toEqual([])
   })
 
+  it("reports cleanup_failed when an applied add leaves its staged file", async () => {
+    const env = fakeEnv()
+    let stagedPath = ""
+    env.onWriteFile = (path) => {
+      if (path.includes(".north-star-")) stagedPath = path
+    }
+    env.failRemove = (path) => path === stagedPath
+
+    const result = await applyPatchTool.execute(
+      {
+        operations: [{ type: "add", path: "new.txt", content: "created\n" }],
+      },
+      { workspace: "/ws", env }
+    )
+
+    expect(result).toContain("ERROR[cleanup_failed]")
+    expect(result).toContain("Patch content was applied")
+    expect(result).toContain(stagedPath)
+    expect(result).toContain("success cleanup for new.txt")
+    expect(env.files.get("new.txt")).toBe("created\n")
+    expect(env.files.get(stagedPath)).toBe("created\n")
+  })
+
+  it("reports cleanup_failed when an applied update leaves its backup", async () => {
+    const env = fakeEnv()
+    env.files.set("a.txt", "old\n")
+    env.failRemove = (path) => path.includes(".north-star-")
+
+    const result = await applyPatchTool.execute(
+      {
+        operations: [
+          {
+            type: "update",
+            path: "a.txt",
+            hunks: [{ old_string: "old", new_string: "new" }],
+          },
+        ],
+      },
+      { workspace: "/ws", env }
+    )
+
+    expect(result).toContain("ERROR[cleanup_failed]")
+    expect(result).toContain("success cleanup for a.txt")
+    expect(env.files.get("a.txt")).toBe("new\n")
+    const temporaryFiles = [...env.files.entries()].filter(([path]) =>
+      path.includes(".north-star-")
+    )
+    expect(temporaryFiles).toHaveLength(1)
+    expect(temporaryFiles[0]?.[1]).toBe("old\n")
+  })
+
+  it("reports stale cleanup failures with retained staged paths", async () => {
+    const env = fakeEnv()
+    env.files.set("a.txt", "old a\n")
+    env.files.set("b.txt", "old b\n")
+    let stagedWrites = 0
+    env.onWriteFile = (path) => {
+      if (!path.includes(".north-star-")) return
+      stagedWrites += 1
+      if (stagedWrites === 2) {
+        env.files.set("a.txt", "external a\n")
+      }
+    }
+    env.failRemove = (path) => path.includes(".north-star-")
+
+    const result = await applyPatchTool.execute(
+      {
+        operations: [
+          {
+            type: "update",
+            path: "a.txt",
+            hunks: [{ old_string: "old a", new_string: "new a" }],
+          },
+          {
+            type: "update",
+            path: "b.txt",
+            hunks: [{ old_string: "old b", new_string: "new b" }],
+          },
+        ],
+      },
+      { workspace: "/ws", env }
+    )
+
+    expect(result).toContain("ERROR[stale_file]")
+    expect(result).toContain("Cleanup failed for retained paths")
+    expect(result).toContain("staging cleanup for a.txt")
+    expect(result).toContain("staging cleanup for b.txt")
+    expect(env.files.get("a.txt")).toBe("external a\n")
+    expect(env.files.get("b.txt")).toBe("old b\n")
+    expect(
+      [...env.files.keys()].filter((p) => p.includes(".north-star-"))
+    ).toHaveLength(2)
+  })
+
   it("removes a staged file when writing it persists content and then fails", async () => {
     const env = fakeEnv()
     env.files.set("a.txt", "old\n")
@@ -636,6 +733,50 @@ describe("apply_patch_tool", () => {
     expect(
       [...env.files.keys()].filter((p) => p.includes(".north-star-"))
     ).toEqual([])
+  })
+
+  it("preserves commit_failed while reporting retained staged cleanup paths", async () => {
+    const env = fakeEnv()
+    env.files.set("a.txt", "old a\n")
+    env.files.set("b.txt", "old b\n")
+    let stagedWrites = 0
+    env.onWriteFile = (path) => {
+      if (!path.includes(".north-star-")) return
+      stagedWrites += 1
+      if (stagedWrites === 2) {
+        throw new Error("injected later write failure after persist")
+      }
+    }
+    env.failRemove = (path) => path.includes(".north-star-")
+
+    const result = await applyPatchTool.execute(
+      {
+        operations: [
+          {
+            type: "update",
+            path: "a.txt",
+            hunks: [{ old_string: "old a", new_string: "new a" }],
+          },
+          {
+            type: "update",
+            path: "b.txt",
+            hunks: [{ old_string: "old b", new_string: "new b" }],
+          },
+        ],
+      },
+      { workspace: "/ws", env }
+    )
+
+    expect(result).toContain("ERROR[commit_failed]")
+    expect(result).toContain("injected later write failure after persist")
+    expect(result).toContain("Cleanup failed for retained paths")
+    expect(result).toContain("rollback cleanup for a.txt")
+    expect(result).toContain("rollback cleanup for b.txt")
+    expect(env.files.get("a.txt")).toBe("old a\n")
+    expect(env.files.get("b.txt")).toBe("old b\n")
+    expect(
+      [...env.files.keys()].filter((p) => p.includes(".north-star-"))
+    ).toHaveLength(2)
   })
 
   it("removes a staged file when preserving its mode fails", async () => {
