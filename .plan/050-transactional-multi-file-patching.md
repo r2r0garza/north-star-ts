@@ -1,7 +1,10 @@
 # PR50: Transactional multi-file patching
 
-> Status: **NOT STARTED**. Depends on `047` revisions/diff previews and benefits
-> from `049` effect metadata. No DB migration.
+> Status: **IMPLEMENTED**. Depends on `047` revisions/diff previews and benefits
+> from `049` effect metadata. No DB migration. The shipped slice validates the
+> complete structured patch before mutation, gates one combined diff, stages
+> writes/backups, and rolls back commit failures. Durable crash-recovery manifests
+> remain a follow-up hardening gap.
 
 ## Context
 

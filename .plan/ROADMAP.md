@@ -7,11 +7,6 @@ item is its plan file, not its rank.
 
 ## Next up
 
-1. **`050` — Transactional multi-file patching.** Add a provider-neutral `apply_patch_tool` for bounded
-   add/update/move/delete operation sets with exact-context hunks and `047` revisions. Validate the
-   complete patch before mutation, present one combined diff/approval, stage all outputs, and use a
-   tested rollback transaction so any invalid hunk, stale file, abort, or commit failure changes
-   nothing—or reports retained recovery artifacts if rollback itself fails.
 3. **`051` — Session-oriented shell execution.** Reuse the shipped `node-pty`/TerminalService core to
    add agent-owned `exec_command`, `write_stdin`, `poll_command`, and `terminate_command`: quick commands
    complete inline; watchers/servers/REPLs yield a scoped session id, cursor-based bounded output, and
@@ -139,6 +134,14 @@ item is its plan file, not its rank.
 
 ## Done
 
+- **`050` — Transactional multi-file patching.** Added a registered provider-neutral
+  `apply_patch_tool` for structured `add`/`update`/`move`/`delete` operation sets with exact-context
+  hunks, optional `047` revisions, patch/file/hunk/byte caps, binary/path/conflict/case-collision
+  validation, one combined approval diff, pre-commit stale revalidation, staged writes, original-file
+  backups, and rollback on commit failure with a distinct `rollback_failed` result if restoration
+  itself fails. Focused tests cover mixed transactions, approval metadata, invalid hunk no-mutation,
+  stale revisions before and after approval, and rollback after an injected rename failure. Durable
+  crash-recovery manifests remain a follow-up hardening gap.
 - **`049` — Tool effect metadata and parallel read-only execution.** Added required
   `ToolEffects` metadata to every built-in tool, with filesystem reads/search/index as the initial
   parallel-safe read set and mutations, browser, web, questions, delegation, shell, and plan/process

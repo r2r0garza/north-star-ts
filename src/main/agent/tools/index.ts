@@ -4,6 +4,7 @@ import { readFileTool } from "./read_file_tool"
 import { searchTool } from "./search_tool"
 import { editFileTool } from "./edit_file_tool"
 import { writeFileTool } from "./write_file_tool"
+import { applyPatchTool } from "./apply_patch_tool"
 import { runShellTool } from "./run_shell_tool"
 import { todoWriteTool } from "./todo_tool"
 import { askUserQuestionTool } from "./ask_user_question_tool"
@@ -35,6 +36,7 @@ const workspaceTools: Tool[] = [
   searchTool,
   editFileTool,
   writeFileTool,
+  applyPatchTool,
   runShellTool,
 ]
 
