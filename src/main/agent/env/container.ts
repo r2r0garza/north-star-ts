@@ -2,7 +2,7 @@ import { spawn } from "child_process"
 import type { ChildProcess } from "child_process"
 import { randomUUID } from "crypto"
 import { EventEmitter } from "events"
-import { relative, posix } from "path"
+import { isAbsolute, relative, posix } from "path"
 import { StringDecoder } from "string_decoder"
 import { resolveInWorkspace } from "../tools/workspace"
 import { captureProcess, captureSpawn } from "./spawn-util"
@@ -187,15 +187,56 @@ export class ContainerEnvironment implements Environment {
     return res.stderr.trim() || fallback
   }
 
-  // Map an in-environment absolute path (under MOUNT) — or a model-supplied
-  // workspace-relative path — to its in-container path. Both `resolve` and exec's
-  // cwd produce MOUNT-rooted paths, so this is mostly identity; it also maps a
-  // host workspace path (exec passes ctx.workspace as cwd) back under MOUNT.
+  // Map an in-environment absolute path (under MOUNT) — or a host workspace path
+  // (exec passes ctx.workspace as cwd) — to its in-container path.
   private toContainerPath(p: string): string {
-    if (isInsideContainerPath(MOUNT, p)) return p
+    if (isInsideContainerPath(MOUNT, p)) return posix.normalize(p)
     // A host path inside the workspace → MOUNT + relative segment.
+    if (!isInsideHostPath(this.cfg.workspace, p)) {
+      throw new Error(
+        `Path "${p}" is outside the workspace and is not allowed.`
+      )
+    }
     const rel = relative(this.cfg.workspace, p)
     return rel ? posix.join(MOUNT, rel.split(/[\\/]/).join("/")) : MOUNT
+  }
+
+  private async validateContainerPath(
+    path: string,
+    opts: RuntimeCliOptions = {}
+  ): Promise<string> {
+    const target = this.toContainerPath(path)
+    const res = await this.runtimeCli(
+      [
+        "exec",
+        this.name,
+        "python3",
+        "-c",
+        CONTAINER_REALPATH_VALIDATOR,
+        MOUNT,
+        target,
+      ],
+      undefined,
+      opts
+    )
+    this.ensureCompleteCliResult(res, `Path "${path}" could not be validated.`)
+    const parsed = this.parseCliJson<{ path: string } | { error: string }>(
+      res,
+      `Path "${path}" could not be validated.`
+    )
+    if ("error" in parsed) {
+      throw new Error(
+        parsed.error === "outside"
+          ? `Path "${path}" resolves (via symlink) outside the workspace and is not allowed.`
+          : `Path "${path}" could not be validated against the workspace.`
+      )
+    }
+    if (res.code !== 0) {
+      throw new Error(
+        res.stderr.trim() || `Path "${path}" could not be validated.`
+      )
+    }
+    return parsed.path
   }
 
   // Confirm the runtime is installed, ensure the image is present, and start (or
@@ -279,75 +320,21 @@ export class ContainerEnvironment implements Environment {
 
   resolveLexical(path: string): string {
     // Lexical confinement against the host workspace (rejects `..`/absolute),
-    // then map into the container. The bind-mount boundary backstops symlink
-    // escapes the lexical check can't see (the container sees only MOUNT).
+    // then map into the container. This does not follow symlinks; use `resolve`
+    // before dereferencing.
     const host = resolveInWorkspace(this.cfg.workspace, path)
     return this.toContainerPath(host)
   }
 
   async resolve(path: string): Promise<string> {
     const target = this.resolveLexical(path)
-    const script = `
-import json, os, sys
-
-mount = sys.argv[1]
-target = sys.argv[2]
-
-def inside(parent, child):
-    rel = os.path.relpath(child, parent)
-    return rel == "." or (not rel.startswith("..") and not os.path.isabs(rel))
-
-probe = target
-suffix = []
-while True:
-    try:
-        real = os.path.realpath(probe)
-        if not inside(mount, real):
-            print(json.dumps({"error": "outside"}))
-            sys.exit(2)
-        print(json.dumps({"path": os.path.normpath(os.path.join(real, *reversed(suffix)))}))
-        sys.exit(0)
-    except OSError:
-        parent = os.path.dirname(probe)
-        if parent == probe:
-            print(json.dumps({"error": "unvalidated"}))
-            sys.exit(3)
-        suffix.append(os.path.basename(probe))
-        probe = parent
-`
-    const res = await this.runtimeCli([
-      "exec",
-      this.name,
-      "python3",
-      "-c",
-      script,
-      MOUNT,
-      target,
-    ])
-    this.ensureCompleteCliResult(res, `Path "${path}" could not be validated.`)
-    const parsed = this.parseCliJson<{ path: string } | { error: string }>(
-      res,
-      `Path "${path}" could not be validated.`
-    )
-    if ("error" in parsed) {
-      throw new Error(
-        parsed.error === "outside"
-          ? `Path "${path}" resolves (via symlink) outside the workspace and is not allowed.`
-          : `Path "${path}" could not be validated against the workspace.`
-      )
-    }
-    if (res.code !== 0) {
-      throw new Error(
-        res.stderr.trim() || `Path "${path}" could not be validated.`
-      )
-    }
-    return parsed.path
+    return this.validateContainerPath(target)
   }
 
   async readFile(path: string): Promise<Buffer> {
     // base64 over the pipe is binary-safe (no encoding/NUL corruption), so the
     // tool's binary detection and utf8 decode behave exactly as on the host.
-    const p = this.toContainerPath(path)
+    const p = await this.validateContainerPath(path)
     const res = await this.runtimeCli(
       ["exec", this.name, "sh", "-c", `base64 < ${shq(p)}`],
       undefined,
@@ -365,7 +352,7 @@ while True:
     path: string,
     opts: ReadTextLinesOptions
   ): Promise<ReadTextLinesResult> {
-    const p = this.toContainerPath(path)
+    const p = await this.validateContainerPath(path)
     const offset = Math.max(1, Math.floor(opts.offset))
     const limit = Math.max(1, Math.floor(opts.limit))
     const maxBytes = Math.max(1, Math.floor(opts.maxBytes))
@@ -562,7 +549,7 @@ PY
   async writeFile(path: string, data: string): Promise<void> {
     // Pipe base64 to `base64 -d` so arbitrary content needs no shell quoting and
     // stays binary-safe.
-    const p = this.toContainerPath(path)
+    const p = await this.validateContainerPath(path)
     const b64 = Buffer.from(data, "utf8").toString("base64")
     const res = await this.runtimeCli(
       ["exec", "-i", this.name, "sh", "-c", `base64 -d > ${shq(p)}`],
@@ -572,7 +559,7 @@ PY
   }
 
   async chmod(path: string, mode: number): Promise<void> {
-    const p = this.toContainerPath(path)
+    const p = await this.validateContainerPath(path)
     const normalized = (mode & 0o7777).toString(8)
     const res = await this.runtimeCli([
       "exec",
@@ -590,8 +577,8 @@ PY
       this.name,
       "mv",
       "-f",
-      this.toContainerPath(from),
-      this.toContainerPath(to),
+      await this.validateContainerPath(from),
+      await this.validateContainerPath(to),
     ])
     this.throwForCliFailure(res, `cannot rename ${from} -> ${to}`)
   }
@@ -602,8 +589,8 @@ PY
       this.name,
       "ln",
       "-T",
-      this.toContainerPath(from),
-      this.toContainerPath(to),
+      await this.validateContainerPath(from),
+      await this.validateContainerPath(to),
     ])
     this.throwForCliFailure(
       res,
@@ -617,7 +604,7 @@ PY
       this.name,
       "rm",
       "-f",
-      this.toContainerPath(path),
+      await this.validateContainerPath(path),
     ])
     this.throwForCliFailure(res, `cannot remove ${path}`)
   }
@@ -628,7 +615,7 @@ PY
       this.name,
       "mkdir",
       "-p",
-      this.toContainerPath(path),
+      await this.validateContainerPath(path),
     ])
     this.throwForCliFailure(res, `cannot mkdir ${path}`)
   }
@@ -637,7 +624,7 @@ PY
     // `%s` = size in bytes, `%F` = file type description, `%a` = permission bits
     // in octal. A nonzero exit (e.g.
     // ENOENT) throws, so read/edit's `catch → not_found` fires just as on the host.
-    const p = this.toContainerPath(path)
+    const p = await this.validateContainerPath(path)
     const res = await this.runtimeCli([
       "exec",
       this.name,
@@ -669,7 +656,7 @@ PY
     // directories (-p). A trailing slash marks a directory; everything else is
     // treated as a file (symlinks/sockets are rare in a workspace and callers'
     // try/catch skips anything unreadable). Exact types are a follow-up.
-    const p = this.toContainerPath(path)
+    const p = await this.validateContainerPath(path)
     const res = await this.runtimeCli([
       "exec",
       this.name,
@@ -758,7 +745,9 @@ PY
   // exec round-trips). Prefers ripgrep with JSON events. If rg is absent, uses a
   // bounded Python fallback that receives all model-supplied data as argv.
   async search(opts: SearchOptions): Promise<SearchResult> {
-    const root = this.toContainerPath(opts.root)
+    const root = await this.validateContainerPath(opts.root, {
+      signal: opts.signal,
+    })
     const hasRg = await this.runtimeCli(
       ["exec", this.name, "sh", "-c", "command -v rg >/dev/null 2>&1"],
       undefined,
@@ -1004,6 +993,40 @@ function isInsideContainerPath(parent: string, child: string): boolean {
   const rel = posix.relative(parent, child)
   return rel === "" || (!rel.startsWith("..") && !posix.isAbsolute(rel))
 }
+
+function isInsideHostPath(parent: string, child: string): boolean {
+  const rel = relative(parent, child)
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel))
+}
+
+const CONTAINER_REALPATH_VALIDATOR = String.raw`
+import json, os, sys
+
+mount = os.path.realpath(sys.argv[1])
+target = sys.argv[2]
+
+def inside(parent, child):
+    rel = os.path.relpath(child, parent)
+    return rel == "." or (not rel.startswith("..") and not os.path.isabs(rel))
+
+probe = target
+suffix = []
+while True:
+    try:
+        real = os.path.realpath(probe)
+        if not inside(mount, real):
+            print(json.dumps({"error": "outside"}))
+            sys.exit(2)
+        print(json.dumps({"path": os.path.normpath(os.path.join(real, *reversed(suffix)))}))
+        sys.exit(0)
+    except OSError:
+        parent = os.path.dirname(probe)
+        if parent == probe:
+            print(json.dumps({"error": "unvalidated"}))
+            sys.exit(3)
+        suffix.append(os.path.basename(probe))
+        probe = parent
+`
 
 const CONTAINER_COMMAND_SUPERVISOR = String.raw`
 import os, subprocess, sys

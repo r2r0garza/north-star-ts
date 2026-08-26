@@ -9,6 +9,11 @@ import type { ChildProcess } from "child_process"
 import { ContainerEnvironment } from "./container"
 import { checkContainerTestAvailability } from "./container-test-availability"
 import { applyPatchTool } from "../tools/apply_patch_tool"
+import { editFileTool } from "../tools/edit_file_tool"
+import { listFilesTool } from "../tools/list_files_tool"
+import { readFileTool } from "../tools/read_file_tool"
+import { searchTool } from "../tools/search_tool"
+import { writeFileTool } from "../tools/write_file_tool"
 
 const IMAGE = process.env.COWORK_ENV_IMAGE || "node:20-bookworm"
 
@@ -87,11 +92,17 @@ describe("ContainerEnvironment runtime CLI supervision", () => {
   })
 
   it("rejects truncated base64 file output instead of returning partial bytes", async () => {
-    const env = testContainer(
-      () =>
-        fakeRuntimeChild({ stdout: Buffer.from("abcdef").toString("base64") }),
-      { runtimeCliReadFileMaxOutputBytes: 4 }
-    )
+    const runtimeSpawn = vi
+      .fn()
+      .mockReturnValueOnce(
+        fakeRuntimeChild({ stdout: '{"path": "/workspace/file.txt"}' })
+      )
+      .mockReturnValueOnce(
+        fakeRuntimeChild({ stdout: Buffer.from("abcdef").toString("base64") })
+      )
+    const env = testContainer(runtimeSpawn, {
+      runtimeCliReadFileMaxOutputBytes: 4,
+    })
 
     await expect(env.readFile("/workspace/file.txt")).rejects.toThrow(
       /output cap/
@@ -239,6 +250,74 @@ for (const runtime of ["docker", "podman"] as const) {
         await expect(env.resolve("external-link")).rejects.toThrow(
           "outside the workspace"
         )
+      })
+
+      it("rejects file tool access through symlinks outside the mount", async () => {
+        const external = `/tmp/ns-027-${runtime}-${process.pid}`
+        const link = `tool-escape-link-${runtime}`
+        await env.exec(
+          `rm -rf ${external} && mkdir -p ${external} && printf 'secret\\n' > ${external}/sentinel.txt`,
+          {
+            cwd: workspace,
+            timeoutMs: 10_000,
+            maxOutputBytes: 1024 * 1024,
+          }
+        )
+        await symlink(external, join(workspace, link))
+
+        const ctx = { workspace, env }
+        const read = await readFileTool.execute(
+          { path: `${link}/sentinel.txt` },
+          ctx
+        )
+        expect(read).toContain("ERROR[not_allowed]")
+        await expect(
+          listFilesTool.execute({ path: link }, ctx)
+        ).rejects.toThrow("outside the workspace")
+        await expect(
+          searchTool.execute({ path: link, query: "secret" }, ctx)
+        ).rejects.toThrow("outside the workspace")
+        await expect(
+          writeFileTool.execute(
+            { path: `${link}/created.txt`, content: "created" },
+            ctx
+          )
+        ).rejects.toThrow("outside the workspace")
+        await expect(
+          editFileTool.execute(
+            {
+              path: `${link}/sentinel.txt`,
+              old_string: "secret",
+              new_string: "changed",
+            },
+            ctx
+          )
+        ).rejects.toThrow("outside the workspace")
+
+        const patch = await applyPatchTool.execute(
+          {
+            operations: [
+              {
+                type: "update",
+                path: `${link}/sentinel.txt`,
+                hunks: [{ old_string: "secret", new_string: "changed" }],
+              },
+            ],
+          },
+          ctx
+        )
+        expect(patch).toContain("ERROR[invalid_patch]")
+        expect(patch).toContain("outside the workspace")
+
+        const check = await env.exec(
+          `test "$(cat ${external}/sentinel.txt)" = secret && test ! -e ${external}/created.txt`,
+          {
+            cwd: workspace,
+            timeoutMs: 10_000,
+            maxOutputBytes: 1024 * 1024,
+          }
+        )
+        expect(check.exitCode).toBe(0)
       })
 
       it("installs a file only when the destination is absent", async () => {
