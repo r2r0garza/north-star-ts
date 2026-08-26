@@ -43,6 +43,34 @@ describe("command session tools", () => {
     expect(result.sessionId).toBeUndefined()
   })
 
+  it("sends parsed shell analysis through the approval gate identity/detail", async () => {
+    const seen: Array<{
+      identity: string
+      detail?: Record<string, unknown>
+    }> = []
+    const workspace = tmpdir()
+    await execCommandTool.execute(
+      { command: "echo hello > out.txt", yield_ms: 1000 },
+      ctx({
+        workspace,
+        gate: async (action) => {
+          seen.push({ identity: action.identity, detail: action.detail })
+          return "approved"
+        },
+      })
+    )
+
+    expect(seen[0].identity).toContain('"write"')
+    const analysis = seen[0].detail?.shellAnalysis as
+      | {
+          candidateWritePaths?: string[]
+          segments?: Array<{ executable?: string }>
+        }
+      | undefined
+    expect(analysis?.candidateWritePaths?.[0]).toContain("out.txt")
+    expect(analysis?.segments?.map((s) => s.executable)).toEqual(["echo"])
+  })
+
   it("returns a running session and polls without duplicate output", async () => {
     const started = parseResult(
       await execCommandTool.execute(

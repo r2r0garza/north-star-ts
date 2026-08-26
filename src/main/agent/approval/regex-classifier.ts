@@ -1,5 +1,10 @@
 import type { ActionClassifier, ActionDecision, ToolAction } from "./types"
 import { normalizeCommand } from "./normalize"
+import {
+  analyzeShellCommand,
+  type ShellCommandAnalysis,
+  type ShellCommandSegment,
+} from "./shell-analyzer"
 
 // Deterministic, regex-based classifier for shell commands. Ported from
 // hermes-tools/approval.py (HARDLINE_PATTERNS + DANGEROUS_PATTERNS). The LLM is
@@ -314,18 +319,106 @@ export class RegexCommandClassifier implements ActionClassifier {
         ? (action.detail.command as string)
         : action.identity
     const normalized = normalizeCommand(command).toLowerCase()
+    const analysis = shellAnalysis(action, command)
 
     // Hardline is unconditional and carries no category — it is never downgraded
     // by the allowlist or a sandbox policy.
-    for (const [re, description] of HARDLINE_COMPILED) {
-      if (re.test(normalized))
-        return { level: "hard_block", reason: description }
+    const hardline = firstMatch(normalized, HARDLINE_COMPILED)
+    if (hardline) return { level: "hard_block", reason: hardline.description }
+    for (const segment of [...analysis.segments, ...analysis.substitutions]) {
+      const segmentHardline = firstMatch(
+        segmentText(segment),
+        HARDLINE_COMPILED
+      )
+      if (segmentHardline) {
+        return { level: "hard_block", reason: segmentHardline.description }
+      }
     }
-    for (const [re, description, category] of DANGEROUS_COMPILED) {
-      if (re.test(normalized)) {
-        return { level: "require_approval", reason: description, category }
+
+    const dangerous = firstMatch(normalized, DANGEROUS_COMPILED)
+    if (dangerous) {
+      return {
+        level: "require_approval",
+        reason: dangerous.description,
+        category: dangerous.category,
+      }
+    }
+    for (const segment of [...analysis.segments, ...analysis.substitutions]) {
+      const segmentDangerous = firstMatch(
+        segmentText(segment),
+        DANGEROUS_COMPILED
+      )
+      if (segmentDangerous) {
+        return {
+          level: "require_approval",
+          reason: segmentDangerous.description,
+          category: segmentDangerous.category,
+        }
+      }
+    }
+    if (analysis.confidence !== "high") {
+      return {
+        level: "require_approval",
+        reason: `shell syntax requires approval: ${analysis.reasons.join(", ")}`,
+        category: "code_exec",
+      }
+    }
+    if (analysis.outsideWorkspacePaths.length > 0) {
+      return {
+        level: "require_approval",
+        reason: "command references paths outside the workspace",
+        category: "system_mutation",
+      }
+    }
+    if (analysis.networkOperations.length > 0) {
+      return {
+        level: "require_approval",
+        reason: "command may access the network",
+        category: "network_access",
       }
     }
     return { level: "allow" }
   }
+}
+
+function shellAnalysis(
+  action: ToolAction,
+  command: string
+): ShellCommandAnalysis {
+  const analysis = action.detail?.shellAnalysis
+  if (isShellCommandAnalysis(analysis)) return analysis
+  return analyzeShellCommand(command, process.platform)
+}
+
+function isShellCommandAnalysis(value: unknown): value is ShellCommandAnalysis {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    Array.isArray((value as ShellCommandAnalysis).segments) &&
+    Array.isArray((value as ShellCommandAnalysis).substitutions) &&
+    Array.isArray((value as ShellCommandAnalysis).networkOperations) &&
+    Array.isArray((value as ShellCommandAnalysis).outsideWorkspacePaths)
+  )
+}
+
+function firstMatch(
+  command: string,
+  patterns: Array<[RegExp, string, string]>
+): { description: string; category: string } | null {
+  for (const [re, description, category] of patterns) {
+    if (re.test(command)) return { description, category }
+  }
+  return null
+}
+
+function segmentText(segment: ShellCommandSegment): string {
+  return normalizeCommand(
+    [
+      ...segment.argv,
+      ...segment.redirects.flatMap((redirect) => [
+        redirect.op,
+        redirect.target,
+      ]),
+    ].join(" ")
+  ).toLowerCase()
 }

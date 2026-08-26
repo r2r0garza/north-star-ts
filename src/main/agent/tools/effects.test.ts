@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { builtInTools } from "."
+import { builtInTools, toolDefinitions } from "."
 
 describe("tool effect metadata", () => {
   it("is declared for every built-in tool", () => {
@@ -21,5 +21,14 @@ describe("tool effect metadata", () => {
         tool.definition.function.name
       ).toBe(true)
     }
+  })
+
+  it("does not offer the legacy run_shell_tool in model-facing definitions", () => {
+    const names = toolDefinitions.map((tool) => tool.function.name)
+    expect(names).toContain("exec_command")
+    expect(names).toContain("write_stdin")
+    expect(names).toContain("poll_command")
+    expect(names).toContain("terminate_command")
+    expect(names).not.toContain("run_shell_tool")
   })
 })

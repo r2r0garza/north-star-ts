@@ -99,6 +99,10 @@ const CATEGORY_META: Record<ApprovalCategory, { label: string; help: string }> =
       label: "System changes",
       help: "Permissions, services, devices, or credential/system paths.",
     },
+    network_access: {
+      label: "Network access",
+      help: "curl, wget, ssh, git network operations, and package installs.",
+    },
     code_exec: {
       label: "Arbitrary code execution",
       help: "Inline interpreters and piping remote scripts to a shell.",
@@ -109,6 +113,7 @@ const CATEGORY_ORDER: ApprovalCategory[] = [
   "destructive_fs",
   "history_rewrite",
   "system_mutation",
+  "network_access",
   "code_exec",
 ]
 

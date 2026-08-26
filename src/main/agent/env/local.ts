@@ -108,10 +108,12 @@ export function materializePythonHeredocCommand(
   return { command: runner, script: lines.slice(0, end).join("\n") }
 }
 
-// The default backend: runs commands and file ops directly on the host, confined
-// to `workspace`. A behavior-preserving wrapper over exactly what the tools did
-// before this seam existed — fs/promises, child_process.spawn, and the workspace
-// path resolvers — so existing tool tests pass unchanged.
+// The default backend: runs file ops through workspace path resolvers, but shell
+// commands execute directly on the host with `cwd` set to the workspace. Cwd is
+// not an OS sandbox; approval policy is the guard for Local shell execution.
+// This is a behavior-preserving wrapper over exactly what the tools did before
+// this seam existed — fs/promises, child_process.spawn, and the workspace path
+// resolvers — so existing tool tests pass unchanged.
 export class LocalEnvironment implements Environment {
   constructor(private readonly workspace: string) {}
 
@@ -158,10 +160,10 @@ export class LocalEnvironment implements Environment {
     return readdir(path, { withFileTypes: true })
   }
 
-  // Run `command` through the user's shell, confined to `opts.cwd`. The capture/
-  // cap/timeout/abort logic lives in captureSpawn (shared with the container
-  // backend); this just spawns the process. stdin is closed so the command can't
-  // block waiting for input.
+  // Run `command` through the user's shell with `opts.cwd` as its working
+  // directory. The capture/cap/timeout/abort logic lives in captureSpawn
+  // (shared with the container backend); this just spawns the process. stdin is
+  // closed so the command can't block waiting for input.
   //
   // `detached: true` makes the child its own process-group leader, so on abort or
   // timeout captureSpawn can SIGKILL the whole group (killGroup) — otherwise a

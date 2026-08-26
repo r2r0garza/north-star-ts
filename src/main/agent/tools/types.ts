@@ -92,10 +92,11 @@ export type AskResult =
 // support it (e.g. unit tests) — the tool then reports it's unavailable.
 export type Ask = (questions: Question[]) => Promise<AskResult>
 
-// Runtime context passed to every tool. `workspace` is the absolute root the
-// agent is confined to — tools must keep all file access inside it. In a Chat
-// session there is no workspace; instead the user attaches specific files, and
-// `attachments` is the absolute-path allowlist a file tool may read from.
+// Runtime context passed to every tool. `workspace` is the absolute root file
+// tools are confined to. Local shell commands run on the host with this as cwd;
+// they are not OS-sandboxed by cwd alone. In a Chat session there is no
+// workspace; instead the user attaches specific files, and `attachments` is the
+// absolute-path allowlist a file tool may read from.
 export interface ToolContext {
   workspace: string
   attachments?: string[]

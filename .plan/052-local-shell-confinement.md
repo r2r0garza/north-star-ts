@@ -1,6 +1,7 @@
 # PR52: Local shell confinement and syntax-aware command policy
 
-> Status: **NOT STARTED**. Depends on `051` so every one-shot/session command
+> Status: **PARTIAL**. `052.1` is implemented; `052.2` enforced Local runtime
+> profiles are not started. Depends on `051` so every one-shot/session command
 > shares one spawn and policy seam. Security-focused; no DB migration expected.
 
 ## Context
@@ -27,6 +28,16 @@ approval, never toward silent allow.
 
 ### 052.1 — Honest posture + parsed policy
 
+Status: **DONE** in this branch. Added a conservative POSIX shell analyzer,
+wired shell sessions to use parsed action identity/detail, kept the existing
+regex corpus as defense in depth over both raw and parsed segments, and surfaced
+detected executables/network/outside-workspace/write targets in approval cards.
+Unsupported syntax such as substitutions/heredocs fails toward approval while
+known hardline text still blocks first. `exec_command` is now the only
+model-offered shell primitive; `run_shell_tool` remains dispatchable only as a
+legacy compatibility wrapper. Local-facing copy now distinguishes workspace
+filesystem confinement from host shell execution.
+
 - Introduce `analyzeShellCommand(command, platform)` returning command segments,
   pipelines, substitutions, redirects, candidate read/write paths, network
   operations, and parse confidence.
@@ -48,6 +59,8 @@ as approval-required rather than adopting an unmaintained parser as a security
 boundary.
 
 ### 052.2 — Enforced Local profiles
+
+Status: **NOT STARTED**.
 
 - Define `read-only`, `workspace-write`, and `host-access` profiles independently
   from approval mode.

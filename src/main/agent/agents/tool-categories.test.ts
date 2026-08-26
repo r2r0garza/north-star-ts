@@ -42,7 +42,8 @@ describe("agentToolAllowlist", () => {
     const allow = agentToolAllowlist(agent(["edit", "execute"]))!
     expect(allow.has("edit_file_tool")).toBe(true)
     expect(allow.has("write_file_tool")).toBe(true)
-    expect(allow.has("run_shell_tool")).toBe(true)
+    expect(allow.has("run_shell_tool")).toBe(false)
+    expect(allow.has("exec_command")).toBe(true)
     // floor is always present
     expect(allow.has("read_file_tool")).toBe(true)
     // categories not listed are excluded

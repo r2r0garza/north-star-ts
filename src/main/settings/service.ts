@@ -22,6 +22,7 @@ export type ApprovalCategory =
   | "destructive_fs" // recursive/forced delete (rm -r, find -delete, git clean -f)
   | "history_rewrite" // git reset --hard, git push --force
   | "system_mutation" // chmod 777, writes to system/credential paths
+  | "network_access" // curl/wget/ssh/git fetch/pull/push/package installs
   | "code_exec" // bash -c, curl|sh, interpreter -e
 
 export const SANDBOX_CATEGORY_DEFAULTS: Record<ApprovalCategory, boolean> = {
@@ -29,6 +30,7 @@ export const SANDBOX_CATEGORY_DEFAULTS: Record<ApprovalCategory, boolean> = {
   destructive_fs: false,
   history_rewrite: false,
   system_mutation: false,
+  network_access: false,
   code_exec: false,
 }
 

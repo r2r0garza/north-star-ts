@@ -47,8 +47,12 @@ const workspaceTools: Tool[] = [
   writeStdinTool,
   pollCommandTool,
   terminateCommandTool,
-  runShellTool,
 ]
+
+// Legacy compatibility tools remain executable by name for old/internal callers,
+// but are not advertised in the model-facing toolDefinitions array. The public
+// shell surface is exec_command + write_stdin/poll_command/terminate_command.
+const legacyTools: Tool[] = [runShellTool]
 
 // Tools gated by something other than the workspace (e.g. conversation mode).
 // They're dispatchable via runTool but are NOT in `toolDefinitions`; runChat
@@ -110,14 +114,18 @@ export const toolDefinitions = workspaceTools.map((t) => t.definition)
 
 // Lookup by name, used to execute any tool the model asked for.
 const byName = new Map(
-  [...workspaceTools, ...otherTools, ...browserTools, ...webTools].map((t) => [
-    t.definition.function.name,
-    t,
-  ])
+  [
+    ...workspaceTools,
+    ...legacyTools,
+    ...otherTools,
+    ...browserTools,
+    ...webTools,
+  ].map((t) => [t.definition.function.name, t])
 )
 
 export const builtInTools = [
   ...workspaceTools,
+  ...legacyTools,
   ...otherTools,
   ...browserTools,
   ...webTools,

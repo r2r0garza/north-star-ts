@@ -7,12 +7,11 @@ item is its plan file, not its rank.
 
 ## Next up
 
-3. **`052` — Local shell confinement and syntax-aware command policy.** Build on `051`'s single spawn
-   seam. Parse command segments/pipelines/substitutions/redirects conservatively, retain the current
-   hardline regex corpus as defense in depth, and route unknown syntax toward approval. Separate exec,
-   outside-workspace, and network decisions; accurately label Local as host access unless a tested OS
-   adapter enforces `read-only`/`workspace-write`. Unsupported platforms offer container/explicit host
-   access rather than a pretend sandbox.
+3. **`052.2` — Local shell confinement: enforced runtime profiles.** `052.1` shipped the honest Local
+   posture and parsed shell policy. Remaining work: define and enforce `read-only`, `workspace-write`,
+   and `host-access` profiles independently from approval mode, with per-platform adapters only where
+   enforcement is dependable. Unsupported platforms offer container/explicit host access rather than a
+   pretend sandbox.
 4. **`042` — Codex CLI provider.** Second concrete split from `034`. Adds **Codex CLI** as a
    workspace-backed local subprocess provider, routed away from `runAgentLoop` into the same
    `agent/cli/` adapter layer. Uses `codex exec --json <message>` for the first turn, parses

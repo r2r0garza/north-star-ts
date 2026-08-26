@@ -5,6 +5,7 @@ import { RegexCommandClassifier } from "./regex-classifier"
 import { FileActionClassifier } from "./file-classifier"
 import { DelegationClassifier } from "./delegation-classifier"
 import { BrowserActionClassifier } from "./browser-classifier"
+import { analyzeShellCommand } from "./shell-analyzer"
 import {
   PolicyEngine,
   type AllowlistLookup,
@@ -136,6 +137,73 @@ describe("RegexCommandClassifier — dangerous (require_approval)", () => {
   it("catches obfuscated recursive rm via backslash escape", () => {
     expect(classify("r\\m -rf build")?.level).toBe("require_approval")
   })
+
+  it("requires approval for network commands even without pipe-to-shell", () => {
+    const verdict = classify("curl https://example.com/install.sh")
+    expect(verdict?.level).toBe("require_approval")
+    expect(verdict && "category" in verdict && verdict.category).toBe(
+      "network_access"
+    )
+  })
+})
+
+describe("analyzeShellCommand", () => {
+  it("extracts executable segments and redirects from compound commands", () => {
+    const analysis = analyzeShellCommand(
+      "echo ok > out.txt && git status | wc -l",
+      "darwin",
+      { cwd: "/tmp/work", workspace: "/tmp/work" }
+    )
+
+    expect(analysis.confidence).toBe("high")
+    expect(analysis.segments.map((s) => s.executable)).toEqual([
+      "echo",
+      "git",
+      "wc",
+    ])
+    expect(analysis.candidateWritePaths).toEqual(["/tmp/work/out.txt"])
+  })
+
+  it("marks substitutions as approval-required and exposes the nested command", () => {
+    const analysis = analyzeShellCommand("echo $(git status)", "darwin")
+
+    expect(analysis.confidence).toBe("requires_approval")
+    expect(analysis.substitutions.map((s) => s.executable)).toEqual(["git"])
+  })
+
+  it("detects network operations and outside-workspace paths", () => {
+    const analysis = analyzeShellCommand(
+      "git pull origin main > /tmp/result.txt",
+      "darwin",
+      { cwd: "/repo", workspace: "/repo" }
+    )
+
+    expect(analysis.networkOperations).toEqual(["git pull"])
+    expect(analysis.outsideWorkspacePaths).toEqual(["/tmp/result.txt"])
+  })
+})
+
+describe("RegexCommandClassifier — parsed shell analysis", () => {
+  it("requires approval when parsed detail references paths outside workspace", () => {
+    const command = "echo hi > /tmp/outside.txt"
+    const analysis = analyzeShellCommand(command, "darwin", {
+      cwd: "/repo",
+      workspace: "/repo",
+    })
+    const verdict = classifier.classify({
+      ...shell(command),
+      detail: { command, shellAnalysis: analysis },
+    })
+
+    expect(verdict?.level).toBe("require_approval")
+    expect(verdict?.reason).toContain("outside the workspace")
+  })
+
+  it("hard-blocks dangerous commands found inside substitutions", () => {
+    expect(classify("echo $(rm -rf /)")).toMatchObject({
+      level: "hard_block",
+    })
+  })
 })
 
 describe("RegexCommandClassifier — read-only/benign (allow)", () => {
@@ -249,7 +317,12 @@ describe("PolicyEngine — local backend tightening", () => {
 
   it("upgrades an auto-allowed file write to require_approval on local backend", () => {
     const engine = new PolicyEngine(
-      [new FileActionClassifier(() => ({ file_write: "auto", file_edit: "auto" }))],
+      [
+        new FileActionClassifier(() => ({
+          file_write: "auto",
+          file_edit: "auto",
+        })),
+      ],
       allowNone
     )
     expect(engine.decide(fileWrite("a.ts"), { sandboxed: false }).level).toBe(
@@ -475,10 +548,7 @@ describe("BrowserActionClassifier", () => {
 
 describe("PolicyEngine — browser interaction carve-out (local backend)", () => {
   const allowNone: AllowlistLookup = { isAllowed: () => false }
-  const engine = new PolicyEngine(
-    [new BrowserActionClassifier()],
-    allowNone
-  )
+  const engine = new PolicyEngine([new BrowserActionClassifier()], allowNone)
 
   it("keeps a browser click auto-allowed on a local backend (no upgrade)", () => {
     // Interactions are exempt from the local-backend allow→require_approval

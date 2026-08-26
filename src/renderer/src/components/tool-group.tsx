@@ -80,6 +80,49 @@ function approvalDiff(detail: Record<string, unknown> | undefined):
     : undefined
 }
 
+function shellApprovalDetails(
+  detail: Record<string, unknown> | undefined
+): string[] {
+  const analysis = detail?.shellAnalysis
+  if (!analysis || typeof analysis !== "object") return []
+  const a = analysis as Record<string, unknown>
+  const segments = Array.isArray(a.segments) ? a.segments : []
+  const executables = segments
+    .map((segment) =>
+      segment && typeof segment === "object"
+        ? (segment as Record<string, unknown>).executable
+        : undefined
+    )
+    .filter((value): value is string => typeof value === "string" && !!value)
+  const network = Array.isArray(a.networkOperations)
+    ? a.networkOperations.filter(
+        (value): value is string => typeof value === "string" && !!value
+      )
+    : []
+  const outside = Array.isArray(a.outsideWorkspacePaths)
+    ? a.outsideWorkspacePaths.filter(
+        (value): value is string => typeof value === "string" && !!value
+      )
+    : []
+  const writes = Array.isArray(a.candidateWritePaths)
+    ? a.candidateWritePaths.filter(
+        (value): value is string => typeof value === "string" && !!value
+      )
+    : []
+  const reasons = Array.isArray(a.reasons)
+    ? a.reasons.filter(
+        (value): value is string => typeof value === "string" && !!value
+      )
+    : []
+  return [
+    executables.length ? `Commands: ${executables.join(", ")}` : "",
+    network.length ? `Network: ${network.join(", ")}` : "",
+    outside.length ? `Outside workspace: ${outside.join(", ")}` : "",
+    writes.length ? `Writes: ${writes.join(", ")}` : "",
+    reasons.length ? `Syntax: ${reasons.join(", ")}` : "",
+  ].filter(Boolean)
+}
+
 // A collapsible group of tool calls for one assistant turn. Collapsed by
 // default; summary shows the count (and a spinner while any call is running).
 // A pending approval no longer force-opens the group: the approval prompt now
@@ -227,6 +270,7 @@ export function ApprovalCard({
   // other gated action remembers per workspace.
   const isWeb = approval.kind === "web"
   const diff = approvalDiff(approval.detail)
+  const shellDetails = shellApprovalDetails(approval.detail)
   return (
     <div className="flex flex-col gap-2 rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-xs">
       <div className="flex items-center gap-2 font-medium text-destructive">
@@ -236,6 +280,15 @@ export function ApprovalCard({
       <pre className="max-w-full overflow-hidden rounded-md bg-muted px-2 py-1.5 break-words whitespace-pre-wrap text-muted-foreground">
         {approval.summary}
       </pre>
+      {shellDetails.length > 0 && (
+        <div className="rounded-md border bg-background px-2 py-1.5 text-muted-foreground">
+          {shellDetails.map((line) => (
+            <div key={line} className="break-words">
+              {line}
+            </div>
+          ))}
+        </div>
+      )}
       {diff && (
         <div className="max-w-full min-w-0 rounded-md border bg-background">
           <div className="flex items-center justify-between gap-2 border-b px-2 py-1 text-[0.7rem] text-muted-foreground">

@@ -7,13 +7,7 @@ const CATEGORY_TOOLS: Record<string, string[]> = {
   read: ["read_file_tool", "list_files_tool"],
   search: ["search_tool", "index_query_tool"],
   edit: ["edit_file_tool", "write_file_tool"],
-  execute: [
-    "run_shell_tool",
-    "exec_command",
-    "write_stdin",
-    "poll_command",
-    "terminate_command",
-  ],
+  execute: ["exec_command", "write_stdin", "poll_command", "terminate_command"],
   web: ["web_search", "web_fetch"],
   browser: [
     "browser_navigate",

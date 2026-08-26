@@ -1,6 +1,6 @@
 import { randomUUID } from "crypto"
 import { stripAnsi } from "../approval/ansi"
-import { normalizeCommand } from "../approval/normalize"
+import { analyzeShellCommand } from "../approval/shell-analyzer"
 import { LocalEnvironment } from "../env/local"
 import type { CommandExit, CommandSessionHandle } from "../env/types"
 import type { ToolAction } from "../approval/types"
@@ -251,12 +251,16 @@ async function startCommand(
   const maxOutputBytes = outputCap(args.max_output_bytes, DEFAULT_OUTPUT_BYTES)
   const cwdArg = typeof args.cwd === "string" ? args.cwd : ""
   const cwd = cwdArg ? resolveInWorkspace(ctx.workspace, cwdArg) : ctx.workspace
+  const shellAnalysis = analyzeShellCommand(command, process.platform, {
+    cwd,
+    workspace: ctx.workspace,
+  })
   const action: ToolAction = {
     tool: opts.compatibility ? "run_shell_tool" : "exec_command",
     kind: "shell",
     summary: `$ ${command}`,
-    identity: normalizeCommand(command),
-    detail: { command, cwd },
+    identity: shellAnalysis.identity,
+    detail: { command, cwd, shellAnalysis },
   }
   const outcome = ctx.gate ? await ctx.gate(action) : ("denied" as const)
   if (outcome === "blocked") {
