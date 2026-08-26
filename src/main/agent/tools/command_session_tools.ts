@@ -255,12 +255,18 @@ async function startCommand(
     cwd,
     workspace: ctx.workspace,
   })
+  const envProfile =
+    ctx.env instanceof LocalEnvironment
+      ? ctx.env.localRuntimeProfile
+      : ctx.env
+        ? "container"
+        : "host-access"
   const action: ToolAction = {
     tool: opts.compatibility ? "run_shell_tool" : "exec_command",
     kind: "shell",
     summary: `$ ${command}`,
     identity: shellAnalysis.identity,
-    detail: { command, cwd, shellAnalysis },
+    detail: { command, cwd, shellAnalysis, runtimeProfile: envProfile },
   }
   const outcome = ctx.gate ? await ctx.gate(action) : ("denied" as const)
   if (outcome === "blocked") {

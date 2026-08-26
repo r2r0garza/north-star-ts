@@ -7,12 +7,7 @@ item is its plan file, not its rank.
 
 ## Next up
 
-3. **`052.2` — Local shell confinement: enforced runtime profiles.** `052.1` shipped the honest Local
-   posture and parsed shell policy. Remaining work: define and enforce `read-only`, `workspace-write`,
-   and `host-access` profiles independently from approval mode, with per-platform adapters only where
-   enforcement is dependable. Unsupported platforms offer container/explicit host access rather than a
-   pretend sandbox.
-4. **`042` — Codex CLI provider.** Second concrete split from `034`. Adds **Codex CLI** as a
+3. **`042` — Codex CLI provider.** Second concrete split from `034`. Adds **Codex CLI** as a
    workspace-backed local subprocess provider, routed away from `runAgentLoop` into the same
    `agent/cli/` adapter layer. Uses `codex exec --json <message>` for the first turn, parses
    `thread.started.thread_id`, stores it, then resumes with `codex exec --json resume <thread_id>
@@ -128,6 +123,18 @@ item is its plan file, not its rank.
 
 ## Done
 
+- **`052.2` — Local shell confinement: enforced runtime profiles.** Added explicit Local runtime
+  profiles (`host-access`, `workspace-write`, `read-only`) independent from approval mode. Host access
+  preserves the previous direct-host behavior; stronger labels require a real platform adapter probe and
+  fail closed when unsupported, with Settings disabling unavailable profiles and showing the adapter
+  reason. macOS profile enforcement wraps shell/session commands in `sandbox-exec` before the user shell
+  starts: `read-only` denies filesystem writes and network; `workspace-write` denies network and limits
+  writes to the workspace plus temp scratch locations. Local environment file mutations also enforce the
+  selected profile so direct file tools cannot bypass `read-only` or write outside the workspace under
+  `workspace-write`. Containers remain authoritative and are not wrapped in a host sandbox. Verified:
+  focused env/profile, approval, settings, and command-session tests pass; production build passes;
+  `pnpm typecheck` still reaches only the three known pre-existing test type errors in `open.test.ts`,
+  `service.test.ts`, and `runner.test.ts`.
 - **`051` — Session-oriented shell execution.** Added an environment-level `spawnCommand` session seam
   and agent-owned `exec_command`, `write_stdin`, `poll_command`, and `terminate_command` tools. Quick
   commands return completed JSON inline; longer commands return scoped runtime session ids with

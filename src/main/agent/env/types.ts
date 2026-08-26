@@ -63,6 +63,16 @@ export interface SpawnCommandOptions {
   signal?: AbortSignal
 }
 
+export type LocalRuntimeProfile =
+  | "host-access"
+  | "workspace-write"
+  | "read-only"
+
+export interface LocalProfileCapabilities {
+  supported: boolean
+  reason?: string
+}
+
 // The subset of fs.Dirent the tools consume. Real fs.Dirent satisfies this, so
 // LocalEnvironment returns Dirents directly; ContainerEnvironment synthesizes
 // objects of this shape from `ls` output.

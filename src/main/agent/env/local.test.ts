@@ -8,6 +8,10 @@ import {
   materializePythonHeredocCommand,
   normalizeHostShellCommand,
 } from "./local"
+import {
+  buildDarwinSandboxProfile,
+  localProfileCapabilities,
+} from "./local-profiles"
 
 let workspace: string
 let env: LocalEnvironment
@@ -242,6 +246,53 @@ describe("LocalEnvironment file ops", () => {
 
   it("resolveLexical rejects absolute paths", () => {
     expect(() => env.resolveLexical("/etc/passwd")).toThrow()
+  })
+
+  it.skipIf(!localProfileCapabilities("read-only").supported)(
+    "blocks filesystem writes in the read-only profile",
+    async () => {
+      const readOnly = new LocalEnvironment(workspace, "read-only")
+      expect(() =>
+        readOnly.writeFile(join(workspace, "blocked.txt"), "x")
+      ).toThrow("read-only profile blocks")
+    }
+  )
+
+  it.skipIf(!localProfileCapabilities("workspace-write").supported)(
+    "blocks writes outside the workspace in the workspace-write profile",
+    async () => {
+      const workspaceWrite = new LocalEnvironment(workspace, "workspace-write")
+      await workspaceWrite.writeFile(join(workspace, "ok.txt"), "x")
+      expect(() =>
+        workspaceWrite.writeFile("/outside-local-profile.txt", "x")
+      ).toThrow("outside the workspace")
+    }
+  )
+})
+
+describe("Local runtime profiles", () => {
+  it("always supports explicit host access", () => {
+    expect(localProfileCapabilities("host-access", "linux")).toEqual({
+      supported: true,
+    })
+  })
+
+  it("refuses stronger local labels on platforms without an adapter", () => {
+    expect(localProfileCapabilities("read-only", "linux").supported).toBe(false)
+  })
+
+  it("builds a macOS read-only profile that denies writes and network", () => {
+    const profile = buildDarwinSandboxProfile("read-only", "/repo")
+    expect(profile).toContain("(deny network*)")
+    expect(profile).toContain("(deny file-write*)")
+    expect(profile).not.toContain("allow file-write")
+  })
+
+  it("builds a macOS workspace-write profile limited to workspace/temp writes", () => {
+    const profile = buildDarwinSandboxProfile("workspace-write", "/repo")
+    expect(profile).toContain('(allow file-write* (subpath "/repo"))')
+    expect(profile).toContain('(allow file-write* (subpath "/private/tmp"))')
+    expect(profile).toContain("(deny network*)")
   })
 })
 

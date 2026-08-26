@@ -50,6 +50,7 @@ import type {
   ThemeSettings,
   IdeSettings,
   NotificationSettings,
+  LocalRuntimeProfile,
 } from "../main/settings/service"
 import type {
   SkillSourceRow,
@@ -59,6 +60,7 @@ import type {
 import type { AgentSourceRow, AgentTree } from "../main/agent/agents/types"
 import type { AgentFields } from "../main/agent/agents/loader"
 import type { RuntimeStatus } from "../main/agent/env/runtime-check"
+import type { LocalProfileCapabilities } from "../main/agent/env/types"
 import type { CreateAccountInput } from "../main/db/repositories/provider-accounts"
 import type { AddModelInput } from "../main/db/repositories/models"
 import type {
@@ -1190,6 +1192,10 @@ const api = {
         docker: RuntimeStatus
         podman: RuntimeStatus
       }>,
+    localProfileCapabilities: () =>
+      ipcRenderer.invoke("settings:localProfileCapabilities") as Promise<
+        Record<LocalRuntimeProfile, LocalProfileCapabilities>
+      >,
   },
 
   // Workspace indexing (plan 008). Pause/resume/cancel reuse tasks.* (an index
@@ -1450,9 +1456,11 @@ export type {
   IdeSettings,
   NotificationSettings,
   Backend,
+  LocalRuntimeProfile,
   FilePermission,
   ApprovalCategory,
 } from "../main/settings/service"
+export type { LocalProfileCapabilities } from "../main/agent/env/types"
 export type {
   SkillSourceRow,
   SkillSourceKind,

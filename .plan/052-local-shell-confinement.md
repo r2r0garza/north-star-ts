@@ -1,8 +1,9 @@
 # PR52: Local shell confinement and syntax-aware command policy
 
-> Status: **PARTIAL**. `052.1` is implemented; `052.2` enforced Local runtime
-> profiles are not started. Depends on `051` so every one-shot/session command
-> shares one spawn and policy seam. Security-focused; no DB migration expected.
+> Status: **DONE**. `052.1` implemented the honest Local posture and parsed
+> policy; `052.2` adds enforced Local runtime profiles where a dependable OS
+> adapter is available. Depends on `051` so every one-shot/session command shares
+> one spawn and policy seam. Security-focused; no DB migration expected.
 
 ## Context
 
@@ -60,7 +61,18 @@ boundary.
 
 ### 052.2 — Enforced Local profiles
 
-Status: **NOT STARTED**.
+Status: **DONE** in this branch. Added explicit `host-access`, `workspace-write`,
+and `read-only` Local profiles independent from approval mode. `host-access`
+preserves today's direct host execution. Stronger Local profiles are only
+available when a real adapter probe passes; unsupported platforms/profiles fail
+closed and the Settings picker disables them with the adapter reason. On macOS,
+the adapter wraps shell/session spawns with `sandbox-exec` before the user shell
+starts: `read-only` denies filesystem writes and network; `workspace-write`
+denies network and allows writes only to the workspace plus temp scratch
+locations. Environment file mutations also enforce the profile, so direct file
+tools cannot bypass `read-only` or write outside the workspace under
+`workspace-write`. Containers remain authoritative and are not wrapped in a host
+sandbox.
 
 - Define `read-only`, `workspace-write`, and `host-access` profiles independently
   from approval mode.

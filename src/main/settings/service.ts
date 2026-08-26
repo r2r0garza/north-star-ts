@@ -1,5 +1,6 @@
 import * as settingsRepo from "../db/repositories/settings"
 import { envConfigFromEnv, type EnvConfig } from "../agent/env/factory"
+import type { LocalRuntimeProfile } from "../agent/env/types"
 
 // The single main-process read/write point for persisted settings. Backed by the
 // flat key→JSON `settings` table (SCHEMA_V4), it parses blobs into typed shapes,
@@ -12,6 +13,7 @@ import { envConfigFromEnv, type EnvConfig } from "../agent/env/factory"
 
 export type Backend = "local" | "docker" | "podman"
 export type FilePermission = "auto" | "require_approval"
+export type { LocalRuntimeProfile }
 
 // Approval categories a sandbox MAY auto-approve. Read ops aren't here (they're
 // never gated). Hardline commands aren't here (never downgraded — see policy.ts).
@@ -36,6 +38,7 @@ export const SANDBOX_CATEGORY_DEFAULTS: Record<ApprovalCategory, boolean> = {
 
 export interface ExecutionSettings {
   backend: Backend
+  localProfile: LocalRuntimeProfile
   image?: string
   sandbox: {
     // Master switch. When false, no sandbox downgrade happens at all.
@@ -236,6 +239,7 @@ const DEFAULT_NOTIFICATIONS: NotificationSettings = {
 function defaultExecution(): ExecutionSettings {
   return {
     backend: "local",
+    localProfile: "host-access",
     sandbox: {
       autoApprove: false,
       prompted: false,
@@ -287,6 +291,12 @@ function loadExecution(): ExecutionSettings {
       const parsed = JSON.parse(raw) as Partial<ExecutionSettings>
       executionCache = {
         backend: parsed.backend ?? base.backend,
+        localProfile:
+          parsed.localProfile === "read-only" ||
+          parsed.localProfile === "workspace-write" ||
+          parsed.localProfile === "host-access"
+            ? parsed.localProfile
+            : base.localProfile,
         image: parsed.image,
         sandbox: {
           autoApprove: parsed.sandbox?.autoApprove ?? base.sandbox.autoApprove,
@@ -574,7 +584,7 @@ export function getExecutionConfig(): EnvConfig {
       image: exec.image || DEFAULT_CONTAINER_IMAGE,
     }
   }
-  return { kind: "local" }
+  return { kind: "local", profile: exec.localProfile }
 }
 
 export function getPermissions(): PermissionSettings {

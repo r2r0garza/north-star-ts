@@ -166,7 +166,8 @@ export class DashboardService {
       }
       return { content: `refreshed ${refreshed}/${widgets.length} widgets` }
     } catch (err) {
-      if (err instanceof AbortedError || signal.aborted) return { stopped: true }
+      if (err instanceof AbortedError || signal.aborted)
+        return { stopped: true }
       const message = err instanceof Error ? err.message : String(err)
       return { error: message, retryable: false }
     } finally {
@@ -222,6 +223,10 @@ export class DashboardService {
     const decision = this.policy.decide(action, {
       workspacePath: recipe.cwd,
       sandboxed: envConfig.kind === "container",
+      localProfile:
+        envConfig.kind === "local"
+          ? (envConfig.profile ?? "host-access")
+          : "host-access",
     })
     if (decision.level !== "allow") {
       return this.markStale(
@@ -259,7 +264,8 @@ export class DashboardService {
       }
     } catch (err) {
       // A cancel/pause aborts the fetch/exec — propagate so the run stops.
-      if (err instanceof Error && err.name === "AbortError") throw new AbortedError()
+      if (err instanceof Error && err.name === "AbortError")
+        throw new AbortedError()
       if (signal.aborted) throw new AbortedError()
       return this.markError(
         widget.id,

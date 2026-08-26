@@ -11,13 +11,18 @@ import {
   readdir,
   unlink,
 } from "fs/promises"
-import { join } from "path"
+import { isAbsolute, relative, resolve, join } from "path"
 import { tmpdir } from "os"
 import { StringDecoder } from "string_decoder"
 import * as pty from "node-pty"
 import { captureSpawn } from "./spawn-util"
 import { readHostTextLines } from "./read-text-lines"
 import { buildRipgrepArgs, parseRipgrepJson } from "./ripgrep"
+import {
+  assertLocalProfileSupported,
+  buildDarwinSandboxProfile,
+  sandboxExecPath,
+} from "./local-profiles"
 import { resolveInWorkspace, resolveInWorkspaceReal } from "../tools/workspace"
 import type {
   Environment,
@@ -33,6 +38,7 @@ import type {
   CommandSessionHandle,
   CommandChunk,
   CommandExit,
+  LocalRuntimeProfile,
 } from "./types"
 
 export function normalizeHostShellCommand(
@@ -76,6 +82,14 @@ function shellForCommand(
   return { file: process.env.SHELL || "sh", args: ["-lc", command] }
 }
 
+function shellForCapturedCommand(
+  command: string,
+  platform: NodeJS.Platform = process.platform
+): { file: string; args: string[] } {
+  if (platform === "win32") return shellForCommand(command, platform)
+  return { file: "/bin/sh", args: ["-c", command] }
+}
+
 export function materializePythonHeredocCommand(
   command: string,
   scriptPath: string,
@@ -108,14 +122,24 @@ export function materializePythonHeredocCommand(
   return { command: runner, script: lines.slice(0, end).join("\n") }
 }
 
-// The default backend: runs file ops through workspace path resolvers, but shell
-// commands execute directly on the host with `cwd` set to the workspace. Cwd is
-// not an OS sandbox; approval policy is the guard for Local shell execution.
+// The default backend: runs file ops through workspace path resolvers, while
+// shell commands execute under the selected Local runtime profile. `host-access`
+// runs directly on the host with `cwd` set to the workspace; stronger labels are
+// accepted only when backed by a dependable OS adapter.
 // This is a behavior-preserving wrapper over exactly what the tools did before
 // this seam existed — fs/promises, child_process.spawn, and the workspace path
 // resolvers — so existing tool tests pass unchanged.
 export class LocalEnvironment implements Environment {
-  constructor(private readonly workspace: string) {}
+  constructor(
+    private readonly workspace: string,
+    private readonly profile: LocalRuntimeProfile = "host-access"
+  ) {
+    assertLocalProfileSupported(profile)
+  }
+
+  get localRuntimeProfile(): LocalRuntimeProfile {
+    return this.profile
+  }
 
   resolve(path: string): Promise<string> {
     return resolveInWorkspaceReal(this.workspace, path)
@@ -137,18 +161,23 @@ export class LocalEnvironment implements Environment {
   }
 
   writeFile(path: string, data: string): Promise<void> {
+    this.assertWritable(path)
     return writeFile(path, data, "utf8")
   }
 
   rename(from: string, to: string): Promise<void> {
+    this.assertWritable(from)
+    this.assertWritable(to)
     return rename(from, to)
   }
 
   removeFile(path: string): Promise<void> {
+    this.assertWritable(path)
     return unlink(path)
   }
 
   async mkdirp(path: string): Promise<void> {
+    this.assertWritable(path)
     await mkdir(path, { recursive: true })
   }
 
@@ -191,12 +220,11 @@ export class LocalEnvironment implements Environment {
       commandToRun = materialized.command
     }
 
-    const child = spawn(commandToRun, {
-      cwd: opts.cwd,
-      shell: true,
-      detached: process.platform !== "win32",
-      stdio: ["ignore", "pipe", "pipe"],
-    })
+    const child = this.spawnShell(commandToRun, opts.cwd, [
+      "ignore",
+      "pipe",
+      "pipe",
+    ])
     try {
       return await captureSpawn(child, { ...opts, killGroup: true })
     } finally {
@@ -212,7 +240,7 @@ export class LocalEnvironment implements Environment {
   ): Promise<CommandSessionHandle> {
     const commandToRun = normalizeHostShellCommand(command)
     if (opts.tty) {
-      const shell = shellForCommand(commandToRun)
+      const shell = this.shellInvocation(commandToRun, false)
       const term = pty.spawn(shell.file, shell.args, {
         name: "xterm-256color",
         cols: 80,
@@ -223,12 +251,11 @@ export class LocalEnvironment implements Environment {
       return new PtyCommandHandle(term, opts.signal)
     }
 
-    const child = spawn(commandToRun, {
-      cwd: opts.cwd,
-      shell: true,
-      detached: process.platform !== "win32",
-      stdio: ["pipe", "pipe", "pipe"],
-    })
+    const child = this.spawnShell(commandToRun, opts.cwd, [
+      "pipe",
+      "pipe",
+      "pipe",
+    ])
     return new ChildProcessCommandHandle(child, {
       killGroup: true,
       signal: opts.signal,
@@ -260,6 +287,67 @@ export class LocalEnvironment implements Environment {
   async dispose(): Promise<void> {
     // Nothing to clean up on the host.
   }
+
+  private shellInvocation(
+    command: string,
+    captured = true
+  ): { file: string; args: string[] } {
+    const shell = captured
+      ? shellForCapturedCommand(command)
+      : shellForCommand(command)
+    if (this.profile === "host-access") return shell
+    if (process.platform !== "darwin") {
+      throw new Error(`Local profile is unavailable: ${this.profile}`)
+    }
+    return {
+      file: sandboxExecPath(),
+      args: [
+        "-p",
+        buildDarwinSandboxProfile(this.profile, this.workspace),
+        shell.file,
+        ...shell.args,
+      ],
+    }
+  }
+
+  private spawnShell(
+    command: string,
+    cwd: string,
+    stdio: ["ignore" | "pipe", "pipe", "pipe"] | ["pipe", "pipe", "pipe"]
+  ): ChildProcess {
+    if (this.profile === "host-access") {
+      return spawn(command, {
+        cwd,
+        shell: true,
+        detached: process.platform !== "win32",
+        stdio,
+      })
+    }
+    const shell = this.shellInvocation(command, true)
+    return spawn(shell.file, shell.args, {
+      cwd,
+      shell: false,
+      detached: process.platform !== "win32",
+      stdio,
+    })
+  }
+
+  private assertWritable(path: string): void {
+    if (this.profile === "host-access") return
+    if (this.profile === "read-only") {
+      throw new Error("Local read-only profile blocks filesystem writes.")
+    }
+    if (!isInside(this.workspace, path) && !isInside(tmpdir(), path)) {
+      throw new Error(
+        "Local workspace-write profile blocks writes outside the workspace."
+      )
+    }
+  }
+}
+
+function isInside(parent: string, child: string): boolean {
+  const rel = relative(resolve(parent), resolve(child))
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel))
 }
 
 class ChildProcessCommandHandle

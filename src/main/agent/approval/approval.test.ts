@@ -356,6 +356,34 @@ describe("PolicyEngine — local backend tightening", () => {
       "hard_block"
     )
   })
+
+  it("hard-blocks direct file writes in local read-only profile", () => {
+    const engine = new PolicyEngine(
+      [
+        new FileActionClassifier(() => ({
+          file_write: "auto",
+          file_edit: "auto",
+        })),
+      ],
+      allowAll
+    )
+    expect(
+      engine.decide(fileWrite("a.ts"), {
+        sandboxed: false,
+        localProfile: "read-only",
+      }).level
+    ).toBe("hard_block")
+  })
+
+  it("does not tighten benign shell commands under an enforced local profile", () => {
+    const engine = new PolicyEngine([classifier], allowNone)
+    expect(
+      engine.decide(shell("git status"), {
+        sandboxed: false,
+        localProfile: "workspace-write",
+      }).level
+    ).toBe("allow")
+  })
 })
 
 describe("RegexCommandClassifier — categories", () => {

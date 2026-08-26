@@ -16,6 +16,7 @@ beforeEach(() => {
   service._resetCacheForTests()
   delete process.env.COWORK_ENV_RUNTIME
   delete process.env.COWORK_ENV_IMAGE
+  delete process.env.COWORK_LOCAL_PROFILE
 })
 
 describe("settings service — defaults (back-compat)", () => {
@@ -29,6 +30,7 @@ describe("settings service — defaults (back-compat)", () => {
   it("execution defaults to local with sandbox off", () => {
     const exec = service.getExecution()
     expect(exec.backend).toBe("local")
+    expect(exec.localProfile).toBe("host-access")
     expect(exec.sandbox.autoApprove).toBe(false)
     expect(exec.sandbox.prompted).toBe(false)
   })
@@ -44,7 +46,19 @@ describe("settings service — defaults (back-compat)", () => {
   })
 
   it("getExecutionConfig is local by default with no env var", () => {
-    expect(service.getExecutionConfig()).toEqual({ kind: "local" })
+    expect(service.getExecutionConfig()).toEqual({
+      kind: "local",
+      profile: "host-access",
+    })
+  })
+
+  it("getExecutionConfig can read a local profile env override before persistence", () => {
+    process.env.COWORK_LOCAL_PROFILE = "read-only"
+    service._resetCacheForTests()
+    expect(service.getExecutionConfig()).toEqual({
+      kind: "local",
+      profile: "read-only",
+    })
   })
 })
 
@@ -53,15 +67,32 @@ describe("settings service — persisted overrides", () => {
     process.env.COWORK_ENV_RUNTIME = "docker"
     service.setExecution({
       backend: "local",
+      localProfile: "host-access",
       sandbox: { autoApprove: false, prompted: true, categories: {} as never },
     })
     // Persisted "local" beats the docker env var.
-    expect(service.getExecutionConfig()).toEqual({ kind: "local" })
+    expect(service.getExecutionConfig()).toEqual({
+      kind: "local",
+      profile: "host-access",
+    })
+  })
+
+  it("fills localProfile from defaults for older persisted settings", () => {
+    store.set(
+      "execution",
+      JSON.stringify({
+        backend: "local",
+        sandbox: { autoApprove: false, prompted: true, categories: {} },
+      })
+    )
+    service._resetCacheForTests()
+    expect(service.getExecution().localProfile).toBe("host-access")
   })
 
   it("persists a container backend with its image", () => {
     service.setExecution({
       backend: "podman",
+      localProfile: "host-access",
       image: "alpine:3",
       sandbox: { autoApprove: false, prompted: true, categories: {} as never },
     })
@@ -167,6 +198,7 @@ describe("settings service — sandboxAutoApproves", () => {
   it("returns false when auto-approve is off", () => {
     service.setExecution({
       backend: "docker",
+      localProfile: "host-access",
       sandbox: {
         autoApprove: false,
         prompted: true,
@@ -179,6 +211,7 @@ describe("settings service — sandboxAutoApproves", () => {
   it("returns true only for enabled categories when auto-approve is on", () => {
     service.setExecution({
       backend: "docker",
+      localProfile: "host-access",
       sandbox: {
         autoApprove: true,
         prompted: true,

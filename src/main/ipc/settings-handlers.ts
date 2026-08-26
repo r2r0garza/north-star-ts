@@ -1,6 +1,7 @@
 import { ipcMain } from "electron"
 import * as settingsService from "../settings/service"
 import { checkRuntimes } from "../agent/env/runtime-check"
+import { LOCAL_RUNTIME_PROFILES, localProfileCapabilities } from "../agent/env"
 import { IDES } from "../ide/open"
 import type {
   ExecutionSettings,
@@ -104,5 +105,14 @@ export function registerSettingsHandlers(): void {
   // (e.g. the user just started Docker Desktop); otherwise cached results return.
   ipcMain.handle("settings:checkRuntimes", (_e, recheck?: boolean) =>
     checkRuntimes(recheck === true)
+  )
+
+  ipcMain.handle("settings:localProfileCapabilities", () =>
+    Object.fromEntries(
+      LOCAL_RUNTIME_PROFILES.map((profile) => [
+        profile,
+        localProfileCapabilities(profile),
+      ])
+    )
   )
 }

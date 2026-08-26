@@ -1095,10 +1095,15 @@ export async function runAgentLoop(
   // Whether this turn runs in an isolated container — gates the sandbox
   // auto-approve downgrade in the approval policy below.
   let sandboxed = false
+  let localProfile: settingsService.LocalRuntimeProfile = "host-access"
   if (hasWorkspace) {
     try {
       const envConfig = settingsService.getExecutionConfig()
       sandboxed = envConfig.kind === "container"
+      localProfile =
+        envConfig.kind === "local"
+          ? (envConfig.profile ?? "host-access")
+          : "host-access"
       env = await createEnvironment(workspace!, conversationId, envConfig)
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err)
@@ -1381,6 +1386,7 @@ export async function runAgentLoop(
                 workspacePath: workspace,
                 conversationId,
                 sandboxed,
+                localProfile,
               })
             if (decision.level === "allow") return Promise.resolve("approved")
             if (decision.level === "hard_block")
