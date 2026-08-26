@@ -64,6 +64,8 @@ const GIT_NETWORK_SUBCOMMANDS = new Set([
   "ls-remote",
   "submodule",
 ])
+const WRAPPER_COMMANDS = new Set(["exec", "nohup", "setsid", "time", "command"])
+const PACKAGE_MANAGER_COMMANDS = new Set(["npm", "pnpm", "yarn", "bun"])
 
 export function analyzeShellCommand(
   command: string,
@@ -75,9 +77,16 @@ export function analyzeShellCommand(
   const tokens = tokenize(normalized, reasons)
   const substitutionCommands = extractSubstitutions(normalized, reasons)
   const segments = parseSegments(tokens)
-  const substitutions = substitutionCommands.flatMap(
-    (sub) => analyzeShellCommand(sub, platform, opts).segments
+  const substitutionAnalyses = substitutionCommands.map((sub) =>
+    analyzeShellCommand(sub, platform, opts)
   )
+  for (const analysis of substitutionAnalyses) {
+    reasons.push(...analysis.reasons)
+  }
+  const substitutions = substitutionAnalyses.flatMap((analysis) => [
+    ...analysis.segments,
+    ...analysis.substitutions,
+  ])
   const allSegments = [...segments, ...substitutions]
   const redirects = allSegments.flatMap((segment) => segment.redirects)
   const candidateReadPaths = unique(
@@ -167,7 +176,6 @@ function tokenize(command: string, reasons: string[]): string[] {
       continue
     }
     if (ch === "$" && next === "(") {
-      reasons.push("command substitution requires approval")
       token += "$("
       i += 1
       continue
@@ -246,32 +254,205 @@ function pushSegment(segments: ShellCommandSegment[], tokens: string[]): void {
     argv.push(token)
   }
   if (argv.length === 0 && redirects.length === 0) return
+  const effectiveArgv = effectiveCommandArgv(argv)
   segments.push({
     raw: tokens.join(" "),
-    executable: argv[0],
-    argv,
+    executable: effectiveArgv[0],
+    argv: effectiveArgv,
     redirects,
   })
 }
 
 function extractSubstitutions(command: string, reasons: string[]): string[] {
   const out: string[] = []
+  let quote: "'" | '"' | null = null
   for (let i = 0; i < command.length; i += 1) {
-    if (command[i] !== "$" || command[i + 1] !== "(") continue
-    let depth = 1
-    let body = ""
-    i += 2
-    for (; i < command.length; i += 1) {
-      const ch = command[i]
-      if (ch === "(") depth += 1
-      if (ch === ")") depth -= 1
-      if (depth === 0) break
-      body += ch
+    const ch = command[i]
+    const next = command[i + 1]
+    if (ch === "\\") {
+      i += 1
+      continue
     }
-    if (depth === 0 && body.trim()) out.push(body.trim())
-    else reasons.push("unterminated command substitution requires approval")
+    if (quote) {
+      if (ch === quote) quote = null
+      if (quote === "'") continue
+    } else if (ch === "'" || ch === '"') {
+      quote = ch
+      continue
+    }
+    if (ch === "$" && next === "(") {
+      reasons.push("command substitution requires approval")
+      const extracted = extractParenSubstitution(command, i + 2, reasons)
+      if (extracted.body.trim()) out.push(extracted.body.trim())
+      i = extracted.end
+      continue
+    }
+    if (ch !== "`") continue
+    reasons.push("backtick command substitution requires approval")
+    const extracted = extractBacktickSubstitution(command, i + 1, reasons)
+    if (extracted.body.trim()) out.push(extracted.body.trim())
+    i = extracted.end
   }
+  if (quote) reasons.push("unclosed quote requires approval")
   return out
+}
+
+function extractParenSubstitution(
+  command: string,
+  start: number,
+  reasons: string[]
+): { body: string; end: number } {
+  let depth = 1
+  let body = ""
+  let quote: "'" | '"' | null = null
+  for (let i = start; i < command.length; i += 1) {
+    const ch = command[i]
+    const next = command[i + 1]
+    if (ch === "\\") {
+      if (next) {
+        body += ch + next
+        i += 1
+      }
+      continue
+    }
+    if (quote) {
+      if (ch === quote) quote = null
+      body += ch
+      continue
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch
+      body += ch
+      continue
+    }
+    if (ch === "$" && next === "(") {
+      depth += 1
+      body += "$("
+      i += 1
+      continue
+    }
+    if (ch === ")") {
+      depth -= 1
+      if (depth === 0) return { body, end: i }
+      body += ch
+      continue
+    }
+    body += ch
+  }
+  reasons.push("unterminated command substitution requires approval")
+  return { body, end: command.length - 1 }
+}
+
+function extractBacktickSubstitution(
+  command: string,
+  start: number,
+  reasons: string[]
+): { body: string; end: number } {
+  let body = ""
+  for (let i = start; i < command.length; i += 1) {
+    const ch = command[i]
+    const next = command[i + 1]
+    if (ch === "\\") {
+      if (next) {
+        body += next
+        i += 1
+      }
+      continue
+    }
+    if (ch === "`") return { body, end: i }
+    body += ch
+  }
+  reasons.push("unterminated backtick command substitution requires approval")
+  return { body, end: command.length - 1 }
+}
+
+function effectiveCommandArgv(argv: string[]): string[] {
+  let index = 0
+  while (index < argv.length && isAssignment(argv[index])) index += 1
+  while (index < argv.length) {
+    const command = basename(argv[index])
+    if (command === "sudo") {
+      index = skipSudo(argv, index + 1)
+      continue
+    }
+    if (command === "env") {
+      index = skipEnv(argv, index + 1)
+      continue
+    }
+    if (WRAPPER_COMMANDS.has(command)) {
+      index = skipWrapper(argv, index + 1)
+      continue
+    }
+    break
+  }
+  return argv.slice(index)
+}
+
+function skipWrapper(argv: string[], index: number): number {
+  while (index < argv.length && argv[index].startsWith("-")) index += 1
+  while (index < argv.length && isAssignment(argv[index])) index += 1
+  return index
+}
+
+function skipEnv(argv: string[], index: number): number {
+  while (index < argv.length) {
+    const arg = argv[index]
+    if (isAssignment(arg)) {
+      index += 1
+      continue
+    }
+    if (arg === "-u" || arg === "--unset") {
+      index += 2
+      continue
+    }
+    if (arg.startsWith("-")) {
+      index += 1
+      continue
+    }
+    break
+  }
+  return index
+}
+
+function skipSudo(argv: string[], index: number): number {
+  while (index < argv.length) {
+    const arg = argv[index]
+    if (isAssignment(arg)) {
+      index += 1
+      continue
+    }
+    if (arg === "--") return index + 1
+    if (!arg.startsWith("-")) break
+    index += sudoOptionConsumesValue(arg) ? 2 : 1
+  }
+  return index
+}
+
+function sudoOptionConsumesValue(arg: string): boolean {
+  if (arg.includes("=")) return false
+  if (["-C", "-D", "-g", "-h", "-p", "-T", "-u"].includes(arg)) return true
+  return /^-[A-Za-z]*[CDghpTu][A-Za-z]*$/.test(arg) && arg.length === 2
+}
+
+function isAssignment(arg: string): boolean {
+  return /^[A-Za-z_][A-Za-z0-9_]*=.*/.test(arg)
+}
+
+function firstSubcommand(argv: string[]): string | null {
+  for (let i = 1; i < argv.length; i += 1) {
+    const arg = argv[i]
+    if (arg === "--") continue
+    if (arg.startsWith("-")) {
+      if (optionConsumesValue(arg)) i += 1
+      continue
+    }
+    return arg
+  }
+  return null
+}
+
+function optionConsumesValue(arg: string): boolean {
+  return !arg.includes("=") && /^[A-Za-z0-9]$/.test(arg.slice(1))
 }
 
 function candidatePaths(argv: string[], cwd?: string): string[] {
@@ -306,9 +487,7 @@ function detectNetworkOperation(segment: ShellCommandSegment): string | null {
   const command = segment.executable ? basename(segment.executable) : ""
   if (!command) return null
   if (NETWORK_COMMANDS.has(command)) return command
-  const subcommand = segment.argv.find(
-    (arg, index) => index > 0 && !arg.startsWith("-")
-  )
+  const subcommand = firstSubcommand(segment.argv)
   if (
     command === "git" &&
     subcommand &&
@@ -317,7 +496,7 @@ function detectNetworkOperation(segment: ShellCommandSegment): string | null {
     return `git ${subcommand}`
   }
   if (
-    ["npm", "pnpm", "yarn", "bun"].includes(command) &&
+    PACKAGE_MANAGER_COMMANDS.has(command) &&
     subcommand &&
     PACKAGE_MANAGER_NETWORK_SUBCOMMANDS.has(subcommand)
   ) {

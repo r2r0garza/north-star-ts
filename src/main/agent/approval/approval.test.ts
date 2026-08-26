@@ -171,6 +171,34 @@ describe("analyzeShellCommand", () => {
     expect(analysis.substitutions.map((s) => s.executable)).toEqual(["git"])
   })
 
+  it("marks backtick substitutions approval-required and exposes their command", () => {
+    const analysis = analyzeShellCommand(
+      "echo `curl https://example.com`",
+      "darwin"
+    )
+
+    expect(analysis.confidence).toBe("requires_approval")
+    expect(analysis.reasons).toContain(
+      "backtick command substitution requires approval"
+    )
+    expect(analysis.substitutions.map((s) => s.executable)).toEqual(["curl"])
+    expect(analysis.networkOperations).toEqual(["curl"])
+  })
+
+  it("recursively analyzes nested substitutions", () => {
+    const analysis = analyzeShellCommand(
+      "echo $(echo `wget https://example.com/install.sh`)",
+      "darwin"
+    )
+
+    expect(analysis.confidence).toBe("requires_approval")
+    expect(analysis.substitutions.map((s) => s.executable)).toEqual([
+      "echo",
+      "wget",
+    ])
+    expect(analysis.networkOperations).toEqual(["wget"])
+  })
+
   it("detects network operations and outside-workspace paths", () => {
     const analysis = analyzeShellCommand(
       "git pull origin main > /tmp/result.txt",
@@ -180,6 +208,67 @@ describe("analyzeShellCommand", () => {
 
     expect(analysis.networkOperations).toEqual(["git pull"])
     expect(analysis.outsideWorkspacePaths).toEqual(["/tmp/result.txt"])
+  })
+
+  it("normalizes leading assignments and wrappers to the effective command", () => {
+    const cases: Array<[command: string, executable: string, network: string]> =
+      [
+        ["API_TOKEN=x curl https://example.com", "curl", "curl"],
+        ["env API_TOKEN=x wget https://example.com", "wget", "wget"],
+        ["command ssh example.com", "ssh", "ssh"],
+        ["sudo curl https://example.com", "curl", "curl"],
+        ["nohup wget https://example.com", "wget", "wget"],
+        ["setsid env API_TOKEN=x git pull", "git", "git pull"],
+      ]
+
+    for (const [command, executable, network] of cases) {
+      const analysis = analyzeShellCommand(command, "darwin")
+
+      expect(analysis.segments[0].executable).toBe(executable)
+      expect(analysis.identity).toContain(`"executable":"${executable}"`)
+      expect(analysis.networkOperations).toContain(network)
+    }
+  })
+
+  it("detects every network command and package manager through common wrappers", () => {
+    const operations: Array<[command: string, network: string]> = [
+      ["curl https://example.com", "curl"],
+      ["wget https://example.com", "wget"],
+      ["ssh example.com", "ssh"],
+      ["scp a example.com:b", "scp"],
+      ["sftp example.com", "sftp"],
+      ["rsync a example.com:b", "rsync"],
+      ["telnet example.com", "telnet"],
+      ["nc example.com 443", "nc"],
+      ["netcat example.com 443", "netcat"],
+      ["git pull", "git pull"],
+      ["npm install", "npm install"],
+      ["pnpm add react", "pnpm add"],
+      ["yarn upgrade", "yarn upgrade"],
+      ["bun update", "bun update"],
+    ]
+    const wrappers = [
+      (command: string) => `FOO=bar ${command}`,
+      (command: string) => `env FOO=bar ${command}`,
+      (command: string) => `command ${command}`,
+      (command: string) => `sudo ${command}`,
+      (command: string) => `nohup ${command}`,
+    ]
+
+    for (const [operation, network] of operations) {
+      for (const wrap of wrappers) {
+        const command = wrap(operation)
+        const analysis = analyzeShellCommand(command, "darwin")
+        const verdict = classify(command)
+
+        expect(analysis.networkOperations, command).toContain(network)
+        expect(verdict?.level, command).not.toBe("allow")
+        expect(verdict?.level, command).toBe("require_approval")
+        expect(verdict && "category" in verdict && verdict.category).toBe(
+          "network_access"
+        )
+      }
+    }
   })
 })
 
@@ -201,6 +290,12 @@ describe("RegexCommandClassifier — parsed shell analysis", () => {
 
   it("hard-blocks dangerous commands found inside substitutions", () => {
     expect(classify("echo $(rm -rf /)")).toMatchObject({
+      level: "hard_block",
+    })
+  })
+
+  it("hard-blocks dangerous commands found inside backticks", () => {
+    expect(classify("echo `rm -rf /`")).toMatchObject({
       level: "hard_block",
     })
   })
