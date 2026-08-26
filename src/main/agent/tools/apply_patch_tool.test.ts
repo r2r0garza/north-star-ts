@@ -8,6 +8,8 @@ function fakeEnv(): Environment & {
   files: Map<string, string>
   modes: Map<string, number>
   renameCalls: Array<{ from: string; to: string }>
+  renameAttempts: Array<{ from: string; to: string }>
+  failRename?: (from: string, to: string) => boolean
   failNextRenameTo?: string
   failNextChmod: boolean
   createBeforeInstallTo?: string
@@ -16,10 +18,15 @@ function fakeEnv(): Environment & {
   const files = new Map<string, string>()
   const modes = new Map<string, number>()
   const renameCalls: Array<{ from: string; to: string }> = []
+  const renameAttempts: Array<{ from: string; to: string }> = []
   const env = {
     files,
     modes,
     renameCalls,
+    renameAttempts,
+    failRename: undefined as
+      | undefined
+      | ((from: string, to: string) => boolean),
     failNextRenameTo: undefined as string | undefined,
     failNextChmod: false,
     createBeforeInstallTo: undefined as string | undefined,
@@ -48,6 +55,10 @@ function fakeEnv(): Environment & {
       modes.set(p, mode & 0o7777)
     },
     rename: async (from: string, to: string) => {
+      renameAttempts.push({ from, to })
+      if (env.failRename?.(from, to)) {
+        throw new Error(`injected rename failure from ${from} to ${to}`)
+      }
       if (env.failNextRenameTo === to) {
         env.failNextRenameTo = undefined
         throw new Error(`injected rename failure for ${to}`)
@@ -632,6 +643,135 @@ describe("apply_patch_tool", () => {
     expect(
       [...env.files.keys()].filter((p) => p.includes(".north-star-"))
     ).toEqual([])
+  })
+
+  it("does not restore nonexistent backups when the first backup rename fails", async () => {
+    const env = fakeEnv()
+    for (const [path, mode] of [
+      ["a.txt", 0o600],
+      ["b.txt", 0o640],
+      ["c.txt", 0o644],
+    ] as const) {
+      env.files.set(path, `old ${path[0]}\n`)
+      env.modes.set(path, mode)
+    }
+    env.failRename = (from) => from === "a.txt"
+
+    const result = await applyPatchTool.execute(
+      {
+        operations: ["a", "b", "c"].map((name) => ({
+          type: "update" as const,
+          path: `${name}.txt`,
+          hunks: [{ old_string: `old ${name}`, new_string: `new ${name}` }],
+        })),
+      },
+      { workspace: "/ws", env }
+    )
+
+    expect(result).toContain("ERROR[commit_failed]")
+    expect(result).not.toContain("ERROR[rollback_failed]")
+    expect(env.renameAttempts).toHaveLength(1)
+    expect(env.renameAttempts[0]).toMatchObject({ from: "a.txt" })
+    expect(
+      env.renameAttempts.some(({ to }) =>
+        ["a.txt", "b.txt", "c.txt"].includes(to)
+      )
+    ).toBe(false)
+    expect(env.files.get("a.txt")).toBe("old a\n")
+    expect(env.files.get("b.txt")).toBe("old b\n")
+    expect(env.files.get("c.txt")).toBe("old c\n")
+    expect(env.modes.get("a.txt")).toBe(0o600)
+    expect(env.modes.get("b.txt")).toBe(0o640)
+    expect(env.modes.get("c.txt")).toBe(0o644)
+    expect(
+      [...env.files.keys()].filter((p) => p.includes(".north-star-"))
+    ).toEqual([])
+  })
+
+  it("restores only completed backups when a middle backup rename fails", async () => {
+    const env = fakeEnv()
+    for (const [path, mode] of [
+      ["a.txt", 0o600],
+      ["b.txt", 0o640],
+      ["c.txt", 0o644],
+    ] as const) {
+      env.files.set(path, `old ${path[0]}\n`)
+      env.modes.set(path, mode)
+    }
+    env.failRename = (from) => from === "b.txt"
+
+    const result = await applyPatchTool.execute(
+      {
+        operations: ["a", "b", "c"].map((name) => ({
+          type: "update" as const,
+          path: `${name}.txt`,
+          hunks: [{ old_string: `old ${name}`, new_string: `new ${name}` }],
+        })),
+      },
+      { workspace: "/ws", env }
+    )
+
+    expect(result).toContain("ERROR[commit_failed]")
+    expect(result).not.toContain("ERROR[rollback_failed]")
+    expect(env.renameAttempts.map(({ from }) => from)).toEqual([
+      "a.txt",
+      "b.txt",
+      expect.stringContaining(".north-star-"),
+    ])
+    expect(env.renameAttempts[2]).toMatchObject({ to: "a.txt" })
+    expect(
+      env.renameAttempts.some(
+        ({ from, to }) => from === "c.txt" || to === "b.txt" || to === "c.txt"
+      )
+    ).toBe(false)
+    expect(env.files.get("a.txt")).toBe("old a\n")
+    expect(env.files.get("b.txt")).toBe("old b\n")
+    expect(env.files.get("c.txt")).toBe("old c\n")
+    expect(env.modes.get("a.txt")).toBe(0o600)
+    expect(env.modes.get("b.txt")).toBe(0o640)
+    expect(env.modes.get("c.txt")).toBe(0o644)
+    expect(
+      [...env.files.keys()].filter((p) => p.includes(".north-star-"))
+    ).toEqual([])
+  })
+
+  it("reports rollback_failed when restoring a completed backup fails", async () => {
+    const env = fakeEnv()
+    env.files.set("a.txt", "old a\n")
+    env.modes.set("a.txt", 0o600)
+    let backedUp = false
+    env.failRename = (from, to) => {
+      if (from === "a.txt") {
+        backedUp = true
+        return false
+      }
+      return backedUp && to === "a.txt"
+    }
+
+    const result = await applyPatchTool.execute(
+      {
+        operations: [
+          {
+            type: "update",
+            path: "a.txt",
+            hunks: [{ old_string: "old a", new_string: "new a" }],
+          },
+        ],
+      },
+      { workspace: "/ws", env }
+    )
+
+    expect(result).toContain("ERROR[rollback_failed]")
+    expect(result).toContain("injected rename failure")
+    expect(env.renameAttempts).toHaveLength(3)
+    expect(env.renameAttempts[2]).toMatchObject({ to: "a.txt" })
+    expect(env.files.has("a.txt")).toBe(false)
+    const temporaryFiles = [...env.files.entries()].filter(([path]) =>
+      path.includes(".north-star-")
+    )
+    expect(temporaryFiles).toHaveLength(1)
+    expect(temporaryFiles[0]?.[1]).toBe("old a\n")
+    expect(env.modes.get(temporaryFiles[0]![0])).toBe(0o600)
   })
 
   it("rolls back files when a commit rename fails", async () => {
