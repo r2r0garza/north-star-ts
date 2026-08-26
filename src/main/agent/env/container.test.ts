@@ -1,33 +1,27 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest"
-import { execFileSync } from "child_process"
 import { mkdtemp, rm, readFile, writeFile } from "fs/promises"
 import { hostname, tmpdir } from "os"
 import { join } from "path"
 import { ContainerEnvironment } from "./container"
-
-// Run these only where a runtime is installed (mirrors the sqlite skipIf pattern).
-// They are integration tests against a real container, so they're skipped in CI
-// environments without Docker/Podman rather than failing.
-function available(runtime: "docker" | "podman"): boolean {
-  try {
-    execFileSync(runtime, ["--version"], { stdio: "ignore" })
-    return true
-  } catch {
-    return false
-  }
-}
+import { checkContainerTestAvailability } from "./container-test-availability"
 
 const IMAGE = process.env.COWORK_ENV_IMAGE || "node:20-bookworm"
 
 // One shared suite body, run once per available runtime.
 for (const runtime of ["docker", "podman"] as const) {
-  describe.skipIf(!available(runtime))(
+  const availability = checkContainerTestAvailability(runtime, IMAGE)
+  describe.skipIf(!availability.shouldRun)(
     `ContainerEnvironment (${runtime})`,
     () => {
       let workspace: string
       let env: ContainerEnvironment
 
       beforeAll(async () => {
+        if (!availability.available) {
+          throw new Error(
+            `Container integration tests requested for ${runtime}, but the runtime is not usable: ${availability.reason}`
+          )
+        }
         workspace = await mkdtemp(join(tmpdir(), `env-${runtime}-`))
         env = new ContainerEnvironment({
           runtime,
