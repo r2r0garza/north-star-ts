@@ -492,6 +492,31 @@ describe("LocalEnvironment.search", () => {
     expect(capped).toBe(true)
   })
 
+  it("reports ripgrep capture truncation before maxResults", async () => {
+    await writeFile(
+      join(workspace, "large.txt"),
+      `needle ${"x".repeat(4000)}\nneedle ${"y".repeat(4000)}\n`
+    )
+    const cappedEnv = new LocalEnvironment(workspace, "host-access", {
+      searchMaxOutputBytes: 600,
+    })
+
+    const result = await cappedEnv.search({
+      root: workspace,
+      query: "needle",
+      ...baseOpts,
+      maxResults: 100,
+    })
+
+    expect(result.matches.length).toBeLessThan(100)
+    expect(result.capped).toBe(true)
+    expect(result.captureTruncated).toBe(true)
+    expect(result.capReason).toBe("captureBytes")
+    expect(result.capturedOutputBytes).toBe(600)
+    expect(result.observedOutputBytes).toBeGreaterThan(600)
+    expect(result.malformedJsonLines).toBeGreaterThan(0)
+  })
+
   it("skips binary files", async () => {
     await writeFile(join(workspace, "bin.dat"), Buffer.from([0x6d, 0x00, 0x6d]))
     const { matches } = await env.search({

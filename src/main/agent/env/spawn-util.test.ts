@@ -47,5 +47,28 @@ describe("captureSpawn", () => {
     expect(result.stdout.toString("utf8")).toBe("out-1err-1ou")
     expect(result.stderr?.toString("utf8")).toBe("err-1")
     expect(result.stdout).toHaveLength(12)
+    expect(result.outputTruncated).toBe(true)
+    expect(result.capturedOutputBytes).toBe(12)
+    expect(result.observedOutputBytes).toBeGreaterThan(12)
+  })
+
+  it("reports bytes discarded after the cap is already full", async () => {
+    const child = nodeChild(`
+      process.stdout.write("12345")
+      setTimeout(() => {
+        process.stdout.write("67890")
+        process.exit(0)
+      }, 20)
+    `)
+
+    const result = await captureSpawn(child, {
+      timeoutMs: 5_000,
+      maxOutputBytes: 5,
+    })
+
+    expect(result.stdout.toString("utf8")).toBe("12345")
+    expect(result.outputTruncated).toBe(true)
+    expect(result.capturedOutputBytes).toBe(5)
+    expect(result.observedOutputBytes).toBe(10)
   })
 })

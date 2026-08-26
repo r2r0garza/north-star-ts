@@ -38,6 +38,7 @@ export interface ContainerConfig {
   workspace: string
   // Stable per-conversation id so the same container is reused across turns.
   conversationId: string
+  searchMaxOutputBytes?: number
 }
 
 // Fixed in-container mount point for the workspace. The host workspace is bound
@@ -548,11 +549,11 @@ PY
       )
       const res = await captureSpawn(child, {
         timeoutMs: 30_000,
-        maxOutputBytes: 16 * 1024 * 1024,
+        maxOutputBytes: this.cfg.searchMaxOutputBytes ?? 16 * 1024 * 1024,
         signal: opts.signal,
       })
       throwForRipgrepExecutionFailure(res)
-      return parseRipgrepJson(res.stdout, { ...opts, root })
+      return parseRipgrepJson(res.stdout, { ...opts, root }, res)
     }
 
     return this.searchWithPythonFallback({ ...opts, root })

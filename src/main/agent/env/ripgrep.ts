@@ -92,7 +92,11 @@ function expandRipgrepGlobs(globs: string[]): string[] {
 
 export function parseRipgrepJson(
   stdout: Buffer,
-  opts: SearchOptions
+  opts: SearchOptions,
+  exec?: Pick<
+    ExecResult,
+    "outputTruncated" | "capturedOutputBytes" | "observedOutputBytes"
+  >
 ): SearchResult {
   const matches: SearchMatch[] = []
   const files: string[] = []
@@ -100,11 +104,18 @@ export function parseRipgrepJson(
   const counts = new Map<string, number>()
   let totalMatches = 0
   let capped = false
+  let capReason: SearchResult["capReason"] | undefined
+  let malformedJsonLines = 0
+
+  const markResultCapped = () => {
+    capped = true
+    capReason ??= "resultCount"
+  }
 
   const addFile = (path: string) => {
     if (fileSet.has(path)) return
     if (opts.result === "files" && files.length >= opts.maxResults) {
-      capped = true
+      markResultCapped()
       return
     }
     fileSet.add(path)
@@ -117,6 +128,7 @@ export function parseRipgrepJson(
     try {
       event = JSON.parse(line) as RgEvent
     } catch {
+      malformedJsonLines += 1
       continue
     }
 
@@ -138,7 +150,7 @@ export function parseRipgrepJson(
 
     if (opts.result !== "content") continue
     if (matches.length >= opts.maxResults) {
-      capped = true
+      markResultCapped()
       continue
     }
 
@@ -155,10 +167,16 @@ export function parseRipgrepJson(
   const countRows: SearchCount[] = []
   for (const [path, matchCount] of counts.entries()) {
     if (countRows.length >= opts.maxResults) {
-      capped = true
+      markResultCapped()
       break
     }
     countRows.push({ path, matches: matchCount })
+  }
+
+  const captureTruncated = exec?.outputTruncated === true
+  if (captureTruncated) {
+    capped = true
+    capReason = "captureBytes"
   }
 
   return {
@@ -169,6 +187,15 @@ export function parseRipgrepJson(
     counts: countRows,
     totalMatches,
     capped,
+    capReason,
+    captureTruncated: captureTruncated || undefined,
+    capturedOutputBytes: captureTruncated
+      ? exec?.capturedOutputBytes
+      : undefined,
+    observedOutputBytes: captureTruncated
+      ? exec?.observedOutputBytes
+      : undefined,
+    malformedJsonLines: malformedJsonLines || undefined,
   }
 }
 

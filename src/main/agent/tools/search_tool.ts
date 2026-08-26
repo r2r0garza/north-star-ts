@@ -161,6 +161,11 @@ export const searchTool: Tool = {
           engine: search.engine,
           result,
           capped: search.capped,
+          capReason: search.capReason,
+          captureTruncated: search.captureTruncated,
+          capturedOutputBytes: search.capturedOutputBytes,
+          observedOutputBytes: search.observedOutputBytes,
+          malformedJsonLines: search.malformedJsonLines,
           reducedFeatures: search.reducedFeatures,
         },
       }).text
@@ -260,7 +265,17 @@ function appendNotes(
 ): string {
   const notes: string[] = []
   if (search.capped) {
-    notes.push(`stopped at ${maxResults} ${search.result} results`)
+    if (search.captureTruncated) {
+      const captured =
+        typeof search.capturedOutputBytes === "number"
+          ? ` after ${search.capturedOutputBytes} captured bytes`
+          : ""
+      notes.push(
+        `output capture truncated${captured}; results may be incomplete; ${recoveryHint(search.result)}`
+      )
+    } else {
+      notes.push(`stopped at ${maxResults} ${search.result} results`)
+    }
   }
   if (search.reducedFeatures?.length) {
     notes.push(`engine=${search.engine}; ${search.reducedFeatures.join("; ")}`)

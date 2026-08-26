@@ -68,6 +68,7 @@ interface LocalEnvironmentDeps {
   resolveRipgrepPath?: () => string
   spawn?: SpawnFn
   searchTimeoutMs?: number
+  searchMaxOutputBytes?: number
 }
 
 function resolveRipgrepPath(): string {
@@ -310,12 +311,12 @@ export class LocalEnvironment implements Environment {
     )
     const res = await captureSpawn(child, {
       timeoutMs: this.deps.searchTimeoutMs ?? 30_000,
-      maxOutputBytes: 16 * 1024 * 1024,
+      maxOutputBytes: this.deps.searchMaxOutputBytes ?? 16 * 1024 * 1024,
       signal: opts.signal,
       killGroup: true,
     })
     throwForRipgrepExecutionFailure(res)
-    return parseRipgrepJson(res.stdout, opts)
+    return parseRipgrepJson(res.stdout, opts, res)
   }
 
   async dispose(): Promise<void> {

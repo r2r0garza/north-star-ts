@@ -31,16 +31,23 @@ export function captureSpawn(
     const combinedChunks: Buffer[] = []
     const stderrChunks: Buffer[] = []
     let bytes = 0
+    let observedBytes = 0
+    let outputTruncated = false
     let timedOut = false
     let aborted = opts.signal?.aborted === true
     let settled = false
 
     const capture = (chunk: Buffer, stream: "stdout" | "stderr") => {
-      if (bytes >= opts.maxOutputBytes) return
+      observedBytes += chunk.length
+      if (bytes >= opts.maxOutputBytes) {
+        outputTruncated = true
+        return
+      }
       const room = opts.maxOutputBytes - bytes
       // Keep at most `room` bytes of this chunk, then ignore the rest. Slicing the
       // Buffer (byte-indexed) is correct; decoding happens once in the caller.
       const keep = chunk.length > room ? chunk.subarray(0, room) : chunk
+      if (keep.length < chunk.length) outputTruncated = true
       combinedChunks.push(keep)
       if (stream === "stderr") stderrChunks.push(keep)
       bytes += keep.length
@@ -124,6 +131,9 @@ export function captureSpawn(
         timedOut,
         aborted,
         spawnError: err.message,
+        outputTruncated,
+        capturedOutputBytes: bytes,
+        observedOutputBytes: observedBytes,
       })
     })
     child.on("close", (code, signal) => {
@@ -135,6 +145,9 @@ export function captureSpawn(
         signal,
         timedOut,
         aborted,
+        outputTruncated,
+        capturedOutputBytes: bytes,
+        observedOutputBytes: observedBytes,
       })
     })
   })

@@ -26,6 +26,11 @@ export interface ExecResult {
   timedOut: boolean
   aborted?: boolean
   spawnError?: string
+  // True when stdout/stderr produced more bytes than `maxOutputBytes` allowed
+  // us to retain.
+  outputTruncated?: boolean
+  capturedOutputBytes?: number
+  observedOutputBytes?: number
 }
 
 export interface ExecOptions {
@@ -170,8 +175,14 @@ export interface SearchResult {
   files: string[]
   counts: SearchCount[]
   totalMatches?: number
-  // True when the search stopped at maxResults (more results may exist).
+  // True when the search stopped at maxResults or output capture was truncated
+  // (more results may exist).
   capped: boolean
+  capReason?: "resultCount" | "captureBytes"
+  captureTruncated?: boolean
+  capturedOutputBytes?: number
+  observedOutputBytes?: number
+  malformedJsonLines?: number
   reducedFeatures?: string[]
 }
 
