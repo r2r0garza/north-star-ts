@@ -371,13 +371,29 @@ function appendOutput(
   const end = start + data.length
   session.totalBytes = end
   session.chunks.push({ stream, start, end, data })
-  while (
-    session.totalBytes - session.droppedBytes > session.maxOutputBytes &&
-    session.chunks.length > 0
-  ) {
-    const dropped = session.chunks.shift()
-    if (!dropped) break
-    session.droppedBytes = dropped.end
+  let bytesToDrop =
+    session.totalBytes - session.droppedBytes - session.maxOutputBytes
+  while (bytesToDrop > 0 && session.chunks.length > 0) {
+    const oldest = session.chunks[0]
+    if (bytesToDrop >= oldest.data.length) {
+      session.chunks.shift()
+      session.droppedBytes = oldest.end
+      bytesToDrop =
+        session.totalBytes - session.droppedBytes - session.maxOutputBytes
+      continue
+    }
+
+    const trimmed = utf8SafeSuffixFrom(oldest.data, bytesToDrop)
+    if (trimmed.data.length === 0) {
+      session.chunks.shift()
+      session.droppedBytes = oldest.end
+    } else {
+      oldest.start += trimmed.offset
+      oldest.data = trimmed.data
+      session.droppedBytes = oldest.start
+    }
+    bytesToDrop =
+      session.totalBytes - session.droppedBytes - session.maxOutputBytes
   }
 }
 
@@ -441,6 +457,7 @@ function renderSince(
   const from = Math.max(0, Math.floor(cursor))
   const effectiveFrom = Math.max(from, session.droppedBytes)
   let bytes = 0
+  let renderedTo = effectiveFrom
   let truncated = from < session.droppedBytes
   const chunks: RenderedOutput["chunks"] = []
   for (const chunk of session.chunks) {
@@ -450,14 +467,17 @@ function renderSince(
       break
     }
     const offset = Math.max(0, effectiveFrom - chunk.start)
-    const available = chunk.data.subarray(offset)
+    const available = utf8SafeSuffixFrom(chunk.data, offset)
+    if (available.offset > offset) truncated = true
+    renderedTo = chunk.start + available.offset
     const keep =
-      available.length > cap - bytes
-        ? utf8SafePrefix(available, cap - bytes)
-        : available
+      available.data.length > cap - bytes
+        ? utf8SafePrefix(available.data, cap - bytes)
+        : available.data
     bytes += keep.length
+    renderedTo += keep.length
     chunks.push({ stream: chunk.stream, text: keep.toString("utf8") })
-    if (keep.length < available.length) {
+    if (keep.length < available.data.length) {
       truncated = true
       break
     }
@@ -465,7 +485,7 @@ function renderSince(
   const output = chunks.map((chunk) => chunk.text).join("")
   return {
     output: stripAnsi(output),
-    cursor: effectiveFrom + bytes,
+    cursor: renderedTo,
     totalBytes: session.totalBytes,
     droppedBytes: Math.max(0, effectiveFrom - from),
     truncated,
@@ -484,6 +504,22 @@ function utf8SafePrefix(buffer: Buffer, maxBytes: number): Buffer {
     }
   }
   return Buffer.alloc(0)
+}
+
+function utf8SafeSuffixFrom(
+  buffer: Buffer,
+  offset: number
+): { offset: number; data: Buffer } {
+  let start = Math.min(buffer.length, Math.max(0, offset))
+  while (start < buffer.length) {
+    try {
+      new TextDecoder("utf-8", { fatal: true }).decode(buffer.subarray(start))
+      return { offset: start, data: buffer.subarray(start) }
+    } catch {
+      start += 1
+    }
+  }
+  return { offset: buffer.length, data: Buffer.alloc(0) }
 }
 
 function pollSessionResult(
