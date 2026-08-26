@@ -55,6 +55,7 @@ export interface PlannedPatchFile {
   after?: string
   beforeRevision?: string
   afterRevision?: string
+  mode?: number
   status: "added" | "updated" | "moved" | "deleted"
   sourcePath?: string
   sourceTarget?: string
@@ -71,6 +72,7 @@ interface SourceFile {
   target: string
   content: string
   revision: string
+  mode?: number
 }
 
 function bytes(value: string): number {
@@ -245,7 +247,13 @@ async function readSource(
   if (expected && expected !== revision) {
     throw new Error(`stale_file:${path}: current revision ${revision}`)
   }
-  return { path, target, content: file.toString("utf8"), revision }
+  return {
+    path,
+    target,
+    content: file.toString("utf8"),
+    revision,
+    mode: stat.mode === undefined ? undefined : stat.mode & 0o7777,
+  }
 }
 
 async function targetExists(
@@ -340,6 +348,7 @@ export async function planPatch(
         after,
         beforeRevision: source.revision,
         afterRevision: revisionOfText(after),
+        mode: source.mode,
         status: "updated",
       })
       finalPaths.add(op.path)
@@ -367,6 +376,7 @@ export async function planPatch(
       after,
       beforeRevision: source.revision,
       afterRevision: revisionOfText(after),
+      mode: source.mode,
       status: "moved",
       sourcePath: op.path,
       sourceTarget: source.target,
@@ -487,6 +497,9 @@ export async function commitPatch(
         await env.mkdirp(dirname(file.target))
         entry.staged = makeTempPath(file.target)
         await env.writeFile(entry.staged, file.after)
+        if (file.mode !== undefined) {
+          await env.chmod(entry.staged, file.mode)
+        }
       }
       if (existed) {
         entry.backup = makeTempPath(file.sourceTarget ?? file.target)

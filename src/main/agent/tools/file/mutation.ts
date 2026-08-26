@@ -47,13 +47,26 @@ export async function atomicWriteChecked(opts: {
   if (current !== opts.expectedRevision) {
     return { staleRevision: current ?? null }
   }
+  const originalMode =
+    opts.expectedRevision === undefined
+      ? undefined
+      : await readFileMode(opts.env, opts.target)
 
   const tmp = makeTempPath(opts.target)
   try {
     await opts.env.writeFile(tmp, opts.content)
+    if (originalMode !== undefined) {
+      await opts.env.chmod(tmp, originalMode)
+    }
     const beforeRename = await readRevision(opts.env, opts.target)
     if (beforeRename !== opts.expectedRevision) {
       return { staleRevision: beforeRename ?? null }
+    }
+    if (originalMode !== undefined) {
+      const beforeRenameMode = await readFileMode(opts.env, opts.target)
+      if (beforeRenameMode !== originalMode) {
+        return { staleRevision: beforeRename ?? null }
+      }
     }
     await opts.env.rename(tmp, opts.target)
     return "ok"
@@ -68,6 +81,20 @@ export async function readRevision(
 ): Promise<string | undefined> {
   try {
     return fileRevision(await env.readFile(target))
+  } catch {
+    return undefined
+  }
+}
+
+export async function readFileMode(
+  env: Environment,
+  target: string
+): Promise<number | undefined> {
+  try {
+    const info = await env.stat(target)
+    return info.isFile() && info.mode !== undefined
+      ? info.mode & 0o7777
+      : undefined
   } catch {
     return undefined
   }

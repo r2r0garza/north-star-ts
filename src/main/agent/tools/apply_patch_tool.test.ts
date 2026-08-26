@@ -27,6 +27,7 @@ function fakeEnv(): Environment & {
     writeFile: async (p: string, data: string) => {
       files.set(p, data)
     },
+    chmod: async () => {},
     rename: async (from: string, to: string) => {
       if (env.failNextRenameTo === to) {
         env.failNextRenameTo = undefined

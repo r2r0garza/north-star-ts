@@ -5,6 +5,7 @@ import { EventEmitter } from "events"
 import {
   readFile,
   writeFile,
+  chmod,
   rename,
   link,
   mkdir,
@@ -166,6 +167,11 @@ export class LocalEnvironment implements Environment {
     return writeFile(path, data, "utf8")
   }
 
+  chmod(path: string, mode: number): Promise<void> {
+    this.assertWritable(path)
+    return chmod(path, mode)
+  }
+
   rename(from: string, to: string): Promise<void> {
     this.assertWritable(from)
     this.assertWritable(to)
@@ -188,8 +194,14 @@ export class LocalEnvironment implements Environment {
     await mkdir(path, { recursive: true })
   }
 
-  stat(path: string): Promise<StatInfo> {
-    return stat(path)
+  async stat(path: string): Promise<StatInfo> {
+    const info = await stat(path)
+    return {
+      size: info.size,
+      mode: info.mode & 0o7777,
+      isFile: () => info.isFile(),
+      isDirectory: () => info.isDirectory(),
+    }
   }
 
   readdir(path: string): Promise<DirEntry[]> {

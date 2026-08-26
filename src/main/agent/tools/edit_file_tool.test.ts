@@ -4,10 +4,17 @@ import { revisionOfText } from "./file/mutation"
 import type { Environment } from "../env/types"
 import type { ToolAction } from "../approval/types"
 
-function fakeEnv(): Environment & { files: Map<string, string> } {
+function fakeEnv(): Environment & {
+  files: Map<string, string>
+  modes: Map<string, number>
+  failNextChmod: boolean
+} {
   const files = new Map<string, string>()
-  return {
+  const modes = new Map<string, number>()
+  const env = {
     files,
+    modes,
+    failNextChmod: false,
     resolve: async (p: string) => p,
     resolveLexical: (p: string) => p,
     readFile: async (p: string) => {
@@ -20,21 +27,34 @@ function fakeEnv(): Environment & { files: Map<string, string> } {
     },
     writeFile: async (p: string, data: string) => {
       files.set(p, data)
+      modes.set(p, 0o644)
+    },
+    chmod: async (p: string, mode: number) => {
+      if (env.failNextChmod) {
+        env.failNextChmod = false
+        throw new Error(`injected chmod failure for ${p}`)
+      }
+      modes.set(p, mode & 0o7777)
     },
     rename: async (from: string, to: string) => {
       const content = files.get(from)
       if (content === undefined) throw new Error("ENOENT")
       files.set(to, content)
+      const mode = modes.get(from)
+      if (mode !== undefined) modes.set(to, mode)
       files.delete(from)
+      modes.delete(from)
     },
     removeFile: async (p: string) => {
       files.delete(p)
+      modes.delete(p)
     },
     mkdirp: async () => {},
     stat: async (p: string) => {
       if (!files.has(p)) throw new Error("ENOENT")
       return {
         size: Buffer.byteLength(files.get(p) ?? "", "utf8"),
+        mode: modes.get(p) ?? 0o644,
         isFile: () => true,
         isDirectory: () => false,
       }
@@ -59,6 +79,7 @@ function fakeEnv(): Environment & { files: Map<string, string> } {
     }),
     dispose: async () => {},
   }
+  return env
 }
 
 describe("edit_file_tool", () => {
@@ -127,6 +148,24 @@ describe("edit_file_tool", () => {
     )
     expect(result).toContain("ERROR[stale_file]")
     expect(env.files.get("a.txt")).toBe("external")
+    expect([...env.files.keys()].filter((p) => p.includes(".tmp"))).toEqual([])
+  })
+
+  it("leaves the original file intact when staged chmod fails", async () => {
+    const env = fakeEnv()
+    env.files.set("script.sh", "#!/bin/sh\necho old\n")
+    env.modes.set("script.sh", 0o755)
+    env.failNextChmod = true
+
+    await expect(
+      editFileTool.execute(
+        { path: "script.sh", old_string: "old", new_string: "new" },
+        { workspace: "/ws", env }
+      )
+    ).rejects.toThrow("injected chmod failure")
+
+    expect(env.files.get("script.sh")).toBe("#!/bin/sh\necho old\n")
+    expect(env.modes.get("script.sh")).toBe(0o755)
     expect([...env.files.keys()].filter((p) => p.includes(".tmp"))).toEqual([])
   })
 })

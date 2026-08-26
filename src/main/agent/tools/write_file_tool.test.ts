@@ -25,6 +25,7 @@ function fakeEnv(): Environment & { files: Map<string, string> } {
     writeFile: async (p: string, data: string) => {
       files.set(p, data)
     },
+    chmod: async () => {},
     rename: async (from: string, to: string) => {
       const content = files.get(from)
       if (content === undefined) throw new Error("ENOENT")

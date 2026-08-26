@@ -333,6 +333,21 @@ PY
     }
   }
 
+  async chmod(path: string, mode: number): Promise<void> {
+    const p = this.toContainerPath(path)
+    const normalized = (mode & 0o7777).toString(8)
+    const res = await this.runtimeCli([
+      "exec",
+      this.name,
+      "chmod",
+      normalized,
+      p,
+    ])
+    if (res.code !== 0) {
+      throw new Error(res.stderr.trim() || `cannot chmod ${path}`)
+    }
+  }
+
   async rename(from: string, to: string): Promise<void> {
     const res = await this.runtimeCli([
       "exec",
@@ -390,7 +405,8 @@ PY
   }
 
   async stat(path: string): Promise<StatInfo> {
-    // `%s` = size in bytes, `%F` = file type description. A nonzero exit (e.g.
+    // `%s` = size in bytes, `%F` = file type description, `%a` = permission bits
+    // in octal. A nonzero exit (e.g.
     // ENOENT) throws, so read/edit's `catch → not_found` fires just as on the host.
     const p = this.toContainerPath(path)
     const res = await this.runtimeCli([
@@ -398,7 +414,7 @@ PY
       this.name,
       "sh",
       "-c",
-      `stat -c '%s %F' ${shq(p)}`,
+      `stat -c '%s %F %a' ${shq(p)}`,
     ])
     if (res.code !== 0) {
       throw new Error(res.stderr.trim() || `no such file: ${path}`)
@@ -406,11 +422,16 @@ PY
     const text = res.stdout.toString("utf8").trim()
     const sp = text.indexOf(" ")
     const size = Number(text.slice(0, sp))
-    const kind = text.slice(sp + 1)
+    const rest = text.slice(sp + 1)
+    const modeSep = rest.lastIndexOf(" ")
+    const kind = modeSep >= 0 ? rest.slice(0, modeSep) : rest
+    const parsedMode =
+      modeSep >= 0 ? Number.parseInt(rest.slice(modeSep + 1), 8) : NaN
     const isDir = kind === "directory"
     const isReg = kind === "regular file" || kind === "regular empty file"
     return {
       size: Number.isFinite(size) ? size : 0,
+      mode: Number.isFinite(parsedMode) ? parsedMode & 0o7777 : undefined,
       isFile: () => isReg,
       isDirectory: () => isDir,
     }

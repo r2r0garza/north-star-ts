@@ -85,6 +85,9 @@ export interface DirEntry {
 // The subset of fs.Stats the tools consume. Real fs.Stats satisfies this.
 export interface StatInfo {
   size: number
+  // Permission bits only; callers must not infer ownership, ACLs, or platform
+  // flags from this value.
+  mode?: number
   isFile(): boolean
   isDirectory(): boolean
 }
@@ -179,7 +182,10 @@ export interface Environment {
   ): Promise<ReadTextLinesResult>
   // Write utf8 text. Combined with `rename` this lets tools keep their atomic-
   // write orchestration (write temp sibling, then rename over the target).
+  // Newly-created files use the backend's normal file-create mode (local and
+  // container backends create as 0o666 filtered by the active process umask).
   writeFile(path: string, data: string): Promise<void>
+  chmod(path: string, mode: number): Promise<void>
   rename(from: string, to: string): Promise<void>
   // Atomically install an already-written file at `to`, failing if `to` exists.
   // The source file remains for caller-owned cleanup.
