@@ -124,6 +124,29 @@ describe("ContainerEnvironment runtime CLI supervision", () => {
 
     expect(child.kill).toHaveBeenCalledWith("SIGKILL")
   })
+
+  it("runs bounded in-container cleanup before returning a timed-out exec", async () => {
+    const commandChild = fakeRuntimeChild({ neverExit: true })
+    const cleanupChild = fakeRuntimeChild({})
+    const runtimeSpawn = vi
+      .fn()
+      .mockReturnValueOnce(commandChild)
+      .mockReturnValueOnce(cleanupChild)
+    const env = testContainer(runtimeSpawn, { runtimeCliTimeoutMs: 10 })
+
+    const result = await env.exec("sleep 30", {
+      cwd: "/tmp/workspace",
+      timeoutMs: 10,
+      maxOutputBytes: 1024,
+    })
+
+    expect(result.timedOut).toBe(true)
+    expect(commandChild.kill).toHaveBeenCalledWith("SIGKILL")
+    expect(runtimeSpawn).toHaveBeenCalledTimes(2)
+    const cleanupArgs = runtimeSpawn.mock.calls[1][1] as string[]
+    expect(cleanupArgs).toContain("python3")
+    expect(cleanupArgs).toContain("KILL")
+  })
 })
 
 // One shared suite body, run once per available runtime.
@@ -164,6 +187,43 @@ for (const runtime of ["docker", "podman"] as const) {
         })
         expect(r.exitCode).toBe(0)
         expect(r.stdout.toString("utf8").trim()).not.toBe(hostname())
+      })
+
+      it("reaps an in-container child process on exec timeout", async () => {
+        const sentinel = "exec-timeout-survivor.txt"
+        const r = await env.exec(
+          `sh -c 'sleep 1; echo late > ${sentinel}' & wait`,
+          {
+            cwd: workspace,
+            timeoutMs: 100,
+            maxOutputBytes: 1024 * 1024,
+          }
+        )
+
+        expect(r.timedOut).toBe(true)
+        await delay(1_300)
+        await expect(
+          readFile(join(workspace, sentinel), "utf8")
+        ).rejects.toThrow()
+      })
+
+      it("reaps an in-container child process when a command session is killed", async () => {
+        const sentinel = "session-kill-survivor.txt"
+        const handle = await env.spawnCommand(
+          `sh -c 'sleep 1; echo late > ${sentinel}' & wait`,
+          {
+            cwd: workspace,
+            tty: false,
+          }
+        )
+        const exit = new Promise((resolve) => handle.onExit(resolve))
+
+        handle.kill()
+        await exit
+        await delay(1_300)
+        await expect(
+          readFile(join(workspace, sentinel), "utf8")
+        ).rejects.toThrow()
       })
 
       it("writes a file that appears on the host via the bind mount", async () => {
@@ -457,4 +517,8 @@ for (const runtime of ["docker", "podman"] as const) {
       })
     }
   )
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
 }

@@ -1,5 +1,6 @@
 import { spawn } from "child_process"
 import type { ChildProcess } from "child_process"
+import { randomUUID } from "crypto"
 import { EventEmitter } from "events"
 import { relative, posix } from "path"
 import { StringDecoder } from "string_decoder"
@@ -80,6 +81,7 @@ const RUNTIME_CLI_PULL_TIMEOUT_MS = 300_000
 const RUNTIME_CLI_MAX_OUTPUT_BYTES = 1024 * 1024
 const RUNTIME_CLI_PULL_MAX_OUTPUT_BYTES = 4 * 1024 * 1024
 const RUNTIME_CLI_READ_FILE_MAX_OUTPUT_BYTES = 16 * 1024 * 1024
+const IN_CONTAINER_KILL_TIMEOUT_MS = 2_000
 
 // Runs commands and file ops inside an OCI container, with the workspace bind-
 // mounted so changes flow live to the host (no file-sync subsystem needed). A
@@ -692,36 +694,42 @@ PY
   }
 
   async exec(command: string, opts: ExecOptions): Promise<ExecResult> {
-    // Run the model's command in the container shell, in the mapped cwd. The
-    // inner command's exit code propagates through `docker exec`. Capture/cap/
-    // timeout/abort are shared with the local backend via captureSpawn.
-    //
-    // Follow-up (see .plan/005.1): killing the host `exec` client (on timeout or
-    // abort) does not stop the in-container process. The signal seam is wired and
-    // we intentionally do NOT pass killGroup here — the docker/podman exec client
-    // is not a detached group leader; an in-container kill needs its own design.
-    const env = await hostCliEnv()
-    const child = spawn(
+    // Run the model's command through an in-container supervisor. Killing only
+    // the host docker/podman exec client can orphan the real command in the
+    // shared container, so timeout/abort also signal the recorded process group
+    // through a separate bounded runtime exec.
+    const env = await (this.cfg.hostCliEnv ?? hostCliEnv)()
+    const pidFile = this.commandPidFile()
+    const child = (this.cfg.runtimeSpawn ?? spawn)(
       this.cfg.runtime,
       [
         "exec",
         "-w",
         this.toContainerPath(opts.cwd),
         this.name,
-        "sh",
+        "python3",
         "-c",
+        CONTAINER_COMMAND_SUPERVISOR,
+        pidFile,
         command,
       ],
       { env, stdio: ["ignore", "pipe", "pipe"] }
     )
-    return captureSpawn(child, opts)
+    return captureSpawn(child, {
+      ...opts,
+      terminateBeforeKill: true,
+      onTerminate: async () => {
+        await this.signalInContainerProcessGroup(pidFile, "KILL")
+      },
+    })
   }
 
   async spawnCommand(
     command: string,
     opts: SpawnCommandOptions
   ): Promise<CommandSessionHandle> {
-    const env = await hostCliEnv()
+    const env = await (this.cfg.hostCliEnv ?? hostCliEnv)()
+    const pidFile = this.commandPidFile()
     const args = [
       "exec",
       "-i",
@@ -729,15 +737,21 @@ PY
       "-w",
       this.toContainerPath(opts.cwd),
       this.name,
-      "sh",
+      "python3",
       "-c",
+      CONTAINER_COMMAND_SUPERVISOR,
+      pidFile,
       command,
     ]
-    const child = spawn(this.cfg.runtime, args, {
+    const child = (this.cfg.runtimeSpawn ?? spawn)(this.cfg.runtime, args, {
       env,
       stdio: ["pipe", "pipe", "pipe"],
     })
-    return new ContainerCommandHandle(child, opts.signal)
+    return new ContainerCommandHandle(child, {
+      signal: opts.signal,
+      signalInner: (signal) =>
+        this.signalInContainerProcessGroup(pidFile, signal),
+    })
   }
 
   // Bulk content search as ONE in-container command (vs. hundreds of per-file
@@ -753,8 +767,8 @@ PY
     this.ensureCompleteCliResult(hasRg, "container rg capability probe")
 
     if (hasRg.code === 0) {
-      const env = await hostCliEnv()
-      const child = spawn(
+      const env = await (this.cfg.hostCliEnv ?? hostCliEnv)()
+      const child = (this.cfg.runtimeSpawn ?? spawn)(
         this.cfg.runtime,
         ["exec", this.name, "rg", ...buildRipgrepArgs({ ...opts, root })],
         { env, stdio: ["ignore", "pipe", "pipe"] }
@@ -950,6 +964,33 @@ PY
     const res = await this.runtimeCli(["rm", "-f", this.name])
     this.throwForCliFailure(res, `cannot dispose container ${this.name}`)
   }
+
+  private commandPidFile(): string {
+    return `/tmp/${systemSlug()}-cmd-${randomUUID()}.pgid`
+  }
+
+  private async signalInContainerProcessGroup(
+    pidFile: string,
+    signal: "INT" | "KILL"
+  ): Promise<void> {
+    const res = await this.runtimeCli(
+      [
+        "exec",
+        this.name,
+        "python3",
+        "-c",
+        CONTAINER_COMMAND_KILLER,
+        pidFile,
+        signal,
+      ],
+      undefined,
+      {
+        timeoutMs: IN_CONTAINER_KILL_TIMEOUT_MS,
+        maxOutputBytes: 8 * 1024,
+      }
+    )
+    this.ensureCompleteCliResult(res, "container command cleanup")
+  }
 }
 
 // Single-quote a path for `sh -c`, escaping embedded single quotes. Paths are
@@ -964,6 +1005,70 @@ function isInsideContainerPath(parent: string, child: string): boolean {
   return rel === "" || (!rel.startsWith("..") && !posix.isAbsolute(rel))
 }
 
+const CONTAINER_COMMAND_SUPERVISOR = String.raw`
+import os, subprocess, sys
+
+pid_file = sys.argv[1]
+command = sys.argv[2]
+
+try:
+    child = subprocess.Popen(
+        ["sh", "-c", command],
+        stdin=sys.stdin,
+        stdout=sys.stdout,
+        stderr=sys.stderr,
+        preexec_fn=os.setsid,
+    )
+    pgid = os.getpgid(child.pid)
+    with open(pid_file, "w", encoding="ascii") as f:
+        f.write(str(pgid))
+    rc = child.wait()
+    raise SystemExit(rc)
+finally:
+    try:
+        os.unlink(pid_file)
+    except FileNotFoundError:
+        pass
+`
+
+const CONTAINER_COMMAND_KILLER = String.raw`
+import os, signal, sys, time
+
+pid_file = sys.argv[1]
+signal_name = sys.argv[2]
+signals = {"INT": signal.SIGINT, "KILL": signal.SIGKILL}
+if signal_name not in signals:
+    raise SystemExit(64)
+
+for _ in range(10):
+    if os.path.exists(pid_file):
+        break
+    time.sleep(0.1)
+if not os.path.exists(pid_file):
+    raise SystemExit(0)
+
+try:
+    with open(pid_file, "r", encoding="ascii") as f:
+        pgid = int(f.read().strip())
+except Exception:
+    try:
+        os.unlink(pid_file)
+    except FileNotFoundError:
+        pass
+    raise SystemExit(0)
+
+try:
+    os.killpg(pgid, signals[signal_name])
+except ProcessLookupError:
+    pass
+
+if signal_name == "KILL":
+    try:
+        os.unlink(pid_file)
+    except FileNotFoundError:
+        pass
+`
+
 class ContainerCommandHandle
   extends EventEmitter<{
     data: [CommandChunk]
@@ -973,11 +1078,15 @@ class ContainerCommandHandle
 {
   private readonly stdoutDecoder = new StringDecoder("utf8")
   private readonly stderrDecoder = new StringDecoder("utf8")
+  private readonly terminationCleanups: Promise<void>[] = []
   private closed = false
 
   constructor(
     private readonly child: ChildProcess,
-    private readonly signal?: AbortSignal
+    private readonly opts: {
+      signal?: AbortSignal
+      signalInner: (signal: "INT" | "KILL") => Promise<void>
+    }
   ) {
     super()
     child.stdout?.on("data", (chunk: Buffer) =>
@@ -992,16 +1101,19 @@ class ContainerCommandHandle
         data: Buffer.from(`Failed to start command: ${err.message}`),
       })
     })
-    child.on("close", (exitCode, signal) => {
+    child.on("close", async (exitCode, signal) => {
       this.closed = true
       this.flushDecoder("stdout", this.stdoutDecoder)
       this.flushDecoder("stderr", this.stderrDecoder)
-      this.signal?.removeEventListener("abort", this.onAbort)
+      this.opts.signal?.removeEventListener("abort", this.onAbort)
+      if (this.terminationCleanups.length > 0) {
+        await Promise.allSettled(this.terminationCleanups)
+      }
       this.emit("exit", { exitCode, signal })
     })
-    if (signal) {
-      if (signal.aborted) this.kill()
-      else signal.addEventListener("abort", this.onAbort, { once: true })
+    if (opts.signal) {
+      if (opts.signal.aborted) this.kill()
+      else opts.signal.addEventListener("abort", this.onAbort, { once: true })
     }
   }
 
@@ -1023,6 +1135,7 @@ class ContainerCommandHandle
 
   interrupt(): void {
     if (this.closed) return
+    this.signalInner("INT")
     try {
       this.child.kill("SIGINT")
     } catch {
@@ -1032,6 +1145,7 @@ class ContainerCommandHandle
 
   kill(): void {
     if (this.closed) return
+    this.signalInner("KILL")
     try {
       this.child.kill("SIGKILL")
     } catch {
@@ -1040,6 +1154,10 @@ class ContainerCommandHandle
   }
 
   private readonly onAbort = () => this.kill()
+
+  private signalInner(signal: "INT" | "KILL"): void {
+    this.terminationCleanups.push(this.opts.signalInner(signal).catch(() => {}))
+  }
 
   private emitDecoded(
     stream: "stdout" | "stderr",

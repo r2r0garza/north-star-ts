@@ -26,6 +26,14 @@ type CaptureOptions = Pick<
   // container backend spawns a non-detached `docker exec` client and leaves this
   // off (process.kill(-pid) on a non-leader would hit the wrong group).
   killGroup?: boolean
+  // Optional backend-specific cleanup to run when timeout/abort forces
+  // termination. ContainerEnvironment uses this to kill the in-container process
+  // group before the host docker/podman exec client is reaped.
+  onTerminate?: (reason: "timeout" | "abort") => void | Promise<void>
+  // When true, run onTerminate before killing the host child. Container exec
+  // needs this because killing the host client can make the in-container
+  // supervisor remove its pidfile before cleanup can read it.
+  terminateBeforeKill?: boolean
 }
 
 // Capture a spawned child's combined stdout+stderr, enforce a timeout, cap the
@@ -97,7 +105,8 @@ function captureChildProcess<T extends ExecResult | CapturedProcessResult>(
     // SIGKILL the whole process group (negative pid) so a shell wrapper's forked
     // grandchildren die too; the group kill can throw ESRCH if the group is
     // already gone, so swallow it and fall back to killing the child directly.
-    const terminate = () => {
+    const terminationCleanups: Promise<void>[] = []
+    const killChild = () => {
       if (opts.killGroup && child.pid) {
         if (process.platform === "win32") {
           const killer = spawn(
@@ -133,10 +142,25 @@ function captureChildProcess<T extends ExecResult | CapturedProcessResult>(
         // child already dead — nothing to do
       }
     }
+    const terminate = (reason: "timeout" | "abort") => {
+      if (!opts.onTerminate) {
+        killChild()
+        return
+      }
+      const cleanup = Promise.resolve()
+        .then(() => opts.onTerminate?.(reason))
+        .catch(() => {})
+      terminationCleanups.push(cleanup)
+      if (opts.terminateBeforeKill) {
+        void cleanup.finally(killChild)
+      } else {
+        killChild()
+      }
+    }
 
     const timer = setTimeout(() => {
       timedOut = true
-      terminate()
+      terminate("timeout")
     }, opts.timeoutMs)
 
     // Abort seam: a fired signal kills the child the same way a timeout does. The
@@ -144,18 +168,21 @@ function captureChildProcess<T extends ExecResult | CapturedProcessResult>(
     // reach a dead child.
     const onAbort = () => {
       aborted = true
-      terminate()
+      terminate("abort")
     }
     if (opts.signal) {
-      if (opts.signal.aborted) terminate()
+      if (opts.signal.aborted) terminate("abort")
       else opts.signal.addEventListener("abort", onAbort, { once: true })
     }
 
-    const finish = (result: ExecResult) => {
+    const finish = async (result: ExecResult) => {
       if (settled) return
       settled = true
       clearTimeout(timer)
       opts.signal?.removeEventListener("abort", onAbort)
+      if (terminationCleanups.length > 0) {
+        await Promise.allSettled(terminationCleanups)
+      }
       resolve(result as T)
     }
 
