@@ -38,7 +38,7 @@ export function buildRipgrepArgs(opts: SearchOptions): string[] {
   if (opts.includeHidden) args.push("--hidden")
   if (!opts.respectIgnore) args.push("--no-ignore")
 
-  for (const glob of opts.globs) {
+  for (const glob of expandRipgrepGlobs(opts.globs)) {
     args.push("--glob", glob)
   }
 
@@ -49,6 +49,17 @@ export function buildRipgrepArgs(opts: SearchOptions): string[] {
 
   args.push("--", opts.query, opts.root)
   return args
+}
+
+function expandRipgrepGlobs(globs: string[]): string[] {
+  const expanded: string[] = []
+  for (const glob of globs) {
+    expanded.push(glob)
+    if (glob.startsWith("!**/")) {
+      expanded.push(`!${glob.slice(4)}`)
+    }
+  }
+  return expanded
 }
 
 export function parseRipgrepJson(

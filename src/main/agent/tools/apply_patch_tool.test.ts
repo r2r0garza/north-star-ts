@@ -7,11 +7,13 @@ import type { Environment, StatInfo } from "../env/types"
 function fakeEnv(): Environment & {
   files: Map<string, string>
   failNextRenameTo?: string
+  createBeforeInstallTo?: string
 } {
   const files = new Map<string, string>()
   const env = {
     files,
     failNextRenameTo: undefined as string | undefined,
+    createBeforeInstallTo: undefined as string | undefined,
     resolve: async (p: string) => p,
     resolveLexical: (p: string) => p,
     readFile: async (p: string) => {
@@ -34,6 +36,16 @@ function fakeEnv(): Environment & {
       if (content === undefined) throw new Error("ENOENT")
       files.set(to, content)
       files.delete(from)
+    },
+    installFileNoReplace: async (from: string, to: string) => {
+      if (env.createBeforeInstallTo === to) {
+        env.createBeforeInstallTo = undefined
+        files.set(to, "external\n")
+      }
+      const content = files.get(from)
+      if (content === undefined) throw new Error("ENOENT")
+      if (files.has(to)) throw new Error("EEXIST")
+      files.set(to, content)
     },
     removeFile: async (p: string) => {
       files.delete(p)
@@ -259,6 +271,62 @@ describe("apply_patch_tool", () => {
     expect(result).toContain("ERROR[commit_failed]")
     expect(env.files.get("a.txt")).toBe("old a\n")
     expect(env.files.get("b.txt")).toBe("old b\n")
+    expect(
+      [...env.files.keys()].filter((p) => p.includes(".north-star-"))
+    ).toEqual([])
+  })
+
+  it("rejects a concurrently-created add destination without deleting it during rollback", async () => {
+    const env = fakeEnv()
+    env.files.set("a.txt", "old a\n")
+    env.createBeforeInstallTo = "new.txt"
+
+    const result = await applyPatchTool.execute(
+      {
+        operations: [
+          {
+            type: "update",
+            path: "a.txt",
+            hunks: [{ old_string: "old a", new_string: "new a" }],
+          },
+          { type: "add", path: "new.txt", content: "created\n" },
+        ],
+      },
+      { workspace: "/ws", env }
+    )
+
+    expect(result).toContain("ERROR[stale_file]")
+    expect(env.files.get("a.txt")).toBe("old a\n")
+    expect(env.files.get("new.txt")).toBe("external\n")
+    expect(
+      [...env.files.keys()].filter((p) => p.includes(".north-star-"))
+    ).toEqual([])
+  })
+
+  it("rejects a concurrently-created move destination without overwriting it", async () => {
+    const env = fakeEnv()
+    env.files.set("a.txt", "old a\n")
+    env.files.set("old.txt", "move me\n")
+    env.createBeforeInstallTo = "moved.txt"
+
+    const result = await applyPatchTool.execute(
+      {
+        operations: [
+          {
+            type: "update",
+            path: "a.txt",
+            hunks: [{ old_string: "old a", new_string: "new a" }],
+          },
+          { type: "move", path: "old.txt", new_path: "moved.txt" },
+        ],
+      },
+      { workspace: "/ws", env }
+    )
+
+    expect(result).toContain("ERROR[stale_file]")
+    expect(env.files.get("a.txt")).toBe("old a\n")
+    expect(env.files.get("old.txt")).toBe("move me\n")
+    expect(env.files.get("moved.txt")).toBe("external\n")
     expect(
       [...env.files.keys()].filter((p) => p.includes(".north-star-"))
     ).toEqual([])

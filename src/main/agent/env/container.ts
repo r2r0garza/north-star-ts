@@ -347,6 +347,22 @@ PY
     }
   }
 
+  async installFileNoReplace(from: string, to: string): Promise<void> {
+    const res = await this.runtimeCli([
+      "exec",
+      this.name,
+      "ln",
+      "-T",
+      this.toContainerPath(from),
+      this.toContainerPath(to),
+    ])
+    if (res.code !== 0) {
+      throw new Error(
+        res.stderr.trim() || `cannot install ${from} without replacing ${to}`
+      )
+    }
+  }
+
   async removeFile(path: string): Promise<void> {
     const res = await this.runtimeCli([
       "exec",
@@ -556,7 +572,10 @@ def glob_allowed(rel):
     for glob in globs:
         neg = glob.startswith("!")
         pat = glob[1:] if neg else glob
-        if fnmatch.fnmatch(rel, pat) or fnmatch.fnmatch(os.path.basename(rel), pat):
+        pats = [pat]
+        if pat.startswith("**/"):
+            pats.append(pat[3:])
+        if any(fnmatch.fnmatch(rel, p) or fnmatch.fnmatch(os.path.basename(rel), p) for p in pats):
             included = not neg
     return included
 

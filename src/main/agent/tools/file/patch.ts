@@ -417,6 +417,41 @@ interface StagedFile {
   staged?: string
   backup?: string
   existed: boolean
+  installed: boolean
+}
+
+class DestinationChangedError extends Error {
+  constructor(
+    readonly path: string,
+    readonly current?: string
+  ) {
+    super(`destination changed before patch commit: ${path}`)
+  }
+}
+
+async function installStagedFile(
+  env: Environment,
+  entry: StagedFile
+): Promise<void> {
+  if (!entry.staged) return
+  if (entry.existed) {
+    await env.rename(entry.staged, entry.file.target)
+    entry.installed = true
+    return
+  }
+  if (!env.installFileNoReplace) {
+    throw new Error("no_replace_install_unavailable")
+  }
+  try {
+    await env.installFileNoReplace(entry.staged, entry.file.target)
+    entry.installed = true
+  } catch {
+    const current = await readRevision(env, entry.file.target)
+    if (current !== undefined) {
+      throw new DestinationChangedError(entry.file.path, current)
+    }
+    throw new Error("no_replace_install_failed")
+  }
 }
 
 export async function commitPatch(
@@ -429,18 +464,25 @@ export async function commitPatch(
   | { code: "rollback_failed"; error: string }
 > {
   for (const file of planned.files) {
-    const expected = file.beforeRevision
-    const current = await readRevision(env, file.sourceTarget ?? file.target)
-    if (current !== expected) {
+    const sourceTarget = file.sourceTarget ?? file.target
+    const current = await readRevision(env, sourceTarget)
+    if (current !== file.beforeRevision) {
       return { code: "stale_file", path: file.sourcePath ?? file.path, current }
+    }
+    if (file.sourceTarget) {
+      const destination = await readRevision(env, file.target)
+      if (destination !== undefined) {
+        return { code: "stale_file", path: file.path, current: destination }
+      }
     }
   }
 
   const staged: StagedFile[] = []
+  let commitError: unknown
   try {
     for (const file of planned.files) {
       const existed = file.before !== undefined && file.status !== "moved"
-      const entry: StagedFile = { file, existed }
+      const entry: StagedFile = { file, existed, installed: false }
       if (file.after !== undefined) {
         await env.mkdirp(dirname(file.target))
         entry.staged = makeTempPath(file.target)
@@ -462,14 +504,16 @@ export async function commitPatch(
     }
     for (const entry of staged) {
       if (entry.staged) {
-        await env.rename(entry.staged, entry.file.target)
+        await installStagedFile(env, entry)
       }
     }
     for (const entry of staged) {
+      if (entry.staged) await env.removeFile(entry.staged).catch(() => {})
       if (entry.backup) await env.removeFile(entry.backup).catch(() => {})
     }
     return "ok"
   } catch (err) {
+    commitError = err
     const errors: string[] = []
     for (const entry of [...staged].reverse()) {
       if (entry.staged) await env.removeFile(entry.staged).catch(() => {})
@@ -479,7 +523,7 @@ export async function commitPatch(
             entry.backup,
             entry.file.sourceTarget ?? entry.file.target
           )
-        } else if (!entry.existed) {
+        } else if (!entry.existed && entry.installed) {
           await env.removeFile(entry.file.target).catch(() => {})
         }
       } catch (rollbackErr) {
@@ -494,6 +538,13 @@ export async function commitPatch(
       return {
         code: "rollback_failed",
         error: `${err instanceof Error ? err.message : String(err)}; rollback: ${errors.join("; ")}`,
+      }
+    }
+    if (commitError instanceof DestinationChangedError) {
+      return {
+        code: "stale_file",
+        path: commitError.path,
+        current: commitError.current,
       }
     }
     return {

@@ -223,6 +223,40 @@ describe("LocalEnvironment file ops", () => {
     expect((await readFile(join(workspace, "to.txt"))).toString()).toBe("x")
   })
 
+  it("installs a file only when the destination is absent", async () => {
+    await writeFile(join(workspace, "staged.txt"), "staged")
+    await env.installFileNoReplace(
+      join(workspace, "staged.txt"),
+      join(workspace, "created.txt")
+    )
+
+    expect((await readFile(join(workspace, "created.txt"))).toString()).toBe(
+      "staged"
+    )
+    expect((await readFile(join(workspace, "staged.txt"))).toString()).toBe(
+      "staged"
+    )
+  })
+
+  it("does not replace an existing destination during no-replace install", async () => {
+    await writeFile(join(workspace, "staged.txt"), "staged")
+    await writeFile(join(workspace, "created.txt"), "external")
+
+    await expect(
+      env.installFileNoReplace(
+        join(workspace, "staged.txt"),
+        join(workspace, "created.txt")
+      )
+    ).rejects.toThrow()
+
+    expect((await readFile(join(workspace, "created.txt"))).toString()).toBe(
+      "external"
+    )
+    expect((await readFile(join(workspace, "staged.txt"))).toString()).toBe(
+      "staged"
+    )
+  })
+
   it("stat reports size and isFile", async () => {
     await writeFile(join(workspace, "f.txt"), "12345")
     const info = await env.stat(join(workspace, "f.txt"))

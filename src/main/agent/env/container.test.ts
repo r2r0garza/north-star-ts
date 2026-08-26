@@ -60,6 +60,39 @@ for (const runtime of ["docker", "podman"] as const) {
         expect(onHost).toBe("from-container")
       })
 
+      it("installs a file only when the destination is absent", async () => {
+        const staged = await env.resolve("staged.txt")
+        const created = await env.resolve("created.txt")
+
+        await env.writeFile(staged, "staged")
+        await env.installFileNoReplace(staged, created)
+
+        expect(await readFile(join(workspace, "created.txt"), "utf8")).toBe(
+          "staged"
+        )
+        expect(await readFile(join(workspace, "staged.txt"), "utf8")).toBe(
+          "staged"
+        )
+      })
+
+      it("does not replace an existing destination during no-replace install", async () => {
+        const staged = await env.resolve("blocked-staged.txt")
+        const created = await env.resolve("blocked-created.txt")
+
+        await env.writeFile(staged, "staged")
+        await env.writeFile(created, "external")
+
+        await expect(
+          env.installFileNoReplace(staged, created)
+        ).rejects.toThrow()
+        expect(
+          await readFile(join(workspace, "blocked-created.txt"), "utf8")
+        ).toBe("external")
+        expect(
+          await readFile(join(workspace, "blocked-staged.txt"), "utf8")
+        ).toBe("staged")
+      })
+
       it("round-trips tricky utf8 content through the base64 pipe", async () => {
         const target = await env.resolve("tricky.txt")
         // Content the base64 pipe must carry intact: multibyte chars, a newline,
@@ -125,12 +158,21 @@ for (const runtime of ["docker", "podman"] as const) {
 
       it("search prunes skipDirs and applies the glob filter", async () => {
         await env.mkdirp(await env.resolve("node_modules"))
-        await env.writeFile(await env.resolve("node_modules/dep.ts"), "marker")
-        await env.writeFile(await env.resolve("keep.ts"), "marker")
-        await env.writeFile(await env.resolve("keep.md"), "marker")
+        await env.writeFile(
+          await env.resolve("node_modules/dep.ts"),
+          "glob-marker-84f2348602b2"
+        )
+        await env.writeFile(
+          await env.resolve("keep.ts"),
+          "glob-marker-84f2348602b2"
+        )
+        await env.writeFile(
+          await env.resolve("keep.md"),
+          "glob-marker-84f2348602b2"
+        )
         const { matches } = await env.search({
           root: await env.resolve(""),
-          query: "marker",
+          query: "glob-marker-84f2348602b2",
           mode: "fixed",
           case: "smart",
           result: "content",

@@ -181,6 +181,9 @@ export interface Environment {
   // write orchestration (write temp sibling, then rename over the target).
   writeFile(path: string, data: string): Promise<void>
   rename(from: string, to: string): Promise<void>
+  // Atomically install an already-written file at `to`, failing if `to` exists.
+  // The source file remains for caller-owned cleanup.
+  installFileNoReplace?(from: string, to: string): Promise<void>
   removeFile(path: string): Promise<void>
   mkdirp(path: string): Promise<void>
   stat(path: string): Promise<StatInfo>

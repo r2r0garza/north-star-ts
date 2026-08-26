@@ -6,6 +6,7 @@ import {
   readFile,
   writeFile,
   rename,
+  link,
   mkdir,
   stat,
   readdir,
@@ -169,6 +170,12 @@ export class LocalEnvironment implements Environment {
     this.assertWritable(from)
     this.assertWritable(to)
     return rename(from, to)
+  }
+
+  installFileNoReplace(from: string, to: string): Promise<void> {
+    this.assertWritable(from)
+    this.assertWritable(to)
+    return link(from, to)
   }
 
   removeFile(path: string): Promise<void> {
