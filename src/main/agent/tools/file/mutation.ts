@@ -37,6 +37,13 @@ export function makeTempPath(target: string): string {
   return join(dirname(target), `.north-star-${randomUUID()}.tmp`)
 }
 
+export function isNotFoundError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException)?.code
+  if (code === "ENOENT" || code === "ENOTDIR") return true
+  const message = error instanceof Error ? error.message : String(error)
+  return /\bENOENT\b|no such file|not found/i.test(message)
+}
+
 export async function atomicWriteChecked(opts: {
   env: Environment
   target: string
@@ -68,6 +75,23 @@ export async function atomicWriteChecked(opts: {
         return { staleRevision: beforeRename ?? null }
       }
     }
+    if (opts.expectedRevision === undefined) {
+      if (!opts.env.installFileNoReplace) {
+        return { staleRevision: beforeRename ?? null }
+      }
+      try {
+        await opts.env.installFileNoReplace(tmp, opts.target)
+        return "ok"
+      } catch {
+        let staleRevision: string | null = null
+        try {
+          staleRevision = (await readRevision(opts.env, opts.target)) ?? null
+        } catch {
+          staleRevision = null
+        }
+        return { staleRevision }
+      }
+    }
     await opts.env.rename(tmp, opts.target)
     return "ok"
   } finally {
@@ -81,7 +105,8 @@ export async function readRevision(
 ): Promise<string | undefined> {
   try {
     return fileRevision(await env.readFile(target))
-  } catch {
+  } catch (error) {
+    if (!isNotFoundError(error)) throw error
     return undefined
   }
 }

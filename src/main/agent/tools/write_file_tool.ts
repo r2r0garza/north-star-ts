@@ -7,6 +7,7 @@ import {
   atomicWriteChecked,
   buildDiffPreview,
   fileRevision,
+  isNotFoundError,
   revisionOfText,
   validRevision,
 } from "./file/mutation"
@@ -91,8 +92,13 @@ export const writeFileTool: Tool = {
     let existingBytes: Buffer | undefined
     try {
       existingBytes = await env.readFile(target)
-    } catch {
-      existingBytes = undefined
+    } catch (error) {
+      if (!isNotFoundError(error)) {
+        return toolError(
+          "read_failed",
+          `Could not read ${path}: ${(error as Error).message}`
+        )
+      }
     }
     const initialRevision = existingBytes
       ? fileRevision(existingBytes)

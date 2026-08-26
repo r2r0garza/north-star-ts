@@ -10,13 +10,15 @@ import type { ToolAction, GateOutcome } from "../approval/types"
 // filesystem. Only the primitives write_file_tool uses are implemented.
 function fakeEnv(): Environment & { files: Map<string, string> } {
   const files = new Map<string, string>()
+  const enoent = (p: string) =>
+    Object.assign(new Error(`ENOENT: ${p}`), { code: "ENOENT" })
   return {
     files,
     resolve: async (p: string) => p,
     resolveLexical: (p: string) => p,
     readFile: async (p: string) => {
       const content = files.get(p)
-      if (content === undefined) throw new Error("ENOENT")
+      if (content === undefined) throw enoent(p)
       return Buffer.from(content, "utf8")
     },
     readTextLines: async () => {
@@ -28,9 +30,17 @@ function fakeEnv(): Environment & { files: Map<string, string> } {
     chmod: async () => {},
     rename: async (from: string, to: string) => {
       const content = files.get(from)
-      if (content === undefined) throw new Error("ENOENT")
+      if (content === undefined) throw enoent(from)
       files.set(to, content)
       files.delete(from)
+    },
+    installFileNoReplace: async (from: string, to: string) => {
+      const content = files.get(from)
+      if (content === undefined) throw enoent(from)
+      if (files.has(to)) {
+        throw Object.assign(new Error(`EEXIST: ${to}`), { code: "EEXIST" })
+      }
+      files.set(to, content)
     },
     removeFile: async (p: string) => {
       files.delete(p)
@@ -228,6 +238,81 @@ describe("write_file_tool", () => {
     )
     expect(result).toContain("ERROR[stale_file]")
     expect(env.files.get("a.txt")).toBe("external")
+    expect([...env.files.keys()].filter((p) => p.includes(".tmp"))).toEqual([])
+  })
+
+  it("does not replace a destination concurrently created during create install", async () => {
+    env.installFileNoReplace = async () => {
+      env.files.set("a.txt", "external")
+      throw Object.assign(new Error("EEXIST: a.txt"), { code: "EEXIST" })
+    }
+    env.rename = async () => {
+      throw new Error("rename should not be used for create installs")
+    }
+
+    const result = await writeFileTool.execute(
+      { path: "a.txt", content: "new", mode: "create" },
+      ctx
+    )
+
+    expect(result).toContain("ERROR[stale_file]")
+    expect(env.files.get("a.txt")).toBe("external")
+    expect([...env.files.keys()].filter((p) => p.includes(".tmp"))).toEqual([])
+  })
+
+  it("does not replace a destination concurrently created during append-to-missing install", async () => {
+    env.installFileNoReplace = async () => {
+      env.files.set("a.txt", "external")
+      throw Object.assign(new Error("EEXIST: a.txt"), { code: "EEXIST" })
+    }
+    env.rename = async () => {
+      throw new Error(
+        "rename should not be used for append-to-missing installs"
+      )
+    }
+
+    const result = await writeFileTool.execute(
+      { path: "a.txt", content: "new", mode: "append" },
+      ctx
+    )
+
+    expect(result).toContain("ERROR[stale_file]")
+    expect(env.files.get("a.txt")).toBe("external")
+    expect([...env.files.keys()].filter((p) => p.includes(".tmp"))).toEqual([])
+  })
+
+  it("does not treat an unreadable destination as safely absent", async () => {
+    env.readFile = async (p) => {
+      if (p === "a.txt") {
+        throw Object.assign(new Error("EACCES: a.txt"), { code: "EACCES" })
+      }
+      const content = env.files.get(p)
+      if (content === undefined) {
+        throw Object.assign(new Error(`ENOENT: ${p}`), { code: "ENOENT" })
+      }
+      return Buffer.from(content, "utf8")
+    }
+
+    const result = await writeFileTool.execute(
+      { path: "a.txt", content: "new", mode: "create" },
+      ctx
+    )
+
+    expect(result).toContain("ERROR[read_failed]")
+    expect(env.files.has("a.txt")).toBe(false)
+    expect([...env.files.keys()].filter((p) => p.includes(".tmp"))).toEqual([])
+  })
+
+  it("fails closed when the backend lacks a no-replace install primitive", async () => {
+    env.installFileNoReplace = undefined
+
+    const result = await writeFileTool.execute(
+      { path: "a.txt", content: "new", mode: "create" },
+      ctx
+    )
+
+    expect(result).toContain("ERROR[stale_file]")
+    expect(env.files.has("a.txt")).toBe(false)
     expect([...env.files.keys()].filter((p) => p.includes(".tmp"))).toEqual([])
   })
 })
