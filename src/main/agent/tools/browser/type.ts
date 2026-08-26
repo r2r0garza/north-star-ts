@@ -1,4 +1,4 @@
-import type { Tool, ToolContext } from "../types"
+import { TOOL_EFFECTS, type Tool, type ToolContext } from "../types"
 import type { ToolAction } from "../../approval/types"
 import { toolError } from "../output"
 
@@ -7,13 +7,14 @@ import { toolError } from "../output"
 // Enter afterward to submit. Gated as a `browser` interaction (auto-allowed;
 // only navigation prompts).
 export const browserTypeTool: Tool = {
+  effects: TOOL_EFFECTS.openWorldMutation,
   definition: {
     type: "function",
     function: {
       name: "browser_type",
       description:
         "Type text into a form field in the agent browser. Target it with a " +
-        "`ref` from the most recent browser_snapshot (e.g. \"e5\"). Set `submit` " +
+        '`ref` from the most recent browser_snapshot (e.g. "e5"). Set `submit` ' +
         "true to press Enter after typing (e.g. to submit a search or form). If " +
         "the page changed since your last snapshot, call browser_snapshot again " +
         "first to get fresh refs.",
@@ -23,7 +24,7 @@ export const browserTypeTool: Tool = {
           ref: {
             type: "string",
             description:
-              "The element ref from browser_snapshot output, e.g. \"e5\".",
+              'The element ref from browser_snapshot output, e.g. "e5".',
           },
           text: { type: "string", description: "The text to type." },
           submit: {

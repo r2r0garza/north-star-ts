@@ -1,4 +1,4 @@
-import type { Tool } from "../tools/types"
+import { TOOL_EFFECTS, type Tool } from "../tools/types"
 import type { SkillMetadata } from "./types"
 
 // Builds a read_skill tool scoped to the given skills. Taking a name (not a
@@ -7,6 +7,7 @@ import type { SkillMetadata } from "./types"
 export function createReadSkillTool(skills: SkillMetadata[]): Tool {
   const index = new Map(skills.map((s) => [s.name, s]))
   return {
+    effects: TOOL_EFFECTS.readOnlySequential,
     definition: {
       type: "function",
       function: {

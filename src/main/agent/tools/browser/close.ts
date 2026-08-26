@@ -1,4 +1,4 @@
-import type { Tool, ToolContext } from "../types"
+import { TOOL_EFFECTS, type Tool, type ToolContext } from "../types"
 import type { ToolAction } from "../../approval/types"
 import { toolError } from "../output"
 
@@ -7,6 +7,7 @@ import { toolError } from "../output"
 // Gated as a `browser` interaction (auto-allowed — closing the agent's own
 // browser is not a side effect on the user's system).
 export const browserCloseTool: Tool = {
+  effects: TOOL_EFFECTS.openWorldMutation,
   definition: {
     type: "function",
     function: {

@@ -1,4 +1,4 @@
-import type { Tool, ToolContext } from "../types"
+import { TOOL_EFFECTS, type Tool, type ToolContext } from "../types"
 import { toolError } from "../output"
 
 // Capture the current page as an image for the vision model. The tool result
@@ -6,6 +6,7 @@ import { toolError } from "../output"
 // handed to the loop via ctx.emitImage, which injects it as a follow-up user
 // message with an image content part. Not gated (observation, not a side effect).
 export const browserScreenshotTool: Tool = {
+  effects: TOOL_EFFECTS.openWorldRead,
   definition: {
     type: "function",
     function: {

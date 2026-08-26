@@ -1,4 +1,4 @@
-import type { Tool, ToolContext } from "../types"
+import { TOOL_EFFECTS, type Tool, type ToolContext } from "../types"
 import type { ToolAction } from "../../approval/types"
 import { toolError } from "../output"
 
@@ -6,6 +6,7 @@ import { toolError } from "../output"
 // interaction (auto-allowed; only forward navigation to a new URL prompts) —
 // going back stays within pages already visited/approved.
 export const browserBackTool: Tool = {
+  effects: TOOL_EFFECTS.openWorldMutation,
   definition: {
     type: "function",
     function: {

@@ -1,5 +1,5 @@
 import { dirname } from "path"
-import type { Tool } from "./types"
+import { TOOL_EFFECTS, type Tool } from "./types"
 import type { ToolAction } from "../approval/types"
 import { LocalEnvironment } from "../env/local"
 import { toolError } from "./output"
@@ -18,6 +18,7 @@ import {
 // calls so no single call carries the whole blob as one oversized JSON argument
 // (which can be truncated at the model's output-token cap and fail to parse).
 export const writeFileTool: Tool = {
+  effects: TOOL_EFFECTS.mutation,
   definition: {
     type: "function",
     function: {

@@ -168,9 +168,64 @@ export interface ToolContext {
   processPhaseRunId?: string
 }
 
+export interface ToolEffects {
+  readOnly: boolean
+  parallelSafe: boolean
+  idempotent: boolean
+  destructive: boolean
+  openWorld: boolean
+}
+
+export const TOOL_EFFECTS = {
+  readOnlyParallel: {
+    readOnly: true,
+    parallelSafe: true,
+    idempotent: true,
+    destructive: false,
+    openWorld: false,
+  },
+  readOnlySequential: {
+    readOnly: true,
+    parallelSafe: false,
+    idempotent: true,
+    destructive: false,
+    openWorld: false,
+  },
+  openWorldRead: {
+    readOnly: true,
+    parallelSafe: false,
+    idempotent: true,
+    destructive: false,
+    openWorld: true,
+  },
+  mutation: {
+    readOnly: false,
+    parallelSafe: false,
+    idempotent: false,
+    destructive: false,
+    openWorld: false,
+  },
+  destructiveMutation: {
+    readOnly: false,
+    parallelSafe: false,
+    idempotent: false,
+    destructive: true,
+    openWorld: false,
+  },
+  openWorldMutation: {
+    readOnly: false,
+    parallelSafe: false,
+    idempotent: false,
+    destructive: false,
+    openWorld: true,
+  },
+} as const satisfies Record<string, ToolEffects>
+
 // A tool the agent can call. `definition` is the OpenAI-compatible schema
-// Portkey expects; `execute` runs server-side and returns a string result.
+// Portkey expects; `effects` declares scheduling/approval-relevant side effects;
+// `execute` runs server-side and returns a string result.
 export interface Tool {
+  effects: ToolEffects
   definition: {
     type: "function"
     function: {

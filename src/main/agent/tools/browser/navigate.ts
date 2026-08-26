@@ -1,4 +1,4 @@
-import type { Tool, ToolContext } from "../types"
+import { TOOL_EFFECTS, type Tool, type ToolContext } from "../types"
 import type { ToolAction } from "../../approval/types"
 import { toolError } from "../output"
 
@@ -6,6 +6,7 @@ import { toolError } from "../output"
 // (fetches an arbitrary origin), so it routes through the approval gate. Reading
 // the page afterwards (browser_snapshot / browser_screenshot) is not gated.
 export const browserNavigateTool: Tool = {
+  effects: TOOL_EFFECTS.openWorldMutation,
   definition: {
     type: "function",
     function: {

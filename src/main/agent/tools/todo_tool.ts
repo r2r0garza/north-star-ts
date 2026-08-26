@@ -1,4 +1,4 @@
-import type { Tool } from "./types"
+import { TOOL_EFFECTS, type Tool } from "./types"
 import { toolError } from "./output"
 import {
   listTodos,
@@ -15,6 +15,7 @@ import type { Todo } from "../../db/types"
 // dangerous action — it touches only its own table, so it does NOT route through
 // the approval gate.
 export const todoWriteTool: Tool = {
+  effects: TOOL_EFFECTS.mutation,
   definition: {
     type: "function",
     function: {

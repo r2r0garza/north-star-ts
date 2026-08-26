@@ -1,9 +1,10 @@
-import type { Tool } from "./types"
+import { TOOL_EFFECTS, type Tool } from "./types"
 import { LocalEnvironment } from "../env/local"
 
 // Lists files at a path within the workspace. Routes through the env's readdir
 // and confines all access to the workspace root to avoid escape/injection.
 export const listFilesTool: Tool = {
+  effects: TOOL_EFFECTS.readOnlyParallel,
   definition: {
     type: "function",
     function: {

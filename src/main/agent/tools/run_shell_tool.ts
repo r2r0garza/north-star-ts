@@ -1,4 +1,4 @@
-import type { Tool, ToolContext } from "./types"
+import { TOOL_EFFECTS, type Tool, type ToolContext } from "./types"
 import type { ToolAction } from "../approval/types"
 import { normalizeCommand } from "../approval/normalize"
 import { stripAnsi } from "../approval/ansi"
@@ -13,6 +13,7 @@ const MAX_OUTPUT_BYTES = 1024 * 1024 // 1 MB hard cap on captured output
 // pipeline (ctx.gate): catastrophic commands are hard-blocked and never spawn,
 // risky commands prompt the human, benign commands run immediately.
 export const runShellTool: Tool = {
+  effects: TOOL_EFFECTS.openWorldMutation,
   definition: {
     type: "function",
     function: {

@@ -1,5 +1,5 @@
 import { readFile } from "fs/promises"
-import type { Tool, Question } from "./types"
+import { TOOL_EFFECTS, type Tool, type Question } from "./types"
 import { toolError } from "./output"
 import { planFilePath } from "./plan-file"
 
@@ -16,6 +16,7 @@ const APPROVE_AUTO_LABEL = "Yes, approve and work in Auto mode"
 // automatically approved. Free-form feedback keeps plan mode on and returns the
 // user's notes so the model keeps refining. Offered only in plan mode.
 export const presentPlanTool: Tool = {
+  effects: TOOL_EFFECTS.openWorldMutation,
   definition: {
     type: "function",
     function: {
@@ -65,7 +66,10 @@ export const presentPlanTool: Tool = {
       body: plan,
       otherLabel: "Refine Plan…",
       options: [
-        { label: APPROVE_LABEL, description: "Exit plan mode and implement it." },
+        {
+          label: APPROVE_LABEL,
+          description: "Exit plan mode and implement it.",
+        },
         {
           label: APPROVE_AUTO_LABEL,
           description:
@@ -114,7 +118,8 @@ export const presentPlanTool: Tool = {
       message:
         "The user has not approved the plan yet. Revise it based on their feedback, " +
         "then call present_plan again.",
-      feedback: feedback || "(no specific feedback — ask what they'd like changed)",
+      feedback:
+        feedback || "(no specific feedback — ask what they'd like changed)",
     })
   },
 }

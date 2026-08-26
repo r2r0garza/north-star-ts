@@ -1,6 +1,6 @@
 import { stat as hostStat } from "fs/promises"
 import { basename } from "path"
-import type { Tool, ToolContext } from "./types"
+import { TOOL_EFFECTS, type Tool, type ToolContext } from "./types"
 import { LocalEnvironment } from "../env/local"
 import type { Environment, StatInfo } from "../env/types"
 import { readHostTextLines } from "../env/read-text-lines"
@@ -47,6 +47,7 @@ async function resolveReadable(
 // line numbers so the model (and edit_file) can reference exact lines. Supports
 // real offset/limit pagination for large files and returns continuation metadata.
 export const readFileTool: Tool = {
+  effects: TOOL_EFFECTS.readOnlyParallel,
   definition: {
     type: "function",
     function: {

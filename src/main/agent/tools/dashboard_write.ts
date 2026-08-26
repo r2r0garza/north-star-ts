@@ -1,4 +1,4 @@
-import type { Tool } from "./types"
+import { TOOL_EFFECTS, type Tool } from "./types"
 import { toolError } from "./output"
 import { getDb } from "../../db/connection"
 import * as dashboards from "../../db/repositories/dashboards"
@@ -15,6 +15,7 @@ import * as dashboards from "../../db/repositories/dashboards"
 // The `recipe` is stored for the deterministic refresh executor (plan 033.3);
 // today it's advisory metadata — refresh re-prompts the agent until 033.3 lands.
 export const dashboardWriteTool: Tool = {
+  effects: TOOL_EFFECTS.mutation,
   definition: {
     type: "function",
     function: {
@@ -57,11 +58,13 @@ export const dashboardWriteTool: Tool = {
           },
           description: {
             type: "string",
-            description: "Optional one-line description of what the dashboard shows.",
+            description:
+              "Optional one-line description of what the dashboard shows.",
           },
           widgets: {
             type: "array",
-            description: "The widgets to save. Replaces the dashboard's existing widgets.",
+            description:
+              "The widgets to save. Replaces the dashboard's existing widgets.",
             items: {
               type: "object",
               properties: {
@@ -126,7 +129,10 @@ export const dashboardWriteTool: Tool = {
       }
     }
     if (widgets !== undefined && !Array.isArray(widgets)) {
-      return toolError("bad_args", "`widgets` must be an array of widget objects.")
+      return toolError(
+        "bad_args",
+        "`widgets` must be an array of widget objects."
+      )
     }
 
     const id = typeof dashboardId === "string" ? dashboardId : undefined
@@ -158,14 +164,11 @@ export const dashboardWriteTool: Tool = {
       const dash = id
         ? dashboards.updateDashboard(id, {
             ...(dashName ? { name: dashName } : {}),
-            ...(typeof description === "string"
-              ? { description }
-              : {}),
+            ...(typeof description === "string" ? { description } : {}),
           })
         : dashboards.createDashboard({
             name: dashName,
-            description:
-              typeof description === "string" ? description : null,
+            description: typeof description === "string" ? description : null,
           })
 
       // Replace-all: drop existing widgets (their cache cascades), re-create.

@@ -1,4 +1,4 @@
-import type { Tool } from "./types"
+import { TOOL_EFFECTS, type Tool } from "./types"
 import { LocalEnvironment } from "../env/local"
 import { legacyGlobToRipgrepGlob } from "../env/ripgrep"
 import { truncateForModel, toolError } from "./output"
@@ -17,6 +17,7 @@ const MAX_CONTEXT_LINES = 5
 // uses packaged ripgrep; containers use in-container rg or an explicit reduced
 // fallback when rg is absent. Patterns and globs are passed as argv data.
 export const searchTool: Tool = {
+  effects: TOOL_EFFECTS.readOnlyParallel,
   definition: {
     type: "function",
     function: {

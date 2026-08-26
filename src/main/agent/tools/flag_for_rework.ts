@@ -1,4 +1,4 @@
-import type { Tool } from "./types"
+import { TOOL_EFFECTS, type Tool } from "./types"
 import { toolError } from "./output"
 import * as processes from "../../db/repositories/processes"
 import { resolveTarget } from "../../tasks/process/flagback"
@@ -15,6 +15,7 @@ export const MAX_FLAGS_PER_RUN = 10
 // single fan-out sub-task this worker consumed) and everything downstream, then
 // re-running. Offered ONLY to process phase workers (ctx.processRunId set).
 export const flagForReworkTool: Tool = {
+  effects: TOOL_EFFECTS.mutation,
   definition: {
     type: "function",
     function: {
@@ -51,7 +52,11 @@ export const flagForReworkTool: Tool = {
   execute: async (args, ctx) => {
     const target = typeof args.target === "string" ? args.target.trim() : ""
     const reason = typeof args.reason === "string" ? args.reason.trim() : ""
-    if (!target) return toolError("bad_args", "`target` (an upstream phase key) is required.")
+    if (!target)
+      return toolError(
+        "bad_args",
+        "`target` (an upstream phase key) is required."
+      )
     if (!reason) return toolError("bad_args", "`reason` is required.")
 
     // Offered only to process phase workers; fail-closed elsewhere.
@@ -63,9 +68,13 @@ export const flagForReworkTool: Tool = {
 
     const run = processes.getProcessRun(ctx.processRunId)
     if (!run?.processId)
-      return toolError("unavailable", "this process run is no longer available.")
+      return toolError(
+        "unavailable",
+        "this process run is no longer available."
+      )
     const graph = processes.getProcessGraph(run.processId)
-    if (!graph) return toolError("unavailable", "the process graph is unavailable.")
+    if (!graph)
+      return toolError("unavailable", "the process graph is unavailable.")
     const flaggingRun = processes.getPhaseRun(ctx.processPhaseRunId)
     if (!flaggingRun)
       return toolError("unavailable", "this phase run is no longer available.")

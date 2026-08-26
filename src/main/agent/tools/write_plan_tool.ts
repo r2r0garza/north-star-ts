@@ -1,5 +1,5 @@
 import { writeFile } from "fs/promises"
-import type { Tool } from "./types"
+import { TOOL_EFFECTS, type Tool } from "./types"
 import { toolError } from "./output"
 import { ensurePlansDir } from "./plan-file"
 
@@ -9,6 +9,7 @@ import { ensurePlansDir } from "./plan-file"
 // can only ever write its own plan file (never the workspace). This bypasses the
 // workspace sandbox on purpose; it's offered only while plan mode is active.
 export const writePlanTool: Tool = {
+  effects: TOOL_EFFECTS.mutation,
   definition: {
     type: "function",
     function: {
@@ -24,7 +25,8 @@ export const writePlanTool: Tool = {
         properties: {
           content: {
             type: "string",
-            description: "The full plan document as Markdown (replaces the file).",
+            description:
+              "The full plan document as Markdown (replaces the file).",
           },
         },
         required: ["content"],

@@ -1,4 +1,4 @@
-import type { Tool, ToolContext } from "../types"
+import { TOOL_EFFECTS, type Tool, type ToolContext } from "../types"
 import type { ToolAction } from "../../approval/types"
 import { toolError } from "../output"
 
@@ -7,13 +7,14 @@ import { toolError } from "../output"
 // action; the classifier auto-allows interactions within an already-opened page
 // (only navigation prompts), so this normally runs without a prompt.
 export const browserClickTool: Tool = {
+  effects: TOOL_EFFECTS.openWorldMutation,
   definition: {
     type: "function",
     function: {
       name: "browser_click",
       description:
         "Click an element in the agent browser. Target it with a `ref` from the " +
-        "most recent browser_snapshot (e.g. \"e3\"). If the page changed since " +
+        'most recent browser_snapshot (e.g. "e3"). If the page changed since ' +
         "your last snapshot, call browser_snapshot again first to get fresh refs. " +
         "Use this to walk through and verify a flow in an app.",
       parameters: {
@@ -22,7 +23,7 @@ export const browserClickTool: Tool = {
           ref: {
             type: "string",
             description:
-              "The element ref from browser_snapshot output, e.g. \"e3\".",
+              'The element ref from browser_snapshot output, e.g. "e3".',
           },
         },
         required: ["ref"],

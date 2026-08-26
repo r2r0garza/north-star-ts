@@ -1,4 +1,4 @@
-import type { Tool, ToolContext } from "../types"
+import { TOOL_EFFECTS, type Tool, type ToolContext } from "../types"
 import type { ToolAction } from "../../approval/types"
 import { toolError, truncateForModel } from "../output"
 import { extractReadable } from "./extract"
@@ -13,6 +13,7 @@ const USER_AGENT =
 // approval gate (auto-approved in Auto mode; grant "once" or "for this session"
 // in Default mode). To DISCOVER pages, use web_search (which is not gated).
 export const webFetchTool: Tool = {
+  effects: TOOL_EFFECTS.openWorldRead,
   definition: {
     type: "function",
     function: {
@@ -79,7 +80,10 @@ export const webFetchTool: Tool = {
         redirect: "follow",
       })
       if (!res.ok) {
-        return toolError("http_error", `HTTP ${res.status} fetching ${parsed.href}`)
+        return toolError(
+          "http_error",
+          `HTTP ${res.status} fetching ${parsed.href}`
+        )
       }
       const contentType = res.headers.get("content-type") ?? ""
       const text = await res.text()

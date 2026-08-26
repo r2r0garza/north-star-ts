@@ -3,6 +3,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js"
 import { UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js"
 import type { McpServer } from "../../db/types"
+import type { ToolEffects } from "../tools/types"
 import { systemDisplayName } from "../../config/system-name"
 import { McpOAuthProvider, startCallbackListener } from "./oauth"
 import { loadServers, resolveEnabledServer } from "./resolve"
@@ -25,11 +26,28 @@ const SEP = "__"
 // A tool definition in the OpenAI-compatible shape the agent loop's `tools` array
 // expects (same shape as Tool.definition in ../tools/types).
 export interface McpToolDefinition {
+  effects: ToolEffects
   type: "function"
   function: {
     name: string
     description: string
     parameters: Record<string, unknown>
+  }
+}
+
+function effectsFromMcpTool(tool: { annotations?: unknown }): ToolEffects {
+  const annotations =
+    tool.annotations && typeof tool.annotations === "object"
+      ? (tool.annotations as Record<string, unknown>)
+      : {}
+  const readOnly = annotations.readOnlyHint === true
+  const destructive = annotations.destructiveHint === true
+  return {
+    readOnly,
+    parallelSafe: false,
+    idempotent: annotations.idempotentHint === true || readOnly,
+    destructive,
+    openWorld: true,
   }
 }
 
@@ -154,6 +172,7 @@ export class McpManager {
           const { tools } = await client.listTools()
           for (const tool of tools) {
             defs.push({
+              effects: effectsFromMcpTool(tool),
               type: "function",
               function: {
                 name: prefixedToolName(server.name, tool.name),

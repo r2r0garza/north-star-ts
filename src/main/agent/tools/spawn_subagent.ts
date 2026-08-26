@@ -1,4 +1,4 @@
-import type { Tool, ToolContext } from "./types"
+import { TOOL_EFFECTS, type Tool, type ToolContext } from "./types"
 import { toolError } from "./output"
 import { MAX_AGENT_DEPTH } from "../agents/types"
 
@@ -10,6 +10,7 @@ import { MAX_AGENT_DEPTH } from "../agents/types"
 // IS the policy. The tool never calls ctx.gate. Any side-effecting tools the
 // child itself runs still hit the child loop's own approval gate normally.
 export const spawnSubagentTool: Tool = {
+  effects: TOOL_EFFECTS.openWorldMutation,
   definition: {
     type: "function",
     function: {

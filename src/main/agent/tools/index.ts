@@ -1,4 +1,4 @@
-import type { Tool, ToolContext } from "./types"
+import type { Tool, ToolContext, ToolEffects } from "./types"
 import { listFilesTool } from "./list_files_tool"
 import { readFileTool } from "./read_file_tool"
 import { searchTool } from "./search_tool"
@@ -103,6 +103,17 @@ const byName = new Map(
     t,
   ])
 )
+
+export const builtInTools = [
+  ...workspaceTools,
+  ...otherTools,
+  ...browserTools,
+  ...webTools,
+]
+
+export function getToolEffects(name: string): ToolEffects | undefined {
+  return byName.get(name)?.effects
+}
 
 // Run a tool call by name. Returns a string result (or an error message).
 export async function runTool(

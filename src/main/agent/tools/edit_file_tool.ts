@@ -1,4 +1,4 @@
-import type { Tool } from "./types"
+import { TOOL_EFFECTS, type Tool } from "./types"
 import type { ToolAction } from "../approval/types"
 import { LocalEnvironment } from "../env/local"
 import { toolError } from "./output"
@@ -25,6 +25,7 @@ function countOccurrences(haystack: string, needle: string): number {
 // exactly once (unless replace_all), returning an actionable error otherwise so
 // the model can add surrounding context and retry. Writes atomically.
 export const editFileTool: Tool = {
+  effects: TOOL_EFFECTS.mutation,
   definition: {
     type: "function",
     function: {

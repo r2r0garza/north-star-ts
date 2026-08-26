@@ -1,4 +1,4 @@
-import type { Tool } from "./types"
+import { TOOL_EFFECTS, type Tool } from "./types"
 import { truncateForModel, toolError } from "./output"
 import { getWorkspaceByPath } from "../../db/repositories/workspaces"
 import { getRunByWorkspace } from "../../db/repositories/index-runs"
@@ -20,6 +20,7 @@ import type { IndexMetadata } from "../../db/types"
 // "does not exist"; the tool says so and points back to search_tool/read_file for
 // authoritative answers. Read-only, so it never gates.
 export const indexQueryTool: Tool = {
+  effects: TOOL_EFFECTS.readOnlyParallel,
   definition: {
     type: "function",
     function: {

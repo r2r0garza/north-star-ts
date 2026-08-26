@@ -7,12 +7,7 @@ item is its plan file, not its rank.
 
 ## Next up
 
-1. **`049` — Tool effect metadata and parallel read-only execution.** Make every built-in tool declare
-   read-only/parallel-safe/idempotent/destructive/open-world effects, then extract a bounded batch
-   scheduler from `runAgentLoop`: consecutive safe reads execute concurrently while mutations,
-   questions, browser actions, shell, delegation, and unannotated MCP calls remain ordering barriers.
-   Events reflect real timing; transcript/DB tool results retain the model's original call order.
-2. **`050` — Transactional multi-file patching.** Add a provider-neutral `apply_patch_tool` for bounded
+1. **`050` — Transactional multi-file patching.** Add a provider-neutral `apply_patch_tool` for bounded
    add/update/move/delete operation sets with exact-context hunks and `047` revisions. Validate the
    complete patch before mutation, present one combined diff/approval, stage all outputs, and use a
    tested rollback transaction so any invalid hunk, stale file, abort, or commit failure changes
@@ -144,6 +139,16 @@ item is its plan file, not its rank.
 
 ## Done
 
+- **`049` — Tool effect metadata and parallel read-only execution.** Added required
+  `ToolEffects` metadata to every built-in tool, with filesystem reads/search/index as the initial
+  parallel-safe read set and mutations, browser, web, questions, delegation, shell, and plan/process
+  side effects as ordering barriers. MCP tool annotations now map into the same effect shape while
+  remaining sequential in v1. Extracted a capped `runToolCallBatches` scheduler from `runAgentLoop`:
+  safe consecutive reads start concurrently, tool start/done events reflect real timing, failures are
+  isolated per call, and transcript/DB tool results plus image injection are retained in model call
+  order. Verified: focused scheduler/effects tests pass, focused file/tool regression tests pass,
+  production build passes; `pnpm typecheck` still reaches only the three known pre-existing test type
+  errors in `open.test.ts`, `service.test.ts`, and `runner.test.ts`.
 - **`048` — Ripgrep-backed workspace search.** Replaced the Local sequential Node file walk with
   packaged `@vscode/ripgrep` and a shared `rg --json` parser/argv builder. `search_tool` now advertises
   `query`, fixed/regex mode, smart/sensitive/insensitive case, real include/exclude `globs`, context

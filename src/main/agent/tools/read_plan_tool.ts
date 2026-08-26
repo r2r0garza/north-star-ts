@@ -1,5 +1,5 @@
 import { readFile } from "fs/promises"
-import type { Tool } from "./types"
+import { TOOL_EFFECTS, type Tool } from "./types"
 import { toolError, truncateForModel } from "./output"
 import { planFilePath } from "./plan-file"
 
@@ -14,6 +14,7 @@ import { planFilePath } from "./plan-file"
 // Offered both in plan mode (so the agent can re-read what it drafted) and after
 // approval (so the implementing turn can consult the approved plan) — see runChat.
 export const readPlanTool: Tool = {
+  effects: TOOL_EFFECTS.readOnlySequential,
   definition: {
     type: "function",
     function: {
