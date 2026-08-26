@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest"
 import { writeFileTool } from "./write_file_tool"
+import { revisionOfText } from "./file/mutation"
 import type { ToolContext } from "./types"
 import type { Environment } from "../env/types"
 import type { ToolAction, GateOutcome } from "../approval/types"
@@ -29,6 +30,9 @@ function fakeEnv(): Environment & { files: Map<string, string> } {
       if (content === undefined) throw new Error("ENOENT")
       files.set(to, content)
       files.delete(from)
+    },
+    removeFile: async (p: string) => {
+      files.delete(p)
     },
     mkdirp: async () => {},
     stat: async () => {
@@ -60,16 +64,27 @@ describe("write_file_tool", () => {
       { path: "a.txt", content: "hello" },
       ctx
     )
-    expect(result).toBe("Wrote 5 bytes to a.txt.")
+    expect(result).toContain("Wrote 5 bytes to a.txt.")
     expect(env.files.get("a.txt")).toBe("hello")
   })
 
-  it("overwrites an existing file in create mode", async () => {
+  it("rejects an existing file in create mode", async () => {
     env.files.set("a.txt", "old")
-    await writeFileTool.execute(
+    const result = await writeFileTool.execute(
       { path: "a.txt", content: "new", mode: "create" },
       ctx
     )
+    expect(result).toContain("ERROR[already_exists]")
+    expect(env.files.get("a.txt")).toBe("old")
+  })
+
+  it("overwrites an existing file in overwrite mode", async () => {
+    env.files.set("a.txt", "old")
+    const result = await writeFileTool.execute(
+      { path: "a.txt", content: "new", mode: "overwrite" },
+      ctx
+    )
+    expect(result).toContain("Wrote 3 bytes to a.txt.")
     expect(env.files.get("a.txt")).toBe("new")
   })
 
@@ -79,7 +94,7 @@ describe("write_file_tool", () => {
       { path: "a.txt", content: "part2", mode: "append" },
       ctx
     )
-    expect(result).toBe("Appended 5 bytes to a.txt.")
+    expect(result).toContain("Appended 5 bytes to a.txt.")
     expect(env.files.get("a.txt")).toBe("part1part2")
   })
 
@@ -88,7 +103,7 @@ describe("write_file_tool", () => {
       { path: "new.txt", content: "first", mode: "append" },
       ctx
     )
-    expect(result).toBe("Appended 5 bytes to new.txt.")
+    expect(result).toContain("Appended 5 bytes to new.txt.")
     expect(env.files.get("new.txt")).toBe("first")
   })
 
@@ -146,6 +161,11 @@ describe("write_file_tool", () => {
     expect(seen).toHaveLength(2)
     expect(seen[0].identity).toBe("file_write:a.txt")
     expect(seen[1].identity).toBe("file_write:a.txt")
+    expect(seen[0].detail?.diff).toMatchObject({
+      path: "a.txt",
+      additions: 1,
+      deletions: 0,
+    })
   })
 
   it("returns denied when the gate denies", async () => {
@@ -156,5 +176,47 @@ describe("write_file_tool", () => {
     )
     expect(result).toContain("ERROR[denied]")
     expect(env.files.has("a.txt")).toBe(false)
+  })
+
+  it("rejects a caller-supplied stale revision before approval", async () => {
+    const seen: ToolAction[] = []
+    env.files.set("a.txt", "current")
+    const result = await writeFileTool.execute(
+      {
+        path: "a.txt",
+        content: "new",
+        mode: "overwrite",
+        expected_revision: revisionOfText("old"),
+      },
+      {
+        workspace: "/ws",
+        env,
+        gate: async (action) => {
+          seen.push(action)
+          return "approved"
+        },
+      }
+    )
+    expect(result).toContain("ERROR[stale_file]")
+    expect(env.files.get("a.txt")).toBe("current")
+    expect(seen).toHaveLength(0)
+  })
+
+  it("rejects a concurrent change while waiting for approval", async () => {
+    env.files.set("a.txt", "old")
+    const result = await writeFileTool.execute(
+      { path: "a.txt", content: "new", mode: "overwrite" },
+      {
+        workspace: "/ws",
+        env,
+        gate: async () => {
+          env.files.set("a.txt", "external")
+          return "approved"
+        },
+      }
+    )
+    expect(result).toContain("ERROR[stale_file]")
+    expect(env.files.get("a.txt")).toBe("external")
+    expect([...env.files.keys()].filter((p) => p.includes(".tmp"))).toEqual([])
   })
 })

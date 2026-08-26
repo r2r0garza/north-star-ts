@@ -1,21 +1,15 @@
-import { dirname, join } from "path"
+import { dirname } from "path"
 import type { Tool } from "./types"
 import type { ToolAction } from "../approval/types"
 import { LocalEnvironment } from "../env/local"
-import type { Environment } from "../env/types"
 import { toolError } from "./output"
-
-// Atomic write: temp file in the same directory, then rename over the target.
-// Both steps go through the env so the atomicity holds on host or in a container.
-async function atomicWrite(
-  env: Environment,
-  target: string,
-  content: string
-): Promise<void> {
-  const tmp = join(dirname(target), `.${Date.now()}-${process.pid}.tmp`)
-  await env.writeFile(tmp, content)
-  await env.rename(tmp, target)
-}
+import {
+  atomicWriteChecked,
+  buildDiffPreview,
+  fileRevision,
+  revisionOfText,
+  validRevision,
+} from "./file/mutation"
 
 // Creates, overwrites, or appends to a file inside the workspace, creating
 // parent directories as needed. Writes atomically and returns a short
@@ -29,8 +23,8 @@ export const writeFileTool: Tool = {
     function: {
       name: "write_file_tool",
       description:
-        'Write a file inside the workspace. mode "create" (default) creates or ' +
-        'overwrites the file with `content`. mode "append" adds `content` to the ' +
+        'Write a file inside the workspace. mode "create" (default) creates a new file and rejects existing paths. ' +
+        'mode "overwrite" replaces an existing file. mode "append" adds `content` to the ' +
         "end of the file (creating it if absent). Parent directories are created " +
         "automatically. Prefer edit_file_tool to modify an existing file. Use " +
         "create for small new files; for a large generated file, write it in " +
@@ -50,12 +44,18 @@ export const writeFileTool: Tool = {
           },
           mode: {
             type: "string",
-            enum: ["create", "append"],
+            enum: ["create", "overwrite", "append"],
             description:
-              'How to write. "create" (default) creates or overwrites the file. ' +
+              'How to write. "create" (default) creates a new file and refuses to overwrite. ' +
+              '"overwrite" replaces an existing file. ' +
               '"append" reads the existing file and appends content to the end ' +
               "(creating it if missing). Use append to build a large file across " +
               "multiple calls — keep each call's content to a manageable chunk.",
+          },
+          expected_revision: {
+            type: "string",
+            description:
+              "Optional SHA-256 revision from read_file_tool metadata. Required to protect a known prior read across overwrite/append calls.",
           },
         },
         required: ["path", "content"],
@@ -70,12 +70,62 @@ export const writeFileTool: Tool = {
     }
     const content = args.content
     const mode = args.mode === undefined ? "create" : args.mode
-    if (mode !== "create" && mode !== "append") {
-      return toolError("bad_args", '`mode` must be "create" or "append".')
+    if (mode !== "create" && mode !== "overwrite" && mode !== "append") {
+      return toolError(
+        "bad_args",
+        '`mode` must be "create", "overwrite", or "append".'
+      )
+    }
+    const expectedRevision = validRevision(args.expected_revision)
+    if (args.expected_revision !== undefined && !expectedRevision) {
+      return toolError(
+        "bad_args",
+        "`expected_revision` must be a 64-character SHA-256 hex digest."
+      )
     }
 
     const env = ctx.env ?? new LocalEnvironment(ctx.workspace)
     const target = await env.resolve(path)
+
+    let existingBytes: Buffer | undefined
+    try {
+      existingBytes = await env.readFile(target)
+    } catch {
+      existingBytes = undefined
+    }
+    const initialRevision = existingBytes
+      ? fileRevision(existingBytes)
+      : undefined
+
+    if (mode === "create" && existingBytes) {
+      return toolError(
+        "already_exists",
+        `${path} already exists.`,
+        'use mode "overwrite" with the current revision if replacement is intended'
+      )
+    }
+    if (expectedRevision && expectedRevision !== initialRevision) {
+      return toolError(
+        "stale_file",
+        `${path} changed since revision ${expectedRevision}. Current revision: ${initialRevision ?? "missing"}.`,
+        "re-read the file and rebase the write"
+      )
+    }
+    if (mode === "overwrite" && !existingBytes) {
+      return toolError("not_found", `No such file to overwrite: ${path}`)
+    }
+
+    let finalContent = content
+    if (mode === "append") {
+      const existing = existingBytes?.toString("utf8") ?? ""
+      finalContent = existing + content
+    }
+    const diff = buildDiffPreview({
+      path,
+      before: existingBytes?.toString("utf8") ?? "",
+      after: finalContent,
+      beforeRevision: initialRevision,
+    })
 
     // Route through the shared approval pipeline (see ../approval). The default
     // file policy auto-allows, so behavior is unchanged today — but this makes
@@ -88,9 +138,9 @@ export const writeFileTool: Tool = {
       const action: ToolAction = {
         tool: "write_file_tool",
         kind: "file_write",
-        summary: `write ${path}`,
+        summary: `${mode} ${path}`,
         identity: `file_write:${path}`,
-        detail: { path },
+        detail: { path, mode, expectedRevision: initialRevision, diff },
       }
       const outcome = await ctx.gate(action)
       if (outcome === "blocked") {
@@ -101,27 +151,32 @@ export const writeFileTool: Tool = {
       }
     }
 
-    await env.mkdirp(dirname(target))
-
-    // Append re-reads the current file and rewrites the whole concatenation
-    // through atomicWrite, so atomicity holds with no Environment change. A read
-    // failure means the file doesn't exist yet — append-to-missing is a create,
-    // not an error.
-    let finalContent = content
-    if (mode === "append") {
-      let existing = ""
-      try {
-        existing = (await env.readFile(target)).toString("utf8")
-      } catch {
-        existing = ""
-      }
-      finalContent = existing + content
+    const checkedTarget = await env.resolve(path)
+    if (checkedTarget !== target) {
+      return toolError(
+        "stale_file",
+        `${path} resolved to a different target before writing.`,
+        "re-read the file and retry"
+      )
     }
-    await atomicWrite(env, target, finalContent)
+    await env.mkdirp(dirname(target))
+    const write = await atomicWriteChecked({
+      env,
+      target,
+      content: finalContent,
+      expectedRevision: initialRevision,
+    })
+    if (write !== "ok") {
+      return toolError(
+        "stale_file",
+        `${path} changed before the write could be saved. Current revision: ${write.staleRevision ?? "missing"}.`,
+        "re-read the file and rebase the write"
+      )
+    }
 
     const bytes = Buffer.byteLength(content, "utf8")
     return mode === "append"
-      ? `Appended ${bytes} bytes to ${path}.`
-      : `Wrote ${bytes} bytes to ${path}.`
+      ? `Appended ${bytes} bytes to ${path}. Revision: ${revisionOfText(finalContent)}.`
+      : `Wrote ${bytes} bytes to ${path}. Revision: ${revisionOfText(finalContent)}.`
   },
 }

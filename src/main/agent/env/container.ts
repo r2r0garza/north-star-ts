@@ -340,6 +340,19 @@ PY
     }
   }
 
+  async removeFile(path: string): Promise<void> {
+    const res = await this.runtimeCli([
+      "exec",
+      this.name,
+      "rm",
+      "-f",
+      this.toContainerPath(path),
+    ])
+    if (res.code !== 0) {
+      throw new Error(res.stderr.trim() || `cannot remove ${path}`)
+    }
+  }
+
   async mkdirp(path: string): Promise<void> {
     const res = await this.runtimeCli([
       "exec",

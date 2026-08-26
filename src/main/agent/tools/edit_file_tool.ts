@@ -1,9 +1,13 @@
-import { dirname, join } from "path"
 import type { Tool } from "./types"
 import type { ToolAction } from "../approval/types"
 import { LocalEnvironment } from "../env/local"
-import type { Environment } from "../env/types"
 import { toolError } from "./output"
+import {
+  atomicWriteChecked,
+  buildDiffPreview,
+  fileRevision,
+  validRevision,
+} from "./file/mutation"
 
 // Count non-overlapping occurrences of `needle` in `haystack`.
 function countOccurrences(haystack: string, needle: string): number {
@@ -15,23 +19,6 @@ function countOccurrences(haystack: string, needle: string): number {
     idx = haystack.indexOf(needle, idx + needle.length)
   }
   return count
-}
-
-// Write `content` to `target` atomically: write a sibling temp file, then rename
-// over the target (rename is atomic within a filesystem). Avoids leaving a
-// half-written file if the process dies mid-write. Routed through the env so it
-// holds on host or in a container.
-async function atomicWrite(
-  env: Environment,
-  target: string,
-  content: string
-): Promise<void> {
-  const tmp = join(
-    dirname(target),
-    `.${Date.now()}-${process.pid}.tmp` // unique within the dir
-  )
-  await env.writeFile(tmp, content)
-  await env.rename(tmp, target)
 }
 
 // Replaces an exact string in a workspace file. Requires `old_string` to occur
@@ -67,6 +54,11 @@ export const editFileTool: Tool = {
             description:
               "Replace every occurrence instead of requiring a unique match. Defaults to false.",
           },
+          expected_revision: {
+            type: "string",
+            description:
+              "Optional SHA-256 revision from read_file_tool metadata. When provided, the edit is rejected if the file changed since that read.",
+          },
         },
         required: ["path", "old_string", "new_string"],
       },
@@ -77,8 +69,15 @@ export const editFileTool: Tool = {
     const oldString = typeof args.old_string === "string" ? args.old_string : ""
     const newString = typeof args.new_string === "string" ? args.new_string : ""
     const replaceAll = args.replace_all === true
+    const expectedRevision = validRevision(args.expected_revision)
 
     if (!path) return toolError("bad_args", "A `path` is required.")
+    if (args.expected_revision !== undefined && !expectedRevision) {
+      return toolError(
+        "bad_args",
+        "`expected_revision` must be a 64-character SHA-256 hex digest."
+      )
+    }
     if (oldString === "") {
       return toolError("bad_args", "`old_string` must not be empty.")
     }
@@ -102,7 +101,16 @@ export const editFileTool: Tool = {
       return toolError("not_a_file", `Not a regular file: ${path}`)
     }
 
-    const content = (await env.readFile(target)).toString("utf8")
+    const initialBytes = await env.readFile(target)
+    const initialRevision = fileRevision(initialBytes)
+    if (expectedRevision && expectedRevision !== initialRevision) {
+      return toolError(
+        "stale_file",
+        `${path} changed since revision ${expectedRevision}. Current revision: ${initialRevision}.`,
+        "re-read the file and rebase the edit"
+      )
+    }
+    const content = initialBytes.toString("utf8")
     const occurrences = countOccurrences(content, oldString)
 
     if (occurrences === 0) {
@@ -123,6 +131,12 @@ export const editFileTool: Tool = {
     const updated = replaceAll
       ? content.split(oldString).join(newString)
       : content.replace(oldString, newString)
+    const diff = buildDiffPreview({
+      path,
+      before: content,
+      after: updated,
+      beforeRevision: initialRevision,
+    })
 
     // Route through the shared approval pipeline (see ../approval). The default
     // file policy auto-allows; this makes edit_file a first-class pipeline
@@ -133,7 +147,7 @@ export const editFileTool: Tool = {
         kind: "file_edit",
         summary: `edit ${path}`,
         identity: `file_edit:${path}`,
-        detail: { path },
+        detail: { path, expectedRevision: initialRevision, diff },
       }
       const outcome = await ctx.gate(action)
       if (outcome === "blocked") {
@@ -144,9 +158,29 @@ export const editFileTool: Tool = {
       }
     }
 
-    await atomicWrite(env, target, updated)
+    const checkedTarget = await env.resolve(path)
+    if (checkedTarget !== target) {
+      return toolError(
+        "stale_file",
+        `${path} resolved to a different target before writing.`,
+        "re-read the file and retry"
+      )
+    }
+    const write = await atomicWriteChecked({
+      env,
+      target,
+      content: updated,
+      expectedRevision: initialRevision,
+    })
+    if (write !== "ok") {
+      return toolError(
+        "stale_file",
+        `${path} changed before the edit could be written. Current revision: ${write.staleRevision ?? "missing"}.`,
+        "re-read the file and rebase the edit"
+      )
+    }
 
     const replaced = replaceAll ? occurrences : 1
-    return `Replaced ${replaced} occurrence${replaced === 1 ? "" : "s"} in ${path}.`
+    return `Replaced ${replaced} occurrence${replaced === 1 ? "" : "s"} in ${path}. Revision: ${diff.newRevision}.`
   },
 }

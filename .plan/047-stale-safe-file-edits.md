@@ -1,6 +1,6 @@
 # PR47: Stale-safe file edits and diff previews
 
-> Status: **NOT STARTED**. Depends on `046` for optional read revisions. No DB
+> Status: **DONE**. Depends on `046` for optional read revisions. No DB
 > migration.
 
 ## Context

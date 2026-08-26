@@ -101,6 +101,7 @@ export type ChatEvent =
       // The action kind being approved (e.g. "delegate"). The renderer hides the
       // "always allow" affordance for delegate approvals. Optional for back-compat.
       kind?: ActionKind
+      detail?: Record<string, unknown>
     }
   | {
       type: "question"

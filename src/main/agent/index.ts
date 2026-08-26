@@ -359,6 +359,7 @@ export type ChatEvent =
       // "always allow in this workspace" button, since delegation is asked every
       // time. Optional so older persisted events without it still parse.
       kind?: ActionKind
+      detail?: Record<string, unknown>
     }
   // The agent is asking the user clarifying questions (ask_user_question). `id`
   // is the tool-call id; `requestId` is the process-unique token the renderer
@@ -1378,6 +1379,7 @@ export async function runAgentLoop(
             summary: action.summary,
             reason: decision.reason,
             kind: action.kind,
+            detail: action.detail,
           })
           return new Promise<GateOutcome>((resolve) => {
             pendingApprovals.set(requestId, {

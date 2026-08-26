@@ -109,6 +109,10 @@ export class LocalEnvironment implements Environment {
     return rename(from, to)
   }
 
+  removeFile(path: string): Promise<void> {
+    return unlink(path)
+  }
+
   async mkdirp(path: string): Promise<void> {
     await mkdir(path, { recursive: true })
   }
