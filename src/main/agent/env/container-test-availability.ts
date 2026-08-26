@@ -6,6 +6,8 @@ export interface ContainerTestProbeResult {
   code: number | null
   stderr: string
   enoent: boolean
+  timedOut?: boolean
+  timeoutMs?: number
 }
 
 export type ContainerTestProbe = (
@@ -20,22 +22,31 @@ export interface ContainerTestAvailability {
   reason: string | null
 }
 
+export const CONTAINER_TEST_PROBE_TIMEOUT_MS = 5_000
+
 function defaultProbe(
   runtime: ContainerTestRuntime,
   args: string[]
 ): ContainerTestProbeResult {
   try {
-    execFileSync(runtime, args, { stdio: "ignore" })
+    execFileSync(runtime, args, {
+      stdio: "ignore",
+      timeout: CONTAINER_TEST_PROBE_TIMEOUT_MS,
+    })
     return { code: 0, stderr: "", enoent: false }
   } catch (err) {
     const e = err as NodeJS.ErrnoException & {
       status?: number | null
       stderr?: Buffer
+      signal?: NodeJS.Signals | null
     }
+    const timedOut = e.code === "ETIMEDOUT"
     return {
       code: typeof e.status === "number" ? e.status : null,
       stderr: e.stderr?.toString("utf8").trim() ?? e.message ?? "",
       enoent: e.code === "ENOENT",
+      timedOut,
+      timeoutMs: timedOut ? CONTAINER_TEST_PROBE_TIMEOUT_MS : undefined,
     }
   }
 }
@@ -54,6 +65,10 @@ function failedProbeReason(
   result: ContainerTestProbeResult
 ): string {
   if (result.enoent) return `${runtime} is not installed or not on PATH`
+  if (result.timedOut) {
+    const deadline = result.timeoutMs ?? CONTAINER_TEST_PROBE_TIMEOUT_MS
+    return `${runtime} ${command} timed out after ${deadline}ms`
+  }
   const detail = result.stderr ? `: ${result.stderr}` : ""
   return `${runtime} ${command} failed${detail}`
 }

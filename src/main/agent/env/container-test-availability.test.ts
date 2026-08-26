@@ -1,6 +1,16 @@
-import { describe, expect, it } from "vitest"
+import { beforeEach, describe, expect, it, vi } from "vitest"
+
+const { execFileSyncMock } = vi.hoisted(() => ({
+  execFileSyncMock: vi.fn(),
+}))
+
+vi.mock("child_process", () => ({
+  execFileSync: execFileSyncMock,
+}))
+
 import {
   checkContainerTestAvailability,
+  CONTAINER_TEST_PROBE_TIMEOUT_MS,
   type ContainerTestProbe,
 } from "./container-test-availability"
 
@@ -14,14 +24,20 @@ function probeWith(
     const failure = failures[key]
     if (!failure) return ok
     return {
-      code: failure.code ?? 1,
+      code: failure.code === undefined ? 1 : failure.code,
       stderr: failure.stderr ?? "",
       enoent: failure.enoent ?? false,
+      timedOut: failure.timedOut,
+      timeoutMs: failure.timeoutMs,
     }
   }
 }
 
 describe("checkContainerTestAvailability", () => {
+  beforeEach(() => {
+    execFileSyncMock.mockReset()
+  })
+
   it("skips when the runtime CLI is missing", () => {
     const availability = checkContainerTestAvailability(
       "docker",
@@ -120,5 +136,86 @@ describe("checkContainerTestAvailability", () => {
       shouldRun: true,
     })
     expect(availability.reason).toContain("docker info failed")
+  })
+
+  it.each([
+    ["--version", "--version"],
+    ["info", "info"],
+    ["image inspect node:20-bookworm", "image inspect node:20-bookworm"],
+  ])(
+    "skips by default when the %s probe times out",
+    (_label, failingCommand) => {
+      const availability = checkContainerTestAvailability(
+        "podman",
+        "node:20-bookworm",
+        {},
+        probeWith({
+          [failingCommand]: {
+            code: null,
+            timedOut: true,
+            timeoutMs: 1234,
+          },
+        })
+      )
+
+      expect(availability).toMatchObject({
+        available: false,
+        required: false,
+        shouldRun: false,
+      })
+      expect(availability.reason).toContain("podman")
+      expect(availability.reason).toContain(failingCommand)
+      expect(availability.reason).toContain("timed out after 1234ms")
+    }
+  )
+
+  it("turns a timed-out probe into a failing suite when explicitly required", () => {
+    const availability = checkContainerTestAvailability(
+      "docker",
+      "node:20-bookworm",
+      { COWORK_CONTAINER_TESTS: "1" },
+      probeWith({
+        info: {
+          code: null,
+          timedOut: true,
+          timeoutMs: 1234,
+        },
+      })
+    )
+
+    expect(availability).toMatchObject({
+      available: false,
+      required: true,
+      shouldRun: true,
+    })
+    expect(availability.reason).toContain("docker info timed out after 1234ms")
+  })
+
+  it("runs each default subprocess probe with a finite timeout", () => {
+    execFileSyncMock.mockReturnValue(Buffer.from(""))
+
+    const availability = checkContainerTestAvailability(
+      "docker",
+      "node:20-bookworm"
+    )
+
+    expect(availability.available).toBe(true)
+    expect(execFileSyncMock).toHaveBeenCalledTimes(3)
+    expect(execFileSyncMock).toHaveBeenNthCalledWith(
+      1,
+      "docker",
+      ["--version"],
+      { stdio: "ignore", timeout: CONTAINER_TEST_PROBE_TIMEOUT_MS }
+    )
+    expect(execFileSyncMock).toHaveBeenNthCalledWith(2, "docker", ["info"], {
+      stdio: "ignore",
+      timeout: CONTAINER_TEST_PROBE_TIMEOUT_MS,
+    })
+    expect(execFileSyncMock).toHaveBeenNthCalledWith(
+      3,
+      "docker",
+      ["image", "inspect", "node:20-bookworm"],
+      { stdio: "ignore", timeout: CONTAINER_TEST_PROBE_TIMEOUT_MS }
+    )
   })
 })
