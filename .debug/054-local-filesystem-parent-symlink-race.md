@@ -1,6 +1,6 @@
 # Local filesystem operations can follow a parent symlink swapped after validation
 
-> Status: **PARTIAL**
+> Status: **PARTIAL — deferred by ADR 009**
 > Severity: **P1 — workspace confinement bypass**
 > Area: local filesystem backend
 
@@ -41,6 +41,13 @@ its own.
 Do not rely on repeated `realpath`/`lstat` checks immediately before an absolute-
 path syscall; that only narrows the race window.
 
+This brief is **not** the next actionable `.debug/` queue item while the branch
+does not include a packaged native helper or native addon plan. ADR
+`.decisions/009-local-filesystem-openat-helper.md` accepts the current
+revalidation mitigation as temporary hardening and deliberately leaves this item
+partial. Resume implementation here only after that native helper work exists;
+otherwise continue to the next OPEN item in `.debug/README.md`.
+
 ## Acceptance criteria
 
 - Parent-directory swaps cannot redirect any filesystem primitive outside the
@@ -63,3 +70,8 @@ directory listing; the external sentinels remain unchanged.
 The implementation now revalidates scoped paths after that seam and before the
 filesystem syscall. This blocks the reproduced swap window, but it is still not
 the full directory-handle/openat-style binding called for above.
+
+Per ADR 009, leave this brief in `PARTIAL` state until local filesystem
+operations bind validation to use through stable opened directory descriptors.
+Do not treat the unresolved P1 severity as a normal queue priority signal unless
+the native helper prerequisite is in scope for the branch.
