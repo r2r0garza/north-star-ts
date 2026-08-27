@@ -65,6 +65,8 @@ a brief names a prerequisite.
 | 56 | P2 | Fixed | [Node pageable reads materialize complete sources](./056-local-pageable-read-streaming-regression.md) | Local filesystem reads |
 | 57 | P2 | Fixed | [MCP discovery lacks cancellation and definition bounds](./057-mcp-discovery-lifecycle-and-definition-bounds.md) | MCP discovery |
 | 58 | P2 | Fixed | [Command output caps exclude serialization expansion](./058-command-session-serialized-output-cap.md) | Command session rendering |
+| 59 | P2 | Closed | [Listener subscriptions leak and background tasks remain untitled](./059-maxlisteners-and-title-generation.md) | IPC subscriptions and conversation titles |
+| 60 | P3 | Closed | [Generated titles echo greetings or expose reasoning](./060-title-generation-reasoning.md) | Conversation title generation |
 
 New briefs start in **OPEN** state. When fixing one, add the regression test
 described by its acceptance criteria before marking it resolved.

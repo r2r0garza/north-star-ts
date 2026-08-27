@@ -179,9 +179,24 @@ function retainTerminalSubscription(): void {
   }
 }
 function releaseTerminalSubscription(): void {
-  terminalSubscriptionCount = Math.max(0, terminalSubscriptionCount - 1)
+  if (terminalSubscriptionCount === 0) return
+  terminalSubscriptionCount -= 1
   if (terminalSubscriptionCount === 0) {
     void ipcRenderer.invoke("terminal:unsubscribe")
+  }
+}
+
+let taskSubscriptionCount = 0
+function retainTaskSubscription(): void {
+  if (taskSubscriptionCount++ === 0) {
+    void ipcRenderer.invoke("task:subscribe")
+  }
+}
+function releaseTaskSubscription(): void {
+  if (taskSubscriptionCount === 0) return
+  taskSubscriptionCount -= 1
+  if (taskSubscriptionCount === 0) {
+    void ipcRenderer.invoke("task:unsubscribe")
   }
 }
 
@@ -305,10 +320,10 @@ const api = {
       const listener = (_e: IpcRendererEvent, payload: TaskLiveEvent) =>
         cb(payload)
       ipcRenderer.on("task:event", listener)
-      void ipcRenderer.invoke("task:subscribe")
+      retainTaskSubscription()
       return () => {
         ipcRenderer.removeListener("task:event", listener)
-        void ipcRenderer.invoke("task:unsubscribe")
+        releaseTaskSubscription()
       }
     },
   },

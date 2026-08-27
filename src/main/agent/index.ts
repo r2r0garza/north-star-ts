@@ -80,6 +80,8 @@ import {
   NoActiveProviderError,
   type LlmSelection,
 } from "./providers"
+import { generateTitle } from "./title"
+export { generateTitle } from "./title"
 import { appendMessage } from "../db/repositories/messages"
 import {
   getConversation,
@@ -291,13 +293,6 @@ export interface ChatRequest {
   autoMode?: boolean
 }
 
-// A trimmed snippet of the first user message — the fallback title when the
-// LLM-generated title request fails.
-function titleFromMessage(text: string): string {
-  const trimmed = text.trim().replace(/\s+/g, " ")
-  return trimmed.length > 60 ? `${trimmed.slice(0, 60)}…` : trimmed
-}
-
 export interface ChatResult {
   content?: string
   error?: string
@@ -394,52 +389,6 @@ function contentToText(content: unknown): string {
       .join("")
   }
   return ""
-}
-
-// Ask the model for a short (5-6 word) title summarizing the user's first
-// message. Non-streaming and capped low so it's cheap. Falls back to a trimmed
-// snippet on any failure so a conversation always gets a title.
-export async function generateTitle(
-  message: string,
-  sel: LlmSelection = settingsService.getTitleGeneration()
-): Promise<string> {
-  const fallback = titleFromMessage(message)
-  try {
-    const { client, model, apiMode } = resolveLlm(sel)
-    const res = await createCompletion(
-      client,
-      model,
-      32,
-      {
-        messages: [
-          {
-            role: "system",
-            content:
-              "You write short conversation titles. Given a user's first message, reply " +
-              "with a 3-6 word title that summarizes its topic. Output ONLY the title " +
-              "text: no quotes, no punctuation at the end, no preamble, and never answer " +
-              "or respond to the message itself.",
-          },
-          // Delimit the message as quoted input with an explicit "Title:" cue so
-          // the model titles it rather than answering it.
-          {
-            role: "user",
-            content: `First message:\n"""\n${message}\n"""\n\nTitle:`,
-          },
-        ],
-      },
-      [],
-      apiMode
-    )
-    const text = contentToText((res as any).choices?.[0]?.message?.content)
-      .trim()
-      .replace(/^["']|["']$/g, "")
-      .replace(/[.\s]+$/, "")
-    return text || fallback
-  } catch (error) {
-    console.error("Title generation failed:", error)
-    return fallback
-  }
 }
 
 // Options for the core agentic loop. The caller owns the AbortController and its
@@ -1726,10 +1675,6 @@ export async function runChat(
   // concurrently with the agentic loop below; awaited in `finally` so it's
   // persisted before runChat returns and the renderer refreshes the sidebar.
   const conversation = getConversation(conversationId)
-  const llmSelection: LlmSelection = {
-    accountId: conversation?.accountId ?? null,
-    modelId: conversation?.modelId ?? null,
-  }
   const titlePromise =
     conversation && !conversation.title && message.trim()
       ? generateTitle(message).then((title) =>

@@ -178,6 +178,23 @@ function buildClient(account: ProviderAccount): LlmClient {
 export function resolveLlm(
   sel: LlmSelection = { accountId: null, modelId: null }
 ): ResolvedClient {
+  const { account, model } = resolveLlmTarget(sel)
+  const client = buildClient(account)
+  providerAccountsRepo.touchLastUsed(account.id)
+  return {
+    client,
+    model,
+    accountId: account.id,
+    apiMode: account.apiMode,
+  }
+}
+
+// Resolve and validate the stored account/model pair without assuming an HTTP
+// client. Autonomous CLI providers use this metadata to branch to their native
+// adapter before buildClient rejects them.
+export function resolveLlmTarget(
+  sel: LlmSelection = { accountId: null, modelId: null }
+): { account: ProviderAccount; model: string } {
   const dflt = settingsService.getLlm()
   const accountId = sel.accountId ?? dflt.activeAccountId
   const modelId = sel.modelId ?? dflt.activeModelId
@@ -213,14 +230,7 @@ export function resolveLlm(
     )
   }
 
-  const client = buildClient(account)
-  providerAccountsRepo.touchLastUsed(account.id)
-  return {
-    client,
-    model: model.modelId,
-    accountId: account.id,
-    apiMode: account.apiMode,
-  }
+  return { account, model: model.modelId }
 }
 
 // A human-readable label for the model a selection would resolve to, WITHOUT

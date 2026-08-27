@@ -58,6 +58,35 @@ describe("Claude Code CLI adapter", () => {
     ])
   })
 
+  it("isolates one-shot utility calls from tools and session persistence", () => {
+    expect(
+      buildClaudeArgs({
+        message: "name this conversation",
+        sessionId: "11111111-1111-4111-8111-111111111111",
+        resume: false,
+        model: "haiku",
+        isolated: true,
+        systemPrompt: "Return only a title.",
+      })
+    ).toEqual([
+      "-p",
+      "name this conversation",
+      "--session-id",
+      "11111111-1111-4111-8111-111111111111",
+      "--output-format",
+      "stream-json",
+      "--verbose",
+      "--model",
+      "haiku",
+      "--no-session-persistence",
+      "--safe-mode",
+      "--tools",
+      "",
+      "--system-prompt",
+      "Return only a title.",
+    ])
+  })
+
   it("parses the captured JSON result", () => {
     const fixture = readFileSync(
       resolve(process.cwd(), "cli_probes/claude/01-json.stdout"),

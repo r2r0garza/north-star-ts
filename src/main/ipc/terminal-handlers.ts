@@ -36,8 +36,17 @@ export function registerTerminalHandlers(terminals: TerminalService): void {
     {
       onData: (event: TerminalDataEvent) => void
       onExit: (event: TerminalExitEvent) => void
+      onDestroyed: () => void
     }
   >()
+  const unsubscribe = (sender: WebContents) => {
+    const listeners = subscriptions.get(sender)
+    if (!listeners) return
+    terminals.off("data", listeners.onData)
+    terminals.off("exit", listeners.onExit)
+    sender.removeListener("destroyed", listeners.onDestroyed)
+    subscriptions.delete(sender)
+  }
   ipcMain.handle("terminal:subscribe", (event) => {
     const sender = event.sender
     if (subscriptions.has(sender)) return
@@ -48,21 +57,14 @@ export function registerTerminalHandlers(terminals: TerminalService): void {
       onExit: (payload: TerminalExitEvent) => {
         if (!sender.isDestroyed()) sender.send("terminal:exit", payload)
       },
+      onDestroyed: () => unsubscribe(sender),
     }
     terminals.on("data", listeners.onData)
     terminals.on("exit", listeners.onExit)
     subscriptions.set(sender, listeners)
-    sender.once("destroyed", () => {
-      terminals.off("data", listeners.onData)
-      terminals.off("exit", listeners.onExit)
-      subscriptions.delete(sender)
-    })
+    sender.once("destroyed", listeners.onDestroyed)
   })
   ipcMain.handle("terminal:unsubscribe", (event) => {
-    const listeners = subscriptions.get(event.sender)
-    if (!listeners) return
-    terminals.off("data", listeners.onData)
-    terminals.off("exit", listeners.onExit)
-    subscriptions.delete(event.sender)
+    unsubscribe(event.sender)
   })
 }

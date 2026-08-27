@@ -37,6 +37,8 @@ export function buildClaudeArgs(input: {
   sessionId: string
   resume: boolean
   model: string
+  isolated?: boolean
+  systemPrompt?: string
 }): string[] {
   const args = input.resume
     ? [
@@ -58,6 +60,12 @@ export function buildClaudeArgs(input: {
         "--verbose",
       ]
   args.push("--model", normalizeClaudeModel(input.model))
+  if (input.isolated) {
+    args.push("--no-session-persistence", "--safe-mode", "--tools", "")
+  }
+  if (input.systemPrompt) {
+    args.push("--system-prompt", input.systemPrompt)
+  }
   return args
 }
 
@@ -163,6 +171,8 @@ export async function runClaudeCode(input: {
   model: string
   signal: AbortSignal
   onEvent: (event: CliTurnEvent) => void
+  isolated?: boolean
+  systemPrompt?: string
 }): Promise<{ content?: string; error?: string; stopped?: boolean }> {
   const child = spawn(
     "claude",
@@ -171,6 +181,8 @@ export async function runClaudeCode(input: {
       sessionId: input.sessionId,
       resume: input.resume,
       model: input.model,
+      isolated: input.isolated,
+      systemPrompt: input.systemPrompt,
     }),
     {
       cwd: input.cwd,

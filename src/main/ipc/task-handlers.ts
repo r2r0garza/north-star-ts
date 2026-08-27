@@ -1,8 +1,12 @@
 import { ipcMain, type WebContents } from "electron"
 import type { TaskRunner, TaskEventPayload } from "../tasks/runner"
-import { resolveApproval, resolveQuestion } from "../agent"
+import { generateTitle, resolveApproval, resolveQuestion } from "../agent"
 import type { QuestionAnswer } from "../agent/tools/types"
 import { listTodos } from "../db/repositories/todos"
+import {
+  getConversation,
+  updateConversation,
+} from "../db/repositories/conversations"
 import {
   TODO_RUN_KICKOFF,
   actionableTodos,
@@ -28,7 +32,17 @@ export function registerTaskHandlers(runner: TaskRunner): void {
         kind?: string
         title?: string | null
       }
-    ) => runner.enqueue(input)
+    ) => {
+      const task = runner.enqueue(input)
+      const conversation = getConversation(input.conversationId)
+      if (!conversation?.title && input.message.trim()) {
+        return generateTitle(input.message).then((title) => {
+          updateConversation(input.conversationId, { title })
+          return task
+        })
+      }
+      return task
+    }
   )
   // Hand the conversation's todo list off to a background task (plan 016, the
   // user-triggered "Run all in background" button). Snapshots the list HERE
@@ -103,28 +117,32 @@ export function registerTaskHandlers(runner: TaskRunner): void {
   // receives every task's events on the "task:event" channel until its
   // webContents is destroyed. The renderer replays history first via
   // db:taskEvents:list, then dedupes the live tail by the row id we forward.
-  const subscriptions = new Map<WebContents, () => void>()
+  const subscriptions = new Map<
+    WebContents,
+    { unsubscribe: () => void; onDestroyed: () => void }
+  >()
+  const unsubscribe = (sender: WebContents) => {
+    const subscription = subscriptions.get(sender)
+    if (!subscription) return
+    subscription.unsubscribe()
+    sender.removeListener("destroyed", subscription.onDestroyed)
+    subscriptions.delete(sender)
+  }
   ipcMain.handle("task:subscribe", (event) => {
     const sender = event.sender
     if (subscriptions.has(sender)) return
-    const unsubscribe = runner.subscribe(
+    const stop = runner.subscribe(
       (taskId: string, ev: TaskEventPayload, eventId: number) => {
         if (!sender.isDestroyed()) {
           sender.send("task:event", { taskId, event: ev, id: eventId })
         }
       }
     )
-    subscriptions.set(sender, unsubscribe)
-    sender.once("destroyed", () => {
-      unsubscribe()
-      subscriptions.delete(sender)
-    })
+    const onDestroyed = () => unsubscribe(sender)
+    subscriptions.set(sender, { unsubscribe: stop, onDestroyed })
+    sender.once("destroyed", onDestroyed)
   })
   ipcMain.handle("task:unsubscribe", (event) => {
-    const unsubscribe = subscriptions.get(event.sender)
-    if (unsubscribe) {
-      unsubscribe()
-      subscriptions.delete(event.sender)
-    }
+    unsubscribe(event.sender)
   })
 }

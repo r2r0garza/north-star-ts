@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { Dialog as DialogPrimitive } from "radix-ui"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Switch } from "@/components/ui/switch"
@@ -315,11 +315,13 @@ function ConversationModelPicker({
   value,
   options,
   onChange,
+  portalContainer,
 }: {
   id: string
   value: string
   options: AccountWithModels[] | null
   onChange: (value: string) => void
+  portalContainer?: React.RefObject<HTMLElement | null>
 }) {
   const groups = modelPickerGroups(options)
   const selected = selectedModelPickerItem(groups, value)
@@ -345,7 +347,10 @@ function ConversationModelPicker({
           )}
         </ComboboxValue>
       </ComboboxTrigger>
-      <ComboboxContent className="w-96 min-w-96">
+      <ComboboxContent
+        className="w-96 min-w-96"
+        portalContainer={portalContainer}
+      >
         <ComboboxInput placeholder="Search models..." showTrigger={false} />
         <ComboboxEmpty>No models found.</ComboboxEmpty>
         <ComboboxList>
@@ -383,6 +388,7 @@ export function SettingsScreen({
   // "providers"; the composer's "Configure model…" also lands there.
   initialTab?: string
 }) {
+  const contentRef = useRef<HTMLDivElement | null>(null)
   const [execution, setExecution] = useState<ExecutionSettings | null>(null)
   const [permissions, setPermissions] = useState<PermissionSettings | null>(
     null
@@ -760,6 +766,7 @@ export function SettingsScreen({
               / Escape-to-close / portal for free, but WITHOUT the shared
               DialogContent's zoom-to-small-box sizing. */}
           <DialogPrimitive.Content
+            ref={contentRef}
             data-slot="settings-screen"
             aria-describedby={undefined}
             // Never close from an outside-interaction: an open modal Select sets
@@ -1068,6 +1075,7 @@ export function SettingsScreen({
                             id="memory-model"
                             value={modelSettingValue(memory)}
                             options={memoryModelOptions}
+                            portalContainer={contentRef}
                             onChange={(value) => {
                               const selection = splitModelSettingValue(value)
                               saveMemory({ ...memory, ...selection })
@@ -1087,6 +1095,7 @@ export function SettingsScreen({
                             id="title-model"
                             value={modelSettingValue(titleGeneration)}
                             options={memoryModelOptions}
+                            portalContainer={contentRef}
                             onChange={(value) => {
                               const selection = splitModelSettingValue(value)
                               saveTitleGeneration(selection)
