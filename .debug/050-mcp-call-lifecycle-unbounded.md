@@ -1,6 +1,6 @@
 # MCP tool calls are unbounded and cannot be cancelled with the turn
 
-> Status: **OPEN**
+> Status: **Fixed**
 > Severity: **P2 — turn stall and unbounded remote output**
 > Area: MCP client manager and agent lifecycle
 
@@ -34,3 +34,16 @@ Bound error strings as well as successful results.
 - Text, resource text, error output, and metadata have documented hard bounds.
 - Truncation is explicit and UTF-8 safe.
 - Connection eviction does not leak child processes, sockets, or listeners.
+
+## Resolution
+
+MCP tool calls now receive the turn abort signal and a configurable hard deadline
+(`COWORK_MCP_TOOL_TIMEOUT_MS`, default 60s). Calls are raced against the same
+abort/deadline scope so Stop and non-settling SDK calls return promptly, and the
+pooled client is evicted so its transport can close.
+
+Tool output is flattened through a UTF-8-safe 256 KiB budget
+(`COWORK_MCP_TOOL_OUTPUT_MAX_BYTES`) with explicit content-type/resource
+metadata. Error strings are bounded to 8 KiB
+(`COWORK_MCP_TOOL_ERROR_MAX_BYTES`). Regression coverage lives in
+`src/main/agent/mcp/manager.test.ts`.

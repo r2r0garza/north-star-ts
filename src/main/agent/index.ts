@@ -1527,7 +1527,12 @@ export async function runAgentLoop(
             })
             result =
               outcome === "approved"
-                ? await getMcpManager().callTool(call.name, args, mcpWorkspace)
+                ? await getMcpManager().callTool(
+                    call.name,
+                    args,
+                    mcpWorkspace,
+                    abort.signal
+                  )
                 : `ERROR[mcp]: the user ${
                     outcome === "blocked" ? "blocked" : "declined"
                   } the call to ${mcpCall.serverName} · ${mcpCall.toolName}.`
