@@ -2,7 +2,11 @@ import { randomUUID } from "crypto"
 import { stripAnsi } from "../approval/ansi"
 import { shellActionForCommand } from "../approval/shell-analyzer"
 import { LocalEnvironment } from "../env/local"
-import type { CommandExit, CommandSessionHandle } from "../env/types"
+import type {
+  CommandCleanupError,
+  CommandExit,
+  CommandSessionHandle,
+} from "../env/types"
 import { truncateForModel, toolError } from "./output"
 import { TOOL_EFFECTS, type Tool, type ToolContext } from "./types"
 
@@ -41,6 +45,7 @@ interface AgentCommandSession {
   exitCode: number | null
   signal: NodeJS.Signals | null
   timedOut: boolean
+  cleanupError?: CommandCleanupError
   timeout: NodeJS.Timeout
   cleanup?: NodeJS.Timeout
 }
@@ -227,7 +232,13 @@ export async function runShellCompatibility(
       ? `terminated by signal ${result.session.signal}`
       : `exit code ${result.session.exitCode ?? "unknown"}`
   sessions.delete(result.session.id)
-  return `[${status}]\n${truncateForModel(stripAnsi(output.output)).text}`.trimEnd()
+  const rendered =
+    `[${status}]\n${truncateForModel(stripAnsi(output.output)).text}`.trimEnd()
+  if (!result.session.cleanupError) return rendered
+  return toolError(
+    "cleanup_failed",
+    `Command finished with ${status}, but cleanup failed for temporary source file ${result.session.cleanupError.path}: ${result.session.cleanupError.error}. The command output was:\n${rendered}`
+  )
 }
 
 async function startCommand(
@@ -381,6 +392,7 @@ function createSession(input: {
     exitCode: null,
     signal: null,
     timedOut: false,
+    cleanupError: undefined,
     timeout: setTimeout(() => {
       session.timedOut = true
       session.status = "timed_out"
@@ -435,6 +447,7 @@ function settleSession(session: AgentCommandSession, exit: CommandExit): void {
   clearTimeout(session.timeout)
   session.exitCode = exit.exitCode
   session.signal = exit.signal
+  session.cleanupError = exit.cleanupError
   if (session.status === "running") session.status = "completed"
   session.cleanup = setTimeout(() => {
     sessions.delete(session.id)
@@ -592,6 +605,7 @@ function renderCommandResult(
     durationMs,
     exitCode: session.exitCode,
     signal: session.signal,
+    cleanupError: session.cleanupError,
     output: output.output,
   }
   return JSON.stringify(body, null, 2)

@@ -47,6 +47,7 @@ import type {
   CommandSessionHandle,
   CommandChunk,
   CommandExit,
+  CommandCleanupError,
   LocalRuntimeProfile,
 } from "./types"
 
@@ -73,6 +74,7 @@ interface LocalEnvironmentDeps {
   platform?: NodeJS.Platform
   searchTimeoutMs?: number
   searchMaxOutputBytes?: number
+  unlinkTempFile?: (path: string) => Promise<void>
 }
 
 function resolveRipgrepPath(): string {
@@ -272,11 +274,13 @@ export class LocalEnvironment implements Environment {
       "pipe",
     ])
     try {
-      return await captureSpawn(child, { ...opts, killGroup: true })
+      const result = await captureSpawn(child, { ...opts, killGroup: true })
+      if (!cleanupPath) return result
+      const cleanupError = await this.cleanupTempFile(cleanupPath)
+      cleanupPath = null
+      return cleanupError ? { ...result, cleanupError } : result
     } finally {
-      if (cleanupPath) {
-        await fsUnlink(cleanupPath).catch(() => {})
-      }
+      if (cleanupPath) await this.cleanupTempFile(cleanupPath)
     }
   }
 
@@ -315,11 +319,13 @@ export class LocalEnvironment implements Environment {
         })
         handle = new PtyCommandHandle(term, opts.signal)
       } catch (error) {
-        if (cleanupPath) await fsUnlink(cleanupPath).catch(() => {})
+        if (cleanupPath) await this.cleanupTempFile(cleanupPath)
         throw error
       }
       return cleanupPath
-        ? new CleanupCommandHandle(handle, cleanupPath)
+        ? new CleanupCommandHandle(handle, cleanupPath, (path) =>
+            this.cleanupTempFile(path)
+          )
         : handle
     }
 
@@ -334,14 +340,32 @@ export class LocalEnvironment implements Environment {
         signal: opts.signal,
       })
     } catch (error) {
-      if (cleanupPath) await fsUnlink(cleanupPath).catch(() => {})
+      if (cleanupPath) await this.cleanupTempFile(cleanupPath)
       throw error
     }
-    return cleanupPath ? new CleanupCommandHandle(handle, cleanupPath) : handle
+    return cleanupPath
+      ? new CleanupCommandHandle(handle, cleanupPath, (path) =>
+          this.cleanupTempFile(path)
+        )
+      : handle
   }
 
   private commandPlatform(): NodeJS.Platform {
     return this.deps.platform ?? process.platform
+  }
+
+  private async cleanupTempFile(
+    path: string
+  ): Promise<CommandCleanupError | undefined> {
+    try {
+      await (this.deps.unlinkTempFile ?? fsUnlink)(path)
+      return undefined
+    } catch (error) {
+      return {
+        path,
+        error: error instanceof Error ? error.message : String(error),
+      }
+    }
   }
 
   private commandSpawn(): SpawnFn {
@@ -476,7 +500,9 @@ async function assertScopedLocalPath(
     ? join(root, relative(lexicalRoot, lexicalTarget))
     : lexicalTarget
   if (!isInside(root, target)) {
-    throw new Error(`Path "${path}" is outside the workspace and is not allowed.`)
+    throw new Error(
+      `Path "${path}" is outside the workspace and is not allowed.`
+    )
   }
 
   const rootStat = await lstat(root)
@@ -627,7 +653,10 @@ async function safeStat(
   }
 }
 
-async function safeReaddir(workspace: string, path: string): Promise<DirEntry[]> {
+async function safeReaddir(
+  workspace: string,
+  path: string
+): Promise<DirEntry[]> {
   const result = await safeListDir(workspace, path, {})
   return result.entries
 }
@@ -747,7 +776,9 @@ async function safeMkdirp(workspace: string, path: string): Promise<void> {
     ? join(root, relative(lexicalRoot, lexicalTarget))
     : lexicalTarget
   if (!isInside(root, target)) {
-    throw new Error(`Path "${path}" is outside the workspace and is not allowed.`)
+    throw new Error(
+      `Path "${path}" is outside the workspace and is not allowed.`
+    )
   }
   const rootStat = await lstat(root)
   if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
@@ -791,7 +822,10 @@ function splitPhysicalLines(data: Buffer): Buffer[] {
   return lines
 }
 
-function utf8SafePrefix(raw: Buffer, byteLimit: number): {
+function utf8SafePrefix(
+  raw: Buffer,
+  byteLimit: number
+): {
   text: string
   bytes: number
 } {
@@ -950,21 +984,17 @@ class CleanupCommandHandle
 {
   constructor(
     private readonly inner: CommandSessionHandle,
-    private readonly cleanupPath: string
+    private readonly cleanupPath: string,
+    private readonly cleanup: (
+      path: string
+    ) => Promise<CommandCleanupError | undefined>
   ) {
     super()
     inner.onData((chunk) => this.emit("data", chunk))
     inner.onExit((exit) => {
-      void fsUnlink(this.cleanupPath)
-        .catch((error) => {
-          this.emit("data", {
-            stream: "stderr",
-            data: Buffer.from(
-              `Failed to remove temporary Python heredoc script ${this.cleanupPath}: ${(error as Error).message}\n`
-            ),
-          })
-        })
-        .finally(() => this.emit("exit", exit))
+      void this.cleanup(this.cleanupPath).then((cleanupError) =>
+        this.emit("exit", cleanupError ? { ...exit, cleanupError } : exit)
+      )
     })
   }
 

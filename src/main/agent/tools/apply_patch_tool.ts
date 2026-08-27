@@ -6,10 +6,13 @@ import {
   commitPatch,
   parsePatchOperations,
   planPatch,
-  type CleanupError,
   type PlannedPatch,
 } from "./file/patch"
-import { FileTooLargeError, fileTooLargeMessage } from "./file/mutation"
+import {
+  cleanupMessage,
+  FileTooLargeError,
+  fileTooLargeMessage,
+} from "./file/mutation"
 
 function errorFromMessage(message: string): string {
   const [code, ...rest] = message.split(":")
@@ -49,16 +52,6 @@ function summarizePatch(planned: PlannedPatch): string {
 
 function combinedDiff(planned: PlannedPatch): string {
   return planned.diffs.map((diff) => diff.diff).join("\n")
-}
-
-function cleanupMessage(cleanupErrors?: CleanupError[]): string {
-  if (!cleanupErrors || cleanupErrors.length === 0) return ""
-  return ` Cleanup failed for retained paths: ${cleanupErrors
-    .map(
-      (error) =>
-        `${error.path} (${error.phase} cleanup for ${error.filePath}: ${error.error})`
-    )
-    .join("; ")}.`
 }
 
 export const applyPatchTool: Tool = {

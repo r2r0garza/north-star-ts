@@ -1,6 +1,6 @@
 # Single-file mutation and one-shot command cleanup failures are suppressed
 
-> Status: **OPEN**
+> Status: **Fixed**
 > Severity: **P2 — silent temporary-file and source leakage**
 > Area: mutation cleanup and local command staging
 
@@ -35,3 +35,16 @@ without exposing sensitive contents.
   primary failure.
 - Command-source leaks are reported without echoing secrets.
 - Normal cleanup remains idempotent and existing error causes are preserved.
+
+## Resolution
+
+Single-file atomic writes now use the same cleanup diagnostic contract as
+multi-file patches. Successful writes/edits that retain staged files or backups
+return `ERROR[cleanup_failed]` with `committed: true` semantics at the helper
+boundary, while failed writes preserve the primary `commit_failed`, stale, or
+file-size result and attach retained cleanup paths.
+
+Local command heredoc staging now reports temporary-source cleanup failures on
+both quick `run_shell_tool` compatibility output and structured command-session
+results. Diagnostics include the retained temp path and cleanup error, but not
+the materialized script contents.

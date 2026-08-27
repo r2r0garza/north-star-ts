@@ -10,17 +10,26 @@ function fakeEnv(): Environment & {
   statSizes: Map<string, number>
   readFileCalls: string[]
   failNextChmod: boolean
+  failRemove: (path: string) => boolean
 } {
   const files = new Map<string, string>()
   const modes = new Map<string, number>()
   const statSizes = new Map<string, number>()
   const readFileCalls: string[] = []
-  const env = {
+  const env: Environment & {
+    files: Map<string, string>
+    modes: Map<string, number>
+    statSizes: Map<string, number>
+    readFileCalls: string[]
+    failNextChmod: boolean
+    failRemove: (path: string) => boolean
+  } = {
     files,
     modes,
     statSizes,
     readFileCalls,
     failNextChmod: false,
+    failRemove: (_path: string) => false,
     resolve: async (p: string) => p,
     resolveLexical: (p: string) => p,
     readFile: async (p: string) => {
@@ -62,6 +71,9 @@ function fakeEnv(): Environment & {
       else modes.delete(to)
     },
     removeFile: async (p: string) => {
+      if (env.failRemove(p)) {
+        throw new Error(`injected cleanup failure for ${p}`)
+      }
       files.delete(p)
       modes.delete(p)
     },
@@ -189,15 +201,35 @@ describe("edit_file_tool", () => {
     env.modes.set("script.sh", 0o755)
     env.failNextChmod = true
 
-    await expect(
-      editFileTool.execute(
-        { path: "script.sh", old_string: "old", new_string: "new" },
-        { workspace: "/ws", env }
-      )
-    ).rejects.toThrow("injected chmod failure")
+    const result = await editFileTool.execute(
+      { path: "script.sh", old_string: "old", new_string: "new" },
+      { workspace: "/ws", env }
+    )
 
+    expect(result).toContain("ERROR[commit_failed]")
+    expect(result).toContain("injected chmod failure")
     expect(env.files.get("script.sh")).toBe("#!/bin/sh\necho old\n")
     expect(env.modes.get("script.sh")).toBe(0o755)
     expect([...env.files.keys()].filter((p) => p.includes(".tmp"))).toEqual([])
+  })
+
+  it("preserves the primary edit failure when temp cleanup also fails", async () => {
+    const env = fakeEnv()
+    env.files.set("script.sh", "#!/bin/sh\necho old\n")
+    env.modes.set("script.sh", 0o755)
+    env.failNextChmod = true
+    env.failRemove = (path) => path.includes(".north-star-")
+
+    const result = await editFileTool.execute(
+      { path: "script.sh", old_string: "old", new_string: "new" },
+      { workspace: "/ws", env }
+    )
+
+    expect(result).toContain("ERROR[commit_failed]")
+    expect(result).toContain("injected chmod failure")
+    expect(result).toContain("Cleanup failed for retained paths")
+    expect(result).toContain("rollback cleanup for script.sh")
+    expect(env.files.get("script.sh")).toBe("#!/bin/sh\necho old\n")
+    expect([...env.files.keys()].some((p) => p.includes(".tmp"))).toBe(true)
   })
 })

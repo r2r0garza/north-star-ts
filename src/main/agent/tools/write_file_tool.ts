@@ -6,6 +6,7 @@ import { toolError } from "./output"
 import {
   atomicWriteChecked,
   buildDiffPreview,
+  cleanupMessage,
   fileTooLargeMessage,
   fileRevision,
   isNotFoundError,
@@ -203,18 +204,34 @@ export const writeFileTool: Tool = {
     const write = await atomicWriteChecked({
       env,
       target,
+      path,
       content: finalContent,
       expectedRevision: initialRevision,
     })
     if (write !== "ok") {
       if ("code" in write && write.code === "file_too_large") {
-        return toolError("file_too_large", fileTooLargeMessage(write))
+        return toolError(
+          "file_too_large",
+          `${fileTooLargeMessage(write)}${cleanupMessage(write.cleanupErrors)}`
+        )
+      }
+      if ("code" in write && write.code === "cleanup_failed") {
+        return toolError(
+          "cleanup_failed",
+          `File content was written to ${path}, but cleanup failed.${cleanupMessage(write.cleanupErrors)} Manual cleanup is required for the retained paths.`
+        )
+      }
+      if ("code" in write && write.code === "commit_failed") {
+        return toolError(
+          "commit_failed",
+          `Write failed before ${path} was committed: ${write.error}${cleanupMessage(write.cleanupErrors)}`
+        )
       }
       const staleRevision =
         "staleRevision" in write ? write.staleRevision : null
       return toolError(
         "stale_file",
-        `${path} changed before the write could be saved. Current revision: ${staleRevision ?? "missing"}.`,
+        `${path} changed before the write could be saved. Current revision: ${staleRevision ?? "missing"}.${cleanupMessage("cleanupErrors" in write ? write.cleanupErrors : undefined)}`,
         "re-read the file and rebase the write"
       )
     }

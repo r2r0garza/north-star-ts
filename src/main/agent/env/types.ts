@@ -31,6 +31,7 @@ export interface ExecResult {
   outputTruncated?: boolean
   capturedOutputBytes?: number
   observedOutputBytes?: number
+  cleanupError?: CommandCleanupError
 }
 
 export interface ExecOptions {
@@ -54,6 +55,12 @@ export interface CommandChunk {
 export interface CommandExit {
   exitCode: number | null
   signal: NodeJS.Signals | null
+  cleanupError?: CommandCleanupError
+}
+
+export interface CommandCleanupError {
+  path: string
+  error: string
 }
 
 export interface CommandSessionHandle {

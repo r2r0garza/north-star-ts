@@ -4,10 +4,11 @@ import {
   buildDiffPreview,
   type FileTooLarge,
   FileTooLargeError,
+  type CleanupError,
   fileRevision,
-  isNotFoundError,
   makeTempPath,
   MUTATION_SOURCE_LIMITS,
+  removeCleanupFile,
   readFileMode,
   readRevision,
   revisionOfText,
@@ -488,15 +489,6 @@ type StalePatchFile = {
   cleanupErrors?: CleanupError[]
 }
 
-type CleanupPhase = "staging" | "success" | "rollback"
-
-export interface CleanupError {
-  phase: CleanupPhase
-  path: string
-  filePath: string
-  error: string
-}
-
 type FileTooLargeWithCleanup = FileTooLarge & {
   cleanupErrors?: CleanupError[]
 }
@@ -603,26 +595,6 @@ async function validatePlannedPatch(
     }
   }
   return undefined
-}
-
-async function removeCleanupFile(
-  env: Environment,
-  cleanupErrors: CleanupError[],
-  phase: CleanupPhase,
-  path: string,
-  filePath: string
-): Promise<void> {
-  try {
-    await env.removeFile(path)
-  } catch (error) {
-    if (isNotFoundError(error)) return
-    cleanupErrors.push({
-      phase,
-      path,
-      filePath,
-      error: error instanceof Error ? error.message : String(error),
-    })
-  }
 }
 
 export async function commitPatch(

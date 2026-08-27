@@ -78,12 +78,65 @@ export function isNotFoundError(error: unknown): boolean {
   return /\bENOENT\b|no such file|not found/i.test(message)
 }
 
+export type CleanupPhase = "staging" | "success" | "rollback"
+
+export interface CleanupError {
+  phase: CleanupPhase
+  path: string
+  filePath: string
+  error: string
+}
+
+export function cleanupMessage(cleanupErrors?: CleanupError[]): string {
+  if (!cleanupErrors || cleanupErrors.length === 0) return ""
+  return ` Cleanup failed for retained paths: ${cleanupErrors
+    .map(
+      (error) =>
+        `${error.path} (${error.phase} cleanup for ${error.filePath}: ${error.error})`
+    )
+    .join("; ")}.`
+}
+
+export async function removeCleanupFile(
+  env: Environment,
+  cleanupErrors: CleanupError[],
+  phase: CleanupPhase,
+  path: string,
+  filePath: string
+): Promise<void> {
+  try {
+    await env.removeFile(path)
+  } catch (error) {
+    if (isNotFoundError(error)) return
+    cleanupErrors.push({
+      phase,
+      path,
+      filePath,
+      error: error instanceof Error ? error.message : String(error),
+    })
+  }
+}
+
+type FileTooLargeWithCleanup = FileTooLarge & {
+  cleanupErrors?: CleanupError[]
+}
+
+export type AtomicWriteResult =
+  | "ok"
+  | { staleRevision: string | null; cleanupErrors?: CleanupError[] }
+  | FileTooLargeWithCleanup
+  | { code: "commit_failed"; error: string; cleanupErrors?: CleanupError[] }
+  | { code: "cleanup_failed"; committed: true; cleanupErrors: CleanupError[] }
+
 export async function atomicWriteChecked(opts: {
   env: Environment
   target: string
+  path?: string
   content: string
   expectedRevision?: string
-}): Promise<"ok" | { staleRevision: string | null } | FileTooLarge> {
+}): Promise<AtomicWriteResult> {
+  const displayPath = opts.path ?? opts.target
+  const cleanupErrors: CleanupError[] = []
   const current = await readRevision(opts.env, opts.target)
   if (current !== opts.expectedRevision) {
     return { staleRevision: current ?? null }
@@ -96,6 +149,58 @@ export async function atomicWriteChecked(opts: {
   const tmp = makeTempPath(opts.target)
   let backup: string | undefined
   let backedUp = false
+  let committed = false
+  let cleanupComplete = false
+  async function cleanupUncommitted(): Promise<void> {
+    if (cleanupComplete) return
+    cleanupComplete = true
+    await removeCleanupFile(
+      opts.env,
+      cleanupErrors,
+      "rollback",
+      tmp,
+      displayPath
+    )
+    if (backup && backedUp) {
+      const current = await readRevision(opts.env, opts.target).catch(
+        () => null
+      )
+      if (current === undefined) {
+        try {
+          await opts.env.rename(backup, opts.target)
+          backedUp = false
+        } catch (rollbackError) {
+          cleanupErrors.push({
+            phase: "rollback",
+            path: backup,
+            filePath: displayPath,
+            error:
+              rollbackError instanceof Error
+                ? rollbackError.message
+                : String(rollbackError),
+          })
+        }
+      } else {
+        await removeCleanupFile(
+          opts.env,
+          cleanupErrors,
+          "rollback",
+          backup,
+          displayPath
+        )
+        backedUp = false
+      }
+    }
+  }
+
+  async function stale(staleRevision: string | null) {
+    await cleanupUncommitted()
+    return {
+      staleRevision,
+      ...(cleanupErrors.length > 0 ? { cleanupErrors } : {}),
+    }
+  }
+
   try {
     await opts.env.writeFile(tmp, opts.content)
     if (originalMode !== undefined) {
@@ -103,32 +208,46 @@ export async function atomicWriteChecked(opts: {
     }
     const beforeRename = await readRevision(opts.env, opts.target)
     if (beforeRename !== opts.expectedRevision) {
-      return { staleRevision: beforeRename ?? null }
+      return stale(beforeRename ?? null)
     }
     if (originalMode !== undefined) {
       const beforeRenameMode = await readFileMode(opts.env, opts.target)
       if (beforeRenameMode !== originalMode) {
-        return { staleRevision: beforeRename ?? null }
+        return stale(beforeRename ?? null)
       }
     }
     if (!opts.env.installFileNoReplace) {
-      return { staleRevision: beforeRename ?? null }
+      return stale(beforeRename ?? null)
     }
     if (opts.expectedRevision === undefined) {
       try {
         await opts.env.installFileNoReplace(tmp, opts.target)
-        return "ok"
+        committed = true
+        await removeCleanupFile(
+          opts.env,
+          cleanupErrors,
+          "success",
+          tmp,
+          displayPath
+        )
+        return cleanupErrors.length > 0
+          ? { code: "cleanup_failed", committed: true, cleanupErrors }
+          : "ok"
       } catch {
         let staleRevision: string | null = null
         try {
           staleRevision = (await readRevision(opts.env, opts.target)) ?? null
         } catch (error) {
           if (error instanceof FileTooLargeError) {
-            return error
+            await cleanupUncommitted()
+            return {
+              ...error,
+              ...(cleanupErrors.length > 0 ? { cleanupErrors } : {}),
+            }
           }
           staleRevision = null
         }
-        return { staleRevision }
+        return stale(staleRevision)
       }
     }
     backup = makeTempPath(opts.target)
@@ -136,46 +255,84 @@ export async function atomicWriteChecked(opts: {
     backedUp = true
     const backedUpRevision = await readRevision(opts.env, backup)
     if (backedUpRevision !== opts.expectedRevision) {
-      return { staleRevision: backedUpRevision ?? null }
+      return stale(backedUpRevision ?? null)
     }
     if (originalMode !== undefined) {
       const backedUpMode = await readFileMode(opts.env, backup)
       if (backedUpMode !== originalMode) {
-        return { staleRevision: backedUpRevision ?? null }
+        return stale(backedUpRevision ?? null)
       }
     }
     try {
       await opts.env.installFileNoReplace(tmp, opts.target)
+      committed = true
     } catch {
       let staleRevision: string | null = null
       try {
         staleRevision = (await readRevision(opts.env, opts.target)) ?? null
       } catch (error) {
         if (error instanceof FileTooLargeError) {
-          return error
+          await cleanupUncommitted()
+          return {
+            ...error,
+            ...(cleanupErrors.length > 0 ? { cleanupErrors } : {}),
+          }
         }
         staleRevision = null
       }
-      return { staleRevision }
+      return stale(staleRevision)
     }
-    try {
-      await opts.env.removeFile(backup)
-      backedUp = false
-    } catch {
-      // The write has committed; the finally block makes one more best-effort
-      // cleanup attempt without converting success into a failed mutation.
+    await removeCleanupFile(
+      opts.env,
+      cleanupErrors,
+      "success",
+      tmp,
+      displayPath
+    )
+    await removeCleanupFile(
+      opts.env,
+      cleanupErrors,
+      "success",
+      backup,
+      displayPath
+    )
+    backedUp = false
+    return cleanupErrors.length > 0
+      ? { code: "cleanup_failed", committed: true, cleanupErrors }
+      : "ok"
+  } catch (error) {
+    await cleanupUncommitted()
+    return {
+      code: "commit_failed",
+      error: error instanceof Error ? error.message : String(error),
+      ...(cleanupErrors.length > 0 ? { cleanupErrors } : {}),
     }
-    return "ok"
   } finally {
-    await opts.env.removeFile(tmp).catch(() => {})
-    if (backup && backedUp) {
+    if (!cleanupComplete && !committed) {
+      await cleanupUncommitted()
+    }
+    if (backup && backedUp && committed) {
+      const retainedBackup = backup
       const current = await readRevision(opts.env, opts.target).catch(
         () => null
       )
       if (current === undefined) {
-        await opts.env.rename(backup, opts.target).catch(() => {})
+        await opts.env.rename(retainedBackup, opts.target).catch((error) => {
+          cleanupErrors.push({
+            phase: "rollback",
+            path: retainedBackup,
+            filePath: displayPath,
+            error: error instanceof Error ? error.message : String(error),
+          })
+        })
       } else {
-        await opts.env.removeFile(backup).catch(() => {})
+        await removeCleanupFile(
+          opts.env,
+          cleanupErrors,
+          committed ? "success" : "rollback",
+          retainedBackup,
+          displayPath
+        )
       }
     }
   }

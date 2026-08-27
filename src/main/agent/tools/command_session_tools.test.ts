@@ -174,6 +174,7 @@ function fakeWindowsPythonSpawn(seen: {
   commands: string[]
   scripts: string[]
   neverExit?: boolean
+  stdout?: string
 }): typeof spawn {
   return ((command: string) => {
     const child = new EventEmitter() as FakeChildProcess
@@ -195,7 +196,7 @@ function fakeWindowsPythonSpawn(seen: {
       const scriptPath = command.match(/^(?:py -3|python) "([^"]+)"$/)?.[1]
       if (scriptPath) {
         seen.scripts.push(scriptPath)
-        child.stdout.write(await readFile(scriptPath, "utf8"))
+        child.stdout.write(seen.stdout ?? (await readFile(scriptPath, "utf8")))
       } else {
         child.stdout.write(command)
       }
@@ -345,6 +346,44 @@ describe("command session tools", () => {
     }
   })
 
+  it("reports materialized heredoc cleanup failures without echoing script contents", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "cmd-heredoc-leak-ws-"))
+    const seen = {
+      commands: [] as string[],
+      scripts: [] as string[],
+      stdout: "done",
+    }
+    try {
+      const env = new LocalEnvironment(workspace, "host-access", {
+        platform: "win32",
+        spawn: fakeWindowsPythonSpawn(seen),
+        unlinkTempFile: async (path) => {
+          throw new Error(`injected unlink failure for ${path}`)
+        },
+      })
+
+      const result = parseResult(
+        await execCommandTool.execute(
+          {
+            command:
+              "python3 - <<'PY'\nSECRET = 'do-not-echo'\nprint('done')\nPY",
+            yield_ms: 1000,
+          },
+          ctx({ workspace, env })
+        )
+      )
+
+      expect(result.status).toBe("completed")
+      expect(result.cleanupError).toMatchObject({
+        path: seen.scripts[0],
+      })
+      expect(JSON.stringify(result.cleanupError)).not.toContain("do-not-echo")
+      await expect(access(seen.scripts[0])).resolves.toBeUndefined()
+    } finally {
+      await rm(workspace, { recursive: true, force: true })
+    }
+  })
+
   it("cleans up materialized Windows Python heredocs when a session times out", async () => {
     const workspace = await mkdtemp(join(tmpdir(), "cmd-heredoc-timeout-ws-"))
     const seen = {
@@ -432,6 +471,42 @@ describe("command session tools", () => {
         /^python ".*cowork-python-heredoc-.*\.py"$/
       )
       await expect(access(seen.scripts[0])).rejects.toThrow()
+    } finally {
+      await rm(workspace, { recursive: true, force: true })
+    }
+  })
+
+  it("reports run_shell heredoc cleanup failures with execution status", async () => {
+    const workspace = await mkdtemp(
+      join(tmpdir(), "run-shell-heredoc-leak-ws-")
+    )
+    const seen = {
+      commands: [] as string[],
+      scripts: [] as string[],
+      stdout: "compat",
+    }
+    try {
+      const env = new LocalEnvironment(workspace, "host-access", {
+        platform: "win32",
+        spawn: fakeWindowsPythonSpawn(seen),
+        unlinkTempFile: async (path) => {
+          throw new Error(`injected unlink failure for ${path}`)
+        },
+      })
+
+      const result = await runShellTool.execute(
+        {
+          command: "python - <<PY\nSECRET = 'do-not-echo'\nprint('compat')\nPY",
+          timeout_ms: 5000,
+        },
+        ctx({ workspace, env })
+      )
+
+      expect(result).toContain("ERROR[cleanup_failed]")
+      expect(result).toContain("Command finished with exit code 0")
+      expect(result).toContain(seen.scripts[0])
+      expect(result).not.toContain("do-not-echo")
+      await expect(access(seen.scripts[0])).resolves.toBeUndefined()
     } finally {
       await rm(workspace, { recursive: true, force: true })
     }

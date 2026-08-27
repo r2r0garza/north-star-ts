@@ -12,16 +12,23 @@ function fakeEnv(): Environment & {
   files: Map<string, string>
   statSizes: Map<string, number>
   readFileCalls: string[]
+  failRemove: (path: string) => boolean
 } {
   const files = new Map<string, string>()
   const statSizes = new Map<string, number>()
   const readFileCalls: string[] = []
   const enoent = (p: string) =>
     Object.assign(new Error(`ENOENT: ${p}`), { code: "ENOENT" })
-  return {
+  const env: Environment & {
+    files: Map<string, string>
+    statSizes: Map<string, number>
+    readFileCalls: string[]
+    failRemove: (path: string) => boolean
+  } = {
     files,
     statSizes,
     readFileCalls,
+    failRemove: (_path: string) => false,
     resolve: async (p: string) => p,
     resolveLexical: (p: string) => p,
     readFile: async (p: string) => {
@@ -52,6 +59,9 @@ function fakeEnv(): Environment & {
       files.set(to, content)
     },
     removeFile: async (p: string) => {
+      if (env.failRemove(p)) {
+        throw new Error(`injected cleanup failure for ${p}`)
+      }
       files.delete(p)
     },
     mkdirp: async () => {},
@@ -76,8 +86,8 @@ function fakeEnv(): Environment & {
       throw new Error("not implemented")
     },
     search: async () => ({
-      engine: "rg",
-      result: "content",
+      engine: "rg" as const,
+      result: "content" as const,
       matches: [],
       files: [],
       counts: [],
@@ -85,6 +95,7 @@ function fakeEnv(): Environment & {
     }),
     dispose: async () => {},
   }
+  return env
 }
 
 let env: ReturnType<typeof fakeEnv>
@@ -105,6 +116,24 @@ describe("write_file_tool", () => {
     expect(env.files.get("a.txt")).toBe("hello")
   })
 
+  it("reports cleanup_failed when a created file leaves its staged temp file", async () => {
+    env.failRemove = (path) => path.includes(".north-star-")
+
+    const result = await writeFileTool.execute(
+      { path: "a.txt", content: "hello" },
+      ctx
+    )
+
+    expect(result).toContain("ERROR[cleanup_failed]")
+    expect(result).toContain("File content was written to a.txt")
+    expect(result).toContain("success cleanup for a.txt")
+    expect(result).toContain("injected cleanup failure")
+    expect(env.files.get("a.txt")).toBe("hello")
+    expect([...env.files.keys()].some((path) => path.includes(".tmp"))).toBe(
+      true
+    )
+  })
+
   it("rejects an existing file in create mode", async () => {
     env.files.set("a.txt", "old")
     const result = await writeFileTool.execute(
@@ -122,6 +151,21 @@ describe("write_file_tool", () => {
       ctx
     )
     expect(result).toContain("Wrote 3 bytes to a.txt.")
+    expect(env.files.get("a.txt")).toBe("new")
+  })
+
+  it("reports cleanup_failed when an overwritten file leaves its backup", async () => {
+    env.files.set("a.txt", "old")
+    env.failRemove = (path) => path.includes(".north-star-")
+
+    const result = await writeFileTool.execute(
+      { path: "a.txt", content: "new", mode: "overwrite" },
+      ctx
+    )
+
+    expect(result).toContain("ERROR[cleanup_failed]")
+    expect(result).toContain("File content was written to a.txt")
+    expect(result).toContain("success cleanup for a.txt")
     expect(env.files.get("a.txt")).toBe("new")
   })
 
