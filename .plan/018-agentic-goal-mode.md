@@ -1,6 +1,8 @@
 # PR18: Agentic goal mode — a bounded plan → execute → review → fix loop
 
-> Status: **NOT STARTED**. Builds on `runAgentLoop` (the shared agent core), the `TaskRunner`
+> Status: **SUPERSEDED BY `025`**. The general Process engine can express this fixed pipeline as a
+> built-in Process template, so this stable-ID design record is not queued implementation work.
+> Originally planned to build on `runAgentLoop` (the shared agent core), the `TaskRunner`
 > (`009`–`016`, task_events + checkpoints), and the deterministic shell/git access from `002`/`006`.
 
 ## Context

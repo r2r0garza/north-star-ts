@@ -1,8 +1,10 @@
 # Slash commands — user-invoked skills (`/skill-name …`)
 
-> Status: **NOT STARTED** — design note. Builds on the skills system (loader + `read_skill` tool,
-> already shipped) and the chat request path. The shape below is a leading hypothesis to refine
-> before building.
+> Status: **PARTIALLY SHIPPED**. Commit `c5594a1` added `skills:list`, composer autocomplete,
+> keyboard selection, slash badges, and send-time rewriting to `<name> skill`. Still required to
+> complete this plan: deterministic `read_skill(name)` pre-injection in main, authoritative unknown-
+> skill validation, and persistence of the literal slash command while the model receives only its
+> remainder.
 
 ## Context
 

@@ -1,9 +1,10 @@
 # PR20: Durable memories — persisted, cross-conversation facts the agent remembers
 
-> Status: **NOT STARTED**. A prerequisite sub-feature split out of `014` (context builder, Q2).
-> `014` shipped the section framework; this fills the **durable-memories section** it reserved.
-> Builds on the SQLite layer (`001`), `runAgentLoop` + the tool interface (`002`/`003`), the approval
-> pipeline (a memory write is a gated side effect), and the `014` `ContextSection` seam.
+> Status: **SUPERSEDED BY SHIPPED IMPLEMENTATION**. PR #11 (`5fca9d8`, merged by `86eb458`) delivered
+> durable cross-conversation memory through an automatic background service and managed `memory-*`
+> skills. It did **not** implement this proposal's explicit gated `remember` tool, SQLite rows, or
+> list/delete manager. This file remains the original design record; any desire for those omitted
+> controls should become a new follow-up rather than putting the broad memory feature back in Next up.
 
 ## Context
 

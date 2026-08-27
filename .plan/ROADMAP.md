@@ -2,12 +2,12 @@
 
 Intended order of work. Plan files are numbered by **creation order** (stable IDs —
 never renumbered, referenced by number in git history). This file is the **priority
-order**, and is meant to be reordered freely as needs change. The number next to each
-item is its plan file, not its rank.
+order**, and is meant to be reordered freely as needs change. The backticked number in each
+item is its plan file; the ordered-list number is its current priority rank.
 
 ## Next up
 
-3. **`042` — Codex CLI provider.** Second concrete split from `034`. Adds **Codex CLI** as a
+1. **`042` — Codex CLI provider.** Second concrete split from `034`. Adds **Codex CLI** as a
    workspace-backed local subprocess provider, routed away from `runAgentLoop` into the same
    `agent/cli/` adapter layer. Uses `codex exec --json <message>` for the first turn, parses
    `thread.started.thread_id`, stores it, then resumes with `codex exec --json resume <thread_id>
@@ -18,7 +18,7 @@ item is its plan file, not its rank.
    sha, omit `--skip-git-repo-check`; if it returns null, include it. This applies to Chat,
    Interactive, and North Star because users may point Codex at ordinary non-git folders. Backend stays
    Local, and our internal tool loop and mode controls are disabled.
-5. **`045` — North Star MCP bridge for CLI providers.** After `042`, make North Star a second, distinct
+2. **`045` — North Star MCP bridge for CLI providers.** After `042`, make North Star a second, distinct
    MCP role: it remains a client of user-configured external servers, and also hosts a lazy,
    authenticated Streamable HTTP server on an ephemeral `127.0.0.1` port for the Claude Code and Codex
    subprocesses we launch. Inject the endpoint per turn (`claude --mcp-config`; Codex transient `-c`
@@ -27,7 +27,7 @@ item is its plan file, not its rank.
    North-Star-specific `index_query`; `045.2` adapts the existing renderer-backed
    `ask_user_question` round trip. Explicit adapters only—no blanket `runTool()` export, no external
    MCP proxy, and no duplicate filesystem/shell tools. Side-effect policy remains enforced server-side.
-6. **`039` — Inspectable agent-to-agent messaging. ⚠️ DESIGN-PENDING.** One phase-agent (B) **asks
+3. **`039` — Inspectable agent-to-agent messaging. ⚠️ DESIGN-PENDING.** One phase-agent (B) **asks
    another phase-agent (A) a question**, answered **from A's own context** — distinct from
    `spawn_subagent` (a fresh, context-less child). The `025` engine makes each phase-run's **worker
    conversation** addressable (`makeRunPhase` stamps a `taskId`/conversation per phase-run), so a gated
@@ -39,7 +39,7 @@ item is its plan file, not its rank.
    context, no mid-flight race); same-run targets only. Monitor renders the A↔B thread off a
    `process_phase`-style event (no new channel). **Likely splits:** `039.1` completed-target round-trip
    + storage + monitor; `039.2` asking a running agent (queued) + richer targeting. Open Qs above.
-7. **`037` — Process import / export.** Unlike `035`/`036` (files already on disk → import-only), a
+4. **`037` — Process import / export.** Unlike `035`/`036` (files already on disk → import-only), a
    Process lives **only in the DB** (`025` tables), so it needs an explicit **serialize ⇄ deserialize**
    to be shareable — the sharing use case you called out. **JSON** interchange (`ProcessExport`,
    `formatVersion`-guarded): **id-free**, edges reference phases by **`key`** (unique per process) so
@@ -53,7 +53,7 @@ item is its plan file, not its rank.
    builder affordances. **Ordered after `038`** so the format carries a phase's `subprocess_id` — a
    sub-process reference exports **by definition identity** (name/a stable ref), and import resolves or
    flags a missing referenced sub-process (like `037`'s missing-agent warning).
-8. **`032` — Process visual canvas.** The explicitly-deferred half of `026` (which shipped the
+5. **`032` — Process visual canvas.** The explicitly-deferred half of `026` (which shipped the
    **list-based** DAG builder and recorded a **visual node/edge canvas** as "later"). Renderer-first +
    one additive migration; **no engine/scheduling/routing change**. Phases become draggable **nodes**,
    dependencies **edges** drawn between handles (same `on_complete`/`on_each_subtask` trigger, same
@@ -67,40 +67,19 @@ item is its plan file, not its rank.
    toggle vs replace (lean **coexist**). The Radix-`Dialog` takeover means the inspector keeps
    `NativeSelect` (the `023`/`026` `pointer-events:none` finding). **Live-run-on-canvas deferred** — v1
    keeps the `026` nested-list monitor. Independent of `029`/`031`.
-9. **`020` — Durable memories.** The cross-conversation memories section `014` reserved: small,
-   persisted facts the agent writes (a **gated, explicit** `remember` tool — no silent profiling)
-   and that inject into future turns, **scoped** global / workspace / conversation (mirrors the
-   `action_allowlist` scoping). New `memories` table + a list/delete surface (durable +
-   cross-conversation ⇒ must be auditable/revocable); a `memoriesSection` renderer with an injection
-   cap. Split out of `014` Q2.
-10. **`010` — Container runtime profiles.** Decouple Workspace (the files) from Runtime (the env a
+6. **`010` — Container runtime profiles.** Decouple Workspace (the files) from Runtime (the env a
    tool call executes in). Replace the raw container `image` string with a named **profile**
    (`node` | `python` | `fullstack`), resolved to an image in the env factory; default/fallback =
    `fullstack` (Node + Python) so a Node repo that later adds a Python backend doesn't wedge.
    One profile per conversation, user-overridable in settings. Kills the "one workspace = one image
    forever" assumption **without** building auto-routing or image management (both deferred). Small
    refactor of `env/factory.ts` + `container.ts` + execution settings (JSON blob — no migration).
-11. **`005.1` — ContainerEnvironment stop in-flight.** The deferred half of `005`: killing the host
-   `docker/podman exec` client doesn't stop the in-container process. Needs its own kill mechanism
-   (in-container PID tracking / `exec kill`, or marker `pkill`). Out of scope when `005` shipped.
-12. **`007` — Slash commands for skills.** Let users force a skill with `/skill-name …` (pre-inject
-   the `read_skill` call), keeping today's model-discretionary path for plain messages. Adds a
-   `skills:list` IPC channel + composer autocomplete. Independent — schedule freely.
-13. **`018` — Agentic goal mode. ⚠️ SUPERSEDED by `025`** (the general Process engine — 018's fixed
-   pipeline becomes one built-in Process *template*; kept as a stable-ID file per convention, not
-   built as its own orchestrator). An opt-in **execution mode** (orthogonal to chat/interactive/
-   north_star): `simple` (today's one-pass behavior, default) vs `goal` (bounded **plan → execute →
-   review → fix → finalize**, capped by `maxIterations` — never unbounded). Modeled as a task-level
-   orchestrator inside the runner's `runOne` (one task / one forked conversation, calling
-   `runAgentLoop` once per phase), so it works for foreground AND background and inherits durable
-   events, crash-resume, and cancellation for free. First real consumer of the unused `checkpoints`
-   table (one checkpoint per phase = the resume cursor) and a new `phase_change` task event. Reviewer
-   is **deterministic-first** — tests/lint/build/file-existence/`git diff` via `Environment.exec`,
-   with an LLM review that *supplements* (can't flip a hard check failure). Manual invocation only this
-   PR (`/goal <request>` — reuses `007`'s composer slash-command affordance — + a "Run with review
-   loop" button); the Always/Ask/Manual/Off **setting is deferred** to its own plan. Placed by `007`
-   since both add `/`-command composer UI.
-14. **`024` — Index filesystem/git watcher.** The "live file watching" follow-up `008` deferred (and
+7. **`007` — Deterministic slash-command skill invocation (picker already shipped).** The composer
+   autocomplete, `skills:list` IPC, keyboard selection, and slash badges shipped in `c5594a1`. The
+   remaining work is the functional guarantee from the plan: a selected `/skill-name …` must
+   deterministically pre-inject `read_skill(skill-name)` before inference, validate unknown skills in
+   main, preserve the literal command in the transcript, and keep plain-message skill use discretionary.
+8. **`024` — Index filesystem/git watcher.** The "live file watching" follow-up `008` deferred (and
    `014` re-deferred). Today the workspace index — and the compact summary `buildIndexSummary`
    injects into the system prompt on every message send — only refreshes when `IndexService.
    ensureRunning` is called, which fires on conversation create/update or manual Start/Rebuild;
@@ -113,20 +92,23 @@ item is its plan file, not its rank.
    flip needn't pay for a tree walk). Reuses `loadGitignore`/`DEFAULT_SKIP_DIRS` + `readGitBranch`;
    gated by a new **"Watch workspace for changes"** toggle in the Workspace Indexing settings group
    (global store, no migration). Open Qs: watcher mechanism (`chokidar` vs core `fs.watch` vs
-   `@parcel/watcher`), watch scope/lifetime, debounce window, churn backpressure. Placed after `018`.
-15. **`053` — Linux Local sandbox adapter. DEFERRED.** Future hardening for `052`'s stronger Local
+   `@parcel/watcher`), watch scope/lifetime, debounce window, churn backpressure.
+
+## Deferred
+
+- **`053` — Linux Local sandbox adapter.** Future hardening for `052`'s stronger Local
    runtime profiles on Linux. Docker/Podman remains the supported Linux sandbox path for now; this
    plan only becomes active if we decide Local should enforce `read-only` / `workspace-write` without a
    container. Candidate adapters include Bubblewrap/namespaces and Landlock, but the acceptance bar is
    real OS enforcement for filesystem, network, and process-tree cleanup. Unsupported Linux hosts must
    continue to fail closed and point users to containers or explicit host access.
-16. **`054` — Windows Local sandbox adapter. DEFERRED.** Future hardening for `052`'s stronger Local
+- **`054` — Windows Local sandbox adapter.** Future hardening for `052`'s stronger Local
    runtime profiles on Windows. Docker/Podman remains the supported Windows sandbox path for now; this
    plan only becomes active if we decide Local should enforce `read-only` / `workspace-write` without a
    container. Likely requires more than Job Objects: process-tree cleanup plus filesystem and network
    restrictions may need AppContainer/restricted-token support or a packaged native helper. Unsupported
    Windows hosts must continue to fail closed and point users to containers or explicit host access.
-17. **`055` — Local filesystem openat helper. DEFERRED.** Future hardening required to close debug
+- **`055` — Local filesystem openat helper.** Future hardening required to close debug
    `054` completely. The current Node local filesystem backend now revalidates after a deterministic
    pre-syscall seam, but complete workspace confinement needs validation/use binding through opened
    directory handles and directory-relative primitives (`openat`/`renameat`/`linkat`/`unlinkat` or
@@ -134,14 +116,34 @@ item is its plan file, not its rank.
    preserve missing-leaf/no-replace/atomic-staging behavior, and prove parent swaps cannot redirect
    reads, writes, chmods, renames, links, unlinks, mkdir, list/stat, or search roots outside the
    workspace.
-18. **`043` — Copilot CLI provider. DEFERRED.** Split out of `034` but parked at the bottom for now.
+- **`043` — Copilot CLI provider.** Split out of `034` but parked for now.
    Probes under `cli_probes/copilot/` confirmed no-tool JSONL streaming, caller-assigned
    `--session-id`, resume, assistant message deltas, final `assistant.message`, and final `result`.
    Tool support is deliberately deferred: a shell-tool probe with `--allow-tool=shell` was rejected as
    too risky in an escalated signed-in environment, and the minimum safe non-interactive permission
    posture needs a separate decision. Revisit after Claude Code and Codex CLI are working.
 
+## Superseded
+
+- **`018` — Agentic goal mode.** Superseded by `025`, whose general Process engine can represent
+  `018`'s fixed plan → execute → review → fix → finalize pipeline as a built-in Process
+  template. The stable-ID plan file remains for history; it is not queued implementation work.
+
 ## Done
+
+- **`020` — Durable memories (replacement automatic-memory design).** Shipped in PR #11
+  (`5fca9d8`, merged by `86eb458`) as an opt-in background memory service rather than the plan's
+  proposed explicit `remember` tool/SQLite design. Completed turns feed managed `memory-*` skills:
+  identity/preferences are global, knowledge/lessons are workspace-scoped, and recent-session memory
+  is staged with raw reference logs. Memory uses a separately configurable model, reconciles pending
+  promotion on startup, is loaded through the normal progressive-disclosure skill path, and can be
+  disabled in Settings. The old proposal's gated writes, per-conversation SQLite rows, and list/delete
+  manager were not implemented; add a new follow-up plan if those controls are still desired.
+- **`005.1` — ContainerEnvironment stop in-flight.** Shipped in `d16475c`. Container commands now run
+  under an in-container supervisor that records the child process group; timeout, Stop, and command-
+  session termination signal that group and perform bounded cleanup instead of killing only the host
+  Docker/Podman client. Unit coverage verifies cleanup ordering, and Docker/Podman integration coverage
+  verifies that timed-out and explicitly killed commands leave no in-container child behind.
 
 - **`052.2` — Local shell confinement: enforced runtime profiles.** Added explicit Local runtime
   profiles (`host-access`, `workspace-write`, `read-only`) independent from approval mode. Host access
@@ -160,8 +162,9 @@ item is its plan file, not its rank.
   commands return completed JSON inline; longer commands return scoped runtime session ids with
   cursor-based bounded output, dropped-byte/truncation metadata, timeout cleanup, stdin/EOF support, and
   graceful-then-force termination. Local supports pipe mode and `node-pty` TTY mode; Container exposes an
-  equivalent `docker/podman exec -i` wrapper while preserving the documented `005.1` in-container child
-  cleanup gap. `run_shell_tool` is now a compatibility wrapper over the session path, and custom-agent
+  equivalent `docker/podman exec -i` wrapper. Its originally documented `005.1` in-container child
+  cleanup gap was subsequently closed by `d16475c`. `run_shell_tool` is now a compatibility wrapper
+  over the session path, and custom-agent
   `execute` permission includes the new tools. Verified: focused session/shell/category/scheduler tests
   pass; production build passes; `pnpm typecheck` reaches only the three known pre-existing test type
   errors in `open.test.ts`, `service.test.ts`, and `runner.test.ts`.
@@ -1122,15 +1125,13 @@ item is its plan file, not its rank.
   `d572805`, merged to `main`). The abort signal was already threaded end-to-end
   (`ctx.signal` → `env.exec` → `captureSpawn`); the real fix was process-group orphaning —
   `LocalEnvironment.exec` now spawns `detached` and abort/timeout SIGKILL the whole group, so a
-  pipeline/build's grandchildren die instead of being reparented to PID 1. The container half is
-  split out to `005.1` (in Next up).
+  pipeline/build's grandchildren die instead of being reparented to PID 1. The container half later
+  shipped as `005.1` (`d16475c`).
 
 ## Backlog (not yet planned)
 
-Tracked in `IMPLEMENTED-TOOLS.md` → "Not yet implemented". Near-term tool candidates:
-`apply_patch`, `read_extract`, `session_search`, `process_registry`, `tool_result_storage`. Larger:
-`skill_manager`, `tool_search`, `cron`/`blueprints`, `code_execution`. Deferred:
-web/SSRF, memory, subagents, MCP, browser/computer-use, media, integrations.
+Tracked in `IMPLEMENTED-TOOLS.md` → "Not yet implemented". This section is a loose idea pool, not
+part of the ordered Next up queue; reconcile it against that inventory before promotion.
 
 ## How to use this file
 
