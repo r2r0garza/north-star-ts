@@ -23,6 +23,8 @@ import type {
 } from "../env/types"
 import type { ToolContext } from "./types"
 
+const MODEL_OUTPUT_BYTES = 192 * 1024
+
 const nodeCmd = (code: string) =>
   `${JSON.stringify(process.execPath)} -e ${JSON.stringify(code)}`
 
@@ -762,6 +764,92 @@ describe("command session tools", () => {
     const reconstructed = await collectRecoverableOutput(started)
     expect(reconstructed).toBe(expected)
     expect(reconstructed).not.toContain("�")
+  })
+
+  it("caps the complete serialized command result across JSON expansion cases", async () => {
+    const cases: Array<{ name: string; raw: string; expected: string }> = [
+      {
+        name: "quotes",
+        raw: '"'.repeat(230 * 1024),
+        expected: '"'.repeat(230 * 1024),
+      },
+      {
+        name: "backslashes",
+        raw: "\\".repeat(230 * 1024),
+        expected: "\\".repeat(230 * 1024),
+      },
+      {
+        name: "newlines",
+        raw: "\n".repeat(230 * 1024),
+        expected: "\n".repeat(230 * 1024),
+      },
+      {
+        name: "controls",
+        raw: "\u0001\t".repeat(120 * 1024),
+        expected: "\u0001\t".repeat(120 * 1024),
+      },
+      {
+        name: "ordinary ASCII",
+        raw: "a".repeat(230 * 1024),
+        expected: "a".repeat(230 * 1024),
+      },
+      {
+        name: "ANSI",
+        raw: `\u001b[31m${"ansi\n".repeat(48 * 1024)}\u001b[0m`,
+        expected: "ansi\n".repeat(48 * 1024),
+      },
+      {
+        name: "UTF-8",
+        raw: "日本語".repeat(30 * 1024),
+        expected: "日本語".repeat(30 * 1024),
+      },
+    ]
+
+    for (const item of cases) {
+      const startedText = await execCommandTool.execute(
+        {
+          command: "fake",
+          max_output_bytes: 1024 * 1024,
+          yield_ms: 10,
+        },
+        ctx({
+          env: fakeEnv([
+            { stream: "pty", data: Buffer.from(item.raw, "utf8") },
+          ]),
+        })
+      )
+      const started = parseResult(startedText)
+
+      expect(
+        Buffer.byteLength(startedText, "utf8"),
+        `${item.name} initial result exceeded serialized cap`
+      ).toBeLessThanOrEqual(MODEL_OUTPUT_BYTES)
+      expect(started.modelTruncated, item.name).toBe(true)
+      expect(started.omittedBytes, item.name).toBeGreaterThan(0)
+
+      let result = started
+      while (
+        Number(result.nextCursor ?? result.cursor) < Number(result.totalBytes)
+      ) {
+        const polledText = await pollCommandTool.execute(
+          {
+            session_id: String(result.sessionId),
+            cursor: Number(result.nextCursor ?? result.cursor),
+            max_output_bytes: 1024 * 1024,
+          },
+          ctx()
+        )
+        expect(
+          Buffer.byteLength(polledText, "utf8"),
+          `${item.name} polled result exceeded serialized cap`
+        ).toBeLessThanOrEqual(MODEL_OUTPUT_BYTES)
+        result = parseResult(polledText)
+      }
+
+      await expect(collectRecoverableOutput(started)).resolves.toBe(
+        item.expected
+      )
+    }
   })
 
   it("keeps visible ANSI-stripped output pageable across model-capped pages", async () => {

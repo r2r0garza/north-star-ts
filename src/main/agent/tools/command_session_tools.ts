@@ -52,6 +52,8 @@ interface AgentCommandSession {
 
 interface RenderedOutput {
   output: string
+  requestedCursor: number
+  rawCap: number
   cursor: number
   nextCursor: number
   totalBytes: number
@@ -537,6 +539,8 @@ function renderSince(
   const omittedBytes = Math.max(0, session.totalBytes - renderedTo)
   return {
     output: stripAnsi(output),
+    requestedCursor: from,
+    rawCap: effectiveCap,
     cursor: renderedTo,
     nextCursor: renderedTo,
     totalBytes: session.totalBytes,
@@ -587,6 +591,45 @@ function pollSessionResult(
 }
 
 function renderCommandResult(
+  session: AgentCommandSession,
+  output: RenderedOutput,
+  opts: { includeSessionId: boolean }
+): string {
+  let fitted = output
+  let rendered = stringifyCommandResult(session, fitted, opts)
+  if (Buffer.byteLength(rendered, "utf8") <= MODEL_OUTPUT_BYTES) {
+    return rendered
+  }
+
+  let low = 0
+  let high = fitted.rawCap
+  let best = renderSince(session, fitted.requestedCursor, 0)
+  let bestRendered = stringifyCommandResult(session, best, opts)
+
+  while (low <= high) {
+    const mid = Math.floor((low + high) / 2)
+    const candidate = renderSince(session, fitted.requestedCursor, mid)
+    const serialized = stringifyCommandResult(session, candidate, opts)
+    if (Buffer.byteLength(serialized, "utf8") <= MODEL_OUTPUT_BYTES) {
+      best = candidate
+      bestRendered = serialized
+      low = mid + 1
+    } else {
+      high = mid - 1
+    }
+  }
+
+  fitted = best
+  rendered = bestRendered
+  while (Buffer.byteLength(rendered, "utf8") > MODEL_OUTPUT_BYTES) {
+    if (fitted.rawCap <= 0) break
+    fitted = renderSince(session, fitted.requestedCursor, fitted.rawCap - 1)
+    rendered = stringifyCommandResult(session, fitted, opts)
+  }
+  return rendered
+}
+
+function stringifyCommandResult(
   session: AgentCommandSession,
   output: RenderedOutput,
   opts: { includeSessionId: boolean }
