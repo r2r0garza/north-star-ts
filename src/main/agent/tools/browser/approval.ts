@@ -1,3 +1,5 @@
+import { createHash } from "crypto"
+
 export type BrowserInteractionKind =
   | "navigation"
   | "reversible_interaction"
@@ -45,13 +47,29 @@ export function summarizeBrowserPayload(text: string): string {
   return `${preview || "(empty)"} (${text.length} char${text.length === 1 ? "" : "s"})`
 }
 
+export function hashBrowserPayload(text: string): string {
+  return createHash("sha256").update(text, "utf8").digest("hex")
+}
+
 export function browserActionIdentity(input: {
   action: "click" | "type" | "type_submit"
+  url: string
   origin: string
   target: string
-  payloadSummary?: string
+  ref?: string
+  targetFingerprint?: string
+  payloadHash?: string
 }): string {
-  const parts = [`browser_${input.action}`, input.origin, input.target]
-  if (input.payloadSummary) parts.push(input.payloadSummary)
+  const parts = [
+    `browser_${input.action}`,
+    input.origin,
+    input.url || "unknown url",
+    input.target,
+  ]
+  if (input.ref) parts.push(`ref=${input.ref}`)
+  if (input.targetFingerprint) {
+    parts.push(`target=${input.targetFingerprint}`)
+  }
+  if (input.payloadHash) parts.push(`payload_sha256=${input.payloadHash}`)
   return parts.join(":")
 }

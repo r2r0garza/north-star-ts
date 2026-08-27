@@ -43,8 +43,11 @@ export const browserClickTool: Tool = {
     }
 
     let target = `element ${ref}`
+    let targetFingerprint = `ref=${ref}`
     try {
-      target = ctx.browser.describeRef(ref).target
+      const described = ctx.browser.describeRef(ref)
+      target = described.target
+      targetFingerprint = described.targetFingerprint
     } catch (err) {
       return toolError(
         "click_failed",
@@ -62,8 +65,11 @@ export const browserClickTool: Tool = {
       summary: `Click ${target} on ${origin}`,
       identity: browserActionIdentity({
         action: "click",
+        url,
         origin,
         target,
+        ref,
+        targetFingerprint,
       }),
       detail: {
         ref,

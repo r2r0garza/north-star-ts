@@ -4,6 +4,7 @@ import { toolError } from "../output"
 import {
   browserActionIdentity,
   browserOrigin,
+  hashBrowserPayload,
   summarizeBrowserPayload,
 } from "./approval"
 
@@ -53,8 +54,11 @@ export const browserTypeTool: Tool = {
     }
 
     let target = `element ${ref}`
+    let targetFingerprint = `ref=${ref}`
     try {
-      target = ctx.browser.describeRef(ref).target
+      const described = ctx.browser.describeRef(ref)
+      target = described.target
+      targetFingerprint = described.targetFingerprint
     } catch (err) {
       return toolError(
         "type_failed",
@@ -77,9 +81,12 @@ export const browserTypeTool: Tool = {
         : `Type into ${target} on ${origin}`,
       identity: browserActionIdentity({
         action: submit ? "type_submit" : "type",
+        url,
         origin,
         target,
-        payloadSummary: submit ? payloadSummary : undefined,
+        ref,
+        targetFingerprint,
+        payloadHash: submit ? hashBrowserPayload(text) : undefined,
       }),
       detail: {
         ref,

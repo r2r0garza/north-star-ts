@@ -76,12 +76,10 @@ export class PolicyEngine {
     // prompt. The upgrade runs BEFORE the allowlist check below, so an "always
     // allow this action" rule remains the per-action escape hatch.
     //
-    // CARVE-OUT: `browser` interactions (click/type/back) stay auto even on a
-    // local backend. Opening a page (browser_navigate) already prompted via the
-    // browser classifier's require_approval; once the user approved the page,
-    // prompting on every click/keystroke would make verifying a multi-step flow
-    // unusable. Navigation isn't affected — it's already require_approval, not
-    // allow, so it never reaches this upgrade branch.
+    // CARVE-OUT: browser actions classified as `allow` stay auto even on a
+    // local backend. The browser classifier itself keeps navigation, clicks, and
+    // submitted typing at require_approval; only reversible controls such as
+    // back/close and plain typing reach this branch as `allow`.
     const enforcedLocalProfile =
       ctx.localProfile === "read-only" || ctx.localProfile === "workspace-write"
     if (

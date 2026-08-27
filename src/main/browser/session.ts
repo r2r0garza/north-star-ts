@@ -54,6 +54,7 @@ export interface InteractionResult {
 export interface BrowserRefDescription {
   ref: string
   target: string
+  targetFingerprint: string
 }
 
 // Raised when a ref isn't in the current map (stale after navigation, or the
@@ -78,7 +79,10 @@ export class BrowserSession {
   // ref → backendDOMNodeId for the most recent snapshot. Cleared on navigation,
   // since node ids don't survive a document swap. A short label (role + name) is
   // kept alongside so an interaction can report what it acted on.
-  private refs = new Map<string, { backendNodeId: number; label: string }>()
+  private refs = new Map<
+    string,
+    { backendNodeId: number; label: string; targetFingerprint: string }
+  >()
 
   // Called with the element the user picked in pick mode. Set by the manager so
   // the pick can be forwarded to the main app renderer.
@@ -592,7 +596,10 @@ export class BrowserSession {
     const wc = this.view.webContents
     const dbg = wc.debugger
     this.refs.clear()
-    const nextRefs = new Map<string, { backendNodeId: number; label: string }>()
+    const nextRefs = new Map<
+      string,
+      { backendNodeId: number; label: string; targetFingerprint: string }
+    >()
     const lines: string[] = []
     let bytes = 0
     let refCounter = 0
@@ -634,13 +641,30 @@ export class BrowserSession {
         )
         if (!objectId) continue
         try {
-          const { nodes } = await sendCommand<{ nodes?: AXNode[] }>(
-            dbg,
-            "Accessibility.getPartialAXTree",
-            { objectId, fetchRelatives: false },
-            timeoutMs,
-            signal
-          )
+          const [axResult, domResult] = await Promise.all([
+            sendCommand<{ nodes?: AXNode[] }>(
+              dbg,
+              "Accessibility.getPartialAXTree",
+              { objectId, fetchRelatives: false },
+              timeoutMs,
+              signal
+            ),
+            sendCommand<{
+              result?: { value?: PickedElementDomDetails | null }
+            }>(
+              dbg,
+              "Runtime.callFunctionOn",
+              {
+                objectId,
+                functionDeclaration: DESCRIBE_PICKED_ELEMENT,
+                returnByValue: true,
+                silent: true,
+              },
+              timeoutMs,
+              signal
+            ).catch(() => null),
+          ])
+          const { nodes } = axResult
           const node = nodes?.[0]
           if (!node) continue
           axNodesRead++
@@ -666,6 +690,13 @@ export class BrowserSession {
             nextRefs.set(ref, {
               backendNodeId: node.backendDOMNodeId,
               label,
+              targetFingerprint: browserTargetFingerprint({
+                ref,
+                backendNodeId: node.backendDOMNodeId,
+                role,
+                name,
+                dom: domResult?.result?.value ?? null,
+              }),
             })
           } else {
             if (interactive && typeof node.backendDOMNodeId === "number") {
@@ -759,7 +790,11 @@ export class BrowserSession {
   // this before approval so cards can identify the target accurately.
   describeRef(ref: string): BrowserRefDescription {
     const entry = this.requireRef(ref)
-    return { ref, target: entry.label }
+    return {
+      ref,
+      target: entry.label,
+      targetFingerprint: entry.targetFingerprint,
+    }
   }
 
   // Click the element behind a ref: scroll it into view, resolve its box, and
@@ -859,7 +894,11 @@ export class BrowserSession {
   }
 
   // Resolve a ref or throw StaleRefError.
-  private requireRef(ref: string): { backendNodeId: number; label: string } {
+  private requireRef(ref: string): {
+    backendNodeId: number
+    label: string
+    targetFingerprint: string
+  } {
     const entry = this.refs.get(ref)
     if (!entry) throw new StaleRefError(ref)
     return entry
@@ -1199,4 +1238,24 @@ function boundedSnapshotValue(value: string): string {
   const normalized = value.replace(/\s+/g, " ").trim()
   if (normalized.length <= SNAPSHOT_MAX_VALUE_CHARS) return normalized
   return `${normalized.slice(0, SNAPSHOT_MAX_VALUE_CHARS - 3)}...`
+}
+
+function browserTargetFingerprint(input: {
+  ref: string
+  backendNodeId: number
+  role: string
+  name?: string
+  dom: PickedElementDomDetails | null
+}): string {
+  const parts = [
+    `ref=${input.ref}`,
+    `role=${input.role}`,
+    `backend=${input.backendNodeId}`,
+  ]
+  if (input.name) parts.push(`name=${boundedSnapshotValue(input.name)}`)
+  if (input.dom?.tag) parts.push(`tag=${input.dom.tag}`)
+  if (input.dom?.selector) {
+    parts.push(`selector=${boundedSnapshotValue(input.dom.selector)}`)
+  }
+  return parts.join("|")
 }

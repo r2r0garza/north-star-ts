@@ -7,6 +7,11 @@ import { DelegationClassifier } from "./delegation-classifier"
 import { BrowserActionClassifier } from "./browser-classifier"
 import { analyzeShellCommand, shellActionForCommand } from "./shell-analyzer"
 import {
+  browserActionIdentity,
+  hashBrowserPayload,
+  summarizeBrowserPayload,
+} from "../tools/browser/approval"
+import {
   PolicyEngine,
   type AllowlistLookup,
   type SandboxPolicyLookup,
@@ -41,7 +46,22 @@ function browserClick(ref: string): ToolAction {
     tool: "browser_click",
     kind: "browser",
     summary: `Click ${ref}`,
-    identity: `browser_click:${ref}`,
+    identity: browserActionIdentity({
+      action: "click",
+      origin: "https://app.example",
+      url: "https://app.example/records",
+      target: `button "${ref}"`,
+      ref,
+      targetFingerprint: `ref=${ref}|role=button|selector=#${ref}`,
+    }),
+    detail: {
+      actionType: "click",
+      origin: "https://app.example",
+      url: "https://app.example/records",
+      target: `button "${ref}"`,
+      ref,
+      interactionKind: "reversible_interaction",
+    },
   }
 }
 
@@ -50,10 +70,18 @@ function browserConsequentialClick(target: string): ToolAction {
     tool: "browser_click",
     kind: "browser",
     summary: `Click ${target} on https://app.example`,
-    identity: `browser_click:https://app.example:${target}`,
+    identity: browserActionIdentity({
+      action: "click",
+      origin: "https://app.example",
+      url: "https://app.example/records/alpha",
+      target,
+      ref: "e1",
+      targetFingerprint: "ref=e1|role=button|selector=#alpha button",
+    }),
     detail: {
       actionType: "click",
       origin: "https://app.example",
+      url: "https://app.example/records/alpha",
       target,
       interactionKind: "consequential_commit",
     },
@@ -65,10 +93,19 @@ function browserSubmitType(target: string, payloadSummary: string): ToolAction {
     tool: "browser_type",
     kind: "browser",
     summary: `Type into ${target} on https://app.example and submit`,
-    identity: `browser_type_submit:https://app.example:${target}:${payloadSummary}`,
+    identity: browserActionIdentity({
+      action: "type_submit",
+      origin: "https://app.example",
+      url: "https://app.example/compose",
+      target,
+      ref: "e2",
+      targetFingerprint: "ref=e2|role=textbox|selector=#message",
+      payloadHash: hashBrowserPayload(payloadSummary),
+    }),
     detail: {
       actionType: "type_submit",
       origin: "https://app.example",
+      url: "https://app.example/compose",
       target,
       payloadSummary,
       interactionKind: "consequential_commit",
@@ -743,8 +780,34 @@ describe("BrowserActionClassifier", () => {
     expect((verdict as { category?: string }).category).toBeUndefined()
   })
 
-  it("auto-allows interactions within an open page (click/type/back/close)", () => {
-    expect(bc.classify(browserClick("e3"))?.level).toBe("allow")
+  it("requires approval for every click because labels are only advisory", () => {
+    for (const target of [
+      'button "Post"',
+      'button "Apply"',
+      'button "Update"',
+      'button "Yes"',
+      "button",
+      'button "Details"',
+    ]) {
+      expect(
+        bc.classify({
+          ...browserClick("e3"),
+          summary: `Click ${target}`,
+          detail: {
+            actionType: "click",
+            origin: "https://app.example",
+            target,
+            interactionKind: "reversible_interaction",
+          },
+        })
+      ).toMatchObject({
+        level: "require_approval",
+        reason: "Browser action may commit an external change",
+      })
+    }
+  })
+
+  it("auto-allows reversible browser controls and non-submitted typing", () => {
     expect(
       bc.classify({
         tool: "browser_type",
@@ -786,6 +849,58 @@ describe("BrowserActionClassifier", () => {
     })
   })
 
+  it("builds different click identities for same-labelled controls on different records", () => {
+    const first = browserActionIdentity({
+      action: "click",
+      origin: "https://app.example",
+      url: "https://app.example/records",
+      target: 'button "Delete"',
+      ref: "e1",
+      targetFingerprint:
+        'ref=e1|role=button|selector=tr:nth-of-type(1) button[title="Delete"]',
+    })
+    const second = browserActionIdentity({
+      action: "click",
+      origin: "https://app.example",
+      url: "https://app.example/records",
+      target: 'button "Delete"',
+      ref: "e2",
+      targetFingerprint:
+        'ref=e2|role=button|selector=tr:nth-of-type(2) button[title="Delete"]',
+    })
+
+    expect(first).not.toBe(second)
+  })
+
+  it("uses exact payload hashes for submitted text identities, not redacted summaries", () => {
+    const firstPayload = "alice@example.com"
+    const secondPayload = "bruno@example.com"
+    expect(summarizeBrowserPayload(firstPayload)).toBe("[email] (17 chars)")
+    expect(summarizeBrowserPayload(secondPayload)).toBe("[email] (17 chars)")
+
+    const base = {
+      action: "type_submit" as const,
+      origin: "https://app.example",
+      url: "https://app.example/invite",
+      target: 'textbox "Email"',
+      ref: "e4",
+      targetFingerprint: "ref=e4|role=textbox|selector=#invite-email",
+    }
+    const first = browserActionIdentity({
+      ...base,
+      payloadHash: hashBrowserPayload(firstPayload),
+    })
+    const second = browserActionIdentity({
+      ...base,
+      payloadHash: hashBrowserPayload(secondPayload),
+    })
+
+    expect(first).not.toBe(second)
+    expect(first).toContain("payload_sha256=")
+    expect(first).not.toContain(firstPayload)
+    expect(second).not.toContain(secondPayload)
+  })
+
   it("returns null for non-browser actions (lets other classifiers run)", () => {
     expect(bc.classify(shell("ls"))).toBeNull()
     expect(bc.classify(fileWrite("a.ts"))).toBeNull()
@@ -796,11 +911,9 @@ describe("PolicyEngine — browser interaction carve-out (local backend)", () =>
   const allowNone: AllowlistLookup = { isAllowed: () => false }
   const engine = new PolicyEngine([new BrowserActionClassifier()], allowNone)
 
-  it("keeps a browser click auto-allowed on a local backend (no upgrade)", () => {
-    // Interactions are exempt from the local-backend allow→require_approval
-    // tightening, so a multi-step flow doesn't prompt on every click.
+  it("requires approval for a browser click on a local backend", () => {
     expect(engine.decide(browserClick("e3"), { sandboxed: false }).level).toBe(
-      "allow"
+      "require_approval"
     )
   })
 

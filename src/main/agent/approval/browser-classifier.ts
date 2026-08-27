@@ -1,12 +1,11 @@
 import type { ActionClassifier, ActionDecision, ToolAction } from "./types"
 
 // Classifier for `browser` actions. Navigation opens an arbitrary origin (a real
-// network side effect), so it always prompts. Clearly reversible interactions
-// WITHIN an already-open page stay auto-allowed so verification remains usable.
-// Consequential clicks and submitted typing prompt separately because approving
-// a page does not authorize purchase/delete/send/permission changes available on
-// that authenticated page. Reads (browser_snapshot / browser_screenshot) build
-// no ToolAction, so they never reach the engine at all, like file reads.
+// network side effect), so it always prompts. Clicks and submitted typing can
+// commit external state even when the accessible label looks harmless ("Post",
+// "Apply", "Yes", or icon-only), so they prompt by default. Reads
+// (browser_snapshot / browser_screenshot) build no ToolAction, so they never
+// reach the engine at all, like file reads.
 //
 // The `allow` verdicts here rely on the local-backend carve-out in policy.ts:
 // only browser actions classified here as `allow` skip the generic local
@@ -16,10 +15,9 @@ import type { ActionClassifier, ActionDecision, ToolAction } from "./types"
 // downgrade keys on category, and there is no browser sandbox category, so a
 // container backend doesn't silence the navigate prompt either.
 //
-// The set of tool names that merely interact with the current page (no new
-// origin fetched). Anything else with kind "browser" is treated as navigation.
+// The set of browser tools that are still treated as reversible page/session
+// controls. Anything else with kind "browser" is treated as navigation.
 const INTERACTION_TOOLS = new Set([
-  "browser_click",
   "browser_type",
   "browser_back",
   "browser_close",
@@ -29,7 +27,10 @@ const INTERACTION_TOOLS = new Set([
 export class BrowserActionClassifier implements ActionClassifier {
   classify(action: ToolAction): ActionDecision | null {
     if (action.kind !== "browser") return null
-    if (action.detail?.interactionKind === "consequential_commit") {
+    if (
+      action.tool === "browser_click" ||
+      action.detail?.interactionKind === "consequential_commit"
+    ) {
       return {
         level: "require_approval",
         reason: "Browser action may commit an external change",
