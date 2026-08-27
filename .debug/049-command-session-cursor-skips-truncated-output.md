@@ -1,6 +1,6 @@
 # Command-session cursors can advance past output omitted from the model
 
-> Status: **OPEN**
+> Status: **Resolved**
 > Severity: **P2 — unrecoverable command-output loss**
 > Area: command session pagination
 
@@ -34,3 +34,18 @@ second opaque truncation pass to an already paginated result.
 - Repeated polling reconstructs retained output without gaps or duplication.
 - Model-cap truncation and ring-buffer drops are reported separately.
 - Completed commands remain pageable whenever output was omitted.
+
+## Resolution
+
+- Session pagination now applies a model-safe page cap before advancing the
+  cursor, and command results no longer run a second opaque model truncation pass
+  over already paginated output.
+- Results expose `nextCursor`, `omittedBytes`, and `modelTruncated` separately
+  from ring-buffer `droppedBytes`.
+- Completed commands include `sessionId` whenever omitted output is still
+  recoverable through polling.
+
+## Verification
+
+- `npm test -- src/main/agent/tools/command_session_tools.test.ts`
+- `npm run typecheck`

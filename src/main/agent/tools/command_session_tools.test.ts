@@ -63,6 +63,35 @@ async function pollUntilTerminal(
   )
 }
 
+async function collectRecoverableOutput(
+  first: Record<string, unknown>
+): Promise<string> {
+  let result = first
+  let output = String(result.output ?? "")
+  let cursor = Number(result.nextCursor ?? result.cursor)
+  const totalBytes = Number(result.totalBytes)
+  const sessionId = String(result.sessionId ?? "")
+
+  while (cursor < totalBytes) {
+    expect(sessionId).not.toBe("")
+    result = parseResult(
+      await pollCommandTool.execute(
+        {
+          session_id: sessionId,
+          cursor,
+          max_output_bytes: 1024 * 1024,
+        },
+        ctx()
+      )
+    )
+    expect(Number(result.nextCursor ?? result.cursor)).toBeGreaterThan(cursor)
+    output += String(result.output ?? "")
+    cursor = Number(result.nextCursor ?? result.cursor)
+  }
+
+  return output
+}
+
 class FakeCommandHandle implements CommandSessionHandle {
   private dataCallbacks: Array<(chunk: CommandChunk) => void> = []
   private exitCallbacks: Array<(exit: CommandExit) => void> = []
@@ -457,6 +486,69 @@ describe("command session tools", () => {
     expect(String(polled.output)).not.toContain("one")
   })
 
+  it("keeps completed command output pageable when the model page cap is hit", async () => {
+    const expected = Array.from(
+      { length: 320 },
+      (_, i) => `marker-${String(i).padStart(3, "0")}-${"x".repeat(700)}\n`
+    ).join("")
+
+    const started = parseResult(
+      await execCommandTool.execute(
+        {
+          command: "fake",
+          max_output_bytes: 1024 * 1024,
+          yield_ms: 10,
+        },
+        ctx({
+          env: fakeEnv([
+            { stream: "stdout", data: Buffer.from(expected, "utf8") },
+          ]),
+        })
+      )
+    )
+
+    expect(started.status).toBe("completed")
+    expect(started.sessionId).toBeTruthy()
+    expect(started.modelTruncated).toBe(true)
+    expect(started.omittedBytes).toBeGreaterThan(0)
+    expect(started.cursor).toBe(started.nextCursor)
+    expect(Number(started.cursor)).toBeLessThan(Number(started.totalBytes))
+
+    await expect(collectRecoverableOutput(started)).resolves.toBe(expected)
+  })
+
+  it("paginates running command output without advancing past omitted bytes", async () => {
+    const prefix = "running-page-start\n"
+    const body = "y".repeat(220 * 1024)
+    const suffix = "\nrunning-page-end\n"
+    const expected = `${prefix}${body}${suffix}`
+
+    const started = parseResult(
+      await execCommandTool.execute(
+        {
+          command: nodeCmd(
+            `process.stdout.write(${JSON.stringify(expected)}); setTimeout(() => {}, 1000)`
+          ),
+          max_output_bytes: 1024 * 1024,
+          yield_ms: 100,
+        },
+        ctx()
+      )
+    )
+
+    expect(started.status).toBe("running")
+    expect(started.modelTruncated).toBe(true)
+    expect(started.omittedBytes).toBeGreaterThan(0)
+    expect(String(started.output)).toContain(prefix)
+    expect(String(started.output)).not.toContain(suffix)
+
+    await expect(collectRecoverableOutput(started)).resolves.toBe(expected)
+    await terminateCommandTool.execute(
+      { session_id: String(started.sessionId), cursor: Number(started.cursor) },
+      ctx()
+    )
+  })
+
   it("keeps bounded polling failures quick for non-terminating sessions", async () => {
     const started = parseResult(
       await execCommandTool.execute(
@@ -544,6 +636,8 @@ describe("command session tools", () => {
     expect(started.cursor).toBe(8)
     expect(started.totalBytes).toBe(8)
     expect(started.droppedBytes).toBe(4)
+    expect(started.omittedBytes).toBe(0)
+    expect(started.modelTruncated).toBe(false)
     expect(started.truncated).toBe(true)
   })
 
@@ -569,6 +663,58 @@ describe("command session tools", () => {
     expect(started.totalBytes).toBe(9)
     expect(started.droppedBytes).toBe(6)
     expect(started.truncated).toBe(true)
+  })
+
+  it("paginates multi-byte UTF-8 output without gaps or replacement characters", async () => {
+    const expected = `${"日本語".repeat(25_000)}done\n`
+    const started = parseResult(
+      await execCommandTool.execute(
+        {
+          command: "fake",
+          max_output_bytes: 1024 * 1024,
+          yield_ms: 10,
+        },
+        ctx({
+          env: fakeEnv([
+            { stream: "stdout", data: Buffer.from(expected, "utf8") },
+          ]),
+        })
+      )
+    )
+
+    expect(started.modelTruncated).toBe(true)
+    expect(String(started.output)).not.toContain("�")
+    const reconstructed = await collectRecoverableOutput(started)
+    expect(reconstructed).toBe(expected)
+    expect(reconstructed).not.toContain("�")
+  })
+
+  it("keeps visible ANSI-stripped output pageable across model-capped pages", async () => {
+    const expected = Array.from(
+      { length: 12_000 },
+      (_, i) => `ansi-${String(i).padStart(3, "0")}\n`
+    ).join("")
+    const raw = expected.replace(/^(.+)$/gm, "\u001b[31m$1\u001b[0m")
+
+    const started = parseResult(
+      await execCommandTool.execute(
+        {
+          command: "fake",
+          max_output_bytes: 1024 * 1024,
+          yield_ms: 10,
+        },
+        ctx({
+          env: fakeEnv([{ stream: "pty", data: Buffer.from(raw, "utf8") }]),
+        })
+      )
+    )
+
+    expect(String(started.output)).not.toContain("\u001b")
+    expect(started.modelTruncated).toBe(true)
+    const reconstructed = await collectRecoverableOutput(started)
+    expect(reconstructed).toContain("ansi-000")
+    expect(reconstructed).toContain("ansi-11999")
+    expect(reconstructed).not.toContain("\u001b")
   })
 
   it("preserves stream order while partially trimming the oldest chunk", async () => {

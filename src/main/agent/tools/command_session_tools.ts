@@ -12,6 +12,7 @@ const DEFAULT_YIELD_MS = 1_000
 const MAX_YIELD_MS = 30_000
 const DEFAULT_OUTPUT_BYTES = 64 * 1024
 const MAX_OUTPUT_BYTES = 1024 * 1024
+const MODEL_OUTPUT_BYTES = 192 * 1024
 const COMPLETED_SESSION_TTL_MS = 5 * 60_000
 const TERMINATE_GRACE_MS = 1_500
 
@@ -47,8 +48,11 @@ interface AgentCommandSession {
 interface RenderedOutput {
   output: string
   cursor: number
+  nextCursor: number
   totalBytes: number
   droppedBytes: number
+  omittedBytes: number
+  modelTruncated: boolean
   truncated: boolean
   chunks: Array<{ stream: "stdout" | "stderr" | "pty"; text: string }>
 }
@@ -101,7 +105,9 @@ export const execCommandTool: Tool = {
     const result = await startCommand(args, ctx, { compatibility: false })
     if ("error" in result) return result.error
     return renderCommandResult(result.session, result.output, {
-      includeSessionId: result.session.status === "running",
+      includeSessionId:
+        result.session.status === "running" ||
+        result.output.cursor < result.output.totalBytes,
     })
   },
 }
@@ -484,14 +490,17 @@ function renderSince(
 ): RenderedOutput {
   const from = Math.max(0, Math.floor(cursor))
   const effectiveFrom = Math.max(from, session.droppedBytes)
+  const effectiveCap = Math.min(cap, MODEL_OUTPUT_BYTES)
   let bytes = 0
   let renderedTo = effectiveFrom
   let truncated = from < session.droppedBytes
+  let modelTruncated = false
   const chunks: RenderedOutput["chunks"] = []
   for (const chunk of session.chunks) {
     if (chunk.end <= effectiveFrom) continue
-    if (bytes >= cap) {
+    if (bytes >= effectiveCap) {
       truncated = true
+      modelTruncated = true
       break
     }
     const offset = Math.max(0, effectiveFrom - chunk.start)
@@ -499,23 +508,28 @@ function renderSince(
     if (available.offset > offset) truncated = true
     renderedTo = chunk.start + available.offset
     const keep =
-      available.data.length > cap - bytes
-        ? utf8SafePrefix(available.data, cap - bytes)
+      available.data.length > effectiveCap - bytes
+        ? utf8SafePrefix(available.data, effectiveCap - bytes)
         : available.data
     bytes += keep.length
     renderedTo += keep.length
     chunks.push({ stream: chunk.stream, text: keep.toString("utf8") })
     if (keep.length < available.data.length) {
       truncated = true
+      modelTruncated = true
       break
     }
   }
   const output = chunks.map((chunk) => chunk.text).join("")
+  const omittedBytes = Math.max(0, session.totalBytes - renderedTo)
   return {
     output: stripAnsi(output),
     cursor: renderedTo,
+    nextCursor: renderedTo,
     totalBytes: session.totalBytes,
     droppedBytes: Math.max(0, effectiveFrom - from),
+    omittedBytes,
+    modelTruncated,
     truncated,
     chunks,
   }
@@ -569,13 +583,16 @@ function renderCommandResult(
     status: session.status,
     ...(opts.includeSessionId ? { sessionId: session.id } : {}),
     cursor: output.cursor,
+    nextCursor: output.nextCursor,
     totalBytes: output.totalBytes,
     droppedBytes: output.droppedBytes,
+    omittedBytes: output.omittedBytes,
+    modelTruncated: output.modelTruncated,
     truncated: output.truncated,
     durationMs,
     exitCode: session.exitCode,
     signal: session.signal,
-    output: truncateForModel(output.output).text,
+    output: output.output,
   }
   return JSON.stringify(body, null, 2)
 }

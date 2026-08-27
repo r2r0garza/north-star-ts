@@ -55,7 +55,7 @@ a brief names a prerequisite.
 | 46 | P2 | Closed | [Local reads materialize the entire file](./046-local-read-materializes-entire-file.md) | Local filesystem reads |
 | 47 | P2 | Open | [Local safe writes ignore short writes](./047-local-safe-fs-short-write.md) | Local filesystem writes |
 | 48 | P2 | Open | [Local runtime and sandbox portability gap](./048-local-tool-runtime-and-sandbox-portability.md) | Local execution backend |
-| 49 | P2 | Open | [Command cursors skip model-truncated output](./049-command-session-cursor-skips-truncated-output.md) | Command session pagination |
+| 49 | P2 | Resolved | [Command cursors skip model-truncated output](./049-command-session-cursor-skips-truncated-output.md) | Command session pagination |
 | 50 | P2 | Open | [MCP call lifecycle and output are unbounded](./050-mcp-call-lifecycle-unbounded.md) | MCP client manager |
 | 51 | P2 | Open | [Single-file cleanup failures are suppressed](./051-single-file-cleanup-failures-suppressed.md) | Mutation and command cleanup |
 | 52 | P2 | Open | [Database-backed tests are silently skipped](./052-sqlite-integration-tests-silently-skipped.md) | Test infrastructure and CI |
