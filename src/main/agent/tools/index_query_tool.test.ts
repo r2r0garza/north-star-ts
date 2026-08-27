@@ -18,6 +18,8 @@ try {
 
 import { indexQueryTool } from "./index_query_tool"
 import { IndexService } from "../../index/service"
+import * as indexFilesRepo from "../../db/repositories/index-files"
+import * as indexSymbolsRepo from "../../db/repositories/index-symbols"
 import type { ToolContext } from "./types"
 import type { TaskRunner } from "../../tasks/runner"
 
@@ -137,6 +139,71 @@ describe.skipIf(!sqliteLoads)("index_query_tool", () => {
     expect(out).toContain("stopped at 5 files")
     // Exactly 5 paths shown (+ the banner line).
     expect(out.split("\n").filter((l) => l.endsWith(".ts"))).toHaveLength(5)
+  })
+
+  it("clamps every limited repository query before execution", async () => {
+    await writeFile(
+      join(root, "a.ts"),
+      `import { thing } from "pkg"\nexport const Target = 1`
+    )
+    await buildIndex()
+
+    const symbolSpy = vi.spyOn(indexSymbolsRepo, "findSymbolsByName")
+    const importsSpy = vi.spyOn(indexSymbolsRepo, "findImportsOf")
+    const filesSpy = vi.spyOn(indexFilesRepo, "listFilesMatching")
+
+    const cases = [
+      { input: 1_000_000, symbol: 101, imports: 101, files: 1001 },
+      { input: Infinity, symbol: 51, imports: 51, files: 501 },
+      { input: 5.8, symbol: 6, imports: 6, files: 6 },
+      { input: -1, symbol: 51, imports: 51, files: 501 },
+      { input: 7, symbol: 8, imports: 8, files: 8 },
+    ]
+
+    for (const c of cases) {
+      await run({ op: "find_symbol", query: "Target", limit: c.input })
+      expect(
+        symbolSpy.mock.calls.at(-1)?.[2] as { limit?: number } | undefined
+      ).toMatchObject({ limit: c.symbol })
+
+      await run({ op: "what_imports", query: "pkg", limit: c.input })
+      expect(importsSpy.mock.calls.at(-1)?.[2]).toBe(c.imports)
+
+      await run({ op: "list_files", query: ".ts", limit: c.input })
+      expect(filesSpy.mock.calls.at(-1)?.[2]).toBe(c.files)
+    }
+  })
+
+  it("reports when capped symbol and import results may have more matches", async () => {
+    for (let i = 0; i < 105; i++) {
+      await writeFile(
+        join(root, `f${String(i).padStart(3, "0")}.ts`),
+        `import { thing } from "pkg"\nexport const Target = ${i}`
+      )
+    }
+    await buildIndex()
+
+    const symbols = await run({
+      op: "find_symbol",
+      query: "Target",
+      limit: 1_000_000,
+    })
+    expect(symbols).toContain("stopped at 100 symbols — more matches may exist")
+    expect(
+      symbols.split("\n").filter((l) => l.includes("const Target"))
+    ).toHaveLength(100)
+
+    const importers = await run({
+      op: "what_imports",
+      query: "pkg",
+      limit: 1_000_000,
+    })
+    expect(importers).toContain(
+      "stopped at 100 imports — more matches may exist"
+    )
+    expect(
+      importers.split("\n").filter((l) => l.includes("imports thing"))
+    ).toHaveLength(100)
   })
 
   it("metadata renders a compact digest, not raw JSON", async () => {
