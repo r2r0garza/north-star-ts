@@ -1,6 +1,6 @@
 # Byte truncation can split a UTF-8 code point
 
-> Status: **OPEN**
+> Status: **Resolved**
 > Severity: **P3 — corrupted tool and diff output**
 > Area: output truncation
 
@@ -26,3 +26,18 @@ Reserve space for the note so the complete returned result also respects its cap
 - Truncation never introduces U+FFFD or partial code points.
 - Generic output and diff previews share the same tested implementation.
 - Returned bytes, including metadata, remain bounded.
+
+## Resolution
+
+- Added a shared UTF-8-safe prefix helper in `src/main/agent/tools/output.ts`.
+- Reworked generic model-output truncation to reserve byte budget for the
+  truncation note, including metadata and recovery hints.
+- Routed git diff preview clipping through the shared UTF-8-safe truncation
+  helper.
+- Added regression coverage for 2-, 3-, and 4-byte characters at cap boundaries,
+  with and without newline fallback.
+
+## Verification
+
+- `npm test -- src/main/agent/tools/output.test.ts src/main/git/diff.test.ts`
+- `npm run typecheck`

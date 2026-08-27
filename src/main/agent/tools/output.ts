@@ -20,6 +20,52 @@ export interface TruncateResult {
   note?: string
 }
 
+export function utf8SafePrefix(
+  text: string,
+  maxBytes: number
+): { text: string; bytes: number } {
+  if (maxBytes <= 0) return { text: "", bytes: 0 }
+  if (Buffer.byteLength(text, "utf8") <= maxBytes) {
+    return { text, bytes: Buffer.byteLength(text, "utf8") }
+  }
+
+  let bytes = 0
+  let out = ""
+  for (const char of text) {
+    const next = Buffer.byteLength(char, "utf8")
+    if (bytes + next > maxBytes) break
+    out += char
+    bytes += next
+  }
+  return { text: out, bytes }
+}
+
+export function truncateUtf8Text(
+  text: string,
+  maxBytes: number
+): { text: string; truncated: boolean } {
+  if (Buffer.byteLength(text, "utf8") <= maxBytes) {
+    return { text, truncated: false }
+  }
+
+  const prefix = utf8SafePrefix(text, maxBytes).text
+  const lastNl = prefix.lastIndexOf("\n")
+  return {
+    text: lastNl > 0 ? prefix.slice(0, lastNl) : prefix,
+    truncated: true,
+  }
+}
+
+function fitTextWithNote(text: string, note: string, maxBytes: number): string {
+  const noteBytes = Buffer.byteLength(note, "utf8")
+  if (noteBytes >= maxBytes) return utf8SafePrefix(note, maxBytes).text
+
+  const separatorBytes = text.length > 0 ? 1 : 0
+  const bodyBudget = Math.max(0, maxBytes - noteBytes - separatorBytes)
+  const body = truncateUtf8Text(text, bodyBudget).text
+  return body ? `${body}\n${note}` : note
+}
+
 // Cap `text` by both line count and byte size, whichever is hit first. When
 // truncated, the returned `text` already has a trailing note appended telling
 // the model how many lines/bytes it's seeing and how to get more.
@@ -46,11 +92,7 @@ export function truncateForModel(
 
   // Byte cap (UTF-8). Trim to a line boundary so we don't cut mid-line.
   if (Buffer.byteLength(out, "utf8") > maxBytes) {
-    const buf = Buffer.from(out, "utf8").subarray(0, maxBytes)
-    let sliced = buf.toString("utf8")
-    const lastNl = sliced.lastIndexOf("\n")
-    if (lastNl > 0) sliced = sliced.slice(0, lastNl)
-    out = sliced
+    out = truncateUtf8Text(out, maxBytes).text
     truncated = true
     reason = reason
       ? `${reason}; also capped at ${maxBytes} bytes`
@@ -62,7 +104,7 @@ export function truncateForModel(
   const metadata = opts.metadata ? ` ${JSON.stringify(opts.metadata)}` : ""
   const recovery = opts.recoveryHint ? ` — ${opts.recoveryHint}` : ""
   const note = `[truncated: ${reason}${recovery}${metadata}]`
-  return { text: `${out}\n${note}`, truncated: true, note }
+  return { text: fitTextWithNote(out, note, maxBytes), truncated: true, note }
 }
 
 export function renderMetadata(metadata: Record<string, unknown>): string {
