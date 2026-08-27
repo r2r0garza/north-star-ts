@@ -20,7 +20,21 @@ import type {
 // Caps so a model-authored write (dashboard_write, plan 033.2) can't blow up the
 // table. Generous for real dashboards — a handful of widgets, small configs.
 export const MAX_WIDGETS = 64
-const MAX_JSON_CHARS = 200_000
+export const MAX_JSON_CHARS = 200_000
+
+export class DashboardJsonTooLargeError extends Error {
+  readonly code = "dashboard_json_too_large"
+
+  constructor(
+    readonly size: number,
+    readonly limit: number
+  ) {
+    super(
+      `Dashboard JSON value is ${size} characters, above the ${limit} character limit. Reduce the widget config, recipe, or cached rows before saving.`
+    )
+    this.name = "DashboardJsonTooLargeError"
+  }
+}
 
 const VALID_TYPES: ReadonlySet<DashboardWidgetType> = new Set([
   "chart",
@@ -52,15 +66,26 @@ function normalizeDataStatus(status: unknown): DashboardWidgetDataStatus {
 }
 
 // Serialize a JSON-able value for a TEXT column: null passes through, everything
-// else is JSON.stringify'd and capped. An unserializable value becomes null.
+// else is JSON.stringify'd and size-checked. An unserializable value becomes
+// null, but oversized JSON is rejected before any SQL write can corrupt a cell.
 function toJsonText(value: unknown): string | null {
   if (value === null || value === undefined) return null
   try {
     const text = JSON.stringify(value)
-    return text.length > MAX_JSON_CHARS ? text.slice(0, MAX_JSON_CHARS) : text
-  } catch {
+    if (typeof text !== "string") return null
+    if (text.length > MAX_JSON_CHARS) {
+      throw new DashboardJsonTooLargeError(text.length, MAX_JSON_CHARS)
+    }
+    return text
+  } catch (err) {
+    if (err instanceof DashboardJsonTooLargeError) throw err
     return null
   }
+}
+
+function toOptionalJsonText(value: unknown): string | null | undefined {
+  if (value === undefined) return undefined
+  return toJsonText(value)
 }
 
 // Parse a TEXT column back into a value; a null or unparseable cell reads null.
@@ -172,9 +197,7 @@ export function getDashboard(id: string): Dashboard | null {
 
 export function listDashboards(): Dashboard[] {
   const rows = getDb()
-    .prepare(
-      "SELECT * FROM dashboards ORDER BY pinned DESC, updated_at DESC"
-    )
+    .prepare("SELECT * FROM dashboards ORDER BY pinned DESC, updated_at DESC")
     .all() as DashboardRow[]
   return rows.map(toDashboard)
 }
@@ -346,22 +369,28 @@ export function upsertWidgetData(input: {
   error?: string | null
 }): DashboardWidgetData {
   const now = Date.now()
+  const dataText = toOptionalJsonText(input.data)
+  const keepExistingData = dataText === undefined ? 1 : 0
   getDb()
     .prepare(
       `INSERT INTO dashboard_widget_data (widget_id, data, status, error, fetched_at)
        VALUES (?, ?, ?, ?, ?)
        ON CONFLICT(widget_id) DO UPDATE SET
-         data = excluded.data,
+         data = CASE
+           WHEN ? = 1 THEN dashboard_widget_data.data
+           ELSE excluded.data
+         END,
          status = excluded.status,
          error = excluded.error,
          fetched_at = excluded.fetched_at`
     )
     .run(
       input.widgetId,
-      toJsonText(input.data),
+      dataText ?? null,
       normalizeDataStatus(input.status),
       input.error ?? null,
-      now
+      now,
+      keepExistingData
     )
   return getWidgetData(input.widgetId)!
 }

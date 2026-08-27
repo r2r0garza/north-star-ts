@@ -4,6 +4,7 @@ import {
   getWidget,
   getWidgetData,
   getDashboard,
+  DashboardJsonTooLargeError,
 } from "../db/repositories/dashboards"
 import { listTasks } from "../db/repositories/tasks"
 import { addRule } from "../db/repositories/action-allowlist"
@@ -299,7 +300,14 @@ export class DashboardService {
       )
     }
 
-    upsertWidgetData({ widgetId: widget.id, data: rows, status: "ok" })
+    try {
+      upsertWidgetData({ widgetId: widget.id, data: rows, status: "ok" })
+    } catch (err) {
+      if (err instanceof DashboardJsonTooLargeError) {
+        return this.markError(widget.id, err.message)
+      }
+      throw err
+    }
     return { kind: "ok" }
   }
 

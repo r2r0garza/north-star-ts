@@ -167,41 +167,49 @@ export const dashboardWriteTool: Tool = {
     // widget's data cache — all in one transaction so a partial write can't
     // leave a half-authored dashboard.
     const db = getDb()
-    const savedId = db.transaction(() => {
-      const dash = id
-        ? dashboards.updateDashboard(id, {
-            ...(dashName ? { name: dashName } : {}),
-            ...(typeof description === "string" ? { description } : {}),
-          })
-        : dashboards.createDashboard({
-            name: dashName,
-            description: typeof description === "string" ? description : null,
-          })
+    let savedId: string
+    try {
+      savedId = db.transaction(() => {
+        const dash = id
+          ? dashboards.updateDashboard(id, {
+              ...(dashName ? { name: dashName } : {}),
+              ...(typeof description === "string" ? { description } : {}),
+            })
+          : dashboards.createDashboard({
+              name: dashName,
+              description: typeof description === "string" ? description : null,
+            })
 
-      // Replace-all: drop existing widgets (their cache cascades), re-create.
-      for (const w of dashboards.listWidgets(dash.id)) {
-        dashboards.deleteWidget(w.id)
-      }
-      items.forEach((raw, i) => {
-        const item = raw && typeof raw === "object" ? raw : {}
-        const widget = dashboards.createWidget({
-          dashboardId: dash.id,
-          title: String(item.title ?? `Widget ${i + 1}`),
-          type: item.type,
-          config: item.config ?? null,
-          recipe: withCwd(item.recipe, workspace),
-          position: i,
-        })
-        if (item.data !== undefined && item.data !== null) {
-          dashboards.upsertWidgetData({
-            widgetId: widget.id,
-            data: item.data,
-            status: "ok",
-          })
+        // Replace-all: drop existing widgets (their cache cascades), re-create.
+        for (const w of dashboards.listWidgets(dash.id)) {
+          dashboards.deleteWidget(w.id)
         }
-      })
-      return dash.id
-    })()
+        items.forEach((raw, i) => {
+          const item = raw && typeof raw === "object" ? raw : {}
+          const widget = dashboards.createWidget({
+            dashboardId: dash.id,
+            title: String(item.title ?? `Widget ${i + 1}`),
+            type: item.type,
+            config: item.config ?? null,
+            recipe: withCwd(item.recipe, workspace),
+            position: i,
+          })
+          if (item.data !== undefined && item.data !== null) {
+            dashboards.upsertWidgetData({
+              widgetId: widget.id,
+              data: item.data,
+              status: "ok",
+            })
+          }
+        })
+        return dash.id
+      })()
+    } catch (err) {
+      if (err instanceof dashboards.DashboardJsonTooLargeError) {
+        return toolError("json_too_large", err.message)
+      }
+      throw err
+    }
 
     const graph = dashboards.getDashboardGraph(savedId)!
     return JSON.stringify({

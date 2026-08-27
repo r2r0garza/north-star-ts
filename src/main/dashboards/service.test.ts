@@ -224,6 +224,42 @@ describe.skipIf(!sqliteLoads)("DashboardService.execute", () => {
     expect(cached?.error).toMatch(/JSON rows/i)
   })
 
+  it("marks oversized JSON rows as an error without replacing prior cache", async () => {
+    const { runner } = makeRunner()
+    const service = new DashboardService(runner)
+    const dash = dashboards.createDashboard({ name: "D" })
+    const cmd = "cat metrics.json"
+    const widget = dashboards.createWidget({
+      dashboardId: dash.id,
+      title: "M",
+      type: "table",
+      recipe: { command: cmd, cwd: "/repo", workspace: "/repo" },
+    })
+    dashboards.upsertWidgetData({
+      widgetId: widget.id,
+      data: [{ old: true }],
+      status: "ok",
+    })
+    addRule({
+      tool: "run_shell_tool",
+      kind: "shell",
+      identity: normalizeCommand(cmd),
+      scope: "workspace",
+      workspacePath: "/repo",
+    })
+    execStdout = JSON.stringify([
+      { blob: "x".repeat(dashboards.MAX_JSON_CHARS) },
+    ])
+
+    const result = await runExecute(service, dash.id)
+
+    expect(result.content).toContain("refreshed 0/1")
+    const cached = dashboards.getWidgetData(widget.id)
+    expect(cached?.status).toBe("error")
+    expect(cached?.error).toMatch(/Dashboard JSON value/)
+    expect(cached?.data).toEqual([{ old: true }])
+  })
+
   it("rejects an allowlisted web recipe whose URL is local or private", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch")
     const { runner } = makeRunner()

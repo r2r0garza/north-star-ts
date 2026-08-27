@@ -128,6 +128,48 @@ describe.skipIf(!sqliteLoads)("dashboard_write", () => {
     expect(titles).toEqual(["New A", "New B"]) // Old is gone
   })
 
+  it("rejects oversized dashboard JSON and preserves the previous dashboard", async () => {
+    const first = JSON.parse(
+      await dashboardWriteTool.execute(
+        {
+          name: "D",
+          widgets: [
+            {
+              title: "Old",
+              type: "table",
+              config: { columns: [{ key: "name" }] },
+              data: [{ name: "before" }],
+            },
+          ],
+        },
+        ctx
+      )
+    )
+    const oldWidgetId = dashboards.listWidgets(first.dashboardId)[0].id
+
+    const result = await dashboardWriteTool.execute(
+      {
+        dashboardId: first.dashboardId,
+        widgets: [
+          {
+            title: "Too big",
+            type: "table",
+            config: { blob: "x".repeat(dashboards.MAX_JSON_CHARS) },
+          },
+        ],
+      },
+      ctx
+    )
+
+    expect(result).toContain("ERROR[json_too_large]")
+    const graph = dashboards.getDashboardGraph(first.dashboardId)!
+    expect(graph.widgets).toHaveLength(1)
+    expect(graph.widgets[0].id).toBe(oldWidgetId)
+    expect(graph.widgets[0].title).toBe("Old")
+    expect(graph.widgets[0].config).toEqual({ columns: [{ key: "name" }] })
+    expect(graph.data[0].data).toEqual([{ name: "before" }])
+  })
+
   it("coerces an unknown widget type to 'table'", async () => {
     const parsed = JSON.parse(
       await dashboardWriteTool.execute(

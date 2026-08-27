@@ -21,6 +21,7 @@ import {
   updateDashboard,
   deleteDashboard,
   createWidget,
+  getWidget,
   listWidgets,
   updateWidget,
   deleteWidget,
@@ -28,6 +29,8 @@ import {
   upsertWidgetData,
   getDashboardGraph,
   normalizeType,
+  DashboardJsonTooLargeError,
+  MAX_JSON_CHARS,
 } from "./dashboards"
 
 beforeEach(() => {
@@ -144,7 +147,11 @@ describe.skipIf(!sqliteLoads)("dashboards repo", () => {
 
   it("assembles the whole dashboard via getDashboardGraph", () => {
     const dash = createDashboard({ name: "D" })
-    const w1 = createWidget({ dashboardId: dash.id, title: "One", type: "chart" })
+    const w1 = createWidget({
+      dashboardId: dash.id,
+      title: "One",
+      type: "chart",
+    })
     createWidget({ dashboardId: dash.id, title: "Two", type: "stat" })
     upsertWidgetData({ widgetId: w1.id, data: [{ x: 1 }] })
 
@@ -170,5 +177,71 @@ describe.skipIf(!sqliteLoads)("dashboards repo", () => {
     // Untouched fields survive.
     expect(updated.config).toEqual({ chartKind: "line" })
     expect(updated.title).toBe("T")
+  })
+
+  it("rejects oversized widget JSON without corrupting existing config, recipe, or data", () => {
+    const dash = createDashboard({ name: "D" })
+    const w = createWidget({
+      dashboardId: dash.id,
+      title: "T",
+      type: "table",
+      config: { columns: [{ key: "name" }] },
+      recipe: { command: "printf '[]'" },
+    })
+    upsertWidgetData({
+      widgetId: w.id,
+      data: [{ name: "before" }],
+      status: "ok",
+    })
+
+    const oversized = "x".repeat(MAX_JSON_CHARS)
+    expect(() => updateWidget(w.id, { config: oversized })).toThrow(
+      DashboardJsonTooLargeError
+    )
+    expect(() =>
+      updateWidget(w.id, { recipe: { command: "printf '[]'", oversized } })
+    ).toThrow(DashboardJsonTooLargeError)
+    expect(() =>
+      upsertWidgetData({
+        widgetId: w.id,
+        data: [{ name: "after", oversized }],
+        status: "ok",
+      })
+    ).toThrow(DashboardJsonTooLargeError)
+
+    const read = getWidget(w.id)!
+    expect(read.config).toEqual({ columns: [{ key: "name" }] })
+    expect(read.recipe).toEqual({ command: "printf '[]'" })
+    expect(getWidgetData(w.id)?.data).toEqual([{ name: "before" }])
+
+    const rows = db
+      .prepare(
+        `SELECT config, recipe, NULL AS data FROM dashboard_widgets
+         UNION ALL
+         SELECT NULL AS config, NULL AS recipe, data FROM dashboard_widget_data`
+      )
+      .all() as Array<{
+      config: string | null
+      recipe: string | null
+      data: string | null
+    }>
+    for (const row of rows) {
+      for (const value of [row.config, row.recipe, row.data]) {
+        if (value !== null) expect(() => JSON.parse(value)).not.toThrow()
+      }
+    }
+  })
+
+  it("preserves cached data when updating only status and error", () => {
+    const dash = createDashboard({ name: "D" })
+    const w = createWidget({ dashboardId: dash.id, title: "T", type: "table" })
+    upsertWidgetData({ widgetId: w.id, data: [{ n: 1 }], status: "ok" })
+
+    upsertWidgetData({ widgetId: w.id, status: "error", error: "boom" })
+
+    const data = getWidgetData(w.id)
+    expect(data?.status).toBe("error")
+    expect(data?.error).toBe("boom")
+    expect(data?.data).toEqual([{ n: 1 }])
   })
 })
