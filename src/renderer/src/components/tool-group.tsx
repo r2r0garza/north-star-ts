@@ -123,6 +123,27 @@ function shellApprovalDetails(
   ].filter(Boolean)
 }
 
+function browserApprovalDetails(
+  detail: Record<string, unknown> | undefined
+): string[] {
+  if (!detail) return []
+  const actionType =
+    typeof detail.actionType === "string" ? detail.actionType : undefined
+  const origin = typeof detail.origin === "string" ? detail.origin : undefined
+  const target = typeof detail.target === "string" ? detail.target : undefined
+  const payloadSummary =
+    typeof detail.payloadSummary === "string"
+      ? detail.payloadSummary
+      : undefined
+  if (!actionType && !origin && !target && !payloadSummary) return []
+  return [
+    actionType ? `Action: ${actionType}` : "",
+    origin ? `Origin: ${origin}` : "",
+    target ? `Target: ${target}` : "",
+    payloadSummary ? `Payload: ${payloadSummary}` : "",
+  ].filter(Boolean)
+}
+
 // A collapsible group of tool calls for one assistant turn. Collapsed by
 // default; summary shows the count (and a spinner while any call is running).
 // A pending approval no longer force-opens the group: the approval prompt now
@@ -265,12 +286,14 @@ export function ApprovalCard({
   // Delegation (handing work to a background task) is asked every time — there's
   // no "always allow" for it, so hide that affordance for delegate approvals.
   const allowRemember = approval.kind !== "delegate"
-  // Web access (web_fetch) is workspace-independent, so its "remember" is scoped
-  // to the session ("this conversation") rather than the workspace folder. Every
-  // other gated action remembers per workspace.
+  // Web and browser approvals are tied to current external/session state, so
+  // their "remember" is scoped to this conversation. Other gated actions remember
+  // per workspace.
   const isWeb = approval.kind === "web"
+  const isBrowser = approval.kind === "browser"
   const diff = approvalDiff(approval.detail)
   const shellDetails = shellApprovalDetails(approval.detail)
+  const browserDetails = browserApprovalDetails(approval.detail)
   return (
     <div className="flex flex-col gap-2 rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-xs">
       <div className="flex items-center gap-2 font-medium text-destructive">
@@ -283,6 +306,15 @@ export function ApprovalCard({
       {shellDetails.length > 0 && (
         <div className="rounded-md border bg-background px-2 py-1.5 text-muted-foreground">
           {shellDetails.map((line) => (
+            <div key={line} className="break-words">
+              {line}
+            </div>
+          ))}
+        </div>
+      )}
+      {browserDetails.length > 0 && (
+        <div className="rounded-md border bg-background px-2 py-1.5 text-muted-foreground">
+          {browserDetails.map((line) => (
             <div key={line} className="break-words">
               {line}
             </div>
@@ -308,7 +340,7 @@ export function ApprovalCard({
           <Kbd className="ml-1.5">⏎</Kbd>
         </Button>
         {allowRemember &&
-          (isWeb ? (
+          (isWeb || isBrowser ? (
             <Button
               size="xs"
               variant="outline"

@@ -45,6 +45,38 @@ function browserClick(ref: string): ToolAction {
   }
 }
 
+function browserConsequentialClick(target: string): ToolAction {
+  return {
+    tool: "browser_click",
+    kind: "browser",
+    summary: `Click ${target} on https://app.example`,
+    identity: `browser_click:https://app.example:${target}`,
+    detail: {
+      actionType: "click",
+      origin: "https://app.example",
+      target,
+      interactionKind: "consequential_commit",
+    },
+  }
+}
+
+function browserSubmitType(target: string, payloadSummary: string): ToolAction {
+  return {
+    tool: "browser_type",
+    kind: "browser",
+    summary: `Type into ${target} on https://app.example and submit`,
+    identity: `browser_type_submit:https://app.example:${target}:${payloadSummary}`,
+    detail: {
+      actionType: "type_submit",
+      origin: "https://app.example",
+      target,
+      payloadSummary,
+      interactionKind: "consequential_commit",
+      submit: true,
+    },
+  }
+}
+
 const classifier = new RegexCommandClassifier()
 const classify = (cmd: string) => classifier.classify(shell(cmd))
 
@@ -725,6 +757,21 @@ describe("BrowserActionClassifier", () => {
     ).toBe("allow")
   })
 
+  it("requires approval for consequential clicks and submitted typing", () => {
+    expect(
+      bc.classify(browserConsequentialClick('button "Delete account"'))
+    ).toMatchObject({
+      level: "require_approval",
+      reason: "Browser action may commit an external change",
+    })
+    expect(
+      bc.classify(browserSubmitType('textbox "Email"', "[email] (16 chars)"))
+    ).toMatchObject({
+      level: "require_approval",
+      reason: "Browser action may commit an external change",
+    })
+  })
+
   it("returns null for non-browser actions (lets other classifiers run)", () => {
     expect(bc.classify(shell("ls"))).toBeNull()
     expect(bc.classify(fileWrite("a.ts"))).toBeNull()
@@ -741,6 +788,19 @@ describe("PolicyEngine — browser interaction carve-out (local backend)", () =>
     expect(engine.decide(browserClick("e3"), { sandboxed: false }).level).toBe(
       "allow"
     )
+  })
+
+  it("does not let the local browser carve-out auto-approve consequential actions", () => {
+    expect(
+      engine.decide(browserConsequentialClick('button "Purchase"'), {
+        sandboxed: false,
+      }).level
+    ).toBe("require_approval")
+    expect(
+      engine.decide(browserSubmitType('textbox "Message"', "hello (5 chars)"), {
+        sandboxed: false,
+      }).level
+    ).toBe("require_approval")
   })
 
   it("still requires approval for navigation on a local backend", () => {

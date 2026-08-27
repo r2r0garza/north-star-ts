@@ -51,6 +51,11 @@ export interface InteractionResult {
   title: string
 }
 
+export interface BrowserRefDescription {
+  ref: string
+  target: string
+}
+
 // Raised when a ref isn't in the current map (stale after navigation, or the
 // model invented one). The tool turns this into an actionable message telling the
 // model to snapshot again.
@@ -315,14 +320,10 @@ export class BrowserSession {
         const dbg = this.view.webContents.debugger
         await sendCommand(dbg, "Overlay.enable", undefined, PICK_TIMEOUT_MS)
         if (!this.pickMode || generation !== this.pickModeGeneration) return
-        await this.applyInspectMode(
-          true,
-          generation,
-          {
-            mode: "searchForNode",
-            highlightConfig: PICK_HIGHLIGHT_CONFIG,
-          }
-        )
+        await this.applyInspectMode(true, generation, {
+          mode: "searchForNode",
+          highlightConfig: PICK_HIGHLIGHT_CONFIG,
+        })
         return
       }
 
@@ -752,6 +753,13 @@ export class BrowserSession {
       signal
     )
     return result?.objectId ?? null
+  }
+
+  // Describe a snapshot ref without interacting with the page. Browser tools use
+  // this before approval so cards can identify the target accurately.
+  describeRef(ref: string): BrowserRefDescription {
+    const entry = this.requireRef(ref)
+    return { ref, target: entry.label }
   }
 
   // Click the element behind a ref: scroll it into view, resolve its box, and

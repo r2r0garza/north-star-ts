@@ -1,6 +1,6 @@
 # Browser interactions can commit irreversible actions without approval
 
-> Status: **OPEN**
+> Status: **RESOLVED**
 > Severity: **P1 — unauthorized external side effects**
 > Area: browser tools and approval policy
 
@@ -36,3 +36,18 @@ the approval action.
 - Form submission and destructive or transactional clicks require approval.
 - Approval cards disclose origin, target, and a redacted payload summary.
 - Snapshotting and clearly reversible local interactions remain usable.
+
+## Resolution
+
+- Added browser interaction classification metadata before click/type execution.
+- Consequential click targets and `browser_type` with `submit: true` now require
+  a distinct browser approval.
+- Browser approval cards show action type, origin, target, and redacted payload
+  summary where present.
+- Browser remembered approvals are scoped to the current conversation instead of
+  the whole workspace.
+
+## Verification
+
+- `npm test -- src/main/agent/approval/approval.test.ts`
+- `npm run typecheck`

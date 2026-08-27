@@ -1,11 +1,16 @@
 import { TOOL_EFFECTS, type Tool, type ToolContext } from "../types"
 import type { ToolAction } from "../../approval/types"
 import { toolError } from "../output"
+import {
+  browserActionIdentity,
+  browserOrigin,
+  classifyBrowserClickTarget,
+} from "./approval"
 
 // Click an element in the agent browser, targeted by a `ref` from the most
 // recent browser_snapshot. Routes through the approval gate as a `browser`
-// action; the classifier auto-allows interactions within an already-opened page
-// (only navigation prompts), so this normally runs without a prompt.
+// action. Clearly reversible clicks stay automatic, but likely commit actions
+// (delete, purchase, send, grant, publish, etc.) require distinct approval.
 export const browserClickTool: Tool = {
   effects: TOOL_EFFECTS.openWorldMutation,
   definition: {
@@ -37,12 +42,37 @@ export const browserClickTool: Tool = {
       return toolError("no_browser", "The agent browser is unavailable.")
     }
 
+    let target = `element ${ref}`
+    try {
+      target = ctx.browser.describeRef(ref).target
+    } catch (err) {
+      return toolError(
+        "click_failed",
+        err instanceof Error ? err.message : String(err)
+      )
+    }
+    const state = ctx.browser.state()
+    const url = state?.url ?? ""
+    const origin = browserOrigin(url)
+    const interactionKind = classifyBrowserClickTarget(target)
+
     const action: ToolAction = {
       tool: "browser_click",
       kind: "browser",
-      summary: `Click element ${ref} in the browser`,
-      identity: `browser_click:${ref}`,
-      detail: { ref },
+      summary: `Click ${target} on ${origin}`,
+      identity: browserActionIdentity({
+        action: "click",
+        origin,
+        target,
+      }),
+      detail: {
+        ref,
+        target,
+        url,
+        origin,
+        actionType: "click",
+        interactionKind,
+      },
     }
     const outcome = ctx.gate ? await ctx.gate(action) : ("denied" as const)
     if (outcome === "blocked") {

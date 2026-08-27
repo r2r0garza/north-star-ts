@@ -1,11 +1,17 @@
 import { TOOL_EFFECTS, type Tool, type ToolContext } from "../types"
 import type { ToolAction } from "../../approval/types"
 import { toolError } from "../output"
+import {
+  browserActionIdentity,
+  browserOrigin,
+  summarizeBrowserPayload,
+} from "./approval"
 
 // Type text into an element (input, textarea, search box) in the agent browser,
 // targeted by a `ref` from the most recent browser_snapshot. Optionally presses
-// Enter afterward to submit. Gated as a `browser` interaction (auto-allowed;
-// only navigation prompts).
+// Enter afterward to submit. Gated as a `browser` interaction: plain typing
+// remains usable, while submitted typing requires a distinct approval because it
+// can send, purchase, delete, or otherwise commit a form.
 export const browserTypeTool: Tool = {
   effects: TOOL_EFFECTS.openWorldMutation,
   definition: {
@@ -46,12 +52,45 @@ export const browserTypeTool: Tool = {
       return toolError("no_browser", "The agent browser is unavailable.")
     }
 
+    let target = `element ${ref}`
+    try {
+      target = ctx.browser.describeRef(ref).target
+    } catch (err) {
+      return toolError(
+        "type_failed",
+        err instanceof Error ? err.message : String(err)
+      )
+    }
+    const state = ctx.browser.state()
+    const url = state?.url ?? ""
+    const origin = browserOrigin(url)
+    const payloadSummary = summarizeBrowserPayload(text)
+    const interactionKind = submit
+      ? "consequential_commit"
+      : "reversible_interaction"
+
     const action: ToolAction = {
       tool: "browser_type",
       kind: "browser",
-      summary: `Type into element ${ref} in the browser`,
-      identity: `browser_type:${ref}`,
-      detail: { ref, submit },
+      summary: submit
+        ? `Type into ${target} on ${origin} and submit`
+        : `Type into ${target} on ${origin}`,
+      identity: browserActionIdentity({
+        action: submit ? "type_submit" : "type",
+        origin,
+        target,
+        payloadSummary: submit ? payloadSummary : undefined,
+      }),
+      detail: {
+        ref,
+        target,
+        url,
+        origin,
+        submit,
+        actionType: submit ? "type_submit" : "type",
+        interactionKind,
+        payloadSummary,
+      },
     }
     const outcome = ctx.gate ? await ctx.gate(action) : ("denied" as const)
     if (outcome === "blocked") {
