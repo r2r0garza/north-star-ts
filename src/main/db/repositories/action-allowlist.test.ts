@@ -1,17 +1,13 @@
 import { describe, it, expect, beforeEach, vi } from "vitest"
 import Database from "better-sqlite3"
 import { runMigrations } from "../migrations"
+import { sqliteLoadsForTests } from "../../test/sqlite"
+
+const sqliteLoads = sqliteLoadsForTests()
 
 // Mock the connection so the repo talks to an in-memory DB (mirrors settings.test).
 let db: Database.Database
 vi.mock("../connection", () => ({ getDb: () => db }))
-
-let sqliteLoads = true
-try {
-  new Database(":memory:").close()
-} catch {
-  sqliteLoads = false
-}
 
 import { addRule, findMatch, listRules } from "./action-allowlist"
 
@@ -24,7 +20,12 @@ beforeEach(() => {
 
 describe.skipIf(!sqliteLoads)("action-allowlist listRules (plan 021)", () => {
   it("returns global rules regardless of scope context", () => {
-    addRule({ tool: "run_shell", kind: "shell", identity: "ls", scope: "global" })
+    addRule({
+      tool: "run_shell",
+      kind: "shell",
+      identity: "ls",
+      scope: "global",
+    })
     const rules = listRules({})
     expect(rules).toHaveLength(1)
     expect(rules[0].scope).toBe("global")
@@ -65,9 +66,9 @@ describe.skipIf(!sqliteLoads)("action-allowlist listRules (plan 021)", () => {
       scope: "agent",
       agentId: "ag1",
     })
-    expect(listRules({ workspacePath: "/ws", conversationId: "c1" })).toHaveLength(
-      0
-    )
+    expect(
+      listRules({ workspacePath: "/ws", conversationId: "c1" })
+    ).toHaveLength(0)
   })
 
   it("returns global + matching workspace + matching conversation together", () => {

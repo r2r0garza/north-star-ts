@@ -35,6 +35,8 @@ const USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 " +
   "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 
+type FetchText = typeof safeFetchText
+
 // Thrown to unwind the per-widget loop on pause/cancel; runOne maps the returned
 // {stopped} to the right terminal status. Mirrors IndexService's AbortedError.
 class AbortedError extends Error {}
@@ -124,7 +126,9 @@ function validateCommandResult(result: ExecResult): string | null {
   const withDetail = (message: string) =>
     detail ? `${message}: ${detail}` : message
 
-  if (result.spawnError) return withDetail(`command failed to start`)
+  if (result.spawnError) {
+    return withDetail(`command failed to start: ${result.spawnError}`)
+  }
   if (result.aborted) return withDetail("command was aborted")
   if (result.timedOut) return withDetail("command timed out")
   if (result.signal)
@@ -152,7 +156,10 @@ function validateCommandResult(result: ExecResult): string | null {
 export class DashboardService {
   private readonly policy = makePolicyEngine()
 
-  constructor(private readonly runner: TaskRunner) {}
+  constructor(
+    private readonly runner: TaskRunner,
+    private readonly fetchText: FetchText = safeFetchText
+  ) {}
 
   // The executor the runner invokes for the `dashboard_refresh` kind. Registered
   // at app init: runner.registerKind(DASHBOARD_REFRESH_KIND, { run, ... }).
@@ -296,7 +303,7 @@ export class DashboardService {
         if (commandError) return this.markError(widget.id, commandError)
         output = stripAnsi(result.stdout.toString("utf8"))
       } else {
-        const { response: res, text } = await safeFetchText(recipe.url!, {
+        const { response: res, text } = await this.fetchText(recipe.url!, {
           headers: { "User-Agent": USER_AGENT, Accept: "application/json,*/*" },
           signal,
           timeoutMs: FETCH_TIMEOUT_MS,

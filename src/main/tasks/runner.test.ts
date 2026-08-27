@@ -3,6 +3,9 @@ import Database from "better-sqlite3"
 import { runMigrations } from "../db/migrations"
 import type { ChatResult } from "../agent"
 import type { RunAgentLoopOptions } from "../agent"
+import { sqliteLoadsForTests } from "../test/sqlite"
+
+const sqliteLoads = sqliteLoadsForTests()
 
 // In-memory DB shared by the runner's repository imports (mirrors the repo test
 // pattern in db/repositories/*.test.ts).
@@ -32,13 +35,6 @@ vi.mock("../agent", () => ({
     return loopImpl(opts)
   },
 }))
-
-let sqliteLoads = true
-try {
-  new Database(":memory:").close()
-} catch {
-  sqliteLoads = false
-}
 
 import { TaskRunner } from "./runner"
 import {

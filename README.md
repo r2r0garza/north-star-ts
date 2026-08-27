@@ -29,6 +29,17 @@ pnpm build      # build all three processes into out/
 pnpm start      # preview the production build
 pnpm dist       # build + package a distributable (electron-builder)
 pnpm typecheck  # tsc --noEmit
+pnpm test       # run the default Vitest suite
+pnpm test:sqlite # run SQLite-backed Vitest files; requires better-sqlite3 built for Node
+```
+
+`postinstall` rebuilds native modules for Electron. If `pnpm test:sqlite` is
+needed locally, temporarily switch `better-sqlite3` to the Node ABI first:
+
+```bash
+npm_config_build_from_source=true npm rebuild better-sqlite3
+pnpm test:sqlite
+pnpm exec electron-rebuild -f -w better-sqlite3
 ```
 
 ## Configuration

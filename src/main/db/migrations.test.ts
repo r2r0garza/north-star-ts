@@ -12,13 +12,9 @@ import {
   SCHEMA_V8,
   SCHEMA_V30,
 } from "./schema"
+import { sqliteLoadsForTests } from "../test/sqlite"
 
-let sqliteLoads = true
-try {
-  new Database(":memory:").close()
-} catch {
-  sqliteLoads = false
-}
+const sqliteLoads = sqliteLoadsForTests()
 
 // Bring a DB to user_version 8 WITHOUT running V9, so a test can seed pre-V9
 // orphans and then apply V9 via runMigrations. Mirrors runMigrations' FK-off loop.

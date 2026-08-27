@@ -1,6 +1,6 @@
 # Green test runs skip the database-backed integration surface
 
-> Status: **OPEN**
+> Status: **FIXED**
 > Severity: **P2 — verification integrity gap**
 > Area: native-module test infrastructure and CI
 
@@ -36,3 +36,15 @@ required database job fail closed and report executed/skipped counts.
 - Electron packaging/runtime compatibility is verified separately.
 - Unexpected skip-count growth is visible and fails the appropriate job.
 - The documented local workflow explains ABI rebuild transitions.
+
+## Resolution
+
+Added a dedicated `sqlite-tests` workflow job that rebuilds `better-sqlite3` for
+the Node ABI and runs `pnpm test:sqlite`. The script sets
+`COWORK_REQUIRE_SQLITE_TESTS=1`, causing the shared SQLite probe to fail closed
+when the native module cannot load, then parses Vitest's JSON report and fails
+if any SQLite-backed assertions are skipped.
+
+The default local suite can still skip SQLite-backed files while native modules
+are in Electron ABI mode. The README and considerations note document the local
+Node-ABI test transition and the restore step back to Electron ABI.

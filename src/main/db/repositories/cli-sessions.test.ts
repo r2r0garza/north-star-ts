@@ -1,6 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import Database from "better-sqlite3"
 import { runMigrations } from "../migrations"
+import { sqliteLoadsForTests } from "../../test/sqlite"
+
+const sqliteLoads = sqliteLoadsForTests()
 
 let db: Database.Database
 vi.mock("../connection", () => ({ getDb: () => db }))
@@ -8,12 +11,6 @@ vi.mock("../connection", () => ({ getDb: () => db }))
 // better-sqlite3's native binary is built for the Electron ABI here; under
 // plain-Node vitest it may not load (see native-module-rebuild note). SQLite-
 // backed tests skip rather than fail when the ABI mismatches.
-let sqliteLoads = true
-try {
-  new Database(":memory:").close()
-} catch {
-  sqliteLoads = false
-}
 
 import { createConversation, deleteConversation } from "./conversations"
 import {

@@ -2,17 +2,13 @@ import { describe, it, expect, beforeEach, vi } from "vitest"
 import Database from "better-sqlite3"
 import { randomUUID } from "crypto"
 import { runMigrations } from "../db/migrations"
+import { sqliteLoadsForTests } from "../test/sqlite"
+
+const sqliteLoads = sqliteLoadsForTests()
 
 // Real schema + real repos over an in-memory DB (like the index service test).
 let db: Database.Database
 vi.mock("../db/connection", () => ({ getDb: () => db }))
-
-let sqliteLoads = true
-try {
-  new Database(":memory:").close()
-} catch {
-  sqliteLoads = false
-}
 
 // The executor's one LLM call goes through the providers barrel. Mock it so the
 // service is exercised without a network/gateway. `resolveLlm` returns a stub
@@ -450,14 +446,17 @@ describe.skipIf(!sqliteLoads)("SummaryService.execute (executor)", () => {
   it("builds a fenced prompt with no continuable transcript cue", async () => {
     const convId = freshConversation()
     seedMessages(convId, 8)
-    nextCompletion = { choices: [{ message: { content: "## Decisions\n- ok" } }] }
+    nextCompletion = {
+      choices: [{ message: { content: "## Decisions\n- ok" } }],
+    }
     await svc.execute({
       task: summarizeTask(convId),
       signal: abortSignal(),
       emit: () => {},
       workspace: undefined,
     })
-    const user = lastBase?.messages?.find((m) => m.role === "user")?.content ?? ""
+    const user =
+      lastBase?.messages?.find((m) => m.role === "user")?.content ?? ""
     // Delimited as data, not an open chat log ending in a completion cue.
     expect(user).toContain("<new_turns>")
     expect(user).toContain("</new_turns>")

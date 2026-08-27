@@ -1,19 +1,15 @@
 import { describe, it, expect, beforeEach, vi } from "vitest"
 import Database from "better-sqlite3"
 import { runMigrations } from "../../db/migrations"
+import { sqliteLoadsForTests } from "../../test/sqlite"
+
+const sqliteLoads = sqliteLoadsForTests()
 
 // Real in-memory DB behind getDb: the tool wraps its writes in a transaction and
 // calls the dashboards repo (which also uses getDb), so a live DB exercises the
 // whole path including the replace-all + data-seed.
 let db: Database.Database
 vi.mock("../../db/connection", () => ({ getDb: () => db }))
-
-let sqliteLoads = true
-try {
-  new Database(":memory:").close()
-} catch {
-  sqliteLoads = false
-}
 
 import { dashboardWriteTool } from "./dashboard_write"
 import * as dashboards from "../../db/repositories/dashboards"

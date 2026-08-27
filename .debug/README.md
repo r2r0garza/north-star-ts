@@ -58,7 +58,7 @@ a brief names a prerequisite.
 | 49 | P2 | Resolved | [Command cursors skip model-truncated output](./049-command-session-cursor-skips-truncated-output.md) | Command session pagination |
 | 50 | P2 | Fixed | [MCP call lifecycle and output are unbounded](./050-mcp-call-lifecycle-unbounded.md) | MCP client manager |
 | 51 | P2 | Fixed | [Single-file cleanup failures are suppressed](./051-single-file-cleanup-failures-suppressed.md) | Mutation and command cleanup |
-| 52 | P2 | Open | [Database-backed tests are silently skipped](./052-sqlite-integration-tests-silently-skipped.md) | Test infrastructure and CI |
+| 52 | P2 | Fixed | [Database-backed tests are silently skipped](./052-sqlite-integration-tests-silently-skipped.md) | Test infrastructure and CI |
 | 53 | P3 | Open | [Workspace containment mishandles edge cases](./053-workspace-path-containment-edge-cases.md) | Workspace path resolution |
 
 New briefs start in **OPEN** state. When fixing one, add the regression test

@@ -11,6 +11,7 @@
     "dist": "node scripts/dist.mjs",
     "format": "prettier --write \"**/*.{ts,tsx}\"",
     "test": "vitest run",
+    "test:sqlite": "node scripts/test-sqlite.mjs",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "postinstall": "electron-rebuild -f -w better-sqlite3 -w node-pty"

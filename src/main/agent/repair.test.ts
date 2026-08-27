@@ -1,17 +1,13 @@
 import { describe, it, expect, beforeEach, vi } from "vitest"
 import Database from "better-sqlite3"
 import { runMigrations } from "../db/migrations"
+import { sqliteLoadsForTests } from "../test/sqlite"
+
+const sqliteLoads = sqliteLoadsForTests()
 
 // In-memory DB shared by the repository imports (mirrors the runner test).
 let db: Database.Database
 vi.mock("../db/connection", () => ({ getDb: () => db }))
-
-let sqliteLoads = true
-try {
-  new Database(":memory:").close()
-} catch {
-  sqliteLoads = false
-}
 
 import { repairDanglingToolCalls } from "./repair"
 import { appendMessage, listMessages } from "../db/repositories/messages"

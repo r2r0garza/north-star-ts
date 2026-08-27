@@ -1,6 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
 import Database from "better-sqlite3"
 import { runMigrations } from "../db/migrations"
+import { sqliteLoadsForTests } from "../test/sqlite"
+
+const sqliteLoads = sqliteLoadsForTests()
 
 // Real in-memory DB behind getDb: the executor reads widgets, authorizes via the
 // shared PolicyEngine (real action_allowlist), and writes the widget-data cache.
@@ -50,14 +53,8 @@ vi.mock("../agent/env/factory", async (importOriginal) => {
   }
 })
 
-let sqliteLoads = true
-try {
-  new Database(":memory:").close()
-} catch {
-  sqliteLoads = false
-}
-
 import { DashboardService, DASHBOARD_REFRESH_KIND } from "./service"
+import { SafeFetchBodyTooLargeError } from "../agent/tools/web/safe-fetch"
 import * as dashboards from "../db/repositories/dashboards"
 import { addRule } from "../db/repositories/action-allowlist"
 import { shellActionForCommand } from "../agent/approval/shell-analyzer"
@@ -387,12 +384,11 @@ describe.skipIf(!sqliteLoads)("DashboardService.execute", () => {
   })
 
   it("marks an oversized web recipe error without replacing prior cache", async () => {
-    const oversizedJson = `[${" ".repeat(1024 * 1024)}]`
-    const fetchMock = vi
-      .spyOn(globalThis, "fetch")
-      .mockResolvedValue(new Response(oversizedJson, { status: 200 }))
+    const fetchText = vi
+      .fn()
+      .mockRejectedValue(new SafeFetchBodyTooLargeError(1024 * 1024))
     const { runner } = makeRunner()
-    const service = new DashboardService(runner)
+    const service = new DashboardService(runner, fetchText)
     const dash = dashboards.createDashboard({ name: "D" })
     const url = "https://93.184.216.34/data"
     const widget = dashboards.createWidget({
@@ -415,7 +411,7 @@ describe.skipIf(!sqliteLoads)("DashboardService.execute", () => {
 
     await runExecute(service, dash.id)
 
-    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(fetchText).toHaveBeenCalledTimes(1)
     const cached = dashboards.getWidgetData(widget.id)
     expect(cached?.status).toBe("error")
     expect(cached?.error).toMatch(/exceeded .* decoded bytes/i)

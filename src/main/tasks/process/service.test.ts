@@ -2,16 +2,12 @@ import { describe, it, expect, beforeEach, vi } from "vitest"
 import Database from "better-sqlite3"
 import { randomUUID } from "crypto"
 import { runMigrations } from "../../db/migrations"
+import { sqliteLoadsForTests } from "../../test/sqlite"
+
+const sqliteLoads = sqliteLoadsForTests()
 
 let db: Database.Database
 vi.mock("../../db/connection", () => ({ getDb: () => db }))
-
-let sqliteLoads = true
-try {
-  new Database(":memory:").close()
-} catch {
-  sqliteLoads = false
-}
 
 // Each phase worker's agent loop is stubbed — no real LLM turn. It records the
 // agentName the forked worker conversation was stamped with, so the test can

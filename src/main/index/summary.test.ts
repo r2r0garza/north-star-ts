@@ -5,16 +5,12 @@ import { mkdtemp, rm, writeFile } from "fs/promises"
 import { tmpdir } from "os"
 import { join } from "path"
 import { runMigrations } from "../db/migrations"
+import { sqliteLoadsForTests } from "../test/sqlite"
+
+const sqliteLoads = sqliteLoadsForTests()
 
 let db: Database.Database
 vi.mock("../db/connection", () => ({ getDb: () => db }))
-
-let sqliteLoads = true
-try {
-  new Database(":memory:").close()
-} catch {
-  sqliteLoads = false
-}
 
 import { buildIndexSummary } from "./summary"
 import { IndexService } from "./service"

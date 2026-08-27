@@ -2,6 +2,9 @@ import { describe, it, expect, beforeEach, vi } from "vitest"
 import Database from "better-sqlite3"
 import { randomUUID } from "crypto"
 import { runMigrations } from "../migrations"
+import { sqliteLoadsForTests } from "../../test/sqlite"
+
+const sqliteLoads = sqliteLoadsForTests()
 
 // Back the repo with an in-memory SQLite DB (real schema, real migrations)
 // instead of the app's on-disk connection, which needs an Electron context.
@@ -14,12 +17,6 @@ vi.mock("../connection", () => ({ getDb: () => db }))
 // normalizeItems tests need no binary and always run; the CRUD/migration tests
 // require SQLite, so they skip (rather than fail) when it can't load. They run
 // wherever the ABI matches (e.g. a Node-ABI CI build of better-sqlite3).
-let sqliteLoads = true
-try {
-  new Database(":memory:").close()
-} catch {
-  sqliteLoads = false
-}
 
 import {
   listTodos,
