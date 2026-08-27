@@ -8,7 +8,10 @@ import {
   safeFetch,
   safeFetchText,
   type SafeFetchLookup,
+  type SafeFetchOptions,
 } from "./safe-fetch"
+
+type SafeFetchTransport = NonNullable<SafeFetchOptions["transport"]>
 
 afterEach(() => {
   vi.useRealTimers()
@@ -62,43 +65,118 @@ describe("assertPublicHttpUrl", () => {
 
 describe("safeFetch", () => {
   it("does not fetch direct private URLs", async () => {
-    const fetchMock = vi.fn()
-    vi.stubGlobal("fetch", fetchMock)
+    const transport: SafeFetchTransport = vi.fn()
 
-    await expect(safeFetch("http://127.0.0.1/secret")).rejects.toThrow(
-      /private|local|metadata/i
+    await expect(
+      safeFetch("http://127.0.0.1/secret", { transport })
+    ).rejects.toThrow(/private|local|metadata/i)
+    expect(transport).not.toHaveBeenCalled()
+  })
+
+  it("pins the initial connection to the validated DNS address set", async () => {
+    const lookup: SafeFetchLookup = vi.fn(async () => [
+      { address: "93.184.216.34", family: 4 },
+    ])
+    const privateEndpoint = vi.fn()
+    const transport: SafeFetchTransport = vi.fn(
+      async (_url, _opts, approvedAddresses) => {
+        if (
+          approvedAddresses.some(
+            (result: { address: string }) => result.address === "127.0.0.1"
+          )
+        ) {
+          privateEndpoint()
+        }
+        return new Response("ok", { status: 200 })
+      }
     )
-    expect(fetchMock).not.toHaveBeenCalled()
+
+    const res = await safeFetch("https://public.example/start", {
+      lookup,
+      transport,
+    })
+
+    expect(await res.text()).toBe("ok")
+    expect(transport).toHaveBeenCalledWith(
+      new URL("https://public.example/start"),
+      expect.objectContaining({ redirect: "manual" }),
+      [{ address: "93.184.216.34", family: 4 }],
+      expect.any(AbortSignal)
+    )
+    expect(privateEndpoint).not.toHaveBeenCalled()
   })
 
   it("revalidates redirects before fetching the next hop", async () => {
     const lookup: SafeFetchLookup = vi.fn(async () => [
       { address: "93.184.216.34", family: 4 },
     ])
-    const fetchMock = vi.fn(
+    const transport: SafeFetchTransport = vi.fn(
       async () =>
         new Response("", {
           status: 302,
           headers: { location: "http://127.0.0.1/admin" },
         })
     )
-    vi.stubGlobal("fetch", fetchMock)
 
     await expect(
-      safeFetch("https://public.example/start", { lookup })
+      safeFetch("https://public.example/start", { lookup, transport })
     ).rejects.toThrow(/private|local|metadata/i)
-    expect(fetchMock).toHaveBeenCalledTimes(1)
-    expect(fetchMock).toHaveBeenCalledWith(
-      "https://public.example/start",
-      expect.objectContaining({ redirect: "manual" })
+    expect(transport).toHaveBeenCalledTimes(1)
+    expect(transport).toHaveBeenCalledWith(
+      new URL("https://public.example/start"),
+      expect.objectContaining({ redirect: "manual" }),
+      [{ address: "93.184.216.34", family: 4 }],
+      expect.any(AbortSignal)
     )
+  })
+
+  it("pins redirect hop connections to their validated DNS address sets", async () => {
+    const lookup: SafeFetchLookup = vi
+      .fn()
+      .mockResolvedValueOnce([{ address: "93.184.216.34", family: 4 }])
+      .mockResolvedValueOnce([{ address: "93.184.216.35", family: 4 }])
+    const privateEndpoint = vi.fn()
+    const transport: SafeFetchTransport = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response("", {
+          status: 302,
+          headers: { location: "https://cdn.example/final" },
+        })
+      )
+      .mockImplementationOnce(async (_url, _opts, approvedAddresses) => {
+        if (
+          approvedAddresses.some(
+            (result: { address: string }) => result.address === "127.0.0.1"
+          )
+        ) {
+          privateEndpoint()
+        }
+        return new Response("ok", { status: 200 })
+      })
+
+    const res = await safeFetch("https://public.example/start", {
+      lookup,
+      transport,
+    })
+
+    expect(await res.text()).toBe("ok")
+    expect(lookup).toHaveBeenNthCalledWith(2, "cdn.example")
+    expect(transport).toHaveBeenNthCalledWith(
+      2,
+      new URL("https://cdn.example/final"),
+      expect.objectContaining({ redirect: "manual" }),
+      [{ address: "93.184.216.35", family: 4 }],
+      expect.any(AbortSignal)
+    )
+    expect(privateEndpoint).not.toHaveBeenCalled()
   })
 
   it("follows public redirects and returns the final response", async () => {
     const lookup: SafeFetchLookup = vi.fn(async () => [
       { address: "93.184.216.34", family: 4 },
     ])
-    const fetchMock = vi
+    const transport: SafeFetchTransport = vi
       .fn()
       .mockResolvedValueOnce(
         new Response("", {
@@ -107,14 +185,18 @@ describe("safeFetch", () => {
         })
       )
       .mockResolvedValueOnce(new Response("ok", { status: 200 }))
-    vi.stubGlobal("fetch", fetchMock)
 
-    const res = await safeFetch("https://public.example/start", { lookup })
+    const res = await safeFetch("https://public.example/start", {
+      lookup,
+      transport,
+    })
     expect(await res.text()).toBe("ok")
-    expect(fetchMock).toHaveBeenNthCalledWith(
+    expect(transport).toHaveBeenNthCalledWith(
       2,
-      "https://public.example/final",
-      expect.objectContaining({ redirect: "manual" })
+      new URL("https://public.example/final"),
+      expect.objectContaining({ redirect: "manual" }),
+      [{ address: "93.184.216.34", family: 4 }],
+      expect.any(AbortSignal)
     )
   })
 })
@@ -150,18 +232,18 @@ describe("safeFetchText", () => {
     const lookup: SafeFetchLookup = vi.fn(async () => [
       { address: "93.184.216.34", family: 4 },
     ])
-    const fetchMock = vi.fn(
-      (_url: string, opts?: RequestInit) =>
+    const transport: SafeFetchTransport = vi.fn(
+      (_url, _opts, _approvedAddresses, signal) =>
         new Promise<Response>((_resolve, reject) => {
-          opts?.signal?.addEventListener("abort", () => {
-            reject(opts.signal?.reason)
+          signal.addEventListener("abort", () => {
+            reject(signal.reason)
           })
         })
     )
-    vi.stubGlobal("fetch", fetchMock)
 
     const promise = safeFetchText("https://public.example/slow", {
       lookup,
+      transport,
       timeoutMs: 25,
     })
     const assertion = expect(promise).rejects.toBeInstanceOf(
@@ -177,11 +259,11 @@ describe("safeFetchText", () => {
     const lookup: SafeFetchLookup = vi.fn(
       () => new Promise<Array<{ address: string; family?: number }>>(() => {})
     )
-    const fetchMock = vi.fn()
-    vi.stubGlobal("fetch", fetchMock)
+    const transport: SafeFetchTransport = vi.fn()
 
     const promise = safeFetchText("https://public.example/slow-dns", {
       lookup,
+      transport,
       timeoutMs: 25,
     })
     const assertion = expect(promise).rejects.toBeInstanceOf(
@@ -190,7 +272,7 @@ describe("safeFetchText", () => {
     await vi.advanceTimersByTimeAsync(25)
 
     await assertion
-    expect(fetchMock).not.toHaveBeenCalled()
+    expect(transport).not.toHaveBeenCalled()
   })
 
   it("reports caller cancellation separately from timeouts", async () => {
@@ -198,23 +280,41 @@ describe("safeFetchText", () => {
       { address: "93.184.216.34", family: 4 },
     ])
     const controller = new AbortController()
-    const fetchMock = vi.fn(
-      (_url: string, opts?: RequestInit) =>
+    const transport: SafeFetchTransport = vi.fn(
+      (_url, _opts, _approvedAddresses, signal) =>
         new Promise<Response>((_resolve, reject) => {
-          opts?.signal?.addEventListener("abort", () => {
-            reject(opts.signal?.reason)
+          signal.addEventListener("abort", () => {
+            reject(signal.reason)
           })
         })
     )
-    vi.stubGlobal("fetch", fetchMock)
 
     const promise = safeFetchText("https://public.example/slow", {
       lookup,
+      transport,
       signal: controller.signal,
       timeoutMs: 30_000,
     })
     controller.abort()
 
     await expect(promise).rejects.toMatchObject({ name: "AbortError" })
+  })
+
+  it("releases deadline resources immediately after a successful response", async () => {
+    vi.useFakeTimers()
+    const lookup: SafeFetchLookup = vi.fn(async () => [
+      { address: "93.184.216.34", family: 4 },
+    ])
+    const transport: SafeFetchTransport = vi.fn(async () => new Response("ok"))
+
+    await expect(
+      safeFetchText("https://public.example/ok", {
+        lookup,
+        transport,
+        timeoutMs: 30_000,
+      })
+    ).resolves.toMatchObject({ text: "ok" })
+
+    expect(vi.getTimerCount()).toBe(0)
   })
 })

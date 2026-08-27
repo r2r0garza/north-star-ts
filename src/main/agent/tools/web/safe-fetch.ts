@@ -1,5 +1,8 @@
 import { lookup as dnsLookup } from "node:dns/promises"
+import http from "node:http"
+import https from "node:https"
 import net from "node:net"
+import { Readable } from "node:stream"
 
 const MAX_REDIRECTS = 10
 const DEFAULT_TIMEOUT_MS = 30_000
@@ -30,10 +33,19 @@ export type SafeFetchLookup = (
   hostname: string
 ) => Promise<Array<{ address: string; family?: number }>>
 
+type SafeFetchAddress = { address: string; family?: number }
+type RequestTransport = (
+  url: URL,
+  options: RequestInit,
+  approvedAddresses: SafeFetchAddress[],
+  signal: AbortSignal
+) => Promise<Response>
+
 export interface SafeFetchOptions extends RequestInit {
   lookup?: SafeFetchLookup
   maxRedirects?: number
   timeoutMs?: number | null
+  transport?: RequestTransport
 }
 
 export interface SafeFetchTextOptions extends SafeFetchOptions {
@@ -165,9 +177,7 @@ function isRedirect(status: number): boolean {
   return [301, 302, 303, 307, 308].includes(status)
 }
 
-async function defaultLookup(
-  hostname: string
-): Promise<Array<{ address: string; family?: number }>> {
+async function defaultLookup(hostname: string): Promise<SafeFetchAddress[]> {
   const results = await dnsLookup(hostname, { all: true, verbatim: true })
   return results.map((result) => ({
     address: result.address,
@@ -178,7 +188,7 @@ async function defaultLookup(
 export async function assertPublicHttpUrl(
   url: URL,
   lookup: SafeFetchLookup = defaultLookup
-): Promise<void> {
+): Promise<SafeFetchAddress[]> {
   if (url.protocol !== "http:" && url.protocol !== "https:") {
     throw new UnsafeUrlError(
       `Only http(s) URLs are supported (got ${url.protocol}).`
@@ -196,7 +206,9 @@ export async function assertPublicHttpUrl(
       "Private, local, link-local, and metadata addresses are not allowed for headless fetches."
     )
   }
-  if (net.isIP(hostname)) return
+  if (net.isIP(hostname)) {
+    return [{ address: hostname, family: net.isIP(hostname) }]
+  }
 
   const addresses = await lookup(hostname)
   if (addresses.length === 0) {
@@ -210,6 +222,11 @@ export async function assertPublicHttpUrl(
       `${hostname} resolves to a private, local, link-local, or metadata address.`
     )
   }
+  const invalid = addresses.find((result) => net.isIP(result.address) === 0)
+  if (invalid) {
+    throw new UnsafeUrlError(`${hostname} resolved to an invalid IP address.`)
+  }
+  return addresses
 }
 
 export async function safeFetch(
@@ -221,6 +238,7 @@ export async function safeFetch(
     maxRedirects = MAX_REDIRECTS,
     timeoutMs = DEFAULT_TIMEOUT_MS,
     signal,
+    transport = requestWithPinnedAddresses,
     ...fetchOptions
   } = options
   let current = typeof input === "string" ? new URL(input) : new URL(input.href)
@@ -229,13 +247,17 @@ export async function safeFetch(
   try {
     for (let hop = 0; hop <= maxRedirects; hop++) {
       throwIfAborted(deadline.signal)
-      await abortable(assertPublicHttpUrl(current, lookup), deadline.signal)
+      const approvedAddresses = await abortable(
+        assertPublicHttpUrl(current, lookup),
+        deadline.signal
+      )
       throwIfAborted(deadline.signal)
-      const res = await fetch(current.href, {
-        ...fetchOptions,
-        redirect: "manual",
-        signal: deadline.signal,
-      })
+      const res = await transport(
+        current,
+        { ...fetchOptions, redirect: "manual" },
+        approvedAddresses,
+        deadline.signal
+      )
 
       if (!isRedirect(res.status)) return res
 
@@ -249,8 +271,9 @@ export async function safeFetch(
 
     throw new UnsafeUrlError("Too many redirects while fetching URL.")
   } catch (err) {
-    deadline.dispose()
     throw normalizeAbortError(err)
+  } finally {
+    deadline.dispose()
   }
 }
 
@@ -281,6 +304,119 @@ export async function safeFetchText(
   } finally {
     deadline.dispose()
   }
+}
+
+async function requestWithPinnedAddresses(
+  url: URL,
+  options: RequestInit,
+  approvedAddresses: SafeFetchAddress[],
+  signal: AbortSignal
+): Promise<Response> {
+  const client = url.protocol === "https:" ? https : http
+  const body = await requestBodyToBuffer(options.body)
+  const headers = requestHeaders(options.headers)
+  const approvedSet = new Set(approvedAddresses.map(normalizeAddressForCompare))
+  let nextAddress = 0
+
+  return new Promise<Response>((resolve, reject) => {
+    const req = client.request(
+      {
+        protocol: url.protocol,
+        hostname: normalizeHostname(url.hostname),
+        port: url.port || undefined,
+        path: `${url.pathname}${url.search}`,
+        method: options.method ?? (body ? "POST" : "GET"),
+        headers,
+        signal,
+        lookup: (_hostname, _opts, callback) => {
+          const selected =
+            approvedAddresses[nextAddress % approvedAddresses.length]
+          nextAddress += 1
+          callback(
+            null,
+            selected.address,
+            selected.family ?? net.isIP(selected.address)
+          )
+        },
+      },
+      (res) => {
+        const remoteAddress = res.socket.remoteAddress
+        if (
+          !remoteAddress ||
+          isPrivateOrLocalAddress(remoteAddress) ||
+          !approvedSet.has(normalizeAddressForCompare(remoteAddress))
+        ) {
+          res.destroy()
+          reject(
+            new UnsafeUrlError(
+              "Connected remote address was not one of the approved public DNS results."
+            )
+          )
+          return
+        }
+
+        resolve(
+          new Response(Readable.toWeb(res) as ReadableStream<Uint8Array>, {
+            status: res.statusCode ?? 0,
+            statusText: res.statusMessage,
+            headers: responseHeaders(res.headers),
+          })
+        )
+      }
+    )
+
+    req.on("error", reject)
+    if (body) req.end(body)
+    else req.end()
+  })
+}
+
+function normalizeAddressForCompare(
+  address: SafeFetchAddress | string
+): string {
+  const raw =
+    typeof address === "string" ? address : normalizeHostname(address.address)
+  const mapped = ipv4FromMappedIPv6(raw)
+  return mapped ?? raw
+}
+
+function requestHeaders(init?: HeadersInit): Record<string, string> {
+  if (!init) return {}
+  const headers = new Headers(init)
+  const result: Record<string, string> = {}
+  headers.forEach((value, key) => {
+    result[key] = value
+  })
+  return result
+}
+
+function responseHeaders(
+  headers: http.IncomingHttpHeaders
+): Array<[string, string]> {
+  const result: Array<[string, string]> = []
+  for (const [key, value] of Object.entries(headers)) {
+    if (value === undefined) continue
+    if (Array.isArray(value)) {
+      for (const item of value) result.push([key, item])
+    } else {
+      result.push([key, value])
+    }
+  }
+  return result
+}
+
+async function requestBodyToBuffer(body: BodyInit | null | undefined) {
+  if (!body) return null
+  if (typeof body === "string") return Buffer.from(body)
+  if (body instanceof URLSearchParams) return Buffer.from(body.toString())
+  if (body instanceof ArrayBuffer) return Buffer.from(body)
+  if (ArrayBuffer.isView(body)) {
+    return Buffer.from(body.buffer, body.byteOffset, body.byteLength)
+  }
+  if (body instanceof Blob) {
+    return Buffer.from(await body.arrayBuffer())
+  }
+  throw new Error("Unsupported request body type for safeFetch.")
 }
 
 export async function readResponseText(

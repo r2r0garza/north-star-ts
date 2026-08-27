@@ -48,7 +48,7 @@ a brief names a prerequisite.
 | 39 | P3 | Fixed | [Command-session completion test is timing-dependent](./039-command-session-test-timing-flake.md) | Test infrastructure |
 | 40 | P3 | Fixed | [CLI-session tests fail on native ABI mismatch](./040-cli-sessions-native-abi-test-failure.md) | Test infrastructure |
 | 41 | P1 | Resolved | [Tool execution ignores the offered tool set](./041-tool-call-availability-not-enforced.md) | Agent tool dispatch |
-| 42 | P1 | Open | [Headless fetch is vulnerable to DNS rebinding](./042-headless-fetch-dns-rebinding.md) | Shared safe-fetch transport |
+| 42 | P1 | Fixed | [Headless fetch is vulnerable to DNS rebinding](./042-headless-fetch-dns-rebinding.md) | Shared safe-fetch transport |
 | 43 | P1 | Open | [Shell approval identities drift](./043-shell-approval-identity-drift.md) | Approval policy and dashboards |
 | 44 | P1 | Open | [Revision-checked mutations have a final install race](./044-file-revision-final-install-race.md) | File mutation transactions |
 | 45 | P1 | Open | [Consequential browser actions are auto-approved](./045-browser-consequential-actions-auto-approved.md) | Browser approval policy |

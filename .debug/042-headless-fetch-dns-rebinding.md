@@ -1,6 +1,6 @@
 # Headless URL validation is not bound to the connected address
 
-> Status: **OPEN**
+> Status: **FIXED**
 > Severity: **P1 — SSRF through DNS rebinding**
 > Area: shared safe-fetch transport
 
@@ -41,3 +41,14 @@ in a `finally` path compatible with response-body consumption.
   metadata-scoped.
 - Redirects cannot introduce a DNS rebinding gap.
 - Successful, failed, and aborted requests all release deadline resources.
+
+## Resolution
+
+- `safeFetch` now validates each hop into an approved address set and passes
+  that set into the Node HTTP/HTTPS transport.
+- The transport pins socket lookup to the approved addresses while preserving
+  the original hostname for Host/SNI, and rejects any connected remote address
+  outside the approved public set.
+- Redirect hops repeat the same pinned validation/transport path.
+- Deadline disposal now runs in `finally`; `safeFetchText` keeps its outer
+  deadline alive through response body consumption.
