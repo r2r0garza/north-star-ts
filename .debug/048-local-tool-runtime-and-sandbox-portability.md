@@ -1,6 +1,6 @@
 # Local tools depend on system Python and lack cross-platform sandbox parity
 
-> Status: **OPEN**
+> Status: **PARTIAL**
 > Severity: **P2 — foundational runtime and isolation gap**
 > Area: local execution backend
 
@@ -32,8 +32,21 @@ regexes as classification and approval UX, not the security boundary.
 
 ## Acceptance criteria
 
-- Foundational tools do not require an undocumented system executable.
-- Every advertised sandbox profile has tested filesystem, network, and process
+- [x] Foundational local filesystem/search tools do not require an undocumented
+  Python executable.
+- [ ] Every advertised sandbox profile has tested filesystem, network, and process
   enforcement on its supported platforms.
-- A requested unavailable sandbox fails closed with a clear recovery path.
-- Documentation distinguishes approval, classification, and OS isolation.
+- [x] A requested unavailable sandbox fails closed with a clear recovery path.
+- [ ] Documentation distinguishes approval, classification, and OS isolation.
+
+## 2026-08-27 branch update
+
+Local foundational filesystem and search operations now use the Electron main
+process Node runtime instead of spawning `python3`. The local helper validates
+workspace scope, rejects symlink traversal, uses no-follow file opens for leaf
+file reads/writes, and invokes the bundled ripgrep binary directly from the
+validated search root.
+
+Stronger local runtime profiles still fail closed when the platform lacks an
+enforceable adapter. Linux and Windows OS sandbox adapters, cross-platform
+enforcement tests, and user-facing documentation remain open.

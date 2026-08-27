@@ -114,7 +114,19 @@ item is its plan file, not its rank.
    gated by a new **"Watch workspace for changes"** toggle in the Workspace Indexing settings group
    (global store, no migration). Open Qs: watcher mechanism (`chokidar` vs core `fs.watch` vs
    `@parcel/watcher`), watch scope/lifetime, debounce window, churn backpressure. Placed after `018`.
-15. **`043` — Copilot CLI provider. DEFERRED.** Split out of `034` but parked at the bottom for now.
+15. **`053` — Linux Local sandbox adapter. DEFERRED.** Future hardening for `052`'s stronger Local
+   runtime profiles on Linux. Docker/Podman remains the supported Linux sandbox path for now; this
+   plan only becomes active if we decide Local should enforce `read-only` / `workspace-write` without a
+   container. Candidate adapters include Bubblewrap/namespaces and Landlock, but the acceptance bar is
+   real OS enforcement for filesystem, network, and process-tree cleanup. Unsupported Linux hosts must
+   continue to fail closed and point users to containers or explicit host access.
+16. **`054` — Windows Local sandbox adapter. DEFERRED.** Future hardening for `052`'s stronger Local
+   runtime profiles on Windows. Docker/Podman remains the supported Windows sandbox path for now; this
+   plan only becomes active if we decide Local should enforce `read-only` / `workspace-write` without a
+   container. Likely requires more than Job Objects: process-tree cleanup plus filesystem and network
+   restrictions may need AppContainer/restricted-token support or a packaged native helper. Unsupported
+   Windows hosts must continue to fail closed and point users to containers or explicit host access.
+17. **`043` — Copilot CLI provider. DEFERRED.** Split out of `034` but parked at the bottom for now.
    Probes under `cli_probes/copilot/` confirmed no-tool JSONL streaming, caller-assigned
    `--session-id`, resume, assistant message deltas, final `assistant.message`, and final `result`.
    Tool support is deliberately deferred: a shell-tool probe with `--allow-tool=shell` was rejected as

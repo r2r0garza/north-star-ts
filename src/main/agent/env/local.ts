@@ -1,8 +1,20 @@
 import { spawn } from "child_process"
 import type { ChildProcess } from "child_process"
-import { randomUUID } from "crypto"
+import { createHash, randomUUID } from "crypto"
 import { EventEmitter } from "events"
-import { writeFile, unlink } from "fs/promises"
+import { constants } from "fs"
+import {
+  chmod as fsChmod,
+  link as fsLink,
+  lstat,
+  mkdir as fsMkdir,
+  open as fsOpen,
+  readdir as fsReaddir,
+  realpath,
+  rename as fsRename,
+  unlink as fsUnlink,
+  writeFile,
+} from "fs/promises"
 import { isAbsolute, relative, resolve, join } from "path"
 import { tmpdir } from "os"
 import { StringDecoder } from "string_decoder"
@@ -58,7 +70,6 @@ type SpawnFn = typeof spawn
 interface LocalEnvironmentDeps {
   resolveRipgrepPath?: () => string
   spawn?: SpawnFn
-  pythonPath?: string
   platform?: NodeJS.Platform
   searchTimeoutMs?: number
   searchMaxOutputBytes?: number
@@ -151,7 +162,6 @@ export class LocalEnvironment implements Environment {
   }
 
   resolve(path: string): Promise<string> {
-    assertScopedFsSupported()
     return resolveInWorkspaceReal(this.workspace, path)
   }
 
@@ -160,65 +170,50 @@ export class LocalEnvironment implements Environment {
   }
 
   readFile(path: string): Promise<Buffer> {
-    return safeReadFile(this.workspace, path, this.deps.pythonPath)
+    return safeReadFile(this.workspace, path)
   }
 
   readTextLines(
     path: string,
     opts: ReadTextLinesOptions
   ): Promise<ReadTextLinesResult> {
-    return safeReadTextLines(this.workspace, path, opts, this.deps.pythonPath)
+    return safeReadTextLines(this.workspace, path, opts)
   }
 
   writeFile(path: string, data: string): Promise<void> {
     this.assertWritable(path)
-    return runSafeFs(
-      this.workspace,
-      "write_file",
-      { path, data },
-      this.deps.pythonPath
-    )
+    return safeWriteFile(this.workspace, path, data)
   }
 
   chmod(path: string, mode: number): Promise<void> {
     this.assertWritable(path)
-    return runSafeFs(
-      this.workspace,
-      "chmod",
-      { path, mode },
-      this.deps.pythonPath
-    )
+    return safeChmod(this.workspace, path, mode)
   }
 
   rename(from: string, to: string): Promise<void> {
     this.assertWritable(from)
     this.assertWritable(to)
-    return runSafeFs(
-      this.workspace,
-      "rename",
-      { from, to },
-      this.deps.pythonPath
-    )
+    return safeRename(this.workspace, from, to)
   }
 
   installFileNoReplace(from: string, to: string): Promise<void> {
     this.assertWritable(from)
     this.assertWritable(to)
-    return runSafeFs(this.workspace, "link", { from, to }, this.deps.pythonPath)
+    return safeLink(this.workspace, from, to)
   }
 
   removeFile(path: string): Promise<void> {
     this.assertWritable(path)
-    return runSafeFs(this.workspace, "unlink", { path }, this.deps.pythonPath)
+    return safeUnlink(this.workspace, path)
   }
 
   async mkdirp(path: string): Promise<void> {
     this.assertWritable(path)
-    await runSafeFs(this.workspace, "mkdirp", { path }, this.deps.pythonPath)
+    await safeMkdirp(this.workspace, path)
   }
 
   async stat(path: string): Promise<StatInfo> {
-    const info = await safeStat(this.workspace, path, this.deps.pythonPath)
+    const info = await safeStat(this.workspace, path)
     return {
       size: info.size,
       mode: info.mode,
@@ -228,11 +223,11 @@ export class LocalEnvironment implements Environment {
   }
 
   readdir(path: string): Promise<DirEntry[]> {
-    return safeReaddir(this.workspace, path, this.deps.pythonPath)
+    return safeReaddir(this.workspace, path)
   }
 
   listDir(path: string, opts: ListDirOptions): Promise<ListDirResult> {
-    return safeListDir(this.workspace, path, opts, this.deps.pythonPath)
+    return safeListDir(this.workspace, path, opts)
   }
 
   // Run `command` through the user's shell with `opts.cwd` as its working
@@ -280,7 +275,7 @@ export class LocalEnvironment implements Environment {
       return await captureSpawn(child, { ...opts, killGroup: true })
     } finally {
       if (cleanupPath) {
-        await unlink(cleanupPath).catch(() => {})
+        await fsUnlink(cleanupPath).catch(() => {})
       }
     }
   }
@@ -320,7 +315,7 @@ export class LocalEnvironment implements Environment {
         })
         handle = new PtyCommandHandle(term, opts.signal)
       } catch (error) {
-        if (cleanupPath) await unlink(cleanupPath).catch(() => {})
+        if (cleanupPath) await fsUnlink(cleanupPath).catch(() => {})
         throw error
       }
       return cleanupPath
@@ -339,7 +334,7 @@ export class LocalEnvironment implements Environment {
         signal: opts.signal,
       })
     } catch (error) {
-      if (cleanupPath) await unlink(cleanupPath).catch(() => {})
+      if (cleanupPath) await fsUnlink(cleanupPath).catch(() => {})
       throw error
     }
     return cleanupPath ? new CleanupCommandHandle(handle, cleanupPath) : handle
@@ -357,20 +352,19 @@ export class LocalEnvironment implements Environment {
   // content are never split with ad-hoc delimiters. Patterns/globs are argv data.
   async search(opts: SearchOptions): Promise<SearchResult> {
     const spawnFn = this.deps.spawn ?? spawn
+    const root = await assertScopedLocalPath(this.workspace, opts.root, {
+      requireLeaf: true,
+      requireDirectory: true,
+    })
     const child = spawnFn(
-      this.deps.pythonPath ?? "python3",
-      [
-        "-c",
-        SAFE_RG_SCRIPT,
-        this.workspace,
-        opts.root,
-        (this.deps.resolveRipgrepPath ?? resolveRipgrepPath)(),
-        ...buildRipgrepArgs(opts),
-      ],
+      (this.deps.resolveRipgrepPath ?? resolveRipgrepPath)(),
+      buildRipgrepArgs({ ...opts, root }).map((arg) =>
+        arg === root ? "." : arg
+      ),
       {
-        cwd: this.workspace,
+        cwd: root,
         shell: false,
-        detached: process.platform !== "win32",
+        detached: this.commandPlatform() !== "win32",
         stdio: ["ignore", "pipe", "pipe"],
       }
     )
@@ -464,574 +458,350 @@ function isInside(parent: string, child: string): boolean {
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel))
 }
 
-function assertScopedFsSupported(): void {
-  if (process.platform === "win32") {
-    throw new Error(
-      "Local filesystem tools require no-follow directory-relative operations, which are unavailable on this platform."
-    )
-  }
+interface ScopedPathOptions {
+  requireLeaf?: boolean
+  requireDirectory?: boolean
+  allowMissingLeaf?: boolean
 }
 
-export const SAFE_FS_SCRIPT = String.raw`
-import base64, codecs, hashlib, json, os, stat, sys
-
-def fail_closed(message):
-    raise RuntimeError(message)
-
-def rel_parts(root, target):
-    root_abs = os.path.realpath(root)
-    target_abs = os.path.realpath(target)
-    rel = os.path.relpath(target_abs, root_abs)
-    if rel == os.curdir:
-        return []
-    if rel == os.pardir or rel.startswith(os.pardir + os.sep) or os.path.isabs(rel):
-        fail_closed("path is outside the workspace")
-    return [p for p in rel.split(os.sep) if p and p != os.curdir]
-
-def open_root(root):
-    return os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-
-def open_dir_child(parent_fd, name):
-    return os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent_fd)
-
-def open_parent(root, target):
-    parts = rel_parts(root, target)
-    root_fd = open_root(root)
-    fds = [root_fd]
-    try:
-        current = root_fd
-        for part in parts[:-1]:
-            current = open_dir_child(current, part)
-            fds.append(current)
-        return fds, current, (parts[-1] if parts else ".")
-    except BaseException:
-        close_all(fds)
-        raise
-
-def close_all(fds):
-    for fd in reversed(fds):
-        try: os.close(fd)
-        except OSError: pass
-
-def read_file(root, path):
-    fds, parent, name = open_parent(root, path)
-    try:
-        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent)
-        try:
-            chunks = []
-            while True:
-                chunk = os.read(fd, 1024 * 1024)
-                if not chunk:
-                    break
-                chunks.append(chunk)
-            return {"data": base64.b64encode(b"".join(chunks)).decode("ascii")}
-        finally:
-            os.close(fd)
-    finally:
-        close_all(fds)
-
-def utf8_safe_prefix(raw, byte_limit):
-    prefix = raw[:byte_limit]
-    while prefix:
-        try:
-            return prefix.decode("utf-8"), len(prefix)
-        except UnicodeDecodeError:
-            prefix = prefix[:-1]
-    return "", 0
-
-def read_text_lines(root, path, offset, limit, max_bytes):
-    offset = max(1, int(offset))
-    limit = max(1, int(limit))
-    max_bytes = max(1, int(max_bytes))
-    sniff = 8000
-    chunk_size = 65536
-
-    fds, parent, name = open_parent(root, path)
-    try:
-        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent)
-        try:
-            file_size = os.fstat(fd).st_size
-            digest = hashlib.sha256()
-            lines = []
-            current = 1
-            end_line = 0
-            returned_bytes = 0
-            has_more = False
-            truncated = False
-            line_too_long = False
-            skipped_line_remainder = False
-            reached_eof = False
-            stopped = False
-            page_full = False
-            pending = b""
-            sniffed = b""
-            line_bytes = 0
-            line_parts = []
-            prefix = bytearray()
-            decoder = codecs.getincrementaldecoder("utf-8")("replace")
-            discarding_requested_line = False
-
-            def reset_line():
-                nonlocal line_bytes, line_parts, prefix, decoder, discarding_requested_line
-                line_bytes = 0
-                line_parts = []
-                prefix = bytearray()
-                decoder = codecs.getincrementaldecoder("utf-8")("replace")
-                discarding_requested_line = False
-
-            def append_requested(raw):
-                nonlocal line_bytes, line_parts, prefix, discarding_requested_line
-                if discarding_requested_line:
-                    line_bytes += len(raw)
-                    return
-                sep = 1 if lines else 0
-                if returned_bytes + sep + line_bytes + len(raw) <= max_bytes:
-                    if not lines and len(prefix) < max_bytes:
-                        prefix.extend(raw[: max_bytes - len(prefix)])
-                    text = decoder.decode(raw, final=False)
-                    if text:
-                        line_parts.append(text)
-                    line_bytes += len(raw)
-                    return
-
-                if not lines:
-                    take = max(0, max_bytes - len(prefix))
-                    if take:
-                        prefix.extend(raw[:take])
-                line_bytes += len(raw)
-                discarding_requested_line = True
-
-            def finish_line():
-                nonlocal current, end_line, returned_bytes, has_more, truncated
-                nonlocal line_too_long, skipped_line_remainder, stopped, page_full
-
-                if current < offset:
-                    current += 1
-                    reset_line()
-                    return
-
-                if len(lines) >= limit:
-                    has_more = True
-                    stopped = True
-                    return
-
-                sep = 1 if lines else 0
-                if returned_bytes + sep + line_bytes > max_bytes:
-                    truncated = True
-                    has_more = True
-                    if not lines:
-                        text, used = utf8_safe_prefix(bytes(prefix), max_bytes)
-                        lines.append(text)
-                        returned_bytes = used
-                        end_line = current
-                        line_too_long = True
-                        skipped_line_remainder = True
-                        current += 1
-                    stopped = True
-                    reset_line()
-                    return
-
-                tail = decoder.decode(b"", final=True)
-                if tail:
-                    line_parts.append(tail)
-                lines.append("".join(line_parts))
-                returned_bytes += sep + line_bytes
-                end_line = current
-                current += 1
-                if len(lines) >= limit:
-                    page_full = True
-                reset_line()
-
-            while True:
-                chunk = os.read(fd, chunk_size)
-                if not chunk:
-                    reached_eof = True
-                    break
-                digest.update(chunk)
-                if len(sniffed) < sniff:
-                    take = min(sniff - len(sniffed), len(chunk))
-                    sniffed += chunk[:take]
-                    if b"\0" in sniffed:
-                        return {"error": "binary"}
-                if page_full:
-                    has_more = True
-                    stopped = True
-                    break
-                pending += chunk
-                while pending and not stopped:
-                    nl = pending.find(b"\n")
-                    if nl >= 0:
-                        part = pending[:nl]
-                        pending = pending[nl + 1:]
-                        append_requested(part)
-                        finish_line()
-                        if page_full and pending:
-                            has_more = True
-                            stopped = True
-                    else:
-                        append_requested(pending)
-                        pending = b""
-                if stopped:
-                    break
-
-            if reached_eof and (line_bytes > 0 or file_size == 0):
-                finish_line()
-
-            result = {
-                "text": "\n".join(lines),
-                "startLine": offset,
-                "endLine": end_line if lines else offset - 1,
-                "hasMore": has_more,
-                "fileBytes": file_size,
-                "truncated": truncated,
-            }
-            if has_more:
-                result["nextOffset"] = end_line + 1
-            if reached_eof:
-                result["revision"] = digest.hexdigest()
-            if line_too_long:
-                result["lineTooLong"] = True
-            if skipped_line_remainder:
-                result["skippedLineRemainder"] = True
-            return result
-        finally:
-            os.close(fd)
-    finally:
-        close_all(fds)
-
-def write_all(fd, data, write=os.write):
-    view = memoryview(data)
-    written_total = 0
-    while written_total < len(view):
-        try:
-            written = write(fd, view[written_total:])
-        except InterruptedError:
-            continue
-        if written <= 0:
-            fail_closed("write made no progress")
-        written_total += written
-
-def planned_write_factory(plan):
-    calls = {"index": 0}
-    def planned_write(fd, chunk):
-        if calls["index"] >= len(plan):
-            return os.write(fd, chunk)
-        step = plan[calls["index"]]
-        calls["index"] += 1
-        if step == "interrupt":
-            raise InterruptedError()
-        if step == "zero":
-            return 0
-        if step == "error":
-            raise OSError("injected write failure")
-        count = int(step)
-        if count < 0:
-            fail_closed("invalid write test plan")
-        to_write = min(count, len(chunk))
-        if to_write == 0:
-            return 0
-        return os.write(fd, chunk[:to_write])
-    return planned_write
-
-def write_file(root, path, data, write=os.write):
-    fds, parent, name = open_parent(root, path)
-    try:
-        fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o666, dir_fd=parent)
-        try:
-            encoded = data.encode("utf-8")
-            # Success means every byte was accepted by the fd; durability remains unchanged and does not include fsync.
-            write_all(fd, encoded, write)
-        finally:
-            os.close(fd)
-        return {}
-    finally:
-        close_all(fds)
-
-def chmod_file(root, path, mode):
-    fds, parent, name = open_parent(root, path)
-    try:
-        os.chmod(name, int(mode), dir_fd=parent, follow_symlinks=False)
-        return {}
-    finally:
-        close_all(fds)
-
-def rename_file(root, src, dst):
-    src_fds, src_parent, src_name = open_parent(root, src)
-    dst_fds, dst_parent, dst_name = open_parent(root, dst)
-    try:
-        os.rename(src_name, dst_name, src_dir_fd=src_parent, dst_dir_fd=dst_parent)
-        return {}
-    finally:
-        close_all(dst_fds)
-        close_all(src_fds)
-
-def link_file(root, src, dst):
-    src_fds, src_parent, src_name = open_parent(root, src)
-    dst_fds, dst_parent, dst_name = open_parent(root, dst)
-    try:
-        os.link(src_name, dst_name, src_dir_fd=src_parent, dst_dir_fd=dst_parent, follow_symlinks=False)
-        return {}
-    finally:
-        close_all(dst_fds)
-        close_all(src_fds)
-
-def unlink_file(root, path):
-    fds, parent, name = open_parent(root, path)
-    try:
-        os.unlink(name, dir_fd=parent)
-        return {}
-    finally:
-        close_all(fds)
-
-def mkdirp(root, path):
-    parts = rel_parts(root, path)
-    root_fd = open_root(root)
-    fds = [root_fd]
-    try:
-        current = root_fd
-        for part in parts:
-            try:
-                os.mkdir(part, 0o777, dir_fd=current)
-            except FileExistsError:
-                pass
-            current = open_dir_child(current, part)
-            fds.append(current)
-        return {}
-    finally:
-        close_all(fds)
-
-def stat_path(root, path):
-    fds, parent, name = open_parent(root, path)
-    try:
-        st = os.stat(name, dir_fd=parent, follow_symlinks=False)
-        typ = "dir" if stat.S_ISDIR(st.st_mode) else "file" if stat.S_ISREG(st.st_mode) else "other"
-        return {"size": st.st_size, "mode": stat.S_IMODE(st.st_mode), "type": typ}
-    finally:
-        close_all(fds)
-
-def listdir_path(root, path, max_entries=None, max_bytes=None):
-    fd = open_root(root)
-    fds = [fd]
-    try:
-        current = fd
-        for part in rel_parts(root, path):
-            current = open_dir_child(current, part)
-            fds.append(current)
-        entries = []
-        total_bytes = 0
-        truncated = False
-        cap_reason = None
-        scan = os.scandir(current)
-        try:
-            for item in scan:
-                name = item.name
-                name_bytes = len(name.encode("utf-8"))
-                if max_entries is not None and len(entries) >= max_entries:
-                    truncated = True
-                    cap_reason = "entryCount"
-                    break
-                if max_bytes is not None and entries and total_bytes + name_bytes > max_bytes:
-                    truncated = True
-                    cap_reason = "nameBytes"
-                    break
-                try:
-                    st = item.stat(follow_symlinks=False)
-                    typ = "dir" if stat.S_ISDIR(st.st_mode) else "file" if stat.S_ISREG(st.st_mode) else "other"
-                except OSError:
-                    typ = "other"
-                entries.append({"name": name, "type": typ})
-                total_bytes += name_bytes
-        finally:
-            scan.close()
-        return {"entries": entries, "truncated": truncated, "capReason": cap_reason}
-    finally:
-        close_all(fds)
-
-def readdir_path(root, path):
-    return {"entries": listdir_path(root, path)["entries"]}
-
-req = json.load(sys.stdin)
-root = req["root"]
-op = req["op"]
-args = req.get("args", {})
-if op == "read_file":
-    result = read_file(root, args["path"])
-elif op == "read_text_lines":
-    result = read_text_lines(root, args["path"], args["offset"], args["limit"], args["maxBytes"])
-elif op == "write_file":
-    result = write_file(root, args["path"], args["data"])
-elif op == "__test_write_file_with_plan":
-    result = write_file(root, args["path"], args["data"], planned_write_factory(args["plan"]))
-elif op == "chmod":
-    result = chmod_file(root, args["path"], args["mode"])
-elif op == "rename":
-    result = rename_file(root, args["from"], args["to"])
-elif op == "link":
-    result = link_file(root, args["from"], args["to"])
-elif op == "unlink":
-    result = unlink_file(root, args["path"])
-elif op == "mkdirp":
-    result = mkdirp(root, args["path"])
-elif op == "stat":
-    result = stat_path(root, args["path"])
-elif op == "listdir":
-    result = listdir_path(root, args["path"], args.get("maxEntries"), args.get("maxBytes"))
-elif op == "readdir":
-    result = readdir_path(root, args["path"])
-else:
-    fail_closed("unknown op")
-json.dump(result, sys.stdout)
-`
-
-const SAFE_RG_SCRIPT = String.raw`
-import os, sys
-
-def fail_closed(message):
-    raise RuntimeError(message)
-
-def rel_parts(root, target):
-    root_abs = os.path.realpath(root)
-    target_abs = os.path.realpath(target)
-    rel = os.path.relpath(target_abs, root_abs)
-    if rel == os.curdir:
-        return []
-    if rel == os.pardir or rel.startswith(os.pardir + os.sep) or os.path.isabs(rel):
-        fail_closed("path is outside the workspace")
-    return [p for p in rel.split(os.sep) if p and p != os.curdir]
-
-try:
-    fd = os.open(sys.argv[1], os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-    fds = [fd]
-    current = fd
-    for part in rel_parts(sys.argv[1], sys.argv[2]):
-        current = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=current)
-        fds.append(current)
-    os.fchdir(current)
-    rg = sys.argv[3]
-    args = [rg] + [("." if arg == sys.argv[2] else arg) for arg in sys.argv[4:]]
-    try:
-        os.execv(rg, args)
-    except OSError as exc:
-        print(str(exc), file=sys.stderr)
-        os._exit(127)
-except BaseException as exc:
-    print(str(exc), file=sys.stderr)
-    os._exit(127)
-finally:
-    for item in reversed(fds):
-        try: os.close(item)
-        except OSError: pass
-`
-
-async function runSafeFs<T>(
-  workspace: string,
-  op: string,
-  args: Record<string, unknown>,
-  pythonPath = "python3"
-): Promise<T> {
-  assertScopedFsSupported()
-  const child = spawn(pythonPath, ["-c", SAFE_FS_SCRIPT], {
-    cwd: workspace,
-    shell: false,
-    stdio: ["pipe", "pipe", "pipe"],
-  })
-  child.stdin.end(JSON.stringify({ root: workspace, op, args }))
-  const res = await captureSpawn(child, {
-    timeoutMs: 30_000,
-    maxOutputBytes: 32 * 1024 * 1024,
-    killGroup: false,
-  })
-  if (res.exitCode !== 0) {
-    const message =
-      res.stderr?.toString("utf8").trim() ||
-      res.stdout.toString("utf8").trim() ||
-      res.spawnError ||
-      "safe local filesystem operation failed"
-    throw new Error(message)
-  }
-  return JSON.parse(res.stdout.toString("utf8") || "{}") as T
-}
-
-async function safeReadFile(
+async function assertScopedLocalPath(
   workspace: string,
   path: string,
-  pythonPath?: string
-): Promise<Buffer> {
-  const result = await runSafeFs<{ data: string }>(
-    workspace,
-    "read_file",
-    { path },
-    pythonPath
-  )
-  return Buffer.from(result.data, "base64")
+  opts: ScopedPathOptions = {}
+): Promise<string> {
+  const lexicalRoot = resolve(workspace)
+  const root = await realpath(workspace)
+  const lexicalTarget = resolve(path)
+  const target = isInside(lexicalRoot, lexicalTarget)
+    ? join(root, relative(lexicalRoot, lexicalTarget))
+    : lexicalTarget
+  if (!isInside(root, target)) {
+    throw new Error(`Path "${path}" is outside the workspace and is not allowed.`)
+  }
+
+  const rootStat = await lstat(root)
+  if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
+    throw new Error("Workspace root is not a real directory.")
+  }
+
+  const rel = relative(root, target)
+  const parts = rel ? rel.split(/[\\/]+/).filter(Boolean) : []
+  let current = root
+  const requiredParts =
+    opts.allowMissingLeaf && parts.length > 0 ? parts.slice(0, -1) : parts
+
+  for (const part of requiredParts) {
+    current = join(current, part)
+    const stat = await lstat(current)
+    if (stat.isSymbolicLink()) {
+      throw new Error(
+        `Path "${path}" resolves through a symlink and is not allowed.`
+      )
+    }
+    if (!stat.isDirectory() && current !== target) {
+      throw new Error(`Path "${path}" has a non-directory parent.`)
+    }
+  }
+
+  if (opts.allowMissingLeaf && parts.length > 0) {
+    try {
+      const leafStat = await lstat(target)
+      if (leafStat.isSymbolicLink()) {
+        throw new Error(
+          `Path "${path}" resolves through a symlink and is not allowed.`
+        )
+      }
+      if (opts.requireDirectory && !leafStat.isDirectory()) {
+        throw new Error(`Path "${path}" is not a directory.`)
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+    }
+    return target
+  }
+
+  if (opts.requireLeaf || opts.requireDirectory) {
+    const leafStat = await lstat(target)
+    if (leafStat.isSymbolicLink()) {
+      throw new Error(
+        `Path "${path}" resolves through a symlink and is not allowed.`
+      )
+    }
+    if (opts.requireDirectory && !leafStat.isDirectory()) {
+      throw new Error(`Path "${path}" is not a directory.`)
+    }
+  }
+
+  return target
+}
+
+async function safeOpenNoFollow(path: string, flags: number, mode?: number) {
+  return fsOpen(path, flags | constants.O_NOFOLLOW, mode)
+}
+
+async function safeReadFile(workspace: string, path: string): Promise<Buffer> {
+  const target = await assertScopedLocalPath(workspace, path, {
+    requireLeaf: true,
+  })
+  const handle = await safeOpenNoFollow(target, constants.O_RDONLY)
+  try {
+    return await handle.readFile()
+  } finally {
+    await handle.close()
+  }
 }
 
 async function safeReadTextLines(
   workspace: string,
   path: string,
-  opts: ReadTextLinesOptions,
-  pythonPath?: string
+  opts: ReadTextLinesOptions
 ): Promise<ReadTextLinesResult> {
-  const result = await runSafeFs<ReadTextLinesResult | { error: string }>(
-    workspace,
-    "read_text_lines",
-    {
-      path,
-      offset: Math.max(1, Math.floor(opts.offset)),
-      limit: Math.max(1, Math.floor(opts.limit)),
-      maxBytes: Math.max(1, Math.floor(opts.maxBytes)),
-    },
-    pythonPath
-  )
-  if ("error" in result) {
-    throw new Error(result.error === "binary" ? "BINARY_FILE" : result.error)
+  const data = await safeReadFile(workspace, path)
+  if (data.subarray(0, 8000).includes(0)) throw new Error("BINARY_FILE")
+
+  const offset = Math.max(1, Math.floor(opts.offset))
+  const limit = Math.max(1, Math.floor(opts.limit))
+  const maxBytes = Math.max(1, Math.floor(opts.maxBytes))
+  const physicalLines = splitPhysicalLines(data)
+  const selected: string[] = []
+  let returnedBytes = 0
+  let endLine = offset - 1
+  let hasMore = false
+  let truncated = false
+  let lineTooLong = false
+  let skippedLineRemainder = false
+
+  for (let index = offset - 1; index < physicalLines.length; index += 1) {
+    if (selected.length >= limit) {
+      hasMore = true
+      break
+    }
+
+    const raw = physicalLines[index]
+    const sep = selected.length > 0 ? 1 : 0
+    if (returnedBytes + sep + raw.length > maxBytes) {
+      truncated = true
+      hasMore = true
+      if (selected.length === 0) {
+        const prefix = utf8SafePrefix(raw, maxBytes)
+        selected.push(prefix.text)
+        returnedBytes = prefix.bytes
+        endLine = index + 1
+        lineTooLong = true
+        skippedLineRemainder = true
+      }
+      break
+    }
+
+    selected.push(raw.toString("utf8"))
+    returnedBytes += sep + raw.length
+    endLine = index + 1
   }
-  return result
+
+  return {
+    text: selected.join("\n"),
+    startLine: offset,
+    endLine,
+    hasMore,
+    nextOffset: hasMore ? endLine + 1 : undefined,
+    fileBytes: data.length,
+    truncated,
+    revision: createHash("sha256").update(data).digest("hex"),
+    lineTooLong: lineTooLong || undefined,
+    skippedLineRemainder: skippedLineRemainder || undefined,
+  }
 }
 
 async function safeStat(
   workspace: string,
-  path: string,
-  pythonPath?: string
+  path: string
 ): Promise<{ size: number; mode: number; type: string }> {
-  return runSafeFs(workspace, "stat", { path }, pythonPath)
+  const target = await assertScopedLocalPath(workspace, path, {
+    requireLeaf: true,
+  })
+  const stat = await lstat(target)
+  return {
+    size: stat.size,
+    mode: stat.mode & 0o777,
+    type: stat.isDirectory() ? "dir" : stat.isFile() ? "file" : "other",
+  }
 }
 
-async function safeReaddir(
-  workspace: string,
-  path: string,
-  pythonPath?: string
-): Promise<DirEntry[]> {
-  const result = await safeListDir(workspace, path, {}, pythonPath)
+async function safeReaddir(workspace: string, path: string): Promise<DirEntry[]> {
+  const result = await safeListDir(workspace, path, {})
   return result.entries
 }
 
 async function safeListDir(
   workspace: string,
   path: string,
-  opts: Partial<ListDirOptions>,
-  pythonPath?: string
+  opts: Partial<ListDirOptions>
 ): Promise<ListDirResult> {
-  const result = await runSafeFs<{
-    entries: Array<{ name: string; type: string }>
-    truncated?: boolean
-    capReason?: ListDirResult["capReason"]
-  }>(
-    workspace,
-    opts.maxEntries == null && opts.maxBytes == null ? "readdir" : "listdir",
-    { path, maxEntries: opts.maxEntries, maxBytes: opts.maxBytes },
-    pythonPath
-  )
-  const entries = result.entries.map((entry) => ({
-    name: entry.name,
-    isFile: () => entry.type === "file",
-    isDirectory: () => entry.type === "dir",
-  }))
-  return {
-    entries,
-    truncated: result.truncated ?? false,
-    capReason: result.capReason,
+  const target = await assertScopedLocalPath(workspace, path, {
+    requireLeaf: true,
+    requireDirectory: true,
+  })
+  const entries: DirEntry[] = []
+  let totalBytes = 0
+  let truncated = false
+  let capReason: ListDirResult["capReason"] | undefined
+
+  for (const entry of await fsReaddir(target, { withFileTypes: true })) {
+    const nameBytes = Buffer.byteLength(entry.name, "utf8")
+    if (opts.maxEntries != null && entries.length >= opts.maxEntries) {
+      truncated = true
+      capReason = "entryCount"
+      break
+    }
+    if (
+      opts.maxBytes != null &&
+      entries.length > 0 &&
+      totalBytes + nameBytes > opts.maxBytes
+    ) {
+      truncated = true
+      capReason = "nameBytes"
+      break
+    }
+    entries.push({
+      name: entry.name,
+      isFile: () => entry.isFile(),
+      isDirectory: () => entry.isDirectory(),
+    })
+    totalBytes += nameBytes
   }
+
+  return { entries, truncated, capReason }
+}
+
+async function safeWriteFile(
+  workspace: string,
+  path: string,
+  data: string
+): Promise<void> {
+  const target = await assertScopedLocalPath(workspace, path, {
+    allowMissingLeaf: true,
+  })
+  const handle = await safeOpenNoFollow(
+    target,
+    constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC,
+    0o666
+  )
+  try {
+    await handle.writeFile(data, "utf8")
+  } finally {
+    await handle.close()
+  }
+}
+
+async function safeChmod(
+  workspace: string,
+  path: string,
+  mode: number
+): Promise<void> {
+  const target = await assertScopedLocalPath(workspace, path, {
+    requireLeaf: true,
+  })
+  await fsChmod(target, mode)
+}
+
+async function safeRename(
+  workspace: string,
+  from: string,
+  to: string
+): Promise<void> {
+  const source = await assertScopedLocalPath(workspace, from, {
+    requireLeaf: true,
+  })
+  const target = await assertScopedLocalPath(workspace, to, {
+    allowMissingLeaf: true,
+  })
+  await fsRename(source, target)
+}
+
+async function safeLink(
+  workspace: string,
+  from: string,
+  to: string
+): Promise<void> {
+  const source = await assertScopedLocalPath(workspace, from, {
+    requireLeaf: true,
+  })
+  const target = await assertScopedLocalPath(workspace, to, {
+    allowMissingLeaf: true,
+  })
+  await fsLink(source, target)
+}
+
+async function safeUnlink(workspace: string, path: string): Promise<void> {
+  const target = await assertScopedLocalPath(workspace, path, {
+    requireLeaf: true,
+  })
+  await fsUnlink(target)
+}
+
+async function safeMkdirp(workspace: string, path: string): Promise<void> {
+  const lexicalRoot = resolve(workspace)
+  const root = await realpath(workspace)
+  const lexicalTarget = resolve(path)
+  const target = isInside(lexicalRoot, lexicalTarget)
+    ? join(root, relative(lexicalRoot, lexicalTarget))
+    : lexicalTarget
+  if (!isInside(root, target)) {
+    throw new Error(`Path "${path}" is outside the workspace and is not allowed.`)
+  }
+  const rootStat = await lstat(root)
+  if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
+    throw new Error("Workspace root is not a real directory.")
+  }
+
+  const rel = relative(root, target)
+  const parts = rel ? rel.split(/[\\/]+/).filter(Boolean) : []
+  let current = root
+  for (const part of parts) {
+    current = join(current, part)
+    try {
+      const stat = await lstat(current)
+      if (stat.isSymbolicLink()) {
+        throw new Error(
+          `Path "${path}" resolves through a symlink and is not allowed.`
+        )
+      }
+      if (!stat.isDirectory()) {
+        throw new Error(`Path "${path}" has a non-directory parent.`)
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+      await fsMkdir(current)
+    }
+  }
+}
+
+function splitPhysicalLines(data: Buffer): Buffer[] {
+  if (data.length === 0) return [Buffer.alloc(0)]
+  const lines: Buffer[] = []
+  let start = 0
+  for (let index = 0; index < data.length; index += 1) {
+    if (data[index] !== 0x0a) continue
+    let end = index
+    if (end > start && data[end - 1] === 0x0d) end -= 1
+    lines.push(data.subarray(start, end))
+    start = index + 1
+  }
+  if (start < data.length) lines.push(data.subarray(start))
+  return lines
+}
+
+function utf8SafePrefix(raw: Buffer, byteLimit: number): {
+  text: string
+  bytes: number
+} {
+  let prefix = raw.subarray(0, byteLimit)
+  while (prefix.length > 0) {
+    const text = prefix.toString("utf8")
+    if (!text.includes("\ufffd")) return { text, bytes: prefix.length }
+    prefix = prefix.subarray(0, prefix.length - 1)
+  }
+  return { text: "", bytes: 0 }
 }
 
 function absolutizeSearchPaths(
@@ -1185,7 +955,7 @@ class CleanupCommandHandle
     super()
     inner.onData((chunk) => this.emit("data", chunk))
     inner.onExit((exit) => {
-      void unlink(this.cleanupPath)
+      void fsUnlink(this.cleanupPath)
         .catch((error) => {
           this.emit("data", {
             stream: "stderr",
