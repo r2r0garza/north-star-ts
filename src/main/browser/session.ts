@@ -590,41 +590,168 @@ export class BrowserSession {
     await this.ensureAttached(timeoutMs, signal)
     const wc = this.view.webContents
     const dbg = wc.debugger
-    const tree = await sendCommand<{ nodes: AXNode[] }>(
-      dbg,
-      "Accessibility.getFullAXTree",
-      undefined,
+    this.refs.clear()
+    const nextRefs = new Map<string, { backendNodeId: number; label: string }>()
+    const lines: string[] = []
+    let bytes = 0
+    let refCounter = 0
+    let axNodesRead = 0
+    let truncated = false
+
+    const appendLine = (line: string, reserveTruncation = true): boolean => {
+      const withNewline = lines.length === 0 ? line : `\n${line}`
+      const lineBytes = Buffer.byteLength(withNewline, "utf8")
+      const maxBytes = reserveTruncation
+        ? SNAPSHOT_MAX_BYTES - SNAPSHOT_TRUNCATION_MESSAGE_BYTES
+        : SNAPSHOT_MAX_BYTES
+      if (bytes + lineBytes > maxBytes) {
+        truncated = true
+        return false
+      }
+      lines.push(line)
+      bytes += lineBytes
+      return true
+    }
+
+    try {
+      appendLine(`URL: ${boundedSnapshotValue(wc.getURL())}`)
+      appendLine(`Title: ${boundedSnapshotValue(wc.getTitle())}`)
+      appendLine("")
+
+      const candidates = await this.collectSnapshotCandidates(timeoutMs, signal)
+      if (candidates.truncated) truncated = true
+
+      for (let slot = 0; slot < candidates.count; slot++) {
+        if (axNodesRead >= SNAPSHOT_MAX_AX_NODES) {
+          truncated = true
+          break
+        }
+        const objectId = await this.snapshotCandidateObjectId(
+          slot,
+          timeoutMs,
+          signal
+        )
+        if (!objectId) continue
+        try {
+          const { nodes } = await sendCommand<{ nodes?: AXNode[] }>(
+            dbg,
+            "Accessibility.getPartialAXTree",
+            { objectId, fetchRelatives: false },
+            timeoutMs,
+            signal
+          )
+          const node = nodes?.[0]
+          if (!node) continue
+          axNodesRead++
+          if (node.ignored) continue
+          const role = node.role?.value
+          if (!role || NON_SEMANTIC_AX_ROLES.has(role)) continue
+          const name = node.name?.value?.trim()
+          const interactive = INTERACTIVE_ROLES.has(role)
+          if (!name && !interactive) continue
+
+          if (
+            interactive &&
+            typeof node.backendDOMNodeId === "number" &&
+            refCounter < SNAPSHOT_MAX_REFS
+          ) {
+            const ref = `e${++refCounter}`
+            const boundedName = name ? boundedSnapshotValue(name) : null
+            const label = boundedName ? `${role} "${boundedName}"` : role
+            const line = name
+              ? `[${ref}] ${role}: ${boundedName}`
+              : `[${ref}] ${role}`
+            if (!appendLine(line)) break
+            nextRefs.set(ref, {
+              backendNodeId: node.backendDOMNodeId,
+              label,
+            })
+          } else {
+            if (interactive && typeof node.backendDOMNodeId === "number") {
+              truncated = true
+            }
+            if (
+              !appendLine(
+                name ? `${role}: ${boundedSnapshotValue(name)}` : role
+              )
+            ) {
+              break
+            }
+          }
+        } finally {
+          await sendCommand(
+            dbg,
+            "Runtime.releaseObject",
+            { objectId },
+            timeoutMs
+          ).catch(() => undefined)
+        }
+      }
+
+      if (truncated) {
+        appendLine("", false)
+        appendLine(SNAPSHOT_TRUNCATION_MESSAGE, false)
+      }
+      this.refs = nextRefs
+      return lines.join("\n")
+    } catch (err) {
+      this.refs.clear()
+      throw err
+    } finally {
+      await sendCommand(
+        dbg,
+        "Runtime.evaluate",
+        {
+          expression:
+            "delete window.__coworkSnapshotCandidates; delete window.__coworkSnapshotCandidatesTruncated",
+        },
+        timeoutMs
+      ).catch(() => undefined)
+    }
+  }
+
+  private async collectSnapshotCandidates(
+    timeoutMs: number,
+    signal?: AbortSignal
+  ): Promise<{ count: number; truncated: boolean }> {
+    const { result } = await sendCommand<{
+      result?: { value?: { count?: number; truncated?: boolean } }
+    }>(
+      this.view.webContents.debugger,
+      "Runtime.evaluate",
+      {
+        expression: SNAPSHOT_CANDIDATE_SCRIPT,
+        returnByValue: true,
+        silent: true,
+      },
       timeoutMs,
       signal
     )
-    this.refs.clear()
-    const lines: string[] = [
-      `URL: ${wc.getURL()}`,
-      `Title: ${wc.getTitle()}`,
-      "",
-    ]
-    let refCounter = 0
-    for (const node of tree.nodes) {
-      if (node.ignored) continue
-      const role = node.role?.value
-      if (!role || role === "none" || role === "generic") continue
-      const name = node.name?.value?.trim()
-      const interactive = INTERACTIVE_ROLES.has(role)
-      if (!name && !interactive) continue
-
-      // Assign a ref to interactive nodes that map to a real DOM node, so the
-      // model can act on them. Non-interactive named nodes (headings, text) are
-      // listed for context but get no ref.
-      if (interactive && typeof node.backendDOMNodeId === "number") {
-        const ref = `e${++refCounter}`
-        const label = name ? `${role} "${name}"` : role
-        this.refs.set(ref, { backendNodeId: node.backendDOMNodeId, label })
-        lines.push(name ? `[${ref}] ${role}: ${name}` : `[${ref}] ${role}`)
-      } else {
-        lines.push(name ? `${role}: ${name}` : role)
-      }
+    const rawCount = Math.max(0, Number(result?.value?.count ?? 0) || 0)
+    return {
+      count: Math.min(SNAPSHOT_MAX_AX_NODES, rawCount),
+      truncated:
+        result?.value?.truncated === true || rawCount > SNAPSHOT_MAX_AX_NODES,
     }
-    return lines.join("\n")
+  }
+
+  private async snapshotCandidateObjectId(
+    slot: number,
+    timeoutMs: number,
+    signal?: AbortSignal
+  ): Promise<string | null> {
+    const { result } = await sendCommand<{
+      result?: { objectId?: string }
+    }>(
+      this.view.webContents.debugger,
+      "Runtime.evaluate",
+      {
+        expression: `window.__coworkSnapshotCandidates && window.__coworkSnapshotCandidates[${slot}]`,
+      },
+      timeoutMs,
+      signal
+    )
+    return result?.objectId ?? null
   }
 
   // Click the element behind a ref: scroll it into view, resolve its box, and
@@ -810,6 +937,15 @@ export class BrowserSession {
 // up and reporting the (unchanged) page. Short: most clicks don't navigate.
 const SETTLE_GRACE_MS = 500
 const PICK_TIMEOUT_MS = 5_000
+const SNAPSHOT_MAX_AX_NODES = 500
+const SNAPSHOT_MAX_REFS = 100
+const SNAPSHOT_MAX_BYTES = 20_000
+const SNAPSHOT_MAX_DOM_VISITS = 2_000
+const SNAPSHOT_MAX_VALUE_CHARS = 300
+const SNAPSHOT_TRUNCATION_MESSAGE =
+  "[Snapshot truncated: page content exceeded browser_snapshot limits. Returned refs remain clickable/typeable; navigate, search, or inspect a narrower area if needed.]"
+const SNAPSHOT_TRUNCATION_MESSAGE_BYTES =
+  Buffer.byteLength(`\n${SNAPSHOT_TRUNCATION_MESSAGE}`, "utf8") + 1
 
 const PICK_HIGHLIGHT_CONFIG = {
   showInfo: true,
@@ -932,6 +1068,82 @@ const DESCRIBE_PICKED_ELEMENT = `function () {
   }
 }`
 
+// Bounded page-world candidate discovery for browser_snapshot. This deliberately
+// avoids Accessibility.getFullAXTree: wide or deep pages can make that response
+// huge before the caller gets a chance to truncate it. Instead, walk at most a
+// fixed number of visible DOM elements, stash at most SNAPSHOT_MAX_AX_NODES
+// candidates, and ask Accessibility.getPartialAXTree for each candidate only.
+const SNAPSHOT_CANDIDATE_SCRIPT = `(() => {
+  const maxVisits = ${SNAPSHOT_MAX_DOM_VISITS}
+  const maxCandidates = ${SNAPSHOT_MAX_AX_NODES}
+  const candidates = []
+  let visits = 0
+  let truncated = false
+  const root = document.body || document.documentElement
+  if (!root) {
+    window.__coworkSnapshotCandidates = []
+    window.__coworkSnapshotCandidatesTruncated = false
+    return { count: 0, truncated: false }
+  }
+  const isVisible = (el) => {
+    const style = window.getComputedStyle(el)
+    if (
+      style.display === "none" ||
+      style.visibility === "hidden" ||
+      style.contentVisibility === "hidden"
+    ) {
+      return false
+    }
+    const rect = el.getBoundingClientRect()
+    return rect.width > 0 && rect.height > 0
+  }
+  const hasOwnText = (el) => {
+    for (const node of el.childNodes) {
+      if (node.nodeType === Node.TEXT_NODE && node.textContent && node.textContent.trim()) {
+        return true
+      }
+    }
+    return false
+  }
+  const isCandidate = (el) => {
+    const tag = el.tagName
+    if (
+      /^(A|BUTTON|INPUT|TEXTAREA|SELECT|SUMMARY|OPTION)$/.test(tag) ||
+      /^(H1|H2|H3|H4|H5|H6|LABEL|IMG)$/.test(tag)
+    ) {
+      return true
+    }
+    if (
+      el.hasAttribute("role") ||
+      el.hasAttribute("aria-label") ||
+      el.hasAttribute("aria-labelledby") ||
+      el.hasAttribute("title") ||
+      el.hasAttribute("alt") ||
+      el.isContentEditable
+    ) {
+      return true
+    }
+    return hasOwnText(el) && el.children.length <= 2
+  }
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT)
+  for (let node = root; node; node = walker.nextNode()) {
+    visits++
+    if (visits > maxVisits) {
+      truncated = true
+      break
+    }
+    if (!isCandidate(node) || !isVisible(node)) continue
+    candidates.push(node)
+    if (candidates.length >= maxCandidates) {
+      truncated = true
+      break
+    }
+  }
+  window.__coworkSnapshotCandidates = candidates
+  window.__coworkSnapshotCandidatesTruncated = truncated
+  return { count: candidates.length, truncated }
+})()`
+
 // Roles that get a ref (things the agent can meaningfully click or type into).
 const INTERACTIVE_ROLES = new Set([
   "button",
@@ -973,4 +1185,10 @@ interface PickedElementDomDetails {
 
 function axString(value?: AXValue): string | null {
   return value?.value?.trim() || null
+}
+
+function boundedSnapshotValue(value: string): string {
+  const normalized = value.replace(/\s+/g, " ").trim()
+  if (normalized.length <= SNAPSHOT_MAX_VALUE_CHARS) return normalized
+  return `${normalized.slice(0, SNAPSHOT_MAX_VALUE_CHARS - 3)}...`
 }
