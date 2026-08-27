@@ -1,4 +1,4 @@
-import { stat as hostStat } from "fs/promises"
+import { open as hostOpen, stat as hostStat } from "fs/promises"
 import { basename } from "path"
 import { TOOL_EFFECTS, type Tool, type ToolContext } from "./types"
 import { LocalEnvironment } from "../env/local"
@@ -105,10 +105,15 @@ export const readFileTool: Tool = {
         : DEFAULT_LIMIT
     const limit = Math.min(requestedLimit, MAX_LIMIT)
     const readOpts = { offset, limit, maxBytes: MAX_READ_BYTES }
-    const readTextAt = (p: string) =>
-      readable.source === "env"
-        ? env.readTextLines(p, readOpts)
-        : readHostTextLines(p, readOpts)
+    const readTextAt = async (p: string, fileBytes: number) => {
+      if (readable.source === "env") return env.readTextLines(p, readOpts)
+      const handle = await hostOpen(p, "r")
+      try {
+        return await readHostTextLines(handle, fileBytes, readOpts)
+      } finally {
+        await handle.close()
+      }
+    }
 
     let info
     try {
@@ -122,7 +127,7 @@ export const readFileTool: Tool = {
 
     let window
     try {
-      window = await readTextAt(target)
+      window = await readTextAt(target, info.size)
     } catch (error) {
       if ((error as Error).message === "BINARY_FILE") {
         return toolError(

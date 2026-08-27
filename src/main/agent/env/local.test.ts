@@ -11,7 +11,10 @@ import {
   symlink,
   stat,
   readdir,
+  open as fsOpen,
 } from "fs/promises"
+import type { Dir } from "fs"
+import type { FileHandle } from "fs/promises"
 import { tmpdir } from "os"
 import { join } from "path"
 import {
@@ -440,6 +443,34 @@ describe("LocalEnvironment file ops", () => {
     expect(byteCapped.capReason).toBe("nameBytes")
   })
 
+  it("listDir stops enumerating the source when the entry cap is reached", async () => {
+    await mkdir(join(workspace, "many"))
+    let yielded = 0
+    const capped = new LocalEnvironment(workspace, "host-access", {
+      opendir: async () =>
+        fakeDir(async function* () {
+          for (let index = 0; index < 50; index += 1) {
+            yielded += 1
+            yield dirent(`file-${index}.txt`)
+          }
+        }),
+    })
+
+    const result = await capped.listDir(join(workspace, "many"), {
+      maxEntries: 3,
+      maxBytes: 1024,
+    })
+
+    expect(result.entries.map((entry) => entry.name)).toEqual([
+      "file-0.txt",
+      "file-1.txt",
+      "file-2.txt",
+    ])
+    expect(result.truncated).toBe(true)
+    expect(result.capReason).toBe("entryCount")
+    expect(yielded).toBe(3)
+  })
+
   it("resolve rejects paths that escape the workspace", async () => {
     await expect(env.resolve("../outside")).rejects.toThrow()
   })
@@ -736,6 +767,48 @@ describe("LocalEnvironment.readTextLines", () => {
     expect(final.revision).toMatch(/^[a-f0-9]{64}$/)
   })
 
+  it("reads an early page with bounded source reads and without hashing to EOF", async () => {
+    const target = join(workspace, "large-streamed.txt")
+    await writeFile(target, "first\n")
+    const chunk = Buffer.alloc(1024 * 1024, "x")
+    for (let i = 0; i < 16; i += 1) {
+      await appendFile(target, chunk)
+    }
+    await appendFile(target, "\nlast\n")
+
+    let bytesRead = 0
+    let largestRead = 0
+    const streamingEnv = new LocalEnvironment(workspace, "host-access", {
+      openNoFollow: async (path, flags, mode) => {
+        const handle = await fsOpen(path, flags, mode)
+        return trackHandleReads(handle, {
+          onRead: (size, requested) => {
+            bytesRead += size
+            largestRead = Math.max(largestRead, requested)
+          },
+        })
+      },
+    })
+
+    const result = await streamingEnv.readTextLines(target, {
+      offset: 1,
+      limit: 1,
+      maxBytes: 1024,
+    })
+
+    expect(result).toMatchObject({
+      text: "first",
+      startLine: 1,
+      endLine: 1,
+      hasMore: true,
+      nextOffset: 2,
+    })
+    expect(result.fileBytes).toBeGreaterThan(16 * 1024 * 1024)
+    expect(result.revision).toBeUndefined()
+    expect(bytesRead).toBeLessThan(1024 * 1024)
+    expect(largestRead).toBeLessThanOrEqual(64 * 1024)
+  })
+
   it("preserves UTF-8 characters and reports byte truncation metadata", async () => {
     await writeFile(join(workspace, "utf8.txt"), "alpha\n日本語 café 🚀\nomega")
     const result = await env.readTextLines(join(workspace, "utf8.txt"), {
@@ -802,6 +875,51 @@ describe("LocalEnvironment.readTextLines", () => {
     ).rejects.toThrow("BINARY_FILE")
   })
 })
+
+function trackHandleReads(
+  handle: FileHandle,
+  opts: { onRead: (bytesRead: number, requestedBytes: number) => void }
+): FileHandle {
+  return new Proxy(handle, {
+    get(target, prop, receiver) {
+      if (prop === "read") {
+        return async (
+          buffer: Buffer,
+          offset: number,
+          length: number,
+          position: number | null
+        ) => {
+          const result = await target.read(buffer, offset, length, position)
+          opts.onRead(result.bytesRead, length)
+          return result
+        }
+      }
+      const value = Reflect.get(target, prop, receiver)
+      return typeof value === "function" ? value.bind(target) : value
+    },
+  }) as FileHandle
+}
+
+function fakeDir(factory: () => AsyncGenerator<DirentLike>): Dir {
+  return {
+    close: async () => {},
+    [Symbol.asyncIterator]: factory,
+  } as unknown as Dir
+}
+
+interface DirentLike {
+  name: string
+  isFile: () => boolean
+  isDirectory: () => boolean
+}
+
+function dirent(name: string): DirentLike {
+  return {
+    name,
+    isFile: () => true,
+    isDirectory: () => false,
+  }
+}
 
 describe("LocalEnvironment.search", () => {
   const baseOpts = {

@@ -1,10 +1,10 @@
 import { createHash } from "crypto"
-import { createReadStream } from "fs"
 import { StringDecoder } from "string_decoder"
-import { stat } from "fs/promises"
+import type { FileHandle } from "fs/promises"
 import type { ReadTextLinesOptions, ReadTextLinesResult } from "./types"
 
 const BINARY_SNIFF_BYTES = 8000
+const READ_CHUNK_BYTES = 64 * 1024
 
 function utf8Prefix(text: string, maxBytes: number): string {
   if (Buffer.byteLength(text, "utf8") <= maxBytes) return text
@@ -20,20 +20,21 @@ function utf8Prefix(text: string, maxBytes: number): string {
 }
 
 export async function readHostTextLines(
-  path: string,
+  handle: FileHandle,
+  fileBytes: number,
   opts: ReadTextLinesOptions
 ): Promise<ReadTextLinesResult> {
-  const info = await stat(path)
   const offset = Math.max(1, Math.floor(opts.offset))
   const limit = Math.max(1, Math.floor(opts.limit))
   const maxBytes = Math.max(1, Math.floor(opts.maxBytes))
 
-  const stream = createReadStream(path)
-  const decoder = new StringDecoder("utf8")
+  let decoder = new StringDecoder("utf8")
   const hash = createHash("sha256")
   const lines: string[] = []
-  let sniffed = Buffer.alloc(0)
+  const sniffed = Buffer.alloc(BINARY_SNIFF_BYTES)
   let pending = ""
+  let sniffedBytes = 0
+  let position = 0
   let currentLine = 1
   let endLine = 0
   let returnedBytes = 0
@@ -46,7 +47,6 @@ export async function readHostTextLines(
 
   const stop = () => {
     stoppedEarly = true
-    stream.destroy()
   }
 
   const maybeTakeLine = (line: string): boolean => {
@@ -61,13 +61,14 @@ export async function readHostTextLines(
       return false
     }
 
-    const lineBytes = Buffer.byteLength(line, "utf8")
+    const normalizedLine = line.endsWith("\r") ? line.slice(0, -1) : line
+    const lineBytes = Buffer.byteLength(normalizedLine, "utf8")
     const separatorBytes = lines.length > 0 ? 1 : 0
     if (returnedBytes + separatorBytes + lineBytes > maxBytes) {
       truncated = true
       hasMore = true
       if (lines.length === 0) {
-        const prefix = utf8Prefix(line, maxBytes)
+        const prefix = utf8Prefix(normalizedLine, maxBytes)
         lines.push(prefix)
         returnedBytes = Buffer.byteLength(prefix, "utf8")
         endLine = currentLine
@@ -78,52 +79,72 @@ export async function readHostTextLines(
       return false
     }
 
-    lines.push(line)
+    lines.push(normalizedLine)
     returnedBytes += separatorBytes + lineBytes
     endLine = currentLine
     currentLine += 1
     return true
   }
 
-  try {
-    for await (const chunk of stream) {
-      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
-      hash.update(buf)
-      if (sniffed.length < BINARY_SNIFF_BYTES) {
-        sniffed = Buffer.concat([
-          sniffed,
-          buf.subarray(0, BINARY_SNIFF_BYTES - sniffed.length),
-        ])
-        if (sniffed.includes(0)) {
-          throw new Error("BINARY_FILE")
-        }
-      }
+  const readNextChunk = async (): Promise<Buffer | null> => {
+    const targetLength = Math.min(READ_CHUNK_BYTES, fileBytes - position)
+    if (targetLength <= 0) return null
 
-      pending += decoder.write(buf)
-      while (true) {
-        const nl = pending.indexOf("\n")
-        if (nl < 0) break
-        const line = pending.slice(0, nl)
-        pending = pending.slice(nl + 1)
-        if (!maybeTakeLine(line)) break
+    const buffer = Buffer.allocUnsafe(targetLength)
+    const { bytesRead } = await handle.read(buffer, 0, targetLength, position)
+    if (bytesRead <= 0) return null
+    position += bytesRead
+
+    const chunk = buffer.subarray(0, bytesRead)
+    hash.update(chunk)
+    if (sniffedBytes < BINARY_SNIFF_BYTES) {
+      const toCopy = Math.min(BINARY_SNIFF_BYTES - sniffedBytes, chunk.length)
+      chunk.copy(sniffed, sniffedBytes, 0, toCopy)
+      sniffedBytes += toCopy
+      if (sniffed.subarray(0, sniffedBytes).includes(0)) {
+        throw new Error("BINARY_FILE")
       }
-      if (!stoppedEarly && Buffer.byteLength(pending, "utf8") > maxBytes) {
-        if (currentLine < offset) {
-          pending = ""
-        } else {
-          maybeTakeLine(pending)
-        }
-      }
-      if (stoppedEarly) break
     }
-  } catch (error) {
-    if ((error as Error).message === "BINARY_FILE") throw error
-    if (!stoppedEarly) throw error
+    return chunk
+  }
+
+  while (!stoppedEarly) {
+    const buf = await readNextChunk()
+    if (!buf) break
+
+    if (skippedLineRemainder) {
+      const raw = buf.toString("binary")
+      const nl = raw.indexOf("\n")
+      if (nl < 0) continue
+      skippedLineRemainder = false
+      pending = decoder.write(buf.subarray(nl + 1))
+    } else {
+      pending += decoder.write(buf)
+    }
+
+    while (!stoppedEarly) {
+      const nl = pending.indexOf("\n")
+      if (nl < 0) break
+      const line = pending.slice(0, nl)
+      pending = pending.slice(nl + 1)
+      if (!maybeTakeLine(line)) break
+    }
+
+    if (!stoppedEarly && Buffer.byteLength(pending, "utf8") > maxBytes) {
+      if (currentLine < offset) {
+        pending = ""
+        skippedLineRemainder = true
+        decoder = new StringDecoder("utf8")
+        currentLine += 1
+      } else {
+        maybeTakeLine(pending)
+      }
+    }
   }
 
   if (!stoppedEarly) {
     pending += decoder.end()
-    if (pending.length > 0 || info.size === 0) {
+    if (!skippedLineRemainder && (pending.length > 0 || fileBytes === 0)) {
       maybeTakeLine(pending)
     }
     reachedEof = !stoppedEarly
@@ -135,7 +156,7 @@ export async function readHostTextLines(
       startLine: offset,
       endLine: offset - 1,
       hasMore: false,
-      fileBytes: info.size,
+      fileBytes,
       truncated: false,
       revision: reachedEof ? hash.digest("hex") : undefined,
     }
@@ -147,7 +168,7 @@ export async function readHostTextLines(
     endLine,
     hasMore,
     nextOffset: hasMore ? endLine + 1 : undefined,
-    fileBytes: info.size,
+    fileBytes,
     truncated,
     revision: reachedEof ? hash.digest("hex") : undefined,
     lineTooLong: lineTooLong || undefined,

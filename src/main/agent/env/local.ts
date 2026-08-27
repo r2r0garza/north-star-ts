@@ -1,20 +1,22 @@
 import { spawn } from "child_process"
 import type { ChildProcess } from "child_process"
-import { createHash, randomUUID } from "crypto"
+import { randomUUID } from "crypto"
 import { EventEmitter } from "events"
 import { constants } from "fs"
+import type { Dir } from "fs"
 import {
   chmod as fsChmod,
   link as fsLink,
   lstat,
   mkdir as fsMkdir,
   open as fsOpen,
-  readdir as fsReaddir,
+  opendir as fsOpendir,
   realpath,
   rename as fsRename,
   unlink as fsUnlink,
   writeFile,
 } from "fs/promises"
+import type { FileHandle } from "fs/promises"
 import { isAbsolute, relative, resolve, join, sep } from "path"
 import { tmpdir } from "os"
 import { StringDecoder } from "string_decoder"
@@ -30,6 +32,7 @@ import {
   buildDarwinSandboxProfile,
   sandboxExecPath,
 } from "./local-profiles"
+import { readHostTextLines } from "./read-text-lines"
 import { resolveInWorkspace, resolveInWorkspaceReal } from "../tools/workspace"
 import type {
   Environment,
@@ -76,6 +79,12 @@ interface LocalEnvironmentDeps {
   searchMaxOutputBytes?: number
   unlinkTempFile?: (path: string) => Promise<void>
   beforeLocalFileSyscall?: (op: string, path: string) => Promise<void>
+  openNoFollow?: (
+    path: string,
+    flags: number,
+    mode?: number
+  ) => Promise<FileHandle>
+  opendir?: (path: string) => Promise<Dir>
 }
 
 function resolveRipgrepPath(): string {
@@ -584,8 +593,13 @@ async function scopedPathForSyscall(
   return assertScopedLocalPath(workspace, target, opts)
 }
 
-async function safeOpenNoFollow(path: string, flags: number, mode?: number) {
-  return fsOpen(path, flags | constants.O_NOFOLLOW, mode)
+async function safeOpenNoFollow(
+  path: string,
+  flags: number,
+  deps: LocalEnvironmentDeps,
+  mode?: number
+) {
+  return (deps.openNoFollow ?? fsOpen)(path, flags | constants.O_NOFOLLOW, mode)
 }
 
 async function safeReadFile(
@@ -602,7 +616,7 @@ async function safeReadFile(
     },
     deps
   )
-  const handle = await safeOpenNoFollow(target, constants.O_RDONLY)
+  const handle = await safeOpenNoFollow(target, constants.O_RDONLY, deps)
   try {
     return await handle.readFile()
   } finally {
@@ -616,59 +630,21 @@ async function safeReadTextLines(
   opts: ReadTextLinesOptions,
   deps: LocalEnvironmentDeps
 ): Promise<ReadTextLinesResult> {
-  const data = await safeReadFile(workspace, path, deps)
-  if (data.subarray(0, 8000).includes(0)) throw new Error("BINARY_FILE")
-
-  const offset = Math.max(1, Math.floor(opts.offset))
-  const limit = Math.max(1, Math.floor(opts.limit))
-  const maxBytes = Math.max(1, Math.floor(opts.maxBytes))
-  const physicalLines = splitPhysicalLines(data)
-  const selected: string[] = []
-  let returnedBytes = 0
-  let endLine = offset - 1
-  let hasMore = false
-  let truncated = false
-  let lineTooLong = false
-  let skippedLineRemainder = false
-
-  for (let index = offset - 1; index < physicalLines.length; index += 1) {
-    if (selected.length >= limit) {
-      hasMore = true
-      break
-    }
-
-    const raw = physicalLines[index]
-    const sep = selected.length > 0 ? 1 : 0
-    if (returnedBytes + sep + raw.length > maxBytes) {
-      truncated = true
-      hasMore = true
-      if (selected.length === 0) {
-        const prefix = utf8SafePrefix(raw, maxBytes)
-        selected.push(prefix.text)
-        returnedBytes = prefix.bytes
-        endLine = index + 1
-        lineTooLong = true
-        skippedLineRemainder = true
-      }
-      break
-    }
-
-    selected.push(raw.toString("utf8"))
-    returnedBytes += sep + raw.length
-    endLine = index + 1
-  }
-
-  return {
-    text: selected.join("\n"),
-    startLine: offset,
-    endLine,
-    hasMore,
-    nextOffset: hasMore ? endLine + 1 : undefined,
-    fileBytes: data.length,
-    truncated,
-    revision: createHash("sha256").update(data).digest("hex"),
-    lineTooLong: lineTooLong || undefined,
-    skippedLineRemainder: skippedLineRemainder || undefined,
+  const target = await scopedPathForSyscall(
+    workspace,
+    path,
+    "readFile",
+    {
+      requireLeaf: true,
+    },
+    deps
+  )
+  const stat = await lstat(target)
+  const handle = await safeOpenNoFollow(target, constants.O_RDONLY, deps)
+  try {
+    return await readHostTextLines(handle, stat.size, opts)
+  } finally {
+    await handle.close()
   }
 }
 
@@ -724,28 +700,33 @@ async function safeListDir(
   let truncated = false
   let capReason: ListDirResult["capReason"] | undefined
 
-  for (const entry of await fsReaddir(target, { withFileTypes: true })) {
-    const nameBytes = Buffer.byteLength(entry.name, "utf8")
-    if (opts.maxEntries != null && entries.length >= opts.maxEntries) {
-      truncated = true
-      capReason = "entryCount"
-      break
+  const dir = await (deps.opendir ?? fsOpendir)(target)
+  try {
+    for await (const entry of dir) {
+      const nameBytes = Buffer.byteLength(entry.name, "utf8")
+      if (
+        opts.maxBytes != null &&
+        entries.length > 0 &&
+        totalBytes + nameBytes > opts.maxBytes
+      ) {
+        truncated = true
+        capReason = "nameBytes"
+        break
+      }
+      entries.push({
+        name: entry.name,
+        isFile: () => entry.isFile(),
+        isDirectory: () => entry.isDirectory(),
+      })
+      totalBytes += nameBytes
+      if (opts.maxEntries != null && entries.length >= opts.maxEntries) {
+        truncated = true
+        capReason = "entryCount"
+        break
+      }
     }
-    if (
-      opts.maxBytes != null &&
-      entries.length > 0 &&
-      totalBytes + nameBytes > opts.maxBytes
-    ) {
-      truncated = true
-      capReason = "nameBytes"
-      break
-    }
-    entries.push({
-      name: entry.name,
-      isFile: () => entry.isFile(),
-      isDirectory: () => entry.isDirectory(),
-    })
-    totalBytes += nameBytes
+  } finally {
+    await dir.close().catch(() => {})
   }
 
   return { entries, truncated, capReason }
@@ -769,6 +750,7 @@ async function safeWriteFile(
   const handle = await safeOpenNoFollow(
     target,
     constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC,
+    deps,
     0o666
   )
   try {
@@ -922,37 +904,6 @@ async function safeMkdirp(
       await fsMkdir(current)
     }
   }
-}
-
-function splitPhysicalLines(data: Buffer): Buffer[] {
-  if (data.length === 0) return [Buffer.alloc(0)]
-  const lines: Buffer[] = []
-  let start = 0
-  for (let index = 0; index < data.length; index += 1) {
-    if (data[index] !== 0x0a) continue
-    let end = index
-    if (end > start && data[end - 1] === 0x0d) end -= 1
-    lines.push(data.subarray(start, end))
-    start = index + 1
-  }
-  if (start < data.length) lines.push(data.subarray(start))
-  return lines
-}
-
-function utf8SafePrefix(
-  raw: Buffer,
-  byteLimit: number
-): {
-  text: string
-  bytes: number
-} {
-  let prefix = raw.subarray(0, byteLimit)
-  while (prefix.length > 0) {
-    const text = prefix.toString("utf8")
-    if (!text.includes("\ufffd")) return { text, bytes: prefix.length }
-    prefix = prefix.subarray(0, prefix.length - 1)
-  }
-  return { text: "", bytes: 0 }
 }
 
 function absolutizeSearchPaths(
