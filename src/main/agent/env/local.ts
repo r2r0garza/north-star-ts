@@ -27,6 +27,8 @@ import type {
   StatInfo,
   SearchOptions,
   SearchResult,
+  ListDirOptions,
+  ListDirResult,
   ReadTextLinesOptions,
   ReadTextLinesResult,
   SpawnCommandOptions,
@@ -229,6 +231,10 @@ export class LocalEnvironment implements Environment {
 
   readdir(path: string): Promise<DirEntry[]> {
     return safeReaddir(this.workspace, path, this.deps.pythonPath)
+  }
+
+  listDir(path: string, opts: ListDirOptions): Promise<ListDirResult> {
+    return safeListDir(this.workspace, path, opts, this.deps.pythonPath)
   }
 
   // Run `command` through the user's shell with `opts.cwd` as its working
@@ -554,7 +560,7 @@ def stat_path(root, path):
     finally:
         close_all(fds)
 
-def readdir_path(root, path):
+def listdir_path(root, path, max_entries=None, max_bytes=None):
     fd = open_root(root)
     fds = [fd]
     try:
@@ -563,16 +569,37 @@ def readdir_path(root, path):
             current = open_dir_child(current, part)
             fds.append(current)
         entries = []
-        for name in os.listdir(current):
-            try:
-                st = os.stat(name, dir_fd=current, follow_symlinks=False)
-                typ = "dir" if stat.S_ISDIR(st.st_mode) else "file" if stat.S_ISREG(st.st_mode) else "other"
-            except OSError:
-                typ = "other"
-            entries.append({"name": name, "type": typ})
-        return {"entries": entries}
+        total_bytes = 0
+        truncated = False
+        cap_reason = None
+        scan = os.scandir(current)
+        try:
+            for item in scan:
+                name = item.name
+                name_bytes = len(name.encode("utf-8"))
+                if max_entries is not None and len(entries) >= max_entries:
+                    truncated = True
+                    cap_reason = "entryCount"
+                    break
+                if max_bytes is not None and entries and total_bytes + name_bytes > max_bytes:
+                    truncated = True
+                    cap_reason = "nameBytes"
+                    break
+                try:
+                    st = item.stat(follow_symlinks=False)
+                    typ = "dir" if stat.S_ISDIR(st.st_mode) else "file" if stat.S_ISREG(st.st_mode) else "other"
+                except OSError:
+                    typ = "other"
+                entries.append({"name": name, "type": typ})
+                total_bytes += name_bytes
+        finally:
+            scan.close()
+        return {"entries": entries, "truncated": truncated, "capReason": cap_reason}
     finally:
         close_all(fds)
+
+def readdir_path(root, path):
+    return {"entries": listdir_path(root, path)["entries"]}
 
 req = json.load(sys.stdin)
 root = req["root"]
@@ -594,6 +621,8 @@ elif op == "mkdirp":
     result = mkdirp(root, args["path"])
 elif op == "stat":
     result = stat_path(root, args["path"])
+elif op == "listdir":
+    result = listdir_path(root, args["path"], args.get("maxEntries"), args.get("maxBytes"))
 elif op == "readdir":
     result = readdir_path(root, args["path"])
 else:
@@ -697,14 +726,36 @@ async function safeReaddir(
   path: string,
   pythonPath?: string
 ): Promise<DirEntry[]> {
+  const result = await safeListDir(workspace, path, {}, pythonPath)
+  return result.entries
+}
+
+async function safeListDir(
+  workspace: string,
+  path: string,
+  opts: Partial<ListDirOptions>,
+  pythonPath?: string
+): Promise<ListDirResult> {
   const result = await runSafeFs<{
     entries: Array<{ name: string; type: string }>
-  }>(workspace, "readdir", { path }, pythonPath)
-  return result.entries.map((entry) => ({
+    truncated?: boolean
+    capReason?: ListDirResult["capReason"]
+  }>(
+    workspace,
+    opts.maxEntries == null && opts.maxBytes == null ? "readdir" : "listdir",
+    { path, maxEntries: opts.maxEntries, maxBytes: opts.maxBytes },
+    pythonPath
+  )
+  const entries = result.entries.map((entry) => ({
     name: entry.name,
     isFile: () => entry.type === "file",
     isDirectory: () => entry.type === "dir",
   }))
+  return {
+    entries,
+    truncated: result.truncated ?? false,
+    capReason: result.capReason,
+  }
 }
 
 function absolutizeSearchPaths(

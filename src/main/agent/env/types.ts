@@ -93,6 +93,17 @@ export interface DirEntry {
   isFile(): boolean
 }
 
+export interface ListDirOptions {
+  maxEntries: number
+  maxBytes: number
+}
+
+export interface ListDirResult {
+  entries: DirEntry[]
+  truncated: boolean
+  capReason?: "entryCount" | "nameBytes" | "captureBytes"
+}
+
 // The subset of fs.Stats the tools consume. Real fs.Stats satisfies this.
 export interface StatInfo {
   size: number
@@ -213,6 +224,7 @@ export interface Environment {
   mkdirp(path: string): Promise<void>
   stat(path: string): Promise<StatInfo>
   readdir(path: string): Promise<DirEntry[]>
+  listDir?(path: string, opts: ListDirOptions): Promise<ListDirResult>
 
   exec(command: string, opts: ExecOptions): Promise<ExecResult>
 

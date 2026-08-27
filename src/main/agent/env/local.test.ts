@@ -351,6 +351,29 @@ describe("LocalEnvironment file ops", () => {
     expect(byName.get("sub")!.isDirectory()).toBe(true)
   })
 
+  it("listDir stops at entry and UTF-8 name-byte caps", async () => {
+    for (let index = 0; index < 5; index += 1) {
+      await writeFile(join(workspace, `日本語-${index}.txt`), "x")
+    }
+
+    const entryCapped = await env.listDir(workspace, {
+      maxEntries: 3,
+      maxBytes: 1024,
+    })
+    expect(entryCapped.entries).toHaveLength(3)
+    expect(entryCapped.truncated).toBe(true)
+    expect(entryCapped.capReason).toBe("entryCount")
+
+    const byteCapped = await env.listDir(workspace, {
+      maxEntries: 100,
+      maxBytes: Buffer.byteLength("日本語-0.txt", "utf8") + 1,
+    })
+    expect(byteCapped.entries).toHaveLength(1)
+    expect(byteCapped.entries[0].name).not.toContain("\ufffd")
+    expect(byteCapped.truncated).toBe(true)
+    expect(byteCapped.capReason).toBe("nameBytes")
+  })
+
   it("resolve rejects paths that escape the workspace", async () => {
     await expect(env.resolve("../outside")).rejects.toThrow()
   })

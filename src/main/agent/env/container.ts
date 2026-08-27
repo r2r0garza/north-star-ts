@@ -22,6 +22,8 @@ import type {
   StatInfo,
   SearchOptions,
   SearchResult,
+  ListDirOptions,
+  ListDirResult,
   ReadTextLinesOptions,
   ReadTextLinesResult,
   SpawnCommandOptions,
@@ -652,32 +654,53 @@ PY
   }
 
   async readdir(path: string): Promise<DirEntry[]> {
-    // `ls -Ap1`: one entry per line, dotfiles except ./.. (-A), trailing `/` on
-    // directories (-p). A trailing slash marks a directory; everything else is
-    // treated as a file (symlinks/sockets are rare in a workspace and callers'
-    // try/catch skips anything unreadable). Exact types are a follow-up.
+    return (await this.listDir(path, {})).entries
+  }
+
+  async listDir(
+    path: string,
+    opts: Partial<ListDirOptions> = {}
+  ): Promise<ListDirResult> {
     const p = await this.validateContainerPath(path)
-    const res = await this.runtimeCli([
-      "exec",
-      this.name,
-      "sh",
-      "-c",
-      `ls -Ap1 ${shq(p)}`,
-    ])
+    const maxEntries = opts.maxEntries ?? 0
+    const maxBytes = opts.maxBytes ?? 0
+    const maxOutputBytes =
+      maxBytes > 0
+        ? Math.max(16 * 1024, Math.min(1024 * 1024, maxBytes * 6))
+        : undefined
+    const res = await this.runtimeCli(
+      [
+        "exec",
+        this.name,
+        "python3",
+        "-c",
+        CONTAINER_LISTDIR_SCRIPT,
+        MOUNT,
+        p,
+        String(maxEntries),
+        String(maxBytes),
+      ],
+      undefined,
+      { maxOutputBytes }
+    )
     this.throwForCliFailure(res, `cannot list ${path}`)
-    return res.stdout
-      .toString("utf8")
-      .split("\n")
-      .filter((line) => line.length > 0)
-      .map((line) => {
-        const isDir = line.endsWith("/")
-        const name = isDir ? line.slice(0, -1) : line
-        return {
-          name,
-          isDirectory: () => isDir,
-          isFile: () => !isDir,
-        }
-      })
+    const parsed = this.parseCliJson<{
+      entries: Array<{ name: string; type: string }>
+      truncated?: boolean
+      capReason?: ListDirResult["capReason"]
+    }>(res, `cannot list ${path}`)
+    return {
+      entries: parsed.entries.map((entry) => ({
+        name: entry.name,
+        isDirectory: () => entry.type === "dir",
+        isFile: () => entry.type === "file",
+      })),
+      truncated: parsed.truncated ?? false,
+      capReason:
+        res.outputTruncated || parsed.capReason === "captureBytes"
+          ? "captureBytes"
+          : parsed.capReason,
+    }
   }
 
   async exec(command: string, opts: ExecOptions): Promise<ExecResult> {
@@ -1026,6 +1049,53 @@ while True:
             sys.exit(3)
         suffix.append(os.path.basename(probe))
         probe = parent
+`
+
+const CONTAINER_LISTDIR_SCRIPT = String.raw`
+import json, os, stat, sys
+
+root = os.path.realpath(sys.argv[1])
+path = sys.argv[2]
+max_entries = int(sys.argv[3])
+max_bytes = int(sys.argv[4])
+
+def inside(parent, child):
+    rel = os.path.relpath(child, parent)
+    return rel == "." or (not rel.startswith("..") and not os.path.isabs(rel))
+
+target = os.path.realpath(path)
+if not inside(root, target):
+    print(json.dumps({"error": "outside"}))
+    sys.exit(2)
+
+entries = []
+total_bytes = 0
+truncated = False
+cap_reason = None
+scan = os.scandir(target)
+try:
+    for item in scan:
+        name = item.name
+        name_bytes = len(name.encode("utf-8"))
+        if max_entries > 0 and len(entries) >= max_entries:
+            truncated = True
+            cap_reason = "entryCount"
+            break
+        if max_bytes > 0 and entries and total_bytes + name_bytes > max_bytes:
+            truncated = True
+            cap_reason = "nameBytes"
+            break
+        try:
+            st = item.stat(follow_symlinks=False)
+            typ = "dir" if stat.S_ISDIR(st.st_mode) else "file" if stat.S_ISREG(st.st_mode) else "other"
+        except OSError:
+            typ = "other"
+        entries.append({"name": name, "type": typ})
+        total_bytes += name_bytes
+finally:
+    scan.close()
+
+print(json.dumps({"entries": entries, "truncated": truncated, "capReason": cap_reason}))
 `
 
 const CONTAINER_COMMAND_SUPERVISOR = String.raw`

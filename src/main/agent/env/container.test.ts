@@ -109,6 +109,43 @@ describe("ContainerEnvironment runtime CLI supervision", () => {
     )
   })
 
+  it("listDir returns capped in-container listing metadata", async () => {
+    const runtimeSpawn = vi
+      .fn()
+      .mockReturnValueOnce(
+        fakeRuntimeChild({ stdout: '{"path": "/workspace/src"}' })
+      )
+      .mockReturnValueOnce(
+        fakeRuntimeChild({
+          stdout: JSON.stringify({
+            entries: [
+              { name: "日本語.txt", type: "file" },
+              { name: "nested", type: "dir" },
+            ],
+            truncated: true,
+            capReason: "entryCount",
+          }),
+        })
+      )
+    const env = testContainer(runtimeSpawn)
+
+    const result = await env.listDir("/workspace/src", {
+      maxEntries: 2,
+      maxBytes: 64,
+    })
+
+    expect(result.truncated).toBe(true)
+    expect(result.capReason).toBe("entryCount")
+    expect(result.entries.map((entry) => entry.name)).toEqual([
+      "日本語.txt",
+      "nested",
+    ])
+    expect(result.entries[1].isDirectory()).toBe(true)
+    expect(runtimeSpawn.mock.calls[1][1]).toEqual(
+      expect.arrayContaining(["/workspace/src", "2", "64"])
+    )
+  })
+
   it("propagates search aborts to the runtime CLI probe", async () => {
     const child = fakeRuntimeChild({ neverExit: true })
     const env = testContainer(() => child)
