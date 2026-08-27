@@ -52,6 +52,15 @@ function fakeEnv(): Environment & {
       files.delete(from)
       modes.delete(from)
     },
+    installFileNoReplace: async (from: string, to: string) => {
+      const content = files.get(from)
+      if (content === undefined) throw new Error("ENOENT")
+      if (files.has(to)) throw new Error("EEXIST")
+      files.set(to, content)
+      const mode = modes.get(from)
+      if (mode !== undefined) modes.set(to, mode)
+      else modes.delete(to)
+    },
     removeFile: async (p: string) => {
       files.delete(p)
       modes.delete(p)

@@ -94,6 +94,8 @@ export async function atomicWriteChecked(opts: {
       : await readFileMode(opts.env, opts.target)
 
   const tmp = makeTempPath(opts.target)
+  let backup: string | undefined
+  let backedUp = false
   try {
     await opts.env.writeFile(tmp, opts.content)
     if (originalMode !== undefined) {
@@ -109,10 +111,10 @@ export async function atomicWriteChecked(opts: {
         return { staleRevision: beforeRename ?? null }
       }
     }
+    if (!opts.env.installFileNoReplace) {
+      return { staleRevision: beforeRename ?? null }
+    }
     if (opts.expectedRevision === undefined) {
-      if (!opts.env.installFileNoReplace) {
-        return { staleRevision: beforeRename ?? null }
-      }
       try {
         await opts.env.installFileNoReplace(tmp, opts.target)
         return "ok"
@@ -129,10 +131,53 @@ export async function atomicWriteChecked(opts: {
         return { staleRevision }
       }
     }
-    await opts.env.rename(tmp, opts.target)
+    backup = makeTempPath(opts.target)
+    await opts.env.rename(opts.target, backup)
+    backedUp = true
+    const backedUpRevision = await readRevision(opts.env, backup)
+    if (backedUpRevision !== opts.expectedRevision) {
+      return { staleRevision: backedUpRevision ?? null }
+    }
+    if (originalMode !== undefined) {
+      const backedUpMode = await readFileMode(opts.env, backup)
+      if (backedUpMode !== originalMode) {
+        return { staleRevision: backedUpRevision ?? null }
+      }
+    }
+    try {
+      await opts.env.installFileNoReplace(tmp, opts.target)
+    } catch {
+      let staleRevision: string | null = null
+      try {
+        staleRevision = (await readRevision(opts.env, opts.target)) ?? null
+      } catch (error) {
+        if (error instanceof FileTooLargeError) {
+          return error
+        }
+        staleRevision = null
+      }
+      return { staleRevision }
+    }
+    try {
+      await opts.env.removeFile(backup)
+      backedUp = false
+    } catch {
+      // The write has committed; the finally block makes one more best-effort
+      // cleanup attempt without converting success into a failed mutation.
+    }
     return "ok"
   } finally {
     await opts.env.removeFile(tmp).catch(() => {})
+    if (backup && backedUp) {
+      const current = await readRevision(opts.env, opts.target).catch(
+        () => null
+      )
+      if (current === undefined) {
+        await opts.env.rename(backup, opts.target).catch(() => {})
+      } else {
+        await opts.env.removeFile(backup).catch(() => {})
+      }
+    }
   }
 }
 

@@ -515,11 +515,6 @@ async function installStagedFile(
   entry: StagedFile
 ): Promise<void> {
   if (!entry.staged) return
-  if (entry.existed) {
-    await env.rename(entry.staged, entry.file.target)
-    entry.installed = true
-    return
-  }
   if (!env.installFileNoReplace) {
     throw new Error("no_replace_install_unavailable")
   }
@@ -532,6 +527,33 @@ async function installStagedFile(
       throw new DestinationChangedError(entry.file.path, current)
     }
     throw new Error("no_replace_install_failed")
+  }
+}
+
+async function validateBackupAfterMove(
+  env: Environment,
+  entry: StagedFile
+): Promise<void> {
+  if (!entry.backup || !entry.backedUp) return
+  const current = await readRevision(
+    env,
+    entry.backup,
+    entry.file.sourcePath ?? entry.file.path
+  )
+  if (current !== entry.file.beforeRevision) {
+    throw new DestinationChangedError(
+      entry.file.sourcePath ?? entry.file.path,
+      current
+    )
+  }
+  if (entry.file.mode !== undefined) {
+    const currentMode = await readFileMode(env, entry.backup)
+    if (currentMode !== entry.file.mode) {
+      throw new DestinationChangedError(
+        entry.file.sourcePath ?? entry.file.path,
+        current
+      )
+    }
   }
 }
 
@@ -669,6 +691,7 @@ export async function commitPatch(
           entry.backup
         )
         entry.backedUp = true
+        await validateBackupAfterMove(env, entry)
       }
     }
     for (const entry of staged) {
@@ -719,12 +742,36 @@ export async function commitPatch(
       }
       try {
         if (entry.backup && entry.backedUp) {
-          await env.rename(
-            entry.backup,
-            entry.file.sourceTarget ?? entry.file.target
+          const rollbackTarget = entry.file.sourceTarget ?? entry.file.target
+          const current = await readRevision(env, rollbackTarget).catch(
+            (error) => {
+              if (error instanceof FileTooLargeError) throw error
+              return undefined
+            }
           )
+          if (current === undefined) {
+            await env.rename(entry.backup, rollbackTarget)
+          } else if (entry.installed && current === entry.file.afterRevision) {
+            await env.removeFile(rollbackTarget)
+            await env.rename(entry.backup, rollbackTarget)
+          } else {
+            throw new Error(
+              `rollback_conflict:${entry.file.path}: destination changed during rollback`
+            )
+          }
         } else if (!entry.existed && entry.installed) {
           try {
+            const current = await readRevision(env, entry.file.target).catch(
+              (error) => {
+                if (error instanceof FileTooLargeError) throw error
+                return undefined
+              }
+            )
+            if (current !== entry.file.afterRevision) {
+              throw new Error(
+                `rollback_conflict:${entry.file.path}: destination changed during rollback`
+              )
+            }
             await env.removeFile(entry.file.target)
           } catch (removeErr) {
             const message =

@@ -13,6 +13,7 @@ function fakeEnv(): Environment & {
   renameAttempts: Array<{ from: string; to: string }>
   failRename?: (from: string, to: string) => boolean
   failNextRenameTo?: string
+  failNextInstallTo?: string
   failNextChmod: boolean
   failRemove?: (path: string) => boolean
   createBeforeInstallTo?: string
@@ -35,6 +36,7 @@ function fakeEnv(): Environment & {
       | undefined
       | ((from: string, to: string) => boolean),
     failNextRenameTo: undefined as string | undefined,
+    failNextInstallTo: undefined as string | undefined,
     failNextChmod: false,
     failRemove: undefined as undefined | ((path: string) => boolean),
     createBeforeInstallTo: undefined as string | undefined,
@@ -87,6 +89,10 @@ function fakeEnv(): Environment & {
         env.createBeforeInstallTo = undefined
         files.set(to, "external\n")
         modes.set(to, 0o644)
+      }
+      if (env.failNextInstallTo === to) {
+        env.failNextInstallTo = undefined
+        throw new Error(`injected install failure for ${to}`)
       }
       const content = files.get(from)
       if (content === undefined) throw new Error("ENOENT")
@@ -656,8 +662,10 @@ describe("apply_patch_tool", () => {
     const temporaryFiles = [...env.files.entries()].filter(([path]) =>
       path.includes(".north-star-")
     )
-    expect(temporaryFiles).toHaveLength(1)
-    expect(temporaryFiles[0]?.[1]).toBe("old\n")
+    expect(temporaryFiles.map(([, content]) => content).sort()).toEqual([
+      "new\n",
+      "old\n",
+    ])
   })
 
   it("reports stale cleanup failures with retained staged paths", async () => {
@@ -945,6 +953,7 @@ describe("apply_patch_tool", () => {
     const env = fakeEnv()
     env.files.set("a.txt", "old a\n")
     env.modes.set("a.txt", 0o600)
+    env.failNextInstallTo = "a.txt"
     let backedUp = false
     env.failRename = (from, to) => {
       if (from === "a.txt") {
@@ -969,8 +978,8 @@ describe("apply_patch_tool", () => {
 
     expect(result).toContain("ERROR[rollback_failed]")
     expect(result).toContain("injected rename failure")
-    expect(env.renameAttempts).toHaveLength(3)
-    expect(env.renameAttempts[2]).toMatchObject({ to: "a.txt" })
+    expect(env.renameAttempts).toHaveLength(2)
+    expect(env.renameAttempts[1]).toMatchObject({ to: "a.txt" })
     expect(env.files.has("a.txt")).toBe(false)
     const temporaryFiles = [...env.files.entries()].filter(([path]) =>
       path.includes(".north-star-")
@@ -984,7 +993,7 @@ describe("apply_patch_tool", () => {
     const env = fakeEnv()
     env.files.set("a.txt", "old a\n")
     env.files.set("b.txt", "old b\n")
-    env.failNextRenameTo = "b.txt"
+    env.failNextInstallTo = "b.txt"
 
     const result = await applyPatchTool.execute(
       {
@@ -1015,7 +1024,7 @@ describe("apply_patch_tool", () => {
   it("reports rollback_failed when removing an installed add destination fails", async () => {
     const env = fakeEnv()
     env.files.set("z.txt", "old z\n")
-    env.failNextRenameTo = "z.txt"
+    env.failNextInstallTo = "z.txt"
     env.failRemove = (path) => path === "a.txt"
 
     const result = await applyPatchTool.execute(
@@ -1046,7 +1055,7 @@ describe("apply_patch_tool", () => {
     const env = fakeEnv()
     env.files.set("old.txt", "move me\n")
     env.files.set("z.txt", "old z\n")
-    env.failNextRenameTo = "z.txt"
+    env.failNextInstallTo = "z.txt"
     env.failRemove = (path) => path === "a-moved.txt"
 
     const result = await applyPatchTool.execute(
@@ -1128,5 +1137,76 @@ describe("apply_patch_tool", () => {
     expect(
       [...env.files.keys()].filter((p) => p.includes(".north-star-"))
     ).toEqual([])
+  })
+
+  it("does not overwrite an update destination created after backup", async () => {
+    const env = fakeEnv()
+    env.files.set("a.txt", "old a\n")
+    env.installFileNoReplace = async () => {
+      env.files.set("a.txt", "external a\n")
+      env.modes.set("a.txt", 0o644)
+      throw new Error("EEXIST")
+    }
+
+    const result = await applyPatchTool.execute(
+      {
+        operations: [
+          {
+            type: "update",
+            path: "a.txt",
+            hunks: [{ old_string: "old a", new_string: "new a" }],
+          },
+        ],
+      },
+      { workspace: "/ws", env }
+    )
+
+    expect(result).toContain("ERROR[rollback_failed]")
+    expect(result).toContain("rollback_conflict:a.txt")
+    expect(env.files.get("a.txt")).toBe("external a\n")
+    const temporaryFiles = [...env.files.entries()].filter(([path]) =>
+      path.includes(".north-star-")
+    )
+    expect(temporaryFiles).toHaveLength(1)
+    expect(temporaryFiles[0]?.[1]).toBe("old a\n")
+  })
+
+  it("does not restore a backup over an external rollback replacement", async () => {
+    const env = fakeEnv()
+    env.files.set("a.txt", "old a\n")
+    env.files.set("b.txt", "old b\n")
+    const installFileNoReplace = env.installFileNoReplace
+    if (!installFileNoReplace) throw new Error("test env missing install")
+    env.installFileNoReplace = async (from, to) => {
+      if (to === "b.txt") {
+        env.files.set("a.txt", "external a\n")
+        env.modes.set("a.txt", 0o644)
+        throw new Error(`injected install failure for ${to}`)
+      }
+      await installFileNoReplace(from, to)
+    }
+
+    const result = await applyPatchTool.execute(
+      {
+        operations: [
+          {
+            type: "update",
+            path: "a.txt",
+            hunks: [{ old_string: "old a", new_string: "new a" }],
+          },
+          {
+            type: "update",
+            path: "b.txt",
+            hunks: [{ old_string: "old b", new_string: "new b" }],
+          },
+        ],
+      },
+      { workspace: "/ws", env }
+    )
+
+    expect(result).toContain("ERROR[rollback_failed]")
+    expect(result).toContain("rollback_conflict:a.txt")
+    expect(env.files.get("a.txt")).toBe("external a\n")
+    expect(env.files.get("b.txt")).toBe("old b\n")
   })
 })

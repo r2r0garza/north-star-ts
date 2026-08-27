@@ -50,7 +50,7 @@ a brief names a prerequisite.
 | 41 | P1 | Resolved | [Tool execution ignores the offered tool set](./041-tool-call-availability-not-enforced.md) | Agent tool dispatch |
 | 42 | P1 | Fixed | [Headless fetch is vulnerable to DNS rebinding](./042-headless-fetch-dns-rebinding.md) | Shared safe-fetch transport |
 | 43 | P1 | Open | [Shell approval identities drift](./043-shell-approval-identity-drift.md) | Approval policy and dashboards |
-| 44 | P1 | Open | [Revision-checked mutations have a final install race](./044-file-revision-final-install-race.md) | File mutation transactions |
+| 44 | P1 | Fixed | [Revision-checked mutations have a final install race](./044-file-revision-final-install-race.md) | File mutation transactions |
 | 45 | P1 | Open | [Consequential browser actions are auto-approved](./045-browser-consequential-actions-auto-approved.md) | Browser approval policy |
 | 46 | P2 | Open | [Local reads materialize the entire file](./046-local-read-materializes-entire-file.md) | Local filesystem reads |
 | 47 | P2 | Open | [Local safe writes ignore short writes](./047-local-safe-fs-short-write.md) | Local filesystem writes |

@@ -326,6 +326,43 @@ describe("write_file_tool", () => {
     expect([...env.files.keys()].filter((p) => p.includes(".tmp"))).toEqual([])
   })
 
+  it("does not overwrite an external change made just before existing-file backup", async () => {
+    env.files.set("a.txt", "old")
+    const rename = env.rename
+    env.rename = async (from, to) => {
+      if (from === "a.txt" && to.includes(".north-star-")) {
+        env.files.set("a.txt", "external")
+      }
+      await rename(from, to)
+    }
+
+    const result = await writeFileTool.execute(
+      { path: "a.txt", content: "new", mode: "overwrite" },
+      ctx
+    )
+
+    expect(result).toContain("ERROR[stale_file]")
+    expect(env.files.get("a.txt")).toBe("external")
+    expect([...env.files.keys()].filter((p) => p.includes(".tmp"))).toEqual([])
+  })
+
+  it("does not overwrite an external change made after existing-file backup", async () => {
+    env.files.set("a.txt", "old")
+    env.installFileNoReplace = async () => {
+      env.files.set("a.txt", "external")
+      throw Object.assign(new Error("EEXIST: a.txt"), { code: "EEXIST" })
+    }
+
+    const result = await writeFileTool.execute(
+      { path: "a.txt", content: "new", mode: "overwrite" },
+      ctx
+    )
+
+    expect(result).toContain("ERROR[stale_file]")
+    expect(env.files.get("a.txt")).toBe("external")
+    expect([...env.files.keys()].filter((p) => p.includes(".tmp"))).toEqual([])
+  })
+
   it("does not treat an unreadable destination as safely absent", async () => {
     env.files.set("a.txt", "old")
     env.readFile = async (p) => {

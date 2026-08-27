@@ -1,6 +1,6 @@
 # Revision-checked mutations can overwrite a write after final validation
 
-> Status: **OPEN**
+> Status: **Fixed**
 > Severity: **P1 — stale overwrite and rollback data loss**
 > Area: single-file and multi-file mutation commits
 
@@ -42,3 +42,19 @@ guarantee and fail closed when contention is detected.
   external replacements.
 - Conflict results identify the affected path and preserve external bytes.
 - Create-only, mode-preservation, cleanup, and rollback tests remain green.
+
+## Resolution
+
+- Existing-file single writes now move the current target to a temporary backup,
+  validate the backed-up bytes and mode, and install the staged content with the
+  no-replace primitive.
+- Multi-file patch commits now install all staged content with no-replace after
+  backup, validate backed-up sources before install, and refuse to restore or
+  remove rollback paths whose current bytes no longer belong to the transaction.
+- Regression tests cover existing-file races before backup and after backup,
+  patch install contention after backup, and rollback conflict preservation.
+
+## Verification
+
+- `npm test -- --run src/main/agent/tools/write_file_tool.test.ts src/main/agent/tools/apply_patch_tool.test.ts`
+- `npm run typecheck`
