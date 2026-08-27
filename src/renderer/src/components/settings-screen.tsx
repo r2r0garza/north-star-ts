@@ -64,6 +64,8 @@ import type {
   IdeSettings,
   NotificationSettings,
   Backend,
+  LocalRuntimeProfile,
+  LocalProfileCapabilities,
   ApprovalCategory,
   Runtime,
   RuntimeStatus,
@@ -99,6 +101,10 @@ const CATEGORY_META: Record<ApprovalCategory, { label: string; help: string }> =
       label: "System changes",
       help: "Permissions, services, devices, or credential/system paths.",
     },
+    network_access: {
+      label: "Network access",
+      help: "curl, wget, ssh, git network operations, and package installs.",
+    },
     code_exec: {
       label: "Arbitrary code execution",
       help: "Inline interpreters and piping remote scripts to a shell.",
@@ -109,6 +115,7 @@ const CATEGORY_ORDER: ApprovalCategory[] = [
   "destructive_fs",
   "history_rewrite",
   "system_mutation",
+  "network_access",
   "code_exec",
 ]
 
@@ -118,7 +125,31 @@ const RUNTIME_STATUS_LABEL: Record<RuntimeStatus, string> = {
   unavailable: "installed, not running",
 }
 
-// The nav-rail sections, in order. Sandbox is gated on a container backend.
+const LOCAL_PROFILE_META: Record<
+  LocalRuntimeProfile,
+  { label: string; help: string }
+> = {
+  "host-access": {
+    label: "Host access",
+    help: "Commands run directly on this machine. Benign commands and file writes still require approval.",
+  },
+  "workspace-write": {
+    label: "Workspace write",
+    help: "Commands run under the local OS sandbox where available. Writes are limited to the workspace and temp locations; network is blocked.",
+  },
+  "read-only": {
+    label: "Read only",
+    help: "Commands run under the local OS sandbox where available. Filesystem writes and network access are blocked.",
+  },
+}
+
+const LOCAL_PROFILE_ORDER: LocalRuntimeProfile[] = [
+  "host-access",
+  "workspace-write",
+  "read-only",
+]
+
+// The nav-rail sections, in order. Sandbox is gated on an enforced backend.
 const SECTIONS: Array<{ value: string; label: string }> = [
   { value: "providers", label: "Providers" },
   { value: "models", label: "Models" },
@@ -393,6 +424,10 @@ export function SettingsScreen({
     Runtime,
     RuntimeStatus
   > | null>(null)
+  const [localProfileCaps, setLocalProfileCaps] = useState<Record<
+    LocalRuntimeProfile,
+    LocalProfileCapabilities
+  > | null>(null)
   const llm = useLlmSettings(open)
   // When set, the first-time onboarding dialog is shown for this just-picked
   // container backend (awaiting the user's enable / not-now choice).
@@ -417,6 +452,7 @@ export function SettingsScreen({
       window.cowork.settings.ideOptions(),
       window.cowork.settings.getNotifications(),
       window.cowork.settings.checkRuntimes(),
+      window.cowork.settings.localProfileCapabilities(),
       window.cowork.settings.getTheme(),
     ]).then(
       ([
@@ -431,6 +467,7 @@ export function SettingsScreen({
         ideOpts,
         notif,
         rt,
+        profileCaps,
         theme,
       ]) => {
         if (cancelled) return
@@ -447,6 +484,7 @@ export function SettingsScreen({
         setIdeOptions(ideOpts)
         setNotifications(notif)
         setRuntimes(rt)
+        setLocalProfileCaps(profileCaps)
         setSavedTheme(theme)
         setThemeDraft(theme)
       }
@@ -696,6 +734,10 @@ export function SettingsScreen({
 
   const isContainer =
     execution?.backend === "docker" || execution?.backend === "podman"
+  const hasEnforcedRuntime =
+    isContainer ||
+    execution?.localProfile === "workspace-write" ||
+    execution?.localProfile === "read-only"
 
   function runtimeOptionDisabled(rt: Runtime): boolean {
     return runtimes != null && runtimes[rt] !== "available"
@@ -763,7 +805,7 @@ export function SettingsScreen({
                       <TabsTrigger
                         key={s.value}
                         value={s.value}
-                        disabled={s.value === "sandbox" && !isContainer}
+                        disabled={s.value === "sandbox" && !hasEnforcedRuntime}
                         className="px-3 py-1.5"
                       >
                         {s.label}
@@ -821,10 +863,52 @@ export function SettingsScreen({
                           </Select>
                           <FieldDescription>
                             {execution.backend === "local"
-                              ? "Tools run directly on your machine. Only file reads run without asking — every command and file write/edit needs your approval."
+                              ? "Choose whether Local shell commands run with explicit host access or an enforceable OS sandbox profile when this platform supports one."
                               : "Tools run in an isolated container with only the workspace mounted."}
                           </FieldDescription>
                         </Field>
+                        {execution.backend === "local" && (
+                          <Field>
+                            <FieldLabel htmlFor="local-profile-select">
+                              Local profile
+                            </FieldLabel>
+                            <Select
+                              value={execution.localProfile}
+                              onValueChange={(value) =>
+                                saveExecution({
+                                  ...execution,
+                                  localProfile: value as LocalRuntimeProfile,
+                                })
+                              }
+                            >
+                              <SelectTrigger id="local-profile-select">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {LOCAL_PROFILE_ORDER.map((profile) => (
+                                  <SelectItem
+                                    key={profile}
+                                    value={profile}
+                                    disabled={
+                                      localProfileCaps?.[profile].supported ===
+                                      false
+                                    }
+                                  >
+                                    {LOCAL_PROFILE_META[profile].label}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                            <FieldDescription>
+                              {localProfileCaps?.[execution.localProfile]
+                                .supported === false
+                                ? localProfileCaps[execution.localProfile]
+                                    .reason
+                                : LOCAL_PROFILE_META[execution.localProfile]
+                                    .help}
+                            </FieldDescription>
+                          </Field>
+                        )}
                       </TabsContent>
 
                       {/* File-permission toggles — flip "require approval" per kind. */}
@@ -1506,7 +1590,7 @@ export function SettingsScreen({
                       </TabsContent>
 
                       {/* Sandbox auto-approve — master switch + per-category opt-ins.
-                        Only meaningful with a container backend (tab is disabled otherwise). */}
+                        Only meaningful with a container or enforced Local profile. */}
                       <TabsContent
                         value="sandbox"
                         className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto py-6"
@@ -1518,8 +1602,8 @@ export function SettingsScreen({
                             </FieldLabel>
                             <FieldDescription>
                               Auto-approve selected actions while running in a
-                              container. Hard-blocked commands are never
-                              auto-approved.
+                              container or enforced Local profile. Hard-blocked
+                              commands are never auto-approved.
                             </FieldDescription>
                           </FieldContent>
                           <Switch

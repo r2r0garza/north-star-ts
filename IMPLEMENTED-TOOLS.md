@@ -12,27 +12,30 @@ Update this file whenever a tool is added, removed, or its gating changes.
 ## Modes
 
 Three conversation modes select which tools are offered:
+
 - **Chat** — no workspace; the user attaches files instead. Tool-light.
 - **Interactive** — workspace-backed; collaborative, incremental.
 - **North Star** — workspace-backed; autonomous, end-to-end.
 
 ## Tools
 
-| Tool | What it does | Offered in | Gating / notes |
-|------|--------------|-----------|----------------|
-| `list_files_tool` | List files/directories at a path inside the workspace. | Interactive, North Star | Workspace-confined. |
-| `read_file_tool` | Read a UTF-8 text file (line-numbered, offset/limit paging). | Interactive, North Star; **Chat** (attachments only) | In Chat, scoped to the user's attached files; otherwise workspace-confined. |
-| `search_tool` | Regex search over file contents; returns `path:line: text`. Params: `pattern` (req), `path`, `glob`, `max_results`. | Interactive, North Star | Workspace-confined. |
-| `edit_file_tool` | Find-and-replace exact text in a workspace file. | Interactive, North Star | Workspace-confined; routes through the approval gate (auto-allowed by default policy). |
-| `write_file_tool` | Create or overwrite a file (creates parent dirs; atomic write). | Interactive, North Star | Workspace-confined; routes through the approval gate (auto-allowed by default policy). |
-| `run_shell_tool` | Run a shell command in the workspace; returns stdout+stderr+exit code. Params: `command` (req), `timeout_ms` (default 30s, cap 600s). | Interactive, North Star | **Human-approval gate**: safe cmds run, risky ones (e.g. `rm -rf`, `git reset --hard`) prompt, catastrophic ones are blocked. Confined to `cwd: workspace`; fails closed without a workspace. |
-| `read_skill` | Load a skill's full body on demand (only metadata is in the prompt). | All modes (when skills are loaded) | Built per-chat; closes over the loaded skills. |
-| `todo_write` | Manage a per-conversation task list (read with no args; replace-all or `merge` by id). Statuses: pending/in_progress/completed/cancelled. | Interactive, North Star | **Mode-gated, not workspace-gated** (excluded from Chat). Persists to the `todos` table; re-injected into the prompt each turn. Not a gated/dangerous action. |
-| `ask_user_question` | Ask the user 1–4 clarifying questions, each with 2–4 options (+ auto "Other" free-form) and optional `multiSelect`. Pauses the turn; answers returned as JSON. | All modes | Universal — clarification matters everywhere. Released as cancelled on Stop. |
+| Tool                                                 | What it does                                                                                                                                                                                                     | Offered in                                           | Gating / notes                                                                                                                                                                                                       |
+| ---------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `list_files_tool`                                    | List files/directories at a path inside the workspace.                                                                                                                                                           | Interactive, North Star                              | Workspace-confined.                                                                                                                                                                                                  |
+| `read_file_tool`                                     | Read a UTF-8 text file (line-numbered, offset/limit paging).                                                                                                                                                     | Interactive, North Star; **Chat** (attachments only) | In Chat, scoped to the user's attached files; otherwise workspace-confined.                                                                                                                                          |
+| `search_tool`                                        | Regex search over file contents; returns `path:line: text`. Params: `pattern` (req), `path`, `glob`, `max_results`.                                                                                              | Interactive, North Star                              | Workspace-confined.                                                                                                                                                                                                  |
+| `edit_file_tool`                                     | Find-and-replace exact text in a workspace file.                                                                                                                                                                 | Interactive, North Star                              | Workspace-confined; routes through the approval gate (auto-allowed by default policy).                                                                                                                               |
+| `write_file_tool`                                    | Create or overwrite a file (creates parent dirs; atomic write).                                                                                                                                                  | Interactive, North Star                              | Workspace-confined; routes through the approval gate (auto-allowed by default policy).                                                                                                                               |
+| `exec_command`                                       | Run a shell command with session support; quick commands return inline, long-running commands return a session id. Params: `command` (req), optional `cwd`, `timeout_ms`, `yield_ms`, `max_output_bytes`, `tty`. | Interactive, North Star                              | **Human-approval gate**. Local runs on the host with workspace cwd; container backends run inside the selected runtime. Parsed shell policy flags unknown syntax, network operations, and outside-workspace targets. |
+| `write_stdin` / `poll_command` / `terminate_command` | Interact with an active `exec_command` session.                                                                                                                                                                  | Interactive, North Star                              | Session ids are scoped to conversation + workspace.                                                                                                                                                                  |
+| `run_shell_tool`                                     | Legacy compatibility wrapper over `exec_command` that waits for completion.                                                                                                                                      | Not model-offered                                    | Kept dispatchable by name for old/internal callers; new model turns should use `exec_command`.                                                                                                                       |
+| `read_skill`                                         | Load a skill's full body on demand (only metadata is in the prompt).                                                                                                                                             | All modes (when skills are loaded)                   | Built per-chat; closes over the loaded skills.                                                                                                                                                                       |
+| `todo_write`                                         | Manage a per-conversation task list (read with no args; replace-all or `merge` by id). Statuses: pending/in_progress/completed/cancelled.                                                                        | Interactive, North Star                              | **Mode-gated, not workspace-gated** (excluded from Chat). Persists to the `todos` table; re-injected into the prompt each turn. Not a gated/dangerous action.                                                        |
+| `ask_user_question`                                  | Ask the user 1–4 clarifying questions, each with 2–4 options (+ auto "Other" free-form) and optional `multiSelect`. Pauses the turn; answers returned as JSON.                                                   | All modes                                            | Universal — clarification matters everywhere. Released as cancelled on Stop.                                                                                                                                         |
 
 ## Foundational (not tools)
 
-- **Execution environment / backend** — *not yet implemented.* Every
+- **Execution environment / backend** — _not yet implemented._ Every
   machine-touching tool currently talks to the **host directly** (`run_shell_tool`
   → `child_process`; file tools → Node `fs`). There is no seam to swap where tools
   execute. Planned: an `Environment` interface so the user can choose a backend —
@@ -60,12 +63,12 @@ Three conversation modes select which tools are offered:
 
 1. **`read_extract`** — transparent `.ipynb`/`.docx`/`.xlsx` → text inside
    `read_file`. Pure, no deps, no network. Smallest win; upgrades a tool we ship.
-2. **`session_search`** — search/recall across *past* conversations (hermes uses
+2. **`session_search`** — search/recall across _past_ conversations (hermes uses
    FTS5). We already persist all messages in SQLite, so it's a natural fit.
 3. **`process_registry`** — background/long-running shell processes (start, poll,
    kill); the async counterpart to `run_shell_tool`. Pairs with the in-flight
    cancel work in `.plan/005-stop-inflight-tool-calls.md`.
-4. **`tool_result_storage`** — *mechanism, not a tool*: persist large tool
+4. **`tool_result_storage`** — _mechanism, not a tool_: persist large tool
    outputs instead of truncating, so the model can page back into them. Improves
    every existing tool.
 

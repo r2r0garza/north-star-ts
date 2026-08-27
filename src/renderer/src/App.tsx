@@ -1142,6 +1142,7 @@ function App(
                   reason: event.reason,
                   status: "pending",
                   kind: event.kind,
+                  detail: event.detail,
                 },
               }))
             )

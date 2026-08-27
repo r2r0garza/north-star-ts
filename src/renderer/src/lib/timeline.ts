@@ -25,6 +25,7 @@ export interface ToolApproval {
   // The action kind, when known. "delegate" (handing work to the background) is
   // asked every time, so its card hides the "always allow" affordance.
   kind?: string
+  detail?: Record<string, unknown>
 }
 
 // A single tool call and (once it finishes) its result. `id` is the tool_call

@@ -1,4 +1,4 @@
-import type { Tool, ToolContext } from "./types"
+import { TOOL_EFFECTS, type Tool, type ToolContext } from "./types"
 import type { ToolAction } from "../approval/types"
 import { toolError } from "./output"
 import { listTodos } from "../../db/repositories/todos"
@@ -22,6 +22,7 @@ import {
 // the task hits while working the list follow the normal background-task approval
 // flow.
 export const runTodosInBackgroundTool: Tool = {
+  effects: TOOL_EFFECTS.openWorldMutation,
   definition: {
     type: "function",
     function: {

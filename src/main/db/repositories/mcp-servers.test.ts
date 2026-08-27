@@ -1,6 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
 import Database from "better-sqlite3"
 import { runMigrations } from "../migrations"
+import { sqliteLoadsForTests } from "../../test/sqlite"
+
+const sqliteLoads = sqliteLoadsForTests()
 
 // A real in-memory SQLite DB, migrated to the latest schema, wired in behind the
 // connection singleton — the repo under test calls getDb() per query.
@@ -12,12 +15,6 @@ import * as repo from "./mcp-servers"
 // better-sqlite3 is compiled against Electron's ABI, so it may not load under the
 // node-based vitest runner. Skip the DB-backed suite when the native module can't
 // load (mirrors migrations.test.ts / index service.test.ts).
-let sqliteLoads = true
-try {
-  new Database(":memory:").close()
-} catch {
-  sqliteLoads = false
-}
 
 beforeEach(() => {
   if (!sqliteLoads) return

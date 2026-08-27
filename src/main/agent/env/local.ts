@@ -1,18 +1,38 @@
 import { spawn } from "child_process"
+import type { ChildProcess } from "child_process"
 import { randomUUID } from "crypto"
+import { EventEmitter } from "events"
+import { constants } from "fs"
+import type { Dir } from "fs"
 import {
-  readFile,
+  chmod as fsChmod,
+  link as fsLink,
+  lstat,
+  mkdir as fsMkdir,
+  open as fsOpen,
+  opendir as fsOpendir,
+  realpath,
+  rename as fsRename,
+  unlink as fsUnlink,
   writeFile,
-  rename,
-  mkdir,
-  stat,
-  readdir,
-  unlink,
 } from "fs/promises"
-import { join } from "path"
+import type { FileHandle } from "fs/promises"
+import { isAbsolute, relative, resolve, join, sep } from "path"
 import { tmpdir } from "os"
+import { StringDecoder } from "string_decoder"
+import * as pty from "node-pty"
 import { captureSpawn } from "./spawn-util"
-import { walkFiles, isBinaryBuffer } from "./walk"
+import {
+  buildRipgrepArgs,
+  parseRipgrepJson,
+  throwForRipgrepExecutionFailure,
+} from "./ripgrep"
+import {
+  assertLocalProfileSupported,
+  buildDarwinSandboxProfile,
+  sandboxExecPath,
+} from "./local-profiles"
+import { readHostTextLines } from "./read-text-lines"
 import { resolveInWorkspace, resolveInWorkspaceReal } from "../tools/workspace"
 import type {
   Environment,
@@ -22,7 +42,16 @@ import type {
   StatInfo,
   SearchOptions,
   SearchResult,
-  SearchMatch,
+  ListDirOptions,
+  ListDirResult,
+  ReadTextLinesOptions,
+  ReadTextLinesResult,
+  SpawnCommandOptions,
+  CommandSessionHandle,
+  CommandChunk,
+  CommandExit,
+  CommandCleanupError,
+  LocalRuntimeProfile,
 } from "./types"
 
 export function normalizeHostShellCommand(
@@ -38,6 +67,58 @@ export function normalizeHostShellCommand(
 
 function quoteWindowsArg(arg: string): string {
   return `"${arg.replace(/"/g, '\\"')}"`
+}
+
+type SpawnFn = typeof spawn
+
+interface LocalEnvironmentDeps {
+  resolveRipgrepPath?: () => string
+  spawn?: SpawnFn
+  platform?: NodeJS.Platform
+  searchTimeoutMs?: number
+  searchMaxOutputBytes?: number
+  unlinkTempFile?: (path: string) => Promise<void>
+  beforeLocalFileSyscall?: (op: string, path: string) => Promise<void>
+  openNoFollow?: (
+    path: string,
+    flags: number,
+    mode?: number
+  ) => Promise<FileHandle>
+  opendir?: (path: string) => Promise<Dir>
+}
+
+function resolveRipgrepPath(): string {
+  try {
+    // Dynamic require keeps dev/test usable before node_modules is installed and
+    // lets electron-builder unpack the packaged binary from node_modules.
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const mod = require("@vscode/ripgrep") as { rgPath?: string }
+    if (mod.rgPath) return mod.rgPath
+  } catch {
+    // Fall through to PATH lookup for development and focused tests.
+  }
+  return "rg"
+}
+
+function shellForCommand(
+  command: string,
+  platform: NodeJS.Platform = process.platform
+): { file: string; args: string[] } {
+  if (platform === "win32") {
+    return {
+      file: process.env.ComSpec || "cmd.exe",
+      args: ["/d", "/s", "/c", command],
+    }
+  }
+  return { file: process.env.SHELL || "sh", args: ["-lc", command] }
+}
+
+function shellForCapturedCommand(
+  command: string,
+  platform: NodeJS.Platform = process.platform
+): { file: string; args: string[] } {
+  if (platform === "win32") return shellForCommand(command, platform)
+  return { file: "/bin/sh", args: ["-c", command] }
 }
 
 export function materializePythonHeredocCommand(
@@ -72,12 +153,25 @@ export function materializePythonHeredocCommand(
   return { command: runner, script: lines.slice(0, end).join("\n") }
 }
 
-// The default backend: runs commands and file ops directly on the host, confined
-// to `workspace`. A behavior-preserving wrapper over exactly what the tools did
-// before this seam existed — fs/promises, child_process.spawn, and the workspace
-// path resolvers — so existing tool tests pass unchanged.
+// The default backend: runs file ops through workspace path resolvers, while
+// shell commands execute under the selected Local runtime profile. `host-access`
+// runs directly on the host with `cwd` set to the workspace; stronger labels are
+// accepted only when backed by a dependable OS adapter.
+// This is a behavior-preserving wrapper over exactly what the tools did before
+// this seam existed — fs/promises, child_process.spawn, and the workspace path
+// resolvers — so existing tool tests pass unchanged.
 export class LocalEnvironment implements Environment {
-  constructor(private readonly workspace: string) {}
+  constructor(
+    private readonly workspace: string,
+    private readonly profile: LocalRuntimeProfile = "host-access",
+    private readonly deps: LocalEnvironmentDeps = {}
+  ) {
+    assertLocalProfileSupported(profile)
+  }
+
+  get localRuntimeProfile(): LocalRuntimeProfile {
+    return this.profile
+  }
 
   resolve(path: string): Promise<string> {
     return resolveInWorkspaceReal(this.workspace, path)
@@ -88,33 +182,70 @@ export class LocalEnvironment implements Environment {
   }
 
   readFile(path: string): Promise<Buffer> {
-    return readFile(path)
+    return safeReadFile(this.workspace, path, this.deps)
+  }
+
+  readTextLines(
+    path: string,
+    opts: ReadTextLinesOptions
+  ): Promise<ReadTextLinesResult> {
+    return safeReadTextLines(this.workspace, path, opts, this.deps)
   }
 
   writeFile(path: string, data: string): Promise<void> {
-    return writeFile(path, data, "utf8")
+    this.assertWritable(path)
+    return safeWriteFile(this.workspace, path, data, this.deps)
+  }
+
+  chmod(path: string, mode: number): Promise<void> {
+    this.assertWritable(path)
+    return safeChmod(this.workspace, path, mode, this.deps)
   }
 
   rename(from: string, to: string): Promise<void> {
-    return rename(from, to)
+    this.assertWritable(from)
+    this.assertWritable(to)
+    return safeRename(this.workspace, from, to, this.deps)
+  }
+
+  installFileNoReplace(from: string, to: string): Promise<void> {
+    this.assertWritable(from)
+    this.assertWritable(to)
+    return safeLink(this.workspace, from, to, this.deps)
+  }
+
+  removeFile(path: string): Promise<void> {
+    this.assertWritable(path)
+    return safeUnlink(this.workspace, path, this.deps)
   }
 
   async mkdirp(path: string): Promise<void> {
-    await mkdir(path, { recursive: true })
+    this.assertWritable(path)
+    await safeMkdirp(this.workspace, path, this.deps)
   }
 
-  stat(path: string): Promise<StatInfo> {
-    return stat(path)
+  async stat(path: string): Promise<StatInfo> {
+    const info = await safeStat(this.workspace, path, this.deps)
+    return {
+      size: info.size,
+      mode: info.mode,
+      isFile: () => info.type === "file",
+      isDirectory: () => info.type === "dir",
+    }
   }
 
   readdir(path: string): Promise<DirEntry[]> {
-    return readdir(path, { withFileTypes: true })
+    return safeReaddir(this.workspace, path, this.deps)
   }
 
-  // Run `command` through the user's shell, confined to `opts.cwd`. The capture/
-  // cap/timeout/abort logic lives in captureSpawn (shared with the container
-  // backend); this just spawns the process. stdin is closed so the command can't
-  // block waiting for input.
+  listDir(path: string, opts: ListDirOptions): Promise<ListDirResult> {
+    return safeListDir(this.workspace, path, opts, this.deps)
+  }
+
+  // Run `command` through the user's shell with `opts.cwd` as its working
+  // directory. The capture/cap/timeout/abort logic lives in captureSpawn
+  // (shared with the container backend); this just spawns the process. stdin is
+  // closed so the command can't block waiting for input.
   //
   // `detached: true` makes the child its own process-group leader, so on abort or
   // timeout captureSpawn can SIGKILL the whole group (killGroup) — otherwise a
@@ -130,76 +261,895 @@ export class LocalEnvironment implements Environment {
   // timeout/abort cleanup.
   async exec(command: string, opts: ExecOptions): Promise<ExecResult> {
     let cleanupPath: string | null = null
-    let commandToRun = normalizeHostShellCommand(command)
+    const platform = this.deps.platform ?? process.platform
+    let commandToRun = normalizeHostShellCommand(command, platform)
     const scriptPath = join(
       tmpdir(),
       `cowork-python-heredoc-${randomUUID()}.py`
     )
-    const materialized = materializePythonHeredocCommand(command, scriptPath)
+    const materialized = materializePythonHeredocCommand(
+      command,
+      scriptPath,
+      platform
+    )
     if (materialized) {
       await writeFile(scriptPath, materialized.script, "utf8")
       cleanupPath = scriptPath
       commandToRun = materialized.command
     }
 
-    const child = spawn(commandToRun, {
-      cwd: opts.cwd,
-      shell: true,
-      detached: process.platform !== "win32",
-      stdio: ["ignore", "pipe", "pipe"],
-    })
+    const child = this.spawnShell(commandToRun, opts.cwd, [
+      "ignore",
+      "pipe",
+      "pipe",
+    ])
     try {
-      return await captureSpawn(child, { ...opts, killGroup: true })
+      const result = await captureSpawn(child, { ...opts, killGroup: true })
+      if (!cleanupPath) return result
+      const cleanupError = await this.cleanupTempFile(cleanupPath)
+      cleanupPath = null
+      return cleanupError ? { ...result, cleanupError } : result
     } finally {
-      if (cleanupPath) {
-        await unlink(cleanupPath).catch(() => {})
+      if (cleanupPath) await this.cleanupTempFile(cleanupPath)
+    }
+  }
+
+  async spawnCommand(
+    command: string,
+    opts: SpawnCommandOptions
+  ): Promise<CommandSessionHandle> {
+    let cleanupPath: string | null = null
+    const platform = this.deps.platform ?? process.platform
+    let commandToRun = normalizeHostShellCommand(command, platform)
+    const scriptPath = join(
+      tmpdir(),
+      `cowork-python-heredoc-${randomUUID()}.py`
+    )
+    const materialized = materializePythonHeredocCommand(
+      command,
+      scriptPath,
+      platform
+    )
+    if (materialized) {
+      await writeFile(scriptPath, materialized.script, "utf8")
+      cleanupPath = scriptPath
+      commandToRun = materialized.command
+    }
+
+    let handle: CommandSessionHandle
+    if (opts.tty) {
+      const shell = this.shellInvocation(commandToRun, false)
+      try {
+        const term = pty.spawn(shell.file, shell.args, {
+          name: "xterm-256color",
+          cols: 80,
+          rows: 24,
+          cwd: opts.cwd,
+          env: { ...process.env, TERM: "xterm-256color" },
+        })
+        handle = new PtyCommandHandle(term, opts.signal)
+      } catch (error) {
+        if (cleanupPath) await this.cleanupTempFile(cleanupPath)
+        throw error
+      }
+      return cleanupPath
+        ? new CleanupCommandHandle(handle, cleanupPath, (path) =>
+            this.cleanupTempFile(path)
+          )
+        : handle
+    }
+
+    try {
+      const child = this.spawnShell(commandToRun, opts.cwd, [
+        "pipe",
+        "pipe",
+        "pipe",
+      ])
+      handle = new ChildProcessCommandHandle(child, {
+        killGroup: true,
+        signal: opts.signal,
+      })
+    } catch (error) {
+      if (cleanupPath) await this.cleanupTempFile(cleanupPath)
+      throw error
+    }
+    return cleanupPath
+      ? new CleanupCommandHandle(handle, cleanupPath, (path) =>
+          this.cleanupTempFile(path)
+        )
+      : handle
+  }
+
+  private commandPlatform(): NodeJS.Platform {
+    return this.deps.platform ?? process.platform
+  }
+
+  private async cleanupTempFile(
+    path: string
+  ): Promise<CommandCleanupError | undefined> {
+    try {
+      await (this.deps.unlinkTempFile ?? fsUnlink)(path)
+      return undefined
+    } catch (error) {
+      return {
+        path,
+        error: error instanceof Error ? error.message : String(error),
       }
     }
   }
 
-  // Grep the workspace by walking the tree (shared walkFiles — same prune/size
-  // rules the indexer uses) and regexing each line of every text file. In-process
-  // fs calls, so this stays as fast as before on the host. The glob/binary/cap
-  // logic that's search-specific stays here on top of the shared traversal.
+  private commandSpawn(): SpawnFn {
+    return this.deps.spawn ?? spawn
+  }
+
+  // Grep the workspace through ripgrep, parsing `--json` so file names and
+  // content are never split with ad-hoc delimiters. Patterns/globs are argv data.
   async search(opts: SearchOptions): Promise<SearchResult> {
-    const regex = new RegExp(opts.pattern)
-    const matches: SearchMatch[] = []
-    let capped = false
-
-    for await (const file of walkFiles({
-      root: opts.root,
-      skipDirs: opts.skipDirs,
-      maxFileBytes: opts.maxFileBytes,
-    })) {
-      if (capped) break
-      const name = file.relPath.split("/").pop() ?? ""
-      if (opts.glob && !name.toLowerCase().includes(opts.glob)) continue
-      try {
-        const buf = await readFile(file.path)
-        if (isBinaryBuffer(buf)) continue
-        const lines = buf.toString("utf8").split("\n")
-        for (let i = 0; i < lines.length; i++) {
-          if (regex.test(lines[i])) {
-            matches.push({
-              path: file.path,
-              line: i + 1,
-              text: lines[i].trim(),
-            })
-            if (matches.length >= opts.maxResults) {
-              capped = true
-              break
-            }
-          }
-        }
-      } catch {
-        // Unreadable file — skip.
+    const spawnFn = this.deps.spawn ?? spawn
+    const root = await scopedPathForSyscall(
+      this.workspace,
+      opts.root,
+      "search",
+      {
+        requireLeaf: true,
+        requireDirectory: true,
+      },
+      this.deps
+    )
+    const child = spawnFn(
+      (this.deps.resolveRipgrepPath ?? resolveRipgrepPath)(),
+      buildRipgrepArgs({ ...opts, root }).map((arg) =>
+        arg === root ? "." : arg
+      ),
+      {
+        cwd: root,
+        shell: false,
+        detached: this.commandPlatform() !== "win32",
+        stdio: ["ignore", "pipe", "pipe"],
       }
-    }
-
-    return { matches, capped }
+    )
+    const res = await captureSpawn(child, {
+      timeoutMs: this.deps.searchTimeoutMs ?? 30_000,
+      maxOutputBytes: this.deps.searchMaxOutputBytes ?? 16 * 1024 * 1024,
+      signal: opts.signal,
+      killGroup: true,
+    })
+    throwForRipgrepExecutionFailure(
+      res.exitCode === 127
+        ? {
+            ...res,
+            exitCode: null,
+            spawnError:
+              res.stderr?.toString("utf8").trim() ||
+              res.stdout.toString("utf8").trim(),
+          }
+        : res
+    )
+    return absolutizeSearchPaths(
+      parseRipgrepJson(res.stdout, opts, res),
+      opts.root
+    )
   }
 
   async dispose(): Promise<void> {
     // Nothing to clean up on the host.
   }
+
+  private shellInvocation(
+    command: string,
+    captured = true
+  ): { file: string; args: string[] } {
+    const platform = this.commandPlatform()
+    const shell = captured
+      ? shellForCapturedCommand(command, platform)
+      : shellForCommand(command, platform)
+    if (this.profile === "host-access") return shell
+    if (process.platform !== "darwin") {
+      throw new Error(`Local profile is unavailable: ${this.profile}`)
+    }
+    return {
+      file: sandboxExecPath(),
+      args: [
+        "-p",
+        buildDarwinSandboxProfile(this.profile, this.workspace),
+        shell.file,
+        ...shell.args,
+      ],
+    }
+  }
+
+  private spawnShell(
+    command: string,
+    cwd: string,
+    stdio: ["ignore" | "pipe", "pipe", "pipe"] | ["pipe", "pipe", "pipe"]
+  ): ChildProcess {
+    if (this.profile === "host-access") {
+      return this.commandSpawn()(command, {
+        cwd,
+        shell: true,
+        detached: this.commandPlatform() !== "win32",
+        stdio,
+      })
+    }
+    const shell = this.shellInvocation(command, true)
+    return this.commandSpawn()(shell.file, shell.args, {
+      cwd,
+      shell: false,
+      detached: this.commandPlatform() !== "win32",
+      stdio,
+    })
+  }
+
+  private assertWritable(path: string): void {
+    if (this.profile === "host-access") return
+    if (this.profile === "read-only") {
+      throw new Error("Local read-only profile blocks filesystem writes.")
+    }
+    if (!isInside(this.workspace, path) && !isInside(tmpdir(), path)) {
+      throw new Error(
+        "Local workspace-write profile blocks writes outside the workspace."
+      )
+    }
+  }
+}
+
+function isInside(parent: string, child: string): boolean {
+  const rel = relative(resolve(parent), resolve(child))
+  return rel === "" || (!isParentTraversal(rel) && !isAbsolute(rel))
+}
+
+function isParentTraversal(rel: string): boolean {
+  return rel === ".." || rel.startsWith(`..${sep}`)
+}
+
+interface ScopedPathOptions {
+  requireLeaf?: boolean
+  requireDirectory?: boolean
+  allowMissingLeaf?: boolean
+}
+
+async function assertScopedLocalPath(
+  workspace: string,
+  path: string,
+  opts: ScopedPathOptions = {}
+): Promise<string> {
+  const lexicalRoot = resolve(workspace)
+  const root = await realpath(workspace)
+  const lexicalTarget = resolve(path)
+  const target = isInside(lexicalRoot, lexicalTarget)
+    ? join(root, relative(lexicalRoot, lexicalTarget))
+    : lexicalTarget
+  if (!isInside(root, target)) {
+    throw new Error(
+      `Path "${path}" is outside the workspace and is not allowed.`
+    )
+  }
+
+  const rootStat = await lstat(root)
+  if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
+    throw new Error("Workspace root is not a real directory.")
+  }
+
+  const rel = relative(root, target)
+  const parts = rel ? rel.split(/[\\/]+/).filter(Boolean) : []
+  let current = root
+  const requiredParts =
+    opts.allowMissingLeaf && parts.length > 0 ? parts.slice(0, -1) : parts
+
+  for (const part of requiredParts) {
+    current = join(current, part)
+    const stat = await lstat(current)
+    if (stat.isSymbolicLink()) {
+      throw new Error(
+        `Path "${path}" resolves through a symlink and is not allowed.`
+      )
+    }
+    if (!stat.isDirectory() && current !== target) {
+      throw new Error(`Path "${path}" has a non-directory parent.`)
+    }
+  }
+
+  if (opts.allowMissingLeaf && parts.length > 0) {
+    try {
+      const leafStat = await lstat(target)
+      if (leafStat.isSymbolicLink()) {
+        throw new Error(
+          `Path "${path}" resolves through a symlink and is not allowed.`
+        )
+      }
+      if (opts.requireDirectory && !leafStat.isDirectory()) {
+        throw new Error(`Path "${path}" is not a directory.`)
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+    }
+    return target
+  }
+
+  if (opts.requireLeaf || opts.requireDirectory) {
+    const leafStat = await lstat(target)
+    if (leafStat.isSymbolicLink()) {
+      throw new Error(
+        `Path "${path}" resolves through a symlink and is not allowed.`
+      )
+    }
+    if (opts.requireDirectory && !leafStat.isDirectory()) {
+      throw new Error(`Path "${path}" is not a directory.`)
+    }
+  }
+
+  return target
+}
+
+async function scopedPathForSyscall(
+  workspace: string,
+  path: string,
+  op: string,
+  opts: ScopedPathOptions,
+  deps: LocalEnvironmentDeps
+): Promise<string> {
+  const target = await assertScopedLocalPath(workspace, path, opts)
+  await deps.beforeLocalFileSyscall?.(op, target)
+  return assertScopedLocalPath(workspace, target, opts)
+}
+
+async function safeOpenNoFollow(
+  path: string,
+  flags: number,
+  deps: LocalEnvironmentDeps,
+  mode?: number
+) {
+  return (deps.openNoFollow ?? fsOpen)(path, flags | constants.O_NOFOLLOW, mode)
+}
+
+async function safeReadFile(
+  workspace: string,
+  path: string,
+  deps: LocalEnvironmentDeps
+): Promise<Buffer> {
+  const target = await scopedPathForSyscall(
+    workspace,
+    path,
+    "readFile",
+    {
+      requireLeaf: true,
+    },
+    deps
+  )
+  const handle = await safeOpenNoFollow(target, constants.O_RDONLY, deps)
+  try {
+    return await handle.readFile()
+  } finally {
+    await handle.close()
+  }
+}
+
+async function safeReadTextLines(
+  workspace: string,
+  path: string,
+  opts: ReadTextLinesOptions,
+  deps: LocalEnvironmentDeps
+): Promise<ReadTextLinesResult> {
+  const target = await scopedPathForSyscall(
+    workspace,
+    path,
+    "readFile",
+    {
+      requireLeaf: true,
+    },
+    deps
+  )
+  const stat = await lstat(target)
+  const handle = await safeOpenNoFollow(target, constants.O_RDONLY, deps)
+  try {
+    return await readHostTextLines(handle, stat.size, opts)
+  } finally {
+    await handle.close()
+  }
+}
+
+async function safeStat(
+  workspace: string,
+  path: string,
+  deps: LocalEnvironmentDeps
+): Promise<{ size: number; mode: number; type: string }> {
+  const target = await scopedPathForSyscall(
+    workspace,
+    path,
+    "stat",
+    {
+      requireLeaf: true,
+    },
+    deps
+  )
+  const stat = await lstat(target)
+  return {
+    size: stat.size,
+    mode: stat.mode & 0o777,
+    type: stat.isDirectory() ? "dir" : stat.isFile() ? "file" : "other",
+  }
+}
+
+async function safeReaddir(
+  workspace: string,
+  path: string,
+  deps: LocalEnvironmentDeps
+): Promise<DirEntry[]> {
+  const result = await safeListDir(workspace, path, {}, deps)
+  return result.entries
+}
+
+async function safeListDir(
+  workspace: string,
+  path: string,
+  opts: Partial<ListDirOptions>,
+  deps: LocalEnvironmentDeps
+): Promise<ListDirResult> {
+  const target = await scopedPathForSyscall(
+    workspace,
+    path,
+    "listDir",
+    {
+      requireLeaf: true,
+      requireDirectory: true,
+    },
+    deps
+  )
+  const entries: DirEntry[] = []
+  let totalBytes = 0
+  let truncated = false
+  let capReason: ListDirResult["capReason"] | undefined
+
+  const dir = await (deps.opendir ?? fsOpendir)(target)
+  try {
+    for await (const entry of dir) {
+      const nameBytes = Buffer.byteLength(entry.name, "utf8")
+      if (
+        opts.maxBytes != null &&
+        entries.length > 0 &&
+        totalBytes + nameBytes > opts.maxBytes
+      ) {
+        truncated = true
+        capReason = "nameBytes"
+        break
+      }
+      entries.push({
+        name: entry.name,
+        isFile: () => entry.isFile(),
+        isDirectory: () => entry.isDirectory(),
+      })
+      totalBytes += nameBytes
+      if (opts.maxEntries != null && entries.length >= opts.maxEntries) {
+        truncated = true
+        capReason = "entryCount"
+        break
+      }
+    }
+  } finally {
+    await dir.close().catch(() => {})
+  }
+
+  return { entries, truncated, capReason }
+}
+
+async function safeWriteFile(
+  workspace: string,
+  path: string,
+  data: string,
+  deps: LocalEnvironmentDeps
+): Promise<void> {
+  const target = await scopedPathForSyscall(
+    workspace,
+    path,
+    "writeFile",
+    {
+      allowMissingLeaf: true,
+    },
+    deps
+  )
+  const handle = await safeOpenNoFollow(
+    target,
+    constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC,
+    deps,
+    0o666
+  )
+  try {
+    await handle.writeFile(data, "utf8")
+  } finally {
+    await handle.close()
+  }
+}
+
+async function safeChmod(
+  workspace: string,
+  path: string,
+  mode: number,
+  deps: LocalEnvironmentDeps
+): Promise<void> {
+  const target = await scopedPathForSyscall(
+    workspace,
+    path,
+    "chmod",
+    {
+      requireLeaf: true,
+    },
+    deps
+  )
+  await fsChmod(target, mode)
+}
+
+async function safeRename(
+  workspace: string,
+  from: string,
+  to: string,
+  deps: LocalEnvironmentDeps
+): Promise<void> {
+  const source = await scopedPathForSyscall(
+    workspace,
+    from,
+    "rename:source",
+    {
+      requireLeaf: true,
+    },
+    deps
+  )
+  const target = await scopedPathForSyscall(
+    workspace,
+    to,
+    "rename:target",
+    {
+      allowMissingLeaf: true,
+    },
+    deps
+  )
+  await fsRename(source, target)
+}
+
+async function safeLink(
+  workspace: string,
+  from: string,
+  to: string,
+  deps: LocalEnvironmentDeps
+): Promise<void> {
+  const source = await scopedPathForSyscall(
+    workspace,
+    from,
+    "link:source",
+    {
+      requireLeaf: true,
+    },
+    deps
+  )
+  const target = await scopedPathForSyscall(
+    workspace,
+    to,
+    "link:target",
+    {
+      allowMissingLeaf: true,
+    },
+    deps
+  )
+  await fsLink(source, target)
+}
+
+async function safeUnlink(
+  workspace: string,
+  path: string,
+  deps: LocalEnvironmentDeps
+): Promise<void> {
+  const target = await scopedPathForSyscall(
+    workspace,
+    path,
+    "unlink",
+    {
+      requireLeaf: true,
+    },
+    deps
+  )
+  await fsUnlink(target)
+}
+
+async function safeMkdirp(
+  workspace: string,
+  path: string,
+  deps: LocalEnvironmentDeps
+): Promise<void> {
+  const lexicalRoot = resolve(workspace)
+  const root = await realpath(workspace)
+  const lexicalTarget = resolve(path)
+  const target = isInside(lexicalRoot, lexicalTarget)
+    ? join(root, relative(lexicalRoot, lexicalTarget))
+    : lexicalTarget
+  if (!isInside(root, target)) {
+    throw new Error(
+      `Path "${path}" is outside the workspace and is not allowed.`
+    )
+  }
+  const rootStat = await lstat(root)
+  if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
+    throw new Error("Workspace root is not a real directory.")
+  }
+
+  const rel = relative(root, target)
+  const parts = rel ? rel.split(/[\\/]+/).filter(Boolean) : []
+  let current = root
+  for (const part of parts) {
+    current = join(current, part)
+    try {
+      const stat = await lstat(current)
+      if (stat.isSymbolicLink()) {
+        throw new Error(
+          `Path "${path}" resolves through a symlink and is not allowed.`
+        )
+      }
+      if (!stat.isDirectory()) {
+        throw new Error(`Path "${path}" has a non-directory parent.`)
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+      await deps.beforeLocalFileSyscall?.("mkdir", current)
+      const parent = await assertScopedLocalPath(
+        workspace,
+        join(current, ".."),
+        {
+          requireLeaf: true,
+          requireDirectory: true,
+        }
+      )
+      if (!isInside(parent, current)) {
+        throw new Error(
+          `Path "${path}" is outside the workspace and is not allowed.`
+        )
+      }
+      await fsMkdir(current)
+    }
+  }
+}
+
+function absolutizeSearchPaths(
+  result: SearchResult,
+  root: string
+): SearchResult {
+  const absolute = (path: string) =>
+    isAbsolute(path) ? path : resolve(root, path)
+  return {
+    ...result,
+    matches: result.matches.map((match) => ({
+      ...match,
+      path: absolute(match.path),
+    })),
+    files: result.files.map(absolute),
+    counts: result.counts.map((count) => ({
+      ...count,
+      path: absolute(count.path),
+    })),
+  }
+}
+
+class ChildProcessCommandHandle
+  extends EventEmitter<{
+    data: [CommandChunk]
+    exit: [CommandExit]
+  }>
+  implements CommandSessionHandle
+{
+  private readonly stdoutDecoder = new StringDecoder("utf8")
+  private readonly stderrDecoder = new StringDecoder("utf8")
+  private closed = false
+
+  constructor(
+    private readonly child: ChildProcess,
+    private readonly opts: { killGroup: boolean; signal?: AbortSignal }
+  ) {
+    super()
+    child.stdout?.on("data", (chunk: Buffer) =>
+      this.emitDecoded("stdout", chunk, this.stdoutDecoder)
+    )
+    child.stderr?.on("data", (chunk: Buffer) =>
+      this.emitDecoded("stderr", chunk, this.stderrDecoder)
+    )
+    child.on("error", (err) => {
+      this.emit("data", {
+        stream: "stderr",
+        data: Buffer.from(`Failed to start command: ${err.message}`),
+      })
+    })
+    child.on("close", (exitCode, signal) => {
+      this.closed = true
+      this.flushDecoder("stdout", this.stdoutDecoder)
+      this.flushDecoder("stderr", this.stderrDecoder)
+      this.opts.signal?.removeEventListener("abort", this.onAbort)
+      this.emit("exit", { exitCode, signal })
+    })
+    if (opts.signal) {
+      if (opts.signal.aborted) this.kill()
+      else opts.signal.addEventListener("abort", this.onAbort, { once: true })
+    }
+  }
+
+  onData(cb: (chunk: CommandChunk) => void): void {
+    this.on("data", cb)
+  }
+
+  onExit(cb: (exit: CommandExit) => void): void {
+    this.on("exit", cb)
+  }
+
+  write(data: string): void {
+    if (!this.closed && this.child.stdin?.writable) this.child.stdin.write(data)
+  }
+
+  closeStdin(): void {
+    if (!this.closed && this.child.stdin?.writable) this.child.stdin.end()
+  }
+
+  interrupt(): void {
+    if (this.closed) return
+    if (process.platform === "win32") {
+      this.kill()
+      return
+    }
+    try {
+      if (this.opts.killGroup && this.child.pid) {
+        process.kill(-this.child.pid, "SIGINT")
+      } else {
+        this.child.kill("SIGINT")
+      }
+    } catch {
+      this.child.kill("SIGINT")
+    }
+  }
+
+  kill(): void {
+    if (this.closed) return
+    if (this.opts.killGroup && this.child.pid) {
+      if (process.platform === "win32") {
+        spawn("taskkill", ["/pid", String(this.child.pid), "/T", "/F"], {
+          stdio: "ignore",
+        }).on("error", () => this.child.kill("SIGKILL"))
+        return
+      }
+      try {
+        process.kill(-this.child.pid, "SIGKILL")
+        return
+      } catch {
+        // Fall back to killing the direct child.
+      }
+    }
+    try {
+      this.child.kill("SIGKILL")
+    } catch {
+      // Already dead.
+    }
+  }
+
+  private readonly onAbort = () => this.kill()
+
+  private emitDecoded(
+    stream: "stdout" | "stderr",
+    chunk: Buffer,
+    decoder: StringDecoder
+  ): void {
+    const decoded = decoder.write(chunk)
+    if (decoded) this.emit("data", { stream, data: Buffer.from(decoded) })
+  }
+
+  private flushDecoder(
+    stream: "stdout" | "stderr",
+    decoder: StringDecoder
+  ): void {
+    const decoded = decoder.end()
+    if (decoded) this.emit("data", { stream, data: Buffer.from(decoded) })
+  }
+}
+
+class CleanupCommandHandle
+  extends EventEmitter<{
+    data: [CommandChunk]
+    exit: [CommandExit]
+  }>
+  implements CommandSessionHandle
+{
+  constructor(
+    private readonly inner: CommandSessionHandle,
+    private readonly cleanupPath: string,
+    private readonly cleanup: (
+      path: string
+    ) => Promise<CommandCleanupError | undefined>
+  ) {
+    super()
+    inner.onData((chunk) => this.emit("data", chunk))
+    inner.onExit((exit) => {
+      void this.cleanup(this.cleanupPath).then((cleanupError) =>
+        this.emit("exit", cleanupError ? { ...exit, cleanupError } : exit)
+      )
+    })
+  }
+
+  onData(cb: (chunk: CommandChunk) => void): void {
+    this.on("data", cb)
+  }
+
+  onExit(cb: (exit: CommandExit) => void): void {
+    this.on("exit", cb)
+  }
+
+  write(data: string): void {
+    this.inner.write(data)
+  }
+
+  closeStdin(): void {
+    this.inner.closeStdin()
+  }
+
+  interrupt(): void {
+    this.inner.interrupt()
+  }
+
+  kill(): void {
+    this.inner.kill()
+  }
+}
+
+class PtyCommandHandle
+  extends EventEmitter<{
+    data: [CommandChunk]
+    exit: [CommandExit]
+  }>
+  implements CommandSessionHandle
+{
+  private closed = false
+
+  constructor(
+    private readonly term: pty.IPty,
+    private readonly signal?: AbortSignal
+  ) {
+    super()
+    term.onData((data) =>
+      this.emit("data", { stream: "pty", data: Buffer.from(data) })
+    )
+    term.onExit(({ exitCode, signal }) => {
+      this.closed = true
+      this.signal?.removeEventListener("abort", this.onAbort)
+      this.emit("exit", {
+        exitCode,
+        signal: typeof signal === "string" ? signal : null,
+      })
+    })
+    if (signal) {
+      if (signal.aborted) this.kill()
+      else signal.addEventListener("abort", this.onAbort, { once: true })
+    }
+  }
+
+  onData(cb: (chunk: CommandChunk) => void): void {
+    this.on("data", cb)
+  }
+
+  onExit(cb: (exit: CommandExit) => void): void {
+    this.on("exit", cb)
+  }
+
+  write(data: string): void {
+    if (!this.closed) this.term.write(data)
+  }
+
+  closeStdin(): void {
+    if (!this.closed) this.term.write("\x04")
+  }
+
+  interrupt(): void {
+    if (!this.closed) this.term.write("\x03")
+  }
+
+  kill(): void {
+    if (this.closed) return
+    try {
+      this.term.kill()
+    } catch {
+      // Already dead.
+    }
+  }
+
+  private readonly onAbort = () => this.kill()
 }

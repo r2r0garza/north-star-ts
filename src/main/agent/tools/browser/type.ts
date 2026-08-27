@@ -1,19 +1,27 @@
-import type { Tool, ToolContext } from "../types"
+import { TOOL_EFFECTS, type Tool, type ToolContext } from "../types"
 import type { ToolAction } from "../../approval/types"
 import { toolError } from "../output"
+import {
+  browserActionIdentity,
+  browserOrigin,
+  hashBrowserPayload,
+  summarizeBrowserPayload,
+} from "./approval"
 
 // Type text into an element (input, textarea, search box) in the agent browser,
 // targeted by a `ref` from the most recent browser_snapshot. Optionally presses
-// Enter afterward to submit. Gated as a `browser` interaction (auto-allowed;
-// only navigation prompts).
+// Enter afterward to submit. Gated as a `browser` interaction: plain typing
+// remains usable, while submitted typing requires a distinct approval because it
+// can send, purchase, delete, or otherwise commit a form.
 export const browserTypeTool: Tool = {
+  effects: TOOL_EFFECTS.openWorldMutation,
   definition: {
     type: "function",
     function: {
       name: "browser_type",
       description:
         "Type text into a form field in the agent browser. Target it with a " +
-        "`ref` from the most recent browser_snapshot (e.g. \"e5\"). Set `submit` " +
+        '`ref` from the most recent browser_snapshot (e.g. "e5"). Set `submit` ' +
         "true to press Enter after typing (e.g. to submit a search or form). If " +
         "the page changed since your last snapshot, call browser_snapshot again " +
         "first to get fresh refs.",
@@ -23,7 +31,7 @@ export const browserTypeTool: Tool = {
           ref: {
             type: "string",
             description:
-              "The element ref from browser_snapshot output, e.g. \"e5\".",
+              'The element ref from browser_snapshot output, e.g. "e5".',
           },
           text: { type: "string", description: "The text to type." },
           submit: {
@@ -45,12 +53,51 @@ export const browserTypeTool: Tool = {
       return toolError("no_browser", "The agent browser is unavailable.")
     }
 
+    let target = `element ${ref}`
+    let targetFingerprint = `ref=${ref}`
+    try {
+      const described = ctx.browser.describeRef(ref)
+      target = described.target
+      targetFingerprint = described.targetFingerprint
+    } catch (err) {
+      return toolError(
+        "type_failed",
+        err instanceof Error ? err.message : String(err)
+      )
+    }
+    const state = ctx.browser.state()
+    const url = state?.url ?? ""
+    const origin = browserOrigin(url)
+    const payloadSummary = summarizeBrowserPayload(text)
+    const interactionKind = submit
+      ? "consequential_commit"
+      : "reversible_interaction"
+
     const action: ToolAction = {
       tool: "browser_type",
       kind: "browser",
-      summary: `Type into element ${ref} in the browser`,
-      identity: `browser_type:${ref}`,
-      detail: { ref, submit },
+      summary: submit
+        ? `Type into ${target} on ${origin} and submit`
+        : `Type into ${target} on ${origin}`,
+      identity: browserActionIdentity({
+        action: submit ? "type_submit" : "type",
+        url,
+        origin,
+        target,
+        ref,
+        targetFingerprint,
+        payloadHash: submit ? hashBrowserPayload(text) : undefined,
+      }),
+      detail: {
+        ref,
+        target,
+        url,
+        origin,
+        submit,
+        actionType: submit ? "type_submit" : "type",
+        interactionKind,
+        payloadSummary,
+      },
     }
     const outcome = ctx.gate ? await ctx.gate(action) : ("denied" as const)
     if (outcome === "blocked") {

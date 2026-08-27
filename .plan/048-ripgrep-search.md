@@ -1,7 +1,17 @@
 # PR48: Ripgrep-backed workspace search
 
-> Status: **NOT STARTED**. Depends on neither `046` nor `047`, but ordered after
-> them as the third tool-quality slice. No schema migration.
+> Status: **DONE**. Depends on neither `046` nor `047`, but ordered after them
+> as the third tool-quality slice. No schema migration.
+
+## Implementation note
+
+Implemented in this branch. Local search now uses packaged `@vscode/ripgrep`
+with a shared `rg --json` parser and argv builder. The agent-facing
+`search_tool` exposes the richer query contract below while preserving legacy
+`pattern`/`glob` inputs. Container search probes for in-container `rg` and falls
+back to a bounded Python implementation that reports `engine:"grep"` plus
+reduced-feature metadata. Electron packaging unpacks the ripgrep binary from
+ASAR.
 
 ## Context
 
@@ -60,15 +70,21 @@ a recovery hint tailored to the selected result mode.
 
 ## Verification
 
-- Fixed, regex, smart-case, path, include/exclude glob, context, files, and count
-  modes against paths containing spaces/colons/non-ASCII.
-- `.gitignore`, hidden files, binary files, symlinks, and result caps behave as
-  declared.
-- A pattern beginning with `-` or containing shell metacharacters remains data.
-- Local packaged binary runs on macOS/Windows/Linux build targets; dev and
-  packaged paths are tested separately.
-- Container `rg` parity fixture plus no-`rg` fallback fixture.
-- Stop kills the search promptly and leaves no process.
+- Focused LocalEnvironment and `search_tool` tests passed.
+- Production build passed.
+- `pnpm typecheck` reached only the known pre-existing three test type errors.
+- Container integration tests could not start in this environment because Docker
+  credential access and Podman socket access were unavailable.
+
+## Follow-ups
+
+- Add packaged-app smoke coverage that executes the unpacked ripgrep binary from
+  the built app layout on supported targets.
+- Preserve the spawn-failure regression behavior resolved in debug brief `003`:
+  infrastructure search failures must stay distinct from empty result sets and
+  bad regex errors.
+- Add container `rg` parity and no-`rg` fallback coverage in an environment with
+  working Docker or Podman access.
 
 ## Out of scope
 

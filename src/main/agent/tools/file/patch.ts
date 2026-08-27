@@ -1,0 +1,783 @@
+import { dirname } from "path"
+import type { Environment, StatInfo } from "../../env/types"
+import {
+  buildDiffPreview,
+  type FileTooLarge,
+  FileTooLargeError,
+  type CleanupError,
+  fileRevision,
+  makeTempPath,
+  MUTATION_SOURCE_LIMITS,
+  removeCleanupFile,
+  readFileMode,
+  readRevision,
+  revisionOfText,
+  validRevision,
+  type FileDiffPreview,
+} from "./mutation"
+
+export const PATCH_LIMITS = {
+  maxOperations: 24,
+  maxFiles: 24,
+  maxHunks: 96,
+  maxInputBytes: 256 * 1024,
+  maxResultBytes: 1024 * 1024,
+} as const
+
+export type PatchOperation =
+  | {
+      type: "add"
+      path: string
+      content: string
+    }
+  | {
+      type: "update"
+      path: string
+      hunks: PatchHunk[]
+      expected_revision?: string
+    }
+  | {
+      type: "move"
+      path: string
+      new_path: string
+      hunks?: PatchHunk[]
+      expected_revision?: string
+    }
+  | {
+      type: "delete"
+      path: string
+      expected_revision?: string
+    }
+
+export interface PatchHunk {
+  old_string: string
+  new_string: string
+}
+
+export interface PlannedPatchFile {
+  path: string
+  target: string
+  before?: string
+  after?: string
+  beforeRevision?: string
+  afterRevision?: string
+  mode?: number
+  status: "added" | "updated" | "moved" | "deleted"
+  sourcePath?: string
+  sourceTarget?: string
+}
+
+export interface PlannedPatch {
+  files: PlannedPatchFile[]
+  diffs: FileDiffPreview[]
+  destructive: boolean
+}
+
+interface SourceFile {
+  path: string
+  target: string
+  content: string
+  revision: string
+  mode?: number
+}
+
+interface SourcePreflight {
+  target: string
+  stat: StatInfo
+}
+
+function bytes(value: string): number {
+  return Buffer.byteLength(value, "utf8")
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
+function isBinary(bytes: Buffer): boolean {
+  return bytes.includes(0)
+}
+
+function countOccurrences(haystack: string, needle: string): number {
+  if (needle === "") return 0
+  let count = 0
+  let idx = haystack.indexOf(needle)
+  while (idx !== -1) {
+    count++
+    idx = haystack.indexOf(needle, idx + needle.length)
+  }
+  return count
+}
+
+function normalizeOperation(value: unknown): PatchOperation | string {
+  if (!isPlainObject(value)) return "each operation must be an object"
+  const type = value.type
+  if (
+    type !== "add" &&
+    type !== "update" &&
+    type !== "move" &&
+    type !== "delete"
+  ) {
+    return '`type` must be "add", "update", "move", or "delete"'
+  }
+  const path = typeof value.path === "string" ? value.path : ""
+  if (!path) return "each operation requires a string `path`"
+  if (type === "add") {
+    if (typeof value.content !== "string") {
+      return "add operations require string `content`"
+    }
+    return { type, path, content: value.content }
+  }
+  const expected = value.expected_revision
+  if (expected !== undefined && !validRevision(expected)) {
+    return "`expected_revision` must be a 64-character SHA-256 hex digest"
+  }
+  if (type === "delete") {
+    return {
+      type,
+      path,
+      ...(expected === undefined
+        ? {}
+        : { expected_revision: String(expected) }),
+    }
+  }
+  const rawHunks = value.hunks
+  if (
+    type === "update" &&
+    (!Array.isArray(rawHunks) || rawHunks.length === 0)
+  ) {
+    return "update operations require a non-empty hunks array"
+  }
+  if (type === "move" && rawHunks !== undefined && !Array.isArray(rawHunks)) {
+    return "move operation `hunks` must be an array when provided"
+  }
+  const hunks: PatchHunk[] = []
+  for (const raw of Array.isArray(rawHunks) ? rawHunks : []) {
+    if (!isPlainObject(raw)) return "each hunk must be an object"
+    if (
+      typeof raw.old_string !== "string" ||
+      typeof raw.new_string !== "string"
+    ) {
+      return "each hunk requires string `old_string` and `new_string`"
+    }
+    if (raw.old_string === "") return "`old_string` must not be empty"
+    if (raw.old_string === raw.new_string) {
+      return "`old_string` and `new_string` must differ"
+    }
+    hunks.push({ old_string: raw.old_string, new_string: raw.new_string })
+  }
+  if (type === "update") {
+    return {
+      type,
+      path,
+      hunks,
+      ...(expected === undefined
+        ? {}
+        : { expected_revision: String(expected) }),
+    }
+  }
+  const newPath = typeof value.new_path === "string" ? value.new_path : ""
+  if (!newPath) return "move operations require a string `new_path`"
+  return {
+    type,
+    path,
+    new_path: newPath,
+    hunks,
+    ...(expected === undefined ? {} : { expected_revision: String(expected) }),
+  }
+}
+
+export function parsePatchOperations(
+  value: unknown
+): PatchOperation[] | string {
+  if (!Array.isArray(value)) return "`operations` must be an array"
+  if (value.length === 0) return "`operations` must not be empty"
+  if (value.length > PATCH_LIMITS.maxOperations) {
+    return `too many operations: ${value.length} > ${PATCH_LIMITS.maxOperations}`
+  }
+  const ops: PatchOperation[] = []
+  let inputBytes = 0
+  let hunks = 0
+  for (const raw of value) {
+    inputBytes += bytes(JSON.stringify(raw))
+    const op = normalizeOperation(raw)
+    if (typeof op === "string") return op
+    if (op.type === "add") inputBytes += bytes(op.content)
+    if (op.type === "update" || op.type === "move") {
+      const opHunks = op.hunks ?? []
+      hunks += opHunks.length
+      for (const hunk of opHunks) {
+        inputBytes += bytes(hunk.old_string) + bytes(hunk.new_string)
+      }
+    }
+    ops.push(op)
+  }
+  if (hunks > PATCH_LIMITS.maxHunks) {
+    return `too many hunks: ${hunks} > ${PATCH_LIMITS.maxHunks}`
+  }
+  if (inputBytes > PATCH_LIMITS.maxInputBytes) {
+    return `patch input is too large: ${inputBytes} > ${PATCH_LIMITS.maxInputBytes} bytes`
+  }
+  return ops
+}
+
+function applyHunks(path: string, content: string, hunks: PatchHunk[]): string {
+  let updated = content
+  for (const hunk of hunks) {
+    const occurrences = countOccurrences(updated, hunk.old_string)
+    if (occurrences === 0) {
+      throw new Error(`no_match:${path}: hunk old_string was not found`)
+    }
+    if (occurrences > 1) {
+      throw new Error(
+        `ambiguous:${path}: hunk old_string matches ${occurrences} places`
+      )
+    }
+    updated = updated.replace(hunk.old_string, hunk.new_string)
+  }
+  return updated
+}
+
+async function readSource(
+  env: Environment,
+  path: string,
+  expectedRevision: string | undefined,
+  preflight: SourcePreflight
+): Promise<SourceFile> {
+  const { target, stat } = preflight
+  const file = await env.readFile(target)
+  if (isBinary(file)) throw new Error(`binary_file:${path}`)
+  const revision = fileRevision(file)
+  const expected = validRevision(expectedRevision)
+  if (expected && expected !== revision) {
+    throw new Error(`stale_file:${path}: current revision ${revision}`)
+  }
+  return {
+    path,
+    target,
+    content: file.toString("utf8"),
+    revision,
+    mode: stat.mode === undefined ? undefined : stat.mode & 0o7777,
+  }
+}
+
+async function preflightSourceSizes(
+  env: Environment,
+  operations: PatchOperation[]
+): Promise<Map<string, SourcePreflight>> {
+  const sourcePaths = new Set<string>()
+  for (const op of operations) {
+    if (op.type !== "add") sourcePaths.add(op.path)
+  }
+
+  const preflight = new Map<string, SourcePreflight>()
+  let totalBytes = 0
+  for (const path of sourcePaths) {
+    const target = await env.resolve(path)
+    let stat
+    try {
+      stat = await env.stat(target)
+    } catch {
+      throw new Error(`not_found:${path}`)
+    }
+    if (!stat.isFile()) throw new Error(`not_a_file:${path}`)
+    if (stat.size > MUTATION_SOURCE_LIMITS.maxFileBytes) {
+      throw new FileTooLargeError(
+        path,
+        stat.size,
+        MUTATION_SOURCE_LIMITS.maxFileBytes
+      )
+    }
+    totalBytes += stat.size
+    if (totalBytes > MUTATION_SOURCE_LIMITS.maxTransactionBytes) {
+      throw new FileTooLargeError(
+        path,
+        totalBytes,
+        MUTATION_SOURCE_LIMITS.maxTransactionBytes,
+        "transaction"
+      )
+    }
+    preflight.set(path, { target, stat })
+  }
+  return preflight
+}
+
+async function targetExists(
+  env: Environment,
+  target: string
+): Promise<boolean> {
+  try {
+    await env.stat(target)
+    return true
+  } catch {
+    return false
+  }
+}
+
+function ensureNoCaseCollision(paths: string[]): void {
+  const seen = new Map<string, string>()
+  for (const path of paths) {
+    const key = path.toLocaleLowerCase()
+    const existing = seen.get(key)
+    if (existing && existing !== path) {
+      throw new Error(`case_collision:${existing} conflicts with ${path}`)
+    }
+    seen.set(key, path)
+  }
+}
+
+export async function planPatch(
+  env: Environment,
+  operations: PatchOperation[]
+): Promise<PlannedPatch> {
+  const sourceByPath = new Map<string, SourceFile>()
+  const finalByPath = new Map<string, PlannedPatchFile>()
+  const finalPaths = new Set<string>()
+  const deletedSources = new Set<string>()
+  const sourcePreflight = await preflightSourceSizes(env, operations)
+
+  async function sourceFor(path: string, expectedRevision?: string) {
+    const cached = sourceByPath.get(path)
+    if (cached) {
+      const expected = validRevision(expectedRevision)
+      if (expected && expected !== cached.revision) {
+        throw new Error(
+          `stale_file:${path}: current revision ${cached.revision}`
+        )
+      }
+      return cached
+    }
+    const preflight = sourcePreflight.get(path)
+    if (!preflight) throw new Error(`not_found:${path}`)
+    const source = await readSource(env, path, expectedRevision, preflight)
+    sourceByPath.set(path, source)
+    return source
+  }
+
+  for (const op of operations) {
+    if (op.type === "add") {
+      const target = await env.resolve(op.path)
+      if (await targetExists(env, target))
+        throw new Error(`already_exists:${op.path}`)
+      if (finalByPath.has(op.path)) throw new Error(`conflict:${op.path}`)
+      finalByPath.set(op.path, {
+        path: op.path,
+        target,
+        after: op.content,
+        afterRevision: revisionOfText(op.content),
+        status: "added",
+      })
+      finalPaths.add(op.path)
+      continue
+    }
+
+    const source = await sourceFor(op.path, op.expected_revision)
+    if (op.type === "delete") {
+      if (deletedSources.has(op.path)) throw new Error(`conflict:${op.path}`)
+      deletedSources.add(op.path)
+      finalByPath.set(op.path, {
+        path: op.path,
+        target: source.target,
+        before: source.content,
+        beforeRevision: source.revision,
+        status: "deleted",
+      })
+      finalPaths.delete(op.path)
+      continue
+    }
+
+    if (op.type === "update") {
+      if (deletedSources.has(op.path)) throw new Error(`conflict:${op.path}`)
+      const before = finalByPath.get(op.path)?.after ?? source.content
+      const after = applyHunks(op.path, before, op.hunks)
+      finalByPath.set(op.path, {
+        path: op.path,
+        target: source.target,
+        before: source.content,
+        after,
+        beforeRevision: source.revision,
+        afterRevision: revisionOfText(after),
+        mode: source.mode,
+        status: "updated",
+      })
+      finalPaths.add(op.path)
+      continue
+    }
+
+    if (deletedSources.has(op.path)) throw new Error(`conflict:${op.path}`)
+    if (finalByPath.has(op.new_path)) throw new Error(`conflict:${op.new_path}`)
+    const target = await env.resolve(op.new_path)
+    if (await targetExists(env, target))
+      throw new Error(`already_exists:${op.new_path}`)
+    const after = applyHunks(op.path, source.content, op.hunks ?? [])
+    deletedSources.add(op.path)
+    finalByPath.set(op.path, {
+      path: op.path,
+      target: source.target,
+      before: source.content,
+      beforeRevision: source.revision,
+      status: "deleted",
+    })
+    finalByPath.set(op.new_path, {
+      path: op.new_path,
+      target,
+      before: source.content,
+      after,
+      beforeRevision: source.revision,
+      afterRevision: revisionOfText(after),
+      mode: source.mode,
+      status: "moved",
+      sourcePath: op.path,
+      sourceTarget: source.target,
+    })
+    finalPaths.delete(op.path)
+    finalPaths.add(op.new_path)
+  }
+
+  if (sourceByPath.size + finalPaths.size > PATCH_LIMITS.maxFiles) {
+    throw new Error(`too_many_files:${sourceByPath.size + finalPaths.size}`)
+  }
+  ensureNoCaseCollision([...sourceByPath.keys(), ...finalPaths])
+
+  const files = [...finalByPath.values()].sort((a, b) =>
+    a.path.localeCompare(b.path)
+  )
+  const resultBytes = files.reduce(
+    (sum, file) => sum + bytes(file.after ?? ""),
+    0
+  )
+  if (resultBytes > PATCH_LIMITS.maxResultBytes) {
+    throw new Error(
+      `result_too_large:${resultBytes} > ${PATCH_LIMITS.maxResultBytes} bytes`
+    )
+  }
+  const diffs = files
+    .filter((file) => file.before !== file.after)
+    .map((file) =>
+      buildDiffPreview({
+        path: file.path,
+        before: file.before ?? "",
+        after: file.after ?? "",
+        beforeRevision: file.beforeRevision,
+      })
+    )
+  if (diffs.length === 0) throw new Error("no_op: patch would not change files")
+  return {
+    files,
+    diffs,
+    destructive: files.some(
+      (file) => file.status === "deleted" || file.status === "moved"
+    ),
+  }
+}
+
+interface StagedFile {
+  file: PlannedPatchFile
+  staged?: string
+  backup?: string
+  backedUp: boolean
+  existed: boolean
+  installed: boolean
+}
+
+type StalePatchFile = {
+  code: "stale_file"
+  path: string
+  current?: string
+  currentMode?: number
+  expectedMode?: number
+  cleanupErrors?: CleanupError[]
+}
+
+type FileTooLargeWithCleanup = FileTooLarge & {
+  cleanupErrors?: CleanupError[]
+}
+
+class DestinationChangedError extends Error {
+  constructor(
+    readonly path: string,
+    readonly current?: string
+  ) {
+    super(`destination changed before patch commit: ${path}`)
+  }
+}
+
+async function installStagedFile(
+  env: Environment,
+  entry: StagedFile
+): Promise<void> {
+  if (!entry.staged) return
+  if (!env.installFileNoReplace) {
+    throw new Error("no_replace_install_unavailable")
+  }
+  try {
+    await env.installFileNoReplace(entry.staged, entry.file.target)
+    entry.installed = true
+  } catch {
+    const current = await readRevision(env, entry.file.target)
+    if (current !== undefined) {
+      throw new DestinationChangedError(entry.file.path, current)
+    }
+    throw new Error("no_replace_install_failed")
+  }
+}
+
+async function validateBackupAfterMove(
+  env: Environment,
+  entry: StagedFile
+): Promise<void> {
+  if (!entry.backup || !entry.backedUp) return
+  const current = await readRevision(
+    env,
+    entry.backup,
+    entry.file.sourcePath ?? entry.file.path
+  )
+  if (current !== entry.file.beforeRevision) {
+    throw new DestinationChangedError(
+      entry.file.sourcePath ?? entry.file.path,
+      current
+    )
+  }
+  if (entry.file.mode !== undefined) {
+    const currentMode = await readFileMode(env, entry.backup)
+    if (currentMode !== entry.file.mode) {
+      throw new DestinationChangedError(
+        entry.file.sourcePath ?? entry.file.path,
+        current
+      )
+    }
+  }
+}
+
+async function validatePlannedPatch(
+  env: Environment,
+  planned: PlannedPatch
+): Promise<StalePatchFile | FileTooLarge | undefined> {
+  for (const file of planned.files) {
+    const sourceTarget = file.sourceTarget ?? file.target
+    let current
+    try {
+      current = await readRevision(
+        env,
+        sourceTarget,
+        file.sourcePath ?? file.path
+      )
+    } catch (error) {
+      if (error instanceof FileTooLargeError) return error
+      throw error
+    }
+    if (current !== file.beforeRevision) {
+      return { code: "stale_file", path: file.sourcePath ?? file.path, current }
+    }
+    if (file.mode !== undefined) {
+      const currentMode = await readFileMode(env, sourceTarget)
+      if (currentMode !== file.mode) {
+        return {
+          code: "stale_file",
+          path: file.sourcePath ?? file.path,
+          current,
+          currentMode,
+          expectedMode: file.mode,
+        }
+      }
+    }
+    if (file.sourceTarget) {
+      let destination
+      try {
+        destination = await readRevision(env, file.target, file.path)
+      } catch (error) {
+        if (error instanceof FileTooLargeError) return error
+        throw error
+      }
+      if (destination !== undefined) {
+        return { code: "stale_file", path: file.path, current: destination }
+      }
+    }
+  }
+  return undefined
+}
+
+export async function commitPatch(
+  env: Environment,
+  planned: PlannedPatch
+): Promise<
+  | "ok"
+  | StalePatchFile
+  | FileTooLargeWithCleanup
+  | { code: "commit_failed"; error: string; cleanupErrors?: CleanupError[] }
+  | { code: "rollback_failed"; error: string; cleanupErrors?: CleanupError[] }
+  | { code: "cleanup_failed"; committed: true; cleanupErrors: CleanupError[] }
+> {
+  const staleBeforeStaging = await validatePlannedPatch(env, planned)
+  if (staleBeforeStaging) return staleBeforeStaging
+
+  const staged: StagedFile[] = []
+  const cleanupErrors: CleanupError[] = []
+  let commitError: unknown
+  try {
+    for (const file of planned.files) {
+      const existed = file.before !== undefined && file.status !== "moved"
+      const entry: StagedFile = {
+        file,
+        existed,
+        backedUp: false,
+        installed: false,
+      }
+      staged.push(entry)
+      if (file.after !== undefined) {
+        await env.mkdirp(dirname(file.target))
+        entry.staged = makeTempPath(file.target)
+        await env.writeFile(entry.staged, file.after)
+        if (file.mode !== undefined) {
+          await env.chmod(entry.staged, file.mode)
+        }
+      }
+      if (existed) {
+        entry.backup = makeTempPath(file.sourceTarget ?? file.target)
+      }
+    }
+
+    const staleBeforeMutation = await validatePlannedPatch(env, planned)
+    if (staleBeforeMutation) {
+      for (const entry of staged) {
+        if (entry.staged) {
+          await removeCleanupFile(
+            env,
+            cleanupErrors,
+            "staging",
+            entry.staged,
+            entry.file.path
+          )
+        }
+      }
+      if (cleanupErrors.length > 0) {
+        return { ...staleBeforeMutation, cleanupErrors }
+      }
+      return staleBeforeMutation
+    }
+
+    for (const entry of staged) {
+      if (entry.backup) {
+        await env.rename(
+          entry.file.sourceTarget ?? entry.file.target,
+          entry.backup
+        )
+        entry.backedUp = true
+        await validateBackupAfterMove(env, entry)
+      }
+    }
+    for (const entry of staged) {
+      if (entry.staged) {
+        await installStagedFile(env, entry)
+      }
+    }
+    for (const entry of staged) {
+      if (entry.staged) {
+        await removeCleanupFile(
+          env,
+          cleanupErrors,
+          "success",
+          entry.staged,
+          entry.file.path
+        )
+      }
+      if (entry.backup) {
+        await removeCleanupFile(
+          env,
+          cleanupErrors,
+          "success",
+          entry.backup,
+          entry.file.path
+        )
+      }
+    }
+    if (cleanupErrors.length > 0) {
+      return {
+        code: "cleanup_failed",
+        committed: true,
+        cleanupErrors,
+      }
+    }
+    return "ok"
+  } catch (err) {
+    commitError = err
+    const errors: string[] = []
+    for (const entry of [...staged].reverse()) {
+      if (entry.staged) {
+        await removeCleanupFile(
+          env,
+          cleanupErrors,
+          "rollback",
+          entry.staged,
+          entry.file.path
+        )
+      }
+      try {
+        if (entry.backup && entry.backedUp) {
+          const rollbackTarget = entry.file.sourceTarget ?? entry.file.target
+          const current = await readRevision(env, rollbackTarget).catch(
+            (error) => {
+              if (error instanceof FileTooLargeError) throw error
+              return undefined
+            }
+          )
+          if (current === undefined) {
+            await env.rename(entry.backup, rollbackTarget)
+          } else if (entry.installed && current === entry.file.afterRevision) {
+            await env.removeFile(rollbackTarget)
+            await env.rename(entry.backup, rollbackTarget)
+          } else {
+            throw new Error(
+              `rollback_conflict:${entry.file.path}: destination changed during rollback`
+            )
+          }
+        } else if (!entry.existed && entry.installed) {
+          try {
+            const current = await readRevision(env, entry.file.target).catch(
+              (error) => {
+                if (error instanceof FileTooLargeError) throw error
+                return undefined
+              }
+            )
+            if (current !== entry.file.afterRevision) {
+              throw new Error(
+                `rollback_conflict:${entry.file.path}: destination changed during rollback`
+              )
+            }
+            await env.removeFile(entry.file.target)
+          } catch (removeErr) {
+            const message =
+              removeErr instanceof Error ? removeErr.message : String(removeErr)
+            throw new Error(`remove_failed:${entry.file.path}: ${message}`)
+          }
+        }
+      } catch (rollbackErr) {
+        errors.push(
+          rollbackErr instanceof Error
+            ? rollbackErr.message
+            : String(rollbackErr)
+        )
+      }
+    }
+    if (errors.length > 0) {
+      return {
+        code: "rollback_failed",
+        error: `${err instanceof Error ? err.message : String(err)}; rollback: ${errors.join("; ")}`,
+        ...(cleanupErrors.length > 0 ? { cleanupErrors } : {}),
+      }
+    }
+    if (commitError instanceof DestinationChangedError) {
+      return {
+        code: "stale_file",
+        path: commitError.path,
+        current: commitError.current,
+        ...(cleanupErrors.length > 0 ? { cleanupErrors } : {}),
+      }
+    }
+    return {
+      code: "commit_failed",
+      error: err instanceof Error ? err.message : String(err),
+      ...(cleanupErrors.length > 0 ? { cleanupErrors } : {}),
+    }
+  }
+}

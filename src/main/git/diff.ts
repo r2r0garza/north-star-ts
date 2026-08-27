@@ -1,5 +1,6 @@
 import { execFile } from "child_process"
 import { promisify } from "util"
+import { truncateUtf8Text } from "../agent/tools/output"
 
 // On-demand git diff for a single workspace-relative file, used by the
 // changed-file pills / sidebar "Changes" review in the renderer. No diff library
@@ -40,15 +41,7 @@ async function isGitRepo(cwd: string): Promise<boolean> {
 }
 
 function clip(text: string): { text: string; truncated: boolean } {
-  if (Buffer.byteLength(text, "utf8") <= MAX_DIFF_BYTES) {
-    return { text, truncated: false }
-  }
-  // Byte-cap, then trim any partial trailing line.
-  const sliced = Buffer.from(text, "utf8")
-    .subarray(0, MAX_DIFF_BYTES)
-    .toString("utf8")
-  const lastNl = sliced.lastIndexOf("\n")
-  return { text: lastNl > 0 ? sliced.slice(0, lastNl) : sliced, truncated: true }
+  return truncateUtf8Text(text, MAX_DIFF_BYTES)
 }
 
 // Diff one workspace-relative file. Returns null when `workspace` isn't a git

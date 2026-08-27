@@ -1,6 +1,6 @@
 # PR46: Truly pageable file reads and structured truncation metadata
 
-> Status: **NOT STARTED**. First tool-quality phase. No schema migration.
+> Status: **DONE**. First tool-quality phase. No schema migration.
 
 ## Context
 

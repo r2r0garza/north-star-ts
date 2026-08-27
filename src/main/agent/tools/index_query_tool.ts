@@ -1,17 +1,17 @@
-import type { Tool } from "./types"
+import { TOOL_EFFECTS, type Tool } from "./types"
 import { truncateForModel, toolError } from "./output"
 import { getWorkspaceByPath } from "../../db/repositories/workspaces"
 import { getRunByWorkspace } from "../../db/repositories/index-runs"
-import {
-  listFilesMatching,
-  countByExt,
-} from "../../db/repositories/index-files"
+import * as indexFilesRepo from "../../db/repositories/index-files"
 import { listMetadata } from "../../db/repositories/index-metadata"
-import {
-  findSymbolsByName,
-  findImportsOf,
-} from "../../db/repositories/index-symbols"
+import * as indexSymbolsRepo from "../../db/repositories/index-symbols"
 import type { IndexMetadata } from "../../db/types"
+
+const RESULT_LIMITS = {
+  find_symbol: { default: 50, max: 100 },
+  what_imports: { default: 50, max: 100 },
+  list_files: { default: 500, max: 1_000 },
+} as const
 
 // Query the pre-built workspace index (plan 008/014). Advisory + fast: it answers
 // "where is X defined", "what imports Y", "what files match Z", and "what's the
@@ -20,6 +20,7 @@ import type { IndexMetadata } from "../../db/types"
 // "does not exist"; the tool says so and points back to search_tool/read_file for
 // authoritative answers. Read-only, so it never gates.
 export const indexQueryTool: Tool = {
+  effects: TOOL_EFFECTS.readOnlyParallel,
   definition: {
     type: "function",
     function: {
@@ -55,7 +56,9 @@ export const indexQueryTool: Tool = {
           },
           limit: {
             type: "integer",
-            description: "Max results (default 50).",
+            description:
+              "Max returned results. Defaults: find_symbol/what_imports 50, list_files 500. " +
+              "Hard caps: find_symbol/what_imports 100, list_files 1000.",
           },
         },
         required: ["op"],
@@ -68,15 +71,6 @@ export const indexQueryTool: Tool = {
     const query = typeof args.query === "string" ? args.query.trim() : ""
     const kind =
       typeof args.kind === "string" && args.kind ? args.kind : undefined
-    const explicitLimit =
-      typeof args.limit === "number" && args.limit > 0
-        ? Math.floor(args.limit)
-        : undefined
-    // find_symbol/what_imports rarely have many hits (50 is plenty); a file
-    // listing routinely does, so it gets a higher default. Either way an explicit
-    // limit wins.
-    const limit = explicitLimit ?? 50
-    const listLimit = explicitLimit ?? 500
 
     if (!ctx.workspace) {
       return toolError(
@@ -101,20 +95,27 @@ export const indexQueryTool: Tool = {
       case "find_symbol": {
         if (!query)
           return toolError("bad_args", "`query` (symbol name) is required.")
-        const hits = findSymbolsByName(ws.id, query, { kind, limit })
+        const limit = normalizeLimit(args.limit, RESULT_LIMITS.find_symbol)
+        const hits = indexSymbolsRepo.findSymbolsByName(ws.id, query, {
+          kind,
+          limit: limit.query,
+        })
         if (hits.length === 0) {
           return notIndexed(
             `No indexed symbol named "${query}"${kind ? ` of kind ${kind}` : ""}.`,
             partial
           )
         }
-        const lines = hits.map((s) => {
+        const capped = hits.length > limit.returned
+        const shown = capped ? hits.slice(0, limit.returned) : hits
+        const lines = shown.map((s) => {
           const exported = (s.detail as { exported?: boolean } | null)?.exported
             ? " (exported)"
             : ""
           const at = s.line != null ? `:${s.line}` : ""
           return `${s.kind} ${s.name}${exported} — ${s.path}${at}`
         })
+        if (capped) lines.push(moreMatchesHint(limit.returned, "symbols"))
         return withBanner(lines.join("\n"), partial)
       }
 
@@ -124,14 +125,22 @@ export const indexQueryTool: Tool = {
             "bad_args",
             "`query` (module specifier) is required."
           )
-        const importers = findImportsOf(ws.id, query, limit)
+        const limit = normalizeLimit(args.limit, RESULT_LIMITS.what_imports)
+        const importers = indexSymbolsRepo.findImportsOf(
+          ws.id,
+          query,
+          limit.query
+        )
         if (importers.length === 0) {
           return notIndexed(`No indexed file imports "${query}".`, partial)
         }
-        const lines = importers.map(
+        const capped = importers.length > limit.returned
+        const shown = capped ? importers.slice(0, limit.returned) : importers
+        const lines = shown.map(
           (i) =>
             `${i.path}${i.line != null ? `:${i.line}` : ""} — imports ${i.name}`
         )
+        if (capped) lines.push(moreMatchesHint(limit.returned, "imports"))
         return withBanner(lines.join("\n"), partial)
       }
 
@@ -140,7 +149,7 @@ export const indexQueryTool: Tool = {
           // No filter → summarize the file map by extension. Honest totals: the
           // per-ext lines PLUS a total and an explicit remainder for extensionless
           // files / buckets past the shown ones, so the numbers always reconcile.
-          const all = countByExt(ws.id)
+          const all = indexFilesRepo.countByExt(ws.id)
           const total = all.reduce((sum, r) => sum + r.count, 0)
           if (total === 0) return withBanner("No files indexed.", partial)
           const TOP = 20
@@ -157,15 +166,20 @@ export const indexQueryTool: Tool = {
         }
         // Over-fetch by one to detect (and honestly report) truncation, the way
         // search_tool does — the agent must never think a capped list is complete.
-        const files = listFilesMatching(ws.id, query, listLimit + 1)
+        const limit = normalizeLimit(args.limit, RESULT_LIMITS.list_files)
+        const files = indexFilesRepo.listFilesMatching(
+          ws.id,
+          query,
+          limit.query
+        )
         if (files.length === 0) {
           return notIndexed(`No indexed file path matches "${query}".`, partial)
         }
-        const capped = files.length > listLimit
-        const shown = capped ? files.slice(0, listLimit) : files
+        const capped = files.length > limit.returned
+        const shown = capped ? files.slice(0, limit.returned) : files
         let body = shown.map((f) => f.path).join("\n")
         if (capped) {
-          body += `\n[stopped at ${listLimit} files — narrow the query for more]`
+          body += `\n${moreMatchesHint(limit.returned, "files")}`
         }
         return withBanner(body, partial)
       }
@@ -184,6 +198,22 @@ export const indexQueryTool: Tool = {
         )
     }
   },
+}
+
+function normalizeLimit(
+  input: unknown,
+  limits: { default: number; max: number }
+): { returned: number; query: number } {
+  const requested =
+    typeof input === "number" && Number.isFinite(input) && input > 0
+      ? Math.max(1, Math.floor(input))
+      : limits.default
+  const returned = Math.min(requested, limits.max)
+  return { returned, query: returned + 1 }
+}
+
+function moreMatchesHint(limit: number, noun: string): string {
+  return `[stopped at ${limit} ${noun} — more matches may exist; narrow the query for more]`
 }
 
 // A compact, bounded digest of the parsed metadata — NOT a raw JSON dump. Full

@@ -1,11 +1,18 @@
-import type { Tool, ToolContext } from "../types"
+import { TOOL_EFFECTS, type Tool, type ToolContext } from "../types"
 import type { ToolAction } from "../../approval/types"
 import { toolError, truncateForModel } from "../output"
 import { extractReadable } from "./extract"
+import {
+  SafeFetchBodyTooLargeError,
+  SafeFetchTimeoutError,
+  safeFetchText,
+} from "./safe-fetch"
 
 const USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 " +
   "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+const FETCH_TIMEOUT_MS = 30_000
+const MAX_FETCH_BODY_BYTES = 2 * 1024 * 1024
 
 // Fetch a web page headlessly (no visible browser) and return its main content
 // as clean markdown. This makes a real network request to an ARBITRARY origin —
@@ -13,6 +20,7 @@ const USER_AGENT =
 // approval gate (auto-approved in Auto mode; grant "once" or "for this session"
 // in Default mode). To DISCOVER pages, use web_search (which is not gated).
 export const webFetchTool: Tool = {
+  effects: TOOL_EFFECTS.openWorldRead,
   definition: {
     type: "function",
     function: {
@@ -73,16 +81,19 @@ export const webFetchTool: Tool = {
     }
 
     try {
-      const res = await fetch(parsed.href, {
+      const { response: res, text } = await safeFetchText(parsed.href, {
         headers: { "User-Agent": USER_AGENT, Accept: "text/html,*/*" },
         signal: ctx.signal,
-        redirect: "follow",
+        timeoutMs: FETCH_TIMEOUT_MS,
+        maxBodyBytes: MAX_FETCH_BODY_BYTES,
       })
       if (!res.ok) {
-        return toolError("http_error", `HTTP ${res.status} fetching ${parsed.href}`)
+        return toolError(
+          "http_error",
+          `HTTP ${res.status} fetching ${parsed.href}`
+        )
       }
       const contentType = res.headers.get("content-type") ?? ""
-      const text = await res.text()
 
       // Non-HTML (JSON, plain text, etc.): return the body as-is (truncated).
       if (!contentType.includes("html")) {
@@ -100,6 +111,12 @@ export const webFetchTool: Tool = {
       const header = `# ${title || parsed.href}\nSource: ${parsed.href}\n\n`
       return truncateForModel(header + markdown).text
     } catch (err) {
+      if (err instanceof SafeFetchTimeoutError) {
+        return toolError("timeout", err.message)
+      }
+      if (err instanceof SafeFetchBodyTooLargeError) {
+        return toolError("response_too_large", err.message)
+      }
       if (err instanceof Error && err.name === "AbortError") {
         return toolError("aborted", "The fetch was cancelled.")
       }

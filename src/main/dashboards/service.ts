@@ -4,17 +4,19 @@ import {
   getWidget,
   getWidgetData,
   getDashboard,
+  DashboardJsonTooLargeError,
 } from "../db/repositories/dashboards"
 import { listTasks } from "../db/repositories/tasks"
 import { addRule } from "../db/repositories/action-allowlist"
 import type { TaskRunner, TaskExecutor, TaskExecResult } from "../tasks/runner"
 import type { DashboardRecipe, DashboardWidget, Task } from "../db/types"
 import type { ToolAction } from "../agent/approval/types"
-import { normalizeCommand } from "../agent/approval/normalize"
 import { stripAnsi } from "../agent/approval/ansi"
+import { shellActionForCommand } from "../agent/approval/shell-analyzer"
 import { makePolicyEngine } from "../agent/approval/engine"
 import { createEnvironment, type EnvConfig } from "../agent/env/factory"
-import type { Environment } from "../agent/env/types"
+import type { Environment, ExecResult } from "../agent/env/types"
+import { safeFetchText } from "../agent/tools/web/safe-fetch"
 import * as settingsService from "../settings/service"
 
 export const DASHBOARD_REFRESH_KIND = "dashboard_refresh"
@@ -26,10 +28,14 @@ const LIVE_STATUSES = new Set(["queued", "running", "waiting_for_approval"])
 // Reuse the shell tool's limits so a headless replay behaves identically.
 const EXEC_TIMEOUT_MS = 30_000
 const MAX_OUTPUT_BYTES = 1024 * 1024
+const FETCH_TIMEOUT_MS = 30_000
+const MAX_FETCH_BODY_BYTES = 1024 * 1024
 
 const USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 " +
   "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+
+type FetchText = typeof safeFetchText
 
 // Thrown to unwind the per-widget loop on pause/cancel; runOne maps the returned
 // {stopped} to the right terminal status. Mirrors IndexService's AbortedError.
@@ -52,9 +58,21 @@ function asRecipe(raw: unknown): DashboardRecipe | null {
     command: pick(r.command),
     url: pick(r.url),
     cwd: pick(r.cwd),
+    workspace: pick(r.workspace),
     note: pick(r.note),
   }
   return recipe.command || recipe.url ? recipe : null
+}
+
+function validateCommandWorkspace(recipe: DashboardRecipe): string | null {
+  if (!recipe.command) return null
+  if (!recipe.cwd || !recipe.workspace) {
+    return "recipe has no verified workspace — re-author it to refresh"
+  }
+  if (recipe.cwd !== recipe.workspace) {
+    return "recipe working directory does not match its captured workspace — re-author it to refresh"
+  }
+  return null
 }
 
 // Reconstruct the SAME ToolAction the origin tool built, so the policy engine's
@@ -62,13 +80,11 @@ function asRecipe(raw: unknown): DashboardRecipe | null {
 // recipe references no runnable action.
 function actionFor(recipe: DashboardRecipe): ToolAction | null {
   if (recipe.command) {
-    return {
+    return shellActionForCommand(recipe.command, {
       tool: "run_shell_tool",
-      kind: "shell",
-      summary: `$ ${recipe.command}`,
-      identity: normalizeCommand(recipe.command),
-      detail: { command: recipe.command },
-    }
+      cwd: recipe.cwd,
+      workspace: recipe.workspace,
+    })
   }
   if (recipe.url) {
     let href: string
@@ -98,6 +114,39 @@ function parseRows(output: string): Array<Record<string, unknown>> {
   throw new Error("not an array or object")
 }
 
+function summarizeStderr(result: ExecResult): string | null {
+  const stderr = result.stderr ?? result.stdout
+  const text = stripAnsi(stderr.toString("utf8")).trim()
+  if (!text) return null
+  return text.length > 500 ? `${text.slice(0, 500)}...` : text
+}
+
+function validateCommandResult(result: ExecResult): string | null {
+  const detail = summarizeStderr(result)
+  const withDetail = (message: string) =>
+    detail ? `${message}: ${detail}` : message
+
+  if (result.spawnError) {
+    return withDetail(`command failed to start: ${result.spawnError}`)
+  }
+  if (result.aborted) return withDetail("command was aborted")
+  if (result.timedOut) return withDetail("command timed out")
+  if (result.signal)
+    return withDetail(`command exited from signal ${result.signal}`)
+  if (result.exitCode !== 0)
+    return withDetail(
+      `command exited with status ${result.exitCode ?? "unknown"}`
+    )
+  if (result.outputTruncated) {
+    const captured =
+      typeof result.capturedOutputBytes === "number"
+        ? ` after ${result.capturedOutputBytes} captured bytes`
+        : ""
+    return `command output was truncated${captured}`
+  }
+  return null
+}
+
 // Deterministic dashboard refresh (plan 033.3). Re-runs each widget's stored
 // recipe with NO LLM, writing fresh rows into the dashboard_widget_data cache the
 // view reads. The FIRST executor to perform a gated-in-origin side effect
@@ -107,7 +156,10 @@ function parseRows(output: string): Array<Record<string, unknown>> {
 export class DashboardService {
   private readonly policy = makePolicyEngine()
 
-  constructor(private readonly runner: TaskRunner) {}
+  constructor(
+    private readonly runner: TaskRunner,
+    private readonly fetchText: FetchText = safeFetchText
+  ) {}
 
   // The executor the runner invokes for the `dashboard_refresh` kind. Registered
   // at app init: runner.registerKind(DASHBOARD_REFRESH_KIND, { run, ... }).
@@ -166,7 +218,8 @@ export class DashboardService {
       }
       return { content: `refreshed ${refreshed}/${widgets.length} widgets` }
     } catch (err) {
-      if (err instanceof AbortedError || signal.aborted) return { stopped: true }
+      if (err instanceof AbortedError || signal.aborted)
+        return { stopped: true }
       const message = err instanceof Error ? err.message : String(err)
       return { error: message, retryable: false }
     } finally {
@@ -206,22 +259,26 @@ export class DashboardService {
       return this.markStale(widget.id, "recipe has no runnable command or URL")
     }
 
-    // A shell command needs a working directory to run in AND to match the
-    // workspace-scoped allowlist grant. No cwd → fail closed.
-    if (action.kind === "shell" && !recipe.cwd) {
-      return this.markStale(
-        widget.id,
-        "recipe has no working directory — re-author it to refresh"
-      )
+    // A shell command needs a server-captured workspace to run in AND to match
+    // the workspace-scoped allowlist grant. Missing or mismatched legacy values
+    // fail closed so a stored recipe cannot move execution to another host path.
+    if (action.kind === "shell") {
+      const workspaceError = validateCommandWorkspace(recipe)
+      if (workspaceError) return this.markStale(widget.id, workspaceError)
     }
 
     // Authorize through the SAME engine the agent loop uses. hard_block always
-    // wins; a workspace-scoped grant matches via recipe.cwd; a global grant (from
-    // "Approve this recipe" on a web recipe) matches with no scope inputs. Any
-    // non-allow verdict fails closed — no human is watching a headless refresh.
+    // wins; a workspace-scoped grant matches via the server-captured workspace;
+    // a global grant (from "Approve this recipe" on a web recipe) matches with
+    // no scope inputs. Any non-allow verdict fails closed — no human is watching
+    // a headless refresh.
     const decision = this.policy.decide(action, {
-      workspacePath: recipe.cwd,
+      workspacePath: recipe.workspace,
       sandboxed: envConfig.kind === "container",
+      localProfile:
+        envConfig.kind === "local"
+          ? (envConfig.profile ?? "host-access")
+          : "host-access",
     })
     if (decision.level !== "allow") {
       return this.markStale(
@@ -235,19 +292,22 @@ export class DashboardService {
     let output: string
     try {
       if (action.kind === "shell") {
-        const env = await getEnv(recipe.cwd!)
+        const env = await getEnv(recipe.workspace!)
         const result = await env.exec(recipe.command!, {
-          cwd: recipe.cwd!,
+          cwd: recipe.workspace!,
           timeoutMs: EXEC_TIMEOUT_MS,
           maxOutputBytes: MAX_OUTPUT_BYTES,
           signal,
         })
+        const commandError = validateCommandResult(result)
+        if (commandError) return this.markError(widget.id, commandError)
         output = stripAnsi(result.stdout.toString("utf8"))
       } else {
-        const res = await fetch(recipe.url!, {
+        const { response: res, text } = await this.fetchText(recipe.url!, {
           headers: { "User-Agent": USER_AGENT, Accept: "application/json,*/*" },
           signal,
-          redirect: "follow",
+          timeoutMs: FETCH_TIMEOUT_MS,
+          maxBodyBytes: MAX_FETCH_BODY_BYTES,
         })
         if (!res.ok) {
           return this.markError(
@@ -255,11 +315,12 @@ export class DashboardService {
             `HTTP ${res.status} fetching the recipe URL`
           )
         }
-        output = await res.text()
+        output = text
       }
     } catch (err) {
       // A cancel/pause aborts the fetch/exec — propagate so the run stops.
-      if (err instanceof Error && err.name === "AbortError") throw new AbortedError()
+      if (err instanceof Error && err.name === "AbortError")
+        throw new AbortedError()
       if (signal.aborted) throw new AbortedError()
       return this.markError(
         widget.id,
@@ -277,7 +338,14 @@ export class DashboardService {
       )
     }
 
-    upsertWidgetData({ widgetId: widget.id, data: rows, status: "ok" })
+    try {
+      upsertWidgetData({ widgetId: widget.id, data: rows, status: "ok" })
+    } catch (err) {
+      if (err instanceof DashboardJsonTooLargeError) {
+        return this.markError(widget.id, err.message)
+      }
+      throw err
+    }
     return { kind: "ok" }
   }
 
@@ -334,11 +402,11 @@ export class DashboardService {
     }
 
     if (action.kind === "shell") {
-      if (!recipe.cwd) {
+      const workspaceError = validateCommandWorkspace(recipe)
+      if (workspaceError) {
         return {
           ok: false,
-          reason:
-            "this recipe has no working directory — re-author the dashboard so its command is captured with a workspace",
+          reason: workspaceError,
         }
       }
       addRule({
@@ -346,7 +414,7 @@ export class DashboardService {
         kind: action.kind,
         identity: action.identity,
         scope: "workspace",
-        workspacePath: recipe.cwd,
+        workspacePath: recipe.workspace,
       })
     } else {
       addRule({

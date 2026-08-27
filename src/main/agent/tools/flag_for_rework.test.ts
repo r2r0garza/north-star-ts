@@ -2,16 +2,12 @@ import { describe, it, expect, beforeEach, vi } from "vitest"
 import Database from "better-sqlite3"
 import { randomUUID } from "crypto"
 import { runMigrations } from "../../db/migrations"
+import { sqliteLoadsForTests } from "../../test/sqlite"
+
+const sqliteLoads = sqliteLoadsForTests()
 
 let db: Database.Database
 vi.mock("../../db/connection", () => ({ getDb: () => db }))
-
-let sqliteLoads = true
-try {
-  new Database(":memory:").close()
-} catch {
-  sqliteLoads = false
-}
 
 import * as processes from "../../db/repositories/processes"
 import { flagForReworkTool, MAX_FLAGS_PER_RUN } from "./flag_for_rework"
@@ -29,9 +25,23 @@ function ctxFor(
 // b running — b is the flagging phase).
 function seed() {
   const def = processes.createProcessDefinition({ name: "T" })
-  const a = processes.createPhase({ processId: def.id, key: "a", name: "A", position: 0 })
-  const b = processes.createPhase({ processId: def.id, key: "b", name: "B", position: 1 })
-  processes.createEdge({ processId: def.id, fromPhaseId: a.id, toPhaseId: b.id })
+  const a = processes.createPhase({
+    processId: def.id,
+    key: "a",
+    name: "A",
+    position: 0,
+  })
+  const b = processes.createPhase({
+    processId: def.id,
+    key: "b",
+    name: "B",
+    position: 1,
+  })
+  processes.createEdge({
+    processId: def.id,
+    fromPhaseId: a.id,
+    toPhaseId: b.id,
+  })
   const convId = randomUUID()
   const now = Date.now()
   db.prepare(
@@ -48,8 +58,16 @@ function seed() {
     objective: "o",
     status: "running",
   })
-  const aRun = processes.createPhaseRun({ runId: run.id, phaseId: a.id, status: "completed" })
-  const bRun = processes.createPhaseRun({ runId: run.id, phaseId: b.id, status: "running" })
+  const aRun = processes.createPhaseRun({
+    runId: run.id,
+    phaseId: a.id,
+    status: "completed",
+  })
+  const bRun = processes.createPhaseRun({
+    runId: run.id,
+    phaseId: b.id,
+    status: "running",
+  })
   return { run, aRun, bRun }
 }
 

@@ -1,6 +1,6 @@
 # PR49: Tool effect metadata and parallel read-only execution
 
-> Status: **NOT STARTED**. Fourth tool-quality slice. No schema migration.
+> Status: **DONE**. Fourth tool-quality slice. No schema migration.
 
 ## Context
 

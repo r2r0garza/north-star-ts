@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest"
 import { writeFileTool } from "./write_file_tool"
+import { MUTATION_SOURCE_LIMITS, revisionOfText } from "./file/mutation"
 import type { ToolContext } from "./types"
 import type { Environment } from "../env/types"
 import type { ToolAction, GateOutcome } from "../approval/types"
@@ -7,29 +8,72 @@ import type { ToolAction, GateOutcome } from "../approval/types"
 // A tiny in-memory Environment so the test exercises mode/append logic and the
 // atomic-write orchestration (temp sibling → rename) without touching the host
 // filesystem. Only the primitives write_file_tool uses are implemented.
-function fakeEnv(): Environment & { files: Map<string, string> } {
+function fakeEnv(): Environment & {
+  files: Map<string, string>
+  statSizes: Map<string, number>
+  readFileCalls: string[]
+  failRemove: (path: string) => boolean
+} {
   const files = new Map<string, string>()
-  return {
+  const statSizes = new Map<string, number>()
+  const readFileCalls: string[] = []
+  const enoent = (p: string) =>
+    Object.assign(new Error(`ENOENT: ${p}`), { code: "ENOENT" })
+  const env: Environment & {
+    files: Map<string, string>
+    statSizes: Map<string, number>
+    readFileCalls: string[]
+    failRemove: (path: string) => boolean
+  } = {
     files,
+    statSizes,
+    readFileCalls,
+    failRemove: (_path: string) => false,
     resolve: async (p: string) => p,
     resolveLexical: (p: string) => p,
     readFile: async (p: string) => {
+      readFileCalls.push(p)
       const content = files.get(p)
-      if (content === undefined) throw new Error("ENOENT")
+      if (content === undefined) throw enoent(p)
       return Buffer.from(content, "utf8")
+    },
+    readTextLines: async () => {
+      throw new Error("not implemented")
     },
     writeFile: async (p: string, data: string) => {
       files.set(p, data)
     },
+    chmod: async () => {},
     rename: async (from: string, to: string) => {
       const content = files.get(from)
-      if (content === undefined) throw new Error("ENOENT")
+      if (content === undefined) throw enoent(from)
       files.set(to, content)
       files.delete(from)
     },
+    installFileNoReplace: async (from: string, to: string) => {
+      const content = files.get(from)
+      if (content === undefined) throw enoent(from)
+      if (files.has(to)) {
+        throw Object.assign(new Error(`EEXIST: ${to}`), { code: "EEXIST" })
+      }
+      files.set(to, content)
+    },
+    removeFile: async (p: string) => {
+      if (env.failRemove(p)) {
+        throw new Error(`injected cleanup failure for ${p}`)
+      }
+      files.delete(p)
+    },
     mkdirp: async () => {},
-    stat: async () => {
-      throw new Error("not implemented")
+    stat: async (p: string) => {
+      const content = files.get(p)
+      if (content === undefined) throw enoent(p)
+      return {
+        size: statSizes.get(p) ?? Buffer.byteLength(content, "utf8"),
+        mode: 0o644,
+        isFile: () => true,
+        isDirectory: () => false,
+      }
     },
     readdir: async () => [],
     exec: async () => ({
@@ -38,9 +82,20 @@ function fakeEnv(): Environment & { files: Map<string, string> } {
       signal: null,
       timedOut: false,
     }),
-    search: async () => ({ matches: [], capped: false }),
+    spawnCommand: async () => {
+      throw new Error("not implemented")
+    },
+    search: async () => ({
+      engine: "rg" as const,
+      result: "content" as const,
+      matches: [],
+      files: [],
+      counts: [],
+      capped: false,
+    }),
     dispose: async () => {},
   }
+  return env
 }
 
 let env: ReturnType<typeof fakeEnv>
@@ -57,16 +112,60 @@ describe("write_file_tool", () => {
       { path: "a.txt", content: "hello" },
       ctx
     )
-    expect(result).toBe("Wrote 5 bytes to a.txt.")
+    expect(result).toContain("Wrote 5 bytes to a.txt.")
     expect(env.files.get("a.txt")).toBe("hello")
   })
 
-  it("overwrites an existing file in create mode", async () => {
+  it("reports cleanup_failed when a created file leaves its staged temp file", async () => {
+    env.failRemove = (path) => path.includes(".north-star-")
+
+    const result = await writeFileTool.execute(
+      { path: "a.txt", content: "hello" },
+      ctx
+    )
+
+    expect(result).toContain("ERROR[cleanup_failed]")
+    expect(result).toContain("File content was written to a.txt")
+    expect(result).toContain("success cleanup for a.txt")
+    expect(result).toContain("injected cleanup failure")
+    expect(env.files.get("a.txt")).toBe("hello")
+    expect([...env.files.keys()].some((path) => path.includes(".tmp"))).toBe(
+      true
+    )
+  })
+
+  it("rejects an existing file in create mode", async () => {
     env.files.set("a.txt", "old")
-    await writeFileTool.execute(
+    const result = await writeFileTool.execute(
       { path: "a.txt", content: "new", mode: "create" },
       ctx
     )
+    expect(result).toContain("ERROR[already_exists]")
+    expect(env.files.get("a.txt")).toBe("old")
+  })
+
+  it("overwrites an existing file in overwrite mode", async () => {
+    env.files.set("a.txt", "old")
+    const result = await writeFileTool.execute(
+      { path: "a.txt", content: "new", mode: "overwrite" },
+      ctx
+    )
+    expect(result).toContain("Wrote 3 bytes to a.txt.")
+    expect(env.files.get("a.txt")).toBe("new")
+  })
+
+  it("reports cleanup_failed when an overwritten file leaves its backup", async () => {
+    env.files.set("a.txt", "old")
+    env.failRemove = (path) => path.includes(".north-star-")
+
+    const result = await writeFileTool.execute(
+      { path: "a.txt", content: "new", mode: "overwrite" },
+      ctx
+    )
+
+    expect(result).toContain("ERROR[cleanup_failed]")
+    expect(result).toContain("File content was written to a.txt")
+    expect(result).toContain("success cleanup for a.txt")
     expect(env.files.get("a.txt")).toBe("new")
   })
 
@@ -76,8 +175,37 @@ describe("write_file_tool", () => {
       { path: "a.txt", content: "part2", mode: "append" },
       ctx
     )
-    expect(result).toBe("Appended 5 bytes to a.txt.")
+    expect(result).toContain("Appended 5 bytes to a.txt.")
     expect(env.files.get("a.txt")).toBe("part1part2")
+  })
+
+  it("rejects an oversized overwrite source before reading file content", async () => {
+    env.files.set("huge.txt", "small placeholder")
+    env.statSizes.set("huge.txt", MUTATION_SOURCE_LIMITS.maxFileBytes + 1)
+
+    const result = await writeFileTool.execute(
+      { path: "huge.txt", content: "new", mode: "overwrite" },
+      ctx
+    )
+
+    expect(result).toContain("ERROR[file_too_large]")
+    expect(result).toContain("read_file_tool")
+    expect(env.files.get("huge.txt")).toBe("small placeholder")
+    expect(env.readFileCalls).toEqual([])
+  })
+
+  it("rejects an oversized append source before reading file content", async () => {
+    env.files.set("huge.txt", "small placeholder")
+    env.statSizes.set("huge.txt", MUTATION_SOURCE_LIMITS.maxFileBytes + 1)
+
+    const result = await writeFileTool.execute(
+      { path: "huge.txt", content: "new", mode: "append" },
+      ctx
+    )
+
+    expect(result).toContain("ERROR[file_too_large]")
+    expect(env.files.get("huge.txt")).toBe("small placeholder")
+    expect(env.readFileCalls).toEqual([])
   })
 
   it("treats append to a missing file as a create (no error)", async () => {
@@ -85,7 +213,7 @@ describe("write_file_tool", () => {
       { path: "new.txt", content: "first", mode: "append" },
       ctx
     )
-    expect(result).toBe("Appended 5 bytes to new.txt.")
+    expect(result).toContain("Appended 5 bytes to new.txt.")
     expect(env.files.get("new.txt")).toBe("first")
   })
 
@@ -143,6 +271,11 @@ describe("write_file_tool", () => {
     expect(seen).toHaveLength(2)
     expect(seen[0].identity).toBe("file_write:a.txt")
     expect(seen[1].identity).toBe("file_write:a.txt")
+    expect(seen[0].detail?.diff).toMatchObject({
+      path: "a.txt",
+      additions: 1,
+      deletions: 0,
+    })
   })
 
   it("returns denied when the gate denies", async () => {
@@ -153,5 +286,160 @@ describe("write_file_tool", () => {
     )
     expect(result).toContain("ERROR[denied]")
     expect(env.files.has("a.txt")).toBe(false)
+  })
+
+  it("rejects a caller-supplied stale revision before approval", async () => {
+    const seen: ToolAction[] = []
+    env.files.set("a.txt", "current")
+    const result = await writeFileTool.execute(
+      {
+        path: "a.txt",
+        content: "new",
+        mode: "overwrite",
+        expected_revision: revisionOfText("old"),
+      },
+      {
+        workspace: "/ws",
+        env,
+        gate: async (action) => {
+          seen.push(action)
+          return "approved"
+        },
+      }
+    )
+    expect(result).toContain("ERROR[stale_file]")
+    expect(env.files.get("a.txt")).toBe("current")
+    expect(seen).toHaveLength(0)
+  })
+
+  it("rejects a concurrent change while waiting for approval", async () => {
+    env.files.set("a.txt", "old")
+    const result = await writeFileTool.execute(
+      { path: "a.txt", content: "new", mode: "overwrite" },
+      {
+        workspace: "/ws",
+        env,
+        gate: async () => {
+          env.files.set("a.txt", "external")
+          return "approved"
+        },
+      }
+    )
+    expect(result).toContain("ERROR[stale_file]")
+    expect(env.files.get("a.txt")).toBe("external")
+    expect([...env.files.keys()].filter((p) => p.includes(".tmp"))).toEqual([])
+  })
+
+  it("does not replace a destination concurrently created during create install", async () => {
+    env.installFileNoReplace = async () => {
+      env.files.set("a.txt", "external")
+      throw Object.assign(new Error("EEXIST: a.txt"), { code: "EEXIST" })
+    }
+    env.rename = async () => {
+      throw new Error("rename should not be used for create installs")
+    }
+
+    const result = await writeFileTool.execute(
+      { path: "a.txt", content: "new", mode: "create" },
+      ctx
+    )
+
+    expect(result).toContain("ERROR[stale_file]")
+    expect(env.files.get("a.txt")).toBe("external")
+    expect([...env.files.keys()].filter((p) => p.includes(".tmp"))).toEqual([])
+  })
+
+  it("does not replace a destination concurrently created during append-to-missing install", async () => {
+    env.installFileNoReplace = async () => {
+      env.files.set("a.txt", "external")
+      throw Object.assign(new Error("EEXIST: a.txt"), { code: "EEXIST" })
+    }
+    env.rename = async () => {
+      throw new Error(
+        "rename should not be used for append-to-missing installs"
+      )
+    }
+
+    const result = await writeFileTool.execute(
+      { path: "a.txt", content: "new", mode: "append" },
+      ctx
+    )
+
+    expect(result).toContain("ERROR[stale_file]")
+    expect(env.files.get("a.txt")).toBe("external")
+    expect([...env.files.keys()].filter((p) => p.includes(".tmp"))).toEqual([])
+  })
+
+  it("does not overwrite an external change made just before existing-file backup", async () => {
+    env.files.set("a.txt", "old")
+    const rename = env.rename
+    env.rename = async (from, to) => {
+      if (from === "a.txt" && to.includes(".north-star-")) {
+        env.files.set("a.txt", "external")
+      }
+      await rename(from, to)
+    }
+
+    const result = await writeFileTool.execute(
+      { path: "a.txt", content: "new", mode: "overwrite" },
+      ctx
+    )
+
+    expect(result).toContain("ERROR[stale_file]")
+    expect(env.files.get("a.txt")).toBe("external")
+    expect([...env.files.keys()].filter((p) => p.includes(".tmp"))).toEqual([])
+  })
+
+  it("does not overwrite an external change made after existing-file backup", async () => {
+    env.files.set("a.txt", "old")
+    env.installFileNoReplace = async () => {
+      env.files.set("a.txt", "external")
+      throw Object.assign(new Error("EEXIST: a.txt"), { code: "EEXIST" })
+    }
+
+    const result = await writeFileTool.execute(
+      { path: "a.txt", content: "new", mode: "overwrite" },
+      ctx
+    )
+
+    expect(result).toContain("ERROR[stale_file]")
+    expect(env.files.get("a.txt")).toBe("external")
+    expect([...env.files.keys()].filter((p) => p.includes(".tmp"))).toEqual([])
+  })
+
+  it("does not treat an unreadable destination as safely absent", async () => {
+    env.files.set("a.txt", "old")
+    env.readFile = async (p) => {
+      if (p === "a.txt") {
+        throw Object.assign(new Error("EACCES: a.txt"), { code: "EACCES" })
+      }
+      const content = env.files.get(p)
+      if (content === undefined) {
+        throw Object.assign(new Error(`ENOENT: ${p}`), { code: "ENOENT" })
+      }
+      return Buffer.from(content, "utf8")
+    }
+
+    const result = await writeFileTool.execute(
+      { path: "a.txt", content: "new", mode: "overwrite" },
+      ctx
+    )
+
+    expect(result).toContain("ERROR[read_failed]")
+    expect(env.files.get("a.txt")).toBe("old")
+    expect([...env.files.keys()].filter((p) => p.includes(".tmp"))).toEqual([])
+  })
+
+  it("fails closed when the backend lacks a no-replace install primitive", async () => {
+    env.installFileNoReplace = undefined
+
+    const result = await writeFileTool.execute(
+      { path: "a.txt", content: "new", mode: "create" },
+      ctx
+    )
+
+    expect(result).toContain("ERROR[stale_file]")
+    expect(env.files.has("a.txt")).toBe(false)
+    expect([...env.files.keys()].filter((p) => p.includes(".tmp"))).toEqual([])
   })
 })

@@ -171,6 +171,7 @@ a disk read on every message. A restart picks up edits.
 
 **Change if:** we want prompt edits to apply on the **next message** without a
 restart. Two options:
+
   1. **Drop the cache** — remove the `cached` short-circuit so `loadSystemPrompt`
      re-reads the file every turn. Cost is one small disk read per message,
      negligible next to a model round-trip (this mirrors how skills already
@@ -181,25 +182,30 @@ Option 1 is simplest and consistent with the skills behavior.
 
 ## 6. DB-integration tests skip unless `better-sqlite3` matches the Node ABI
 
-**Where:** `src/main/db/repositories/todos.test.ts` (the `describe.skipIf(!sqliteLoads)`
-blocks), driven by how `better-sqlite3` is built (see the native-module-rebuild memory note).
+**Where:** SQLite-backed Vitest files that use `sqliteLoadsForTests()` and
+`describe.skipIf(!sqliteLoads)`, driven by how `better-sqlite3` is built (see the
+native-module-rebuild memory note).
 
-**Behavior:** `better-sqlite3` ships a native binary compiled for **one** Node ABI. The app
-needs it built for **Electron's** ABI, so under plain-Node `vitest` the binary fails to load
-(`NODE_MODULE_VERSION` mismatch). The todos repo tests that open a real in-memory DB therefore
-**skip** rather than fail when the binary can't load; the pure `normalizeItems` tests and the
-mocked tool tests always run. With the Electron ABI binary in place (normal dev state),
-`pnpm test` reports `74 passed | 8 skipped`.
+**Behavior:** `better-sqlite3` ships a native binary compiled for **one** Node ABI.
+The app needs it built for **Electron's** ABI, so under plain-Node `vitest` the
+binary fails to load (`NODE_MODULE_VERSION` mismatch). SQLite-backed tests still
+skip in the default local suite when the binary is in Electron ABI mode, keeping
+the everyday app-development path green.
 
-**Why it's fine now:** The DB tests *were* run and verified — temporarily rebuild for the Node
-ABI (`npm rebuild better-sqlite3 --build-from-source`), `pnpm test` → all 82 pass, then restore
-the Electron ABI (`pnpm exec electron-rebuild -f -w better-sqlite3`). Skipping (not failing)
-keeps the everyday `pnpm test` green on the Electron-ABI binary the app uses.
+**Verification contract:** `.github/workflows/ci.yml` has a dedicated
+`sqlite-tests` job that runs `npm_config_build_from_source=true npm rebuild better-sqlite3`,
+then `pnpm test:sqlite`. That script sets `COWORK_REQUIRE_SQLITE_TESTS=1`, so the
+SQLite probe fails closed if the native module cannot load, and it parses
+Vitest's JSON report to fail when any SQLite-backed assertion is skipped.
 
-**Change if:** we want the DB tests in CI every run. Options: (1) a CI step that builds
-`better-sqlite3` for the Node ABI before `vitest` (and never ships that artifact); (2) run these
-tests under Electron (e.g. an electron-based test runner); (3) swap to a pure-JS SQLite for
-tests. Until then, re-verify the skipped tests with the rebuild dance after touching repo SQL.
+**Local workflow:** To run the same coverage locally, switch to the Node ABI,
+run the SQLite job, then restore Electron compatibility:
+
+```bash
+npm_config_build_from_source=true npm rebuild better-sqlite3
+pnpm test:sqlite
+pnpm exec electron-rebuild -f -w better-sqlite3
+```
 
 ## 5. Chat attachments are inlined whole, as UTF-8, with a per-file size cap
 

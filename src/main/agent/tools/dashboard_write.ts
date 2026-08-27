@@ -1,4 +1,4 @@
-import type { Tool } from "./types"
+import { TOOL_EFFECTS, type Tool } from "./types"
 import { toolError } from "./output"
 import { getDb } from "../../db/connection"
 import * as dashboards from "../../db/repositories/dashboards"
@@ -15,6 +15,7 @@ import * as dashboards from "../../db/repositories/dashboards"
 // The `recipe` is stored for the deterministic refresh executor (plan 033.3);
 // today it's advisory metadata — refresh re-prompts the agent until 033.3 lands.
 export const dashboardWriteTool: Tool = {
+  effects: TOOL_EFFECTS.mutation,
   definition: {
     type: "function",
     function: {
@@ -57,11 +58,13 @@ export const dashboardWriteTool: Tool = {
           },
           description: {
             type: "string",
-            description: "Optional one-line description of what the dashboard shows.",
+            description:
+              "Optional one-line description of what the dashboard shows.",
           },
           widgets: {
             type: "array",
-            description: "The widgets to save. Replaces the dashboard's existing widgets.",
+            description:
+              "The widgets to save. Replaces the dashboard's existing widgets.",
             items: {
               type: "object",
               properties: {
@@ -126,7 +129,10 @@ export const dashboardWriteTool: Tool = {
       }
     }
     if (widgets !== undefined && !Array.isArray(widgets)) {
-      return toolError("bad_args", "`widgets` must be an array of widget objects.")
+      return toolError(
+        "bad_args",
+        "`widgets` must be an array of widget objects."
+      )
     }
 
     const id = typeof dashboardId === "string" ? dashboardId : undefined
@@ -149,49 +155,61 @@ export const dashboardWriteTool: Tool = {
         `A dashboard can have at most ${dashboards.MAX_WIDGETS} widgets (got ${items.length}).`
       )
     }
+    const workspace = ctx.workspace?.trim() || undefined
+    if (items.some((raw) => hasCommandRecipe(raw) && !workspace)) {
+      return toolError(
+        "bad_args",
+        "Command recipes require an active workspace so refresh can run from a server-owned working directory."
+      )
+    }
 
     // Create/update the definition, then replace its widgets + seed each
     // widget's data cache — all in one transaction so a partial write can't
     // leave a half-authored dashboard.
     const db = getDb()
-    const savedId = db.transaction(() => {
-      const dash = id
-        ? dashboards.updateDashboard(id, {
-            ...(dashName ? { name: dashName } : {}),
-            ...(typeof description === "string"
-              ? { description }
-              : {}),
-          })
-        : dashboards.createDashboard({
-            name: dashName,
-            description:
-              typeof description === "string" ? description : null,
-          })
+    let savedId: string
+    try {
+      savedId = db.transaction(() => {
+        const dash = id
+          ? dashboards.updateDashboard(id, {
+              ...(dashName ? { name: dashName } : {}),
+              ...(typeof description === "string" ? { description } : {}),
+            })
+          : dashboards.createDashboard({
+              name: dashName,
+              description: typeof description === "string" ? description : null,
+            })
 
-      // Replace-all: drop existing widgets (their cache cascades), re-create.
-      for (const w of dashboards.listWidgets(dash.id)) {
-        dashboards.deleteWidget(w.id)
-      }
-      items.forEach((raw, i) => {
-        const item = raw && typeof raw === "object" ? raw : {}
-        const widget = dashboards.createWidget({
-          dashboardId: dash.id,
-          title: String(item.title ?? `Widget ${i + 1}`),
-          type: item.type,
-          config: item.config ?? null,
-          recipe: withCwd(item.recipe, ctx.workspace),
-          position: i,
-        })
-        if (item.data !== undefined && item.data !== null) {
-          dashboards.upsertWidgetData({
-            widgetId: widget.id,
-            data: item.data,
-            status: "ok",
-          })
+        // Replace-all: drop existing widgets (their cache cascades), re-create.
+        for (const w of dashboards.listWidgets(dash.id)) {
+          dashboards.deleteWidget(w.id)
         }
-      })
-      return dash.id
-    })()
+        items.forEach((raw, i) => {
+          const item = raw && typeof raw === "object" ? raw : {}
+          const widget = dashboards.createWidget({
+            dashboardId: dash.id,
+            title: String(item.title ?? `Widget ${i + 1}`),
+            type: item.type,
+            config: item.config ?? null,
+            recipe: withCwd(item.recipe, workspace),
+            position: i,
+          })
+          if (item.data !== undefined && item.data !== null) {
+            dashboards.upsertWidgetData({
+              widgetId: widget.id,
+              data: item.data,
+              status: "ok",
+            })
+          }
+        })
+        return dash.id
+      })()
+    } catch (err) {
+      if (err instanceof dashboards.DashboardJsonTooLargeError) {
+        return toolError("json_too_large", err.message)
+      }
+      throw err
+    }
 
     const graph = dashboards.getDashboardGraph(savedId)!
     return JSON.stringify({
@@ -207,16 +225,27 @@ export const dashboardWriteTool: Tool = {
   },
 }
 
+function hasCommandRecipe(raw: unknown): boolean {
+  if (!raw || typeof raw !== "object") return false
+  const recipe = (raw as Record<string, unknown>).recipe
+  return (
+    !!recipe &&
+    typeof recipe === "object" &&
+    typeof (recipe as Record<string, unknown>).command === "string"
+  )
+}
+
 // Capture the authoring working directory into a `command` recipe so the
 // deterministic refresh executor (033.3) can re-run the command from the same
 // place AND match the workspace-scoped allowlist grant the agent's own run_shell
 // earned. A recipe with only a `url` (or no command) is left untouched — a web
-// fetch needs no directory. An explicit `cwd` the model set is preserved.
+// fetch needs no directory. Model-supplied cwd values are ignored: the workspace
+// is server-owned state, not authorable recipe input.
 function withCwd(recipe: unknown, workspace: string | undefined): unknown {
   if (!recipe || typeof recipe !== "object") return recipe ?? null
   const r = recipe as Record<string, unknown>
-  if (typeof r.command === "string" && !r.cwd && workspace) {
-    return { ...r, cwd: workspace }
+  if (typeof r.command === "string" && workspace) {
+    return { ...r, cwd: workspace, workspace }
   }
   return recipe
 }

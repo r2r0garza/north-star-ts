@@ -1,6 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
 import Database from "better-sqlite3"
 import { runMigrations } from "../db/migrations"
+import { sqliteLoadsForTests } from "../test/sqlite"
+
+const sqliteLoads = sqliteLoadsForTests()
 
 // Real in-memory DB behind getDb: the executor reads widgets, authorizes via the
 // shared PolicyEngine (real action_allowlist), and writes the widget-data cache.
@@ -11,38 +14,50 @@ vi.mock("../db/connection", () => ({ getDb: () => db }))
 // spawn a real process — the mock env returns whatever stdout the current test
 // wants. Preserve the rest of the module (envConfigFromEnv is used by settings).
 let execStdout = "[]"
+let execResultPatch: Partial<{
+  stderr: Buffer
+  exitCode: number | null
+  signal: NodeJS.Signals | null
+  timedOut: boolean
+  aborted: boolean
+  spawnError: string
+  outputTruncated: boolean
+  capturedOutputBytes: number
+  observedOutputBytes: number
+}> = {}
 let execCalls: string[] = []
+let createEnvironmentCalls: string[] = []
+let execCwds: string[] = []
 const disposed = vi.fn()
 vi.mock("../agent/env/factory", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../agent/env/factory")>()
   return {
     ...actual,
-    createEnvironment: vi.fn(async () => ({
-      exec: async (command: string) => {
-        execCalls.push(command)
-        return {
-          stdout: Buffer.from(execStdout, "utf8"),
-          exitCode: 0,
-          signal: null,
-          timedOut: false,
-        }
-      },
-      dispose: disposed,
-    })),
+    createEnvironment: vi.fn(async (workspace: string) => {
+      createEnvironmentCalls.push(workspace)
+      return {
+        exec: async (command: string, opts?: { cwd?: string }) => {
+          execCalls.push(command)
+          if (opts?.cwd) execCwds.push(opts.cwd)
+          return {
+            stdout: Buffer.from(execStdout, "utf8"),
+            exitCode: 0,
+            signal: null,
+            timedOut: false,
+            ...execResultPatch,
+          }
+        },
+        dispose: disposed,
+      }
+    }),
   }
 })
 
-let sqliteLoads = true
-try {
-  new Database(":memory:").close()
-} catch {
-  sqliteLoads = false
-}
-
 import { DashboardService, DASHBOARD_REFRESH_KIND } from "./service"
+import { SafeFetchBodyTooLargeError } from "../agent/tools/web/safe-fetch"
 import * as dashboards from "../db/repositories/dashboards"
 import { addRule } from "../db/repositories/action-allowlist"
-import { normalizeCommand } from "../agent/approval/normalize"
+import { shellActionForCommand } from "../agent/approval/shell-analyzer"
 import type { TaskRunner } from "../tasks/runner"
 import type { Task } from "../db/types"
 
@@ -79,17 +94,29 @@ async function runExecute(
   })
 }
 
+function shellIdentity(command: string, workspace = "/repo"): string {
+  return shellActionForCommand(command, {
+    tool: "run_shell_tool",
+    cwd: workspace,
+    workspace,
+  }).identity
+}
+
 beforeEach(() => {
   if (!sqliteLoads) return
   db = new Database(":memory:")
   db.pragma("foreign_keys = ON")
   runMigrations(db)
   execStdout = "[]"
+  execResultPatch = {}
   execCalls = []
+  createEnvironmentCalls = []
+  execCwds = []
   disposed.mockClear()
 })
 
 afterEach(() => {
+  vi.restoreAllMocks()
   if (sqliteLoads) db.close()
 })
 
@@ -103,13 +130,13 @@ describe.skipIf(!sqliteLoads)("DashboardService.execute", () => {
       dashboardId: dash.id,
       title: "M",
       type: "table",
-      recipe: { command: cmd, cwd: "/repo" },
+      recipe: { command: cmd, cwd: "/repo", workspace: "/repo" },
     })
     // Bless the command at workspace scope (as author-time "always allow" would).
     addRule({
       tool: "run_shell_tool",
       kind: "shell",
-      identity: normalizeCommand(cmd),
+      identity: shellIdentity(cmd),
       scope: "workspace",
       workspacePath: "/repo",
     })
@@ -118,6 +145,8 @@ describe.skipIf(!sqliteLoads)("DashboardService.execute", () => {
     const result = await runExecute(service, dash.id)
     expect(result.content).toContain("refreshed 1/1")
     expect(execCalls).toEqual([cmd])
+    expect(createEnvironmentCalls).toEqual(["/repo"])
+    expect(execCwds).toEqual(["/repo"])
     const cached = dashboards.getWidgetData(widget.id)
     expect(cached?.status).toBe("ok")
     expect(cached?.data).toEqual([{ a: 1 }, { a: 2 }])
@@ -131,7 +160,7 @@ describe.skipIf(!sqliteLoads)("DashboardService.execute", () => {
       dashboardId: dash.id,
       title: "M",
       type: "table",
-      recipe: { command: "cat secrets.json", cwd: "/repo" },
+      recipe: { command: "cat secrets.json", cwd: "/repo", workspace: "/repo" },
     })
 
     await runExecute(service, dash.id)
@@ -141,7 +170,7 @@ describe.skipIf(!sqliteLoads)("DashboardService.execute", () => {
     expect(cached?.error).toMatch(/approv/i)
   })
 
-  it("marks a shell recipe with no cwd stale (fail closed)", async () => {
+  it("marks a shell recipe with no verified workspace stale (fail closed)", async () => {
     const { runner } = makeRunner()
     const service = new DashboardService(runner)
     const dash = dashboards.createDashboard({ name: "D" })
@@ -155,6 +184,36 @@ describe.skipIf(!sqliteLoads)("DashboardService.execute", () => {
     await runExecute(service, dash.id)
     expect(execCalls).toEqual([])
     expect(dashboards.getWidgetData(widget.id)?.status).toBe("stale")
+    expect(dashboards.getWidgetData(widget.id)?.error).toMatch(
+      /verified workspace/i
+    )
+  })
+
+  it("marks a legacy command recipe with mismatched cwd and workspace stale", async () => {
+    const { runner } = makeRunner()
+    const service = new DashboardService(runner)
+    const dash = dashboards.createDashboard({ name: "D" })
+    const cmd = "cat secrets.json"
+    const widget = dashboards.createWidget({
+      dashboardId: dash.id,
+      title: "M",
+      type: "table",
+      recipe: { command: cmd, cwd: "/tmp/outside", workspace: "/repo" },
+    })
+    addRule({
+      tool: "run_shell_tool",
+      kind: "shell",
+      identity: shellIdentity(cmd, "/tmp/outside"),
+      scope: "workspace",
+      workspacePath: "/tmp/outside",
+    })
+
+    await runExecute(service, dash.id)
+    expect(execCalls).toEqual([])
+    expect(createEnvironmentCalls).toEqual([])
+    const cached = dashboards.getWidgetData(widget.id)
+    expect(cached?.status).toBe("stale")
+    expect(cached?.error).toMatch(/does not match/i)
   })
 
   it("marks a widget error when the recipe output is not JSON rows", async () => {
@@ -166,12 +225,12 @@ describe.skipIf(!sqliteLoads)("DashboardService.execute", () => {
       dashboardId: dash.id,
       title: "M",
       type: "table",
-      recipe: { command: cmd, cwd: "/repo" },
+      recipe: { command: cmd, cwd: "/repo", workspace: "/repo" },
     })
     addRule({
       tool: "run_shell_tool",
       kind: "shell",
-      identity: normalizeCommand(cmd),
+      identity: shellIdentity(cmd),
       scope: "workspace",
       workspacePath: "/repo",
     })
@@ -183,6 +242,182 @@ describe.skipIf(!sqliteLoads)("DashboardService.execute", () => {
     expect(cached?.error).toMatch(/JSON rows/i)
   })
 
+  it.each([
+    {
+      name: "nonzero exit",
+      patch: {
+        exitCode: 7,
+        stderr: Buffer.from("permission denied", "utf8"),
+      },
+      expected: /status 7.*permission denied/i,
+    },
+    {
+      name: "timeout after output",
+      patch: {
+        timedOut: true,
+        stderr: Buffer.from("deadline exceeded", "utf8"),
+      },
+      expected: /timed out.*deadline exceeded/i,
+    },
+    {
+      name: "signal after output",
+      patch: { exitCode: null, signal: "SIGTERM" as NodeJS.Signals },
+      expected: /signal SIGTERM/i,
+    },
+    {
+      name: "abort after output",
+      patch: { exitCode: null, aborted: true },
+      expected: /aborted/i,
+    },
+    {
+      name: "spawn failure",
+      patch: { exitCode: null, spawnError: "ENOENT" },
+      expected: /failed to start.*ENOENT/i,
+    },
+    {
+      name: "truncated output",
+      patch: {
+        outputTruncated: true,
+        capturedOutputBytes: 12,
+        observedOutputBytes: 20,
+      },
+      expected: /truncated.*12 captured bytes/i,
+    },
+  ])(
+    "does not replace prior cache when shell refresh has $name",
+    async ({ patch, expected }) => {
+      const { runner } = makeRunner()
+      const service = new DashboardService(runner)
+      const dash = dashboards.createDashboard({ name: "D" })
+      const cmd = "cat metrics.json"
+      const widget = dashboards.createWidget({
+        dashboardId: dash.id,
+        title: "M",
+        type: "table",
+        recipe: { command: cmd, cwd: "/repo", workspace: "/repo" },
+      })
+      dashboards.upsertWidgetData({
+        widgetId: widget.id,
+        data: [{ old: true }],
+        status: "ok",
+      })
+      addRule({
+        tool: "run_shell_tool",
+        kind: "shell",
+        identity: shellIdentity(cmd),
+        scope: "workspace",
+        workspacePath: "/repo",
+      })
+      execStdout = JSON.stringify([{ fresh: true }])
+      execResultPatch = patch
+
+      const result = await runExecute(service, dash.id)
+
+      expect(result.content).toContain("refreshed 0/1")
+      const cached = dashboards.getWidgetData(widget.id)
+      expect(cached?.status).toBe("error")
+      expect(cached?.error).toMatch(expected)
+      expect(cached?.data).toEqual([{ old: true }])
+    }
+  )
+
+  it("marks oversized JSON rows as an error without replacing prior cache", async () => {
+    const { runner } = makeRunner()
+    const service = new DashboardService(runner)
+    const dash = dashboards.createDashboard({ name: "D" })
+    const cmd = "cat metrics.json"
+    const widget = dashboards.createWidget({
+      dashboardId: dash.id,
+      title: "M",
+      type: "table",
+      recipe: { command: cmd, cwd: "/repo", workspace: "/repo" },
+    })
+    dashboards.upsertWidgetData({
+      widgetId: widget.id,
+      data: [{ old: true }],
+      status: "ok",
+    })
+    addRule({
+      tool: "run_shell_tool",
+      kind: "shell",
+      identity: shellIdentity(cmd),
+      scope: "workspace",
+      workspacePath: "/repo",
+    })
+    execStdout = JSON.stringify([
+      { blob: "x".repeat(dashboards.MAX_JSON_CHARS) },
+    ])
+
+    const result = await runExecute(service, dash.id)
+
+    expect(result.content).toContain("refreshed 0/1")
+    const cached = dashboards.getWidgetData(widget.id)
+    expect(cached?.status).toBe("error")
+    expect(cached?.error).toMatch(/Dashboard JSON value/)
+    expect(cached?.data).toEqual([{ old: true }])
+  })
+
+  it("rejects an allowlisted web recipe whose URL is local or private", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+    const { runner } = makeRunner()
+    const service = new DashboardService(runner)
+    const dash = dashboards.createDashboard({ name: "D" })
+    const url = "http://169.254.169.254/latest/meta-data"
+    const widget = dashboards.createWidget({
+      dashboardId: dash.id,
+      title: "W",
+      type: "table",
+      recipe: { url },
+    })
+    addRule({
+      tool: "web_fetch",
+      kind: "web",
+      identity: `web_fetch:${url}`,
+      scope: "global",
+    })
+
+    await runExecute(service, dash.id)
+    expect(fetchMock).not.toHaveBeenCalled()
+    const cached = dashboards.getWidgetData(widget.id)
+    expect(cached?.status).toBe("error")
+    expect(cached?.error).toMatch(/private|local|metadata/i)
+  })
+
+  it("marks an oversized web recipe error without replacing prior cache", async () => {
+    const fetchText = vi
+      .fn()
+      .mockRejectedValue(new SafeFetchBodyTooLargeError(1024 * 1024))
+    const { runner } = makeRunner()
+    const service = new DashboardService(runner, fetchText)
+    const dash = dashboards.createDashboard({ name: "D" })
+    const url = "https://93.184.216.34/data"
+    const widget = dashboards.createWidget({
+      dashboardId: dash.id,
+      title: "W",
+      type: "table",
+      recipe: { url },
+    })
+    dashboards.upsertWidgetData({
+      widgetId: widget.id,
+      data: [{ old: true }],
+      status: "ok",
+    })
+    addRule({
+      tool: "web_fetch",
+      kind: "web",
+      identity: `web_fetch:${url}`,
+      scope: "global",
+    })
+
+    await runExecute(service, dash.id)
+
+    expect(fetchText).toHaveBeenCalledTimes(1)
+    const cached = dashboards.getWidgetData(widget.id)
+    expect(cached?.status).toBe("error")
+    expect(cached?.error).toMatch(/exceeded .* decoded bytes/i)
+    expect(cached?.data).toEqual([{ old: true }])
+  })
+
   it("leaves a recipe-less (manual) widget untouched", async () => {
     const { runner } = makeRunner()
     const service = new DashboardService(runner)
@@ -192,7 +427,11 @@ describe.skipIf(!sqliteLoads)("DashboardService.execute", () => {
       title: "manual",
       type: "stat",
     })
-    dashboards.upsertWidgetData({ widgetId: widget.id, data: [{ n: 5 }], status: "ok" })
+    dashboards.upsertWidgetData({
+      widgetId: widget.id,
+      data: [{ n: 5 }],
+      status: "ok",
+    })
 
     const result = await runExecute(service, dash.id)
     expect(result.content).toContain("refreshed 0/1")
@@ -209,17 +448,21 @@ describe.skipIf(!sqliteLoads)("DashboardService.execute", () => {
       dashboardId: dash.id,
       title: "M",
       type: "table",
-      recipe: { command: cmd, cwd: "/repo" },
+      recipe: { command: cmd, cwd: "/repo", workspace: "/repo" },
     })
     addRule({
       tool: "run_shell_tool",
       kind: "shell",
-      identity: normalizeCommand(cmd),
+      identity: shellIdentity(cmd),
       scope: "workspace",
       workspacePath: "/repo",
     })
     // Seed fresh `ok` data (fetched_at = now).
-    dashboards.upsertWidgetData({ widgetId: widget.id, data: [{ a: 1 }], status: "ok" })
+    dashboards.upsertWidgetData({
+      widgetId: widget.id,
+      data: [{ a: 1 }],
+      status: "ok",
+    })
     execStdout = JSON.stringify([{ a: 999 }]) // would overwrite if it ran
 
     // With a generous staleness window, the fresh widget is skipped — no re-run.
@@ -278,24 +521,27 @@ describe.skipIf(!sqliteLoads)("DashboardService.approveRecipe", () => {
       dashboardId: dash.id,
       title: "M",
       type: "table",
-      recipe: { command: cmd, cwd: "/repo" },
+      recipe: { command: cmd, cwd: "/repo", workspace: "/repo" },
     })
     const result = service.approveRecipe(widget.id)
     expect(result.ok).toBe(true)
-    // The identity is the normalized command, scoped to the recipe's cwd.
-    const rows = db
-      .prepare("SELECT * FROM action_allowlist")
-      .all() as Array<{ kind: string; identity: string; scope: string; workspace_path: string }>
+    // The identity is the canonical shell action, scoped to the recipe's cwd.
+    const rows = db.prepare("SELECT * FROM action_allowlist").all() as Array<{
+      kind: string
+      identity: string
+      scope: string
+      workspace_path: string
+    }>
     expect(rows).toHaveLength(1)
     expect(rows[0].kind).toBe("shell")
-    expect(rows[0].identity).toBe(normalizeCommand(cmd))
+    expect(rows[0].identity).toBe(shellIdentity(cmd))
     expect(rows[0].scope).toBe("workspace")
     expect(rows[0].workspace_path).toBe("/repo")
     // A refresh was triggered.
     expect(enqueued).toHaveLength(1)
   })
 
-  it("fails (no rule, ok:false) for a shell recipe with no cwd", () => {
+  it("fails (no rule, ok:false) for a shell recipe with no verified workspace", () => {
     const { runner, enqueued } = makeRunner()
     const service = new DashboardService(runner)
     const dash = dashboards.createDashboard({ name: "D" })
@@ -307,7 +553,7 @@ describe.skipIf(!sqliteLoads)("DashboardService.approveRecipe", () => {
     })
     const result = service.approveRecipe(widget.id)
     expect(result.ok).toBe(false)
-    if (!result.ok) expect(result.reason).toMatch(/working directory/i)
+    if (!result.ok) expect(result.reason).toMatch(/verified workspace/i)
     // No grant written, no refresh enqueued.
     expect(db.prepare("SELECT * FROM action_allowlist").all()).toHaveLength(0)
     expect(enqueued).toHaveLength(0)
@@ -324,9 +570,11 @@ describe.skipIf(!sqliteLoads)("DashboardService.approveRecipe", () => {
       recipe: { url: "https://api.example.com/data" },
     })
     service.approveRecipe(widget.id)
-    const rows = db
-      .prepare("SELECT * FROM action_allowlist")
-      .all() as Array<{ kind: string; identity: string; scope: string }>
+    const rows = db.prepare("SELECT * FROM action_allowlist").all() as Array<{
+      kind: string
+      identity: string
+      scope: string
+    }>
     expect(rows).toHaveLength(1)
     expect(rows[0].kind).toBe("web")
     expect(rows[0].identity).toBe("web_fetch:https://api.example.com/data")

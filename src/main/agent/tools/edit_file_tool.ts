@@ -1,9 +1,16 @@
-import { dirname, join } from "path"
-import type { Tool } from "./types"
+import { TOOL_EFFECTS, type Tool } from "./types"
 import type { ToolAction } from "../approval/types"
 import { LocalEnvironment } from "../env/local"
-import type { Environment } from "../env/types"
 import { toolError } from "./output"
+import {
+  atomicWriteChecked,
+  buildDiffPreview,
+  cleanupMessage,
+  fileTooLargeMessage,
+  fileRevision,
+  MUTATION_SOURCE_LIMITS,
+  validRevision,
+} from "./file/mutation"
 
 // Count non-overlapping occurrences of `needle` in `haystack`.
 function countOccurrences(haystack: string, needle: string): number {
@@ -17,27 +24,11 @@ function countOccurrences(haystack: string, needle: string): number {
   return count
 }
 
-// Write `content` to `target` atomically: write a sibling temp file, then rename
-// over the target (rename is atomic within a filesystem). Avoids leaving a
-// half-written file if the process dies mid-write. Routed through the env so it
-// holds on host or in a container.
-async function atomicWrite(
-  env: Environment,
-  target: string,
-  content: string
-): Promise<void> {
-  const tmp = join(
-    dirname(target),
-    `.${Date.now()}-${process.pid}.tmp` // unique within the dir
-  )
-  await env.writeFile(tmp, content)
-  await env.rename(tmp, target)
-}
-
 // Replaces an exact string in a workspace file. Requires `old_string` to occur
 // exactly once (unless replace_all), returning an actionable error otherwise so
 // the model can add surrounding context and retry. Writes atomically.
 export const editFileTool: Tool = {
+  effects: TOOL_EFFECTS.mutation,
   definition: {
     type: "function",
     function: {
@@ -67,6 +58,11 @@ export const editFileTool: Tool = {
             description:
               "Replace every occurrence instead of requiring a unique match. Defaults to false.",
           },
+          expected_revision: {
+            type: "string",
+            description:
+              "Optional SHA-256 revision from read_file_tool metadata. When provided, the edit is rejected if the file changed since that read.",
+          },
         },
         required: ["path", "old_string", "new_string"],
       },
@@ -77,8 +73,15 @@ export const editFileTool: Tool = {
     const oldString = typeof args.old_string === "string" ? args.old_string : ""
     const newString = typeof args.new_string === "string" ? args.new_string : ""
     const replaceAll = args.replace_all === true
+    const expectedRevision = validRevision(args.expected_revision)
 
     if (!path) return toolError("bad_args", "A `path` is required.")
+    if (args.expected_revision !== undefined && !expectedRevision) {
+      return toolError(
+        "bad_args",
+        "`expected_revision` must be a 64-character SHA-256 hex digest."
+      )
+    }
     if (oldString === "") {
       return toolError("bad_args", "`old_string` must not be empty.")
     }
@@ -101,8 +104,29 @@ export const editFileTool: Tool = {
     if (!info.isFile()) {
       return toolError("not_a_file", `Not a regular file: ${path}`)
     }
+    if (info.size > MUTATION_SOURCE_LIMITS.maxFileBytes) {
+      return toolError(
+        "file_too_large",
+        fileTooLargeMessage({
+          code: "file_too_large",
+          path,
+          size: info.size,
+          limit: MUTATION_SOURCE_LIMITS.maxFileBytes,
+          scope: "file",
+        })
+      )
+    }
 
-    const content = (await env.readFile(target)).toString("utf8")
+    const initialBytes = await env.readFile(target)
+    const initialRevision = fileRevision(initialBytes)
+    if (expectedRevision && expectedRevision !== initialRevision) {
+      return toolError(
+        "stale_file",
+        `${path} changed since revision ${expectedRevision}. Current revision: ${initialRevision}.`,
+        "re-read the file and rebase the edit"
+      )
+    }
+    const content = initialBytes.toString("utf8")
     const occurrences = countOccurrences(content, oldString)
 
     if (occurrences === 0) {
@@ -123,6 +147,12 @@ export const editFileTool: Tool = {
     const updated = replaceAll
       ? content.split(oldString).join(newString)
       : content.replace(oldString, newString)
+    const diff = buildDiffPreview({
+      path,
+      before: content,
+      after: updated,
+      beforeRevision: initialRevision,
+    })
 
     // Route through the shared approval pipeline (see ../approval). The default
     // file policy auto-allows; this makes edit_file a first-class pipeline
@@ -133,7 +163,7 @@ export const editFileTool: Tool = {
         kind: "file_edit",
         summary: `edit ${path}`,
         identity: `file_edit:${path}`,
-        detail: { path },
+        detail: { path, expectedRevision: initialRevision, diff },
       }
       const outcome = await ctx.gate(action)
       if (outcome === "blocked") {
@@ -144,9 +174,50 @@ export const editFileTool: Tool = {
       }
     }
 
-    await atomicWrite(env, target, updated)
+    const checkedTarget = await env.resolve(path)
+    if (checkedTarget !== target) {
+      return toolError(
+        "stale_file",
+        `${path} resolved to a different target before writing.`,
+        "re-read the file and retry"
+      )
+    }
+    const write = await atomicWriteChecked({
+      env,
+      target,
+      path,
+      content: updated,
+      expectedRevision: initialRevision,
+    })
+    if (write !== "ok") {
+      if ("code" in write && write.code === "file_too_large") {
+        return toolError(
+          "file_too_large",
+          `${fileTooLargeMessage(write)}${cleanupMessage(write.cleanupErrors)}`
+        )
+      }
+      if ("code" in write && write.code === "cleanup_failed") {
+        return toolError(
+          "cleanup_failed",
+          `File content was edited in ${path}, but cleanup failed.${cleanupMessage(write.cleanupErrors)} Manual cleanup is required for the retained paths.`
+        )
+      }
+      if ("code" in write && write.code === "commit_failed") {
+        return toolError(
+          "commit_failed",
+          `Edit failed before ${path} was committed: ${write.error}${cleanupMessage(write.cleanupErrors)}`
+        )
+      }
+      const staleRevision =
+        "staleRevision" in write ? write.staleRevision : null
+      return toolError(
+        "stale_file",
+        `${path} changed before the edit could be written. Current revision: ${staleRevision ?? "missing"}.${cleanupMessage("cleanupErrors" in write ? write.cleanupErrors : undefined)}`,
+        "re-read the file and rebase the edit"
+      )
+    }
 
     const replaced = replaceAll ? occurrences : 1
-    return `Replaced ${replaced} occurrence${replaced === 1 ? "" : "s"} in ${path}.`
+    return `Replaced ${replaced} occurrence${replaced === 1 ? "" : "s"} in ${path}. Revision: ${diff.newRevision}.`
   },
 }

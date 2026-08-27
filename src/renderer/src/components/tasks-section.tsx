@@ -40,6 +40,8 @@ type PendingGate =
       tool: string
       summary: string
       reason: string
+      actionKind?: string
+      detail?: Record<string, unknown>
     }
   | { kind: "question"; requestId: string; questions: Question[] }
 
@@ -57,6 +59,8 @@ function latestGate(events: TaskEventPayload[]): PendingGate | null {
         tool: ev.tool,
         summary: ev.summary,
         reason: ev.reason,
+        actionKind: ev.kind,
+        detail: ev.detail,
       }
     } else if (ev.type === "question") {
       gate = {
@@ -158,6 +162,8 @@ function TaskRow({
             requestId: gate.requestId,
             summary: gate.summary,
             reason: gate.reason,
+            kind: gate.actionKind,
+            detail: gate.detail,
             status: "pending",
           }}
           onApproval={(requestId, decision, remember) =>
@@ -261,6 +267,8 @@ export function TasksSection({
             tool: event.tool,
             summary: event.summary,
             reason: event.reason,
+            actionKind: event.kind,
+            detail: event.detail,
           },
         }))
       } else if (event.type === "question") {

@@ -1,16 +1,12 @@
 import { describe, it, expect, beforeEach, vi } from "vitest"
 import Database from "better-sqlite3"
 import { runMigrations } from "../migrations"
+import { sqliteLoadsForTests } from "../../test/sqlite"
+
+const sqliteLoads = sqliteLoadsForTests()
 
 let db: Database.Database
 vi.mock("../connection", () => ({ getDb: () => db }))
-
-let sqliteLoads = true
-try {
-  new Database(":memory:").close()
-} catch {
-  sqliteLoads = false
-}
 
 import {
   createProject,
@@ -20,10 +16,7 @@ import {
   deleteProject,
 } from "./projects"
 import { upsertWorkspace, deleteWorkspace } from "./workspaces"
-import {
-  createConversation,
-  getConversation,
-} from "./conversations"
+import { createConversation, getConversation } from "./conversations"
 
 beforeEach(() => {
   if (!sqliteLoads) return

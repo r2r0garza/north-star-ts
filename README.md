@@ -2,7 +2,9 @@
 
 A desktop AI agent (Electron + Vite + React) that works inside a user-selected
 workspace folder. The agent talks to Claude via a Portkey gateway and can call
-server-side tools (e.g. `ls`) that are confined to the chosen workspace.
+server-side tools. File tools are confined to the chosen workspace; Local shell
+commands run on the host with the workspace as their working directory and are
+guarded by approval policy.
 
 ## Architecture
 
@@ -10,7 +12,7 @@ server-side tools (e.g. `ls`) that are confined to the chosen workspace.
 src/
   main/          Electron main process (Node)
     index.ts       window lifecycle + IPC handlers + .env.local loading
-    agent/         Portkey agentic loop + tools (ls, workspace confinement)
+    agent/         Portkey agentic loop + tools (filesystem confinement, shell policy)
     pick-workspace.ts  native OS folder picker (dialog.showOpenDialog)
   preload/       contextBridge → window.cowork.{chat, pickWorkspace}
   renderer/      React UI (Vite). @/* → src/renderer/src
@@ -27,6 +29,17 @@ pnpm build      # build all three processes into out/
 pnpm start      # preview the production build
 pnpm dist       # build + package a distributable (electron-builder)
 pnpm typecheck  # tsc --noEmit
+pnpm test       # run the default Vitest suite
+pnpm test:sqlite # run SQLite-backed Vitest files; requires better-sqlite3 built for Node
+```
+
+`postinstall` rebuilds native modules for Electron. If `pnpm test:sqlite` is
+needed locally, temporarily switch `better-sqlite3` to the Node ABI first:
+
+```bash
+npm_config_build_from_source=true npm rebuild better-sqlite3
+pnpm test:sqlite
+pnpm exec electron-rebuild -f -w better-sqlite3
 ```
 
 ## Configuration
@@ -57,8 +70,8 @@ These directories are bundled into the distributable alongside `out/`.
 1. Create `src/main/agent/tools/my-tool.ts` exporting a `Tool`.
 2. Import it in `src/main/agent/tools/index.ts` and add it to the `registry`.
 
-Resolve any model-supplied path through `resolveInWorkspace(ctx.workspace, path)`
-to inherit workspace confinement.
+Resolve any model-supplied filesystem path through
+`resolveInWorkspace(ctx.workspace, path)` to inherit workspace confinement.
 
 ## UI components
 

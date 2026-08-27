@@ -18,6 +18,7 @@ away. For live, still-open trade-offs see `CONSIDERATIONS.md` at the repo root.
 - [006 — Externalized system prompt](006-system-prompt.md)
 - [007 — View switcher, Chat mode & file attachments](007-view-switcher-chat-attachments.md)
 - [008 — Core file tools, tools-out-of-prompt & per-mode system prompts](008-file-tools-and-per-mode-prompts.md)
+- [009 — Local filesystem confinement requires directory-relative syscalls](009-local-filesystem-openat-helper.md)
 
 ## Context
 

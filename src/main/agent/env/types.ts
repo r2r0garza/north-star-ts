@@ -16,10 +16,22 @@
 // stdout+stderr as a Buffer — the caller decodes utf8 ONCE, because decoding
 // per-chunk would corrupt a multibyte character straddling a chunk boundary.
 export interface ExecResult {
+  // Historical compatibility: stdout contains the combined stdout+stderr bytes.
   stdout: Buffer
+  // Stream-specific stderr for callers that need to distinguish diagnostics from
+  // parseable stdout. Older mocks may omit this.
+  stderr?: Buffer
   exitCode: number | null
   signal: NodeJS.Signals | null
   timedOut: boolean
+  aborted?: boolean
+  spawnError?: string
+  // True when stdout/stderr produced more bytes than `maxOutputBytes` allowed
+  // us to retain.
+  outputTruncated?: boolean
+  capturedOutputBytes?: number
+  observedOutputBytes?: number
+  cleanupError?: CommandCleanupError
 }
 
 export interface ExecOptions {
@@ -33,6 +45,52 @@ export interface ExecOptions {
   signal?: AbortSignal
 }
 
+export type CommandStream = "stdout" | "stderr" | "pty"
+
+export interface CommandChunk {
+  stream: CommandStream
+  data: Buffer
+}
+
+export interface CommandExit {
+  exitCode: number | null
+  signal: NodeJS.Signals | null
+  cleanupError?: CommandCleanupError
+}
+
+export interface CommandCleanupError {
+  path: string
+  error: string
+}
+
+export interface CommandSessionHandle {
+  onData(cb: (chunk: CommandChunk) => void): void
+  onExit(cb: (exit: CommandExit) => void): void
+  write(data: string): void
+  closeStdin(): void
+  interrupt(): void
+  kill(): void
+}
+
+export interface SpawnCommandOptions {
+  // Absolute working directory within this environment's filesystem view.
+  cwd: string
+  // Use a PTY when the backend supports it. PTY output is one stream.
+  tty: boolean
+  // Abort seam: Stop/app cleanup terminates the command session.
+  signal?: AbortSignal
+}
+
+export type LocalRuntimeProfile =
+  | "host-access"
+  | "workspace-write"
+  | "read-only"
+
+export interface LocalProfileCapabilities {
+  supported: boolean
+  reason?: string
+}
+
 // The subset of fs.Dirent the tools consume. Real fs.Dirent satisfies this, so
 // LocalEnvironment returns Dirents directly; ContainerEnvironment synthesizes
 // objects of this shape from `ls` output.
@@ -42,64 +100,148 @@ export interface DirEntry {
   isFile(): boolean
 }
 
+export interface ListDirOptions {
+  maxEntries: number
+  maxBytes: number
+}
+
+export interface ListDirResult {
+  entries: DirEntry[]
+  truncated: boolean
+  capReason?: "entryCount" | "nameBytes" | "captureBytes"
+}
+
 // The subset of fs.Stats the tools consume. Real fs.Stats satisfies this.
 export interface StatInfo {
   size: number
+  // Permission bits only; callers must not infer ownership, ACLs, or platform
+  // flags from this value.
+  mode?: number
   isFile(): boolean
   isDirectory(): boolean
 }
 
+export interface ReadTextLinesOptions {
+  // 1-based line number to start at.
+  offset: number
+  // Maximum complete lines to return.
+  limit: number
+  // Maximum UTF-8 bytes of file content to return.
+  maxBytes: number
+}
+
+export interface ReadTextLinesResult {
+  text: string
+  startLine: number
+  endLine: number
+  hasMore: boolean
+  nextOffset?: number
+  fileBytes: number
+  truncated: boolean
+  revision?: string
+  lineTooLong?: boolean
+  skippedLineRemainder?: boolean
+}
+
+export type SearchMode = "regex" | "fixed"
+export type SearchCase = "smart" | "sensitive" | "insensitive"
+export type SearchResultMode = "content" | "files" | "count"
+
 // Inputs for a content search. Backend-agnostic: the tool resolves `root` in the
-// env's filesystem view and passes its constants (skip list, per-file size cap),
-// so both backends honor the same ignore rules and bounds.
+// env's filesystem view and passes concrete search policy, so both backends honor
+// the same mode, glob, ignore, hidden-file, context, and cap contract.
 export interface SearchOptions {
   // Absolute path (in this env's view) to search under.
   root: string
-  // The pattern. Validated as a JS RegExp by the caller; the Local backend uses
-  // it as a JS RegExp, the Container backend hands it to rg/grep (whose engines
-  // are close but not identical — literals and simple patterns behave the same).
-  pattern: string
-  // Optional case-insensitive substring filter on file names (e.g. ".ts").
-  glob?: string
-  // Stop after this many matching lines (the caller surfaces a "stopped" note).
+  // The pattern/query, passed to ripgrep as argv data.
+  query: string
+  mode: SearchMode
+  case: SearchCase
+  // Real ripgrep include/exclude globs. Legacy `glob` is normalized by the tool.
+  globs: string[]
+  result: SearchResultMode
+  beforeContext: number
+  afterContext: number
+  includeHidden: boolean
+  respectIgnore: boolean
+  // Stop after this many result items (content lines, files, or count rows).
   maxResults: number
-  // Directory names to prune anywhere in the tree (e.g. .git, node_modules).
-  skipDirs: string[]
-  // Skip files larger than this many bytes.
+  // Skip files larger than this many bytes where the engine supports it.
   maxFileBytes: number
+  signal?: AbortSignal
 }
 
-// One matching line. `path` is absolute in the env's filesystem view; the tool
-// renders it relative to the workspace root for display.
+// One matching or context line. `path` is absolute in the env's filesystem view;
+// the tool renders it relative to the workspace root for display.
 export interface SearchMatch {
   path: string
   line: number
+  column?: number
   text: string
+  kind?: "match" | "context"
+}
+
+export interface SearchCount {
+  path: string
+  matches: number
 }
 
 export interface SearchResult {
+  engine: "rg" | "grep"
+  result: SearchResultMode
   matches: SearchMatch[]
-  // True when the search stopped at maxResults (more matches exist).
+  files: string[]
+  counts: SearchCount[]
+  totalMatches?: number
+  // True when the search stopped at maxResults or output capture was truncated
+  // (more results may exist).
   capped: boolean
+  capReason?: "resultCount" | "captureBytes"
+  captureTruncated?: boolean
+  capturedOutputBytes?: number
+  observedOutputBytes?: number
+  malformedJsonLines?: number
+  reducedFeatures?: string[]
 }
 
 export interface Environment {
   // Resolve a model-supplied, workspace-relative path to a safe absolute path in
   // this environment's filesystem view. Symlink-safe (realpath-based) variant.
   resolve(path: string): Promise<string>
-  // Lexical-only resolve (no realpath) — used by list_files, as today.
+  // Lexical-only resolve (no realpath) for operations that do not dereference
+  // the resulting path.
   resolveLexical(path: string): string
 
   readFile(path: string): Promise<Buffer>
+  readTextLines(
+    path: string,
+    opts: ReadTextLinesOptions
+  ): Promise<ReadTextLinesResult>
   // Write utf8 text. Combined with `rename` this lets tools keep their atomic-
   // write orchestration (write temp sibling, then rename over the target).
+  // Newly-created files use the backend's normal file-create mode (local and
+  // container backends create as 0o666 filtered by the active process umask).
   writeFile(path: string, data: string): Promise<void>
+  chmod(path: string, mode: number): Promise<void>
   rename(from: string, to: string): Promise<void>
+  // Atomically install an already-written file at `to`, failing if `to` exists.
+  // The source file remains for caller-owned cleanup.
+  installFileNoReplace?(from: string, to: string): Promise<void>
+  removeFile(path: string): Promise<void>
   mkdirp(path: string): Promise<void>
   stat(path: string): Promise<StatInfo>
   readdir(path: string): Promise<DirEntry[]>
+  listDir?(path: string, opts: ListDirOptions): Promise<ListDirResult>
 
   exec(command: string, opts: ExecOptions): Promise<ExecResult>
+
+  // Spawn a command session that can be polled and written to. Implementations
+  // return immediately with a live handle; the agent session manager owns output
+  // buffering, timeouts, and lifecycle cleanup.
+  spawnCommand(
+    command: string,
+    opts: SpawnCommandOptions
+  ): Promise<CommandSessionHandle>
 
   // Bulk content search under `opts.root`. This is a first-class env operation
   // (not a tool-side walk over readdir/stat/readFile) because search fans out

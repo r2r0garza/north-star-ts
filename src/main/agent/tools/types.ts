@@ -92,10 +92,11 @@ export type AskResult =
 // support it (e.g. unit tests) — the tool then reports it's unavailable.
 export type Ask = (questions: Question[]) => Promise<AskResult>
 
-// Runtime context passed to every tool. `workspace` is the absolute root the
-// agent is confined to — tools must keep all file access inside it. In a Chat
-// session there is no workspace; instead the user attaches specific files, and
-// `attachments` is the absolute-path allowlist a file tool may read from.
+// Runtime context passed to every tool. `workspace` is the absolute root file
+// tools are confined to. Local shell commands run on the host with this as cwd;
+// they are not OS-sandboxed by cwd alone. In a Chat session there is no
+// workspace; instead the user attaches specific files, and `attachments` is the
+// absolute-path allowlist a file tool may read from.
 export interface ToolContext {
   workspace: string
   attachments?: string[]
@@ -168,9 +169,64 @@ export interface ToolContext {
   processPhaseRunId?: string
 }
 
+export interface ToolEffects {
+  readOnly: boolean
+  parallelSafe: boolean
+  idempotent: boolean
+  destructive: boolean
+  openWorld: boolean
+}
+
+export const TOOL_EFFECTS = {
+  readOnlyParallel: {
+    readOnly: true,
+    parallelSafe: true,
+    idempotent: true,
+    destructive: false,
+    openWorld: false,
+  },
+  readOnlySequential: {
+    readOnly: true,
+    parallelSafe: false,
+    idempotent: true,
+    destructive: false,
+    openWorld: false,
+  },
+  openWorldRead: {
+    readOnly: true,
+    parallelSafe: false,
+    idempotent: true,
+    destructive: false,
+    openWorld: true,
+  },
+  mutation: {
+    readOnly: false,
+    parallelSafe: false,
+    idempotent: false,
+    destructive: false,
+    openWorld: false,
+  },
+  destructiveMutation: {
+    readOnly: false,
+    parallelSafe: false,
+    idempotent: false,
+    destructive: true,
+    openWorld: false,
+  },
+  openWorldMutation: {
+    readOnly: false,
+    parallelSafe: false,
+    idempotent: false,
+    destructive: false,
+    openWorld: true,
+  },
+} as const satisfies Record<string, ToolEffects>
+
 // A tool the agent can call. `definition` is the OpenAI-compatible schema
-// Portkey expects; `execute` runs server-side and returns a string result.
+// Portkey expects; `effects` declares scheduling/approval-relevant side effects;
+// `execute` runs server-side and returns a string result.
 export interface Tool {
+  effects: ToolEffects
   definition: {
     type: "function"
     function: {

@@ -5,6 +5,12 @@ import { RegexCommandClassifier } from "./regex-classifier"
 import { FileActionClassifier } from "./file-classifier"
 import { DelegationClassifier } from "./delegation-classifier"
 import { BrowserActionClassifier } from "./browser-classifier"
+import { analyzeShellCommand, shellActionForCommand } from "./shell-analyzer"
+import {
+  browserActionIdentity,
+  hashBrowserPayload,
+  summarizeBrowserPayload,
+} from "../tools/browser/approval"
 import {
   PolicyEngine,
   type AllowlistLookup,
@@ -14,13 +20,7 @@ import type { ToolAction } from "./types"
 
 // Build a shell action for the classifier under test.
 function shell(command: string): ToolAction {
-  return {
-    tool: "run_shell_tool",
-    kind: "shell",
-    summary: `$ ${command}`,
-    identity: normalizeCommand(command),
-    detail: { command },
-  }
+  return shellActionForCommand(command)
 }
 
 function fileWrite(relPath: string): ToolAction {
@@ -46,7 +46,71 @@ function browserClick(ref: string): ToolAction {
     tool: "browser_click",
     kind: "browser",
     summary: `Click ${ref}`,
-    identity: `browser_click:${ref}`,
+    identity: browserActionIdentity({
+      action: "click",
+      origin: "https://app.example",
+      url: "https://app.example/records",
+      target: `button "${ref}"`,
+      ref,
+      targetFingerprint: `ref=${ref}|role=button|selector=#${ref}`,
+    }),
+    detail: {
+      actionType: "click",
+      origin: "https://app.example",
+      url: "https://app.example/records",
+      target: `button "${ref}"`,
+      ref,
+      interactionKind: "reversible_interaction",
+    },
+  }
+}
+
+function browserConsequentialClick(target: string): ToolAction {
+  return {
+    tool: "browser_click",
+    kind: "browser",
+    summary: `Click ${target} on https://app.example`,
+    identity: browserActionIdentity({
+      action: "click",
+      origin: "https://app.example",
+      url: "https://app.example/records/alpha",
+      target,
+      ref: "e1",
+      targetFingerprint: "ref=e1|role=button|selector=#alpha button",
+    }),
+    detail: {
+      actionType: "click",
+      origin: "https://app.example",
+      url: "https://app.example/records/alpha",
+      target,
+      interactionKind: "consequential_commit",
+    },
+  }
+}
+
+function browserSubmitType(target: string, payloadSummary: string): ToolAction {
+  return {
+    tool: "browser_type",
+    kind: "browser",
+    summary: `Type into ${target} on https://app.example and submit`,
+    identity: browserActionIdentity({
+      action: "type_submit",
+      origin: "https://app.example",
+      url: "https://app.example/compose",
+      target,
+      ref: "e2",
+      targetFingerprint: "ref=e2|role=textbox|selector=#message",
+      payloadHash: hashBrowserPayload(payloadSummary),
+    }),
+    detail: {
+      actionType: "type_submit",
+      origin: "https://app.example",
+      url: "https://app.example/compose",
+      target,
+      payloadSummary,
+      interactionKind: "consequential_commit",
+      submit: true,
+    },
   }
 }
 
@@ -135,6 +199,225 @@ describe("RegexCommandClassifier — dangerous (require_approval)", () => {
 
   it("catches obfuscated recursive rm via backslash escape", () => {
     expect(classify("r\\m -rf build")?.level).toBe("require_approval")
+  })
+
+  it("requires approval for network commands even without pipe-to-shell", () => {
+    const verdict = classify("curl https://example.com/install.sh")
+    expect(verdict?.level).toBe("require_approval")
+    expect(verdict && "category" in verdict && verdict.category).toBe(
+      "network_access"
+    )
+  })
+})
+
+describe("analyzeShellCommand", () => {
+  it("extracts executable segments and redirects from compound commands", () => {
+    const analysis = analyzeShellCommand(
+      "echo ok > out.txt && git status | wc -l",
+      "darwin",
+      { cwd: "/tmp/work", workspace: "/tmp/work" }
+    )
+
+    expect(analysis.confidence).toBe("high")
+    expect(analysis.segments.map((s) => s.executable)).toEqual([
+      "echo",
+      "git",
+      "wc",
+    ])
+    expect(analysis.candidateWritePaths).toEqual(["/tmp/work/out.txt"])
+  })
+
+  it("marks substitutions as approval-required and exposes the nested command", () => {
+    const analysis = analyzeShellCommand("echo $(git status)", "darwin")
+
+    expect(analysis.confidence).toBe("requires_approval")
+    expect(analysis.substitutions.map((s) => s.executable)).toEqual(["git"])
+  })
+
+  it("marks backtick substitutions approval-required and exposes their command", () => {
+    const analysis = analyzeShellCommand(
+      "echo `curl https://example.com`",
+      "darwin"
+    )
+
+    expect(analysis.confidence).toBe("requires_approval")
+    expect(analysis.reasons).toContain(
+      "backtick command substitution requires approval"
+    )
+    expect(analysis.substitutions.map((s) => s.executable)).toEqual(["curl"])
+    expect(analysis.networkOperations).toEqual(["curl"])
+  })
+
+  it("recursively analyzes nested substitutions", () => {
+    const analysis = analyzeShellCommand(
+      "echo $(echo `wget https://example.com/install.sh`)",
+      "darwin"
+    )
+
+    expect(analysis.confidence).toBe("requires_approval")
+    expect(analysis.substitutions.map((s) => s.executable)).toEqual([
+      "echo",
+      "wget",
+    ])
+    expect(analysis.networkOperations).toEqual(["wget"])
+  })
+
+  it("detects network operations and outside-workspace paths", () => {
+    const analysis = analyzeShellCommand(
+      "git pull origin main > /tmp/result.txt",
+      "darwin",
+      { cwd: "/repo", workspace: "/repo" }
+    )
+
+    expect(analysis.networkOperations).toEqual(["git pull"])
+    expect(analysis.outsideWorkspacePaths).toEqual(["/tmp/result.txt"])
+  })
+
+  it("does not treat dot-dot-prefixed in-workspace paths as escapes", () => {
+    const analysis = analyzeShellCommand(
+      "echo ok > ..cache/result.txt",
+      "darwin",
+      {
+        cwd: "/repo",
+        workspace: "/repo",
+      }
+    )
+
+    expect(analysis.candidateWritePaths).toEqual(["/repo/..cache/result.txt"])
+    expect(analysis.outsideWorkspacePaths).toEqual([])
+  })
+
+  it("normalizes leading assignments and wrappers to the effective command", () => {
+    const cases: Array<[command: string, executable: string, network: string]> =
+      [
+        ["API_TOKEN=x curl https://example.com", "curl", "curl"],
+        ["env API_TOKEN=x wget https://example.com", "wget", "wget"],
+        ["command ssh example.com", "ssh", "ssh"],
+        ["sudo curl https://example.com", "curl", "curl"],
+        ["nohup wget https://example.com", "wget", "wget"],
+        ["setsid env API_TOKEN=x git pull", "git", "git pull"],
+      ]
+
+    for (const [command, executable, network] of cases) {
+      const analysis = analyzeShellCommand(command, "darwin")
+
+      expect(analysis.segments[0].executable).toBe(executable)
+      expect(analysis.identity).toContain(`"executable":"${executable}"`)
+      expect(analysis.networkOperations).toContain(network)
+    }
+  })
+
+  it("keeps behavior-changing environment in exact shell identities", () => {
+    const trusted = shellActionForCommand("PATH=/trusted git status", {
+      platform: "darwin",
+      cwd: "/repo",
+      workspace: "/repo",
+    })
+    const untrusted = shellActionForCommand("PATH=/untrusted git status", {
+      platform: "darwin",
+      cwd: "/repo",
+      workspace: "/repo",
+    })
+
+    expect(trusted.identity).not.toBe(untrusted.identity)
+  })
+
+  it("keeps env and wrapper options in exact shell identities", () => {
+    const base = shellActionForCommand("env GIT_SSH_COMMAND=ssh git fetch", {
+      platform: "darwin",
+    })
+    const changedEnv = shellActionForCommand(
+      "env GIT_SSH_COMMAND='ssh -i key' git fetch",
+      { platform: "darwin" }
+    )
+    const changedWrapper = shellActionForCommand("sudo -u root git fetch", {
+      platform: "darwin",
+    })
+
+    expect(base.identity).not.toBe(changedEnv.identity)
+    expect(base.identity).not.toBe(changedWrapper.identity)
+    expect(base.detail?.shellAnalysis).toMatchObject({
+      networkOperations: ["git fetch"],
+    })
+  })
+
+  it("normalizes equivalent shell formatting in exact identities", () => {
+    const compact = shellActionForCommand("git status", { platform: "darwin" })
+    const spaced = shellActionForCommand("  git    status  ", {
+      platform: "darwin",
+    })
+
+    expect(compact.identity).toBe(spaced.identity)
+  })
+
+  it("detects every network command and package manager through common wrappers", () => {
+    const operations: Array<[command: string, network: string]> = [
+      ["curl https://example.com", "curl"],
+      ["wget https://example.com", "wget"],
+      ["ssh example.com", "ssh"],
+      ["scp a example.com:b", "scp"],
+      ["sftp example.com", "sftp"],
+      ["rsync a example.com:b", "rsync"],
+      ["telnet example.com", "telnet"],
+      ["nc example.com 443", "nc"],
+      ["netcat example.com 443", "netcat"],
+      ["git pull", "git pull"],
+      ["npm install", "npm install"],
+      ["pnpm add react", "pnpm add"],
+      ["yarn upgrade", "yarn upgrade"],
+      ["bun update", "bun update"],
+    ]
+    const wrappers = [
+      (command: string) => `FOO=bar ${command}`,
+      (command: string) => `env FOO=bar ${command}`,
+      (command: string) => `command ${command}`,
+      (command: string) => `sudo ${command}`,
+      (command: string) => `nohup ${command}`,
+    ]
+
+    for (const [operation, network] of operations) {
+      for (const wrap of wrappers) {
+        const command = wrap(operation)
+        const analysis = analyzeShellCommand(command, "darwin")
+        const verdict = classify(command)
+
+        expect(analysis.networkOperations, command).toContain(network)
+        expect(verdict?.level, command).not.toBe("allow")
+        expect(verdict?.level, command).toBe("require_approval")
+        expect(verdict && "category" in verdict && verdict.category).toBe(
+          "network_access"
+        )
+      }
+    }
+  })
+})
+
+describe("RegexCommandClassifier — parsed shell analysis", () => {
+  it("requires approval when parsed detail references paths outside workspace", () => {
+    const command = "echo hi > /tmp/outside.txt"
+    const analysis = analyzeShellCommand(command, "darwin", {
+      cwd: "/repo",
+      workspace: "/repo",
+    })
+    const verdict = classifier.classify({
+      ...shell(command),
+      detail: { command, shellAnalysis: analysis },
+    })
+
+    expect(verdict?.level).toBe("require_approval")
+    expect(verdict?.reason).toContain("outside the workspace")
+  })
+
+  it("hard-blocks dangerous commands found inside substitutions", () => {
+    expect(classify("echo $(rm -rf /)")).toMatchObject({
+      level: "hard_block",
+    })
+  })
+
+  it("hard-blocks dangerous commands found inside backticks", () => {
+    expect(classify("echo `rm -rf /`")).toMatchObject({
+      level: "hard_block",
+    })
   })
 })
 
@@ -249,7 +532,12 @@ describe("PolicyEngine — local backend tightening", () => {
 
   it("upgrades an auto-allowed file write to require_approval on local backend", () => {
     const engine = new PolicyEngine(
-      [new FileActionClassifier(() => ({ file_write: "auto", file_edit: "auto" }))],
+      [
+        new FileActionClassifier(() => ({
+          file_write: "auto",
+          file_edit: "auto",
+        })),
+      ],
       allowNone
     )
     expect(engine.decide(fileWrite("a.ts"), { sandboxed: false }).level).toBe(
@@ -277,11 +565,64 @@ describe("PolicyEngine — local backend tightening", () => {
     )
   })
 
+  it("does not allowlist a command with different behavior-changing env", () => {
+    const approved = shellActionForCommand("PATH=/trusted git status", {
+      platform: "darwin",
+      cwd: "/repo",
+      workspace: "/repo",
+    })
+    const requested = shellActionForCommand("PATH=/untrusted git status", {
+      platform: "darwin",
+      cwd: "/repo",
+      workspace: "/repo",
+    })
+    const allowed = new Set([approved.identity])
+    const engine = new PolicyEngine([classifier], {
+      isAllowed: (action) => allowed.has(action.identity),
+    })
+
+    expect(
+      engine.decide(requested, {
+        sandboxed: false,
+        localProfile: "host-access",
+        workspacePath: "/repo",
+      }).level
+    ).toBe("require_approval")
+  })
+
   it("still hard-blocks a catastrophic command on local backend", () => {
     const engine = new PolicyEngine([classifier], allowNone)
     expect(engine.decide(shell("rm -rf /"), { sandboxed: false }).level).toBe(
       "hard_block"
     )
+  })
+
+  it("hard-blocks direct file writes in local read-only profile", () => {
+    const engine = new PolicyEngine(
+      [
+        new FileActionClassifier(() => ({
+          file_write: "auto",
+          file_edit: "auto",
+        })),
+      ],
+      allowAll
+    )
+    expect(
+      engine.decide(fileWrite("a.ts"), {
+        sandboxed: false,
+        localProfile: "read-only",
+      }).level
+    ).toBe("hard_block")
+  })
+
+  it("does not tighten benign shell commands under an enforced local profile", () => {
+    const engine = new PolicyEngine([classifier], allowNone)
+    expect(
+      engine.decide(shell("git status"), {
+        sandboxed: false,
+        localProfile: "workspace-write",
+      }).level
+    ).toBe("allow")
   })
 })
 
@@ -439,8 +780,34 @@ describe("BrowserActionClassifier", () => {
     expect((verdict as { category?: string }).category).toBeUndefined()
   })
 
-  it("auto-allows interactions within an open page (click/type/back/close)", () => {
-    expect(bc.classify(browserClick("e3"))?.level).toBe("allow")
+  it("requires approval for every click because labels are only advisory", () => {
+    for (const target of [
+      'button "Post"',
+      'button "Apply"',
+      'button "Update"',
+      'button "Yes"',
+      "button",
+      'button "Details"',
+    ]) {
+      expect(
+        bc.classify({
+          ...browserClick("e3"),
+          summary: `Click ${target}`,
+          detail: {
+            actionType: "click",
+            origin: "https://app.example",
+            target,
+            interactionKind: "reversible_interaction",
+          },
+        })
+      ).toMatchObject({
+        level: "require_approval",
+        reason: "Browser action may commit an external change",
+      })
+    }
+  })
+
+  it("auto-allows reversible browser controls and non-submitted typing", () => {
     expect(
       bc.classify({
         tool: "browser_type",
@@ -467,6 +834,73 @@ describe("BrowserActionClassifier", () => {
     ).toBe("allow")
   })
 
+  it("requires approval for consequential clicks and submitted typing", () => {
+    expect(
+      bc.classify(browserConsequentialClick('button "Delete account"'))
+    ).toMatchObject({
+      level: "require_approval",
+      reason: "Browser action may commit an external change",
+    })
+    expect(
+      bc.classify(browserSubmitType('textbox "Email"', "[email] (16 chars)"))
+    ).toMatchObject({
+      level: "require_approval",
+      reason: "Browser action may commit an external change",
+    })
+  })
+
+  it("builds different click identities for same-labelled controls on different records", () => {
+    const first = browserActionIdentity({
+      action: "click",
+      origin: "https://app.example",
+      url: "https://app.example/records",
+      target: 'button "Delete"',
+      ref: "e1",
+      targetFingerprint:
+        'ref=e1|role=button|selector=tr:nth-of-type(1) button[title="Delete"]',
+    })
+    const second = browserActionIdentity({
+      action: "click",
+      origin: "https://app.example",
+      url: "https://app.example/records",
+      target: 'button "Delete"',
+      ref: "e2",
+      targetFingerprint:
+        'ref=e2|role=button|selector=tr:nth-of-type(2) button[title="Delete"]',
+    })
+
+    expect(first).not.toBe(second)
+  })
+
+  it("uses exact payload hashes for submitted text identities, not redacted summaries", () => {
+    const firstPayload = "alice@example.com"
+    const secondPayload = "bruno@example.com"
+    expect(summarizeBrowserPayload(firstPayload)).toBe("[email] (17 chars)")
+    expect(summarizeBrowserPayload(secondPayload)).toBe("[email] (17 chars)")
+
+    const base = {
+      action: "type_submit" as const,
+      origin: "https://app.example",
+      url: "https://app.example/invite",
+      target: 'textbox "Email"',
+      ref: "e4",
+      targetFingerprint: "ref=e4|role=textbox|selector=#invite-email",
+    }
+    const first = browserActionIdentity({
+      ...base,
+      payloadHash: hashBrowserPayload(firstPayload),
+    })
+    const second = browserActionIdentity({
+      ...base,
+      payloadHash: hashBrowserPayload(secondPayload),
+    })
+
+    expect(first).not.toBe(second)
+    expect(first).toContain("payload_sha256=")
+    expect(first).not.toContain(firstPayload)
+    expect(second).not.toContain(secondPayload)
+  })
+
   it("returns null for non-browser actions (lets other classifiers run)", () => {
     expect(bc.classify(shell("ls"))).toBeNull()
     expect(bc.classify(fileWrite("a.ts"))).toBeNull()
@@ -475,17 +909,25 @@ describe("BrowserActionClassifier", () => {
 
 describe("PolicyEngine — browser interaction carve-out (local backend)", () => {
   const allowNone: AllowlistLookup = { isAllowed: () => false }
-  const engine = new PolicyEngine(
-    [new BrowserActionClassifier()],
-    allowNone
-  )
+  const engine = new PolicyEngine([new BrowserActionClassifier()], allowNone)
 
-  it("keeps a browser click auto-allowed on a local backend (no upgrade)", () => {
-    // Interactions are exempt from the local-backend allow→require_approval
-    // tightening, so a multi-step flow doesn't prompt on every click.
+  it("requires approval for a browser click on a local backend", () => {
     expect(engine.decide(browserClick("e3"), { sandboxed: false }).level).toBe(
-      "allow"
+      "require_approval"
     )
+  })
+
+  it("does not let the local browser carve-out auto-approve consequential actions", () => {
+    expect(
+      engine.decide(browserConsequentialClick('button "Purchase"'), {
+        sandboxed: false,
+      }).level
+    ).toBe("require_approval")
+    expect(
+      engine.decide(browserSubmitType('textbox "Message"', "hello (5 chars)"), {
+        sandboxed: false,
+      }).level
+    ).toBe("require_approval")
   })
 
   it("still requires approval for navigation on a local backend", () => {

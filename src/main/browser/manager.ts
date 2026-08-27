@@ -4,6 +4,7 @@ import { BrowserWindowHost, type TabInfo } from "./window"
 import { SidebarBrowserHost, type SidebarBounds } from "./sidebar-host"
 import * as settingsService from "../settings/service"
 import type {
+  BrowserRefDescription,
   InteractionResult,
   NavigateResult,
   ScreenshotResult,
@@ -69,6 +70,7 @@ export interface BrowserHandle {
   navigate(url: string): Promise<NavigateResult>
   screenshot(): Promise<ScreenshotResult>
   snapshot(): Promise<string>
+  describeRef(ref: string): BrowserRefDescription
   click(ref: string): Promise<InteractionResult>
   type(ref: string, text: string, submit: boolean): Promise<InteractionResult>
   back(): Promise<NavigateResult>
@@ -311,7 +313,11 @@ export class BrowserManager {
     if (wc.isDestroyed()) return null
     const url = wc.getURL()
     if (!url || url === "about:blank") return null
-    return { url, title: wc.getTitle() || url, loading: wc.isLoadingMainFrame() }
+    return {
+      url,
+      title: wc.getTitle() || url,
+      loading: wc.isLoadingMainFrame(),
+    }
   }
 
   // The renderer tells us which conversation the user is viewing; show its tab.
@@ -407,9 +413,13 @@ export class BrowserManager {
     return {
       navigate,
       screenshot: () =>
-        this.ensureTab(conversationId).screenshot(SCREENSHOT_TIMEOUT_MS, signal),
+        this.ensureTab(conversationId).screenshot(
+          SCREENSHOT_TIMEOUT_MS,
+          signal
+        ),
       snapshot: () =>
         this.ensureTab(conversationId).snapshot(SNAPSHOT_TIMEOUT_MS, signal),
+      describeRef: (ref) => this.ensureTab(conversationId).describeRef(ref),
       click: (ref) =>
         this.ensureTab(conversationId).click(ref, INTERACT_TIMEOUT_MS, signal),
       type: (ref, text, submit) =>
@@ -442,7 +452,8 @@ export class BrowserManager {
       reveal: () => {
         this.ensureTab(conversationId)
         if (this.surface === "sidebar") {
-          if (this.activeConversationId === conversationId) this.openRequester?.()
+          if (this.activeConversationId === conversationId)
+            this.openRequester?.()
         } else {
           this.windowHost.reveal()
           this.windowHost.showView(conversationId)

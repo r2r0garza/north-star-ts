@@ -1,4 +1,4 @@
-import type { Tool, ToolContext } from "../types"
+import { TOOL_EFFECTS, type Tool, type ToolContext } from "../types"
 import { toolError, truncateForModel } from "../output"
 
 // Read the current page as a compact accessibility outline (roles + names). This
@@ -6,6 +6,7 @@ import { toolError, truncateForModel } from "../output"
 // screenshots can't be shown to the model. Not gated (observation, not a side
 // effect), mirroring how file reads never reach the approval gate.
 export const browserSnapshotTool: Tool = {
+  effects: TOOL_EFFECTS.openWorldRead,
   definition: {
     type: "function",
     function: {

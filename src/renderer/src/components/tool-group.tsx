@@ -59,6 +59,91 @@ function clip(text: string): string {
     : text
 }
 
+function approvalDiff(detail: Record<string, unknown> | undefined):
+  | {
+      diff: string
+      additions?: number
+      deletions?: number
+      truncated?: boolean
+    }
+  | undefined {
+  const diff = detail?.diff
+  if (!diff || typeof diff !== "object") return undefined
+  const d = diff as Record<string, unknown>
+  return typeof d.diff === "string"
+    ? {
+        diff: d.diff,
+        additions: typeof d.additions === "number" ? d.additions : undefined,
+        deletions: typeof d.deletions === "number" ? d.deletions : undefined,
+        truncated: d.truncated === true,
+      }
+    : undefined
+}
+
+function shellApprovalDetails(
+  detail: Record<string, unknown> | undefined
+): string[] {
+  const analysis = detail?.shellAnalysis
+  if (!analysis || typeof analysis !== "object") return []
+  const a = analysis as Record<string, unknown>
+  const segments = Array.isArray(a.segments) ? a.segments : []
+  const executables = segments
+    .map((segment) =>
+      segment && typeof segment === "object"
+        ? (segment as Record<string, unknown>).executable
+        : undefined
+    )
+    .filter((value): value is string => typeof value === "string" && !!value)
+  const network = Array.isArray(a.networkOperations)
+    ? a.networkOperations.filter(
+        (value): value is string => typeof value === "string" && !!value
+      )
+    : []
+  const outside = Array.isArray(a.outsideWorkspacePaths)
+    ? a.outsideWorkspacePaths.filter(
+        (value): value is string => typeof value === "string" && !!value
+      )
+    : []
+  const writes = Array.isArray(a.candidateWritePaths)
+    ? a.candidateWritePaths.filter(
+        (value): value is string => typeof value === "string" && !!value
+      )
+    : []
+  const reasons = Array.isArray(a.reasons)
+    ? a.reasons.filter(
+        (value): value is string => typeof value === "string" && !!value
+      )
+    : []
+  return [
+    executables.length ? `Commands: ${executables.join(", ")}` : "",
+    network.length ? `Network: ${network.join(", ")}` : "",
+    outside.length ? `Outside workspace: ${outside.join(", ")}` : "",
+    writes.length ? `Writes: ${writes.join(", ")}` : "",
+    reasons.length ? `Syntax: ${reasons.join(", ")}` : "",
+  ].filter(Boolean)
+}
+
+function browserApprovalDetails(
+  detail: Record<string, unknown> | undefined
+): string[] {
+  if (!detail) return []
+  const actionType =
+    typeof detail.actionType === "string" ? detail.actionType : undefined
+  const origin = typeof detail.origin === "string" ? detail.origin : undefined
+  const target = typeof detail.target === "string" ? detail.target : undefined
+  const payloadSummary =
+    typeof detail.payloadSummary === "string"
+      ? detail.payloadSummary
+      : undefined
+  if (!actionType && !origin && !target && !payloadSummary) return []
+  return [
+    actionType ? `Action: ${actionType}` : "",
+    origin ? `Origin: ${origin}` : "",
+    target ? `Target: ${target}` : "",
+    payloadSummary ? `Payload: ${payloadSummary}` : "",
+  ].filter(Boolean)
+}
+
 // A collapsible group of tool calls for one assistant turn. Collapsed by
 // default; summary shows the count (and a spinner while any call is running).
 // A pending approval no longer force-opens the group: the approval prompt now
@@ -72,7 +157,7 @@ export function ToolGroup({ calls }: { calls: ToolUse[] }) {
 
   return (
     <Collapsible
-      className="w-full min-w-0 max-w-full"
+      className="w-full max-w-full min-w-0"
       open={open}
       onOpenChange={setOpen}
     >
@@ -92,8 +177,8 @@ export function ToolGroup({ calls }: { calls: ToolUse[] }) {
           </Marker>
         </button>
       </CollapsibleTrigger>
-      <CollapsibleContent className="min-w-0 max-w-full">
-        <div className="mt-1 flex min-w-0 max-w-full flex-col gap-1 pl-2">
+      <CollapsibleContent className="max-w-full min-w-0">
+        <div className="mt-1 flex max-w-full min-w-0 flex-col gap-1 pl-2">
           {calls.map((c) => (
             <ToolUseRow key={c.id} use={c} />
           ))}
@@ -113,8 +198,8 @@ function ToolUseRow({ use }: { use: ToolUse }) {
   const interrupted = use.status === "interrupted"
   const awaiting = use.approval?.status === "pending"
   return (
-    <div className="flex min-w-0 max-w-full flex-col gap-1">
-      <Collapsible className="w-full min-w-0 max-w-full">
+    <div className="flex max-w-full min-w-0 flex-col gap-1">
+      <Collapsible className="w-full max-w-full min-w-0">
         <CollapsibleTrigger asChild>
           <button type="button" className="group/row w-full text-left">
             <Marker
@@ -153,10 +238,10 @@ function ToolUseRow({ use }: { use: ToolUse }) {
             </Marker>
           </button>
         </CollapsibleTrigger>
-        <CollapsibleContent className="min-w-0 max-w-full">
-          <div className="mt-1 flex min-w-0 max-w-full flex-col gap-2 pl-6 text-xs">
+        <CollapsibleContent className="max-w-full min-w-0">
+          <div className="mt-1 flex max-w-full min-w-0 flex-col gap-2 pl-6 text-xs">
             {(use.args || use.rawArgs) && (
-              <pre className="w-full min-w-0 max-w-full overflow-x-auto rounded-md bg-muted px-2 py-1.5 text-muted-foreground">
+              <pre className="w-full max-w-full min-w-0 overflow-x-auto rounded-md bg-muted px-2 py-1.5 text-muted-foreground">
                 {use.args ? JSON.stringify(use.args, null, 2) : use.rawArgs}
               </pre>
             )}
@@ -201,10 +286,14 @@ export function ApprovalCard({
   // Delegation (handing work to a background task) is asked every time — there's
   // no "always allow" for it, so hide that affordance for delegate approvals.
   const allowRemember = approval.kind !== "delegate"
-  // Web access (web_fetch) is workspace-independent, so its "remember" is scoped
-  // to the session ("this conversation") rather than the workspace folder. Every
-  // other gated action remembers per workspace.
+  // Web and browser approvals are tied to current external/session state, so
+  // their "remember" is scoped to this conversation. Other gated actions remember
+  // per workspace.
   const isWeb = approval.kind === "web"
+  const isBrowser = approval.kind === "browser"
+  const diff = approvalDiff(approval.detail)
+  const shellDetails = shellApprovalDetails(approval.detail)
+  const browserDetails = browserApprovalDetails(approval.detail)
   return (
     <div className="flex flex-col gap-2 rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-xs">
       <div className="flex items-center gap-2 font-medium text-destructive">
@@ -214,13 +303,44 @@ export function ApprovalCard({
       <pre className="max-w-full overflow-hidden rounded-md bg-muted px-2 py-1.5 break-words whitespace-pre-wrap text-muted-foreground">
         {approval.summary}
       </pre>
+      {shellDetails.length > 0 && (
+        <div className="rounded-md border bg-background px-2 py-1.5 text-muted-foreground">
+          {shellDetails.map((line) => (
+            <div key={line} className="break-words">
+              {line}
+            </div>
+          ))}
+        </div>
+      )}
+      {browserDetails.length > 0 && (
+        <div className="rounded-md border bg-background px-2 py-1.5 text-muted-foreground">
+          {browserDetails.map((line) => (
+            <div key={line} className="break-words">
+              {line}
+            </div>
+          ))}
+        </div>
+      )}
+      {diff && (
+        <div className="max-w-full min-w-0 rounded-md border bg-background">
+          <div className="flex items-center justify-between gap-2 border-b px-2 py-1 text-[0.7rem] text-muted-foreground">
+            <span>
+              {diff.additions ?? 0} additions, {diff.deletions ?? 0} deletions
+            </span>
+            {diff.truncated && <span>Preview truncated</span>}
+          </div>
+          <pre className="max-h-56 max-w-full overflow-auto px-2 py-1.5 font-mono text-[0.7rem] leading-4 whitespace-pre">
+            {diff.diff}
+          </pre>
+        </div>
+      )}
       <div className="flex flex-wrap items-center gap-2">
         <Button size="xs" onClick={() => onApproval(requestId, "approved")}>
           Approve once
           <Kbd className="ml-1.5">⏎</Kbd>
         </Button>
         {allowRemember &&
-          (isWeb ? (
+          (isWeb || isBrowser ? (
             <Button
               size="xs"
               variant="outline"

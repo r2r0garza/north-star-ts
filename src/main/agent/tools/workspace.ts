@@ -1,4 +1,4 @@
-import { resolve, relative, isAbsolute, dirname } from "path"
+import { resolve, relative, isAbsolute, dirname, basename, sep } from "path"
 import { realpath } from "fs/promises"
 
 // Resolve a model-supplied path against the workspace root and guarantee the
@@ -11,7 +11,7 @@ import { realpath } from "fs/promises"
 export function resolveInWorkspace(workspace: string, path: string): string {
   const target = resolve(workspace, path || ".")
   const rel = relative(workspace, target)
-  const escapes = rel.startsWith("..") || isAbsolute(rel)
+  const escapes = isParentTraversal(rel) || isAbsolute(rel)
   if (escapes) {
     throw new Error(
       `Path "${path}" is outside the workspace and is not allowed.`
@@ -24,15 +24,28 @@ export function resolveInWorkspace(workspace: string, path: string): string {
 // purely lexical (both must already be absolute, normalized paths).
 function isInside(parent: string, child: string): boolean {
   const rel = relative(parent, child)
-  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel))
+  return rel === "" || (!isParentTraversal(rel) && !isAbsolute(rel))
+}
+
+function isParentTraversal(rel: string): boolean {
+  return rel === ".." || rel.startsWith(`..${sep}`)
+}
+
+function isEnoent(err: unknown): boolean {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    "code" in err &&
+    (err as NodeJS.ErrnoException).code === "ENOENT"
+  )
 }
 
 // Like `resolveInWorkspace`, but additionally follows symlinks via realpath to
 // guarantee the *real* target stays inside the *real* workspace root — closing
 // the symlink-escape hole the lexical check can't see. For paths that don't
 // exist yet (creating a new file), it validates the nearest existing ancestor
-// instead, so writes/edits to new files still work. Returns the lexically safe
-// absolute path (NOT the realpath) so callers operate on the in-workspace path.
+// instead, so writes/edits to new files still work. Returns the validated real
+// path (including any not-yet-created suffix) so use is bound to validation.
 export async function resolveInWorkspaceReal(
   workspace: string,
   path: string
@@ -48,6 +61,7 @@ export async function resolveInWorkspaceReal(
   // realpath that. A not-yet-created file is fine as long as its real parent is
   // inside the workspace.
   let probe = target
+  const suffix: string[] = []
   // eslint-disable-next-line no-constant-condition
   while (true) {
     try {
@@ -57,16 +71,11 @@ export async function resolveInWorkspaceReal(
           `Path "${path}" resolves (via symlink) outside the workspace and is not allowed.`
         )
       }
-      return target
+      return resolve(real, ...suffix.reverse())
     } catch (err) {
-      // Re-throw our own escape error; ENOENT means this ancestor doesn't exist
-      // yet, so step up to its parent and try again.
-      if (
-        err instanceof Error &&
-        err.message.includes("outside the workspace")
-      ) {
-        throw err
-      }
+      // ENOENT means this ancestor doesn't exist yet, so step up to its parent
+      // and try again. Other validation failures must fail closed.
+      if (!isEnoent(err)) throw err
       const parent = dirname(probe)
       if (parent === probe) {
         // Reached the filesystem root without finding an existing ancestor.
@@ -74,6 +83,7 @@ export async function resolveInWorkspaceReal(
           `Path "${path}" could not be validated against the workspace.`
         )
       }
+      suffix.push(basename(probe))
       probe = parent
     }
   }

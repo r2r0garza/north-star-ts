@@ -1,4 +1,4 @@
-import type { Tool } from "./types"
+import { TOOL_EFFECTS, type Tool } from "./types"
 import type { Question } from "./types"
 import { toolError } from "./output"
 
@@ -14,6 +14,7 @@ const MAX_OPTIONS = 4
 // come back as the tool result so the model can continue with them. Offered in
 // all modes — clarification is useful everywhere.
 export const askUserQuestionTool: Tool = {
+  effects: TOOL_EFFECTS.openWorldMutation,
   definition: {
     type: "function",
     function: {

@@ -41,3 +41,11 @@ system-prompt-logs/
 
 agent-memory/
 cli_probes/
+.cowork/skills/memory-*
+
+big-read-test.txt
+binary-test.dat
+utf8-test.txt
+verify-a.txt
+verify-moved.txt
+verify-new.txt

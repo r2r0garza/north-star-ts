@@ -81,6 +81,8 @@ export type {
   IdeSettings,
   NotificationSettings,
   Backend,
+  LocalRuntimeProfile,
+  LocalProfileCapabilities,
   FilePermission,
   ApprovalCategory,
   RuntimeStatus,

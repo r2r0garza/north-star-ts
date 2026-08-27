@@ -612,6 +612,7 @@ export interface DashboardRecipe {
   command?: string
   url?: string
   cwd?: string
+  workspace?: string
   note?: string
 }
 

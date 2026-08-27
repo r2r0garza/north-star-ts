@@ -1,9 +1,7 @@
-import type { Tool, ToolContext } from "../types"
+import { TOOL_EFFECTS, type Tool, type ToolContext } from "../types"
 import { toolError, truncateForModel } from "../output"
-import {
-  DuckDuckGoProvider,
-  type WebSearchProvider,
-} from "./providers"
+import { DuckDuckGoProvider, type WebSearchProvider } from "./providers"
+import { SafeFetchBodyTooLargeError, SafeFetchTimeoutError } from "./safe-fetch"
 
 // The active search provider. A single default (DuckDuckGo) for now; swap or
 // make configurable later without touching the tool below.
@@ -19,6 +17,7 @@ const MAX_LIMIT = 10
 // so — like file reads and browser interactions — it builds NO ToolAction and is
 // never gated. (Reading a specific arbitrary page IS gated: see web_fetch.)
 export const webSearchTool: Tool = {
+  effects: TOOL_EFFECTS.openWorldRead,
   definition: {
     type: "function",
     function: {
@@ -65,11 +64,16 @@ export const webSearchTool: Tool = {
             }`
         )
         .join("\n\n")
-      return truncateForModel(
-        `Search results for "${query}":\n\n${formatted}`
-      ).text
+      return truncateForModel(`Search results for "${query}":\n\n${formatted}`)
+        .text
     } catch (err) {
       // Aborted (Stop/timeout) surfaces as an AbortError — report it plainly.
+      if (err instanceof SafeFetchTimeoutError) {
+        return toolError("timeout", err.message)
+      }
+      if (err instanceof SafeFetchBodyTooLargeError) {
+        return toolError("response_too_large", err.message)
+      }
       if (err instanceof Error && err.name === "AbortError") {
         return toolError("aborted", "The search was cancelled.")
       }

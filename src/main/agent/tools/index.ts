@@ -1,10 +1,17 @@
-import type { Tool, ToolContext } from "./types"
+import type { Tool, ToolContext, ToolEffects } from "./types"
 import { listFilesTool } from "./list_files_tool"
 import { readFileTool } from "./read_file_tool"
 import { searchTool } from "./search_tool"
 import { editFileTool } from "./edit_file_tool"
 import { writeFileTool } from "./write_file_tool"
+import { applyPatchTool } from "./apply_patch_tool"
 import { runShellTool } from "./run_shell_tool"
+import {
+  execCommandTool,
+  pollCommandTool,
+  terminateCommandTool,
+  writeStdinTool,
+} from "./command_session_tools"
 import { todoWriteTool } from "./todo_tool"
 import { askUserQuestionTool } from "./ask_user_question_tool"
 import { runTodosInBackgroundTool } from "./run_todos_in_background"
@@ -35,8 +42,17 @@ const workspaceTools: Tool[] = [
   searchTool,
   editFileTool,
   writeFileTool,
-  runShellTool,
+  applyPatchTool,
+  execCommandTool,
+  writeStdinTool,
+  pollCommandTool,
+  terminateCommandTool,
 ]
+
+// Legacy compatibility tools remain executable by name for old/internal callers,
+// but are not advertised in the model-facing toolDefinitions array. The public
+// shell surface is exec_command + write_stdin/poll_command/terminate_command.
+const legacyTools: Tool[] = [runShellTool]
 
 // Tools gated by something other than the workspace (e.g. conversation mode).
 // They're dispatchable via runTool but are NOT in `toolDefinitions`; runChat
@@ -98,11 +114,26 @@ export const toolDefinitions = workspaceTools.map((t) => t.definition)
 
 // Lookup by name, used to execute any tool the model asked for.
 const byName = new Map(
-  [...workspaceTools, ...otherTools, ...browserTools, ...webTools].map((t) => [
-    t.definition.function.name,
-    t,
-  ])
+  [
+    ...workspaceTools,
+    ...legacyTools,
+    ...otherTools,
+    ...browserTools,
+    ...webTools,
+  ].map((t) => [t.definition.function.name, t])
 )
+
+export const builtInTools = [
+  ...workspaceTools,
+  ...legacyTools,
+  ...otherTools,
+  ...browserTools,
+  ...webTools,
+]
+
+export function getToolEffects(name: string): ToolEffects | undefined {
+  return byName.get(name)?.effects
+}
 
 // Run a tool call by name. Returns a string result (or an error message).
 export async function runTool(

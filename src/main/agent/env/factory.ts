@@ -1,12 +1,12 @@
 import { LocalEnvironment } from "./local"
 import { ContainerEnvironment } from "./container"
-import type { Environment } from "./types"
+import type { Environment, LocalRuntimeProfile } from "./types"
 
 // Default image for the container backend (basics only — no build/pinning here).
 const DEFAULT_CONTAINER_IMAGE = "node:20-bookworm"
 
 export type EnvConfig =
-  | { kind: "local" }
+  | { kind: "local"; profile?: LocalRuntimeProfile }
   | { kind: "container"; runtime: "docker" | "podman"; image: string }
 
 // Build the execution backend for a turn. Local is the default; a container is
@@ -27,7 +27,7 @@ export async function createEnvironment(
     await env.start()
     return env
   }
-  return new LocalEnvironment(workspace)
+  return new LocalEnvironment(workspace, cfg.profile ?? "host-access")
 }
 
 // Until the settings pane (.plan/004) lands, the backend is selected by a single
@@ -43,5 +43,13 @@ export function envConfigFromEnv(): EnvConfig {
       image: process.env.COWORK_ENV_IMAGE || DEFAULT_CONTAINER_IMAGE,
     }
   }
-  return { kind: "local" }
+  const profile = process.env.COWORK_LOCAL_PROFILE
+  if (
+    profile === "read-only" ||
+    profile === "workspace-write" ||
+    profile === "host-access"
+  ) {
+    return { kind: "local", profile }
+  }
+  return { kind: "local", profile: "host-access" }
 }

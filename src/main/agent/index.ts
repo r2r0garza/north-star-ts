@@ -8,6 +8,7 @@ import {
   webSearchDefinition,
   webFetchDefinition,
   runTool,
+  getToolEffects,
   todoWriteTool,
   askUserQuestionTool,
   runTodosInBackgroundTool,
@@ -17,10 +18,11 @@ import {
   presentPlanTool,
 } from "./tools"
 import type { BrowserHandle } from "../browser/manager"
-import type { ToolImage } from "./tools/types"
+import { TOOL_EFFECTS, type ToolImage } from "./tools/types"
 import { readFileTool } from "./tools/read_file_tool"
 import { accumulateToolCalls, extractTextToolCalls } from "./tool-stream"
 import type { ToolCallDelta } from "./tool-stream"
+import { runToolCallBatches } from "./tool-batch-scheduler"
 import {
   listTodos,
   replaceTodos,
@@ -66,6 +68,7 @@ import {
   browserStateSection,
 } from "./context/sections"
 import { repairDanglingToolCalls } from "./repair"
+import { offeredToolNames, unavailableToolResult } from "./tool-availability"
 import { createEnvironment } from "./env"
 import { LocalEnvironment } from "./env/local"
 import type { Environment } from "./env/types"
@@ -359,6 +362,7 @@ export type ChatEvent =
       // "always allow in this workspace" button, since delegation is asked every
       // time. Optional so older persisted events without it still parse.
       kind?: ActionKind
+      detail?: Record<string, unknown>
     }
   // The agent is asking the user clarifying questions (ask_user_question). `id`
   // is the tool-call id; `requestId` is the process-unique token the renderer
@@ -757,7 +761,10 @@ export async function runAgentLoop(
         allowedNames,
         mcpWorkspace,
         (server, err) =>
-          console.warn(`[mcp] server "${server}" unavailable this turn: ${err}`)
+          console.warn(
+            `[mcp] server "${server}" unavailable this turn: ${err}`
+          ),
+        abort.signal
       )
     }
   }
@@ -769,7 +776,12 @@ export async function runAgentLoop(
   const MUTATING_TOOL_NAMES = new Set([
     "write_file_tool",
     "edit_file_tool",
+    "apply_patch_tool",
     "run_shell_tool",
+    "exec_command",
+    "write_stdin",
+    "poll_command",
+    "terminate_command",
   ])
 
   // Build the per-turn toolset from the CURRENT plan-mode flag. Recomputed each
@@ -1092,10 +1104,15 @@ export async function runAgentLoop(
   // Whether this turn runs in an isolated container — gates the sandbox
   // auto-approve downgrade in the approval policy below.
   let sandboxed = false
+  let localProfile: settingsService.LocalRuntimeProfile = "host-access"
   if (hasWorkspace) {
     try {
       const envConfig = settingsService.getExecutionConfig()
       sandboxed = envConfig.kind === "container"
+      localProfile =
+        envConfig.kind === "local"
+          ? (envConfig.profile ?? "host-access")
+          : "host-access"
       env = await createEnvironment(workspace!, conversationId, envConfig)
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err)
@@ -1140,6 +1157,7 @@ export async function runAgentLoop(
       // the previous iteration's present_plan call flips planMode off, so this
       // round-trip regains the full filesystem toolset.
       const tools = buildTools()
+      const offeredNames = offeredToolNames(tools)
 
       const stream = await createCompletion(
         llm.client,
@@ -1289,239 +1307,248 @@ export async function runAgentLoop(
         })),
       })
 
-      // Images a tool produced this round (browser_screenshot). Collected across
-      // the round's tool calls, then injected as a single follow-up user message
-      // after the tool results so the vision model sees them on the next
-      // round-trip. Tool results themselves stay text-only (persisted as strings).
-      const turnImages: ToolImage[] = []
-
-      // Execute each requested tool call and append its result. read_skill is
-      // built per-chat (it closes over the loaded skills), so route it directly;
-      // everything else goes through the static tool registry.
-      for (const call of toolCalls) {
-        onEvent({
-          type: "tool",
-          phase: "start",
-          id: call.id,
-          name: call.name,
-          arguments: call.arguments,
-        })
-        // The model's streamed tool-call arguments are occasionally malformed JSON
-        // even when the turn wasn't length-truncated (a mid-stream glitch, or an
-        // unescaped character in a large blob — e.g. a big write_file_tool payload).
-        // (Concatenated JSON from providers that omit the streaming `index` is now
-        // reassembled correctly upstream by accumulateToolCalls; this catch remains
-        // as defense-in-depth for genuinely malformed/truncated arguments.)
-        // A raw JSON.parse throw here would abort the whole turn as an opaque
-        // "turn ended early: Unterminated string in JSON …". Instead, feed the tool
-        // call a structured error result (with its tool_call_id, so the transcript
-        // stays well-formed) and continue — the agent sees an actionable failure and
-        // can retry the call with valid arguments (or chunk a large write).
-        let args: Record<string, unknown>
-        try {
-          args = JSON.parse(call.arguments || "{}")
-        } catch {
-          const errResult =
-            "ERROR[bad_tool_arguments]: your tool-call arguments were not valid " +
-            "JSON (often an unescaped character or an over-large value). Retry this " +
-            "call with well-formed JSON; if a value is large, write it in smaller chunks."
+      // Execute requested tool calls in maximal consecutive batches. Only
+      // workspace-confined read-only tools marked parallel-safe can overlap; all
+      // mutations, browser actions, questions, approvals, shell calls,
+      // delegation, web/MCP, and unannotated calls remain one-call barriers.
+      const toolResults = await runToolCallBatches(toolCalls, {
+        onBatchSettled: (results) => {
+          // Persist each settled batch before the next barrier begins. Within a
+          // read batch, rows stay in the model's original call order even if
+          // individual reads finished out of order.
+          for (const { call, result } of results) {
+            messages.push({
+              role: "tool",
+              tool_call_id: call.id,
+              content: result,
+            })
+            appendMessage({
+              conversationId,
+              role: "tool",
+              content: result,
+              toolCallId: call.id,
+              toolName: call.name,
+            })
+          }
+        },
+        effectsFor: (name) => {
+          if (name === readSkillTool.definition.function.name) {
+            return TOOL_EFFECTS.readOnlySequential
+          }
+          return (
+            mcpTools.find((tool) => tool.function.name === name)?.effects ??
+            getToolEffects(name)
+          )
+        },
+        onStart: (call) =>
+          onEvent({
+            type: "tool",
+            phase: "start",
+            id: call.id,
+            name: call.name,
+            arguments: call.arguments,
+          }),
+        onDone: (call, result) =>
           onEvent({
             type: "tool",
             phase: "done",
             id: call.id,
             name: call.name,
-            result: errResult,
-          })
-          messages.push({
-            role: "tool",
-            tool_call_id: call.id,
-            content: errResult,
-          })
-          appendMessage({
+            result,
+          }),
+        execute: async (call) => {
+          const callImages: ToolImage[] = []
+          const unavailable = unavailableToolResult(call.name, offeredNames)
+          if (unavailable) return { result: unavailable }
+          // The model's streamed tool-call arguments are occasionally malformed JSON
+          // even when the turn wasn't length-truncated (a mid-stream glitch, or an
+          // unescaped character in a large blob — e.g. a big write_file_tool payload).
+          // (Concatenated JSON from providers that omit the streaming `index` is now
+          // reassembled correctly upstream by accumulateToolCalls; this catch remains
+          // as defense-in-depth for genuinely malformed/truncated arguments.)
+          // A raw JSON.parse throw here would abort the whole turn as an opaque
+          // "turn ended early: Unterminated string in JSON …". Instead, feed the tool
+          // call a structured error result (with its tool_call_id, so the transcript
+          // stays well-formed) and continue — the agent sees an actionable failure and
+          // can retry the call with valid arguments (or chunk a large write).
+          let args: Record<string, unknown>
+          try {
+            args = JSON.parse(call.arguments || "{}")
+          } catch {
+            const errResult =
+              "ERROR[bad_tool_arguments]: your tool-call arguments were not valid " +
+              "JSON (often an unescaped character or an over-large value). Retry this " +
+              "call with well-formed JSON; if a value is large, write it in smaller chunks."
+            return { result: errResult }
+          }
+          // The approval gate for this tool call. `allow` and `hard_block` resolve
+          // synchronously; `require_approval` emits an event and blocks until the
+          // renderer calls resolveApproval over IPC. The event carries the tool-
+          // call `id` (so the renderer attaches the card to the right marker) and
+          // a process-unique `requestId` keying the pending map — the renderer
+          // echoes the latter back, so a decision can't resolve another turn's gate.
+          const gate: Gate = (action): Promise<GateOutcome> => {
+            // Plan mode hard-blocks workspace mutations regardless of the offered
+            // toolset (belt-and-suspenders: the mutating tools are already withheld
+            // from buildTools()). Reads the LIVE flag, so once a plan is approved
+            // this stops blocking and the same turn can implement.
+            const decision =
+              planModeClassifier.classify(action) ??
+              policy.decide(action, {
+                workspacePath: workspace,
+                conversationId,
+                sandboxed,
+                localProfile,
+              })
+            if (decision.level === "allow") return Promise.resolve("approved")
+            if (decision.level === "hard_block")
+              return Promise.resolve("blocked")
+            // Auto mode: automatically approve any action that would otherwise
+            // require human confirmation. Hard-blocks still block (handled above).
+            if (autoMode) return Promise.resolve("approved")
+            const requestId = randomUUID()
+            onEvent({
+              type: "approval",
+              id: call.id,
+              requestId,
+              tool: action.tool,
+              summary: action.summary,
+              reason: decision.reason,
+              kind: action.kind,
+              detail: action.detail,
+            })
+            return new Promise<GateOutcome>((resolve) => {
+              pendingApprovals.set(requestId, {
+                resolve,
+                action,
+                workspacePath: workspace,
+                conversationId,
+              })
+              // If the turn is stopped while waiting on this approval, release the
+              // gate (as a denial) so the loop can unwind instead of hanging — the
+              // pre-PR2 "renderer disconnect hangs the gate" gap, closed by Stop.
+              // EXCEPTION: an app-shutdown abort leaves the gate unresolved on
+              // purpose — persisting a denial result here would record a decision
+              // the user never made and wedge resume (plan 012). The process is
+              // exiting anyway; the task stays waiting_for_approval and reconciles
+              // to interrupted on next boot.
+              abort.signal.addEventListener(
+                "abort",
+                () => {
+                  if (abort.signal.reason === SHUTDOWN_ABORT_REASON) return
+                  if (pendingApprovals.delete(requestId)) resolve("denied")
+                },
+                { once: true }
+              )
+            })
+          }
+          // The clarification prompt for ask_user_question. Emits a `question`
+          // event and blocks until the renderer answers (chat:answer → resolveQuestion)
+          // or the turn is stopped (resolves "cancelled" so the loop unwinds).
+          const ask: Ask = (questions): Promise<AskResult> => {
+            const requestId = randomUUID()
+            onEvent({ type: "question", id: call.id, requestId, questions })
+            return new Promise<AskResult>((resolve) => {
+              pendingQuestions.set(requestId, resolve)
+              abort.signal.addEventListener(
+                "abort",
+                () => {
+                  // Shutdown: leave unresolved so no synthetic answer is persisted
+                  // and the task reconciles to interrupted (mirrors the gate above).
+                  if (abort.signal.reason === SHUTDOWN_ABORT_REASON) return
+                  if (pendingQuestions.delete(requestId))
+                    resolve({ status: "cancelled" })
+                },
+                { once: true }
+              )
+            })
+          }
+          // read_skill ignores these fields. With a workspace, file tools confine
+          // to it; without one, read_file_tool reads only the attached files.
+          const ctx = {
+            workspace: workspace ?? "",
+            attachments,
             conversationId,
-            role: "tool",
-            content: errResult,
-            toolCallId: call.id,
-            toolName: call.name,
-          })
-          continue
-        }
-        // The approval gate for this tool call. `allow` and `hard_block` resolve
-        // synchronously; `require_approval` emits an event and blocks until the
-        // renderer calls resolveApproval over IPC. The event carries the tool-
-        // call `id` (so the renderer attaches the card to the right marker) and
-        // a process-unique `requestId` keying the pending map — the renderer
-        // echoes the latter back, so a decision can't resolve another turn's gate.
-        const gate: Gate = (action): Promise<GateOutcome> => {
-          // Plan mode hard-blocks workspace mutations regardless of the offered
-          // toolset (belt-and-suspenders: the mutating tools are already withheld
-          // from buildTools()). Reads the LIVE flag, so once a plan is approved
-          // this stops blocking and the same turn can implement.
-          const decision =
-            planModeClassifier.classify(action) ??
-            policy.decide(action, {
-              workspacePath: workspace,
-              conversationId,
-              sandboxed,
+            gate,
+            ask,
+            env,
+            signal: abort.signal,
+            enqueueTask: opts.enqueueTask,
+            browser,
+            emitImage: (image: ToolImage) => callImages.push(image),
+            // present_plan calls this on approval; the selected backend is already
+            // running, so the next loop iteration can safely unlock mutations.
+            setPlanMode: (on: boolean) => {
+              planMode = on
+              onEvent({ type: "plan_mode", enabled: on })
+            },
+            // present_plan calls this when the user picks "approve and Auto mode".
+            // Shared with the mid-turn dropdown toggle (autoModeSetters registry).
+            setAutoMode,
+            // Subagent spawning: wired only when the running agent may spawn, so
+            // the tool reports "unavailable" otherwise (it's also not offered).
+            // agentChildren is the authorization whitelist; depth/ancestors bound
+            // recursion. The child's name is appended to the ancestor chain here.
+            spawnSubagent: offerSpawn
+              ? (input: { agentName: string; prompt: string }) =>
+                  spawnSubagent({
+                    agentName: input.agentName,
+                    prompt: input.prompt,
+                    parentWorkspace: hasWorkspace ? workspace : undefined,
+                    // Children discover agents from the same directory as this run
+                    // (Chat's project dir, not the confinement workspace).
+                    agentDir,
+                    parentConversation: conversation,
+                    parentSignal: abort.signal,
+                    depth: (opts.agentDepth ?? 0) + 1,
+                    ancestors: [
+                      ...(opts.agentAncestors ?? []),
+                      ...(agent ? [agent.name] : []),
+                    ],
+                  })
+              : undefined,
+            agentChildren: agent?.children,
+            agentDepth: opts.agentDepth ?? 0,
+            agentAncestors: opts.agentAncestors ?? [],
+            processRunId: opts.processRunId,
+            processPhaseRunId: opts.processPhaseRunId,
+          }
+          // MCP tool calls (mcp__<server>__<tool>) route to the connection pool via
+          // the manager, not the static tool registry. Gate first: calling a
+          // third-party server is a side effect (kind "mcp"), so it prompts unless
+          // auto mode, exactly like web_fetch. The identity is the prefixed name so an
+          // "always allow" rule is scoped to that specific server tool.
+          const mcpCall = parsePrefixedName(call.name)
+          let result: string
+          if (mcpCall) {
+            const outcome = await gate({
+              tool: call.name,
+              kind: "mcp",
+              summary: `Call ${mcpCall.serverName} · ${mcpCall.toolName}`,
+              identity: call.name,
+              detail: { server: mcpCall.serverName, tool: mcpCall.toolName },
             })
-          if (decision.level === "allow") return Promise.resolve("approved")
-          if (decision.level === "hard_block") return Promise.resolve("blocked")
-          // Auto mode: automatically approve any action that would otherwise
-          // require human confirmation. Hard-blocks still block (handled above).
-          if (autoMode) return Promise.resolve("approved")
-          const requestId = randomUUID()
-          onEvent({
-            type: "approval",
-            id: call.id,
-            requestId,
-            tool: action.tool,
-            summary: action.summary,
-            reason: decision.reason,
-            kind: action.kind,
-          })
-          return new Promise<GateOutcome>((resolve) => {
-            pendingApprovals.set(requestId, {
-              resolve,
-              action,
-              workspacePath: workspace,
-              conversationId,
-            })
-            // If the turn is stopped while waiting on this approval, release the
-            // gate (as a denial) so the loop can unwind instead of hanging — the
-            // pre-PR2 "renderer disconnect hangs the gate" gap, closed by Stop.
-            // EXCEPTION: an app-shutdown abort leaves the gate unresolved on
-            // purpose — persisting a denial result here would record a decision
-            // the user never made and wedge resume (plan 012). The process is
-            // exiting anyway; the task stays waiting_for_approval and reconciles
-            // to interrupted on next boot.
-            abort.signal.addEventListener(
-              "abort",
-              () => {
-                if (abort.signal.reason === SHUTDOWN_ABORT_REASON) return
-                if (pendingApprovals.delete(requestId)) resolve("denied")
-              },
-              { once: true }
-            )
-          })
-        }
-        // The clarification prompt for ask_user_question. Emits a `question`
-        // event and blocks until the renderer answers (chat:answer → resolveQuestion)
-        // or the turn is stopped (resolves "cancelled" so the loop unwinds).
-        const ask: Ask = (questions): Promise<AskResult> => {
-          const requestId = randomUUID()
-          onEvent({ type: "question", id: call.id, requestId, questions })
-          return new Promise<AskResult>((resolve) => {
-            pendingQuestions.set(requestId, resolve)
-            abort.signal.addEventListener(
-              "abort",
-              () => {
-                // Shutdown: leave unresolved so no synthetic answer is persisted
-                // and the task reconciles to interrupted (mirrors the gate above).
-                if (abort.signal.reason === SHUTDOWN_ABORT_REASON) return
-                if (pendingQuestions.delete(requestId))
-                  resolve({ status: "cancelled" })
-              },
-              { once: true }
-            )
-          })
-        }
-        // read_skill ignores these fields. With a workspace, file tools confine
-        // to it; without one, read_file_tool reads only the attached files.
-        const ctx = {
-          workspace: workspace ?? "",
-          attachments,
-          conversationId,
-          gate,
-          ask,
-          env,
-          signal: abort.signal,
-          enqueueTask: opts.enqueueTask,
-          browser,
-          emitImage: (image: ToolImage) => turnImages.push(image),
-          // present_plan calls this on approval; the selected backend is already
-          // running, so the next loop iteration can safely unlock mutations.
-          setPlanMode: (on: boolean) => {
-            planMode = on
-            onEvent({ type: "plan_mode", enabled: on })
-          },
-          // present_plan calls this when the user picks "approve and Auto mode".
-          // Shared with the mid-turn dropdown toggle (autoModeSetters registry).
-          setAutoMode,
-          // Subagent spawning: wired only when the running agent may spawn, so
-          // the tool reports "unavailable" otherwise (it's also not offered).
-          // agentChildren is the authorization whitelist; depth/ancestors bound
-          // recursion. The child's name is appended to the ancestor chain here.
-          spawnSubagent: offerSpawn
-            ? (input: { agentName: string; prompt: string }) =>
-                spawnSubagent({
-                  agentName: input.agentName,
-                  prompt: input.prompt,
-                  parentWorkspace: hasWorkspace ? workspace : undefined,
-                  // Children discover agents from the same directory as this run
-                  // (Chat's project dir, not the confinement workspace).
-                  agentDir,
-                  parentConversation: conversation,
-                  parentSignal: abort.signal,
-                  depth: (opts.agentDepth ?? 0) + 1,
-                  ancestors: [
-                    ...(opts.agentAncestors ?? []),
-                    ...(agent ? [agent.name] : []),
-                  ],
-                })
-            : undefined,
-          agentChildren: agent?.children,
-          agentDepth: opts.agentDepth ?? 0,
-          agentAncestors: opts.agentAncestors ?? [],
-          processRunId: opts.processRunId,
-          processPhaseRunId: opts.processPhaseRunId,
-        }
-        // MCP tool calls (mcp__<server>__<tool>) route to the connection pool via
-        // the manager, not the static tool registry. Gate first: calling a
-        // third-party server is a side effect (kind "mcp"), so it prompts unless
-        // auto mode, exactly like web_fetch. The identity is the prefixed name so an
-        // "always allow" rule is scoped to that specific server tool.
-        const mcpCall = parsePrefixedName(call.name)
-        let result: string
-        if (mcpCall) {
-          const outcome = await gate({
-            tool: call.name,
-            kind: "mcp",
-            summary: `Call ${mcpCall.serverName} · ${mcpCall.toolName}`,
-            identity: call.name,
-            detail: { server: mcpCall.serverName, tool: mcpCall.toolName },
-          })
-          result =
-            outcome === "approved"
-              ? await getMcpManager().callTool(call.name, args, mcpWorkspace)
-              : `ERROR[mcp]: the user ${
-                  outcome === "blocked" ? "blocked" : "declined"
-                } the call to ${mcpCall.serverName} · ${mcpCall.toolName}.`
-        } else {
-          result =
-            call.name === readSkillTool.definition.function.name
-              ? await readSkillTool.execute(args, ctx)
-              : await runTool(call.name, args, ctx)
-        }
-        onEvent({
-          type: "tool",
-          phase: "done",
-          id: call.id,
-          name: call.name,
-          result,
-        })
-        messages.push({
-          role: "tool",
-          tool_call_id: call.id,
-          content: result,
-        })
-        appendMessage({
-          conversationId,
-          role: "tool",
-          content: result,
-          toolCallId: call.id,
-          toolName: call.name,
-        })
-      }
+            result =
+              outcome === "approved"
+                ? await getMcpManager().callTool(
+                    call.name,
+                    args,
+                    mcpWorkspace,
+                    abort.signal
+                  )
+                : `ERROR[mcp]: the user ${
+                    outcome === "blocked" ? "blocked" : "declined"
+                  } the call to ${mcpCall.serverName} · ${mcpCall.toolName}.`
+          } else {
+            result =
+              call.name === readSkillTool.definition.function.name
+                ? await readSkillTool.execute(args, ctx)
+                : await runTool(call.name, args, ctx)
+          }
+          return { result, images: callImages }
+        },
+      })
+      const turnImages = toolResults.flatMap((result) => result.images)
 
       // If any tool produced an image this round (browser_screenshot), inject it
       // as a user message with image content parts so the vision model sees it on

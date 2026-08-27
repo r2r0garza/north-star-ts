@@ -1,34 +1,54 @@
-import { relative } from "path"
-import type { Tool } from "./types"
+import { TOOL_EFFECTS, type Tool } from "./types"
 import { LocalEnvironment } from "../env/local"
+import {
+  isSearchExecutionError,
+  isSearchPatternError,
+  legacyGlobToRipgrepGlob,
+} from "../env/ripgrep"
 import { truncateForModel, toolError } from "./output"
+import type {
+  SearchCase,
+  SearchMode,
+  SearchResult,
+  SearchResultMode,
+} from "../env/types"
 
-// Directories never worth searching. Keeps the walk fast and the results clean.
-const SKIP_DIRS = [".git", "node_modules", "dist", "out", ".cache"]
-
-// Don't read files larger than this when scanning for matches.
 const MAX_FILE_BYTES = 1024 * 1024 // 1 MB
+const MAX_RESULTS_CAP = 500
+const MAX_CONTEXT_LINES = 5
 
-// Searches file contents under the workspace for a regex pattern. The actual scan
-// is a first-class Environment operation (env.search): Local does a Node/fs walk,
-// Container runs one in-container rg/grep — a per-file walk there would be
-// hundreds of slow exec round-trips. Returns `relpath:line: text` hits, bounded
-// by max_results and truncated so large result sets can't blow the context window.
+// Searches file contents under the workspace through Environment.search. Local
+// uses packaged ripgrep; containers use in-container rg or an explicit reduced
+// fallback when rg is absent. Patterns and globs are passed as argv data.
 export const searchTool: Tool = {
+  effects: TOOL_EFFECTS.readOnlyParallel,
   definition: {
     type: "function",
     function: {
       name: "search_tool",
       description:
-        "Search file contents under the workspace for a regular-expression " +
-        "pattern. Returns matching lines as `path:line: text`.",
+        "Search file contents under the workspace. Supports fixed or regex " +
+        "queries, smart case, real include/exclude globs, context, files, and counts.",
       parameters: {
         type: "object",
         properties: {
+          query: {
+            type: "string",
+            description: "Text or regex to search for.",
+          },
           pattern: {
             type: "string",
-            description:
-              "JavaScript regular expression to match against each line.",
+            description: "Deprecated alias for query. Prefer query.",
+          },
+          mode: {
+            type: "string",
+            enum: ["fixed", "regex"],
+            description: "Search mode. Defaults to fixed.",
+          },
+          case: {
+            type: "string",
+            enum: ["smart", "sensitive", "insensitive"],
+            description: "Case matching. Defaults to smart.",
           },
           path: {
             type: "string",
@@ -36,67 +56,244 @@ export const searchTool: Tool = {
               "Subdirectory to search within, relative to the workspace root. " +
               "Defaults to the whole workspace.",
           },
+          globs: {
+            type: "array",
+            items: { type: "string" },
+            description:
+              'Ripgrep include/exclude globs, e.g. ["*.ts", "!dist/**"].',
+          },
           glob: {
             type: "string",
             description:
-              "Optional case-insensitive substring or extension filter on file " +
-              'names (e.g. ".ts"). Only matching files are searched.',
+              'Deprecated single glob/substring filter, e.g. ".ts". Prefer globs.',
+          },
+          result: {
+            type: "string",
+            enum: ["content", "files", "count"],
+            description:
+              "Result shape: matching lines, matching files, or per-file counts. Defaults to content.",
+          },
+          before_context: {
+            type: "integer",
+            description: "Lines of context before each match. Capped at 5.",
+          },
+          after_context: {
+            type: "integer",
+            description: "Lines of context after each match. Capped at 5.",
+          },
+          include_hidden: {
+            type: "boolean",
+            description:
+              "Include hidden files and directories. Defaults to false.",
+          },
+          respect_ignore: {
+            type: "boolean",
+            description: "Respect .gitignore/.ignore rules. Defaults to true.",
           },
           max_results: {
             type: "integer",
             description:
-              "Maximum number of matching lines to return. Defaults to 100.",
+              "Maximum number of result items to return. Server-capped at 500.",
           },
         },
-        required: ["pattern"],
+        required: [],
       },
     },
   },
   execute: async (args, ctx) => {
-    const pattern = typeof args.pattern === "string" ? args.pattern : ""
-    if (!pattern) return toolError("bad_args", "A `pattern` is required.")
+    const query =
+      typeof args.query === "string"
+        ? args.query
+        : typeof args.pattern === "string"
+          ? args.pattern
+          : ""
+    if (!query) return toolError("bad_args", "A `query` is required.")
 
-    try {
-      new RegExp(pattern)
-    } catch (err) {
-      return toolError(
-        "bad_regex",
-        `Invalid regular expression: ${err instanceof Error ? err.message : pattern}`
-      )
-    }
+    const mode = enumArg<SearchMode>(args.mode, ["fixed", "regex"], "fixed")
+    const caseMode = enumArg<SearchCase>(
+      args.case,
+      ["smart", "sensitive", "insensitive"],
+      "smart"
+    )
+    const result = enumArg<SearchResultMode>(
+      args.result,
+      ["content", "files", "count"],
+      "content"
+    )
+    const beforeContext = boundedInt(
+      args.before_context,
+      0,
+      MAX_CONTEXT_LINES,
+      0
+    )
+    const afterContext = boundedInt(args.after_context, 0, MAX_CONTEXT_LINES, 0)
+    const maxResults = boundedInt(args.max_results, 1, MAX_RESULTS_CAP, 100)
+    const includeHidden = args.include_hidden === true
+    const respectIgnore = args.respect_ignore !== false
 
     const env = ctx.env ?? new LocalEnvironment(ctx.workspace)
     const sub = typeof args.path === "string" ? args.path : ""
     const root = await env.resolve(sub)
-    // Display hits relative to the workspace root (resolved in the env's own
-    // filesystem view), so the path reads identically whether matches come back
-    // as host paths or in-container paths under the bind mount.
     const displayRoot = await env.resolve("")
-    const glob =
-      typeof args.glob === "string" && args.glob ? args.glob.toLowerCase() : ""
-    const maxResults =
-      typeof args.max_results === "number" && args.max_results > 0
-        ? Math.floor(args.max_results)
-        : 100
+    const globs = normalizeGlobs(args)
 
-    const { matches, capped } = await env.search({
-      root,
-      pattern,
-      glob: glob || undefined,
-      maxResults,
-      skipDirs: SKIP_DIRS,
-      maxFileBytes: MAX_FILE_BYTES,
-    })
+    try {
+      const search = await env.search({
+        root,
+        query,
+        mode,
+        case: caseMode,
+        globs,
+        result,
+        beforeContext,
+        afterContext,
+        includeHidden,
+        respectIgnore,
+        maxResults,
+        maxFileBytes: MAX_FILE_BYTES,
+        signal: ctx.signal,
+      })
 
-    if (matches.length === 0) {
-      return `No matches for /${pattern}/.`
+      const body = renderSearchResult(search, displayRoot, query, maxResults)
+      return truncateForModel(body, {
+        recoveryHint: recoveryHint(result),
+        metadata: {
+          engine: search.engine,
+          result,
+          capped: search.capped,
+          capReason: search.capReason,
+          captureTruncated: search.captureTruncated,
+          capturedOutputBytes: search.capturedOutputBytes,
+          observedOutputBytes: search.observedOutputBytes,
+          malformedJsonLines: search.malformedJsonLines,
+          reducedFeatures: search.reducedFeatures,
+        },
+      }).text
+    } catch (err) {
+      if (isSearchPatternError(err)) {
+        return toolError(
+          "bad_regex",
+          `Invalid regular expression: ${
+            err instanceof Error ? err.message : query
+          }`
+        )
+      }
+      if (isSearchExecutionError(err)) {
+        return toolError(
+          err.code,
+          err.message,
+          "Search infrastructure failed; retry after repairing the search backend."
+        )
+      }
+      throw err
     }
-    let out = matches
-      .map((m) => `${relative(displayRoot, m.path)}:${m.line}: ${m.text}`)
-      .join("\n")
-    if (capped) {
-      out += `\n[stopped at ${maxResults} matches — narrow the pattern or path for more]`
-    }
-    return truncateForModel(out).text
   },
+}
+
+function normalizeGlobs(args: Record<string, unknown>): string[] {
+  const globs = Array.isArray(args.globs)
+    ? args.globs.filter(
+        (g): g is string => typeof g === "string" && g.length > 0
+      )
+    : []
+  if (typeof args.glob === "string" && args.glob.length > 0) {
+    globs.push(legacyGlobToRipgrepGlob(args.glob))
+  }
+  return globs
+}
+
+function enumArg<T extends string>(
+  value: unknown,
+  allowed: readonly T[],
+  fallback: T
+): T {
+  return typeof value === "string" && allowed.includes(value as T)
+    ? (value as T)
+    : fallback
+}
+
+function boundedInt(
+  value: unknown,
+  min: number,
+  max: number,
+  fallback: number
+): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return fallback
+  return Math.min(max, Math.max(min, Math.floor(value)))
+}
+
+function renderSearchResult(
+  search: SearchResult,
+  displayRoot: string,
+  query: string,
+  maxResults: number
+): string {
+  if (search.result === "files") {
+    if (search.files.length === 0)
+      return `No files matched ${JSON.stringify(query)}.`
+    return appendNotes(
+      search.files.map((p) => relPath(displayRoot, p)).join("\n"),
+      search,
+      maxResults
+    )
+  }
+
+  if (search.result === "count") {
+    if (search.counts.length === 0)
+      return `No matches for ${JSON.stringify(query)}.`
+    const rows = search.counts.map(
+      (c) => `${relPath(displayRoot, c.path)}: ${c.matches}`
+    )
+    rows.push(`total: ${search.totalMatches ?? 0}`)
+    return appendNotes(rows.join("\n"), search, maxResults)
+  }
+
+  if (search.matches.length === 0)
+    return `No matches for ${JSON.stringify(query)}.`
+  const rows = search.matches.map((m) => {
+    const column = m.column ? `:${m.column}` : ""
+    const prefix = m.kind === "context" ? "-" : ":"
+    return `${relPath(displayRoot, m.path)}:${m.line}${column}${prefix} ${m.text}`
+  })
+  return appendNotes(rows.join("\n"), search, maxResults)
+}
+
+function appendNotes(
+  text: string,
+  search: SearchResult,
+  maxResults: number
+): string {
+  const notes: string[] = []
+  if (search.capped) {
+    if (search.captureTruncated) {
+      const captured =
+        typeof search.capturedOutputBytes === "number"
+          ? ` after ${search.capturedOutputBytes} captured bytes`
+          : ""
+      notes.push(
+        `output capture truncated${captured}; results may be incomplete; ${recoveryHint(search.result)}`
+      )
+    } else {
+      notes.push(`stopped at ${maxResults} ${search.result} results`)
+    }
+  }
+  if (search.reducedFeatures?.length) {
+    notes.push(`engine=${search.engine}; ${search.reducedFeatures.join("; ")}`)
+  } else {
+    notes.push(`engine=${search.engine}`)
+  }
+  return `${text}\n[${notes.join(" | ")}]`
+}
+
+function recoveryHint(result: SearchResultMode): string {
+  if (result === "files") return "narrow globs/path or switch to content/count"
+  if (result === "count") return "narrow globs/path or switch to files/content"
+  return "narrow query/path/globs or use result='files'/'count'"
+}
+
+function relPath(root: string, path: string): string {
+  const rel = path.startsWith(root)
+    ? path.slice(root.length).replace(/^[/\\]/, "")
+    : path
+  return rel ? rel.split(/[\\/]/).join("/") : "."
 }

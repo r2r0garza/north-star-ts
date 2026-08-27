@@ -1,4 +1,4 @@
-import type { Tool, ToolContext } from "../types"
+import { TOOL_EFFECTS, type Tool, type ToolContext } from "../types"
 import { toolError } from "../output"
 
 // Hand the browser to the user for something only a human can do: a captcha, a
@@ -12,6 +12,7 @@ import { toolError } from "../output"
 // tool with a `reason` covers every case without the model guessing which
 // specific tool applies.
 export const browserHandoffTool: Tool = {
+  effects: TOOL_EFFECTS.openWorldMutation,
   definition: {
     type: "function",
     function: {

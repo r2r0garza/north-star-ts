@@ -3,6 +3,9 @@ import Database from "better-sqlite3"
 import { runMigrations } from "../db/migrations"
 import type { ChatResult } from "../agent"
 import type { RunAgentLoopOptions } from "../agent"
+import { sqliteLoadsForTests } from "../test/sqlite"
+
+const sqliteLoads = sqliteLoadsForTests()
 
 // In-memory DB shared by the runner's repository imports (mirrors the repo test
 // pattern in db/repositories/*.test.ts).
@@ -33,15 +36,13 @@ vi.mock("../agent", () => ({
   },
 }))
 
-let sqliteLoads = true
-try {
-  new Database(":memory:").close()
-} catch {
-  sqliteLoads = false
-}
-
 import { TaskRunner } from "./runner"
-import { createTask, getTask, listTasks } from "../db/repositories/tasks"
+import {
+  createTask,
+  getTask,
+  listTasks,
+  updateTask,
+} from "../db/repositories/tasks"
 import { appendMessage, listMessages } from "../db/repositories/messages"
 import { listEvents } from "../db/repositories/task-events"
 import { createApproval, listApprovals } from "../db/repositories/approvals"
@@ -107,9 +108,9 @@ describe.skipIf(!sqliteLoads)(
       const task = createTask({
         conversationId: conv.id,
         status: "failed",
-        error: "boom",
         input: { kind: "agent_chat", message: "hi" },
       })
+      updateTask(task.id, { error: "boom" })
       const runner = new TaskRunner()
       runner.start()
       await settle()
@@ -880,11 +881,7 @@ describe.skipIf(!sqliteLoads)(
       runner.start()
       const task = runner.enqueueKind({ kind: "slow_det", input: {} })
       // Let it start running.
-      for (
-        let i = 0;
-        i < 50 && getTask(task.id)?.status !== "running";
-        i++
-      ) {
+      for (let i = 0; i < 50 && getTask(task.id)?.status !== "running"; i++) {
         await new Promise((r) => setTimeout(r, 5))
       }
       expect(getTask(task.id)?.status).toBe("running")

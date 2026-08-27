@@ -1,4 +1,5 @@
 import type { ActionClassifier, ActionDecision, ToolAction } from "./types"
+import type { LocalRuntimeProfile } from "../env/types"
 
 // Context for a policy decision — the scope inputs the allowlist matches on,
 // plus whether this turn runs in a sandbox (a container backend), which gates the
@@ -9,6 +10,7 @@ export interface PolicyContext {
   // True when the active execution backend is an isolated container, so the
   // sandbox policy may auto-approve selected require_approval categories.
   sandboxed?: boolean
+  localProfile?: LocalRuntimeProfile
 }
 
 // Allowlist lookup the PolicyEngine consults before classifying. Decoupled from
@@ -54,6 +56,16 @@ export class PolicyEngine {
     // downgrade path below. Neither the allowlist nor the sandbox can reach it.
     if (verdict.level === "hard_block") return verdict
 
+    if (
+      ctx.localProfile === "read-only" &&
+      (action.kind === "file_write" || action.kind === "file_edit")
+    ) {
+      return {
+        level: "hard_block",
+        reason: "Local read-only profile blocks filesystem writes.",
+      }
+    }
+
     // Local backend (not a container): the approval gate is the ONLY guard, so
     // the policy TIGHTENS — a benign `allow` is upgraded to require_approval so
     // everything the agent does on the user's own machine is opt-in. This is the
@@ -64,13 +76,18 @@ export class PolicyEngine {
     // prompt. The upgrade runs BEFORE the allowlist check below, so an "always
     // allow this action" rule remains the per-action escape hatch.
     //
-    // CARVE-OUT: `browser` interactions (click/type/back) stay auto even on a
-    // local backend. Opening a page (browser_navigate) already prompted via the
-    // browser classifier's require_approval; once the user approved the page,
-    // prompting on every click/keystroke would make verifying a multi-step flow
-    // unusable. Navigation isn't affected — it's already require_approval, not
-    // allow, so it never reaches this upgrade branch.
-    if (!ctx.sandboxed && verdict.level === "allow" && action.kind !== "browser") {
+    // CARVE-OUT: browser actions classified as `allow` stay auto even on a
+    // local backend. The browser classifier itself keeps navigation, clicks, and
+    // submitted typing at require_approval; only reversible controls such as
+    // back/close and plain typing reach this branch as `allow`.
+    const enforcedLocalProfile =
+      ctx.localProfile === "read-only" || ctx.localProfile === "workspace-write"
+    if (
+      !ctx.sandboxed &&
+      !enforcedLocalProfile &&
+      verdict.level === "allow" &&
+      action.kind !== "browser"
+    ) {
       verdict = {
         level: "require_approval",
         reason:
@@ -88,8 +105,14 @@ export class PolicyEngine {
       // In a sandbox, the sandbox policy may auto-approve selected categories —
       // the container's isolation is what makes this safe. Hardline already
       // returned above, so this can only ever relax the recoverable tier.
-      if (ctx.sandboxed && this.sandboxPolicy?.autoApproves(verdict.category)) {
-        return { level: "allow", reason: "sandboxed" }
+      if (
+        (ctx.sandboxed || enforcedLocalProfile) &&
+        this.sandboxPolicy?.autoApproves(verdict.category)
+      ) {
+        return {
+          level: "allow",
+          reason: ctx.sandboxed ? "sandboxed" : `local ${ctx.localProfile}`,
+        }
       }
     }
 
