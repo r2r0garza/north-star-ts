@@ -26,6 +26,13 @@ const SEP = "__"
 const DEFAULT_TOOL_CALL_TIMEOUT_MS = 60_000
 const DEFAULT_TOOL_OUTPUT_MAX_BYTES = 256 * 1024
 const DEFAULT_TOOL_ERROR_MAX_BYTES = 8 * 1024
+const DEFAULT_DISCOVERY_TIMEOUT_MS = 30_000
+const DEFAULT_DISCOVERY_MAX_TOOLS = 128
+const DEFAULT_DISCOVERY_MAX_TOOLS_PER_SERVER = 64
+const DEFAULT_DISCOVERY_DESCRIPTION_MAX_BYTES = 4 * 1024
+const DEFAULT_DISCOVERY_SCHEMA_MAX_BYTES = 32 * 1024
+const DEFAULT_DISCOVERY_TOTAL_MAX_BYTES = 512 * 1024
+const DEFAULT_DISCOVERY_SCHEMA_MAX_DEPTH = 24
 
 export const MCP_TOOL_CALL_TIMEOUT_MS = envPositiveInt(
   "COWORK_MCP_TOOL_TIMEOUT_MS",
@@ -38,6 +45,34 @@ export const MCP_TOOL_OUTPUT_MAX_BYTES = envPositiveInt(
 export const MCP_TOOL_ERROR_MAX_BYTES = envPositiveInt(
   "COWORK_MCP_TOOL_ERROR_MAX_BYTES",
   DEFAULT_TOOL_ERROR_MAX_BYTES
+)
+export const MCP_DISCOVERY_TIMEOUT_MS = envPositiveInt(
+  "COWORK_MCP_DISCOVERY_TIMEOUT_MS",
+  DEFAULT_DISCOVERY_TIMEOUT_MS
+)
+export const MCP_DISCOVERY_MAX_TOOLS = envPositiveInt(
+  "COWORK_MCP_DISCOVERY_MAX_TOOLS",
+  DEFAULT_DISCOVERY_MAX_TOOLS
+)
+export const MCP_DISCOVERY_MAX_TOOLS_PER_SERVER = envPositiveInt(
+  "COWORK_MCP_DISCOVERY_MAX_TOOLS_PER_SERVER",
+  DEFAULT_DISCOVERY_MAX_TOOLS_PER_SERVER
+)
+export const MCP_DISCOVERY_DESCRIPTION_MAX_BYTES = envPositiveInt(
+  "COWORK_MCP_DISCOVERY_DESCRIPTION_MAX_BYTES",
+  DEFAULT_DISCOVERY_DESCRIPTION_MAX_BYTES
+)
+export const MCP_DISCOVERY_SCHEMA_MAX_BYTES = envPositiveInt(
+  "COWORK_MCP_DISCOVERY_SCHEMA_MAX_BYTES",
+  DEFAULT_DISCOVERY_SCHEMA_MAX_BYTES
+)
+export const MCP_DISCOVERY_TOTAL_MAX_BYTES = envPositiveInt(
+  "COWORK_MCP_DISCOVERY_TOTAL_MAX_BYTES",
+  DEFAULT_DISCOVERY_TOTAL_MAX_BYTES
+)
+export const MCP_DISCOVERY_SCHEMA_MAX_DEPTH = envPositiveInt(
+  "COWORK_MCP_DISCOVERY_SCHEMA_MAX_DEPTH",
+  DEFAULT_DISCOVERY_SCHEMA_MAX_DEPTH
 )
 
 // A tool definition in the OpenAI-compatible shape the agent loop's `tools` array
@@ -101,10 +136,13 @@ export class McpManager {
   // Ensure a connected client for the given server, reusing a pooled one. Throws
   // (with a useful message) if the server can't be reached or needs auth — callers
   // that batch (listToolsFor) catch per-server so one failure is isolated.
-  private async ensureConnected(server: McpServer): Promise<Client> {
+  private async ensureConnected(
+    server: McpServer,
+    signal?: AbortSignal
+  ): Promise<Client> {
     const existing = this.pool.get(server.name)
     if (existing) return existing.client
-    const { client, close } = await this.connect(server)
+    const { client, close } = await this.connect(server, signal)
     this.pool.set(server.name, { client, close })
     return client
   }
@@ -113,7 +151,8 @@ export class McpManager {
   // by testConnection (which closes immediately). For an HTTP server with stored
   // OAuth tokens, an OAuth provider is attached so the transport can refresh.
   private async connect(
-    server: McpServer
+    server: McpServer,
+    signal?: AbortSignal
   ): Promise<{ client: Client; close: () => Promise<void> }> {
     const client = new Client({
       name: systemDisplayName(),
@@ -132,7 +171,19 @@ export class McpManager {
         // Merge configured env over the inherited default env (PATH, etc.).
         env: { ...getInheritedEnv(), ...server.env },
       })
-      await client.connect(transport)
+      try {
+        await abortable(
+          client.connect(transport, {
+            signal,
+            timeout: MCP_DISCOVERY_TIMEOUT_MS,
+            maxTotalTimeout: MCP_DISCOVERY_TIMEOUT_MS,
+          }),
+          signal
+        )
+      } catch (err) {
+        await transport.close().catch(() => {})
+        throw err
+      }
       return { client, close: () => transport.close() }
     }
 
@@ -158,8 +209,16 @@ export class McpManager {
       requestInit: hasHeaders(server) ? { headers: server.headers } : undefined,
     })
     try {
-      await client.connect(transport)
+      await abortable(
+        client.connect(transport, {
+          signal,
+          timeout: MCP_DISCOVERY_TIMEOUT_MS,
+          maxTotalTimeout: MCP_DISCOVERY_TIMEOUT_MS,
+        }),
+        signal
+      )
     } catch (err) {
+      await transport.close().catch(() => {})
       if (err instanceof UnauthorizedError) {
         throw new Error(
           `MCP server "${server.name}" requires authorization. Click "Authorize" in the MCP view.`
@@ -177,35 +236,66 @@ export class McpManager {
   async listToolsFor(
     serverNames: string[],
     workspace: string | undefined,
-    onError?: (serverName: string, error: string) => void
+    onError?: (serverName: string, error: string) => void,
+    signal?: AbortSignal
   ): Promise<McpToolDefinition[]> {
     const all = await loadServers(workspace)
     const wanted = all.filter((s) => s.enabled && serverNames.includes(s.name))
     const defs: McpToolDefinition[] = []
+    let totalDefinitionBytes = 0
     await Promise.all(
       wanted.map(async (server) => {
+        const scope = makeMcpDiscoveryScope(signal)
         try {
-          const client = await this.ensureConnected(server)
-          const { tools } = await client.listTools()
-          for (const tool of tools) {
-            defs.push({
-              effects: effectsFromMcpTool(tool),
-              type: "function",
-              function: {
-                name: prefixedToolName(server.name, tool.name),
-                description:
-                  tool.description ?? `Tool ${tool.name} from ${server.name}.`,
-                // MCP's inputSchema IS a JSON Schema object — pass it straight
-                // through as the function parameters. Fall back to an empty
-                // object schema when a tool declares no inputs.
-                parameters: (tool.inputSchema as
-                  | Record<string, unknown>
-                  | undefined) ?? {
-                  type: "object",
-                  properties: {},
-                },
-              },
-            })
+          const client = await this.ensureConnected(server, scope.signal)
+          const { tools } = await abortable(
+            client.listTools(undefined, {
+              signal: scope.signal,
+              timeout: MCP_DISCOVERY_TIMEOUT_MS,
+              maxTotalTimeout: MCP_DISCOVERY_TIMEOUT_MS,
+            }),
+            scope.signal
+          )
+          if (tools.length > MCP_DISCOVERY_MAX_TOOLS_PER_SERVER) {
+            onError?.(
+              server.name,
+              `omitted ${tools.length - MCP_DISCOVERY_MAX_TOOLS_PER_SERVER} MCP tools over the per-server discovery limit of ${MCP_DISCOVERY_MAX_TOOLS_PER_SERVER}.`
+            )
+          }
+          let includedForServer = 0
+          for (const tool of tools.slice(
+            0,
+            MCP_DISCOVERY_MAX_TOOLS_PER_SERVER
+          )) {
+            if (defs.length >= MCP_DISCOVERY_MAX_TOOLS) {
+              onError?.(
+                server.name,
+                `omitted MCP tool "${tool.name}" because the global discovery limit of ${MCP_DISCOVERY_MAX_TOOLS} tools was reached.`
+              )
+              break
+            }
+            const def = buildBoundedToolDefinition(server.name, tool, onError)
+            const bytes = Buffer.byteLength(JSON.stringify(def), "utf8")
+            if (totalDefinitionBytes + bytes > MCP_DISCOVERY_TOTAL_MAX_BYTES) {
+              onError?.(
+                server.name,
+                `omitted MCP tool "${tool.name}" because the serialized discovery budget of ${MCP_DISCOVERY_TOTAL_MAX_BYTES} bytes was reached.`
+              )
+              break
+            }
+            defs.push(def)
+            includedForServer += 1
+            totalDefinitionBytes += bytes
+          }
+          if (
+            includedForServer === 0 &&
+            tools.length > 0 &&
+            defs.length >= MCP_DISCOVERY_MAX_TOOLS
+          ) {
+            onError?.(
+              server.name,
+              `all MCP tools from "${server.name}" were omitted by the global discovery limit.`
+            )
           }
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err)
@@ -214,6 +304,8 @@ export class McpManager {
           this.evict(server.name)
           onError?.(server.name, msg)
           console.warn(`[mcp] skipping server "${server.name}": ${msg}`)
+        } finally {
+          scope.dispose()
         }
       })
     )
@@ -277,10 +369,18 @@ export class McpManager {
       (s) => s.name === serverName
     )
     if (!server) return { ok: false, error: "Server not found." }
+    const scope = makeMcpDiscoveryScope(undefined)
     try {
-      const { client, close } = await this.connect(server)
+      const { client, close } = await this.connect(server, scope.signal)
       try {
-        const { tools } = await client.listTools()
+        const { tools } = await abortable(
+          client.listTools(undefined, {
+            signal: scope.signal,
+            timeout: MCP_DISCOVERY_TIMEOUT_MS,
+            maxTotalTimeout: MCP_DISCOVERY_TIMEOUT_MS,
+          }),
+          scope.signal
+        )
         return { ok: true, toolCount: tools.length }
       } finally {
         await close().catch(() => {})
@@ -290,6 +390,8 @@ export class McpManager {
         ok: false,
         error: err instanceof Error ? err.message : String(err),
       }
+    } finally {
+      scope.dispose()
     }
   }
 
@@ -512,6 +614,130 @@ class McpCallTimeoutError extends Error {
   }
 }
 
+class McpDiscoveryTimeoutError extends Error {
+  constructor(timeoutMs: number) {
+    super(`MCP discovery timed out after ${timeoutMs}ms.`)
+    this.name = "McpDiscoveryTimeoutError"
+  }
+}
+
+function buildBoundedToolDefinition(
+  serverName: string,
+  tool: {
+    name: string
+    description?: string
+    inputSchema?: unknown
+    annotations?: unknown
+  },
+  onError?: (serverName: string, error: string) => void
+): McpToolDefinition {
+  const fallbackSchema = { type: "object", properties: {} }
+  const rawDescription =
+    tool.description ?? `Tool ${tool.name} from ${serverName}.`
+  const descriptionNote = `[metadata] MCP description truncated at ${MCP_DISCOVERY_DESCRIPTION_MAX_BYTES} bytes.`
+  const description =
+    Buffer.byteLength(rawDescription, "utf8") >
+    MCP_DISCOVERY_DESCRIPTION_MAX_BYTES
+      ? fitMcpTextWithNote(
+          rawDescription,
+          descriptionNote,
+          MCP_DISCOVERY_DESCRIPTION_MAX_BYTES
+        )
+      : rawDescription
+  if (description !== rawDescription) {
+    onError?.(
+      serverName,
+      `truncated MCP tool "${tool.name}" description at ${MCP_DISCOVERY_DESCRIPTION_MAX_BYTES} bytes.`
+    )
+  }
+
+  let parameters: Record<string, unknown> = fallbackSchema
+  if (tool.inputSchema && typeof tool.inputSchema === "object") {
+    const schema = tool.inputSchema as Record<string, unknown>
+    const schemaBytes = safeJsonBytes(schema)
+    const depth = jsonDepth(schema)
+    if (schemaBytes > MCP_DISCOVERY_SCHEMA_MAX_BYTES) {
+      onError?.(
+        serverName,
+        `replaced MCP tool "${tool.name}" input schema because it exceeded ${MCP_DISCOVERY_SCHEMA_MAX_BYTES} bytes.`
+      )
+    } else if (depth > MCP_DISCOVERY_SCHEMA_MAX_DEPTH) {
+      onError?.(
+        serverName,
+        `replaced MCP tool "${tool.name}" input schema because it exceeded depth ${MCP_DISCOVERY_SCHEMA_MAX_DEPTH}.`
+      )
+    } else {
+      parameters = schema
+    }
+  } else if (tool.inputSchema !== undefined) {
+    onError?.(
+      serverName,
+      `replaced MCP tool "${tool.name}" input schema because it was not an object.`
+    )
+  }
+
+  return {
+    effects: effectsFromMcpTool(tool),
+    type: "function",
+    function: {
+      name: prefixedToolName(serverName, tool.name),
+      description,
+      parameters,
+    },
+  }
+}
+
+function safeJsonBytes(value: unknown): number {
+  try {
+    return Buffer.byteLength(JSON.stringify(value), "utf8")
+  } catch {
+    return Number.POSITIVE_INFINITY
+  }
+}
+
+function jsonDepth(value: unknown, seen = new WeakSet<object>()): number {
+  if (!value || typeof value !== "object") return 0
+  if (seen.has(value)) return Number.POSITIVE_INFINITY
+  seen.add(value)
+  const entries = Array.isArray(value)
+    ? value
+    : Object.values(value as Record<string, unknown>)
+  let max = 0
+  for (const child of entries) {
+    max = Math.max(max, jsonDepth(child, seen))
+  }
+  seen.delete(value)
+  return max + 1
+}
+
+function makeMcpDiscoveryScope(parent: AbortSignal | undefined): {
+  signal: AbortSignal
+  dispose: () => void
+} {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => {
+    controller.abort(new McpDiscoveryTimeoutError(MCP_DISCOVERY_TIMEOUT_MS))
+  }, MCP_DISCOVERY_TIMEOUT_MS)
+  ;(timeout as ReturnType<typeof setTimeout> & { unref?: () => void }).unref?.()
+
+  const abortFromParent = () => {
+    controller.abort(
+      parent?.reason ??
+        new DOMException("The operation was aborted.", "AbortError")
+    )
+  }
+  if (parent?.aborted) abortFromParent()
+  else parent?.addEventListener("abort", abortFromParent, { once: true })
+
+  return {
+    signal: controller.signal,
+    dispose: () => {
+      clearTimeout(timeout)
+      parent?.removeEventListener("abort", abortFromParent)
+    },
+  }
+}
+
 function makeMcpCallScope(
   parent: AbortSignal | undefined,
   timeoutMs: number
@@ -540,7 +766,11 @@ function makeMcpCallScope(
   }
 }
 
-function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+function abortable<T>(
+  promise: Promise<T>,
+  signal: AbortSignal | undefined
+): Promise<T> {
+  if (!signal) return promise
   if (signal.aborted) return Promise.reject(abortReason(signal))
   return new Promise((resolve, reject) => {
     const onAbort = () => {

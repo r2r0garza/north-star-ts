@@ -2,6 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { McpServer } from "../../db/types"
 import {
   flattenContent,
+  MCP_DISCOVERY_DESCRIPTION_MAX_BYTES,
+  MCP_DISCOVERY_MAX_TOOLS_PER_SERVER,
+  MCP_DISCOVERY_SCHEMA_MAX_BYTES,
   MCP_TOOL_CALL_TIMEOUT_MS,
   MCP_TOOL_ERROR_MAX_BYTES,
   MCP_TOOL_OUTPUT_MAX_BYTES,
@@ -9,7 +12,7 @@ import {
   parsePrefixedName,
   prefixedToolName,
 } from "./manager"
-import { resolveEnabledServer } from "./resolve"
+import { loadServers, resolveEnabledServer } from "./resolve"
 
 vi.mock("./resolve", () => ({
   loadServers: vi.fn(),
@@ -17,6 +20,7 @@ vi.mock("./resolve", () => ({
 }))
 
 const mockedResolveEnabledServer = vi.mocked(resolveEnabledServer)
+const mockedLoadServers = vi.mocked(loadServers)
 
 describe("MCP tool name prefixing", () => {
   it("builds a namespaced name", () => {
@@ -140,6 +144,112 @@ describe("MCP tool call lifecycle", () => {
   })
 })
 
+describe("MCP discovery lifecycle and definition bounds", () => {
+  const server: McpServer = {
+    name: "srv",
+    transport: "stdio",
+    command: "mcp-server",
+    args: [],
+    env: {},
+    url: null,
+    headers: {},
+    path: "/tmp/mcp.json",
+    source: "/tmp",
+    enabled: true,
+    hasOauth: false,
+  }
+
+  beforeEach(() => {
+    mockedLoadServers.mockResolvedValue([server])
+  })
+
+  afterEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it("passes a turn abort signal to MCP tool discovery and evicts on stop", async () => {
+    const abort = new AbortController()
+    const listTools = vi.fn(() => new Promise<never>(() => {}))
+    const close = vi.fn(async () => {})
+    const manager = managerWithPooledClient("srv", { listTools }, close)
+    const errors: string[] = []
+
+    const resultPromise = manager.listToolsFor(
+      ["srv"],
+      undefined,
+      (_server, err) => errors.push(err),
+      abort.signal
+    )
+    abort.abort()
+    const result = await resultPromise
+
+    expect(result).toEqual([])
+    expect(listTools).toHaveBeenCalledWith(
+      undefined,
+      expect.objectContaining({
+        signal: expect.any(AbortSignal),
+        timeout: expect.any(Number),
+        maxTotalTimeout: expect.any(Number),
+      })
+    )
+    expect(errors.join("\n")).toContain("This operation was aborted")
+    expect(close).toHaveBeenCalledTimes(1)
+  })
+
+  it("bounds MCP tool counts, descriptions, and schemas while keeping valid tools", async () => {
+    const tools = [
+      {
+        name: "oversized",
+        description: "語".repeat(MCP_DISCOVERY_DESCRIPTION_MAX_BYTES),
+        inputSchema: {
+          type: "object",
+          properties: {
+            blob: {
+              type: "string",
+              description: "x".repeat(MCP_DISCOVERY_SCHEMA_MAX_BYTES),
+            },
+          },
+        },
+      },
+      ...Array.from(
+        { length: MCP_DISCOVERY_MAX_TOOLS_PER_SERVER + 5 },
+        (_, idx) => ({
+          name: `valid${idx}`,
+          description: `valid ${idx}`,
+          inputSchema: { type: "object", properties: {} },
+        })
+      ),
+    ]
+    const manager = managerWithPooledClient("srv", {
+      listTools: vi.fn(async () => ({ tools })),
+    })
+    const errors: string[] = []
+
+    const defs = await manager.listToolsFor(
+      ["srv"],
+      undefined,
+      (_server, err) => errors.push(err)
+    )
+
+    expect(defs).toHaveLength(MCP_DISCOVERY_MAX_TOOLS_PER_SERVER)
+    expect(defs[0].function.name).toBe("mcp__srv__oversized")
+    expect(
+      Buffer.byteLength(defs[0].function.description, "utf8")
+    ).toBeLessThanOrEqual(MCP_DISCOVERY_DESCRIPTION_MAX_BYTES)
+    expect(defs[0].function.description).toContain("description truncated")
+    expect(defs[0].function.parameters).toEqual({
+      type: "object",
+      properties: {},
+    })
+    expect(defs.some((def) => def.function.name === "mcp__srv__valid0")).toBe(
+      true
+    )
+    expect(errors.join("\n")).toContain("per-server discovery limit")
+    expect(errors.join("\n")).toContain("description")
+    expect(errors.join("\n")).toContain("input schema")
+  })
+})
+
 describe("MCP content flattening", () => {
   it("caps oversized text output with explicit UTF-8-safe metadata", () => {
     const result = flattenContent({
@@ -179,8 +289,11 @@ describe("MCP content flattening", () => {
 
 function managerWithPooledClient(
   serverName: string,
-  client: { callTool: ReturnType<typeof vi.fn> },
-  close: () => Promise<void>
+  client: {
+    callTool?: ReturnType<typeof vi.fn>
+    listTools?: ReturnType<typeof vi.fn>
+  },
+  close: () => Promise<void> = async () => {}
 ): McpManager {
   const manager = new McpManager()
   ;(

@@ -63,7 +63,7 @@ a brief names a prerequisite.
 | 54 | P1 | Open | [Parent symlink swaps can escape local filesystem confinement](./054-local-filesystem-parent-symlink-race.md) | Local filesystem backend |
 | 55 | P1 | Open | [Browser commit approvals are under-scoped](./055-browser-approval-scope-and-classification.md) | Browser approval policy |
 | 56 | P2 | Fixed | [Node pageable reads materialize complete sources](./056-local-pageable-read-streaming-regression.md) | Local filesystem reads |
-| 57 | P2 | Open | [MCP discovery lacks cancellation and definition bounds](./057-mcp-discovery-lifecycle-and-definition-bounds.md) | MCP discovery |
+| 57 | P2 | Fixed | [MCP discovery lacks cancellation and definition bounds](./057-mcp-discovery-lifecycle-and-definition-bounds.md) | MCP discovery |
 | 58 | P2 | Open | [Command output caps exclude serialization expansion](./058-command-session-serialized-output-cap.md) | Command session rendering |
 
 New briefs start in **OPEN** state. When fixing one, add the regression test

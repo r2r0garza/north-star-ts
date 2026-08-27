@@ -761,7 +761,10 @@ export async function runAgentLoop(
         allowedNames,
         mcpWorkspace,
         (server, err) =>
-          console.warn(`[mcp] server "${server}" unavailable this turn: ${err}`)
+          console.warn(
+            `[mcp] server "${server}" unavailable this turn: ${err}`
+          ),
+        abort.signal
       )
     }
   }
