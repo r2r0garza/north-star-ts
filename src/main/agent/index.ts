@@ -68,6 +68,7 @@ import {
   browserStateSection,
 } from "./context/sections"
 import { repairDanglingToolCalls } from "./repair"
+import { offeredToolNames, unavailableToolResult } from "./tool-availability"
 import { createEnvironment } from "./env"
 import { LocalEnvironment } from "./env/local"
 import type { Environment } from "./env/types"
@@ -772,7 +773,12 @@ export async function runAgentLoop(
   const MUTATING_TOOL_NAMES = new Set([
     "write_file_tool",
     "edit_file_tool",
+    "apply_patch_tool",
     "run_shell_tool",
+    "exec_command",
+    "write_stdin",
+    "poll_command",
+    "terminate_command",
   ])
 
   // Build the per-turn toolset from the CURRENT plan-mode flag. Recomputed each
@@ -1148,6 +1154,7 @@ export async function runAgentLoop(
       // the previous iteration's present_plan call flips planMode off, so this
       // round-trip regains the full filesystem toolset.
       const tools = buildTools()
+      const offeredNames = offeredToolNames(tools)
 
       const stream = await createCompletion(
         llm.client,
@@ -1348,6 +1355,8 @@ export async function runAgentLoop(
           }),
         execute: async (call) => {
           const callImages: ToolImage[] = []
+          const unavailable = unavailableToolResult(call.name, offeredNames)
+          if (unavailable) return { result: unavailable }
           // The model's streamed tool-call arguments are occasionally malformed JSON
           // even when the turn wasn't length-truncated (a mid-stream glitch, or an
           // unescaped character in a large blob — e.g. a big write_file_tool payload).
