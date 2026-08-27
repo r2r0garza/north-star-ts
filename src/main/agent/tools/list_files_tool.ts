@@ -88,7 +88,8 @@ function renderEntries(entries: DirEntry[]): {
     if (lines.length >= MAX_LIST_ENTRIES) {
       return { lines, truncated: true, capReason: "entryCount" }
     }
-    const line = entry.isDirectory() ? `${entry.name}/` : entry.name
+    const escapedName = JSON.stringify(entry.name)
+    const line = entry.isDirectory() ? `${escapedName}/` : escapedName
     const lineBytes = Buffer.byteLength(line, "utf8")
     const separatorBytes = lines.length > 0 ? 1 : 0
     if (

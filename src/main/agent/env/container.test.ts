@@ -459,6 +459,38 @@ for (const runtime of ["docker", "podman"] as const) {
         expect(byName.get("afile.txt")!.isFile()).toBe(true)
       })
 
+      it("listDir round-trips special filenames with metadata-derived types", async () => {
+        const names = [
+          "has\nnewline.txt",
+          "has\rcarriage.txt",
+          "has\ttab.txt",
+          'quote"backslash\\.txt',
+          "日本語🚀.txt",
+          "plain-file",
+          "directory\nname",
+        ]
+        for (const name of names) {
+          const target = await env.resolve(name)
+          if (name === "directory\nname") {
+            await env.mkdirp(target)
+          } else {
+            await env.writeFile(target, "x")
+          }
+        }
+
+        const result = await env.listDir(await env.resolve(""), {
+          maxEntries: 100,
+          maxBytes: 1024 * 1024,
+        })
+        const byName = new Map(result.entries.map((e) => [e.name, e]))
+
+        for (const name of names) {
+          expect(byName.has(name)).toBe(true)
+        }
+        expect(byName.get("plain-file")!.isFile()).toBe(true)
+        expect(byName.get("directory\nname")!.isDirectory()).toBe(true)
+      })
+
       it("search finds a line via a single in-container command", async () => {
         await env.writeFile(
           await env.resolve("hay.txt"),

@@ -351,6 +351,37 @@ describe("LocalEnvironment file ops", () => {
     expect(byName.get("sub")!.isDirectory()).toBe(true)
   })
 
+  it("listDir round-trips special filenames with metadata-derived types", async () => {
+    const names = [
+      "has\nnewline.txt",
+      "has\rcarriage.txt",
+      "has\ttab.txt",
+      'quote"backslash\\.txt',
+      "日本語🚀.txt",
+      "plain-file",
+      "directory\nname",
+    ]
+    for (const name of names) {
+      if (name === "directory\nname") {
+        await mkdir(join(workspace, name))
+      } else {
+        await writeFile(join(workspace, name), "x")
+      }
+    }
+
+    const entries = await env.listDir(workspace, {
+      maxEntries: 100,
+      maxBytes: 1024 * 1024,
+    })
+    const byName = new Map(entries.entries.map((e) => [e.name, e]))
+
+    for (const name of names) {
+      expect(byName.has(name)).toBe(true)
+    }
+    expect(byName.get("plain-file")!.isFile()).toBe(true)
+    expect(byName.get("directory\nname")!.isDirectory()).toBe(true)
+  })
+
   it("listDir stops at entry and UTF-8 name-byte caps", async () => {
     for (let index = 0; index < 5; index += 1) {
       await writeFile(join(workspace, `日本語-${index}.txt`), "x")

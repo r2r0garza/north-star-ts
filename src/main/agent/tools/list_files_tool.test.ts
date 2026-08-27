@@ -25,7 +25,7 @@ describe("list_files_tool", () => {
 
     const result = await listFilesTool.execute({ path: "src" }, { workspace })
 
-    expect(result).toContain("index.ts")
+    expect(result).toContain('"index.ts"')
   })
 
   it("rejects workspace symlinks to external directories without listing names", async () => {
@@ -64,8 +64,8 @@ describe("list_files_tool", () => {
     )
     const lines = result.split("\n")
 
-    expect(lines[0]).toBe("file-0000.txt")
-    expect(lines[1999]).toBe("file-1999.txt")
+    expect(lines[0]).toBe('"file-0000.txt"')
+    expect(lines[1999]).toBe('"file-1999.txt"')
     expect(result).not.toContain("file-2000.txt")
     expect(result).toContain('"truncated":true')
     expect(result).toContain('"entriesShown":2000')
@@ -88,6 +88,36 @@ describe("list_files_tool", () => {
     expect(Buffer.byteLength(listing, "utf8")).toBeLessThanOrEqual(128 * 1024)
     expect(listing).not.toContain("\ufffd")
     expect(result).toContain('"capReason":"nameBytes"')
+  })
+
+  it("renders one JSON-escaped line per entry, with directory type from metadata", async () => {
+    const entries = [
+      entry("plain.txt"),
+      entry("has\nnewline.txt"),
+      entry("has\rcarriage.txt"),
+      entry("has\ttab.txt"),
+      entry('quote"backslash\\.txt'),
+      entry("日本語🚀.txt"),
+      entry("dirish", "file"),
+      entry("directory\nname", "dir"),
+    ]
+    const env = fakeEnv({ entries, truncated: false })
+
+    const result = await listFilesTool.execute(
+      { path: "." },
+      { workspace, env }
+    )
+
+    expect(result.split("\n")).toEqual([
+      '"directory\\nname"/',
+      '"dirish"',
+      '"has\\ttab.txt"',
+      '"has\\nnewline.txt"',
+      '"has\\rcarriage.txt"',
+      '"plain.txt"',
+      '"quote\\"backslash\\\\.txt"',
+      '"日本語🚀.txt"',
+    ])
   })
 })
 
