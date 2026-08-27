@@ -5,6 +5,7 @@ import {
   rm,
   readFile,
   writeFile,
+  appendFile,
   mkdir,
   chmod,
   symlink,
@@ -528,40 +529,40 @@ describe("Local runtime profiles", () => {
 
 describe("LocalEnvironment.readTextLines", () => {
   it("pages through files larger than the old whole-file cap", async () => {
-    const lines = Array.from({ length: 12_000 }, (_, i) => `line-${i + 1}`)
-    await writeFile(join(workspace, "large.txt"), `${lines.join("\n")}\n`)
+    const target = join(workspace, "large.txt")
+    await writeFile(target, "first\n")
+    const chunk = Buffer.alloc(1024 * 1024, "x")
+    for (let i = 0; i < 34; i += 1) {
+      await appendFile(target, chunk)
+    }
+    await appendFile(target, "\nlast\n")
 
-    const first = await env.readTextLines(join(workspace, "large.txt"), {
+    const first = await env.readTextLines(target, {
       offset: 1,
-      limit: 3,
-      maxBytes: 256 * 1024,
+      limit: 1,
+      maxBytes: 1024,
     })
-    const middle = await env.readTextLines(join(workspace, "large.txt"), {
-      offset: first.nextOffset!,
-      limit: 3,
-      maxBytes: 256 * 1024,
-    })
-    const final = await env.readTextLines(join(workspace, "large.txt"), {
-      offset: 11_999,
-      limit: 3,
-      maxBytes: 256 * 1024,
+    const final = await env.readTextLines(target, {
+      offset: 3,
+      limit: 1,
+      maxBytes: 1024,
     })
 
     expect(first).toMatchObject({
-      text: "line-1\nline-2\nline-3",
+      text: "first",
       startLine: 1,
-      endLine: 3,
+      endLine: 1,
       hasMore: true,
-      nextOffset: 4,
+      nextOffset: 2,
     })
-    expect(middle.text).toBe("line-4\nline-5\nline-6")
     expect(final).toMatchObject({
-      text: "line-11999\nline-12000",
-      startLine: 11999,
-      endLine: 12000,
+      text: "last",
+      startLine: 3,
+      endLine: 3,
       hasMore: false,
       truncated: false,
     })
+    expect(final.fileBytes).toBeGreaterThan(32 * 1024 * 1024)
     expect(final.revision).toMatch(/^[a-f0-9]{64}$/)
   })
 

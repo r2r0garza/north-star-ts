@@ -167,10 +167,7 @@ export class LocalEnvironment implements Environment {
     path: string,
     opts: ReadTextLinesOptions
   ): Promise<ReadTextLinesResult> {
-    return readTextLinesFromBuffer(
-      safeReadFile(this.workspace, path, this.deps.pythonPath),
-      opts
-    )
+    return safeReadTextLines(this.workspace, path, opts, this.deps.pythonPath)
   }
 
   writeFile(path: string, data: string): Promise<void> {
@@ -476,7 +473,7 @@ function assertScopedFsSupported(): void {
 }
 
 const SAFE_FS_SCRIPT = String.raw`
-import base64, json, os, stat, sys
+import base64, codecs, hashlib, json, os, stat, sys
 
 def fail_closed(message):
     raise RuntimeError(message)
@@ -528,6 +525,175 @@ def read_file(root, path):
                     break
                 chunks.append(chunk)
             return {"data": base64.b64encode(b"".join(chunks)).decode("ascii")}
+        finally:
+            os.close(fd)
+    finally:
+        close_all(fds)
+
+def utf8_safe_prefix(raw, byte_limit):
+    prefix = raw[:byte_limit]
+    while prefix:
+        try:
+            return prefix.decode("utf-8"), len(prefix)
+        except UnicodeDecodeError:
+            prefix = prefix[:-1]
+    return "", 0
+
+def read_text_lines(root, path, offset, limit, max_bytes):
+    offset = max(1, int(offset))
+    limit = max(1, int(limit))
+    max_bytes = max(1, int(max_bytes))
+    sniff = 8000
+    chunk_size = 65536
+
+    fds, parent, name = open_parent(root, path)
+    try:
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent)
+        try:
+            file_size = os.fstat(fd).st_size
+            digest = hashlib.sha256()
+            lines = []
+            current = 1
+            end_line = 0
+            returned_bytes = 0
+            has_more = False
+            truncated = False
+            line_too_long = False
+            skipped_line_remainder = False
+            reached_eof = False
+            stopped = False
+            page_full = False
+            pending = b""
+            sniffed = b""
+            line_bytes = 0
+            line_parts = []
+            prefix = bytearray()
+            decoder = codecs.getincrementaldecoder("utf-8")("replace")
+            discarding_requested_line = False
+
+            def reset_line():
+                nonlocal line_bytes, line_parts, prefix, decoder, discarding_requested_line
+                line_bytes = 0
+                line_parts = []
+                prefix = bytearray()
+                decoder = codecs.getincrementaldecoder("utf-8")("replace")
+                discarding_requested_line = False
+
+            def append_requested(raw):
+                nonlocal line_bytes, line_parts, prefix, discarding_requested_line
+                if discarding_requested_line:
+                    line_bytes += len(raw)
+                    return
+                sep = 1 if lines else 0
+                if returned_bytes + sep + line_bytes + len(raw) <= max_bytes:
+                    if not lines and len(prefix) < max_bytes:
+                        prefix.extend(raw[: max_bytes - len(prefix)])
+                    text = decoder.decode(raw, final=False)
+                    if text:
+                        line_parts.append(text)
+                    line_bytes += len(raw)
+                    return
+
+                if not lines:
+                    take = max(0, max_bytes - len(prefix))
+                    if take:
+                        prefix.extend(raw[:take])
+                line_bytes += len(raw)
+                discarding_requested_line = True
+
+            def finish_line():
+                nonlocal current, end_line, returned_bytes, has_more, truncated
+                nonlocal line_too_long, skipped_line_remainder, stopped, page_full
+
+                if current < offset:
+                    current += 1
+                    reset_line()
+                    return
+
+                if len(lines) >= limit:
+                    has_more = True
+                    stopped = True
+                    return
+
+                sep = 1 if lines else 0
+                if returned_bytes + sep + line_bytes > max_bytes:
+                    truncated = True
+                    has_more = True
+                    if not lines:
+                        text, used = utf8_safe_prefix(bytes(prefix), max_bytes)
+                        lines.append(text)
+                        returned_bytes = used
+                        end_line = current
+                        line_too_long = True
+                        skipped_line_remainder = True
+                        current += 1
+                    stopped = True
+                    reset_line()
+                    return
+
+                tail = decoder.decode(b"", final=True)
+                if tail:
+                    line_parts.append(tail)
+                lines.append("".join(line_parts))
+                returned_bytes += sep + line_bytes
+                end_line = current
+                current += 1
+                if len(lines) >= limit:
+                    page_full = True
+                reset_line()
+
+            while True:
+                chunk = os.read(fd, chunk_size)
+                if not chunk:
+                    reached_eof = True
+                    break
+                digest.update(chunk)
+                if len(sniffed) < sniff:
+                    take = min(sniff - len(sniffed), len(chunk))
+                    sniffed += chunk[:take]
+                    if b"\0" in sniffed:
+                        return {"error": "binary"}
+                if page_full:
+                    has_more = True
+                    stopped = True
+                    break
+                pending += chunk
+                while pending and not stopped:
+                    nl = pending.find(b"\n")
+                    if nl >= 0:
+                        part = pending[:nl]
+                        pending = pending[nl + 1:]
+                        append_requested(part)
+                        finish_line()
+                        if page_full and pending:
+                            has_more = True
+                            stopped = True
+                    else:
+                        append_requested(pending)
+                        pending = b""
+                if stopped:
+                    break
+
+            if reached_eof and (line_bytes > 0 or file_size == 0):
+                finish_line()
+
+            result = {
+                "text": "\n".join(lines),
+                "startLine": offset,
+                "endLine": end_line if lines else offset - 1,
+                "hasMore": has_more,
+                "fileBytes": file_size,
+                "truncated": truncated,
+            }
+            if has_more:
+                result["nextOffset"] = end_line + 1
+            if reached_eof:
+                result["revision"] = digest.hexdigest()
+            if line_too_long:
+                result["lineTooLong"] = True
+            if skipped_line_remainder:
+                result["skippedLineRemainder"] = True
+            return result
         finally:
             os.close(fd)
     finally:
@@ -654,6 +820,8 @@ op = req["op"]
 args = req.get("args", {})
 if op == "read_file":
     result = read_file(root, args["path"])
+elif op == "read_text_lines":
+    result = read_text_lines(root, args["path"], args["offset"], args["limit"], args["maxBytes"])
 elif op == "write_file":
     result = write_file(root, args["path"], args["data"])
 elif op == "chmod":
@@ -760,6 +928,29 @@ async function safeReadFile(
   return Buffer.from(result.data, "base64")
 }
 
+async function safeReadTextLines(
+  workspace: string,
+  path: string,
+  opts: ReadTextLinesOptions,
+  pythonPath?: string
+): Promise<ReadTextLinesResult> {
+  const result = await runSafeFs<ReadTextLinesResult | { error: string }>(
+    workspace,
+    "read_text_lines",
+    {
+      path,
+      offset: Math.max(1, Math.floor(opts.offset)),
+      limit: Math.max(1, Math.floor(opts.limit)),
+      maxBytes: Math.max(1, Math.floor(opts.maxBytes)),
+    },
+    pythonPath
+  )
+  if ("error" in result) {
+    throw new Error(result.error === "binary" ? "BINARY_FILE" : result.error)
+  }
+  return result
+}
+
 async function safeStat(
   workspace: string,
   path: string,
@@ -823,77 +1014,6 @@ function absolutizeSearchPaths(
       path: absolute(count.path),
     })),
   }
-}
-
-async function readTextLinesFromBuffer(
-  bytes: Promise<Buffer>,
-  opts: ReadTextLinesOptions
-): Promise<ReadTextLinesResult> {
-  const { createHash } = await import("crypto")
-  const data = await bytes
-  if (data.subarray(0, 8000).includes(0)) throw new Error("BINARY_FILE")
-  const text = data.toString("utf8")
-  const lines =
-    text === ""
-      ? [""]
-      : text.endsWith("\n")
-        ? text.slice(0, -1).split("\n")
-        : text.split("\n")
-  const offset = Math.max(1, Math.floor(opts.offset))
-  const limit = Math.max(1, Math.floor(opts.limit))
-  const maxBytes = Math.max(1, Math.floor(opts.maxBytes))
-  const selected: string[] = []
-  let returnedBytes = 0
-  let truncated = false
-  let lineTooLong = false
-  let skippedLineRemainder = false
-  for (let i = offset - 1; i < lines.length && selected.length < limit; i++) {
-    const line = lines[i] ?? ""
-    const separatorBytes = selected.length > 0 ? 1 : 0
-    const lineBytes = Buffer.byteLength(line, "utf8")
-    if (returnedBytes + separatorBytes + lineBytes > maxBytes) {
-      truncated = true
-      if (selected.length === 0) {
-        const prefix = utf8Prefix(line, maxBytes)
-        selected.push(prefix)
-        returnedBytes = Buffer.byteLength(prefix, "utf8")
-        lineTooLong = true
-        skippedLineRemainder = true
-      }
-      break
-    }
-    selected.push(line)
-    returnedBytes += separatorBytes + lineBytes
-  }
-  const endLine = selected.length ? offset + selected.length - 1 : offset - 1
-  const hasMore = truncated || offset - 1 + selected.length < lines.length
-  return {
-    text: selected.join("\n"),
-    startLine: offset,
-    endLine,
-    hasMore,
-    nextOffset: hasMore ? endLine + 1 : undefined,
-    fileBytes: data.length,
-    truncated,
-    revision: hasMore
-      ? undefined
-      : createHash("sha256").update(data).digest("hex"),
-    lineTooLong: lineTooLong || undefined,
-    skippedLineRemainder: skippedLineRemainder || undefined,
-  }
-}
-
-function utf8Prefix(text: string, maxBytes: number): string {
-  if (Buffer.byteLength(text, "utf8") <= maxBytes) return text
-  let out = ""
-  let bytes = 0
-  for (const char of text) {
-    const next = Buffer.byteLength(char, "utf8")
-    if (bytes + next > maxBytes) break
-    out += char
-    bytes += next
-  }
-  return out
 }
 
 class ChildProcessCommandHandle

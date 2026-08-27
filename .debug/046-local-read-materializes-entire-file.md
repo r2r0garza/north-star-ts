@@ -1,6 +1,6 @@
 # Local pageable reads materialize the entire file before enforcing limits
 
-> Status: **OPEN**
+> Status: **CLOSED**
 > Severity: **P2 — avoidable memory exhaustion and false read failures**
 > Area: local filesystem read backend
 
@@ -35,3 +35,18 @@ the bytes and return it only after EOF was observed.
   size, not the source-file size.
 - Large local files support the same pagination semantics as other backends.
 - Binary, line-too-long, UTF-8, truncation, and revision metadata remain correct.
+
+## Resolution
+
+- Moved `LocalEnvironment.readTextLines` into the safe filesystem helper as a
+  chunked `read_text_lines` operation.
+- Kept workspace confinement and `O_NOFOLLOW` path handling while enforcing
+  offset, line limit, binary sniffing, and returned-byte caps in the helper.
+- Computes SHA-256 revision incrementally and only returns it after EOF.
+- Replaced the local large-file regression with a file whose old base64 helper
+  path would exceed the subprocess capture cap while tiny paged reads succeed.
+
+## Verification
+
+- `npx vitest run src/main/agent/env/local.test.ts`
+- `npm run typecheck`

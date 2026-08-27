@@ -52,7 +52,7 @@ a brief names a prerequisite.
 | 43 | P1 | Open | [Shell approval identities drift](./043-shell-approval-identity-drift.md) | Approval policy and dashboards |
 | 44 | P1 | Fixed | [Revision-checked mutations have a final install race](./044-file-revision-final-install-race.md) | File mutation transactions |
 | 45 | P1 | Open | [Consequential browser actions are auto-approved](./045-browser-consequential-actions-auto-approved.md) | Browser approval policy |
-| 46 | P2 | Open | [Local reads materialize the entire file](./046-local-read-materializes-entire-file.md) | Local filesystem reads |
+| 46 | P2 | Closed | [Local reads materialize the entire file](./046-local-read-materializes-entire-file.md) | Local filesystem reads |
 | 47 | P2 | Open | [Local safe writes ignore short writes](./047-local-safe-fs-short-write.md) | Local filesystem writes |
 | 48 | P2 | Open | [Local runtime and sandbox portability gap](./048-local-tool-runtime-and-sandbox-portability.md) | Local execution backend |
 | 49 | P2 | Open | [Command cursors skip model-truncated output](./049-command-session-cursor-skips-truncated-output.md) | Command session pagination |
