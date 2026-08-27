@@ -1,6 +1,6 @@
 # Local safe filesystem writes can report success after a short write
 
-> Status: **OPEN**
+> Status: **CLOSED**
 > Severity: **P2 — silent partial file corruption**
 > Area: local Python filesystem helper
 
@@ -31,3 +31,13 @@ at minimum, never claim success before all bytes reach the file descriptor.
 - Short writes, interruptions, zero-progress writes, and UTF-8 payloads have
   regression coverage.
 - Atomic staging and cleanup behavior remains unchanged.
+
+## Resolution
+
+- Added a `write_all` loop in the local safe filesystem helper that encodes once,
+  retries `InterruptedError`, detects zero-progress writes, and returns only
+  after every byte has been accepted by the file descriptor.
+- Documented the durability boundary: success does not imply `fsync`; it means
+  all bytes reached the file descriptor.
+- Added regression coverage for short writes, interruptions, zero-progress
+  writes, terminal write errors, and multi-byte UTF-8 payloads.

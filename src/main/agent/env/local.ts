@@ -472,7 +472,7 @@ function assertScopedFsSupported(): void {
   }
 }
 
-const SAFE_FS_SCRIPT = String.raw`
+export const SAFE_FS_SCRIPT = String.raw`
 import base64, codecs, hashlib, json, os, stat, sys
 
 def fail_closed(message):
@@ -699,12 +699,48 @@ def read_text_lines(root, path, offset, limit, max_bytes):
     finally:
         close_all(fds)
 
-def write_file(root, path, data):
+def write_all(fd, data, write=os.write):
+    view = memoryview(data)
+    written_total = 0
+    while written_total < len(view):
+        try:
+            written = write(fd, view[written_total:])
+        except InterruptedError:
+            continue
+        if written <= 0:
+            fail_closed("write made no progress")
+        written_total += written
+
+def planned_write_factory(plan):
+    calls = {"index": 0}
+    def planned_write(fd, chunk):
+        if calls["index"] >= len(plan):
+            return os.write(fd, chunk)
+        step = plan[calls["index"]]
+        calls["index"] += 1
+        if step == "interrupt":
+            raise InterruptedError()
+        if step == "zero":
+            return 0
+        if step == "error":
+            raise OSError("injected write failure")
+        count = int(step)
+        if count < 0:
+            fail_closed("invalid write test plan")
+        to_write = min(count, len(chunk))
+        if to_write == 0:
+            return 0
+        return os.write(fd, chunk[:to_write])
+    return planned_write
+
+def write_file(root, path, data, write=os.write):
     fds, parent, name = open_parent(root, path)
     try:
         fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o666, dir_fd=parent)
         try:
-            os.write(fd, data.encode("utf-8"))
+            encoded = data.encode("utf-8")
+            # Success means every byte was accepted by the fd; durability remains unchanged and does not include fsync.
+            write_all(fd, encoded, write)
         finally:
             os.close(fd)
         return {}
@@ -824,6 +860,8 @@ elif op == "read_text_lines":
     result = read_text_lines(root, args["path"], args["offset"], args["limit"], args["maxBytes"])
 elif op == "write_file":
     result = write_file(root, args["path"], args["data"])
+elif op == "__test_write_file_with_plan":
+    result = write_file(root, args["path"], args["data"], planned_write_factory(args["plan"]))
 elif op == "chmod":
     result = chmod_file(root, args["path"], args["mode"])
 elif op == "rename":

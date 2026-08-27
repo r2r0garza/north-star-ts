@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest"
-import { execSync } from "child_process"
+import { execSync, spawnSync } from "child_process"
 import {
   mkdtemp,
   rm,
@@ -14,6 +14,7 @@ import { tmpdir } from "os"
 import { join } from "path"
 import {
   LocalEnvironment,
+  SAFE_FS_SCRIPT,
   materializePythonHeredocCommand,
   normalizeHostShellCommand,
 } from "./local"
@@ -37,6 +38,23 @@ if (canInspectProcesses) {
 
 const nodeCmd = (code: string) =>
   `${JSON.stringify(process.execPath)} -e ${JSON.stringify(code)}`
+
+function runSafeFsScriptForTest(
+  op: string,
+  args: Record<string, unknown>
+): string {
+  const result = spawnSync("python3", ["-c", SAFE_FS_SCRIPT], {
+    cwd: workspace,
+    input: JSON.stringify({ root: workspace, op, args }),
+    encoding: "utf8",
+    maxBuffer: 1024 * 1024,
+  })
+  if (result.error) throw result.error
+  if (result.status !== 0) {
+    throw new Error(result.stderr.trim() || result.stdout.trim())
+  }
+  return result.stdout
+}
 
 beforeEach(async () => {
   workspace = await mkdtemp(join(tmpdir(), "env-local-"))
@@ -220,6 +238,52 @@ describe("LocalEnvironment file ops", () => {
     const buf = await env.readFile(target)
     expect(buf.toString("utf8")).toBe("hi there")
   })
+
+  it.skipIf(process.platform === "win32")(
+    "completes local writes after short writes and interruptions",
+    async () => {
+      const target = join(workspace, "short-write.txt")
+      const content = "alpha\n日本語 café\nomega"
+
+      runSafeFsScriptForTest("__test_write_file_with_plan", {
+        path: target,
+        data: content,
+        plan: [1, 2, "interrupt", 3],
+      })
+
+      expect(await readFile(target, "utf8")).toBe(content)
+    }
+  )
+
+  it.skipIf(process.platform === "win32")(
+    "fails local writes that make no progress",
+    async () => {
+      const target = join(workspace, "zero-write.txt")
+
+      expect(() =>
+        runSafeFsScriptForTest("__test_write_file_with_plan", {
+          path: target,
+          data: "日本語",
+          plan: ["zero"],
+        })
+      ).toThrow("write made no progress")
+    }
+  )
+
+  it.skipIf(process.platform === "win32")(
+    "fails local writes on terminal write errors",
+    async () => {
+      const target = join(workspace, "error-write.txt")
+
+      expect(() =>
+        runSafeFsScriptForTest("__test_write_file_with_plan", {
+          path: target,
+          data: "prefix 日本語 suffix",
+          plan: [3, "error"],
+        })
+      ).toThrow("injected write failure")
+    }
+  )
 
   it("mkdirp creates nested directories", async () => {
     const dir = await env.resolve("a/b/c")
