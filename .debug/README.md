@@ -61,7 +61,7 @@ a brief names a prerequisite.
 | 52 | P2 | Fixed | [Database-backed tests are silently skipped](./052-sqlite-integration-tests-silently-skipped.md) | Test infrastructure and CI |
 | 53 | P3 | Closed | [Workspace containment mishandles edge cases](./053-workspace-path-containment-edge-cases.md) | Workspace path resolution |
 | 54 | P1 | Partial / Deferred by ADR 009 | [Parent symlink swaps can escape local filesystem confinement](./054-local-filesystem-parent-symlink-race.md) | Local filesystem backend |
-| 55 | P1 | Open | [Browser commit approvals are under-scoped](./055-browser-approval-scope-and-classification.md) | Browser approval policy |
+| 55 | P1 | Closed | [Browser commit approvals are under-scoped](./055-browser-approval-scope-and-classification.md) | Browser approval policy |
 | 56 | P2 | Fixed | [Node pageable reads materialize complete sources](./056-local-pageable-read-streaming-regression.md) | Local filesystem reads |
 | 57 | P2 | Fixed | [MCP discovery lacks cancellation and definition bounds](./057-mcp-discovery-lifecycle-and-definition-bounds.md) | MCP discovery |
 | 58 | P2 | Fixed | [Command output caps exclude serialization expansion](./058-command-session-serialized-output-cap.md) | Command session rendering |
