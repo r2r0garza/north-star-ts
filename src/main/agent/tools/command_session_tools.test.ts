@@ -39,6 +39,30 @@ function parseResult(text: string): Record<string, unknown> {
   return JSON.parse(text) as Record<string, unknown>
 }
 
+async function pollUntilTerminal(
+  sessionId: string,
+  cursor: number,
+  opts: { deadlineMs?: number; intervalMs?: number } = {}
+): Promise<Record<string, unknown>> {
+  const deadlineAt = Date.now() + (opts.deadlineMs ?? 1_000)
+  const intervalMs = opts.intervalMs ?? 20
+  let last: Record<string, unknown> | undefined
+
+  do {
+    last = parseResult(
+      await pollCommandTool.execute({ session_id: sessionId, cursor }, ctx())
+    )
+    if (last.status !== "running") return last
+    await new Promise((resolve) => setTimeout(resolve, intervalMs))
+  } while (Date.now() < deadlineAt)
+
+  throw new Error(
+    `Command session did not finish before deadline; last status was ${String(
+      last?.status
+    )}.`
+  )
+}
+
 class FakeCommandHandle implements CommandSessionHandle {
   private dataCallbacks: Array<(chunk: CommandChunk) => void> = []
   private exitCallbacks: Array<(exit: CommandExit) => void> = []
@@ -426,14 +450,30 @@ describe("command session tools", () => {
     const sessionId = String(started.sessionId)
     const cursor = Number(started.cursor)
 
-    await new Promise((resolve) => setTimeout(resolve, 250))
-    const polled = parseResult(
-      await pollCommandTool.execute({ session_id: sessionId, cursor }, ctx())
-    )
+    const polled = await pollUntilTerminal(sessionId, cursor)
 
     expect(polled.status).toBe("completed")
     expect(String(polled.output)).toContain("two")
     expect(String(polled.output)).not.toContain("one")
+  })
+
+  it("keeps bounded polling failures quick for non-terminating sessions", async () => {
+    const started = parseResult(
+      await execCommandTool.execute(
+        {
+          command: nodeCmd("setTimeout(() => {}, 5000)"),
+          yield_ms: 10,
+        },
+        ctx()
+      )
+    )
+
+    await expect(
+      pollUntilTerminal(String(started.sessionId), Number(started.cursor), {
+        deadlineMs: 80,
+        intervalMs: 10,
+      })
+    ).rejects.toThrow("did not finish before deadline")
   })
 
   it("writes stdin and EOF to a running command", async () => {
