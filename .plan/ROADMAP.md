@@ -126,7 +126,15 @@ item is its plan file, not its rank.
    container. Likely requires more than Job Objects: process-tree cleanup plus filesystem and network
    restrictions may need AppContainer/restricted-token support or a packaged native helper. Unsupported
    Windows hosts must continue to fail closed and point users to containers or explicit host access.
-17. **`043` — Copilot CLI provider. DEFERRED.** Split out of `034` but parked at the bottom for now.
+17. **`055` — Local filesystem openat helper. DEFERRED.** Future hardening required to close debug
+   `054` completely. The current Node local filesystem backend now revalidates after a deterministic
+   pre-syscall seam, but complete workspace confinement needs validation/use binding through opened
+   directory handles and directory-relative primitives (`openat`/`renameat`/`linkat`/`unlinkat` or
+   platform equivalents). Add a packaged native helper or addon for local host filesystem operations,
+   preserve missing-leaf/no-replace/atomic-staging behavior, and prove parent swaps cannot redirect
+   reads, writes, chmods, renames, links, unlinks, mkdir, list/stat, or search roots outside the
+   workspace.
+18. **`043` — Copilot CLI provider. DEFERRED.** Split out of `034` but parked at the bottom for now.
    Probes under `cli_probes/copilot/` confirmed no-tool JSONL streaming, caller-assigned
    `--session-id`, resume, assistant message deltas, final `assistant.message`, and final `result`.
    Tool support is deliberately deferred: a shell-tool probe with `--allow-tool=shell` was rejected as

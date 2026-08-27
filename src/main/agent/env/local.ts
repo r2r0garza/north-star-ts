@@ -75,6 +75,7 @@ interface LocalEnvironmentDeps {
   searchTimeoutMs?: number
   searchMaxOutputBytes?: number
   unlinkTempFile?: (path: string) => Promise<void>
+  beforeLocalFileSyscall?: (op: string, path: string) => Promise<void>
 }
 
 function resolveRipgrepPath(): string {
@@ -172,50 +173,50 @@ export class LocalEnvironment implements Environment {
   }
 
   readFile(path: string): Promise<Buffer> {
-    return safeReadFile(this.workspace, path)
+    return safeReadFile(this.workspace, path, this.deps)
   }
 
   readTextLines(
     path: string,
     opts: ReadTextLinesOptions
   ): Promise<ReadTextLinesResult> {
-    return safeReadTextLines(this.workspace, path, opts)
+    return safeReadTextLines(this.workspace, path, opts, this.deps)
   }
 
   writeFile(path: string, data: string): Promise<void> {
     this.assertWritable(path)
-    return safeWriteFile(this.workspace, path, data)
+    return safeWriteFile(this.workspace, path, data, this.deps)
   }
 
   chmod(path: string, mode: number): Promise<void> {
     this.assertWritable(path)
-    return safeChmod(this.workspace, path, mode)
+    return safeChmod(this.workspace, path, mode, this.deps)
   }
 
   rename(from: string, to: string): Promise<void> {
     this.assertWritable(from)
     this.assertWritable(to)
-    return safeRename(this.workspace, from, to)
+    return safeRename(this.workspace, from, to, this.deps)
   }
 
   installFileNoReplace(from: string, to: string): Promise<void> {
     this.assertWritable(from)
     this.assertWritable(to)
-    return safeLink(this.workspace, from, to)
+    return safeLink(this.workspace, from, to, this.deps)
   }
 
   removeFile(path: string): Promise<void> {
     this.assertWritable(path)
-    return safeUnlink(this.workspace, path)
+    return safeUnlink(this.workspace, path, this.deps)
   }
 
   async mkdirp(path: string): Promise<void> {
     this.assertWritable(path)
-    await safeMkdirp(this.workspace, path)
+    await safeMkdirp(this.workspace, path, this.deps)
   }
 
   async stat(path: string): Promise<StatInfo> {
-    const info = await safeStat(this.workspace, path)
+    const info = await safeStat(this.workspace, path, this.deps)
     return {
       size: info.size,
       mode: info.mode,
@@ -225,11 +226,11 @@ export class LocalEnvironment implements Environment {
   }
 
   readdir(path: string): Promise<DirEntry[]> {
-    return safeReaddir(this.workspace, path)
+    return safeReaddir(this.workspace, path, this.deps)
   }
 
   listDir(path: string, opts: ListDirOptions): Promise<ListDirResult> {
-    return safeListDir(this.workspace, path, opts)
+    return safeListDir(this.workspace, path, opts, this.deps)
   }
 
   // Run `command` through the user's shell with `opts.cwd` as its working
@@ -376,10 +377,16 @@ export class LocalEnvironment implements Environment {
   // content are never split with ad-hoc delimiters. Patterns/globs are argv data.
   async search(opts: SearchOptions): Promise<SearchResult> {
     const spawnFn = this.deps.spawn ?? spawn
-    const root = await assertScopedLocalPath(this.workspace, opts.root, {
-      requireLeaf: true,
-      requireDirectory: true,
-    })
+    const root = await scopedPathForSyscall(
+      this.workspace,
+      opts.root,
+      "search",
+      {
+        requireLeaf: true,
+        requireDirectory: true,
+      },
+      this.deps
+    )
     const child = spawnFn(
       (this.deps.resolveRipgrepPath ?? resolveRipgrepPath)(),
       buildRipgrepArgs({ ...opts, root }).map((arg) =>
@@ -565,14 +572,36 @@ async function assertScopedLocalPath(
   return target
 }
 
+async function scopedPathForSyscall(
+  workspace: string,
+  path: string,
+  op: string,
+  opts: ScopedPathOptions,
+  deps: LocalEnvironmentDeps
+): Promise<string> {
+  const target = await assertScopedLocalPath(workspace, path, opts)
+  await deps.beforeLocalFileSyscall?.(op, target)
+  return assertScopedLocalPath(workspace, target, opts)
+}
+
 async function safeOpenNoFollow(path: string, flags: number, mode?: number) {
   return fsOpen(path, flags | constants.O_NOFOLLOW, mode)
 }
 
-async function safeReadFile(workspace: string, path: string): Promise<Buffer> {
-  const target = await assertScopedLocalPath(workspace, path, {
-    requireLeaf: true,
-  })
+async function safeReadFile(
+  workspace: string,
+  path: string,
+  deps: LocalEnvironmentDeps
+): Promise<Buffer> {
+  const target = await scopedPathForSyscall(
+    workspace,
+    path,
+    "readFile",
+    {
+      requireLeaf: true,
+    },
+    deps
+  )
   const handle = await safeOpenNoFollow(target, constants.O_RDONLY)
   try {
     return await handle.readFile()
@@ -584,9 +613,10 @@ async function safeReadFile(workspace: string, path: string): Promise<Buffer> {
 async function safeReadTextLines(
   workspace: string,
   path: string,
-  opts: ReadTextLinesOptions
+  opts: ReadTextLinesOptions,
+  deps: LocalEnvironmentDeps
 ): Promise<ReadTextLinesResult> {
-  const data = await safeReadFile(workspace, path)
+  const data = await safeReadFile(workspace, path, deps)
   if (data.subarray(0, 8000).includes(0)) throw new Error("BINARY_FILE")
 
   const offset = Math.max(1, Math.floor(opts.offset))
@@ -644,11 +674,18 @@ async function safeReadTextLines(
 
 async function safeStat(
   workspace: string,
-  path: string
+  path: string,
+  deps: LocalEnvironmentDeps
 ): Promise<{ size: number; mode: number; type: string }> {
-  const target = await assertScopedLocalPath(workspace, path, {
-    requireLeaf: true,
-  })
+  const target = await scopedPathForSyscall(
+    workspace,
+    path,
+    "stat",
+    {
+      requireLeaf: true,
+    },
+    deps
+  )
   const stat = await lstat(target)
   return {
     size: stat.size,
@@ -659,21 +696,29 @@ async function safeStat(
 
 async function safeReaddir(
   workspace: string,
-  path: string
+  path: string,
+  deps: LocalEnvironmentDeps
 ): Promise<DirEntry[]> {
-  const result = await safeListDir(workspace, path, {})
+  const result = await safeListDir(workspace, path, {}, deps)
   return result.entries
 }
 
 async function safeListDir(
   workspace: string,
   path: string,
-  opts: Partial<ListDirOptions>
+  opts: Partial<ListDirOptions>,
+  deps: LocalEnvironmentDeps
 ): Promise<ListDirResult> {
-  const target = await assertScopedLocalPath(workspace, path, {
-    requireLeaf: true,
-    requireDirectory: true,
-  })
+  const target = await scopedPathForSyscall(
+    workspace,
+    path,
+    "listDir",
+    {
+      requireLeaf: true,
+      requireDirectory: true,
+    },
+    deps
+  )
   const entries: DirEntry[] = []
   let totalBytes = 0
   let truncated = false
@@ -709,11 +754,18 @@ async function safeListDir(
 async function safeWriteFile(
   workspace: string,
   path: string,
-  data: string
+  data: string,
+  deps: LocalEnvironmentDeps
 ): Promise<void> {
-  const target = await assertScopedLocalPath(workspace, path, {
-    allowMissingLeaf: true,
-  })
+  const target = await scopedPathForSyscall(
+    workspace,
+    path,
+    "writeFile",
+    {
+      allowMissingLeaf: true,
+    },
+    deps
+  )
   const handle = await safeOpenNoFollow(
     target,
     constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC,
@@ -729,50 +781,97 @@ async function safeWriteFile(
 async function safeChmod(
   workspace: string,
   path: string,
-  mode: number
+  mode: number,
+  deps: LocalEnvironmentDeps
 ): Promise<void> {
-  const target = await assertScopedLocalPath(workspace, path, {
-    requireLeaf: true,
-  })
+  const target = await scopedPathForSyscall(
+    workspace,
+    path,
+    "chmod",
+    {
+      requireLeaf: true,
+    },
+    deps
+  )
   await fsChmod(target, mode)
 }
 
 async function safeRename(
   workspace: string,
   from: string,
-  to: string
+  to: string,
+  deps: LocalEnvironmentDeps
 ): Promise<void> {
-  const source = await assertScopedLocalPath(workspace, from, {
-    requireLeaf: true,
-  })
-  const target = await assertScopedLocalPath(workspace, to, {
-    allowMissingLeaf: true,
-  })
+  const source = await scopedPathForSyscall(
+    workspace,
+    from,
+    "rename:source",
+    {
+      requireLeaf: true,
+    },
+    deps
+  )
+  const target = await scopedPathForSyscall(
+    workspace,
+    to,
+    "rename:target",
+    {
+      allowMissingLeaf: true,
+    },
+    deps
+  )
   await fsRename(source, target)
 }
 
 async function safeLink(
   workspace: string,
   from: string,
-  to: string
+  to: string,
+  deps: LocalEnvironmentDeps
 ): Promise<void> {
-  const source = await assertScopedLocalPath(workspace, from, {
-    requireLeaf: true,
-  })
-  const target = await assertScopedLocalPath(workspace, to, {
-    allowMissingLeaf: true,
-  })
+  const source = await scopedPathForSyscall(
+    workspace,
+    from,
+    "link:source",
+    {
+      requireLeaf: true,
+    },
+    deps
+  )
+  const target = await scopedPathForSyscall(
+    workspace,
+    to,
+    "link:target",
+    {
+      allowMissingLeaf: true,
+    },
+    deps
+  )
   await fsLink(source, target)
 }
 
-async function safeUnlink(workspace: string, path: string): Promise<void> {
-  const target = await assertScopedLocalPath(workspace, path, {
-    requireLeaf: true,
-  })
+async function safeUnlink(
+  workspace: string,
+  path: string,
+  deps: LocalEnvironmentDeps
+): Promise<void> {
+  const target = await scopedPathForSyscall(
+    workspace,
+    path,
+    "unlink",
+    {
+      requireLeaf: true,
+    },
+    deps
+  )
   await fsUnlink(target)
 }
 
-async function safeMkdirp(workspace: string, path: string): Promise<void> {
+async function safeMkdirp(
+  workspace: string,
+  path: string,
+  deps: LocalEnvironmentDeps
+): Promise<void> {
   const lexicalRoot = resolve(workspace)
   const root = await realpath(workspace)
   const lexicalTarget = resolve(path)
@@ -806,6 +905,20 @@ async function safeMkdirp(workspace: string, path: string): Promise<void> {
       }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+      await deps.beforeLocalFileSyscall?.("mkdir", current)
+      const parent = await assertScopedLocalPath(
+        workspace,
+        join(current, ".."),
+        {
+          requireLeaf: true,
+          requireDirectory: true,
+        }
+      )
+      if (!isInside(parent, current)) {
+        throw new Error(
+          `Path "${path}" is outside the workspace and is not allowed.`
+        )
+      }
       await fsMkdir(current)
     }
   }

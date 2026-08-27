@@ -9,6 +9,8 @@ import {
   mkdir,
   chmod,
   symlink,
+  stat,
+  readdir,
 } from "fs/promises"
 import { tmpdir } from "os"
 import { join } from "path"
@@ -214,6 +216,30 @@ describe("materializePythonHeredocCommand", () => {
 })
 
 describe("LocalEnvironment file ops", () => {
+  async function withParentSwapEnv(
+    opToSwap: string,
+    run: (raceEnv: LocalEnvironment, external: string) => Promise<void>
+  ) {
+    const external = await mkdtemp(join(tmpdir(), "env-local-external-"))
+    let swapped = false
+    const raceEnv = new LocalEnvironment(workspace, "host-access", {
+      beforeLocalFileSyscall: async (op) => {
+        if (swapped || op !== opToSwap) return
+        swapped = true
+        await rm(join(workspace, "safe"), { recursive: true, force: true })
+        await symlink(external, join(workspace, "safe"))
+      },
+    })
+
+    try {
+      await mkdir(join(workspace, "safe"), { recursive: true })
+      await run(raceEnv, external)
+      expect(swapped).toBe(true)
+    } finally {
+      await rm(external, { recursive: true, force: true })
+    }
+  }
+
   it("writes and reads a file, round-tripping bytes", async () => {
     const target = await env.resolve("note.txt")
     await env.writeFile(target, "hi there")
@@ -421,6 +447,142 @@ describe("LocalEnvironment file ops", () => {
   it("resolveLexical rejects absolute paths", () => {
     expect(() => env.resolveLexical("/etc/passwd")).toThrow()
   })
+
+  it.skipIf(process.platform === "win32")(
+    "rejects a read when a parent is swapped after validation",
+    async () => {
+      await withParentSwapEnv("readFile", async (raceEnv, external) => {
+        await writeFile(join(workspace, "safe", "sentinel.txt"), "inside")
+        await writeFile(join(external, "sentinel.txt"), "outside")
+
+        await expect(
+          raceEnv.readFile(join(workspace, "safe", "sentinel.txt"))
+        ).rejects.toThrow("symlink")
+        expect(await readFile(join(external, "sentinel.txt"), "utf8")).toBe(
+          "outside"
+        )
+      })
+    }
+  )
+
+  it.skipIf(process.platform === "win32")(
+    "rejects a write when a parent is swapped after validation",
+    async () => {
+      await withParentSwapEnv("writeFile", async (raceEnv, external) => {
+        await writeFile(join(workspace, "safe", "sentinel.txt"), "inside")
+        await writeFile(join(external, "sentinel.txt"), "outside")
+
+        await expect(
+          raceEnv.writeFile(join(workspace, "safe", "sentinel.txt"), "escaped")
+        ).rejects.toThrow("symlink")
+        expect(await readFile(join(external, "sentinel.txt"), "utf8")).toBe(
+          "outside"
+        )
+      })
+    }
+  )
+
+  it.skipIf(process.platform === "win32")(
+    "rejects chmod when a parent is swapped after validation",
+    async () => {
+      await withParentSwapEnv("chmod", async (raceEnv, external) => {
+        await writeFile(join(workspace, "safe", "sentinel.txt"), "inside")
+        await writeFile(join(external, "sentinel.txt"), "outside")
+        await chmod(join(external, "sentinel.txt"), 0o644)
+
+        await expect(
+          raceEnv.chmod(join(workspace, "safe", "sentinel.txt"), 0o755)
+        ).rejects.toThrow("symlink")
+        expect((await stat(join(external, "sentinel.txt"))).mode & 0o777).toBe(
+          0o644
+        )
+      })
+    }
+  )
+
+  it.skipIf(process.platform === "win32")(
+    "rejects rename when a parent is swapped after validation",
+    async () => {
+      await withParentSwapEnv("rename:target", async (raceEnv, external) => {
+        await writeFile(join(workspace, "source.txt"), "source")
+        await writeFile(join(external, "renamed.txt"), "outside")
+
+        await expect(
+          raceEnv.rename(
+            join(workspace, "source.txt"),
+            join(workspace, "safe", "renamed.txt")
+          )
+        ).rejects.toThrow("symlink")
+        expect(await readFile(join(external, "renamed.txt"), "utf8")).toBe(
+          "outside"
+        )
+      })
+    }
+  )
+
+  it.skipIf(process.platform === "win32")(
+    "rejects no-replace installs when a parent is swapped after validation",
+    async () => {
+      await withParentSwapEnv("link:target", async (raceEnv, external) => {
+        await writeFile(join(workspace, "source.txt"), "source")
+        await writeFile(join(external, "created.txt"), "outside")
+
+        await expect(
+          raceEnv.installFileNoReplace(
+            join(workspace, "source.txt"),
+            join(workspace, "safe", "created.txt")
+          )
+        ).rejects.toThrow("symlink")
+        expect(await readFile(join(external, "created.txt"), "utf8")).toBe(
+          "outside"
+        )
+      })
+    }
+  )
+
+  it.skipIf(process.platform === "win32")(
+    "rejects unlink when a parent is swapped after validation",
+    async () => {
+      await withParentSwapEnv("unlink", async (raceEnv, external) => {
+        await writeFile(join(workspace, "safe", "sentinel.txt"), "inside")
+        await writeFile(join(external, "sentinel.txt"), "outside")
+
+        await expect(
+          raceEnv.removeFile(join(workspace, "safe", "sentinel.txt"))
+        ).rejects.toThrow("symlink")
+        expect(await readFile(join(external, "sentinel.txt"), "utf8")).toBe(
+          "outside"
+        )
+      })
+    }
+  )
+
+  it.skipIf(process.platform === "win32")(
+    "rejects mkdir when a parent is swapped after validation",
+    async () => {
+      await withParentSwapEnv("mkdir", async (raceEnv, external) => {
+        await mkdir(join(external, "child"), { recursive: true })
+
+        await expect(
+          raceEnv.mkdirp(join(workspace, "safe", "child", "nested"))
+        ).rejects.toThrow("symlink")
+        expect(await readdir(join(external, "child"))).toEqual([])
+      })
+    }
+  )
+
+  it.skipIf(process.platform === "win32")(
+    "rejects directory listing when a parent is swapped after validation",
+    async () => {
+      await withParentSwapEnv("listDir", async (raceEnv, external) => {
+        await writeFile(join(external, "external.txt"), "outside")
+
+        await expect(raceEnv.readdir(join(workspace, "safe"))).rejects.toThrow(
+          "symlink"
+        )
+      })
+    }
+  )
 
   it.skipIf(process.platform === "win32")(
     "does not read through a parent swapped to an external symlink after resolve",

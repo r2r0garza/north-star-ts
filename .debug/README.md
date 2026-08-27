@@ -49,17 +49,22 @@ a brief names a prerequisite.
 | 40 | P3 | Fixed | [CLI-session tests fail on native ABI mismatch](./040-cli-sessions-native-abi-test-failure.md) | Test infrastructure |
 | 41 | P1 | Resolved | [Tool execution ignores the offered tool set](./041-tool-call-availability-not-enforced.md) | Agent tool dispatch |
 | 42 | P1 | Fixed | [Headless fetch is vulnerable to DNS rebinding](./042-headless-fetch-dns-rebinding.md) | Shared safe-fetch transport |
-| 43 | P1 | Open | [Shell approval identities drift](./043-shell-approval-identity-drift.md) | Approval policy and dashboards |
+| 43 | P1 | Resolved | [Shell approval identities drift](./043-shell-approval-identity-drift.md) | Approval policy and dashboards |
 | 44 | P1 | Fixed | [Revision-checked mutations have a final install race](./044-file-revision-final-install-race.md) | File mutation transactions |
-| 45 | P1 | Open | [Consequential browser actions are auto-approved](./045-browser-consequential-actions-auto-approved.md) | Browser approval policy |
+| 45 | P1 | Resolved | [Consequential browser actions are auto-approved](./045-browser-consequential-actions-auto-approved.md) | Browser approval policy |
 | 46 | P2 | Closed | [Local reads materialize the entire file](./046-local-read-materializes-entire-file.md) | Local filesystem reads |
-| 47 | P2 | Open | [Local safe writes ignore short writes](./047-local-safe-fs-short-write.md) | Local filesystem writes |
-| 48 | P2 | Open | [Local runtime and sandbox portability gap](./048-local-tool-runtime-and-sandbox-portability.md) | Local execution backend |
+| 47 | P2 | Closed | [Local safe writes ignore short writes](./047-local-safe-fs-short-write.md) | Local filesystem writes |
+| 48 | P2 | Partial | [Local runtime and sandbox portability gap](./048-local-tool-runtime-and-sandbox-portability.md) | Local execution backend |
 | 49 | P2 | Resolved | [Command cursors skip model-truncated output](./049-command-session-cursor-skips-truncated-output.md) | Command session pagination |
 | 50 | P2 | Fixed | [MCP call lifecycle and output are unbounded](./050-mcp-call-lifecycle-unbounded.md) | MCP client manager |
 | 51 | P2 | Fixed | [Single-file cleanup failures are suppressed](./051-single-file-cleanup-failures-suppressed.md) | Mutation and command cleanup |
 | 52 | P2 | Fixed | [Database-backed tests are silently skipped](./052-sqlite-integration-tests-silently-skipped.md) | Test infrastructure and CI |
-| 53 | P3 | Open | [Workspace containment mishandles edge cases](./053-workspace-path-containment-edge-cases.md) | Workspace path resolution |
+| 53 | P3 | Closed | [Workspace containment mishandles edge cases](./053-workspace-path-containment-edge-cases.md) | Workspace path resolution |
+| 54 | P1 | Open | [Parent symlink swaps can escape local filesystem confinement](./054-local-filesystem-parent-symlink-race.md) | Local filesystem backend |
+| 55 | P1 | Open | [Browser commit approvals are under-scoped](./055-browser-approval-scope-and-classification.md) | Browser approval policy |
+| 56 | P2 | Open | [Node pageable reads materialize complete sources](./056-local-pageable-read-streaming-regression.md) | Local filesystem reads |
+| 57 | P2 | Open | [MCP discovery lacks cancellation and definition bounds](./057-mcp-discovery-lifecycle-and-definition-bounds.md) | MCP discovery |
+| 58 | P2 | Open | [Command output caps exclude serialization expansion](./058-command-session-serialized-output-cap.md) | Command session rendering |
 
 New briefs start in **OPEN** state. When fixing one, add the regression test
 described by its acceptance criteria before marking it resolved.
