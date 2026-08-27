@@ -2,7 +2,7 @@ import { spawn } from "child_process"
 import type { ChildProcess } from "child_process"
 import { randomUUID } from "crypto"
 import { EventEmitter } from "events"
-import { isAbsolute, relative, posix } from "path"
+import { isAbsolute, relative, posix, sep } from "path"
 import { StringDecoder } from "string_decoder"
 import { resolveInWorkspace } from "../tools/workspace"
 import { captureProcess, captureSpawn } from "./spawn-util"
@@ -1014,12 +1014,20 @@ function shq(s: string): string {
 
 function isInsideContainerPath(parent: string, child: string): boolean {
   const rel = posix.relative(parent, child)
-  return rel === "" || (!rel.startsWith("..") && !posix.isAbsolute(rel))
+  return rel === "" || (!isPosixParentTraversal(rel) && !posix.isAbsolute(rel))
 }
 
 function isInsideHostPath(parent: string, child: string): boolean {
   const rel = relative(parent, child)
-  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel))
+  return rel === "" || (!isHostParentTraversal(rel) && !isAbsolute(rel))
+}
+
+function isPosixParentTraversal(rel: string): boolean {
+  return rel === ".." || rel.startsWith("../")
+}
+
+function isHostParentTraversal(rel: string): boolean {
+  return rel === ".." || rel.startsWith(`..${sep}`)
 }
 
 const CONTAINER_REALPATH_VALIDATOR = String.raw`
@@ -1030,7 +1038,7 @@ target = sys.argv[2]
 
 def inside(parent, child):
     rel = os.path.relpath(child, parent)
-    return rel == "." or (not rel.startswith("..") and not os.path.isabs(rel))
+    return rel == "." or (rel != ".." and not rel.startswith(".." + os.sep) and not os.path.isabs(rel))
 
 probe = target
 suffix = []

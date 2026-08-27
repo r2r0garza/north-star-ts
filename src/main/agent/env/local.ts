@@ -15,7 +15,7 @@ import {
   unlink as fsUnlink,
   writeFile,
 } from "fs/promises"
-import { isAbsolute, relative, resolve, join } from "path"
+import { isAbsolute, relative, resolve, join, sep } from "path"
 import { tmpdir } from "os"
 import { StringDecoder } from "string_decoder"
 import * as pty from "node-pty"
@@ -479,7 +479,11 @@ export class LocalEnvironment implements Environment {
 
 function isInside(parent: string, child: string): boolean {
   const rel = relative(resolve(parent), resolve(child))
-  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel))
+  return rel === "" || (!isParentTraversal(rel) && !isAbsolute(rel))
+}
+
+function isParentTraversal(rel: string): boolean {
+  return rel === ".." || rel.startsWith(`..${sep}`)
 }
 
 interface ScopedPathOptions {

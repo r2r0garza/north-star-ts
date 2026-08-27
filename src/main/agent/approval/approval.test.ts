@@ -236,6 +236,20 @@ describe("analyzeShellCommand", () => {
     expect(analysis.outsideWorkspacePaths).toEqual(["/tmp/result.txt"])
   })
 
+  it("does not treat dot-dot-prefixed in-workspace paths as escapes", () => {
+    const analysis = analyzeShellCommand(
+      "echo ok > ..cache/result.txt",
+      "darwin",
+      {
+        cwd: "/repo",
+        workspace: "/repo",
+      }
+    )
+
+    expect(analysis.candidateWritePaths).toEqual(["/repo/..cache/result.txt"])
+    expect(analysis.outsideWorkspacePaths).toEqual([])
+  })
+
   it("normalizes leading assignments and wrappers to the effective command", () => {
     const cases: Array<[command: string, executable: string, network: string]> =
       [

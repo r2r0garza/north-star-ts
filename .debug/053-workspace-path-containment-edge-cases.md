@@ -1,6 +1,6 @@
 # Workspace path containment mishandles dot-dot prefixes and realpath errors
 
-> Status: **OPEN**
+> Status: **CLOSED**
 > Severity: **P3 — valid-path rejection and misleading validation**
 > Area: workspace path resolution
 
@@ -35,3 +35,14 @@ propagate or wrap every other validation failure.
 - True parent traversal and absolute escape remain rejected.
 - Only missing-path errors trigger nearest-existing-ancestor validation.
 - Permission, symlink-loop, and I/O errors fail closed with accurate diagnostics.
+
+## Resolution
+
+- Updated workspace containment checks to reject only `..` and `..` followed by
+  the platform separator, preserving valid names such as `..cache`.
+- Applied the same predicate to local, container, and shell approval containment
+  helpers.
+- Narrowed `resolveInWorkspaceReal` ancestor fallback to `ENOENT`; all other
+  `realpath` errors now propagate.
+- Added focused regression coverage for dot-dot-prefixed names, traversal
+  rejection, symlink escapes, and `realpath` error handling.

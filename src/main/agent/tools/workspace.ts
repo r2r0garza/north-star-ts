@@ -1,4 +1,4 @@
-import { resolve, relative, isAbsolute, dirname, basename } from "path"
+import { resolve, relative, isAbsolute, dirname, basename, sep } from "path"
 import { realpath } from "fs/promises"
 
 // Resolve a model-supplied path against the workspace root and guarantee the
@@ -11,7 +11,7 @@ import { realpath } from "fs/promises"
 export function resolveInWorkspace(workspace: string, path: string): string {
   const target = resolve(workspace, path || ".")
   const rel = relative(workspace, target)
-  const escapes = rel.startsWith("..") || isAbsolute(rel)
+  const escapes = isParentTraversal(rel) || isAbsolute(rel)
   if (escapes) {
     throw new Error(
       `Path "${path}" is outside the workspace and is not allowed.`
@@ -24,7 +24,20 @@ export function resolveInWorkspace(workspace: string, path: string): string {
 // purely lexical (both must already be absolute, normalized paths).
 function isInside(parent: string, child: string): boolean {
   const rel = relative(parent, child)
-  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel))
+  return rel === "" || (!isParentTraversal(rel) && !isAbsolute(rel))
+}
+
+function isParentTraversal(rel: string): boolean {
+  return rel === ".." || rel.startsWith(`..${sep}`)
+}
+
+function isEnoent(err: unknown): boolean {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    "code" in err &&
+    (err as NodeJS.ErrnoException).code === "ENOENT"
+  )
 }
 
 // Like `resolveInWorkspace`, but additionally follows symlinks via realpath to
@@ -60,14 +73,9 @@ export async function resolveInWorkspaceReal(
       }
       return resolve(real, ...suffix.reverse())
     } catch (err) {
-      // Re-throw our own escape error; ENOENT means this ancestor doesn't exist
-      // yet, so step up to its parent and try again.
-      if (
-        err instanceof Error &&
-        err.message.includes("outside the workspace")
-      ) {
-        throw err
-      }
+      // ENOENT means this ancestor doesn't exist yet, so step up to its parent
+      // and try again. Other validation failures must fail closed.
+      if (!isEnoent(err)) throw err
       const parent = dirname(probe)
       if (parent === probe) {
         // Reached the filesystem root without finding an existing ancestor.

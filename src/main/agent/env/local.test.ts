@@ -221,6 +221,14 @@ describe("LocalEnvironment file ops", () => {
     expect(buf.toString("utf8")).toBe("hi there")
   })
 
+  it("allows file operations in dot-dot-prefixed directories", async () => {
+    const target = await env.resolve("..cache/note.txt")
+    await env.mkdirp(join(workspace, "..cache"))
+    await env.writeFile(target, "cached")
+
+    expect((await env.readFile(target)).toString("utf8")).toBe("cached")
+  })
+
   it("mkdirp creates nested directories", async () => {
     const dir = await env.resolve("a/b/c")
     await env.mkdirp(dir)

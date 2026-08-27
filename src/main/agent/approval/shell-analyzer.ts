@@ -1,4 +1,4 @@
-import { basename, isAbsolute, relative, resolve } from "path"
+import { basename, isAbsolute, relative, resolve, sep } from "path"
 import { homedir } from "os"
 import { normalizeCommand } from "./normalize"
 import type { ToolAction } from "./types"
@@ -545,7 +545,11 @@ function detectNetworkOperation(segment: ShellCommandSegment): string | null {
 
 function isInside(parent: string, child: string): boolean {
   const rel = relative(resolve(parent), resolve(child))
-  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel))
+  return rel === "" || (!isParentTraversal(rel) && !isAbsolute(rel))
+}
+
+function isParentTraversal(rel: string): boolean {
+  return rel === ".." || rel.startsWith(`..${sep}`)
 }
 
 function unique(values: string[]): string[] {
