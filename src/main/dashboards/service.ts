@@ -11,8 +11,8 @@ import { addRule } from "../db/repositories/action-allowlist"
 import type { TaskRunner, TaskExecutor, TaskExecResult } from "../tasks/runner"
 import type { DashboardRecipe, DashboardWidget, Task } from "../db/types"
 import type { ToolAction } from "../agent/approval/types"
-import { normalizeCommand } from "../agent/approval/normalize"
 import { stripAnsi } from "../agent/approval/ansi"
+import { shellActionForCommand } from "../agent/approval/shell-analyzer"
 import { makePolicyEngine } from "../agent/approval/engine"
 import { createEnvironment, type EnvConfig } from "../agent/env/factory"
 import type { Environment, ExecResult } from "../agent/env/types"
@@ -78,13 +78,11 @@ function validateCommandWorkspace(recipe: DashboardRecipe): string | null {
 // recipe references no runnable action.
 function actionFor(recipe: DashboardRecipe): ToolAction | null {
   if (recipe.command) {
-    return {
+    return shellActionForCommand(recipe.command, {
       tool: "run_shell_tool",
-      kind: "shell",
-      summary: `$ ${recipe.command}`,
-      identity: normalizeCommand(recipe.command),
-      detail: { command: recipe.command },
-    }
+      cwd: recipe.cwd,
+      workspace: recipe.workspace,
+    })
   }
   if (recipe.url) {
     let href: string

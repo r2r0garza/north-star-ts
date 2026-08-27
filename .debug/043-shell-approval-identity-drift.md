@@ -1,6 +1,6 @@
 # Shell approval identity omits environment state and diverges from dashboards
 
-> Status: **OPEN**
+> Status: **RESOLVED**
 > Severity: **P1 — durable approval scope mismatch**
 > Area: shell analysis, allowlist, and dashboard refresh
 
@@ -40,3 +40,14 @@ network classification.
 - Equivalent formatting and quoting normalize consistently where safe.
 - Live shell actions and dashboard recipes construct the same identity.
 - Existing durable rules are migrated, invalidated, or versioned explicitly.
+
+## Resolution
+
+- Shell identities are now versioned (`version: 2`) and include each parsed
+  segment's full `rawArgv` before assignment/wrapper stripping.
+- The effective executable/argv remains separate for risk and network
+  classification.
+- `shellActionForCommand()` is the canonical action builder used by live command
+  execution and dashboard recipes.
+- Existing durable shell approvals using the old identity shape are invalidated
+  by the versioned identity change and must be re-approved.

@@ -60,7 +60,7 @@ try {
 import { DashboardService, DASHBOARD_REFRESH_KIND } from "./service"
 import * as dashboards from "../db/repositories/dashboards"
 import { addRule } from "../db/repositories/action-allowlist"
-import { normalizeCommand } from "../agent/approval/normalize"
+import { shellActionForCommand } from "../agent/approval/shell-analyzer"
 import type { TaskRunner } from "../tasks/runner"
 import type { Task } from "../db/types"
 
@@ -97,6 +97,14 @@ async function runExecute(
   })
 }
 
+function shellIdentity(command: string, workspace = "/repo"): string {
+  return shellActionForCommand(command, {
+    tool: "run_shell_tool",
+    cwd: workspace,
+    workspace,
+  }).identity
+}
+
 beforeEach(() => {
   if (!sqliteLoads) return
   db = new Database(":memory:")
@@ -131,7 +139,7 @@ describe.skipIf(!sqliteLoads)("DashboardService.execute", () => {
     addRule({
       tool: "run_shell_tool",
       kind: "shell",
-      identity: normalizeCommand(cmd),
+      identity: shellIdentity(cmd),
       scope: "workspace",
       workspacePath: "/repo",
     })
@@ -198,7 +206,7 @@ describe.skipIf(!sqliteLoads)("DashboardService.execute", () => {
     addRule({
       tool: "run_shell_tool",
       kind: "shell",
-      identity: normalizeCommand(cmd),
+      identity: shellIdentity(cmd, "/tmp/outside"),
       scope: "workspace",
       workspacePath: "/tmp/outside",
     })
@@ -225,7 +233,7 @@ describe.skipIf(!sqliteLoads)("DashboardService.execute", () => {
     addRule({
       tool: "run_shell_tool",
       kind: "shell",
-      identity: normalizeCommand(cmd),
+      identity: shellIdentity(cmd),
       scope: "workspace",
       workspacePath: "/repo",
     })
@@ -299,7 +307,7 @@ describe.skipIf(!sqliteLoads)("DashboardService.execute", () => {
       addRule({
         tool: "run_shell_tool",
         kind: "shell",
-        identity: normalizeCommand(cmd),
+        identity: shellIdentity(cmd),
         scope: "workspace",
         workspacePath: "/repo",
       })
@@ -335,7 +343,7 @@ describe.skipIf(!sqliteLoads)("DashboardService.execute", () => {
     addRule({
       tool: "run_shell_tool",
       kind: "shell",
-      identity: normalizeCommand(cmd),
+      identity: shellIdentity(cmd),
       scope: "workspace",
       workspacePath: "/repo",
     })
@@ -449,7 +457,7 @@ describe.skipIf(!sqliteLoads)("DashboardService.execute", () => {
     addRule({
       tool: "run_shell_tool",
       kind: "shell",
-      identity: normalizeCommand(cmd),
+      identity: shellIdentity(cmd),
       scope: "workspace",
       workspacePath: "/repo",
     })
@@ -521,7 +529,7 @@ describe.skipIf(!sqliteLoads)("DashboardService.approveRecipe", () => {
     })
     const result = service.approveRecipe(widget.id)
     expect(result.ok).toBe(true)
-    // The identity is the normalized command, scoped to the recipe's cwd.
+    // The identity is the canonical shell action, scoped to the recipe's cwd.
     const rows = db.prepare("SELECT * FROM action_allowlist").all() as Array<{
       kind: string
       identity: string
@@ -530,7 +538,7 @@ describe.skipIf(!sqliteLoads)("DashboardService.approveRecipe", () => {
     }>
     expect(rows).toHaveLength(1)
     expect(rows[0].kind).toBe("shell")
-    expect(rows[0].identity).toBe(normalizeCommand(cmd))
+    expect(rows[0].identity).toBe(shellIdentity(cmd))
     expect(rows[0].scope).toBe("workspace")
     expect(rows[0].workspace_path).toBe("/repo")
     // A refresh was triggered.

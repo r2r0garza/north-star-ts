@@ -1,6 +1,7 @@
 import { basename, isAbsolute, relative, resolve } from "path"
 import { homedir } from "os"
 import { normalizeCommand } from "./normalize"
+import type { ToolAction } from "./types"
 
 export type ShellParseConfidence = "high" | "requires_approval"
 
@@ -12,6 +13,7 @@ export interface ShellRedirect {
 export interface ShellCommandSegment {
   raw: string
   executable?: string
+  rawArgv: string[]
   argv: string[]
   redirects: ShellRedirect[]
 }
@@ -33,6 +35,12 @@ export interface ShellCommandAnalysis {
 interface AnalyzeOptions {
   cwd?: string
   workspace?: string
+}
+
+interface ShellActionOptions extends AnalyzeOptions {
+  tool?: string
+  platform?: NodeJS.Platform
+  runtimeProfile?: string
 }
 
 const COMMAND_SEPARATORS = new Set([";", "&&", "||", "|", "\n"])
@@ -123,7 +131,9 @@ export function analyzeShellCommand(
   }
 
   const identityParts = {
+    version: 2,
     segments: allSegments.map((segment) => ({
+      rawArgv: segment.rawArgv,
       executable: segment.executable ?? "",
       argv: segment.argv,
       redirects: segment.redirects,
@@ -145,6 +155,33 @@ export function analyzeShellCommand(
     outsideWorkspacePaths,
     networkOperations,
     identity: `shell:${JSON.stringify(identityParts)}`,
+  }
+}
+
+export function shellActionForCommand(
+  command: string,
+  opts: ShellActionOptions = {}
+): ToolAction {
+  const shellAnalysis = analyzeShellCommand(
+    command,
+    opts.platform ?? process.platform,
+    {
+      cwd: opts.cwd,
+      workspace: opts.workspace,
+    }
+  )
+  return {
+    tool: opts.tool ?? "run_shell_tool",
+    kind: "shell",
+    summary: `$ ${command}`,
+    identity: shellAnalysis.identity,
+    detail: {
+      command,
+      cwd: opts.cwd,
+      workspace: opts.workspace,
+      shellAnalysis,
+      ...(opts.runtimeProfile ? { runtimeProfile: opts.runtimeProfile } : {}),
+    },
   }
 }
 
@@ -258,6 +295,7 @@ function pushSegment(segments: ShellCommandSegment[], tokens: string[]): void {
   segments.push({
     raw: tokens.join(" "),
     executable: effectiveArgv[0],
+    rawArgv: argv,
     argv: effectiveArgv,
     redirects,
   })

@@ -5,7 +5,7 @@ import { RegexCommandClassifier } from "./regex-classifier"
 import { FileActionClassifier } from "./file-classifier"
 import { DelegationClassifier } from "./delegation-classifier"
 import { BrowserActionClassifier } from "./browser-classifier"
-import { analyzeShellCommand } from "./shell-analyzer"
+import { analyzeShellCommand, shellActionForCommand } from "./shell-analyzer"
 import {
   PolicyEngine,
   type AllowlistLookup,
@@ -15,13 +15,7 @@ import type { ToolAction } from "./types"
 
 // Build a shell action for the classifier under test.
 function shell(command: string): ToolAction {
-  return {
-    tool: "run_shell_tool",
-    kind: "shell",
-    summary: `$ ${command}`,
-    identity: normalizeCommand(command),
-    detail: { command },
-  }
+  return shellActionForCommand(command)
 }
 
 function fileWrite(relPath: string): ToolAction {
@@ -228,6 +222,49 @@ describe("analyzeShellCommand", () => {
       expect(analysis.identity).toContain(`"executable":"${executable}"`)
       expect(analysis.networkOperations).toContain(network)
     }
+  })
+
+  it("keeps behavior-changing environment in exact shell identities", () => {
+    const trusted = shellActionForCommand("PATH=/trusted git status", {
+      platform: "darwin",
+      cwd: "/repo",
+      workspace: "/repo",
+    })
+    const untrusted = shellActionForCommand("PATH=/untrusted git status", {
+      platform: "darwin",
+      cwd: "/repo",
+      workspace: "/repo",
+    })
+
+    expect(trusted.identity).not.toBe(untrusted.identity)
+  })
+
+  it("keeps env and wrapper options in exact shell identities", () => {
+    const base = shellActionForCommand("env GIT_SSH_COMMAND=ssh git fetch", {
+      platform: "darwin",
+    })
+    const changedEnv = shellActionForCommand(
+      "env GIT_SSH_COMMAND='ssh -i key' git fetch",
+      { platform: "darwin" }
+    )
+    const changedWrapper = shellActionForCommand("sudo -u root git fetch", {
+      platform: "darwin",
+    })
+
+    expect(base.identity).not.toBe(changedEnv.identity)
+    expect(base.identity).not.toBe(changedWrapper.identity)
+    expect(base.detail?.shellAnalysis).toMatchObject({
+      networkOperations: ["git fetch"],
+    })
+  })
+
+  it("normalizes equivalent shell formatting in exact identities", () => {
+    const compact = shellActionForCommand("git status", { platform: "darwin" })
+    const spaced = shellActionForCommand("  git    status  ", {
+      platform: "darwin",
+    })
+
+    expect(compact.identity).toBe(spaced.identity)
   })
 
   it("detects every network command and package manager through common wrappers", () => {
@@ -443,6 +480,31 @@ describe("PolicyEngine — local backend tightening", () => {
     expect(engine.decide(shell("git status"), { sandboxed: false }).level).toBe(
       "allow"
     )
+  })
+
+  it("does not allowlist a command with different behavior-changing env", () => {
+    const approved = shellActionForCommand("PATH=/trusted git status", {
+      platform: "darwin",
+      cwd: "/repo",
+      workspace: "/repo",
+    })
+    const requested = shellActionForCommand("PATH=/untrusted git status", {
+      platform: "darwin",
+      cwd: "/repo",
+      workspace: "/repo",
+    })
+    const allowed = new Set([approved.identity])
+    const engine = new PolicyEngine([classifier], {
+      isAllowed: (action) => allowed.has(action.identity),
+    })
+
+    expect(
+      engine.decide(requested, {
+        sandboxed: false,
+        localProfile: "host-access",
+        workspacePath: "/repo",
+      }).level
+    ).toBe("require_approval")
   })
 
   it("still hard-blocks a catastrophic command on local backend", () => {

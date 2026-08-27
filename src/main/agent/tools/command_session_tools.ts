@@ -1,9 +1,8 @@
 import { randomUUID } from "crypto"
 import { stripAnsi } from "../approval/ansi"
-import { analyzeShellCommand } from "../approval/shell-analyzer"
+import { shellActionForCommand } from "../approval/shell-analyzer"
 import { LocalEnvironment } from "../env/local"
 import type { CommandExit, CommandSessionHandle } from "../env/types"
-import type { ToolAction } from "../approval/types"
 import { truncateForModel, toolError } from "./output"
 import { TOOL_EFFECTS, type Tool, type ToolContext } from "./types"
 
@@ -265,29 +264,18 @@ async function startCommand(
       ),
     }
   }
-  const shellAnalysis = analyzeShellCommand(command, process.platform, {
-    cwd,
-    workspace: workspaceRoot,
-  })
   const envProfile =
     ctx.env instanceof LocalEnvironment
       ? ctx.env.localRuntimeProfile
       : ctx.env
         ? "container"
         : "host-access"
-  const action: ToolAction = {
+  const action = shellActionForCommand(command, {
     tool: opts.compatibility ? "run_shell_tool" : "exec_command",
-    kind: "shell",
-    summary: `$ ${command}`,
-    identity: shellAnalysis.identity,
-    detail: {
-      command,
-      cwd,
-      workspace: workspaceRoot,
-      shellAnalysis,
-      runtimeProfile: envProfile,
-    },
-  }
+    cwd,
+    workspace: workspaceRoot,
+    runtimeProfile: envProfile,
+  })
   const outcome = ctx.gate ? await ctx.gate(action) : ("denied" as const)
   if (outcome === "blocked") {
     return {

@@ -5,9 +5,9 @@ import { stripAnsi } from "./ansi"
 // hermes-tools/approval.py `_normalize_command_for_detection`.
 //
 // The goal is to defeat trivial obfuscation so a dangerous command can't be
-// disguised as benign and slip through the classifier as `allow`. This is also
-// the single source of truth for a command's *identity* used by the allowlist:
-// two commands that normalize to the same string are "the same command".
+// disguised as benign and slip through the classifier as `allow`. Shell
+// allowlist identity is built by shell-analyzer.ts, which uses this normalized
+// form as parser input but also preserves behavior-changing env/wrapper state.
 //
 // Steps (order matters — see the home-fold note below):
 //  1. Strip ANSI escape sequences (CSI/OSC/DCS/8-bit C1, etc.).
