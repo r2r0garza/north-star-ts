@@ -2,6 +2,8 @@ import { lookup as dnsLookup } from "node:dns/promises"
 import net from "node:net"
 
 const MAX_REDIRECTS = 10
+const DEFAULT_TIMEOUT_MS = 30_000
+const DEFAULT_MAX_BODY_BYTES = 2 * 1024 * 1024
 const BLOCKED_IPV4_RANGES: Array<[string, number]> = [
   ["0.0.0.0", 8],
   ["10.0.0.0", 8],
@@ -31,10 +33,31 @@ export type SafeFetchLookup = (
 export interface SafeFetchOptions extends RequestInit {
   lookup?: SafeFetchLookup
   maxRedirects?: number
+  timeoutMs?: number | null
+}
+
+export interface SafeFetchTextOptions extends SafeFetchOptions {
+  maxBodyBytes?: number
 }
 
 class UnsafeUrlError extends Error {
   name = "UnsafeUrlError"
+}
+
+export class SafeFetchTimeoutError extends Error {
+  name = "SafeFetchTimeoutError"
+
+  constructor(timeoutMs: number) {
+    super(`Request timed out after ${timeoutMs}ms.`)
+  }
+}
+
+export class SafeFetchBodyTooLargeError extends Error {
+  name = "SafeFetchBodyTooLargeError"
+
+  constructor(maxBodyBytes: number) {
+    super(`Response body exceeded ${maxBodyBytes} decoded bytes.`)
+  }
 }
 
 function normalizeHostname(hostname: string): string {
@@ -193,25 +216,215 @@ export async function safeFetch(
   input: string | URL,
   options: SafeFetchOptions = {}
 ): Promise<Response> {
-  const { lookup, maxRedirects = MAX_REDIRECTS, ...fetchOptions } = options
+  const {
+    lookup,
+    maxRedirects = MAX_REDIRECTS,
+    timeoutMs = DEFAULT_TIMEOUT_MS,
+    signal,
+    ...fetchOptions
+  } = options
   let current = typeof input === "string" ? new URL(input) : new URL(input.href)
+  const deadline = makeDeadlineSignal(signal ?? undefined, timeoutMs)
 
-  for (let hop = 0; hop <= maxRedirects; hop++) {
-    await assertPublicHttpUrl(current, lookup)
-    const res = await fetch(current.href, {
-      ...fetchOptions,
-      redirect: "manual",
-    })
+  try {
+    for (let hop = 0; hop <= maxRedirects; hop++) {
+      throwIfAborted(deadline.signal)
+      await abortable(assertPublicHttpUrl(current, lookup), deadline.signal)
+      throwIfAborted(deadline.signal)
+      const res = await fetch(current.href, {
+        ...fetchOptions,
+        redirect: "manual",
+        signal: deadline.signal,
+      })
 
-    if (!isRedirect(res.status)) return res
+      if (!isRedirect(res.status)) return res
 
-    const location = res.headers.get("location")
-    if (!location) return res
-    if (hop === maxRedirects) {
-      throw new UnsafeUrlError("Too many redirects while fetching URL.")
+      const location = res.headers.get("location")
+      if (!location) return res
+      if (hop === maxRedirects) {
+        throw new UnsafeUrlError("Too many redirects while fetching URL.")
+      }
+      current = new URL(location, current)
     }
-    current = new URL(location, current)
+
+    throw new UnsafeUrlError("Too many redirects while fetching URL.")
+  } catch (err) {
+    deadline.dispose()
+    throw normalizeAbortError(err)
+  }
+}
+
+export async function safeFetchText(
+  input: string | URL,
+  options: SafeFetchTextOptions = {}
+): Promise<{ response: Response; text: string }> {
+  const {
+    maxBodyBytes = DEFAULT_MAX_BODY_BYTES,
+    timeoutMs = DEFAULT_TIMEOUT_MS,
+    signal,
+    ...fetchOptions
+  } = options
+  const deadline = makeDeadlineSignal(signal ?? undefined, timeoutMs)
+  try {
+    const response = await safeFetch(input, {
+      ...fetchOptions,
+      timeoutMs: null,
+      signal: deadline.signal,
+    })
+    const text = await readResponseText(response, {
+      maxBodyBytes,
+      signal: deadline.signal,
+    })
+    return { response, text }
+  } catch (err) {
+    throw normalizeAbortError(err)
+  } finally {
+    deadline.dispose()
+  }
+}
+
+export async function readResponseText(
+  response: Response,
+  opts: { maxBodyBytes?: number; signal?: AbortSignal } = {}
+): Promise<string> {
+  const maxBodyBytes = opts.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES
+  if (maxBodyBytes <= 0 || !Number.isFinite(maxBodyBytes)) {
+    throw new Error("maxBodyBytes must be a positive finite number")
+  }
+  if (!response.body) return ""
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  const chunks: string[] = []
+  let totalBytes = 0
+
+  try {
+    while (true) {
+      throwIfAborted(opts.signal)
+      const { done, value } = await readChunk(reader, opts.signal)
+      if (done) break
+      if (!value) continue
+
+      totalBytes += value.byteLength
+      if (totalBytes > maxBodyBytes) {
+        await reader.cancel(new SafeFetchBodyTooLargeError(maxBodyBytes))
+        throw new SafeFetchBodyTooLargeError(maxBodyBytes)
+      }
+      chunks.push(decoder.decode(value, { stream: true }))
+    }
+    chunks.push(decoder.decode())
+    return chunks.join("")
+  } catch (err) {
+    throw normalizeAbortError(err)
+  } finally {
+    reader.releaseLock()
+  }
+}
+
+function makeDeadlineSignal(
+  signal: AbortSignal | undefined,
+  timeoutMs: number | null
+): { signal: AbortSignal; dispose: () => void } {
+  if (timeoutMs === null) {
+    return {
+      signal: signal ?? new AbortController().signal,
+      dispose: () => {},
+    }
+  }
+  if (timeoutMs <= 0 || !Number.isFinite(timeoutMs)) {
+    throw new Error("timeoutMs must be a positive finite number")
   }
 
-  throw new UnsafeUrlError("Too many redirects while fetching URL.")
+  const controller = new AbortController()
+  const timeout = setTimeout(() => {
+    controller.abort(new SafeFetchTimeoutError(timeoutMs))
+  }, timeoutMs)
+  ;(timeout as ReturnType<typeof setTimeout> & { unref?: () => void }).unref?.()
+
+  const abortFromCaller = () => {
+    controller.abort(getAbortReason(signal))
+  }
+  if (signal?.aborted) {
+    abortFromCaller()
+  } else {
+    signal?.addEventListener("abort", abortFromCaller, { once: true })
+  }
+
+  return {
+    signal: controller.signal,
+    dispose: () => {
+      clearTimeout(timeout)
+      signal?.removeEventListener("abort", abortFromCaller)
+    },
+  }
+}
+
+async function readChunk(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  signal?: AbortSignal
+): Promise<ReadableStreamReadResult<Uint8Array>> {
+  if (!signal) return reader.read()
+  throwIfAborted(signal)
+
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      signal.removeEventListener("abort", onAbort)
+      const reason = getAbortReason(signal)
+      void reader.cancel(reason).catch(() => {})
+      reject(reason)
+    }
+    signal.addEventListener("abort", onAbort, { once: true })
+    reader.read().then(
+      (result) => {
+        signal.removeEventListener("abort", onAbort)
+        resolve(result)
+      },
+      (err) => {
+        signal.removeEventListener("abort", onAbort)
+        reject(err)
+      }
+    )
+  })
+}
+
+function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  throwIfAborted(signal)
+
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      signal.removeEventListener("abort", onAbort)
+      reject(getAbortReason(signal))
+    }
+    signal.addEventListener("abort", onAbort, { once: true })
+    promise.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort)
+        resolve(value)
+      },
+      (err) => {
+        signal.removeEventListener("abort", onAbort)
+        reject(err)
+      }
+    )
+  })
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw getAbortReason(signal)
+}
+
+function getAbortReason(signal?: AbortSignal): unknown {
+  return (
+    signal?.reason ??
+    new DOMException("The operation was aborted.", "AbortError")
+  )
+}
+
+function normalizeAbortError(err: unknown): unknown {
+  if (err instanceof SafeFetchTimeoutError) return err
+  if (err instanceof SafeFetchBodyTooLargeError) return err
+  if (err instanceof Error && err.name === "TimeoutError") {
+    return new SafeFetchTimeoutError(DEFAULT_TIMEOUT_MS)
+  }
+  return err
 }

@@ -4,6 +4,7 @@
 // tool. Provider impls do the network call + parse; the tool formats the result.
 
 import * as cheerio from "cheerio"
+import { safeFetchText } from "./safe-fetch"
 
 export interface WebSearchResult {
   title: string
@@ -27,6 +28,8 @@ export interface WebSearchProvider {
 const USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 " +
   "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+const SEARCH_TIMEOUT_MS = 15_000
+const MAX_SEARCH_BODY_BYTES = 1024 * 1024
 
 // DuckDuckGo has no official search API. This scrapes the "html" (no-JS)
 // endpoint, which returns real result listings as static markup. Unofficial and
@@ -42,7 +45,7 @@ export class DuckDuckGoProvider implements WebSearchProvider {
   ): Promise<WebSearchResult[]> {
     const endpoint = "https://html.duckduckgo.com/html/"
     const body = new URLSearchParams({ q: query }).toString()
-    const res = await fetch(endpoint, {
+    const { response: res, text: html } = await safeFetchText(endpoint, {
       method: "POST",
       headers: {
         "User-Agent": USER_AGENT,
@@ -51,11 +54,12 @@ export class DuckDuckGoProvider implements WebSearchProvider {
       },
       body,
       signal: opts.signal,
+      timeoutMs: SEARCH_TIMEOUT_MS,
+      maxBodyBytes: MAX_SEARCH_BODY_BYTES,
     })
     if (!res.ok) {
       throw new Error(`DuckDuckGo returned HTTP ${res.status}`)
     }
-    const html = await res.text()
     return parseDuckDuckGoHtml(html, opts.limit)
   }
 }

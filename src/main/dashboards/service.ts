@@ -15,7 +15,7 @@ import { stripAnsi } from "../agent/approval/ansi"
 import { makePolicyEngine } from "../agent/approval/engine"
 import { createEnvironment, type EnvConfig } from "../agent/env/factory"
 import type { Environment } from "../agent/env/types"
-import { safeFetch } from "../agent/tools/web/safe-fetch"
+import { safeFetchText } from "../agent/tools/web/safe-fetch"
 import * as settingsService from "../settings/service"
 
 export const DASHBOARD_REFRESH_KIND = "dashboard_refresh"
@@ -27,6 +27,8 @@ const LIVE_STATUSES = new Set(["queued", "running", "waiting_for_approval"])
 // Reuse the shell tool's limits so a headless replay behaves identically.
 const EXEC_TIMEOUT_MS = 30_000
 const MAX_OUTPUT_BYTES = 1024 * 1024
+const FETCH_TIMEOUT_MS = 30_000
+const MAX_FETCH_BODY_BYTES = 1024 * 1024
 
 const USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 " +
@@ -262,9 +264,11 @@ export class DashboardService {
         })
         output = stripAnsi(result.stdout.toString("utf8"))
       } else {
-        const res = await safeFetch(recipe.url!, {
+        const { response: res, text } = await safeFetchText(recipe.url!, {
           headers: { "User-Agent": USER_AGENT, Accept: "application/json,*/*" },
           signal,
+          timeoutMs: FETCH_TIMEOUT_MS,
+          maxBodyBytes: MAX_FETCH_BODY_BYTES,
         })
         if (!res.ok) {
           return this.markError(
@@ -272,7 +276,7 @@ export class DashboardService {
             `HTTP ${res.status} fetching the recipe URL`
           )
         }
-        output = await res.text()
+        output = text
       }
     } catch (err) {
       // A cancel/pause aborts the fetch/exec — propagate so the run stops.

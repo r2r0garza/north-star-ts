@@ -2,11 +2,16 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import {
   assertPublicHttpUrl,
   isPrivateOrLocalAddress,
+  readResponseText,
+  SafeFetchBodyTooLargeError,
+  SafeFetchTimeoutError,
   safeFetch,
+  safeFetchText,
   type SafeFetchLookup,
 } from "./safe-fetch"
 
 afterEach(() => {
+  vi.useRealTimers()
   vi.unstubAllGlobals()
 })
 
@@ -111,5 +116,105 @@ describe("safeFetch", () => {
       "https://public.example/final",
       expect.objectContaining({ redirect: "manual" })
     )
+  })
+})
+
+describe("readResponseText", () => {
+  it("streams response text through a decoded-byte cap", async () => {
+    const res = new Response("1234567890")
+
+    await expect(
+      readResponseText(res, { maxBodyBytes: 5 })
+    ).rejects.toBeInstanceOf(SafeFetchBodyTooLargeError)
+  })
+
+  it("does not split multi-byte UTF-8 characters while decoding chunks", async () => {
+    const encoded = new TextEncoder().encode("a🙂b")
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoded.slice(0, 2))
+        controller.enqueue(encoded.slice(2))
+        controller.close()
+      },
+    })
+
+    await expect(
+      readResponseText(new Response(stream), { maxBodyBytes: encoded.length })
+    ).resolves.toBe("a🙂b")
+  })
+})
+
+describe("safeFetchText", () => {
+  it("applies an independent request deadline", async () => {
+    vi.useFakeTimers()
+    const lookup: SafeFetchLookup = vi.fn(async () => [
+      { address: "93.184.216.34", family: 4 },
+    ])
+    const fetchMock = vi.fn(
+      (_url: string, opts?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          opts?.signal?.addEventListener("abort", () => {
+            reject(opts.signal?.reason)
+          })
+        })
+    )
+    vi.stubGlobal("fetch", fetchMock)
+
+    const promise = safeFetchText("https://public.example/slow", {
+      lookup,
+      timeoutMs: 25,
+    })
+    const assertion = expect(promise).rejects.toBeInstanceOf(
+      SafeFetchTimeoutError
+    )
+    await vi.advanceTimersByTimeAsync(25)
+
+    await assertion
+  })
+
+  it("applies the request deadline while validating DNS", async () => {
+    vi.useFakeTimers()
+    const lookup: SafeFetchLookup = vi.fn(
+      () => new Promise<Array<{ address: string; family?: number }>>(() => {})
+    )
+    const fetchMock = vi.fn()
+    vi.stubGlobal("fetch", fetchMock)
+
+    const promise = safeFetchText("https://public.example/slow-dns", {
+      lookup,
+      timeoutMs: 25,
+    })
+    const assertion = expect(promise).rejects.toBeInstanceOf(
+      SafeFetchTimeoutError
+    )
+    await vi.advanceTimersByTimeAsync(25)
+
+    await assertion
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it("reports caller cancellation separately from timeouts", async () => {
+    const lookup: SafeFetchLookup = vi.fn(async () => [
+      { address: "93.184.216.34", family: 4 },
+    ])
+    const controller = new AbortController()
+    const fetchMock = vi.fn(
+      (_url: string, opts?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          opts?.signal?.addEventListener("abort", () => {
+            reject(opts.signal?.reason)
+          })
+        })
+    )
+    vi.stubGlobal("fetch", fetchMock)
+
+    const promise = safeFetchText("https://public.example/slow", {
+      lookup,
+      signal: controller.signal,
+      timeoutMs: 30_000,
+    })
+    controller.abort()
+
+    await expect(promise).rejects.toMatchObject({ name: "AbortError" })
   })
 })

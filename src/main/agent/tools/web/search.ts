@@ -1,6 +1,7 @@
 import { TOOL_EFFECTS, type Tool, type ToolContext } from "../types"
 import { toolError, truncateForModel } from "../output"
 import { DuckDuckGoProvider, type WebSearchProvider } from "./providers"
+import { SafeFetchBodyTooLargeError, SafeFetchTimeoutError } from "./safe-fetch"
 
 // The active search provider. A single default (DuckDuckGo) for now; swap or
 // make configurable later without touching the tool below.
@@ -67,6 +68,12 @@ export const webSearchTool: Tool = {
         .text
     } catch (err) {
       // Aborted (Stop/timeout) surfaces as an AbortError — report it plainly.
+      if (err instanceof SafeFetchTimeoutError) {
+        return toolError("timeout", err.message)
+      }
+      if (err instanceof SafeFetchBodyTooLargeError) {
+        return toolError("response_too_large", err.message)
+      }
       if (err instanceof Error && err.name === "AbortError") {
         return toolError("aborted", "The search was cancelled.")
       }
