@@ -1,6 +1,6 @@
 # CLI-session repository tests fail under the Electron native-module ABI
 
-> Status: **OPEN**
+> Status: **FIXED**
 > Severity: **P3 — full-suite test infrastructure failure**
 > Area: SQLite repository tests
 
@@ -28,3 +28,20 @@ clearly reported skip. Do not hide genuine migration/repository failures.
 - A normal documented setup produces a non-red full suite.
 - Both CLI-session behaviors still execute in at least one required CI job.
 - ABI unavailability is distinguished from assertion failure.
+
+## Resolution
+
+- Added the same `sqliteLoads` native-module availability probe used by the other
+  SQLite repository suites to `cli-sessions.test.ts`.
+- Skipped only the DB-backed `cli-sessions repo` describe block when
+  `better-sqlite3` cannot load under plain-Node Vitest after an Electron rebuild.
+- Left the two CLI-session behavior assertions unchanged, so they still execute
+  in test environments where the native module is built for the active Node ABI.
+
+## Verification
+
+- `pnpm vitest run src/main/db/repositories/cli-sessions.test.ts` completed
+  non-red in the local Electron-rebuilt ABI state, reporting the suite and both
+  tests as skipped instead of failing during setup.
+- `pnpm test` passed with 64 test files passing and 26 native/integration-gated
+  files skipped.

@@ -5,6 +5,16 @@ import { runMigrations } from "../migrations"
 let db: Database.Database
 vi.mock("../connection", () => ({ getDb: () => db }))
 
+// better-sqlite3's native binary is built for the Electron ABI here; under
+// plain-Node vitest it may not load (see native-module-rebuild note). SQLite-
+// backed tests skip rather than fail when the ABI mismatches.
+let sqliteLoads = true
+try {
+  new Database(":memory:").close()
+} catch {
+  sqliteLoads = false
+}
+
 import { createConversation, deleteConversation } from "./conversations"
 import {
   ensureCliSession,
@@ -13,12 +23,13 @@ import {
 } from "./cli-sessions"
 
 beforeEach(() => {
+  if (!sqliteLoads) return
   db = new Database(":memory:")
   db.pragma("foreign_keys = ON")
   runMigrations(db)
 })
 
-describe("cli-sessions repo", () => {
+describe.skipIf(!sqliteLoads)("cli-sessions repo", () => {
   it("creates once and reuses the same conversation session", () => {
     const conversation = createConversation({ mode: "chat" })
     const first = ensureCliSession(conversation.id, "claude_code")

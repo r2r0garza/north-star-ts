@@ -46,7 +46,7 @@ a brief names a prerequisite.
 | 37 | P3 | Resolved | [Byte truncation can split UTF-8](./037-utf8-truncation-splits-codepoints.md) | Output formatting |
 | 38 | P3 | Fixed | [Listings cannot represent newline filenames](./038-directory-listing-newline-filenames.md) | Directory listing |
 | 39 | P3 | Fixed | [Command-session completion test is timing-dependent](./039-command-session-test-timing-flake.md) | Test infrastructure |
-| 40 | P3 | Open | [CLI-session tests fail on native ABI mismatch](./040-cli-sessions-native-abi-test-failure.md) | Test infrastructure |
+| 40 | P3 | Fixed | [CLI-session tests fail on native ABI mismatch](./040-cli-sessions-native-abi-test-failure.md) | Test infrastructure |
 
 New briefs start in **OPEN** state. When fixing one, add the regression test
 described by its acceptance criteria before marking it resolved.
