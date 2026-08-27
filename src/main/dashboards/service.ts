@@ -15,7 +15,7 @@ import { normalizeCommand } from "../agent/approval/normalize"
 import { stripAnsi } from "../agent/approval/ansi"
 import { makePolicyEngine } from "../agent/approval/engine"
 import { createEnvironment, type EnvConfig } from "../agent/env/factory"
-import type { Environment } from "../agent/env/types"
+import type { Environment, ExecResult } from "../agent/env/types"
 import { safeFetchText } from "../agent/tools/web/safe-fetch"
 import * as settingsService from "../settings/service"
 
@@ -112,6 +112,37 @@ function parseRows(output: string): Array<Record<string, unknown>> {
   if (parsed && typeof parsed === "object")
     return [parsed as Record<string, unknown>]
   throw new Error("not an array or object")
+}
+
+function summarizeStderr(result: ExecResult): string | null {
+  const stderr = result.stderr ?? result.stdout
+  const text = stripAnsi(stderr.toString("utf8")).trim()
+  if (!text) return null
+  return text.length > 500 ? `${text.slice(0, 500)}...` : text
+}
+
+function validateCommandResult(result: ExecResult): string | null {
+  const detail = summarizeStderr(result)
+  const withDetail = (message: string) =>
+    detail ? `${message}: ${detail}` : message
+
+  if (result.spawnError) return withDetail(`command failed to start`)
+  if (result.aborted) return withDetail("command was aborted")
+  if (result.timedOut) return withDetail("command timed out")
+  if (result.signal)
+    return withDetail(`command exited from signal ${result.signal}`)
+  if (result.exitCode !== 0)
+    return withDetail(
+      `command exited with status ${result.exitCode ?? "unknown"}`
+    )
+  if (result.outputTruncated) {
+    const captured =
+      typeof result.capturedOutputBytes === "number"
+        ? ` after ${result.capturedOutputBytes} captured bytes`
+        : ""
+    return `command output was truncated${captured}`
+  }
+  return null
 }
 
 // Deterministic dashboard refresh (plan 033.3). Re-runs each widget's stored
@@ -263,6 +294,8 @@ export class DashboardService {
           maxOutputBytes: MAX_OUTPUT_BYTES,
           signal,
         })
+        const commandError = validateCommandResult(result)
+        if (commandError) return this.markError(widget.id, commandError)
         output = stripAnsi(result.stdout.toString("utf8"))
       } else {
         const { response: res, text } = await safeFetchText(recipe.url!, {

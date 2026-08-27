@@ -11,6 +11,17 @@ vi.mock("../db/connection", () => ({ getDb: () => db }))
 // spawn a real process — the mock env returns whatever stdout the current test
 // wants. Preserve the rest of the module (envConfigFromEnv is used by settings).
 let execStdout = "[]"
+let execResultPatch: Partial<{
+  stderr: Buffer
+  exitCode: number | null
+  signal: NodeJS.Signals | null
+  timedOut: boolean
+  aborted: boolean
+  spawnError: string
+  outputTruncated: boolean
+  capturedOutputBytes: number
+  observedOutputBytes: number
+}> = {}
 let execCalls: string[] = []
 let createEnvironmentCalls: string[] = []
 let execCwds: string[] = []
@@ -30,6 +41,7 @@ vi.mock("../agent/env/factory", async (importOriginal) => {
             exitCode: 0,
             signal: null,
             timedOut: false,
+            ...execResultPatch,
           }
         },
         dispose: disposed,
@@ -91,6 +103,7 @@ beforeEach(() => {
   db.pragma("foreign_keys = ON")
   runMigrations(db)
   execStdout = "[]"
+  execResultPatch = {}
   execCalls = []
   createEnvironmentCalls = []
   execCwds = []
@@ -223,6 +236,85 @@ describe.skipIf(!sqliteLoads)("DashboardService.execute", () => {
     expect(cached?.status).toBe("error")
     expect(cached?.error).toMatch(/JSON rows/i)
   })
+
+  it.each([
+    {
+      name: "nonzero exit",
+      patch: {
+        exitCode: 7,
+        stderr: Buffer.from("permission denied", "utf8"),
+      },
+      expected: /status 7.*permission denied/i,
+    },
+    {
+      name: "timeout after output",
+      patch: {
+        timedOut: true,
+        stderr: Buffer.from("deadline exceeded", "utf8"),
+      },
+      expected: /timed out.*deadline exceeded/i,
+    },
+    {
+      name: "signal after output",
+      patch: { exitCode: null, signal: "SIGTERM" as NodeJS.Signals },
+      expected: /signal SIGTERM/i,
+    },
+    {
+      name: "abort after output",
+      patch: { exitCode: null, aborted: true },
+      expected: /aborted/i,
+    },
+    {
+      name: "spawn failure",
+      patch: { exitCode: null, spawnError: "ENOENT" },
+      expected: /failed to start.*ENOENT/i,
+    },
+    {
+      name: "truncated output",
+      patch: {
+        outputTruncated: true,
+        capturedOutputBytes: 12,
+        observedOutputBytes: 20,
+      },
+      expected: /truncated.*12 captured bytes/i,
+    },
+  ])(
+    "does not replace prior cache when shell refresh has $name",
+    async ({ patch, expected }) => {
+      const { runner } = makeRunner()
+      const service = new DashboardService(runner)
+      const dash = dashboards.createDashboard({ name: "D" })
+      const cmd = "cat metrics.json"
+      const widget = dashboards.createWidget({
+        dashboardId: dash.id,
+        title: "M",
+        type: "table",
+        recipe: { command: cmd, cwd: "/repo", workspace: "/repo" },
+      })
+      dashboards.upsertWidgetData({
+        widgetId: widget.id,
+        data: [{ old: true }],
+        status: "ok",
+      })
+      addRule({
+        tool: "run_shell_tool",
+        kind: "shell",
+        identity: normalizeCommand(cmd),
+        scope: "workspace",
+        workspacePath: "/repo",
+      })
+      execStdout = JSON.stringify([{ fresh: true }])
+      execResultPatch = patch
+
+      const result = await runExecute(service, dash.id)
+
+      expect(result.content).toContain("refreshed 0/1")
+      const cached = dashboards.getWidgetData(widget.id)
+      expect(cached?.status).toBe("error")
+      expect(cached?.error).toMatch(expected)
+      expect(cached?.data).toEqual([{ old: true }])
+    }
+  )
 
   it("marks oversized JSON rows as an error without replacing prior cache", async () => {
     const { runner } = makeRunner()
