@@ -1,8 +1,9 @@
 # Tool hardening debug queue
 
-These briefs capture the open issues found during the post-hardening review of
-plans `046` through `052`. Work through them in severity order unless a later
-brief becomes a prerequisite for an earlier fix.
+These briefs capture the original post-hardening review of plans `046` through
+`052` and the comprehensive built-in-tool closure audit that followed. Numeric
+IDs are stable creation order; prioritize open P1 issues, then P2, then P3 unless
+a brief names a prerequisite.
 
 | Order | Severity | Status | Brief | Area |
 | --- | --- | --- | --- | --- |
@@ -13,11 +14,39 @@ brief becomes a prerequisite for an earlier fix.
 | 5 | P2 | Fixed | [Oversized-line pagination cannot advance](./005-oversized-line-pagination-cannot-advance.md) | Pageable reads |
 | 6 | P3 | Resolved | [Plan 048 status is stale](./006-plan-048-status-is-stale.md) | Planning documentation |
 | 7 | P2 | Resolved | [Combined process output loses stream order](./007-combined-process-output-loses-stream-order.md) | Shared process capture |
-| 8 | P2 | Open | [Search capture truncation is not reported](./008-search-capture-truncation-is-not-reported.md) | Workspace search |
-| 9 | P2 | Open | [Patch commit ignores concurrent mode changes](./009-patch-commit-ignores-concurrent-mode-changes.md) | Multi-file patch transaction |
-| 10 | P2 | Open | [Container oversized-line reads are unbounded](./010-container-oversized-line-reads-are-unbounded.md) | Pageable reads |
-| 11 | P3 | Open | [Container test availability probe is incomplete](./011-container-test-availability-probe-is-incomplete.md) | Test infrastructure |
+| 8 | P2 | Closed | [Search capture truncation is not reported](./008-search-capture-truncation-is-not-reported.md) | Workspace search |
+| 9 | P2 | Fixed | [Patch commit ignores concurrent mode changes](./009-patch-commit-ignores-concurrent-mode-changes.md) | Multi-file patch transaction |
+| 10 | P2 | Closed | [Container oversized-line reads are unbounded](./010-container-oversized-line-reads-are-unbounded.md) | Pageable reads |
+| 11 | P3 | Resolved | [Container test availability probe is incomplete](./011-container-test-availability-probe-is-incomplete.md) | Test infrastructure |
 | 12 | P2 | Fixed | [Patch commit staging window allows stale overwrite](./012-patch-commit-staging-window-allows-stale-overwrite.md) | Multi-file patch transaction |
+| 13 | P2 | Fixed | [Container test probes can hang indefinitely](./013-container-test-probes-can-hang-indefinitely.md) | Test infrastructure |
+| 14 | P2 | Fixed | [Patch staging failure leaves temporary files](./014-patch-staging-failure-leaves-temporary-files.md) | Multi-file patch transaction |
+| 15 | P2 | Fixed | [Container probe timeout is not a hard deadline](./015-container-probe-timeout-is-not-a-hard-deadline.md) | Test infrastructure |
+| 16 | P3 | Resolved | [Patch rollback does not track completed backups](./016-patch-rollback-does-not-track-completed-backups.md) | Multi-file patch transaction |
+| 17 | P1 | Fixed | [Create-only writes can replace a concurrent destination](./017-create-only-write-race.md) | Single-file writes |
+| 18 | P1 | Fixed | [Patch rollback can leave an installed destination](./018-patch-rollback-swallows-destination-removal.md) | Multi-file patch rollback |
+| 19 | P1 | Fixed | [list_files can enumerate outside the workspace](./019-list-files-symlink-escape.md) | Directory listing |
+| 20 | P1 | Fixed | [Local realpath validation has a check/use race](./020-local-path-resolution-symlink-toctou.md) | Local path confinement |
+| 21 | P1 | Fixed | [exec_command cwd can escape through a symlink](./021-shell-cwd-symlink-escape.md) | Command sessions |
+| 22 | P1 | Fixed | [Shell analysis misses substitutions and wrappers](./022-shell-analyzer-backtick-wrapper-network-bypass.md) | Approval policy |
+| 23 | P1 | Fixed | [Headless fetches can reach private services](./023-web-fetch-ssrf-redirect-scope.md) | Web and dashboards |
+| 24 | P1 | Fixed | [Dashboard recipes can replace the captured cwd](./024-dashboard-recipe-arbitrary-cwd.md) | Dashboard refresh |
+| 25 | P2 | Resolved | [Container runtime CLI operations are unbounded](./025-container-runtime-cli-unbounded.md) | Container backend |
+| 26 | P2 | Resolved | [Container commands can survive Stop](./026-container-inflight-process-survives-stop.md) | Container shell execution |
+| 27 | P2 | Fixed | [Container paths can escape the workspace mount](./027-container-resolver-symlink-escape.md) | Container path confinement |
+| 28 | P2 | Resolved | [File mutation source reads are unbounded](./028-file-mutation-source-reads-unbounded.md) | Edit/write/patch planning |
+| 29 | P2 | Fixed | [Patch cleanup failures are suppressed](./029-patch-cleanup-failures-suppressed.md) | Patch cleanup |
+| 30 | P2 | Fixed | [list_files output is unbounded](./030-list-files-unbounded-output.md) | Directory listing |
+| 31 | P2 | Fixed | [index_query accepts an unbounded limit](./031-index-query-limit-unbounded.md) | Workspace index |
+| 32 | P2 | Fixed | [Browser snapshot builds the full AX tree](./032-browser-snapshot-full-tree-unbounded.md) | Agent browser |
+| 33 | P2 | Fixed | [Network response bodies are unbounded](./033-network-response-bodies-unbounded.md) | Web and dashboards |
+| 34 | P2 | Resolved | [Dashboard JSON truncation corrupts data](./034-dashboard-json-truncation-corrupts-data.md) | Dashboard persistence |
+| 35 | P2 | Resolved | [Dashboard refresh ignores command failure](./035-dashboard-refresh-ignores-command-failure.md) | Dashboard refresh |
+| 36 | P2 | Fixed | [Windows Python heredocs regressed under sessions](./036-windows-python-heredoc-session-regression.md) | Command sessions |
+| 37 | P3 | Open | [Byte truncation can split UTF-8](./037-utf8-truncation-splits-codepoints.md) | Output formatting |
+| 38 | P3 | Open | [Listings cannot represent newline filenames](./038-directory-listing-newline-filenames.md) | Directory listing |
+| 39 | P3 | Open | [Command-session completion test is timing-dependent](./039-command-session-test-timing-flake.md) | Test infrastructure |
+| 40 | P3 | Open | [CLI-session tests fail on native ABI mismatch](./040-cli-sessions-native-abi-test-failure.md) | Test infrastructure |
 
 New briefs start in **OPEN** state. When fixing one, add the regression test
 described by its acceptance criteria before marking it resolved.

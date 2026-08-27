@@ -59,6 +59,7 @@ interface LocalEnvironmentDeps {
   resolveRipgrepPath?: () => string
   spawn?: SpawnFn
   pythonPath?: string
+  platform?: NodeJS.Platform
   searchTimeoutMs?: number
   searchMaxOutputBytes?: number
 }
@@ -256,12 +257,17 @@ export class LocalEnvironment implements Environment {
   // timeout/abort cleanup.
   async exec(command: string, opts: ExecOptions): Promise<ExecResult> {
     let cleanupPath: string | null = null
-    let commandToRun = normalizeHostShellCommand(command)
+    const platform = this.deps.platform ?? process.platform
+    let commandToRun = normalizeHostShellCommand(command, platform)
     const scriptPath = join(
       tmpdir(),
       `cowork-python-heredoc-${randomUUID()}.py`
     )
-    const materialized = materializePythonHeredocCommand(command, scriptPath)
+    const materialized = materializePythonHeredocCommand(
+      command,
+      scriptPath,
+      platform
+    )
     if (materialized) {
       await writeFile(scriptPath, materialized.script, "utf8")
       cleanupPath = scriptPath
@@ -286,28 +292,68 @@ export class LocalEnvironment implements Environment {
     command: string,
     opts: SpawnCommandOptions
   ): Promise<CommandSessionHandle> {
-    const commandToRun = normalizeHostShellCommand(command)
-    if (opts.tty) {
-      const shell = this.shellInvocation(commandToRun, false)
-      const term = pty.spawn(shell.file, shell.args, {
-        name: "xterm-256color",
-        cols: 80,
-        rows: 24,
-        cwd: opts.cwd,
-        env: { ...process.env, TERM: "xterm-256color" },
-      })
-      return new PtyCommandHandle(term, opts.signal)
+    let cleanupPath: string | null = null
+    const platform = this.deps.platform ?? process.platform
+    let commandToRun = normalizeHostShellCommand(command, platform)
+    const scriptPath = join(
+      tmpdir(),
+      `cowork-python-heredoc-${randomUUID()}.py`
+    )
+    const materialized = materializePythonHeredocCommand(
+      command,
+      scriptPath,
+      platform
+    )
+    if (materialized) {
+      await writeFile(scriptPath, materialized.script, "utf8")
+      cleanupPath = scriptPath
+      commandToRun = materialized.command
     }
 
-    const child = this.spawnShell(commandToRun, opts.cwd, [
-      "pipe",
-      "pipe",
-      "pipe",
-    ])
-    return new ChildProcessCommandHandle(child, {
-      killGroup: true,
-      signal: opts.signal,
-    })
+    let handle: CommandSessionHandle
+    if (opts.tty) {
+      const shell = this.shellInvocation(commandToRun, false)
+      try {
+        const term = pty.spawn(shell.file, shell.args, {
+          name: "xterm-256color",
+          cols: 80,
+          rows: 24,
+          cwd: opts.cwd,
+          env: { ...process.env, TERM: "xterm-256color" },
+        })
+        handle = new PtyCommandHandle(term, opts.signal)
+      } catch (error) {
+        if (cleanupPath) await unlink(cleanupPath).catch(() => {})
+        throw error
+      }
+      return cleanupPath
+        ? new CleanupCommandHandle(handle, cleanupPath)
+        : handle
+    }
+
+    try {
+      const child = this.spawnShell(commandToRun, opts.cwd, [
+        "pipe",
+        "pipe",
+        "pipe",
+      ])
+      handle = new ChildProcessCommandHandle(child, {
+        killGroup: true,
+        signal: opts.signal,
+      })
+    } catch (error) {
+      if (cleanupPath) await unlink(cleanupPath).catch(() => {})
+      throw error
+    }
+    return cleanupPath ? new CleanupCommandHandle(handle, cleanupPath) : handle
+  }
+
+  private commandPlatform(): NodeJS.Platform {
+    return this.deps.platform ?? process.platform
+  }
+
+  private commandSpawn(): SpawnFn {
+    return this.deps.spawn ?? spawn
   }
 
   // Grep the workspace through ripgrep, parsing `--json` so file names and
@@ -362,9 +408,10 @@ export class LocalEnvironment implements Environment {
     command: string,
     captured = true
   ): { file: string; args: string[] } {
+    const platform = this.commandPlatform()
     const shell = captured
-      ? shellForCapturedCommand(command)
-      : shellForCommand(command)
+      ? shellForCapturedCommand(command, platform)
+      : shellForCommand(command, platform)
     if (this.profile === "host-access") return shell
     if (process.platform !== "darwin") {
       throw new Error(`Local profile is unavailable: ${this.profile}`)
@@ -386,18 +433,18 @@ export class LocalEnvironment implements Environment {
     stdio: ["ignore" | "pipe", "pipe", "pipe"] | ["pipe", "pipe", "pipe"]
   ): ChildProcess {
     if (this.profile === "host-access") {
-      return spawn(command, {
+      return this.commandSpawn()(command, {
         cwd,
         shell: true,
-        detached: process.platform !== "win32",
+        detached: this.commandPlatform() !== "win32",
         stdio,
       })
     }
     const shell = this.shellInvocation(command, true)
-    return spawn(shell.file, shell.args, {
+    return this.commandSpawn()(shell.file, shell.args, {
       cwd,
       shell: false,
-      detached: process.platform !== "win32",
+      detached: this.commandPlatform() !== "win32",
       stdio,
     })
   }
@@ -963,6 +1010,58 @@ class ChildProcessCommandHandle
   ): void {
     const decoded = decoder.end()
     if (decoded) this.emit("data", { stream, data: Buffer.from(decoded) })
+  }
+}
+
+class CleanupCommandHandle
+  extends EventEmitter<{
+    data: [CommandChunk]
+    exit: [CommandExit]
+  }>
+  implements CommandSessionHandle
+{
+  constructor(
+    private readonly inner: CommandSessionHandle,
+    private readonly cleanupPath: string
+  ) {
+    super()
+    inner.onData((chunk) => this.emit("data", chunk))
+    inner.onExit((exit) => {
+      void unlink(this.cleanupPath)
+        .catch((error) => {
+          this.emit("data", {
+            stream: "stderr",
+            data: Buffer.from(
+              `Failed to remove temporary Python heredoc script ${this.cleanupPath}: ${(error as Error).message}\n`
+            ),
+          })
+        })
+        .finally(() => this.emit("exit", exit))
+    })
+  }
+
+  onData(cb: (chunk: CommandChunk) => void): void {
+    this.on("data", cb)
+  }
+
+  onExit(cb: (exit: CommandExit) => void): void {
+    this.on("exit", cb)
+  }
+
+  write(data: string): void {
+    this.inner.write(data)
+  }
+
+  closeStdin(): void {
+    this.inner.closeStdin()
+  }
+
+  interrupt(): void {
+    this.inner.interrupt()
+  }
+
+  kill(): void {
+    this.inner.kill()
   }
 }
 

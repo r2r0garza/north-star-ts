@@ -1,7 +1,10 @@
 import { afterEach, describe, expect, it } from "vitest"
 import { tmpdir } from "os"
-import { mkdtemp, rm, symlink } from "fs/promises"
+import { access, mkdtemp, readFile, rm, symlink } from "fs/promises"
 import { isAbsolute, join, relative, resolve } from "path"
+import { EventEmitter } from "events"
+import { PassThrough } from "stream"
+import type { ChildProcess, spawn } from "child_process"
 import {
   execCommandTool,
   pollCommandTool,
@@ -9,6 +12,8 @@ import {
   testCommandSessions,
   writeStdinTool,
 } from "./command_session_tools"
+import { runShellTool } from "./run_shell_tool"
+import { LocalEnvironment } from "../env/local"
 import type {
   CommandChunk,
   CommandExit,
@@ -106,6 +111,52 @@ function fakeEnv(chunks: CommandChunk[]): Environment & {
   } as Environment & { spawnedCwds: string[]; resolvedPaths: string[] }
 }
 
+type FakeChildProcess = ChildProcess & {
+  stdout: PassThrough
+  stderr: PassThrough
+  stdin: PassThrough
+}
+
+function fakeWindowsPythonSpawn(seen: {
+  commands: string[]
+  scripts: string[]
+  neverExit?: boolean
+}): typeof spawn {
+  return ((command: string) => {
+    const child = new EventEmitter() as FakeChildProcess
+    child.stdout = new PassThrough()
+    child.stderr = new PassThrough()
+    child.stdin = new PassThrough()
+    Object.defineProperty(child, "pid", { value: 12345 })
+    child.kill = () => {
+      setImmediate(() => {
+        child.stdout.end()
+        child.stderr.end()
+        child.emit("close", null, "SIGKILL")
+      })
+      return true
+    }
+
+    setImmediate(async () => {
+      seen.commands.push(command)
+      const scriptPath = command.match(/^(?:py -3|python) "([^"]+)"$/)?.[1]
+      if (scriptPath) {
+        seen.scripts.push(scriptPath)
+        child.stdout.write(await readFile(scriptPath, "utf8"))
+      } else {
+        child.stdout.write(command)
+      }
+      if (!seen.neverExit) {
+        child.stdout.end()
+        child.stderr.end()
+        child.emit("close", 0, null)
+      }
+    })
+
+    return child
+  }) as typeof spawn
+}
+
 afterEach(() => {
   testCommandSessions.clear()
 })
@@ -175,7 +226,9 @@ describe("command session tools", () => {
       })
     )
 
-    expect(seen).toEqual([{ cwd: "/workspace/nested", workspace: "/workspace" }])
+    expect(seen).toEqual([
+      { cwd: "/workspace/nested", workspace: "/workspace" },
+    ])
     expect(env.spawnedCwds).toEqual(["/workspace/nested"])
   })
 
@@ -208,6 +261,152 @@ describe("command session tools", () => {
       }
     }
   )
+
+  it("materializes Windows Python heredocs for exec_command sessions and cleans them up", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "cmd-heredoc-ws-"))
+    const seen = { commands: [] as string[], scripts: [] as string[] }
+    try {
+      const env = new LocalEnvironment(workspace, "host-access", {
+        platform: "win32",
+        spawn: fakeWindowsPythonSpawn(seen),
+      })
+
+      const result = parseResult(
+        await execCommandTool.execute(
+          {
+            command: "python3 - <<'PY'\nprint('from heredoc')\nPY",
+            yield_ms: 1000,
+          },
+          ctx({ workspace, env })
+        )
+      )
+
+      expect(result.status).toBe("completed")
+      expect(result.output).toBe("print('from heredoc')")
+      expect(seen.commands[0]).toMatch(
+        /^py -3 ".*cowork-python-heredoc-.*\.py"$/
+      )
+      await expect(access(seen.scripts[0])).rejects.toThrow()
+    } finally {
+      await rm(workspace, { recursive: true, force: true })
+    }
+  })
+
+  it("cleans up materialized Windows Python heredocs when a session times out", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "cmd-heredoc-timeout-ws-"))
+    const seen = {
+      commands: [] as string[],
+      scripts: [] as string[],
+      neverExit: true,
+    }
+    try {
+      const env = new LocalEnvironment(workspace, "host-access", {
+        platform: "win32",
+        spawn: fakeWindowsPythonSpawn(seen),
+      })
+
+      const result = parseResult(
+        await execCommandTool.execute(
+          {
+            command: "python3 - <<'PY'\nprint('slow')\nPY",
+            timeout_ms: 10,
+            yield_ms: 100,
+          },
+          ctx({ workspace, env })
+        )
+      )
+
+      expect(result.status).toBe("timed_out")
+      await expect(access(seen.scripts[0])).rejects.toThrow()
+    } finally {
+      await rm(workspace, { recursive: true, force: true })
+    }
+  })
+
+  it("cleans up materialized Windows Python heredocs when a session is stopped", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "cmd-heredoc-stop-ws-"))
+    const seen = {
+      commands: [] as string[],
+      scripts: [] as string[],
+      neverExit: true,
+    }
+    try {
+      const env = new LocalEnvironment(workspace, "host-access", {
+        platform: "win32",
+        spawn: fakeWindowsPythonSpawn(seen),
+      })
+
+      const started = parseResult(
+        await execCommandTool.execute(
+          {
+            command: "python3 - <<'PY'\nprint('stoppable')\nPY",
+            timeout_ms: 5000,
+            yield_ms: 1,
+          },
+          ctx({ workspace, env })
+        )
+      )
+      expect(started.status).toBe("running")
+
+      await terminateCommandTool.execute(
+        { session_id: String(started.sessionId) },
+        ctx({ workspace, env })
+      )
+
+      await expect(access(seen.scripts[0])).rejects.toThrow()
+    } finally {
+      await rm(workspace, { recursive: true, force: true })
+    }
+  })
+
+  it("materializes Windows Python heredocs for run_shell_tool compatibility and cleans them up", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "run-shell-heredoc-ws-"))
+    const seen = { commands: [] as string[], scripts: [] as string[] }
+    try {
+      const env = new LocalEnvironment(workspace, "host-access", {
+        platform: "win32",
+        spawn: fakeWindowsPythonSpawn(seen),
+      })
+
+      const result = await runShellTool.execute(
+        { command: "python - <<PY\nprint('compat')\nPY", timeout_ms: 5000 },
+        ctx({ workspace, env })
+      )
+
+      expect(result).toContain("[exit code 0]")
+      expect(result).toContain("print('compat')")
+      expect(seen.commands[0]).toMatch(
+        /^python ".*cowork-python-heredoc-.*\.py"$/
+      )
+      await expect(access(seen.scripts[0])).rejects.toThrow()
+    } finally {
+      await rm(workspace, { recursive: true, force: true })
+    }
+  })
+
+  it("leaves non-heredoc Windows commands unchanged except python3 launcher normalization", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "cmd-no-heredoc-ws-"))
+    const seen = { commands: [] as string[], scripts: [] as string[] }
+    try {
+      const env = new LocalEnvironment(workspace, "host-access", {
+        platform: "win32",
+        spawn: fakeWindowsPythonSpawn(seen),
+      })
+
+      const result = parseResult(
+        await execCommandTool.execute(
+          { command: 'python3 -c "print(1)"', yield_ms: 1000 },
+          ctx({ workspace, env })
+        )
+      )
+
+      expect(result.status).toBe("completed")
+      expect(result.output).toBe('py -3 -c "print(1)"')
+      expect(seen.scripts).toEqual([])
+    } finally {
+      await rm(workspace, { recursive: true, force: true })
+    }
+  })
 
   it("returns a running session and polls without duplicate output", async () => {
     const started = parseResult(
