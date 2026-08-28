@@ -146,6 +146,37 @@ describe("external agent capability policy", () => {
     expect(allow("write_file_tool")).toBe(false)
   })
 
+  it("maps document and notebook read capabilities to read_document only", () => {
+    const github = agentCapabilityPolicy(
+      agent("github", {
+        tools: ["read/readDocument", "notebook/read", "notebook/run"],
+      })
+    )!
+    const claude = agentCapabilityPolicy(
+      agent("claude", { tools: ["NotebookRead", "NotebookEdit"] })
+    )!
+
+    expect(externalAgentToolFilter(github, false)!("read_document")).toBe(true)
+    expect(externalAgentToolFilter(github, false)!("exec_command")).toBe(false)
+    expect(externalAgentToolFilter(github, false)!("write_file_tool")).toBe(
+      false
+    )
+    expect(github.diagnostics).toContainEqual(
+      expect.objectContaining({
+        code: "unsupported_tool_group_member",
+        message: expect.stringContaining("notebook/run"),
+      })
+    )
+    expect(externalAgentToolFilter(claude, false)!("read_document")).toBe(true)
+    expect(externalAgentToolFilter(claude, false)!("exec_command")).toBe(false)
+    expect(claude.diagnostics).toContainEqual(
+      expect.objectContaining({
+        code: "unsupported_tool_group_member",
+        message: expect.stringContaining("NotebookEdit"),
+      })
+    )
+  })
+
   it("maps GitHub and Claude language-service capabilities to navigation tools", () => {
     const github = agentCapabilityPolicy(
       agent("github", {

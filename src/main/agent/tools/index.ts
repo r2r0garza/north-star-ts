@@ -37,6 +37,7 @@ import {
   gitShowTool,
   gitStatusTool,
 } from "./git_tools"
+import { readDocumentTool } from "./document_extraction_tool"
 import { todoWriteTool } from "./todo_tool"
 import { askUserQuestionTool } from "./ask_user_question_tool"
 import { runTodosInBackgroundTool } from "./run_todos_in_background"
@@ -89,6 +90,7 @@ const workspaceTools: Tool[] = [
   gitLogTool,
   gitShowTool,
   gitBranchesTool,
+  readDocumentTool,
 ]
 
 // Legacy compatibility tools remain executable by name for old/internal callers,

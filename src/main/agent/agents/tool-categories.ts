@@ -5,6 +5,7 @@ import type { AgentDefinition } from "./types"
 // agent narrows its toolset by category; this is where a category expands.
 export const CATEGORY_TOOLS: Record<string, string[]> = {
   read: ["read_file_tool", "list_files_tool"],
+  document_read: ["read_document"],
   search: ["search_tool", "index_query_tool"],
   navigation: [
     "workspace_symbols",

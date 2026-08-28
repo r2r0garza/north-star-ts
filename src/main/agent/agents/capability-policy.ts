@@ -48,6 +48,7 @@ const GITHUB_GROUPS: Record<string, string[]> = {
   git_read: CATEGORY_TOOLS.git_read,
   execute: CATEGORY_TOOLS.execute,
   diagnostics: CATEGORY_TOOLS.diagnostics,
+  document_read: CATEGORY_TOOLS.document_read,
   lsp: CATEGORY_TOOLS.lsp,
   navigation: CATEGORY_TOOLS.navigation,
   read: CATEGORY_TOOLS.read,
@@ -60,6 +61,8 @@ const GITHUB_GROUPS: Record<string, string[]> = {
 
 const GITHUB_TOOLS: Record<string, string[]> = {
   "read/readFile": ["read_file_tool"],
+  "read/readDocument": ["read_document"],
+  "notebook/read": ["read_document"],
   "read/listFiles": ["list_files_tool"],
   "search/textSearch": ["search_tool"],
   "search/fileSearch": ["index_query_tool"],
@@ -97,13 +100,13 @@ const GITHUB_UNSUPPORTED = new Set([
   "vscode/extensions",
   "vscodeGeneral/open",
   "vscodeGeneral/terminalSelection",
-  "notebook/read",
   "notebook/edit",
   "notebook/run",
 ])
 
 const CLAUDE_TOOLS: Record<string, string[]> = {
   Read: CATEGORY_TOOLS.read,
+  NotebookRead: ["read_document"],
   Write: ["write_file_tool"],
   Edit: ["edit_file_tool", "apply_patch_tool"],
   Grep: ["search_tool"],
@@ -119,7 +122,6 @@ const CLAUDE_TOOLS: Record<string, string[]> = {
 
 const CLAUDE_UNSUPPORTED = new Set([
   "NotebookEdit",
-  "NotebookRead",
   "Monitor",
   "Artifact",
   "Worktree",

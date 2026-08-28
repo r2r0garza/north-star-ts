@@ -103,6 +103,17 @@ describe("read_file_tool", () => {
     )
     expect(result).toContain("ERROR[binary]")
   })
+
+  it("recommends read_document for supported binary documents", async () => {
+    await writeFile(join(workspace, "sample.pdf"), Buffer.from([0, 1, 0]))
+    const result = await readFileTool.execute(
+      { path: "sample.pdf" },
+      { workspace }
+    )
+
+    expect(result).toContain("ERROR[binary]")
+    expect(result).toContain("Use read_document")
+  })
 })
 
 describe("truncateForModel", () => {

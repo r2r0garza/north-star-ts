@@ -4,6 +4,7 @@ import { TOOL_EFFECTS, type Tool, type ToolContext } from "./types"
 import { LocalEnvironment } from "../env/local"
 import type { Environment, StatInfo } from "../env/types"
 import { readHostTextLines } from "../env/read-text-lines"
+import { supportedDocumentKind } from "./document_extraction_tool"
 import { renderMetadata, toolError } from "./output"
 
 // Largest file we'll read into context. Matches the attachment cap in
@@ -130,9 +131,13 @@ export const readFileTool: Tool = {
       window = await readTextAt(target, info.size)
     } catch (error) {
       if ((error as Error).message === "BINARY_FILE") {
+        const kind = supportedDocumentKind(path)
         return toolError(
           "binary",
-          `File appears to be binary, not text: ${path}`
+          `File appears to be binary, not text: ${path}`,
+          kind
+            ? "Use read_document for supported binary documents and image metadata."
+            : undefined
         )
       }
       return toolError(

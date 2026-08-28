@@ -73,6 +73,7 @@ describe("agentToolAllowlist", () => {
         "agent",
         "todo",
         "diagnostics",
+        "document_read",
         "test",
         "navigation",
         "filesystem",
@@ -88,6 +89,7 @@ describe("agentToolAllowlist", () => {
     expect(allow.has("todo_write")).toBe(true)
     expect(allow.has("run_todos_in_background")).toBe(true)
     expect(allow.has("workspace_diagnostics")).toBe(true)
+    expect(allow.has("read_document")).toBe(true)
     expect(allow.has("run_tests")).toBe(true)
     expect(allow.has("get_test_results")).toBe(true)
     expect(allow.has("workspace_symbols")).toBe(true)
