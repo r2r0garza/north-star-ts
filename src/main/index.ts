@@ -46,7 +46,11 @@ import {
   importSkillFromMarkdown,
   importSkillFromZip,
 } from "./agent/skills/import"
-import { agentSources, userAgentsDir } from "./agent/agents/sources"
+import {
+  agentSources,
+  agentSourceEntries as getAgentSourceEntries,
+  userAgentsDir,
+} from "./agent/agents/sources"
 import {
   loadAgents,
   listSource as listAgentSource,
@@ -401,7 +405,30 @@ ipcMain.handle("agents:list", async (_event, workspace?: string) => {
   const agents = await loadAgents(agentSources(workspace))
   return agents
     .filter((a) => a.userInvocable)
-    .map(({ name, description }) => ({ name, description }))
+    .map(
+      ({
+        refId,
+        ref,
+        sourceKind,
+        scope,
+        name,
+        nativeName,
+        description,
+        label,
+        diagnostics,
+      }) => ({
+        ref: refId,
+        refId,
+        agentRef: ref,
+        sourceKind,
+        scope,
+        name,
+        nativeName,
+        description,
+        label,
+        diagnostics,
+      })
+    )
 })
 
 // The kind-tagged agent-source dirs for a workspace, in load order. Mirrors
@@ -411,20 +438,10 @@ ipcMain.handle("agents:list", async (_event, workspace?: string) => {
 function agentSourceEntries(
   workspace?: string
 ): Array<{ path: string; kind: AgentSourceKind }> {
-  const custom = settingsService.getAgentSources().folders
-  const dataDir = dataDirName()
-  const entries: Array<{ path: string; kind: AgentSourceKind }> = [
-    { path: userAgentsDir(), kind: "user" },
-    ...custom.map((path) => ({ path, kind: "custom" as const })),
-  ]
-  if (workspace) {
-    entries.push({ path: join(workspace, ".github", "agents"), kind: "github" })
-    entries.push({
-      path: join(workspace, dataDir, "agents"),
-      kind: "workspace",
-    })
-  }
-  return entries
+  return getAgentSourceEntries(workspace).map(({ path, kind }) => ({
+    path,
+    kind,
+  }))
 }
 
 // Enumerate the agent sources (user + custom) for Settings → Capabilities, each
@@ -458,24 +475,21 @@ ipcMain.handle("agents:tree", async (): Promise<AgentTree> => {
     agents: await listAgentSource(path),
   })
 
-  const global = [await toFolder(userAgentsDir(), "Global", "user")]
+  const global = await Promise.all(
+    getAgentSourceEntries()
+      .filter((entry) => entry.scope === "global")
+      .map((entry) => toFolder(entry.path, entry.label, entry.kind))
+  )
 
   const workspaces = await Promise.all(
     listWorkspaces().map(async (ws) => ({
       label: ws.name ?? baseName(ws.path),
       path: ws.path,
-      folders: await Promise.all([
-        toFolder(
-          join(ws.path, ".github", "agents"),
-          ".github/agents",
-          "github"
-        ),
-        toFolder(
-          join(ws.path, dataDir, "agents"),
-          `${dataDir}/agents`,
-          "workspace"
-        ),
-      ]),
+      folders: await Promise.all(
+        getAgentSourceEntries(ws.path)
+          .filter((entry) => entry.scope === "workspace")
+          .map((entry) => toFolder(entry.path, entry.label, entry.kind))
+      ),
     }))
   )
 
@@ -883,11 +897,15 @@ const AGENT_SUFFIX = ".agent.md"
 // dirs for EVERY known workspace. Read is permitted everywhere; writes use the
 // narrower writableAgentRoots().
 function allAgentRoots(): string[] {
-  const dataDir = dataDirName()
-  const roots = [userAgentsDir(), ...settingsService.getAgentSources().folders]
+  const roots = [
+    userAgentsDir(),
+    ...settingsService.getAgentSources().folders,
+    ...getAgentSourceEntries()
+      .filter((entry) => entry.sourceKind !== "north_star")
+      .map((entry) => entry.path),
+  ]
   for (const ws of listWorkspaces()) {
-    roots.push(join(ws.path, ".github", "agents"))
-    roots.push(join(ws.path, dataDir, "agents"))
+    roots.push(...getAgentSourceEntries(ws.path).map((entry) => entry.path))
   }
   return roots.map((r) => resolve(r))
 }
@@ -903,8 +921,12 @@ function writableAgentRoots(): string[] {
 // known agent-source dir. Same traversal / sibling-prefix protection as skills.
 function assertAgentPath(filePath: string): void {
   const resolved = resolve(filePath)
-  if (!basename(resolved).endsWith(AGENT_SUFFIX)) {
-    throw new Error(`Refusing non-.agent.md path: ${filePath}`)
+  const allowedFile =
+    basename(resolved).endsWith(AGENT_SUFFIX) ||
+    extname(resolved) === ".md" ||
+    extname(resolved) === ".toml"
+  if (!allowedFile) {
+    throw new Error(`Refusing non-agent definition path: ${filePath}`)
   }
   const inside = allAgentRoots().some(
     (root) => resolved === root || resolved.startsWith(root + sep)

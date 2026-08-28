@@ -6,14 +6,27 @@ import { offeredToolNames, unavailableToolResult } from "./tool-availability"
 const def = (name: string) => ({ function: { name } })
 
 function agent(tools: string[]): AgentDefinition {
+  const ref = {
+    sourceKind: "north_star" as const,
+    scope: "global" as const,
+    definitionPath: "/x/limited.agent.md",
+    nativeName: "limited",
+  }
   return {
     name: "limited",
+    nativeName: "limited",
     description: "limited",
     tools,
     userInvocable: true,
     body: "body",
-    path: "/x/limited.agent.md",
+    path: ref.definitionPath,
     source: "/x",
+    ref,
+    refId: `agentref:v1:${JSON.stringify(ref)}`,
+    sourceKind: "north_star",
+    scope: "global",
+    label: "North Star: limited",
+    diagnostics: [],
   }
 }
 

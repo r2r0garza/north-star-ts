@@ -168,8 +168,21 @@ export type SkillSummary = {
 // dropdown needs to display and match on. The full definition (body, tools,
 // skills, children) stays in the main process and is resolved per turn.
 export type AgentSummary = {
+  ref: string
+  refId: string
+  agentRef: {
+    sourceKind: string
+    scope: string
+    definitionPath: string
+    nativeName: string
+  }
+  sourceKind: string
+  scope: string
   name: string
+  nativeName: string
   description: string
+  label: string
+  diagnostics: Array<{ severity: string; code: string; message: string }>
 }
 
 let terminalSubscriptionCount = 0

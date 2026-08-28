@@ -1642,16 +1642,26 @@ function App(
   // each other item is an agent (filtered by name). Compact (icon-only) when the
   // right panel squeezes the toolbar. The selected agent's prompt is prepended
   // to ours per turn.
-  const agentItems: { value: string; label: string; description?: string }[] = [
+  const agentItems: {
+    value: string
+    label: string
+    description?: string
+    name?: string
+  }[] = [
     { value: "", label: "Default (no agent)" },
     ...agents.map((a) => ({
-      value: a.name,
-      label: a.name,
+      value: a.ref ?? a.name,
+      label: a.label ?? a.name,
       description: a.description,
+      name: a.name,
     })),
   ]
   const selectedAgentItem =
-    agentItems.find((it) => it.value === (selAgentName ?? "")) ?? null
+    agentItems.find(
+      (it) =>
+        it.value === (selAgentName ?? "") ||
+        (it.name && it.name === selAgentName)
+    ) ?? null
   const renderAgentItem = (item: {
     value: string
     label: string
@@ -1722,7 +1732,11 @@ function App(
         }}
       >
         <ComboboxTrigger
-          title={selAgentName ? `Agent: ${selAgentName}` : "Select agent"}
+          title={
+            selectedAgentItem?.value
+              ? `Agent: ${selectedAgentItem.label}`
+              : "Select agent"
+          }
           className={cn(
             "flex h-7 items-center rounded-md px-2 transition-colors",
             selAgentName

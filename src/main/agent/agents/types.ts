@@ -14,6 +14,28 @@ export const MAX_AGENT_DEPTH = 5
 // `undefined` (key omitted) and `[]` (key present but empty) is load-bearing and
 // must be preserved by the parser — the two mean different things (see the table
 // in each field's comment). Never collapse `undefined` to `[]`.
+export type ExternalAgentSourceKind =
+  | "north_star"
+  | "github"
+  | "cursor"
+  | "claude"
+  | "codex"
+
+export type AgentScope = "global" | "workspace" | "custom"
+
+export interface AgentCompatibilityDiagnostic {
+  severity: "warning" | "error"
+  code: string
+  message: string
+}
+
+export interface AgentRef {
+  sourceKind: ExternalAgentSourceKind
+  scope: AgentScope
+  definitionPath: string
+  nativeName: string
+}
+
 export interface AgentDefinition {
   // Agent identifier: lowercase alphanumeric + single hyphens, must match the
   // file's `<name>.agent.md` stem.
@@ -55,6 +77,14 @@ export interface AgentDefinition {
   path: string
   // Which source dir this agent came from, for diagnostics.
   source: string
+  ref: AgentRef
+  refId: string
+  sourceKind: ExternalAgentSourceKind
+  scope: AgentScope
+  nativeName: string
+  label: string
+  sourceMetadata?: unknown
+  diagnostics: AgentCompatibilityDiagnostic[]
 }
 
 // One agent-source directory as surfaced to the Settings → Capabilities table.
@@ -63,7 +93,14 @@ export interface AgentDefinition {
 //   custom    — a folder the user registered in Settings (removable)
 //   github    — <workspace>/.github/agents (zero-config, workspace-scoped)
 //   workspace — <workspace>/.<system>/agents
-export type AgentSourceKind = "user" | "custom" | "github" | "workspace"
+export type AgentSourceKind =
+  | "user"
+  | "custom"
+  | "github"
+  | "workspace"
+  | "cursor"
+  | "claude"
+  | "codex"
 export interface AgentSourceRow {
   path: string
   kind: AgentSourceKind

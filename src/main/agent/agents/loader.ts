@@ -1,14 +1,25 @@
-import { readFile, readdir, stat } from "fs/promises"
+import { readFile, readdir, realpath, stat } from "fs/promises"
 import path from "path"
 import * as yaml from "js-yaml"
-import type { AgentDefinition } from "./types"
-import { agentSources } from "./sources"
+import type {
+  AgentCompatibilityDiagnostic,
+  AgentDefinition,
+  AgentRef,
+  ExternalAgentSourceKind,
+} from "./types"
+import {
+  agentSourceEntries,
+  agentSources,
+  type AgentSourceEntry,
+} from "./sources"
 
 export const MAX_AGENT_FILE_SIZE = 10 * 1024 * 1024 // 10MB DoS guard
 const MAX_NAME = 64
 const MAX_DESCRIPTION = 1024
 const FRONTMATTER = /^---\s*\n([\s\S]*?)\n---\s*\n?/
 const AGENT_SUFFIX = ".agent.md"
+const MARKDOWN_SUFFIX = ".md"
+const TOML_SUFFIX = ".toml"
 
 export function validateName(name: string, stem: string): string | null {
   if (!name) return "name is required"
@@ -41,11 +52,153 @@ function parseList(
   return raw.map((v) => String(v).trim()).filter(Boolean)
 }
 
+function sourceLabel(kind: ExternalAgentSourceKind): string {
+  switch (kind) {
+    case "north_star":
+      return "North Star"
+    case "github":
+      return "GitHub"
+    case "cursor":
+      return "Cursor"
+    case "claude":
+      return "Claude"
+    case "codex":
+      return "Codex"
+  }
+}
+
+function serializeAgentRef(ref: AgentRef): string {
+  return `agentref:v1:${JSON.stringify(ref)}`
+}
+
+function normalizeDefinitionPath(agentPath: string): string {
+  return path.resolve(agentPath)
+}
+
+function inferSourceEntry(source: string): AgentSourceEntry {
+  const resolved = path.resolve(source)
+  const normalized = resolved.split(path.sep).join("/")
+  const scope =
+    normalized.includes("/.github/agents") ||
+    normalized.includes("/.copilot/agents") ||
+    normalized.includes("/.cursor/agents") ||
+    normalized.includes("/.claude/agents") ||
+    normalized.includes("/.codex/")
+      ? normalized.startsWith(
+          path
+            .resolve(process.env.HOME ?? "")
+            .split(path.sep)
+            .join("/")
+        )
+        ? "global"
+        : "workspace"
+      : "custom"
+  if (
+    normalized.endsWith("/.github/agents") ||
+    normalized.endsWith("/.copilot/agents")
+  ) {
+    return {
+      path: source,
+      kind: "github",
+      sourceKind: "github",
+      scope,
+      label: path.basename(source),
+    }
+  }
+  if (normalized.endsWith("/.cursor/agents")) {
+    return {
+      path: source,
+      kind: "cursor",
+      sourceKind: "cursor",
+      scope,
+      label: ".cursor/agents",
+    }
+  }
+  if (normalized.endsWith("/.claude/agents")) {
+    return {
+      path: source,
+      kind: "claude",
+      sourceKind: "claude",
+      scope,
+      label: ".claude/agents",
+    }
+  }
+  if (
+    normalized.endsWith("/.codex/agents") ||
+    normalized.endsWith("/.codex/config.toml")
+  ) {
+    return {
+      path: source,
+      kind: "codex",
+      sourceKind: "codex",
+      scope,
+      label: path.basename(source),
+    }
+  }
+  if (normalized.endsWith("/.cowork/agents")) {
+    return {
+      path: source,
+      kind: "workspace",
+      sourceKind: "north_star",
+      scope: "workspace",
+      label: ".cowork/agents",
+    }
+  }
+  return {
+    path: source,
+    kind: "custom",
+    sourceKind: "north_star",
+    scope,
+    label: path.basename(source),
+  }
+}
+
+function makeBaseDefinition(input: {
+  sourceKind: ExternalAgentSourceKind
+  scope: AgentDefinition["scope"]
+  agentPath: string
+  source: string
+  nativeName: string
+  description: string
+  body: string
+  userInvocable: boolean
+  sourceMetadata?: unknown
+  diagnostics?: AgentCompatibilityDiagnostic[]
+}): AgentDefinition {
+  const ref: AgentRef = {
+    sourceKind: input.sourceKind,
+    scope: input.scope,
+    definitionPath: normalizeDefinitionPath(input.agentPath),
+    nativeName: input.nativeName,
+  }
+  return {
+    name: input.nativeName,
+    nativeName: input.nativeName,
+    description:
+      input.description.length > MAX_DESCRIPTION
+        ? input.description.slice(0, MAX_DESCRIPTION)
+        : input.description,
+    userInvocable: input.userInvocable,
+    body: input.body,
+    path: input.agentPath,
+    source: input.source,
+    ref,
+    refId: serializeAgentRef(ref),
+    sourceKind: input.sourceKind,
+    scope: input.scope,
+    label: `${sourceLabel(input.sourceKind)}: ${input.nativeName}`,
+    sourceMetadata: input.sourceMetadata,
+    diagnostics: input.diagnostics ?? [],
+  }
+}
+
 export function parseAgent(
   content: string,
   agentPath: string,
   stem: string,
-  source: string
+  source: string,
+  sourceKind: ExternalAgentSourceKind = "north_star",
+  scope: AgentDefinition["scope"] = "custom"
 ): AgentDefinition | null {
   if (content.length > MAX_AGENT_FILE_SIZE) {
     console.warn(`Skipping ${agentPath}: content too large`)
@@ -89,17 +242,177 @@ export function parseAgent(
     description = description.slice(0, MAX_DESCRIPTION)
 
   return {
-    name,
-    description,
+    ...makeBaseDefinition({
+      sourceKind,
+      scope,
+      agentPath,
+      source,
+      nativeName: name,
+      description,
+      userInvocable: data["user-invocable"] === true,
+      body: content.slice(match[0].length),
+      sourceMetadata: data,
+    }),
     tools: parseList(data, "tools"),
     skills: parseList(data, "skills"),
     children: parseList(data, "children"),
     mcpServers: parseList(data, "mcp-servers"),
-    userInvocable: data["user-invocable"] === true,
-    body: content.slice(match[0].length),
-    path: agentPath,
-    source,
   }
+}
+
+function parseMarkdownFrontmatter(content: string): {
+  data: Record<string, unknown>
+  body: string
+  error?: string
+} {
+  const match = FRONTMATTER.exec(content)
+  if (!match) return { data: {}, body: content, error: "no YAML frontmatter" }
+  try {
+    const fm = yaml.load(match[1])
+    if (typeof fm !== "object" || fm === null) {
+      return {
+        data: {},
+        body: content.slice(match[0].length),
+        error: "frontmatter is not a mapping",
+      }
+    }
+    return {
+      data: fm as Record<string, unknown>,
+      body: content.slice(match[0].length),
+    }
+  } catch (e) {
+    return {
+      data: {},
+      body: content.slice(match[0].length),
+      error: `invalid YAML: ${e}`,
+    }
+  }
+}
+
+function parseExternalMarkdownAgent(
+  content: string,
+  agentPath: string,
+  stem: string,
+  entry: AgentSourceEntry
+): AgentDefinition | null {
+  if (content.length > MAX_AGENT_FILE_SIZE) return null
+  const parsed = parseMarkdownFrontmatter(content)
+  const diagnostics: AgentCompatibilityDiagnostic[] = []
+  if (parsed.error) {
+    diagnostics.push({
+      severity: "error",
+      code: "invalid_frontmatter",
+      message: parsed.error,
+    })
+  }
+  const data = parsed.data
+  const nativeName = String(data.name ?? stem).trim()
+  const description = String(data.description ?? "").trim()
+  if (!nativeName) return null
+  if (!description) {
+    diagnostics.push({
+      severity: entry.sourceKind === "github" ? "error" : "warning",
+      code: "missing_description",
+      message: "description is missing",
+    })
+  }
+  const userInvocable =
+    "user-invocable" in data ? data["user-invocable"] !== false : true
+  const agent = makeBaseDefinition({
+    sourceKind: entry.sourceKind,
+    scope: entry.scope,
+    agentPath,
+    source: entry.path,
+    nativeName,
+    description,
+    body: parsed.body,
+    userInvocable,
+    sourceMetadata: data,
+    diagnostics,
+  })
+  if (entry.sourceKind === "claude") {
+    agent.tools = parseList(data, "tools")
+    agent.skills = parseList(data, "skills")
+  } else if (entry.sourceKind === "cursor") {
+    agent.sourceMetadata = {
+      ...data,
+      readonly: data.readonly,
+      is_background: data.is_background,
+    }
+  } else if (entry.sourceKind === "github") {
+    agent.tools = parseList(data, "tools")
+    agent.mcpServers = parseList(data, "mcp-servers")
+  }
+  return agent
+}
+
+function parseTomlStringValue(raw: string): string | undefined {
+  const trimmed = raw.trim()
+  if (trimmed.startsWith('"') && trimmed.endsWith('"')) {
+    return trimmed.slice(1, -1).replace(/\\"/g, '"')
+  }
+  if (trimmed.startsWith("'") && trimmed.endsWith("'")) {
+    return trimmed.slice(1, -1)
+  }
+  return trimmed || undefined
+}
+
+function parseCodexToml(
+  content: string
+): Record<string, Record<string, string>> {
+  const sections: Record<string, Record<string, string>> = {}
+  let current: string | null = null
+  for (const line of content.split(/\r?\n/)) {
+    const trimmed = line.trim()
+    if (!trimmed || trimmed.startsWith("#")) continue
+    const section = /^\[([^\]]+)\]$/.exec(trimmed)
+    if (section) {
+      current = section[1]
+      sections[current] = sections[current] ?? {}
+      continue
+    }
+    if (!current) continue
+    const eq = trimmed.indexOf("=")
+    if (eq < 0) continue
+    sections[current][trimmed.slice(0, eq).trim()] = trimmed
+      .slice(eq + 1)
+      .trim()
+  }
+  return sections
+}
+
+function codexAgentFromToml(
+  content: string,
+  agentPath: string,
+  nativeName: string,
+  entry: AgentSourceEntry,
+  metadata: Record<string, unknown> = {}
+): AgentDefinition {
+  const sections = parseCodexToml(content)
+  const root = sections.agent ?? sections[""] ?? {}
+  const name =
+    parseTomlStringValue(root.name ?? "") ??
+    parseTomlStringValue(metadata.name as string) ??
+    nativeName
+  const description =
+    parseTomlStringValue(root.description ?? "") ??
+    parseTomlStringValue(metadata.description as string) ??
+    ""
+  const body =
+    parseTomlStringValue(root.developer_instructions ?? "") ??
+    parseTomlStringValue(root.instructions ?? "") ??
+    ""
+  return makeBaseDefinition({
+    sourceKind: "codex",
+    scope: entry.scope,
+    agentPath,
+    source: entry.path,
+    nativeName: name,
+    description,
+    body,
+    userInvocable: true,
+    sourceMetadata: { ...metadata, sections },
+  })
 }
 
 // Fields a serialized agent carries. Mirrors AgentDefinition minus the runtime-only
@@ -139,7 +452,22 @@ export function serializeAgent(fields: AgentFields): string {
 
 // List agents in a single source directory. Reads flat `<name>.agent.md` files
 // (unlike skills, which live in per-skill subdirectories).
-export async function listSource(sourceDir: string): Promise<AgentDefinition[]> {
+export async function listSource(
+  sourceDir: string,
+  entry?: AgentSourceEntry
+): Promise<AgentDefinition[]> {
+  const sourceEntry =
+    entry ??
+    ({
+      path: sourceDir,
+      kind: "custom",
+      sourceKind: "north_star",
+      scope: "custom",
+      label: path.basename(sourceDir),
+    } satisfies AgentSourceEntry)
+  if (sourceEntry.sourceKind === "codex" && sourceDir.endsWith("config.toml")) {
+    return listCodexConfig(sourceEntry)
+  }
   let entries: string[]
   try {
     entries = await readdir(sourceDir)
@@ -149,7 +477,17 @@ export async function listSource(sourceDir: string): Promise<AgentDefinition[]> 
 
   const agents: AgentDefinition[] = []
   for (const entry of entries) {
-    if (!entry.endsWith(AGENT_SUFFIX)) continue
+    if (
+      sourceEntry.sourceKind === "north_star" &&
+      !entry.endsWith(AGENT_SUFFIX)
+    )
+      continue
+    if (
+      sourceEntry.sourceKind !== "north_star" &&
+      !entry.endsWith(MARKDOWN_SUFFIX) &&
+      !entry.endsWith(TOML_SUFFIX)
+    )
+      continue
     const filePath = path.join(sourceDir, entry)
     try {
       if (!(await stat(filePath)).isFile()) continue
@@ -162,21 +500,128 @@ export async function listSource(sourceDir: string): Promise<AgentDefinition[]> 
     } catch {
       continue
     }
-    const stem = entry.slice(0, -AGENT_SUFFIX.length)
-    const parsed = parseAgent(content, filePath, stem, sourceDir)
+    const stem = entry.endsWith(AGENT_SUFFIX)
+      ? entry.slice(0, -AGENT_SUFFIX.length)
+      : entry.replace(/\.[^.]+$/, "")
+    const parsed =
+      sourceEntry.sourceKind === "north_star"
+        ? parseAgent(
+            content,
+            filePath,
+            stem,
+            sourceDir,
+            sourceEntry.sourceKind,
+            sourceEntry.scope
+          )
+        : sourceEntry.sourceKind === "codex" && entry.endsWith(TOML_SUFFIX)
+          ? codexAgentFromToml(content, filePath, stem, sourceEntry)
+          : parseExternalMarkdownAgent(content, filePath, stem, sourceEntry)
     if (parsed) agents.push(parsed)
   }
   return agents
 }
 
-// Load agents from sources in order. Later sources override earlier ones by name
-// (last-wins) — enables user → workspace layering.
-export async function loadAgents(sources: string[]): Promise<AgentDefinition[]> {
-  const byName = new Map<string, AgentDefinition>()
-  for (const source of sources) {
-    for (const agent of await listSource(source)) byName.set(agent.name, agent)
+async function listCodexConfig(
+  entry: AgentSourceEntry
+): Promise<AgentDefinition[]> {
+  let content: string
+  try {
+    content = await readFile(entry.path, "utf-8")
+  } catch {
+    return []
   }
-  return [...byName.values()]
+  const sections = parseCodexToml(content)
+  const agents: AgentDefinition[] = []
+  const baseDir = path.dirname(entry.path)
+  for (const [section, values] of Object.entries(sections)) {
+    if (!section.startsWith("agents.")) continue
+    const nativeName = section.slice("agents.".length)
+    const configFile = parseTomlStringValue(values.config_file ?? "")
+    const description = parseTomlStringValue(values.description ?? "") ?? ""
+    if (configFile) {
+      const configPath = path.isAbsolute(configFile)
+        ? configFile
+        : path.join(baseDir, configFile)
+      try {
+        const agentContent = await readFile(configPath, "utf-8")
+        agents.push(
+          codexAgentFromToml(agentContent, configPath, nativeName, entry, {
+            registry: values,
+            name: nativeName,
+            description,
+          })
+        )
+        continue
+      } catch {
+        agents.push(
+          makeBaseDefinition({
+            sourceKind: "codex",
+            scope: entry.scope,
+            agentPath: configPath,
+            source: entry.path,
+            nativeName,
+            description,
+            body: "",
+            userInvocable: true,
+            sourceMetadata: { registry: values },
+            diagnostics: [
+              {
+                severity: "error",
+                code: "missing_config_file",
+                message: `Unable to read referenced Codex agent config: ${configFile}`,
+              },
+            ],
+          })
+        )
+        continue
+      }
+    }
+    agents.push(
+      makeBaseDefinition({
+        sourceKind: "codex",
+        scope: entry.scope,
+        agentPath: entry.path,
+        source: entry.path,
+        nativeName,
+        description,
+        body: "",
+        userInvocable: true,
+        sourceMetadata: { registry: values },
+      })
+    )
+  }
+  return agents
+}
+
+async function canonicalPath(filePath: string): Promise<string> {
+  try {
+    return await realpath(filePath)
+  } catch {
+    return path.resolve(filePath)
+  }
+}
+
+// Load agents from sources in order. Source-qualified identity keeps same-name
+// definitions distinct; legacy bare-name resolution is handled by loadAgent.
+export async function loadAgents(
+  sources: string[]
+): Promise<AgentDefinition[]> {
+  const entries = agentSourceEntries()
+  const bySource = new Map(
+    entries.map((entry) => [path.resolve(entry.path), entry])
+  )
+  const byRef = new Map<string, AgentDefinition>()
+  const seenPaths = new Set<string>()
+  for (const source of sources) {
+    const entry = bySource.get(path.resolve(source)) ?? inferSourceEntry(source)
+    for (const agent of await listSource(source, entry)) {
+      const physicalPath = await canonicalPath(agent.path)
+      if (seenPaths.has(physicalPath)) continue
+      seenPaths.add(physicalPath)
+      byRef.set(agent.refId, agent)
+    }
+  }
+  return [...byRef.values()]
 }
 
 // Resolve a single agent by name for the given workspace, honoring the same
@@ -186,5 +631,8 @@ export async function loadAgent(
   workspace?: string
 ): Promise<AgentDefinition | null> {
   const agents = await loadAgents(agentSources(workspace))
-  return agents.find((a) => a.name === name) ?? null
+  if (name.startsWith("agentref:v1:")) {
+    return agents.find((a) => a.refId === name) ?? null
+  }
+  return [...agents].reverse().find((a) => a.name === name) ?? null
 }

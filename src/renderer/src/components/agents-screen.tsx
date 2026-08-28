@@ -79,6 +79,10 @@ function agentKey(sourcePath: string, name: string): string {
   return `${sourcePath} ${name}`
 }
 
+function displayName(agent: AgentDefinition): string {
+  return agent.label ?? agent.name
+}
+
 // Whether a folder kind is writable (editable/deletable) in this UI.
 function isWritable(kind: AgentFolder["kind"]): boolean {
   return kind === "user" || kind === "custom"
@@ -99,7 +103,9 @@ function matchesQuery(a: AgentDefinition, query: string): boolean {
   const q = query.trim().toLowerCase()
   if (!q) return true
   return (
-    a.name.toLowerCase().includes(q) || a.description.toLowerCase().includes(q)
+    a.name.toLowerCase().includes(q) ||
+    displayName(a).toLowerCase().includes(q) ||
+    a.description.toLowerCase().includes(q)
   )
 }
 
@@ -166,7 +172,7 @@ export function AgentsScreen({ onClose }: { onClose: () => void }) {
     return folders.flatMap((f) =>
       f.agents.map((a) => ({
         ...a,
-        key: agentKey(f.path, a.name),
+        key: a.refId ?? agentKey(f.path, a.name),
         kind: f.kind,
       }))
     )
@@ -214,7 +220,9 @@ export function AgentsScreen({ onClose }: { onClose: () => void }) {
       .tree()
       .then((t) => {
         const names = new Set<string>()
-        const collect = (folders: { servers: { name: string; enabled: boolean }[] }[]) => {
+        const collect = (
+          folders: { servers: { name: string; enabled: boolean }[] }[]
+        ) => {
           for (const f of folders)
             for (const s of f.servers) if (s.enabled) names.add(s.name)
         }
@@ -444,7 +452,7 @@ export function AgentsScreen({ onClose }: { onClose: () => void }) {
       ) : mode.kind === "edit" && draft && selected ? (
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
           <FormHeader
-            title={selected.name}
+            title={displayName(selected)}
             subtitle={selected.path}
             saving={saving}
             saveLabel={saving ? "Saving…" : "Save"}
@@ -473,7 +481,7 @@ export function AgentsScreen({ onClose }: { onClose: () => void }) {
                 <ArrowLeft />
               </Button>
               <div className="min-w-0">
-                <p className="truncate font-medium">{selected.name}</p>
+                <p className="truncate font-medium">{displayName(selected)}</p>
                 <p className="truncate font-mono text-xs text-muted-foreground">
                   {selected.path}
                 </p>
@@ -556,13 +564,15 @@ export function AgentsScreen({ onClose }: { onClose: () => void }) {
                       .filter((a) => matchesQuery(a, query))
                       .map((a) => (
                         <AgentCard
-                          key={agentKey(f.path, a.name)}
+                          key={a.refId ?? agentKey(f.path, a.name)}
                           agent={{
                             ...a,
-                            key: agentKey(f.path, a.name),
+                            key: a.refId ?? agentKey(f.path, a.name),
                             kind: f.kind,
                           }}
-                          onOpen={() => selectAgent(agentKey(f.path, a.name))}
+                          onOpen={() =>
+                            selectAgent(a.refId ?? agentKey(f.path, a.name))
+                          }
                           onDelete={deleteAgent}
                         />
                       ))
@@ -607,14 +617,16 @@ export function AgentsScreen({ onClose }: { onClose: () => void }) {
                       <CardGrid>
                         {matched.map((a) => (
                           <AgentCard
-                            key={agentKey(folder.path, a.name)}
+                            key={a.refId ?? agentKey(folder.path, a.name)}
                             agent={{
                               ...a,
-                              key: agentKey(folder.path, a.name),
+                              key: a.refId ?? agentKey(folder.path, a.name),
                               kind: folder.kind,
                             }}
                             onOpen={() =>
-                              selectAgent(agentKey(folder.path, a.name))
+                              selectAgent(
+                                a.refId ?? agentKey(folder.path, a.name)
+                              )
                             }
                             onDelete={deleteAgent}
                           />
@@ -951,6 +963,8 @@ function AgentView({ agent }: { agent: AgentDefinition }) {
       <div className="max-w-2xl space-y-4 px-6 py-5">
         <p className="text-sm text-muted-foreground">{agent.description}</p>
         <div className="grid grid-cols-[8rem_1fr] gap-x-4 gap-y-1.5 text-sm">
+          <ViewRow label="Source" value={agent.sourceKind ?? "north_star"} />
+          <ViewRow label="Scope" value={agent.scope ?? "custom"} />
           <ViewRow
             label="Tools"
             value={triSummary(agent.tools, "All tools", "Read-only")}
@@ -965,16 +979,20 @@ function AgentView({ agent }: { agent: AgentDefinition }) {
           />
           <ViewRow
             label="MCP servers"
-            value={triSummary(
-              agent.mcpServers,
-              "All enabled servers",
-              "None"
-            )}
+            value={triSummary(agent.mcpServers, "All enabled servers", "None")}
           />
           <ViewRow
             label="User-invocable"
             value={agent.userInvocable ? "Yes" : "No"}
           />
+          {agent.diagnostics && agent.diagnostics.length > 0 && (
+            <ViewRow
+              label="Diagnostics"
+              value={agent.diagnostics
+                .map((d) => `${d.severity}: ${d.message}`)
+                .join("; ")}
+            />
+          )}
         </div>
         <div className="border-t pt-4">
           <Markdown content={agent.body} />
@@ -1104,7 +1122,7 @@ function AgentCard({
       className="cursor-pointer transition-shadow hover:ring-foreground/25 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
     >
       <CardHeader>
-        <CardTitle className="truncate">{agent.name}</CardTitle>
+        <CardTitle className="truncate">{displayName(agent)}</CardTitle>
         <CardAction className="flex items-center gap-1">
           {writable ? (
             <button
@@ -1178,13 +1196,15 @@ function WorkspaceSection({
           <CardGrid>
             {wsAgents.map(({ folder, agent }) => (
               <AgentCard
-                key={agentKey(folder.path, agent.name)}
+                key={agent.refId ?? agentKey(folder.path, agent.name)}
                 agent={{
                   ...agent,
-                  key: agentKey(folder.path, agent.name),
+                  key: agent.refId ?? agentKey(folder.path, agent.name),
                   kind: folder.kind,
                 }}
-                onOpen={() => onOpen(agentKey(folder.path, agent.name))}
+                onOpen={() =>
+                  onOpen(agent.refId ?? agentKey(folder.path, agent.name))
+                }
                 onDelete={onDelete}
               />
             ))}

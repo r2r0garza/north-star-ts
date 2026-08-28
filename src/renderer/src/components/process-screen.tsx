@@ -166,6 +166,14 @@ const OWN_AGENT = "__own__"
 // empty-value constraint as OWN_AGENT. Maps to null (an ordinary agent phase).
 const NO_SUBPROCESS = "__none__"
 
+function agentValue(agent: AgentSummary): string {
+  return agent.ref ?? agent.name
+}
+
+function agentLabel(agent: AgentSummary): string {
+  return agent.label ?? agent.name
+}
+
 export function ProcessScreen({ onClose }: { onClose: () => void }) {
   const [definitions, setDefinitions] = useState<ProcessDefinition[] | null>(
     null
@@ -834,7 +842,7 @@ function PhaseCard({
   const upstreamCandidates = phases.filter((p) => p.id !== phase.id)
   // Agents not already in the pool, for the add dropdown.
   const poolNames = new Set(pool.map((a) => a.agentName))
-  const addable = agents.filter((a) => !poolNames.has(a.name))
+  const addable = agents.filter((a) => !poolNames.has(agentValue(a)))
   // Collapsed by default — a built graph is mostly read; expand to edit.
   const [expanded, setExpanded] = useState(false)
   const depCount = incoming.length
@@ -1233,8 +1241,8 @@ function PhaseCard({
                       Phase&apos;s own agent
                     </SelectItem>
                     {agents.map((a) => (
-                      <SelectItem key={a.name} value={a.name}>
-                        {a.name}
+                      <SelectItem key={agentValue(a)} value={agentValue(a)}>
+                        {agentLabel(a)}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -1346,8 +1354,8 @@ function PhaseCard({
                 // stays unselected, so the trigger always reads "Add agent…".
                 <Combobox
                   items={addable.map((a) => ({
-                    value: a.name,
-                    label: a.name,
+                    value: agentValue(a),
+                    label: agentLabel(a),
                     description: a.description,
                   }))}
                   value={null}

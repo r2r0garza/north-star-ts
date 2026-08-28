@@ -207,6 +207,9 @@ const AGENT_SOURCE_KIND_LABEL: Record<AgentSourceRow["kind"], string> = {
   custom: "Custom",
   github: "Workspace",
   workspace: "Workspace",
+  cursor: "Workspace",
+  claude: "Workspace",
+  codex: "Workspace",
 }
 
 const MCP_SOURCE_KIND_LABEL: Record<McpSourceRow["kind"], string> = {

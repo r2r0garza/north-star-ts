@@ -40,12 +40,29 @@ describe("agentSources", () => {
     const ws = "/tmp/ws"
     expect(agentSources(ws)).toEqual([
       path.join(home, ".cowork", "agents"),
+      path.join(home, ".copilot", "agents"),
+      path.join(home, ".cursor", "agents"),
+      path.join(home, ".claude", "agents"),
+      path.join(home, ".codex", "config.toml"),
+      path.join(home, ".codex", "agents"),
       path.join(ws, ".github", "agents"),
+      path.join(ws, ".copilot", "agents"),
+      path.join(ws, ".cursor", "agents"),
+      path.join(ws, ".claude", "agents"),
+      path.join(ws, ".codex", "config.toml"),
+      path.join(ws, ".codex", "agents"),
       path.join(ws, ".cowork", "agents"),
     ])
   })
   it("omits workspace dirs when no workspace is given", () => {
-    expect(agentSources()).toEqual([path.join(home, ".cowork", "agents")])
+    expect(agentSources()).toEqual([
+      path.join(home, ".cowork", "agents"),
+      path.join(home, ".copilot", "agents"),
+      path.join(home, ".cursor", "agents"),
+      path.join(home, ".claude", "agents"),
+      path.join(home, ".codex", "config.toml"),
+      path.join(home, ".codex", "agents"),
+    ])
   })
 })
 
@@ -114,8 +131,8 @@ body`
   })
 })
 
-describe("loadAgents source precedence", () => {
-  it("lets a workspace agent override a user agent of the same name (last-wins)", async () => {
+describe("loadAgents source-qualified identity", () => {
+  it("keeps same-name agents from different sources independently selectable", async () => {
     const ws = mkdtempSync(path.join(tmpdir(), "ws-"))
     writeAgent(userDir, "dup", `---\nname: dup\ndescription: user\n---\nu`)
     writeAgent(
@@ -124,8 +141,77 @@ describe("loadAgents source precedence", () => {
       `---\nname: dup\ndescription: workspace\n---\nw`
     )
     const agents = await loadAgents(agentSources(ws))
+    expect(agents.filter((a) => a.name === "dup")).toHaveLength(2)
+    expect(agents.map((a) => a.refId)).toEqual([
+      expect.stringContaining('"scope":"global"'),
+      expect.stringContaining('"scope":"workspace"'),
+    ])
+    expect((await loadAgent("dup", ws))?.description).toBe("workspace")
+    rmSync(ws, { recursive: true, force: true })
+  })
+})
+
+describe("external provider parsing", () => {
+  it("parses GitHub markdown agents without requiring name or .agent.md suffix", async () => {
+    const ws = mkdtempSync(path.join(tmpdir(), "ws-"))
+    const dir = path.join(ws, ".github", "agents")
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(
+      path.join(dir, "reviewer.md"),
+      `---\ndescription: Reviews pull requests\ntools: [read, search]\n---\nReview carefully.`
+    )
+    const agent = (await loadAgents(agentSources(ws))).find(
+      (a) => a.sourceKind === "github"
+    )!
+    expect(agent.name).toBe("reviewer")
+    expect(agent.label).toBe("GitHub: reviewer")
+    expect(agent.tools).toEqual(["read", "search"])
+    expect(agent.userInvocable).toBe(true)
+    rmSync(ws, { recursive: true, force: true })
+  })
+
+  it("parses Cursor and Claude markdown with source-specific identity", async () => {
+    const ws = mkdtempSync(path.join(tmpdir(), "ws-"))
+    mkdirSync(path.join(ws, ".cursor", "agents"), { recursive: true })
+    mkdirSync(path.join(ws, ".claude", "agents"), { recursive: true })
+    writeFileSync(
+      path.join(ws, ".cursor", "agents", "reviewer.md"),
+      `---\nname: reviewer\ndescription: Cursor reviewer\nreadonly: true\n---\nCursor body`
+    )
+    writeFileSync(
+      path.join(ws, ".claude", "agents", "reviewer.md"),
+      `---\nname: reviewer\ndescription: Claude reviewer\ntools: [Read]\nskills: [test]\n---\nClaude body`
+    )
+    const agents = await loadAgents(agentSources(ws))
+    expect(agents.find((a) => a.sourceKind === "cursor")?.label).toBe(
+      "Cursor: reviewer"
+    )
+    expect(agents.find((a) => a.sourceKind === "claude")?.skills).toEqual([
+      "test",
+    ])
+    expect(agents.filter((a) => a.name === "reviewer")).toHaveLength(2)
+    rmSync(ws, { recursive: true, force: true })
+  })
+
+  it("parses Codex config registry entries and avoids duplicate config files", async () => {
+    const ws = mkdtempSync(path.join(tmpdir(), "ws-"))
+    const codexDir = path.join(ws, ".codex")
+    const agentsDir = path.join(codexDir, "agents")
+    mkdirSync(agentsDir, { recursive: true })
+    writeFileSync(
+      path.join(codexDir, "config.toml"),
+      `[agents.reviewer]\ndescription = "Codex reviewer"\nconfig_file = "agents/reviewer.toml"\n`
+    )
+    writeFileSync(
+      path.join(agentsDir, "reviewer.toml"),
+      `[agent]\nname = "reviewer"\ndescription = "Standalone description"\ndeveloper_instructions = "Codex body"\n`
+    )
+    const agents = (await loadAgents(agentSources(ws))).filter(
+      (a) => a.sourceKind === "codex"
+    )
     expect(agents).toHaveLength(1)
-    expect(agents[0].description).toBe("workspace")
+    expect(agents[0].name).toBe("reviewer")
+    expect(agents[0].body).toBe("Codex body")
     rmSync(ws, { recursive: true, force: true })
   })
 })

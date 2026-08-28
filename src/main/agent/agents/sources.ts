@@ -2,6 +2,11 @@ import { app } from "electron"
 import path from "path"
 import * as settingsService from "../../settings/service"
 import { dataDirName } from "../../config/system-name"
+import type {
+  AgentScope,
+  AgentSourceKind,
+  ExternalAgentSourceKind,
+} from "./types"
 
 // The writable user-level agents home: ~/.<system>/agents. `dataDirName()` is
 // derived from NEXT_system_name (".cowork" by default) — never hardcoded — so a
@@ -26,12 +31,130 @@ export function userAgentsDir(): string {
 // The ".<system>" dir name is customizable via NEXT_system_name (see
 // config/system-name.ts); it defaults to ".cowork".
 export function agentSources(workspace?: string): string[] {
+  return agentSourceEntries(workspace).map((entry) => entry.path)
+}
+
+export interface AgentSourceEntry {
+  path: string
+  kind: AgentSourceKind
+  sourceKind: ExternalAgentSourceKind
+  scope: AgentScope
+  label: string
+}
+
+export function agentSourceEntries(workspace?: string): AgentSourceEntry[] {
   const custom = settingsService.getAgentSources().folders
   const dataDir = dataDirName()
-  const sources = [userAgentsDir(), ...custom]
+  const home = app.getPath("home")
+  const entries: AgentSourceEntry[] = [
+    {
+      path: userAgentsDir(),
+      kind: "user",
+      sourceKind: "north_star",
+      scope: "global",
+      label: "Global North Star",
+    },
+    ...custom.map((sourcePath) => ({
+      path: sourcePath,
+      kind: "custom" as const,
+      sourceKind: "north_star" as const,
+      scope: "custom" as const,
+      label: path.basename(sourcePath),
+    })),
+    {
+      path: path.join(home, ".copilot", "agents"),
+      kind: "github",
+      sourceKind: "github",
+      scope: "global",
+      label: "Global GitHub Copilot",
+    },
+    {
+      path: path.join(home, ".cursor", "agents"),
+      kind: "cursor",
+      sourceKind: "cursor",
+      scope: "global",
+      label: "Global Cursor",
+    },
+    {
+      path: path.join(home, ".claude", "agents"),
+      kind: "claude",
+      sourceKind: "claude",
+      scope: "global",
+      label: "Global Claude",
+    },
+    {
+      path: path.join(home, ".codex", "config.toml"),
+      kind: "codex",
+      sourceKind: "codex",
+      scope: "global",
+      label: "Global Codex config",
+    },
+    {
+      path: path.join(home, ".codex", "agents"),
+      kind: "codex",
+      sourceKind: "codex",
+      scope: "global",
+      label: "Global Codex agents",
+    },
+  ]
   if (workspace) {
-    sources.push(path.join(workspace, ".github", "agents"))
-    sources.push(path.join(workspace, dataDir, "agents"))
+    entries.push(
+      {
+        path: path.join(workspace, ".github", "agents"),
+        kind: "github",
+        sourceKind: "github",
+        scope: "workspace",
+        label: ".github/agents",
+      },
+      {
+        path: path.join(workspace, ".copilot", "agents"),
+        kind: "github",
+        sourceKind: "github",
+        scope: "workspace",
+        label: ".copilot/agents",
+      },
+      {
+        path: path.join(workspace, ".cursor", "agents"),
+        kind: "cursor",
+        sourceKind: "cursor",
+        scope: "workspace",
+        label: ".cursor/agents",
+      },
+      {
+        path: path.join(workspace, ".claude", "agents"),
+        kind: "claude",
+        sourceKind: "claude",
+        scope: "workspace",
+        label: ".claude/agents",
+      },
+      {
+        path: path.join(workspace, ".codex", "config.toml"),
+        kind: "codex",
+        sourceKind: "codex",
+        scope: "workspace",
+        label: ".codex/config.toml",
+      },
+      {
+        path: path.join(workspace, ".codex", "agents"),
+        kind: "codex",
+        sourceKind: "codex",
+        scope: "workspace",
+        label: ".codex/agents",
+      },
+      {
+        path: path.join(workspace, dataDir, "agents"),
+        kind: "workspace",
+        sourceKind: "north_star",
+        scope: "workspace",
+        label: `${dataDir}/agents`,
+      }
+    )
   }
-  return [...new Set(sources)]
+  const seen = new Set<string>()
+  return entries.filter((entry) => {
+    const key = path.resolve(entry.path)
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
 }
