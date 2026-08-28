@@ -208,6 +208,12 @@ export class LocalEnvironment implements Environment {
     return safeRename(this.workspace, from, to, this.deps)
   }
 
+  renameNoReplace(from: string, to: string): Promise<void> {
+    this.assertWritable(from)
+    this.assertWritable(to)
+    return safeRenameNoReplace(this.workspace, from, to, this.deps)
+  }
+
   installFileNoReplace(from: string, to: string): Promise<void> {
     this.assertWritable(from)
     this.assertWritable(to)
@@ -217,6 +223,19 @@ export class LocalEnvironment implements Environment {
   removeFile(path: string): Promise<void> {
     this.assertWritable(path)
     return safeUnlink(this.workspace, path, this.deps)
+  }
+
+  removeDirectory(
+    path: string,
+    opts: { recursive?: boolean } = {}
+  ): Promise<void> {
+    this.assertWritable(path)
+    return safeRemoveDirectory(this.workspace, path, opts, this.deps)
+  }
+
+  async mkdir(path: string): Promise<void> {
+    this.assertWritable(path)
+    await safeMkdir(this.workspace, path, this.deps)
   }
 
   async mkdirp(path: string): Promise<void> {
@@ -229,6 +248,7 @@ export class LocalEnvironment implements Environment {
     return {
       size: info.size,
       mode: info.mode,
+      mtimeMs: info.mtimeMs,
       isFile: () => info.type === "file",
       isDirectory: () => info.type === "dir",
     }
@@ -652,7 +672,7 @@ async function safeStat(
   workspace: string,
   path: string,
   deps: LocalEnvironmentDeps
-): Promise<{ size: number; mode: number; type: string }> {
+): Promise<{ size: number; mode: number; mtimeMs: number; type: string }> {
   const target = await scopedPathForSyscall(
     workspace,
     path,
@@ -666,6 +686,7 @@ async function safeStat(
   return {
     size: stat.size,
     mode: stat.mode & 0o777,
+    mtimeMs: stat.mtimeMs,
     type: stat.isDirectory() ? "dir" : stat.isFile() ? "file" : "other",
   }
 }
@@ -805,6 +826,43 @@ async function safeRename(
   await fsRename(source, target)
 }
 
+async function safeRenameNoReplace(
+  workspace: string,
+  from: string,
+  to: string,
+  deps: LocalEnvironmentDeps
+): Promise<void> {
+  const source = await scopedPathForSyscall(
+    workspace,
+    from,
+    "rename:source",
+    {
+      requireLeaf: true,
+    },
+    deps
+  )
+  const target = await scopedPathForSyscall(
+    workspace,
+    to,
+    "rename:target",
+    {
+      allowMissingLeaf: true,
+    },
+    deps
+  )
+  try {
+    await lstat(target)
+    const error = new Error(
+      `Path "${to}" already exists.`
+    ) as NodeJS.ErrnoException
+    error.code = "EEXIST"
+    throw error
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+  }
+  await fsRename(source, target)
+}
+
 async function safeLink(
   workspace: string,
   from: string,
@@ -847,6 +905,54 @@ async function safeUnlink(
     deps
   )
   await fsUnlink(target)
+}
+
+async function safeRemoveDirectory(
+  workspace: string,
+  path: string,
+  opts: { recursive?: boolean },
+  deps: LocalEnvironmentDeps
+): Promise<void> {
+  const target = await scopedPathForSyscall(
+    workspace,
+    path,
+    "rmdir",
+    {
+      requireLeaf: true,
+      requireDirectory: true,
+    },
+    deps
+  )
+  if (relative(await realpath(workspace), target) === "") {
+    throw new Error("Refusing to delete the workspace root.")
+  }
+  await rmLocalDirectory(target, opts.recursive === true)
+}
+
+async function rmLocalDirectory(
+  path: string,
+  recursive: boolean
+): Promise<void> {
+  const { rm, rmdir } = await import("fs/promises")
+  if (recursive) await rm(path, { recursive: true })
+  else await rmdir(path)
+}
+
+async function safeMkdir(
+  workspace: string,
+  path: string,
+  deps: LocalEnvironmentDeps
+): Promise<void> {
+  const target = await scopedPathForSyscall(
+    workspace,
+    path,
+    "mkdir",
+    {
+      allowMissingLeaf: true,
+    },
+    deps
+  )
+  await fsMkdir(target)
 }
 
 async function safeMkdirp(

@@ -34,6 +34,8 @@ const NO_EXTERNAL_TOOLS = new Set<string>()
 
 const UNSAFE_MUTATION_OR_EXECUTION = new Set([
   ...CATEGORY_TOOLS.edit,
+  ...CATEGORY_TOOLS.filesystem,
+  ...CATEGORY_TOOLS.delete,
   ...CATEGORY_TOOLS.execute,
 ])
 
@@ -41,6 +43,8 @@ const GITHUB_GROUPS: Record<string, string[]> = {
   agent: CATEGORY_TOOLS.agent,
   browser: CATEGORY_TOOLS.browser,
   edit: CATEGORY_TOOLS.edit,
+  filesystem: CATEGORY_TOOLS.filesystem,
+  delete: CATEGORY_TOOLS.delete,
   execute: CATEGORY_TOOLS.execute,
   diagnostics: CATEGORY_TOOLS.diagnostics,
   lsp: CATEGORY_TOOLS.lsp,
@@ -70,6 +74,8 @@ const GITHUB_TOOLS: Record<string, string[]> = {
   "execute/runTests": ["run_tests", "get_test_results"],
   "vscodeGeneral/runTests": ["run_tests", "get_test_results"],
   "execute/testFailure": ["get_test_results"],
+  "edit/createDirectory": ["create_directory"],
+  "vscodeGeneral/rename": ["move_path"],
   "browser/navigate": ["browser_navigate"],
   "browser/snapshot": ["browser_snapshot"],
   "browser/screenshot": ["browser_screenshot"],
@@ -85,7 +91,6 @@ const GITHUB_TOOLS: Record<string, string[]> = {
 
 const GITHUB_UNSUPPORTED = new Set([
   "vscode/extensions",
-  "vscodeGeneral/rename",
   "vscodeGeneral/open",
   "vscodeGeneral/terminalSelection",
   "notebook/read",

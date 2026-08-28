@@ -13,6 +13,9 @@ export type ActionKind =
   | "shell"
   | "file_write"
   | "file_edit"
+  | "file_mkdir"
+  | "file_move"
+  | "file_delete"
   | "delegate"
   | "browser"
   // Headless web access to an arbitrary origin (web_fetch). A real network side

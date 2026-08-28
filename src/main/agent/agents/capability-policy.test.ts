@@ -67,7 +67,7 @@ describe("external agent capability policy", () => {
   it("maps GitHub groups and individual tools without broadening unsupported tools", () => {
     const policy = agentCapabilityPolicy(
       agent("github", {
-        tools: ["read", "web/fetch", "vscodeGeneral/rename"],
+        tools: ["read", "web/fetch", "vscodeGeneral/open"],
       })
     )!
     const allow = externalAgentToolFilter(policy, false)!
@@ -79,7 +79,7 @@ describe("external agent capability policy", () => {
     expect(policy.diagnostics).toContainEqual(
       expect.objectContaining({
         code: "unsupported_tool_group_member",
-        message: expect.stringContaining("vscodeGeneral/rename"),
+        message: expect.stringContaining("vscodeGeneral/open"),
       })
     )
   })
@@ -111,6 +111,21 @@ describe("external agent capability policy", () => {
     expect(allow("workspace_diagnostics")).toBe(true)
     expect(allow("run_tests")).toBe(true)
     expect(allow("get_test_results")).toBe(true)
+    expect(allow("exec_command")).toBe(false)
+  })
+
+  it("maps GitHub filesystem lifecycle capabilities without broad edit or shell access", () => {
+    const policy = agentCapabilityPolicy(
+      agent("github", {
+        tools: ["read", "edit/createDirectory", "vscodeGeneral/rename"],
+      })
+    )!
+    const allow = externalAgentToolFilter(policy, false)!
+
+    expect(allow("read_file_tool")).toBe(true)
+    expect(allow("create_directory")).toBe(true)
+    expect(allow("move_path")).toBe(true)
+    expect(allow("write_file_tool")).toBe(false)
     expect(allow("exec_command")).toBe(false)
   })
 

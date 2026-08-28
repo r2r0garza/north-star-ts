@@ -22,7 +22,29 @@ export class FileActionClassifier implements ActionClassifier {
   constructor(private readonly getPermissions?: () => FilePermissions) {}
 
   classify(action: ToolAction): ActionDecision | null {
-    if (action.kind !== "file_write" && action.kind !== "file_edit") return null
+    if (
+      action.kind !== "file_write" &&
+      action.kind !== "file_edit" &&
+      action.kind !== "file_mkdir" &&
+      action.kind !== "file_move" &&
+      action.kind !== "file_delete"
+    ) {
+      return null
+    }
+    if (action.kind === "file_delete" && action.detail?.recursive === true) {
+      return {
+        level: "require_approval",
+        reason: "recursive file_delete requires approval",
+        category: "destructive_fs",
+      }
+    }
+    if (
+      action.kind === "file_mkdir" ||
+      action.kind === "file_move" ||
+      action.kind === "file_delete"
+    ) {
+      return { level: "allow" }
+    }
     const policy = this.getPermissions?.()[action.kind] ?? "auto"
     if (policy === "require_approval") {
       return {

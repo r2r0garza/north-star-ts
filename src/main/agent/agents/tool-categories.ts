@@ -21,6 +21,8 @@ export const CATEGORY_TOOLS: Record<string, string[]> = {
     "hover_type",
   ],
   edit: ["edit_file_tool", "write_file_tool", "apply_patch_tool"],
+  filesystem: ["stat_path", "create_directory", "move_path"],
+  delete: ["delete_path"],
   execute: ["exec_command", "write_stdin", "poll_command", "terminate_command"],
   diagnostics: ["workspace_diagnostics"],
   test: ["run_tests", "get_test_results"],

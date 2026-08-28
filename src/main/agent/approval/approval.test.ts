@@ -32,6 +32,16 @@ function fileWrite(relPath: string): ToolAction {
   }
 }
 
+function fileDelete(relPath: string, recursive = false): ToolAction {
+  return {
+    tool: "delete_path",
+    kind: "file_delete",
+    summary: `delete ${relPath}`,
+    identity: `file_delete:${relPath}:${recursive ? "recursive" : "single"}`,
+    detail: { path: relPath, recursive },
+  }
+}
+
 // Build a browser action (navigate vs an interaction) for the classifier tests.
 function browserNavigate(url: string): ToolAction {
   return {
@@ -459,6 +469,13 @@ describe("FileActionClassifier", () => {
 
   it("returns null for shell actions", () => {
     expect(fileClassifier.classify(shell("ls"))).toBeNull()
+  })
+
+  it("requires approval for recursive delete actions", () => {
+    expect(fileClassifier.classify(fileDelete("build", true))).toMatchObject({
+      level: "require_approval",
+      category: "destructive_fs",
+    })
   })
 })
 

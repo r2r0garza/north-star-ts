@@ -117,6 +117,7 @@ export interface StatInfo {
   // Permission bits only; callers must not infer ownership, ACLs, or platform
   // flags from this value.
   mode?: number
+  mtimeMs?: number
   isFile(): boolean
   isDirectory(): boolean
 }
@@ -227,7 +228,10 @@ export interface Environment {
   // Atomically install an already-written file at `to`, failing if `to` exists.
   // The source file remains for caller-owned cleanup.
   installFileNoReplace?(from: string, to: string): Promise<void>
+  renameNoReplace?(from: string, to: string): Promise<void>
   removeFile(path: string): Promise<void>
+  removeDirectory?(path: string, opts?: { recursive?: boolean }): Promise<void>
+  mkdir?(path: string): Promise<void>
   mkdirp(path: string): Promise<void>
   stat(path: string): Promise<StatInfo>
   readdir(path: string): Promise<DirEntry[]>

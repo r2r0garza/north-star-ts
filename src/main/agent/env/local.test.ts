@@ -271,6 +271,34 @@ describe("LocalEnvironment file ops", () => {
     expect((await readFile(join(workspace, "to.txt"))).toString()).toBe("x")
   })
 
+  it("renameNoReplace moves without replacing an existing destination", async () => {
+    await writeFile(join(workspace, "from.txt"), "x")
+    await writeFile(join(workspace, "to.txt"), "y")
+
+    await expect(
+      env.renameNoReplace(
+        join(workspace, "from.txt"),
+        join(workspace, "to.txt")
+      )
+    ).rejects.toThrow()
+
+    await env.renameNoReplace(
+      join(workspace, "from.txt"),
+      join(workspace, "created.txt")
+    )
+    expect(await readFile(join(workspace, "created.txt"), "utf8")).toBe("x")
+  })
+
+  it("removes directories only recursively when requested", async () => {
+    await mkdir(join(workspace, "empty"))
+    await mkdir(join(workspace, "tree", "child"), { recursive: true })
+
+    await env.removeDirectory(join(workspace, "empty"))
+    await expect(env.removeDirectory(join(workspace, "tree"))).rejects.toThrow()
+    await env.removeDirectory(join(workspace, "tree"), { recursive: true })
+    await expect(env.stat(join(workspace, "tree"))).rejects.toThrow()
+  })
+
   it("installs a file only when the destination is absent", async () => {
     await writeFile(join(workspace, "staged.txt"), "staged")
     await env.installFileNoReplace(

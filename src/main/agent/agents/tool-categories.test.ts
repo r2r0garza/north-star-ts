@@ -55,6 +55,7 @@ describe("agentToolAllowlist", () => {
     const allow = agentToolAllowlist(agent(["edit", "execute"]))!
     expect(allow.has("edit_file_tool")).toBe(true)
     expect(allow.has("write_file_tool")).toBe(true)
+    expect(allow.has("stat_path")).toBe(false)
     expect(allow.has("run_shell_tool")).toBe(false)
     expect(allow.has("exec_command")).toBe(true)
     // floor is always present
@@ -74,6 +75,8 @@ describe("agentToolAllowlist", () => {
         "diagnostics",
         "test",
         "navigation",
+        "filesystem",
+        "delete",
       ])
     )!
     expect(allow.has("web_search")).toBe(true)
@@ -91,6 +94,10 @@ describe("agentToolAllowlist", () => {
     expect(allow.has("go_to_definition")).toBe(true)
     expect(allow.has("find_references")).toBe(true)
     expect(allow.has("hover_type")).toBe(true)
+    expect(allow.has("stat_path")).toBe(true)
+    expect(allow.has("create_directory")).toBe(true)
+    expect(allow.has("move_path")).toBe(true)
+    expect(allow.has("delete_path")).toBe(true)
   })
 
   it("ignores unknown categories", () => {

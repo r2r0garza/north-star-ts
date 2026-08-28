@@ -24,6 +24,12 @@ import {
   hoverTypeTool,
   workspaceSymbolsTool,
 } from "./code_navigation_tools"
+import {
+  createDirectoryTool,
+  deletePathTool,
+  movePathTool,
+  statPathTool,
+} from "./filesystem_lifecycle_tools"
 import { todoWriteTool } from "./todo_tool"
 import { askUserQuestionTool } from "./ask_user_question_tool"
 import { runTodosInBackgroundTool } from "./run_todos_in_background"
@@ -67,6 +73,10 @@ const workspaceTools: Tool[] = [
   goToDefinitionTool,
   findReferencesTool,
   hoverTypeTool,
+  statPathTool,
+  createDirectoryTool,
+  movePathTool,
+  deletePathTool,
 ]
 
 // Legacy compatibility tools remain executable by name for old/internal callers,

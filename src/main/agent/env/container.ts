@@ -585,6 +585,23 @@ PY
     this.throwForCliFailure(res, `cannot rename ${from} -> ${to}`)
   }
 
+  async renameNoReplace(from: string, to: string): Promise<void> {
+    const source = this.toContainerPath(from)
+    const target = this.toContainerPath(to)
+    const res = await this.runtimeCli([
+      "exec",
+      this.name,
+      "python3",
+      "-c",
+      CONTAINER_FS_LIFECYCLE,
+      "rename_no_replace",
+      MOUNT,
+      source,
+      target,
+    ])
+    this.throwForCliFailure(res, `cannot rename ${from} -> ${to}`)
+  }
+
   async installFileNoReplace(from: string, to: string): Promise<void> {
     const res = await this.runtimeCli([
       "exec",
@@ -604,11 +621,47 @@ PY
     const res = await this.runtimeCli([
       "exec",
       this.name,
-      "rm",
-      "-f",
-      await this.validateContainerPath(path),
+      "python3",
+      "-c",
+      CONTAINER_FS_LIFECYCLE,
+      "unlink",
+      MOUNT,
+      this.toContainerPath(path),
     ])
     this.throwForCliFailure(res, `cannot remove ${path}`)
+  }
+
+  async removeDirectory(
+    path: string,
+    opts: { recursive?: boolean } = {}
+  ): Promise<void> {
+    const target = this.toContainerPath(path)
+    const res = await this.runtimeCli([
+      "exec",
+      this.name,
+      "python3",
+      "-c",
+      CONTAINER_FS_LIFECYCLE,
+      opts.recursive ? "rmtree" : "rmdir",
+      MOUNT,
+      target,
+    ])
+    this.throwForCliFailure(res, `cannot remove directory ${path}`)
+  }
+
+  async mkdir(path: string): Promise<void> {
+    const target = this.toContainerPath(path)
+    const res = await this.runtimeCli([
+      "exec",
+      this.name,
+      "python3",
+      "-c",
+      CONTAINER_FS_LIFECYCLE,
+      "mkdir",
+      MOUNT,
+      target,
+    ])
+    this.throwForCliFailure(res, `cannot mkdir ${path}`)
   }
 
   async mkdirp(path: string): Promise<void> {
@@ -623,33 +676,29 @@ PY
   }
 
   async stat(path: string): Promise<StatInfo> {
-    // `%s` = size in bytes, `%F` = file type description, `%a` = permission bits
-    // in octal. A nonzero exit (e.g.
-    // ENOENT) throws, so read/edit's `catch → not_found` fires just as on the host.
-    const p = await this.validateContainerPath(path)
+    const p = this.toContainerPath(path)
     const res = await this.runtimeCli([
       "exec",
       this.name,
-      "sh",
+      "python3",
       "-c",
-      `stat -c '%s %F %a' ${shq(p)}`,
+      CONTAINER_STAT_SCRIPT,
+      MOUNT,
+      p,
     ])
     this.throwForCliFailure(res, `no such file: ${path}`)
-    const text = res.stdout.toString("utf8").trim()
-    const sp = text.indexOf(" ")
-    const size = Number(text.slice(0, sp))
-    const rest = text.slice(sp + 1)
-    const modeSep = rest.lastIndexOf(" ")
-    const kind = modeSep >= 0 ? rest.slice(0, modeSep) : rest
-    const parsedMode =
-      modeSep >= 0 ? Number.parseInt(rest.slice(modeSep + 1), 8) : NaN
-    const isDir = kind === "directory"
-    const isReg = kind === "regular file" || kind === "regular empty file"
+    const parsed = this.parseCliJson<{
+      size: number
+      mode?: number
+      mtimeMs?: number
+      type: "file" | "dir" | "other"
+    }>(res, `no such file: ${path}`)
     return {
-      size: Number.isFinite(size) ? size : 0,
-      mode: Number.isFinite(parsedMode) ? parsedMode & 0o7777 : undefined,
-      isFile: () => isReg,
-      isDirectory: () => isDir,
+      size: parsed.size,
+      mode: parsed.mode,
+      mtimeMs: parsed.mtimeMs,
+      isFile: () => parsed.type === "file",
+      isDirectory: () => parsed.type === "dir",
     }
   }
 
@@ -1104,6 +1153,100 @@ finally:
     scan.close()
 
 print(json.dumps({"entries": entries, "truncated": truncated, "capReason": cap_reason}))
+`
+
+const CONTAINER_STAT_SCRIPT = String.raw`
+import json, os, stat, sys
+
+root = os.path.realpath(sys.argv[1])
+path = sys.argv[2]
+
+def inside(parent, child):
+    rel = os.path.relpath(child, parent)
+    return rel == "." or (rel != ".." and not rel.startswith(".." + os.sep) and not os.path.isabs(rel))
+
+parent = os.path.dirname(path) or "."
+real_parent = os.path.realpath(parent)
+if not inside(root, real_parent):
+    print("outside workspace", file=sys.stderr)
+    raise SystemExit(1)
+if os.path.islink(path):
+    print("symlink leaf is not allowed", file=sys.stderr)
+    raise SystemExit(1)
+
+st = os.lstat(path)
+mode = st.st_mode
+typ = "dir" if stat.S_ISDIR(mode) else "file" if stat.S_ISREG(mode) else "other"
+print(json.dumps({
+    "size": st.st_size,
+    "mode": stat.S_IMODE(mode),
+    "mtimeMs": st.st_mtime * 1000,
+    "type": typ,
+}))
+`
+
+const CONTAINER_FS_LIFECYCLE = String.raw`
+import json, os, shutil, stat, sys
+
+op = sys.argv[1]
+root = os.path.realpath(sys.argv[2])
+source = sys.argv[3]
+target = sys.argv[4] if len(sys.argv) > 4 else None
+
+def inside(parent, child):
+    rel = os.path.relpath(child, parent)
+    return rel == "." or (rel != ".." and not rel.startswith(".." + os.sep) and not os.path.isabs(rel))
+
+def validate_leaf(path, allow_missing=False):
+    parent = os.path.dirname(path) or "."
+    real_parent = os.path.realpath(parent)
+    if not inside(root, real_parent):
+        raise RuntimeError("outside workspace")
+    if os.path.islink(path):
+        raise RuntimeError("symlink leaf is not allowed")
+    if not allow_missing:
+        os.lstat(path)
+    return path
+
+def fail(message):
+    print(json.dumps({"error": message}), file=sys.stderr)
+    raise SystemExit(1)
+
+try:
+    if op == "mkdir":
+        validate_leaf(source, allow_missing=True)
+        os.mkdir(source)
+    elif op == "unlink":
+        validate_leaf(source)
+        if source == root:
+            fail("refusing to delete workspace root")
+        if not stat.S_ISREG(os.lstat(source).st_mode):
+            fail("not a file")
+        os.unlink(source)
+    elif op == "rename_no_replace":
+        validate_leaf(source)
+        validate_leaf(target, allow_missing=True)
+        if source == root:
+            fail("refusing to move workspace root")
+        if os.path.exists(target) or os.path.islink(target):
+            fail("destination already exists")
+        os.rename(source, target)
+    elif op == "rmdir":
+        validate_leaf(source)
+        if source == root:
+            fail("refusing to delete workspace root")
+        os.rmdir(source)
+    elif op == "rmtree":
+        validate_leaf(source)
+        if source == root:
+            fail("refusing to delete workspace root")
+        if not stat.S_ISDIR(os.lstat(source).st_mode):
+            fail("not a directory")
+        shutil.rmtree(source)
+    else:
+        fail("unknown operation")
+except Exception as e:
+    fail(str(e))
 `
 
 const CONTAINER_COMMAND_SUPERVISOR = String.raw`
