@@ -8,6 +8,8 @@ export const CATEGORY_TOOLS: Record<string, string[]> = {
   search: ["search_tool", "index_query_tool"],
   edit: ["edit_file_tool", "write_file_tool", "apply_patch_tool"],
   execute: ["exec_command", "write_stdin", "poll_command", "terminate_command"],
+  diagnostics: ["workspace_diagnostics"],
+  test: ["run_tests", "get_test_results"],
   web: ["web_search", "web_fetch"],
   browser: [
     "browser_navigate",

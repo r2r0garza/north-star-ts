@@ -66,7 +66,7 @@ describe("agentToolAllowlist", () => {
 
   it("maps web/browser/agent/todo categories", () => {
     const allow = agentToolAllowlist(
-      agent(["web", "browser", "agent", "todo"])
+      agent(["web", "browser", "agent", "todo", "diagnostics", "test"])
     )!
     expect(allow.has("web_search")).toBe(true)
     expect(allow.has("web_fetch")).toBe(true)
@@ -75,6 +75,9 @@ describe("agentToolAllowlist", () => {
     expect(allow.has("spawn_subagent")).toBe(true)
     expect(allow.has("todo_write")).toBe(true)
     expect(allow.has("run_todos_in_background")).toBe(true)
+    expect(allow.has("workspace_diagnostics")).toBe(true)
+    expect(allow.has("run_tests")).toBe(true)
+    expect(allow.has("get_test_results")).toBe(true)
   })
 
   it("ignores unknown categories", () => {

@@ -43,8 +43,9 @@ export interface AgentDefinition {
   // What the agent does AND when to use it. Shown in the picker and to a parent
   // agent choosing which child to spawn.
   description: string
-  // Allowed tool CATEGORIES (friendly names: read, search, edit, execute, agent,
-  // web, browser, todo — see the category map in ../tools). Tri-state:
+  // Allowed tool CATEGORIES (friendly names: read, search, edit, execute,
+  // diagnostics, test, agent, web, browser, todo — see the category map in
+  // ../tools). Tri-state:
   //   undefined → all tools (default main-agent toolset for the mode)
   //   []        → the read-only floor only (read + search)
   //   [list]    → only the listed categories (plus the universal floor)

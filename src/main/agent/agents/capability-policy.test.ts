@@ -100,6 +100,20 @@ describe("external agent capability policy", () => {
     ).toBe(true)
   })
 
+  it("maps GitHub problem and run-test capabilities to narrow structured tools", () => {
+    const policy = agentCapabilityPolicy(
+      agent("github", {
+        tools: ["read/problems", "execute/runTests", "execute/testFailure"],
+      })
+    )!
+    const allow = externalAgentToolFilter(policy, false)!
+
+    expect(allow("workspace_diagnostics")).toBe(true)
+    expect(allow("run_tests")).toBe(true)
+    expect(allow("get_test_results")).toBe(true)
+    expect(allow("exec_command")).toBe(false)
+  })
+
   it("applies Claude allow and disallowedTools precedence", () => {
     const policy = agentCapabilityPolicy(
       agent("claude", {

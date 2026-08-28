@@ -12,6 +12,11 @@ import {
   terminateCommandTool,
   writeStdinTool,
 } from "./command_session_tools"
+import {
+  getTestResultsTool,
+  runTestsTool,
+  workspaceDiagnosticsTool,
+} from "./test_diagnostics_tools"
 import { todoWriteTool } from "./todo_tool"
 import { askUserQuestionTool } from "./ask_user_question_tool"
 import { runTodosInBackgroundTool } from "./run_todos_in_background"
@@ -47,6 +52,9 @@ const workspaceTools: Tool[] = [
   writeStdinTool,
   pollCommandTool,
   terminateCommandTool,
+  workspaceDiagnosticsTool,
+  runTestsTool,
+  getTestResultsTool,
 ]
 
 // Legacy compatibility tools remain executable by name for old/internal callers,
