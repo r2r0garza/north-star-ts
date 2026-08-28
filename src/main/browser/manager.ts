@@ -9,7 +9,15 @@ import type {
   NavigateResult,
   ScreenshotResult,
 } from "./session"
-import type { PickedElement } from "./types"
+import type {
+  BrowserConsoleEntry,
+  BrowserDialogState,
+  BrowserEvaluateResult,
+  BrowserLogPage,
+  BrowserNetworkEntry,
+  BrowserWaitInput,
+  PickedElement,
+} from "./types"
 
 // Forwards a picked element to the main app renderer (so it can surface as a
 // composer chip). Injected by the caller — the manager can't reach the main
@@ -72,7 +80,28 @@ export interface BrowserHandle {
   snapshot(): Promise<string>
   describeRef(ref: string): BrowserRefDescription
   click(ref: string): Promise<InteractionResult>
+  hover(ref: string): Promise<InteractionResult>
+  drag(fromRef: string, toRef: string): Promise<InteractionResult>
   type(ref: string, text: string, submit: boolean): Promise<InteractionResult>
+  wait(input: BrowserWaitInput): Promise<NavigateResult>
+  console(options: {
+    cursor?: number
+    level?: string
+    limit?: number
+    sinceMs?: number
+  }): BrowserLogPage<BrowserConsoleEntry>
+  network(options: {
+    cursor?: number
+    status?: number
+    limit?: number
+    sinceMs?: number
+  }): BrowserLogPage<BrowserNetworkEntry>
+  dialog(): BrowserDialogState | null
+  handleDialog(
+    action: "accept" | "dismiss",
+    promptText?: string
+  ): Promise<NavigateResult>
+  evaluate(expression: string): Promise<BrowserEvaluateResult>
   back(): Promise<NavigateResult>
   // Close this conversation's tab. Returns true if a tab was actually open.
   close(): boolean
@@ -422,11 +451,38 @@ export class BrowserManager {
       describeRef: (ref) => this.ensureTab(conversationId).describeRef(ref),
       click: (ref) =>
         this.ensureTab(conversationId).click(ref, INTERACT_TIMEOUT_MS, signal),
+      hover: (ref) =>
+        this.ensureTab(conversationId).hover(ref, INTERACT_TIMEOUT_MS, signal),
+      drag: (fromRef, toRef) =>
+        this.ensureTab(conversationId).drag(
+          fromRef,
+          toRef,
+          INTERACT_TIMEOUT_MS,
+          signal
+        ),
       type: (ref, text, submit) =>
         this.ensureTab(conversationId).type(
           ref,
           text,
           submit,
+          INTERACT_TIMEOUT_MS,
+          signal
+        ),
+      wait: (input) =>
+        this.ensureTab(conversationId).wait(input, NAVIGATE_TIMEOUT_MS, signal),
+      console: (options) => this.ensureTab(conversationId).console(options),
+      network: (options) => this.ensureTab(conversationId).network(options),
+      dialog: () => this.ensureTab(conversationId).dialog(),
+      handleDialog: (action, promptText) =>
+        this.ensureTab(conversationId).handleDialog(
+          action,
+          promptText,
+          INTERACT_TIMEOUT_MS,
+          signal
+        ),
+      evaluate: (expression) =>
+        this.ensureTab(conversationId).evaluate(
+          expression,
           INTERACT_TIMEOUT_MS,
           signal
         ),

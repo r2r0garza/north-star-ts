@@ -18,7 +18,10 @@ import type { ActionClassifier, ActionDecision, ToolAction } from "./types"
 // The set of browser tools that are still treated as reversible page/session
 // controls. Anything else with kind "browser" is treated as navigation.
 const INTERACTION_TOOLS = new Set([
+  "browser_hover",
+  "browser_drag",
   "browser_type",
+  "browser_wait",
   "browser_back",
   "browser_close",
   "browser_handoff",

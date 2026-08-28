@@ -54,7 +54,14 @@ import { browserNavigateTool } from "./browser/navigate"
 import { browserSnapshotTool } from "./browser/snapshot"
 import { browserScreenshotTool } from "./browser/screenshot"
 import { browserClickTool } from "./browser/click"
+import { browserHoverTool } from "./browser/hover"
+import { browserDragTool } from "./browser/drag"
 import { browserTypeTool } from "./browser/type"
+import { browserWaitTool } from "./browser/wait"
+import { browserConsoleTool } from "./browser/console"
+import { browserNetworkTool } from "./browser/network"
+import { browserHandleDialogTool } from "./browser/dialog"
+import { browserEvaluateTool } from "./browser/evaluate"
 import { browserBackTool } from "./browser/back"
 import { browserCloseTool } from "./browser/close"
 import { browserHandoffTool } from "./browser/handoff"
@@ -142,7 +149,14 @@ const browserTools: Tool[] = [
   browserSnapshotTool,
   browserScreenshotTool,
   browserClickTool,
+  browserHoverTool,
+  browserDragTool,
   browserTypeTool,
+  browserWaitTool,
+  browserConsoleTool,
+  browserNetworkTool,
+  browserHandleDialogTool,
+  browserEvaluateTool,
   browserBackTool,
   browserCloseTool,
   browserHandoffTool,

@@ -1,6 +1,14 @@
 import { WebContentsView } from "electron"
 import { sendCommand, withDeadline } from "./cdp"
-import type { PickedElement } from "./types"
+import type {
+  BrowserConsoleEntry,
+  BrowserDialogState,
+  BrowserEvaluateResult,
+  BrowserLogPage,
+  BrowserNetworkEntry,
+  BrowserWaitInput,
+  PickedElement,
+} from "./types"
 
 // One agent-controllable browser page. Wraps a WebContentsView (its page runs in
 // its own renderer/GPU process, off the main event loop) and drives it over the
@@ -100,6 +108,15 @@ export class BrowserSession {
   // binding + new-document script are lost with the attachment) so the next
   // ensureAttached reinstalls it.
   private altPickInstalled = false
+  private consoleEntries: BrowserConsoleEntry[] = []
+  private networkEntries: BrowserNetworkEntry[] = []
+  private nextConsoleId = 1
+  private nextNetworkId = 1
+  private networkByRequest = new Map<
+    string,
+    { startedAt: number; entry: BrowserNetworkEntry }
+  >()
+  private pendingDialog: BrowserDialogState | null = null
 
   constructor() {
     this.view = new WebContentsView({
@@ -140,6 +157,38 @@ export class BrowserSession {
     this.view.webContents.debugger.on("message", (_event, method, params) => {
       if (method === "Runtime.bindingCalled") {
         this.handleBindingCalled(params)
+        return
+      }
+      if (method === "Runtime.consoleAPICalled") {
+        this.recordConsoleApi(params)
+        return
+      }
+      if (method === "Log.entryAdded") {
+        this.recordLogEntry(params)
+        return
+      }
+      if (method === "Network.requestWillBeSent") {
+        this.recordNetworkRequest(params)
+        return
+      }
+      if (method === "Network.responseReceived") {
+        this.recordNetworkResponse(params)
+        return
+      }
+      if (method === "Network.loadingFailed") {
+        this.recordNetworkFailure(params)
+        return
+      }
+      if (method === "Network.loadingFinished") {
+        this.recordNetworkFinished(params)
+        return
+      }
+      if (method === "Page.javascriptDialogOpening") {
+        this.recordDialogOpening(params)
+        return
+      }
+      if (method === "Page.javascriptDialogClosed") {
+        this.pendingDialog = null
         return
       }
       // inspectNodeRequested is ONLY emitted while inspect mode is engaged in the
@@ -258,6 +307,12 @@ export class BrowserSession {
     if (!dbg.isAttached()) dbg.attach("1.3")
     await sendCommand(dbg, "DOM.enable", undefined, timeoutMs, signal)
     await sendCommand(dbg, "Accessibility.enable", undefined, timeoutMs, signal)
+    await sendCommand(dbg, "Page.enable", undefined, timeoutMs, signal)
+    await sendCommand(dbg, "Runtime.enable", undefined, timeoutMs, signal)
+    await sendCommand(dbg, "Log.enable", undefined, timeoutMs, signal).catch(
+      () => undefined
+    )
+    await sendCommand(dbg, "Network.enable", undefined, timeoutMs, signal)
     this.attached = true
     // Re-establish the Alt+click listener on every (re)attach — the button
     // picker's teardown detaches the debugger, so this keeps Alt-pick alive.
@@ -282,7 +337,6 @@ export class BrowserSession {
       // event never reaches the main process, so the FIRST Alt+click is silently
       // dropped (until some other command happens to enable Runtime) — the "have
       // to alt-click twice" bug.
-      await sendCommand(dbg, "Runtime.enable", undefined, timeoutMs, signal)
       await sendCommand(
         dbg,
         "Runtime.addBinding",
@@ -290,7 +344,6 @@ export class BrowserSession {
         timeoutMs,
         signal
       )
-      await sendCommand(dbg, "Page.enable", undefined, timeoutMs, signal)
       // Survive navigations.
       await sendCommand(
         dbg,
@@ -826,6 +879,102 @@ export class BrowserSession {
     return this.interactionResult(entry.label)
   }
 
+  async hover(
+    ref: string,
+    timeoutMs: number,
+    signal?: AbortSignal
+  ): Promise<InteractionResult> {
+    const entry = this.requireRef(ref)
+    const dbg = this.view.webContents.debugger
+    const { x, y } = await this.centerOf(entry.backendNodeId, timeoutMs, signal)
+    await sendCommand(
+      dbg,
+      "Input.dispatchMouseEvent",
+      { type: "mouseMoved", x, y, button: "none" },
+      timeoutMs,
+      signal
+    )
+    await this.settle(timeoutMs, signal)
+    return this.interactionResult(entry.label)
+  }
+
+  async drag(
+    fromRef: string,
+    toRef: string,
+    timeoutMs: number,
+    signal?: AbortSignal
+  ): Promise<InteractionResult> {
+    const from = this.requireRef(fromRef)
+    const to = this.requireRef(toRef)
+    const dbg = this.view.webContents.debugger
+    const start = await this.centerOf(from.backendNodeId, timeoutMs, signal)
+    const end = await this.centerOf(to.backendNodeId, timeoutMs, signal)
+    await sendCommand(
+      dbg,
+      "Input.dispatchMouseEvent",
+      {
+        type: "mouseMoved",
+        x: start.x,
+        y: start.y,
+        button: "none",
+      },
+      timeoutMs,
+      signal
+    )
+    await sendCommand(
+      dbg,
+      "Input.dispatchMouseEvent",
+      {
+        type: "mousePressed",
+        x: start.x,
+        y: start.y,
+        button: "left",
+        clickCount: 1,
+      },
+      timeoutMs,
+      signal
+    )
+    await sendCommand(
+      dbg,
+      "Input.dispatchMouseEvent",
+      {
+        type: "mouseMoved",
+        x: (start.x + end.x) / 2,
+        y: (start.y + end.y) / 2,
+        button: "left",
+      },
+      timeoutMs,
+      signal
+    )
+    await sendCommand(
+      dbg,
+      "Input.dispatchMouseEvent",
+      {
+        type: "mouseMoved",
+        x: end.x,
+        y: end.y,
+        button: "left",
+      },
+      timeoutMs,
+      signal
+    )
+    await sendCommand(
+      dbg,
+      "Input.dispatchMouseEvent",
+      {
+        type: "mouseReleased",
+        x: end.x,
+        y: end.y,
+        button: "left",
+        clickCount: 1,
+      },
+      timeoutMs,
+      signal
+    )
+    await this.settle(timeoutMs, signal)
+    return this.interactionResult(`${from.label} to ${to.label}`)
+  }
+
   // Type into the element behind a ref: focus it, insert the text, and optionally
   // press Enter (e.g. to submit a form or search box).
   async type(
@@ -893,6 +1042,160 @@ export class BrowserSession {
     return { url: wc.getURL(), title: wc.getTitle() }
   }
 
+  async wait(
+    input: BrowserWaitInput,
+    timeoutMs: number,
+    signal?: AbortSignal
+  ): Promise<NavigateResult> {
+    await this.ensureAttached(timeoutMs, signal)
+    const wc = this.view.webContents
+    const cappedTimeout = Math.max(
+      0,
+      Math.min(input.timeoutMs || 0, BROWSER_WAIT_MAX_MS)
+    )
+    if (cappedTimeout <= 0) throw new Error("wait timeout must be positive.")
+    const initialUrl = wc.getURL()
+    const initialTitle = wc.getTitle()
+    const waitPromise = this.waitForCondition(
+      input,
+      initialUrl,
+      initialTitle,
+      cappedTimeout,
+      signal
+    )
+    await withDeadline(waitPromise, cappedTimeout, signal)
+    return { url: wc.getURL(), title: wc.getTitle() }
+  }
+
+  console(options: {
+    cursor?: number
+    level?: string
+    limit?: number
+    sinceMs?: number
+  }): BrowserLogPage<BrowserConsoleEntry> {
+    const limit = boundedLogLimit(options.limit)
+    const level = options.level?.toLowerCase()
+    const minId = Math.max(0, options.cursor ?? 0)
+    const since = options.sinceMs ? Date.now() - options.sinceMs : 0
+    const entries = this.consoleEntries
+      .filter((entry) => entry.id > minId)
+      .filter((entry) => !level || entry.level.toLowerCase() === level)
+      .filter((entry) => !since || entry.timestamp >= since)
+      .slice(0, limit)
+    return {
+      entries,
+      nextCursor:
+        entries.length === limit ? entries[entries.length - 1].id : null,
+    }
+  }
+
+  network(options: {
+    cursor?: number
+    status?: number
+    limit?: number
+    sinceMs?: number
+  }): BrowserLogPage<BrowserNetworkEntry> {
+    const limit = boundedLogLimit(options.limit)
+    const minId = Math.max(0, options.cursor ?? 0)
+    const since = options.sinceMs ? Date.now() - options.sinceMs : 0
+    const entries = this.networkEntries
+      .filter((entry) => entry.id > minId)
+      .filter(
+        (entry) =>
+          options.status === undefined || entry.status === options.status
+      )
+      .filter((entry) => !since || entry.timestamp >= since)
+      .slice(0, limit)
+    return {
+      entries,
+      nextCursor:
+        entries.length === limit ? entries[entries.length - 1].id : null,
+    }
+  }
+
+  dialog(): BrowserDialogState | null {
+    return this.pendingDialog
+  }
+
+  async handleDialog(
+    action: "accept" | "dismiss",
+    promptText: string | undefined,
+    timeoutMs: number,
+    signal?: AbortSignal
+  ): Promise<NavigateResult> {
+    await this.ensureAttached(timeoutMs, signal)
+    if (!this.pendingDialog) throw new Error("No browser dialog is pending.")
+    await sendCommand(
+      this.view.webContents.debugger,
+      "Page.handleJavaScriptDialog",
+      { accept: action === "accept", promptText },
+      timeoutMs,
+      signal
+    )
+    this.pendingDialog = null
+    await this.settle(timeoutMs, signal)
+    return this.interactionResult("browser dialog")
+  }
+
+  async evaluate(
+    expression: string,
+    timeoutMs: number,
+    signal?: AbortSignal
+  ): Promise<BrowserEvaluateResult> {
+    if (/\bfunction\b|=>/.test(expression)) {
+      throw new Error("browser_evaluate rejects function literals.")
+    }
+    await this.ensureAttached(timeoutMs, signal)
+    const wrapped = `(() => {
+      const value = (${expression})
+      const seen = new WeakSet()
+      const cap = (input, depth) => {
+        if (depth > ${EVALUATE_MAX_DEPTH}) return "[MaxDepth]"
+        if (input === null || typeof input !== "object") return input
+        if (seen.has(input)) return "[Circular]"
+        seen.add(input)
+        if (Array.isArray(input)) return input.slice(0, 50).map((item) => cap(item, depth + 1))
+        const out = {}
+        for (const [key, val] of Object.entries(input).slice(0, 50)) out[key] = cap(val, depth + 1)
+        return out
+      }
+      return cap(value, 0)
+    })()`
+    const { result, exceptionDetails } = await sendCommand<{
+      result?: { value?: unknown; type?: string; subtype?: string }
+      exceptionDetails?: { text?: string }
+    }>(
+      this.view.webContents.debugger,
+      "Runtime.evaluate",
+      {
+        expression: wrapped,
+        awaitPromise: true,
+        returnByValue: true,
+        timeout: Math.min(timeoutMs, EVALUATE_TIMEOUT_MS),
+        silent: true,
+      },
+      Math.min(timeoutMs, EVALUATE_TIMEOUT_MS),
+      signal
+    )
+    if (exceptionDetails) {
+      throw new Error(exceptionDetails.text || "browser_evaluate threw.")
+    }
+    if (result?.type === "function" || result?.subtype === "node") {
+      throw new Error(
+        "browser_evaluate cannot return functions or remote handles."
+      )
+    }
+    const serialized = JSON.stringify(result?.value)
+    const truncated =
+      typeof serialized === "string" &&
+      Buffer.byteLength(serialized, "utf8") > EVALUATE_MAX_OUTPUT_BYTES
+    if (!truncated) return { value: result?.value ?? null, truncated: false }
+    return {
+      value: serialized.slice(0, EVALUATE_MAX_OUTPUT_BYTES),
+      truncated: true,
+    }
+  }
+
   // Resolve a ref or throw StaleRefError.
   private requireRef(ref: string): {
     backendNodeId: number
@@ -902,6 +1205,57 @@ export class BrowserSession {
     const entry = this.refs.get(ref)
     if (!entry) throw new StaleRefError(ref)
     return entry
+  }
+
+  private waitForCondition(
+    input: BrowserWaitInput,
+    initialUrl: string,
+    initialTitle: string,
+    timeoutMs: number,
+    signal?: AbortSignal
+  ): Promise<void> {
+    if (input.condition === "duration") return abortableDelay(timeoutMs, signal)
+    const wc = this.view.webContents
+    if (input.condition === "url_changed") {
+      return waitUntil(() => wc.getURL() !== initialUrl, timeoutMs, signal)
+    }
+    if (input.condition === "title_changed") {
+      return waitUntil(() => wc.getTitle() !== initialTitle, timeoutMs, signal)
+    }
+    if (input.condition === "network_idle") {
+      const idleMs = Math.max(
+        100,
+        Math.min(input.idleMs ?? NETWORK_IDLE_DEFAULT_MS, NETWORK_IDLE_MAX_MS)
+      )
+      return waitUntil(
+        () => this.networkByRequest.size === 0,
+        timeoutMs,
+        signal,
+        idleMs
+      )
+    }
+    if (!input.ref) throw new Error("A `ref` is required for ref waits.")
+    const entry = this.requireRef(input.ref)
+    const expectVisible = input.condition === "ref_visible"
+    return waitUntil(
+      () => this.refHasBox(entry.backendNodeId, expectVisible),
+      timeoutMs,
+      signal
+    )
+  }
+
+  private async refHasBox(
+    backendNodeId: number,
+    expectVisible: boolean
+  ): Promise<boolean> {
+    const { model } = await sendCommand<{ model?: { content?: number[] } }>(
+      this.view.webContents.debugger,
+      "DOM.getBoxModel",
+      { backendNodeId },
+      1_000
+    ).catch(() => ({ model: undefined }))
+    const visible = !!model?.content && model.content.length >= 8
+    return expectVisible ? visible : !visible
   }
 
   // Scroll a node into view and return the CSS-pixel center of its content box.
@@ -963,10 +1317,154 @@ export class BrowserSession {
     return { target, url: wc.getURL(), title: wc.getTitle() }
   }
 
+  private pushConsole(entry: Omit<BrowserConsoleEntry, "id">): void {
+    this.consoleEntries.push({ ...entry, id: this.nextConsoleId++ })
+    if (this.consoleEntries.length > LOG_RING_CAP) this.consoleEntries.shift()
+  }
+
+  private pushNetwork(entry: BrowserNetworkEntry): void {
+    this.networkEntries.push(entry)
+    if (this.networkEntries.length > LOG_RING_CAP) this.networkEntries.shift()
+  }
+
+  private recordConsoleApi(params: unknown): void {
+    const data = (params ?? {}) as {
+      type?: unknown
+      timestamp?: unknown
+      args?: Array<{ value?: unknown; description?: unknown }>
+      stackTrace?: {
+        callFrames?: Array<{ url?: unknown; lineNumber?: unknown }>
+      }
+    }
+    const frame = data.stackTrace?.callFrames?.[0]
+    this.pushConsole({
+      timestamp:
+        typeof data.timestamp === "number" ? data.timestamp : Date.now(),
+      level: typeof data.type === "string" ? data.type : "log",
+      text: sanitizeLogText(
+        (data.args ?? [])
+          .map((arg) =>
+            arg.value === undefined
+              ? String(arg.description ?? "")
+              : String(arg.value)
+          )
+          .join(" ")
+      ),
+      url: typeof frame?.url === "string" ? sanitizeUrl(frame.url) : undefined,
+      line:
+        typeof frame?.lineNumber === "number"
+          ? frame.lineNumber + 1
+          : undefined,
+    })
+  }
+
+  private recordLogEntry(params: unknown): void {
+    const entry = (params as { entry?: Record<string, unknown> } | null)?.entry
+    if (!entry) return
+    this.pushConsole({
+      timestamp:
+        typeof entry.timestamp === "number" ? entry.timestamp : Date.now(),
+      level: typeof entry.level === "string" ? entry.level : "log",
+      text: sanitizeLogText(String(entry.text ?? "")),
+      url: typeof entry.url === "string" ? sanitizeUrl(entry.url) : undefined,
+      line: typeof entry.lineNumber === "number" ? entry.lineNumber : undefined,
+    })
+  }
+
+  private recordNetworkRequest(params: unknown): void {
+    const data = (params ?? {}) as {
+      requestId?: unknown
+      timestamp?: unknown
+      type?: unknown
+      request?: { method?: unknown; url?: unknown }
+    }
+    if (typeof data.requestId !== "string") return
+    const startedAt = Date.now()
+    const entry: BrowserNetworkEntry = {
+      id: this.nextNetworkId++,
+      timestamp: startedAt,
+      requestId: data.requestId,
+      method:
+        typeof data.request?.method === "string" ? data.request.method : "GET",
+      url: sanitizeUrl(String(data.request?.url ?? "")),
+      resourceType: typeof data.type === "string" ? data.type : undefined,
+    }
+    this.networkByRequest.set(data.requestId, { startedAt, entry })
+    this.pushNetwork(entry)
+  }
+
+  private recordNetworkResponse(params: unknown): void {
+    const data = (params ?? {}) as {
+      requestId?: unknown
+      type?: unknown
+      response?: { status?: unknown; url?: unknown }
+    }
+    if (typeof data.requestId !== "string") return
+    const active = this.networkByRequest.get(data.requestId)
+    if (!active) return
+    active.entry.status =
+      typeof data.response?.status === "number"
+        ? data.response.status
+        : undefined
+    active.entry.url =
+      typeof data.response?.url === "string"
+        ? sanitizeUrl(data.response.url)
+        : active.entry.url
+    active.entry.resourceType =
+      typeof data.type === "string" ? data.type : active.entry.resourceType
+  }
+
+  private recordNetworkFailure(params: unknown): void {
+    const data = (params ?? {}) as { requestId?: unknown; errorText?: unknown }
+    if (typeof data.requestId !== "string") return
+    const active = this.networkByRequest.get(data.requestId)
+    if (!active) return
+    active.entry.failure =
+      typeof data.errorText === "string"
+        ? sanitizeLogText(data.errorText)
+        : "failed"
+    active.entry.timingMs = Date.now() - active.startedAt
+    this.networkByRequest.delete(data.requestId)
+  }
+
+  private recordNetworkFinished(params: unknown): void {
+    const data = (params ?? {}) as { requestId?: unknown }
+    if (typeof data.requestId !== "string") return
+    const active = this.networkByRequest.get(data.requestId)
+    if (!active) return
+    active.entry.timingMs = Date.now() - active.startedAt
+    this.networkByRequest.delete(data.requestId)
+  }
+
+  private recordDialogOpening(params: unknown): void {
+    const data = (params ?? {}) as {
+      type?: unknown
+      message?: unknown
+      defaultPrompt?: unknown
+      url?: unknown
+    }
+    this.pendingDialog = {
+      type: typeof data.type === "string" ? data.type : "alert",
+      message: sanitizeLogText(String(data.message ?? "")),
+      defaultPrompt:
+        typeof data.defaultPrompt === "string"
+          ? sanitizeLogText(data.defaultPrompt)
+          : undefined,
+      url:
+        typeof data.url === "string"
+          ? sanitizeUrl(data.url)
+          : sanitizeUrl(this.view.webContents.getURL()),
+    }
+  }
+
   dispose(): void {
     if (this.disposed) return
     this.disposed = true
     this.refs.clear()
+    this.consoleEntries = []
+    this.networkEntries = []
+    this.networkByRequest.clear()
+    this.pendingDialog = null
     try {
       const dbg = this.view.webContents.debugger
       if (dbg.isAttached()) dbg.detach()
@@ -984,6 +1482,15 @@ export class BrowserSession {
 // up and reporting the (unchanged) page. Short: most clicks don't navigate.
 const SETTLE_GRACE_MS = 500
 const PICK_TIMEOUT_MS = 5_000
+const BROWSER_WAIT_MAX_MS = 30_000
+const NETWORK_IDLE_DEFAULT_MS = 500
+const NETWORK_IDLE_MAX_MS = 5_000
+const LOG_RING_CAP = 500
+const LOG_PAGE_DEFAULT_LIMIT = 50
+const LOG_PAGE_MAX_LIMIT = 100
+const EVALUATE_TIMEOUT_MS = 2_000
+const EVALUATE_MAX_DEPTH = 4
+const EVALUATE_MAX_OUTPUT_BYTES = 8_000
 const SNAPSHOT_MAX_AX_NODES = 500
 const SNAPSHOT_MAX_REFS = 100
 const SNAPSHOT_MAX_BYTES = 20_000
@@ -1259,3 +1766,77 @@ function browserTargetFingerprint(input: {
   }
   return parts.join("|")
 }
+
+function boundedLogLimit(limit: number | undefined): number {
+  if (!Number.isFinite(limit ?? NaN)) return LOG_PAGE_DEFAULT_LIMIT
+  return Math.max(1, Math.min(Math.trunc(limit as number), LOG_PAGE_MAX_LIMIT))
+}
+
+function sanitizeUrl(raw: string): string {
+  try {
+    const url = new URL(raw)
+    for (const key of [...url.searchParams.keys()]) {
+      if (SENSITIVE_URL_KEY_RE.test(key))
+        url.searchParams.set(key, "[redacted]")
+    }
+    url.username = url.username ? "[redacted]" : ""
+    url.password = url.password ? "[redacted]" : ""
+    return url.toString()
+  } catch {
+    return sanitizeLogText(raw)
+  }
+}
+
+function sanitizeLogText(text: string): string {
+  return text
+    .replace(
+      /\b(cookie|authorization|x-api-key)\s*[:=]\s*\S+/gi,
+      "$1=[redacted]"
+    )
+    .replace(
+      /\b(?:sk|pk|rk|ghp|github_pat|xox[baprs])_[A-Za-z0-9_-]+\b/g,
+      "[secret]"
+    )
+    .replace(/\b[A-Za-z0-9_-]{32,}\b/g, "[secret]")
+    .slice(0, 2_000)
+}
+
+async function waitUntil(
+  predicate: () => boolean | Promise<boolean>,
+  timeoutMs: number,
+  signal?: AbortSignal,
+  stableMs = 0
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  let stableSince: number | null = null
+  while (Date.now() <= deadline) {
+    if (signal?.aborted) throw new Error("Browser wait was stopped.")
+    if (await predicate()) {
+      if (stableMs <= 0) return
+      stableSince ??= Date.now()
+      if (Date.now() - stableSince >= stableMs) return
+    } else {
+      stableSince = null
+    }
+    await abortableDelay(100, signal)
+  }
+  throw new Error("Browser wait timed out.")
+}
+
+function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new Error("Browser wait was stopped."))
+      return
+    }
+    const timer = setTimeout(resolve, ms)
+    const onAbort = () => {
+      clearTimeout(timer)
+      reject(new Error("Browser wait was stopped."))
+    }
+    signal?.addEventListener("abort", onAbort, { once: true })
+  })
+}
+
+const SENSITIVE_URL_KEY_RE =
+  /^(token|access_token|refresh_token|id_token|code|key|api_key|apikey|password|secret|signature|sig|auth|authorization|cookie)$/i

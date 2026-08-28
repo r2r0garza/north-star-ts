@@ -85,6 +85,9 @@ describe("agentToolAllowlist", () => {
     expect(allow.has("web_fetch")).toBe(true)
     expect(allow.has("browser_navigate")).toBe(true)
     expect(allow.has("browser_screenshot")).toBe(true)
+    expect(allow.has("browser_hover")).toBe(true)
+    expect(allow.has("browser_network")).toBe(true)
+    expect(allow.has("browser_evaluate")).toBe(false)
     expect(allow.has("spawn_subagent")).toBe(true)
     expect(allow.has("todo_write")).toBe(true)
     expect(allow.has("run_todos_in_background")).toBe(true)
@@ -106,6 +109,12 @@ describe("agentToolAllowlist", () => {
     expect(allow.has("git_log")).toBe(true)
     expect(allow.has("git_show")).toBe(true)
     expect(allow.has("git_branches")).toBe(true)
+  })
+
+  it("keeps browser_evaluate behind the browser_advanced category", () => {
+    const allow = agentToolAllowlist(agent(["browser_advanced"]))!
+    expect(allow.has("browser_evaluate")).toBe(true)
+    expect(allow.has("browser_navigate")).toBe(false)
   })
 
   it("ignores unknown categories", () => {

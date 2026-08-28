@@ -36,11 +36,18 @@ export const CATEGORY_TOOLS: Record<string, string[]> = {
     "browser_snapshot",
     "browser_screenshot",
     "browser_click",
+    "browser_hover",
+    "browser_drag",
     "browser_type",
+    "browser_wait",
+    "browser_console",
+    "browser_network",
+    "browser_handle_dialog",
     "browser_back",
     "browser_close",
     "browser_handoff",
   ],
+  browser_advanced: ["browser_evaluate"],
   todo: ["todo_write", "run_todos_in_background"],
   // `dashboard` → the live-dashboard authoring tool (plan 033.2). Offered in
   // interactive modes (buildTools gates it on showTodos); this mapping lets a

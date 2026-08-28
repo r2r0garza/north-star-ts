@@ -15,3 +15,54 @@ export interface PickedElement {
   // Trimmed visible text content (may duplicate name; capped during CDP extraction).
   text: string
 }
+
+export interface BrowserWaitInput {
+  condition:
+    | "duration"
+    | "url_changed"
+    | "title_changed"
+    | "ref_visible"
+    | "ref_hidden"
+    | "network_idle"
+  ref?: string
+  timeoutMs: number
+  idleMs?: number
+}
+
+export interface BrowserConsoleEntry {
+  id: number
+  timestamp: number
+  level: string
+  text: string
+  url?: string
+  line?: number
+}
+
+export interface BrowserNetworkEntry {
+  id: number
+  timestamp: number
+  requestId: string
+  method: string
+  url: string
+  resourceType?: string
+  status?: number
+  timingMs?: number
+  failure?: string
+}
+
+export interface BrowserLogPage<T> {
+  entries: T[]
+  nextCursor: number | null
+}
+
+export interface BrowserDialogState {
+  type: string
+  message: string
+  defaultPrompt?: string
+  url: string
+}
+
+export interface BrowserEvaluateResult {
+  value: unknown
+  truncated: boolean
+}
