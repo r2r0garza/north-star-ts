@@ -4,7 +4,8 @@
 > JSON → a new Process definition) to the Process view (`026`). Unlike skills (`035`) and agents
 > (`036`) — which are already files on disk and so are **import-only** here — a Process lives **only in
 > the database** (`025`'s tables), so it needs an explicit **serialize ⇄ deserialize** round-trip to be
-> shareable. **JSON** is the interchange format (portable, diffable, hand-editable).
+> shareable. **JSON** is the interchange format (portable, diffable, hand-editable). Depends on
+> `056`'s source-qualified agent-reference format so export does not collapse same-name agents.
 
 ## Context
 
@@ -15,8 +16,9 @@ through granular CRUD verbs — `db:processes:{create, update, delete}` +
 `026`'s builder edits by delete+recreate — **mutate-then-refetch**). The tables (`SCHEMA_V15`) are all
 **id-keyed with FKs**: `process_phases.process_id`, `process_edges.from_phase_id`/`to_phase_id`,
 `process_phase_agents.phase_id`; a phase also has a human **`key`** (unique per process) and a
-**`position`**; agents reference **`agent_name`** (a name, resolved at run time — not an FK to an agent
-row). The Process screen (`process-screen.tsx`) has a definition rail (New + delete) + the list builder.
+**`position`**; legacy agents reference **`agent_name`**, while `056` migrates active selections to a
+source-qualified agent reference. The Process screen (`process-screen.tsx`) has a definition rail
+(New + delete) + the list builder.
 
 **Ids are the crux:** raw row ids are meaningless across machines and would collide on import. Export
 must be **id-relative** (edges reference phases by **`key`**, not id) so import can mint fresh ids.
@@ -25,7 +27,8 @@ must be **id-relative** (edges reference phases by **`key`**, not id) so import 
 
 1. **Export** the selected Process definition to a `.json` file the user saves anywhere — a
    self-contained, id-free (or id-relative) document capturing phases + their config (routing / gate /
-   fan-out / position / key), the per-phase agent pool (names + skills/tools overrides), and edges
+   fan-out / position / key), the per-phase agent pool (portable source-qualified references +
+   skills/tools overrides), and edges
    (by phase **key** + trigger).
 2. **Import** such a JSON → a **new** Process definition (fresh ids everywhere), validated, appearing
    in the definition rail ready to run/edit. Round-trips: export A → import → identical graph as A′.
@@ -34,10 +37,12 @@ must be **id-relative** (edges reference phases by **`key`**, not id) so import 
 
 ### A. The interchange format (`ProcessExport`, versioned)
 - A top-level `{ formatVersion: 1, exportedAt, definition: { name, description }, phases: [...],
-  edges: [...] }` where **phases carry `key`** (routing/gate/fan_out/position + `agents: [{ agentName,
-  skills, tools }]`) and **edges reference `fromKey`/`toKey` + `trigger`** — **no raw ids**, so import
-  is collision-free. `formatVersion` guards future shape changes. Agent references stay as **names**
-  (a process is portable even if the importer lacks those agents — surfaced as a warning, see Q3).
+  edges: [...] }` where **phases carry `key`** (routing/gate/fan_out/position +
+  `agents: [{ agent: { sourceKind, nativeName, sourcePathHint? }, skills, tools }]`) and **edges
+  reference `fromKey`/`toKey` + `trigger`** — **no raw ids**, so import is collision-free.
+  `formatVersion` guards future shape changes. Do not export an opaque local ref containing an
+  absolute path as the portable identity; carry the source kind + native name and an optional
+  workspace-relative/source-location hint so import can resolve or warn.
 
 ### B. IPC / serialization (main process — `process/io.ts` + verbs in `index.ts`)
 - **`processes:export(processId)`** → build the `ProcessExport` from `getProcessGraph` (drop ids, map
@@ -61,10 +66,10 @@ must be **id-relative** (edges reference phases by **`key`**, not id) so import 
 1. **Id strategy in the file.** Fully **id-free** (edges by phase `key`) — cleanest, requires unique
    keys (already a table constraint) — vs keep original ids + remap on import. Lean **id-free by key**
    (keys are already unique per process and human-meaningful).
-2. **Missing agents on import.** A process references `agent_name`s the importer may not have. Import
-   anyway and **warn** ("3 phases reference agents not found: …; author or import them via `027`/`036`")
-   vs block. Lean **import + warn** — agent names resolve at *run* time (`025.3`'s router already falls
-   back), so a process is still editable/inspectable without them; the run surfaces the gap.
+2. **Missing/ambiguous agents on import.** Resolve each portable descriptor against `056`'s catalog.
+   Import anyway and **warn** when none or several definitions match; retain the unresolved descriptor
+   for later repair instead of substituting a same-name agent from another source. A process remains
+   editable/inspectable without the agent, and cannot run that pool member until resolved.
 3. **Save/open plumbing.** Do the file read/write in **main** (`dialog.showSaveDialog`/`showOpenDialog`
    + `fs`) returning done/error, vs return the JSON string to the renderer. Lean **main does the file
    I/O** (consistent with `pick-workspace.ts`; no blob shuttling over IPC).
@@ -89,6 +94,7 @@ must be **id-relative** (edges reference phases by **`key`**, not id) so import 
 - **Exporting a run** (a `process_runs`/`process_phase_runs` execution) — only the reusable
   *definition* is shareable; run history stays local.
 - **A process marketplace / remote share (URL / gist)** — later; this is local file JSON only.
-- **Bundling referenced agents/skills into the export** — the export carries agent *names*; importing
-  the agents themselves is `036` (a future "bundle" format could pair them — deferred).
+- **Bundling referenced agents/skills into the export** — the export carries portable agent
+  descriptors, not the agent files; importing the agents themselves is `036`/the external source
+  discovery in `056` (a future "bundle" format could pair them — deferred).
 - **Skill / agent import** — `035` / `036`.

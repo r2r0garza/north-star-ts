@@ -476,11 +476,17 @@ function App(
       ? !configuredModelId || configuredModelId === "claude-code"
         ? "sonnet"
         : configuredModelId
-      : configuredModelId
+      : effectiveAccount?.account.provider === "codex_cli"
+        ? !configuredModelId || configuredModelId === "codex-cli"
+          ? "gpt-5.3-codex"
+          : configuredModelId
+        : configuredModelId
   const effectiveModel = effectiveAccount?.models.find(
     (m) => m.modelId === effModelId
   )
-  const effectiveIsCli = effectiveAccount?.account.provider === "claude_code"
+  const effectiveIsCli =
+    effectiveAccount?.account.provider === "claude_code" ||
+    effectiveAccount?.account.provider === "codex_cli"
 
   // The conversation the panel is currently showing. Updated synchronously when
   // the prop changes (in the load effect) so streaming callbacks can tell, at the
@@ -644,10 +650,10 @@ function App(
   // <workspace>/.cowork/skills and <workspace>/.github/skills).
   useEffect(() => reloadSkills(), [reloadSkills])
 
-  // Load the user-invocable custom agents for the picker. Reloads on workspace
-  // change (workspace-level agents live under <workspace>/.cowork/agents and
-  // <workspace>/.github/agents), mirroring skills.
-  useEffect(() => {
+  // Fetch the user-invocable custom agents for the picker. Extracted so it can
+  // be re-run on focus/open: agent files may be edited outside the app, and the
+  // renderer otherwise only sees changes after a full reload or workspace swap.
+  const reloadAgents = useCallback(() => {
     let cancelled = false
     window.cowork.agents
       .list(workspace.trim() || undefined)
@@ -661,6 +667,16 @@ function App(
       cancelled = true
     }
   }, [workspace])
+
+  // Initial load + reload on workspace change (workspace-level agents live under
+  // <workspace>/.cowork/agents and <workspace>/.github/agents), mirroring skills.
+  useEffect(() => reloadAgents(), [reloadAgents])
+
+  // Re-scan externally edited agent files when the app comes back into focus.
+  useEffect(() => {
+    window.addEventListener("focus", reloadAgents)
+    return () => window.removeEventListener("focus", reloadAgents)
+  }, [reloadAgents])
 
   // Report the workspace root up to the Shell so the sidebar Changes review + the
   // browser file:// opens can use it. Chat has no workspace → report empty.
@@ -1035,7 +1051,7 @@ function App(
         accountId: selAccountId,
         modelId: selModelId,
         // Persist the selected custom agent (null = built-in main agent).
-        agentName: selAgentName,
+        agentName: effectiveIsCli ? null : selAgentName,
       })
       convoId = convo.id
       isNew = true
@@ -1298,7 +1314,7 @@ function App(
         projectId: pendingProjectId,
         accountId: selAccountId,
         modelId: selModelId,
-        agentName: selAgentName,
+        agentName: effectiveIsCli ? null : selAgentName,
       })
       convoId = convo.id
       isNew = true
@@ -1465,10 +1481,11 @@ function App(
   async function selectModel(accountId: string, modelId: string) {
     setSelAccountId(accountId)
     setSelModelId(modelId)
-    const cli =
-      accountsWithModels.find((entry) => entry.account.id === accountId)
-        ?.account.provider === "claude_code"
-    if (cli) {
+    const cli = accountsWithModels.find(
+      (entry) => entry.account.id === accountId
+    )?.account.provider
+    const isCli = cli === "claude_code" || cli === "codex_cli"
+    if (isCli) {
       setAgentMode("default")
       setSelAgentName(null)
     }
@@ -1476,7 +1493,7 @@ function App(
       await window.cowork.db.conversations.update(conversationId, {
         accountId,
         modelId,
-        ...(cli ? { agentName: null } : {}),
+        ...(isCli ? { agentName: null } : {}),
       })
     }
   }
@@ -1662,6 +1679,9 @@ function App(
         value={selectedAgentItem}
         isItemEqualToValue={(a, b) => a?.value === b?.value}
         onValueChange={onAgentValueChange}
+        onOpenChange={(open) => {
+          if (open) reloadAgents()
+        }}
       >
         <ComboboxTrigger
           className={cn(
@@ -1697,6 +1717,9 @@ function App(
         value={selectedAgentItem}
         isItemEqualToValue={(a, b) => a?.value === b?.value}
         onValueChange={onAgentValueChange}
+        onOpenChange={(open) => {
+          if (open) reloadAgents()
+        }}
       >
         <ComboboxTrigger
           title={selAgentName ? `Agent: ${selAgentName}` : "Select agent"}

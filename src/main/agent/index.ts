@@ -93,7 +93,7 @@ import { getWorkspace } from "../db/repositories/workspaces"
 import { getProject } from "../db/repositories/projects"
 import { getAccount } from "../db/repositories/provider-accounts"
 import type { Conversation } from "../db/types"
-import { runClaudeConversation } from "./cli"
+import { runClaudeConversation, runCodexConversation } from "./cli"
 import { normalizeClaudeModel } from "./cli/claude"
 import { makePolicyEngine } from "./approval/engine"
 import { PlanModeClassifier } from "./approval/plan-mode-classifier"
@@ -557,6 +557,22 @@ export async function runAgentLoop(
         conversation.modelId ??
           (conversation.accountId === null ? defaultLlm.activeModelId : null)
       ),
+      abort,
+      onEvent,
+    })
+  }
+  if (effectiveAccount?.provider === "codex_cli") {
+    if (!conversation) return { error: "Conversation not found." }
+    if (!effectiveAccount.enabled) {
+      return { error: "The selected Codex CLI provider is disabled." }
+    }
+    return runCodexConversation({
+      conversation,
+      workspace,
+      userMessage,
+      model:
+        conversation.modelId ??
+        (conversation.accountId === null ? defaultLlm.activeModelId : null),
       abort,
       onEvent,
     })

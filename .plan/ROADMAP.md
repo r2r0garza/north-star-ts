@@ -7,18 +7,60 @@ item is its plan file; the ordered-list number is its current priority rank.
 
 ## Next up
 
-1. **`042` — Codex CLI provider.** Second concrete split from `034`. Adds **Codex CLI** as a
-   workspace-backed local subprocess provider, routed away from `runAgentLoop` into the same
-   `agent/cli/` adapter layer. Uses `codex exec --json <message>` for the first turn, parses
-   `thread.started.thread_id`, stores it, then resumes with `codex exec --json resume <thread_id>
-   <message>`. Probes under `cli_probes/codex/` confirmed clean JSONL: `thread.started`,
-   `turn.started`, `command_execution` with `aggregated_output`, `agent_message`, and
-   `turn.completed.usage`. Path rule: Codex exposes `-C/--cd`; set process `cwd` to the target and pass
-   `-C <targetDir>` explicitly. Before spawning, reuse our git probe: if it returns a branch or detached
-   sha, omit `--skip-git-repo-check`; if it returns null, include it. This applies to Chat,
-   Interactive, and North Star because users may point Codex at ordinary non-git folders. Backend stays
-   Local, and our internal tool loop and mode controls are disabled.
-2. **`045` — North Star MCP bridge for CLI providers.** After `042`, make North Star a second, distinct
+1. **`056` — External agent sources, parsers, and source-qualified identity.** Stop parsing every
+   provider's agent as North Star's `.agent.md` schema. Discover global/workspace GitHub Copilot,
+   Cursor, Claude, and Codex definitions with dedicated tolerant adapters; keep external files
+   view-only; retain same-name agents as qualified entries (`github: reviewer`, `claude: reviewer`,
+   etc.); and migrate conversations/Process pools from bare names to stable source-qualified refs.
+   Includes `~/.copilot/agents`, workspace `.github/.copilot`, global/workspace `.cursor/.claude`, and
+   Codex `config.toml` + `agents` directories. Foundation for `057`/`058`; no native CLI-agent path.
+2. **`057` — External agent capability fidelity.** Normalize GitHub hierarchical/individual tools,
+   Claude allow+deny and parameterized `Skill(...)`/`Agent(...)`, Cursor `readonly`, and Codex sandbox
+   posture into an exact internal capability policy. External agents receive no automatic read/search
+   floor or universal tools; unknown/unavailable tools are denied individually with compatibility
+   warnings while mapped tools remain runnable. Adds the agreed source-specific ask-user-question,
+   child, skill, and reviewed North Star MCP-server policies. Depends on `056`.
+3. **`058` — External agent runtime metadata + saved model mappings.** Explicit cross-provider model
+   resolution with no fuzzy aliases: inherit/omitted uses the conversation model; otherwise an
+   unresolved `(source kind, source model token, destination account)` opens a mapping modal, saves the
+   user's destination-model choice, and reuses it until changed/cleared or made stale by catalog
+   removal. Also covers reasoning effort, background durable execution, max turns,
+   permission/isolation posture, memory/hooks/initialPrompt, and MCP setup handoff. Depends on
+   `056`/`057`; CLI-provider conversations still hide the agent picker and native
+   `claude --agent`/Codex-agent execution remains separate.
+4. **`059` — Structured diagnostics and test tools.** Add `workspace_diagnostics`, `run_tests`, and
+   pageable normalized test results over the existing Environment/command-session lifecycle. Test and
+   checker runs remain execution-gated, but agents can receive a narrow registered-test capability
+   without arbitrary shell access. Table-driven providers return typed problems/failures and raw bounded
+   evidence; maps GitHub problems/runTests/testFailure capabilities. No dependency installation or
+   watch mode.
+5. **`060` — Semantic code navigation.** TypeScript/JavaScript-first language-service tools for
+   workspace/document symbols, definition, references, and hover/type, plus semantic diagnostics fed
+   into `059`. One bounded long-lived service per workspace with snapshot invalidation; no project
+   plugin execution. Language-neutral provider seam for later ecosystems. Regex/index results remain
+   explicitly labeled non-semantic.
+6. **`061` — Granular filesystem operations.** Add workspace-confined `stat_path`,
+   `create_directory`, no-replace `move_path`, and explicit/non-recursive-by-default `delete_path`
+   across Local/container Environments. Precise effects/approvals let external agents receive one file
+   operation without gaining shell or the whole edit category; root/foreign/symlink/broad-delete cases
+   fail closed.
+7. **`062` — Structured read-only Git inspection.** Add status, diff, log, show, and branches through
+   one argv-safe Git service shared with the Changes UI. Machine-readable/non-interactive invocations,
+   strict path/revision validation, no hooks/pagers/external diff/network, bounded pageable results,
+   and Local/container parity. No Git mutations.
+8. **`063` — Universal document extraction.** One bounded `read_document` surface for PDF, DOCX,
+   XLSX, PPTX, and IPYNB, with page/sheet/slide/cell provenance, table structure, continuation cursors,
+   archive/decompression caps, and zero macro/formula/notebook/embedded-object execution. Basic image
+   metadata only in v1; dependency/security/packaging spike precedes extractor selection.
+9. **`064` — Conversation-scoped recall.** Add search/read for the current conversation by default and
+   a separately authorized conversation-tree search for its task/subagent descendants. FTS-backed,
+   capped, auditable, and server-scoped from `ctx.conversationId`; it cannot accept arbitrary session
+   IDs or reach same-project/global conversations. Project/global recall remains future privileged work.
+10. **`065` — Browser debugging and advanced interaction.** Add bounded wait/hover/drag/dialog tools,
+   conversation-tab-scoped console/network ring buffers with redaction, and a separately gated,
+   approval-required page-only evaluate escape hatch. No unrestricted Playwright code, Node/Electron
+   access, credential capture, or unbounded bodies.
+11. **`045` — North Star MCP bridge for CLI providers.** After `042`, make North Star a second, distinct
    MCP role: it remains a client of user-configured external servers, and also hosts a lazy,
    authenticated Streamable HTTP server on an ephemeral `127.0.0.1` port for the Claude Code and Codex
    subprocesses we launch. Inject the endpoint per turn (`claude --mcp-config`; Codex transient `-c`
@@ -27,7 +69,7 @@ item is its plan file; the ordered-list number is its current priority rank.
    North-Star-specific `index_query`; `045.2` adapts the existing renderer-backed
    `ask_user_question` round trip. Explicit adapters only—no blanket `runTool()` export, no external
    MCP proxy, and no duplicate filesystem/shell tools. Side-effect policy remains enforced server-side.
-3. **`039` — Inspectable agent-to-agent messaging. ⚠️ DESIGN-PENDING.** One phase-agent (B) **asks
+12. **`039` — Inspectable agent-to-agent messaging. ⚠️ DESIGN-PENDING.** One phase-agent (B) **asks
    another phase-agent (A) a question**, answered **from A's own context** — distinct from
    `spawn_subagent` (a fresh, context-less child). The `025` engine makes each phase-run's **worker
    conversation** addressable (`makeRunPhase` stamps a `taskId`/conversation per phase-run), so a gated
@@ -39,21 +81,23 @@ item is its plan file; the ordered-list number is its current priority rank.
    context, no mid-flight race); same-run targets only. Monitor renders the A↔B thread off a
    `process_phase`-style event (no new channel). **Likely splits:** `039.1` completed-target round-trip
    + storage + monitor; `039.2` asking a running agent (queued) + richer targeting. Open Qs above.
-4. **`037` — Process import / export.** Unlike `035`/`036` (files already on disk → import-only), a
+13. **`037` — Process import / export.** Unlike `035`/`036` (files already on disk → import-only), a
    Process lives **only in the DB** (`025` tables), so it needs an explicit **serialize ⇄ deserialize**
    to be shareable — the sharing use case you called out. **JSON** interchange (`ProcessExport`,
    `formatVersion`-guarded): **id-free**, edges reference phases by **`key`** (unique per process) so
-   import mints fresh ids collision-free; agent pool carried as **names**. **Export** = build from
+   import mints fresh ids collision-free; agent pools carry `056`-compatible portable source-kind/name
+   descriptors rather than local opaque refs or bare names. **Export** = build from
    `getProcessGraph`, drop ids, save dialog. **Import** = parse + validate (unique keys, every edge
    endpoint resolves, enums valid) then **replay through the existing granular CRUD in one
    transaction** (`createProcess`→`createPhase`×N→key→newId map→`createEdge`/`createPhaseAgent`) — no
-   new write path, same invariants as `026`. Round-trips (export→import ≡ original modulo ids). Missing
-   referenced agents → **import + warn** (names resolve at run time; `025.3` router falls back) (Q2).
+   new write path, same invariants as `026`. Round-trips (export→import ≡ original modulo ids).
+   Missing/ambiguous referenced agents → **import + warn**, retain unresolved descriptors, and never
+   substitute a same-name agent from another source (Q2).
    Export is *definition only* (not run history). New `process/io.ts` + `processes:export`/`import` IPC +
    builder affordances. **Ordered after `038`** so the format carries a phase's `subprocess_id` — a
    sub-process reference exports **by definition identity** (name/a stable ref), and import resolves or
    flags a missing referenced sub-process (like `037`'s missing-agent warning).
-5. **`032` — Process visual canvas.** The explicitly-deferred half of `026` (which shipped the
+14. **`032` — Process visual canvas.** The explicitly-deferred half of `026` (which shipped the
    **list-based** DAG builder and recorded a **visual node/edge canvas** as "later"). Renderer-first +
    one additive migration; **no engine/scheduling/routing change**. Phases become draggable **nodes**,
    dependencies **edges** drawn between handles (same `on_complete`/`on_each_subtask` trigger, same
@@ -67,19 +111,19 @@ item is its plan file; the ordered-list number is its current priority rank.
    toggle vs replace (lean **coexist**). The Radix-`Dialog` takeover means the inspector keeps
    `NativeSelect` (the `023`/`026` `pointer-events:none` finding). **Live-run-on-canvas deferred** — v1
    keeps the `026` nested-list monitor. Independent of `029`/`031`.
-6. **`010` — Container runtime profiles.** Decouple Workspace (the files) from Runtime (the env a
+15. **`010` — Container runtime profiles.** Decouple Workspace (the files) from Runtime (the env a
    tool call executes in). Replace the raw container `image` string with a named **profile**
    (`node` | `python` | `fullstack`), resolved to an image in the env factory; default/fallback =
    `fullstack` (Node + Python) so a Node repo that later adds a Python backend doesn't wedge.
    One profile per conversation, user-overridable in settings. Kills the "one workspace = one image
    forever" assumption **without** building auto-routing or image management (both deferred). Small
    refactor of `env/factory.ts` + `container.ts` + execution settings (JSON blob — no migration).
-7. **`007` — Deterministic slash-command skill invocation (picker already shipped).** The composer
+16. **`007` — Deterministic slash-command skill invocation (picker already shipped).** The composer
    autocomplete, `skills:list` IPC, keyboard selection, and slash badges shipped in `c5594a1`. The
    remaining work is the functional guarantee from the plan: a selected `/skill-name …` must
    deterministically pre-inject `read_skill(skill-name)` before inference, validate unknown skills in
    main, preserve the literal command in the transcript, and keep plain-message skill use discretionary.
-8. **`024` — Index filesystem/git watcher.** The "live file watching" follow-up `008` deferred (and
+17. **`024` — Index filesystem/git watcher.** The "live file watching" follow-up `008` deferred (and
    `014` re-deferred). Today the workspace index — and the compact summary `buildIndexSummary`
    injects into the system prompt on every message send — only refreshes when `IndexService.
    ensureRunning` is called, which fires on conversation create/update or manual Start/Rebuild;
@@ -96,6 +140,17 @@ item is its plan file; the ordered-list number is its current priority rank.
 
 ## Deferred
 
+- **`066` — Notebook editing and cell execution.** Depends on `063`'s safe reader and a reviewed
+   Environment-backed kernel contract. Adds revision-safe structured cell edits and separately
+   execution-gated cell runs with Stop/timeouts/output caps; never installs kernels or treats notebook
+   reading as permission to execute code.
+- **`067` — Conversation-scoped workspace checkpoints.** Content-addressed app-data manifests/blobs,
+   safe conflict-aware preview/restore, quotas/retention, and conversation+workspace scope. Preserves
+   unrelated user changes and never wraps destructive `git reset`/`checkout`/`clean`.
+- **`068` — Progressive tool discovery.** Implement only after measurements show the growing catalog
+   hurts context or selection. `tool_search` searches/activates only the already-authorized catalog
+   after mode/workspace/agent/MCP policy; denied tools are neither revealed nor activated, and stale
+   activations invalidate on policy/runtime changes.
 - **`053` — Linux Local sandbox adapter.** Future hardening for `052`'s stronger Local
    runtime profiles on Linux. Docker/Podman remains the supported Linux sandbox path for now; this
    plan only becomes active if we decide Local should enforce `read-only` / `workspace-write` without a
@@ -131,6 +186,15 @@ item is its plan file; the ordered-list number is its current priority rank.
 
 ## Done
 
+- **`042` — Codex CLI provider.** Added a credential-free `codex_cli` provider with Settings detection,
+  a fixed seeded Codex CLI model entry, schema v31 provider/session support, and routing that bypasses
+  `runAgentLoop`. The adapter launches `codex exec --json` with an explicit process cwd and `-C`
+  working root, uses the existing git probe to decide whether `--skip-git-repo-check` is needed,
+  captures `thread.started.thread_id` after the first turn, resumes later turns with that id, parses
+  `agent_message` and `command_execution` JSONL into live transcript/tool events, and uses the same
+  process-group abort discipline as Claude Code. Verified: focused CLI parser/argv tests pass,
+  TypeScript passes, and production build passes; SQLite-backed repository/migration tests remain
+  skipped in the plain Node runner because the local better-sqlite3 binary is built for Electron ABI.
 - **`020` — Durable memories (replacement automatic-memory design).** Shipped in PR #11
   (`5fca9d8`, merged by `86eb458`) as an opt-in background memory service rather than the plan's
   proposed explicit `remember` tool/SQLite design. Completed turns feed managed `memory-*` skills:

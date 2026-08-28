@@ -16,6 +16,7 @@ import { createConversation, deleteConversation } from "./conversations"
 import {
   ensureCliSession,
   getCliSession,
+  setCliSession,
   touchCliSession,
 } from "./cli-sessions"
 
@@ -43,5 +44,18 @@ describe.skipIf(!sqliteLoads)("cli-sessions repo", () => {
     ensureCliSession(conversation.id, "claude_code")
     deleteConversation(conversation.id)
     expect(getCliSession(conversation.id, "claude_code")).toBeUndefined()
+  })
+
+  it("stores Codex's captured thread id", () => {
+    const conversation = createConversation({ mode: "chat" })
+    const session = setCliSession(
+      conversation.id,
+      "codex_cli",
+      "01a03b92-67e5-7823-b246-a5180f091f46"
+    )
+    expect(session.sessionId).toBe("01a03b92-67e5-7823-b246-a5180f091f46")
+    expect(getCliSession(conversation.id, "codex_cli")?.provider).toBe(
+      "codex_cli"
+    )
   })
 })

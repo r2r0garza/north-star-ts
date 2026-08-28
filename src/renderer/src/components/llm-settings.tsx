@@ -70,6 +70,7 @@ const PROVIDERS: Array<{ value: Provider; label: string; enabled: boolean }> = [
   { value: "openai_compatible", label: "OpenAI-compatible", enabled: true },
   { value: "openai", label: "OpenAI", enabled: true },
   { value: "claude_code", label: "Claude Code CLI", enabled: true },
+  { value: "codex_cli", label: "Codex CLI", enabled: true },
   { value: "anthropic", label: "Anthropic", enabled: false },
   { value: "google", label: "Google", enabled: false },
   { value: "azure_openai", label: "Azure OpenAI", enabled: false },
@@ -78,11 +79,11 @@ const PROVIDERS: Array<{ value: Provider; label: string; enabled: boolean }> = [
 // Native OpenAI can omit a base URL (the SDK defaults to api.openai.com); every
 // other wired provider is a gateway that requires one.
 function requiresBaseUrl(provider: Provider): boolean {
-  return provider !== "openai" && provider !== "claude_code"
+  return provider !== "openai" && !isCliProvider(provider)
 }
 
 function isCliProvider(provider: Provider): boolean {
-  return provider === "claude_code"
+  return provider === "claude_code" || provider === "codex_cli"
 }
 
 function providerLabel(provider: Provider): string {
@@ -219,10 +220,15 @@ export function ProvidersTab({ state }: { state: LlmState }) {
               value={active?.activeAccountId ?? ""}
               onValueChange={async (id) => {
                 const provider = accounts.find((account) => account.id === id)
+                const cliDefault =
+                  provider?.provider === "claude_code"
+                    ? "sonnet"
+                    : provider?.provider === "codex_cli"
+                      ? "gpt-5.3-codex"
+                      : null
                 const next = {
                   activeAccountId: id,
-                  activeModelId:
-                    provider?.provider === "claude_code" ? "sonnet" : null,
+                  activeModelId: cliDefault,
                 }
                 setActive(next)
                 await window.cowork.providers.setDefault(next)
@@ -333,7 +339,11 @@ function AccountCard({
 
   useEffect(() => {
     if (!open || !isCliProvider(account.provider)) return
-    void window.cowork.providers.detectClaudeCode().then(setCliStatus)
+    const detect =
+      account.provider === "codex_cli"
+        ? window.cowork.providers.detectCodexCli
+        : window.cowork.providers.detectClaudeCode
+    void detect().then(setCliStatus)
   }, [open, account.provider])
 
   async function saveBaseUrl() {
@@ -442,10 +452,10 @@ function AccountCard({
         {isCliProvider(account.provider) ? (
           <div className="rounded-md bg-muted px-3 py-2 text-xs">
             {cliStatus == null
-              ? "Checking for Claude Code…"
+              ? `Checking for ${providerLabel(account.provider)}...`
               : cliStatus.installed
-                ? `Installed: ${cliStatus.version ?? "Claude Code"}`
-                : `Not available: ${cliStatus.error ?? "claude was not found on PATH."}`}
+                ? `Installed: ${cliStatus.version ?? providerLabel(account.provider)}`
+                : `Not available: ${cliStatus.error ?? "CLI was not found on PATH."}`}
           </div>
         ) : (
           <>
@@ -798,16 +808,31 @@ function AccountModelsSection({
         {isCliProvider(account.provider) ? (
           <>
             <p className="text-xs text-muted-foreground">
-              Claude Code manages model availability. Choose a durable alias;
-              Sonnet is used when no explicit alias is selected.
+              {account.provider === "claude_code"
+                ? "Claude Code manages model availability. Choose a durable alias; Sonnet is used when no explicit alias is selected."
+                : "Codex CLI manages model availability. Choose the model passed to codex exec with --model."}
             </p>
             <div className="flex flex-col gap-2">
-              {["sonnet", "haiku", "opus", "fable"].map((alias) => {
+              {(account.provider === "claude_code"
+                ? ["sonnet", "haiku", "opus", "fable"]
+                : [
+                    "gpt-5.3-codex",
+                    "gpt-5.3-codex-spark",
+                    "gpt-5.5",
+                    "gpt-5.6-sol",
+                    "gpt-5.6-terra",
+                    "gpt-5.6-luna",
+                  ]
+              ).map((alias) => {
                 const model = models?.find((entry) => entry.modelId === alias)
                 const selected =
                   isActiveAccount &&
                   (active?.activeModelId === alias ||
-                    (!active?.activeModelId && alias === "sonnet"))
+                    (!active?.activeModelId &&
+                      alias ===
+                        (account.provider === "claude_code"
+                          ? "sonnet"
+                          : "gpt-5.3-codex")))
                 return (
                   <button
                     key={alias}
@@ -825,7 +850,10 @@ function AccountModelsSection({
                       {alias}
                     </span>
                     <span className="flex items-center gap-2">
-                      {alias === "sonnet" && (
+                      {((account.provider === "claude_code" &&
+                        alias === "sonnet") ||
+                        (account.provider === "codex_cli" &&
+                          alias === "gpt-5.3-codex")) && (
                         <Badge variant="outline">fallback</Badge>
                       )}
                       {selected && <Badge>default</Badge>}
