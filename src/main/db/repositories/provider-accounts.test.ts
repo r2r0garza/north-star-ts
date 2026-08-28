@@ -55,6 +55,19 @@ describe.skipIf(!sqliteLoads)("provider-accounts repo", () => {
     ])
   })
 
+  it("accepts the Codex CLI provider without credentials", () => {
+    const account = createAccount({
+      provider: "codex_cli",
+      displayName: "Codex CLI",
+    })
+    expect(account.provider).toBe("codex_cli")
+    expect(account.hasKey).toBe(false)
+    addModel({ accountId: account.id, modelId: "gpt-5.3-codex" })
+    expect(listModels(account.id).map((model) => model.modelId)).toEqual([
+      "gpt-5.3-codex",
+    ])
+  })
+
   it("stores ciphertext as a BLOB and reflects hasKey, never leaking the blob", () => {
     const a = createAccount({ provider: "portkey", displayName: "Work" })
     setEncryptedKey(a.id, Buffer.from([1, 2, 3, 4]))

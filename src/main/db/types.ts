@@ -268,6 +268,7 @@ export type Provider =
   | "openai_compatible"
   | "openai"
   | "claude_code"
+  | "codex_cli"
   | "anthropic"
   | "google"
   | "azure_openai"
@@ -320,7 +321,7 @@ export interface ModelEntry {
 // transcript; North Star stores only the stable reference needed to resume.
 export interface CliSession {
   conversationId: string
-  provider: "claude_code"
+  provider: "claude_code" | "codex_cli"
   sessionId: string
   createdAt: number
   updatedAt: number

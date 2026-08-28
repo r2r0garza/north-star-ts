@@ -11,6 +11,8 @@ import {
   SCHEMA_V7,
   SCHEMA_V8,
   SCHEMA_V30,
+  SCHEMA_V31,
+  SCHEMA_V32,
 } from "./schema"
 import { sqliteLoadsForTests } from "../test/sqlite"
 
@@ -86,8 +88,98 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
     const db = new Database(":memory:")
     db.pragma("foreign_keys = ON")
     runMigrations(db)
-    expect(db.pragma("user_version", { simple: true })).toBe(30)
+    expect(db.pragma("user_version", { simple: true })).toBe(32)
     expect(db.pragma("foreign_key_check")).toHaveLength(0)
+    db.close()
+  })
+
+  it("widens provider and CLI session constraints for Codex CLI (v31)", () => {
+    const db = new Database(":memory:")
+    db.exec(`
+      CREATE TABLE provider_accounts (
+        id TEXT PRIMARY KEY, provider TEXT NOT NULL, display_name TEXT NOT NULL,
+        base_url TEXT, encrypted_key BLOB, api_mode TEXT NOT NULL DEFAULT 'completions',
+        enabled INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL,
+        last_used_at INTEGER, position INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE TABLE conversations (
+        id TEXT PRIMARY KEY, mode TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+      );
+      CREATE TABLE cli_sessions (
+        conversation_id TEXT NOT NULL, provider TEXT NOT NULL, session_id TEXT NOT NULL,
+        created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+        PRIMARY KEY (conversation_id, provider), UNIQUE (provider, session_id)
+      );
+      INSERT INTO provider_accounts
+        (id, provider, display_name, created_at)
+      VALUES ('claude', 'claude_code', 'Claude Code CLI', 0);
+      INSERT INTO conversations VALUES ('conversation', 'chat', 0, 0);
+      INSERT INTO cli_sessions VALUES ('conversation', 'claude_code', 'session', 0, 0);
+    `)
+    db.exec(SCHEMA_V31)
+
+    db.prepare(
+      "INSERT INTO provider_accounts (id, provider, display_name, created_at) VALUES ('codex', 'codex_cli', 'Codex CLI', 0)"
+    ).run()
+    db.prepare(
+      "INSERT INTO cli_sessions VALUES ('conversation', 'codex_cli', 'thread', 0, 0)"
+    ).run()
+    expect(
+      db
+        .prepare("SELECT provider FROM provider_accounts ORDER BY id")
+        .pluck()
+        .all()
+    ).toEqual(["claude_code", "codex_cli"])
+    db.close()
+  })
+
+  it("migrates Codex CLI aliases and legacy defaults (v32)", () => {
+    const db = new Database(":memory:")
+    db.exec(`
+      CREATE TABLE provider_accounts (id TEXT PRIMARY KEY, provider TEXT NOT NULL);
+      CREATE TABLE conversations (id TEXT PRIMARY KEY, account_id TEXT, model_id TEXT);
+      CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL);
+      CREATE TABLE models (
+        id TEXT PRIMARY KEY, account_id TEXT NOT NULL, model_id TEXT NOT NULL,
+        model_name TEXT, origin TEXT NOT NULL, favorite INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+        UNIQUE (account_id, model_id)
+      );
+      INSERT INTO provider_accounts VALUES ('codex', 'codex_cli');
+      INSERT INTO conversations VALUES ('conversation', 'codex', 'codex-cli');
+      INSERT INTO settings VALUES (
+        'llm', '{"activeAccountId":"codex","activeModelId":"codex-cli"}', 0
+      );
+      INSERT INTO models VALUES (
+        'legacy', 'codex', 'codex-cli', 'Codex CLI', 'seeded', 0, 0, 0
+      );
+    `)
+    db.exec(SCHEMA_V32)
+
+    const aliases = db
+      .prepare(
+        "SELECT model_id FROM models WHERE account_id = 'codex' ORDER BY favorite DESC, created_at ASC"
+      )
+      .all() as Array<{ model_id: string }>
+    expect(aliases.map((row) => row.model_id)).toEqual([
+      "gpt-5.3-codex",
+      "gpt-5.3-codex-spark",
+      "gpt-5.5",
+      "gpt-5.6-sol",
+      "gpt-5.6-terra",
+      "gpt-5.6-luna",
+    ])
+    expect(db.prepare("SELECT model_id FROM conversations").pluck().get()).toBe(
+      "gpt-5.3-codex"
+    )
+    expect(
+      JSON.parse(
+        db
+          .prepare("SELECT value FROM settings WHERE key = 'llm'")
+          .pluck()
+          .get() as string
+      ).activeModelId
+    ).toBe("gpt-5.3-codex")
     db.close()
   })
 

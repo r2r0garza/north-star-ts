@@ -7,18 +7,7 @@ item is its plan file; the ordered-list number is its current priority rank.
 
 ## Next up
 
-1. **`042` — Codex CLI provider.** Second concrete split from `034`. Adds **Codex CLI** as a
-   workspace-backed local subprocess provider, routed away from `runAgentLoop` into the same
-   `agent/cli/` adapter layer. Uses `codex exec --json <message>` for the first turn, parses
-   `thread.started.thread_id`, stores it, then resumes with `codex exec --json resume <thread_id>
-   <message>`. Probes under `cli_probes/codex/` confirmed clean JSONL: `thread.started`,
-   `turn.started`, `command_execution` with `aggregated_output`, `agent_message`, and
-   `turn.completed.usage`. Path rule: Codex exposes `-C/--cd`; set process `cwd` to the target and pass
-   `-C <targetDir>` explicitly. Before spawning, reuse our git probe: if it returns a branch or detached
-   sha, omit `--skip-git-repo-check`; if it returns null, include it. This applies to Chat,
-   Interactive, and North Star because users may point Codex at ordinary non-git folders. Backend stays
-   Local, and our internal tool loop and mode controls are disabled.
-2. **`045` — North Star MCP bridge for CLI providers.** After `042`, make North Star a second, distinct
+1. **`045` — North Star MCP bridge for CLI providers.** After `042`, make North Star a second, distinct
    MCP role: it remains a client of user-configured external servers, and also hosts a lazy,
    authenticated Streamable HTTP server on an ephemeral `127.0.0.1` port for the Claude Code and Codex
    subprocesses we launch. Inject the endpoint per turn (`claude --mcp-config`; Codex transient `-c`
@@ -27,7 +16,7 @@ item is its plan file; the ordered-list number is its current priority rank.
    North-Star-specific `index_query`; `045.2` adapts the existing renderer-backed
    `ask_user_question` round trip. Explicit adapters only—no blanket `runTool()` export, no external
    MCP proxy, and no duplicate filesystem/shell tools. Side-effect policy remains enforced server-side.
-3. **`039` — Inspectable agent-to-agent messaging. ⚠️ DESIGN-PENDING.** One phase-agent (B) **asks
+2. **`039` — Inspectable agent-to-agent messaging. ⚠️ DESIGN-PENDING.** One phase-agent (B) **asks
    another phase-agent (A) a question**, answered **from A's own context** — distinct from
    `spawn_subagent` (a fresh, context-less child). The `025` engine makes each phase-run's **worker
    conversation** addressable (`makeRunPhase` stamps a `taskId`/conversation per phase-run), so a gated
@@ -39,7 +28,7 @@ item is its plan file; the ordered-list number is its current priority rank.
    context, no mid-flight race); same-run targets only. Monitor renders the A↔B thread off a
    `process_phase`-style event (no new channel). **Likely splits:** `039.1` completed-target round-trip
    + storage + monitor; `039.2` asking a running agent (queued) + richer targeting. Open Qs above.
-4. **`037` — Process import / export.** Unlike `035`/`036` (files already on disk → import-only), a
+3. **`037` — Process import / export.** Unlike `035`/`036` (files already on disk → import-only), a
    Process lives **only in the DB** (`025` tables), so it needs an explicit **serialize ⇄ deserialize**
    to be shareable — the sharing use case you called out. **JSON** interchange (`ProcessExport`,
    `formatVersion`-guarded): **id-free**, edges reference phases by **`key`** (unique per process) so
@@ -53,7 +42,7 @@ item is its plan file; the ordered-list number is its current priority rank.
    builder affordances. **Ordered after `038`** so the format carries a phase's `subprocess_id` — a
    sub-process reference exports **by definition identity** (name/a stable ref), and import resolves or
    flags a missing referenced sub-process (like `037`'s missing-agent warning).
-5. **`032` — Process visual canvas.** The explicitly-deferred half of `026` (which shipped the
+4. **`032` — Process visual canvas.** The explicitly-deferred half of `026` (which shipped the
    **list-based** DAG builder and recorded a **visual node/edge canvas** as "later"). Renderer-first +
    one additive migration; **no engine/scheduling/routing change**. Phases become draggable **nodes**,
    dependencies **edges** drawn between handles (same `on_complete`/`on_each_subtask` trigger, same
@@ -67,19 +56,19 @@ item is its plan file; the ordered-list number is its current priority rank.
    toggle vs replace (lean **coexist**). The Radix-`Dialog` takeover means the inspector keeps
    `NativeSelect` (the `023`/`026` `pointer-events:none` finding). **Live-run-on-canvas deferred** — v1
    keeps the `026` nested-list monitor. Independent of `029`/`031`.
-6. **`010` — Container runtime profiles.** Decouple Workspace (the files) from Runtime (the env a
+5. **`010` — Container runtime profiles.** Decouple Workspace (the files) from Runtime (the env a
    tool call executes in). Replace the raw container `image` string with a named **profile**
    (`node` | `python` | `fullstack`), resolved to an image in the env factory; default/fallback =
    `fullstack` (Node + Python) so a Node repo that later adds a Python backend doesn't wedge.
    One profile per conversation, user-overridable in settings. Kills the "one workspace = one image
    forever" assumption **without** building auto-routing or image management (both deferred). Small
    refactor of `env/factory.ts` + `container.ts` + execution settings (JSON blob — no migration).
-7. **`007` — Deterministic slash-command skill invocation (picker already shipped).** The composer
+6. **`007` — Deterministic slash-command skill invocation (picker already shipped).** The composer
    autocomplete, `skills:list` IPC, keyboard selection, and slash badges shipped in `c5594a1`. The
    remaining work is the functional guarantee from the plan: a selected `/skill-name …` must
    deterministically pre-inject `read_skill(skill-name)` before inference, validate unknown skills in
    main, preserve the literal command in the transcript, and keep plain-message skill use discretionary.
-8. **`024` — Index filesystem/git watcher.** The "live file watching" follow-up `008` deferred (and
+7. **`024` — Index filesystem/git watcher.** The "live file watching" follow-up `008` deferred (and
    `014` re-deferred). Today the workspace index — and the compact summary `buildIndexSummary`
    injects into the system prompt on every message send — only refreshes when `IndexService.
    ensureRunning` is called, which fires on conversation create/update or manual Start/Rebuild;
@@ -131,6 +120,15 @@ item is its plan file; the ordered-list number is its current priority rank.
 
 ## Done
 
+- **`042` — Codex CLI provider.** Added a credential-free `codex_cli` provider with Settings detection,
+  a fixed seeded Codex CLI model entry, schema v31 provider/session support, and routing that bypasses
+  `runAgentLoop`. The adapter launches `codex exec --json` with an explicit process cwd and `-C`
+  working root, uses the existing git probe to decide whether `--skip-git-repo-check` is needed,
+  captures `thread.started.thread_id` after the first turn, resumes later turns with that id, parses
+  `agent_message` and `command_execution` JSONL into live transcript/tool events, and uses the same
+  process-group abort discipline as Claude Code. Verified: focused CLI parser/argv tests pass,
+  TypeScript passes, and production build passes; SQLite-backed repository/migration tests remain
+  skipped in the plain Node runner because the local better-sqlite3 binary is built for Electron ABI.
 - **`020` — Durable memories (replacement automatic-memory design).** Shipped in PR #11
   (`5fca9d8`, merged by `86eb458`) as an opt-in background memory service rather than the plan's
   proposed explicit `remember` tool/SQLite design. Completed turns feed managed `memory-*` skills:

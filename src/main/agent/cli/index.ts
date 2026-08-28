@@ -5,11 +5,14 @@ import { appendMessage, listMessages } from "../../db/repositories/messages"
 import {
   deleteCliSession,
   ensureCliSession,
+  getCliSession,
+  setCliSession,
   touchCliSession,
 } from "../../db/repositories/cli-sessions"
 import type { Conversation } from "../../db/types"
 import type { ChatEvent, ChatResult } from "../index"
 import { normalizeClaudeModel, runClaudeCode } from "./claude"
+import { normalizeCodexModel, runCodexCli } from "./codex"
 
 export async function resolveCliCwd(input: {
   conversation: Conversation
@@ -27,13 +30,110 @@ export async function resolveCliCwd(input: {
   }
   if (!input.workspace || !isAbsolute(input.workspace)) {
     throw new Error(
-      "A valid absolute workspace path is required for Claude Code."
+      "A valid absolute workspace path is required for CLI providers."
     )
   }
   const cwd = resolve(input.workspace)
   const info = await stat(cwd).catch(() => null)
   if (!info?.isDirectory()) throw new Error(`Workspace does not exist: ${cwd}`)
   return realpath(cwd)
+}
+
+export async function runCodexConversation(input: {
+  conversation: Conversation
+  workspace?: string
+  userMessage?: string
+  model?: string | null
+  abort: AbortController
+  onEvent: (event: ChatEvent) => void
+}): Promise<ChatResult> {
+  let prompt = input.userMessage
+  if (prompt !== undefined) {
+    prompt = prompt || "Hello"
+    appendMessage({
+      conversationId: input.conversation.id,
+      role: "user",
+      content: prompt,
+    })
+  } else {
+    const latestUser = listMessages(input.conversation.id)
+      .slice()
+      .reverse()
+      .find((message) => message.role === "user" && message.content)
+    prompt = latestUser?.content ?? "Continue."
+  }
+
+  try {
+    const cwd = await resolveCliCwd({
+      conversation: input.conversation,
+      workspace: input.workspace,
+    })
+    const session = getCliSession(input.conversation.id, "codex_cli")
+    const toolNames = new Map<string, string>()
+    const result = await runCodexCli({
+      cwd,
+      message: prompt,
+      threadId: session?.sessionId,
+      model: normalizeCodexModel(input.model),
+      signal: input.abort.signal,
+      onEvent: (event) => {
+        if (event.type === "text" && event.text) {
+          input.onEvent({ type: "token", delta: event.text })
+        } else if (event.type === "tool_start" && event.id && event.name) {
+          toolNames.set(event.id, event.name)
+          input.onEvent({
+            type: "tool",
+            phase: "start",
+            id: event.id,
+            name: event.name,
+            arguments: event.arguments ?? "{}",
+          })
+        } else if (event.type === "tool_done" && event.id) {
+          input.onEvent({
+            type: "tool",
+            phase: "done",
+            id: event.id,
+            name: toolNames.get(event.id) ?? event.name ?? "Codex command",
+            result: event.result ?? "",
+          })
+        }
+      },
+    })
+    if (result.threadId) {
+      setCliSession(input.conversation.id, "codex_cli", result.threadId)
+    }
+    touchCliSession(input.conversation.id, "codex_cli")
+    if (result.stopped) {
+      appendMessage({
+        conversationId: input.conversation.id,
+        role: "assistant",
+        content: "Stopped by user.",
+      })
+      return { stopped: true }
+    }
+    if (result.error) {
+      appendMessage({
+        conversationId: input.conversation.id,
+        role: "assistant",
+        content: `The Codex CLI turn ended early: ${result.error}`,
+      })
+      return { error: result.error }
+    }
+    appendMessage({
+      conversationId: input.conversation.id,
+      role: "assistant",
+      content: result.content ?? "",
+    })
+    return { content: result.content }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    appendMessage({
+      conversationId: input.conversation.id,
+      role: "assistant",
+      content: `The Codex CLI turn ended early: ${message}`,
+    })
+    return { error: message }
+  }
 }
 
 export async function runClaudeConversation(input: {

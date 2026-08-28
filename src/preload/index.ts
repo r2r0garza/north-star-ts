@@ -1311,6 +1311,12 @@ const api = {
         version?: string
         error?: string
       }>,
+    detectCodexCli: () =>
+      ipcRenderer.invoke("providers:detectCodexCli") as Promise<{
+        installed: boolean
+        version?: string
+        error?: string
+      }>,
     reorder: (orderedIds: string[]) =>
       ipcRenderer.invoke("providers:reorder", orderedIds) as Promise<
         AccountView[]

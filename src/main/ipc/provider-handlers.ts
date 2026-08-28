@@ -13,6 +13,7 @@ import type { AddModelInput } from "../db/repositories/models"
 import type { LlmSettings } from "../settings/service"
 import type { ModelEntry, ProviderAccount } from "../db/types"
 import { CLAUDE_CODE_MODELS, detectClaudeCode } from "../agent/cli/claude"
+import { CODEX_CLI_MODELS, detectCodexCli } from "../agent/cli/codex"
 
 // IPC for LLM provider accounts, their models, API keys (safeStorage), and the
 // active selection. The renderer NEVER receives a plaintext key — only `hasKey`
@@ -89,11 +90,24 @@ export function registerProviderHandlers(): void {
         })
         if (model.favorite) modelsRepo.updateModel(added.id, { favorite: true })
       }
+    } else if (account.provider === "codex_cli") {
+      for (const model of CODEX_CLI_MODELS) {
+        const added = modelsRepo.addModel({
+          accountId: account.id,
+          modelId: model.id,
+          modelName: model.name,
+          origin: "seeded",
+        })
+        if (model.favorite) modelsRepo.updateModel(added.id, { favorite: true })
+      }
     }
     return toView(account)
   })
   ipcMain.handle("providers:detectClaudeCode", () =>
     detectClaudeCode(app.getPath("userData"))
+  )
+  ipcMain.handle("providers:detectCodexCli", () =>
+    detectCodexCli(app.getPath("userData"))
   )
   ipcMain.handle("providers:reorder", (_e, orderedIds: string[]) =>
     providerAccountsRepo.reorderAccounts(orderedIds).map(toView)

@@ -888,3 +888,96 @@ JOIN (
 ) AS alias
 WHERE provider = 'claude_code';
 `
+
+// v31 (plan 042): add the Codex CLI autonomous local provider. Both provider
+// tables have CHECK constraints, so rebuild them to admit `codex_cli`.
+export const SCHEMA_V31 = `
+CREATE TABLE provider_accounts_v31 (
+  id            TEXT PRIMARY KEY,
+  provider      TEXT NOT NULL CHECK (provider IN
+                  ('portkey','openai_compatible','openai','claude_code','codex_cli','anthropic','google','azure_openai')),
+  display_name  TEXT NOT NULL,
+  base_url      TEXT,
+  encrypted_key BLOB,
+  api_mode      TEXT NOT NULL DEFAULT 'completions'
+                  CHECK (api_mode IN ('completions','responses')),
+  enabled       INTEGER NOT NULL DEFAULT 1,
+  created_at    INTEGER NOT NULL,
+  last_used_at  INTEGER,
+  position      INTEGER NOT NULL DEFAULT 0
+);
+INSERT INTO provider_accounts_v31
+  (id, provider, display_name, base_url, encrypted_key, api_mode, enabled, created_at, last_used_at, position)
+SELECT id, provider, display_name, base_url, encrypted_key, api_mode, enabled, created_at, last_used_at, position
+FROM provider_accounts;
+DROP TABLE provider_accounts;
+ALTER TABLE provider_accounts_v31 RENAME TO provider_accounts;
+
+CREATE TABLE cli_sessions_v31 (
+  conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  provider        TEXT NOT NULL CHECK (provider IN ('claude_code','codex_cli')),
+  session_id      TEXT NOT NULL,
+  created_at      INTEGER NOT NULL,
+  updated_at      INTEGER NOT NULL,
+  PRIMARY KEY (conversation_id, provider),
+  UNIQUE (provider, session_id)
+);
+INSERT INTO cli_sessions_v31
+  (conversation_id, provider, session_id, created_at, updated_at)
+SELECT conversation_id, provider, session_id, created_at, updated_at
+FROM cli_sessions;
+DROP TABLE cli_sessions;
+ALTER TABLE cli_sessions_v31 RENAME TO cli_sessions;
+CREATE INDEX idx_cli_sessions_provider_session
+  ON cli_sessions(provider, session_id);
+`
+
+// v32 (plan 042 follow-up): Codex CLI gets durable selectable model aliases,
+// matching the fixed-alias treatment used for Claude Code.
+export const SCHEMA_V32 = `
+UPDATE conversations
+SET model_id = 'gpt-5.3-codex'
+WHERE model_id = 'codex-cli'
+  AND account_id IN (
+    SELECT id FROM provider_accounts WHERE provider = 'codex_cli'
+  );
+
+UPDATE settings
+SET value = json_set(value, '$.activeModelId', 'gpt-5.3-codex')
+WHERE key = 'llm'
+  AND json_extract(value, '$.activeAccountId') IN (
+    SELECT id FROM provider_accounts WHERE provider = 'codex_cli'
+  )
+  AND (
+    json_extract(value, '$.activeModelId') IS NULL OR
+    json_extract(value, '$.activeModelId') = 'codex-cli'
+  );
+
+DELETE FROM models
+WHERE model_id = 'codex-cli'
+  AND account_id IN (
+    SELECT id FROM provider_accounts WHERE provider = 'codex_cli'
+  );
+
+INSERT OR IGNORE INTO models
+  (id, account_id, model_id, model_name, origin, favorite, created_at, updated_at)
+SELECT lower(hex(randomblob(16))), id, 'gpt-5.3-codex', 'GPT-5.3 Codex', 'seeded', 1,
+       CAST(strftime('%s','now') AS INTEGER) * 1000,
+       CAST(strftime('%s','now') AS INTEGER) * 1000
+FROM provider_accounts WHERE provider = 'codex_cli';
+
+INSERT OR IGNORE INTO models
+  (id, account_id, model_id, model_name, origin, favorite, created_at, updated_at)
+SELECT lower(hex(randomblob(16))), provider_accounts.id, alias.id, alias.name, 'seeded', 0,
+       CAST(strftime('%s','now') AS INTEGER) * 1000 + alias.seq,
+       CAST(strftime('%s','now') AS INTEGER) * 1000 + alias.seq
+FROM provider_accounts
+JOIN (
+  SELECT 'gpt-5.3-codex-spark' AS id, 'GPT-5.3 Codex Spark' AS name, 1 AS seq
+  UNION ALL SELECT 'gpt-5.5', 'GPT-5.5', 2
+  UNION ALL SELECT 'gpt-5.6-sol', 'GPT-5.6 Sol', 3
+  UNION ALL SELECT 'gpt-5.6-terra', 'GPT-5.6 Terra', 4
+  UNION ALL SELECT 'gpt-5.6-luna', 'GPT-5.6 Luna', 5
+) AS alias
+WHERE provider = 'codex_cli';
+`

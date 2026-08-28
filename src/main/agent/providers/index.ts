@@ -264,7 +264,10 @@ export function hasActiveProvider(): boolean {
     const usable = (accountId: string, modelId?: string | null): boolean => {
       const account = providerAccountsRepo.getAccount(accountId)
       if (!account || !account.enabled) return false
-      if (account.provider === "claude_code") {
+      if (
+        account.provider === "claude_code" ||
+        account.provider === "codex_cli"
+      ) {
         const models = modelsRepo.listModels(account.id)
         return modelId
           ? models.some((m) => m.modelId === modelId)

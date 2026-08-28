@@ -1,6 +1,6 @@
 # PR42: Codex CLI provider
 
-> Status: **PROPOSED** (not started).
+> Status: **DONE**.
 > Split out of `034` after live CLI probes on 2026-08-25/26. This is the second
 > external-agent provider slice: **Codex CLI** as a local subprocess backend.
 
