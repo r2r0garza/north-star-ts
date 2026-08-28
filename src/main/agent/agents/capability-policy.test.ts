@@ -114,6 +114,27 @@ describe("external agent capability policy", () => {
     expect(allow("exec_command")).toBe(false)
   })
 
+  it("maps GitHub and Claude language-service capabilities to navigation tools", () => {
+    const github = agentCapabilityPolicy(
+      agent("github", {
+        tools: ["vscodeGeneral/usages", "vscodeGeneral/definitions"],
+      })
+    )!
+    const claude = agentCapabilityPolicy(agent("claude", { tools: ["LSP"] }))!
+
+    expect(externalAgentToolFilter(github, false)!("find_references")).toBe(
+      true
+    )
+    expect(externalAgentToolFilter(github, false)!("go_to_definition")).toBe(
+      true
+    )
+    expect(externalAgentToolFilter(github, false)!("exec_command")).toBe(false)
+    expect(externalAgentToolFilter(claude, false)!("hover_type")).toBe(true)
+    expect(externalAgentToolFilter(claude, false)!("edit_file_tool")).toBe(
+      false
+    )
+  })
+
   it("applies Claude allow and disallowedTools precedence", () => {
     const policy = agentCapabilityPolicy(
       agent("claude", {

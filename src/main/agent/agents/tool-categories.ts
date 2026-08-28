@@ -6,6 +6,20 @@ import type { AgentDefinition } from "./types"
 export const CATEGORY_TOOLS: Record<string, string[]> = {
   read: ["read_file_tool", "list_files_tool"],
   search: ["search_tool", "index_query_tool"],
+  navigation: [
+    "workspace_symbols",
+    "document_symbols",
+    "go_to_definition",
+    "find_references",
+    "hover_type",
+  ],
+  lsp: [
+    "workspace_symbols",
+    "document_symbols",
+    "go_to_definition",
+    "find_references",
+    "hover_type",
+  ],
   edit: ["edit_file_tool", "write_file_tool", "apply_patch_tool"],
   execute: ["exec_command", "write_stdin", "poll_command", "terminate_command"],
   diagnostics: ["workspace_diagnostics"],

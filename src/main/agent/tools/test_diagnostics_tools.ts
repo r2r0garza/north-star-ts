@@ -8,6 +8,7 @@ import type {
 } from "../env/types"
 import { TOOL_EFFECTS, type Tool, type ToolContext } from "./types"
 import { toolError } from "./output"
+import { semanticDiagnosticsForWorkspace } from "./code_navigation_tools"
 
 type DiagnosticSeverity = "error" | "warning" | "info"
 type TestStatus = "passed" | "failed" | "skipped" | "todo"
@@ -84,7 +85,7 @@ export const workspaceDiagnosticsTool: Tool = {
           target: {
             type: "string",
             description:
-              "Optional semantic checker target: typecheck, lint, check, or diagnostics. Defaults to the best declared checker.",
+              "Optional semantic checker target: typecheck, lint, check, diagnostics, or semantic. Defaults to the best declared checker.",
           },
           timeout_ms: {
             type: "integer",
@@ -101,9 +102,13 @@ export const workspaceDiagnosticsTool: Tool = {
     },
   },
   execute: async (args, ctx) => {
+    const target = stringArg(args.target)
+    if (target && ["semantic", "lsp", "typescript"].includes(target)) {
+      return semanticDiagnosticsForWorkspace(ctx)
+    }
     const command = await detectCommand(ctx, {
       kind: "diagnostics",
-      target: stringArg(args.target),
+      target,
     })
     if ("error" in command) return command.error
 

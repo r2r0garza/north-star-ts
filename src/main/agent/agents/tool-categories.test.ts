@@ -66,7 +66,15 @@ describe("agentToolAllowlist", () => {
 
   it("maps web/browser/agent/todo categories", () => {
     const allow = agentToolAllowlist(
-      agent(["web", "browser", "agent", "todo", "diagnostics", "test"])
+      agent([
+        "web",
+        "browser",
+        "agent",
+        "todo",
+        "diagnostics",
+        "test",
+        "navigation",
+      ])
     )!
     expect(allow.has("web_search")).toBe(true)
     expect(allow.has("web_fetch")).toBe(true)
@@ -78,6 +86,11 @@ describe("agentToolAllowlist", () => {
     expect(allow.has("workspace_diagnostics")).toBe(true)
     expect(allow.has("run_tests")).toBe(true)
     expect(allow.has("get_test_results")).toBe(true)
+    expect(allow.has("workspace_symbols")).toBe(true)
+    expect(allow.has("document_symbols")).toBe(true)
+    expect(allow.has("go_to_definition")).toBe(true)
+    expect(allow.has("find_references")).toBe(true)
+    expect(allow.has("hover_type")).toBe(true)
   })
 
   it("ignores unknown categories", () => {

@@ -17,6 +17,13 @@ import {
   runTestsTool,
   workspaceDiagnosticsTool,
 } from "./test_diagnostics_tools"
+import {
+  documentSymbolsTool,
+  findReferencesTool,
+  goToDefinitionTool,
+  hoverTypeTool,
+  workspaceSymbolsTool,
+} from "./code_navigation_tools"
 import { todoWriteTool } from "./todo_tool"
 import { askUserQuestionTool } from "./ask_user_question_tool"
 import { runTodosInBackgroundTool } from "./run_todos_in_background"
@@ -55,6 +62,11 @@ const workspaceTools: Tool[] = [
   workspaceDiagnosticsTool,
   runTestsTool,
   getTestResultsTool,
+  workspaceSymbolsTool,
+  documentSymbolsTool,
+  goToDefinitionTool,
+  findReferencesTool,
+  hoverTypeTool,
 ]
 
 // Legacy compatibility tools remain executable by name for old/internal callers,
