@@ -46,7 +46,14 @@ import {
   isUniversalTool,
 } from "./agents/tool-categories"
 import { buildSubagentsPrompt } from "./agents/prompt"
-import { resolveMcpServers } from "./agents/mcp-access"
+import {
+  agentCapabilityPolicy,
+  agentCapabilitySummary,
+  externalAgentToolFilter,
+  resolvePolicyChildren,
+  resolvePolicyMcpServers,
+  resolvePolicySkills,
+} from "./agents/capability-policy"
 import { getMcpManager, parsePrefixedName, enabledServerNames } from "./mcp"
 import type { McpToolDefinition } from "./mcp"
 import { spawnSubagentTool } from "./tools/spawn_subagent"
@@ -599,6 +606,7 @@ export async function runAgentLoop(
   const agent = conversation?.agentName
     ? await loadAgent(conversation.agentName, agentDir)
     : null
+  const capabilityPolicy = agentCapabilityPolicy(agent)
 
   // Load skills (user → workspace, last-wins), then build the read_skill tool and
   // the Skills System prompt section. Only skill metadata enters the prompt;
@@ -606,10 +614,7 @@ export async function runAgentLoop(
   // `skills` frontmatter, filter to its allowlist (tri-state: omitted → all;
   // [] → none; [list] → only those) before building the tool + prompt.
   const allSkills = await loadSkills(skillSources(agentDir))
-  const skills =
-    agent?.skills === undefined
-      ? allSkills
-      : allSkills.filter((s) => agent.skills!.includes(s.name))
+  const skills = resolvePolicySkills(agent, allSkills, capabilityPolicy)
   const readSkillTool = createReadSkillTool(skills)
 
   // Filesystem tools are confined to a workspace, so the full set is only
@@ -681,7 +686,11 @@ export async function runAgentLoop(
   // the universal floor, handled in buildTools); null = no restriction (omitted
   // frontmatter → full mode-appropriate toolset). Computed once — it doesn't
   // change mid-turn like planMode does.
-  const agentToolNames = agentToolAllowlist(agent)
+  const agentToolNames = capabilityPolicy ? null : agentToolAllowlist(agent)
+  const externalToolAllowed = externalAgentToolFilter(
+    capabilityPolicy,
+    !!opts.suppressUserQuestions
+  )
 
   // Subagent spawning. The spawn_subagent tool is offered only when BOTH gates
   // pass: the agent's `tools` includes the `agent` category AND its `children`
@@ -692,17 +701,18 @@ export async function runAgentLoop(
   // max depth can't offer the tool (its children could never spawn anyway).
   const canSpawn =
     !!agent &&
-    agentToolsIncludeCategory(agent, "agent") &&
-    agent.children !== undefined &&
+    (capabilityPolicy
+      ? capabilityPolicy.children.kind !== "none"
+      : agentToolsIncludeCategory(agent, "agent") &&
+        agent.children !== undefined) &&
     (opts.agentDepth ?? 0) < MAX_AGENT_DEPTH
   let spawnableChildren: AgentDefinition[] = []
   if (canSpawn) {
     const loadable = await loadAgents(agentSources(agentDir))
-    const allow = agent!.children!
-    spawnableChildren = loadable.filter(
-      (a) =>
-        a.name !== agent!.name && // never list self
-        (allow.length === 0 || allow.includes(a.name))
+    spawnableChildren = resolvePolicyChildren(
+      agent!,
+      loadable,
+      capabilityPolicy
     )
   }
   const offerSpawn = canSpawn && spawnableChildren.length > 0
@@ -720,7 +730,11 @@ export async function runAgentLoop(
   let mcpTools: McpToolDefinition[] = []
   {
     const enabledNames = await enabledServerNames(mcpWorkspace)
-    const allowedNames = resolveMcpServers(agent, enabledNames)
+    const allowedNames = resolvePolicyMcpServers(
+      agent,
+      enabledNames,
+      capabilityPolicy
+    )
     if (allowedNames.length > 0) {
       mcpTools = await getMcpManager().listToolsFor(
         allowedNames,
@@ -759,13 +773,15 @@ export async function runAgentLoop(
   // no filesystem tools; plan mode still drops mutating tools). Universal tools
   // (ask_user_question, read_skill, plan-mode handoff) bypass the allowlist.
   const applyAgentTools = (defs: { function: { name: string } }[]) =>
-    agentToolNames === null
-      ? defs
-      : defs.filter(
-          (d) =>
-            isUniversalTool(d.function.name) ||
-            agentToolNames.has(d.function.name)
-        )
+    externalToolAllowed
+      ? defs.filter((d) => externalToolAllowed(d.function.name))
+      : agentToolNames === null
+        ? defs
+        : defs.filter(
+            (d) =>
+              isUniversalTool(d.function.name) ||
+              agentToolNames.has(d.function.name)
+          )
   const buildTools = () =>
     applyAgentTools([
       ...(hasWorkspace
@@ -865,6 +881,21 @@ export async function runAgentLoop(
     buildTools().some((d) => d.function.name.startsWith("browser_"))
   ) {
     sections.push(browserStateSection(browser.state()))
+  }
+
+  if (agent && capabilityPolicy) {
+    const capabilitySummary = agentCapabilitySummary(
+      agent,
+      capabilityPolicy,
+      buildTools().map((d) => d.function.name)
+    )
+    if (capabilitySummary) {
+      sections.push({
+        name: "external_agent_capabilities",
+        priority: SECTION_PRIORITY.skills,
+        content: capabilitySummary,
+      })
+    }
   }
 
   // Skills: the read_skill catalog. Kept longest under budget pressure (highest

@@ -3,7 +3,7 @@ import type { AgentDefinition } from "./types"
 // Maps the friendly tool CATEGORIES an agent declares in its `tools` frontmatter
 // to the internal tool `function.name` values the agent loop offers. A custom
 // agent narrows its toolset by category; this is where a category expands.
-const CATEGORY_TOOLS: Record<string, string[]> = {
+export const CATEGORY_TOOLS: Record<string, string[]> = {
   read: ["read_file_tool", "list_files_tool"],
   search: ["search_tool", "index_query_tool"],
   edit: ["edit_file_tool", "write_file_tool", "apply_patch_tool"],

@@ -333,6 +333,11 @@ function parseExternalMarkdownAgent(
   if (entry.sourceKind === "claude") {
     agent.tools = parseList(data, "tools")
     agent.skills = parseList(data, "skills")
+    agent.sourceMetadata = {
+      ...data,
+      disallowedTools: parseList(data, "disallowedTools"),
+      mcpServers: data.mcpServers,
+    }
   } else if (entry.sourceKind === "cursor") {
     agent.sourceMetadata = {
       ...data,
@@ -411,7 +416,11 @@ function codexAgentFromToml(
     description,
     body,
     userInvocable: true,
-    sourceMetadata: { ...metadata, sections },
+    sourceMetadata: {
+      ...metadata,
+      sections,
+      sandbox_mode: parseTomlStringValue(root.sandbox_mode ?? ""),
+    },
   })
 }
 
