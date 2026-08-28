@@ -129,6 +129,23 @@ describe("external agent capability policy", () => {
     expect(allow("exec_command")).toBe(false)
   })
 
+  it("maps GitHub source-control capabilities to read-only Git tools only", () => {
+    const policy = agentCapabilityPolicy(
+      agent("github", {
+        tools: ["read/sourceControl", "vscodeGeneral/git"],
+      })
+    )!
+    const allow = externalAgentToolFilter(policy, false)!
+
+    expect(allow("git_status")).toBe(true)
+    expect(allow("git_diff")).toBe(true)
+    expect(allow("git_log")).toBe(true)
+    expect(allow("git_show")).toBe(true)
+    expect(allow("git_branches")).toBe(true)
+    expect(allow("exec_command")).toBe(false)
+    expect(allow("write_file_tool")).toBe(false)
+  })
+
   it("maps GitHub and Claude language-service capabilities to navigation tools", () => {
     const github = agentCapabilityPolicy(
       agent("github", {

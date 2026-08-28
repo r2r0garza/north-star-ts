@@ -16,6 +16,7 @@ import {
 import { systemSlug } from "../../config/system-name"
 import type {
   Environment,
+  ExecFileOptions,
   ExecResult,
   ExecOptions,
   DirEntry,
@@ -781,6 +782,31 @@ PY
         await this.signalInContainerProcessGroup(pidFile, "KILL")
       },
     })
+  }
+
+  async execFile(
+    file: string,
+    args: string[],
+    opts: ExecFileOptions
+  ): Promise<ExecResult> {
+    const env = await (this.cfg.hostCliEnv ?? hostCliEnv)()
+    const containerEnv = Object.entries(opts.env ?? {}).flatMap(([key, value]) =>
+      value === undefined ? [] : ["-e", `${key}=${value}`]
+    )
+    const child = (this.cfg.runtimeSpawn ?? spawn)(
+      this.cfg.runtime,
+      [
+        "exec",
+        ...containerEnv,
+        "-w",
+        this.toContainerPath(opts.cwd),
+        this.name,
+        file,
+        ...args,
+      ],
+      { env, stdio: ["ignore", "pipe", "pipe"] }
+    )
+    return captureSpawn(child, opts)
   }
 
   async spawnCommand(

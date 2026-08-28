@@ -45,6 +45,10 @@ export interface ExecOptions {
   signal?: AbortSignal
 }
 
+export interface ExecFileOptions extends ExecOptions {
+  env?: Record<string, string | undefined>
+}
+
 export type CommandStream = "stdout" | "stderr" | "pty"
 
 export interface CommandChunk {
@@ -238,6 +242,14 @@ export interface Environment {
   listDir?(path: string, opts: ListDirOptions): Promise<ListDirResult>
 
   exec(command: string, opts: ExecOptions): Promise<ExecResult>
+
+  // Run a program with argv data, never through a shell. Tools use this when
+  // model-supplied strings must remain ordinary arguments.
+  execFile?(
+    file: string,
+    args: string[],
+    opts: ExecFileOptions
+  ): Promise<ExecResult>
 
   // Spawn a command session that can be polled and written to. Implementations
   // return immediately with a live handle; the agent session manager owns output

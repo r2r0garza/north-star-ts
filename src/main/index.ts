@@ -77,6 +77,7 @@ import * as settingsService from "./settings/service"
 import { listWorkspaceFiles } from "./files/list"
 import { readGitBranch } from "./index/metadata"
 import { gitDiffFile } from "./git/diff"
+import { GitService } from "./git/service"
 import { openInIde } from "./ide/open"
 import { resolveInWorkspaceReal } from "./agent/tools/workspace"
 import { registerDbHandlers } from "./ipc/db-handlers"
@@ -970,6 +971,12 @@ ipcMain.handle(
 // falling back to a direct .git/HEAD read when git isn't on PATH.
 ipcMain.handle("git:branch", async (_event, path: string) => {
   if (!path?.trim()) return null
+  try {
+    const serviceBranch = await new GitService(path.trim()).branchName()
+    if (serviceBranch) return serviceBranch
+  } catch {
+    // Fall back to the legacy zero-dependency reader when git is unavailable.
+  }
   const result = await readGitBranch(path.trim())
   if (!result) return null
   const val = result.value as {

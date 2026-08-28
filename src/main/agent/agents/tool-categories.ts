@@ -23,6 +23,7 @@ export const CATEGORY_TOOLS: Record<string, string[]> = {
   edit: ["edit_file_tool", "write_file_tool", "apply_patch_tool"],
   filesystem: ["stat_path", "create_directory", "move_path"],
   delete: ["delete_path"],
+  git_read: ["git_status", "git_diff", "git_log", "git_show", "git_branches"],
   execute: ["exec_command", "write_stdin", "poll_command", "terminate_command"],
   diagnostics: ["workspace_diagnostics"],
   test: ["run_tests", "get_test_results"],

@@ -77,6 +77,7 @@ describe("agentToolAllowlist", () => {
         "navigation",
         "filesystem",
         "delete",
+        "git_read",
       ])
     )!
     expect(allow.has("web_search")).toBe(true)
@@ -98,6 +99,11 @@ describe("agentToolAllowlist", () => {
     expect(allow.has("create_directory")).toBe(true)
     expect(allow.has("move_path")).toBe(true)
     expect(allow.has("delete_path")).toBe(true)
+    expect(allow.has("git_status")).toBe(true)
+    expect(allow.has("git_diff")).toBe(true)
+    expect(allow.has("git_log")).toBe(true)
+    expect(allow.has("git_show")).toBe(true)
+    expect(allow.has("git_branches")).toBe(true)
   })
 
   it("ignores unknown categories", () => {

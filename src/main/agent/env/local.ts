@@ -36,6 +36,7 @@ import { readHostTextLines } from "./read-text-lines"
 import { resolveInWorkspace, resolveInWorkspaceReal } from "../tools/workspace"
 import type {
   Environment,
+  ExecFileOptions,
   ExecResult,
   ExecOptions,
   DirEntry,
@@ -312,6 +313,21 @@ export class LocalEnvironment implements Environment {
     } finally {
       if (cleanupPath) await this.cleanupTempFile(cleanupPath)
     }
+  }
+
+  async execFile(
+    file: string,
+    args: string[],
+    opts: ExecFileOptions
+  ): Promise<ExecResult> {
+    const child = this.commandSpawn()(file, args, {
+      cwd: opts.cwd,
+      shell: false,
+      detached: this.commandPlatform() !== "win32",
+      stdio: ["ignore", "pipe", "pipe"],
+      env: opts.env ? { ...process.env, ...opts.env } : process.env,
+    })
+    return captureSpawn(child, { ...opts, killGroup: true })
   }
 
   async spawnCommand(
