@@ -285,6 +285,12 @@ export type ApiMode = "completions" | "responses"
 // never deletes `manual`/`seeded` ones).
 export type ModelOrigin = "manual" | "gateway" | "seeded"
 
+export type ExternalAgentModelSourceKind =
+  | "github"
+  | "cursor"
+  | "claude"
+  | "codex"
+
 // A configured connection to an LLM provider. The API key is NEVER held here in
 // plaintext — `hasKey` reflects whether ciphertext is stored (the row's actual
 // `encrypted_key` BLOB stays in the main process and never crosses IPC).
@@ -313,6 +319,16 @@ export interface ModelEntry {
   modelName: string | null
   origin: ModelOrigin
   favorite: boolean
+  createdAt: number
+  updatedAt: number
+}
+
+export interface ExternalAgentModelMapping {
+  sourceKind: ExternalAgentModelSourceKind
+  sourceModel: string
+  normalizedSourceModel: string
+  destinationAccountId: string
+  destinationModelId: string
   createdAt: number
   updatedAt: number
 }

@@ -981,3 +981,22 @@ JOIN (
 ) AS alias
 WHERE provider = 'codex_cli';
 `
+
+// v33 (plan 058): explicit external-agent model mappings. Source model tokens
+// from GitHub/Cursor/Claude/Codex definitions never fuzzy-match into the
+// destination account catalog. A mapping is namespaced by source system and
+// destination account; exact active-catalog IDs can resolve without a row.
+export const SCHEMA_V33 = `
+CREATE TABLE external_agent_model_mappings (
+  source_kind              TEXT NOT NULL CHECK (source_kind IN ('github','cursor','claude','codex')),
+  source_model             TEXT NOT NULL,
+  normalized_source_model  TEXT NOT NULL,
+  destination_account_id   TEXT NOT NULL REFERENCES provider_accounts(id) ON DELETE CASCADE,
+  destination_model_id     TEXT NOT NULL,
+  created_at               INTEGER NOT NULL,
+  updated_at               INTEGER NOT NULL,
+  PRIMARY KEY (source_kind, normalized_source_model, destination_account_id)
+);
+CREATE INDEX idx_external_agent_model_mappings_account
+  ON external_agent_model_mappings(destination_account_id);
+`

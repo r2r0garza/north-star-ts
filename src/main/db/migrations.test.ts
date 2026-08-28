@@ -13,6 +13,7 @@ import {
   SCHEMA_V30,
   SCHEMA_V31,
   SCHEMA_V32,
+  SCHEMA_V33,
 } from "./schema"
 import { sqliteLoadsForTests } from "../test/sqlite"
 
@@ -88,8 +89,34 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
     const db = new Database(":memory:")
     db.pragma("foreign_keys = ON")
     runMigrations(db)
-    expect(db.pragma("user_version", { simple: true })).toBe(32)
+    expect(db.pragma("user_version", { simple: true })).toBe(33)
     expect(db.pragma("foreign_key_check")).toHaveLength(0)
+    db.close()
+  })
+
+  it("adds external agent model mappings in v33", () => {
+    const db = new Database(":memory:")
+    db.pragma("foreign_keys = ON")
+    runMigrations(db)
+    db.prepare(
+      `INSERT INTO provider_accounts
+        (id, provider, display_name, api_mode, enabled, position, created_at)
+       VALUES ('account', 'openai', 'OpenAI', 'completions', 1, 0, 0)`
+    ).run()
+    db.prepare(
+      `INSERT INTO external_agent_model_mappings
+        (source_kind, source_model, normalized_source_model,
+         destination_account_id, destination_model_id, created_at, updated_at)
+       VALUES ('claude', 'Haiku', 'haiku', 'account', 'anthropic/haiku', 0, 0)`
+    ).run()
+    expect(
+      db
+        .prepare(
+          "SELECT destination_model_id FROM external_agent_model_mappings"
+        )
+        .pluck()
+        .get()
+    ).toBe("anthropic/haiku")
     db.close()
   })
 
@@ -482,7 +509,7 @@ describe.skipIf(!sqliteLoads)("SCHEMA_V9 — orphan reap (plan 022)", () => {
     // Apply V9 (the reaper) and any later migrations, up to the latest version.
     runMigrations(db)
 
-    expect(db.pragma("user_version", { simple: true })).toBe(30)
+    expect(db.pragma("user_version", { simple: true })).toBe(33)
 
     // Reaped: orphan + its nested descendant, and all their state.
     const taskIds = (

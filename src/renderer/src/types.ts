@@ -104,6 +104,10 @@ export type {
   ModelEntry,
   AccountView,
   AccountWithModels,
+  ExternalAgentModelMapping,
+  ExternalAgentModelSourceKind,
+  ExternalAgentModelResolution,
+  ResolvedMappingView,
 } from "../../preload/index"
 
 // MCP server types, surfaced for the MCP view + agent editor picker.

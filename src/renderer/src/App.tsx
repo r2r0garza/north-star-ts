@@ -24,6 +24,13 @@ import {
   X,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 import { Markdown } from "@/components/markdown"
 import { VIEW_TO_MODE, type View } from "@/components/sidebar"
 import {
@@ -97,6 +104,7 @@ import type {
   QuestionAnswer,
   LlmSettings,
   AccountWithModels,
+  ModelEntry,
   SkillSummary,
   AgentSummary,
   PickedElement,
@@ -122,6 +130,19 @@ interface LiveTurn {
 }
 const EMPTY_LIVE: LiveTurn = { segments: [], question: null }
 
+type ExternalSourceKind = "github" | "cursor" | "claude" | "codex"
+
+interface PendingModelMapping {
+  agent: AgentSummary
+  sourceKind: ExternalSourceKind
+  sourceModel: string
+  destinationAccountId: string
+  destinationModelId: string | null
+  models: ModelEntry[]
+  reason: string
+  resume: "send" | "background"
+}
+
 // Append streamed assistant text. Extends the trailing text segment when the
 // last event was also text (so a token stream coalesces), otherwise starts a new
 // text segment after a tools group — which is what creates the interleaving.
@@ -140,6 +161,37 @@ function appendLiveText(turn: LiveTurn, delta: string): LiveTurn {
     ...turn,
     segments: [...turn.segments, { kind: "text", text: delta }],
   }
+}
+
+function externalSourceKind(value: string): ExternalSourceKind | null {
+  return value === "github" ||
+    value === "cursor" ||
+    value === "claude" ||
+    value === "codex"
+    ? value
+    : null
+}
+
+function metadataRecord(agent: AgentSummary): Record<string, unknown> {
+  return typeof agent.sourceMetadata === "object" &&
+    agent.sourceMetadata !== null
+    ? (agent.sourceMetadata as Record<string, unknown>)
+    : {}
+}
+
+function sourceModelToken(agent: AgentSummary): string | null {
+  const metadata = metadataRecord(agent)
+  const direct = metadata.model
+  if (typeof direct === "string" && direct.trim()) return direct.trim()
+  const sections = metadata.sections
+  if (typeof sections === "object" && sections !== null) {
+    const agentSection = (sections as Record<string, unknown>).agent
+    if (typeof agentSection === "object" && agentSection !== null) {
+      const raw = (agentSection as Record<string, unknown>).model
+      if (typeof raw === "string" && raw.trim()) return raw.trim()
+    }
+  }
+  return null
 }
 
 // Register a started tool call. Appends to the trailing tools group when the last
@@ -364,6 +416,8 @@ function App(
   // conversation it's carried into create() on first send. Mirrors selModelId.
   const [agents, setAgents] = useState<AgentSummary[]>([])
   const [selAgentName, setSelAgentName] = useState<string | null>(null)
+  const [pendingModelMapping, setPendingModelMapping] =
+    useState<PendingModelMapping | null>(null)
   const [menu, setMenu] = useState<{ kind: MentionKind; query: string } | null>(
     null
   )
@@ -940,6 +994,59 @@ function App(
     ])
   }
 
+  async function preflightExternalAgentModel(
+    resume: PendingModelMapping["resume"]
+  ): Promise<boolean> {
+    if (!selAgentName || !effAccountId || !effModelId) return true
+    const agent = agents.find(
+      (candidate) =>
+        candidate.ref === selAgentName ||
+        candidate.refId === selAgentName ||
+        candidate.name === selAgentName
+    )
+    if (!agent) return true
+    const sourceKind = externalSourceKind(agent.sourceKind)
+    if (!sourceKind) return true
+    const sourceModel = sourceModelToken(agent)
+    if (!sourceModel) return true
+    const resolution = await window.cowork.externalModels.resolve({
+      sourceKind,
+      sourceModel,
+      destinationAccountId: effAccountId,
+      conversationModelId: effModelId,
+    })
+    if (resolution.status !== "unresolved") return true
+    const accountModels =
+      accountsWithModels.find((entry) => entry.account.id === effAccountId)
+        ?.models ?? []
+    setPendingModelMapping({
+      agent,
+      sourceKind,
+      sourceModel,
+      destinationAccountId: effAccountId,
+      destinationModelId: accountModels[0]?.modelId ?? null,
+      models: accountModels,
+      reason: resolution.reason,
+      resume,
+    })
+    return false
+  }
+
+  async function savePendingModelMapping() {
+    if (!pendingModelMapping?.destinationModelId) return
+    await window.cowork.externalModels.saveMapping({
+      sourceKind: pendingModelMapping.sourceKind,
+      sourceModel: pendingModelMapping.sourceModel,
+      destinationAccountId: pendingModelMapping.destinationAccountId,
+      destinationModelId: pendingModelMapping.destinationModelId,
+    })
+    const resume = pendingModelMapping.resume
+    setPendingModelMapping(null)
+    requestAnimationFrame(() => {
+      void (resume === "background" ? runInBackground() : sendMessage())
+    })
+  }
+
   function removeAttachment(path: string) {
     setAttachments((prev) => prev.filter((p) => p !== path))
   }
@@ -1017,6 +1124,7 @@ function App(
 
   async function sendMessage() {
     if (!canSend) return
+    if (!(await preflightExternalAgentModel("send"))) return
     // Expand confirmed mention tokens before sending, so the model reliably
     // reads them: `/git-commit` → `git-commit skill`, `@src/foo.ts` → `src/foo.ts`.
     // The expanded text is also what's shown in the optimistic timeline, so the
@@ -1296,6 +1404,7 @@ function App(
   // attachment-only path can come later).
   async function runInBackground() {
     if (!canSend || isChat) return
+    if (!(await preflightExternalAgentModel("background"))) return
     const text = message.trim()
 
     // Ensure a conversation exists — created lazily, mirroring sendMessage. For
@@ -2036,6 +2145,90 @@ function App(
           </div>
         </div>
       </div>
+      <Dialog
+        open={pendingModelMapping !== null}
+        onOpenChange={(open) => {
+          if (!open) setPendingModelMapping(null)
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Map external model</DialogTitle>
+          </DialogHeader>
+          {pendingModelMapping && (
+            <div className="flex flex-col gap-3 text-sm">
+              <p className="text-muted-foreground">
+                {pendingModelMapping.agent.label} requests{" "}
+                <span className="font-mono text-foreground">
+                  {pendingModelMapping.sourceModel}
+                </span>
+                . Choose the destination model for this provider account.
+              </p>
+              {pendingModelMapping.reason === "stale_mapping" && (
+                <p className="rounded-md bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                  The saved mapping points at a model that is no longer in this
+                  account catalog.
+                </p>
+              )}
+              <Combobox
+                items={pendingModelMapping.models.map((model) => ({
+                  value: model.modelId,
+                  label:
+                    model.modelName && model.modelName.trim()
+                      ? model.modelName
+                      : model.modelId,
+                }))}
+                value={
+                  pendingModelMapping.destinationModelId
+                    ? {
+                        value: pendingModelMapping.destinationModelId,
+                        label: pendingModelMapping.destinationModelId,
+                      }
+                    : null
+                }
+                isItemEqualToValue={(a, b) => a?.value === b?.value}
+                onValueChange={(item) => {
+                  if (!item) return
+                  setPendingModelMapping((prev) =>
+                    prev ? { ...prev, destinationModelId: item.value } : prev
+                  )
+                }}
+              >
+                <ComboboxTrigger>
+                  <ComboboxValue placeholder="Choose destination model" />
+                </ComboboxTrigger>
+                <ComboboxContent>
+                  <ComboboxInput placeholder="Search models..." />
+                  <ComboboxEmpty>No models found</ComboboxEmpty>
+                  <ComboboxList>
+                    <ComboboxCollection>
+                      {(item: { value: string; label: string }) => (
+                        <ComboboxItem key={item.value} value={item}>
+                          <span className="truncate">{item.label}</span>
+                        </ComboboxItem>
+                      )}
+                    </ComboboxCollection>
+                  </ComboboxList>
+                </ComboboxContent>
+              </Combobox>
+            </div>
+          )}
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setPendingModelMapping(null)}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={savePendingModelMapping}
+              disabled={!pendingModelMapping?.destinationModelId}
+            >
+              Save and send
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </>
   )
 
@@ -2065,16 +2258,17 @@ function App(
                 <p className="font-medium text-foreground">
                   {agentName} - Autonomous Tasks
                 </p>
-                <p>Pick a workspace folder, then ask the agent about it.</p>
+                <p>
+                  Give it a goal. It will plan, run tools, and report progress.
+                </p>
               </>
             )}
           </div>
-          {composer}
+          <div className="mx-auto max-w-3xl">{composer}</div>
         </div>
       </div>
     )
   }
-
   return (
     // pt-11 clears the Shell's floating top drag bar (h-11, holding the
     // Info/Browser/Changes toggle): the scroll region starts BELOW it, so

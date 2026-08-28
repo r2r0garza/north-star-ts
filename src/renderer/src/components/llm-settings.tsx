@@ -58,6 +58,7 @@ import type {
   ModelEntry,
   ModelOrigin,
   Provider,
+  ResolvedMappingView,
 } from "@/types"
 
 // Provider catalog for the picker. `enabled` ones are wired; the rest show as
@@ -94,6 +95,13 @@ const ORIGIN_LABEL: Record<ModelOrigin, string> = {
   manual: "manual",
   gateway: "gateway",
   seeded: "seeded",
+}
+
+const SOURCE_LABEL: Record<ResolvedMappingView["sourceKind"], string> = {
+  github: "GitHub Copilot",
+  cursor: "Cursor",
+  claude: "Claude",
+  codex: "Codex",
 }
 
 // A model's display name: the custom label if set, else the raw id.
@@ -694,6 +702,148 @@ export function ModelsTab({ state }: { state: LlmState }) {
         />
       ))}
     </TabsContent>
+  )
+}
+
+// ── External model mappings tab ─────────────────────────────────────────────
+
+export function ModelMappingsTab() {
+  const [mappings, setMappings] = useState<ResolvedMappingView[] | null>(null)
+  const [accountsWithModels, setAccountsWithModels] = useState<Array<{
+    account: AccountView
+    models: ModelEntry[]
+  }> | null>(null)
+
+  const reload = useCallback(async () => {
+    const [nextMappings, nextAccounts] = await Promise.all([
+      window.cowork.externalModels.listMappings(),
+      window.cowork.providers.listWithModels(),
+    ])
+    setMappings(nextMappings)
+    setAccountsWithModels(nextAccounts)
+  }, [])
+
+  useEffect(() => {
+    void reload()
+  }, [reload])
+
+  if (!mappings || !accountsWithModels) {
+    return (
+      <TabsContent value="model-mappings" className="py-6">
+        <Spinner />
+      </TabsContent>
+    )
+  }
+
+  return (
+    <TabsContent value="model-mappings" className={TAB_SCROLL}>
+      {mappings.length === 0 ? (
+        <Empty>
+          <EmptyHeader>
+            <EmptyTitle>No external model mappings</EmptyTitle>
+            <EmptyDescription>
+              Mappings are saved after resolving an external agent model token.
+            </EmptyDescription>
+          </EmptyHeader>
+        </Empty>
+      ) : (
+        <div className="flex flex-col gap-3">
+          {mappings.map((mapping) => (
+            <MappingRow
+              key={`${mapping.sourceKind}:${mapping.normalizedSourceModel}:${mapping.destinationAccountId}`}
+              mapping={mapping}
+              accountsWithModels={accountsWithModels}
+              onReload={reload}
+            />
+          ))}
+        </div>
+      )}
+    </TabsContent>
+  )
+}
+
+function MappingRow({
+  mapping,
+  accountsWithModels,
+  onReload,
+}: {
+  mapping: ResolvedMappingView
+  accountsWithModels: Array<{ account: AccountView; models: ModelEntry[] }>
+  onReload: () => Promise<void>
+}) {
+  const accountModels =
+    accountsWithModels.find(
+      (entry) => entry.account.id === mapping.destinationAccountId
+    )?.models ?? []
+
+  async function changeDestination(destinationModelId: string) {
+    await window.cowork.externalModels.saveMapping({
+      sourceKind: mapping.sourceKind,
+      sourceModel: mapping.sourceModel,
+      destinationAccountId: mapping.destinationAccountId,
+      destinationModelId,
+    })
+    await onReload()
+  }
+
+  async function clearMapping() {
+    await window.cowork.externalModels.deleteMapping(
+      mapping.sourceKind,
+      mapping.sourceModel,
+      mapping.destinationAccountId
+    )
+    await onReload()
+  }
+
+  return (
+    <div className="rounded-lg border border-border p-3">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge variant="secondary">
+              {SOURCE_LABEL[mapping.sourceKind]}
+            </Badge>
+            {mapping.stale && <Badge variant="destructive">stale</Badge>}
+          </div>
+          <p className="mt-2 truncate text-sm font-medium">
+            {mapping.sourceModel}
+          </p>
+          <p className="mt-1 truncate text-xs text-muted-foreground">
+            {mapping.destinationAccount?.displayName ??
+              "Missing destination account"}
+          </p>
+        </div>
+        <Button variant="ghost" size="icon-sm" onClick={clearMapping}>
+          <Trash2 />
+          <span className="sr-only">Clear mapping</span>
+        </Button>
+      </div>
+
+      <div className="mt-3">
+        <Select
+          value={mapping.destinationModel?.modelId ?? ""}
+          onValueChange={changeDestination}
+          disabled={accountModels.length === 0}
+        >
+          <SelectTrigger>
+            <SelectValue
+              placeholder={
+                accountModels.length === 0
+                  ? "No models on destination account"
+                  : "Choose destination model"
+              }
+            />
+          </SelectTrigger>
+          <SelectContent>
+            {accountModels.map((model) => (
+              <SelectItem key={model.id} value={model.modelId}>
+                {modelLabel(model)}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+    </div>
   )
 }
 

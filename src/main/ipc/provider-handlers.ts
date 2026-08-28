@@ -1,6 +1,7 @@
 import { app, ipcMain } from "electron"
 import * as providerAccountsRepo from "../db/repositories/provider-accounts"
 import * as modelsRepo from "../db/repositories/models"
+import * as externalModelMappingsRepo from "../db/repositories/external-agent-model-mappings"
 import * as secrets from "../settings/secrets"
 import * as settingsService from "../settings/service"
 import {
@@ -11,9 +12,17 @@ import {
 import type { CreateAccountInput } from "../db/repositories/provider-accounts"
 import type { AddModelInput } from "../db/repositories/models"
 import type { LlmSettings } from "../settings/service"
-import type { ModelEntry, ProviderAccount } from "../db/types"
+import type {
+  ExternalAgentModelSourceKind,
+  ModelEntry,
+  ProviderAccount,
+} from "../db/types"
 import { CLAUDE_CODE_MODELS, detectClaudeCode } from "../agent/cli/claude"
 import { CODEX_CLI_MODELS, detectCodexCli } from "../agent/cli/codex"
+import {
+  listMappingViews,
+  resolveExternalAgentModel,
+} from "../agent/runtime/model-resolution"
 
 // IPC for LLM provider accounts, their models, API keys (safeStorage), and the
 // active selection. The renderer NEVER receives a plaintext key — only `hasKey`
@@ -136,6 +145,7 @@ export function registerProviderHandlers(): void {
     }
   )
   ipcMain.handle("providers:delete", (_e, id: string) => {
+    externalModelMappingsRepo.deleteMappingsForAccount(id)
     providerAccountsRepo.deleteAccount(id)
     // If the deleted account was active, clear the selection so the next turn
     // surfaces a clean "configure a provider" error instead of a stale id.
@@ -207,6 +217,7 @@ export function registerProviderHandlers(): void {
     invalidateProviderClient() // the active model may have been removed
   })
   ipcMain.handle("models:deleteForAccount", (_e, accountId: string) => {
+    externalModelMappingsRepo.deleteMappingsForAccount(accountId)
     modelsRepo.deleteModelsForAccount(accountId)
     const llm = settingsService.getLlm()
     if (llm.activeAccountId === accountId) {
@@ -263,4 +274,40 @@ export function registerProviderHandlers(): void {
   )
   // Whether a usable provider+model is configured (drives first-launch + Send gate).
   ipcMain.handle("providers:hasActive", () => hasActiveProvider())
+
+  // ── External agent model mappings (plan 058) ───────────────────────────────
+  ipcMain.handle("externalModels:listMappings", () => listMappingViews())
+  ipcMain.handle(
+    "externalModels:saveMapping",
+    (
+      _e,
+      input: externalModelMappingsRepo.UpsertExternalAgentModelMappingInput
+    ) => externalModelMappingsRepo.upsertMapping(input)
+  )
+  ipcMain.handle(
+    "externalModels:deleteMapping",
+    (
+      _e,
+      sourceKind: ExternalAgentModelSourceKind,
+      sourceModel: string,
+      destinationAccountId: string
+    ) =>
+      externalModelMappingsRepo.deleteMapping(
+        sourceKind,
+        sourceModel,
+        destinationAccountId
+      )
+  )
+  ipcMain.handle(
+    "externalModels:resolve",
+    (
+      _e,
+      input: {
+        sourceKind: ExternalAgentModelSourceKind
+        sourceModel?: string | null
+        destinationAccountId: string
+        conversationModelId: string
+      }
+    ) => resolveExternalAgentModel(input)
+  )
 }

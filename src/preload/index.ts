@@ -31,6 +31,8 @@ import type {
   DashboardGraph,
   DashboardWidget,
   DashboardWidgetData,
+  ExternalAgentModelMapping,
+  ExternalAgentModelSourceKind,
 } from "../main/db/types"
 import type { ActionKind } from "../main/agent/approval/types"
 import type { PickedElement } from "../main/browser/types"
@@ -68,6 +70,10 @@ import type {
   AccountWithModels,
 } from "../main/ipc/provider-handlers"
 import type { ModelEntry, IndexPriority, McpServerDef } from "../main/db/types"
+import type {
+  ExternalAgentModelResolution,
+  ResolvedMappingView,
+} from "../main/agent/runtime/model-resolution"
 import type { IndexStatus } from "../main/ipc/index-handlers"
 import type { ApproveResult } from "../main/dashboards/service"
 import type {
@@ -182,6 +188,7 @@ export type AgentSummary = {
   nativeName: string
   description: string
   label: string
+  sourceMetadata?: unknown
   diagnostics: Array<{ severity: string; code: string; message: string }>
 }
 
@@ -1358,6 +1365,44 @@ const api = {
       }>,
   },
 
+  externalModels: {
+    listMappings: () =>
+      ipcRenderer.invoke("externalModels:listMappings") as Promise<
+        ResolvedMappingView[]
+      >,
+    saveMapping: (input: {
+      sourceKind: ExternalAgentModelSourceKind
+      sourceModel: string
+      destinationAccountId: string
+      destinationModelId: string
+    }) =>
+      ipcRenderer.invoke(
+        "externalModels:saveMapping",
+        input
+      ) as Promise<ExternalAgentModelMapping>,
+    deleteMapping: (
+      sourceKind: ExternalAgentModelSourceKind,
+      sourceModel: string,
+      destinationAccountId: string
+    ) =>
+      ipcRenderer.invoke(
+        "externalModels:deleteMapping",
+        sourceKind,
+        sourceModel,
+        destinationAccountId
+      ) as Promise<void>,
+    resolve: (input: {
+      sourceKind: ExternalAgentModelSourceKind
+      sourceModel?: string | null
+      destinationAccountId: string
+      conversationModelId: string
+    }) =>
+      ipcRenderer.invoke(
+        "externalModels:resolve",
+        input
+      ) as Promise<ExternalAgentModelResolution>,
+  },
+
   // External MCP servers (stdio + streamable HTTP). DEFINITIONS live in mcp.json
   // files (like agents/skills); only the enabled toggle + OAuth secrets live in
   // the DB side-store, keyed by server name. OAuth token ciphertext never crosses
@@ -1518,7 +1563,13 @@ export type {
   ModelOrigin,
   ProviderAccount,
   ModelEntry,
+  ExternalAgentModelMapping,
+  ExternalAgentModelSourceKind,
 } from "../main/db/types"
+export type {
+  ExternalAgentModelResolution,
+  ResolvedMappingView,
+} from "../main/agent/runtime/model-resolution"
 export type {
   AccountView,
   AccountWithModels,

@@ -415,6 +415,7 @@ ipcMain.handle("agents:list", async (_event, workspace?: string) => {
         nativeName,
         description,
         label,
+        sourceMetadata,
         diagnostics,
       }) => ({
         ref: refId,
@@ -426,6 +427,7 @@ ipcMain.handle("agents:list", async (_event, workspace?: string) => {
         nativeName,
         description,
         label,
+        sourceMetadata,
         diagnostics,
       })
     )

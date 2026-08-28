@@ -51,6 +51,7 @@ import { XIcon, Plus, Trash2 } from "lucide-react"
 import {
   ProvidersTab,
   ModelsTab,
+  ModelMappingsTab,
   useLlmSettings,
 } from "@/components/llm-settings"
 import type {
@@ -153,6 +154,7 @@ const LOCAL_PROFILE_ORDER: LocalRuntimeProfile[] = [
 const SECTIONS: Array<{ value: string; label: string }> = [
   { value: "providers", label: "Providers" },
   { value: "models", label: "Models" },
+  { value: "model-mappings", label: "Model mappings" },
   { value: "backend", label: "Backend" },
   { value: "permissions", label: "Permissions" },
   { value: "indexing", label: "Context" },
@@ -830,6 +832,7 @@ export function SettingsScreen({
                     <div className="flex min-h-0 w-full max-w-2xl flex-col">
                       <ProvidersTab state={llm} />
                       <ModelsTab state={llm} />
+                      <ModelMappingsTab />
 
                       {/* Backend picker — Local / Docker / Podman, gated by availability. */}
                       <TabsContent
