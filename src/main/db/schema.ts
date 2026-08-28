@@ -1000,3 +1000,50 @@ CREATE TABLE external_agent_model_mappings (
 CREATE INDEX idx_external_agent_model_mappings_account
   ON external_agent_model_mappings(destination_account_id);
 `
+
+// v34 (plan 064): conversation-scoped recall. Full-text search is indexed by
+// message text and serialized tool-call arguments, while conversation/role/seq
+// metadata stays unindexed for strict server-owned scope filtering.
+export const SCHEMA_V34 = `
+CREATE VIRTUAL TABLE message_fts USING fts5(
+  message_id UNINDEXED,
+  conversation_id UNINDEXED,
+  seq UNINDEXED,
+  role UNINDEXED,
+  created_at UNINDEXED,
+  tool_name UNINDEXED,
+  content,
+  tokenize = 'unicode61'
+);
+
+INSERT INTO message_fts
+  (message_id, conversation_id, seq, role, created_at, tool_name, content)
+SELECT
+  id,
+  conversation_id,
+  seq,
+  role,
+  created_at,
+  tool_name,
+  trim(COALESCE(content, '') || ' ' || COALESCE(tool_calls, ''))
+FROM messages
+WHERE trim(COALESCE(content, '') || ' ' || COALESCE(tool_calls, '')) <> '';
+
+CREATE TRIGGER messages_ai_message_fts AFTER INSERT ON messages BEGIN
+  INSERT INTO message_fts
+    (message_id, conversation_id, seq, role, created_at, tool_name, content)
+  SELECT
+    NEW.id,
+    NEW.conversation_id,
+    NEW.seq,
+    NEW.role,
+    NEW.created_at,
+    NEW.tool_name,
+    trim(COALESCE(NEW.content, '') || ' ' || COALESCE(NEW.tool_calls, ''))
+  WHERE trim(COALESCE(NEW.content, '') || ' ' || COALESCE(NEW.tool_calls, '')) <> '';
+END;
+
+CREATE TRIGGER messages_ad_message_fts AFTER DELETE ON messages BEGIN
+  DELETE FROM message_fts WHERE message_id = OLD.id;
+END;
+`

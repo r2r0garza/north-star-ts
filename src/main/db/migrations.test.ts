@@ -14,6 +14,7 @@ import {
   SCHEMA_V31,
   SCHEMA_V32,
   SCHEMA_V33,
+  SCHEMA_V34,
 } from "./schema"
 import { sqliteLoadsForTests } from "../test/sqlite"
 
@@ -89,7 +90,7 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
     const db = new Database(":memory:")
     db.pragma("foreign_keys = ON")
     runMigrations(db)
-    expect(db.pragma("user_version", { simple: true })).toBe(33)
+    expect(db.pragma("user_version", { simple: true })).toBe(34)
     expect(db.pragma("foreign_key_check")).toHaveLength(0)
     db.close()
   })
@@ -117,6 +118,27 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
         .pluck()
         .get()
     ).toBe("anthropic/haiku")
+    db.close()
+  })
+
+  it("adds message FTS recall index in v34", () => {
+    const db = new Database(":memory:")
+    db.pragma("foreign_keys = ON")
+    runMigrations(db)
+    seedConversation(db, "conversation")
+    db.prepare(
+      "INSERT INTO messages (id, conversation_id, seq, role, content, created_at) VALUES ('m1', 'conversation', 1, 'user', 'remember the red adapter', 0)"
+    ).run()
+    expect(
+      db
+        .prepare(
+          "SELECT message_id FROM message_fts WHERE message_fts MATCH 'red'"
+        )
+        .pluck()
+        .all()
+    ).toEqual(["m1"])
+    db.prepare("DELETE FROM conversations WHERE id = 'conversation'").run()
+    expect(count(db, "message_fts")).toBe(0)
     db.close()
   })
 
@@ -509,7 +531,7 @@ describe.skipIf(!sqliteLoads)("SCHEMA_V9 — orphan reap (plan 022)", () => {
     // Apply V9 (the reaper) and any later migrations, up to the latest version.
     runMigrations(db)
 
-    expect(db.pragma("user_version", { simple: true })).toBe(33)
+    expect(db.pragma("user_version", { simple: true })).toBe(34)
 
     // Reaped: orphan + its nested descendant, and all their state.
     const taskIds = (

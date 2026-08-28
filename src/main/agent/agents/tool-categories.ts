@@ -7,6 +7,8 @@ export const CATEGORY_TOOLS: Record<string, string[]> = {
   read: ["read_file_tool", "list_files_tool"],
   document_read: ["read_document"],
   search: ["search_tool", "index_query_tool"],
+  recall: ["conversation_search", "conversation_read"],
+  tree_recall: ["conversation_tree_search"],
   navigation: [
     "workspace_symbols",
     "document_symbols",

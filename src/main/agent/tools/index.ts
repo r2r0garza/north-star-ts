@@ -38,6 +38,11 @@ import {
   gitStatusTool,
 } from "./git_tools"
 import { readDocumentTool } from "./document_extraction_tool"
+import {
+  conversationReadTool,
+  conversationSearchTool,
+  conversationTreeSearchTool,
+} from "./conversation_recall_tools"
 import { todoWriteTool } from "./todo_tool"
 import { askUserQuestionTool } from "./ask_user_question_tool"
 import { runTodosInBackgroundTool } from "./run_todos_in_background"
@@ -108,6 +113,9 @@ const otherTools: Tool[] = [
   askUserQuestionTool,
   runTodosInBackgroundTool,
   indexQueryTool,
+  conversationSearchTool,
+  conversationReadTool,
+  conversationTreeSearchTool,
   // Plan-mode tools: offered by runChat only while plan mode is active. Not in
   // toolDefinitions; dispatchable via runTool. read_plan is also offered after
   // approval so the implementing turn can re-read the approved plan.
@@ -206,5 +214,10 @@ export { readPlanTool } from "./read_plan_tool"
 export { presentPlanTool } from "./present_plan_tool"
 export { flagForReworkTool } from "./flag_for_rework"
 export { dashboardWriteTool } from "./dashboard_write"
+export {
+  conversationReadTool,
+  conversationSearchTool,
+  conversationTreeSearchTool,
+} from "./conversation_recall_tools"
 
 export type { Tool, ToolContext } from "./types"
