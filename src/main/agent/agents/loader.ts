@@ -12,6 +12,7 @@ import {
   agentSources,
   type AgentSourceEntry,
 } from "./sources"
+import { systemDisplayName } from "../../config/system-name"
 
 export const MAX_AGENT_FILE_SIZE = 10 * 1024 * 1024 // 10MB DoS guard
 const MAX_NAME = 64
@@ -55,9 +56,11 @@ function parseList(
 function sourceLabel(kind: ExternalAgentSourceKind): string {
   switch (kind) {
     case "north_star":
-      return "North Star"
+      return systemDisplayName()
     case "github":
       return "GitHub"
+    case "copilot":
+      return "Copilot"
     case "cursor":
       return "Cursor"
     case "claude":
@@ -93,16 +96,22 @@ function inferSourceEntry(source: string): AgentSourceEntry {
         ? "global"
         : "workspace"
       : "custom"
-  if (
-    normalized.endsWith("/.github/agents") ||
-    normalized.endsWith("/.copilot/agents")
-  ) {
+  if (normalized.endsWith("/.github/agents")) {
     return {
       path: source,
       kind: "github",
       sourceKind: "github",
       scope,
       label: path.basename(source),
+    }
+  }
+  if (normalized.endsWith("/.copilot/agents")) {
+    return {
+      path: source,
+      kind: "copilot",
+      sourceKind: "copilot",
+      scope,
+      label: ".copilot/agents",
     }
   }
   if (normalized.endsWith("/.cursor/agents")) {
@@ -136,11 +145,12 @@ function inferSourceEntry(source: string): AgentSourceEntry {
     }
   }
   if (normalized.endsWith("/.cowork/agents")) {
+    const home = path.resolve(process.env.HOME ?? "").split(path.sep).join("/")
     return {
       path: source,
-      kind: "workspace",
+      kind: normalized.startsWith(home + "/") ? "user" : "workspace",
       sourceKind: "north_star",
-      scope: "workspace",
+      scope: normalized.startsWith(home + "/") ? "global" : "workspace",
       label: ".cowork/agents",
     }
   }
@@ -311,7 +321,10 @@ function parseExternalMarkdownAgent(
   if (!nativeName) return null
   if (!description) {
     diagnostics.push({
-      severity: entry.sourceKind === "github" ? "error" : "warning",
+      severity:
+        entry.sourceKind === "github" || entry.sourceKind === "copilot"
+          ? "error"
+          : "warning",
       code: "missing_description",
       message: "description is missing",
     })
@@ -344,7 +357,7 @@ function parseExternalMarkdownAgent(
       readonly: data.readonly,
       is_background: data.is_background,
     }
-  } else if (entry.sourceKind === "github") {
+  } else if (entry.sourceKind === "github" || entry.sourceKind === "copilot") {
     agent.tools = parseList(data, "tools")
     agent.mcpServers = parseList(data, "mcp-servers")
   }
@@ -465,15 +478,7 @@ export async function listSource(
   sourceDir: string,
   entry?: AgentSourceEntry
 ): Promise<AgentDefinition[]> {
-  const sourceEntry =
-    entry ??
-    ({
-      path: sourceDir,
-      kind: "custom",
-      sourceKind: "north_star",
-      scope: "custom",
-      label: path.basename(sourceDir),
-    } satisfies AgentSourceEntry)
+  const sourceEntry = entry ?? inferSourceEntry(sourceDir)
   if (sourceEntry.sourceKind === "codex" && sourceDir.endsWith("config.toml")) {
     return listCodexConfig(sourceEntry)
   }

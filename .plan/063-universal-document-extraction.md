@@ -1,8 +1,8 @@
 # PR63: Universal document extraction tool
 
-> Status: **NOT STARTED**. Lets agents inspect common binary documents through one
-> bounded, provenance-preserving read surface instead of failing UTF-8 reads or relying
-> on ad hoc shell dependencies.
+> Status: **DONE**. Implemented by `98a7f39` with bounded `read_document` extraction,
+> provenance-preserving format handling, binary-read guidance, capability mapping, and
+> focused document tests.
 
 ## Goal
 
@@ -65,4 +65,3 @@ value when available. Notebook output is separated from source cells and capped.
 
 - Editing documents, rendering perfect visual layout, executing notebooks, OCR by
   default, or bypassing encryption.
-

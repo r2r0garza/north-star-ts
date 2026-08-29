@@ -1,7 +1,8 @@
 # PR61: Granular filesystem lifecycle tools
 
-> Status: **NOT STARTED**. Replaces common shell-only file management with confined,
-> individually permissioned operations.
+> Status: **DONE**. Implemented by `675706b` with workspace-confined `stat_path`,
+> `create_directory`, `move_path`, and delete lifecycle operations across Local and
+> container environments with explicit approval effects.
 
 ## Context
 
@@ -72,4 +73,3 @@ shell text where possible.
 
 - Copying whole trees, chmod/chown, ACLs, trash integration, or arbitrary glob deletes.
 - Treating `055` as complete; this plan must use its helper automatically when shipped.
-

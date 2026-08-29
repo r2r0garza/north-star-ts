@@ -99,6 +99,7 @@ const ORIGIN_LABEL: Record<ModelOrigin, string> = {
 
 const SOURCE_LABEL: Record<ResolvedMappingView["sourceKind"], string> = {
   github: "GitHub Copilot",
+  copilot: "GitHub Copilot",
   cursor: "Cursor",
   claude: "Claude",
   codex: "Codex",

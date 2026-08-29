@@ -287,6 +287,7 @@ export type ModelOrigin = "manual" | "gateway" | "seeded"
 
 export type ExternalAgentModelSourceKind =
   | "github"
+  | "copilot"
   | "cursor"
   | "claude"
   | "codex"

@@ -988,7 +988,7 @@ WHERE provider = 'codex_cli';
 // destination account; exact active-catalog IDs can resolve without a row.
 export const SCHEMA_V33 = `
 CREATE TABLE external_agent_model_mappings (
-  source_kind              TEXT NOT NULL CHECK (source_kind IN ('github','cursor','claude','codex')),
+  source_kind              TEXT NOT NULL CHECK (source_kind IN ('github','copilot','cursor','claude','codex')),
   source_model             TEXT NOT NULL,
   normalized_source_model  TEXT NOT NULL,
   destination_account_id   TEXT NOT NULL REFERENCES provider_accounts(id) ON DELETE CASCADE,
@@ -1046,4 +1046,35 @@ END;
 CREATE TRIGGER messages_ad_message_fts AFTER DELETE ON messages BEGIN
   DELETE FROM message_fts WHERE message_id = OLD.id;
 END;
+`
+
+// v35: distinguish ~/.copilot/agents from .github/agents in external-agent
+// model mappings. SQLite cannot widen a CHECK constraint in place, so rebuild the
+// small mapping table and preserve existing rows.
+export const SCHEMA_V35 = `
+ALTER TABLE external_agent_model_mappings RENAME TO external_agent_model_mappings_old;
+
+CREATE TABLE external_agent_model_mappings (
+  source_kind              TEXT NOT NULL CHECK (source_kind IN ('github','copilot','cursor','claude','codex')),
+  source_model             TEXT NOT NULL,
+  normalized_source_model  TEXT NOT NULL,
+  destination_account_id   TEXT NOT NULL REFERENCES provider_accounts(id) ON DELETE CASCADE,
+  destination_model_id     TEXT NOT NULL,
+  created_at               INTEGER NOT NULL,
+  updated_at               INTEGER NOT NULL,
+  PRIMARY KEY (source_kind, normalized_source_model, destination_account_id)
+);
+
+INSERT INTO external_agent_model_mappings
+  (source_kind, source_model, normalized_source_model,
+   destination_account_id, destination_model_id, created_at, updated_at)
+SELECT
+  source_kind, source_model, normalized_source_model,
+  destination_account_id, destination_model_id, created_at, updated_at
+FROM external_agent_model_mappings_old;
+
+DROP TABLE external_agent_model_mappings_old;
+
+CREATE INDEX idx_external_agent_model_mappings_account
+  ON external_agent_model_mappings(destination_account_id);
 `

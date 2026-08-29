@@ -461,6 +461,7 @@ export function agentCapabilityPolicy(
   if (!agent || agent.sourceKind === "north_star") return null
   switch (agent.sourceKind) {
     case "github":
+    case "copilot":
       return githubPolicy(agent)
     case "claude":
       return claudePolicy(agent)

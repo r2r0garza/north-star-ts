@@ -1,7 +1,8 @@
 # PR59: Structured workspace diagnostics and test execution
 
-> Status: **NOT STARTED**. Highest-value tool addition: give agents typed
-> diagnostics and test results without granting an arbitrary shell command surface.
+> Status: **DONE**. Implemented by `43401cb` with `workspace_diagnostics` and
+> `run_tests`, structured diagnostic/test parsing, approval-gated execution, external
+> capability mapping, and focused tool tests.
 
 ## Context
 
@@ -95,4 +96,3 @@ and reject cross-conversation result reads.
 - Watch mode in v1.
 - Semantic definitions/references (`060`).
 - Automatically fixing diagnostics.
-

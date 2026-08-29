@@ -1,8 +1,8 @@
 # PR56: External agent sources, parsers, and source-qualified identity
 
-> Status: **NOT STARTED**. Foundation for `057` (capability fidelity) and `058`
-> (runtime metadata). Planning only; no external agent is executed differently until
-> the follow-up enforcement plan ships.
+> Status: **DONE**. Implemented by `243e4bf` with source-qualified discovery,
+> provider-specific parsing, compatibility diagnostics, read-only external rows, and
+> UI/IPC support for qualified agent identity.
 
 ## Context
 
@@ -219,4 +219,3 @@ remains.
   remains hidden for Claude Code and Codex CLI conversations; native CLI-agent support
   needs its own future design.
 - Editing or importing changes back into external agent formats.
-

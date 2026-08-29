@@ -17,6 +17,7 @@ export const MAX_AGENT_DEPTH = 5
 export type ExternalAgentSourceKind =
   | "north_star"
   | "github"
+  | "copilot"
   | "cursor"
   | "claude"
   | "codex"
@@ -98,6 +99,7 @@ export type AgentSourceKind =
   | "user"
   | "custom"
   | "github"
+  | "copilot"
   | "workspace"
   | "cursor"
   | "claude"

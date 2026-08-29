@@ -208,6 +208,7 @@ const AGENT_SOURCE_KIND_LABEL: Record<AgentSourceRow["kind"], string> = {
   user: "User",
   custom: "Custom",
   github: "Workspace",
+  copilot: "Workspace",
   workspace: "Workspace",
   cursor: "Workspace",
   claude: "Workspace",

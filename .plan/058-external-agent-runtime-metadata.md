@@ -1,8 +1,8 @@
 # PR58: External agent runtime metadata, saved model mappings, and advanced fidelity
 
-> Status: **NOT STARTED**. Depends on `056` and `057`. The source metadata is parsed
-> in `056`; this plan decides when and how North Star executes it rather than merely
-> reporting it.
+> Status: **DONE**. Implemented by `023d019` with explicit external-agent model
+> resolution, saved source-token mappings, database migration/repository support,
+> Settings UI, and runtime mapping tests.
 
 ## Context
 

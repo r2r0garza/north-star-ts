@@ -1,7 +1,7 @@
 import { app } from "electron"
 import path from "path"
 import * as settingsService from "../../settings/service"
-import { dataDirName } from "../../config/system-name"
+import { dataDirName, systemDisplayName } from "../../config/system-name"
 import type {
   AgentScope,
   AgentSourceKind,
@@ -52,7 +52,7 @@ export function agentSourceEntries(workspace?: string): AgentSourceEntry[] {
       kind: "user",
       sourceKind: "north_star",
       scope: "global",
-      label: "Global North Star",
+      label: `Global ${systemDisplayName()}`,
     },
     ...custom.map((sourcePath) => ({
       path: sourcePath,
@@ -63,8 +63,8 @@ export function agentSourceEntries(workspace?: string): AgentSourceEntry[] {
     })),
     {
       path: path.join(home, ".copilot", "agents"),
-      kind: "github",
-      sourceKind: "github",
+      kind: "copilot",
+      sourceKind: "copilot",
       scope: "global",
       label: "Global GitHub Copilot",
     },
@@ -82,20 +82,24 @@ export function agentSourceEntries(workspace?: string): AgentSourceEntry[] {
       scope: "global",
       label: "Global Claude",
     },
-    {
-      path: path.join(home, ".codex", "config.toml"),
-      kind: "codex",
-      sourceKind: "codex",
-      scope: "global",
-      label: "Global Codex config",
-    },
-    {
-      path: path.join(home, ".codex", "agents"),
-      kind: "codex",
-      sourceKind: "codex",
-      scope: "global",
-      label: "Global Codex agents",
-    },
+    // Temporarily disabled with the global Codex agent directory: config.toml
+    // can register agent TOML files that the lightweight parser cannot load.
+    // {
+    //   path: path.join(home, ".codex", "config.toml"),
+    //   kind: "codex",
+    //   sourceKind: "codex",
+    //   scope: "global",
+    //   label: "Global Codex config",
+    // },
+    // Temporarily disabled: the lightweight TOML loader does not support the
+    // top-level, multiline format used by ~/.codex/agents/*.toml yet.
+    // {
+    //   path: path.join(home, ".codex", "agents"),
+    //   kind: "codex",
+    //   sourceKind: "codex",
+    //   scope: "global",
+    //   label: "Global Codex agents",
+    // },
   ]
   if (workspace) {
     entries.push(
@@ -108,8 +112,8 @@ export function agentSourceEntries(workspace?: string): AgentSourceEntry[] {
       },
       {
         path: path.join(workspace, ".copilot", "agents"),
-        kind: "github",
-        sourceKind: "github",
+        kind: "copilot",
+        sourceKind: "copilot",
         scope: "workspace",
         label: ".copilot/agents",
       },
@@ -127,13 +131,14 @@ export function agentSourceEntries(workspace?: string): AgentSourceEntry[] {
         scope: "workspace",
         label: ".claude/agents",
       },
-      {
-        path: path.join(workspace, ".codex", "config.toml"),
-        kind: "codex",
-        sourceKind: "codex",
-        scope: "workspace",
-        label: ".codex/config.toml",
-      },
+      // Temporarily disabled for the same reason as the global Codex config.
+      // {
+      //   path: path.join(workspace, ".codex", "config.toml"),
+      //   kind: "codex",
+      //   sourceKind: "codex",
+      //   scope: "workspace",
+      //   label: ".codex/config.toml",
+      // },
       {
         path: path.join(workspace, ".codex", "agents"),
         kind: "codex",

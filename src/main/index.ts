@@ -68,7 +68,6 @@ import type {
 } from "./agent/skills/types"
 import type {
   AgentSourceRow,
-  AgentSourceKind,
   AgentTree,
   AgentFolder,
 } from "./agent/agents/types"
@@ -434,29 +433,16 @@ ipcMain.handle("agents:list", async (_event, workspace?: string) => {
     )
 })
 
-// The kind-tagged agent-source dirs for a workspace, in load order. Mirrors
-// skillSourceEntries: user + user-registered custom folders, plus the workspace
-// dirs when a workspace is passed. Backs agents:sources (counts) for the Settings
-// → Capabilities "Agent folders" table.
-function agentSourceEntries(
-  workspace?: string
-): Array<{ path: string; kind: AgentSourceKind }> {
-  return getAgentSourceEntries(workspace).map(({ path, kind }) => ({
-    path,
-    kind,
-  }))
-}
-
 // Enumerate the agent sources (user + custom) for Settings → Capabilities, each
 // tagged with its kind and its current agent count. Mirrors the load order.
 ipcMain.handle(
   "agents:sources",
   async (_event, workspace?: string): Promise<AgentSourceRow[]> => {
     return Promise.all(
-      agentSourceEntries(workspace).map(async ({ path, kind }) => ({
-        path,
-        kind,
-        agentCount: (await listAgentSource(path)).length,
+      getAgentSourceEntries(workspace).map(async (entry) => ({
+        path: entry.path,
+        kind: entry.kind,
+        agentCount: (await listAgentSource(entry.path, entry)).length,
       }))
     )
   }
@@ -466,22 +452,19 @@ ipcMain.handle(
 // agents. Enumerates workspaces itself so the view populates with no active
 // conversation. Folders are included even when empty. Mirrors skills:tree.
 ipcMain.handle("agents:tree", async (): Promise<AgentTree> => {
-  const dataDir = dataDirName()
   const toFolder = async (
-    path: string,
-    label: string,
-    kind: AgentFolder["kind"]
+    entry: ReturnType<typeof getAgentSourceEntries>[number]
   ): Promise<AgentFolder> => ({
-    path,
-    label,
-    kind,
-    agents: await listAgentSource(path),
+    path: entry.path,
+    label: entry.label,
+    kind: entry.kind,
+    agents: await listAgentSource(entry.path, entry),
   })
 
   const global = await Promise.all(
     getAgentSourceEntries()
       .filter((entry) => entry.scope === "global")
-      .map((entry) => toFolder(entry.path, entry.label, entry.kind))
+      .map(toFolder)
   )
 
   const workspaces = await Promise.all(
@@ -491,15 +474,21 @@ ipcMain.handle("agents:tree", async (): Promise<AgentTree> => {
       folders: await Promise.all(
         getAgentSourceEntries(ws.path)
           .filter((entry) => entry.scope === "workspace")
-          .map((entry) => toFolder(entry.path, entry.label, entry.kind))
+          .map(toFolder)
       ),
     }))
   )
 
   const custom = await Promise.all(
-    settingsService
-      .getAgentSources()
-      .folders.map((folder) => toFolder(folder, baseName(folder), "custom"))
+    settingsService.getAgentSources().folders.map((folder) =>
+      toFolder({
+        path: folder,
+        label: baseName(folder),
+        kind: "custom",
+        sourceKind: "north_star",
+        scope: "custom",
+      })
+    )
   )
 
   return { global, workspaces, custom }

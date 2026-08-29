@@ -130,7 +130,7 @@ interface LiveTurn {
 }
 const EMPTY_LIVE: LiveTurn = { segments: [], question: null }
 
-type ExternalSourceKind = "github" | "cursor" | "claude" | "codex"
+type ExternalSourceKind = "github" | "copilot" | "cursor" | "claude" | "codex"
 
 interface PendingModelMapping {
   agent: AgentSummary
@@ -165,6 +165,7 @@ function appendLiveText(turn: LiveTurn, delta: string): LiveTurn {
 
 function externalSourceKind(value: string): ExternalSourceKind | null {
   return value === "github" ||
+    value === "copilot" ||
     value === "cursor" ||
     value === "claude" ||
     value === "codex"

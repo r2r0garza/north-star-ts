@@ -14,7 +14,7 @@
     "test:sqlite": "node scripts/test-sqlite.mjs",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "postinstall": "electron-rebuild -f -w better-sqlite3 -w node-pty"
+    "postinstall": "electron-rebuild -f -w better-sqlite3,node-pty"
   },
   "build": {
     "appId": "com.agentic.north-star",

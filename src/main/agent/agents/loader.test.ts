@@ -7,7 +7,10 @@ import path from "path"
 // data-dir so tests read from predictable, isolated locations.
 let home = ""
 vi.mock("electron", () => ({ app: { getPath: () => home } }))
-vi.mock("../../config/system-name", () => ({ dataDirName: () => ".cowork" }))
+vi.mock("../../config/system-name", () => ({
+  dataDirName: () => ".cowork",
+  systemDisplayName: () => "Cowork",
+}))
 // agentSources() reads user-registered custom folders from the settings service;
 // stub it (no DB in unit tests) so these tests cover only the built-in sources.
 let customFolders: string[] = []
@@ -43,13 +46,10 @@ describe("agentSources", () => {
       path.join(home, ".copilot", "agents"),
       path.join(home, ".cursor", "agents"),
       path.join(home, ".claude", "agents"),
-      path.join(home, ".codex", "config.toml"),
-      path.join(home, ".codex", "agents"),
       path.join(ws, ".github", "agents"),
       path.join(ws, ".copilot", "agents"),
       path.join(ws, ".cursor", "agents"),
       path.join(ws, ".claude", "agents"),
-      path.join(ws, ".codex", "config.toml"),
       path.join(ws, ".codex", "agents"),
       path.join(ws, ".cowork", "agents"),
     ])
@@ -60,8 +60,6 @@ describe("agentSources", () => {
       path.join(home, ".copilot", "agents"),
       path.join(home, ".cursor", "agents"),
       path.join(home, ".claude", "agents"),
-      path.join(home, ".codex", "config.toml"),
-      path.join(home, ".codex", "agents"),
     ])
   })
 })
@@ -85,6 +83,7 @@ You are a careful reviewer.`
     const [a] = await loadAgents(agentSources())
     expect(a.name).toBe("reviewer")
     expect(a.description).toBe("Reviews code")
+    expect(a.label).toBe("Cowork: reviewer")
     expect(a.tools).toEqual(["read", "search", "edit"])
     expect(a.skills).toEqual(["git-commit"])
     expect(a.children).toEqual(["researcher"])
@@ -165,6 +164,24 @@ describe("external provider parsing", () => {
     )!
     expect(agent.name).toBe("reviewer")
     expect(agent.label).toBe("GitHub: reviewer")
+    expect(agent.tools).toEqual(["read", "search"])
+    expect(agent.userInvocable).toBe(true)
+    rmSync(ws, { recursive: true, force: true })
+  })
+
+  it("labels Copilot markdown agents with Copilot identity", async () => {
+    const ws = mkdtempSync(path.join(tmpdir(), "ws-"))
+    const dir = path.join(ws, ".copilot", "agents")
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(
+      path.join(dir, "reviewer.md"),
+      `---\ndescription: Reviews pull requests\ntools: [read, search]\n---\nReview carefully.`
+    )
+    const agent = (await loadAgents(agentSources(ws))).find(
+      (a) => a.sourceKind === "copilot"
+    )!
+    expect(agent.name).toBe("reviewer")
+    expect(agent.label).toBe("Copilot: reviewer")
     expect(agent.tools).toEqual(["read", "search"])
     expect(agent.userInvocable).toBe(true)
     rmSync(ws, { recursive: true, force: true })

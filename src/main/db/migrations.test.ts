@@ -90,7 +90,7 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
     const db = new Database(":memory:")
     db.pragma("foreign_keys = ON")
     runMigrations(db)
-    expect(db.pragma("user_version", { simple: true })).toBe(34)
+    expect(db.pragma("user_version", { simple: true })).toBe(35)
     expect(db.pragma("foreign_key_check")).toHaveLength(0)
     db.close()
   })
@@ -139,6 +139,30 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
     ).toEqual(["m1"])
     db.prepare("DELETE FROM conversations WHERE id = 'conversation'").run()
     expect(count(db, "message_fts")).toBe(0)
+    db.close()
+  })
+
+  it("widens external agent model mappings for Copilot in v35", () => {
+    const db = new Database(":memory:")
+    db.pragma("foreign_keys = ON")
+    runMigrations(db)
+    db.prepare(
+      `INSERT INTO provider_accounts
+        (id, provider, display_name, api_mode, enabled, position, created_at)
+       VALUES ('account', 'openai', 'OpenAI', 'completions', 1, 0, 0)`
+    ).run()
+    db.prepare(
+      `INSERT INTO external_agent_model_mappings
+        (source_kind, source_model, normalized_source_model,
+         destination_account_id, destination_model_id, created_at, updated_at)
+       VALUES ('copilot', 'GPT-5', 'gpt-5', 'account', 'openai/gpt-5', 0, 0)`
+    ).run()
+    expect(
+      db
+        .prepare("SELECT source_kind FROM external_agent_model_mappings")
+        .pluck()
+        .get()
+    ).toBe("copilot")
     db.close()
   })
 

@@ -37,6 +37,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
 import { Markdown } from "@/components/markdown"
 import { AgentUploadModal } from "@/components/agent-upload-modal"
 import { toast } from "sonner"
@@ -57,19 +63,59 @@ import type { AgentDefinition, AgentFolder, AgentTree } from "@/types"
 // github + workspace agents are read-only here (viewable only). "Add new agent"
 // is disabled on the Workspace tab since workspace folders are not writable here.
 
-// The 8 friendly tool categories, in display order. Mirrors TOOL_CATEGORIES in
-// the main process (src/main/agent/agents/tool-categories.ts). Duplicated here
-// rather than imported to avoid pulling a main-process module into the renderer.
+// Friendly tool categories, in alphabetical order. Mirrors TOOL_CATEGORIES in the
+// main process (src/main/agent/agents/tool-categories.ts). Duplicated here rather
+// than imported to avoid pulling a main-process module into the renderer.
 const TOOL_CATEGORIES = [
-  "read",
-  "search",
+  "agent",
+  "browser",
+  "browser_advanced",
+  "dashboard",
+  "delete",
+  "diagnostics",
+  "document_read",
   "edit",
   "execute",
-  "web",
-  "browser",
+  "filesystem",
+  "git_read",
+  "lsp",
+  "navigation",
+  "read",
+  "recall",
+  "search",
+  "test",
   "todo",
-  "agent",
+  "tree_recall",
+  "web",
 ] as const
+
+const TOOL_CATEGORY_DESCRIPTIONS: Record<
+  (typeof TOOL_CATEGORIES)[number],
+  string
+> = {
+  read: "Read files and list workspace directories.",
+  document_read:
+    "Extract text and structure from documents, PDFs, slides, and spreadsheets.",
+  search: "Search files and query the code index.",
+  recall: "Search and read this conversation's history.",
+  tree_recall: "Search this conversation plus delegated worker histories.",
+  navigation:
+    "Use code intelligence for symbols, definitions, references, and hover types.",
+  lsp: "Alias for code navigation tools.",
+  edit: "Edit, write, and patch files.",
+  filesystem: "Inspect, create, and move filesystem paths.",
+  delete: "Delete files or directories.",
+  git_read: "Read Git status, diffs, logs, branches, and commit details.",
+  execute: "Run and manage shell commands.",
+  diagnostics: "Read workspace diagnostics.",
+  test: "Run tests and inspect test results.",
+  web: "Search and fetch web pages.",
+  browser: "Navigate and interact with browser pages.",
+  browser_advanced: "Evaluate JavaScript in the browser.",
+  todo: "Manage todos and send todo work to the background.",
+  dashboard: "Create or update live dashboards.",
+  agent: "Spawn permitted child agents.",
+}
 
 // A flat, addressable agent: its definition + folder kind + a key unique across
 // folders (source dir + name), since the same name can appear in several.
@@ -193,7 +239,9 @@ export function AgentsScreen({ onClose }: { onClose: () => void }) {
   const writableDirs = useMemo(() => {
     if (!tree) return [] as Array<{ path: string; label: string }>
     return [
-      ...tree.global.map((f) => ({ path: f.path, label: "Global (user)" })),
+      ...tree.global
+        .filter((f) => isWritable(f.kind))
+        .map((f) => ({ path: f.path, label: f.label })),
       ...tree.custom.map((f) => ({
         path: f.path,
         label: `Custom · ${f.label}`,
@@ -805,6 +853,7 @@ function AgentForm({
           allLabel="All tools"
           noneLabel="Read-only (read + search)"
           options={TOOL_CATEGORIES as readonly string[]}
+          descriptions={TOOL_CATEGORY_DESCRIPTIONS}
           value={draft.tools}
           onChange={(tools) => onChange({ ...draft, tools })}
         />
@@ -879,6 +928,7 @@ function TriStatePicker({
   allLabel,
   noneLabel,
   options,
+  descriptions,
   value,
   onChange,
   emptyOptionsNote,
@@ -888,6 +938,7 @@ function TriStatePicker({
   allLabel: string
   noneLabel: string
   options: readonly string[]
+  descriptions?: Record<string, string>
   value: string[] | undefined
   onChange: (v: string[] | undefined) => void
   emptyOptionsNote?: string
@@ -925,31 +976,45 @@ function TriStatePicker({
         </SelectContent>
       </Select>
       {mode === "choose" && (
-        <div className="rounded-md border p-3">
-          {options.length === 0 ? (
-            <p className="text-xs text-muted-foreground">
-              {emptyOptionsNote ?? "Nothing to choose."}
-            </p>
-          ) : (
-            <div className="grid grid-cols-2 gap-x-4 gap-y-2">
-              {options.map((name) => {
-                const checked = !!value?.includes(name)
-                return (
-                  <label
-                    key={name}
-                    className="flex cursor-pointer items-center gap-2 text-sm"
-                  >
-                    <Checkbox
-                      checked={checked}
-                      onCheckedChange={(v) => toggle(name, v === true)}
-                    />
-                    <span className="truncate">{name}</span>
-                  </label>
-                )
-              })}
-            </div>
-          )}
-        </div>
+        <TooltipProvider>
+          <div className="rounded-md border p-3">
+            {options.length === 0 ? (
+              <p className="text-xs text-muted-foreground">
+                {emptyOptionsNote ?? "Nothing to choose."}
+              </p>
+            ) : (
+              <div className="grid grid-cols-2 gap-x-4 gap-y-2">
+                {options.map((name) => {
+                  const checked = !!value?.includes(name)
+                  const description = descriptions?.[name]
+                  const item = (
+                    <label className="flex min-w-0 cursor-pointer items-center gap-2 text-sm">
+                      <Checkbox
+                        checked={checked}
+                        onCheckedChange={(v) => toggle(name, v === true)}
+                      />
+                      <span className="truncate">{name}</span>
+                    </label>
+                  )
+                  return (
+                    <div key={name} className="min-w-0">
+                      {description ? (
+                        <Tooltip>
+                          <TooltipTrigger asChild>{item}</TooltipTrigger>
+                          <TooltipContent side="top" align="start">
+                            {description}
+                          </TooltipContent>
+                        </Tooltip>
+                      ) : (
+                        item
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+        </TooltipProvider>
       )}
     </div>
   )
