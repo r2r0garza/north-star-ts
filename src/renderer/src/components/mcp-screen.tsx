@@ -65,14 +65,16 @@ function matchesQuery(s: McpServer, query: string): boolean {
 
 // The editable definition draft (mirrors McpServerDef; state is edited separately
 // via the enabled toggle / Authorize).
-type Draft = {
+export type Draft = {
   name: string
   transport: McpTransport
   command: string
   args: string[]
   env: Record<string, string>
+  envText: string
   url: string
   headers: Record<string, string>
+  headersText: string
 }
 
 function draftFromServer(s: McpServer): Draft {
@@ -82,12 +84,14 @@ function draftFromServer(s: McpServer): Draft {
     command: s.command ?? "",
     args: s.args,
     env: s.env,
+    envText: recordToText(s.env),
     url: s.url ?? "",
     headers: s.headers,
+    headersText: recordToText(s.headers),
   }
 }
 
-function draftToDef(d: Draft): McpServerDef {
+export function draftToDef(d: Draft): McpServerDef {
   const stdio = d.transport === "stdio"
   return {
     name: d.name.trim(),
@@ -95,9 +99,9 @@ function draftToDef(d: Draft): McpServerDef {
     command: stdio ? d.command.trim() || null : null,
     // Drop blank rows (an unfilled "Add argument" box) before persisting.
     args: stdio ? d.args.map((a) => a.trim()).filter(Boolean) : [],
-    env: stdio ? d.env : {},
+    env: stdio ? textToRecord(d.envText) : {},
     url: stdio ? null : d.url.trim() || null,
-    headers: stdio ? {} : d.headers,
+    headers: stdio ? {} : textToRecord(d.headersText),
   }
 }
 
@@ -107,12 +111,12 @@ type Mode =
   | { kind: "create"; filePath: string }
 
 // ── text <-> args/record helpers (multi-line editing) ───────────────────────
-function recordToText(rec: Record<string, string>): string {
+export function recordToText(rec: Record<string, string>): string {
   return Object.entries(rec)
     .map(([k, v]) => `${k}=${v}`)
     .join("\n")
 }
-function textToRecord(text: string): Record<string, string> {
+export function textToRecord(text: string): Record<string, string> {
   const rec: Record<string, string> = {}
   for (const line of text.split("\n")) {
     const t = line.trim()
@@ -214,8 +218,10 @@ export function McpScreen({ onClose }: { onClose: () => void }) {
       command: "",
       args: [],
       env: {},
+      envText: "",
       url: "",
       headers: {},
+      headersText: "",
     })
     setMode({ kind: "create", filePath: writableTargets[0]?.path ?? "" })
   }
@@ -857,9 +863,9 @@ function ServerForm({
             </FormField>
             <FormField label="Environment (KEY=value, one per line)">
               <Textarea
-                value={recordToText(draft.env)}
+                value={draft.envText}
                 onChange={(e) =>
-                  onChange({ ...draft, env: textToRecord(e.target.value) })
+                  onChange({ ...draft, envText: e.target.value })
                 }
                 rows={2}
                 className="font-mono text-xs"
@@ -878,9 +884,9 @@ function ServerForm({
             </FormField>
             <FormField label="Headers (KEY=value, one per line)">
               <Textarea
-                value={recordToText(draft.headers)}
+                value={draft.headersText}
                 onChange={(e) =>
-                  onChange({ ...draft, headers: textToRecord(e.target.value) })
+                  onChange({ ...draft, headersText: e.target.value })
                 }
                 rows={2}
                 className="font-mono text-xs"
