@@ -126,6 +126,21 @@ describe("write_file_tool", () => {
     expect(env.files.get("a.txt")).toBe("hello")
   })
 
+  it("treats an empty create revision placeholder as omitted", async () => {
+    const result = await writeFileTool.execute(
+      {
+        path: "a.txt",
+        content: "hello",
+        mode: "create",
+        expected_revision: "",
+      },
+      ctx
+    )
+
+    expect(result).toContain("Wrote 5 bytes to a.txt.")
+    expect(env.files.get("a.txt")).toBe("hello")
+  })
+
   it("reports cleanup_failed when a created file leaves its staged temp file", async () => {
     env.failRemove = (path) => path.includes(".north-star-")
 
@@ -249,6 +264,51 @@ describe("write_file_tool", () => {
       ctx
     )
     expect(result).toContain("ERROR[bad_args]")
+    expect(env.files.has("a.txt")).toBe(false)
+  })
+
+  it("rejects empty revision placeholders for overwrite and append", async () => {
+    env.files.set("a.txt", "old")
+
+    const overwrite = await writeFileTool.execute(
+      {
+        path: "a.txt",
+        content: "new",
+        mode: "overwrite",
+        expected_revision: "",
+      },
+      ctx
+    )
+    const append = await writeFileTool.execute(
+      {
+        path: "a.txt",
+        content: "new",
+        mode: "append",
+        expected_revision: "",
+      },
+      ctx
+    )
+
+    expect(overwrite).toContain("ERROR[bad_args]")
+    expect(overwrite).toContain("real revision")
+    expect(append).toContain("ERROR[bad_args]")
+    expect(append).toContain("real revision")
+    expect(env.files.get("a.txt")).toBe("old")
+  })
+
+  it("rejects invented create revisions as stale instead of creating the file", async () => {
+    const result = await writeFileTool.execute(
+      {
+        path: "a.txt",
+        content: "hello",
+        mode: "create",
+        expected_revision: "0".repeat(64),
+      },
+      ctx
+    )
+
+    expect(result).toContain("ERROR[stale_file]")
+    expect(result).toContain("Current revision: missing")
     expect(env.files.has("a.txt")).toBe(false)
   })
 

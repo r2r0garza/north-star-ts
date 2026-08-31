@@ -90,6 +90,7 @@ import {
 } from "@/components/ui/combobox"
 import {
   buildTimeline,
+  deriveLabel,
   toToolUse,
   isErrorResult,
   baseName as lastSegment,
@@ -1253,6 +1254,11 @@ function App(
                 ...t,
                 result: event.result,
                 status: isErrorResult(event.result) ? "error" : "done",
+                label: deriveLabel(
+                  t.name,
+                  t.args,
+                  isErrorResult(event.result) ? "error" : "done"
+                ),
                 approval: undefined,
               }))
             )

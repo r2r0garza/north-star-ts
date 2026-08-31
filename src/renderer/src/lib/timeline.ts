@@ -70,8 +70,37 @@ function fileTypeOf(path: string): ChangedFile["fileType"] {
   return /\.(html?|xhtml)$/i.test(path) ? "html" : "code"
 }
 
-// The file-writing tools whose calls produce a changed-file pill.
-const WRITE_TOOLS = new Set(["edit_file_tool", "write_file_tool"])
+// The file-mutation tools whose successful calls produce changed-file pills.
+const MUTATION_TOOLS = new Set([
+  "edit_file_tool",
+  "write_file_tool",
+  "apply_patch_tool",
+])
+
+function patchChangedFiles(
+  operations: unknown,
+  byPath: Map<string, ChangedFile>
+): void {
+  if (!Array.isArray(operations)) return
+  for (const op of operations) {
+    if (!op || typeof op !== "object") continue
+    const record = op as Record<string, unknown>
+    const type = typeof record.type === "string" ? record.type : ""
+    const path =
+      type === "move" && typeof record.new_path === "string"
+        ? record.new_path
+        : typeof record.path === "string"
+          ? record.path
+          : ""
+    if (!path || type === "delete") continue
+    byPath.set(path, {
+      path,
+      baseName: baseName(path),
+      kind: type === "add" ? "write" : "edit",
+      fileType: fileTypeOf(path),
+    })
+  }
+}
 
 // Derive the deduped, ordered list of files changed by a set of tool calls (one
 // assistant turn's group, or the live turn's tools). Later calls win on dedupe,
@@ -80,7 +109,12 @@ const WRITE_TOOLS = new Set(["edit_file_tool", "write_file_tool"])
 export function changedFilesFromCalls(calls: ToolUse[]): ChangedFile[] {
   const byPath = new Map<string, ChangedFile>()
   for (const call of calls) {
-    if (!WRITE_TOOLS.has(call.name)) continue
+    if (!MUTATION_TOOLS.has(call.name)) continue
+    if (call.status !== "done" || isErrorResult(call.result)) continue
+    if (call.name === "apply_patch_tool") {
+      patchChangedFiles(call.args?.operations, byPath)
+      continue
+    }
     const path =
       call.args && typeof call.args.path === "string" ? call.args.path : ""
     if (!path) continue
@@ -107,17 +141,39 @@ export function parseArgs(raw: string): Record<string, unknown> | null {
 // A human-readable label for a tool call, derived from its name + arguments.
 export function deriveLabel(
   name: string,
-  args: Record<string, unknown> | null
+  args: Record<string, unknown> | null,
+  status: ToolStatus = "done"
 ): string {
   const a = args ?? {}
   const path = typeof a.path === "string" ? a.path : ""
+  const mutationLabel = (stem: string, fallback: string) => {
+    const target = path ? baseName(path) : fallback
+    if (status === "running") return `${stem}ing ${target}`
+    if (status === "error") return `${stem} failed ${target}`
+    if (status === "interrupted") return `${stem} interrupted ${target}`
+    return `${stem}${stem.endsWith("e") ? "d" : "ed"} ${target}`
+  }
   switch (name) {
     case "read_file_tool":
       return path ? `Read ${baseName(path)}` : "Read file"
     case "edit_file_tool":
-      return path ? `Edited ${baseName(path)}` : "Edited file"
+      return mutationLabel("Edit", "file")
     case "write_file_tool":
+      if (status === "running")
+        return path ? `Writing ${baseName(path)}` : "Writing file"
+      if (status === "error")
+        return path ? `Write failed ${baseName(path)}` : "Write failed"
+      if (status === "interrupted") {
+        return path
+          ? `Write interrupted ${baseName(path)}`
+          : "Write interrupted"
+      }
       return path ? `Wrote ${baseName(path)}` : "Wrote file"
+    case "apply_patch_tool":
+      if (status === "running") return "Applying patch"
+      if (status === "error") return "Patch failed"
+      if (status === "interrupted") return "Patch interrupted"
+      return "Applied patch"
     case "search_tool": {
       const pat = typeof a.pattern === "string" ? a.pattern : ""
       return pat ? `Searched "${pat}"` : "Searched"
@@ -168,7 +224,7 @@ export function toToolUse(call: {
   return {
     id: call.id,
     name: call.name,
-    label: deriveLabel(call.name, args),
+    label: deriveLabel(call.name, args, "running"),
     args,
     rawArgs: call.arguments,
     status: "running",
@@ -219,6 +275,7 @@ export function buildTimeline(rows: DbMessage[]): TimelineItem[] {
       if (use) {
         use.result = m.content ?? ""
         use.status = isErrorResult(use.result) ? "error" : "done"
+        use.label = deriveLabel(use.name, use.args, use.status)
       }
     }
     // role:"system" is never persisted; ignore if present.
@@ -231,7 +288,10 @@ export function buildTimeline(rows: DbMessage[]): TimelineItem[] {
   // ever catches truly dangling calls.) The next user message repairs the
   // transcript main-side (repairDanglingToolCalls) so the conversation continues.
   for (const use of callById.values()) {
-    if (use.status === "running") use.status = "interrupted"
+    if (use.status === "running") {
+      use.status = "interrupted"
+      use.label = deriveLabel(use.name, use.args, use.status)
+    }
   }
 
   return items
