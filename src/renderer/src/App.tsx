@@ -1217,6 +1217,7 @@ function App(
           // Chat sends no workspace and inlines attachments instead.
           workspace: isChat ? undefined : workspace.trim(),
           attachments: isChat ? sentAttachments : undefined,
+          skills: [...confirmedSkills],
           // Plan mode is interactive/north_star only (never Chat); auto mode is
           // available everywhere, including Chat (suppresses browser_navigate
           // prompts).

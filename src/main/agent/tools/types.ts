@@ -131,6 +131,9 @@ export interface ToolContext {
   // Attach an image to the current turn for the vision model (see ToolImage /
   // EmitImage). Used by browser_screenshot; absent where images can't be shown.
   emitImage?: EmitImage
+  // Read-only auxiliary roots registered by read_skill during this turn. Keys
+  // are skill names; values are absolute host paths to the selected skill folder.
+  skillResourceRoots?: Record<string, string>
   // Flip plan mode on/off for the CURRENT turn (see present_plan_tool). Set by the
   // real agent loop, which holds plan mode as a mutable flag and rebuilds the
   // toolset each iteration — so approving a plan (setPlanMode(false)) unlocks the

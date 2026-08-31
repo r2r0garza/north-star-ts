@@ -5,6 +5,7 @@ import { TOOL_EFFECTS } from "./types"
 import type { ToolAction } from "../approval/types"
 import { fileRevision, isNotFoundError } from "./file/mutation"
 import { renderMetadata, toolError } from "./output"
+import { isSkillResourceUri, resolveSkillResourcePath } from "./skill_resources"
 
 type PathKind = "file" | "directory" | "other"
 
@@ -109,10 +110,15 @@ export const statPathTool: Tool = {
     const env = envFor(ctx)
     let target
     try {
-      target = env.resolveLexical(path)
-      const info = await env.stat(target)
+      target = isSkillResourceUri(path)
+        ? await resolveSkillResourcePath(ctx, path)
+        : env.resolveLexical(path)
+      const statEnv = isSkillResourceUri(path)
+        ? new LocalEnvironment(target)
+        : env
+      const info = await statEnv.stat(target)
       const kind = kindOf(info)
-      const revision = await revisionFor(env, target, info)
+      const revision = await revisionFor(statEnv, target, info)
       return `Path ${path} is a ${kind}.${renderMetadata(
         metadataFor(info, kind, revision)
       )}`
@@ -152,6 +158,12 @@ export const createDirectoryTool: Tool = {
   execute: async (args, ctx) => {
     const path = typeof args.path === "string" ? args.path : ""
     if (!path) return toolError("bad_args", "A `path` is required.")
+    if (isSkillResourceUri(path)) {
+      return toolError(
+        "not_allowed",
+        "Skill resources are read-only and cannot be created."
+      )
+    }
     const parents = args.parents === true
     const env = envFor(ctx)
     let target
@@ -235,6 +247,12 @@ export const movePathTool: Tool = {
     const to = typeof args.to === "string" ? args.to : ""
     if (!from || !to)
       return toolError("bad_args", "`from` and `to` are required.")
+    if (isSkillResourceUri(from) || isSkillResourceUri(to)) {
+      return toolError(
+        "not_allowed",
+        "Skill resources are read-only and cannot be moved or renamed."
+      )
+    }
     const overwrite = args.overwrite === true
     const env = envFor(ctx)
     let source
@@ -335,6 +353,12 @@ export const deletePathTool: Tool = {
   execute: async (args, ctx) => {
     const path = typeof args.path === "string" ? args.path : ""
     if (!path) return toolError("bad_args", "A `path` is required.")
+    if (isSkillResourceUri(path)) {
+      return toolError(
+        "not_allowed",
+        "Skill resources are read-only and cannot be deleted."
+      )
+    }
     const recursive = args.recursive === true
     const env = envFor(ctx)
     let target

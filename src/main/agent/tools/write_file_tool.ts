@@ -14,6 +14,7 @@ import {
   revisionOfText,
   validRevision,
 } from "./file/mutation"
+import { isSkillResourceUri } from "./skill_resources"
 
 // Creates, overwrites, or appends to a file inside the workspace, creating
 // parent directories as needed. Writes atomically and returns a short
@@ -70,6 +71,12 @@ export const writeFileTool: Tool = {
   execute: async (args, ctx) => {
     const path = typeof args.path === "string" ? args.path : ""
     if (!path) return toolError("bad_args", "A `path` is required.")
+    if (isSkillResourceUri(path)) {
+      return toolError(
+        "not_allowed",
+        "Skill resources are read-only and cannot be written."
+      )
+    }
     if (typeof args.content !== "string") {
       return toolError("bad_args", "`content` must be a string.")
     }

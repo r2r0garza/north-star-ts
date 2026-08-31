@@ -12,6 +12,7 @@ import type {
   SearchResult,
   SearchResultMode,
 } from "../env/types"
+import { isSkillResourceUri, resolveSkillResourcePath } from "./skill_resources"
 
 const MAX_FILE_BYTES = 1024 * 1024 // 1 MB
 const MAX_RESULTS_CAP = 500
@@ -27,7 +28,7 @@ export const searchTool: Tool = {
     function: {
       name: "search_tool",
       description:
-        "Search file contents under the workspace. Supports fixed or regex " +
+        "Search file contents under the workspace or an activated read-only skill resource root. Supports fixed or regex " +
         "queries, smart case, real include/exclude globs, context, files, and counts.",
       parameters: {
         type: "object",
@@ -54,6 +55,7 @@ export const searchTool: Tool = {
             type: "string",
             description:
               "Subdirectory to search within, relative to the workspace root. " +
+              "Use an activated skill resource URI like skill://name/path to search bundled skill files. " +
               "Defaults to the whole workspace.",
           },
           globs: {
@@ -133,12 +135,26 @@ export const searchTool: Tool = {
 
     const env = ctx.env ?? new LocalEnvironment(ctx.workspace)
     const sub = typeof args.path === "string" ? args.path : ""
-    const root = await env.resolve(sub)
-    const displayRoot = await env.resolve("")
+    const isSkillPath = isSkillResourceUri(sub)
+    let searchEnv = env
+    let root: string
+    let displayRoot: string
+    try {
+      if (isSkillPath) {
+        root = await resolveSkillResourcePath(ctx, sub)
+        searchEnv = new LocalEnvironment(root)
+        displayRoot = root
+      } else {
+        root = await env.resolve(sub)
+        displayRoot = await env.resolve("")
+      }
+    } catch (error) {
+      return toolError("not_allowed", (error as Error).message)
+    }
     const globs = normalizeGlobs(args)
 
     try {
-      const search = await env.search({
+      const search = await searchEnv.search({
         root,
         query,
         mode,

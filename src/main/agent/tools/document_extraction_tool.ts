@@ -5,6 +5,7 @@ import { LocalEnvironment } from "../env/local"
 import type { Environment, StatInfo } from "../env/types"
 import { renderMetadata, toolError, truncateUtf8Text } from "./output"
 import { TOOL_EFFECTS, type Tool, type ToolContext } from "./types"
+import { isSkillResourceUri, resolveSkillResourcePath } from "./skill_resources"
 
 const MAX_DOCUMENT_BYTES = 16 * 1024 * 1024
 const MAX_ZIP_ENTRIES = 512
@@ -62,6 +63,9 @@ async function resolveReadable(
   env: Environment,
   path: string
 ): Promise<Readable> {
+  if (isSkillResourceUri(path)) {
+    return { source: "host", path: await resolveSkillResourcePath(ctx, path) }
+  }
   if (ctx.workspace) {
     return { source: "env", path: await env.resolve(path) }
   }
@@ -641,7 +645,9 @@ export const readDocumentTool: Tool = {
           path: {
             type: "string",
             description:
-              "Document path. In a workspace, relative to the workspace root. In Chat, the name or path of an attached file.",
+              "Document path. In a workspace, relative to the workspace root " +
+              "or an activated skill resource URI like skill://name/path. " +
+              "In Chat, the name or path of an attached file.",
           },
           cursor: {
             type: "string",

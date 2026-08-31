@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest"
-import { mkdtemp, rm, writeFile } from "fs/promises"
+import { mkdtemp, mkdir, rm, symlink, writeFile } from "fs/promises"
 import { tmpdir } from "os"
 import { basename, join } from "path"
 import { readFileTool } from "./read_file_tool"
@@ -16,6 +16,69 @@ afterEach(async () => {
 })
 
 describe("read_file_tool", () => {
+  it("reads activated skill resources with exact path casing", async () => {
+    const skillRoot = await mkdtemp(join(tmpdir(), "skill-resource-"))
+    try {
+      await mkdir(join(skillRoot, "References"), { recursive: true })
+      await writeFile(join(skillRoot, "References", "Template.txt"), "hello\n")
+
+      const allowed = await readFileTool.execute(
+        { path: "skill://demo/References/Template.txt" },
+        {
+          workspace,
+          skillResourceRoots: { demo: skillRoot },
+        }
+      )
+      const wrongCase = await readFileTool.execute(
+        { path: "skill://demo/references/Template.txt" },
+        {
+          workspace,
+          skillResourceRoots: { demo: skillRoot },
+        }
+      )
+
+      expect(allowed).toContain("1\thello")
+      expect(wrongCase).toContain("ERROR[not_allowed]")
+    } finally {
+      await rm(skillRoot, { recursive: true, force: true })
+    }
+  })
+
+  it("rejects inactive, traversal, absolute, and symlink-escaping skill resources", async () => {
+    const skillRoot = await mkdtemp(join(tmpdir(), "skill-resource-"))
+    const outside = await mkdtemp(join(tmpdir(), "skill-resource-outside-"))
+    try {
+      await writeFile(join(outside, "secret.txt"), "secret\n")
+      await symlink(outside, join(skillRoot, "outside"))
+
+      const inactive = await readFileTool.execute(
+        { path: "skill://missing/template.txt" },
+        { workspace, skillResourceRoots: { demo: skillRoot } }
+      )
+      const traversal = await readFileTool.execute(
+        { path: "skill://demo/../secret.txt" },
+        { workspace, skillResourceRoots: { demo: skillRoot } }
+      )
+      const absolute = await readFileTool.execute(
+        { path: "skill://demo/%2Ftmp%2Fsecret.txt" },
+        { workspace, skillResourceRoots: { demo: skillRoot } }
+      )
+      const symlinkEscape = await readFileTool.execute(
+        { path: "skill://demo/outside/secret.txt" },
+        { workspace, skillResourceRoots: { demo: skillRoot } }
+      )
+
+      expect(inactive).toContain("ERROR[not_allowed]")
+      expect(traversal).toContain("ERROR[not_allowed]")
+      expect(absolute).toContain("ERROR[not_allowed]")
+      expect(symlinkEscape).toContain("ERROR[not_allowed]")
+      expect(symlinkEscape).not.toContain("secret")
+    } finally {
+      await rm(skillRoot, { recursive: true, force: true })
+      await rm(outside, { recursive: true, force: true })
+    }
+  })
+
   it("reads a large file with adjacent continuation metadata", async () => {
     const lines = Array.from({ length: 40_000 }, (_, i) => `row-${i + 1}`)
     await writeFile(join(workspace, "large.txt"), `${lines.join("\n")}\n`)

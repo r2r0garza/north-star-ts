@@ -1,6 +1,6 @@
 import { randomUUID } from "crypto"
 import { stat } from "fs/promises"
-import { basename, isAbsolute } from "path"
+import { basename, dirname, isAbsolute } from "path"
 import { SHUTDOWN_ABORT_REASON } from "./abort"
 import {
   toolDefinitions,
@@ -35,6 +35,7 @@ import { loadSkills } from "./skills/loader"
 import { buildSkillsPrompt } from "./skills/prompt"
 import { createReadSkillTool } from "./skills/tool"
 import { skillSources } from "./skills/sources"
+import { registerSkillResourceRootInMap } from "./tools/skill_resources"
 import { recordMemoryTurn } from "./memory/service"
 import { loadAgent, loadAgents } from "./agents/loader"
 import { agentSources } from "./agents/sources"
@@ -292,6 +293,8 @@ export interface ChatRequest {
   workspace?: string
   // Absolute paths of files to inline into the prompt (Chat view attachments).
   attachments?: string[]
+  // Skill names explicitly selected by the user through slash mentions.
+  skills?: string[]
   // Start this turn in plan mode (interactive/north_star only). See
   // RunAgentLoopOptions.planMode.
   planMode?: boolean
@@ -411,6 +414,8 @@ export interface RunAgentLoopOptions {
   workspace?: string
   // Absolute paths of files to inline into the prompt (Chat view attachments).
   attachments?: string[]
+  // Skill names explicitly selected by the user through slash mentions.
+  skills?: string[]
   // A fresh user message to persist before the loop starts (a new turn). Omitted
   // when a durable task resumes — the loop continues from the already-persisted
   // transcript with no new user turn, since context is rebuilt from stored
@@ -515,8 +520,15 @@ function resolveConversationDir(
 export async function runAgentLoop(
   opts: RunAgentLoopOptions
 ): Promise<ChatResult> {
-  const { conversationId, workspace, attachments, userMessage, abort, taskId } =
-    opts
+  const {
+    conversationId,
+    workspace,
+    attachments,
+    userMessage,
+    abort,
+    taskId,
+    skills: selectedSkillNames,
+  } = opts
   const onEvent: OnEvent = opts.onEvent ?? (() => {})
 
   // The workspace is optional. When provided it must be a real directory and
@@ -616,6 +628,16 @@ export async function runAgentLoop(
   const allSkills = await loadSkills(skillSources(agentDir))
   const skills = resolvePolicySkills(agent, allSkills, capabilityPolicy)
   const readSkillTool = createReadSkillTool(skills)
+  const skillResourceRoots: Record<string, string> = {}
+  for (const name of selectedSkillNames ?? []) {
+    const skill = skills.find((s) => s.name === name)
+    if (skill) {
+      registerSkillResourceRootInMap(skillResourceRoots, {
+        name: skill.name,
+        root: dirname(skill.path),
+      })
+    }
+  }
 
   // Filesystem tools are confined to a workspace, so the full set is only
   // offered when one exists. A Chat session has no workspace; instead it offers
@@ -906,6 +928,22 @@ export async function runAgentLoop(
       name: "skills",
       priority: SECTION_PRIORITY.skills,
       content: skillsPrompt,
+    })
+  }
+  const selectedSkills = skills.filter((s) =>
+    (selectedSkillNames ?? []).includes(s.name)
+  )
+  if (selectedSkills.length > 0) {
+    sections.push({
+      name: "selected_skills",
+      priority: SECTION_PRIORITY.skills,
+      content:
+        "## User-selected skills\n" +
+        "The user explicitly selected these skills with slash mentions. Treat them as activated for this turn; their bundled files are available as read-only skill resources:\n" +
+        selectedSkills
+          .map((s) => `- ${s.name}: skill://${s.name}/`)
+          .join("\n") +
+        "\nCall read_skill for full instructions if the selected skill instructions are not already in context.",
     })
   }
 
@@ -1472,6 +1510,7 @@ export async function runAgentLoop(
             enqueueTask: opts.enqueueTask,
             browser,
             emitImage: (image: ToolImage) => callImages.push(image),
+            skillResourceRoots,
             // present_plan calls this on approval; the selected backend is already
             // running, so the next loop iteration can safely unlock mutations.
             setPlanMode: (on: boolean) => {
@@ -1705,6 +1744,7 @@ export async function runChat(
     message,
     workspace,
     attachments,
+    skills,
     planMode,
     autoMode,
   }: ChatRequest,
@@ -1739,6 +1779,7 @@ export async function runChat(
       conversationId,
       workspace,
       attachments,
+      skills,
       userMessage: message,
       planMode,
       autoMode,

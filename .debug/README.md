@@ -67,6 +67,7 @@ a brief names a prerequisite.
 | 58 | P2 | Fixed | [Command output caps exclude serialization expansion](./058-command-session-serialized-output-cap.md) | Command session rendering |
 | 59 | P2 | Closed | [Listener subscriptions leak and background tasks remain untitled](./059-maxlisteners-and-title-generation.md) | IPC subscriptions and conversation titles |
 | 60 | P3 | Closed | [Generated titles echo greetings or expose reasoning](./060-title-generation-reasoning.md) | Conversation title generation |
+| 61 | P2 | OPEN | [Skill resources resolve against the workspace](./061-skill-resources-resolve-against-workspace.md) | Skill runtime and filesystem roots |
 
 New briefs start in **OPEN** state. When fixing one, add the regression test
 described by its acceptance criteria before marking it resolved.

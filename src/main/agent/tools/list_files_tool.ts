@@ -2,6 +2,7 @@ import { TOOL_EFFECTS, type Tool } from "./types"
 import { LocalEnvironment } from "../env/local"
 import type { DirEntry, ListDirResult } from "../env/types"
 import { renderMetadata, toolError } from "./output"
+import { isSkillResourceUri, resolveSkillResourcePath } from "./skill_resources"
 
 const MAX_LIST_ENTRIES = 2000
 const MAX_LIST_BYTES = 128 * 1024
@@ -15,14 +16,16 @@ export const listFilesTool: Tool = {
     function: {
       name: "list_files_tool",
       description:
-        "List the files and directories at a given path inside the workspace.",
+        "List the files and directories at a given path inside the workspace " +
+        "or an activated read-only skill resource root.",
       parameters: {
         type: "object",
         properties: {
           path: {
             type: "string",
             description:
-              "Path relative to the workspace root. Defaults to the workspace root.",
+              "Path relative to the workspace root, or an activated skill " +
+              "resource URI like skill://name/path. Defaults to the workspace root.",
           },
         },
         required: [],
@@ -31,25 +34,33 @@ export const listFilesTool: Tool = {
   },
   execute: async (args, ctx) => {
     const path = typeof args.path === "string" ? args.path : ""
-    if (!ctx.workspace) {
+    const isSkillPath = isSkillResourceUri(path)
+    if (!ctx.workspace && !isSkillPath) {
       return toolError("no_workspace", "Listing files requires a workspace.")
     }
     const env = ctx.env ?? new LocalEnvironment(ctx.workspace)
     let target
     try {
-      target = await env.resolve(path)
+      target = isSkillPath
+        ? await resolveSkillResourcePath(ctx, path)
+        : await env.resolve(path)
     } catch (error) {
       return toolError("not_allowed", (error as Error).message)
     }
 
     let result: ListDirResult
     try {
-      result = env.listDir
-        ? await env.listDir(target, {
-            maxEntries: MAX_LIST_ENTRIES + 1,
-            maxBytes: MAX_LIST_BYTES + 1,
-          })
-        : { entries: await env.readdir(target), truncated: false }
+      result = isSkillPath
+        ? {
+            entries: await new LocalEnvironment(target).readdir(target),
+            truncated: false,
+          }
+        : env.listDir
+          ? await env.listDir(target, {
+              maxEntries: MAX_LIST_ENTRIES + 1,
+              maxBytes: MAX_LIST_BYTES + 1,
+            })
+          : { entries: await env.readdir(target), truncated: false }
     } catch (error) {
       return toolError(
         "list_failed",

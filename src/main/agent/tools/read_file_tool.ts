@@ -6,6 +6,7 @@ import type { Environment, StatInfo } from "../env/types"
 import { readHostTextLines } from "../env/read-text-lines"
 import { supportedDocumentKind } from "./document_extraction_tool"
 import { renderMetadata, toolError } from "./output"
+import { isSkillResourceUri, resolveSkillResourcePath } from "./skill_resources"
 
 // Largest file we'll read into context. Matches the attachment cap in
 // agent/index.ts so the agent's two file-ingestion paths are bounded alike.
@@ -29,6 +30,9 @@ async function resolveReadable(
   env: Environment,
   path: string
 ): Promise<Readable> {
+  if (isSkillResourceUri(path)) {
+    return { source: "host", path: await resolveSkillResourcePath(ctx, path) }
+  }
   if (ctx.workspace) {
     return { source: "env", path: await env.resolve(path) }
   }
@@ -63,7 +67,8 @@ export const readFileTool: Tool = {
             type: "string",
             description:
               "The file to read. In a workspace, a path relative to the workspace " +
-              "root. In a Chat session, the name (or path) of one of the attached files.",
+              "root, or an activated skill resource URI like skill://name/path. " +
+              "In a Chat session, the name (or path) of one of the attached files.",
           },
           offset: {
             type: "integer",

@@ -13,6 +13,7 @@ import {
   FileTooLargeError,
   fileTooLargeMessage,
 } from "./file/mutation"
+import { isSkillResourceUri } from "./skill_resources"
 
 function errorFromMessage(message: string): string {
   const [code, ...rest] = message.split(":")
@@ -119,6 +120,18 @@ export const applyPatchTool: Tool = {
     const operations = parsePatchOperations(args.operations)
     if (typeof operations === "string") {
       return toolError("bad_args", operations)
+    }
+    if (
+      operations.some(
+        (op) =>
+          isSkillResourceUri(op.path) ||
+          ("new_path" in op && isSkillResourceUri(op.new_path))
+      )
+    ) {
+      return toolError(
+        "not_allowed",
+        "Skill resources are read-only and cannot be patched."
+      )
     }
 
     const env = ctx.env ?? new LocalEnvironment(ctx.workspace)

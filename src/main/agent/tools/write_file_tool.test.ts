@@ -107,6 +107,16 @@ beforeEach(() => {
 })
 
 describe("write_file_tool", () => {
+  it("rejects skill resource writes before resolving the workspace env", async () => {
+    const result = await writeFileTool.execute(
+      { path: "skill://demo/template.txt", content: "new" },
+      ctx
+    )
+
+    expect(result).toContain("ERROR[not_allowed]")
+    expect(result).toContain("read-only")
+  })
+
   it("creates a file by default (mode omitted)", async () => {
     const result = await writeFileTool.execute(
       { path: "a.txt", content: "hello" },

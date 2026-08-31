@@ -232,6 +232,7 @@ const api = {
       message: string
       workspace?: string
       attachments?: string[]
+      skills?: string[]
       // Start the turn in plan mode (interactive/north_star only): read/search +
       // write_plan only, until the user approves via present_plan.
       planMode?: boolean
