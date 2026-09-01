@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { agentDisplay } from "./agent-display"
+import { agentDisplay, agentRunTitle } from "./agent-display"
 
 describe("agentDisplay", () => {
   it("turns a durable agent reference into friendly display metadata", () => {
@@ -41,5 +41,21 @@ describe("agentDisplay", () => {
       source: null,
       scope: null,
     })
+  })
+})
+
+describe("agentRunTitle", () => {
+  it("replaces an embedded durable reference with the native agent name", () => {
+    const ref =
+      'agentref:v1:{"sourceKind":"cursor","scope":"global","nativeName":"researcher"}'
+
+    expect(agentRunTitle(`Research: ${ref}`, "Research", ref)).toBe(
+      "Research: researcher"
+    )
+  })
+
+  it("preserves ordinary and fallback titles", () => {
+    expect(agentRunTitle("Auth task", "Fallback", "coder")).toBe("Auth task")
+    expect(agentRunTitle(null, "Fallback", "coder")).toBe("Fallback")
   })
 })

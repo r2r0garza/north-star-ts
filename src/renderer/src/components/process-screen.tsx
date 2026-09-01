@@ -101,7 +101,7 @@ import {
 } from "@/components/ui/combobox"
 import { toast } from "sonner"
 import { cn, formatRelativeTime } from "@/lib/utils"
-import { agentDisplay } from "@/lib/agent-display"
+import { agentDisplay, agentRunTitle } from "@/lib/agent-display"
 import type {
   AgentSummary,
   EdgeTrigger,
@@ -174,6 +174,48 @@ function agentValue(agent: AgentSummary): string {
 
 function agentLabel(agent: AgentSummary): string {
   return agent.label ?? agent.name
+}
+
+function AgentIdentityBadge({
+  value,
+  metadata,
+  onRemove,
+}: {
+  value: string
+  metadata?: AgentSummary
+  onRemove?: () => void
+}) {
+  const display = agentDisplay(value, metadata)
+  const details = [display.source, display.scope].filter(Boolean).join(" · ")
+
+  return (
+    <Badge
+      variant={onRemove ? "secondary" : "outline"}
+      className={cn(
+        "max-w-full gap-1.5 pr-1 pl-2",
+        onRemove ? "py-1" : "h-5 text-[10px]"
+      )}
+      title={details ? `${display.name} · ${details}` : display.name}
+    >
+      <Bot className="size-3 shrink-0 text-muted-foreground" />
+      <span className="min-w-0 truncate font-medium">{display.name}</span>
+      {display.source && (
+        <span className="shrink-0 border-l border-foreground/10 pl-1.5 text-[10px] font-normal text-muted-foreground">
+          {display.source}
+        </span>
+      )}
+      {onRemove && (
+        <button
+          type="button"
+          onClick={onRemove}
+          className="shrink-0 rounded-sm p-0.5 transition-colors hover:bg-background/60 hover:text-foreground"
+          aria-label={`Remove ${display.name}`}
+        >
+          <XIcon className="size-3" />
+        </button>
+      )}
+    </Badge>
+  )
 }
 
 export function ProcessScreen({ onClose }: { onClose: () => void }) {
@@ -1337,38 +1379,13 @@ function PhaseCard({
               <div className="flex flex-wrap items-center gap-1.5">
                 {pool.map((a) => {
                   const catalogAgent = agentsByValue.get(a.agentName)
-                  const display = agentDisplay(a.agentName, catalogAgent)
-                  const details = [display.source, display.scope]
-                    .filter(Boolean)
-                    .join(" · ")
-
                   return (
-                    <Badge
+                    <AgentIdentityBadge
                       key={a.id}
-                      variant="secondary"
-                      className="max-w-full gap-1.5 py-1 pr-1 pl-2"
-                      title={
-                        details ? `${display.name} · ${details}` : display.name
-                      }
-                    >
-                      <Bot className="size-3 shrink-0 text-muted-foreground" />
-                      <span className="min-w-0 truncate font-medium">
-                        {display.name}
-                      </span>
-                      {display.source && (
-                        <span className="shrink-0 border-l border-foreground/10 pl-1.5 text-[10px] font-normal text-muted-foreground">
-                          {display.source}
-                        </span>
-                      )}
-                      <button
-                        type="button"
-                        onClick={() => removePoolAgent(a.id)}
-                        className="shrink-0 rounded-sm p-0.5 transition-colors hover:bg-background/60 hover:text-foreground"
-                        aria-label={`Remove ${display.name}`}
-                      >
-                        <XIcon className="size-3" />
-                      </button>
-                    </Badge>
+                      value={a.agentName}
+                      metadata={catalogAgent}
+                      onRemove={() => removePoolAgent(a.id)}
+                    />
                   )
                 })}
                 {pool.length === 0 && (
@@ -2187,9 +2204,7 @@ function PhaseRunItem({
         <StatusIcon status={displayStatus} />
         <span className="min-w-0 flex-1 truncate font-medium">{name}</span>
         {phaseRun.agentName && (
-          <Badge variant="outline" className="shrink-0 font-mono text-[10px]">
-            {phaseRun.agentName}
-          </Badge>
+          <AgentIdentityBadge value={phaseRun.agentName} />
         )}
         <PhaseStatusLabel status={displayStatus} />
       </div>
@@ -2241,6 +2256,11 @@ function PhaseRunItem({
         <div className="flex flex-col gap-1 border-l-2 pl-3">
           {childRuns.map((c, i) => {
             const clickable = c.taskId !== null
+            const childName = agentRunTitle(
+              c.title,
+              `${phaseName(c.phaseId)} #${i + 1}`,
+              c.agentName
+            )
             return (
               <div key={c.id} className="flex flex-col gap-0.5">
                 <div
@@ -2254,17 +2274,8 @@ function PhaseRunItem({
                   }
                 >
                   <StatusIcon status={c.status} />
-                  <span className="min-w-0 flex-1 truncate">
-                    {c.title ?? `${phaseName(c.phaseId)} #${i + 1}`}
-                  </span>
-                  {c.agentName && (
-                    <Badge
-                      variant="outline"
-                      className="shrink-0 font-mono text-[10px]"
-                    >
-                      {c.agentName}
-                    </Badge>
-                  )}
+                  <span className="min-w-0 flex-1 truncate">{childName}</span>
+                  {c.agentName && <AgentIdentityBadge value={c.agentName} />}
                   <PhaseStatusLabel status={c.status} />
                 </div>
                 {/* This sub-task's produced files (plan 030b). */}
@@ -2285,7 +2296,7 @@ function PhaseRunItem({
                   <div className="pl-1">
                     <FlagCard
                       flagGate={childFlagGates[c.id]}
-                      flaggerName={c.title ?? phaseName(c.phaseId)}
+                      flaggerName={childName}
                       onConfirm={() =>
                         onConfirmFlag(childFlagGates[c.id].requestId, c.id)
                       }
@@ -2604,6 +2615,11 @@ function SubProcessNestedRun({
             const displayStatus = gateRequestId
               ? "waiting_for_approval"
               : pr.status
+            const runName = agentRunTitle(
+              pr.title,
+              phaseName(pr.phaseId),
+              pr.agentName
+            )
             return (
               <div key={pr.id} className="flex flex-col gap-0.5">
                 <div
@@ -2615,23 +2631,14 @@ function SubProcessNestedRun({
                   title={pr.taskId ? "View this phase's transcript" : undefined}
                 >
                   <StatusIcon status={displayStatus} />
-                  <span className="min-w-0 flex-1 truncate">
-                    {pr.title ?? phaseName(pr.phaseId)}
-                  </span>
-                  {pr.agentName && (
-                    <Badge
-                      variant="outline"
-                      className="shrink-0 font-mono text-[10px]"
-                    >
-                      {pr.agentName}
-                    </Badge>
-                  )}
+                  <span className="min-w-0 flex-1 truncate">{runName}</span>
+                  {pr.agentName && <AgentIdentityBadge value={pr.agentName} />}
                   <PhaseStatusLabel status={displayStatus} />
                 </div>
                 {/* An approve gate raised inside this nested run (plan 038.2). */}
                 {gateRequestId && (
                   <GateCard
-                    name={pr.title ?? phaseName(pr.phaseId)}
+                    name={runName}
                     requestId={gateRequestId}
                     phaseRunId={pr.id}
                     reworkRound={pr.reworkRound}
@@ -2646,7 +2653,7 @@ function SubProcessNestedRun({
                 {flagGates[pr.id] && (
                   <FlagCard
                     flagGate={flagGates[pr.id]}
-                    flaggerName={pr.title ?? phaseName(pr.phaseId)}
+                    flaggerName={runName}
                     onConfirm={() =>
                       onConfirmFlag(flagGates[pr.id].requestId, pr.id)
                     }
@@ -2666,8 +2673,15 @@ function SubProcessNestedRun({
                     >
                       <StatusIcon status={c.status} />
                       <span className="min-w-0 flex-1 truncate">
-                        {c.title ?? `${phaseName(c.phaseId)} #${i + 1}`}
+                        {agentRunTitle(
+                          c.title,
+                          `${phaseName(c.phaseId)} #${i + 1}`,
+                          c.agentName
+                        )}
                       </span>
+                      {c.agentName && (
+                        <AgentIdentityBadge value={c.agentName} />
+                      )}
                       <PhaseStatusLabel status={c.status} />
                     </div>
                     {/* A per-child rework flag a nested on_each_subtask instance
@@ -2676,7 +2690,11 @@ function SubProcessNestedRun({
                       <div className="ml-3">
                         <FlagCard
                           flagGate={flagGates[c.id]}
-                          flaggerName={c.title ?? phaseName(c.phaseId)}
+                          flaggerName={agentRunTitle(
+                            c.title,
+                            phaseName(c.phaseId),
+                            c.agentName
+                          )}
                           onConfirm={() =>
                             onConfirmFlag(flagGates[c.id].requestId, c.id)
                           }

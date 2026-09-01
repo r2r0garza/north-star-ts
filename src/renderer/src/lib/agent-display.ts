@@ -61,3 +61,16 @@ export function agentDisplay(
     scope: scope ? titleCase(scope) : null,
   }
 }
+
+// Older phase-run titles were built by appending the durable agent value to the
+// phase name. Keep the authored portion, but hide that transport identifier when
+// presenting both existing and newly-created runs.
+export function agentRunTitle(
+  title: string | null,
+  fallback: string,
+  agentValue: string | null
+): string {
+  const value = title ?? fallback
+  if (!agentValue || !value.includes(agentValue)) return value
+  return value.replaceAll(agentValue, agentDisplay(agentValue).name)
+}
