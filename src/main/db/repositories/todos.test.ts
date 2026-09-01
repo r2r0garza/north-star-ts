@@ -24,6 +24,7 @@ import {
   mergeTodos,
   normalizeItems,
   isTodoListFinished,
+  subscribeTodoChanges,
   MAX_TODO_ITEMS,
   MAX_TODO_CONTENT_CHARS,
 } from "./todos"
@@ -170,6 +171,26 @@ describe.skipIf(!sqliteLoads)("replaceTodos", () => {
     expect(listTodos(c)).toHaveLength(0)
   })
 
+  it("publishes the committed snapshot after replace and clear", () => {
+    const c = freshConversation()
+    const listener = vi.fn()
+    const unsubscribe = subscribeTodoChanges(listener)
+
+    replaceTodos(c, [{ id: "a", content: "a", status: "pending" }])
+    replaceTodos(c, [])
+    unsubscribe()
+
+    expect(listener).toHaveBeenCalledTimes(2)
+    expect(listener.mock.calls[0][0]).toMatchObject({
+      conversationId: c,
+      todos: [{ itemId: "a", status: "pending" }],
+    })
+    expect(listener.mock.calls[1][0]).toMatchObject({
+      conversationId: c,
+      todos: [],
+    })
+  })
+
   it("scopes todos to their conversation", () => {
     const c1 = freshConversation()
     const c2 = freshConversation()
@@ -199,6 +220,22 @@ describe.skipIf(!sqliteLoads)("mergeTodos", () => {
     expect(list).toHaveLength(2)
     expect(list.find((t) => t.itemId === "a")?.status).toBe("in_progress")
     expect(list.find((t) => t.itemId === "b")?.status).toBe("pending")
+  })
+
+  it("publishes the committed snapshot after merge", () => {
+    const c = freshConversation()
+    replaceTodos(c, [{ id: "a", content: "a", status: "pending" }])
+    const listener = vi.fn()
+    const unsubscribe = subscribeTodoChanges(listener)
+
+    mergeTodos(c, [{ id: "a", content: "a", status: "completed" }])
+    unsubscribe()
+
+    expect(listener).toHaveBeenCalledTimes(1)
+    expect(listener.mock.calls[0][0]).toMatchObject({
+      conversationId: c,
+      todos: [{ itemId: "a", status: "completed" }],
+    })
   })
 
   it("appends new items to the end", () => {

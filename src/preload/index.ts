@@ -163,6 +163,11 @@ export type TaskLiveEvent = {
   id: number
 }
 
+export type TodoChangeEvent = {
+  conversationId: string
+  todos: Todo[]
+}
+
 // A skill as surfaced to the composer's slash menu — just what the picker needs
 // to display and match on. The full body stays in the main process (read_skill).
 export type SkillSummary = {
@@ -210,6 +215,20 @@ let taskSubscriptionCount = 0
 function retainTaskSubscription(): void {
   if (taskSubscriptionCount++ === 0) {
     void ipcRenderer.invoke("task:subscribe")
+  }
+}
+
+let todoSubscriptionCount = 0
+function retainTodoSubscription(): void {
+  if (todoSubscriptionCount++ === 0) {
+    void ipcRenderer.invoke("db:todos:subscribe")
+  }
+}
+function releaseTodoSubscription(): void {
+  if (todoSubscriptionCount === 0) return
+  todoSubscriptionCount -= 1
+  if (todoSubscriptionCount === 0) {
+    void ipcRenderer.invoke("db:todos:unsubscribe")
   }
 }
 function releaseTaskSubscription(): void {
@@ -781,6 +800,17 @@ const api = {
       // happen via the agent's todo_write tool, not the renderer.
       list: (conversationId: string) =>
         ipcRenderer.invoke("db:todos:list", conversationId) as Promise<Todo[]>,
+      // Subscribe to committed todo mutations. Returns an unsubscribe function.
+      onChange: (cb: (event: TodoChangeEvent) => void) => {
+        const listener = (_event: IpcRendererEvent, payload: TodoChangeEvent) =>
+          cb(payload)
+        ipcRenderer.on("db:todos:change", listener)
+        retainTodoSubscription()
+        return () => {
+          ipcRenderer.removeListener("db:todos:change", listener)
+          releaseTodoSubscription()
+        }
+      },
     },
     workspaces: {
       list: () =>

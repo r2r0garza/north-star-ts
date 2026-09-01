@@ -1,4 +1,4 @@
-import { ipcMain } from "electron"
+import { ipcMain, type WebContents } from "electron"
 import {
   conversations,
   messages,
@@ -141,6 +141,32 @@ export function registerDbHandlers(
   ipcMain.handle("db:todos:list", (_e, conversationId: string) =>
     todos.listTodos(conversationId)
   )
+  const todoSubscriptions = new Map<
+    WebContents,
+    { unsubscribe: () => void; onDestroyed: () => void }
+  >()
+  const unsubscribeTodos = (sender: WebContents) => {
+    const subscription = todoSubscriptions.get(sender)
+    if (!subscription) return
+    subscription.unsubscribe()
+    sender.removeListener("destroyed", subscription.onDestroyed)
+    todoSubscriptions.delete(sender)
+  }
+  ipcMain.handle("db:todos:subscribe", (event) => {
+    const sender = event.sender
+    if (todoSubscriptions.has(sender)) return
+    const stop = todos.subscribeTodoChanges((payload) => {
+      if (!sender.isDestroyed()) {
+        sender.send("db:todos:change", payload)
+      }
+    })
+    const onDestroyed = () => unsubscribeTodos(sender)
+    todoSubscriptions.set(sender, { unsubscribe: stop, onDestroyed })
+    sender.once("destroyed", onDestroyed)
+  })
+  ipcMain.handle("db:todos:unsubscribe", (event) => {
+    unsubscribeTodos(event.sender)
+  })
 
   // Workspaces
   ipcMain.handle("db:workspaces:list", () => workspaces.listWorkspaces())
