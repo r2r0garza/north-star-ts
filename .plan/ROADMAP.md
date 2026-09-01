@@ -16,19 +16,25 @@ item is its plan file; the ordered-list number is its current priority rank.
    North-Star-specific `index_query`; `045.2` adapts the existing renderer-backed
    `ask_user_question` round trip. Explicit adapters only—no blanket `runTool()` export, no external
    MCP proxy, and no duplicate filesystem/shell tools. Side-effect policy remains enforced server-side.
-2. **`039` — Inspectable agent-to-agent messaging. ⚠️ DESIGN-PENDING.** One phase-agent (B) **asks
-   another phase-agent (A) a question**, answered **from A's own context** — distinct from
-   `spawn_subagent` (a fresh, context-less child). The `025` engine makes each phase-run's **worker
-   conversation** addressable (`makeRunPhase` stamps a `taskId`/conversation per phase-run), so a gated
-   **`ask_agent`** tool: writes a durable `process_messages` row (`pending`), **injects the question
-   into A's existing conversation**, runs **A's `runAgentLoop` one turn** (A answers from its history),
-   then returns **{question + A's answer}** to B (B's transcript records both) while A's transcript keeps
-   the **{incoming question + answer}** — both sides retain full context. Inline + **bounded** (per-run
-   message cap + reentrancy/cycle depth guard — mandatory). v1 **asks only completed phases** (settled
-   context, no mid-flight race); same-run targets only. Monitor renders the A↔B thread off a
-   `process_phase`-style event (no new channel). **Likely splits:** `039.1` completed-target round-trip
-   + storage + monitor; `039.2` asking a running agent (queued) + richer targeting. Open Qs above.
-3. **`037` — Process import / export.** Unlike `035`/`036` (files already on disk → import-only), a
+2. **`069` — Process intake policies and inspectable assumptions.** Give each Process an explicit run-
+   entry contract instead of injecting a mandatory Planning phase: **Proceed with assumptions**
+   (default, no preflight gate), **Approve initial plan** (side-effect-free execution brief + one durable
+   approval/revision loop), or **Strict input contract** (definition-authored required fields validated
+   before enqueue). Snapshot supplied inputs on the run; inject intake guidance, definition of done, and
+   a shared materiality/authority interruption rule into phase kickoffs. Add a durable, run-scoped
+   assumptions log with origin/confidence/impact/status and monitor UI. Human clarification pauses and
+   resumes the correct worker; it remains distinct from internal Agent exchanges (`039`). Split strict
+   deterministic intake first, then assumptions/questions, then approve-plan preflight.
+3. **`039` — Inspectable Process consultations / Agent exchanges.** A running phase may consult a
+   **completed phase in the same run** and receive a context-grounded answer. The user observes the
+   durable exchange but cannot reply; intervention stays in existing Process controls. Before adding
+   consultation, persist an explicit phase result and move downstream aggregation away from "latest
+   assistant message," so appended answers never replace official output. Answer turns run under an
+   **answer-only capability profile**—no mutation, execution, delegation, user questions, or recursive
+   consultation. v1 is synchronous, same-run, completed-target, capped, and read-only in the monitor;
+   discovered defects recommend rework through the existing flag policy rather than silently changing
+   completed artifacts. Split `039.1` result integrity, then `039.2` consultation/storage/monitor.
+4. **`037` — Process import / export.** Unlike `035`/`036` (files already on disk → import-only), a
    Process lives **only in the DB** (`025` tables), so it needs an explicit **serialize ⇄ deserialize**
    to be shareable — the sharing use case you called out. **JSON** interchange (`ProcessExport`,
    `formatVersion`-guarded): **id-free**, edges reference phases by **`key`** (unique per process) so
@@ -44,7 +50,7 @@ item is its plan file; the ordered-list number is its current priority rank.
    builder affordances. **Ordered after `038`** so the format carries a phase's `subprocess_id` — a
    sub-process reference exports **by definition identity** (name/a stable ref), and import resolves or
    flags a missing referenced sub-process (like `037`'s missing-agent warning).
-4. **`032` — Process visual canvas.** The explicitly-deferred half of `026` (which shipped the
+5. **`032` — Process visual canvas.** The explicitly-deferred half of `026` (which shipped the
    **list-based** DAG builder and recorded a **visual node/edge canvas** as "later"). Renderer-first +
    one additive migration; **no engine/scheduling/routing change**. Phases become draggable **nodes**,
    dependencies **edges** drawn between handles (same `on_complete`/`on_each_subtask` trigger, same
@@ -58,19 +64,19 @@ item is its plan file; the ordered-list number is its current priority rank.
    toggle vs replace (lean **coexist**). The Radix-`Dialog` takeover means the inspector keeps
    `NativeSelect` (the `023`/`026` `pointer-events:none` finding). **Live-run-on-canvas deferred** — v1
    keeps the `026` nested-list monitor. Independent of `029`/`031`.
-5. **`010` — Container runtime profiles.** Decouple Workspace (the files) from Runtime (the env a
+6. **`010` — Container runtime profiles.** Decouple Workspace (the files) from Runtime (the env a
    tool call executes in). Replace the raw container `image` string with a named **profile**
    (`node` | `python` | `fullstack`), resolved to an image in the env factory; default/fallback =
    `fullstack` (Node + Python) so a Node repo that later adds a Python backend doesn't wedge.
    One profile per conversation, user-overridable in settings. Kills the "one workspace = one image
    forever" assumption **without** building auto-routing or image management (both deferred). Small
    refactor of `env/factory.ts` + `container.ts` + execution settings (JSON blob — no migration).
-6. **`007` — Deterministic slash-command skill invocation (picker already shipped).** The composer
+7. **`007` — Deterministic slash-command skill invocation (picker already shipped).** The composer
    autocomplete, `skills:list` IPC, keyboard selection, and slash badges shipped in `c5594a1`. The
    remaining work is the functional guarantee from the plan: a selected `/skill-name …` must
    deterministically pre-inject `read_skill(skill-name)` before inference, validate unknown skills in
    main, preserve the literal command in the transcript, and keep plain-message skill use discretionary.
-7. **`024` — Index filesystem/git watcher.** The "live file watching" follow-up `008` deferred (and
+8. **`024` — Index filesystem/git watcher.** The "live file watching" follow-up `008` deferred (and
    `014` re-deferred). Today the workspace index — and the compact summary `buildIndexSummary`
    injects into the system prompt on every message send — only refreshes when `IndexService.
    ensureRunning` is called, which fires on conversation create/update or manual Start/Rebuild;
@@ -87,6 +93,14 @@ item is its plan file; the ordered-list number is its current priority rank.
 
 ## Deferred
 
+- **`070` — Pods: autonomous agent teams with mutable work graphs. DEFERRED SEED.** A Pod is not a
+  saved roster or a loose Process: it owns an objective and may create, split, assign, cancel,
+  reprioritize, and revisit work within a charter, budget, and externally defined completion contract.
+  Reuse the task/agent runtime, `069` intake/assumptions, and `039` result/exchange foundations; net-new
+  concepts are the durable mutable work board, bounded coordinator replan loop, independent completion
+  evaluator, and charter enforcement. Activate only after `069`/`039` land, three concrete objectives
+  demonstrate runtime topology change beyond Process fan-out/rework, and a bounded prototype materially
+  outperforms the equivalent Process without unacceptable cost, thrash, or user confusion.
 - **`066` — Notebook editing and cell execution.** Depends on `063`'s safe reader and a reviewed
    Environment-backed kernel contract. Adds revision-safe structured cell edits and separately
    execution-gated cell runs with Stop/timeouts/output caps; never installs kernels or treats notebook
