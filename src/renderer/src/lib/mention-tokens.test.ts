@@ -134,9 +134,9 @@ describe("expandMentions", () => {
     values: new Set(["src/foo.ts"]),
   }
 
-  it("expands a skill token to natural language", () => {
+  it("leaves a skill token literal for main-process invocation", () => {
     expect(expandMentions("hey, commit with the /git-commit", [skills])).toBe(
-      "hey, commit with the git-commit skill"
+      "hey, commit with the /git-commit"
     )
   })
 
@@ -149,7 +149,7 @@ describe("expandMentions", () => {
   it("expands both kinds together", () => {
     expect(
       expandMentions("use /git-commit on @src/foo.ts", [skills, files])
-    ).toBe("use git-commit skill on src/foo.ts")
+    ).toBe("use /git-commit on src/foo.ts")
   })
 
   it("leaves unconfirmed tokens untouched", () => {

@@ -71,12 +71,7 @@ item is its plan file; the ordered-list number is its current priority rank.
    One profile per conversation, user-overridable in settings. Kills the "one workspace = one image
    forever" assumption **without** building auto-routing or image management (both deferred). Small
    refactor of `env/factory.ts` + `container.ts` + execution settings (JSON blob — no migration).
-7. **`007` — Deterministic slash-command skill invocation (picker already shipped).** The composer
-   autocomplete, `skills:list` IPC, keyboard selection, and slash badges shipped in `c5594a1`. The
-   remaining work is the functional guarantee from the plan: a selected `/skill-name …` must
-   deterministically pre-inject `read_skill(skill-name)` before inference, validate unknown skills in
-   main, preserve the literal command in the transcript, and keep plain-message skill use discretionary.
-8. **`024` — Index filesystem/git watcher.** The "live file watching" follow-up `008` deferred (and
+7. **`024` — Index filesystem/git watcher.** The "live file watching" follow-up `008` deferred (and
    `014` re-deferred). Today the workspace index — and the compact summary `buildIndexSummary`
    injects into the system prompt on every message send — only refreshes when `IndexService.
    ensureRunning` is called, which fires on conversation create/update or manual Start/Rebuild;
@@ -147,6 +142,14 @@ item is its plan file; the ordered-list number is its current priority rank.
 
 ## Done
 
+- **`007` — Deterministic slash-command skill invocation.** Completed the post-`c5594a1` functional
+  guarantee for slash-invoked skills: renderer-selected slash mentions now stay literal instead of
+  rewriting to prose, main parses leading `/skill-name` commands defensively, validates forced skills
+  against the resolved per-turn catalog, pre-injects and persists a synthetic `read_skill(name)` tool
+  round trip before inference, and sends only the leading-command remainder to the model while keeping
+  the literal command in the transcript. Added focused parser and mention-token tests. Verified:
+  `pnpm typecheck`, focused `pnpm vitest run ...forced.test.ts ...mention-tokens.test.ts`, and
+  `pnpm build`.
 - **`065` — Browser debugging and advanced interaction.** Shipped in `ab1b572`.
   Added bounded browser wait, hover, drag, and dialog tools; conversation-scoped console/network
   evidence buffers; a redacted, approval-gated `browser_evaluate` escape hatch; browser approval

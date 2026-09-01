@@ -34,6 +34,7 @@ import { buildTodoListPrompt } from "./todo-prompt"
 import { loadSkills } from "./skills/loader"
 import { buildSkillsPrompt } from "./skills/prompt"
 import { createReadSkillTool } from "./skills/tool"
+import { forcedSkillNames } from "./skills/forced"
 import { skillSources } from "./skills/sources"
 import { registerSkillResourceRootInMap } from "./tools/skill_resources"
 import { recordMemoryTurn } from "./memory/service"
@@ -628,8 +629,19 @@ export async function runAgentLoop(
   const allSkills = await loadSkills(skillSources(agentDir))
   const skills = resolvePolicySkills(agent, allSkills, capabilityPolicy)
   const readSkillTool = createReadSkillTool(skills)
+  const forcedSkills = forcedSkillNames(userMessage, selectedSkillNames)
+  const availableSkillNames = new Set(skills.map((skill) => skill.name))
+  const unknownSkill = forcedSkills.names.find(
+    (name) => !availableSkillNames.has(name)
+  )
+  if (unknownSkill) {
+    const available = [...availableSkillNames].join(", ") || "(none)"
+    return {
+      error: `No skill named "${unknownSkill}". Available skills: ${available}`,
+    }
+  }
   const skillResourceRoots: Record<string, string> = {}
-  for (const name of selectedSkillNames ?? []) {
+  for (const name of forcedSkills.names) {
     const skill = skills.find((s) => s.name === name)
     if (skill) {
       registerSkillResourceRootInMap(skillResourceRoots, {
@@ -931,7 +943,7 @@ export async function runAgentLoop(
     })
   }
   const selectedSkills = skills.filter((s) =>
-    (selectedSkillNames ?? []).includes(s.name)
+    forcedSkills.names.includes(s.name)
   )
   if (selectedSkills.length > 0) {
     sections.push({
@@ -1081,15 +1093,23 @@ export async function runAgentLoop(
   // files by name (contents are NOT inlined: the model reads them on demand via
   // read_file_tool, scoped to this attachment list, which supports paging).
   let persistedUserContent: string | undefined
+  let modelUserContent: string | undefined
   if (userMessage !== undefined) {
     let userContent = userMessage || "What files are in the workspace?"
+    let modelContent =
+      forcedSkills.modelMessage !== undefined
+        ? forcedSkills.modelMessage
+        : userContent
     if (hasAttachments) {
       const names = attachments!.map((p) => basename(p)).join(", ")
       const note = `Attached files (read with read_file_tool when needed): ${names}`
       userContent = userContent ? `${userContent}\n\n${note}` : note
+      modelContent = modelContent ? `${modelContent}\n\n${note}` : note
     }
     persistedUserContent = userContent
-    // With attachments inlined, so history reflects what the model actually saw.
+    modelUserContent = modelContent
+    // Persist the literal user text. A leading /skill command may be stripped
+    // only in the in-memory model message below, after the history is rebuilt.
     appendMessage({ conversationId, role: "user", content: userContent })
   }
 
@@ -1104,6 +1124,79 @@ export async function runAgentLoop(
     tokenBudget:
       settingsService.getIndexing().summarizeTokenThreshold || undefined,
   })
+  if (
+    modelUserContent !== undefined &&
+    modelUserContent !== persistedUserContent
+  ) {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i]?.role === "user") {
+        messages[i] = { ...messages[i], content: modelUserContent }
+        break
+      }
+    }
+  }
+
+  for (const name of forcedSkills.names) {
+    const id = randomUUID()
+    const args = JSON.stringify({ name })
+    onEvent({
+      type: "tool",
+      phase: "start",
+      id,
+      name: readSkillTool.definition.function.name,
+      arguments: args,
+    })
+    const result = await readSkillTool.execute(
+      { name },
+      {
+        workspace: workspace ?? "",
+        attachments,
+        conversationId,
+        skillResourceRoots,
+      }
+    )
+    messages.push({
+      role: "assistant",
+      content: null,
+      tool_calls: [
+        {
+          id,
+          type: "function",
+          function: {
+            name: readSkillTool.definition.function.name,
+            arguments: args,
+          },
+        },
+      ],
+    })
+    appendMessage({
+      conversationId,
+      role: "assistant",
+      content: null,
+      toolCalls: [
+        {
+          id,
+          name: readSkillTool.definition.function.name,
+          arguments: args,
+        },
+      ],
+    })
+    messages.push({ role: "tool", tool_call_id: id, content: result })
+    appendMessage({
+      conversationId,
+      role: "tool",
+      content: result,
+      toolCallId: id,
+      toolName: readSkillTool.definition.function.name,
+    })
+    onEvent({
+      type: "tool",
+      phase: "done",
+      id,
+      name: readSkillTool.definition.function.name,
+      result,
+    })
+  }
 
   // Debug aid (settings.logSystemPrompt): dump the verbatim system block for this
   // turn to system-prompt-logs/. Best-effort and fire-and-forget — never blocks or

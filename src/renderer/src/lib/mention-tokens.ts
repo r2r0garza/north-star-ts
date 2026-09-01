@@ -10,7 +10,7 @@
 // Three jobs, both kinds handled in one pass:
 //   - activeMentionToken: detect the trigger token being typed at the caret
 //   - segmentMessage:     split text into plain + mention segments (badge overlay)
-//   - expandMentions:     rewrite confirmed tokens for the model (at send)
+//   - expandMentions:     rewrite confirmed file tokens for the model (at send)
 
 export type MentionKind = "skill" | "file"
 
@@ -137,9 +137,9 @@ export function segmentMessage(
   return segments
 }
 
-// Rewrite confirmed mention tokens for the model:
-//   - `/git-commit` → `git-commit skill` (no leading "the", so it reads right
-//     when the user already wrote "…with the /git-commit")
+// Rewrite confirmed file mention tokens for the model:
+//   - `/git-commit` stays literal; the main process validates selected skills
+//     and deterministically pre-injects read_skill before inference.
 //   - `@src/foo.ts` → `src/foo.ts` (the bare workspace-relative path, which is
 //     what the agent's file tools consume)
 export function expandMentions(
@@ -150,6 +150,6 @@ export function expandMentions(
   if (!re) return text
   return text.replace(re, (m) => {
     const { kind, value } = classifyMarker(m)
-    return kind === "skill" ? `${value} skill` : value
+    return kind === "skill" ? m : value
   })
 }

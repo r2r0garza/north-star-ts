@@ -1,10 +1,9 @@
 # Slash commands — user-invoked skills (`/skill-name …`)
 
-> Status: **PARTIALLY SHIPPED**. Commit `c5594a1` added `skills:list`, composer autocomplete,
-> keyboard selection, slash badges, and send-time rewriting to `<name> skill`. Still required to
-> complete this plan: deterministic `read_skill(name)` pre-injection in main, authoritative unknown-
-> skill validation, and persistence of the literal slash command while the model receives only its
-> remainder.
+> Status: **SHIPPED**. Commit `c5594a1` added `skills:list`, composer autocomplete,
+> keyboard selection, and slash badges. The follow-up implementation completed deterministic
+> main-process `read_skill(name)` pre-injection, authoritative unknown-skill validation, literal
+> slash-command transcript persistence, and model-facing leading-command stripping.
 
 ## Context
 
@@ -39,7 +38,26 @@ behavior. Skill names are already stable kebab-case identifiers (validated in
 - **Messages are assembled fresh each turn** via `contextBuilder.build(...)`, then appended to as
   tools run — so injecting a pre-executed tool call into the array is natural and low-risk.
 
-## Recommended approach
+## Shipped implementation
+
+- `src/main/agent/skills/forced.ts` parses deterministic skill invocations from both renderer-selected
+  slash mentions (`ChatRequest.skills`) and a leading literal `/skill-name` command. It dedupes names,
+  preserves picker order, and returns the leading-command remainder for the model-facing user message.
+- `src/main/agent/index.ts` validates forced skills against the turn's resolved skill catalog after
+  custom-agent skill policy is applied. Unknown names fail before inference with the same available-skill
+  style as `read_skill`.
+- For each forced skill, `runAgentLoop` emits, persists, and injects a synthetic assistant
+  `read_skill` tool call plus matching tool result before the first model call. This reuses
+  `createReadSkillTool().execute`, so skill bodies and bundled resource-root activation remain one
+  source of truth.
+- The user message stored in the transcript remains literal (`/skill-name ...`). When the user starts
+  the message with a slash command, only the in-memory model prompt sees the remainder; attachments are
+  still appended to both forms.
+- `src/renderer/src/lib/mention-tokens.ts` no longer rewrites selected skill mentions to natural
+  language. It preserves `/skill-name` literally and continues rewriting file mentions to bare
+  workspace-relative paths.
+
+## Original recommended approach
 
 ### A. Forcing mechanism — pre-inject a `read_skill` call (NOT `tool_choice`)
 
@@ -125,7 +143,7 @@ literal `/name ` prefix is stripped from the text the model sees; the **original
 4. **Mode/workspace gating.** Skills already layer by workspace; should `/name` be offered in all
    modes (chat/interactive/north_star)? Leaning: yes, wherever skills load.
 
-## Verification (when built)
+## Verification
 
 - **Manual force:** `/some-skill do X` → the transcript shows a `read_skill(some-skill)` call +
   its body before the assistant acts, and the response follows the skill. No `/` prefix leaks into
@@ -136,7 +154,10 @@ literal `/name ` prefix is stripped from the text the model sees; the **original
   silent normal turn.
 - **Empty remainder:** `/some-skill` alone forces the skill with no extra instruction.
 - **Renderer:** typing `/` shows matching skills with descriptions; completing inserts `/<name> `.
-- `pnpm typecheck`, `pnpm test`, `pnpm build` clean; `pnpm dev` exercises the composer end-to-end.
+- Automated verification run:
+  - `pnpm typecheck`
+  - `pnpm vitest run src/main/agent/skills/forced.test.ts src/renderer/src/lib/mention-tokens.test.ts`
+  - `pnpm build`
 
 ## Out of scope
 

@@ -1127,10 +1127,9 @@ function App(
   async function sendMessage() {
     if (!canSend) return
     if (!(await preflightExternalAgentModel("send"))) return
-    // Expand confirmed mention tokens before sending, so the model reliably
-    // reads them: `/git-commit` → `git-commit skill`, `@src/foo.ts` → `src/foo.ts`.
-    // The expanded text is also what's shown in the optimistic timeline, so the
-    // transcript matches what the agent received.
+    // Expand confirmed file mentions before sending, so the model gets bare
+    // workspace paths (`@src/foo.ts` → `src/foo.ts`). Skill mentions stay literal
+    // in the transcript and are sent separately as deterministic invocations.
     const base = expandMentions(message, confirmedMentions).trim()
     // Prepend a descriptor per picked element (if any) so the agent knows exactly
     // which on-page element(s) the user is pointing at. It can act on each two
