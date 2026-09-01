@@ -141,6 +141,7 @@ export type {
   PhaseRouting,
   PhaseGatePolicy,
   EdgeTrigger,
+  ProcessImportResult,
 } from "../../preload/index"
 
 // Live dashboard types (plan 033), surfaced for the Dashboards screen.

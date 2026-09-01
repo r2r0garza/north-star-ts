@@ -1,7 +1,20 @@
-import { ipcMain } from "electron"
+import { readFile, writeFile } from "fs/promises"
+import { basename } from "path"
+import {
+  BrowserWindow,
+  dialog,
+  ipcMain,
+  type OpenDialogOptions,
+  type SaveDialogOptions,
+} from "electron"
 import type { TaskRunner } from "../tasks/runner"
 import type { ProcessService } from "../tasks/process/service"
 import { getProcessRun } from "../db/repositories/processes"
+import {
+  exportProcessDefinition,
+  importProcessExport,
+  type ProcessImportResult,
+} from "../process/io"
 
 // Control channels for the Process engine (plan 025). Definition/run CRUD lives
 // on the `db:processes:*` channels (db-handlers.ts); these are the *control verbs*
@@ -104,5 +117,61 @@ export function registerProcessHandlers(
     "process:dismissFlag",
     (_e, payload: { processRunId: string; requestId: string }) =>
       processService.dismissFlag(payload)
+  )
+
+  ipcMain.handle("process:export", async (_e, processId: string) => {
+    const exported = exportProcessDefinition(processId)
+    const safeName = exported.definition.name
+      .trim()
+      .replace(/[^a-z0-9._ -]+/gi, "-")
+      .replace(/\s+/g, " ")
+      .slice(0, 80)
+    const win = BrowserWindow.getFocusedWindow() ?? undefined
+    const options: SaveDialogOptions = {
+      title: "Export process",
+      defaultPath: `${safeName || "process"}.json`,
+      filters: [{ name: "Process JSON", extensions: ["json"] }],
+    }
+    const result = win
+      ? await dialog.showSaveDialog(win, options)
+      : await dialog.showSaveDialog(options)
+    if (result.canceled || !result.filePath) return { canceled: true }
+
+    await writeFile(
+      result.filePath,
+      `${JSON.stringify(exported, null, 2)}\n`,
+      "utf-8"
+    )
+    return { path: result.filePath, canceled: false }
+  })
+
+  ipcMain.handle(
+    "process:import",
+    async (): Promise<
+      | (ProcessImportResult & { path: string; canceled: false })
+      | { canceled: true }
+    > => {
+      const win = BrowserWindow.getFocusedWindow() ?? undefined
+      const options: OpenDialogOptions = {
+        title: "Import process",
+        properties: ["openFile"],
+        filters: [{ name: "Process JSON", extensions: ["json"] }],
+      }
+      const result = win
+        ? await dialog.showOpenDialog(win, options)
+        : await dialog.showOpenDialog(options)
+      if (result.canceled || result.filePaths.length === 0) {
+        return { canceled: true }
+      }
+
+      const path = result.filePaths[0]
+      const raw = await readFile(path, "utf-8")
+      const parsed = JSON.parse(raw) as unknown
+      return {
+        ...importProcessExport(parsed),
+        path: basename(path),
+        canceled: false,
+      }
+    }
   )
 }

@@ -5,6 +5,7 @@ import {
   ChevronRight,
   Circle,
   CheckCircle2,
+  Download,
   XCircle,
   FolderOpen,
   GripVertical,
@@ -17,6 +18,7 @@ import {
   ShieldAlert,
   SkipForward,
   Trash2,
+  Upload,
   XIcon,
 } from "lucide-react"
 import {
@@ -236,8 +238,9 @@ export function ProcessScreen({ onClose }: { onClose: () => void }) {
   // Free-text filter over the process cards (matches name + description).
   const [query, setQuery] = useState("")
 
-  const loadDefinitions = useCallback(() => {
-    window.cowork.db.processes.list().then(setDefinitions)
+  const loadDefinitions = useCallback(async () => {
+    const list = await window.cowork.db.processes.list()
+    setDefinitions(list)
   }, [])
 
   // Load on mount. The component is mounted only while the Process view is open
@@ -308,6 +311,37 @@ export function ProcessScreen({ onClose }: { onClose: () => void }) {
       setActiveRunId(null)
     } catch (err) {
       toast.error(`Could not create process: ${err}`)
+    }
+  }
+
+  async function importDefinition() {
+    try {
+      const result = await window.cowork.process.importDefinition()
+      if (result.canceled) return
+      await loadDefinitions()
+      setSelectedId(result.processId)
+      setPane("builder")
+      setActiveRunId(null)
+      if (result.warnings.length > 0) {
+        toast.warning(
+          `Imported with ${result.warnings.length} warning${result.warnings.length === 1 ? "" : "s"}`,
+          { description: result.warnings.slice(0, 2).join(" ") }
+        )
+      } else {
+        toast.success(`Imported ${result.path}`)
+      }
+    } catch (err) {
+      toast.error(`Could not import process: ${err}`)
+    }
+  }
+
+  async function exportDefinition(definition: ProcessDefinition) {
+    try {
+      const result = await window.cowork.process.exportDefinition(definition.id)
+      if (result.canceled) return
+      toast.success(`Exported ${definition.name}`)
+    } catch (err) {
+      toast.error(`Could not export process: ${err}`)
     }
   }
 
@@ -424,15 +458,26 @@ export function ProcessScreen({ onClose }: { onClose: () => void }) {
                 ? "…"
                 : `${definitions.length} ${definitions.length === 1 ? "process" : "processes"}`}
             </span>
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              onClick={createDefinition}
-            >
-              <Plus className="size-4" />
-              New Process
-            </Button>
+            <div className="flex items-center gap-2">
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={importDefinition}
+              >
+                <Upload className="size-4" />
+                Import
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={createDefinition}
+              >
+                <Plus className="size-4" />
+                New Process
+              </Button>
+            </div>
           </div>
 
           <div className="shrink-0 border-b px-4 py-2">
@@ -468,6 +513,7 @@ export function ProcessScreen({ onClose }: { onClose: () => void }) {
                         setPane("builder")
                         setActiveRunId(null)
                       }}
+                      onExport={() => exportDefinition(d)}
                       onDelete={() => setPendingDelete(d)}
                     />
                   ))}
@@ -553,10 +599,12 @@ function CardGrid({ children }: { children: React.ReactNode }) {
 function ProcessCard({
   definition,
   onOpen,
+  onExport,
   onDelete,
 }: {
   definition: ProcessDefinition
   onOpen: () => void
+  onExport: () => void
   onDelete: () => void
 }) {
   return (
@@ -575,7 +623,18 @@ function ProcessCard({
     >
       <CardHeader>
         <CardTitle className="truncate">{definition.name}</CardTitle>
-        <CardAction>
+        <CardAction className="flex items-center gap-1">
+          <button
+            type="button"
+            aria-label={`Export ${definition.name}`}
+            onClick={(e) => {
+              e.stopPropagation()
+              onExport()
+            }}
+            className="rounded p-1 text-muted-foreground opacity-0 transition-opacity group-hover/card:opacity-100 hover:bg-muted hover:text-foreground focus:opacity-100"
+          >
+            <Download className="size-3.5" />
+          </button>
           <button
             type="button"
             aria-label={`Delete ${definition.name}`}

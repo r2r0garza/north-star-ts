@@ -87,6 +87,7 @@ import type {
   TerminalProfile,
   TerminalSessionView,
 } from "../main/terminal/types"
+import type { ProcessImportResult } from "../main/process/io"
 
 // Streaming events emitted during a chat turn (mirrors ChatEvent in the agent).
 export type ChatEvent =
@@ -416,6 +417,15 @@ const api = {
       ipcRenderer.invoke("process:confirmFlag", payload) as Promise<void>,
     dismissFlag: (payload: { processRunId: string; requestId: string }) =>
       ipcRenderer.invoke("process:dismissFlag", payload) as Promise<void>,
+    exportDefinition: (processId: string) =>
+      ipcRenderer.invoke("process:export", processId) as Promise<
+        { path: string; canceled: false } | { canceled: true }
+      >,
+    importDefinition: () =>
+      ipcRenderer.invoke("process:import") as Promise<
+        | (ProcessImportResult & { path: string; canceled: false })
+        | { canceled: true }
+      >,
   },
   pickWorkspace: () =>
     ipcRenderer.invoke("pick-workspace") as Promise<{
@@ -1543,6 +1553,7 @@ export type {
   DashboardWidgetType,
   DashboardWidgetDataStatus,
 } from "../main/db/types"
+export type { ProcessImportResult } from "../main/process/io"
 // Re-export the ask_user_question types so the renderer can type the panel.
 export type {
   Question,
