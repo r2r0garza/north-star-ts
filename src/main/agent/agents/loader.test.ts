@@ -112,6 +112,22 @@ body`
     expect(a.mcpServers).toBeUndefined() // omitted → all enabled servers
   })
 
+  it("parses Claude's comma-separated tool scalar in a verbatim import", async () => {
+    writeAgent(
+      userDir,
+      "claude-import",
+      `---
+name: claude-import
+description: Imported from Claude Code
+tools: Read, Write, Edit, Bash, Grep, Glob
+---
+body`
+    )
+    const [a] = await loadAgents(agentSources())
+    expect(a.sourceKind).toBe("north_star")
+    expect(a.tools).toEqual(["Read", "Write", "Edit", "Bash", "Grep", "Glob"])
+  })
+
   it("defaults user-invocable to false when omitted", async () => {
     writeAgent(userDir, "hidden", `---\nname: hidden\ndescription: d\n---\nb`)
     const [a] = await loadAgents(agentSources())
@@ -197,7 +213,7 @@ describe("external provider parsing", () => {
     )
     writeFileSync(
       path.join(ws, ".claude", "agents", "reviewer.md"),
-      `---\nname: reviewer\ndescription: Claude reviewer\ntools: [Read]\nskills: [test]\n---\nClaude body`
+      `---\nname: reviewer\ndescription: Claude reviewer\ntools: Read, Grep, Bash\nskills: [test]\n---\nClaude body`
     )
     const agents = await loadAgents(agentSources(ws))
     expect(agents.find((a) => a.sourceKind === "cursor")?.label).toBe(
@@ -205,6 +221,11 @@ describe("external provider parsing", () => {
     )
     expect(agents.find((a) => a.sourceKind === "claude")?.skills).toEqual([
       "test",
+    ])
+    expect(agents.find((a) => a.sourceKind === "claude")?.tools).toEqual([
+      "Read",
+      "Grep",
+      "Bash",
     ])
     expect(agents.filter((a) => a.name === "reviewer")).toHaveLength(2)
     rmSync(ws, { recursive: true, force: true })

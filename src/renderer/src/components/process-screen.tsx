@@ -891,6 +891,29 @@ function PhaseCard({
     () => new Map(agents.map((agent) => [agentValue(agent), agent])),
     [agents]
   )
+  const reviewerAgentItems = useMemo(
+    () => [
+      {
+        value: OWN_AGENT,
+        label: "Phase's own agent",
+        description: "Use the phase's first pool agent",
+      },
+      ...agents.map((agent) => ({
+        value: agentValue(agent),
+        label: agentLabel(agent),
+        description: agent.description,
+        name: agent.name,
+        source: [agent.sourceKind, agent.scope].filter(Boolean).join(" · "),
+      })),
+    ],
+    [agents]
+  )
+  const selectedReviewerAgent =
+    reviewerAgentItems.find(
+      (item) =>
+        item.value === (phase.validatorAgent ?? OWN_AGENT) ||
+        ("name" in item && item.name === phase.validatorAgent)
+    ) ?? reviewerAgentItems[0]
   // Collapsed by default — a built graph is mostly read; expand to edit.
   const [expanded, setExpanded] = useState(false)
   const depCount = incoming.length
@@ -1271,30 +1294,55 @@ function PhaseCard({
                 title="The agent that reviews this phase's output. Defaults to the phase's own first pool agent."
               >
                 <span className="text-muted-foreground">Reviewer</span>
-                <Select
-                  // Radix Select can't use an empty-string value, so the "own
-                  // agent" default (null) maps to a sentinel option.
-                  value={phase.validatorAgent ?? OWN_AGENT}
-                  onValueChange={(v) =>
-                    patchPhase({
-                      validatorAgent: v === OWN_AGENT ? null : v,
+                <Combobox
+                  items={reviewerAgentItems}
+                  value={selectedReviewerAgent}
+                  isItemEqualToValue={(a, b) => a?.value === b?.value}
+                  onValueChange={(item: { value: string } | null) => {
+                    if (!item) return
+                    void patchPhase({
+                      validatorAgent:
+                        item.value === OWN_AGENT ? null : item.value,
                     })
-                  }
+                  }}
                 >
-                  <SelectTrigger size="sm" className="text-xs">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value={OWN_AGENT}>
-                      Phase&apos;s own agent
-                    </SelectItem>
-                    {agents.map((a) => (
-                      <SelectItem key={agentValue(a)} value={agentValue(a)}>
-                        {agentLabel(a)}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                  <ComboboxTrigger className="flex h-7 max-w-64 min-w-44 items-center justify-between gap-1 rounded-[min(var(--radius-md),10px)] border border-input bg-transparent px-2.5 text-xs transition-colors hover:bg-accent/50 dark:bg-input/30">
+                    <ComboboxValue>
+                      {(item: (typeof reviewerAgentItems)[number] | null) => (
+                        <span className="truncate">
+                          {item?.label ?? "Phase's own agent"}
+                        </span>
+                      )}
+                    </ComboboxValue>
+                  </ComboboxTrigger>
+                  <ComboboxContent className="w-80 min-w-80">
+                    <ComboboxInput
+                      placeholder="Search reviewer agents…"
+                      showTrigger={false}
+                    />
+                    <ComboboxEmpty>No agents found.</ComboboxEmpty>
+                    <ComboboxList>
+                      {(item: (typeof reviewerAgentItems)[number]) => (
+                        <ComboboxItem key={item.value} value={item}>
+                          <span className="flex min-w-0 flex-col gap-0.5">
+                            <span className="truncate">{item.label}</span>
+                            {(item.description ||
+                              ("source" in item && item.source)) && (
+                              <span className="line-clamp-2 text-[10px] text-muted-foreground">
+                                {[
+                                  item.description,
+                                  "source" in item ? item.source : undefined,
+                                ]
+                                  .filter(Boolean)
+                                  .join(" · ")}
+                              </span>
+                            )}
+                          </span>
+                        </ComboboxItem>
+                      )}
+                    </ComboboxList>
+                  </ComboboxContent>
+                </Combobox>
               </label>
               <label
                 className="flex items-center gap-2 text-xs"
@@ -1521,6 +1569,30 @@ const ACTIVE_RUN_STATUSES = new Set([
   "paused",
 ])
 
+// A terminal run cannot still own live phase work. Older runs created before the
+// nested-failure drain fix can nevertheless contain `running`/`ready` rows because
+// their scheduler exited before observing parallel siblings. Keep those historical
+// rows from rendering an infinite spinner; the transcript remains available and a
+// retry still reads the untouched durable frontier from the main process.
+const TERMINAL_RUN_STATUSES = new Set(["completed", "failed", "cancelled"])
+const LIVE_PHASE_STATUSES = new Set<PhaseRunStatus>([
+  "ready",
+  "running",
+  "waiting_for_approval",
+])
+
+function phaseRunsForDisplay(
+  run: ProcessRun | null,
+  phaseRuns: ProcessPhaseRun[]
+): ProcessPhaseRun[] {
+  if (!run || !TERMINAL_RUN_STATUSES.has(run.status)) return phaseRuns
+  return phaseRuns.map((phaseRun) =>
+    LIVE_PHASE_STATUSES.has(phaseRun.status)
+      ? { ...phaseRun, status: "cancelled" }
+      : phaseRun
+  )
+}
+
 function RunMonitor({
   definition,
   activeRunId,
@@ -1578,7 +1650,7 @@ function RunMonitor({
       window.cowork.db.processes.phaseRuns.list({ runId: activeRunId }),
     ])
     setRun(r)
-    setPhaseRuns(prs)
+    setPhaseRuns(phaseRunsForDisplay(r, prs))
   }, [activeRunId])
   const refetchRef = useRef(refetch)
   refetchRef.current = refetch
@@ -2530,7 +2602,7 @@ function SubProcessNestedRun({
       window.cowork.db.processes.phaseRuns.list({ runId: childRun.id }),
     ])
     setGraph(g)
-    setPhaseRuns(prs)
+    setPhaseRuns(phaseRunsForDisplay(childRun, prs))
     setLoaded(true)
   }, [parentPhaseRunId])
 

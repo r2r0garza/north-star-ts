@@ -127,6 +127,7 @@ const CLAUDE_TOOLS: Record<string, string[]> = {
   WebSearch: ["web_search"],
   TodoWrite: ["todo_write"],
   Task: ["run_todos_in_background"],
+  AskUserQuestion: ["ask_user_question"],
 }
 
 const CLAUDE_UNSUPPORTED = new Set([
@@ -158,8 +159,14 @@ function listFromMetadata(
   const data = metadata(agent)
   if (!(key in data)) return undefined
   const raw = data[key]
-  if (!Array.isArray(raw)) return []
-  return raw.map((value) => String(value).trim()).filter(Boolean)
+  if (Array.isArray(raw))
+    return raw.map((value) => String(value).trim()).filter(Boolean)
+  if (typeof raw === "string")
+    return raw
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean)
+  return []
 }
 
 function boolFromMetadata(agent: AgentDefinition, key: string): boolean {
@@ -352,6 +359,36 @@ function claudePolicy(agent: AgentDefinition): AgentCapabilityPolicy {
   }
 }
 
+// An agent imported through the UI lands in a writable North Star directory and
+// is intentionally copied verbatim. Its directory therefore no longer identifies
+// the source format. Claude's capitalized tool vocabulary is unambiguous enough to
+// recover that provenance at runtime and apply the same compatibility policy used
+// for agents loaded directly from `.claude/agents`.
+function usesClaudeToolSyntax(agent: AgentDefinition): boolean {
+  if ("disallowedTools" in metadata(agent)) return true
+  return (agent.tools ?? []).some((rule) => {
+    if (rule.startsWith("mcp__")) return true
+    const { base } = parseParameterizedRule(rule)
+    return (
+      base === "Agent" ||
+      base === "Skill" ||
+      base in CLAUDE_TOOLS ||
+      CLAUDE_UNSUPPORTED.has(base)
+    )
+  })
+}
+
+function inferredClaudePolicy(agent: AgentDefinition): AgentCapabilityPolicy {
+  const policy = claudePolicy(agent)
+  policy.diagnostics.unshift(
+    diag(
+      "source_format_inferred",
+      "Claude Code tool syntax detected; applying North Star tool translations"
+    )
+  )
+  return policy
+}
+
 function cursorPolicy(agent: AgentDefinition): AgentCapabilityPolicy {
   const denied = boolFromMetadata(agent, "readonly")
     ? new Set([...UNSAFE_MUTATION_OR_EXECUTION, "spawn_subagent"])
@@ -458,7 +495,9 @@ function mcpPolicyFromAgent(
 export function agentCapabilityPolicy(
   agent: AgentDefinition | null
 ): AgentCapabilityPolicy | null {
-  if (!agent || agent.sourceKind === "north_star") return null
+  if (!agent) return null
+  if (agent.sourceKind === "north_star")
+    return usesClaudeToolSyntax(agent) ? inferredClaudePolicy(agent) : null
   switch (agent.sourceKind) {
     case "github":
     case "copilot":
@@ -557,6 +596,9 @@ export function agentCapabilitySummary(
   offeredNames: string[]
 ): string | null {
   if (!policy) return null
+  const claudeCompatible =
+    agent.sourceKind === "claude" ||
+    policy.diagnostics.some((d) => d.code === "source_format_inferred")
   const diagnostics = policy.diagnostics
     .slice(0, 8)
     .map((d) => `- ${d.code}: ${d.message}`)
@@ -564,6 +606,11 @@ export function agentCapabilitySummary(
     "## External agent capability policy",
     `Source: ${agent.label}`,
     `Offered built-in tools: ${offeredNames.length ? offeredNames.sort().join(", ") : "none"}`,
+    ...(claudeCompatible
+      ? [
+          "Claude Code compatibility: Tool names in the agent instructions are conceptual; use the offered North Star equivalents listed above. If the instructions mention CLAUDE.md, use it when present, otherwise check AGENTS.md for project instructions. A missing optional instruction file is recoverable and must not fail the task.",
+        ]
+      : []),
     diagnostics.length
       ? ["Compatibility diagnostics:", ...diagnostics].join("\n")
       : "Compatibility diagnostics: none",

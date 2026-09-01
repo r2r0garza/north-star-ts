@@ -53,6 +53,27 @@ function parseList(
   return raw.map((v) => String(v).trim()).filter(Boolean)
 }
 
+// Claude Code commonly serializes `tools` as a comma-separated YAML scalar
+// (`tools: Read, Write, Bash`) rather than an array. Accept both forms at the
+// loader boundary so direct Claude sources and verbatim imports retain the tool
+// rules that the capability-policy layer translates at runtime. Other tri-state
+// lists stay strict arrays via parseList.
+function parseToolList(
+  data: Record<string, unknown>,
+  key: string
+): string[] | undefined {
+  if (!(key in data)) return undefined
+  const raw = data[key]
+  if (Array.isArray(raw))
+    return raw.map((v) => String(v).trim()).filter(Boolean)
+  if (typeof raw === "string")
+    return raw
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean)
+  return []
+}
+
 function sourceLabel(kind: ExternalAgentSourceKind): string {
   switch (kind) {
     case "north_star":
@@ -145,7 +166,10 @@ function inferSourceEntry(source: string): AgentSourceEntry {
     }
   }
   if (normalized.endsWith("/.cowork/agents")) {
-    const home = path.resolve(process.env.HOME ?? "").split(path.sep).join("/")
+    const home = path
+      .resolve(process.env.HOME ?? "")
+      .split(path.sep)
+      .join("/")
     return {
       path: source,
       kind: normalized.startsWith(home + "/") ? "user" : "workspace",
@@ -263,7 +287,7 @@ export function parseAgent(
       body: content.slice(match[0].length),
       sourceMetadata: data,
     }),
-    tools: parseList(data, "tools"),
+    tools: parseToolList(data, "tools"),
     skills: parseList(data, "skills"),
     children: parseList(data, "children"),
     mcpServers: parseList(data, "mcp-servers"),
@@ -344,11 +368,11 @@ function parseExternalMarkdownAgent(
     diagnostics,
   })
   if (entry.sourceKind === "claude") {
-    agent.tools = parseList(data, "tools")
+    agent.tools = parseToolList(data, "tools")
     agent.skills = parseList(data, "skills")
     agent.sourceMetadata = {
       ...data,
-      disallowedTools: parseList(data, "disallowedTools"),
+      disallowedTools: parseToolList(data, "disallowedTools"),
       mcpServers: data.mcpServers,
     }
   } else if (entry.sourceKind === "cursor") {

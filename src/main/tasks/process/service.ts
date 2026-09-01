@@ -614,16 +614,33 @@ export class ProcessService {
       }
 
       // Drive the nested run inline at depth+1, sharing the parent's task/signal/emit.
-      // A GateBlockedError inside propagates (pauses the whole run); an abort/failure
-      // sets the child run's status, which we map back to the parent phase-run below.
-      await this.driveRun({
-        run: childRun,
-        graph: childGraph,
-        taskId,
-        signal,
-        emit,
-        depth: depth + 1,
-      })
+      // A GateBlockedError inside propagates (pauses the whole run). A normal child
+      // failure also throws after driveRun stamps the child run `failed`; absorb that
+      // throw here so the parent scheduler can settle THIS phase-run failed and keep
+      // draining its other in-flight siblings. Letting it escape made the top-level
+      // run terminal immediately while parallel sub-process phase-runs stayed forever
+      // `running` (there was no scheduler left to observe their completion).
+      try {
+        await this.driveRun({
+          run: childRun,
+          graph: childGraph,
+          taskId,
+          signal,
+          emit,
+          depth: depth + 1,
+        })
+      } catch (err) {
+        if (err instanceof GateBlockedError) throw err
+        if (signal.aborted) return { stopped: true }
+
+        // A child scheduling failure is an expected PhaseResult at this boundary.
+        // If the child did not manage to stamp itself failed, preserve the original
+        // error instead of hiding an unexpected infrastructure exception behind the
+        // generic sub-process message below.
+        const settled = processes.getProcessRun(childRun.id)
+        if (settled?.status !== "failed")
+          return { error: err instanceof Error ? err.message : String(err) }
+      }
 
       const settled = processes.getProcessRun(childRun.id)
       if (signal.aborted || settled?.status === "cancelled")

@@ -35,6 +35,13 @@ const decomposeReplies: string[] = []
 // (plan 038.3) — simulates a quit/cancel mid-run. Each entry carries the reason so a
 // test can exercise the resumable (shutdown) vs terminal (cancel) branches.
 const abortOnMessage: Array<{ match: string; reason?: symbol }> = []
+// Workers a test needs to hold in-flight. Used to prove that a failed nested run
+// does not let the parent scheduler terminate while a parallel sibling is active.
+const holdOnMessage: Array<{
+  match: string
+  entered: () => void
+  wait: Promise<void>
+}> = []
 let runAbort: AbortController | null = null
 // A stable SHUTDOWN_ABORT_REASON identity. service.ts imports it from the leaf
 // `../../agent/abort` (mocked below with this same hoisted sentinel), so its
@@ -71,6 +78,11 @@ vi.mock("../../agent", () => ({
     if (failIdx !== -1) {
       failOnce.splice(failIdx, 1)
       return { error: "boom", retryable: false }
+    }
+    const hold = holdOnMessage.find((h) => msg.includes(h.match))
+    if (hold) {
+      hold.entered()
+      await hold.wait
     }
     const isReview = msg.startsWith("# Review the")
     // A fan-out decomposition worker (plan 025.1) is asked to reply with ONLY a
@@ -153,6 +165,7 @@ beforeEach(() => {
   failOnce.length = 0
   decomposeReplies.length = 0
   abortOnMessage.length = 0
+  holdOnMessage.length = 0
   runAbort = null
   nextReply = ""
   for (const k of Object.keys(descriptions)) delete descriptions[k]
@@ -577,16 +590,16 @@ describe.skipIf(!sqliteLoads)(
           workspace: undefined,
         })
 
-      // First drive fails: the inner phase boomed → child run failed → parent run
-      // failed. The parent's sub-process phase-run is left `running` (the child
-      // driveRun threw, so it was never settled — the R6 divergence 038.2 handles);
-      // the child run + its inner phase are `failed`.
+      // First drive fails: the inner phase boomed → child run failed → parent
+      // sub-process phase failed → parent run failed. The failure must cross the
+      // nested-run boundary as a normal PhaseResult, not strand the parent phase in
+      // `running`.
       await drive()
       expect(processes.getProcessRun(run.id)!.status).toBe("failed")
       const implRun = processes
         .listPhaseRuns({ runId: run.id, parentId: null })
         .find((pr) => pr.phaseId === implPhaseId)!
-      expect(implRun.status).toBe("running")
+      expect(implRun.status).toBe("failed")
       const childRun = processes.getProcessRunByParentPhaseRunId(implRun.id)!
       expect(childRun.status).toBe("failed")
       const innerRun = processes.listPhaseRuns({ runId: childRun.id })[0]
@@ -605,6 +618,106 @@ describe.skipIf(!sqliteLoads)(
       expect(
         processes.getProcessRunByParentPhaseRunId(implRun.id)!.status
       ).toBe("completed")
+    })
+
+    it("drains a parallel sub-process before marking the parent run failed", async () => {
+      const failedSub = processes.createProcessDefinition({
+        name: "Failed sub",
+      })
+      processes.createPhase({
+        processId: failedSub.id,
+        key: "fail",
+        name: "Fail child",
+        position: 0,
+      })
+      const slowSub = processes.createProcessDefinition({ name: "Slow sub" })
+      processes.createPhase({
+        processId: slowSub.id,
+        key: "slow",
+        name: "Slow child",
+        position: 0,
+      })
+      const parent = processes.createProcessDefinition({ name: "Parent" })
+      const failedPhase = processes.createPhase({
+        processId: parent.id,
+        key: "failed-sub",
+        name: "Failed sub-process",
+        subprocessId: failedSub.id,
+        position: 0,
+      })
+      const slowPhase = processes.createPhase({
+        processId: parent.id,
+        key: "slow-sub",
+        name: "Slow sub-process",
+        subprocessId: slowSub.id,
+        position: 1,
+      })
+
+      let markSlowStarted!: () => void
+      const slowStarted = new Promise<void>((resolve) => {
+        markSlowStarted = resolve
+      })
+      let releaseSlow!: () => void
+      const slowRelease = new Promise<void>((resolve) => {
+        releaseSlow = resolve
+      })
+      holdOnMessage.push({
+        match: "Slow child",
+        entered: markSlowStarted,
+        wait: slowRelease,
+      })
+      failOnce.push("Fail child")
+
+      const { taskId } = seedTaskRow()
+      const run = processes.createProcessRun({
+        processId: parent.id,
+        sourceConversationId: null,
+        taskId,
+        objective: "run both",
+        status: "running",
+      })
+      const svc = new ProcessService(fakeRunner)
+      const execution = svc.execute({
+        task: { id: taskId, input: { processRunId: run.id } } as never,
+        signal: new AbortController().signal,
+        emit: () => {},
+        workspace: undefined,
+      })
+
+      await slowStarted
+      await vi.waitFor(() => {
+        const rows = processes.listPhaseRuns({
+          runId: run.id,
+          parentId: null,
+        })
+        expect(rows.find((pr) => pr.phaseId === failedPhase.id)?.status).toBe(
+          "failed"
+        )
+      })
+
+      // The sibling is genuinely still active, so the enclosing run must remain
+      // active too. This is the state combination that used to show Failed + spinner.
+      expect(processes.getProcessRun(run.id)?.status).toBe("running")
+      expect(
+        processes
+          .listPhaseRuns({ runId: run.id, parentId: null })
+          .find((pr) => pr.phaseId === slowPhase.id)?.status
+      ).toBe("running")
+
+      releaseSlow()
+      const result = await execution
+      expect((result as { error?: string }).error).toBe(
+        "a process phase failed"
+      )
+      expect(processes.getProcessRun(run.id)?.status).toBe("failed")
+      const rows = processes.listPhaseRuns({ runId: run.id, parentId: null })
+      expect(rows.find((pr) => pr.phaseId === failedPhase.id)?.status).toBe(
+        "failed"
+      )
+      expect(rows.find((pr) => pr.phaseId === slowPhase.id)?.status).toBe(
+        "completed"
+      )
+      expect(rows.some((pr) => pr.status === "running")).toBe(false)
     })
 
     it("request-changes on a sub-process phase re-drives the whole child with feedback (plan 038.2)", async () => {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 import type { SkillMetadata } from "../skills/types"
 import {
+  agentCapabilitySummary,
   agentCapabilityPolicy,
   externalAgentToolFilter,
   resolvePolicyChildren,
@@ -212,6 +213,75 @@ describe("external agent capability policy", () => {
     expect(allow("apply_patch_tool")).toBe(false)
     expect(allow("read_skill")).toBe(true)
     expect(allow("spawn_subagent")).toBe(true)
+  })
+
+  it("infers Claude compatibility for a verbatim agent imported into a North Star source", () => {
+    const policy = agentCapabilityPolicy(
+      agent("north_star", {
+        tools: [
+          "Read",
+          "Write",
+          "Edit",
+          "Bash",
+          "Grep",
+          "Glob",
+          "AskUserQuestion",
+        ],
+        sourceMetadata: {
+          tools: "Read, Write, Edit, Bash, Grep, Glob, AskUserQuestion",
+        },
+      })
+    )!
+    const allow = externalAgentToolFilter(policy, false)!
+
+    expect(allow("read_file_tool")).toBe(true)
+    expect(allow("list_files_tool")).toBe(true)
+    expect(allow("write_file_tool")).toBe(true)
+    expect(allow("edit_file_tool")).toBe(true)
+    expect(allow("apply_patch_tool")).toBe(true)
+    expect(allow("exec_command")).toBe(true)
+    expect(allow("search_tool")).toBe(true)
+    expect(allow("ask_user_question")).toBe(true)
+    expect(policy.diagnostics).toContainEqual(
+      expect.objectContaining({ code: "source_format_inferred" })
+    )
+  })
+
+  it("keeps native North Star category agents on the native policy path", () => {
+    expect(
+      agentCapabilityPolicy(
+        agent("north_star", { tools: ["read", "edit", "execute"] })
+      )
+    ).toBeNull()
+  })
+
+  it("honors a comma-separated Claude disallowedTools scalar after import", () => {
+    const policy = agentCapabilityPolicy(
+      agent("north_star", {
+        tools: ["Read", "Edit", "Bash"],
+        sourceMetadata: { disallowedTools: "Edit, Bash" },
+      })
+    )!
+    const allow = externalAgentToolFilter(policy, false)!
+
+    expect(allow("read_file_tool")).toBe(true)
+    expect(allow("edit_file_tool")).toBe(false)
+    expect(allow("apply_patch_tool")).toBe(false)
+    expect(allow("exec_command")).toBe(false)
+  })
+
+  it("orients imported Claude instructions to North Star tools and AGENTS.md", () => {
+    const imported = agent("north_star", { tools: ["Read", "Bash"] })
+    const policy = agentCapabilityPolicy(imported)!
+    const summary = agentCapabilitySummary(imported, policy, [
+      "read_file_tool",
+      "exec_command",
+    ])!
+
+    expect(summary).toContain("Tool names in the agent instructions")
+    expect(summary).toContain("CLAUDE.md")
+    expect(summary).toContain("AGENTS.md")
+    expect(summary).toContain("must not fail the task")
   })
 
   it("filters Claude skills and same-provider named children", () => {
