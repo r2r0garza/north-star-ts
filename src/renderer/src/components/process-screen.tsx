@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   ArrowLeft,
+  Bot,
   ChevronRight,
   Circle,
   CheckCircle2,
@@ -100,6 +101,7 @@ import {
 } from "@/components/ui/combobox"
 import { toast } from "sonner"
 import { cn, formatRelativeTime } from "@/lib/utils"
+import { agentDisplay } from "@/lib/agent-display"
 import type {
   AgentSummary,
   EdgeTrigger,
@@ -843,6 +845,10 @@ function PhaseCard({
   // Agents not already in the pool, for the add dropdown.
   const poolNames = new Set(pool.map((a) => a.agentName))
   const addable = agents.filter((a) => !poolNames.has(agentValue(a)))
+  const agentsByValue = useMemo(
+    () => new Map(agents.map((agent) => [agentValue(agent), agent])),
+    [agents]
+  )
   // Collapsed by default — a built graph is mostly read; expand to edit.
   const [expanded, setExpanded] = useState(false)
   const depCount = incoming.length
@@ -1329,19 +1335,42 @@ function PhaseCard({
                 )}
               </span>
               <div className="flex flex-wrap items-center gap-1.5">
-                {pool.map((a) => (
-                  <Badge key={a.id} variant="secondary" className="gap-1 pr-1">
-                    {a.agentName}
-                    <button
-                      type="button"
-                      onClick={() => removePoolAgent(a.id)}
-                      className="rounded-sm p-0.5 hover:bg-background/60"
-                      aria-label={`Remove ${a.agentName}`}
+                {pool.map((a) => {
+                  const catalogAgent = agentsByValue.get(a.agentName)
+                  const display = agentDisplay(a.agentName, catalogAgent)
+                  const details = [display.source, display.scope]
+                    .filter(Boolean)
+                    .join(" · ")
+
+                  return (
+                    <Badge
+                      key={a.id}
+                      variant="secondary"
+                      className="max-w-full gap-1.5 py-1 pr-1 pl-2"
+                      title={
+                        details ? `${display.name} · ${details}` : display.name
+                      }
                     >
-                      <XIcon className="size-3" />
-                    </button>
-                  </Badge>
-                ))}
+                      <Bot className="size-3 shrink-0 text-muted-foreground" />
+                      <span className="min-w-0 truncate font-medium">
+                        {display.name}
+                      </span>
+                      {display.source && (
+                        <span className="shrink-0 border-l border-foreground/10 pl-1.5 text-[10px] font-normal text-muted-foreground">
+                          {display.source}
+                        </span>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => removePoolAgent(a.id)}
+                        className="shrink-0 rounded-sm p-0.5 transition-colors hover:bg-background/60 hover:text-foreground"
+                        aria-label={`Remove ${display.name}`}
+                      >
+                        <XIcon className="size-3" />
+                      </button>
+                    </Badge>
+                  )
+                })}
                 {pool.length === 0 && (
                   <span className="text-xs text-muted-foreground">
                     No agents — the phase falls back to the default agent.
