@@ -194,6 +194,26 @@ describe("settings service — title generation", () => {
   })
 })
 
+describe("settings service — conversations", () => {
+  it("defaults the startup view to the main agent mode", () => {
+    expect(service.getConversations()).toEqual({ defaultMode: "north_star" })
+  })
+
+  it("round-trips the default conversation mode", () => {
+    service.setConversations({ defaultMode: "chat" })
+    service._resetCacheForTests()
+    expect(service.getConversations()).toEqual({ defaultMode: "chat" })
+  })
+
+  it("falls back to the main agent mode for corrupt or unknown values", () => {
+    store.set("conversations", JSON.stringify({ defaultMode: "bogus" }))
+    expect(service.getConversations()).toEqual({ defaultMode: "north_star" })
+    service._resetCacheForTests()
+    store.set("conversations", "{not json")
+    expect(service.getConversations()).toEqual({ defaultMode: "north_star" })
+  })
+})
+
 describe("settings service — sandboxAutoApproves", () => {
   it("returns false when auto-approve is off", () => {
     service.setExecution({

@@ -38,6 +38,12 @@ import { applyThemeCss } from "@/lib/theme"
 import { cn } from "@/lib/utils"
 import App, { type AppHandle } from "./App"
 
+const DEFAULT_MODE_TO_VIEW = {
+  chat: "Chat",
+  interactive: "Interactive",
+  north_star: "North Star",
+} as const satisfies Record<string, View>
+
 // Deterministic infrastructure task kinds that repaint their own UI in place and
 // run automatically (on open / poll), so a completion OS-notification would just
 // be noise. Excluded from the background-task notification handler below.
@@ -190,6 +196,21 @@ function Shell() {
   useEffect(() => {
     window.cowork.isFullScreen().then(setFullscreen)
     return window.cowork.onFullScreenChange(setFullscreen)
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    window.cowork.settings
+      .getConversations()
+      .then((settings) => {
+        if (!cancelled) setView(DEFAULT_MODE_TO_VIEW[settings.defaultMode])
+      })
+      .catch((err) => {
+        console.warn("[settings] failed to load conversation settings:", err)
+      })
+    return () => {
+      cancelled = true
+    }
   }, [])
 
   // Brand the window title from the customizable system name (NEXT_system_name),

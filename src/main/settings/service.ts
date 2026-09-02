@@ -179,6 +179,12 @@ export interface OnboardingSettings {
   hideStartupGuide: boolean
 }
 
+export type DefaultConversationMode = "chat" | "interactive" | "north_star"
+
+export interface ConversationSettings {
+  defaultMode: DefaultConversationMode
+}
+
 // Default container image when a runtime is chosen but no image is set.
 const DEFAULT_CONTAINER_IMAGE = "node:20-bookworm"
 
@@ -244,6 +250,10 @@ const DEFAULT_ONBOARDING: OnboardingSettings = {
   hideStartupGuide: false,
 }
 
+const DEFAULT_CONVERSATIONS: ConversationSettings = {
+  defaultMode: "north_star",
+}
+
 function defaultExecution(): ExecutionSettings {
   return {
     backend: "local",
@@ -272,6 +282,7 @@ const KEY_THEME = "theme"
 const KEY_IDE = "ide"
 const KEY_NOTIFICATIONS = "notifications"
 const KEY_ONBOARDING = "onboarding"
+const KEY_CONVERSATIONS = "conversations"
 
 let executionCache: ExecutionSettings | undefined
 let permissionsCache: PermissionSettings | undefined
@@ -287,6 +298,7 @@ let themeCache: ThemeSettings | undefined
 let ideCache: IdeSettings | undefined
 let notificationsCache: NotificationSettings | undefined
 let onboardingCache: OnboardingSettings | undefined
+let conversationsCache: ConversationSettings | undefined
 // Tracks whether an execution row exists, so getExecutionConfig can fall back to
 // the COWORK_ENV_RUNTIME env var until the user writes a backend choice.
 let executionPersisted = false
@@ -594,6 +606,29 @@ function loadOnboarding(): OnboardingSettings {
   return onboardingCache
 }
 
+function loadConversations(): ConversationSettings {
+  if (conversationsCache) return conversationsCache
+  const raw = settingsRepo.getSetting(KEY_CONVERSATIONS)
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw) as Partial<ConversationSettings>
+      conversationsCache = {
+        defaultMode:
+          parsed.defaultMode === "chat" ||
+          parsed.defaultMode === "interactive" ||
+          parsed.defaultMode === "north_star"
+            ? parsed.defaultMode
+            : DEFAULT_CONVERSATIONS.defaultMode,
+      }
+      return conversationsCache
+    } catch {
+      // Corrupt blob — fall through to defaults.
+    }
+  }
+  conversationsCache = { ...DEFAULT_CONVERSATIONS }
+  return conversationsCache
+}
+
 // ── Reads ────────────────────────────────────────────────────────────────────
 
 export function getExecution(): ExecutionSettings {
@@ -666,6 +701,10 @@ export function getNotifications(): NotificationSettings {
 
 export function getOnboarding(): OnboardingSettings {
   return loadOnboarding()
+}
+
+export function getConversations(): ConversationSettings {
+  return loadConversations()
 }
 
 // Whether the sandbox policy auto-approves a given action category. Consulted by
@@ -753,6 +792,14 @@ export function setOnboarding(next: OnboardingSettings): OnboardingSettings {
   return next
 }
 
+export function setConversations(
+  next: ConversationSettings
+): ConversationSettings {
+  settingsRepo.setSetting(KEY_CONVERSATIONS, JSON.stringify(next))
+  conversationsCache = next
+  return next
+}
+
 // Invalidation hook fired whenever the active LLM selection changes, so the
 // provider routing layer can drop its cached client and the next turn rebuilds
 // with the new account/model. Registered by the providers module to avoid a
@@ -800,5 +847,6 @@ export function _resetCacheForTests(): void {
   ideCache = undefined
   notificationsCache = undefined
   onboardingCache = undefined
+  conversationsCache = undefined
   executionPersisted = false
 }

@@ -64,6 +64,7 @@ import type {
   ThemeSettings,
   IdeSettings,
   NotificationSettings,
+  ConversationSettings,
   Backend,
   LocalRuntimeProfile,
   LocalProfileCapabilities,
@@ -415,6 +416,8 @@ export function SettingsScreen({
   >([])
   const [notifications, setNotifications] =
     useState<NotificationSettings | null>(null)
+  const [conversations, setConversations] =
+    useState<ConversationSettings | null>(null)
   // The last-persisted theme override, and the in-progress draft the Appearance
   // pickers edit. The draft drives a live preview; Save persists it, Reset clears
   // the override, and closing without Save restores `savedTheme` (drops preview).
@@ -463,6 +466,7 @@ export function SettingsScreen({
       window.cowork.settings.getIde(),
       window.cowork.settings.ideOptions(),
       window.cowork.settings.getNotifications(),
+      window.cowork.settings.getConversations(),
       window.cowork.settings.checkRuntimes(),
       window.cowork.settings.localProfileCapabilities(),
       window.cowork.settings.getTheme(),
@@ -478,6 +482,7 @@ export function SettingsScreen({
         ideCfg,
         ideOpts,
         notif,
+        conv,
         rt,
         profileCaps,
         theme,
@@ -495,6 +500,7 @@ export function SettingsScreen({
         setIde(ideCfg)
         setIdeOptions(ideOpts)
         setNotifications(notif)
+        setConversations(conv)
         setRuntimes(rt)
         setLocalProfileCaps(profileCaps)
         setSavedTheme(theme)
@@ -681,6 +687,10 @@ export function SettingsScreen({
     setNotifications(next)
     await window.cowork.settings.setNotifications(next)
   }
+  async function saveConversations(next: ConversationSettings) {
+    setConversations(next)
+    await window.cowork.settings.setConversations(next)
+  }
 
   // Update the theme draft AND live-preview it immediately (recolor the whole
   // app). Persistence waits for Save; this only paints.
@@ -803,7 +813,8 @@ export function SettingsScreen({
               titleGeneration &&
               browser &&
               ide &&
-              notifications && (
+              notifications &&
+              conversations && (
                 <Tabs
                   orientation="vertical"
                   defaultValue={initialTab}
@@ -1055,6 +1066,36 @@ export function SettingsScreen({
                         value="conversations"
                         className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto py-6"
                       >
+                        <Field>
+                          <FieldLabel htmlFor="default-mode">
+                            Default mode
+                          </FieldLabel>
+                          <Select
+                            value={conversations.defaultMode}
+                            onValueChange={(value) =>
+                              saveConversations({
+                                defaultMode:
+                                  value as ConversationSettings["defaultMode"],
+                              })
+                            }
+                          >
+                            <SelectTrigger id="default-mode" className="w-60">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="chat">Chat</SelectItem>
+                              <SelectItem value="interactive">
+                                Interactive
+                              </SelectItem>
+                              <SelectItem value="north_star">
+                                {window.cowork.system().mainAgentName}
+                              </SelectItem>
+                            </SelectContent>
+                          </Select>
+                          <FieldDescription>
+                            The view selected when the app opens.
+                          </FieldDescription>
+                        </Field>
                         <Field orientation="horizontal">
                           <FieldContent>
                             <FieldLabel htmlFor="memory-enabled">
