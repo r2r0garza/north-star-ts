@@ -516,6 +516,7 @@ export interface ResetRunRecursiveInput {
 const resettable = (s: string): boolean => s === "failed" || s === "cancelled"
 const frontierToPending = {
   status: "pending" as const,
+  taskId: null,
   error: null,
   startedAt: null,
   finishedAt: null,

@@ -21,7 +21,6 @@ import type { BrowserHandle } from "../browser/manager"
 import { TOOL_EFFECTS, type ToolImage } from "./tools/types"
 import { readFileTool } from "./tools/read_file_tool"
 import { accumulateToolCalls, extractTextToolCalls } from "./tool-stream"
-import type { ToolCallDelta } from "./tool-stream"
 import { runToolCallBatches } from "./tool-batch-scheduler"
 import {
   listTodos,
@@ -89,9 +88,17 @@ import {
   NoActiveProviderError,
   type LlmSelection,
 } from "./providers"
+import {
+  createCompletionRoundWithRetry,
+  ModelRequestRetryExhaustedError,
+} from "./model-request-retry"
 import { generateTitle } from "./title"
 export { generateTitle } from "./title"
-import { appendMessage } from "../db/repositories/messages"
+import { appendMessage, getMaxMessageSeq } from "../db/repositories/messages"
+import {
+  completeBudget as completeModelRequestRetryBudget,
+  exhaustBudget as exhaustModelRequestRetryBudget,
+} from "../db/repositories/model-request-retry-budgets"
 import {
   getConversation,
   createConversation,
@@ -388,19 +395,6 @@ export type ChatEvent =
   | { type: "auto_mode"; enabled: boolean }
 
 type OnEvent = (event: ChatEvent) => void
-
-// Normalize a content value (string or array of parts) to plain text.
-function contentToText(content: unknown): string {
-  if (typeof content === "string") return content
-  if (Array.isArray(content)) {
-    return content
-      .map((part: any) =>
-        typeof part === "string" ? part : (part?.text ?? "")
-      )
-      .join("")
-  }
-  return ""
-}
 
 // Options for the core agentic loop. The caller owns the AbortController and its
 // registration/teardown, so the live `chat` path can key it by conversationId
@@ -1285,71 +1279,35 @@ export async function runAgentLoop(
       // round-trip regains the full filesystem toolset.
       const tools = buildTools()
       const offeredNames = offeredToolNames(tools)
+      const logicalRoundId = `after-seq:${getMaxMessageSeq(conversationId)}`
 
-      const stream = await createCompletion(
-        llm.client,
-        llm.model,
-        MAX_OUTPUT_TOKENS,
-        { messages, tools, stream: true },
-        [
-          undefined,
-          // The abort signal. On the OpenAI-backed path the SDK forwards it to
-          // fetch, so an abort tears the stream down directly. On the Portkey path
-          // (3.1.0) it does NOT forward — Portkey only checks `signal.aborted` after
-          // an error — so there the real cancellation is the `break` in the consume
-          // loop below: breaking runs the stream iterator's return()/reader.cancel(),
-          // which tears down the HTTP body.
-          { signal: abort.signal },
-        ],
-        llm.apiMode
-      )
+      const round = await createCompletionRoundWithRetry({
+        conversationId,
+        logicalRoundId,
+        signal: abort.signal,
+        isTransientError,
+        request: () =>
+          createCompletion(
+            llm.client,
+            llm.model,
+            MAX_OUTPUT_TOKENS,
+            { messages, tools, stream: true },
+            [
+              undefined,
+              // The abort signal. On the OpenAI-backed path the SDK forwards it to
+              // fetch. On the Portkey path, breaking the iterator cancels the body.
+              { signal: abort.signal },
+            ],
+            llm.apiMode
+          ),
+      })
 
-      // Reassemble the streamed turn. Text deltas are forwarded live; tool-call
-      // fragments arrive piecemeal and are collected here, then reassembled by
-      // `accumulateToolCalls` (which handles providers that omit `index`).
-      let text = ""
-      let withheldText = false
-      const toolFragments: ToolCallDelta[] = []
-      // The provider's reason for ending the turn (last non-null wins). "length"
-      // means the output hit the token cap — the response (and any tool-call JSON
-      // mid-stream) is truncated, so we must NOT try to parse it as complete.
-      let finishReason: string | null = null
-
-      for await (const chunk of stream) {
-        // Stop pressed mid-stream: break so the iterator cancels the reader and
-        // the HTTP stream stops. The post-loop abort check unwinds the turn.
-        if (abort.signal.aborted) break
-
-        const choice = chunk.choices[0]
-        if (choice?.finish_reason) finishReason = choice.finish_reason
-        const delta = choice?.delta
-        if (!delta) continue
-
-        const piece = contentToText(delta.content)
-        if (piece) {
-          text += piece
-          const trimmed = text.trimStart()
-          const mayBeTextToolCall =
-            !streamedText &&
-            ("[TOOL_CALL:".startsWith(trimmed) ||
-              trimmed.startsWith("[TOOL_CALL:"))
-          if (mayBeTextToolCall) {
-            withheldText = true
-            continue
-          }
-          const visiblePiece = withheldText ? text : piece
-          withheldText = false
-          // First visible token of a later turn: separate it from prior text.
-          if (text === visiblePiece && streamedText)
-            onEvent({ type: "token", delta: "\n\n" })
-          streamedText = true
-          onEvent({ type: "token", delta: visiblePiece })
-        }
-
-        for (const tc of (delta.tool_calls ?? []) as ToolCallDelta[]) {
-          toolFragments.push(tc)
-        }
-      }
+      // Reassemble the streamed turn only after the request has completed. Each
+      // failed transport/stream attempt buffers and discards its partial text and
+      // tool fragments, so a retry cannot execute an abandoned partial tool call
+      // or duplicate partial prose in the live UI.
+      let text = round.text
+      const finishReason = round.finishReason
 
       // Stopped mid-stream (we broke out above): persist whatever text streamed
       // so far plus the stop note, and end the turn. Don't act on a partial
@@ -1365,11 +1323,11 @@ export async function runAgentLoop(
         return { stopped: true }
       }
 
-      const structuredToolCalls = accumulateToolCalls(toolFragments)
+      const structuredToolCalls = accumulateToolCalls(round.toolFragments)
       const recovered = extractTextToolCalls(text)
       text = recovered.text
       const toolCalls = [...structuredToolCalls, ...recovered.toolCalls]
-      if (withheldText && recovered.toolCalls.length === 0 && text) {
+      if (text) {
         if (streamedText) onEvent({ type: "token", delta: "\n\n" })
         onEvent({ type: "token", delta: text })
         streamedText = true
@@ -1391,13 +1349,19 @@ export async function runAgentLoop(
           role: "assistant",
           content: `⚠️ ${note}`,
         })
-        return { error: note, retryable: true }
+        exhaustModelRequestRetryBudget({
+          conversationId,
+          logicalRoundId,
+          error: note,
+        })
+        return { error: note, retryable: false }
       }
 
       if (toolCalls.length === 0) {
         // No tool calls — this is the final answer. Persist it so the next turn
         // (and a reopened conversation) has the full transcript.
         appendMessage({ conversationId, role: "assistant", content: text })
+        completeModelRequestRetryBudget({ conversationId, logicalRoundId })
         if (
           persistedUserContent !== undefined &&
           (opts.agentDepth ?? 0) === 0
@@ -1433,6 +1397,7 @@ export async function runAgentLoop(
           arguments: c.arguments,
         })),
       })
+      completeModelRequestRetryBudget({ conversationId, logicalRoundId })
 
       // Execute requested tool calls in maximal consecutive batches. Only
       // workspace-confined read-only tools marked parallel-safe can overlap; all
@@ -1712,6 +1677,10 @@ export async function runAgentLoop(
         content: "⏹ Stopped by user.",
       })
       return { stopped: true }
+    }
+    if (error instanceof ModelRequestRetryExhaustedError) {
+      console.error("Model request retry budget exhausted:", error)
+      return failTurn(conversationId, error.message, false)
     }
     console.error("Portkey request failed:", error)
     const message = error instanceof Error ? error.message : "Request failed"

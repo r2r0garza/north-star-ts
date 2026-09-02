@@ -1,14 +1,14 @@
 ---
-status: OPEN
+status: CLOSED
 severity: P1
 trigger: "Processes and conversations share API error classification but not the same recovery boundary"
 created: 2026-09-01
-updated: 2026-09-01
+updated: 2026-09-02
 ---
 
 # Retry failed model requests without restarting process work
 
-## Current behavior and evidence
+## Original behavior and evidence
 
 At revision `21bd34d`:
 
@@ -26,6 +26,32 @@ At revision `21bd34d`:
 These are not equivalent recovery guarantees. A transient failure after useful
 tool work can cause an entire process phase to be attempted again. Lower-level
 client retry defaults have not been audited; do not assume their attempt count.
+
+## Current state
+
+The native completion-backed agent loop now owns a durable retry boundary for one
+logical model round:
+
+- `runAgentLoop` retries transient failures from both completion creation and
+  stream iteration.
+- Retries reuse the same `messages` and `tools` for the failed model round, so
+  completed tool results from earlier rounds stay in context.
+- Partial text and partial tool-call fragments from failed stream attempts are
+  buffered per attempt and discarded unless the stream completes.
+- Retry state is persisted by stable logical request id, including consumed
+  attempts, absolute deadline, completion, exhaustion, and linked user retries.
+- OpenAI SDK internal retries are disabled with `maxRetries: 0`; Portkey's
+  exposed `maxRetries` instance field is set to `0`.
+- Output-length truncation while a tool call is present is treated as an
+  unchanged-request failure, not a transient transport retry.
+
+This closes the phase-worker replay hazard for transient failures: recoverable
+request failures stay inside the worker's model round, while exhausted requests
+fail visibly without causing automatic phase replay with a fresh worker
+conversation. Automatic resume reloads the existing retry budget and makes zero
+new provider calls when the request is exhausted or past deadline. Explicit user
+retry creates a linked new budget only after preserving completed tool results
+and checking unresolved side effects.
 
 ## Proposed direction
 
@@ -71,20 +97,37 @@ round or genuine semantic rework is new logical work with its own request ID.
 
 ## Acceptance criteria
 
-- [ ] A completed side-effecting tool executes once when the following request
-  fails twice and then succeeds; all attempts include its existing result.
-- [ ] Test failure before response and during stream iteration, including partial
-  tool arguments and partial text. No abandoned tool fragment executes.
-- [ ] Fake-clock tests cover backoff, server delay, exhaustion, cancellation,
-  shutdown, and no late request after abort. Inject jitter for deterministic tests.
-- [ ] Auth/invalid-request failures do not consume transient retry cycles.
-- [ ] Assert total transport attempts across the stack; no multiplicative retry.
-- [ ] Exhaustion followed by automatic task/process resume, including app restart,
-  makes no new transport request. Explicit retry creates a linked budget without
-  replaying completed tools or bypassing unresolved-effect checks.
-- [ ] Both live chat and process workers exercise this shared implementation.
-- [ ] Exhaustion exposes an actionable recoverable failure, not a success or an
-  automatic worker restart. No provider-internal retry setting is assumed.
+- [x] A completed side-effecting tool executes once when the following request
+      fails twice and then succeeds; all attempts include its existing result.
+- [x] Test failure before response and during stream iteration, including partial
+      tool arguments and partial text. No abandoned tool fragment executes.
+- [x] Fake-clock tests cover backoff, server delay, exhaustion, cancellation,
+      shutdown, and no late request after abort. Inject jitter for deterministic
+      tests.
+- [x] Auth/invalid-request failures do not consume transient retry cycles.
+- [x] Assert total transport attempts across the stack; no multiplicative retry.
+- [x] Exhaustion followed by automatic task/process resume, including app restart,
+      makes no new transport request. Explicit retry creates a linked budget without
+      replaying completed tools or bypassing unresolved-effect checks.
+- [x] Both live chat and process workers exercise this shared implementation.
+- [x] Exhaustion exposes an actionable recoverable failure, not a success or an
+      automatic worker restart. No provider-internal retry setting is assumed.
+
+## Completed slices
+
+The umbrella work was split into narrower follow-up notes, now resolved:
+
+- [072](./072-persist-model-request-retry-budget.md): persist logical
+  model-request budget state.
+- [073](./073-agent-loop-retry-state-wiring.md): wire durable retry state into
+  `runAgentLoop`.
+- [074](./074-auto-resume-must-not-refresh-model-retry-budget.md): prevent
+  task/process auto-resume from refreshing an exhausted request budget.
+- [075](./075-explicit-retry-linked-model-budget.md): define explicit user retry
+  as a linked new budget without replaying completed or unknown side effects.
+- [076](./076-model-request-retry-fake-clock-tests.md): add deterministic
+  fake-clock coverage for backoff, `Retry-After`, cancellation, shutdown, and
+  exhaustion.
 
 ## Likely files and dependencies
 
@@ -96,3 +139,43 @@ Build on [065](./065-tool-error-feedback-lacks-loop-integration-tests.md).
 Coordinate resume semantics with [067](./067-interrupted-tools-risk-duplicate-side-effects.md)
 and attempt visibility with [069](./069-process-failures-lose-stage-and-attempt-context.md).
 New settings or retry events require the normal preload/main IPC boundary.
+
+## Progress 2026-09-02
+
+- Added a native completion retry coordinator in `runAgentLoop` around request
+  creation and stream consumption. Retries reuse the same messages/tools for the
+  failed model round, buffer partial text/tool fragments per attempt, and persist
+  only a completed stream.
+- Disabled hidden SDK retries for OpenAI (`maxRetries: 0`) and Portkey
+  (`maxRetries = 0`) so the loop owns the effective transport attempt count.
+- Output-length tool truncation is now surfaced as non-retryable for the unchanged
+  request path.
+- Added integration coverage proving a completed mutating tool is not replayed
+  when the following model request fails twice then succeeds, partial stream text
+  and partial tool arguments are discarded, and deterministic 401-style failures
+  do not retry.
+- Persisted logical request retry identity/deadline across task and process
+  resume, including zero-transport auto-resume after exhaustion or deadline
+  expiry.
+- Added explicit linked user-retry semantics that preserve completed tool results
+  and block unresolved/unknown side-effect outcomes.
+- Extracted the model-request retry coordinator and added deterministic
+  fake-clock coverage for capped backoff, `Retry-After`, elapsed-budget
+  exhaustion, attempt exhaustion, cancellation, shutdown, no late provider
+  access, abandoned stream fragment discard, and auto-resume after exhaustion.
+
+## Resolution
+
+The shared native completion retry boundary now covers live chat and process
+workers without relying on process-scheduler replay. Provider transport attempts
+are counted by the coordinator, hidden SDK retries are disabled, failed stream
+attempts are discarded before persistence, durable request budgets survive
+resume/restart, and explicit user retry is represented as a linked budget rather
+than an automatic refresh.
+
+Verification:
+
+- `npm test -- src/main/agent/model-request-retry.test.ts src/main/agent/tool-error-feedback.integration.test.ts`
+- `npm test -- src/main/db/repositories/model-request-retry-budgets.test.ts src/main/db/migrations.test.ts src/main/tasks/runner.test.ts src/main/agent/repair.test.ts`
+- `npm test -- src/main/tasks/process/service.test.ts src/main/agent/tool-error-feedback.integration.test.ts`
+- `npm run typecheck`

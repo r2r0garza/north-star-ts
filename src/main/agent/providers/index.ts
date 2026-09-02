@@ -158,12 +158,22 @@ function buildClient(account: ProviderAccount): LlmClient {
 
   let client: LlmClient
   if (account.provider === "portkey") {
-    client = wrapPortkey(new Portkey({ baseURL: account.baseUrl!, apiKey }))
+    const portkey = new Portkey({ baseURL: account.baseUrl!, apiKey })
+    // Portkey's SDK owns one hidden retry by default. The agent loop owns the
+    // model-request retry budget, so disable SDK-level multiplication.
+    portkey.maxRetries = 0
+    client = wrapPortkey(portkey)
   } else {
     // openai + openai_compatible: the OpenAI SDK sends Authorization: Bearer on
     // every request. baseURL undefined → native api.openai.com.
     client = wrapOpenAI(
-      new OpenAI({ apiKey, baseURL: account.baseUrl ?? undefined })
+      new OpenAI({
+        apiKey,
+        baseURL: account.baseUrl ?? undefined,
+        // OpenAI defaults to 2 internal retries; keep transport attempts visible
+        // and bounded by the shared agent-loop retry coordinator.
+        maxRetries: 0,
+      })
     )
   }
   clientCache.set(account.id, client)

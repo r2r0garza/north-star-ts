@@ -49,6 +49,11 @@ import { createApproval, listApprovals } from "../db/repositories/approvals"
 import { appendEvent } from "../db/repositories/task-events"
 import { createCheckpoint } from "../db/repositories/task-checkpoints"
 import {
+  consumeAttempt,
+  exhaustBudget,
+  getBudget,
+} from "../db/repositories/model-request-retry-budgets"
+import {
   createConversation,
   getConversation,
 } from "../db/repositories/conversations"
@@ -105,6 +110,25 @@ describe.skipIf(!sqliteLoads)(
   () => {
     it("re-queues and re-runs a failed task, keeping its id", async () => {
       const conv = createConversation({ mode: "chat" })
+      appendMessage({ conversationId: conv.id, role: "user", content: "hi" })
+      consumeAttempt({
+        conversationId: conv.id,
+        logicalRoundId: "after-seq:1",
+        maxAttempts: 1,
+        maxElapsedMs: 120_000,
+        now: 1000,
+      })
+      exhaustBudget({
+        conversationId: conv.id,
+        logicalRoundId: "after-seq:1",
+        error: "gateway 503",
+        now: 1100,
+      })
+      appendMessage({
+        conversationId: conv.id,
+        role: "assistant",
+        content: "failed",
+      })
       const task = createTask({
         conversationId: conv.id,
         status: "failed",
@@ -121,6 +145,100 @@ describe.skipIf(!sqliteLoads)(
       // Same task id, re-run to completion.
       expect(loopCalls).toHaveLength(1)
       expect(getTask(task.id)?.status).toBe("completed")
+      const retry = getBudget(conv.id, "after-seq:2")
+      expect(retry).toMatchObject({
+        source: "user_retry",
+        retrySequence: 1,
+        attemptsConsumed: 0,
+      })
+      expect(retry?.parentBudgetId).toBe(getBudget(conv.id, "after-seq:1")?.id)
+      await runner.stop()
+    })
+
+    it("keeps completed side-effect results in the transcript on retry", async () => {
+      const conv = createConversation({ mode: "chat" })
+      appendMessage({ conversationId: conv.id, role: "user", content: "go" })
+      appendMessage({
+        conversationId: conv.id,
+        role: "assistant",
+        content: null,
+        toolCalls: [{ id: "call-1", name: "run_shell_tool", arguments: "{}" }],
+      })
+      appendMessage({
+        conversationId: conv.id,
+        role: "tool",
+        content: "executed once",
+        toolCallId: "call-1",
+        toolName: "run_shell_tool",
+      })
+      consumeAttempt({
+        conversationId: conv.id,
+        logicalRoundId: "after-seq:3",
+        maxAttempts: 1,
+        maxElapsedMs: 120_000,
+        now: 1000,
+      })
+      exhaustBudget({
+        conversationId: conv.id,
+        logicalRoundId: "after-seq:3",
+        error: "gateway 503",
+        now: 1100,
+      })
+      appendMessage({
+        conversationId: conv.id,
+        role: "assistant",
+        content: "failed",
+      })
+      const task = createTask({
+        conversationId: conv.id,
+        status: "failed",
+        input: { kind: "agent_chat", message: "go" },
+      })
+      loopImpl = async (opts) => {
+        expect(
+          listMessages(opts.conversationId).map((m) => m.content)
+        ).toContain("executed once")
+        return { content: "done" }
+      }
+
+      const runner = new TaskRunner()
+      runner.start()
+      await settle()
+      runner.restart(task.id)
+      await settle()
+
+      expect(loopCalls).toHaveLength(1)
+      expect(
+        listMessages(conv.id).filter((m) => m.toolCallId === "call-1")
+      ).toHaveLength(1)
+      await runner.stop()
+    })
+
+    it("blocks retry when a side-effecting tool outcome is unknown", async () => {
+      const conv = createConversation({ mode: "chat" })
+      appendMessage({ conversationId: conv.id, role: "user", content: "go" })
+      appendMessage({
+        conversationId: conv.id,
+        role: "assistant",
+        content: null,
+        toolCalls: [{ id: "call-1", name: "run_shell_tool", arguments: "{}" }],
+      })
+      const task = createTask({
+        conversationId: conv.id,
+        status: "failed",
+        input: { kind: "agent_chat", message: "go" },
+      })
+      const runner = new TaskRunner()
+      runner.start()
+      await settle()
+
+      expect(() => runner.restart(task.id)).toThrow(
+        "side-effecting tool outcomes are unknown"
+      )
+      await settle()
+
+      expect(loopCalls).toHaveLength(0)
+      expect(getTask(task.id)?.status).toBe("failed")
       await runner.stop()
     })
 

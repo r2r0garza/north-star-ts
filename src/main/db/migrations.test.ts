@@ -90,8 +90,41 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
     const db = new Database(":memory:")
     db.pragma("foreign_keys = ON")
     runMigrations(db)
-    expect(db.pragma("user_version", { simple: true })).toBe(35)
+    expect(db.pragma("user_version", { simple: true })).toBe(37)
     expect(db.pragma("foreign_key_check")).toHaveLength(0)
+    db.close()
+  })
+
+  it("adds durable linked model request retry budgets through v37", () => {
+    const db = new Database(":memory:")
+    db.pragma("foreign_keys = ON")
+    runMigrations(db)
+    seedConversation(db, "conversation")
+    db.prepare(
+      `INSERT INTO model_request_retry_budgets
+        (id, conversation_id, logical_round_id, status, attempts_consumed,
+         max_attempts, first_attempt_at, deadline_at, created_at, updated_at)
+       VALUES ('budget', 'conversation', 'after-seq:1', 'in_progress', 1, 3, 1000, 121000, 1000, 1000)`
+    ).run()
+    expect(
+      db
+        .prepare(
+          "SELECT deadline_at FROM model_request_retry_budgets WHERE id = 'budget'"
+        )
+        .pluck()
+        .get()
+    ).toBe(121000)
+    expect(
+      db
+        .prepare(
+          "SELECT retry_sequence, source, parent_budget_id FROM model_request_retry_budgets WHERE id = 'budget'"
+        )
+        .get()
+    ).toEqual({
+      retry_sequence: 0,
+      source: "automatic",
+      parent_budget_id: null,
+    })
     db.close()
   })
 
@@ -555,7 +588,7 @@ describe.skipIf(!sqliteLoads)("SCHEMA_V9 — orphan reap (plan 022)", () => {
     // Apply V9 (the reaper) and any later migrations, up to the latest version.
     runMigrations(db)
 
-    expect(db.pragma("user_version", { simple: true })).toBe(35)
+    expect(db.pragma("user_version", { simple: true })).toBe(37)
 
     // Reaped: orphan + its nested descendant, and all their state.
     const taskIds = (

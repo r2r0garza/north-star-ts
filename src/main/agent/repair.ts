@@ -3,11 +3,40 @@ import {
   deleteMessage,
   listMessages,
 } from "../db/repositories/messages"
+import { getToolEffects } from "./tools"
+import type { ToolCallRecord } from "../db/types"
 
 // The synthetic result appended (in "synthesize" mode) for a tool call that
 // never produced one. The model API requires a `tool` message for every
 // tool_call_id, so a half-finished turn would otherwise 400 the next request.
-const INTERRUPTED_RESULT = "Interrupted before completion; result unknown."
+export const INTERRUPTED_RESULT =
+  "Interrupted before completion; result unknown."
+
+function isSideEffecting(call: ToolCallRecord): boolean {
+  const effects = getToolEffects(call.name)
+  return !effects || !effects.readOnly
+}
+
+export function unknownSideEffectingToolCalls(
+  conversationId: string
+): ToolCallRecord[] {
+  const messages = listMessages(conversationId)
+  const byToolCallId = new Map(
+    messages
+      .filter((m) => m.role === "tool" && m.toolCallId)
+      .map((m) => [m.toolCallId as string, m])
+  )
+  const unknown: ToolCallRecord[] = []
+  for (const message of messages) {
+    if (message.role !== "assistant" || !message.toolCalls?.length) continue
+    for (const call of message.toolCalls) {
+      if (!isSideEffecting(call)) continue
+      const result = byToolCallId.get(call.id)
+      if (!result || result.content === INTERRUPTED_RESULT) unknown.push(call)
+    }
+  }
+  return unknown
+}
 
 // How to repair a dangling assistant tool-call tail — a turn left with tool
 // calls that never produced results (the app quit, or a turn was abandoned,

@@ -89,12 +89,15 @@ vi.mock("../../agent", () => ({
     // JSON array of sub-task briefings. `decomposeReplies` lets a test script the
     // split; the default is two sub-tasks so a fan-out phase spawns children.
     const isDecompose = msg.startsWith("# Process phase (fan-out):")
-    const content = isDecompose
-      ? (decomposeReplies.shift() ??
-        JSON.stringify(["sub-task 1", "sub-task 2"]))
-      : isReview && reviewReplies.length
-        ? reviewReplies.shift()!
-        : "done"
+    const isResumedDecompose =
+      input.userMessage === undefined && decomposeReplies.length > 0
+    const content =
+      isDecompose || isResumedDecompose
+        ? (decomposeReplies.shift() ??
+          JSON.stringify(["sub-task 1", "sub-task 2"]))
+        : isReview && reviewReplies.length
+          ? reviewReplies.shift()!
+          : "done"
     // Give the worker a final assistant message (its "output").
     db.prepare(
       "INSERT INTO messages (id, conversation_id, seq, role, content, created_at) VALUES (?, ?, ?, 'assistant', ?, ?)"
@@ -912,6 +915,119 @@ describe.skipIf(!sqliteLoads)(
     })
   }
 )
+
+describe.skipIf(!sqliteLoads)("ProcessService worker resume", () => {
+  it("reuses an existing phase worker conversation without a fresh kickoff", async () => {
+    const def = processes.createProcessDefinition({ name: "Resume" })
+    const phase = processes.createPhase({
+      processId: def.id,
+      key: "impl",
+      name: "Implement",
+      position: 0,
+    })
+    const { taskId } = seedTaskRow()
+    const run = processes.createProcessRun({
+      processId: def.id,
+      sourceConversationId: null,
+      taskId,
+      objective: "resume safely",
+      status: "running",
+    })
+    const phaseRun = processes.createPhaseRun({
+      runId: run.id,
+      phaseId: phase.id,
+      status: "pending",
+    })
+    const existingWorker = seedTaskRow()
+    processes.updatePhaseRun(phaseRun.id, { taskId: existingWorker.taskId })
+
+    const svc = new ProcessService(fakeRunner)
+    await svc.execute({
+      task: { id: taskId, input: { processRunId: run.id } } as never,
+      signal: new AbortController().signal,
+      emit: () => {},
+      workspace: undefined,
+    })
+
+    expect(loopCalls).toHaveLength(1)
+    expect(loopCalls[0].conversationId).toBe(
+      (
+        db
+          .prepare("SELECT conversation_id FROM tasks WHERE id = ?")
+          .get(existingWorker.taskId)! as { conversation_id: string }
+      ).conversation_id
+    )
+    expect(loopCalls[0].userMessage).toBeUndefined()
+    expect(
+      (
+        db
+          .prepare(
+            "SELECT COUNT(*) AS count FROM tasks WHERE input LIKE '%process_phase%'"
+          )
+          .get()! as { count: number }
+      ).count
+    ).toBe(0)
+    expect(processes.getPhaseRun(phaseRun.id)?.status).toBe("completed")
+  })
+
+  it("reuses an existing decomposition worker conversation without a fresh kickoff", async () => {
+    const def = processes.createProcessDefinition({ name: "Resume fan-out" })
+    const phase = processes.createPhase({
+      processId: def.id,
+      key: "split",
+      name: "Split",
+      fanOut: true,
+      position: 0,
+    })
+    const { taskId } = seedTaskRow()
+    const run = processes.createProcessRun({
+      processId: def.id,
+      sourceConversationId: null,
+      taskId,
+      objective: "resume split",
+      status: "running",
+    })
+    const phaseRun = processes.createPhaseRun({
+      runId: run.id,
+      phaseId: phase.id,
+      status: "pending",
+    })
+    const existingWorker = seedTaskRow()
+    processes.updatePhaseRun(phaseRun.id, { taskId: existingWorker.taskId })
+    decomposeReplies.push(JSON.stringify(["resumed sub-task"]))
+
+    const svc = new ProcessService(fakeRunner)
+    await svc.execute({
+      task: { id: taskId, input: { processRunId: run.id } } as never,
+      signal: new AbortController().signal,
+      emit: () => {},
+      workspace: undefined,
+    })
+
+    expect(loopCalls[0].conversationId).toBe(
+      (
+        db
+          .prepare("SELECT conversation_id FROM tasks WHERE id = ?")
+          .get(existingWorker.taskId)! as { conversation_id: string }
+      ).conversation_id
+    )
+    expect(loopCalls[0].userMessage).toBeUndefined()
+    expect(
+      (
+        db
+          .prepare(
+            "SELECT COUNT(*) AS count FROM tasks WHERE input LIKE '%process_phase_decompose%'"
+          )
+          .get()! as { count: number }
+      ).count
+    ).toBe(0)
+    expect(
+      processes
+        .listPhaseRuns({ runId: run.id, parentId: phaseRun.id })
+        .map((child) => child.title)
+    ).toEqual(["resumed sub-task"])
+  })
+})
 
 describe.skipIf(!sqliteLoads)(
   "ProcessService requestChanges (plan 029)",

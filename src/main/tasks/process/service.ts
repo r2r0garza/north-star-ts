@@ -705,6 +705,8 @@ export class ProcessService {
       const workspace = workspaceId
         ? getWorkspace(workspaceId)?.path
         : undefined
+      const reworkNote =
+        processes.getPhaseRun(phaseRun.id)?.reworkNote ?? undefined
 
       // A fan-out CHILD runs its decomposed sub-task briefing verbatim; a normal
       // phase gets the generic self-contained kickoff (plan 025.1).
@@ -720,8 +722,7 @@ export class ProcessService {
           // re-runs this closure within one runPhaseWithRetry call and stamps a new
           // note each round, so the passed-in phaseRun object is stale. Null for a
           // first run.
-          reworkNote:
-            processes.getPhaseRun(phaseRun.id)?.reworkNote ?? undefined,
+          reworkNote,
         })
 
       // Resolve the phase's agent BEFORE forking the worker: for a `dispatch`
@@ -737,27 +738,37 @@ export class ProcessService {
         signal,
       })
 
-      const worker = createConversation({
-        mode: source?.mode ?? "interactive",
-        workspaceId,
-        accountId: source?.accountId ?? null,
-        modelId: source?.modelId ?? null,
-        agentName,
-        title: `${phase.name}${agentName ? `: ${agentName}` : ""}`,
-      })
-      // Back the worker with a task row so it's not listed as a standalone chat
-      // and is cascade-deleted with the source session (spawnSubagent shape).
-      const workerTask = createTask({
-        conversationId: worker.id,
-        sourceConversationId: run.sourceConversationId ?? worker.id,
-        status: "completed",
-        title: phase.name,
-        input: { kind: "process_phase", phaseRunId: phaseRun.id, agentName },
-      })
-      processes.updatePhaseRun(phaseRun.id, {
-        taskId: workerTask.id,
-        agentName,
-      })
+      const existingWorkerTask =
+        !reworkNote && phaseRun.taskId ? getTask(phaseRun.taskId) : undefined
+      const existingWorker = existingWorkerTask
+        ? getConversation(existingWorkerTask.conversationId)
+        : undefined
+      const resumingWorker = !!existingWorkerTask && !!existingWorker
+      const worker =
+        existingWorker ??
+        createConversation({
+          mode: source?.mode ?? "interactive",
+          workspaceId,
+          accountId: source?.accountId ?? null,
+          modelId: source?.modelId ?? null,
+          agentName,
+          title: `${phase.name}${agentName ? `: ${agentName}` : ""}`,
+        })
+      if (!resumingWorker) {
+        // Back the worker with a task row so it's not listed as a standalone chat
+        // and is cascade-deleted with the source session (spawnSubagent shape).
+        const workerTask = createTask({
+          conversationId: worker.id,
+          sourceConversationId: run.sourceConversationId ?? worker.id,
+          status: "completed",
+          title: phase.name,
+          input: { kind: "process_phase", phaseRunId: phaseRun.id, agentName },
+        })
+        processes.updatePhaseRun(phaseRun.id, {
+          taskId: workerTask.id,
+          agentName,
+        })
+      }
 
       // Chain a child controller so run-level cancel unwinds the phase worker.
       const childAbort = new AbortController()
@@ -774,7 +785,7 @@ export class ProcessService {
           conversationId: worker.id,
           workspace,
           agentDir: workspace,
-          userMessage: prompt,
+          userMessage: resumingWorker ? undefined : prompt,
           abort: childAbort,
           // Phases are autonomous; the phase gate is the HITL point.
           autoMode: true,
@@ -817,30 +828,42 @@ export class ProcessService {
       const workspace = workspaceId
         ? getWorkspace(workspaceId)?.path
         : undefined
+      const reworkNote =
+        processes.getPhaseRun(phaseRun.id)?.reworkNote ?? undefined
 
-      const worker = createConversation({
-        mode: source?.mode ?? "interactive",
-        workspaceId,
-        accountId: source?.accountId ?? null,
-        modelId: source?.modelId ?? null,
-        agentName,
-        title: `${phase.name} (decompose)${agentName ? `: ${agentName}` : ""}`,
-      })
-      const workerTask = createTask({
-        conversationId: worker.id,
-        sourceConversationId: run.sourceConversationId ?? worker.id,
-        status: "completed",
-        title: `${phase.name} (decompose)`,
-        input: {
-          kind: "process_phase_decompose",
-          phaseRunId: phaseRun.id,
+      const existingWorkerTask =
+        !reworkNote && phaseRun.taskId ? getTask(phaseRun.taskId) : undefined
+      const existingWorker = existingWorkerTask
+        ? getConversation(existingWorkerTask.conversationId)
+        : undefined
+      const resumingWorker = !!existingWorkerTask && !!existingWorker
+      const worker =
+        existingWorker ??
+        createConversation({
+          mode: source?.mode ?? "interactive",
+          workspaceId,
+          accountId: source?.accountId ?? null,
+          modelId: source?.modelId ?? null,
           agentName,
-        },
-      })
-      processes.updatePhaseRun(phaseRun.id, {
-        taskId: workerTask.id,
-        agentName,
-      })
+          title: `${phase.name} (decompose)${agentName ? `: ${agentName}` : ""}`,
+        })
+      if (!resumingWorker) {
+        const workerTask = createTask({
+          conversationId: worker.id,
+          sourceConversationId: run.sourceConversationId ?? worker.id,
+          status: "completed",
+          title: `${phase.name} (decompose)`,
+          input: {
+            kind: "process_phase_decompose",
+            phaseRunId: phaseRun.id,
+            agentName,
+          },
+        })
+        processes.updatePhaseRun(phaseRun.id, {
+          taskId: workerTask.id,
+          agentName,
+        })
+      }
 
       const childAbort = new AbortController()
       if (signal.aborted) childAbort.abort(signal.reason)
@@ -861,8 +884,7 @@ export class ProcessService {
           // Whole-container rework stores feedback on the fan-out parent run.
           // Re-read it per attempt so retries and post-reset resumes do not use a
           // stale phaseRun object.
-          reworkNote:
-            processes.getPhaseRun(phaseRun.id)?.reworkNote ?? undefined,
+          reworkNote,
         }) + (attempt > 1 ? decompositionRetryNote : "")
 
       try {
@@ -870,7 +892,7 @@ export class ProcessService {
           conversationId: worker.id,
           workspace,
           agentDir: workspace,
-          userMessage: prompt,
+          userMessage: resumingWorker ? undefined : prompt,
           abort: childAbort,
           autoMode: true,
           // Headless worker — no user to answer a clarifying question.

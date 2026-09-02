@@ -12,7 +12,9 @@ import {
   listApprovals,
   resolveApproval as resolveApprovalRecord,
 } from "../db/repositories/approvals"
-import { appendMessage } from "../db/repositories/messages"
+import { appendMessage, getMaxMessageSeq } from "../db/repositories/messages"
+import { createLinkedRetryBudget } from "../db/repositories/model-request-retry-budgets"
+import { unknownSideEffectingToolCalls } from "../agent/repair"
 import {
   getConversation,
   createConversation,
@@ -486,8 +488,21 @@ export class TaskRunner {
   restart(taskId: string): void {
     const task = getTask(taskId)
     if (!task || task.status !== "failed") return
+    const unknownSideEffects = unknownSideEffectingToolCalls(
+      task.conversationId
+    )
+    if (unknownSideEffects.length > 0) {
+      const names = unknownSideEffects.map((call) => call.name).join(", ")
+      throw new Error(
+        `cannot retry task while side-effecting tool outcomes are unknown: ${names}`
+      )
+    }
     // A fresh user-driven run gets the full retry allowance again.
     this.attempts.delete(taskId)
+    createLinkedRetryBudget({
+      conversationId: task.conversationId,
+      logicalRoundId: `after-seq:${getMaxMessageSeq(task.conversationId)}`,
+    })
     updateTask(taskId, { status: "queued" })
     this.emit(taskId, {
       type: "status_change",

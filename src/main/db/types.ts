@@ -334,6 +334,31 @@ export interface ExternalAgentModelMapping {
   updatedAt: number
 }
 
+export type ModelRequestRetryBudgetStatus =
+  | "in_progress"
+  | "completed"
+  | "exhausted"
+export type ModelRequestRetryBudgetSource = "automatic" | "user_retry"
+
+export interface ModelRequestRetryBudget {
+  id: string
+  conversationId: string
+  logicalRoundId: string
+  parentBudgetId: string | null
+  retrySequence: number
+  source: ModelRequestRetryBudgetSource
+  status: ModelRequestRetryBudgetStatus
+  attemptsConsumed: number
+  maxAttempts: number
+  firstAttemptAt: number
+  deadlineAt: number
+  lastError: string | null
+  completedAt: number | null
+  exhaustedAt: number | null
+  createdAt: number
+  updatedAt: number
+}
+
 // External agent CLI continuity (SCHEMA_V29). The provider owns its native
 // transcript; North Star stores only the stable reference needed to resume.
 export interface CliSession {

@@ -17,7 +17,8 @@ let db: Database.Database
 vi.mock("../db/connection", () => ({ getDb: () => db }))
 vi.mock("electron", () => ({
   app: {
-    getPath: (name: string) => (name === "home" ? electronPaths.home : tmpdir()),
+    getPath: (name: string) =>
+      name === "home" ? electronPaths.home : tmpdir(),
     getAppPath: () => electronPaths.appPath,
   },
 }))
@@ -28,7 +29,9 @@ type CompletionRequest = {
   tools: string[]
 }
 
-const scriptedCompletions: Array<(request: CompletionRequest) => AsyncIterable<any>> = []
+const scriptedCompletions: Array<
+  (request: CompletionRequest) => AsyncIterable<any>
+> = []
 const completionRequests: CompletionRequest[] = []
 
 vi.mock("./providers", () => {
@@ -55,14 +58,20 @@ vi.mock("./providers", () => {
       if (!next) throw new Error("unexpected completion request")
       return next(snapshot)
     },
-    isTransientError: () => false,
+    isTransientError: (err: unknown) =>
+      (err as { transient?: boolean }).transient === true,
     resolveModelLabel: () => "test-model",
     NoActiveProviderError,
   }
 })
 
 import { createConversation } from "../db/repositories/conversations"
-import { listMessages } from "../db/repositories/messages"
+import { appendMessage, listMessages } from "../db/repositories/messages"
+import {
+  consumeAttempt,
+  getBudget,
+  recordFailure,
+} from "../db/repositories/model-request-retry-budgets"
 import { createTask, getTask } from "../db/repositories/tasks"
 import { upsertWorkspace } from "../db/repositories/workspaces"
 import * as processes from "../db/repositories/processes"
@@ -114,6 +123,37 @@ function streamText(content: string): AsyncIterable<any> {
   })()
 }
 
+function streamLengthToolCall(): AsyncIterable<any> {
+  return (async function* () {
+    yield {
+      choices: [
+        {
+          delta: {
+            tool_calls: [
+              {
+                index: 0,
+                id: "truncated_tool",
+                type: "function",
+                function: {
+                  name: "read_file_tool",
+                  arguments: '{"path":"ok',
+                },
+              },
+            ],
+          },
+          finish_reason: "length",
+        },
+      ],
+    }
+  })()
+}
+
+function transientError(message: string): Error & { transient: true } {
+  const err = new Error(message) as Error & { transient: true }
+  err.transient = true
+  return err
+}
+
 async function makeWorkspace(): Promise<string> {
   const workspace = await mkdtemp(join(tmpdir(), "north-star-loop-"))
   await writeFile(join(workspace, "ok.txt"), "corrected content\n", "utf-8")
@@ -121,7 +161,9 @@ async function makeWorkspace(): Promise<string> {
 }
 
 function toolRows(conversationId: string) {
-  return listMessages(conversationId).filter((message) => message.role === "tool")
+  return listMessages(conversationId).filter(
+    (message) => message.role === "tool"
+  )
 }
 
 function contentsByCallId(conversationId: string): Map<string, string> {
@@ -134,7 +176,9 @@ function contentsByCallId(conversationId: string): Map<string, string> {
 }
 
 function lastMessage(request: CompletionRequest, role: string) {
-  return [...request.messages].reverse().find((message) => message.role === role)
+  return [...request.messages]
+    .reverse()
+    .find((message) => message.role === role)
 }
 
 let unofferedToolExecutions = 0
@@ -149,6 +193,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  vi.restoreAllMocks()
   toolRegistry.byName.delete("test_throw_tool")
   toolRegistry.byName.delete("test_unoffered_tool")
   const registered = toolDefinitions.findIndex(
@@ -276,6 +321,18 @@ describe.skipIf(!sqliteLoads)("agent loop tool-error feedback", () => {
     expect(result).toEqual({ content: "Recovered." })
     expect(unofferedToolExecutions).toBe(0)
     expect(completionRequests).toHaveLength(3)
+    expect(getBudget(conversation.id, "after-seq:1")).toMatchObject({
+      status: "completed",
+      attemptsConsumed: 1,
+    })
+    expect(getBudget(conversation.id, "after-seq:7")).toMatchObject({
+      status: "completed",
+      attemptsConsumed: 1,
+    })
+    expect(getBudget(conversation.id, "after-seq:9")).toMatchObject({
+      status: "completed",
+      attemptsConsumed: 1,
+    })
     const persisted = contentsByCallId(conversation.id)
     expect(persisted.get("call_missing")).toContain("ERROR[not_found]")
     expect(persisted.get("call_sibling")).toContain("corrected content")
@@ -431,7 +488,10 @@ describe.skipIf(!sqliteLoads)("agent loop tool-error feedback", () => {
 
     expect(result).toEqual({ content: "process complete" })
     expect(processes.getProcessRun(run.id)?.status).toBe("completed")
-    const phaseRun = processes.listPhaseRuns({ runId: run.id, parentId: null })[0]
+    const phaseRun = processes.listPhaseRuns({
+      runId: run.id,
+      parentId: null,
+    })[0]
     expect(phaseRun.status).toBe("completed")
     expect(phaseRun.agentName).toBe("reader")
     const workerTask = getTask(phaseRun.taskId!)
@@ -442,5 +502,235 @@ describe.skipIf(!sqliteLoads)("agent loop tool-error feedback", () => {
       "corrected content"
     )
     expect(completionRequests).toHaveLength(3)
+  })
+
+  it("retries only the failed model request after a completed tool round", async () => {
+    vi.spyOn(Math, "random").mockReturnValue(0)
+    let executions = 0
+    const sideEffectTool: Tool = {
+      effects: TOOL_EFFECTS.mutation,
+      definition: {
+        type: "function",
+        function: {
+          name: "test_throw_tool",
+          description: "Counts executions in tests.",
+          parameters: { type: "object", properties: {} },
+        },
+      },
+      execute: async () => {
+        executions += 1
+        return `executed ${executions}`
+      },
+    }
+    toolDefinitions.push(sideEffectTool.definition)
+    toolRegistry.byName.set("test_throw_tool", sideEffectTool)
+
+    const workspace = await makeWorkspace()
+    const conversation = createConversation({ mode: "interactive" })
+
+    scriptedCompletions.push(() =>
+      streamToolCalls([
+        {
+          id: "side_effect_once",
+          name: "test_throw_tool",
+          arguments: "{}",
+        },
+      ])
+    )
+    scriptedCompletions.push((request) => {
+      expect(lastMessage(request, "tool")).toMatchObject({
+        tool_call_id: "side_effect_once",
+        content: "executed 1",
+      })
+      throw transientError("temporary outage 1")
+    })
+    scriptedCompletions.push((request) => {
+      expect(lastMessage(request, "tool")).toMatchObject({
+        tool_call_id: "side_effect_once",
+        content: "executed 1",
+      })
+      throw transientError("temporary outage 2")
+    })
+    scriptedCompletions.push((request) => {
+      expect(lastMessage(request, "tool")).toMatchObject({
+        tool_call_id: "side_effect_once",
+        content: "executed 1",
+      })
+      return streamText("done after retry")
+    })
+
+    const result = await runAgentLoop({
+      conversationId: conversation.id,
+      workspace,
+      userMessage: "run the side effect once",
+      abort: new AbortController(),
+      onEvent: () => {},
+    })
+
+    expect(result).toEqual({ content: "done after retry" })
+    expect(executions).toBe(1)
+    expect(completionRequests).toHaveLength(4)
+    expect(getBudget(conversation.id, "after-seq:1")).toMatchObject({
+      status: "completed",
+      attemptsConsumed: 1,
+    })
+    expect(getBudget(conversation.id, "after-seq:3")).toMatchObject({
+      status: "completed",
+      attemptsConsumed: 3,
+      lastError: "temporary outage 2",
+    })
+    expect(contentsByCallId(conversation.id).get("side_effect_once")).toBe(
+      "executed 1"
+    )
+  })
+
+  it("discards partial text and tool fragments from a failed stream retry", async () => {
+    vi.spyOn(Math, "random").mockReturnValue(0)
+    const workspace = await makeWorkspace()
+    const conversation = createConversation({ mode: "interactive" })
+    const tokens: string[] = []
+
+    scriptedCompletions.push(() =>
+      (async function* () {
+        yield {
+          choices: [
+            {
+              delta: {
+                content: "abandoned text",
+                tool_calls: [
+                  {
+                    index: 0,
+                    id: "partial_tool",
+                    type: "function",
+                    function: {
+                      name: "read_file_tool",
+                      arguments: '{"path":"ok',
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        }
+        throw transientError("socket died mid-stream")
+      })()
+    )
+    scriptedCompletions.push(() => streamText("clean retry"))
+
+    const result = await runAgentLoop({
+      conversationId: conversation.id,
+      workspace,
+      userMessage: "stream retry",
+      abort: new AbortController(),
+      onEvent: (event) => {
+        if (event.type === "token") tokens.push(event.delta)
+      },
+    })
+
+    expect(result).toEqual({ content: "clean retry" })
+    expect(tokens).toEqual(["clean retry"])
+    expect(getBudget(conversation.id, "after-seq:1")).toMatchObject({
+      status: "completed",
+      attemptsConsumed: 2,
+      lastError: "socket died mid-stream",
+    })
+    expect(contentsByCallId(conversation.id).has("partial_tool")).toBe(false)
+    expect(
+      listMessages(conversation.id).some((message) =>
+        String(message.content ?? "").includes("abandoned text")
+      )
+    ).toBe(false)
+    expect(completionRequests).toHaveLength(2)
+  })
+
+  it("does not retry deterministic provider failures", async () => {
+    const workspace = await makeWorkspace()
+    const conversation = createConversation({ mode: "interactive" })
+    const err = Object.assign(new Error("invalid api key"), { status: 401 })
+
+    scriptedCompletions.push(() => {
+      throw err
+    })
+
+    const result = await runAgentLoop({
+      conversationId: conversation.id,
+      workspace,
+      userMessage: "auth failure",
+      abort: new AbortController(),
+      onEvent: () => {},
+    })
+
+    expect(result).toEqual({ error: "invalid api key", retryable: false })
+    expect(completionRequests).toHaveLength(1)
+    expect(getBudget(conversation.id, "after-seq:1")).toMatchObject({
+      status: "exhausted",
+      attemptsConsumed: 1,
+      lastError: "invalid api key",
+    })
+  })
+
+  it("exhausts a durable budget without a transient retry for truncated tool calls", async () => {
+    const workspace = await makeWorkspace()
+    const conversation = createConversation({ mode: "interactive" })
+
+    scriptedCompletions.push(() => streamLengthToolCall())
+
+    const result = await runAgentLoop({
+      conversationId: conversation.id,
+      workspace,
+      userMessage: "make an oversized tool call",
+      abort: new AbortController(),
+      onEvent: () => {},
+    })
+
+    expect(result.error).toContain(
+      "The model's response was truncated before the tool call completed"
+    )
+    expect(result.retryable).toBe(false)
+    expect(completionRequests).toHaveLength(1)
+    expect(getBudget(conversation.id, "after-seq:1")).toMatchObject({
+      status: "exhausted",
+      attemptsConsumed: 1,
+    })
+    expect(contentsByCallId(conversation.id).has("truncated_tool")).toBe(false)
+  })
+
+  it("makes zero provider calls when a resumed model round is past its durable deadline", async () => {
+    const conversation = createConversation({ mode: "interactive" })
+    appendMessage({
+      conversationId: conversation.id,
+      role: "user",
+      content: "resume the in-flight request",
+    })
+    consumeAttempt({
+      conversationId: conversation.id,
+      logicalRoundId: "after-seq:1",
+      maxAttempts: 3,
+      maxElapsedMs: 1,
+      now: 1000,
+    })
+    recordFailure({
+      conversationId: conversation.id,
+      logicalRoundId: "after-seq:1",
+      error: "gateway 503",
+      now: 1001,
+    })
+
+    const result = await runAgentLoop({
+      conversationId: conversation.id,
+      abort: new AbortController(),
+      onEvent: () => {},
+    })
+
+    expect(result.error).toContain("Model request failed after 1 attempts")
+    expect(completionRequests).toHaveLength(0)
+    expect(getBudget(conversation.id, "after-seq:1")).toMatchObject({
+      status: "exhausted",
+      attemptsConsumed: 1,
+      lastError: "gateway 503",
+    })
+    expect(listMessages(conversation.id).at(-1)?.content ?? "").toContain(
+      "The turn ended early"
+    )
   })
 })

@@ -1078,3 +1078,44 @@ DROP TABLE external_agent_model_mappings_old;
 CREATE INDEX idx_external_agent_model_mappings_account
   ON external_agent_model_mappings(destination_account_id);
 `
+
+// v36 (debug 072): durable retry budgets for native model request rounds. The
+// logical round id is owned by the agent loop and is stable across resume for
+// the same persisted transcript boundary, while attempts are consumed before
+// each provider transport call so a crash mid-request does not refresh budget.
+export const SCHEMA_V36 = `
+CREATE TABLE model_request_retry_budgets (
+  id                  TEXT PRIMARY KEY,
+  conversation_id     TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  logical_round_id    TEXT NOT NULL,
+  status              TEXT NOT NULL CHECK (status IN ('in_progress','completed','exhausted')),
+  attempts_consumed   INTEGER NOT NULL,
+  max_attempts        INTEGER NOT NULL,
+  first_attempt_at    INTEGER NOT NULL,
+  deadline_at         INTEGER NOT NULL,
+  last_error          TEXT,
+  completed_at        INTEGER,
+  exhausted_at        INTEGER,
+  created_at          INTEGER NOT NULL,
+  updated_at          INTEGER NOT NULL,
+  UNIQUE (conversation_id, logical_round_id)
+);
+CREATE INDEX idx_model_request_retry_budgets_conversation
+  ON model_request_retry_budgets(conversation_id, logical_round_id);
+`
+
+// v37 (debug 075): explicit user retry creates a fresh retry budget linked to
+// the exhausted model request it supersedes. The logical round id remains the
+// transcript boundary used by the agent loop; parent_budget_id/retry_sequence
+// preserve the audit chain across user-authorized retries.
+export const SCHEMA_V37 = `
+ALTER TABLE model_request_retry_budgets
+  ADD COLUMN parent_budget_id TEXT REFERENCES model_request_retry_budgets(id) ON DELETE SET NULL;
+ALTER TABLE model_request_retry_budgets
+  ADD COLUMN retry_sequence INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE model_request_retry_budgets
+  ADD COLUMN source TEXT NOT NULL DEFAULT 'automatic'
+    CHECK (source IN ('automatic','user_retry'));
+CREATE INDEX idx_model_request_retry_budgets_parent
+  ON model_request_retry_budgets(parent_budget_id);
+`
