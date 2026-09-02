@@ -27,6 +27,7 @@ import type {
   ProcessRunStatus,
   PhaseRunStatus,
   PhaseRouting,
+  PhaseCompletionContract,
   PhaseGatePolicy,
   EdgeTrigger,
   Dashboard,
@@ -988,6 +989,7 @@ const api = {
           fanOut?: boolean
           maxReworkRounds?: number
           dotFolder?: boolean
+          completionContract?: PhaseCompletionContract
           validator?: boolean
           validatorMaxIterations?: number
           validatorAgent?: string | null
@@ -1012,6 +1014,7 @@ const api = {
             fanOut?: boolean
             maxReworkRounds?: number
             dotFolder?: boolean
+            completionContract?: PhaseCompletionContract
             validator?: boolean
             validatorMaxIterations?: number
             validatorAgent?: string | null

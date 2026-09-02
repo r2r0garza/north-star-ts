@@ -4,10 +4,18 @@ import { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import {
   GateCard,
+  ProcessBuilder,
+  PhaseCompletionEvidence,
+  RunCompletionSummary,
   PhaseAttemptHistory,
   recoverProcessMonitorGates,
 } from "./process-screen"
-import type { Approval, ProcessPhaseAttempt, TaskEventPayload } from "@/types"
+import type {
+  Approval,
+  ProcessRun,
+  ProcessPhaseAttempt,
+  TaskEventPayload,
+} from "@/types"
 
 let container: HTMLDivElement
 let root: Root
@@ -132,10 +140,7 @@ describe("PhaseAttemptHistory", () => {
 
     await act(async () => {
       root.render(
-        <PhaseAttemptHistory
-          phaseRunId="phase-run-1"
-          onOpenTask={vi.fn()}
-        />
+        <PhaseAttemptHistory phaseRunId="phase-run-1" onOpenTask={vi.fn()} />
       )
     })
     await flushPromises()
@@ -164,10 +169,7 @@ describe("PhaseAttemptHistory", () => {
 
     await act(async () => {
       root.render(
-        <PhaseAttemptHistory
-          phaseRunId="phase-run-1"
-          onOpenTask={onOpenTask}
-        />
+        <PhaseAttemptHistory phaseRunId="phase-run-1" onOpenTask={onOpenTask} />
       )
     })
     await flushPromises()
@@ -408,5 +410,163 @@ describe("recoverProcessMonitorGates", () => {
 
     expect(recovered.gates).toEqual({})
     expect(recovered.requests["req-1"]).toBe(request)
+  })
+})
+
+describe("completion policy rollout", () => {
+  const definition = {
+    id: "process",
+    name: "Example",
+    description: null,
+    requireFlagApproval: true,
+    createdAt: 1,
+    updatedAt: 1,
+  }
+  const phase = {
+    id: "phase",
+    processId: "process",
+    key: "work",
+    name: "Work",
+    routing: "single",
+    gatePolicy: "auto",
+    fanOut: false,
+    maxReworkRounds: 0,
+    dotFolder: false,
+    validator: false,
+    validatorMaxIterations: 0,
+    validatorAgent: null,
+    subprocessId: null,
+    position: 0,
+  } as const
+  it("creates new builder phases with validated v1 completion", async () => {
+    const create = vi.fn().mockResolvedValue(phase)
+    ;(window as unknown as { cowork: unknown }).cowork = {
+      db: {
+        processes: {
+          get: vi.fn().mockResolvedValue({
+            definition,
+            phases: [],
+            agents: [],
+            edges: [],
+          }),
+          phases: { create },
+        },
+      },
+    }
+    act(() => {
+      root.render(
+        <ProcessBuilder
+          definition={definition}
+          agents={[]}
+          definitions={[definition]}
+          onDefinitionChanged={() => {}}
+        />
+      )
+    })
+    await flushPromises()
+    clickByText("Add phase")
+    await flushPromises()
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        completionContract: {
+          policy: "validated",
+          version: 1,
+          requiredArtifacts: [],
+        },
+      })
+    )
+  })
+  it("shows legacy compatibility and allows explicit opt-in in the builder", async () => {
+    const update = vi.fn().mockResolvedValue(phase)
+    ;(window as unknown as { cowork: unknown }).cowork = {
+      db: {
+        processes: {
+          get: vi.fn().mockResolvedValue({
+            definition,
+            phases: [phase],
+            agents: [],
+            edges: [],
+          }),
+          phases: { update },
+        },
+      },
+    }
+    act(() => {
+      root.render(
+        <ProcessBuilder
+          definition={definition}
+          agents={[]}
+          definitions={[definition]}
+          onDefinitionChanged={() => {}}
+        />
+      )
+    })
+    await flushPromises()
+    clickByText("Work")
+    await flushPromises()
+    expect(container.textContent).toContain("Legacy completion")
+    const toggle = container.querySelector(
+      '[aria-label="Validated completion"]'
+    )!
+    expect(toggle).toBeTruthy()
+    act(() => {
+      toggle.dispatchEvent(new MouseEvent("click", { bubbles: true }))
+    })
+    await flushPromises()
+    expect(update).toHaveBeenCalledWith("phase", {
+      completionContract: {
+        policy: "validated",
+        version: 1,
+        requiredArtifacts: [],
+      },
+    })
+  })
+  it("shows the recorded run policy instead of a changed definition, and actionable outcome evidence", () => {
+    const run: Pick<ProcessRun, "completionContracts"> = {
+      completionContracts: {
+        phase: {
+          policy: "validated",
+          version: 1,
+          requiredArtifacts: ["report.txt"],
+        },
+      },
+    }
+    act(() => {
+      root.render(
+        <>
+          <RunCompletionSummary run={run} phases={[phase]} />
+          <PhaseCompletionEvidence
+            receipt={{
+              outcome: {
+                version: 1,
+                attemptId: "attempt",
+                status: "blocked",
+                output: "Cannot finish",
+                evidence: "Input missing",
+                reason: "Missing input",
+                nextAction: "Supply input",
+              },
+              checkedArtifacts: [],
+              checkedAt: 1,
+            }}
+          />
+        </>
+      )
+    })
+    expect(container.textContent).toContain("Work: Validated v1")
+    expect(container.textContent).toContain("report.txt")
+    expect(container.textContent).toContain("blocked")
+    expect(container.textContent).toContain("Supply input")
+    act(() => {
+      root.render(
+        <RunCompletionSummary
+          run={{ completionContracts: null }}
+          phases={[phase]}
+        />
+      )
+    })
+    expect(container.textContent).toContain(
+      "Legacy (ended turn counts as success)"
+    )
   })
 })

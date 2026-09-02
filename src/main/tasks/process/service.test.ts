@@ -16,12 +16,14 @@ vi.mock("../../db/connection", () => ({ getDb: () => db }))
 const loopCalls: {
   conversationId: string
   userMessage?: string
+  processCompletionInstruction?: string
   suppressUserQuestions?: boolean
 }[] = []
 // A validator reviewer's scripted replies (plan 031.1): each call to a REVIEW
 // prompt (validatorPrompt begins "# Review the") shifts one reply off this queue;
 // the reply is the reviewer worker's final message (a JSON verdict). Empty queue
 // yields the default "done", which is unparseable and should hold the phase.
+const outcomeReplies: Array<(instruction: string) => string> = []
 const reviewReplies: string[] = []
 // Substrings that make a worker whose userMessage contains one return a
 // non-retryable error the FIRST time it's seen (then succeed on a re-run) — lets a
@@ -60,11 +62,13 @@ vi.mock("../../agent", () => ({
   runAgentLoop: async (input: {
     conversationId: string
     userMessage?: string
+    processCompletionInstruction?: string
     suppressUserQuestions?: boolean
   }) => {
     loopCalls.push({
       conversationId: input.conversationId,
       userMessage: input.userMessage,
+      processCompletionInstruction: input.processCompletionInstruction,
       suppressUserQuestions: input.suppressUserQuestions,
     })
     const msg = input.userMessage ?? ""
@@ -99,7 +103,9 @@ vi.mock("../../agent", () => ({
           JSON.stringify(["sub-task 1", "sub-task 2"]))
         : (isReview || isResumedReview) && reviewReplies.length
           ? reviewReplies.shift()!
-          : "done"
+          : outcomeReplies.length && input.processCompletionInstruction
+            ? outcomeReplies.shift()!(input.processCompletionInstruction)
+            : "done"
     // Give the worker a final assistant message (its "output").
     db.prepare(
       "INSERT INTO messages (id, conversation_id, seq, role, content, created_at) VALUES (?, ?, ?, 'assistant', ?, ?)"
@@ -202,6 +208,7 @@ beforeEach(() => {
   runMigrations(db)
   loopCalls.length = 0
   reviewReplies.length = 0
+  outcomeReplies.length = 0
   failOnce.length = 0
   decomposeReplies.length = 0
   abortOnMessage.length = 0
@@ -1973,3 +1980,101 @@ describe.skipIf(!sqliteLoads)(
     })
   }
 )
+
+describe.skipIf(!sqliteLoads)("ProcessService validated completion", () => {
+  const reply = (instruction: string) =>
+    JSON.stringify({
+      version: 1,
+      attemptId: instruction.match(/attemptId: "([^"]+)"/)?.[1],
+      status: "completed",
+      output: "Finished",
+      evidence: "Verified the requested result",
+    })
+  function setup(validator = false) {
+    const def = processes.createProcessDefinition({ name: "Validated" })
+    const phase = processes.createPhase({
+      processId: def.id,
+      key: "work",
+      name: "Work",
+      position: 0,
+      validator,
+      completionContract: {
+        policy: "validated",
+        version: 1,
+        requiredArtifacts: [],
+      },
+    })
+    const { taskId } = seedTaskRow()
+    const run = processes.createProcessRun({
+      processId: def.id,
+      sourceConversationId: null,
+      taskId,
+      status: "running",
+    })
+    const svc = new ProcessService({ resume: vi.fn() } as never)
+    const execute = () =>
+      svc.execute({
+        task: { id: taskId, input: { processRunId: run.id } } as never,
+        signal: new AbortController().signal,
+        emit: () => {},
+        workspace: undefined,
+      })
+    return { phase, run, taskId, svc, execute }
+  }
+  it("uses the recorded contract and refreshes instructions without a new user message on resume", async () => {
+    const { phase, run, execute } = setup()
+    const row = processes.createPhaseRun({
+      runId: run.id,
+      phaseId: phase.id,
+      status: "pending",
+    })
+    const worker = seedTaskRow()
+    processes.updatePhaseRun(row.id, { taskId: worker.taskId })
+    processes.updatePhase(phase.id, {
+      completionContract: { policy: "legacy" },
+    })
+    outcomeReplies.push(reply)
+    await execute()
+    expect(loopCalls[0].userMessage).toBeUndefined()
+    expect(loopCalls[0].processCompletionInstruction).toContain(
+      "Required phase outcome"
+    )
+    expect(
+      processes.getPhaseRun(row.id)?.completionReceipt?.outcome.status
+    ).toBe("completed")
+    expect(processes.getPhaseRun(row.id)?.taskId).toBe(worker.taskId)
+  })
+  it("retains the receipt on review-only retry and clears it for semantic rework", async () => {
+    const { run, taskId, svc, execute } = setup(true)
+    outcomeReplies.push(reply)
+    reviewReplies.push("unparseable")
+    await execute()
+    let row = processes.listPhaseRuns({ runId: run.id })[0]
+    const receipt = row.completionReceipt
+    const identity = row.outputIdentity
+    expect(receipt?.outcome.status).toBe("completed")
+    expect(row.status).toBe("waiting_for_approval")
+    const gate = listApprovals({ taskId }).find((a) => a.status === "pending")!
+    svc.retryReview({
+      processRunId: run.id,
+      requestId: (gate.request as { requestId: string }).requestId,
+    })
+    expect(processes.getPhaseRun(row.id)?.completionReceipt).toEqual(receipt)
+    expect(processes.getPhaseRun(row.id)?.outputIdentity).toBe(identity)
+    reviewReplies.push(
+      '{"approved": false, "feedback": "Revise the result"}',
+      '{"approved": true}'
+    )
+    outcomeReplies.push(reply)
+    await execute()
+    row = processes.getPhaseRun(row.id)!
+    expect(row.status).toBe("completed")
+    expect(row.completionReceipt?.outcome.attemptId).not.toBe(
+      receipt?.outcome.attemptId
+    )
+    expect(row.validatorRound).toBe(1)
+    expect(
+      loopCalls.filter((c) => c.processCompletionInstruction)
+    ).toHaveLength(2)
+  })
+})

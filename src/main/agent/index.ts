@@ -587,6 +587,8 @@ export interface RunAgentLoopOptions {
   // the run's graph + record a durable cross-phase rework flag. Absent otherwise.
   processRunId?: string
   processPhaseRunId?: string
+  // Process-only format instruction, refreshed even when resuming a transcript.
+  processCompletionInstruction?: string
   // Withhold the ask_user_question tool: this turn has NO interactive user to
   // answer a clarifying question, so offering the tool only lets the worker stall
   // until it's interrupted. Set by every Process worker fork (phase / decompose /
@@ -1029,9 +1031,13 @@ export async function runAgentLoop(
   // stays non-droppable): the agent's persona/instructions sit on top of ours so
   // they frame everything the model reads, without discarding the mode behavior.
   const modePrompt = await loadSystemPrompt(conversation?.mode)
-  const baseSystemPrompt = agent
-    ? `${agent.body.trim()}\n\n${modePrompt}`
-    : modePrompt
+  const baseSystemPrompt =
+    (agent ? `${agent.body.trim()}\n\n${modePrompt}` : modePrompt) +
+    (opts.processRunId &&
+    opts.processPhaseRunId &&
+    opts.processCompletionInstruction
+      ? `\n\n${opts.processCompletionInstruction}`
+      : "")
   const sections: ContextSection[] = []
 
   // Environment orientation: date + model always, and (when a workspace exists)

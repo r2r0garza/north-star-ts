@@ -446,3 +446,30 @@ function failure(patch: Partial<import("../db/types").FailureContext> = {}) {
     ...patch,
   } satisfies import("../db/types").FailureContext
 }
+
+describe.skipIf(!sqliteLoads)("completion policy portability", () => {
+  it("round-trips v1 checks, preserves legacy imports, and rejects unsupported contracts", () => {
+    const exported = buildProcessExport(seedGraph())
+    exported.phases[0].completionContract = {
+      policy: "validated",
+      version: 1,
+      requiredArtifacts: ["report.txt"],
+    }
+    const result = importProcessExport(exported)
+    expect(
+      getProcessGraph(result.processId)?.phases[0].completionContract
+    ).toEqual(exported.phases[0].completionContract)
+    delete exported.phases[0].completionContract
+    const legacy = importProcessExport(exported)
+    expect(
+      getProcessGraph(legacy.processId)?.phases[0].completionContract
+    ).toEqual({ policy: "legacy" })
+    const count = listProcessDefinitions().length
+    exported.phases[0].completionContract = {
+      policy: "validated",
+      version: 99,
+    } as never
+    expect(() => importProcessExport(exported)).toThrow()
+    expect(listProcessDefinitions()).toHaveLength(count)
+  })
+})

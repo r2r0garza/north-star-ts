@@ -1,3 +1,4 @@
+import { completionInstruction } from "./completion"
 import { createHash } from "crypto"
 import { app } from "electron"
 import { join } from "path"
@@ -641,6 +642,14 @@ export class ProcessService {
         taskId,
         signal,
         emit,
+        workspace: (() => {
+          const id =
+            run.workspaceId ??
+            (run.sourceConversationId
+              ? getConversation(run.sourceConversationId)?.workspaceId
+              : null)
+          return id ? getWorkspace(id)?.path : undefined
+        })(),
         runPhase: this.makeRunPhase(run),
         decompose: this.makeDecompose(run),
         buildEachSubtaskPrompt: this.makeBuildEachSubtaskPrompt(run),
@@ -879,7 +888,7 @@ export class ProcessService {
   // precedent), and return the outcome. Phases run in AUTO mode — the phase's
   // gate_policy is the human-in-the-loop control point, not per-tool prompts.
   private makeRunPhase(run: ProcessRun): RunPhase {
-    return async ({ phase, phaseRun, subtaskPrompt, signal }) => {
+    return async ({ phase, phaseRun, subtaskPrompt, attemptId, signal }) => {
       const source = run.sourceConversationId
         ? getConversation(run.sourceConversationId)
         : undefined
@@ -982,6 +991,10 @@ export class ProcessService {
           // flag_for_rework tool reach the run's graph + record a durable flag.
           processRunId: run.id,
           processPhaseRunId: phaseRun.id,
+          processCompletionInstruction: completionInstruction(
+            phase.completionContract ?? { policy: "legacy" },
+            attemptId
+          ),
           // Headless worker: no user to answer a clarifying question (it would only
           // stall until interrupted). The kickoff frames the work as self-contained.
           suppressUserQuestions: true,

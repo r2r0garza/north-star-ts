@@ -1,3 +1,4 @@
+import * as schema from "./schema"
 import { describe, it, expect } from "vitest"
 import Database from "better-sqlite3"
 import { runMigrations } from "./migrations"
@@ -91,7 +92,7 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
     const db = new Database(":memory:")
     db.pragma("foreign_keys = ON")
     runMigrations(db)
-    expect(db.pragma("user_version", { simple: true })).toBe(40)
+    expect(db.pragma("user_version", { simple: true })).toBe(41)
     expect(db.pragma("foreign_key_check")).toHaveLength(0)
     db.close()
   })
@@ -657,7 +658,7 @@ describe.skipIf(!sqliteLoads)("SCHEMA_V9 — orphan reap (plan 022)", () => {
     // Apply V9 (the reaper) and any later migrations, up to the latest version.
     runMigrations(db)
 
-    expect(db.pragma("user_version", { simple: true })).toBe(40)
+    expect(db.pragma("user_version", { simple: true })).toBe(41)
 
     // Reaped: orphan + its nested descendant, and all their state.
     const taskIds = (
@@ -679,6 +680,34 @@ describe.skipIf(!sqliteLoads)("SCHEMA_V9 — orphan reap (plan 022)", () => {
 
     // No dangling references after FKs are re-enabled.
     expect(db.pragma("foreign_key_check")).toHaveLength(0)
+    db.close()
+  })
+})
+
+describe.skipIf(!sqliteLoads)("completion policy migration", () => {
+  it("keeps existing phases and in-flight runs explicitly legacy", () => {
+    const db = new Database(":memory:")
+    for (let n = 1; n <= 40; n++)
+      db.exec((schema as Record<string, string>)[`SCHEMA_V${n}`])
+    db.pragma("user_version = 40")
+    db.exec(`
+      INSERT INTO process_definitions (id, name, created_at, updated_at) VALUES ('p', 'Existing', 1, 1);
+      INSERT INTO process_phases (id, process_id, key, name, position) VALUES ('phase', 'p', 'work', 'Work', 0);
+      INSERT INTO process_runs (id, process_id, status, created_at) VALUES ('run', 'p', 'running', 1);
+      INSERT INTO process_phase_runs (id, run_id, phase_id, status) VALUES ('pr', 'run', 'phase', 'running');
+    `)
+    runMigrations(db)
+    expect(
+      db.prepare("SELECT completion_contract FROM process_phases").get()
+    ).toEqual({ completion_contract: '{"policy":"legacy"}' })
+    expect(
+      db.prepare("SELECT completion_contracts FROM process_runs").get()
+    ).toEqual({ completion_contracts: null })
+    expect(
+      db
+        .prepare("SELECT status, completion_receipt FROM process_phase_runs")
+        .get()
+    ).toEqual({ status: "running", completion_receipt: null })
     db.close()
   })
 })

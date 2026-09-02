@@ -1195,3 +1195,10 @@ CREATE INDEX idx_process_phase_attempts_phase_run
 CREATE INDEX idx_process_phase_attempts_run
   ON process_phase_attempts(run_id, created_at ASC);
 `
+
+// Completion policy is opt-in for existing definitions and immutable per run.
+export const SCHEMA_V41 = `
+ALTER TABLE process_phases ADD COLUMN completion_contract TEXT NOT NULL DEFAULT '{"policy":"legacy"}';
+ALTER TABLE process_runs ADD COLUMN completion_contracts TEXT;
+ALTER TABLE process_phase_runs ADD COLUMN completion_receipt TEXT;
+`

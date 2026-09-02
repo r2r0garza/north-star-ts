@@ -1,3 +1,8 @@
+import {
+  checkPhaseOutcome,
+  parsePhaseOutcome,
+  runCompletionContract,
+} from "./completion"
 import { randomUUID } from "crypto"
 import { mkdirSync, writeFileSync } from "fs"
 import { join } from "path"
@@ -109,6 +114,7 @@ export interface PhaseResult {
 export type RunPhase = (input: {
   phaseRun: ProcessPhaseRun
   phase: ProcessPhase
+  attemptId: string
   subtaskPrompt?: string
   // Chained to the run's abort signal by the caller.
   signal: AbortSignal
@@ -191,6 +197,7 @@ export type Validate = (input: {
 }) => Promise<ValidateResult>
 
 export interface SchedulerCtx {
+  workspace?: string
   run: ProcessRun
   graph: ProcessGraph
   // The process_run backing task id — the anchor for approvals + checkpoints.
@@ -669,6 +676,9 @@ function buildApprovalPacket(input: {
 
 export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
   const { graph, run } = ctx
+  // Validate snapshots before dispatching even a container/subprocess. A phase
+  // added after this run started has no recorded contract and needs a new run.
+  for (const phase of graph.phases) runCompletionContract(run, phase.id)
   const phasesById = new Map(graph.phases.map((p) => [p.id, p]))
 
   // Phases that are the target of ≥1 `on_each_subtask` edge whose SOURCE is a
@@ -1602,12 +1612,84 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
       runsValidator &&
       phaseRun.taskId !== null &&
       validatorReviewRetryRequested(phaseRun.id)
+    const failContract = (
+      error: unknown,
+      code = "phase_completion_invalid"
+    ) => {
+      const latest = processes.getPhaseRun(phaseRun.id) ?? phaseRun
+      const failure = processFailure({
+        code,
+        stage: "output_validation",
+        message: `${error instanceof Error ? error.message : String(error)}. Resolve the issue, then Restart run.`,
+        run,
+        phase,
+        phaseRun: latest,
+        taskId: ctx.taskId,
+      })
+      persistPhaseFailure({
+        phase,
+        phaseRun: latest,
+        failure,
+        patch: {
+          status: "failed",
+          error: failure.message,
+          failure,
+          finishedAt: Date.now(),
+        },
+        emitStatus: "failed",
+      })
+    }
+    let contract
+    try {
+      contract = runCompletionContract(run, phase.id)
+    } catch (err) {
+      failContract(err)
+      return
+    }
+    // Supply the recorded policy to the service, even if the definition changed.
+    phase = { ...phase, completionContract: contract }
+    if (
+      contract.policy === "validated" &&
+      phase.validator &&
+      subtaskPrompt === undefined &&
+      !ctx.validate
+    ) {
+      failContract("Configured validator is unavailable", "validator_missing")
+      return
+    }
+    if (reviewOnlyRetry && contract.policy === "validated") {
+      const receipt = processes.getPhaseRun(phaseRun.id)?.completionReceipt
+      if (
+        !receipt ||
+        receipt.checkedAt === null ||
+        receipt.outcome.status !== "completed"
+      ) {
+        failContract("No validated worker output is available for review")
+        return
+      }
+      try {
+        await checkPhaseOutcome({
+          contract,
+          outcome: receipt.outcome,
+          workspace: ctx.workspace,
+        })
+      } catch (err) {
+        failContract(err)
+        return
+      }
+    }
     let attempt = 0
     // Chain a child controller so run-level cancel unwinds the phase worker.
     while (true) {
       attempt++
       if (!reviewOnlyRetry || attempt > 1) {
+        const attemptId = randomUUID()
+        processes.updatePhaseRun(phaseRun.id, {
+          completionReceipt: null,
+          outputIdentity: null,
+        })
         const result = await ctx.runPhase({
+          attemptId,
           phaseRun,
           phase,
           subtaskPrompt,
@@ -1660,7 +1742,42 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
           })
           return
         }
-        if (result.outputIdentity !== undefined) {
+        if (contract.policy === "validated") {
+          try {
+            const outcome = parsePhaseOutcome(result.content, attemptId)
+            // Persist the declaration even when a configured file check fails.
+            processes.updatePhaseRun(phaseRun.id, {
+              completionReceipt: {
+                outcome,
+                checkedArtifacts: [],
+                checkedAt: null,
+              },
+            })
+            const receipt = await checkPhaseOutcome({
+              contract,
+              outcome,
+              workspace: ctx.workspace,
+            })
+            if (ctx.signal.aborted) {
+              settleStoppedPhaseRun(phase, phaseRun.id)
+              return
+            }
+            processes.updatePhaseRun(phaseRun.id, {
+              completionReceipt: receipt,
+            })
+            if (outcome.status !== "completed") {
+              failContract(
+                `${outcome.reason} Next action: ${outcome.nextAction}`,
+                `phase_outcome_${outcome.status}`
+              )
+              return
+            }
+          } catch (err) {
+            failContract(err)
+            return
+          }
+        }
+        if (result.outputIdentity != null) {
           processes.updatePhaseRun(phaseRun.id, {
             outputIdentity: result.outputIdentity,
           })

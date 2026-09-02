@@ -1,3 +1,4 @@
+import { parseCompletionContract } from "./completion-contract"
 import { getDb } from "../db/connection"
 import {
   createEdge,
@@ -20,6 +21,7 @@ import type {
   PhaseGatePolicy,
   PhaseRouting,
   ProcessPhaseAttempt,
+  ProcessPhase,
   ProcessPhaseRun,
   ProcessGraph,
   ProcessRun,
@@ -67,6 +69,7 @@ export interface ProcessExportPhaseAgent {
 }
 
 export interface ProcessExportPhase {
+  completionContract?: ProcessPhase["completionContract"]
   key: string
   name: string
   routing: PhaseRouting
@@ -112,6 +115,7 @@ export interface ProcessIncidentAppInfo {
 }
 
 export interface ProcessIncidentRunIdentity {
+  completionContracts: ProcessRun["completionContracts"]
   id: string
   processId: string | null
   processName: string | null
@@ -128,6 +132,7 @@ export interface ProcessIncidentRunIdentity {
 }
 
 export interface ProcessIncidentPhaseRunIdentity {
+  completionReceipt: ProcessPhaseRun["completionReceipt"]
   id: string
   runId: string
   phaseId: string
@@ -276,6 +281,7 @@ export function buildProcessExport(graph: ProcessGraph): ProcessExport {
           fanOut: phase.fanOut,
           maxReworkRounds: phase.maxReworkRounds,
           dotFolder: phase.dotFolder,
+          completionContract: phase.completionContract,
           validator: phase.validator,
           validatorMaxIterations: phase.validatorMaxIterations,
           validatorAgent: phase.validatorAgent
@@ -374,6 +380,7 @@ export function importProcessExport(input: unknown): ProcessImportResult {
         fanOut: phase.fanOut,
         maxReworkRounds: phase.maxReworkRounds,
         dotFolder: phase.dotFolder,
+        completionContract: phase.completionContract,
         validator: phase.validator,
         validatorMaxIterations: phase.validatorMaxIterations,
         validatorAgent: phase.validatorAgent
@@ -454,6 +461,7 @@ function collectIncidentRunIds(rootRun: ProcessRun): Set<string> {
 
 function runToIncidentIdentity(run: ProcessRun): ProcessIncidentRunIdentity {
   return {
+    completionContracts: run.completionContracts,
     id: run.id,
     processId: run.processId,
     processName: run.processId
@@ -480,6 +488,7 @@ function phaseRunToIncidentIdentity(
     id: phaseRun.id,
     runId: phaseRun.runId,
     phaseId: phaseRun.phaseId,
+    completionReceipt: phaseRun.completionReceipt,
     phaseKey: phase?.key ?? null,
     phaseName: phase?.name ?? null,
     parentId: phaseRun.parentId,
@@ -599,6 +608,7 @@ function validateProcessExport(input: unknown): ProcessExport {
         `phases[${index}].maxReworkRounds`
       ),
       dotFolder: booleanValue(phase.dotFolder, `phases[${index}].dotFolder`),
+      completionContract: parseCompletionContract(phase.completionContract),
       validator: booleanValue(phase.validator, `phases[${index}].validator`),
       validatorMaxIterations: nonNegativeInteger(
         phase.validatorMaxIterations,

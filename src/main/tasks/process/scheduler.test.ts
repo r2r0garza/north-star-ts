@@ -2861,3 +2861,150 @@ describe.skipIf(!sqliteLoads)(
     })
   }
 )
+
+describe.skipIf(!sqliteLoads)("recorded phase completion contracts", () => {
+  function validatedProcess(requiredArtifacts: string[] = []) {
+    const id = buildProcess({
+      phases: [{ key: "work" }, { key: "dependent" }],
+      edges: [["work", "dependent"]],
+    })
+    const phase = processes.listPhases(id)[0]
+    processes.updatePhase(phase.id, {
+      completionContract: {
+        policy: "validated",
+        version: 1,
+        requiredArtifacts,
+      },
+    })
+    return { id, phase }
+  }
+  const completed = (attemptId: string) =>
+    JSON.stringify({
+      version: 1,
+      attemptId,
+      status: "completed",
+      output: "Done",
+      evidence: "Verified after recovering from a tool error",
+    })
+
+  it.each(["blocked", "failed", "missing", "invalid"])(
+    "holds dependents for %s tool-free outcomes",
+    async (status) => {
+      const { id } = validatedProcess()
+      const worker = vi.fn<RunPhase>(async ({ attemptId }) => ({
+        content:
+          status === "missing"
+            ? undefined
+            : status === "invalid"
+              ? "done"
+              : JSON.stringify({
+                  version: 1,
+                  attemptId,
+                  status,
+                  output: "Incomplete",
+                  evidence: "Tool error confirmed",
+                  reason: "Access denied",
+                  nextAction: "Grant access",
+                }),
+      }))
+      const { ctx, runId } = makeCtx(id, worker)
+      await expect(runScheduler(ctx)).rejects.toThrow("a process phase failed")
+      expect(worker).toHaveBeenCalledTimes(1)
+      const rows = processes.listPhaseRuns({ runId })
+      expect(rows.find((r) => r.status === "failed")?.failure?.stage).toBe(
+        "output_validation"
+      )
+      expect(rows.some((r) => r.status === "pending")).toBe(true)
+    }
+  )
+
+  it("requires the configured file, then accepts a recovered worker on restart", async () => {
+    const { id } = validatedProcess(["report.txt"])
+    const workspace = mkdtempSync(join(tmpdir(), "phase-completion-"))
+    const { ctx, runId } = makeCtx(id, async ({ attemptId }) => ({
+      content: completed(attemptId),
+    }))
+    ctx.workspace = workspace
+    await expect(runScheduler(ctx)).rejects.toThrow()
+    const row = processes
+      .listPhaseRuns({ runId })
+      .find((r) => r.status === "failed")!
+    expect(row.error).toContain("report.txt")
+    const oldAttempt = row.completionReceipt!.outcome.attemptId
+    processes.updatePhaseRun(row.id, {
+      status: "pending",
+      outputIdentity: null,
+    })
+    writeFileSync(join(workspace, "report.txt"), "recovered")
+    await runScheduler(ctx)
+    const current = processes.getPhaseRun(row.id)!
+    expect(current.status).toBe("completed")
+    expect(current.completionReceipt?.checkedArtifacts).toEqual(["report.txt"])
+    expect(current.completionReceipt?.outcome.attemptId).not.toBe(oldAttempt)
+    expect(
+      processes.listPhaseRuns({ runId }).every((r) => r.status === "completed")
+    ).toBe(true)
+  })
+
+  it("retains the run policy across definition edits and rejects a stale attempt after reset", async () => {
+    const { id, phase } = validatedProcess()
+    let oldReply: string | undefined
+    const { ctx, runId } = makeCtx(id, async ({ attemptId }) => {
+      oldReply ??= completed(attemptId)
+      return { content: oldReply }
+    })
+    processes.updatePhase(phase.id, {
+      completionContract: { policy: "legacy" },
+    })
+    ctx.graph = processes.getProcessGraph(id)!
+    await runScheduler(ctx)
+    const row = processes
+      .listPhaseRuns({ runId })
+      .find((r) => r.phaseId === phase.id)!
+    expect(row.completionReceipt?.outcome.version).toBe(1)
+    processes.updatePhaseRun(row.id, {
+      status: "pending",
+      outputIdentity: null,
+    })
+    expect(processes.getPhaseRun(row.id)?.completionReceipt).toBeNull()
+    await expect(runScheduler(ctx)).rejects.toThrow()
+    expect(processes.getPhaseRun(row.id)?.error).toContain("stale")
+  })
+
+  it("keeps pre-contract runs legacy even after the definition opts in", async () => {
+    const { id } = validatedProcess()
+    const { ctx, runId } = makeCtx(id, async () => ({ content: "freeform" }))
+    db.prepare(
+      "UPDATE process_runs SET completion_contracts = NULL WHERE id = ?"
+    ).run(runId)
+    ctx.run = processes.getProcessRun(runId)!
+    await runScheduler(ctx)
+    expect(
+      processes.listPhaseRuns({ runId }).every((r) => r.status === "completed")
+    ).toBe(true)
+  })
+
+  it("enforces outcomes for fan-out children", async () => {
+    const id = buildProcess({
+      phases: [{ key: "split", fanOut: true }, { key: "after" }],
+      edges: [["split", "after"]],
+    })
+    const phase = processes.listPhases(id)[0]
+    processes.updatePhase(phase.id, {
+      completionContract: {
+        policy: "validated",
+        version: 1,
+        requiredArtifacts: [],
+      },
+    })
+    const worker = vi.fn<RunPhase>(async () => ({ content: "done" }))
+    const { ctx, runId } = makeCtx(id, worker, {
+      decompose: async () => ({ subtasks: ["one"] }),
+    })
+    await expect(runScheduler(ctx)).rejects.toThrow()
+    expect(worker).toHaveBeenCalledTimes(1)
+    expect(
+      processes.listPhaseRuns({ runId }).filter((r) => r.status === "failed")
+    ).toHaveLength(2)
+  })
+})

@@ -767,7 +767,7 @@ function deriveKey(name: string, otherKeys: Iterable<string>): string {
 // through the `db.processes.*` CRUD then reloads the whole graph — the
 // mutate-then-refetch pattern from SkillsScreen — since agent-pool and edge rows
 // have no update verb (edit = delete + recreate).
-function ProcessBuilder({
+export function ProcessBuilder({
   definition,
   agents,
   definitions,
@@ -820,6 +820,11 @@ function ProcessBuilder({
           phases.map((p) => p.key)
         ),
         name,
+        completionContract: {
+          policy: "validated",
+          version: 1,
+          requiredArtifacts: [],
+        },
         position: n,
       })
       reload()
@@ -1080,6 +1085,7 @@ function PhaseCard({
     fanOut?: boolean
     maxReworkRounds?: number
     dotFolder?: boolean
+    completionContract?: ProcessPhase["completionContract"]
     validator?: boolean
     validatorMaxIterations?: number
     validatorAgent?: string | null
@@ -1284,6 +1290,76 @@ function PhaseCard({
               {phase.key}
             </span>
           </div>
+
+          {!phase.subprocessId && (
+            <div className="space-y-2 text-xs">
+              <label className="flex items-center gap-2">
+                <Switch
+                  aria-label="Validated completion"
+                  checked={phase.completionContract?.policy === "validated"}
+                  onCheckedChange={(checked) =>
+                    patchPhase({
+                      completionContract: checked
+                        ? {
+                            policy: "validated",
+                            version: 1,
+                            requiredArtifacts: [],
+                          }
+                        : { policy: "legacy" },
+                    })
+                  }
+                />
+                {phase.completionContract?.policy === "validated"
+                  ? "Validated completion v1"
+                  : "Legacy completion: an ended turn counts as success"}
+              </label>
+              <p className="text-muted-foreground">
+                Changes apply to new runs. Existing runs retain their recorded
+                policy.
+              </p>
+              {phase.completionContract?.policy === "validated" && (
+                <label className="block space-y-1">
+                  <span>
+                    Required workspace files (one relative path per line)
+                  </span>
+                  <Textarea
+                    key={JSON.stringify(
+                      phase.completionContract.requiredArtifacts
+                    )}
+                    aria-label="Required workspace files"
+                    defaultValue={phase.completionContract.requiredArtifacts.join(
+                      "\n"
+                    )}
+                    onBlur={(e) => {
+                      const requiredArtifacts = e.target.value
+                        .split("\n")
+                        .map((s) => s.trim())
+                        .filter(Boolean)
+                      if (
+                        JSON.stringify(requiredArtifacts) !==
+                        JSON.stringify(
+                          phase.completionContract?.policy === "validated"
+                            ? phase.completionContract.requiredArtifacts
+                            : []
+                        )
+                      )
+                        patchPhase({
+                          completionContract: {
+                            policy: "validated",
+                            version: 1,
+                            requiredArtifacts,
+                          },
+                        })
+                    }}
+                  />
+                  <span className="text-muted-foreground">
+                    Checks file presence. Use a validator for semantic review.
+                    Fan-out checks apply to every child.
+                  </span>
+                </label>
+              )}
+            </div>
+          )}
 
           {/* Row 2: routing / gate / fan-out. */}
           <div className="flex flex-wrap items-center gap-4">
@@ -2260,7 +2336,7 @@ function RunMonitor({
               onClick={() => window.cowork.process.restart(run.id)}
             >
               <RotateCcw className="size-3.5" />
-              Retry
+              Restart run
             </Button>
           </>
         )}
@@ -2275,6 +2351,9 @@ function RunMonitor({
       {/* Phase list. */}
       <ScrollArea className="min-h-0 flex-1">
         <div className="mx-auto flex max-w-3xl flex-col gap-2 px-6 py-4">
+          {run && graph && (
+            <RunCompletionSummary run={run} phases={graph.phases} />
+          )}
           {run?.objective && (
             <p className="mb-2 rounded-md bg-muted px-3 py-2 text-xs text-muted-foreground">
               {run.objective}
@@ -2521,6 +2600,7 @@ function PhaseRunItem({
         <PhaseStatusLabel status={displayStatus} />
       </div>
 
+      <PhaseCompletionEvidence receipt={phaseRun.completionReceipt} />
       {phaseRun.failure && (
         <div className="flex flex-wrap gap-1.5 text-xs text-muted-foreground">
           <span className="rounded border px-1.5 py-0.5">
@@ -2716,6 +2796,71 @@ function PhaseRunItem({
         />
       )}
     </div>
+  )
+}
+
+export function PhaseCompletionEvidence({
+  receipt,
+}: {
+  receipt: ProcessPhaseRun["completionReceipt"]
+}) {
+  return (
+    <>
+      {receipt && (
+        <details className="rounded border p-2 text-xs">
+          <summary>Declared outcome v1: {receipt.outcome.status}</summary>
+          <p className="mt-2 whitespace-pre-wrap">{receipt.outcome.output}</p>
+          <p className="whitespace-pre-wrap">
+            Evidence: {receipt.outcome.evidence}
+          </p>
+          {receipt.outcome.nextAction && (
+            <p>Next action: {receipt.outcome.nextAction}</p>
+          )}
+          <p>
+            {receipt.checkedAt === null
+              ? "Required file checks have not passed"
+              : `Files checked: ${receipt.checkedArtifacts.join(", ") || "none"}`}
+          </p>
+          <p className="text-muted-foreground">
+            A declared outcome and file checks do not establish semantic
+            correctness.
+          </p>
+        </details>
+      )}
+    </>
+  )
+}
+
+export function RunCompletionSummary({
+  run,
+  phases,
+}: {
+  run: Pick<ProcessRun, "completionContracts">
+  phases: ProcessPhase[]
+}) {
+  return (
+    <details className="rounded border p-2 text-xs text-muted-foreground">
+      <summary>Recorded completion policies</summary>
+      {phases.map((phase) => {
+        const contract =
+          run.completionContracts == null
+            ? { policy: "legacy" as const }
+            : run.completionContracts[phase.id]
+        return (
+          <p key={phase.id}>
+            {phase.name}:{" "}
+            {contract?.policy === "validated"
+              ? `Validated v${contract.version}`
+              : contract?.policy === "legacy"
+                ? "Legacy (ended turn counts as success)"
+                : "Missing policy: start a new run"}
+            {contract?.policy === "validated" &&
+              contract.requiredArtifacts.length > 0 &&
+              `; required files: ${contract.requiredArtifacts.join(", ")}`}
+          </p>
+        )
+      })}
+    </details>
   )
 }
 

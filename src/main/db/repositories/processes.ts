@@ -1,7 +1,10 @@
+import { parseCompletionContract } from "../../process/completion-contract"
 import { randomUUID } from "crypto"
 import { getDb } from "../connection"
 import type {
   EdgeTrigger,
+  PhaseCompletionContract,
+  PhaseCompletionReceipt,
   FailureContext,
   FailureStage,
   PhaseGatePolicy,
@@ -47,6 +50,7 @@ function toDefinition(row: ProcessDefinitionRow): ProcessDefinition {
 }
 
 interface ProcessPhaseRow {
+  completion_contract: string
   id: string
   process_id: string
   key: string
@@ -65,6 +69,9 @@ interface ProcessPhaseRow {
 
 function toPhase(row: ProcessPhaseRow): ProcessPhase {
   return {
+    completionContract: parseCompletionContract(
+      JSON.parse(row.completion_contract)
+    ),
     id: row.id,
     processId: row.process_id,
     key: row.key,
@@ -122,6 +129,7 @@ function toEdge(row: ProcessEdgeRow): ProcessEdge {
 }
 
 interface ProcessRunRow {
+  completion_contracts: string | null
   id: string
   process_id: string | null
   source_conversation_id: string | null
@@ -138,6 +146,10 @@ interface ProcessRunRow {
 
 function toRun(row: ProcessRunRow): ProcessRun {
   return {
+    completionContracts:
+      row.completion_contracts === null
+        ? null
+        : JSON.parse(row.completion_contracts),
     id: row.id,
     processId: row.process_id,
     sourceConversationId: row.source_conversation_id,
@@ -154,6 +166,7 @@ function toRun(row: ProcessRunRow): ProcessRun {
 }
 
 interface ProcessPhaseRunRow {
+  completion_receipt: string | null
   id: string
   run_id: string
   phase_id: string
@@ -176,6 +189,10 @@ interface ProcessPhaseRunRow {
 
 function toPhaseRun(row: ProcessPhaseRunRow): ProcessPhaseRun {
   return {
+    completionReceipt:
+      row.completion_receipt === null
+        ? null
+        : JSON.parse(row.completion_receipt),
     id: row.id,
     runId: row.run_id,
     phaseId: row.phase_id,
@@ -364,6 +381,7 @@ function assertSubprocessValid(
 }
 
 export function createPhase(input: {
+  completionContract?: PhaseCompletionContract
   processId: string
   key: string
   name: string
@@ -378,11 +396,12 @@ export function createPhase(input: {
   subprocessId?: string | null
   position: number
 }): ProcessPhase {
+  const contract = parseCompletionContract(input.completionContract)
   assertSubprocessValid(input.processId, input.subprocessId, input.fanOut)
   const id = randomUUID()
   getDb()
     .prepare(
-      "INSERT INTO process_phases (id, process_id, key, name, routing, gate_policy, fan_out, max_rework_rounds, dot_folder, validator, validator_max_iterations, validator_agent, subprocess_id, position) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+      "INSERT INTO process_phases (id, process_id, key, name, routing, gate_policy, fan_out, max_rework_rounds, dot_folder, validator, validator_max_iterations, validator_agent, subprocess_id, position, completion_contract) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )
     .run(
       id,
@@ -398,7 +417,8 @@ export function createPhase(input: {
       input.validatorMaxIterations ?? 0,
       input.validatorAgent ?? null,
       input.subprocessId ?? null,
-      input.position
+      input.position,
+      JSON.stringify(contract)
     )
   return getPhase(id)!
 }
@@ -422,6 +442,7 @@ export function listPhases(processId: string): ProcessPhase[] {
 export function updatePhase(
   id: string,
   patch: {
+    completionContract?: PhaseCompletionContract
     key?: string
     name?: string
     routing?: PhaseRouting
@@ -453,6 +474,12 @@ export function updatePhase(
   }
   const sets: string[] = []
   const values: unknown[] = []
+  if (patch.completionContract !== undefined) {
+    sets.push("completion_contract = ?")
+    values.push(
+      JSON.stringify(parseCompletionContract(patch.completionContract))
+    )
+  }
   if (patch.key !== undefined) {
     sets.push("key = ?")
     values.push(patch.key)
@@ -622,7 +649,7 @@ export function createProcessRun(input: {
   const now = Date.now()
   getDb()
     .prepare(
-      "INSERT INTO process_runs (id, process_id, source_conversation_id, workspace_id, task_id, objective, parent_phase_run_id, status, started_at, finished_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+      "INSERT INTO process_runs (id, process_id, source_conversation_id, workspace_id, task_id, objective, parent_phase_run_id, status, started_at, finished_at, created_at, completion_contracts) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )
     .run(
       id,
@@ -635,7 +662,15 @@ export function createProcessRun(input: {
       input.status ?? "queued",
       null,
       null,
-      now
+      now,
+      JSON.stringify(
+        Object.fromEntries(
+          (input.processId ? listPhases(input.processId) : []).map((phase) => [
+            phase.id,
+            phase.completionContract,
+          ])
+        )
+      )
     )
   return getProcessRun(id)!
 }
@@ -816,6 +851,7 @@ export function updatePhaseRun(
     reworkRound?: number
     validatorRound?: number
     outputIdentity?: string | null
+    completionReceipt?: PhaseCompletionReceipt | null
   }
 ): ProcessPhaseRun {
   const sets: string[] = []
@@ -863,6 +899,14 @@ export function updatePhaseRun(
   if (patch.validatorRound !== undefined) {
     sets.push("validator_round = ?")
     values.push(patch.validatorRound)
+  }
+  if (patch.completionReceipt !== undefined || patch.outputIdentity === null) {
+    sets.push("completion_receipt = ?")
+    values.push(
+      patch.outputIdentity === null || !patch.completionReceipt
+        ? null
+        : JSON.stringify(patch.completionReceipt)
+    )
   }
   if (patch.outputIdentity !== undefined) {
     sets.push("output_identity = ?")

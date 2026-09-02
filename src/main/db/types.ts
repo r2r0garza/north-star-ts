@@ -524,7 +524,30 @@ export interface ProcessDefinition {
   updatedAt: number
 }
 
+export type PhaseCompletionContract =
+  | { policy: "legacy" }
+  | { policy: "validated"; version: 1; requiredArtifacts: string[] }
+
+export interface PhaseOutcome {
+  version: 1
+  attemptId: string
+  status: "completed" | "blocked" | "failed"
+  output: string
+  evidence: string
+  reason?: string
+  nextAction?: string
+}
+
+export interface PhaseCompletionReceipt {
+  outcome: PhaseOutcome
+  checkedArtifacts: string[]
+  // Null until all configured checks pass.
+  checkedAt: number | null
+}
+
 export interface ProcessPhase {
+  // Omitted only in pre-contract in-memory callers; persisted rows are explicit.
+  completionContract?: PhaseCompletionContract
   id: string
   processId: string
   key: string
@@ -578,6 +601,8 @@ export interface ProcessEdge {
 }
 
 export interface ProcessRun {
+  // Null/absent marks pre-contract runs: permanently legacy on resume.
+  completionContracts?: Record<string, PhaseCompletionContract> | null
   id: string
   processId: string | null
   sourceConversationId: string | null
@@ -605,6 +630,7 @@ export interface ProcessRun {
 }
 
 export interface ProcessPhaseRun {
+  completionReceipt?: PhaseCompletionReceipt | null
   id: string
   runId: string
   phaseId: string
