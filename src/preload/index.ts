@@ -414,6 +414,10 @@ const api = {
       feedback: string
     }) =>
       ipcRenderer.invoke("process:requestChanges", payload) as Promise<void>,
+    // Retry only a failed validator review against the existing completed phase
+    // output. Does not send the phase worker back for rework.
+    retryReview: (payload: { processRunId: string; requestId: string }) =>
+      ipcRenderer.invoke("process:retryReview", payload) as Promise<void>,
     // Cross-phase rework flag confirmation (plan 031.2).
     confirmFlag: (payload: { processRunId: string; requestId: string }) =>
       ipcRenderer.invoke("process:confirmFlag", payload) as Promise<void>,

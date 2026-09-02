@@ -148,6 +148,11 @@ interface ProcessGateRequest {
   flagReason?: string
 }
 
+interface GateInfo {
+  requestId: string
+  gateKind: "phase" | "validator"
+}
+
 interface ApprovalArtifact {
   path: string
   name: string
@@ -185,6 +190,7 @@ interface ProcessApprovalPacket {
 interface ApprovalReviewTarget {
   phaseRun: ProcessPhaseRun
   name: string
+  gateKind?: "phase" | "validator"
   requestId?: string
   packet?: ProcessApprovalPacket
   files?: ChangedFile[]
@@ -1726,8 +1732,8 @@ function RunMonitor({
   const [run, setRun] = useState<ProcessRun | null>(null)
   const [phaseRuns, setPhaseRuns] = useState<ProcessPhaseRun[]>([])
   const [graph, setGraph] = useState<ProcessGraph | null>(null)
-  // phaseRunId → the pending gate's requestId (derived from the event stream).
-  const [gates, setGates] = useState<Record<string, string>>({})
+  // phaseRunId → the pending phase/validator gate (derived from the event stream).
+  const [gates, setGates] = useState<Record<string, GateInfo>>({})
   // requestId → durable request blob, including the approval review packet when
   // available. Rebuilt from approvals on load/replay and refreshed on live gates.
   const [gateRequests, setGateRequests] = useState<
@@ -1853,7 +1859,7 @@ function RunMonitor({
           // a phase-run has both a denied old row and a fresh pending gate — the
           // denied row must not clear the live one (plan 029). Applies to all gate
           // kinds (phase / validator / flag).
-          if (req && gates[req.phaseRunId] === req.requestId)
+          if (req && gates[req.phaseRunId]?.requestId === req.requestId)
             delete gates[req.phaseRunId]
         }
         setGates(gates)
@@ -1992,9 +1998,12 @@ function RunMonitor({
       const packet = requestId
         ? gateRequests[requestId]?.approvalPacket
         : undefined
+      const request = requestId ? gateRequests[requestId] : undefined
       setReviewTarget({
         phaseRun,
         name,
+        gateKind:
+          request?.kind === "process_validator_gate" ? "validator" : "phase",
         requestId,
         packet,
         files,
@@ -2076,6 +2085,22 @@ function RunMonitor({
       })
     } catch (err) {
       toast.error(`Could not request changes: ${err}`)
+    }
+  }
+
+  async function retryReview(requestId: string, phaseRunId: string) {
+    if (!run) return
+    clearGate(phaseRunId)
+    setReviewTarget((target) =>
+      target?.requestId === requestId ? null : target
+    )
+    try {
+      await window.cowork.process.retryReview({
+        processRunId: run.id,
+        requestId,
+      })
+    } catch (err) {
+      toast.error(`Could not retry review: ${err}`)
     }
   }
 
@@ -2268,8 +2293,10 @@ function RunMonitor({
               key={pr.id}
               phaseRun={pr}
               name={phaseName(pr.phaseId)}
-              gateRequestId={gates[pr.id]}
-              gateRequest={gateRequests[gates[pr.id]]}
+              gateInfo={gates[pr.id]}
+              gateRequest={
+                gates[pr.id] ? gateRequests[gates[pr.id].requestId] : undefined
+              }
               gates={gates}
               gateRequests={gateRequests}
               flagGate={flagGates[pr.id]}
@@ -2293,6 +2320,7 @@ function RunMonitor({
               onApprove={approve}
               onDeny={deny}
               onRequestChanges={requestChanges}
+              onRetryReview={retryReview}
               onConfirmFlag={confirmFlag}
               onDismissFlag={dismissFlag}
               onOpenTranscript={openTranscript}
@@ -2386,7 +2414,7 @@ function PhaseFileChips({
 function PhaseRunItem({
   phaseRun,
   name,
-  gateRequestId,
+  gateInfo,
   gateRequest,
   gates,
   gateRequests,
@@ -2403,6 +2431,7 @@ function PhaseRunItem({
   onApprove,
   onDeny,
   onRequestChanges,
+  onRetryReview,
   onConfirmFlag,
   onDismissFlag,
   onOpenTranscript,
@@ -2410,11 +2439,11 @@ function PhaseRunItem({
 }: {
   phaseRun: ProcessPhaseRun
   name: string
-  gateRequestId: string | undefined
+  gateInfo: GateInfo | undefined
   gateRequest: ProcessGateRequest | undefined
   // The full phaseRunId → gate requestId map, threaded down so a nested sub-process
   // run's own phase gates render actionable cards (plan 038.2).
-  gates: Record<string, string>
+  gates: Record<string, GateInfo>
   gateRequests: Record<string, ProcessGateRequest>
   // A pending cross-phase rework flag this phase raised, awaiting confirmation
   // (plan 031.2). Undefined when there's none.
@@ -2446,6 +2475,7 @@ function PhaseRunItem({
     phaseRunId: string,
     feedback: string
   ) => void
+  onRetryReview: (requestId: string, phaseRunId: string) => void
   onConfirmFlag: (requestId: string, phaseRunId: string) => void
   onDismissFlag: (requestId: string, phaseRunId: string) => void
   // Open a phase/child's worker transcript (only rows with a taskId).
@@ -2461,7 +2491,7 @@ function PhaseRunItem({
   // hold on its dependents (the requestId rides the event + a durable approval
   // row, not the phase status). So drive the card off the gate map, not the
   // phase-run status, and OVERRIDE the displayed status to read as awaiting.
-  const gated = gateRequestId !== undefined
+  const gated = gateInfo !== undefined
   const displayStatus = gated ? "waiting_for_approval" : phaseRun.status
   const clickable = phaseRun.taskId !== null
 
@@ -2496,7 +2526,7 @@ function PhaseRunItem({
           status={phaseRun.status}
           workspacePath={workspacePath}
           onReviewFiles={(files) =>
-            onOpenReview(phaseRun, name, gateRequestId, files)
+            onOpenReview(phaseRun, name, gateInfo?.requestId, files)
           }
         />
       )}
@@ -2506,16 +2536,18 @@ function PhaseRunItem({
       {gated && (
         <GateCard
           name={name}
-          requestId={gateRequestId}
+          requestId={gateInfo.requestId}
           phaseRunId={phaseRun.id}
+          gateKind={gateInfo.gateKind}
           reworkRound={phaseRun.reworkRound}
           maxReworkRounds={maxReworkRounds}
           isContainer={isContainer}
           onApprove={onApprove}
           onDeny={onDeny}
           onRequestChanges={onRequestChanges}
+          onRetryReview={onRetryReview}
           packet={gateRequest?.approvalPacket}
-          onViewDetails={() => onOpenReview(phaseRun, name, gateRequestId)}
+          onViewDetails={() => onOpenReview(phaseRun, name, gateInfo.requestId)}
         />
       )}
 
@@ -2604,6 +2636,7 @@ function PhaseRunItem({
                       onApprove={onApprove}
                       onDeny={onDeny}
                       onRequestChanges={onRequestChanges}
+                      onRetryReview={onRetryReview}
                       onConfirmFlag={onConfirmFlag}
                       onDismissFlag={onDismissFlag}
                       onOpenReview={onOpenReview}
@@ -2634,6 +2667,7 @@ function PhaseRunItem({
           onApprove={onApprove}
           onDeny={onDeny}
           onRequestChanges={onRequestChanges}
+          onRetryReview={onRetryReview}
           onConfirmFlag={onConfirmFlag}
           onDismissFlag={onDismissFlag}
           onOpenReview={onOpenReview}
@@ -2686,6 +2720,31 @@ function approvalEvidenceCounts(packet: ProcessApprovalPacket): string {
   return parts.join(" · ")
 }
 
+function validatorGateCopy(name: string, packet?: ProcessApprovalPacket) {
+  const outcome = packet?.summary.outcome ?? ""
+  const unavailable = outcome.includes("could not be validated")
+  const exhausted = outcome.includes("exhausted validator review")
+  if (unavailable) {
+    return {
+      title: `“${name}” is held because the validator review is unavailable.`,
+      fallback:
+        "The phase worker completed, but the validator did not produce a usable approval. Retry the review, request changes, deny, or manually override the unavailable review.",
+    }
+  }
+  if (exhausted) {
+    return {
+      title: `“${name}” exhausted validator review rounds.`,
+      fallback:
+        "The phase worker completed, but the validator did not approve it within the configured review budget. Request changes, deny, or manually override the exhausted review.",
+    }
+  }
+  return {
+    title: `“${name}” is held for validator review.`,
+    fallback:
+      "The phase worker completed, but the validator did not provide an approval. Retry the review, request changes, deny, or manually override the validator hold.",
+  }
+}
+
 function languageForPath(path: string): string {
   const ext = path.split(".").pop()?.toLowerCase() ?? ""
   const map: Record<string, string> = {
@@ -2727,22 +2786,25 @@ function renderFileTextMarkdown(path: string, content: string): string {
   return `\`\`\`${lang}\n${content.replace(/```/g, "``\\`")}\n\`\`\``
 }
 
-function GateCard({
+export function GateCard({
   name,
   requestId,
   phaseRunId,
+  gateKind,
   reworkRound,
   maxReworkRounds,
   isContainer,
   onApprove,
   onDeny,
   onRequestChanges,
+  onRetryReview,
   packet,
   onViewDetails,
 }: {
   name: string
   requestId: string
   phaseRunId: string
+  gateKind: "phase" | "validator"
   reworkRound: number
   maxReworkRounds: number
   isContainer: boolean
@@ -2753,6 +2815,7 @@ function GateCard({
     phaseRunId: string,
     feedback: string
   ) => void
+  onRetryReview: (requestId: string, phaseRunId: string) => void
   packet?: ProcessApprovalPacket
   onViewDetails: () => void
 }) {
@@ -2760,6 +2823,19 @@ function GateCard({
   const [reworkText, setReworkText] = useState("")
   const atReworkCap = maxReworkRounds > 0 && reworkRound >= maxReworkRounds
   const canRequestChanges = !isContainer && !atReworkCap
+  const canRetryReview = gateKind === "validator"
+  const validatorCopy =
+    gateKind === "validator" ? validatorGateCopy(name, packet) : null
+  const title =
+    gateKind === "validator"
+      ? validatorCopy!.title
+      : `“${name}” is done — approve to release its downstream phases.`
+  const summary = packet
+    ? compactApprovalSummary(packet)
+    : gateKind === "validator"
+      ? validatorCopy!.fallback
+      : "Review the worker transcript before approving this phase."
+  const approveLabel = gateKind === "validator" ? "Manual override" : "Approve"
   const evidenceCounts = packet
     ? approvalEvidenceCounts(packet)
     : `${reworkRound > 0 ? `round ${reworkRound} · ` : ""}transcript available`
@@ -2767,15 +2843,9 @@ function GateCard({
     <div className="flex flex-col gap-2 rounded-lg border border-amber-500/40 bg-amber-500/5 p-3 text-xs">
       <div className="flex items-center gap-2 font-medium text-amber-600 dark:text-amber-500">
         <ShieldAlert className="size-3.5 shrink-0" />
-        <span>
-          “{name}” is done — approve to release its downstream phases.
-        </span>
+        <span>{title}</span>
       </div>
-      <p className="leading-relaxed text-foreground/85">
-        {packet
-          ? compactApprovalSummary(packet)
-          : "Review the worker transcript before approving this phase."}
-      </p>
+      <p className="leading-relaxed text-foreground/85">{summary}</p>
       <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
         <span className="min-w-0 flex-1 truncate">{evidenceCounts}</span>
         <Button
@@ -2789,8 +2859,18 @@ function GateCard({
         </Button>
       </div>
       <div className="flex flex-wrap items-center gap-2">
+        {canRetryReview && (
+          <Button
+            size="xs"
+            variant="outline"
+            onClick={() => onRetryReview(requestId, phaseRunId)}
+          >
+            <RotateCcw className="size-3" />
+            Retry review
+          </Button>
+        )}
         <Button size="xs" onClick={() => onApprove(requestId, phaseRunId)}>
-          Approve <Kbd className="ml-1.5">⏎</Kbd>
+          {approveLabel} <Kbd className="ml-1.5">⏎</Kbd>
         </Button>
         <Button
           size="xs"
@@ -2809,6 +2889,12 @@ function GateCard({
           </Button>
         )}
       </div>
+      {gateKind === "validator" && (
+        <p className="text-[11px] text-muted-foreground">
+          Manual override records a human decision and releases downstream
+          phases without a validator approval.
+        </p>
+      )}
       {atReworkCap && !isContainer && (
         <p className="text-[11px] text-muted-foreground">
           Rework limit reached ({maxReworkRounds}). Approve or deny to continue.
@@ -2970,6 +3056,7 @@ function ApprovalReviewDrawer({
   const requestId = target?.requestId
   const phaseRunId = target?.phaseRun.id
   const hasDiff = !!diff?.diff.trim()
+  const isValidatorGate = target?.gateKind === "validator"
 
   return (
     <Sheet open={target !== null} onOpenChange={onOpenChange}>
@@ -2979,7 +3066,11 @@ function ApprovalReviewDrawer({
       >
         <SheetHeader className="border-b px-4 py-3">
           <SheetTitle className="truncate">
-            {target ? `Approval review: ${target.name}` : "Approval review"}
+            {target
+              ? isValidatorGate
+                ? `Validator override review: ${target.name}`
+                : `Approval review: ${target.name}`
+              : "Approval review"}
           </SheetTitle>
           <SheetDescription>
             {packet
@@ -2998,11 +3089,21 @@ function ApprovalReviewDrawer({
                 <p className="text-sm leading-relaxed">
                   {packet
                     ? compactApprovalSummary(packet)
-                    : "No approval packet was attached to this request. Use the transcript and current workspace files as fallback evidence."}
+                    : isValidatorGate
+                      ? "No approval packet was attached to this validator gate. Use the transcript and current workspace files as fallback evidence before retrying or manually overriding."
+                      : "No approval packet was attached to this request. Use the transcript and current workspace files as fallback evidence."}
                 </p>
+                {isValidatorGate && (
+                  <p className="rounded-md border border-amber-500/40 bg-amber-500/5 px-2 py-1.5 text-xs text-amber-700 dark:text-amber-400">
+                    Approving this gate is recorded as a manual override of an
+                    unavailable validator review.
+                  </p>
+                )}
                 {packet?.downstream.length ? (
                   <p className="text-xs text-muted-foreground">
-                    Approval releases{" "}
+                    {isValidatorGate
+                      ? "Manual override releases "
+                      : "Approval releases "}
                     {packet.downstream.map((d) => d.name).join(", ")}.
                   </p>
                 ) : (
@@ -3244,7 +3345,7 @@ function ApprovalReviewDrawer({
                       onApprove(requestId, phaseRunId)
                   }}
                 >
-                  Approve
+                  {isValidatorGate ? "Manual override" : "Approve"}
                 </Button>
                 {target?.phaseRun.taskId && (
                   <Button
@@ -3299,6 +3400,7 @@ function SubProcessNestedRun({
   onApprove,
   onDeny,
   onRequestChanges,
+  onRetryReview,
   onConfirmFlag,
   onDismissFlag,
   onOpenReview,
@@ -3312,7 +3414,7 @@ function SubProcessNestedRun({
   depth: number
   // The shared task's gate/flag maps (keyed by phase-run id) + control callbacks,
   // threaded down so a nested run's own gates/flags are actionable (plan 038.2).
-  gates: Record<string, string>
+  gates: Record<string, GateInfo>
   gateRequests: Record<string, ProcessGateRequest>
   flagGates: Record<string, FlagGateInfo>
   onApprove: (requestId: string, phaseRunId: string) => void
@@ -3322,6 +3424,7 @@ function SubProcessNestedRun({
     phaseRunId: string,
     feedback: string
   ) => void
+  onRetryReview: (requestId: string, phaseRunId: string) => void
   onConfirmFlag: (requestId: string, phaseRunId: string) => void
   onDismissFlag: (requestId: string, phaseRunId: string) => void
   onOpenReview: (
@@ -3433,10 +3536,8 @@ function SubProcessNestedRun({
             // A gate on this nested phase surfaces via the shared task's approvals
             // (plan 038.2). An approve-gated phase stays `completed` in the DB, so
             // override the displayed status to read as awaiting (as PhaseRunItem does).
-            const gateRequestId = gates[pr.id]
-            const displayStatus = gateRequestId
-              ? "waiting_for_approval"
-              : pr.status
+            const gateInfo = gates[pr.id]
+            const displayStatus = gateInfo ? "waiting_for_approval" : pr.status
             const runName = agentRunTitle(
               pr.title,
               phaseName(pr.phaseId),
@@ -3458,20 +3559,22 @@ function SubProcessNestedRun({
                   <PhaseStatusLabel status={displayStatus} />
                 </div>
                 {/* An approve gate raised inside this nested run (plan 038.2). */}
-                {gateRequestId && (
+                {gateInfo && (
                   <GateCard
                     name={runName}
-                    requestId={gateRequestId}
+                    requestId={gateInfo.requestId}
                     phaseRunId={pr.id}
+                    gateKind={gateInfo.gateKind}
                     reworkRound={pr.reworkRound}
                     maxReworkRounds={maxRework(pr.phaseId)}
                     isContainer={isContainer(pr.phaseId)}
                     onApprove={onApprove}
                     onDeny={onDeny}
                     onRequestChanges={onRequestChanges}
-                    packet={gateRequests[gateRequestId]?.approvalPacket}
+                    onRetryReview={onRetryReview}
+                    packet={gateRequests[gateInfo.requestId]?.approvalPacket}
                     onViewDetails={() =>
-                      onOpenReview(pr, runName, gateRequestId)
+                      onOpenReview(pr, runName, gateInfo.requestId)
                     }
                   />
                 )}
@@ -3548,6 +3651,7 @@ function SubProcessNestedRun({
                             onApprove={onApprove}
                             onDeny={onDeny}
                             onRequestChanges={onRequestChanges}
+                            onRetryReview={onRetryReview}
                             onConfirmFlag={onConfirmFlag}
                             onDismissFlag={onDismissFlag}
                             onOpenReview={onOpenReview}
@@ -3573,6 +3677,7 @@ function SubProcessNestedRun({
                       onApprove={onApprove}
                       onDeny={onDeny}
                       onRequestChanges={onRequestChanges}
+                      onRetryReview={onRetryReview}
                       onConfirmFlag={onConfirmFlag}
                       onDismissFlag={onDismissFlag}
                       onOpenReview={onOpenReview}
@@ -3777,15 +3882,21 @@ function NewRunModal({
 // separate flagGates map / card, not the generic approve card, so it must not
 // land here (else a flagging phase would show both cards).
 function foldGate(
-  gates: Record<string, string>,
+  gates: Record<string, GateInfo>,
   ev: Extract<TaskEventPayload, { type: "process_phase" }>
-): Record<string, string> {
+): Record<string, GateInfo> {
   if (
     ev.status === "waiting_for_approval" &&
     ev.requestId &&
     ev.gateKind !== "flag"
   ) {
-    return { ...gates, [ev.phaseRunId]: ev.requestId }
+    return {
+      ...gates,
+      [ev.phaseRunId]: {
+        requestId: ev.requestId,
+        gateKind: ev.gateKind === "validator" ? "validator" : "phase",
+      },
+    }
   }
   if (gates[ev.phaseRunId]) {
     const next = { ...gates }
@@ -3797,8 +3908,8 @@ function foldGate(
 
 // Rebuild the whole gate map from a replayed event stream (newest wins per
 // phase). Used to recover pending gates after the monitor (re)mounts.
-function deriveGates(events: TaskEventPayload[]): Record<string, string> {
-  let gates: Record<string, string> = {}
+function deriveGates(events: TaskEventPayload[]): Record<string, GateInfo> {
+  let gates: Record<string, GateInfo> = {}
   for (const ev of events) {
     if (ev.type === "process_phase") gates = foldGate(gates, ev)
   }

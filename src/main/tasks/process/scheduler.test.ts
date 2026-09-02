@@ -15,7 +15,11 @@ vi.mock("../../db/connection", () => ({ getDb: () => db }))
 // backed tests skip rather than fail when the ABI mismatches.
 
 import * as processes from "../../db/repositories/processes"
-import { listApprovals, resolveApproval } from "../../db/repositories/approvals"
+import {
+  createApproval,
+  listApprovals,
+  resolveApproval,
+} from "../../db/repositories/approvals"
 import {
   runScheduler,
   subtaskTitle,
@@ -1132,6 +1136,86 @@ describe.skipIf(!sqliteLoads)("scheduler — validator (plan 031.1)", () => {
     expect(aRun.reworkRound).toBe(0)
   })
 
+  it("ignores a delayed stale validator approval for replaced output", async () => {
+    const pid = buildProcess({
+      phases: [{ key: "a", validator: true }, { key: "b" }],
+      edges: [["a", "b"]],
+    })
+    const ran: string[] = []
+    const identities = ["out-1", "out-2"]
+    const runPhase: RunPhase = async ({ phase }) => {
+      ran.push(phase.key)
+      return {
+        content: phase.key,
+        outputIdentity: identities.shift() ?? "out-2",
+      }
+    }
+    let reviews = 0
+    const validate: Validate = async ({ phaseRun, outputIdentity }) => {
+      reviews++
+      if (reviews === 1) {
+        processes.updatePhaseRun(phaseRun.id, {
+          status: "pending",
+          outputIdentity: "out-2",
+        })
+        return { approved: true, targetOutputIdentity: outputIdentity }
+      }
+      return { approved: true, targetOutputIdentity: outputIdentity }
+    }
+    const { ctx, runId } = makeCtx(pid, runPhase, { validate })
+
+    await runScheduler(ctx)
+
+    expect(ran).toEqual(["a", "a", "b"])
+    expect(reviews).toBe(2)
+    const aRun = runsForKey(runId, pid, "a").find((r) => r.parentId === null)!
+    expect(aRun.status).toBe("completed")
+    expect(aRun.outputIdentity).toBe("out-2")
+  })
+
+  it("ignores delayed stale validator rejection feedback for replaced output", async () => {
+    const pid = buildProcess({
+      phases: [{ key: "a", validator: true }, { key: "b" }],
+      edges: [["a", "b"]],
+    })
+    const ran: string[] = []
+    const identities = ["out-1", "out-2"]
+    const runPhase: RunPhase = async ({ phase, phaseRun }) => {
+      const fresh = processes.getPhaseRun(phaseRun.id)
+      ran.push(`${phase.key}${fresh?.reworkNote ? "*" : ""}`)
+      return {
+        content: phase.key,
+        outputIdentity: identities.shift() ?? "out-2",
+      }
+    }
+    let reviews = 0
+    const validate: Validate = async ({ phaseRun, outputIdentity }) => {
+      reviews++
+      if (reviews === 1) {
+        processes.updatePhaseRun(phaseRun.id, {
+          status: "pending",
+          outputIdentity: "out-2",
+        })
+        return {
+          approved: false,
+          feedback: "stale feedback",
+          targetOutputIdentity: outputIdentity,
+        }
+      }
+      return { approved: true, targetOutputIdentity: outputIdentity }
+    }
+    const { ctx, runId } = makeCtx(pid, runPhase, { validate })
+
+    await runScheduler(ctx)
+
+    expect(ran).toEqual(["a", "a", "b"])
+    expect(reviews).toBe(2)
+    const aRun = runsForKey(runId, pid, "a").find((r) => r.parentId === null)!
+    expect(aRun.status).toBe("completed")
+    expect(aRun.validatorRound).toBe(0)
+    expect(aRun.reworkNote).toBeNull()
+  })
+
   it("escalates to a human gate when the validator exhausts its cap", async () => {
     // a (validator, cap 2) -> b. The reviewer always rejects. a re-runs up to the
     // cap, then the scheduler raises a gate (throws) and b never runs.
@@ -1191,10 +1275,26 @@ describe.skipIf(!sqliteLoads)("scheduler — validator (plan 031.1)", () => {
     expect(ran).toEqual(["a"]) // one attempt, then straight to the gate
     expect(statusByKey(runId, pid).a).toBe("waiting_for_approval")
 
-    // Approve the exhaustion gate.
+    // Manual-override the exhaustion gate.
     const pending = listApprovals({ taskId: ctx.taskId, status: "pending" })
     expect(pending).toHaveLength(1)
-    resolveApproval(pending[0].id, { status: "approved" })
+    const request = pending[0].request as {
+      requestId: string
+      phaseKey: string
+      phaseRunId: string
+    }
+    resolveApproval(pending[0].id, {
+      status: "approved",
+      decision: {
+        manualOverride: true,
+        gateKind: "process_validator_gate",
+        requestId: request.requestId,
+        phaseKey: request.phaseKey,
+        phaseRunId: request.phaseRunId,
+        failureReason: "not good enough",
+        actor: "user",
+      },
+    })
 
     // Resume: reconcileValidatorGates flips a → completed, releasing b. The
     // validator does NOT re-run (a is no longer re-running its worker).
@@ -1211,6 +1311,47 @@ describe.skipIf(!sqliteLoads)("scheduler — validator (plan 031.1)", () => {
     })
     expect(ran).toEqual(["a", "b"])
     expect(statusByKey(runId, pid)).toEqual({ a: "completed", b: "completed" })
+  })
+
+  it("does not release a validator gate from a generic approved row", async () => {
+    const pid = buildProcess({
+      phases: [
+        { key: "a", validator: true, validatorMaxIterations: 1 },
+        { key: "b" },
+      ],
+      edges: [["a", "b"]],
+    })
+    const ran: string[] = []
+    const runPhase: RunPhase = async ({ phase }) => {
+      ran.push(phase.key)
+      return { content: phase.key }
+    }
+    const validate: Validate = async () => ({
+      approved: false,
+      feedback: "not good enough",
+    })
+    const { ctx, runId } = makeCtx(pid, runPhase, { validate })
+    await expect(runScheduler(ctx)).rejects.toBeInstanceOf(GateBlockedError)
+
+    const pending = listApprovals({ taskId: ctx.taskId, status: "pending" })
+    expect(pending).toHaveLength(1)
+    resolveApproval(pending[0].id, { status: "approved" })
+
+    await runScheduler({
+      run: processes.getProcessRun(runId)!,
+      graph: processes.getProcessGraph(pid)!,
+      taskId: ctx.taskId,
+      signal: new AbortController().signal,
+      emit: () => {},
+      runPhase,
+      validate,
+    })
+
+    expect(ran).toEqual(["a"])
+    expect(statusByKey(runId, pid)).toEqual({
+      a: "waiting_for_approval",
+      b: "pending",
+    })
   })
 
   it("uses the engine default cap when no per-phase override is set", async () => {
@@ -1231,9 +1372,9 @@ describe.skipIf(!sqliteLoads)("scheduler — validator (plan 031.1)", () => {
     expect(runs).toBe(3) // DEFAULT_VALIDATOR_ITERATIONS
   })
 
-  it("fails open (completes) when the reviewer itself errors", async () => {
-    // A broken reviewer (error result) must not wedge the run — the phase settles
-    // completed and dependents proceed.
+  it("holds the phase when the reviewer itself errors", async () => {
+    // A broken reviewer is not an approval. The phase parks at the validator gate
+    // and dependents remain unreleased.
     const pid = buildProcess({
       phases: [{ key: "a", validator: true }, { key: "b" }],
       edges: [["a", "b"]],
@@ -1244,8 +1385,118 @@ describe.skipIf(!sqliteLoads)("scheduler — validator (plan 031.1)", () => {
       error: "reviewer blew up",
     })
     const { ctx, runId } = makeCtx(pid, runPhase, { validate })
+    await expect(runScheduler(ctx)).rejects.toBeInstanceOf(GateBlockedError)
+    expect(statusByKey(runId, pid)).toEqual({
+      a: "waiting_for_approval",
+      b: "pending",
+    })
+    const aRun = runsForKey(runId, pid, "a").find((r) => r.parentId === null)!
+    expect(aRun.error).toBe("reviewer blew up")
+    expect(aRun.validatorRound).toBe(0)
+    const pending = listApprovals({ taskId: ctx.taskId, status: "pending" })
+    expect(pending).toHaveLength(1)
+  })
+
+  it("retries only the validator review after a validator-unavailable gate", async () => {
+    const pid = buildProcess({
+      phases: [{ key: "a", validator: true }, { key: "b" }],
+      edges: [["a", "b"]],
+    })
+    const { ctx, runId } = makeCtx(
+      pid,
+      async ({ phase }) => ({ content: phase.key }),
+      {
+        validate: async () => ({ approved: true }),
+      }
+    )
+    const graph = processes.getProcessGraph(pid)!
+    const a = graph.phases.find((p) => p.key === "a")!
+    const aRun = processes.createPhaseRun({
+      runId,
+      phaseId: a.id,
+      status: "pending",
+    })
+    processes.updatePhaseRun(aRun.id, {
+      taskId: freshTask(),
+      error: null,
+      validatorRound: 0,
+    })
+    createApproval({
+      taskId: ctx.taskId,
+      request: {
+        kind: "process_validator_gate",
+        phaseKey: "a",
+        phaseRunId: aRun.id,
+        requestId: randomUUID(),
+      },
+    })
+    const gate = listApprovals({ taskId: ctx.taskId })[0]
+    resolveApproval(gate.id, {
+      status: "denied",
+      decision: { retryReview: true },
+    })
+    const ran: string[] = []
+    ctx.runPhase = async ({ phase }) => {
+      ran.push(phase.key)
+      return { content: phase.key }
+    }
+
     await runScheduler(ctx)
-    expect(statusByKey(runId, pid)).toEqual({ a: "completed", b: "completed" })
+
+    expect(ran).toEqual(["b"])
+    const fresh = processes.getPhaseRun(aRun.id)!
+    expect(fresh.status).toBe("completed")
+    expect(fresh.validatorRound).toBe(0)
+    expect(fresh.reworkRound).toBe(0)
+  })
+
+  it("enters the normal validator rework loop after a retry review rejects", async () => {
+    const pid = buildProcess({
+      phases: [{ key: "a", validator: true, validatorMaxIterations: 3 }],
+    })
+    const { ctx, runId } = makeCtx(pid, async () => ({ content: "unused" }))
+    const graph = processes.getProcessGraph(pid)!
+    const a = graph.phases.find((p) => p.key === "a")!
+    const aRun = processes.createPhaseRun({
+      runId,
+      phaseId: a.id,
+      status: "pending",
+    })
+    processes.updatePhaseRun(aRun.id, {
+      taskId: freshTask(),
+      validatorRound: 0,
+    })
+    createApproval({
+      taskId: ctx.taskId,
+      request: {
+        kind: "process_validator_gate",
+        phaseKey: "a",
+        phaseRunId: aRun.id,
+        requestId: randomUUID(),
+      },
+    })
+    resolveApproval(listApprovals({ taskId: ctx.taskId })[0].id, {
+      status: "denied",
+      decision: { retryReview: true },
+    })
+    const ran: string[] = []
+    const verdicts = [
+      { approved: false, feedback: "fix it" },
+      { approved: true },
+    ]
+    ctx.runPhase = async ({ phase }) => {
+      ran.push(phase.key)
+      return { content: phase.key }
+    }
+    ctx.validate = async () => verdicts.shift()!
+
+    await runScheduler(ctx)
+
+    expect(ran).toEqual(["a"])
+    const fresh = processes.getPhaseRun(aRun.id)!
+    expect(fresh.status).toBe("completed")
+    expect(fresh.validatorRound).toBe(1)
+    expect(fresh.reworkRound).toBe(0)
   })
 
   it("does not review a phase with the validator toggle off", async () => {

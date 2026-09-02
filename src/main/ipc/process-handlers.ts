@@ -60,11 +60,9 @@ export function registerProcessHandlers(
     processService.restartRun(processRunId)
   )
 
-  // Approve a phase gate. A process gate has no in-memory agent promise (the
-  // scheduler threw and unwound, settling the task `paused`), so unlike
-  // task:approve we don't touch the agent gate resolver — we settle the durable
-  // approval row (recordApprovalDecision) and RESUME the paused task, which
-  // re-runs the scheduler; it sees the gate approved and releases the dependents.
+  // Approve a process gate. The service keeps normal phase approval and
+  // validator manual override decisions distinct, then resumes the paused task so
+  // the scheduler can reconcile the durable gate row.
   ipcMain.handle(
     "process:approve",
     (
@@ -74,10 +72,7 @@ export function registerProcessHandlers(
         requestId: string
       }
     ) => {
-      const run = getProcessRun(payload.processRunId)
-      if (!run?.taskId) return
-      runner.recordApprovalDecision(run.taskId, payload.requestId, "approved")
-      runner.resume(run.taskId)
+      processService.approve(payload)
     }
   )
 
@@ -103,6 +98,14 @@ export function registerProcessHandlers(
       _e,
       payload: { processRunId: string; requestId: string; feedback: string }
     ) => processService.requestChanges(payload)
+  )
+
+  // Retry only a failed validator review for a validator gate. The completed phase
+  // worker output is reused; only the reviewer runs again.
+  ipcMain.handle(
+    "process:retryReview",
+    (_e, payload: { processRunId: string; requestId: string }) =>
+      processService.retryReview(payload)
   )
 
   // Confirm / dismiss a cross-phase rework flag (plan 031.2). Delegated to the

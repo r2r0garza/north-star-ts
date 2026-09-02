@@ -20,8 +20,8 @@ const loopCalls: {
 }[] = []
 // A validator reviewer's scripted replies (plan 031.1): each call to a REVIEW
 // prompt (validatorPrompt begins "# Review the") shifts one reply off this queue;
-// the reply is the reviewer worker's final message (a JSON verdict). Empty queue →
-// the default "done" (unparseable → the caller fails open, i.e. approves).
+// the reply is the reviewer worker's final message (a JSON verdict). Empty queue
+// yields the default "done", which is unparseable and should hold the phase.
 const reviewReplies: string[] = []
 // Substrings that make a worker whose userMessage contains one return a
 // non-retryable error the FIRST time it's seen (then succeed on a re-run) — lets a
@@ -85,6 +85,8 @@ vi.mock("../../agent", () => ({
       await hold.wait
     }
     const isReview = msg.startsWith("# Review the")
+    const isResumedReview =
+      input.userMessage === undefined && reviewReplies.length > 0
     // A fan-out decomposition worker (plan 025.1) is asked to reply with ONLY a
     // JSON array of sub-task briefings. `decomposeReplies` lets a test script the
     // split; the default is two sub-tasks so a fan-out phase spawns children.
@@ -95,7 +97,7 @@ vi.mock("../../agent", () => ({
       isDecompose || isResumedDecompose
         ? (decomposeReplies.shift() ??
           JSON.stringify(["sub-task 1", "sub-task 2"]))
-        : isReview && reviewReplies.length
+        : (isReview || isResumedReview) && reviewReplies.length
           ? reviewReplies.shift()!
           : "done"
     // Give the worker a final assistant message (its "output").
@@ -1126,7 +1128,12 @@ describe.skipIf(!sqliteLoads)("ProcessService worker resume", () => {
       phaseId: phase.id,
       status: "pending",
     })
-    processes.updatePhaseRun(phaseRun.id, { validatorRound: 0 })
+    const workerTask = seedTaskRow()
+    processes.updatePhaseRun(phaseRun.id, {
+      taskId: workerTask.taskId,
+      validatorRound: 0,
+      outputIdentity: "phase-output:v1:current",
+    })
     const existingReviewer = seedTaskRow()
     db.prepare("UPDATE tasks SET input = ? WHERE id = ?").run(
       JSON.stringify({
@@ -1134,9 +1141,22 @@ describe.skipIf(!sqliteLoads)("ProcessService worker resume", () => {
         phaseRunId: phaseRun.id,
         agentName: null,
         validatorRound: 0,
+        reviewTargetOutputIdentity: "phase-output:v1:current",
       }),
       existingReviewer.taskId
     )
+    const retryGate = createApproval({
+      taskId,
+      request: {
+        kind: "process_validator_gate",
+        phaseKey: "impl",
+        phaseRunId: phaseRun.id,
+        requestId: randomUUID(),
+      },
+    })
+    db.prepare(
+      "UPDATE approvals SET status = 'denied', decision = ? WHERE id = ?"
+    ).run(JSON.stringify({ retryReview: true }), retryGate.id)
     reviewReplies.push('{"approved": true}')
 
     const svc = new ProcessService(fakeRunner)
@@ -1161,6 +1181,72 @@ describe.skipIf(!sqliteLoads)("ProcessService worker resume", () => {
       ).count
     ).toBe(1)
     expect(processes.getPhaseRun(phaseRun.id)?.status).toBe("completed")
+  })
+
+  it("does not resume an existing validator worker for a stale output identity", async () => {
+    const def = processes.createProcessDefinition({ name: "Stale validator" })
+    const phase = processes.createPhase({
+      processId: def.id,
+      key: "impl",
+      name: "Implement",
+      validator: true,
+      position: 0,
+    })
+    const { taskId } = seedTaskRow()
+    const run = processes.createProcessRun({
+      processId: def.id,
+      sourceConversationId: null,
+      taskId,
+      objective: "resume review",
+      status: "running",
+    })
+    const phaseRun = processes.createPhaseRun({
+      runId: run.id,
+      phaseId: phase.id,
+      status: "pending",
+    })
+    const staleReviewer = seedTaskRow()
+    db.prepare("UPDATE tasks SET input = ? WHERE id = ?").run(
+      JSON.stringify({
+        kind: "process_phase_validate",
+        phaseRunId: phaseRun.id,
+        agentName: null,
+        validatorRound: 0,
+        reviewTargetOutputIdentity: "phase-output:v1:old",
+      }),
+      staleReviewer.taskId
+    )
+    reviewReplies.push('{"approved": true}')
+
+    const svc = new ProcessService(fakeRunner)
+    await svc.execute({
+      task: { id: taskId, input: { processRunId: run.id } } as never,
+      signal: new AbortController().signal,
+      emit: () => {},
+      workspace: undefined,
+    })
+
+    const staleValidatorCall = loopCalls.find(
+      (c) => c.conversationId === conversationIdForTask(staleReviewer.taskId)
+    )
+    expect(staleValidatorCall).toBeUndefined()
+    const reviewTasks = (
+      db
+        .prepare(
+          "SELECT input FROM tasks WHERE input LIKE '%process_phase_validate%'"
+        )
+        .all() as Array<{ input: string }>
+    ).map(
+      (row) => JSON.parse(row.input) as { reviewTargetOutputIdentity?: string }
+    )
+    expect(reviewTasks).toHaveLength(2)
+    const currentIdentity = processes.getPhaseRun(phaseRun.id)?.outputIdentity
+    expect(currentIdentity).toMatch(/^phase-output:v1:/)
+    expect(reviewTasks).toContainEqual(
+      expect.objectContaining({
+        reviewTargetOutputIdentity: currentIdentity,
+      })
+    )
   })
 })
 
@@ -1432,7 +1518,7 @@ describe.skipIf(!sqliteLoads)("ProcessService validator (plan 031.1)", () => {
     expect(reviewRuns).toHaveLength(2)
   })
 
-  it("fails open (completes) when the reviewer's verdict is unparseable", async () => {
+  it("holds the phase when the reviewer's verdict is unparseable", async () => {
     const def = processes.createProcessDefinition({ name: "T" })
     const phase = processes.createPhase({
       processId: def.id,
@@ -1446,9 +1532,8 @@ describe.skipIf(!sqliteLoads)("ProcessService validator (plan 031.1)", () => {
       agentName: "coder",
       position: 0,
     })
-    // The reviewer replies with non-JSON prose → parseVerdict returns null →
-    // fail open (approve). (Empty reviewReplies also yields the "done" default,
-    // which is likewise unparseable — assert the explicit prose case here.)
+    // The reviewer replies with non-JSON prose → parseVerdict returns null, which
+    // is a failed review boundary rather than an approval.
     reviewReplies.push("looks fine to me")
 
     const { taskId } = seedTaskRow()
@@ -1461,23 +1546,174 @@ describe.skipIf(!sqliteLoads)("ProcessService validator (plan 031.1)", () => {
     })
 
     const svc = new ProcessService(fakeRunner)
-    await svc.execute({
+    const result = await svc.execute({
       task: { id: taskId, input: { processRunId: run.id } } as never,
       signal: new AbortController().signal,
       emit: () => {},
       workspace: undefined,
     })
+    expect(result).toEqual({ paused: true })
 
     const phaseRun = processes
       .listPhaseRuns({ runId: run.id, parentId: null })
       .find((pr) => pr.phaseId === phase.id)!
-    expect(phaseRun.status).toBe("completed")
-    // Approved on the first review → no re-run, validator round stays 0.
+    expect(phaseRun.status).toBe("waiting_for_approval")
+    expect(phaseRun.error).toBe("validator returned an unparseable verdict")
     expect(phaseRun.validatorRound).toBe(0)
+    const pending = listApprovals({ taskId, status: "pending" })
+    expect(pending).toHaveLength(1)
+    expect(pending[0].request).toMatchObject({
+      kind: "process_validator_gate",
+      phaseRunId: phaseRun.id,
+    })
     const workerRuns = loopCalls.filter((c) =>
       c.userMessage?.startsWith("# Process phase")
     )
     expect(workerRuns).toHaveLength(1)
+  })
+
+  it("retryReview resets only the validator boundary and preserves the phase worker", () => {
+    const def = processes.createProcessDefinition({ name: "T" })
+    const phase = processes.createPhase({
+      processId: def.id,
+      key: "impl",
+      name: "Implement",
+      validator: true,
+      position: 0,
+    })
+    const topTask = seedTaskRow()
+    const workerTask = seedTaskRow()
+    const reviewTask = seedTaskRow()
+    db.prepare("UPDATE tasks SET input = ? WHERE id = ?").run(
+      JSON.stringify({
+        kind: "process_phase_validate",
+        phaseRunId: "placeholder",
+        validatorRound: 0,
+      }),
+      reviewTask.taskId
+    )
+    const run = processes.createProcessRun({
+      processId: def.id,
+      sourceConversationId: null,
+      taskId: topTask.taskId,
+      objective: "build it",
+      status: "waiting_for_approval",
+    })
+    const phaseRun = processes.createPhaseRun({
+      runId: run.id,
+      phaseId: phase.id,
+      status: "waiting_for_approval",
+    })
+    processes.updatePhaseRun(phaseRun.id, {
+      taskId: workerTask.taskId,
+      error: "validator returned an unparseable verdict",
+      finishedAt: Date.now(),
+      validatorRound: 0,
+      reworkRound: 0,
+    })
+    db.prepare("UPDATE tasks SET input = ? WHERE id = ?").run(
+      JSON.stringify({
+        kind: "process_phase_validate",
+        phaseRunId: phaseRun.id,
+        validatorRound: 0,
+      }),
+      reviewTask.taskId
+    )
+    const requestId = randomUUID()
+    const approval = createApproval({
+      taskId: topTask.taskId,
+      request: {
+        kind: "process_validator_gate",
+        phaseKey: "impl",
+        phaseRunId: phaseRun.id,
+        requestId,
+      },
+    })
+    const resumed: string[] = []
+    const svc = new ProcessService({
+      enqueueKind: () => ({ id: "t" }),
+      resume: (id: string) => resumed.push(id),
+    } as never)
+
+    const updated = svc.retryReview({ processRunId: run.id, requestId })
+
+    expect(getApproval(approval.id)!.status).toBe("denied")
+    expect(getApproval(approval.id)!.decision).toEqual({ retryReview: true })
+    const fresh = processes.getPhaseRun(phaseRun.id)!
+    expect(fresh.status).toBe("pending")
+    expect(fresh.taskId).toBe(workerTask.taskId)
+    expect(fresh.error).toBeNull()
+    expect(fresh.validatorRound).toBe(0)
+    expect(fresh.reworkRound).toBe(0)
+    expect(
+      (
+        db
+          .prepare("SELECT COUNT(*) AS count FROM tasks WHERE id = ?")
+          .get(reviewTask.taskId) as { count: number }
+      ).count
+    ).toBe(0)
+    expect(updated?.status).toBe("running")
+    expect(resumed).toEqual([topTask.taskId])
+  })
+
+  it("approves a validator gate as an audited manual override", () => {
+    const def = processes.createProcessDefinition({ name: "T" })
+    const phase = processes.createPhase({
+      processId: def.id,
+      key: "impl",
+      name: "Implement",
+      validator: true,
+      position: 0,
+    })
+    const topTask = seedTaskRow()
+    const run = processes.createProcessRun({
+      processId: def.id,
+      sourceConversationId: null,
+      taskId: topTask.taskId,
+      objective: "build it",
+      status: "waiting_for_approval",
+    })
+    const phaseRun = processes.createPhaseRun({
+      runId: run.id,
+      phaseId: phase.id,
+      status: "waiting_for_approval",
+    })
+    processes.updatePhaseRun(phaseRun.id, {
+      error: "validator returned an unparseable verdict",
+    })
+    const requestId = randomUUID()
+    const approval = createApproval({
+      taskId: topTask.taskId,
+      request: {
+        kind: "process_validator_gate",
+        phaseKey: "impl",
+        phaseRunId: phaseRun.id,
+        requestId,
+      },
+    })
+    const resumed: string[] = []
+    const markedRunning: string[] = []
+    const svc = new ProcessService({
+      enqueueKind: () => ({ id: "t" }),
+      markRunning: (id: string) => markedRunning.push(id),
+      resume: (id: string) => resumed.push(id),
+    } as never)
+
+    const updated = svc.approve({ processRunId: run.id, requestId })
+
+    expect(updated?.status).toBe("waiting_for_approval")
+    expect(getApproval(approval.id)!.status).toBe("approved")
+    expect(getApproval(approval.id)!.decision).toEqual({
+      manualOverride: true,
+      gateKind: "process_validator_gate",
+      requestId,
+      phaseKey: "impl",
+      phaseRunId: phaseRun.id,
+      failureReason: "validator returned an unparseable verdict",
+      actor: "user",
+    })
+    expect(markedRunning).toEqual([topTask.taskId])
+    expect(resumed).toEqual([topTask.taskId])
   })
 })
 

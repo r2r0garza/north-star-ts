@@ -1,10 +1,17 @@
+import { createHash } from "crypto"
 import { runAgentLoop, generateTitle } from "../../agent"
 import { SHUTDOWN_ABORT_REASON, PAUSE_ABORT_REASON } from "../../agent/abort"
 import {
   createConversation,
+  deleteConversation,
   getConversation,
 } from "../../db/repositories/conversations"
-import { createTask, getTask, listTasks } from "../../db/repositories/tasks"
+import {
+  createTask,
+  deleteTask,
+  getTask,
+  listTasks,
+} from "../../db/repositories/tasks"
 import { listMessages } from "../../db/repositories/messages"
 import { getWorkspace, upsertWorkspace } from "../../db/repositories/workspaces"
 import * as processes from "../../db/repositories/processes"
@@ -70,6 +77,7 @@ interface ProcessWorkerTaskInput {
   phaseRunId?: string
   agentName?: string | null
   validatorRound?: number
+  reviewTargetOutputIdentity?: string | null
 }
 
 // Settle an aborted run's status by WHY it aborted (plan 038.3). A SHUTDOWN (app
@@ -189,6 +197,55 @@ export class ProcessService {
     return updated
   }
 
+  // Approve a pending process gate. A validator gate approval is explicitly a
+  // human manual override of an unavailable/exhausted review, not a validator
+  // approval, so persist that distinction in the decision blob before resuming.
+  approve(input: {
+    processRunId: string
+    requestId: string
+  }): ProcessRun | undefined {
+    const { processRunId, requestId } = input
+    const run = processes.getProcessRun(processRunId)
+    if (!run?.taskId) return run
+
+    const approval = listApprovals({ taskId: run.taskId }).find((a) => {
+      const req = a.request as { requestId?: string } | null
+      return req?.requestId === requestId && a.status === "pending"
+    })
+    if (!approval) return run
+
+    const req = approval.request as {
+      kind?: string
+      phaseKey?: string
+      phaseRunId?: string
+    } | null
+
+    if (req?.kind === "process_validator_gate") {
+      const phaseRun = req.phaseRunId
+        ? processes.getPhaseRun(req.phaseRunId)
+        : undefined
+      resolveApproval(approval.id, {
+        status: "approved",
+        decision: {
+          manualOverride: true,
+          gateKind: "process_validator_gate",
+          requestId,
+          phaseKey: req.phaseKey ?? null,
+          phaseRunId: req.phaseRunId ?? null,
+          failureReason: phaseRun?.error ?? null,
+          actor: "user",
+        },
+      })
+      this.runner.markRunning(run.taskId)
+      this.runner.resume(run.taskId)
+      return processes.getProcessRun(processRunId)
+    }
+
+    this.runner.recordApprovalDecision(run.taskId, requestId, "approved")
+    this.runner.resume(run.taskId)
+    return processes.getProcessRun(processRunId)
+  }
+
   // Request changes on a gated phase (plan 029): the third gate decision beside
   // approve/deny. Settle the pending gate `denied` (feedback stored in the
   // decision blob for the review trail), reset the gated phase-run to `pending`
@@ -282,6 +339,7 @@ export class ProcessService {
         // the re-run a fresh budget of automatic validator rounds. Harmless on a
         // non-validator phase (stays 0).
         validatorRound: 0,
+        outputIdentity: null,
       })
       // A SUB-PROCESS phase (plan 038.2): the phase's work is a nested run, so the
       // rework_note alone re-runs nothing. Whole-reset the child run with the
@@ -300,6 +358,73 @@ export class ProcessService {
 
     // better-sqlite3 is synchronous, so the tx has committed — resume re-drives
     // the (paused) backing task, which rebuilds runByPhaseId from the fresh DB.
+    const updated = processes.getProcessRun(processRunId)
+    this.runner.resume(taskId)
+    return updated
+  }
+
+  // Retry only the validator reviewer for a validator-unavailable gate (plan 084).
+  // The phase worker already completed and its taskId is the stable review input;
+  // do not reset that worker, do not bump reworkRound, and do not consume a
+  // validatorRound (valid negative verdicts own that counter). Instead, settle the
+  // current validator gate with an audit marker, remove the stale reviewer worker
+  // for this same validatorRound so makeValidate sends a fresh prompt, flip the
+  // phase back to pending, and resume the owning run.
+  retryReview(input: {
+    processRunId: string
+    requestId: string
+  }): ProcessRun | undefined {
+    const { processRunId, requestId } = input
+    const topRun = processes.getProcessRun(processRunId)
+    if (!topRun?.taskId) return topRun
+    const taskId = topRun.taskId
+
+    const approval = listApprovals({ taskId }).find((a) => {
+      const req = a.request as { requestId?: string; kind?: string } | null
+      return (
+        req?.requestId === requestId &&
+        req.kind === "process_validator_gate" &&
+        a.status === "pending"
+      )
+    })
+    if (!approval) return topRun
+    const req = approval.request as { phaseRunId?: string } | null
+    const phaseRunId = req?.phaseRunId
+    if (!phaseRunId) return topRun
+
+    const phaseRun = processes.getPhaseRun(phaseRunId)
+    if (!phaseRun?.taskId) return topRun
+    const phase = processes.getPhase(phaseRun.phaseId)
+    if (!phase?.validator) return topRun
+    const owningRun = processes.getProcessRun(phaseRun.runId)
+    if (!owningRun) return topRun
+
+    const staleReviewTask = this.findProcessWorkerTask(
+      phaseRun.id,
+      "process_phase_validate",
+      phaseRun.validatorRound
+    )
+
+    const tx = getDb().transaction(() => {
+      resolveApproval(approval.id, {
+        status: "denied",
+        decision: { retryReview: true },
+      })
+      if (staleReviewTask) {
+        deleteTask(staleReviewTask.id)
+        deleteConversation(staleReviewTask.conversationId)
+      }
+      processes.updatePhaseRun(phaseRun.id, {
+        status: "pending",
+        error: null,
+        startedAt: null,
+        finishedAt: null,
+        reworkNote: null,
+      })
+      this.flipRunningToTop(owningRun)
+    })
+    tx()
+
     const updated = processes.getProcessRun(processRunId)
     this.runner.resume(taskId)
     return updated
@@ -813,7 +938,12 @@ export class ProcessService {
           return { stopped: true }
         if (result.error)
           return { error: result.error, retryable: result.retryable }
-        return { content: result.content } satisfies PhaseResult
+        const output = this.lastAssistantOutput(
+          processes.getPhaseRun(phaseRun.id) ?? phaseRun
+        )
+        const outputIdentity = output?.identity ?? null
+        processes.updatePhaseRun(phaseRun.id, { outputIdentity })
+        return { content: result.content, outputIdentity } satisfies PhaseResult
       } catch (err) {
         return { error: err instanceof Error ? err.message : String(err) }
       }
@@ -959,10 +1089,10 @@ export class ProcessService {
   // judge the phase's output against the objective. The reviewer's own agent is
   // `phase.validatorAgent` (else the phase's pool[0]); its conversation is
   // separate from the phase worker's, so we do NOT overwrite the phase-run's
-  // taskId/agentName. Returns the parsed verdict; an unparseable reply FAILS OPEN
-  // (approved) so a broken reviewer never wedges the run.
+  // taskId/agentName. Returns the parsed verdict; an unparseable reply is a failed
+  // review boundary and must not approve the phase.
   private makeValidate(run: ProcessRun): Validate {
-    return async ({ phase, phaseRun, signal }) => {
+    return async ({ phase, phaseRun, outputIdentity, signal }) => {
       const source = run.sourceConversationId
         ? getConversation(run.sourceConversationId)
         : undefined
@@ -970,6 +1100,7 @@ export class ProcessService {
       // The phase worker's output is the review input — read it BEFORE forking the
       // reviewer (the reviewer's conversation would otherwise be the latest).
       const phaseOutput = this.lastAssistantContent(phaseRun)
+      const reviewTargetOutputIdentity = outputIdentity
 
       // The dedicated reviewer agent, falling back to the phase's own resolved
       // agent (pool[0]) when none is configured.
@@ -987,7 +1118,8 @@ export class ProcessService {
       const existingWorkerTask = this.findProcessWorkerTask(
         phaseRun.id,
         "process_phase_validate",
-        validatorRound
+        validatorRound,
+        reviewTargetOutputIdentity
       )
       const existingWorker = existingWorkerTask
         ? getConversation(existingWorkerTask.conversationId)
@@ -1014,6 +1146,7 @@ export class ProcessService {
             phaseRunId: phaseRun.id,
             agentName,
             validatorRound,
+            reviewTargetOutputIdentity,
           },
         })
       }
@@ -1053,17 +1186,25 @@ export class ProcessService {
             approved: false,
             error: result.error,
             retryable: result.retryable,
+            targetOutputIdentity: reviewTargetOutputIdentity,
           }
         const verdict = parseVerdict(result.content ?? "")
-        // Unparseable verdict → fail open (approve). A broken/ambiguous reviewer
-        // must never wedge the run; the iteration cap already bounds real loops.
-        if (!verdict) return { approved: true }
-        return { approved: verdict.approved, feedback: verdict.feedback }
+        if (!verdict)
+          return {
+            approved: false,
+            error: "validator returned an unparseable verdict",
+            targetOutputIdentity: reviewTargetOutputIdentity,
+          }
+        return {
+          approved: verdict.approved,
+          feedback: verdict.feedback,
+          targetOutputIdentity: reviewTargetOutputIdentity,
+        }
       } catch (err) {
-        // A thrown reviewer is treated as an error (fail-open in the scheduler).
         return {
           approved: false,
           error: err instanceof Error ? err.message : String(err),
+          targetOutputIdentity: reviewTargetOutputIdentity,
         }
       }
     }
@@ -1183,14 +1324,28 @@ export class ProcessService {
 
   // The final assistant message of a phase's worker conversation (its "output").
   private lastAssistantContent(phaseRun: ProcessPhaseRun): string | null {
+    return this.lastAssistantOutput(phaseRun)?.content ?? null
+  }
+
+  private lastAssistantOutput(
+    phaseRun: ProcessPhaseRun
+  ): { content: string; identity: string } | null {
     if (!phaseRun.taskId) return null
     // The worker conversation id is the phase-run's backing task's conversation.
     const workerTask = getTask(phaseRun.taskId)
     if (!workerTask) return null
     const messages = listMessages(workerTask.conversationId)
     for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i].role === "assistant" && messages[i].content)
-        return messages[i].content
+      const message = messages[i]
+      if (message.role === "assistant" && message.content) {
+        const digest = createHash("sha256")
+          .update(message.content)
+          .digest("hex")
+        return {
+          content: message.content,
+          identity: `phase-output:v1:${phaseRun.taskId}:${message.id}:${digest}`,
+        }
+      }
     }
     return null
   }
@@ -1198,13 +1353,19 @@ export class ProcessService {
   private findProcessWorkerTask(
     phaseRunId: string,
     kind: string,
-    validatorRound?: number
+    validatorRound?: number,
+    reviewTargetOutputIdentity?: string | null
   ) {
     return listTasks().find((task) => {
       const input = task.input as ProcessWorkerTaskInput | null
       if (input?.kind !== kind || input.phaseRunId !== phaseRunId) return false
       if (validatorRound === undefined) return true
-      return input.validatorRound === validatorRound
+      if (input.validatorRound !== validatorRound) return false
+      if (reviewTargetOutputIdentity === undefined) return true
+      return (
+        (input.reviewTargetOutputIdentity ?? null) ===
+        reviewTargetOutputIdentity
+      )
     })
   }
 

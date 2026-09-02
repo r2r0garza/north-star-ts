@@ -1159,3 +1159,11 @@ CREATE INDEX idx_tool_call_lifecycle_message
 CREATE INDEX idx_tool_call_lifecycle_invocation
   ON tool_call_lifecycle(conversation_id, invocation_id, updated_at DESC);
 `
+
+// v39 (debug 085): bind validator review results to the exact phase-worker
+// output they reviewed. The value is derived from the worker task plus its final
+// assistant message and is cleared on reset/rework before being stamped again by
+// the next successful worker output. Pure ADD COLUMN.
+export const SCHEMA_V39 = `
+ALTER TABLE process_phase_runs ADD COLUMN output_identity TEXT;
+`

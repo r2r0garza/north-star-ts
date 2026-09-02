@@ -600,6 +600,10 @@ export interface ProcessPhaseRun {
   // has sent this phase-run back. Kept SEPARATE from reworkRound (which drives the
   // 029 count-based gate re-detection and must not be perturbed). Default 0.
   validatorRound: number
+  // Stable identity of the current completed worker output reviewed by a
+  // validator. Cleared on reset/rework and stamped after each successful worker
+  // completion so stale reviewer results cannot settle a replacement output.
+  outputIdentity: string | null
   // First-class on_each_subtask lineage (plan 031.2): the source fan-out CHILD
   // this consumer instance consumes. Null for ordinary runs and fan-out children;
   // set for on_each_subtask consumer instances. Lets flag-back reset only the

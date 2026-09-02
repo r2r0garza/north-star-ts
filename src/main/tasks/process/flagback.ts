@@ -225,6 +225,7 @@ const toPending = {
   error: null,
   startedAt: null,
   finishedAt: null,
+  outputIdentity: null,
 }
 
 // Is a phase a container (fan-out parent or on_each_subtask consumer of a fan-out
@@ -290,6 +291,7 @@ export function resetContainerWhole(
     reworkNote,
     reworkRound: containerRun.reworkRound + 1,
     validatorRound: 0,
+    outputIdentity: null,
   })
 }
 
@@ -303,6 +305,7 @@ export function resetPlain(
     reworkNote,
     reworkRound: phaseRun.reworkRound + 1,
     validatorRound: 0,
+    outputIdentity: null,
   })
 }
 
@@ -357,7 +360,7 @@ function applyPerChild(input: ApplyFlagBackInput): void {
   // 2. Reset the flagged child; re-inject the reason into its stored sub-task
   //    prompt (children run subtaskPrompt verbatim, so append a "requested changes"
   //    note via a fresh fanout: checkpoint row — latest-wins on recovery).
-  processes.updatePhaseRun(childRunId, { ...toPending })
+  processes.updatePhaseRun(childRunId, { ...toPending, outputIdentity: null })
   reinjectChildPrompt(taskId, child, reason)
 
   // 3. Reopen the child's container parent so the scheduler re-derives it once the

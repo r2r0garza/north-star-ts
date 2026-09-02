@@ -166,6 +166,7 @@ interface ProcessPhaseRunRow {
   rework_note: string | null
   rework_round: number
   validator_round: number
+  output_identity: string | null
   source_child_run_id: string | null
 }
 
@@ -186,6 +187,7 @@ function toPhaseRun(row: ProcessPhaseRunRow): ProcessPhaseRun {
     reworkNote: row.rework_note,
     reworkRound: row.rework_round,
     validatorRound: row.validator_round,
+    outputIdentity: row.output_identity,
     sourceChildRunId: row.source_child_run_id,
   }
 }
@@ -770,6 +772,7 @@ export function updatePhaseRun(
     reworkNote?: string | null
     reworkRound?: number
     validatorRound?: number
+    outputIdentity?: string | null
   }
 ): ProcessPhaseRun {
   const sets: string[] = []
@@ -813,6 +816,10 @@ export function updatePhaseRun(
   if (patch.validatorRound !== undefined) {
     sets.push("validator_round = ?")
     values.push(patch.validatorRound)
+  }
+  if (patch.outputIdentity !== undefined) {
+    sets.push("output_identity = ?")
+    values.push(patch.outputIdentity)
   }
   if (sets.length > 0) {
     values.push(id)

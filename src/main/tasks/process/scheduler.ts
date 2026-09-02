@@ -88,6 +88,7 @@ export class GateBlockedError extends Error {
 // The outcome of running one phase's worker (the injected runPhase resolves it).
 export interface PhaseResult {
   content?: string
+  outputIdentity?: string | null
   error?: string
   stopped?: boolean
   retryable?: boolean
@@ -159,11 +160,13 @@ export type BuildEachSubtaskPrompt = (input: {
 // judges a completed phase's output: `approved` gates whether the phase settles
 // completed; `feedback` (when rejected) is injected into the phase's re-run
 // kickoff (the 029 rework channel). error/stopped mirror a normal phase result
-// so a cancelled/failed review unwinds like the phase worker itself. Injected so
-// tests can stub the reviewer.
+// so a cancelled/failed review unwinds like the phase worker itself. Any `error`
+// is a failed review boundary, not approval. Injected so tests can stub the
+// reviewer.
 export interface ValidateResult {
   approved: boolean
   feedback?: string
+  targetOutputIdentity?: string | null
   error?: string
   stopped?: boolean
   retryable?: boolean
@@ -172,6 +175,7 @@ export interface ValidateResult {
 export type Validate = (input: {
   phase: ProcessPhase
   phaseRun: ProcessPhaseRun
+  outputIdentity: string | null
   signal: AbortSignal
 }) => Promise<ValidateResult>
 
@@ -463,7 +467,9 @@ function buildApprovalPacket(input: {
     summary: {
       outcome:
         input.gateKind === "validator"
-          ? `${input.phase.name} exhausted validator review and needs a human decision.`
+          ? input.phaseRun.error
+            ? `${input.phase.name} could not be validated: ${input.phaseRun.error}`
+            : `${input.phase.name} exhausted validator review and needs a human decision.`
           : `${input.phase.name} completed and is ready for approval.`,
       materialChanges,
       validationSummary,
@@ -754,14 +760,32 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
       )
     })
 
-  // The VALIDATOR exhaustion escalation (plan 031.1). When a validator phase
-  // burns its iteration cap without approving, raise a human gate on the SAME
-  // phase-run (which is left `waiting_for_approval`, carrying the last feedback as
-  // its rework_note) so a human decides: approve as-is (→ the walk reconciles it
-  // to `completed`, releasing dependents) or request changes (029 path, which
-  // resets it for a fresh round of attempts). Mirrors raiseGate but with the
-  // validator kind and no dependents precondition — the phase-run itself is held
-  // by its non-completed status, so dependents wait without a gateResolved check.
+  const validatorReviewRetryRequested = (phaseRunId: string): boolean =>
+    validatorGateRows(phaseRunId).some(
+      (a) =>
+        a.status === "denied" &&
+        (a.decision as { retryReview?: boolean } | null)?.retryReview === true
+    )
+
+  const validatorManualOverrideApproved = (phaseRunId: string): boolean =>
+    validatorGateRows(phaseRunId).some((a) => {
+      if (a.status !== "approved") return false
+      const decision = a.decision as {
+        manualOverride?: boolean
+        gateKind?: string
+        phaseRunId?: string
+      } | null
+      return (
+        decision?.manualOverride === true &&
+        decision.gateKind === "process_validator_gate" &&
+        decision.phaseRunId === phaseRunId
+      )
+    })
+
+  // The VALIDATOR escalation (plan 031.1). When a validator phase burns its
+  // iteration cap, or the review boundary fails before a valid verdict arrives,
+  // raise a human gate on the SAME phase-run. The phase-run is left
+  // `waiting_for_approval`, so dependents wait without a gateResolved check.
   const raiseValidatorGate = (
     phase: ProcessPhase,
     phaseRun: ProcessPhaseRun
@@ -814,8 +838,7 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
       if (!pr) continue
       const fresh = processes.getPhaseRun(pr.id)
       if (fresh?.status !== "waiting_for_approval") continue
-      if (!validatorGateRows(pr.id).some((a) => a.status === "approved"))
-        continue
+      if (!validatorManualOverrideApproved(pr.id)) continue
       processes.updatePhaseRun(pr.id, {
         status: "completed",
         finishedAt: Date.now(),
@@ -1300,54 +1323,81 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
     // sub-DAG / container replay is plan 031.2. Inert if no validator injected.
     const runsValidator =
       phase.validator && !!ctx.validate && subtaskPrompt === undefined
+    let reviewOnlyRetry =
+      runsValidator &&
+      phaseRun.taskId !== null &&
+      validatorReviewRetryRequested(phaseRun.id)
     let attempt = 0
     // Chain a child controller so run-level cancel unwinds the phase worker.
     while (true) {
       attempt++
-      const result = await ctx.runPhase({
-        phaseRun,
-        phase,
-        subtaskPrompt,
-        signal: ctx.signal,
-      })
-      if (result.stopped || ctx.signal.aborted) {
-        settleStoppedPhaseRun(phase, phaseRun.id)
-        return
-      }
-      if (result.error) {
-        if (result.retryable && attempt < MAX_PHASE_ATTEMPTS) {
-          processes.updatePhaseRun(phaseRun.id, { iteration: attempt })
-          continue
-        }
-        processes.updatePhaseRun(phaseRun.id, {
-          status: "failed",
-          error: result.error,
-          finishedAt: Date.now(),
-          iteration: attempt,
+      if (!reviewOnlyRetry || attempt > 1) {
+        const result = await ctx.runPhase({
+          phaseRun,
+          phase,
+          subtaskPrompt,
+          signal: ctx.signal,
         })
-        emitPhase(phase, phaseRun.id, "failed")
-        return
+        if (result.stopped || ctx.signal.aborted) {
+          settleStoppedPhaseRun(phase, phaseRun.id)
+          return
+        }
+        if (result.error) {
+          if (result.retryable && attempt < MAX_PHASE_ATTEMPTS) {
+            processes.updatePhaseRun(phaseRun.id, { iteration: attempt })
+            continue
+          }
+          processes.updatePhaseRun(phaseRun.id, {
+            status: "failed",
+            error: result.error,
+            finishedAt: Date.now(),
+            iteration: attempt,
+          })
+          emitPhase(phase, phaseRun.id, "failed")
+          return
+        }
+        if (result.outputIdentity !== undefined) {
+          processes.updatePhaseRun(phaseRun.id, {
+            outputIdentity: result.outputIdentity,
+          })
+        }
       }
 
       // The worker succeeded. Before settling `completed`, run the validator
-      // review (plan 031.1) if enabled: an approval settles the phase; a rejection
-      // re-runs the worker with the feedback (via the 029 rework channel) until the
-      // iteration cap, at which point it escalates to a human gate.
+      // review (plan 031.1) if enabled: only a valid approval settles the phase; a
+      // valid rejection re-runs the worker with feedback (via the 029 rework
+      // channel) until the iteration cap, at which point it escalates to a human
+      // gate. Reviewer errors or invalid output hold the phase at the same gate.
       if (runsValidator) {
+        const outputIdentity =
+          processes.getPhaseRun(phaseRun.id)?.outputIdentity ?? null
         const verdict = await ctx.validate!({
           phase,
           phaseRun,
+          outputIdentity,
           signal: ctx.signal,
         })
         if (verdict.stopped || ctx.signal.aborted) {
           settleStoppedPhaseRun(phase, phaseRun.id)
           return
         }
-        // A non-approval verdict (`error` means the reviewer worker itself broke)
-        // sends the phase back — UNLESS the reviewer errored, in which case we
-        // FAIL OPEN (approve) so a broken reviewer never wedges the run. The
-        // iteration cap already bounds any productive rejection loop.
-        if (!verdict.approved && !verdict.error) {
+        const currentOutputIdentity =
+          processes.getPhaseRun(phaseRun.id)?.outputIdentity ?? null
+        if (
+          verdict.targetOutputIdentity !== undefined &&
+          verdict.targetOutputIdentity !== currentOutputIdentity
+        ) {
+          return
+        }
+        if (verdict.error) {
+          processes.updatePhaseRun(phaseRun.id, {
+            status: "waiting_for_approval",
+            error: verdict.error,
+            reworkNote: null,
+          })
+          raiseValidatorGate(phase, processes.getPhaseRun(phaseRun.id)!)
+        }
+        if (!verdict.approved) {
           const round =
             (processes.getPhaseRun(phaseRun.id)?.validatorRound ?? 0) + 1
           const cap =
@@ -1372,7 +1422,9 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
           processes.updatePhaseRun(phaseRun.id, {
             validatorRound: round,
             reworkNote: verdict.feedback ?? null,
+            outputIdentity: null,
           })
+          reviewOnlyRetry = false
           attempt = 0
           continue
         }

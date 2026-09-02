@@ -223,7 +223,9 @@ export function fanOutDecomposePrompt(input: {
       "after the array — the array must be your entire reply."
   )
   lines.push("")
-  lines.push('Example: ["Implement the login form component", "Add the /session API route"]')
+  lines.push(
+    'Example: ["Implement the login form component", "Add the /session API route"]'
+  )
   return lines.join("\n")
 }
 
@@ -295,7 +297,11 @@ function matchBracket(text: string, from: number): number {
 // `[` and match its balanced `]`, JSON.parse the slice, and coerce elements to
 // briefing strings. Returns [] if no bracketed run parses into a non-empty list.
 function briefingsFromCandidate(candidate: string): string[] {
-  for (let start = candidate.indexOf("["); start !== -1; start = candidate.indexOf("[", start + 1)) {
+  for (
+    let start = candidate.indexOf("[");
+    start !== -1;
+    start = candidate.indexOf("[", start + 1)
+  ) {
     const end = matchBracket(candidate, start)
     if (end === -1) break
     let parsed: unknown
@@ -453,8 +459,8 @@ function objectToVerdict(parsed: unknown): ValidatorVerdict | null {
 // Tolerant extraction of a validator verdict from the reviewer's final message
 // (plan 031.1), mirroring parseDecomposition: scan every fenced block AND the raw
 // text for the first brace-run that JSON-parses into an object carrying an
-// `approved` field. Returns null on a genuine miss — the caller treats that as
-// fail-open (approve) so a broken reviewer never wedges the run.
+// `approved` field. Returns null on a genuine miss; callers must treat that as a
+// failed review boundary, never as approval.
 export function parseVerdict(text: string): ValidatorVerdict | null {
   if (!text) return null
   const candidates: string[] = []

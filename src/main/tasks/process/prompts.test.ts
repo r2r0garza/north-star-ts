@@ -65,7 +65,10 @@ describe("parseDecomposition", () => {
 
   it("accepts an array of objects, pulling a briefing field", () => {
     const text = '[{"task": "Build the form"}, {"briefing": "Add the route"}]'
-    expect(parseDecomposition(text)).toEqual(["Build the form", "Add the route"])
+    expect(parseDecomposition(text)).toEqual([
+      "Build the form",
+      "Add the route",
+    ])
   })
 
   it("accepts objects with a sole string value when no known key matches", () => {
@@ -106,7 +109,7 @@ describe("parseDecomposition", () => {
   })
 
   it("returns [] for an array of objects with no string field", () => {
-    expect(parseDecomposition("[{\"n\": 1}, {\"n\": 2}]")).toEqual([])
+    expect(parseDecomposition('[{"n": 1}, {"n": 2}]')).toEqual([])
   })
 })
 
@@ -237,7 +240,9 @@ describe("validatorPrompt (plan 031.1)", () => {
     const p = validatorPrompt({
       phase,
       objective: "ship the counter",
-      upstream: [{ phaseName: "Design", phaseKey: "design", content: "spec here" }],
+      upstream: [
+        { phaseName: "Design", phaseKey: "design", content: "spec here" },
+      ],
       phaseOutput: "I built the component",
     })
     expect(p).toContain("ship the counter")
@@ -292,11 +297,13 @@ describe("parseVerdict (plan 031.1)", () => {
 
   it("ignores braces inside strings when matching", () => {
     expect(
-      parseVerdict('{"approved": false, "feedback": "the JSON {a:1} was wrong"}')
+      parseVerdict(
+        '{"approved": false, "feedback": "the JSON {a:1} was wrong"}'
+      )
     ).toEqual({ approved: false, feedback: "the JSON {a:1} was wrong" })
   })
 
-  it("returns null when there is no parseable verdict (caller fails open)", () => {
+  it("returns null when there is no parseable verdict", () => {
     expect(parseVerdict("looks good to me!")).toBeNull()
     expect(parseVerdict("")).toBeNull()
     // An object without an `approved` field is not a verdict.
