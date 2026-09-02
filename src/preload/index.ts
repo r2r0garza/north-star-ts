@@ -553,6 +553,12 @@ const api = {
   files: {
     list: (workspace: string, query: string) =>
       ipcRenderer.invoke("files:list", workspace, query) as Promise<string[]>,
+    readText: (workspace: string, relPath: string) =>
+      ipcRenderer.invoke("files:readText", workspace, relPath) as Promise<{
+        content: string | null
+        truncated: boolean
+        error: string | null
+      }>,
   },
   // Read the current git branch for a workspace folder. Resolves with the
   // branch name, a short detached-HEAD SHA, or null when not a git repo.

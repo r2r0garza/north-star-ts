@@ -2,6 +2,8 @@ import { describe, it, expect } from "vitest"
 import {
   parseDecomposition,
   MAX_FAN_OUT,
+  decompositionRetryNote,
+  fanOutDecomposePrompt,
   kickoffPrompt,
   validatorPrompt,
   parseVerdict,
@@ -138,6 +140,56 @@ describe("kickoffPrompt — rework note (plan 029)", () => {
       reworkNote: "   ",
     })
     expect(p).not.toContain("## Requested changes")
+  })
+})
+
+describe("fanOutDecomposePrompt — rework note", () => {
+  it("omits the Requested changes section on a first run", () => {
+    const p = fanOutDecomposePrompt({
+      phase: { ...phase, fanOut: true },
+      objective: "ship it",
+      upstream: [],
+    })
+    expect(p).not.toContain("## Requested changes")
+    expect(p).toContain("## Your task")
+    expect(p).toContain("ONLY a JSON array of strings")
+  })
+
+  it("injects the note before the decomposition task when present", () => {
+    const p = fanOutDecomposePrompt({
+      phase: { ...phase, fanOut: true },
+      objective: "ship it",
+      upstream: [],
+      reworkNote: "split the work by platform",
+    })
+    expect(p).toContain("## Requested changes")
+    expect(p).toContain("split the work by platform")
+    expect(p.indexOf("## Requested changes")).toBeLessThan(
+      p.indexOf("## Your task")
+    )
+    expect(p).toContain("ONLY a JSON array of strings")
+  })
+
+  it("ignores a blank/whitespace note", () => {
+    const p = fanOutDecomposePrompt({
+      phase: { ...phase, fanOut: true },
+      objective: "ship it",
+      upstream: [],
+      reworkNote: "   ",
+    })
+    expect(p).not.toContain("## Requested changes")
+  })
+
+  it("retains requested changes when the retry coda is appended", () => {
+    const p =
+      fanOutDecomposePrompt({
+        phase: { ...phase, fanOut: true },
+        objective: "ship it",
+        upstream: [],
+        reworkNote: "make each briefing self-contained",
+      }) + decompositionRetryNote
+    expect(p).toContain("make each briefing self-contained")
+    expect(p).toContain("Your previous reply could not be parsed")
   })
 })
 

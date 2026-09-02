@@ -1,5 +1,7 @@
 import { randomUUID } from "crypto"
 import { createApproval, listApprovals } from "../../db/repositories/approvals"
+import { listMessages } from "../../db/repositories/messages"
+import { getTask } from "../../db/repositories/tasks"
 import {
   createCheckpoint,
   listCheckpoints,
@@ -227,12 +229,252 @@ interface GateRequest {
   phaseKey: string
   phaseRunId: string
   requestId: string
+  approvalPacket?: ProcessApprovalPacket
   // Set only on a process_flag_gate (plan 031.2): the durable process_flags row to
   // apply on confirm, plus the target key + reason so the monitor can render the
   // confirmation card off the approvals row alone (no separate flags IPC).
   flagId?: string
   flagTargetKey?: string
   flagReason?: string
+}
+
+interface ApprovalArtifact {
+  path: string
+  name: string
+  kind: "edit" | "write"
+  fileType: "code" | "html" | "document"
+  provenance: "phase_attributed" | "workspace"
+}
+
+interface ApprovalValidation {
+  label: string
+  status: "passed" | "failed" | "unknown"
+  command: string | null
+  output: string | null
+}
+
+interface ProcessApprovalPacket {
+  requestId: string
+  processRunId: string
+  phaseRunId: string
+  reworkRound: number
+  createdAt: number
+  summary: {
+    outcome: string
+    materialChanges: string[]
+    validationSummary: string
+    caveats: string[]
+  }
+  artifacts: ApprovalArtifact[]
+  validations: ApprovalValidation[]
+  downstream: Array<{ phaseId: string; name: string }>
+  evidenceWarnings: string[]
+  transcriptTaskId: string | null
+}
+
+const MUTATION_TOOLS = new Set([
+  "edit_file_tool",
+  "write_file_tool",
+  "apply_patch_tool",
+])
+
+const VALIDATION_TOOL_NAMES = new Set([
+  "run_shell_tool",
+  "start_command",
+  "test_diagnostics",
+  "check_typescript",
+])
+
+function basename(p: string): string {
+  const parts = p.replace(/[/\\]+$/, "").split(/[/\\]/)
+  return parts[parts.length - 1] || p
+}
+
+function fileTypeOf(path: string): ApprovalArtifact["fileType"] {
+  if (/\.(html?|xhtml)$/i.test(path)) return "html"
+  if (/\.(md|mdx|txt|rst|adoc)$/i.test(path)) return "document"
+  return "code"
+}
+
+function parseArgs(raw: string): Record<string, unknown> | null {
+  try {
+    const value = JSON.parse(raw)
+    return value && typeof value === "object"
+      ? (value as Record<string, unknown>)
+      : null
+  } catch {
+    return null
+  }
+}
+
+function collectPatchArtifacts(
+  operations: unknown,
+  byPath: Map<string, ApprovalArtifact>
+): void {
+  if (!Array.isArray(operations)) return
+  for (const op of operations) {
+    if (!op || typeof op !== "object") continue
+    const record = op as Record<string, unknown>
+    const type = typeof record.type === "string" ? record.type : ""
+    const path =
+      type === "move" && typeof record.new_path === "string"
+        ? record.new_path
+        : typeof record.path === "string"
+          ? record.path
+          : ""
+    if (!path || type === "delete") continue
+    byPath.set(path, {
+      path,
+      name: basename(path),
+      kind: type === "add" ? "write" : "edit",
+      fileType: fileTypeOf(path),
+      provenance: "workspace",
+    })
+  }
+}
+
+function collectApprovalEvidence(phaseRun: ProcessPhaseRun): {
+  artifacts: ApprovalArtifact[]
+  validations: ApprovalValidation[]
+  evidenceWarnings: string[]
+} {
+  if (!phaseRun.taskId) {
+    return {
+      artifacts: [],
+      validations: [],
+      evidenceWarnings: [
+        "No worker transcript task is attached to this phase.",
+      ],
+    }
+  }
+  const task = getTask(phaseRun.taskId)
+  if (!task) {
+    return {
+      artifacts: [],
+      validations: [],
+      evidenceWarnings: ["The worker transcript task is no longer available."],
+    }
+  }
+
+  const artifacts = new Map<string, ApprovalArtifact>()
+  const validations: ApprovalValidation[] = []
+  const toolCalls = new Map<
+    string,
+    { name: string; args: Record<string, unknown> | null }
+  >()
+
+  for (const message of listMessages(task.conversationId)) {
+    for (const call of message.toolCalls ?? []) {
+      const args = parseArgs(call.arguments)
+      toolCalls.set(call.id, { name: call.name, args })
+    }
+
+    if (message.role !== "tool" || !message.toolCallId) continue
+    const call = toolCalls.get(message.toolCallId)
+    const output = message.content ?? ""
+    if (!call) continue
+    if (MUTATION_TOOLS.has(call.name) && !output.startsWith("ERROR[")) {
+      if (call.name === "apply_patch_tool") {
+        collectPatchArtifacts(call.args?.operations, artifacts)
+      } else {
+        const path = typeof call.args?.path === "string" ? call.args.path : ""
+        if (path) {
+          artifacts.set(path, {
+            path,
+            name: basename(path),
+            kind: call.name === "edit_file_tool" ? "edit" : "write",
+            fileType: fileTypeOf(path),
+            provenance: "workspace",
+          })
+        }
+      }
+    }
+    if (!VALIDATION_TOOL_NAMES.has(call.name)) continue
+    const command =
+      typeof call.args?.command === "string"
+        ? call.args.command
+        : typeof call.args?.cmd === "string"
+          ? call.args.cmd
+          : null
+    validations.push({
+      label: command ?? call.name,
+      status: output.startsWith("ERROR[") ? "failed" : "passed",
+      command,
+      output: output.slice(0, 4000),
+    })
+  }
+
+  return {
+    artifacts: [...artifacts.values()],
+    validations,
+    evidenceWarnings:
+      artifacts.size > 0
+        ? [
+            "File diffs are current workspace evidence derived from phase-attributed tool calls; they may include overlapping or subsequent edits.",
+          ]
+        : [],
+  }
+}
+
+function buildApprovalPacket(input: {
+  requestId: string
+  run: ProcessRun
+  phase: ProcessPhase
+  phaseRun: ProcessPhaseRun
+  graph: ProcessGraph
+  gateKind: "phase" | "validator"
+}): ProcessApprovalPacket {
+  const evidence = collectApprovalEvidence(input.phaseRun)
+  const downstream = input.graph.edges
+    .filter((e) => e.fromPhaseId === input.phase.id)
+    .map((e) => {
+      const p = input.graph.phases.find((phase) => phase.id === e.toPhaseId)
+      return { phaseId: e.toPhaseId, name: p?.name ?? e.toPhaseId }
+    })
+  const fileCount = evidence.artifacts.length
+  const validationCount = evidence.validations.length
+  const failedCount = evidence.validations.filter(
+    (v) => v.status === "failed"
+  ).length
+  const materialChanges =
+    fileCount > 0
+      ? evidence.artifacts
+          .slice(0, 6)
+          .map((a) => `${a.kind === "edit" ? "Edited" : "Wrote"} ${a.path}`)
+      : ["No changed files were attributed to this phase."]
+  const validationSummary =
+    validationCount === 0
+      ? "No validation commands or diagnostics were recorded."
+      : failedCount > 0
+        ? `${failedCount} of ${validationCount} recorded validation checks failed.`
+        : `${validationCount} recorded validation check${validationCount === 1 ? "" : "s"} passed.`
+  const caveats = [
+    ...evidence.evidenceWarnings,
+    ...(validationCount === 0
+      ? ["Review the transcript for manual validation details."]
+      : []),
+  ]
+  return {
+    requestId: input.requestId,
+    processRunId: input.run.id,
+    phaseRunId: input.phaseRun.id,
+    reworkRound: input.phaseRun.reworkRound,
+    createdAt: Date.now(),
+    summary: {
+      outcome:
+        input.gateKind === "validator"
+          ? `${input.phase.name} exhausted validator review and needs a human decision.`
+          : `${input.phase.name} completed and is ready for approval.`,
+      materialChanges,
+      validationSummary,
+      caveats,
+    },
+    artifacts: evidence.artifacts,
+    validations: evidence.validations,
+    downstream,
+    evidenceWarnings: evidence.evidenceWarnings,
+    transcriptTaskId: input.phaseRun.taskId,
+  }
 }
 
 export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
@@ -423,11 +665,20 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
   const raiseGate = (phase: ProcessPhase): never => {
     const pr = runByPhaseId.get(phase.id)!
     const requestId = randomUUID()
+    const freshPr = processes.getPhaseRun(pr.id) ?? pr
     const request: GateRequest = {
       kind: "process_phase_gate",
       phaseKey: phase.key,
       phaseRunId: pr.id,
       requestId,
+      approvalPacket: buildApprovalPacket({
+        requestId,
+        run,
+        phase,
+        phaseRun: freshPr,
+        graph,
+        gateKind: "phase",
+      }),
     }
     createApproval({ taskId: ctx.taskId, request })
     markWaitingForApprovalToTop()
@@ -516,11 +767,20 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
     phaseRun: ProcessPhaseRun
   ): never => {
     const requestId = randomUUID()
+    const freshPr = processes.getPhaseRun(phaseRun.id) ?? phaseRun
     const request: GateRequest = {
       kind: "process_validator_gate",
       phaseKey: phase.key,
       phaseRunId: phaseRun.id,
       requestId,
+      approvalPacket: buildApprovalPacket({
+        requestId,
+        run,
+        phase,
+        phaseRun: freshPr,
+        graph,
+        gateKind: "validator",
+      }),
     }
     createApproval({ taskId: ctx.taskId, request })
     markWaitingForApprovalToTop()

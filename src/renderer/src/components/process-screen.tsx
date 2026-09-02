@@ -6,6 +6,7 @@ import {
   Circle,
   CheckCircle2,
   Download,
+  FileText,
   XCircle,
   FolderOpen,
   GripVertical,
@@ -67,6 +68,15 @@ import {
 } from "@/components/ui/select"
 import { TaskTranscriptSheet } from "@/components/task-transcript-sheet"
 import { ChangedFilesBar } from "@/components/changed-files-bar"
+import { DiffView } from "@/components/diff-view"
+import { Markdown } from "@/components/markdown"
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+  SheetDescription,
+} from "@/components/ui/sheet"
 import {
   buildTimeline,
   changedFilesFromCalls,
@@ -119,6 +129,7 @@ import type {
   Task,
   TaskEventPayload,
   TaskLiveEvent,
+  GitDiffResult,
 } from "@/types"
 
 // The durable approval row's `request` blob for a process gate (mirrors
@@ -131,9 +142,59 @@ interface ProcessGateRequest {
   phaseKey: string
   phaseRunId: string
   requestId: string
+  approvalPacket?: ProcessApprovalPacket
   flagId?: string
   flagTargetKey?: string
   flagReason?: string
+}
+
+interface ApprovalArtifact {
+  path: string
+  name: string
+  kind: "edit" | "write"
+  fileType: "code" | "html" | "document"
+  provenance: "phase_attributed" | "workspace"
+}
+
+interface ApprovalValidation {
+  label: string
+  status: "passed" | "failed" | "unknown"
+  command: string | null
+  output: string | null
+}
+
+interface ProcessApprovalPacket {
+  requestId: string
+  processRunId: string
+  phaseRunId: string
+  reworkRound: number
+  createdAt: number
+  summary: {
+    outcome: string
+    materialChanges: string[]
+    validationSummary: string
+    caveats: string[]
+  }
+  artifacts: ApprovalArtifact[]
+  validations: ApprovalValidation[]
+  downstream: Array<{ phaseId: string; name: string }>
+  evidenceWarnings: string[]
+  transcriptTaskId: string | null
+}
+
+interface ApprovalReviewTarget {
+  phaseRun: ProcessPhaseRun
+  name: string
+  requestId?: string
+  packet?: ProcessApprovalPacket
+  files?: ChangedFile[]
+  canRequestChanges: boolean
+}
+
+interface FileTextResult {
+  content: string | null
+  truncated: boolean
+  error: string | null
 }
 
 // A pending cross-phase rework flag awaiting human confirmation (plan 031.2),
@@ -1667,6 +1728,11 @@ function RunMonitor({
   const [graph, setGraph] = useState<ProcessGraph | null>(null)
   // phaseRunId → the pending gate's requestId (derived from the event stream).
   const [gates, setGates] = useState<Record<string, string>>({})
+  // requestId → durable request blob, including the approval review packet when
+  // available. Rebuilt from approvals on load/replay and refreshed on live gates.
+  const [gateRequests, setGateRequests] = useState<
+    Record<string, ProcessGateRequest>
+  >({})
   // phaseRunId → a pending cross-phase rework flag awaiting confirmation (plan
   // 031.2): the flagging phase's card shows the target + reason with Approve
   // send-back / Dismiss. Sourced from the durable approvals list (the flag gate's
@@ -1682,6 +1748,9 @@ function RunMonitor({
   // The phase-run whose worker transcript is open (null = closed). Resolved from
   // the phase-run's taskId → the worker Task the read-only sheet renders.
   const [viewingTask, setViewingTask] = useState<Task | null>(null)
+  const [reviewTarget, setReviewTarget] = useState<ApprovalReviewTarget | null>(
+    null
+  )
   // Absolute path of the run's workspace, resolved from run.workspaceId (there's
   // no workspaces.get — list-and-find). Fed to the per-phase file chips (plan
   // 030b) to build file:// URLs, git diffs, and open-in-editor. "" when unknown.
@@ -1736,6 +1805,8 @@ function RunMonitor({
   // Load the selected run + rebuild the gate map from its replayed event stream.
   useEffect(() => {
     setGates({})
+    setGateRequests({})
+    setReviewTarget(null)
     if (!activeRunId) {
       setRun(null)
       setPhaseRuns([])
@@ -1762,8 +1833,10 @@ function RunMonitor({
           events.map((e) => e.payload as TaskEventPayload)
         )
         const flagInfo: Record<string, FlagGateInfo> = {}
+        const requests: Record<string, ProcessGateRequest> = {}
         for (const a of approvals) {
           const req = a.request as ProcessGateRequest | null
+          if (req?.requestId) requests[req.requestId] = req
           if (a.status === "pending") {
             // A pending flag gate: record its target + reason so PhaseRunItem can
             // render the confirmation card (keyed by the flagging phase-run).
@@ -1785,6 +1858,7 @@ function RunMonitor({
         }
         setGates(gates)
         setFlagGates(flagInfo)
+        setGateRequests(requests)
       })
     })
     return () => {
@@ -1808,9 +1882,11 @@ function RunMonitor({
           // (plan 031.2). Cheap: only the pending flag rows are kept.
           window.cowork.db.approvals.list({ taskId }).then((approvals) => {
             const info: Record<string, FlagGateInfo> = {}
+            const requests: Record<string, ProcessGateRequest> = {}
             for (const a of approvals) {
-              if (a.status !== "pending") continue
               const req = a.request as ProcessGateRequest | null
+              if (req?.requestId) requests[req.requestId] = req
+              if (a.status !== "pending") continue
               if (req?.kind === "process_flag_gate")
                 info[req.phaseRunId] = {
                   requestId: req.requestId,
@@ -1819,6 +1895,7 @@ function RunMonitor({
                 }
             }
             setFlagGates(info)
+            setGateRequests(requests)
           })
           void refetchRef.current()
           setRefreshTick((t) => t + 1)
@@ -1894,6 +1971,39 @@ function RunMonitor({
     [graph]
   )
 
+  const canRequestChangesForPhase = useCallback(
+    (phaseRun: ProcessPhaseRun) => {
+      const max = phaseMaxRework(phaseRun.phaseId)
+      return (
+        !phaseIsContainer(phaseRun.phaseId) &&
+        !(max > 0 && phaseRun.reworkRound >= max)
+      )
+    },
+    [phaseIsContainer, phaseMaxRework]
+  )
+
+  const openApprovalReview = useCallback(
+    (
+      phaseRun: ProcessPhaseRun,
+      name: string,
+      requestId?: string,
+      files?: ChangedFile[]
+    ) => {
+      const packet = requestId
+        ? gateRequests[requestId]?.approvalPacket
+        : undefined
+      setReviewTarget({
+        phaseRun,
+        name,
+        requestId,
+        packet,
+        files,
+        canRequestChanges: canRequestChangesForPhase(phaseRun),
+      })
+    },
+    [canRequestChangesForPhase, gateRequests]
+  )
+
   // Split into top-level phase runs (parentId null) and their children, so the
   // monitor can nest fan-out / on_each_subtask instances under their container.
   const { topLevel, childrenOf } = useMemo(() => {
@@ -1924,6 +2034,9 @@ function RunMonitor({
   async function approve(requestId: string, phaseRunId: string) {
     if (!run) return
     clearGate(phaseRunId)
+    setReviewTarget((target) =>
+      target?.requestId === requestId ? null : target
+    )
     try {
       await window.cowork.process.approve({ processRunId: run.id, requestId })
     } catch (err) {
@@ -1933,6 +2046,9 @@ function RunMonitor({
   async function deny(requestId: string, phaseRunId: string) {
     if (!run) return
     clearGate(phaseRunId)
+    setReviewTarget((target) =>
+      target?.requestId === requestId ? null : target
+    )
     try {
       await window.cowork.process.deny({ processRunId: run.id, requestId })
     } catch (err) {
@@ -1949,6 +2065,9 @@ function RunMonitor({
   ) {
     if (!run) return
     clearGate(phaseRunId)
+    setReviewTarget((target) =>
+      target?.requestId === requestId ? null : target
+    )
     try {
       await window.cowork.process.requestChanges({
         processRunId: run.id,
@@ -2150,7 +2269,9 @@ function RunMonitor({
               phaseRun={pr}
               name={phaseName(pr.phaseId)}
               gateRequestId={gates[pr.id]}
+              gateRequest={gateRequests[gates[pr.id]]}
               gates={gates}
+              gateRequests={gateRequests}
               flagGate={flagGates[pr.id]}
               childFlagGates={flagGates}
               childRuns={childrenOf.get(pr.id) ?? []}
@@ -2175,6 +2296,7 @@ function RunMonitor({
               onConfirmFlag={confirmFlag}
               onDismissFlag={dismissFlag}
               onOpenTranscript={openTranscript}
+              onOpenReview={openApprovalReview}
             />
           ))}
         </div>
@@ -2188,6 +2310,17 @@ function RunMonitor({
         onOpenChange={(o) => {
           if (!o) setViewingTask(null)
         }}
+      />
+      <ApprovalReviewDrawer
+        target={reviewTarget}
+        workspacePath={workspacePath}
+        onOpenChange={(open) => {
+          if (!open) setReviewTarget(null)
+        }}
+        onApprove={approve}
+        onDeny={deny}
+        onRequestChanges={requestChanges}
+        onOpenTranscript={openTranscript}
       />
     </div>
   )
@@ -2205,10 +2338,12 @@ function PhaseFileChips({
   taskId,
   status,
   workspacePath,
+  onReviewFiles,
 }: {
   taskId: string
   status: PhaseRunStatus
   workspacePath: string
+  onReviewFiles: (files: ChangedFile[]) => void
 }) {
   const [files, setFiles] = useState<ChangedFile[]>([])
 
@@ -2241,10 +2376,7 @@ function PhaseFileChips({
       onOpenHtml={(relPath) => {
         void window.cowork.openInEditor(workspacePath, relPath)
       }}
-      onReviewAll={(fs) => {
-        for (const f of fs)
-          void window.cowork.openInEditor(workspacePath, f.path)
-      }}
+      onReviewAll={onReviewFiles}
     />
   )
 }
@@ -2255,7 +2387,9 @@ function PhaseRunItem({
   phaseRun,
   name,
   gateRequestId,
+  gateRequest,
   gates,
+  gateRequests,
   flagGate,
   childFlagGates,
   childRuns,
@@ -2272,13 +2406,16 @@ function PhaseRunItem({
   onConfirmFlag,
   onDismissFlag,
   onOpenTranscript,
+  onOpenReview,
 }: {
   phaseRun: ProcessPhaseRun
   name: string
   gateRequestId: string | undefined
+  gateRequest: ProcessGateRequest | undefined
   // The full phaseRunId → gate requestId map, threaded down so a nested sub-process
   // run's own phase gates render actionable cards (plan 038.2).
   gates: Record<string, string>
+  gateRequests: Record<string, ProcessGateRequest>
   // A pending cross-phase rework flag this phase raised, awaiting confirmation
   // (plan 031.2). Undefined when there's none.
   flagGate: FlagGateInfo | undefined
@@ -2313,6 +2450,12 @@ function PhaseRunItem({
   onDismissFlag: (requestId: string, phaseRunId: string) => void
   // Open a phase/child's worker transcript (only rows with a taskId).
   onOpenTranscript: (phaseRun: ProcessPhaseRun) => void
+  onOpenReview: (
+    phaseRun: ProcessPhaseRun,
+    name: string,
+    requestId?: string,
+    files?: ChangedFile[]
+  ) => void
 }) {
   // A gated phase's own row stays `completed` in the DB — the gate is a run-level
   // hold on its dependents (the requestId rides the event + a durable approval
@@ -2352,6 +2495,9 @@ function PhaseRunItem({
           taskId={phaseRun.taskId}
           status={phaseRun.status}
           workspacePath={workspacePath}
+          onReviewFiles={(files) =>
+            onOpenReview(phaseRun, name, gateRequestId, files)
+          }
         />
       )}
 
@@ -2368,6 +2514,8 @@ function PhaseRunItem({
           onApprove={onApprove}
           onDeny={onDeny}
           onRequestChanges={onRequestChanges}
+          packet={gateRequest?.approvalPacket}
+          onViewDetails={() => onOpenReview(phaseRun, name, gateRequestId)}
         />
       )}
 
@@ -2416,6 +2564,9 @@ function PhaseRunItem({
                       taskId={c.taskId}
                       status={c.status}
                       workspacePath={workspacePath}
+                      onReviewFiles={(files) =>
+                        onOpenReview(c, childName, undefined, files)
+                      }
                     />
                   </div>
                 )}
@@ -2448,12 +2599,14 @@ function PhaseRunItem({
                       refreshTick={refreshTick}
                       depth={0}
                       gates={gates}
+                      gateRequests={gateRequests}
                       flagGates={childFlagGates}
                       onApprove={onApprove}
                       onDeny={onDeny}
                       onRequestChanges={onRequestChanges}
                       onConfirmFlag={onConfirmFlag}
                       onDismissFlag={onDismissFlag}
+                      onOpenReview={onOpenReview}
                     />
                   </div>
                 )}
@@ -2476,12 +2629,14 @@ function PhaseRunItem({
           refreshTick={refreshTick}
           depth={0}
           gates={gates}
+          gateRequests={gateRequests}
           flagGates={childFlagGates}
           onApprove={onApprove}
           onDeny={onDeny}
           onRequestChanges={onRequestChanges}
           onConfirmFlag={onConfirmFlag}
           onDismissFlag={onDismissFlag}
+          onOpenReview={onOpenReview}
         />
       )}
     </div>
@@ -2493,6 +2648,85 @@ function PhaseRunItem({
 // run's own gated phases can render the same actionable card (plan 038.2). Request
 // changes is hidden for a container phase (backend rejects it) or at the per-phase
 // rework cap (0 = unlimited).
+function compactApprovalSummary(packet: ProcessApprovalPacket): string {
+  const changes =
+    packet.artifacts.length > 0
+      ? `Changed ${packet.artifacts.length} file${packet.artifacts.length === 1 ? "" : "s"}.`
+      : packet.summary.materialChanges[0] || "No changed files were recorded."
+  const caveat = packet.summary.caveats[0]
+  return [
+    packet.summary.outcome,
+    changes,
+    packet.summary.validationSummary,
+    caveat,
+  ]
+    .filter(Boolean)
+    .join(" ")
+}
+
+function approvalEvidenceCounts(packet: ProcessApprovalPacket): string {
+  const parts: string[] = []
+  if (packet.artifacts.length > 0)
+    parts.push(
+      `${packet.artifacts.length} file${packet.artifacts.length === 1 ? "" : "s"}`
+    )
+  if (packet.validations.length > 0) {
+    const failed = packet.validations.filter(
+      (v) => v.status === "failed"
+    ).length
+    parts.push(
+      failed > 0
+        ? `${failed} validation failed`
+        : `${packet.validations.length} validation passed`
+    )
+  }
+  if (packet.evidenceWarnings.length > 0)
+    parts.push(`${packet.evidenceWarnings.length} warning`)
+  if (parts.length === 0) parts.push("transcript available")
+  return parts.join(" · ")
+}
+
+function languageForPath(path: string): string {
+  const ext = path.split(".").pop()?.toLowerCase() ?? ""
+  const map: Record<string, string> = {
+    ts: "typescript",
+    tsx: "tsx",
+    js: "javascript",
+    jsx: "jsx",
+    json: "json",
+    css: "css",
+    scss: "scss",
+    html: "html",
+    md: "markdown",
+    mdx: "mdx",
+    py: "python",
+    rb: "ruby",
+    rs: "rust",
+    go: "go",
+    java: "java",
+    kt: "kotlin",
+    swift: "swift",
+    c: "c",
+    h: "c",
+    cpp: "cpp",
+    hpp: "cpp",
+    cs: "csharp",
+    sh: "bash",
+    zsh: "bash",
+    yml: "yaml",
+    yaml: "yaml",
+    toml: "toml",
+    sql: "sql",
+  }
+  return map[ext] ?? ""
+}
+
+function renderFileTextMarkdown(path: string, content: string): string {
+  if (/\.(md|mdx)$/i.test(path)) return content
+  const lang = languageForPath(path)
+  return `\`\`\`${lang}\n${content.replace(/```/g, "``\\`")}\n\`\`\``
+}
+
 function GateCard({
   name,
   requestId,
@@ -2503,6 +2737,8 @@ function GateCard({
   onApprove,
   onDeny,
   onRequestChanges,
+  packet,
+  onViewDetails,
 }: {
   name: string
   requestId: string
@@ -2517,11 +2753,16 @@ function GateCard({
     phaseRunId: string,
     feedback: string
   ) => void
+  packet?: ProcessApprovalPacket
+  onViewDetails: () => void
 }) {
   const [reworkOpen, setReworkOpen] = useState(false)
   const [reworkText, setReworkText] = useState("")
   const atReworkCap = maxReworkRounds > 0 && reworkRound >= maxReworkRounds
   const canRequestChanges = !isContainer && !atReworkCap
+  const evidenceCounts = packet
+    ? approvalEvidenceCounts(packet)
+    : `${reworkRound > 0 ? `round ${reworkRound} · ` : ""}transcript available`
   return (
     <div className="flex flex-col gap-2 rounded-lg border border-amber-500/40 bg-amber-500/5 p-3 text-xs">
       <div className="flex items-center gap-2 font-medium text-amber-600 dark:text-amber-500">
@@ -2529,6 +2770,23 @@ function GateCard({
         <span>
           “{name}” is done — approve to release its downstream phases.
         </span>
+      </div>
+      <p className="leading-relaxed text-foreground/85">
+        {packet
+          ? compactApprovalSummary(packet)
+          : "Review the worker transcript before approving this phase."}
+      </p>
+      <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+        <span className="min-w-0 flex-1 truncate">{evidenceCounts}</span>
+        <Button
+          size="xs"
+          variant="secondary"
+          className="shrink-0"
+          onClick={onViewDetails}
+        >
+          <FileText className="size-3" />
+          View details
+        </Button>
       </div>
       <div className="flex flex-wrap items-center gap-2">
         <Button size="xs" onClick={() => onApprove(requestId, phaseRunId)}>
@@ -2595,6 +2853,430 @@ function GateCard({
   )
 }
 
+function ApprovalReviewDrawer({
+  target,
+  workspacePath,
+  onOpenChange,
+  onApprove,
+  onDeny,
+  onRequestChanges,
+  onOpenTranscript,
+}: {
+  target: ApprovalReviewTarget | null
+  workspacePath: string
+  onOpenChange: (open: boolean) => void
+  onApprove: (requestId: string, phaseRunId: string) => void
+  onDeny: (requestId: string, phaseRunId: string) => void
+  onRequestChanges: (
+    requestId: string,
+    phaseRunId: string,
+    feedback: string
+  ) => void
+  onOpenTranscript: (phaseRun: ProcessPhaseRun) => void
+}) {
+  const [selectedPath, setSelectedPath] = useState<string | null>(null)
+  const [diff, setDiff] = useState<GitDiffResult | null>(null)
+  const [diffLoading, setDiffLoading] = useState(false)
+  const [fileText, setFileText] = useState<FileTextResult | null>(null)
+  const [fileTextLoading, setFileTextLoading] = useState(false)
+  const [feedbackOpen, setFeedbackOpen] = useState(false)
+  const [feedback, setFeedback] = useState("")
+
+  const artifacts = useMemo<ApprovalArtifact[]>(() => {
+    if (target?.packet?.artifacts.length) return target.packet.artifacts
+    return (target?.files ?? []).map((file) => ({
+      path: file.path,
+      name: file.baseName,
+      kind: file.kind,
+      fileType: file.fileType === "html" ? "html" : "code",
+      provenance: "workspace",
+    }))
+  }, [target?.files, target?.packet])
+
+  const selected =
+    artifacts.find((a) => a.path === selectedPath) ?? artifacts[0]
+
+  useEffect(() => {
+    setSelectedPath(artifacts[0]?.path ?? null)
+    setDiff(null)
+    setFileText(null)
+    setFeedbackOpen(false)
+    setFeedback("")
+  }, [target?.phaseRun.id, target?.requestId, artifacts])
+
+  useEffect(() => {
+    if (!selected || selected.fileType === "html" || !workspacePath) {
+      setDiff(null)
+      setDiffLoading(false)
+    } else {
+      let cancelled = false
+      setDiffLoading(true)
+      window.cowork.git
+        .diff(workspacePath, selected.path)
+        .then((res) => {
+          if (!cancelled) setDiff(res)
+        })
+        .catch(() => {
+          if (!cancelled) setDiff(null)
+        })
+        .finally(() => {
+          if (!cancelled) setDiffLoading(false)
+        })
+      return () => {
+        cancelled = true
+      }
+    }
+  }, [selected, workspacePath])
+
+  useEffect(() => {
+    if (!selected || selected.fileType === "html" || !workspacePath) {
+      setFileText(null)
+      setFileTextLoading(false)
+      return
+    }
+    const readText = window.cowork.files.readText
+    if (typeof readText !== "function") {
+      setFileText({
+        content: null,
+        truncated: false,
+        error: "File preview is unavailable until the app is restarted.",
+      })
+      setFileTextLoading(false)
+      return
+    }
+    let cancelled = false
+    setFileTextLoading(true)
+    readText(workspacePath, selected.path)
+      .then((res) => {
+        if (!cancelled) setFileText(res)
+      })
+      .catch((err) => {
+        if (!cancelled)
+          setFileText({
+            content: null,
+            truncated: false,
+            error: err instanceof Error ? err.message : String(err),
+          })
+      })
+      .finally(() => {
+        if (!cancelled) setFileTextLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [selected, workspacePath])
+
+  const packet = target?.packet
+  const requestId = target?.requestId
+  const phaseRunId = target?.phaseRun.id
+  const hasDiff = !!diff?.diff.trim()
+
+  return (
+    <Sheet open={target !== null} onOpenChange={onOpenChange}>
+      <SheetContent
+        side="right"
+        className="flex !w-[min(96vw,82rem)] !max-w-[min(96vw,82rem)] flex-col gap-0 p-0"
+      >
+        <SheetHeader className="border-b px-4 py-3">
+          <SheetTitle className="truncate">
+            {target ? `Approval review: ${target.name}` : "Approval review"}
+          </SheetTitle>
+          <SheetDescription>
+            {packet
+              ? `Round ${packet.reworkRound} · ${new Date(packet.createdAt).toLocaleString()}`
+              : "Review evidence before deciding."}
+          </SheetDescription>
+        </SheetHeader>
+
+        <div className="grid min-h-0 flex-1 grid-cols-[minmax(18rem,22rem)_minmax(0,1fr)]">
+          <ScrollArea className="border-r">
+            <div className="flex flex-col gap-4 p-4 text-sm">
+              <section className="flex flex-col gap-2">
+                <h3 className="text-xs font-semibold text-muted-foreground uppercase">
+                  Overview
+                </h3>
+                <p className="text-sm leading-relaxed">
+                  {packet
+                    ? compactApprovalSummary(packet)
+                    : "No approval packet was attached to this request. Use the transcript and current workspace files as fallback evidence."}
+                </p>
+                {packet?.downstream.length ? (
+                  <p className="text-xs text-muted-foreground">
+                    Approval releases{" "}
+                    {packet.downstream.map((d) => d.name).join(", ")}.
+                  </p>
+                ) : (
+                  <p className="text-xs text-muted-foreground">
+                    No downstream phase metadata was recorded.
+                  </p>
+                )}
+              </section>
+
+              <section className="flex flex-col gap-2">
+                <h3 className="text-xs font-semibold text-muted-foreground uppercase">
+                  Artifacts
+                </h3>
+                {artifacts.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">
+                    No file artifacts were recorded.
+                  </p>
+                ) : (
+                  artifacts.map((artifact) => (
+                    <button
+                      type="button"
+                      key={artifact.path}
+                      onClick={() => setSelectedPath(artifact.path)}
+                      className={cn(
+                        "flex items-center gap-2 rounded-md border px-2 py-1.5 text-left text-xs hover:bg-accent",
+                        selected?.path === artifact.path && "bg-accent"
+                      )}
+                    >
+                      <FileText className="size-3.5 shrink-0 text-muted-foreground" />
+                      <span className="min-w-0 flex-1 truncate">
+                        {artifact.path}
+                      </span>
+                      <Badge variant="secondary" className="text-[10px]">
+                        {artifact.provenance === "workspace"
+                          ? "workspace"
+                          : "phase"}
+                      </Badge>
+                    </button>
+                  ))
+                )}
+              </section>
+
+              <section className="flex flex-col gap-2">
+                <h3 className="text-xs font-semibold text-muted-foreground uppercase">
+                  Validation
+                </h3>
+                {packet?.validations.length ? (
+                  packet.validations.map((validation, i) => (
+                    <div
+                      key={`${validation.label}:${i}`}
+                      className="rounded-md border px-2 py-1.5 text-xs"
+                    >
+                      <div className="flex items-center gap-2">
+                        <StatusDot status={validation.status} />
+                        <span className="min-w-0 flex-1 truncate">
+                          {validation.label}
+                        </span>
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <p className="text-xs text-muted-foreground">
+                    No structured validation was recorded.
+                  </p>
+                )}
+              </section>
+
+              {packet?.evidenceWarnings.length ? (
+                <section className="flex flex-col gap-1 rounded-md border border-amber-500/40 bg-amber-500/5 p-2 text-xs text-amber-700 dark:text-amber-400">
+                  {packet.evidenceWarnings.map((warning) => (
+                    <p key={warning}>{warning}</p>
+                  ))}
+                </section>
+              ) : null}
+            </div>
+          </ScrollArea>
+
+          <div className="flex min-w-0 flex-col">
+            <ScrollArea className="min-h-0 flex-1">
+              <div className="p-4">
+                {selected ? (
+                  <div className="flex flex-col gap-3">
+                    <div className="flex items-center gap-2">
+                      <span className="min-w-0 flex-1 truncate text-sm font-medium">
+                        {selected.path}
+                      </span>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={!workspacePath}
+                        onClick={() => {
+                          if (workspacePath)
+                            void window.cowork.openInEditor(
+                              workspacePath,
+                              selected.path
+                            )
+                        }}
+                      >
+                        <FolderOpen className="size-3.5" />
+                        Open in editor
+                      </Button>
+                    </div>
+                    {selected.fileType === "html" && workspacePath ? (
+                      <iframe
+                        src={`file://${workspacePath}/${selected.path}`}
+                        title={selected.name}
+                        sandbox=""
+                        className="h-[32rem] w-full rounded-md border bg-white"
+                      />
+                    ) : diffLoading ? (
+                      <p className="text-sm text-muted-foreground">
+                        Loading diff…
+                      </p>
+                    ) : hasDiff ? (
+                      <DiffView
+                        result={diff}
+                        className="max-h-[32rem] rounded-md border"
+                      />
+                    ) : fileTextLoading ? (
+                      <p className="text-sm text-muted-foreground">
+                        Loading file…
+                      </p>
+                    ) : fileText?.content !== null &&
+                      fileText?.content !== undefined ? (
+                      <div className="max-h-[32rem] overflow-auto rounded-md border p-3">
+                        <Markdown
+                          content={renderFileTextMarkdown(
+                            selected.path,
+                            fileText.content
+                          )}
+                        />
+                        {fileText.truncated && (
+                          <p className="mt-2 text-xs text-muted-foreground">
+                            File preview truncated.
+                          </p>
+                        )}
+                      </div>
+                    ) : (
+                      <p className="rounded-md border px-3 py-2 text-sm text-muted-foreground">
+                        {fileText?.error ??
+                          "No diff or text preview available."}
+                      </p>
+                    )}
+                  </div>
+                ) : packet?.validations.length ? (
+                  <div className="flex flex-col gap-3">
+                    {packet.validations.map((validation, i) => (
+                      <div
+                        key={`${validation.label}:output:${i}`}
+                        className="rounded-md border"
+                      >
+                        <div className="flex items-center gap-2 border-b px-3 py-2 text-sm">
+                          <StatusDot status={validation.status} />
+                          <span className="font-medium">
+                            {validation.label}
+                          </span>
+                        </div>
+                        <pre className="max-h-80 overflow-auto p-3 text-xs">
+                          {validation.output || "No output recorded."}
+                        </pre>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="flex flex-col gap-2 text-sm text-muted-foreground">
+                    <p>No artifact or validation evidence is available.</p>
+                    {target?.phaseRun.taskId && (
+                      <Button
+                        variant="outline"
+                        className="w-fit"
+                        onClick={() => onOpenTranscript(target.phaseRun)}
+                      >
+                        Open transcript
+                      </Button>
+                    )}
+                  </div>
+                )}
+              </div>
+            </ScrollArea>
+
+            <div className="border-t p-3">
+              {feedbackOpen && (
+                <div className="mb-3 flex flex-col gap-2">
+                  <Textarea
+                    rows={3}
+                    value={feedback}
+                    onChange={(e) => setFeedback(e.target.value)}
+                    placeholder="What should change before this phase is approved?"
+                  />
+                  <div className="flex items-center gap-2">
+                    <Button
+                      size="sm"
+                      disabled={!requestId || !phaseRunId || !feedback.trim()}
+                      onClick={() => {
+                        if (!requestId || !phaseRunId) return
+                        onRequestChanges(requestId, phaseRunId, feedback.trim())
+                      }}
+                    >
+                      Send back
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => {
+                        setFeedback("")
+                        setFeedbackOpen(false)
+                      }}
+                    >
+                      Cancel
+                    </Button>
+                  </div>
+                </div>
+              )}
+              <div className="flex items-center gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={!requestId || !target?.canRequestChanges}
+                  onClick={() => setFeedbackOpen(true)}
+                >
+                  Request changes
+                </Button>
+                <Button
+                  size="sm"
+                  variant="destructive"
+                  disabled={!requestId || !phaseRunId}
+                  onClick={() => {
+                    if (requestId && phaseRunId) onDeny(requestId, phaseRunId)
+                  }}
+                >
+                  Deny
+                </Button>
+                <Button
+                  size="sm"
+                  className="ml-auto"
+                  disabled={!requestId || !phaseRunId}
+                  onClick={() => {
+                    if (requestId && phaseRunId)
+                      onApprove(requestId, phaseRunId)
+                  }}
+                >
+                  Approve
+                </Button>
+                {target?.phaseRun.taskId && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => onOpenTranscript(target.phaseRun)}
+                  >
+                    Transcript
+                  </Button>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      </SheetContent>
+    </Sheet>
+  )
+}
+
+function StatusDot({ status }: { status: ApprovalValidation["status"] }) {
+  return (
+    <span
+      className={cn(
+        "size-2 rounded-full",
+        status === "passed" && "bg-emerald-500",
+        status === "failed" && "bg-destructive",
+        status === "unknown" && "bg-muted-foreground"
+      )}
+    />
+  )
+}
+
 // The nested run beneath a sub-process phase-run (plan 038.1). Collapsed by
 // default; on expand it lazily fetches the child run (by parent_phase_run_id), its
 // definition graph, and its phase-runs, then renders them as a compact tree —
@@ -2612,12 +3294,14 @@ function SubProcessNestedRun({
   refreshTick,
   depth,
   gates,
+  gateRequests,
   flagGates,
   onApprove,
   onDeny,
   onRequestChanges,
   onConfirmFlag,
   onDismissFlag,
+  onOpenReview,
 }: {
   parentPhaseRunId: string
   workspacePath: string
@@ -2629,6 +3313,7 @@ function SubProcessNestedRun({
   // The shared task's gate/flag maps (keyed by phase-run id) + control callbacks,
   // threaded down so a nested run's own gates/flags are actionable (plan 038.2).
   gates: Record<string, string>
+  gateRequests: Record<string, ProcessGateRequest>
   flagGates: Record<string, FlagGateInfo>
   onApprove: (requestId: string, phaseRunId: string) => void
   onDeny: (requestId: string, phaseRunId: string) => void
@@ -2639,6 +3324,12 @@ function SubProcessNestedRun({
   ) => void
   onConfirmFlag: (requestId: string, phaseRunId: string) => void
   onDismissFlag: (requestId: string, phaseRunId: string) => void
+  onOpenReview: (
+    phaseRun: ProcessPhaseRun,
+    name: string,
+    requestId?: string,
+    files?: ChangedFile[]
+  ) => void
 }) {
   const [open, setOpen] = useState(false)
   const [graph, setGraph] = useState<ProcessGraph | null>(null)
@@ -2778,6 +3469,10 @@ function SubProcessNestedRun({
                     onApprove={onApprove}
                     onDeny={onDeny}
                     onRequestChanges={onRequestChanges}
+                    packet={gateRequests[gateRequestId]?.approvalPacket}
+                    onViewDetails={() =>
+                      onOpenReview(pr, runName, gateRequestId)
+                    }
                   />
                 )}
                 {/* A cross-phase rework flag this nested phase raised (plan 038.2). */}
@@ -2848,12 +3543,14 @@ function SubProcessNestedRun({
                             refreshTick={refreshTick}
                             depth={depth + 1}
                             gates={gates}
+                            gateRequests={gateRequests}
                             flagGates={flagGates}
                             onApprove={onApprove}
                             onDeny={onDeny}
                             onRequestChanges={onRequestChanges}
                             onConfirmFlag={onConfirmFlag}
                             onDismissFlag={onDismissFlag}
+                            onOpenReview={onOpenReview}
                           />
                         </div>
                       )}
@@ -2871,12 +3568,14 @@ function SubProcessNestedRun({
                       refreshTick={refreshTick}
                       depth={depth + 1}
                       gates={gates}
+                      gateRequests={gateRequests}
                       flagGates={flagGates}
                       onApprove={onApprove}
                       onDeny={onDeny}
                       onRequestChanges={onRequestChanges}
                       onConfirmFlag={onConfirmFlag}
                       onDismissFlag={onDismissFlag}
+                      onOpenReview={onOpenReview}
                     />
                   )}
               </div>

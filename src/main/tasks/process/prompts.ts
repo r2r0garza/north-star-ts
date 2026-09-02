@@ -168,8 +168,11 @@ export function fanOutDecomposePrompt(input: {
   phase: ProcessPhase
   objective: string
   upstream: UpstreamResult[]
+  // A direct flag_for_rework reason, reviewer note, or generic downstream
+  // re-check note stamped on the container phase-run before re-decomposition.
+  reworkNote?: string
 }): string {
-  const { phase, objective, upstream } = input
+  const { phase, objective, upstream, reworkNote } = input
   const lines: string[] = []
   lines.push(`# Process phase (fan-out): ${phase.name}`)
   lines.push("")
@@ -189,6 +192,17 @@ export function fanOutDecomposePrompt(input: {
       lines.push(u.content?.trim() || "(no textual output)")
       lines.push("")
     }
+  }
+  if (reworkNote?.trim()) {
+    lines.push("## Requested changes")
+    lines.push(
+      "This fan-out phase is being decomposed again because prior work was sent " +
+        "back or upstream input changed. Use this feedback when planning the " +
+        "replacement sub-tasks:"
+    )
+    lines.push("")
+    lines.push(reworkNote.trim())
+    lines.push("")
   }
   lines.push("## Your task")
   lines.push(

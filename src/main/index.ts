@@ -954,6 +954,48 @@ ipcMain.handle(
     return listWorkspaceFiles(workspace.trim(), query ?? "", Date.now())
   }
 )
+const FILE_READ_TEXT_LIMIT = 256 * 1024
+ipcMain.handle(
+  "files:readText",
+  async (
+    _event,
+    workspace: string,
+    relPath: string
+  ): Promise<{
+    content: string | null
+    truncated: boolean
+    error: string | null
+  }> => {
+    if (!workspace?.trim() || !relPath?.trim())
+      return { content: null, truncated: false, error: "No path." }
+    let abs: string
+    try {
+      abs = await resolveInWorkspaceReal(workspace.trim(), relPath.trim())
+    } catch {
+      return {
+        content: null,
+        truncated: false,
+        error: "Path is outside the workspace.",
+      }
+    }
+    try {
+      const bytes = await readFile(abs)
+      const truncated = bytes.byteLength > FILE_READ_TEXT_LIMIT
+      const slice = truncated ? bytes.subarray(0, FILE_READ_TEXT_LIMIT) : bytes
+      return {
+        content: slice.toString("utf8"),
+        truncated,
+        error: null,
+      }
+    } catch (err) {
+      return {
+        content: null,
+        truncated: false,
+        error: err instanceof Error ? err.message : String(err),
+      }
+    }
+  }
+)
 // Read the current git branch for a workspace folder. Returns the branch name
 // string, a short SHA when the HEAD is detached, or null when the folder is not
 // a git repo. Prefers the `git` CLI (correct for worktrees/subdirs/packed refs),

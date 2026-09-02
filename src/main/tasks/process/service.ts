@@ -858,6 +858,11 @@ export class ProcessService {
           phase,
           objective: run.objective ?? "",
           upstream: this.collectUpstream(run, phase),
+          // Whole-container rework stores feedback on the fan-out parent run.
+          // Re-read it per attempt so retries and post-reset resumes do not use a
+          // stale phaseRun object.
+          reworkNote:
+            processes.getPhaseRun(phaseRun.id)?.reworkNote ?? undefined,
         }) + (attempt > 1 ? decompositionRetryNote : "")
 
       try {

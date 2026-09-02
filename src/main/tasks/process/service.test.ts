@@ -1299,6 +1299,146 @@ describe.skipIf(!sqliteLoads)(
       expect(resumed).toEqual([run.taskId])
     })
 
+    it("re-runs whole fan-out decomposition with the flag reason in the worker prompt", async () => {
+      const def = processes.createProcessDefinition({ name: "T" })
+      const impl = processes.createPhase({
+        processId: def.id,
+        key: "impl",
+        name: "Implement",
+        fanOut: true,
+        position: 0,
+      })
+      const verify = processes.createPhase({
+        processId: def.id,
+        key: "verify",
+        name: "Verify",
+        position: 1,
+      })
+      processes.createEdge({
+        processId: def.id,
+        fromPhaseId: impl.id,
+        toPhaseId: verify.id,
+      })
+      decomposeReplies.push(
+        JSON.stringify(["old api split", "old ui split"]),
+        JSON.stringify(["replacement api split", "replacement ui split"])
+      )
+
+      const { taskId } = seedTaskRow()
+      const run = processes.createProcessRun({
+        processId: def.id,
+        sourceConversationId: null,
+        taskId,
+        objective: "ship it",
+        status: "running",
+      })
+      const { runner, resumed } = makeRunner()
+      const svc = new ProcessService(runner)
+      const task = { id: taskId, input: { processRunId: run.id } } as never
+      await svc.execute({
+        task,
+        signal: new AbortController().signal,
+        emit: () => {},
+        workspace: undefined,
+      })
+
+      const implRun = processes
+        .listPhaseRuns({ runId: run.id, parentId: null })
+        .find((pr) => pr.phaseId === impl.id)!
+      const verifyRun = processes
+        .listPhaseRuns({ runId: run.id, parentId: null })
+        .find((pr) => pr.phaseId === verify.id)!
+      const reason = "split api work from ui work before assigning children"
+      const flag = processes.createFlag({
+        runId: run.id,
+        flaggingPhaseRunId: verifyRun.id,
+        targetPhaseId: impl.id,
+        reason,
+      })
+      const requestId = randomUUID()
+      createApproval({
+        taskId,
+        request: {
+          kind: "process_flag_gate",
+          phaseKey: "verify",
+          phaseRunId: verifyRun.id,
+          requestId,
+          flagId: flag.id,
+          flagTargetKey: "impl",
+          flagReason: reason,
+        },
+      })
+
+      svc.confirmFlag({ processRunId: run.id, requestId })
+      expect(resumed).toEqual([taskId])
+      expect(processes.getPhaseRun(implRun.id)?.reworkNote).toBe(reason)
+      loopCalls.length = 0
+
+      await svc.execute({
+        task,
+        signal: new AbortController().signal,
+        emit: () => {},
+        workspace: undefined,
+      })
+
+      const decomposePrompt = loopCalls.find((c) =>
+        c.userMessage?.startsWith("# Process phase (fan-out): Implement")
+      )?.userMessage
+      expect(decomposePrompt).toContain("## Requested changes")
+      expect(decomposePrompt).toContain(reason)
+      expect(decomposePrompt).toContain("ONLY a JSON array of strings")
+    })
+
+    it("keeps fan-out rework feedback on decomposition parse retry", async () => {
+      const def = processes.createProcessDefinition({ name: "T" })
+      const impl = processes.createPhase({
+        processId: def.id,
+        key: "impl",
+        name: "Implement",
+        fanOut: true,
+        position: 0,
+      })
+      decomposeReplies.push("not json", JSON.stringify(["fixed split"]))
+
+      const { taskId } = seedTaskRow()
+      const run = processes.createProcessRun({
+        processId: def.id,
+        sourceConversationId: null,
+        taskId,
+        objective: "ship it",
+        status: "running",
+      })
+      const implRun = processes.createPhaseRun({
+        runId: run.id,
+        phaseId: impl.id,
+        status: "pending",
+      })
+      processes.updatePhaseRun(implRun.id, {
+        reworkNote: "use smaller independent briefings",
+      })
+
+      const svc = new ProcessService(fakeRunner)
+      await svc.execute({
+        task: { id: taskId, input: { processRunId: run.id } } as never,
+        signal: new AbortController().signal,
+        emit: () => {},
+        workspace: undefined,
+      })
+
+      const decomposePrompts = loopCalls
+        .map((c) => c.userMessage ?? "")
+        .filter((m) => m.startsWith("# Process phase (fan-out): Implement"))
+      expect(decomposePrompts).toHaveLength(2)
+      expect(decomposePrompts[0]).toContain("use smaller independent briefings")
+      expect(decomposePrompts[0]).not.toContain(
+        "Your previous reply could not be parsed"
+      )
+      expect(decomposePrompts[1]).toContain("use smaller independent briefings")
+      expect(decomposePrompts[1]).toContain(
+        "Your previous reply could not be parsed"
+      )
+    })
+
     it("dismissFlag leaves the target intact, marks the flag dismissed, resumes", () => {
       const { run, aRun, flag, requestId, approvalId } = seedFlag()
       const { runner, resumed } = makeRunner()

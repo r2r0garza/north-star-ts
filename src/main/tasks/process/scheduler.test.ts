@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest"
 import Database from "better-sqlite3"
 import { randomUUID } from "crypto"
 import { runMigrations } from "../../db/migrations"
+import { appendMessage } from "../../db/repositories/messages"
 import { sqliteLoadsForTests } from "../../test/sqlite"
 
 const sqliteLoads = sqliteLoadsForTests()
@@ -282,6 +283,20 @@ describe.skipIf(!sqliteLoads)("scheduler — approval gate", () => {
     // A gate approval row exists as pending; approve it.
     const pending = listApprovals({ taskId: ctx.taskId, status: "pending" })
     expect(pending).toHaveLength(1)
+    expect(pending[0].request).toMatchObject({
+      kind: "process_phase_gate",
+      phaseRunId: runsForKey(runId, pid, "a")[0].id,
+      approvalPacket: {
+        phaseRunId: runsForKey(runId, pid, "a")[0].id,
+        reworkRound: 0,
+        summary: {
+          outcome: "A completed and is ready for approval.",
+          validationSummary:
+            "No validation commands or diagnostics were recorded.",
+        },
+        downstream: [{ name: "B" }],
+      },
+    })
     resolveApproval(pending[0].id, { status: "approved" })
 
     // Resume: re-run the scheduler over the same run (fresh ctx, same taskId/run).
@@ -298,6 +313,83 @@ describe.skipIf(!sqliteLoads)("scheduler — approval gate", () => {
     })
     expect(ran).toEqual(["a", "b"])
     expect(statusByKey(runId, pid).b).toBe("completed")
+  })
+
+  it("persists attributed artifacts and validation in the approval packet", async () => {
+    const pid = buildProcess({
+      phases: [{ key: "a", gate: "approve" }, { key: "b" }],
+      edges: [["a", "b"]],
+    })
+    const runPhase: RunPhase = async ({ phaseRun }) => {
+      const workerTaskId = freshTask()
+      const worker = processes.updatePhaseRun(phaseRun.id, {
+        taskId: workerTaskId,
+      })
+      const task = db
+        .prepare("SELECT conversation_id FROM tasks WHERE id = ?")
+        .get(worker.taskId) as { conversation_id: string }
+      appendMessage({
+        conversationId: task.conversation_id,
+        role: "assistant",
+        toolCalls: [
+          {
+            id: "write-1",
+            name: "write_file_tool",
+            arguments: JSON.stringify({
+              path: "docs/plan.md",
+              content: "hello",
+            }),
+          },
+          {
+            id: "test-1",
+            name: "run_shell_tool",
+            arguments: JSON.stringify({ command: "npm test -- a" }),
+          },
+        ],
+      })
+      appendMessage({
+        conversationId: task.conversation_id,
+        role: "tool",
+        toolCallId: "write-1",
+        toolName: "write_file_tool",
+        content: "Wrote 5 bytes to docs/plan.md.",
+      })
+      appendMessage({
+        conversationId: task.conversation_id,
+        role: "tool",
+        toolCallId: "test-1",
+        toolName: "run_shell_tool",
+        content: "1 test passed",
+      })
+      return { content: "done" }
+    }
+
+    const { ctx } = makeCtx(pid, runPhase)
+    await expect(runScheduler(ctx)).rejects.toBeInstanceOf(GateBlockedError)
+
+    const [pending] = listApprovals({ taskId: ctx.taskId, status: "pending" })
+    expect(pending.request).toMatchObject({
+      approvalPacket: {
+        summary: {
+          materialChanges: ["Wrote docs/plan.md"],
+          validationSummary: "1 recorded validation check passed.",
+        },
+        artifacts: [
+          {
+            path: "docs/plan.md",
+            fileType: "document",
+            provenance: "workspace",
+          },
+        ],
+        validations: [
+          {
+            label: "npm test -- a",
+            status: "passed",
+            command: "npm test -- a",
+          },
+        ],
+      },
+    })
   })
 
   it("re-gates after a request-changes re-run, then releases (plan 029)", async () => {
