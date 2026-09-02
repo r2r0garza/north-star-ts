@@ -368,3 +368,20 @@ describe("settings service — theme (brand colors)", () => {
     expect(service.getTheme()).toEqual({ accent: null, neutral: null })
   })
 })
+
+describe("settings service — onboarding", () => {
+  it("defaults to showing the startup guide", () => {
+    expect(service.getOnboarding()).toEqual({ hideStartupGuide: false })
+  })
+
+  it("round-trips the startup guide dismissal preference", () => {
+    service.setOnboarding({ hideStartupGuide: true })
+    service._resetCacheForTests()
+    expect(service.getOnboarding()).toEqual({ hideStartupGuide: true })
+  })
+
+  it("falls back to defaults on a corrupt blob", () => {
+    store.set("onboarding", "{not json")
+    expect(service.getOnboarding()).toEqual({ hideStartupGuide: false })
+  })
+})

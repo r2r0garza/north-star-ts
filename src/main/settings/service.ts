@@ -175,6 +175,10 @@ export interface NotificationSettings {
   onTaskComplete: boolean
 }
 
+export interface OnboardingSettings {
+  hideStartupGuide: boolean
+}
+
 // Default container image when a runtime is chosen but no image is set.
 const DEFAULT_CONTAINER_IMAGE = "node:20-bookworm"
 
@@ -236,6 +240,10 @@ const DEFAULT_NOTIFICATIONS: NotificationSettings = {
   onTaskComplete: true,
 }
 
+const DEFAULT_ONBOARDING: OnboardingSettings = {
+  hideStartupGuide: false,
+}
+
 function defaultExecution(): ExecutionSettings {
   return {
     backend: "local",
@@ -263,6 +271,7 @@ const KEY_BROWSER = "browser"
 const KEY_THEME = "theme"
 const KEY_IDE = "ide"
 const KEY_NOTIFICATIONS = "notifications"
+const KEY_ONBOARDING = "onboarding"
 
 let executionCache: ExecutionSettings | undefined
 let permissionsCache: PermissionSettings | undefined
@@ -277,6 +286,7 @@ let browserCache: BrowserSettings | undefined
 let themeCache: ThemeSettings | undefined
 let ideCache: IdeSettings | undefined
 let notificationsCache: NotificationSettings | undefined
+let onboardingCache: OnboardingSettings | undefined
 // Tracks whether an execution row exists, so getExecutionConfig can fall back to
 // the COWORK_ENV_RUNTIME env var until the user writes a backend choice.
 let executionPersisted = false
@@ -565,6 +575,25 @@ function loadNotifications(): NotificationSettings {
   return notificationsCache
 }
 
+function loadOnboarding(): OnboardingSettings {
+  if (onboardingCache) return onboardingCache
+  const raw = settingsRepo.getSetting(KEY_ONBOARDING)
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw) as Partial<OnboardingSettings>
+      onboardingCache = {
+        hideStartupGuide:
+          parsed.hideStartupGuide ?? DEFAULT_ONBOARDING.hideStartupGuide,
+      }
+      return onboardingCache
+    } catch {
+      // Corrupt blob — fall through to defaults.
+    }
+  }
+  onboardingCache = { ...DEFAULT_ONBOARDING }
+  return onboardingCache
+}
+
 // ── Reads ────────────────────────────────────────────────────────────────────
 
 export function getExecution(): ExecutionSettings {
@@ -633,6 +662,10 @@ export function getIde(): IdeSettings {
 
 export function getNotifications(): NotificationSettings {
   return loadNotifications()
+}
+
+export function getOnboarding(): OnboardingSettings {
+  return loadOnboarding()
 }
 
 // Whether the sandbox policy auto-approves a given action category. Consulted by
@@ -714,6 +747,12 @@ export function setNotifications(
   return next
 }
 
+export function setOnboarding(next: OnboardingSettings): OnboardingSettings {
+  settingsRepo.setSetting(KEY_ONBOARDING, JSON.stringify(next))
+  onboardingCache = next
+  return next
+}
+
 // Invalidation hook fired whenever the active LLM selection changes, so the
 // provider routing layer can drop its cached client and the next turn rebuilds
 // with the new account/model. Registered by the providers module to avoid a
@@ -760,5 +799,6 @@ export function _resetCacheForTests(): void {
   themeCache = undefined
   ideCache = undefined
   notificationsCache = undefined
+  onboardingCache = undefined
   executionPersisted = false
 }

@@ -22,6 +22,7 @@ import { AgentsScreen } from "@/components/agents-screen"
 import { McpScreen } from "@/components/mcp-screen"
 import { ProcessScreen } from "@/components/process-screen"
 import { DashboardsScreen } from "@/components/dashboards-screen"
+import { StartupGuideDialog } from "@/components/startup-guide-dialog"
 import { TaskTranscriptSheet } from "@/components/task-transcript-sheet"
 import { TaskCompletionToasts } from "@/components/task-completion-toasts"
 import {
@@ -91,6 +92,7 @@ function Shell() {
   // in-panel destination in the center region; authors/views live dashboards
   // (plan 033). Mutually exclusive with the other footer overlays.
   const [dashboardsOpen, setDashboardsOpen] = useState(false)
+  const [startupGuideOpen, setStartupGuideOpen] = useState(false)
   // Which tab Settings opens on. First launch (no provider configured) opens
   // straight to Providers so the user can set one up.
   const [settingsTab, setSettingsTab] = useState("backend")
@@ -194,6 +196,23 @@ function Shell() {
   // overriding the static "Cowork" baked into index.html.
   useEffect(() => {
     document.title = window.cowork.system().displayName
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    window.cowork.settings
+      .getOnboarding()
+      .then((settings) => {
+        if (!cancelled && !settings.hideStartupGuide) {
+          setStartupGuideOpen(true)
+        }
+      })
+      .catch((err) => {
+        console.warn("[settings] failed to load onboarding settings:", err)
+      })
+    return () => {
+      cancelled = true
+    }
   }, [])
 
   // Tell the agent browser which conversation is active, so it shows that
@@ -348,6 +367,16 @@ function Shell() {
   function handleConversationDeleted(id: string) {
     if (id === activeConversationId) setActiveConversationId(null)
     refreshConversations()
+  }
+
+  function dismissStartupGuide(dontShowAgain: boolean) {
+    setStartupGuideOpen(false)
+    if (!dontShowAgain) return
+    void window.cowork.settings
+      .setOnboarding({ hideStartupGuide: true })
+      .catch((err) => {
+        console.warn("[settings] failed to save onboarding settings:", err)
+      })
   }
 
   return (
@@ -508,7 +537,9 @@ function Shell() {
         open={activityOpen}
         mode={sidebarMode}
         reserveWindowControls={reserveWindowControls}
-        browserObscured={settingsOpen || viewingTask !== null}
+        browserObscured={
+          settingsOpen || startupGuideOpen || viewingTask !== null
+        }
         workspace={workspacePath}
         changedFiles={reviewFiles}
         onOpenHtml={openHtmlInBrowser}
@@ -524,6 +555,11 @@ function Shell() {
         onReveal={revealHistory}
       />
       <Toaster />
+      <StartupGuideDialog
+        agentName={window.cowork.system().mainAgentName}
+        open={startupGuideOpen}
+        onDismiss={dismissStartupGuide}
+      />
       <TaskTranscriptSheet
         task={viewingTask}
         open={viewingTask !== null}

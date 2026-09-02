@@ -84,6 +84,7 @@ export type {
   ThemeSettings,
   IdeSettings,
   NotificationSettings,
+  OnboardingSettings,
   Backend,
   LocalRuntimeProfile,
   LocalProfileCapabilities,

@@ -16,6 +16,7 @@ import type {
   ThemeSettings,
   IdeSettings,
   NotificationSettings,
+  OnboardingSettings,
 } from "../settings/service"
 
 // Registers the `settings:` IPC channels. All route through the settings service
@@ -95,6 +96,12 @@ export function registerSettingsHandlers(): void {
   ipcMain.handle(
     "settings:setNotifications",
     (_e, next: NotificationSettings) => settingsService.setNotifications(next)
+  )
+  ipcMain.handle("settings:getOnboarding", () =>
+    settingsService.getOnboarding()
+  )
+  ipcMain.handle("settings:setOnboarding", (_e, next: OnboardingSettings) =>
+    settingsService.setOnboarding(next)
   )
   // Static IDE registry (id + label) for the Settings dropdown.
   ipcMain.handle("settings:getIdeOptions", () =>

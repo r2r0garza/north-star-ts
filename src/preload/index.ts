@@ -52,6 +52,7 @@ import type {
   ThemeSettings,
   IdeSettings,
   NotificationSettings,
+  OnboardingSettings,
   LocalRuntimeProfile,
 } from "../main/settings/service"
 import type {
@@ -1263,6 +1264,15 @@ const api = {
         "settings:setNotifications",
         next
       ) as Promise<NotificationSettings>,
+    getOnboarding: () =>
+      ipcRenderer.invoke(
+        "settings:getOnboarding"
+      ) as Promise<OnboardingSettings>,
+    setOnboarding: (next: OnboardingSettings) =>
+      ipcRenderer.invoke(
+        "settings:setOnboarding",
+        next
+      ) as Promise<OnboardingSettings>,
     // The selectable IDEs (id + label) for the Settings dropdown. Static list;
     // mirrored from the main-process IDE registry so the renderer needs no import.
     ideOptions: () =>
@@ -1582,6 +1592,7 @@ export type {
   ThemeSettings,
   IdeSettings,
   NotificationSettings,
+  OnboardingSettings,
   Backend,
   LocalRuntimeProfile,
   FilePermission,

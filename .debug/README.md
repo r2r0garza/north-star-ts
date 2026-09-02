@@ -71,3 +71,49 @@ a brief names a prerequisite.
 
 New briefs start in **OPEN** state. When fixing one, add the regression test
 described by its acceptance criteria before marking it resolved.
+
+## Process and agent error-recovery follow-up (2026-09-01)
+
+The following briefs document remaining gaps inspected at revision `21bd34d`.
+They are remediation plans, not implemented fixes. Ordinary tool-error feedback
+already exists; the original run on another computer has not been conclusively
+diagnosed. The earlier nested-failure, agent compatibility, and reviewer-search
+changes were committed in `5a8058c` and are not reopened by these briefs.
+
+| ID | Severity | Status | Brief | Area |
+| --- | --- | --- | --- | --- |
+| 65 | P2 | OPEN | [Deterministic tool-error feedback coverage](./065-tool-error-feedback-lacks-loop-integration-tests.md) | Full agent/process loop tests |
+| 66 | P1 | OPEN | [API retries restart process workers](./066-api-retries-restart-process-workers.md) | Shared model-request recovery |
+| 67 | P1 | OPEN | [Interrupted tools risk duplicate effects](./067-interrupted-tools-risk-duplicate-side-effects.md) | Durable tool outcomes and safe resume |
+| 68 | P1 | OPEN | [Validator errors silently approve phases](./068-validator-errors-silently-approve-phases.md) | Fail-closed review |
+| 69 | P2 | OPEN | [Failures lose stage and attempt context](./069-process-failures-lose-stage-and-attempt-context.md) | Error records and monitor actions |
+| 70 | P2 | OPEN | [Tool-free replies do not prove completion](./070-tool-free-replies-do-not-prove-phase-completion.md) | Explicit process completion contracts |
+| 71 | P2 | OPEN | [Tool batches delay feedback and cancellation](./071-tool-batches-delay-error-feedback-and-cancellation.md) | Bounded lifecycle and per-call durability |
+
+### Suggested implementation sequence
+
+1. Establish the deterministic harness in 065 and the shared failure vocabulary
+   from 069. Add failing regression cases before each behavioral change.
+2. Ship the fail-closed baseline of 068 and shared request recovery in 066.
+   Remove automatic fresh-worker replay for exhausted transport failures;
+   coordinate that boundary with 067 rather than adding another retry loop.
+3. Implement durable safe resume in 067 and batch lifecycle guarantees in 071.
+   Retain successful results and handle unknown effects conservatively.
+4. Finish review-only recovery actions in 068 and the durable diagnostics/UI in
+   069. Test nesting, cancellation, restart, and late completion together.
+5. Implement 070 after selecting and documenting its compatibility policy.
+   This improves completion assurance but does not guarantee model correctness.
+
+### Closure requirements
+
+- Script model responses and inject tool/transport failures; live paid API calls
+  are not necessary to prove orchestration behavior.
+- Exercise the real shared loop in at least one process integration test;
+  mocking `runAgentLoop` alone cannot establish error-delivery guarantees.
+- Require database-backed tests to execute using the existing 052/`test:sqlite`
+  workflow. Report executed/skipped counts and preserve Electron ABI usability.
+- Preserve workspace confinement, approval rules, and main/preload/renderer
+  process boundaries. No retry grants new permission.
+- Record actual test commands, results, limitations, and implementing commits in
+  each brief before marking it fixed. Do not claim that a scripted recovery
+  proves that a real agent always selects a successful strategy.
