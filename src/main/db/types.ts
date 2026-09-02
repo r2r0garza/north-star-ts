@@ -97,6 +97,35 @@ export interface Message {
   createdAt: number
 }
 
+export type ToolCallLifecycleState =
+  | "prepared"
+  | "waiting_for_approval"
+  | "started"
+  | "settled_success"
+  | "settled_error"
+  | "not_started"
+  | "unknown"
+
+export interface ToolCallLifecycle {
+  id: string
+  conversationId: string
+  assistantMessageId: string | null
+  logicalRoundId: string
+  toolCallId: string
+  toolName: string
+  arguments: string
+  invocationId: string
+  identity: string
+  state: ToolCallLifecycleState
+  result: string | null
+  error: string | null
+  preparedAt: number
+  waitingAt: number | null
+  startedAt: number | null
+  settledAt: number | null
+  updatedAt: number
+}
+
 // The rolling conversation summary (SCHEMA_V10, plan 019). One row per
 // conversation — a compact digest of the turns scrolling out of the
 // ContextBuilder's recent-message window. `coversThrough` is the highest

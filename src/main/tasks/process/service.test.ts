@@ -134,11 +134,16 @@ vi.mock("../../agent/agents/loader", () => ({
 }))
 
 import * as processes from "../../db/repositories/processes"
+import { appendMessage } from "../../db/repositories/messages"
 import {
   createApproval,
   getApproval,
   listApprovals,
 } from "../../db/repositories/approvals"
+import {
+  markToolCallStarted,
+  recordToolCallIntents,
+} from "../../db/repositories/tool-call-lifecycle"
 import { ProcessService } from "./service"
 import type { TaskEventPayload } from "../runner"
 
@@ -157,6 +162,36 @@ function seedTaskRow(): { taskId: string } {
     "INSERT INTO tasks (id, conversation_id, source_conversation_id, title, status, input, result, error, created_at, updated_at) VALUES (?, ?, ?, NULL, 'running', NULL, NULL, NULL, ?, ?)"
   ).run(taskId, convId, convId, now, now)
   return { taskId }
+}
+
+function conversationIdForTask(taskId: string): string {
+  return (
+    db
+      .prepare("SELECT conversation_id FROM tasks WHERE id = ?")
+      .get(taskId)! as { conversation_id: string }
+  ).conversation_id
+}
+
+function seedUnknownSideEffect(taskId: string): void {
+  const conversationId = conversationIdForTask(taskId)
+  const assistant = appendMessage({
+    conversationId,
+    role: "assistant",
+    toolCalls: [
+      {
+        id: "write-unknown",
+        name: "write_file_tool",
+        arguments: JSON.stringify({ path: "out.txt", content: "data" }),
+      },
+    ],
+  })
+  recordToolCallIntents({
+    conversationId,
+    assistantMessageId: assistant.id,
+    logicalRoundId: "round-1",
+    calls: assistant.toolCalls ?? [],
+  })
+  markToolCallStarted({ conversationId, toolCallId: "write-unknown" })
 }
 
 beforeEach(() => {
@@ -417,6 +452,47 @@ describe.skipIf(!sqliteLoads)("ProcessService restartRun", () => {
     svc.restartRun(run.id)
     expect(restarted).toEqual([])
     expect(processes.getProcessRun(run.id)!.status).toBe("running")
+  })
+
+  it("blocks a failed-frontier restart when a process worker has an unknown side-effecting outcome", async () => {
+    const def = processes.createProcessDefinition({ name: "T" })
+    const phase = processes.createPhase({
+      processId: def.id,
+      key: "impl",
+      name: "Implement",
+      position: 0,
+    })
+    const { taskId } = seedTaskRow()
+    db.prepare("UPDATE tasks SET status = 'failed' WHERE id = ?").run(taskId)
+    const run = processes.createProcessRun({
+      processId: def.id,
+      sourceConversationId: null,
+      taskId,
+      objective: "do it",
+      status: "failed",
+    })
+    const phaseRun = processes.createPhaseRun({
+      runId: run.id,
+      phaseId: phase.id,
+      status: "failed",
+    })
+    const worker = seedTaskRow()
+    processes.updatePhaseRun(phaseRun.id, { taskId: worker.taskId })
+    seedUnknownSideEffect(worker.taskId)
+
+    const restarted: string[] = []
+    const runner = {
+      enqueueKind: () => ({ id: "t" }),
+      restart: (id: string) => restarted.push(id),
+    } as never
+    const svc = new ProcessService(runner)
+
+    expect(() => svc.restartRun(run.id)).toThrow(
+      "side-effecting tool outcomes are unknown"
+    )
+    expect(processes.getPhaseRun(phaseRun.id)!.status).toBe("failed")
+    expect(processes.getProcessRun(run.id)!.status).toBe("failed")
+    expect(restarted).toEqual([])
   })
 })
 
@@ -1027,6 +1103,65 @@ describe.skipIf(!sqliteLoads)("ProcessService worker resume", () => {
         .map((child) => child.title)
     ).toEqual(["resumed sub-task"])
   })
+
+  it("reuses an existing validator worker conversation without a fresh review kickoff", async () => {
+    const def = processes.createProcessDefinition({ name: "Resume validator" })
+    const phase = processes.createPhase({
+      processId: def.id,
+      key: "impl",
+      name: "Implement",
+      validator: true,
+      position: 0,
+    })
+    const { taskId } = seedTaskRow()
+    const run = processes.createProcessRun({
+      processId: def.id,
+      sourceConversationId: null,
+      taskId,
+      objective: "resume review",
+      status: "running",
+    })
+    const phaseRun = processes.createPhaseRun({
+      runId: run.id,
+      phaseId: phase.id,
+      status: "pending",
+    })
+    processes.updatePhaseRun(phaseRun.id, { validatorRound: 0 })
+    const existingReviewer = seedTaskRow()
+    db.prepare("UPDATE tasks SET input = ? WHERE id = ?").run(
+      JSON.stringify({
+        kind: "process_phase_validate",
+        phaseRunId: phaseRun.id,
+        agentName: null,
+        validatorRound: 0,
+      }),
+      existingReviewer.taskId
+    )
+    reviewReplies.push('{"approved": true}')
+
+    const svc = new ProcessService(fakeRunner)
+    await svc.execute({
+      task: { id: taskId, input: { processRunId: run.id } } as never,
+      signal: new AbortController().signal,
+      emit: () => {},
+      workspace: undefined,
+    })
+
+    const validatorCall = loopCalls.find(
+      (c) => c.conversationId === conversationIdForTask(existingReviewer.taskId)
+    )
+    expect(validatorCall?.userMessage).toBeUndefined()
+    expect(
+      (
+        db
+          .prepare(
+            "SELECT COUNT(*) AS count FROM tasks WHERE input LIKE '%process_phase_validate%'"
+          )
+          .get()! as { count: number }
+      ).count
+    ).toBe(1)
+    expect(processes.getPhaseRun(phaseRun.id)?.status).toBe("completed")
+  })
 })
 
 describe.skipIf(!sqliteLoads)(
@@ -1128,6 +1263,29 @@ describe.skipIf(!sqliteLoads)(
       // Run flipped back to running; the backing task resumed.
       expect(updated?.status).toBe("running")
       expect(resumed).toEqual([run.taskId])
+    })
+
+    it("blocks request-changes rerun when the phase worker has an unknown side-effecting outcome", () => {
+      const { run, aRun, requestId, approvalId } = seedGatedPhase()
+      const worker = seedTaskRow()
+      processes.updatePhaseRun(aRun.id, { taskId: worker.taskId })
+      seedUnknownSideEffect(worker.taskId)
+      const { runner, resumed } = makeRunner()
+      const svc = new ProcessService(runner)
+
+      expect(() =>
+        svc.requestChanges({
+          processRunId: run.id,
+          requestId,
+          feedback: "tighten the copy",
+        })
+      ).toThrow("side-effecting tool outcomes are unknown")
+      expect(getApproval(approvalId)!.status).toBe("pending")
+      expect(processes.getPhaseRun(aRun.id)!.status).toBe("completed")
+      expect(processes.getProcessRun(run.id)!.status).toBe(
+        "waiting_for_approval"
+      )
+      expect(resumed).toEqual([])
     })
 
     it("rejects at the per-phase rework cap", () => {

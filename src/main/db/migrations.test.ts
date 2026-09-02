@@ -15,6 +15,7 @@ import {
   SCHEMA_V32,
   SCHEMA_V33,
   SCHEMA_V34,
+  SCHEMA_V38,
 } from "./schema"
 import { sqliteLoadsForTests } from "../test/sqlite"
 
@@ -90,8 +91,35 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
     const db = new Database(":memory:")
     db.pragma("foreign_keys = ON")
     runMigrations(db)
-    expect(db.pragma("user_version", { simple: true })).toBe(37)
+    expect(db.pragma("user_version", { simple: true })).toBe(38)
     expect(db.pragma("foreign_key_check")).toHaveLength(0)
+    db.close()
+  })
+
+  it("adds durable tool-call lifecycle records in v38", () => {
+    const db = new Database(":memory:")
+    db.pragma("foreign_keys = ON")
+    runMigrations(db)
+    seedConversation(db, "conversation")
+    db.prepare(
+      "INSERT INTO messages (id, conversation_id, seq, role, tool_calls, created_at) VALUES ('assistant', 'conversation', 1, 'assistant', '[]', 0)"
+    ).run()
+    db.prepare(
+      `INSERT INTO tool_call_lifecycle
+        (id, conversation_id, assistant_message_id, logical_round_id,
+         tool_call_id, tool_name, arguments, invocation_id, identity, state,
+         prepared_at, updated_at)
+       VALUES ('life', 'conversation', 'assistant', 'after-seq:1',
+         'call-1', 'read_file_tool', '{}', 'toolinv_test', '{}',
+         'prepared', 0, 0)`
+    ).run()
+    expect(
+      db
+        .prepare("SELECT state FROM tool_call_lifecycle WHERE id = 'life'")
+        .pluck()
+        .get()
+    ).toBe("prepared")
+    expect(SCHEMA_V38).toContain("tool_call_lifecycle")
     db.close()
   })
 
@@ -588,7 +616,7 @@ describe.skipIf(!sqliteLoads)("SCHEMA_V9 — orphan reap (plan 022)", () => {
     // Apply V9 (the reaper) and any later migrations, up to the latest version.
     runMigrations(db)
 
-    expect(db.pragma("user_version", { simple: true })).toBe(37)
+    expect(db.pragma("user_version", { simple: true })).toBe(38)
 
     // Reaped: orphan + its nested descendant, and all their state.
     const taskIds = (

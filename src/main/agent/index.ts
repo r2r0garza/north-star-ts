@@ -96,6 +96,18 @@ import { generateTitle } from "./title"
 export { generateTitle } from "./title"
 import { appendMessage, getMaxMessageSeq } from "../db/repositories/messages"
 import {
+  findPriorToolCallLifecycleByInvocation,
+  getToolCallLifecycle,
+  markToolCallNotStarted,
+  markToolCallSettled,
+  markToolCallStarted,
+  markToolCallUnknown,
+  markToolCallWaitingForApproval,
+  normalizeToolActionIdentity,
+  recordToolCallIntents,
+  updateToolCallOperationIdentity,
+} from "../db/repositories/tool-call-lifecycle"
+import {
   completeBudget as completeModelRequestRetryBudget,
   exhaustBudget as exhaustModelRequestRetryBudget,
 } from "../db/repositories/model-request-retry-budgets"
@@ -343,6 +355,72 @@ function failTurn(
     content: `⚠️ The turn ended early: ${message}`,
   })
   return { error: message, retryable, errorCode }
+}
+
+function isToolErrorResult(result: string): boolean {
+  return result.startsWith("ERROR[") || result.startsWith("Error running ")
+}
+
+function reconciledSideEffectingToolResult(input: {
+  conversationId: string
+  callId: string
+  callName: string
+  effects: ReturnType<typeof getToolEffects>
+}): string | undefined {
+  if (input.effects?.readOnly) return undefined
+  const current = getToolCallLifecycle(input.conversationId, input.callId)
+  if (!current) return undefined
+  const prior = findPriorToolCallLifecycleByInvocation({
+    conversationId: input.conversationId,
+    invocationId: current.invocationId,
+    excludeToolCallId: input.callId,
+  })
+
+  const settled = prior.find(
+    (row) => row.state === "settled_success" || row.state === "settled_error"
+  )
+  if (settled) {
+    return (
+      settled.result ??
+      settled.error ??
+      `ERROR[tool_reconciled]: equivalent ${input.callName} already settled.`
+    )
+  }
+
+  const unknown = prior.find(
+    (row) => row.state === "unknown" || row.state === "started"
+  )
+  if (!unknown) return undefined
+  return (
+    `ERROR[tool_reconciliation_blocked]: an equivalent ${input.callName} ` +
+    `invocation has an unknown outcome (${unknown.invocationId}). ` +
+    "The operation was not retried to avoid duplicating side effects."
+  )
+}
+
+function reconcileSideEffectingToolAction(input: {
+  conversationId: string
+  callId: string
+  callName: string
+  action: ToolAction
+  effects: ReturnType<typeof getToolEffects>
+}): string | undefined {
+  if (input.effects?.readOnly) return undefined
+  const current = updateToolCallOperationIdentity({
+    conversationId: input.conversationId,
+    toolCallId: input.callId,
+    identity: normalizeToolActionIdentity({
+      kind: input.action.kind,
+      identity: input.action.identity,
+    }),
+  })
+  if (!current) return undefined
+  return reconciledSideEffectingToolResult({
+    conversationId: input.conversationId,
+    callId: input.callId,
+    callName: input.callName,
+    effects: input.effects,
+  })
 }
 
 // Streaming events emitted during a turn. `token` is a text delta to append to
@@ -1066,15 +1144,11 @@ export async function runAgentLoop(
   // would carry an assistant tool_call with no matching `tool` message and the
   // next request would 400.
   //
-  // The repair mode depends on the caller, distinguished by `userMessage`:
-  //  - A durable-task RESUME passes no userMessage ("carry on"). Roll the
-  //    incomplete turn back so the agent re-plans and re-issues the gated tool —
-  //    the gate re-prompts (plan 012). A synthetic result would look like a
-  //    finished call and the action would never be retried.
-  //  - A live-chat turn passes a fresh userMessage. Synthesize an "interrupted"
-  //    result and let the new message drive (live chat is ephemeral; the user
-  //    retries by typing). A first task run also has no dangling tail, so its
-  //    rollback is a no-op.
+  // The repair mode depends on the caller, distinguished by `userMessage`.
+  // Durable-task resumes pass no userMessage ("carry on"), while live-chat turns
+  // pass a fresh userMessage. Both modes now preserve the assistant tool-call
+  // evidence and repair unanswered calls from durable lifecycle state; "rollback"
+  // remains a compatibility spelling for task callers.
   repairDanglingToolCalls(
     conversationId,
     userMessage === undefined ? "rollback" : "synthesize"
@@ -1133,22 +1207,6 @@ export async function runAgentLoop(
   for (const name of forcedSkills.names) {
     const id = randomUUID()
     const args = JSON.stringify({ name })
-    onEvent({
-      type: "tool",
-      phase: "start",
-      id,
-      name: readSkillTool.definition.function.name,
-      arguments: args,
-    })
-    const result = await readSkillTool.execute(
-      { name },
-      {
-        workspace: workspace ?? "",
-        attachments,
-        conversationId,
-        skillResourceRoots,
-      }
-    )
     messages.push({
       role: "assistant",
       content: null,
@@ -1163,7 +1221,7 @@ export async function runAgentLoop(
         },
       ],
     })
-    appendMessage({
+    const assistantMessage = appendMessage({
       conversationId,
       role: "assistant",
       content: null,
@@ -1175,6 +1233,47 @@ export async function runAgentLoop(
         },
       ],
     })
+    recordToolCallIntents({
+      conversationId,
+      assistantMessageId: assistantMessage.id,
+      logicalRoundId: `forced-skill:${name}`,
+      calls: [
+        {
+          id,
+          name: readSkillTool.definition.function.name,
+          arguments: args,
+        },
+      ],
+    })
+    markToolCallStarted({ conversationId, toolCallId: id })
+    onEvent({
+      type: "tool",
+      phase: "start",
+      id,
+      name: readSkillTool.definition.function.name,
+      arguments: args,
+    })
+    let result: string
+    try {
+      result = await readSkillTool.execute(
+        { name },
+        {
+          workspace: workspace ?? "",
+          attachments,
+          conversationId,
+          skillResourceRoots,
+        }
+      )
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      markToolCallSettled({
+        conversationId,
+        toolCallId: id,
+        state: "settled_error",
+        error: message,
+      })
+      throw err
+    }
     messages.push({ role: "tool", tool_call_id: id, content: result })
     appendMessage({
       conversationId,
@@ -1182,6 +1281,13 @@ export async function runAgentLoop(
       content: result,
       toolCallId: id,
       toolName: readSkillTool.definition.function.name,
+    })
+    markToolCallSettled({
+      conversationId,
+      toolCallId: id,
+      state: isToolErrorResult(result) ? "settled_error" : "settled_success",
+      result,
+      error: isToolErrorResult(result) ? result : null,
     })
     onEvent({
       type: "tool",
@@ -1387,7 +1493,7 @@ export async function runAgentLoop(
           function: { name: c.name, arguments: c.arguments },
         })),
       })
-      appendMessage({
+      const assistantMessage = appendMessage({
         conversationId,
         role: "assistant",
         content: text || null,
@@ -1397,7 +1503,22 @@ export async function runAgentLoop(
           arguments: c.arguments,
         })),
       })
+      recordToolCallIntents({
+        conversationId,
+        assistantMessageId: assistantMessage.id,
+        logicalRoundId,
+        calls: toolCalls,
+      })
       completeModelRequestRetryBudget({ conversationId, logicalRoundId })
+      const effectsForCall = (name: string) => {
+        if (name === readSkillTool.definition.function.name) {
+          return TOOL_EFFECTS.readOnlySequential
+        }
+        return (
+          mcpTools.find((tool) => tool.function.name === name)?.effects ??
+          getToolEffects(name)
+        )
+      }
 
       // Execute requested tool calls in maximal consecutive batches. Only
       // workspace-confined read-only tools marked parallel-safe can overlap; all
@@ -1408,7 +1529,7 @@ export async function runAgentLoop(
           // Persist each settled batch before the next barrier begins. Within a
           // read batch, rows stay in the model's original call order even if
           // individual reads finished out of order.
-          for (const { call, result } of results) {
+          for (const { call, result, error, outcome } of results) {
             messages.push({
               role: "tool",
               tool_call_id: call.id,
@@ -1421,25 +1542,43 @@ export async function runAgentLoop(
               toolCallId: call.id,
               toolName: call.name,
             })
+            if (outcome === "unknown") {
+              markToolCallUnknown({
+                conversationId,
+                toolCallId: call.id,
+                error: result,
+              })
+            } else if (outcome === "not_started") {
+              markToolCallNotStarted({
+                conversationId,
+                toolCallId: call.id,
+                result,
+              })
+            } else {
+              markToolCallSettled({
+                conversationId,
+                toolCallId: call.id,
+                state:
+                  error || isToolErrorResult(result)
+                    ? "settled_error"
+                    : "settled_success",
+                result,
+                error: error || isToolErrorResult(result) ? result : null,
+              })
+            }
           }
         },
-        effectsFor: (name) => {
-          if (name === readSkillTool.definition.function.name) {
-            return TOOL_EFFECTS.readOnlySequential
-          }
-          return (
-            mcpTools.find((tool) => tool.function.name === name)?.effects ??
-            getToolEffects(name)
-          )
-        },
-        onStart: (call) =>
+        effectsFor: effectsForCall,
+        onStart: (call) => {
+          markToolCallStarted({ conversationId, toolCallId: call.id })
           onEvent({
             type: "tool",
             phase: "start",
             id: call.id,
             name: call.name,
             arguments: call.arguments,
-          }),
+          })
+        },
         onDone: (call, result) =>
           onEvent({
             type: "tool",
@@ -1448,10 +1587,18 @@ export async function runAgentLoop(
             name: call.name,
             result,
           }),
+        signal: abort.signal,
         execute: async (call) => {
           const callImages: ToolImage[] = []
           const unavailable = unavailableToolResult(call.name, offeredNames)
           if (unavailable) return { result: unavailable }
+          const reconciled = reconciledSideEffectingToolResult({
+            conversationId,
+            callId: call.id,
+            callName: call.name,
+            effects: effectsForCall(call.name),
+          })
+          if (reconciled !== undefined) return { result: reconciled }
           // The model's streamed tool-call arguments are occasionally malformed JSON
           // even when the turn wasn't length-truncated (a mid-stream glitch, or an
           // unescaped character in a large blob — e.g. a big write_file_tool payload).
@@ -1480,6 +1627,14 @@ export async function runAgentLoop(
           // a process-unique `requestId` keying the pending map — the renderer
           // echoes the latter back, so a decision can't resolve another turn's gate.
           const gate: Gate = (action): Promise<GateOutcome> => {
+            const reconciled = reconcileSideEffectingToolAction({
+              conversationId,
+              callId: call.id,
+              callName: call.name,
+              action,
+              effects: effectsForCall(call.name),
+            })
+            if (reconciled !== undefined) return Promise.resolve("blocked")
             // Plan mode hard-blocks workspace mutations regardless of the offered
             // toolset (belt-and-suspenders: the mutating tools are already withheld
             // from buildTools()). Reads the LIVE flag, so once a plan is approved
@@ -1499,6 +1654,10 @@ export async function runAgentLoop(
             // require human confirmation. Hard-blocks still block (handled above).
             if (autoMode) return Promise.resolve("approved")
             const requestId = randomUUID()
+            markToolCallWaitingForApproval({
+              conversationId,
+              toolCallId: call.id,
+            })
             onEvent({
               type: "approval",
               id: call.id,
@@ -1561,6 +1720,8 @@ export async function runAgentLoop(
             workspace: workspace ?? "",
             attachments,
             conversationId,
+            invocationId: getToolCallLifecycle(conversationId, call.id)
+              ?.invocationId,
             gate,
             ask,
             env,

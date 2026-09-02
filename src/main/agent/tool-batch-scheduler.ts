@@ -10,6 +10,8 @@ export interface ScheduledToolResult {
   call: ScheduledToolCall
   result: string
   images: ToolImage[]
+  error: boolean
+  outcome: "success" | "error" | "unknown" | "not_started"
 }
 
 export interface ToolBatchSchedulerOptions {
@@ -22,6 +24,7 @@ export interface ToolBatchSchedulerOptions {
   onDone?: (call: ScheduledToolCall, result: string) => void
   onBatchSettled?: (results: ScheduledToolResult[]) => void | Promise<void>
   concurrency?: number
+  signal?: AbortSignal
 }
 
 const DEFAULT_CONCURRENCY = 4
@@ -38,6 +41,14 @@ function canRunInReadBatch(effects: ToolEffects | undefined): boolean {
 
 function errorResult(name: string, err: unknown): string {
   return `Error running ${name}: ${err instanceof Error ? err.message : String(err)}`
+}
+
+function unknownResult(name: string): string {
+  return `Interrupted while ${name} was running; result unknown.`
+}
+
+function notStartedResult(name: string): string {
+  return `Interrupted before ${name} started.`
 }
 
 function partitionToolCalls(
@@ -78,6 +89,16 @@ async function runBatch(
     while (next < batch.length) {
       const index = next++
       const call = batch[index]
+      if (opts.signal?.aborted) {
+        results[index] = {
+          call,
+          result: notStartedResult(call.name),
+          images: [],
+          error: false,
+          outcome: "not_started",
+        }
+        continue
+      }
       opts.onStart?.(call)
       try {
         const output = await opts.execute(call, baseIndex + index)
@@ -85,12 +106,28 @@ async function runBatch(
           call,
           result: output.result,
           images: output.images ?? [],
+          error: false,
+          outcome: "success",
         }
       } catch (err) {
+        const effects = opts.effectsFor(call.name)
+        if (opts.signal?.aborted && !effects?.readOnly) {
+          results[index] = {
+            call,
+            result: unknownResult(call.name),
+            images: [],
+            error: true,
+            outcome: "unknown",
+          }
+          opts.onDone?.(call, results[index].result)
+          continue
+        }
         results[index] = {
           call,
           result: errorResult(call.name, err),
           images: [],
+          error: true,
+          outcome: "error",
         }
       }
       opts.onDone?.(call, results[index].result)
@@ -111,7 +148,15 @@ export async function runToolCallBatches(
   const results: ScheduledToolResult[] = []
   let baseIndex = 0
   for (const batch of batches) {
-    const batchResults = await runBatch(batch, baseIndex, opts)
+    const batchResults = opts.signal?.aborted
+      ? batch.map((call) => ({
+          call,
+          result: notStartedResult(call.name),
+          images: [],
+          error: false,
+          outcome: "not_started" as const,
+        }))
+      : await runBatch(batch, baseIndex, opts)
     await opts.onBatchSettled?.(batchResults)
     results.push(...batchResults)
     baseIndex += batch.length

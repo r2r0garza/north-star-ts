@@ -466,6 +466,15 @@ export class TaskRunner {
     const task = getTask(taskId)
     if (!task || (task.status !== "interrupted" && task.status !== "paused"))
       return
+    const unknownSideEffects = unknownSideEffectingToolCalls(
+      task.conversationId
+    )
+    if (unknownSideEffects.length > 0) {
+      const names = unknownSideEffects.map((call) => call.name).join(", ")
+      throw new Error(
+        `cannot resume task while side-effecting tool outcomes are unknown: ${names}`
+      )
+    }
     // A manual resume restarts the retry budget — the prior attempt counter (if
     // any survived) is stale; a fresh user-driven run gets the full allowance.
     this.attempts.delete(taskId)
@@ -680,9 +689,14 @@ export class TaskRunner {
       if (task.status === "waiting_for_approval") {
         this.settleApprovals(task.id, "denied", { superseded: "restart" })
       }
-      const next: TaskStatus = this.capabilityOf(kindOf(task)).autoResume
-        ? "queued"
-        : "interrupted"
+      const unknownSideEffects = unknownSideEffectingToolCalls(
+        task.conversationId
+      )
+      const next: TaskStatus =
+        this.capabilityOf(kindOf(task)).autoResume &&
+        unknownSideEffects.length === 0
+          ? "queued"
+          : "interrupted"
       updateTask(task.id, { status: next })
       this.emit(task.id, { type: "status_change", from: task.status, to: next })
     }

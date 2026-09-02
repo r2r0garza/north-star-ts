@@ -100,6 +100,26 @@ describe("tool batch scheduler", () => {
     expect(events).toEqual(["start:1", "settled:1", "start:2", "settled:2"])
   })
 
+  it("does not start the next barrier when batch persistence fails", async () => {
+    const starts: string[] = []
+    const settled: string[] = []
+
+    await expect(
+      runToolCallBatches([call("1", "write"), call("2", "write")], {
+        effectsFor: () => writeEffects,
+        onStart: (c) => starts.push(c.id),
+        onBatchSettled: (results) => {
+          settled.push(results.map((r) => r.call.id).join(","))
+          throw new Error("persist failed")
+        },
+        execute: async (c) => ({ result: c.id }),
+      })
+    ).rejects.toThrow("persist failed")
+
+    expect(starts).toEqual(["1"])
+    expect(settled).toEqual(["1"])
+  })
+
   it("caps parallel read concurrency", async () => {
     let active = 0
     let maxActive = 0
@@ -119,5 +139,70 @@ describe("tool batch scheduler", () => {
     )
 
     expect(maxActive).toBe(2)
+  })
+
+  it("stops starting calls after cancellation and reports never-started calls", async () => {
+    const abort = new AbortController()
+    const starts: string[] = []
+    const results = await runToolCallBatches(
+      [call("1", "read"), call("2", "read"), call("3", "read")],
+      {
+        effectsFor: () => readEffects,
+        concurrency: 1,
+        signal: abort.signal,
+        onStart: (c) => starts.push(c.id),
+        execute: async (c) => {
+          abort.abort()
+          return { result: c.id }
+        },
+      }
+    )
+
+    expect(starts).toEqual(["1"])
+    expect(results.map((r) => r.outcome)).toEqual([
+      "success",
+      "not_started",
+      "not_started",
+    ])
+  })
+
+  it("does not start later batches after cancellation", async () => {
+    const abort = new AbortController()
+    const starts: string[] = []
+    const settled: string[] = []
+    const results = await runToolCallBatches(
+      [call("1", "write"), call("2", "write")],
+      {
+        effectsFor: () => writeEffects,
+        signal: abort.signal,
+        onStart: (c) => starts.push(c.id),
+        onBatchSettled: (batch) => {
+          settled.push(batch.map((r) => `${r.call.id}:${r.outcome}`).join(","))
+        },
+        execute: async (c) => {
+          abort.abort()
+          return { result: c.id }
+        },
+      }
+    )
+
+    expect(starts).toEqual(["1"])
+    expect(results.map((r) => r.outcome)).toEqual(["success", "not_started"])
+    expect(settled).toEqual(["1:success", "2:not_started"])
+  })
+
+  it("records an aborted in-flight side-effecting call as unknown", async () => {
+    const abort = new AbortController()
+    const results = await runToolCallBatches([call("1", "write")], {
+      effectsFor: () => writeEffects,
+      signal: abort.signal,
+      execute: async () => {
+        abort.abort()
+        throw new Error("aborted")
+      },
+    })
+
+    expect(results[0].outcome).toBe("unknown")
+    expect(results[0].result).toContain("result unknown")
   })
 })

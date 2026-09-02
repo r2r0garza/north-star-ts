@@ -4,7 +4,7 @@ import {
   createConversation,
   getConversation,
 } from "../../db/repositories/conversations"
-import { createTask, getTask } from "../../db/repositories/tasks"
+import { createTask, getTask, listTasks } from "../../db/repositories/tasks"
 import { listMessages } from "../../db/repositories/messages"
 import { getWorkspace, upsertWorkspace } from "../../db/repositories/workspaces"
 import * as processes from "../../db/repositories/processes"
@@ -51,6 +51,7 @@ import {
   resetRunRecursive,
   resetSubProcessChild,
 } from "./flagback"
+import { unknownSideEffectingToolCalls } from "../../agent/repair"
 
 // The DAG orchestrator task kind (plan 025). One ProcessService per app, holding
 // the runner reference so startRun can enqueue the process_run task. The executor
@@ -62,6 +63,13 @@ export const PROCESS_RUN_KIND = "process_run"
 // executor finds its run on first run AND on autoResume after a crash.
 interface ProcessRunInput {
   processRunId?: string
+}
+
+interface ProcessWorkerTaskInput {
+  kind?: string
+  phaseRunId?: string
+  agentName?: string | null
+  validatorRound?: number
 }
 
 // Settle an aborted run's status by WHY it aborted (plan 038.3). A SHUTDOWN (app
@@ -166,6 +174,7 @@ export class ProcessService {
       return run
     const graph = processes.getProcessGraph(run.processId)
     if (!graph) return run
+    this.assertNoUnknownProcessWorkerOutcomes(run)
 
     const tx = getDb().transaction(() => {
       resetRunRecursive({ taskId: run.taskId!, run, graph, mode: "frontier" })
@@ -225,6 +234,7 @@ export class ProcessService {
     // for the container guard below.
     const owningRun = processes.getProcessRun(phaseRun.runId)
     if (!owningRun) return topRun
+    this.assertNoUnknownPhaseWorkerOutcomes(phaseRun)
     const owningGraph = owningRun.processId
       ? processes.getProcessGraph(owningRun.processId)
       : undefined
@@ -339,6 +349,7 @@ export class ProcessService {
     const req = approval.request as { flagId?: string } | null
     const flag = req?.flagId ? processes.getFlag(req.flagId) : undefined
     if (!flag || flag.status !== "pending") return topRun
+    this.assertNoUnknownProcessWorkerOutcomes(topRun)
 
     // The flag targets a phase in the run that OWNS it — the top-level run for a
     // top-level flag, or a nested sub-process run for a child-internal flag (plan
@@ -970,25 +981,42 @@ export class ProcessService {
         ? getWorkspace(workspaceId)?.path
         : undefined
 
-      const worker = createConversation({
-        mode: source?.mode ?? "interactive",
-        workspaceId,
-        accountId: source?.accountId ?? null,
-        modelId: source?.modelId ?? null,
-        agentName,
-        title: `${phase.name} (review)${agentName ? `: ${agentName}` : ""}`,
-      })
-      createTask({
-        conversationId: worker.id,
-        sourceConversationId: run.sourceConversationId ?? worker.id,
-        status: "completed",
-        title: `${phase.name} (review)`,
-        input: {
-          kind: "process_phase_validate",
-          phaseRunId: phaseRun.id,
+      const validatorRound =
+        processes.getPhaseRun(phaseRun.id)?.validatorRound ??
+        phaseRun.validatorRound
+      const existingWorkerTask = this.findProcessWorkerTask(
+        phaseRun.id,
+        "process_phase_validate",
+        validatorRound
+      )
+      const existingWorker = existingWorkerTask
+        ? getConversation(existingWorkerTask.conversationId)
+        : undefined
+      const resumingWorker = !!existingWorkerTask && !!existingWorker
+      const worker =
+        existingWorker ??
+        createConversation({
+          mode: source?.mode ?? "interactive",
+          workspaceId,
+          accountId: source?.accountId ?? null,
+          modelId: source?.modelId ?? null,
           agentName,
-        },
-      })
+          title: `${phase.name} (review)${agentName ? `: ${agentName}` : ""}`,
+        })
+      if (!resumingWorker) {
+        createTask({
+          conversationId: worker.id,
+          sourceConversationId: run.sourceConversationId ?? worker.id,
+          status: "completed",
+          title: `${phase.name} (review)`,
+          input: {
+            kind: "process_phase_validate",
+            phaseRunId: phaseRun.id,
+            agentName,
+            validatorRound,
+          },
+        })
+      }
 
       const childAbort = new AbortController()
       if (signal.aborted) childAbort.abort(signal.reason)
@@ -1011,7 +1039,7 @@ export class ProcessService {
           conversationId: worker.id,
           workspace,
           agentDir: workspace,
-          userMessage: prompt,
+          userMessage: resumingWorker ? undefined : prompt,
           abort: childAbort,
           autoMode: true,
           // Headless reviewer — no user to answer a clarifying question.
@@ -1165,5 +1193,57 @@ export class ProcessService {
         return messages[i].content
     }
     return null
+  }
+
+  private findProcessWorkerTask(
+    phaseRunId: string,
+    kind: string,
+    validatorRound?: number
+  ) {
+    return listTasks().find((task) => {
+      const input = task.input as ProcessWorkerTaskInput | null
+      if (input?.kind !== kind || input.phaseRunId !== phaseRunId) return false
+      if (validatorRound === undefined) return true
+      return input.validatorRound === validatorRound
+    })
+  }
+
+  private assertNoUnknownPhaseWorkerOutcomes(phaseRun: ProcessPhaseRun): void {
+    const tasks = [
+      phaseRun.taskId ? getTask(phaseRun.taskId) : undefined,
+      ...listTasks().filter((task) => {
+        const input = task.input as ProcessWorkerTaskInput | null
+        return (
+          input?.phaseRunId === phaseRun.id &&
+          (input.kind === "process_phase_validate" ||
+            input.kind === "process_phase" ||
+            input.kind === "process_phase_decompose")
+        )
+      }),
+    ].filter((task): task is NonNullable<typeof task> => task !== undefined)
+
+    const seen = new Set<string>()
+    const unknown: string[] = []
+    for (const task of tasks) {
+      if (seen.has(task.id)) continue
+      seen.add(task.id)
+      const calls = unknownSideEffectingToolCalls(task.conversationId)
+      for (const call of calls) unknown.push(call.name)
+    }
+    if (unknown.length === 0) return
+    throw new Error(
+      `cannot rerun process phase while side-effecting tool outcomes are unknown: ${[...new Set(unknown)].join(", ")}`
+    )
+  }
+
+  private assertNoUnknownProcessWorkerOutcomes(run: ProcessRun): void {
+    const visit = (cur: ProcessRun): void => {
+      for (const phaseRun of processes.listPhaseRuns({ runId: cur.id })) {
+        this.assertNoUnknownPhaseWorkerOutcomes(phaseRun)
+        const child = processes.getProcessRunByParentPhaseRunId(phaseRun.id)
+        if (child) visit(child)
+      }
+    }
+    visit(run)
   }
 }

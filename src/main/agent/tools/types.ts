@@ -102,6 +102,10 @@ export interface ToolContext {
   attachments?: string[]
   // The conversation this turn belongs to — used to scope approval decisions.
   conversationId?: string
+  // Stable durable identity for the currently executing tool call. Unlike the
+  // provider's transient tool-call id, this is derived before execution from the
+  // conversation plus normalized operation and survives regenerated call ids.
+  invocationId?: string
   // The single approval pipeline every gated tool routes through (see
   // ../approval). A tool builds a ToolAction and awaits `gate(action)` before
   // performing a side effect. Absent in contexts that don't gate (e.g. unit

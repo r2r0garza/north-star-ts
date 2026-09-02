@@ -1,9 +1,9 @@
 ---
-status: OPEN
+status: CLOSED
 severity: P1
 trigger: "Automatic phase replay and incomplete-turn rollback can repeat work whose external effect already happened"
 created: 2026-09-01
-updated: 2026-09-01
+updated: 2026-09-02
 ---
 
 # Preserve tool outcomes and make interrupted replay safe
@@ -50,17 +50,52 @@ calls without lifecycle evidence default conservatively to unknown.
 
 ## Acceptance criteria
 
-- [ ] Fault injection before execution, after external effect, and before result
+- [x] First delivery: rollback repair no longer deletes the incomplete assistant
+  tool-call turn or completed sibling results; unanswered calls are preserved as
+  explicit interrupted/unknown tool results so recovery guards can see them.
+- [x] First delivery: manual retry, manual resume, and registered auto-resume
+  paths block when the preserved transcript contains unknown side-effecting
+  tool outcomes.
+- [x] Fault injection before execution, after external effect, and before result
   persistence produces the appropriate not-started/unknown/settled outcome.
-- [ ] Resume preserves completed sibling results and does not repeat their actions.
-- [ ] Unknown mutations block automatic replay, including after app restart or
+- [x] Resume preserves completed sibling results and does not repeat their actions.
+- [x] Unknown mutations block automatic replay, including after app restart or
   a fresh model-generated call ID; read-only recovery remains available.
-- [ ] Idempotent reconciliation resumes using the original operation identity.
-- [ ] Pending approvals re-prompt without inventing a user decision.
-- [ ] User retry distinguishes continuation from deliberate whole-phase rerun;
+- [x] Idempotent reconciliation resumes using the original operation identity.
+- [x] Pending approvals re-prompt without inventing a user decision.
+- [x] User retry distinguishes continuation from deliberate whole-phase rerun;
   explicit reruns warn about prior effects and retain audit history.
-- [ ] Migration handles legacy incomplete transcripts without claiming certainty.
-- [ ] Cancellation stops scheduling new work and records unresolved outcomes.
+- [x] Migration handles legacy incomplete transcripts without claiming certainty.
+- [x] Cancellation stops scheduling new work and records unresolved outcomes.
+
+## Resolution
+
+Closed by the durable lifecycle follow-up series:
+
+- [077](./077-durable-tool-call-lifecycle.md): persisted per-tool intent,
+  start, success, error, and conservative legacy recovery evidence.
+- [078](./078-tool-recovery-not-started-vs-unknown.md): distinguished
+  not-started approval/retry recovery from started-but-unsettled unknown
+  outcomes.
+- [079](./079-stable-tool-invocation-identity-and-reconciliation.md): added
+  stable invocation identity and reconciliation for equivalent calls.
+- [080](./080-block-equivalent-unknown-mutation-replay.md): blocked equivalent
+  side-effecting replay under fresh model-generated tool-call IDs.
+- [081](./081-cancellation-records-unresolved-tool-outcomes.md): stopped
+  scheduling on cancellation while preserving settled sibling results and
+  recording unresolved outcomes.
+- [082](./082-tool-lifecycle-fault-injection-tests.md): added boundary
+  fault-injection coverage for not-started, unknown, settled, resume, restart,
+  retry, approval, and cancellation behavior.
+- [083](./083-process-worker-tool-outcome-recovery.md): aligned process worker
+  resume/rerun/rework/validation paths with the generic unknown-outcome guards
+  and transcript reuse semantics.
+
+The implementation still does not claim exactly-once external execution. The
+closed guarantee is narrower: known evidence is preserved, unknown
+side-effecting outcomes block automatic replay, equivalent hazardous retries are
+guarded by stable operation identity, and deliberate process reruns remain
+auditable.
 
 ## Likely files and dependencies
 
@@ -72,6 +107,4 @@ calls without lifecycle evidence default conservatively to unknown.
 Coordinate [066](./066-api-retries-restart-process-workers.md),
 [069](./069-process-failures-lose-stage-and-attempt-context.md), and
 [071](./071-tool-batches-delay-error-feedback-and-cancellation.md).
-The first delivery can prevent fresh-worker automatic replay and retain known
-results; durable unknown-outcome handling is still required before closing.
-
+Durable unknown-outcome handling is now covered by the linked follow-up notes.

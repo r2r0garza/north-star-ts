@@ -242,6 +242,34 @@ describe.skipIf(!sqliteLoads)(
       await runner.stop()
     })
 
+    it("blocks manual resume when a side-effecting tool outcome is unknown", async () => {
+      const conv = createConversation({ mode: "chat" })
+      appendMessage({ conversationId: conv.id, role: "user", content: "go" })
+      appendMessage({
+        conversationId: conv.id,
+        role: "assistant",
+        content: null,
+        toolCalls: [{ id: "call-1", name: "run_shell_tool", arguments: "{}" }],
+      })
+      const task = createTask({
+        conversationId: conv.id,
+        status: "interrupted",
+        input: { kind: "agent_chat", message: "go" },
+      })
+      const runner = new TaskRunner()
+      runner.start()
+      await settle()
+
+      expect(() => runner.resume(task.id)).toThrow(
+        "side-effecting tool outcomes are unknown"
+      )
+      await settle()
+
+      expect(loopCalls).toHaveLength(0)
+      expect(getTask(task.id)?.status).toBe("interrupted")
+      await runner.stop()
+    })
+
     it("is a no-op on a non-failed task", async () => {
       const conv = createConversation({ mode: "chat" })
       const task = createTask({
@@ -359,6 +387,31 @@ describe.skipIf(!sqliteLoads)(
       ).toContain("headless work")
       expect(loopCalls).toHaveLength(1)
       expect(loopCalls[0].conversationId).toBe(finished.conversationId)
+      await runner.stop()
+    })
+
+    it("does not auto-resume an orphaned task with unknown side effects", async () => {
+      const conv = createConversation({ mode: "chat" })
+      appendMessage({ conversationId: conv.id, role: "user", content: "go" })
+      appendMessage({
+        conversationId: conv.id,
+        role: "assistant",
+        content: null,
+        toolCalls: [{ id: "call-1", name: "run_shell_tool", arguments: "{}" }],
+      })
+      const task = createTask({
+        conversationId: conv.id,
+        status: "running",
+        input: { kind: "auto_kind", message: "go" },
+      })
+
+      const runner = new TaskRunner()
+      runner.registerKind("auto_kind", { autoResume: true })
+      runner.start()
+      await settle()
+
+      expect(loopCalls).toHaveLength(0)
+      expect(getTask(task.id)?.status).toBe("interrupted")
       await runner.stop()
     })
   }

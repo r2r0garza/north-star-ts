@@ -1,16 +1,20 @@
+import { appendMessage, listMessages } from "../db/repositories/messages"
 import {
-  appendMessage,
-  deleteMessage,
-  listMessages,
-} from "../db/repositories/messages"
+  listToolCallLifecycle,
+  markToolCallNotStarted,
+  markToolCallUnknown,
+} from "../db/repositories/tool-call-lifecycle"
 import { getToolEffects } from "./tools"
-import type { ToolCallRecord } from "../db/types"
+import type { ToolCallLifecycle, ToolCallRecord } from "../db/types"
 
 // The synthetic result appended (in "synthesize" mode) for a tool call that
 // never produced one. The model API requires a `tool` message for every
 // tool_call_id, so a half-finished turn would otherwise 400 the next request.
 export const INTERRUPTED_RESULT =
   "Interrupted before completion; result unknown."
+
+export const NOT_STARTED_RESULT =
+  "Interrupted before tool execution started; retry or re-request approval if still needed."
 
 function isSideEffecting(call: ToolCallRecord): boolean {
   const effects = getToolEffects(call.name)
@@ -21,6 +25,9 @@ export function unknownSideEffectingToolCalls(
   conversationId: string
 ): ToolCallRecord[] {
   const messages = listMessages(conversationId)
+  const lifecycleByToolCallId = new Map(
+    listToolCallLifecycle(conversationId).map((row) => [row.toolCallId, row])
+  )
   const byToolCallId = new Map(
     messages
       .filter((m) => m.role === "tool" && m.toolCallId)
@@ -31,6 +38,24 @@ export function unknownSideEffectingToolCalls(
     if (message.role !== "assistant" || !message.toolCalls?.length) continue
     for (const call of message.toolCalls) {
       if (!isSideEffecting(call)) continue
+      const lifecycle = lifecycleByToolCallId.get(call.id)
+      if (lifecycle?.state === "settled_success") continue
+      if (lifecycle?.state === "unknown") {
+        unknown.push(call)
+        continue
+      }
+      if (lifecycle?.state === "started") {
+        unknown.push(call)
+        continue
+      }
+      if (
+        lifecycle?.state === "prepared" ||
+        lifecycle?.state === "waiting_for_approval" ||
+        lifecycle?.state === "not_started" ||
+        lifecycle?.state === "settled_error"
+      ) {
+        continue
+      }
       const result = byToolCallId.get(call.id)
       if (!result || result.content === INTERRUPTED_RESULT) unknown.push(call)
     }
@@ -38,23 +63,62 @@ export function unknownSideEffectingToolCalls(
   return unknown
 }
 
+function recoveredToolResult(lifecycle: ToolCallLifecycle | undefined): {
+  content: string
+  markNotStarted: boolean
+  markUnknown: boolean
+} {
+  if (!lifecycle)
+    return {
+      content: INTERRUPTED_RESULT,
+      markNotStarted: false,
+      markUnknown: true,
+    }
+  if (lifecycle.state === "settled_success") {
+    return {
+      content: lifecycle.result ?? "",
+      markNotStarted: false,
+      markUnknown: false,
+    }
+  }
+  if (lifecycle.state === "settled_error") {
+    return {
+      content: lifecycle.result ?? lifecycle.error ?? INTERRUPTED_RESULT,
+      markNotStarted: false,
+      markUnknown: false,
+    }
+  }
+  if (
+    lifecycle.state === "prepared" ||
+    lifecycle.state === "waiting_for_approval" ||
+    lifecycle.state === "not_started"
+  ) {
+    return {
+      content: lifecycle.result ?? NOT_STARTED_RESULT,
+      markNotStarted: lifecycle.state === "prepared",
+      markUnknown: false,
+    }
+  }
+  return {
+    content: INTERRUPTED_RESULT,
+    markNotStarted: false,
+    markUnknown: true,
+  }
+}
+
 // How to repair a dangling assistant tool-call tail — a turn left with tool
 // calls that never produced results (the app quit, or a turn was abandoned,
 // while a call was in flight, e.g. parked on an approval gate).
 //
-//  - "synthesize": append a synthetic "interrupted" result for each unanswered
-//    call so the transcript is API-valid and PRESERVED. The model sees the
-//    attempt was interrupted; a fresh user message drives what happens next.
-//    Used by the live `chat` path (ephemeral — the user retries by typing).
+// Both modes preserve the assistant tool-call turn and any completed sibling
+// results. Deleting the turn erases durable evidence that a side-effecting call
+// may already have started, and can make a resumed task re-plan the same action
+// with a fresh tool-call id. Instead, append a synthetic "interrupted" result for
+// each unanswered call so the transcript stays API-valid and recovery guards can
+// see that a side-effecting outcome is unknown.
 //
-//  - "rollback": DELETE the incomplete trailing turn (the assistant tool-call
-//    message and every message after it) so the transcript ends at the prior
-//    complete turn. On the next model round the agent re-plans and re-issues
-//    the gated tool, which re-enters the gate and RE-PROMPTS. Used by the
-//    durable task runner on resume — clicking Resume means "carry on and
-//    re-attempt", not "tell me it was interrupted and stop" (plan 012). A
-//    synthetic result would read as a finished call and the action would never
-//    be retried.
+// "rollback" remains as a compatibility spelling for durable task callers that
+// used to request deletion. It now means "repair without erasing evidence".
 export type RepairMode = "synthesize" | "rollback"
 
 // Repair a dangling assistant tool-call tail for a conversation. No-op when the
@@ -83,23 +147,33 @@ export function repairDanglingToolCalls(
   const unanswered = toolCalls.filter((c) => !answered.has(c.id))
   if (unanswered.length === 0) return
 
-  if (mode === "rollback") {
-    // Drop the incomplete turn entirely: the dangling assistant tool-call
-    // message and everything after it (its partial tool results, if any). This
-    // is the LAST assistant tool-call turn, so a blocked loop never advanced
-    // past it — everything after lastIdx belongs to this same incomplete turn.
-    // The transcript then ends at the prior complete turn (e.g. the user's
-    // request), and the agent re-attempts from there.
-    for (const m of messages.slice(lastIdx)) deleteMessage(m.id)
-    return
-  }
+  void mode
 
-  // "synthesize": fill each unanswered call with an interrupted result.
+  const lifecycleByToolCallId = new Map(
+    listToolCallLifecycle(conversationId).map((row) => [row.toolCallId, row])
+  )
+
+  // Fill each unanswered call with an interrupted result.
   for (const call of unanswered) {
+    const recovered = recoveredToolResult(lifecycleByToolCallId.get(call.id))
+    if (recovered.markNotStarted) {
+      markToolCallNotStarted({
+        conversationId,
+        toolCallId: call.id,
+        result: recovered.content,
+      })
+    }
+    if (recovered.markUnknown) {
+      markToolCallUnknown({
+        conversationId,
+        toolCallId: call.id,
+        error: recovered.content,
+      })
+    }
     appendMessage({
       conversationId,
       role: "tool",
-      content: INTERRUPTED_RESULT,
+      content: recovered.content,
       toolCallId: call.id,
       toolName: call.name,
     })

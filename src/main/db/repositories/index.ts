@@ -2,6 +2,7 @@
 // read e.g. `conversations.create(...)`, `messages.appendMessage(...)`.
 export * as conversations from "./conversations"
 export * as messages from "./messages"
+export * as toolCallLifecycle from "./tool-call-lifecycle"
 export * as workspaces from "./workspaces"
 export * as projects from "./projects"
 export * as tasks from "./tasks"

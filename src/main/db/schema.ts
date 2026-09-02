@@ -1119,3 +1119,43 @@ ALTER TABLE model_request_retry_budgets
 CREATE INDEX idx_model_request_retry_budgets_parent
   ON model_request_retry_budgets(parent_budget_id);
 `
+
+// v38 (debug 077): durable per-tool-call lifecycle evidence. The transcript must
+// remain API-valid, but recovery cannot infer every crash boundary from messages
+// alone. This table records intent before approval/execution, records start
+// immediately before invoking a tool body, and records terminal outcomes as each
+// call settles. `logical_round_id` is the same persisted transcript boundary used
+// by model retry budgets; `assistant_message_id` links to the tool-call-bearing
+// message when available. Legacy transcript-only calls simply have no row and
+// are treated conservatively by recovery.
+export const SCHEMA_V38 = `
+CREATE TABLE tool_call_lifecycle (
+  id                    TEXT PRIMARY KEY,
+  conversation_id       TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  assistant_message_id  TEXT REFERENCES messages(id) ON DELETE SET NULL,
+  logical_round_id      TEXT NOT NULL,
+  tool_call_id          TEXT NOT NULL,
+  tool_name             TEXT NOT NULL,
+  arguments             TEXT NOT NULL,
+  invocation_id         TEXT NOT NULL,
+  identity              TEXT NOT NULL,
+  state                 TEXT NOT NULL CHECK (state IN
+                          ('prepared','waiting_for_approval','started',
+                           'settled_success','settled_error','not_started',
+                           'unknown')),
+  result                TEXT,
+  error                 TEXT,
+  prepared_at           INTEGER NOT NULL,
+  waiting_at            INTEGER,
+  started_at            INTEGER,
+  settled_at            INTEGER,
+  updated_at            INTEGER NOT NULL,
+  UNIQUE (conversation_id, tool_call_id)
+);
+CREATE INDEX idx_tool_call_lifecycle_conversation
+  ON tool_call_lifecycle(conversation_id, state);
+CREATE INDEX idx_tool_call_lifecycle_message
+  ON tool_call_lifecycle(assistant_message_id);
+CREATE INDEX idx_tool_call_lifecycle_invocation
+  ON tool_call_lifecycle(conversation_id, invocation_id, updated_at DESC);
+`

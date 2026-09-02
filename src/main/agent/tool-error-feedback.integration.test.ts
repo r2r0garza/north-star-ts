@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, writeFile } from "fs/promises"
+import { access, mkdtemp, mkdir, writeFile } from "fs/promises"
 import { join } from "path"
 import { tmpdir } from "os"
 import { randomUUID } from "crypto"
@@ -67,6 +67,14 @@ vi.mock("./providers", () => {
 
 import { createConversation } from "../db/repositories/conversations"
 import { appendMessage, listMessages } from "../db/repositories/messages"
+import {
+  listToolCallLifecycle,
+  markToolCallStarted,
+  markToolCallUnknown,
+  normalizeToolActionIdentity,
+  recordToolCallIntents,
+  updateToolCallOperationIdentity,
+} from "../db/repositories/tool-call-lifecycle"
 import {
   consumeAttempt,
   getBudget,
@@ -203,6 +211,181 @@ afterEach(() => {
 })
 
 describe.skipIf(!sqliteLoads)("agent loop tool-error feedback", () => {
+  it("blocks equivalent fresh-id mutations after an unknown operation", async () => {
+    const workspace = await makeWorkspace()
+    const conversation = createConversation({ mode: "interactive" })
+    const priorAssistant = appendMessage({
+      conversationId: conversation.id,
+      role: "assistant",
+      content: null,
+      toolCalls: [
+        {
+          id: "call_unknown",
+          name: "write_file_tool",
+          arguments: JSON.stringify({
+            path: "guarded.txt",
+            content: "first",
+            mode: "create",
+          }),
+        },
+      ],
+    })
+    recordToolCallIntents({
+      conversationId: conversation.id,
+      assistantMessageId: priorAssistant.id,
+      logicalRoundId: "after-seq:1",
+      calls: [
+        {
+          id: "call_unknown",
+          name: "write_file_tool",
+          arguments: JSON.stringify({
+            path: "guarded.txt",
+            content: "first",
+            mode: "create",
+          }),
+        },
+      ],
+    })
+    updateToolCallOperationIdentity({
+      conversationId: conversation.id,
+      toolCallId: "call_unknown",
+      identity: normalizeToolActionIdentity({
+        kind: "file_write",
+        identity: "file_write:guarded.txt",
+      }),
+    })
+    markToolCallStarted({
+      conversationId: conversation.id,
+      toolCallId: "call_unknown",
+    })
+    markToolCallUnknown({
+      conversationId: conversation.id,
+      toolCallId: "call_unknown",
+      error: "Interrupted before completion; result unknown.",
+    })
+
+    scriptedCompletions.push(() =>
+      streamToolCalls([
+        {
+          id: "call_retry",
+          name: "write_file_tool",
+          arguments: JSON.stringify({
+            path: "guarded.txt",
+            content: "second",
+            mode: "append",
+          }),
+        },
+      ])
+    )
+    scriptedCompletions.push((request) => {
+      expect(lastMessage(request, "tool")).toMatchObject({
+        tool_call_id: "call_retry",
+      })
+      expect(lastMessage(request, "tool")?.content).toContain(
+        "ERROR[blocked]"
+      )
+      return streamText("Blocked duplicate.")
+    })
+
+    const result = await runAgentLoop({
+      conversationId: conversation.id,
+      workspace,
+      userMessage: "try again",
+      abort: new AbortController(),
+      onEvent: () => {},
+    })
+
+    expect(result).toEqual({ content: "Blocked duplicate." })
+    await expect(access(join(workspace, "guarded.txt"))).rejects.toThrow()
+    const lifecycle = listToolCallLifecycle(conversation.id)
+    expect(lifecycle.map((row) => [row.toolCallId, row.state])).toContainEqual([
+      "call_unknown",
+      "unknown",
+    ])
+    expect(lifecycle.map((row) => [row.toolCallId, row.state])).toContainEqual([
+      "call_retry",
+      "settled_error",
+    ])
+    expect(
+      lifecycle.find((row) => row.toolCallId === "call_unknown")?.invocationId
+    ).toBe(
+      lifecycle.find((row) => row.toolCallId === "call_retry")?.invocationId
+    )
+  })
+
+  it("allows equivalent fresh-id reads after an unknown read outcome", async () => {
+    const workspace = await makeWorkspace()
+    const conversation = createConversation({ mode: "interactive" })
+    const priorAssistant = appendMessage({
+      conversationId: conversation.id,
+      role: "assistant",
+      content: null,
+      toolCalls: [
+        {
+          id: "call_unknown_read",
+          name: "read_file_tool",
+          arguments: JSON.stringify({ path: "ok.txt" }),
+        },
+      ],
+    })
+    recordToolCallIntents({
+      conversationId: conversation.id,
+      assistantMessageId: priorAssistant.id,
+      logicalRoundId: "after-seq:1",
+      calls: [
+        {
+          id: "call_unknown_read",
+          name: "read_file_tool",
+          arguments: JSON.stringify({ path: "ok.txt" }),
+        },
+      ],
+    })
+    markToolCallStarted({
+      conversationId: conversation.id,
+      toolCallId: "call_unknown_read",
+    })
+    markToolCallUnknown({
+      conversationId: conversation.id,
+      toolCallId: "call_unknown_read",
+      error: "Interrupted before completion; result unknown.",
+    })
+
+    scriptedCompletions.push(() =>
+      streamToolCalls([
+        {
+          id: "call_retry_read",
+          name: "read_file_tool",
+          arguments: JSON.stringify({ path: "ok.txt" }),
+        },
+      ])
+    )
+    scriptedCompletions.push((request) => {
+      expect(lastMessage(request, "tool")).toMatchObject({
+        tool_call_id: "call_retry_read",
+      })
+      expect(lastMessage(request, "tool")?.content).toContain(
+        "corrected content"
+      )
+      return streamText("Read retry worked.")
+    })
+
+    const result = await runAgentLoop({
+      conversationId: conversation.id,
+      workspace,
+      userMessage: "read again",
+      abort: new AbortController(),
+      onEvent: () => {},
+    })
+
+    expect(result).toEqual({ content: "Read retry worked." })
+    expect(
+      listToolCallLifecycle(conversation.id).map((row) => [
+        row.toolCallId,
+        row.state,
+      ])
+    ).toContainEqual(["call_retry_read", "settled_success"])
+  })
+
   it("persists tool failures and feeds them into the next model request for recovery", async () => {
     const throwingTool: Tool = {
       effects: TOOL_EFFECTS.readOnlySequential,
@@ -344,6 +527,25 @@ describe.skipIf(!sqliteLoads)("agent loop tool-error feedback", () => {
       "ERROR[bad_tool_arguments]"
     )
     expect(persisted.get("call_corrected")).toContain("corrected content")
+    const lifecycle = listToolCallLifecycle(conversation.id)
+    expect(lifecycle.map((row) => [row.toolCallId, row.state])).toEqual([
+      ["call_missing", "settled_error"],
+      ["call_sibling", "settled_success"],
+      ["call_throw", "settled_error"],
+      ["call_unavailable", "settled_error"],
+      ["call_bad_json", "settled_error"],
+      ["call_corrected", "settled_success"],
+    ])
+    expect(lifecycle.map((row) => row.logicalRoundId)).toEqual([
+      "after-seq:1",
+      "after-seq:1",
+      "after-seq:1",
+      "after-seq:1",
+      "after-seq:1",
+      "after-seq:7",
+    ])
+    expect(lifecycle.every((row) => row.startedAt !== null)).toBe(true)
+    expect(lifecycle.every((row) => row.settledAt !== null)).toBe(true)
   })
 
   it("does not execute a known tool body when plan mode makes it unavailable", async () => {
