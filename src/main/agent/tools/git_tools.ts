@@ -32,6 +32,7 @@ function gitTool(
 ): Tool {
   return {
     effects: TOOL_EFFECTS.readOnlyParallel,
+    executionPolicy: { timeoutMs: 35000 },
     definition: {
       type: "function",
       function: {
@@ -112,7 +113,9 @@ export const gitShowTool = gitTool(
     const revision = optionalString(args.revision)
     if (!revision) return toolError("bad_args", "A `revision` is required.")
     try {
-      return render(await service(ctx).show(revision, optionalString(args.path)))
+      return render(
+        await service(ctx).show(revision, optionalString(args.path))
+      )
     } catch (error) {
       return toolError("git_failed", (error as Error).message)
     }

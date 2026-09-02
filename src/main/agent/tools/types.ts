@@ -232,7 +232,17 @@ export const TOOL_EFFECTS = {
 // A tool the agent can call. `definition` is the OpenAI-compatible schema
 // Portkey expects; `effects` declares scheduling/approval-relevant side effects;
 // `execute` runs server-side and returns a string result.
+export interface ToolExecutionPolicy {
+  // Execution budget measured from dispatch. Bounded filesystem/database reads
+  // use 30s; process-backed searches/git allow 35s around their 30s backend
+  // deadline; extraction/navigation allow 120s for parsing/index startup.
+  // Omit for human waits and resumable commands whose backend owns deadlines.
+  // Expiry aborts ctx.signal; unsupported cleanup remains an unknown mutation.
+  timeoutMs?: number
+}
+
 export interface Tool {
+  executionPolicy?: ToolExecutionPolicy
   effects: ToolEffects
   definition: {
     type: "function"

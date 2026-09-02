@@ -632,6 +632,7 @@ function renderBlock(block: ExtractedBlock): string {
 
 export const readDocumentTool: Tool = {
   effects: TOOL_EFFECTS.readOnlyParallel,
+  executionPolicy: { timeoutMs: 120000 },
   definition: {
     type: "function",
     function: {

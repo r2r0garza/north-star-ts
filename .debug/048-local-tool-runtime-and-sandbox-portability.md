@@ -50,3 +50,13 @@ validated search root.
 Stronger local runtime profiles still fail closed when the platform lacks an
 enforceable adapter. Linux and Windows OS sandbox adapters, cross-platform
 enforcement tests, and user-facing documentation remain open.
+
+## 2026-09-02 tracking audit
+
+Status remains **PARTIAL**. The two unchecked acceptance criteria above remain
+unfinished. `src/main/agent/env/local-profiles.ts` still exposes stronger Local
+profiles only through the macOS adapter and fails closed elsewhere. Native
+Linux/Windows adapters are explicitly deferred in
+[plan 053](../.plan/053-linux-local-sandbox-adapter.md) and
+[plan 054](../.plan/054-windows-local-sandbox-adapter.md). Their existence does
+not complete enforcement coverage or user-facing isolation documentation.

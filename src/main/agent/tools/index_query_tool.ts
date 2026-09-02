@@ -21,6 +21,7 @@ const RESULT_LIMITS = {
 // authoritative answers. Read-only, so it never gates.
 export const indexQueryTool: Tool = {
   effects: TOOL_EFFECTS.readOnlyParallel,
+  executionPolicy: { timeoutMs: 30000 },
   definition: {
     type: "function",
     function: {

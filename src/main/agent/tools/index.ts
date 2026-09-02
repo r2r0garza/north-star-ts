@@ -1,3 +1,4 @@
+import { ToolLifecycleError } from "../tool-batch-scheduler"
 import type { Tool, ToolContext, ToolEffects } from "./types"
 import { listFilesTool } from "./list_files_tool"
 import { readFileTool } from "./read_file_tool"
@@ -205,6 +206,10 @@ export function getToolEffects(name: string): ToolEffects | undefined {
   return byName.get(name)?.effects
 }
 
+export function getToolExecutionPolicy(name: string) {
+  return byName.get(name)?.executionPolicy
+}
+
 // Run a tool call by name. Returns a string result (or an error message).
 export async function runTool(
   name: string,
@@ -216,6 +221,7 @@ export async function runTool(
   try {
     return await tool.execute(args, ctx)
   } catch (err) {
+    if (err instanceof ToolLifecycleError) throw err
     return `Error running ${name}: ${
       err instanceof Error ? err.message : String(err)
     }`

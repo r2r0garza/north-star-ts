@@ -23,6 +23,7 @@ const MAX_CONTEXT_LINES = 5
 // fallback when rg is absent. Patterns and globs are passed as argv data.
 export const searchTool: Tool = {
   effects: TOOL_EFFECTS.readOnlyParallel,
+  executionPolicy: { timeoutMs: 35000 },
   definition: {
     type: "function",
     function: {

@@ -127,6 +127,7 @@ export interface StatInfo {
 }
 
 export interface ReadTextLinesOptions {
+  signal?: AbortSignal
   // 1-based line number to start at.
   offset: number
   // Maximum complete lines to return.

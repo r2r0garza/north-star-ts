@@ -15,6 +15,7 @@ import { planFilePath } from "./plan-file"
 // approval (so the implementing turn can consult the approved plan) — see runChat.
 export const readPlanTool: Tool = {
   effects: TOOL_EFFECTS.readOnlySequential,
+  executionPolicy: { timeoutMs: 30000 },
   definition: {
     type: "function",
     function: {

@@ -86,6 +86,7 @@ function metadataFor(
 
 export const statPathTool: Tool = {
   effects: TOOL_EFFECTS.readOnlyParallel,
+  executionPolicy: { timeoutMs: 30000 },
   definition: {
     type: "function",
     function: {

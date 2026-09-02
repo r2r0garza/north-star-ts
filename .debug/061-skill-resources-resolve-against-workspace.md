@@ -23,7 +23,7 @@ updated: 2026-08-31
   beside `SKILL.md`, but the agent cannot use it as input to whatever operation
   the skill requests.
 
-## Current Focus
+## Original investigation (before implementation)
 
 - hypothesis: skill discovery retains the absolute `SKILL.md` path, but skill
   activation discards that location and exposes only the body. The tool
@@ -37,7 +37,7 @@ updated: 2026-08-31
   resources are available as general read-only inputs; the agent, rather than
   skill-specific app code, decides whether to read, encode, inspect, execute, or
   otherwise process them.
-- next_action: design the read-only skill-root abstraction and its local/container
+- planned_action: design the read-only skill-root abstraction and its local/container
   path semantics before changing individual file tools.
 - reasoning_checkpoint: this is not a missing base64, image-copy, HTML-template,
   or other resource-specific feature. It is a missing filesystem capability for
@@ -74,7 +74,7 @@ updated: 2026-08-31
   feature because arbitrary shell-string rewriting would expand the mutation and
   approval surface.
 
-## Evidence
+## Original evidence (before implementation)
 
 - timestamp: 2026-08-31
   observation: `SkillMetadata.path` stores the absolute path to `SKILL.md` in

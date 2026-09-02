@@ -22,6 +22,8 @@ import {
   materializePythonHeredocCommand,
   normalizeHostShellCommand,
 } from "./local"
+import { runToolCallBatches } from "../tool-batch-scheduler"
+import { TOOL_EFFECTS } from "../tools/types"
 import { SearchExecutionError, SearchPatternError } from "./ripgrep"
 import { applyPatchTool } from "../tools/apply_patch_tool"
 import {
@@ -1218,4 +1220,61 @@ describe("LocalEnvironment.search", () => {
       )
     ).toEqual({ "one.txt": 2, "two.txt": 1 })
   })
+})
+
+describe("scheduler backend cancellation", () => {
+  it("propagates a deadline to the real local process and reaps it", async () => {
+    let backend!: ReturnType<LocalEnvironment["exec"]>
+    const results = await runToolCallBatches(
+      [{ id: "command", name: "command", arguments: "{}" }],
+      {
+        effectsFor: () => TOOL_EFFECTS.openWorldMutation,
+        policyFor: () => ({ timeoutMs: 100 }),
+        execute: async (_call, _index, signal) => {
+          backend = env.exec(nodeCmd("setInterval(() => {}, 1000)"), {
+            cwd: workspace,
+            timeoutMs: 5000,
+            maxOutputBytes: 1024,
+            signal,
+          })
+          const output = await backend
+          return { result: String(output.exitCode) }
+        },
+      }
+    )
+    expect(results[0].outcome).toBe("unknown")
+    // Await the backend's close event, not merely the scheduler's race result.
+    const output = await backend
+    expect(output.aborted).toBe(true)
+    expect(output.exitCode).not.toBe(0)
+  })
+})
+
+it("stops paged reads between chunks and closes the file handle on cancellation", async () => {
+  const abort = new AbortController()
+  const target = join(workspace, "cancel-read.txt")
+  await writeFile(target, "line\n".repeat(50000))
+  let opened!: FileHandle
+  let reads = 0
+  const readingEnv = new LocalEnvironment(workspace, "host-access", {
+    openNoFollow: async (path, flags, mode) => {
+      opened = await fsOpen(path, flags, mode)
+      return trackHandleReads(opened, {
+        onRead: () => {
+          reads++
+          abort.abort(new Error("stop read"))
+        },
+      })
+    },
+  })
+  await expect(
+    readingEnv.readTextLines(target, {
+      offset: 40000,
+      limit: 1,
+      maxBytes: 1024,
+      signal: abort.signal,
+    })
+  ).rejects.toThrow("stop read")
+  expect(reads).toBe(1)
+  expect(opened.fd).toBe(-1)
 })

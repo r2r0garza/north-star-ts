@@ -41,12 +41,12 @@ its own.
 Do not rely on repeated `realpath`/`lstat` checks immediately before an absolute-
 path syscall; that only narrows the race window.
 
-This brief is **not** the next actionable `.debug/` queue item while the branch
-does not include a packaged native helper or native addon plan. ADR
-`.decisions/009-local-filesystem-openat-helper.md` accepts the current
-revalidation mitigation as temporary hardening and deliberately leaves this item
-partial. Resume implementation here only after that native helper work exists;
-otherwise continue to the next OPEN item in `.debug/README.md`.
+This brief remains deferred under
+[ADR 009](../.decisions/009-local-filesystem-openat-helper.md).
+[Plan 055](../.plan/055-local-filesystem-openat-helper.md) now tracks the packaged
+native helper, but is still **NOT STARTED** and explicitly deferred. The plan's
+existence does not close the race. Resume implementation when that work is taken
+up; until then retain Partial status and the documented mitigation limits.
 
 ## Acceptance criteria
 

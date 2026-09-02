@@ -9,6 +9,7 @@ import {
   webFetchDefinition,
   runTool,
   getToolEffects,
+  getToolExecutionPolicy,
   todoWriteTool,
   askUserQuestionTool,
   runTodosInBackgroundTool,
@@ -21,7 +22,7 @@ import type { BrowserHandle } from "../browser/manager"
 import { TOOL_EFFECTS, type ToolImage } from "./tools/types"
 import { readFileTool } from "./tools/read_file_tool"
 import { accumulateToolCalls, extractTextToolCalls } from "./tool-stream"
-import { runToolCallBatches } from "./tool-batch-scheduler"
+import { runToolCallBatches, ToolLifecycleError } from "./tool-batch-scheduler"
 import {
   listTodos,
   replaceTodos,
@@ -353,11 +354,23 @@ function failTurn(
   errorCode?: ChatResult["errorCode"],
   failure?: FailureContext
 ): ChatResult {
-  appendMessage({
-    conversationId,
-    role: "assistant",
-    content: `⚠️ The turn ended early: ${message}`,
-  })
+  try {
+    appendMessage({
+      conversationId,
+      role: "assistant",
+      content: `⚠️ The turn ended early: ${message}`,
+    })
+  } catch {
+    console.error("Unable to persist agent failure", {
+      conversationId,
+      stage: "result_persistence",
+    })
+    failure ??= agentFailure({
+      code: "failure_persistence_failed",
+      stage: "result_persistence",
+      message: "Unable to persist agent failure",
+    })
+  }
   return {
     error: message,
     retryable,
@@ -375,6 +388,7 @@ function agentFailure(input: {
   processRunId?: string
   processPhaseRunId?: string
   cause?: string | null
+  toolCallId?: string
 }): FailureContext {
   return sanitizeFailureContext({
     code: input.code,
@@ -389,6 +403,7 @@ function agentFailure(input: {
     taskId: input.taskId ?? null,
     workerTaskId: input.taskId ?? null,
     agentName: null,
+    toolCallId: input.toolCallId,
     cause: input.cause ?? null,
     occurredAt: Date.now(),
   })
@@ -1601,16 +1616,50 @@ export async function runAgentLoop(
       // mutations, browser actions, questions, approvals, shell calls,
       // delegation, web/MCP, and unannotated calls remain one-call barriers.
       const toolResults = await runToolCallBatches(toolCalls, {
-        onBatchSettled: (results) => {
-          // Persist each settled batch before the next barrier begins. Within a
-          // read batch, rows stay in the model's original call order even if
-          // individual reads finished out of order.
-          for (const { call, result, error, outcome } of results) {
-            messages.push({
-              role: "tool",
-              tool_call_id: call.id,
-              content: result,
+        // Durable lifecycle evidence is keyed by call ID and written as soon as
+        // each call settles. Repair can reconstruct an interrupted transcript
+        // from it; ordered message projection need not wait to make results safe.
+        onSettled: (settled) => {
+          const { call } = settled
+          // A cancelled approval wait has not authorized any backend work.
+          if (
+            settled.outcome === "unknown" &&
+            getToolCallLifecycle(conversationId, call.id)?.state ===
+              "waiting_for_approval"
+          ) {
+            settled.outcome = "not_started"
+            settled.result =
+              "Interrupted before tool execution started; re-request approval if still needed."
+            settled.error = false
+          }
+          const { result, error, outcome } = settled
+          if (outcome === "unknown") {
+            markToolCallUnknown({
+              conversationId,
+              toolCallId: call.id,
+              error: result,
             })
+          } else if (outcome === "not_started") {
+            markToolCallNotStarted({
+              conversationId,
+              toolCallId: call.id,
+              result,
+            })
+          } else {
+            markToolCallSettled({
+              conversationId,
+              toolCallId: call.id,
+              state:
+                error || isToolErrorResult(result)
+                  ? "settled_error"
+                  : "settled_success",
+              result,
+              error: error || isToolErrorResult(result) ? result : null,
+            })
+          }
+        },
+        onBatchSettled: (results) => {
+          for (const { call, result } of results) {
             appendMessage({
               conversationId,
               role: "tool",
@@ -1618,35 +1667,16 @@ export async function runAgentLoop(
               toolCallId: call.id,
               toolName: call.name,
             })
-            if (outcome === "unknown") {
-              markToolCallUnknown({
-                conversationId,
-                toolCallId: call.id,
-                error: result,
-              })
-            } else if (outcome === "not_started") {
-              markToolCallNotStarted({
-                conversationId,
-                toolCallId: call.id,
-                result,
-              })
-            } else {
-              markToolCallSettled({
-                conversationId,
-                toolCallId: call.id,
-                state:
-                  error || isToolErrorResult(result)
-                    ? "settled_error"
-                    : "settled_success",
-                result,
-                error: error || isToolErrorResult(result) ? result : null,
-              })
-            }
+            messages.push({
+              role: "tool",
+              tool_call_id: call.id,
+              content: result,
+            })
           }
         },
+        policyFor: (call) => getToolExecutionPolicy(call.name),
         effectsFor: effectsForCall,
         onStart: (call) => {
-          markToolCallStarted({ conversationId, toolCallId: call.id })
           onEvent({
             type: "tool",
             phase: "start",
@@ -1664,7 +1694,17 @@ export async function runAgentLoop(
             result,
           }),
         signal: abort.signal,
-        execute: async (call) => {
+        execute: async (call, _index, callSignal) => {
+          const persistLifecycle = <T>(action: () => T): T => {
+            try {
+              return action()
+            } catch (error) {
+              throw new ToolLifecycleError("result_persistence", call.id, error)
+            }
+          }
+          persistLifecycle(() =>
+            markToolCallStarted({ conversationId, toolCallId: call.id })
+          )
           const callImages: ToolImage[] = []
           const unavailable = unavailableToolResult(call.name, offeredNames)
           if (unavailable) return { result: unavailable }
@@ -1703,6 +1743,7 @@ export async function runAgentLoop(
           // a process-unique `requestId` keying the pending map — the renderer
           // echoes the latter back, so a decision can't resolve another turn's gate.
           const gate: Gate = (action): Promise<GateOutcome> => {
+            callSignal.throwIfAborted()
             const reconciled = reconcileSideEffectingToolAction({
               conversationId,
               callId: call.id,
@@ -1730,10 +1771,12 @@ export async function runAgentLoop(
             // require human confirmation. Hard-blocks still block (handled above).
             if (autoMode) return Promise.resolve("approved")
             const requestId = randomUUID()
-            markToolCallWaitingForApproval({
-              conversationId,
-              toolCallId: call.id,
-            })
+            persistLifecycle(() =>
+              markToolCallWaitingForApproval({
+                conversationId,
+                toolCallId: call.id,
+              })
+            )
             onEvent({
               type: "approval",
               id: call.id,
@@ -1759,30 +1802,39 @@ export async function runAgentLoop(
               // the user never made and wedge resume (plan 012). The process is
               // exiting anyway; the task stays waiting_for_approval and reconciles
               // to interrupted on next boot.
-              abort.signal.addEventListener(
+              callSignal.addEventListener(
                 "abort",
                 () => {
-                  if (abort.signal.reason === SHUTDOWN_ABORT_REASON) return
+                  if (callSignal.reason === SHUTDOWN_ABORT_REASON) return
                   if (pendingApprovals.delete(requestId)) resolve("denied")
                 },
                 { once: true }
               )
+            }).then((outcome) => {
+              callSignal.throwIfAborted()
+              if (outcome === "approved") {
+                persistLifecycle(() =>
+                  markToolCallStarted({ conversationId, toolCallId: call.id })
+                )
+              }
+              return outcome
             })
           }
           // The clarification prompt for ask_user_question. Emits a `question`
           // event and blocks until the renderer answers (chat:answer → resolveQuestion)
           // or the turn is stopped (resolves "cancelled" so the loop unwinds).
           const ask: Ask = (questions): Promise<AskResult> => {
+            callSignal.throwIfAborted()
             const requestId = randomUUID()
             onEvent({ type: "question", id: call.id, requestId, questions })
             return new Promise<AskResult>((resolve) => {
               pendingQuestions.set(requestId, resolve)
-              abort.signal.addEventListener(
+              callSignal.addEventListener(
                 "abort",
                 () => {
                   // Shutdown: leave unresolved so no synthetic answer is persisted
                   // and the task reconciles to interrupted (mirrors the gate above).
-                  if (abort.signal.reason === SHUTDOWN_ABORT_REASON) return
+                  if (callSignal.reason === SHUTDOWN_ABORT_REASON) return
                   if (pendingQuestions.delete(requestId))
                     resolve({ status: "cancelled" })
                 },
@@ -1801,20 +1853,33 @@ export async function runAgentLoop(
             gate,
             ask,
             env,
-            signal: abort.signal,
-            enqueueTask: opts.enqueueTask,
+            signal: callSignal,
+            enqueueTask: opts.enqueueTask
+              ? (
+                  input: Parameters<NonNullable<typeof opts.enqueueTask>>[0]
+                ) => {
+                  callSignal.throwIfAborted()
+                  return opts.enqueueTask!(input)
+                }
+              : undefined,
             browser,
-            emitImage: (image: ToolImage) => callImages.push(image),
+            emitImage: (image: ToolImage) => {
+              if (!callSignal.aborted) callImages.push(image)
+            },
             skillResourceRoots,
             // present_plan calls this on approval; the selected backend is already
             // running, so the next loop iteration can safely unlock mutations.
             setPlanMode: (on: boolean) => {
+              callSignal.throwIfAborted()
               planMode = on
               onEvent({ type: "plan_mode", enabled: on })
             },
             // present_plan calls this when the user picks "approve and Auto mode".
             // Shared with the mid-turn dropdown toggle (autoModeSetters registry).
-            setAutoMode,
+            setAutoMode: (on: boolean) => {
+              callSignal.throwIfAborted()
+              setAutoMode(on)
+            },
             // Subagent spawning: wired only when the running agent may spawn, so
             // the tool reports "unavailable" otherwise (it's also not offered).
             // agentChildren is the authorization whitelist; depth/ancestors bound
@@ -1829,7 +1894,7 @@ export async function runAgentLoop(
                     // (Chat's project dir, not the confinement workspace).
                     agentDir,
                     parentConversation: conversation,
-                    parentSignal: abort.signal,
+                    parentSignal: callSignal,
                     depth: (opts.agentDepth ?? 0) + 1,
                     ancestors: [
                       ...(opts.agentAncestors ?? []),
@@ -1864,7 +1929,7 @@ export async function runAgentLoop(
                     call.name,
                     args,
                     mcpWorkspace,
-                    abort.signal
+                    callSignal
                   )
                 : `ERROR[mcp]: the user ${
                     outcome === "blocked" ? "blocked" : "declined"
@@ -1878,6 +1943,15 @@ export async function runAgentLoop(
           return { result, images: callImages }
         },
       })
+      if (
+        !abort.signal.aborted &&
+        toolResults.some((result) => result.outcome === "unknown")
+      ) {
+        return failTurn(
+          conversationId,
+          "A tool outcome is unknown. Reconcile its effects before continuing."
+        )
+      }
       const turnImages = toolResults.flatMap((result) => result.images)
 
       // If any tool produced an image this round (browser_screenshot), inject it
@@ -1907,7 +1981,7 @@ export async function runAgentLoop(
     // A user Stop aborts the in-flight stream, which surfaces here as an abort
     // error. That's a clean stop, not a failure: persist a neutral note (so the
     // transcript shows where it stopped) and return without an error banner.
-    if (abort.signal.aborted) {
+    if (abort.signal.aborted && !(error instanceof ToolLifecycleError)) {
       appendMessage({
         conversationId,
         role: "assistant",
@@ -1931,16 +2005,35 @@ export async function runAgentLoop(
           : undefined
       return failTurn(conversationId, error.message, false, undefined, failure)
     }
-    console.error("Agent loop failed:", error)
+    console.error(
+      "Agent loop failed:",
+      error instanceof ToolLifecycleError
+        ? { stage: error.stage, toolCallId: error.toolCallId }
+        : error
+    )
     const message = error instanceof Error ? error.message : "Request failed"
-    const retryable = isTransientError(error)
+    const retryable =
+      !(error instanceof ToolLifecycleError) && isTransientError(error)
     const failure =
-      taskId || opts.processRunId || opts.processPhaseRunId
+      error instanceof ToolLifecycleError ||
+      taskId ||
+      opts.processRunId ||
+      opts.processPhaseRunId
         ? agentFailure({
-            code: retryable
-              ? "transient_model_request_failed"
-              : "model_request_failed",
-            stage: "model_request",
+            toolCallId:
+              error instanceof ToolLifecycleError
+                ? error.toolCallId
+                : undefined,
+            code:
+              error instanceof ToolLifecycleError
+                ? "tool_lifecycle_failed"
+                : retryable
+                  ? "transient_model_request_failed"
+                  : "model_request_failed",
+            stage:
+              error instanceof ToolLifecycleError
+                ? error.stage
+                : "model_request",
             message,
             retryable,
             taskId,

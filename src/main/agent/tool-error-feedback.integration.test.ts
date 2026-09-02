@@ -86,6 +86,10 @@ import * as processes from "../db/repositories/processes"
 import { ProcessService } from "../tasks/process/service"
 import { runAgentLoop } from "."
 import {
+  repairDanglingToolCalls,
+  unknownSideEffectingToolCalls,
+} from "./repair"
+import {
   testExports as toolRegistry,
   toolDefinitions,
   type Tool,
@@ -1121,5 +1125,272 @@ describe.skipIf(!sqliteLoads)("agent loop tool-error feedback", () => {
     expect(listMessages(conversation.id).at(-1)?.content ?? "").toContain(
       "The turn ended early"
     )
+  })
+})
+
+describe.skipIf(!sqliteLoads)("tool batch durability and cancellation", () => {
+  function installTool(
+    execute: Tool["execute"],
+    effects = TOOL_EFFECTS.readOnlyParallel as Tool["effects"]
+  ) {
+    const tool: Tool = {
+      effects,
+      executionPolicy: { timeoutMs: 100 },
+      definition: {
+        type: "function",
+        function: {
+          name: "test_batch_tool",
+          description: "Batch fault injection",
+          parameters: { type: "object", properties: {} },
+        },
+      },
+      execute,
+    }
+    toolRegistry.byName.set("test_batch_tool", tool)
+    toolDefinitions.push(tool.definition)
+    return tool
+  }
+  afterEach(() => {
+    vi.useRealTimers()
+    toolRegistry.byName.delete("test_batch_tool")
+    const index = toolDefinitions.findIndex(
+      (tool) => tool.function.name === "test_batch_tool"
+    )
+    if (index !== -1) toolDefinitions.splice(index, 1)
+  })
+  const batchCall = (id: string) => ({
+    id,
+    name: "test_batch_tool",
+    arguments: JSON.stringify({ id }),
+  })
+
+  it("durably saves siblings while a read hangs, then projects one ordered result per call", async () => {
+    const workspace = await makeWorkspace()
+    const conversation = createConversation({ mode: "interactive" })
+    let finish!: (result: string) => void
+    let lateImage!: () => void
+    let pendingSignal!: AbortSignal
+    installTool(async (args, ctx) => {
+      if (args.id === "bad") throw new Error("controlled read error")
+      if (args.id === "good") return "successful sibling"
+      pendingSignal = ctx.signal!
+      lateImage = () => ctx.emitImage?.({ jpegBase64: "late", alt: "late" })
+      return new Promise((resolve) => {
+        finish = resolve
+      })
+    })
+    scriptedCompletions.push(() =>
+      streamToolCalls([
+        batchCall("pending"),
+        batchCall("bad"),
+        batchCall("good"),
+      ])
+    )
+    scriptedCompletions.push((request) => {
+      const results = request.messages.filter((m) => m.role === "tool")
+      expect(results.map((r) => r.tool_call_id)).toEqual([
+        "pending",
+        "bad",
+        "good",
+      ])
+      expect(results[0].content).toContain("ERROR[tool_timeout]")
+      expect(results[1].content).toContain("controlled read error")
+      expect(results[2].content).toBe("successful sibling")
+      return streamText("Recovered after deadline")
+    })
+    vi.useFakeTimers()
+    let siblingsDone!: () => void
+    const siblings = new Promise<void>((resolve) => {
+      siblingsDone = resolve
+    })
+    let done = 0
+    const run = runAgentLoop({
+      conversationId: conversation.id,
+      workspace,
+      userMessage: "read",
+      abort: new AbortController(),
+      onEvent: (event) => {
+        if (event.type === "tool" && event.phase === "done" && ++done === 2)
+          siblingsDone()
+      },
+    })
+    await siblings
+    expect(
+      listToolCallLifecycle(conversation.id).map((r) => [
+        r.toolCallId,
+        r.state,
+        r.result,
+      ])
+    ).toEqual([
+      ["pending", "started", null],
+      [
+        "bad",
+        "settled_error",
+        expect.stringContaining("controlled read error"),
+      ],
+      ["good", "settled_success", "successful sibling"],
+    ])
+    expect(completionRequests).toHaveLength(1)
+    await vi.advanceTimersByTimeAsync(100)
+    expect(await run).toEqual({ content: "Recovered after deadline" })
+    expect(pendingSignal.aborted).toBe(true)
+    const before = listMessages(conversation.id)
+    lateImage()
+    finish("late success")
+    await vi.advanceTimersByTimeAsync(0)
+    expect(listMessages(conversation.id)).toEqual(before)
+    expect(done).toBe(3)
+    expect(toolRows(conversation.id).map((r) => r.toolCallId)).toEqual([
+      "pending",
+      "bad",
+      "good",
+    ])
+  })
+
+  it("records unknown mutation outcomes, prevents the next barrier/model request, and blocks replay", async () => {
+    const workspace = await makeWorkspace()
+    const conversation = createConversation({ mode: "interactive" })
+    let entered!: () => void
+    const active = new Promise<void>((resolve) => {
+      entered = resolve
+    })
+    const execute = vi.fn(async () => {
+      entered()
+      return new Promise<string>(() => {})
+    })
+    installTool(execute, TOOL_EFFECTS.mutation)
+    scriptedCompletions.push(() =>
+      streamToolCalls([batchCall("mutation"), batchCall("later")])
+    )
+    vi.useFakeTimers()
+    const run = runAgentLoop({
+      conversationId: conversation.id,
+      workspace,
+      userMessage: "change",
+      abort: new AbortController(),
+      onEvent: () => {},
+    })
+    await active
+    await vi.advanceTimersByTimeAsync(100)
+    expect((await run).error).toContain("Reconcile")
+    expect(execute).toHaveBeenCalledTimes(1)
+    expect(completionRequests).toHaveLength(1)
+    expect(listToolCallLifecycle(conversation.id).map((r) => r.state)).toEqual([
+      "unknown",
+      "not_started",
+    ])
+    expect(
+      unknownSideEffectingToolCalls(conversation.id).map((c) => c.id)
+    ).toEqual(["mutation"])
+    repairDanglingToolCalls(conversation.id)
+    expect(toolRows(conversation.id)).toHaveLength(2)
+  })
+
+  it("Stop settles active reads without dispatching queued calls, mutations, or another model request", async () => {
+    const workspace = await makeWorkspace()
+    const conversation = createConversation({ mode: "interactive" })
+    const abort = new AbortController()
+    let started!: () => void
+    const active = new Promise<void>((resolve) => {
+      started = resolve
+    })
+    let executions = 0
+    installTool(async () => {
+      if (++executions === 4) started()
+      return new Promise<string>(() => {})
+    })
+    scriptedCompletions.push(() =>
+      streamToolCalls([
+        ...["a", "b", "c", "d", "queued"].map(batchCall),
+        {
+          id: "mutation",
+          name: "write_file_tool",
+          arguments: JSON.stringify({
+            path: "should-not-exist.txt",
+            content: "bad",
+          }),
+        },
+      ])
+    )
+    const run = runAgentLoop({
+      conversationId: conversation.id,
+      workspace,
+      userMessage: "read",
+      abort,
+      onEvent: () => {},
+    })
+    await active
+    abort.abort()
+    expect(await run).toMatchObject({ stopped: true })
+    expect(executions).toBe(4)
+    expect(completionRequests).toHaveLength(1)
+    expect(listToolCallLifecycle(conversation.id).map((r) => r.state)).toEqual([
+      "settled_error",
+      "settled_error",
+      "settled_error",
+      "settled_error",
+      "not_started",
+      "not_started",
+    ])
+    expect(toolRows(conversation.id)).toHaveLength(6)
+    await expect(
+      access(join(workspace, "should-not-exist.txt"))
+    ).rejects.toThrow()
+  })
+
+  it("surfaces lifecycle persistence faults as result_persistence", async () => {
+    const workspace = await makeWorkspace()
+    const conversation = createConversation({ mode: "interactive" })
+    installTool(async () => "backend result")
+    // Fail only terminal lifecycle persistence, after execution has returned.
+    db.exec(`CREATE TRIGGER fail_tool_result BEFORE UPDATE OF state ON tool_call_lifecycle
+      WHEN NEW.state = 'settled_success' BEGIN SELECT RAISE(FAIL, 'disk failure'); END`)
+    scriptedCompletions.push(() => streamToolCalls([batchCall("persist_fail")]))
+    const result = await runAgentLoop({
+      conversationId: conversation.id,
+      workspace,
+      userMessage: "read",
+      abort: new AbortController(),
+      onEvent: () => {},
+    })
+    expect(result).toMatchObject({
+      retryable: false,
+      failure: { stage: "result_persistence", toolCallId: "persist_fail" },
+    })
+    expect(completionRequests).toHaveLength(1)
+    expect(toolRows(conversation.id)).toHaveLength(0)
+    expect(listToolCallLifecycle(conversation.id)[0].state).toBe("started")
+  })
+
+  it("rebuilds ordered messages from durable lifecycle results if transcript persistence fails", async () => {
+    const workspace = await makeWorkspace()
+    const conversation = createConversation({ mode: "interactive" })
+    installTool(async (args) => String(args.id))
+    db.exec(`CREATE TRIGGER fail_tool_message BEFORE INSERT ON messages
+      WHEN NEW.role = 'tool' BEGIN SELECT RAISE(FAIL, 'disk failure'); END`)
+    scriptedCompletions.push(() =>
+      streamToolCalls([batchCall("first"), batchCall("second")])
+    )
+    const result = await runAgentLoop({
+      conversationId: conversation.id,
+      workspace,
+      userMessage: "read",
+      abort: new AbortController(),
+      onEvent: () => {},
+    })
+    expect(result.failure?.stage).toBe("result_persistence")
+    expect(listToolCallLifecycle(conversation.id).map((r) => r.state)).toEqual([
+      "settled_success",
+      "settled_success",
+    ])
+    db.exec("DROP TRIGGER fail_tool_message")
+    repairDanglingToolCalls(conversation.id)
+    repairDanglingToolCalls(conversation.id)
+    expect(
+      toolRows(conversation.id).map((r) => [r.toolCallId, r.content])
+    ).toEqual([
+      ["first", "first"],
+      ["second", "second"],
+    ])
   })
 })

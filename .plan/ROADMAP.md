@@ -7,7 +7,14 @@ item is its plan file; the ordered-list number is its current priority rank.
 
 ## Next up
 
-1. **`045` — North Star MCP bridge for CLI providers.** After `042`, make North Star a second, distinct
+1. **`072` — Event-driven command completion.** Add `background: false` (default) to
+   `exec_command` for a single pending tool call that returns final output, and `background: true`
+   for prompt session creation followed by automatic completion delivery while the agent does
+   independent work. A scoped completion inbox and `wait_for_events` wake an idle agent without
+   periodic model polling. Integrate delivery at safe model-request boundaries, preserve transcript
+   pairing and bounded output until consumption, and prevent late exits from restarting a stopped
+   run. Cover foreground/background execution, waiting UI, cancellation, and Local/container parity.
+2. **`045` — North Star MCP bridge for CLI providers.** After `042`, make North Star a second, distinct
    MCP role: it remains a client of user-configured external servers, and also hosts a lazy,
    authenticated Streamable HTTP server on an ephemeral `127.0.0.1` port for the Claude Code and Codex
    subprocesses we launch. Inject the endpoint per turn (`claude --mcp-config`; Codex transient `-c`
@@ -16,7 +23,7 @@ item is its plan file; the ordered-list number is its current priority rank.
    North-Star-specific `index_query`; `045.2` adapts the existing renderer-backed
    `ask_user_question` round trip. Explicit adapters only—no blanket `runTool()` export, no external
    MCP proxy, and no duplicate filesystem/shell tools. Side-effect policy remains enforced server-side.
-2. **`069` — Process intake policies and inspectable assumptions.** Give each Process an explicit run-
+3. **`069` — Process intake policies and inspectable assumptions.** Give each Process an explicit run-
    entry contract instead of injecting a mandatory Planning phase: **Proceed with assumptions**
    (default, no preflight gate), **Approve initial plan** (side-effect-free execution brief + one durable
    approval/revision loop), or **Strict input contract** (definition-authored required fields validated
@@ -25,7 +32,7 @@ item is its plan file; the ordered-list number is its current priority rank.
    assumptions log with origin/confidence/impact/status and monitor UI. Human clarification pauses and
    resumes the correct worker; it remains distinct from internal Agent exchanges (`039`). Split strict
    deterministic intake first, then assumptions/questions, then approve-plan preflight.
-3. **`039` — Inspectable Process consultations / Agent exchanges.** A running phase may consult a
+4. **`039` — Inspectable Process consultations / Agent exchanges.** A running phase may consult a
    **completed phase in the same run** and receive a context-grounded answer. The user observes the
    durable exchange but cannot reply; intervention stays in existing Process controls. Before adding
    consultation, persist an explicit phase result and move downstream aggregation away from "latest
@@ -34,7 +41,7 @@ item is its plan file; the ordered-list number is its current priority rank.
    consultation. v1 is synchronous, same-run, completed-target, capped, and read-only in the monitor;
    discovered defects recommend rework through the existing flag policy rather than silently changing
    completed artifacts. Split `039.1` result integrity, then `039.2` consultation/storage/monitor.
-4. **`032` — Process visual canvas.** The explicitly-deferred half of `026` (which shipped the
+5. **`032` — Process visual canvas.** The explicitly-deferred half of `026` (which shipped the
    **list-based** DAG builder and recorded a **visual node/edge canvas** as "later"). Renderer-first +
    one additive migration; **no engine/scheduling/routing change**. Phases become draggable **nodes**,
    dependencies **edges** drawn between handles (same `on_complete`/`on_each_subtask` trigger, same
@@ -48,14 +55,14 @@ item is its plan file; the ordered-list number is its current priority rank.
    toggle vs replace (lean **coexist**). The Radix-`Dialog` takeover means the inspector keeps
    `NativeSelect` (the `023`/`026` `pointer-events:none` finding). **Live-run-on-canvas deferred** — v1
    keeps the `026` nested-list monitor. Independent of `029`/`031`.
-5. **`010` — Container runtime profiles.** Decouple Workspace (the files) from Runtime (the env a
+6. **`010` — Container runtime profiles.** Decouple Workspace (the files) from Runtime (the env a
    tool call executes in). Replace the raw container `image` string with a named **profile**
    (`node` | `python` | `fullstack`), resolved to an image in the env factory; default/fallback =
    `fullstack` (Node + Python) so a Node repo that later adds a Python backend doesn't wedge.
    One profile per conversation, user-overridable in settings. Kills the "one workspace = one image
    forever" assumption **without** building auto-routing or image management (both deferred). Small
    refactor of `env/factory.ts` + `container.ts` + execution settings (JSON blob — no migration).
-6. **`024` — Index filesystem/git watcher.** The "live file watching" follow-up `008` deferred (and
+7. **`024` — Index filesystem/git watcher.** The "live file watching" follow-up `008` deferred (and
    `014` re-deferred). Today the workspace index — and the compact summary `buildIndexSummary`
    injects into the system prompt on every message send — only refreshes when
    `IndexService.ensureRunning` is called, which fires on conversation create/update or manual

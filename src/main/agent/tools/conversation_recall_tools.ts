@@ -11,6 +11,7 @@ const ROLE_VALUES: MessageRole[] = ["system", "user", "assistant", "tool"]
 
 export const conversationSearchTool: Tool = {
   effects: TOOL_EFFECTS.readOnlyParallel,
+  executionPolicy: { timeoutMs: 30000 },
   definition: {
     type: "function",
     function: {
@@ -55,6 +56,7 @@ export const conversationSearchTool: Tool = {
 
 export const conversationReadTool: Tool = {
   effects: TOOL_EFFECTS.readOnlyParallel,
+  executionPolicy: { timeoutMs: 30000 },
   definition: {
     type: "function",
     function: {
@@ -110,6 +112,7 @@ export const conversationReadTool: Tool = {
 
 export const conversationTreeSearchTool: Tool = {
   effects: TOOL_EFFECTS.readOnlyParallel,
+  executionPolicy: { timeoutMs: 30000 },
   definition: {
     type: "function",
     function: {
@@ -163,9 +166,7 @@ function noConversation(): string {
   )
 }
 
-function parseSearchArgs(
-  args: Record<string, unknown>
-):
+function parseSearchArgs(args: Record<string, unknown>):
   | {
       query: string
       roles?: MessageRole[]

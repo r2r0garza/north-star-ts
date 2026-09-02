@@ -53,6 +53,7 @@ async function resolveReadable(
 // real offset/limit pagination for large files and returns continuation metadata.
 export const readFileTool: Tool = {
   effects: TOOL_EFFECTS.readOnlyParallel,
+  executionPolicy: { timeoutMs: 30000 },
   definition: {
     type: "function",
     function: {
@@ -110,7 +111,12 @@ export const readFileTool: Tool = {
         ? Math.floor(args.limit)
         : DEFAULT_LIMIT
     const limit = Math.min(requestedLimit, MAX_LIMIT)
-    const readOpts = { offset, limit, maxBytes: MAX_READ_BYTES }
+    const readOpts = {
+      offset,
+      limit,
+      maxBytes: MAX_READ_BYTES,
+      signal: ctx.signal,
+    }
     const readTextAt = async (p: string, fileBytes: number) => {
       if (readable.source === "env") return env.readTextLines(p, readOpts)
       const handle = await hostOpen(p, "r")

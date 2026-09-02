@@ -509,6 +509,7 @@ const providers = new Map<string, TypeScriptNavigationProvider>()
 
 export const workspaceSymbolsTool: Tool = {
   effects: TOOL_EFFECTS.readOnlyParallel,
+  executionPolicy: { timeoutMs: 120000 },
   definition: {
     type: "function",
     function: {
@@ -547,6 +548,7 @@ export const workspaceSymbolsTool: Tool = {
 
 export const documentSymbolsTool: Tool = {
   effects: TOOL_EFFECTS.readOnlyParallel,
+  executionPolicy: { timeoutMs: 120000 },
   definition: {
     type: "function",
     function: {
@@ -571,6 +573,7 @@ export const documentSymbolsTool: Tool = {
 
 export const goToDefinitionTool: Tool = {
   effects: TOOL_EFFECTS.readOnlyParallel,
+  executionPolicy: { timeoutMs: 120000 },
   definition: {
     type: "function",
     function: {
@@ -600,6 +603,7 @@ export const goToDefinitionTool: Tool = {
 
 export const findReferencesTool: Tool = {
   effects: TOOL_EFFECTS.readOnlyParallel,
+  executionPolicy: { timeoutMs: 120000 },
   definition: {
     type: "function",
     function: {
@@ -641,6 +645,7 @@ export const findReferencesTool: Tool = {
 
 export const hoverTypeTool: Tool = {
   effects: TOOL_EFFECTS.readOnlyParallel,
+  executionPolicy: { timeoutMs: 120000 },
   definition: {
     type: "function",
     function: {

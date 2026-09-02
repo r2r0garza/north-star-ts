@@ -87,11 +87,13 @@ export async function readHostTextLines(
   }
 
   const readNextChunk = async (): Promise<Buffer | null> => {
+    opts.signal?.throwIfAborted()
     const targetLength = Math.min(READ_CHUNK_BYTES, fileBytes - position)
     if (targetLength <= 0) return null
 
     const buffer = Buffer.allocUnsafe(targetLength)
     const { bytesRead } = await handle.read(buffer, 0, targetLength, position)
+    opts.signal?.throwIfAborted()
     if (bytesRead <= 0) return null
     position += bytesRead
 

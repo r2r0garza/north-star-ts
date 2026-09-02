@@ -11,6 +11,7 @@ const MAX_LIST_BYTES = 128 * 1024
 // and confines all access to the workspace root to avoid escape/injection.
 export const listFilesTool: Tool = {
   effects: TOOL_EFFECTS.readOnlyParallel,
+  executionPolicy: { timeoutMs: 30000 },
   definition: {
     type: "function",
     function: {
