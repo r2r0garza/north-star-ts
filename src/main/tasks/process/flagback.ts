@@ -223,6 +223,7 @@ function orderedChildren(
 const toPending = {
   status: "pending" as const,
   error: null,
+  failure: null,
   startedAt: null,
   finishedAt: null,
   outputIdentity: null,
@@ -435,6 +436,7 @@ function reopenContainer(containerRunId: string): void {
   processes.updatePhaseRun(containerRunId, {
     status: "running",
     error: null,
+    failure: null,
     finishedAt: null,
   })
 }
@@ -521,6 +523,7 @@ const frontierToPending = {
   status: "pending" as const,
   taskId: null,
   error: null,
+  failure: null,
   startedAt: null,
   finishedAt: null,
 }
@@ -574,6 +577,7 @@ export function resetRunRecursive(input: ResetRunRecursiveInput): void {
           processes.updatePhaseRun(pr.id, {
             status: "running",
             error: null,
+            failure: null,
             finishedAt: null,
           })
           for (const child of children)

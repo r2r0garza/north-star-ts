@@ -1,4 +1,6 @@
 import { randomUUID } from "crypto"
+import { mkdirSync, writeFileSync } from "fs"
+import { join } from "path"
 import { createApproval, listApprovals } from "../../db/repositories/approvals"
 import { listMessages } from "../../db/repositories/messages"
 import { getTask } from "../../db/repositories/tasks"
@@ -17,7 +19,13 @@ import {
 } from "./checkpoints"
 import { SHUTDOWN_ABORT_REASON, PAUSE_ABORT_REASON } from "../../agent/abort"
 import type { TaskEventPayload } from "../runner"
+import {
+  sanitizeFailureContext,
+  sanitizeFailureText,
+} from "./failure-sanitizer"
 import type {
+  FailureContext,
+  FailureStage,
   ProcessFlag,
   ProcessGraph,
   ProcessPhase,
@@ -90,6 +98,7 @@ export interface PhaseResult {
   content?: string
   outputIdentity?: string | null
   error?: string
+  failure?: FailureContext
   stopped?: boolean
   retryable?: boolean
 }
@@ -132,6 +141,7 @@ export type RunSubProcess = (input: {
 export interface DecomposeResult {
   subtasks?: string[]
   error?: string
+  failure?: FailureContext
   stopped?: boolean
   retryable?: boolean
 }
@@ -168,6 +178,7 @@ export interface ValidateResult {
   feedback?: string
   targetOutputIdentity?: string | null
   error?: string
+  failure?: FailureContext
   stopped?: boolean
   retryable?: boolean
 }
@@ -216,6 +227,179 @@ export interface SchedulerCtx {
   // service increments it for a nested run. Threaded to runSubProcess for the
   // MAX_PROCESS_DEPTH backstop.
   processDepth?: number
+  // Best-effort external sink for failure diagnostics when SQLite persistence
+  // throws while recording the phase row, failed-attempt audit, or task event.
+  failureDiagnosticDir?: string | null
+}
+
+interface FailurePersistenceFallbackResult {
+  path: string | null
+  error: string | null
+}
+
+export class FailurePersistenceError extends Error {
+  constructor(
+    readonly failure: FailureContext,
+    readonly fallback: FailurePersistenceFallbackResult
+  ) {
+    super(failure.message)
+    this.name = "FailurePersistenceError"
+  }
+}
+
+function processFailure(input: {
+  resultFailure?: FailureContext
+  code: string
+  stage: FailureStage
+  message: string
+  retryable?: boolean
+  attempt?: number | null
+  maxAttempts?: number | null
+  run: ProcessRun
+  phase: ProcessPhase
+  phaseRun: ProcessPhaseRun
+  taskId: string
+}): FailureContext {
+  return sanitizeFailureContext({
+    code: input.resultFailure?.code ?? input.code,
+    stage: input.resultFailure?.stage ?? input.stage,
+    message: input.resultFailure?.message ?? input.message,
+    retryable: input.resultFailure?.retryable ?? input.retryable === true,
+    attempt: input.attempt ?? input.resultFailure?.attempt ?? null,
+    maxAttempts: input.maxAttempts ?? input.resultFailure?.maxAttempts ?? null,
+    runId: input.resultFailure?.runId ?? input.run.id,
+    phaseRunId: input.resultFailure?.phaseRunId ?? input.phaseRun.id,
+    phaseId: input.resultFailure?.phaseId ?? input.phase.id,
+    taskId: input.resultFailure?.taskId ?? input.taskId,
+    workerTaskId:
+      input.resultFailure?.workerTaskId ?? input.phaseRun.taskId ?? null,
+    agentName:
+      input.resultFailure?.agentName ?? input.phaseRun.agentName ?? null,
+    toolCallId: input.resultFailure?.toolCallId ?? null,
+    cause: input.resultFailure?.cause ?? null,
+    occurredAt: input.resultFailure?.occurredAt ?? Date.now(),
+  })
+}
+
+function recordFailedAttempt(input: {
+  run: ProcessRun
+  phase: ProcessPhase
+  phaseRun: ProcessPhaseRun
+  taskId: string
+  failure: FailureContext
+}): void {
+  processes.createPhaseAttempt({
+    runId: input.run.id,
+    phaseRunId: input.phaseRun.id,
+    phaseId: input.phase.id,
+    taskId: input.taskId,
+    workerTaskId: input.failure.workerTaskId,
+    agentName: input.failure.agentName,
+    stage: input.failure.stage,
+    attempt: input.failure.attempt,
+    maxAttempts: input.failure.maxAttempts,
+    error: input.failure.message,
+    failure: input.failure,
+  })
+}
+
+function errMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
+}
+
+function failureSummary(failure: FailureContext): string {
+  return `${failure.stage}/${failure.code}: ${failure.message}`
+}
+
+function writeFailurePersistenceFallback(input: {
+  ctx: SchedulerCtx
+  run: ProcessRun
+  phase: ProcessPhase
+  phaseRun: ProcessPhaseRun
+  originalFailure: FailureContext
+  persistenceError: unknown
+}): FailurePersistenceFallbackResult {
+  if (!input.ctx.failureDiagnosticDir) return { path: null, error: null }
+  try {
+    const dir = input.ctx.failureDiagnosticDir
+    mkdirSync(dir, { recursive: true })
+    const path = join(
+      dir,
+      `process-failure-${input.run.id}-${input.phaseRun.id}-${Date.now()}.json`
+    )
+    writeFileSync(
+      path,
+      JSON.stringify(
+        {
+          formatVersion: 1,
+          writtenAt: new Date().toISOString(),
+          runId: input.run.id,
+          processId: input.run.processId,
+          taskId: input.ctx.taskId,
+          phaseId: input.phase.id,
+          phaseKey: input.phase.key,
+          phaseRunId: input.phaseRun.id,
+          originalFailure: input.originalFailure,
+          persistenceFailure: {
+            message: sanitizeFailureText(
+              errMessage(input.persistenceError),
+              512
+            ),
+          },
+        },
+        null,
+        2
+      ),
+      "utf8"
+    )
+    return { path, error: null }
+  } catch (err) {
+    return {
+      path: null,
+      error: sanitizeFailureText(errMessage(err), 512),
+    }
+  }
+}
+
+function persistenceFailure(input: {
+  ctx: SchedulerCtx
+  run: ProcessRun
+  phase: ProcessPhase
+  phaseRun: ProcessPhaseRun
+  originalFailure: FailureContext
+  persistenceError: unknown
+  fallback: FailurePersistenceFallbackResult
+}): FailureContext {
+  const fallbackText = input.ctx.failureDiagnosticDir
+    ? input.fallback.path
+      ? `Best-effort fallback diagnostic: ${input.fallback.path}`
+      : `Fallback diagnostic failed: ${input.fallback.error ?? "unknown error"}`
+    : "No fallback diagnostic location is configured."
+  return sanitizeFailureContext({
+    code: "process_failure_persistence_failed",
+    stage: "result_persistence",
+    message:
+      "Process failure diagnostics were not fully persisted. " +
+      `Original failure: ${failureSummary(input.originalFailure)}. ` +
+      `Persistence failure: ${errMessage(input.persistenceError)}. ` +
+      fallbackText,
+    retryable: false,
+    attempt: input.originalFailure.attempt,
+    maxAttempts: input.originalFailure.maxAttempts,
+    runId: input.run.id,
+    phaseRunId: input.phaseRun.id,
+    phaseId: input.phase.id,
+    taskId: input.ctx.taskId,
+    workerTaskId: input.originalFailure.workerTaskId,
+    agentName: input.originalFailure.agentName,
+    toolCallId: input.originalFailure.toolCallId ?? null,
+    cause: JSON.stringify({
+      originalFailure: input.originalFailure,
+      persistenceFailure: { message: errMessage(input.persistenceError) },
+      fallback: input.fallback,
+    }),
+    occurredAt: Date.now(),
+  })
 }
 
 // A gate's durable approval request blob (stored on the approvals row). Kinds
@@ -818,6 +1002,7 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
       parentId: phaseRun.parentId,
       requestId,
       gateKind: "validator",
+      failure: freshPr.failure,
     })
     checkpoint()
     throw new GateBlockedError()
@@ -1156,12 +1341,31 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
     parentRun: ProcessPhaseRun
   ): Promise<void> => {
     if (!ctx.decompose) {
-      processes.updatePhaseRun(parentRun.id, {
-        status: "failed",
-        error: "fan-out phase has no decomposer configured",
-        finishedAt: Date.now(),
+      const latest = processes.getPhaseRun(parentRun.id) ?? parentRun
+      const failure = processFailure({
+        code: "decomposer_missing",
+        stage: "decomposition",
+        message: "fan-out phase has no decomposer configured",
+        retryable: false,
+        attempt: null,
+        maxAttempts: MAX_PHASE_ATTEMPTS,
+        run,
+        phase,
+        phaseRun: latest,
+        taskId: ctx.taskId,
       })
-      emitPhase(phase, parentRun.id, "failed")
+      persistPhaseFailure({
+        phase,
+        phaseRun: latest,
+        failure,
+        patch: {
+          status: "failed",
+          error: failure.message,
+          failure,
+          finishedAt: Date.now(),
+        },
+        emitStatus: "failed",
+      })
       return
     }
     let attempt = 0
@@ -1180,23 +1384,59 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
       const subtasks = result.subtasks ?? []
       if (result.error || subtasks.length === 0) {
         const err = result.error ?? "fan-out produced no sub-tasks"
+        const latest = processes.getPhaseRun(parentRun.id) ?? parentRun
+        const failure = processFailure({
+          resultFailure: result.failure,
+          code:
+            subtasks.length === 0
+              ? "decomposition_empty"
+              : "decomposition_failed",
+          stage: subtasks.length === 0 ? "output_validation" : "decomposition",
+          message: err,
+          retryable: result.retryable,
+          attempt,
+          maxAttempts: MAX_PHASE_ATTEMPTS,
+          run,
+          phase,
+          phaseRun: latest,
+          taskId: ctx.taskId,
+        })
         if (result.retryable && attempt < MAX_PHASE_ATTEMPTS) {
-          processes.updatePhaseRun(parentRun.id, { iteration: attempt })
+          persistPhaseFailure({
+            phase,
+            phaseRun: latest,
+            failure,
+            patch: {
+              iteration: attempt,
+              error: failure.message,
+              failure,
+            },
+          })
           continue
         }
-        processes.updatePhaseRun(parentRun.id, {
-          status: "failed",
-          error: err,
-          finishedAt: Date.now(),
-          iteration: attempt,
+        persistPhaseFailure({
+          phase,
+          phaseRun: latest,
+          failure,
+          patch: {
+            status: "failed",
+            error: failure.message,
+            failure,
+            finishedAt: Date.now(),
+            iteration: attempt,
+          },
+          emitStatus: "failed",
         })
-        emitPhase(phase, parentRun.id, "failed")
         return
       }
       // Success: spawn children. The parent stays `running` — deriveFanoutParents
       // settles it once every child is terminal.
       createChildrenAtomic(parentRun, subtasks)
-      processes.updatePhaseRun(parentRun.id, { iteration: attempt })
+      processes.updatePhaseRun(parentRun.id, {
+        iteration: attempt,
+        error: null,
+        failure: null,
+      })
       return
     }
   }
@@ -1303,11 +1543,46 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
         : anyCancelled
           ? "cancelled"
           : "completed"
-      processes.updatePhaseRun(pr.id, {
+      const failedChild = children.find((c) => c.status === "failed")
+      const derivedFailure =
+        derived === "failed"
+          ? (failedChild?.failure ??
+            processFailure({
+              code: "fanout_child_failed",
+              stage: "scheduler",
+              message: failedChild?.error ?? "fan-out child failed",
+              retryable: false,
+              run,
+              phase,
+              phaseRun: pr,
+              taskId: ctx.taskId,
+            }))
+          : null
+      const patch: Parameters<typeof processes.updatePhaseRun>[1] = {
         status: derived,
+        error:
+          failedChild?.error ?? (derived === "completed" ? null : pr.error),
+        failure:
+          derived === "failed"
+            ? derivedFailure
+            : derived === "completed"
+              ? null
+              : pr.failure,
         finishedAt: Date.now(),
-      })
-      emitPhase(phase, pr.id, derived)
+      }
+      if (derivedFailure) {
+        persistPhaseFailure({
+          phase,
+          phaseRun: pr,
+          failure: derivedFailure,
+          recordAttempt: !failedChild?.failure,
+          patch,
+          emitStatus: "failed",
+        })
+      } else {
+        processes.updatePhaseRun(pr.id, patch)
+        emitPhase(phase, pr.id, derived)
+      }
       settledAny = true
     }
     return settledAny
@@ -1343,17 +1618,46 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
           return
         }
         if (result.error) {
+          const latest = processes.getPhaseRun(phaseRun.id) ?? phaseRun
+          const failure = processFailure({
+            resultFailure: result.failure,
+            code: "phase_worker_failed",
+            stage: result.failure?.stage ?? "model_request",
+            message: result.error,
+            retryable: result.retryable,
+            attempt,
+            maxAttempts: MAX_PHASE_ATTEMPTS,
+            run,
+            phase,
+            phaseRun: latest,
+            taskId: ctx.taskId,
+          })
           if (result.retryable && attempt < MAX_PHASE_ATTEMPTS) {
-            processes.updatePhaseRun(phaseRun.id, { iteration: attempt })
+            persistPhaseFailure({
+              phase,
+              phaseRun: latest,
+              failure,
+              patch: {
+                iteration: attempt,
+                error: failure.message,
+                failure,
+              },
+            })
             continue
           }
-          processes.updatePhaseRun(phaseRun.id, {
-            status: "failed",
-            error: result.error,
-            finishedAt: Date.now(),
-            iteration: attempt,
+          persistPhaseFailure({
+            phase,
+            phaseRun: latest,
+            failure,
+            patch: {
+              status: "failed",
+              error: failure.message,
+              failure,
+              finishedAt: Date.now(),
+              iteration: attempt,
+            },
+            emitStatus: "failed",
           })
-          emitPhase(phase, phaseRun.id, "failed")
           return
         }
         if (result.outputIdentity !== undefined) {
@@ -1390,10 +1694,33 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
           return
         }
         if (verdict.error) {
-          processes.updatePhaseRun(phaseRun.id, {
-            status: "waiting_for_approval",
-            error: verdict.error,
-            reworkNote: null,
+          const latest = processes.getPhaseRun(phaseRun.id) ?? phaseRun
+          const failure = processFailure({
+            resultFailure: verdict.failure,
+            code: "validator_review_failed",
+            stage: verdict.failure?.stage ?? "reviewer",
+            message: verdict.error,
+            retryable: verdict.retryable,
+            attempt: latest.validatorRound + 1,
+            maxAttempts:
+              phase.validatorMaxIterations > 0
+                ? phase.validatorMaxIterations
+                : DEFAULT_VALIDATOR_ITERATIONS,
+            run,
+            phase,
+            phaseRun: latest,
+            taskId: ctx.taskId,
+          })
+          persistPhaseFailure({
+            phase,
+            phaseRun: latest,
+            failure,
+            patch: {
+              status: "waiting_for_approval",
+              error: failure.message,
+              failure,
+              reworkNote: null,
+            },
           })
           raiseValidatorGate(phase, processes.getPhaseRun(phaseRun.id)!)
         }
@@ -1432,6 +1759,8 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
 
       processes.updatePhaseRun(phaseRun.id, {
         status: "completed",
+        error: null,
+        failure: null,
         finishedAt: Date.now(),
         iteration: attempt,
       })
@@ -1456,12 +1785,31 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
     subtaskPrompt?: string
   ): Promise<void> => {
     if (!ctx.runSubProcess) {
-      processes.updatePhaseRun(phaseRun.id, {
-        status: "failed",
-        error: "sub-process phase has no runner configured",
-        finishedAt: Date.now(),
+      const latest = processes.getPhaseRun(phaseRun.id) ?? phaseRun
+      const failure = processFailure({
+        code: "subprocess_runner_missing",
+        stage: "subprocess",
+        message: "sub-process phase has no runner configured",
+        retryable: false,
+        attempt: 1,
+        maxAttempts: 1,
+        run,
+        phase,
+        phaseRun: latest,
+        taskId: ctx.taskId,
       })
-      emitPhase(phase, phaseRun.id, "failed")
+      persistPhaseFailure({
+        phase,
+        phaseRun: latest,
+        failure,
+        patch: {
+          status: "failed",
+          error: failure.message,
+          failure,
+          finishedAt: Date.now(),
+        },
+        emitStatus: "failed",
+      })
       return
     }
     const result = await ctx.runSubProcess({
@@ -1477,16 +1825,38 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
       return
     }
     if (result.error) {
-      processes.updatePhaseRun(phaseRun.id, {
-        status: "failed",
-        error: result.error,
-        finishedAt: Date.now(),
+      const latest = processes.getPhaseRun(phaseRun.id) ?? phaseRun
+      const failure = processFailure({
+        resultFailure: result.failure,
+        code: "subprocess_failed",
+        stage: "subprocess",
+        message: result.error,
+        retryable: result.retryable,
+        attempt: 1,
+        maxAttempts: 1,
+        run,
+        phase,
+        phaseRun: latest,
+        taskId: ctx.taskId,
       })
-      emitPhase(phase, phaseRun.id, "failed")
+      persistPhaseFailure({
+        phase,
+        phaseRun: latest,
+        failure,
+        patch: {
+          status: "failed",
+          error: failure.message,
+          failure,
+          finishedAt: Date.now(),
+        },
+        emitStatus: "failed",
+      })
       return
     }
     processes.updatePhaseRun(phaseRun.id, {
       status: "completed",
+      error: null,
+      failure: null,
       finishedAt: Date.now(),
     })
     emitPhase(phase, phaseRun.id, "completed")
@@ -1506,7 +1876,89 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
       agentName: pr?.agentName ?? null,
       status,
       parentId: pr?.parentId ?? null,
+      failure: pr?.failure ?? null,
     })
+  }
+
+  const persistPhaseFailure = (input: {
+    phase: ProcessPhase
+    phaseRun: ProcessPhaseRun
+    failure: FailureContext
+    recordAttempt?: boolean
+    patch: Parameters<typeof processes.updatePhaseRun>[1]
+    emitStatus?: "failed" | "waiting_for_approval"
+  }): ProcessPhaseRun => {
+    try {
+      if (input.recordAttempt !== false) {
+        recordFailedAttempt({
+          run,
+          phase: input.phase,
+          phaseRun: input.phaseRun,
+          taskId: ctx.taskId,
+          failure: input.failure,
+        })
+      }
+      const updated = processes.updatePhaseRun(input.phaseRun.id, input.patch)
+      if (input.emitStatus) {
+        ctx.emit({
+          type: "process_phase",
+          runId: run.id,
+          phaseRunId: input.phaseRun.id,
+          phaseKey: input.phase.key,
+          agentName: updated.agentName ?? input.failure.agentName,
+          status: input.emitStatus,
+          parentId: updated.parentId,
+          failure: updated.failure ?? input.failure,
+        })
+      }
+      return updated
+    } catch (err) {
+      const fallback = writeFailurePersistenceFallback({
+        ctx,
+        run,
+        phase: input.phase,
+        phaseRun: input.phaseRun,
+        originalFailure: input.failure,
+        persistenceError: err,
+      })
+      const failure = persistenceFailure({
+        ctx,
+        run,
+        phase: input.phase,
+        phaseRun: input.phaseRun,
+        originalFailure: input.failure,
+        persistenceError: err,
+        fallback,
+      })
+      try {
+        processes.updatePhaseRun(input.phaseRun.id, {
+          status: "failed",
+          error: failure.message,
+          failure,
+          finishedAt: Date.now(),
+        })
+      } catch {
+        // The fallback diagnostic and thrown FailurePersistenceError are the source
+        // of truth when SQLite cannot even record the persistence failure.
+      }
+      try {
+        ctx.emit({
+          type: "process_phase",
+          runId: run.id,
+          phaseRunId: input.phaseRun.id,
+          phaseKey: input.phase.key,
+          agentName: input.phaseRun.agentName ?? failure.agentName,
+          status: "failed",
+          parentId: input.phaseRun.parentId,
+          failure,
+        })
+      } catch {
+        // A task_events write can be the failing persistence boundary. The task
+        // result still carries the honest error, and the external fallback may
+        // carry the original failure.
+      }
+      throw new FailurePersistenceError(failure, fallback)
+    }
   }
 
   // Whether the current abort is RESUMABLE (app quit / pause) vs a genuine user

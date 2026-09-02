@@ -706,6 +706,158 @@ describe.skipIf(!sqliteLoads)("agent loop tool-error feedback", () => {
     expect(completionRequests).toHaveLength(3)
   })
 
+  it("keeps a process worker tool failure distinct from a later API failure", async () => {
+    const workspace = await makeWorkspace()
+    await mkdir(join(workspace, ".claude", "agents"), { recursive: true })
+    await writeFile(
+      join(workspace, ".claude", "agents", "reader.md"),
+      [
+        "---",
+        "name: reader",
+        "description: Reads files for a process phase.",
+        "tools: Read",
+        "---",
+        "Use file reads only.",
+        "",
+      ].join("\n"),
+      "utf-8"
+    )
+
+    const workspaceId = upsertWorkspace(workspace).id
+    const source = createConversation({
+      mode: "interactive",
+      workspaceId,
+    })
+    const definition = processes.createProcessDefinition({ name: "Loop test" })
+    const phase = processes.createPhase({
+      processId: definition.id,
+      key: "read",
+      name: "Read",
+      routing: "single",
+      position: 0,
+    })
+    processes.createPhaseAgent({
+      phaseId: phase.id,
+      agentName: "reader",
+      position: 0,
+    })
+    const backingTask = createTask({
+      conversationId: source.id,
+      sourceConversationId: source.id,
+      status: "running",
+      title: "Process",
+      input: { kind: "process_run" },
+    })
+    const run = processes.createProcessRun({
+      processId: definition.id,
+      sourceConversationId: source.id,
+      workspaceId,
+      taskId: backingTask.id,
+      objective: "read files",
+      status: "running",
+    })
+
+    scriptedCompletions.push(() =>
+      streamToolCalls([
+        {
+          id: "process_missing",
+          name: "read_file_tool",
+          arguments: JSON.stringify({ path: "missing.txt" }),
+        },
+      ])
+    )
+    const apiError = Object.assign(new Error("invalid api key after tool"), {
+      status: 401,
+    })
+    scriptedCompletions.push((request) => {
+      expect(lastMessage(request, "tool")).toMatchObject({
+        tool_call_id: "process_missing",
+      })
+      expect(lastMessage(request, "tool")?.content).toContain(
+        "ERROR[not_found]"
+      )
+      throw apiError
+    })
+
+    const svc = new ProcessService({ enqueueKind: vi.fn() } as never)
+    const events: TaskEventPayload[] = []
+    const result = await svc.execute({
+      task: {
+        ...backingTask,
+        input: { processRunId: run.id },
+      } as never,
+      signal: new AbortController().signal,
+      emit: (event) => {
+        events.push(event)
+      },
+      workspace: undefined,
+    })
+
+    expect(result).toEqual({ error: "a process phase failed", retryable: false })
+    expect(processes.getProcessRun(run.id)?.status).toBe("failed")
+    const phaseRun = processes.listPhaseRuns({
+      runId: run.id,
+      parentId: null,
+    })[0]
+    expect(phaseRun.status).toBe("failed")
+    expect(phaseRun.agentName).toBe("reader")
+    expect(phaseRun.failure).toMatchObject({
+      code: "model_request_failed",
+      stage: "model_request",
+      message: "invalid api key after tool",
+      phaseRunId: phaseRun.id,
+      phaseId: phase.id,
+      workerTaskId: phaseRun.taskId,
+      agentName: "reader",
+    })
+    expect(phaseRun.failure?.taskId).toBe(phaseRun.taskId)
+    expect(phaseRun.failure?.toolCallId ?? null).toBeNull()
+
+    const attempts = processes.listPhaseAttempts({ phaseRunId: phaseRun.id })
+    expect(attempts).toHaveLength(1)
+    expect(attempts[0]).toMatchObject({
+      stage: "model_request",
+      error: "invalid api key after tool",
+      workerTaskId: phaseRun.taskId,
+      failure: {
+        code: "model_request_failed",
+        stage: "model_request",
+      },
+    })
+
+    const failedEvent = events.find(
+      (event) => event.type === "process_phase" && event.status === "failed"
+    )
+    expect(failedEvent).toMatchObject({
+      type: "process_phase",
+      phaseRunId: phaseRun.id,
+      failure: {
+        code: "model_request_failed",
+        stage: "model_request",
+      },
+    })
+
+    const workerTask = getTask(phaseRun.taskId!)
+    expect(workerTask).toBeTruthy()
+    const workerResults = contentsByCallId(workerTask!.conversationId)
+    expect(workerResults.get("process_missing")).toContain("ERROR[not_found]")
+    const lifecycle = listToolCallLifecycle(workerTask!.conversationId)
+    expect(lifecycle).toHaveLength(1)
+    expect(lifecycle[0]).toMatchObject({
+      toolCallId: "process_missing",
+      toolName: "read_file_tool",
+      state: "settled_error",
+      logicalRoundId: "after-seq:1",
+    })
+    expect(lifecycle[0].error).toContain("ERROR[not_found]")
+    expect(getBudget(workerTask!.conversationId, "after-seq:3")).toMatchObject({
+      status: "exhausted",
+      attemptsConsumed: 1,
+      lastError: "invalid api key after tool",
+    })
+    expect(completionRequests).toHaveLength(2)
+  })
+
   it("retries only the failed model request after a completed tool round", async () => {
     vi.spyOn(Math, "random").mockReturnValue(0)
     let executions = 0

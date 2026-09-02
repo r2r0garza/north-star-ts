@@ -5,22 +5,34 @@ import {
   createPhaseAgent,
   createProcessDefinition,
   getProcessDefinition,
+  getPhase,
+  getPhaseRun,
   getProcessGraph,
+  getProcessRun,
+  listPhaseAttempts,
+  listPhaseRuns,
+  listProcessRuns,
   updateProcessDefinition,
 } from "../db/repositories/processes"
 import type {
   EdgeTrigger,
+  FailureContext,
   PhaseGatePolicy,
   PhaseRouting,
+  ProcessPhaseAttempt,
+  ProcessPhaseRun,
   ProcessGraph,
+  ProcessRun,
 } from "../db/types"
 import type {
   AgentRef,
   AgentScope,
   ExternalAgentSourceKind,
 } from "../agent/agents/types"
+import { sanitizeFailureContext } from "../tasks/process/failure-sanitizer"
 
 const FORMAT_VERSION = 1
+const INCIDENT_FORMAT_VERSION = 1
 const AGENT_REF_PREFIX = "agentref:v1:"
 
 const ROUTINGS: readonly PhaseRouting[] = ["single", "dispatch"]
@@ -91,6 +103,77 @@ export interface ProcessExport {
 export interface ProcessImportResult {
   processId: string
   warnings: string[]
+}
+
+export interface ProcessIncidentAppInfo {
+  name: string
+  version: string
+  build: string | null
+}
+
+export interface ProcessIncidentRunIdentity {
+  id: string
+  processId: string | null
+  processName: string | null
+  taskId: string | null
+  sourceConversationId: string | null
+  workspaceId: string | null
+  parentPhaseRunId: string | null
+  status: ProcessRun["status"]
+  objective: string | null
+  title: string | null
+  createdAt: string
+  startedAt: string | null
+  finishedAt: string | null
+}
+
+export interface ProcessIncidentPhaseRunIdentity {
+  id: string
+  runId: string
+  phaseId: string
+  phaseKey: string | null
+  phaseName: string | null
+  parentId: string | null
+  taskId: string | null
+  workerTaskId: string | null
+  agentName: string | null
+  status: ProcessPhaseRun["status"]
+  iteration: number
+  reworkRound: number
+  validatorRound: number
+  sourceChildRunId: string | null
+  startedAt: string | null
+  finishedAt: string | null
+  failure: FailureContext | null
+}
+
+export interface ProcessIncidentAttempt {
+  id: string
+  runId: string
+  phaseRunId: string
+  phaseId: string
+  phaseKey: string | null
+  taskId: string | null
+  workerTaskId: string | null
+  agentName: string | null
+  stage: ProcessPhaseAttempt["stage"]
+  status: ProcessPhaseAttempt["status"]
+  attempt: number | null
+  maxAttempts: number | null
+  error: string
+  failure: FailureContext
+  createdAt: string
+}
+
+export interface ProcessRunIncidentExport {
+  formatVersion: 1
+  kind: "process_run_incident"
+  exportedAt: string
+  app: ProcessIncidentAppInfo
+  rootRunId: string
+  runs: ProcessIncidentRunIdentity[]
+  phaseRuns: ProcessIncidentPhaseRunIdentity[]
+  attempts: ProcessIncidentAttempt[]
 }
 
 function parseAgentRef(value: string): AgentRef | null {
@@ -227,6 +310,36 @@ export function exportProcessDefinition(processId: string): ProcessExport {
   return buildProcessExport(graph)
 }
 
+export function buildProcessRunIncidentExport(
+  processRunId: string,
+  app: ProcessIncidentAppInfo
+): ProcessRunIncidentExport {
+  const rootRun = getProcessRun(processRunId)
+  if (!rootRun) throw new Error("Process run not found")
+
+  const runIds = collectIncidentRunIds(rootRun)
+  const runs = [...runIds]
+    .map((id) => getProcessRun(id))
+    .filter((run): run is ProcessRun => !!run)
+  const phaseRuns = runs.flatMap((run) => listPhaseRuns({ runId: run.id }))
+  const attempts = runs
+    .flatMap((run) => listPhaseAttempts({ runId: run.id }))
+    .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id))
+
+  return {
+    formatVersion: INCIDENT_FORMAT_VERSION,
+    kind: "process_run_incident",
+    exportedAt: new Date().toISOString(),
+    app,
+    rootRunId: rootRun.id,
+    runs: runs.map(runToIncidentIdentity),
+    phaseRuns: phaseRuns.map(phaseRunToIncidentIdentity),
+    attempts: attempts.map(attemptToIncident),
+  }
+}
+
+export const exportProcessRunIncident = buildProcessRunIncidentExport
+
 export function importProcessExport(input: unknown): ProcessImportResult {
   const parsed = validateProcessExport(input)
   const warnings: string[] = []
@@ -301,6 +414,119 @@ export function importProcessExport(input: unknown): ProcessImportResult {
 
     return { processId: definition.id, warnings }
   })()
+}
+
+function collectIncidentRunIds(rootRun: ProcessRun): Set<string> {
+  const ids = new Set<string>()
+  const queue: ProcessRun[] = []
+
+  let current: ProcessRun | undefined = rootRun
+  while (current) {
+    if (ids.has(current.id)) break
+    ids.add(current.id)
+    queue.push(current)
+    const parentPhaseRun: ProcessPhaseRun | undefined = current.parentPhaseRunId
+      ? getPhaseRun(current.parentPhaseRunId)
+      : undefined
+    current = parentPhaseRun ? getProcessRun(parentPhaseRun.runId) : undefined
+  }
+
+  const allRuns = listProcessRuns()
+  for (let index = 0; index < queue.length; index++) {
+    const run = queue[index]
+    const phaseRunIds = new Set(
+      listPhaseRuns({ runId: run.id }).map((phaseRun) => phaseRun.id)
+    )
+    for (const candidate of allRuns) {
+      if (
+        candidate.parentPhaseRunId &&
+        phaseRunIds.has(candidate.parentPhaseRunId) &&
+        !ids.has(candidate.id)
+      ) {
+        ids.add(candidate.id)
+        queue.push(candidate)
+      }
+    }
+  }
+
+  return ids
+}
+
+function runToIncidentIdentity(run: ProcessRun): ProcessIncidentRunIdentity {
+  return {
+    id: run.id,
+    processId: run.processId,
+    processName: run.processId
+      ? (getProcessDefinition(run.processId)?.name ?? null)
+      : null,
+    taskId: run.taskId,
+    sourceConversationId: run.sourceConversationId,
+    workspaceId: run.workspaceId,
+    parentPhaseRunId: run.parentPhaseRunId,
+    status: run.status,
+    objective: run.objective,
+    title: run.title,
+    createdAt: iso(run.createdAt),
+    startedAt: nullableIso(run.startedAt),
+    finishedAt: nullableIso(run.finishedAt),
+  }
+}
+
+function phaseRunToIncidentIdentity(
+  phaseRun: ProcessPhaseRun
+): ProcessIncidentPhaseRunIdentity {
+  const phase = getPhase(phaseRun.phaseId)
+  return {
+    id: phaseRun.id,
+    runId: phaseRun.runId,
+    phaseId: phaseRun.phaseId,
+    phaseKey: phase?.key ?? null,
+    phaseName: phase?.name ?? null,
+    parentId: phaseRun.parentId,
+    taskId: phaseRun.taskId,
+    workerTaskId: phaseRun.taskId,
+    agentName: phaseRun.agentName,
+    status: phaseRun.status,
+    iteration: phaseRun.iteration,
+    reworkRound: phaseRun.reworkRound,
+    validatorRound: phaseRun.validatorRound,
+    sourceChildRunId: phaseRun.sourceChildRunId,
+    startedAt: nullableIso(phaseRun.startedAt),
+    finishedAt: nullableIso(phaseRun.finishedAt),
+    failure: phaseRun.failure ? sanitizeFailureContext(phaseRun.failure) : null,
+  }
+}
+
+function attemptToIncident(
+  attempt: ProcessPhaseAttempt
+): ProcessIncidentAttempt {
+  const phase = getPhase(attempt.phaseId)
+  const failure = sanitizeFailureContext(attempt.failure)
+  return {
+    id: attempt.id,
+    runId: attempt.runId,
+    phaseRunId: attempt.phaseRunId,
+    phaseId: attempt.phaseId,
+    phaseKey: phase?.key ?? null,
+    taskId: attempt.taskId,
+    workerTaskId: attempt.workerTaskId,
+    agentName: attempt.agentName,
+    stage: attempt.stage,
+    status: attempt.status,
+    attempt: attempt.attempt,
+    maxAttempts: attempt.maxAttempts,
+    error: failure.message,
+    failure,
+    createdAt: iso(attempt.createdAt),
+  }
+}
+
+function iso(value: number): string {
+  return new Date(value).toISOString()
+}
+
+function nullableIso(value: number | null): string | null {
+  return value === null ? null : iso(value)
 }
 
 function resolveSubprocess(

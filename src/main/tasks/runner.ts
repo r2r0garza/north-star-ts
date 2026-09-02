@@ -6,7 +6,7 @@ import {
   listTasks,
   updateTask,
 } from "../db/repositories/tasks"
-import { appendEvent } from "../db/repositories/task-events"
+import { appendEvent, listEvents } from "../db/repositories/task-events"
 import {
   createApproval,
   listApprovals,
@@ -23,7 +23,13 @@ import {
 } from "../db/repositories/conversations"
 import { getWorkspace } from "../db/repositories/workspaces"
 import { replaceTodos } from "../db/repositories/todos"
-import type { PhaseRunStatus, Task, TaskStatus, TodoStatus } from "../db/types"
+import type {
+  FailureContext,
+  PhaseRunStatus,
+  Task,
+  TaskStatus,
+  TodoStatus,
+} from "../db/types"
 
 // Runner-emitted lifecycle events, appended to task_events alongside the agent's
 // ChatEvents so a (re)attaching renderer can reconstruct a task's progress from
@@ -38,6 +44,10 @@ export type RunnerLifecycleEvent =
   // logically running (DB row unchanged) while it backs off, so no status_change
   // accompanies this — it's a progress note in the durable log (plan 011).
   | { type: "attempt"; n: number; reason: string }
+  // A user-driven resume/restart starts a fresh retry budget for this task id.
+  // Kept in the durable event log so crash/reload recovery can ignore older
+  // retry attempts while still preserving the transcript.
+  | { type: "retry_budget_reset" }
   // Deterministic indexing progress (plan 008). Emitted per batch by the
   // workspace_index executor and forwarded on the live tail so the status strip
   // can render `filesScanned / filesTotal` and the current stage. `filesTotal` is
@@ -76,6 +86,7 @@ export type RunnerLifecycleEvent =
       // a "flag" gate uses the cross-phase rework confirmation card. Absent on
       // non-gate events. Lets the monitor route the requestId to the right card.
       gateKind?: "phase" | "validator" | "flag"
+      failure?: FailureContext | null
     }
 
 // The full vocabulary written to task_events / streamed on the live tail: the
@@ -199,6 +210,16 @@ function backoffDelay(attempt: number, cfg: BackoffConfig): number {
   return Math.floor(Math.random() * ceiling)
 }
 
+function durableRetryAttempts(taskId: string): number {
+  const events = listEvents(taskId)
+  const lastResetIndex = events.findLastIndex(
+    (event) => event.type === "retry_budget_reset"
+  )
+  return events
+    .slice(lastResetIndex + 1)
+    .filter((event) => event.type === "attempt").length
+}
+
 // A single-process durable task runner over the existing task tables. It makes
 // agent work queued (FIFO under a concurrency cap), background (runs with no
 // renderer attached; progress persisted to task_events), and crash-resumable
@@ -238,9 +259,8 @@ export class TaskRunner {
   private wakeQueued = false
   private stopped = false
   private pumping = false
-  // Per-task count of failed attempts so far (transient-retry budget). Survives
-  // between a failed run and its backoff re-run; deleted on any terminal settle.
-  private attempts = new Map<string, number>()
+  // Failed retry attempts are counted from the durable task_events log so
+  // bounded retries survive app reloads while a task is sleeping in backoff.
   // Pending backoff timers so cancel()/stop() can clear a task mid-sleep. A task
   // here is NOT in `running` (its slot is freed) but its DB row stays `running`.
   private backoffTimers = new Map<string, ReturnType<typeof setTimeout>>()
@@ -475,9 +495,9 @@ export class TaskRunner {
         `cannot resume task while side-effecting tool outcomes are unknown: ${names}`
       )
     }
-    // A manual resume restarts the retry budget — the prior attempt counter (if
-    // any survived) is stale; a fresh user-driven run gets the full allowance.
-    this.attempts.delete(taskId)
+    // A manual resume restarts the durable retry budget. Older attempt events
+    // remain inspectable but no longer count against this fresh user-driven run.
+    this.emit(taskId, { type: "retry_budget_reset" })
     updateTask(taskId, { status: "queued" })
     this.emit(taskId, {
       type: "status_change",
@@ -507,7 +527,7 @@ export class TaskRunner {
       )
     }
     // A fresh user-driven run gets the full retry allowance again.
-    this.attempts.delete(taskId)
+    this.emit(taskId, { type: "retry_budget_reset" })
     createLinkedRetryBudget({
       conversationId: task.conversationId,
       logicalRoundId: `after-seq:${getMaxMessageSeq(task.conversationId)}`,
@@ -538,7 +558,6 @@ export class TaskRunner {
     if (timer) {
       clearTimeout(timer)
       this.backoffTimers.delete(taskId)
-      this.attempts.delete(taskId)
     }
     this.queue = this.queue.filter((id) => id !== taskId)
     const task = getTask(taskId)
@@ -563,7 +582,6 @@ export class TaskRunner {
     if (timer) {
       clearTimeout(timer)
       this.backoffTimers.delete(taskId)
-      this.attempts.delete(taskId)
       this.queue = this.queue.filter((id) => id !== taskId)
       const task = getTask(taskId)
       if (task) {
@@ -875,7 +893,6 @@ export class TaskRunner {
       // resuming). The agent path tolerates this only because a shutdown usually
       // kills the process before runOne returns.
       if (abort.signal.reason === SHUTDOWN_ABORT_REASON) {
-        this.attempts.delete(taskId)
         // Leave the status `running`; reconcile owns the transition on next boot.
       } else if (
         // A pause aborts the executor with PAUSE_ABORT_REASON: settle to `paused`
@@ -885,7 +902,6 @@ export class TaskRunner {
         ("paused" in result && result.paused) ||
         abort.signal.reason === PAUSE_ABORT_REASON
       ) {
-        this.attempts.delete(taskId)
         updateTask(taskId, { status: "paused" })
         this.emit(taskId, {
           type: "status_change",
@@ -893,7 +909,6 @@ export class TaskRunner {
           to: "paused",
         })
       } else if (result.stopped) {
-        this.attempts.delete(taskId)
         // A turn stopped while parked on a gate leaves a `pending` approval row;
         // sweep it so it doesn't outlive the cancelled task (no-op if the user
         // already approved/denied it).
@@ -907,7 +922,6 @@ export class TaskRunner {
       } else if (result.error) {
         this.settleError(taskId, result.error, result.retryable === true)
       } else {
-        this.attempts.delete(taskId)
         updateTask(taskId, {
           status: "completed",
           result: result.content ?? null,
@@ -924,7 +938,6 @@ export class TaskRunner {
       // unexpected throw (e.g. a repository call) — not a provider-transient error,
       // so it fails fast with no retry.
       const message = err instanceof Error ? err.message : String(err)
-      this.attempts.delete(taskId)
       this.settleApprovals(taskId, "denied", { superseded: "interrupted" })
       updateTask(taskId, { status: "failed", error: message })
       this.emit(taskId, { type: "task_failed", error: message })
@@ -940,19 +953,15 @@ export class TaskRunner {
   // leave the DB row `running` (so a crash mid-backoff reconciles to
   // `interrupted`), and arm a timer that re-queues the task once the slot is
   // freed by runOne's finally. On exhaustion (or a deterministic error) we mark
-  // the task `failed` and clear the attempt counter.
+  // the task `failed`.
   private settleError(taskId: string, error: string, retryable: boolean): void {
-    const n = (this.attempts.get(taskId) ?? 0) + 1
+    const n = durableRetryAttempts(taskId) + 1
     if (retryable && n < this.backoff.maxAttempts) {
-      this.attempts.set(taskId, n)
       this.emit(taskId, { type: "attempt", n, reason: error })
       const timer = setTimeout(
         () => {
           this.backoffTimers.delete(taskId)
-          if (this.stopped || !getTask(taskId)) {
-            this.attempts.delete(taskId)
-            return
-          }
+          if (this.stopped || !getTask(taskId)) return
           if (!this.queue.includes(taskId)) this.queue.push(taskId)
           this.wakeup()
         },
@@ -961,7 +970,6 @@ export class TaskRunner {
       this.backoffTimers.set(taskId, timer)
       return
     }
-    this.attempts.delete(taskId)
     updateTask(taskId, { status: "failed", error })
     this.emit(taskId, { type: "task_failed", error })
     this.emit(taskId, { type: "status_change", from: "running", to: "failed" })

@@ -2,9 +2,12 @@ import { randomUUID } from "crypto"
 import { getDb } from "../connection"
 import type {
   EdgeTrigger,
+  FailureContext,
+  FailureStage,
   PhaseGatePolicy,
   PhaseRouting,
   PhaseRunStatus,
+  ProcessPhaseAttempt,
   ProcessDefinition,
   ProcessEdge,
   ProcessFlag,
@@ -161,6 +164,7 @@ interface ProcessPhaseRunRow {
   title: string | null
   iteration: number
   error: string | null
+  failure: string | null
   started_at: number | null
   finished_at: number | null
   rework_note: string | null
@@ -182,6 +186,8 @@ function toPhaseRun(row: ProcessPhaseRunRow): ProcessPhaseRun {
     title: row.title,
     iteration: row.iteration,
     error: row.error,
+    failure:
+      row.failure === null ? null : (JSON.parse(row.failure) as FailureContext),
     startedAt: row.started_at,
     finishedAt: row.finished_at,
     reworkNote: row.rework_note,
@@ -189,6 +195,42 @@ function toPhaseRun(row: ProcessPhaseRunRow): ProcessPhaseRun {
     validatorRound: row.validator_round,
     outputIdentity: row.output_identity,
     sourceChildRunId: row.source_child_run_id,
+  }
+}
+
+interface ProcessPhaseAttemptRow {
+  id: string
+  run_id: string
+  phase_run_id: string
+  phase_id: string
+  task_id: string | null
+  worker_task_id: string | null
+  agent_name: string | null
+  stage: FailureStage
+  status: "failed"
+  attempt: number | null
+  max_attempts: number | null
+  error: string
+  failure: string
+  created_at: number
+}
+
+function toPhaseAttempt(row: ProcessPhaseAttemptRow): ProcessPhaseAttempt {
+  return {
+    id: row.id,
+    runId: row.run_id,
+    phaseRunId: row.phase_run_id,
+    phaseId: row.phase_id,
+    taskId: row.task_id,
+    workerTaskId: row.worker_task_id,
+    agentName: row.agent_name,
+    stage: row.stage,
+    status: row.status,
+    attempt: row.attempt,
+    maxAttempts: row.max_attempts,
+    error: row.error,
+    failure: JSON.parse(row.failure) as FailureContext,
+    createdAt: row.created_at,
   }
 }
 
@@ -767,6 +809,7 @@ export function updatePhaseRun(
     agentName?: string | null
     iteration?: number
     error?: string | null
+    failure?: FailureContext | null
     startedAt?: number | null
     finishedAt?: number | null
     reworkNote?: string | null
@@ -796,6 +839,10 @@ export function updatePhaseRun(
   if (patch.error !== undefined) {
     sets.push("error = ?")
     values.push(patch.error)
+  }
+  if (patch.failure !== undefined) {
+    sets.push("failure = ?")
+    values.push(patch.failure === null ? null : JSON.stringify(patch.failure))
   }
   if (patch.startedAt !== undefined) {
     sets.push("started_at = ?")
@@ -828,6 +875,73 @@ export function updatePhaseRun(
       .run(...values)
   }
   return getPhaseRun(id)!
+}
+
+export function createPhaseAttempt(input: {
+  runId: string
+  phaseRunId: string
+  phaseId: string
+  taskId?: string | null
+  workerTaskId?: string | null
+  agentName?: string | null
+  stage: FailureStage
+  attempt?: number | null
+  maxAttempts?: number | null
+  error: string
+  failure: FailureContext
+}): ProcessPhaseAttempt {
+  const id = randomUUID()
+  const now = Date.now()
+  getDb()
+    .prepare(
+      "INSERT INTO process_phase_attempts (id, run_id, phase_run_id, phase_id, task_id, worker_task_id, agent_name, stage, status, attempt, max_attempts, error, failure, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'failed', ?, ?, ?, ?, ?)"
+    )
+    .run(
+      id,
+      input.runId,
+      input.phaseRunId,
+      input.phaseId,
+      input.taskId ?? null,
+      input.workerTaskId ?? null,
+      input.agentName ?? null,
+      input.stage,
+      input.attempt ?? null,
+      input.maxAttempts ?? null,
+      input.error,
+      JSON.stringify(input.failure),
+      now
+    )
+  return getPhaseAttempt(id)!
+}
+
+export function getPhaseAttempt(id: string): ProcessPhaseAttempt | undefined {
+  const row = getDb()
+    .prepare("SELECT * FROM process_phase_attempts WHERE id = ?")
+    .get(id) as ProcessPhaseAttemptRow | undefined
+  return row ? toPhaseAttempt(row) : undefined
+}
+
+export function listPhaseAttempts(opts: {
+  runId?: string
+  phaseRunId?: string
+}): ProcessPhaseAttempt[] {
+  const clauses: string[] = []
+  const values: unknown[] = []
+  if (opts.runId) {
+    clauses.push("run_id = ?")
+    values.push(opts.runId)
+  }
+  if (opts.phaseRunId) {
+    clauses.push("phase_run_id = ?")
+    values.push(opts.phaseRunId)
+  }
+  const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : ""
+  const rows = getDb()
+    .prepare(
+      `SELECT * FROM process_phase_attempts ${where} ORDER BY created_at ASC`
+    )
+    .all(...values) as ProcessPhaseAttemptRow[]
+  return rows.map(toPhaseAttempt)
 }
 
 // Delete a phase-run and its descendant children (the parent_id FK is

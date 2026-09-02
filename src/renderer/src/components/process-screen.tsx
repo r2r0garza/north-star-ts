@@ -124,8 +124,10 @@ import type {
   ProcessGraph,
   ProcessPhase,
   ProcessPhaseAgent,
+  ProcessPhaseAttempt,
   ProcessPhaseRun,
   ProcessRun,
+  Approval,
   Task,
   TaskEventPayload,
   TaskLiveEvent,
@@ -137,7 +139,7 @@ import type {
 // keys the monitor's gate map — so we can drop a settled gate on reconcile. A
 // process_flag_gate (plan 031.2) additionally carries the flag's target + reason
 // so the monitor renders the confirmation card off the approvals row alone.
-interface ProcessGateRequest {
+export interface ProcessGateRequest {
   kind: "process_phase_gate" | "process_validator_gate" | "process_flag_gate"
   phaseKey: string
   phaseRunId: string
@@ -148,7 +150,7 @@ interface ProcessGateRequest {
   flagReason?: string
 }
 
-interface GateInfo {
+export interface GateInfo {
   requestId: string
   gateKind: "phase" | "validator"
 }
@@ -168,7 +170,7 @@ interface ApprovalValidation {
   output: string | null
 }
 
-interface ProcessApprovalPacket {
+export interface ProcessApprovalPacket {
   requestId: string
   processRunId: string
   phaseRunId: string
@@ -205,7 +207,7 @@ interface FileTextResult {
 
 // A pending cross-phase rework flag awaiting human confirmation (plan 031.2),
 // rendered on the FLAGGING phase-run's card.
-interface FlagGateInfo {
+export interface FlagGateInfo {
   requestId: string
   targetKey: string
   reason: string
@@ -1766,7 +1768,11 @@ function RunMonitor({
   // no-op if the phase never spawned a worker (taskId null) or the task vanished.
   async function openTranscript(phaseRun: ProcessPhaseRun) {
     if (!phaseRun.taskId) return
-    const task = await window.cowork.db.tasks.get(phaseRun.taskId)
+    await openTaskById(phaseRun.taskId)
+  }
+
+  async function openTaskById(taskId: string) {
+    const task = await window.cowork.db.tasks.get(taskId)
     if (task) setViewingTask(task)
   }
 
@@ -1835,36 +1841,13 @@ function RunMonitor({
         window.cowork.db.approvals.list({ taskId }),
       ]).then(([events, approvals]) => {
         if (cancelled) return
-        const gates = deriveGates(
-          events.map((e) => e.payload as TaskEventPayload)
-        )
-        const flagInfo: Record<string, FlagGateInfo> = {}
-        const requests: Record<string, ProcessGateRequest> = {}
-        for (const a of approvals) {
-          const req = a.request as ProcessGateRequest | null
-          if (req?.requestId) requests[req.requestId] = req
-          if (a.status === "pending") {
-            // A pending flag gate: record its target + reason so PhaseRunItem can
-            // render the confirmation card (keyed by the flagging phase-run).
-            if (req?.kind === "process_flag_gate")
-              flagInfo[req.phaseRunId] = {
-                requestId: req.requestId,
-                targetKey: req.flagTargetKey ?? "",
-                reason: req.flagReason ?? "",
-              }
-            continue
-          }
-          // Drop the gate only if THIS settled row is the one the map is showing
-          // (match by requestId, not phaseRunId): after a "Request changes" round
-          // a phase-run has both a denied old row and a fresh pending gate — the
-          // denied row must not clear the live one (plan 029). Applies to all gate
-          // kinds (phase / validator / flag).
-          if (req && gates[req.phaseRunId]?.requestId === req.requestId)
-            delete gates[req.phaseRunId]
-        }
-        setGates(gates)
-        setFlagGates(flagInfo)
-        setGateRequests(requests)
+        const recovered = recoverProcessMonitorGates({
+          events: events.map((e) => e.payload as TaskEventPayload),
+          approvals,
+        })
+        setGates(recovered.gates)
+        setFlagGates(recovered.flagGates)
+        setGateRequests(recovered.requests)
       })
     })
     return () => {
@@ -2142,6 +2125,17 @@ function RunMonitor({
     }
   }
 
+  async function exportRunIncident() {
+    if (!run) return
+    try {
+      const result = await window.cowork.process.exportRunIncident(run.id)
+      if (result.canceled) return
+      toast.success("Exported process incident")
+    } catch (err) {
+      toast.error(`Could not export process incident: ${err}`)
+    }
+  }
+
   // Start a new run of this definition (from the New Run modal). Refreshes the
   // run list, selects the new run, and closes the modal.
   async function startNewRun(objective: string, workspacePath: string) {
@@ -2249,15 +2243,26 @@ function RunMonitor({
         {/* A failed run can retry from its failure frontier: the failed phase(s)
             and blocked dependents re-run; completed phases don't. */}
         {run && run.status === "failed" && (
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            onClick={() => window.cowork.process.restart(run.id)}
-          >
-            <RotateCcw className="size-3.5" />
-            Retry
-          </Button>
+          <>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={exportRunIncident}
+            >
+              <Download className="size-3.5" />
+              Export Incident
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={() => window.cowork.process.restart(run.id)}
+            >
+              <RotateCcw className="size-3.5" />
+              Retry
+            </Button>
+          </>
         )}
       </div>
 
@@ -2324,6 +2329,7 @@ function RunMonitor({
               onConfirmFlag={confirmFlag}
               onDismissFlag={dismissFlag}
               onOpenTranscript={openTranscript}
+              onOpenTask={openTaskById}
               onOpenReview={openApprovalReview}
             />
           ))}
@@ -2435,6 +2441,7 @@ function PhaseRunItem({
   onConfirmFlag,
   onDismissFlag,
   onOpenTranscript,
+  onOpenTask,
   onOpenReview,
 }: {
   phaseRun: ProcessPhaseRun
@@ -2480,6 +2487,7 @@ function PhaseRunItem({
   onDismissFlag: (requestId: string, phaseRunId: string) => void
   // Open a phase/child's worker transcript (only rows with a taskId).
   onOpenTranscript: (phaseRun: ProcessPhaseRun) => void
+  onOpenTask: (taskId: string) => void
   onOpenReview: (
     phaseRun: ProcessPhaseRun,
     name: string,
@@ -2513,11 +2521,36 @@ function PhaseRunItem({
         <PhaseStatusLabel status={displayStatus} />
       </div>
 
-      {phaseRun.error && (
+      {phaseRun.failure && (
+        <div className="flex flex-wrap gap-1.5 text-xs text-muted-foreground">
+          <span className="rounded border px-1.5 py-0.5">
+            {phaseRun.failure.stage}
+          </span>
+          <span className="rounded border px-1.5 py-0.5">
+            {phaseRun.failure.code}
+          </span>
+          {phaseRun.failure.attempt !== null && (
+            <span className="rounded border px-1.5 py-0.5">
+              attempt {phaseRun.failure.attempt}
+              {phaseRun.failure.maxAttempts !== null
+                ? `/${phaseRun.failure.maxAttempts}`
+                : ""}
+            </span>
+          )}
+        </div>
+      )}
+
+      {(phaseRun.failure?.message ?? phaseRun.error) && (
         <pre className="overflow-x-auto rounded-md bg-destructive/5 px-2 py-1.5 text-xs text-destructive">
-          {phaseRun.error}
+          {phaseRun.failure?.message ?? phaseRun.error}
         </pre>
       )}
+
+      <PhaseAttemptHistory
+        phaseRunId={phaseRun.id}
+        refreshKey={refreshTick}
+        onOpenTask={onOpenTask}
+      />
 
       {/* Files this phase's worker produced (plan 030b). */}
       {phaseRun.taskId && (
@@ -2602,6 +2635,13 @@ function PhaseRunItem({
                     />
                   </div>
                 )}
+                <div className="pl-1">
+                  <PhaseAttemptHistory
+                    phaseRunId={c.id}
+                    refreshKey={refreshTick}
+                    onOpenTask={onOpenTask}
+                  />
+                </div>
                 {/* A per-child rework flag this INSTANCE raised (plan 031.2):
                     an on_each_subtask consumer instance that flagged its source
                     sub-task. Rendered here since the instance is a nested child,
@@ -2628,6 +2668,7 @@ function PhaseRunItem({
                       parentPhaseRunId={c.id}
                       workspacePath={workspacePath}
                       onOpenTranscript={onOpenTranscript}
+                      onOpenTask={onOpenTask}
                       refreshTick={refreshTick}
                       depth={0}
                       gates={gates}
@@ -2659,6 +2700,7 @@ function PhaseRunItem({
           parentPhaseRunId={phaseRun.id}
           workspacePath={workspacePath}
           onOpenTranscript={onOpenTranscript}
+          onOpenTask={onOpenTask}
           refreshTick={refreshTick}
           depth={0}
           gates={gates}
@@ -2674,6 +2716,126 @@ function PhaseRunItem({
         />
       )}
     </div>
+  )
+}
+
+function formatAttemptTime(timestamp: number): string {
+  return new Date(timestamp).toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  })
+}
+
+function attemptLabel(attempt: ProcessPhaseAttempt): string {
+  if (attempt.attempt === null) return "attempt unknown"
+  return `attempt ${attempt.attempt}${
+    attempt.maxAttempts !== null ? `/${attempt.maxAttempts}` : ""
+  }`
+}
+
+// Compact durable failure-audit disclosure. The current phase row may have
+// succeeded after a retry, so this reads process_phase_attempts instead of the
+// latest phaseRun.failure field.
+export function PhaseAttemptHistory({
+  phaseRunId,
+  refreshKey,
+  onOpenTask,
+}: {
+  phaseRunId: string
+  refreshKey?: unknown
+  onOpenTask: (taskId: string) => void
+}) {
+  const [attempts, setAttempts] = useState<ProcessPhaseAttempt[]>([])
+  const [open, setOpen] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    window.cowork.db.processes.phaseAttempts
+      .list({ phaseRunId })
+      .then((rows) => {
+        if (!cancelled) setAttempts(rows)
+      })
+      .catch(() => {
+        if (!cancelled) setAttempts([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [phaseRunId, refreshKey])
+
+  if (attempts.length === 0) return null
+
+  return (
+    <Collapsible open={open} onOpenChange={setOpen}>
+      <CollapsibleTrigger asChild>
+        <button
+          type="button"
+          className="flex w-fit items-center gap-1 rounded-md border px-2 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
+        >
+          <ChevronRight
+            className={cn("size-3.5 transition-transform", open && "rotate-90")}
+          />
+          Attempt history
+          <Badge variant="secondary" className="h-4 px-1 text-[10px]">
+            {attempts.length}
+          </Badge>
+        </button>
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        <div className="mt-2 flex flex-col gap-1.5 rounded-md border bg-muted/30 p-2">
+          {attempts.map((attempt) => {
+            const taskId = attempt.workerTaskId ?? attempt.taskId
+            return (
+              <div
+                key={attempt.id}
+                className="flex flex-col gap-1 rounded border bg-background/70 px-2 py-1.5 text-xs"
+              >
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <Badge variant="outline" className="h-5">
+                    {attemptLabel(attempt)}
+                  </Badge>
+                  <Badge variant="outline" className="h-5">
+                    {attempt.stage}
+                  </Badge>
+                  <Badge variant="outline" className="h-5">
+                    {attempt.failure.code}
+                  </Badge>
+                  <Badge
+                    variant={
+                      attempt.failure.retryable ? "secondary" : "outline"
+                    }
+                    className="h-5"
+                  >
+                    {attempt.failure.retryable ? "retryable" : "not retryable"}
+                  </Badge>
+                  <span className="text-[11px] text-muted-foreground">
+                    {formatAttemptTime(attempt.createdAt)}
+                  </span>
+                  {taskId && (
+                    <Button
+                      type="button"
+                      size="xs"
+                      variant="ghost"
+                      className="ml-auto h-6"
+                      onClick={() => onOpenTask(taskId)}
+                      title={taskId}
+                    >
+                      <FileText className="size-3" />
+                      Transcript
+                    </Button>
+                  )}
+                </div>
+                <p className="line-clamp-2 text-muted-foreground">
+                  {attempt.failure.message || attempt.error}
+                </p>
+              </div>
+            )
+          })}
+        </div>
+      </CollapsibleContent>
+    </Collapsible>
   )
 }
 
@@ -3392,6 +3554,7 @@ function SubProcessNestedRun({
   parentPhaseRunId,
   workspacePath,
   onOpenTranscript,
+  onOpenTask,
   refreshTick,
   depth,
   gates,
@@ -3408,6 +3571,7 @@ function SubProcessNestedRun({
   parentPhaseRunId: string
   workspacePath: string
   onOpenTranscript: (phaseRun: ProcessPhaseRun) => void
+  onOpenTask: (taskId: string) => void
   // Bumped by the monitor on every live task event; re-fetches the child run's
   // rows while expanded so a running nested run's phases update live (plan 038.1).
   refreshTick: number
@@ -3578,6 +3742,11 @@ function SubProcessNestedRun({
                     }
                   />
                 )}
+                <PhaseAttemptHistory
+                  phaseRunId={pr.id}
+                  refreshKey={refreshTick}
+                  onOpenTask={onOpenTask}
+                />
                 {/* A cross-phase rework flag this nested phase raised (plan 038.2). */}
                 {flagGates[pr.id] && (
                   <FlagCard
@@ -3633,6 +3802,13 @@ function SubProcessNestedRun({
                         />
                       </div>
                     )}
+                    <div className="ml-3">
+                      <PhaseAttemptHistory
+                        phaseRunId={c.id}
+                        refreshKey={refreshTick}
+                        onOpenTask={onOpenTask}
+                      />
+                    </div>
                     {/* A combined fan-out + sub-process phase inside the nested run
                         (plan 038.3): each child dispatched its own sub-process. */}
                     {isSubProcess(pr.phaseId) &&
@@ -3643,6 +3819,7 @@ function SubProcessNestedRun({
                             parentPhaseRunId={c.id}
                             workspacePath={workspacePath}
                             onOpenTranscript={onOpenTranscript}
+                            onOpenTask={onOpenTask}
                             refreshTick={refreshTick}
                             depth={depth + 1}
                             gates={gates}
@@ -3669,6 +3846,7 @@ function SubProcessNestedRun({
                       parentPhaseRunId={pr.id}
                       workspacePath={workspacePath}
                       onOpenTranscript={onOpenTranscript}
+                      onOpenTask={onOpenTask}
                       refreshTick={refreshTick}
                       depth={depth + 1}
                       gates={gates}
@@ -3881,7 +4059,7 @@ function NewRunModal({
 // A FLAG gate (plan 031.2, gateKind "flag") is EXCLUDED — it's rendered by the
 // separate flagGates map / card, not the generic approve card, so it must not
 // land here (else a flagging phase would show both cards).
-function foldGate(
+export function foldGate(
   gates: Record<string, GateInfo>,
   ev: Extract<TaskEventPayload, { type: "process_phase" }>
 ): Record<string, GateInfo> {
@@ -3908,12 +4086,44 @@ function foldGate(
 
 // Rebuild the whole gate map from a replayed event stream (newest wins per
 // phase). Used to recover pending gates after the monitor (re)mounts.
-function deriveGates(events: TaskEventPayload[]): Record<string, GateInfo> {
+export function deriveGates(
+  events: TaskEventPayload[]
+): Record<string, GateInfo> {
   let gates: Record<string, GateInfo> = {}
   for (const ev of events) {
     if (ev.type === "process_phase") gates = foldGate(gates, ev)
   }
   return gates
+}
+
+export function recoverProcessMonitorGates(input: {
+  events: TaskEventPayload[]
+  approvals: Approval[]
+}): {
+  gates: Record<string, GateInfo>
+  flagGates: Record<string, FlagGateInfo>
+  requests: Record<string, ProcessGateRequest>
+} {
+  const gates = deriveGates(input.events)
+  const flagGates: Record<string, FlagGateInfo> = {}
+  const requests: Record<string, ProcessGateRequest> = {}
+  for (const approval of input.approvals) {
+    const req = approval.request as ProcessGateRequest | null
+    if (req?.requestId) requests[req.requestId] = req
+    if (approval.status === "pending") {
+      if (req?.kind === "process_flag_gate") {
+        flagGates[req.phaseRunId] = {
+          requestId: req.requestId,
+          targetKey: req.flagTargetKey ?? "",
+          reason: req.flagReason ?? "",
+        }
+      }
+      continue
+    }
+    if (req && gates[req.phaseRunId]?.requestId === req.requestId)
+      delete gates[req.phaseRunId]
+  }
+  return { gates, flagGates, requests }
 }
 
 function runLabel(run: ProcessRun): string {

@@ -797,6 +797,79 @@ describe.skipIf(!sqliteLoads)(
       await runner.stop()
     })
 
+    it("keeps the retry budget after reload during backoff", async () => {
+      let calls = 0
+      const run = async () => {
+        calls++
+        return { error: "still 503", retryable: true }
+      }
+      const runner1 = new TaskRunner({
+        backoff: { baseMs: 10_000, maxMs: 10_000, maxAttempts: 3 },
+      })
+      runner1.registerKind("auto_kind", { autoResume: true, run })
+      runner1.start()
+      const task = runner1.enqueueKind({
+        kind: "auto_kind",
+        title: "recoverable process",
+        input: {},
+      })
+
+      for (
+        let i = 0;
+        i < 50 &&
+        listEvents(task.id).filter((e) => e.type === "attempt").length < 1;
+        i++
+      ) {
+        await new Promise((r) => setTimeout(r, 5))
+      }
+      expect(calls).toBe(1)
+      expect(getTask(task.id)?.status).toBe("running")
+
+      await runner1.stop()
+
+      const runner2 = new TaskRunner({ backoff: fastBackoff })
+      runner2.registerKind("auto_kind", { autoResume: true, run })
+      runner2.start()
+      await settle()
+
+      expect(calls).toBe(3)
+      expect(getTask(task.id)?.status).toBe("failed")
+      const attempts = listEvents(task.id).filter((e) => e.type === "attempt")
+      expect(attempts.map((e) => (e.payload as { n: number }).n)).toEqual([
+        1, 2,
+      ])
+      await runner2.stop()
+    })
+
+    it("resets the durable retry budget on user restart", async () => {
+      const conv = createConversation({ mode: "chat" })
+      let calls = 0
+      const run = async () => {
+        calls++
+        return { error: "still 503", retryable: true }
+      }
+      const task = createTask({
+        conversationId: conv.id,
+        status: "failed",
+        input: { kind: "auto_kind" },
+      })
+      appendEvent({ taskId: task.id, type: "attempt", payload: { n: 1 } })
+      appendEvent({ taskId: task.id, type: "attempt", payload: { n: 2 } })
+
+      const runner = new TaskRunner({ backoff: fastBackoff })
+      runner.registerKind("auto_kind", { autoResume: true, run })
+      runner.start()
+      runner.restart(task.id)
+      await settle()
+
+      expect(calls).toBe(3)
+      expect(getTask(task.id)?.status).toBe("failed")
+      expect(
+        listEvents(task.id).some((e) => e.type === "retry_budget_reset")
+      ).toBe(true)
+      await runner.stop()
+    })
+
     it("does not retry a deterministic failure", async () => {
       const conv = createConversation({ mode: "chat" })
       loopImpl = async () => ({ error: "bad args", retryable: false })

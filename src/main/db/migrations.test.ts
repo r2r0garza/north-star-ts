@@ -91,7 +91,7 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
     const db = new Database(":memory:")
     db.pragma("foreign_keys = ON")
     runMigrations(db)
-    expect(db.pragma("user_version", { simple: true })).toBe(39)
+    expect(db.pragma("user_version", { simple: true })).toBe(40)
     expect(db.pragma("foreign_key_check")).toHaveLength(0)
     db.close()
   })
@@ -463,6 +463,36 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
     db.close()
   })
 
+  it("adds process failure context columns and attempt audit table (v40, debug 069)", () => {
+    const db = new Database(":memory:")
+    db.pragma("foreign_keys = ON")
+    runMigrations(db)
+    const phaseRunCols = (
+      db.pragma("table_info(process_phase_runs)") as Array<{ name: string }>
+    ).map((c) => c.name)
+    expect(phaseRunCols).toContain("failure")
+    const attemptsTable = db
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='process_phase_attempts'"
+      )
+      .get()
+    expect(attemptsTable).toBeTruthy()
+    const attemptCols = (
+      db.pragma("table_info(process_phase_attempts)") as Array<{ name: string }>
+    ).map((c) => c.name)
+    expect(attemptCols).toEqual(
+      expect.arrayContaining([
+        "phase_run_id",
+        "worker_task_id",
+        "stage",
+        "attempt",
+        "max_attempts",
+        "failure",
+      ])
+    )
+    db.close()
+  })
+
   it("adds the flag-back schema (v22, plan 031.2)", () => {
     const db = new Database(":memory:")
     db.pragma("foreign_keys = ON")
@@ -627,7 +657,7 @@ describe.skipIf(!sqliteLoads)("SCHEMA_V9 — orphan reap (plan 022)", () => {
     // Apply V9 (the reaper) and any later migrations, up to the latest version.
     runMigrations(db)
 
-    expect(db.pragma("user_version", { simple: true })).toBe(39)
+    expect(db.pragma("user_version", { simple: true })).toBe(40)
 
     // Reaped: orphan + its nested descendant, and all their state.
     const taskIds = (

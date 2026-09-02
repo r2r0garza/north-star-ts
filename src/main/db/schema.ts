@@ -1167,3 +1167,31 @@ CREATE INDEX idx_tool_call_lifecycle_invocation
 export const SCHEMA_V39 = `
 ALTER TABLE process_phase_runs ADD COLUMN output_identity TEXT;
 `
+
+// v40 (debug 069): preserve structured process failure context and failed
+// attempt history across process/task boundaries. The phase row carries the
+// latest failure for monitor reloads; process_phase_attempts keeps each failed
+// retry/exhaustion event inspectable even when the phase later re-runs.
+export const SCHEMA_V40 = `
+ALTER TABLE process_phase_runs ADD COLUMN failure TEXT;
+CREATE TABLE process_phase_attempts (
+  id                 TEXT PRIMARY KEY,
+  run_id             TEXT NOT NULL REFERENCES process_runs(id) ON DELETE CASCADE,
+  phase_run_id       TEXT NOT NULL REFERENCES process_phase_runs(id) ON DELETE CASCADE,
+  phase_id           TEXT NOT NULL REFERENCES process_phases(id),
+  task_id            TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+  worker_task_id     TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+  agent_name         TEXT,
+  stage              TEXT NOT NULL,
+  status             TEXT NOT NULL,
+  attempt            INTEGER,
+  max_attempts       INTEGER,
+  error              TEXT NOT NULL,
+  failure            TEXT NOT NULL,
+  created_at         INTEGER NOT NULL
+);
+CREATE INDEX idx_process_phase_attempts_phase_run
+  ON process_phase_attempts(phase_run_id, created_at ASC);
+CREATE INDEX idx_process_phase_attempts_run
+  ON process_phase_attempts(run_id, created_at ASC);
+`

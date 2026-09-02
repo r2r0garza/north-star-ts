@@ -6,6 +6,7 @@ import type {
   Approval,
   ApprovalStatus,
   Conversation,
+  FailureContext,
   Message,
   Mode,
   Project,
@@ -21,6 +22,7 @@ import type {
   ProcessPhaseAgent,
   ProcessEdge,
   ProcessRun,
+  ProcessPhaseAttempt,
   ProcessPhaseRun,
   ProcessRunStatus,
   PhaseRunStatus,
@@ -89,7 +91,10 @@ import type {
   TerminalProfile,
   TerminalSessionView,
 } from "../main/terminal/types"
-import type { ProcessImportResult } from "../main/process/io"
+import type {
+  ProcessImportResult,
+  ProcessRunIncidentExport,
+} from "../main/process/io"
 
 // Streaming events emitted during a chat turn (mirrors ChatEvent in the agent).
 export type ChatEvent =
@@ -152,6 +157,7 @@ export type RunnerLifecycleEvent =
       // Which gate kind a waiting_for_approval event is (plan 031.2): "phase" /
       // "validator" use the generic approve card; "flag" uses the rework card.
       gateKind?: "phase" | "validator" | "flag"
+      failure?: FailureContext | null
     }
 
 // The full event vocabulary a task emits, live or replayed from task_events.
@@ -425,6 +431,10 @@ const api = {
       ipcRenderer.invoke("process:dismissFlag", payload) as Promise<void>,
     exportDefinition: (processId: string) =>
       ipcRenderer.invoke("process:export", processId) as Promise<
+        { path: string; canceled: false } | { canceled: true }
+      >,
+    exportRunIncident: (processRunId: string) =>
+      ipcRenderer.invoke("process:exportRunIncident", processRunId) as Promise<
         { path: string; canceled: false } | { canceled: true }
       >,
     importDefinition: () =>
@@ -1079,6 +1089,13 @@ const api = {
             ProcessPhaseRun[]
           >,
       },
+      phaseAttempts: {
+        list: (opts: { runId?: string; phaseRunId?: string }) =>
+          ipcRenderer.invoke(
+            "db:processes:phaseAttempts:list",
+            opts
+          ) as Promise<ProcessPhaseAttempt[]>,
+      },
     },
 
     // Live dashboards (plan 033). CRUD the dashboards view + the dashboard_write
@@ -1554,6 +1571,7 @@ export type {
   Approval,
   ApprovalStatus,
   Conversation,
+  FailureContext,
   Message,
   Mode,
   Project,
@@ -1569,6 +1587,7 @@ export type {
   ProcessPhaseAgent,
   ProcessEdge,
   ProcessRun,
+  ProcessPhaseAttempt,
   ProcessPhaseRun,
   ProcessGraph,
   ProcessRunStatus,
@@ -1583,7 +1602,10 @@ export type {
   DashboardWidgetType,
   DashboardWidgetDataStatus,
 } from "../main/db/types"
-export type { ProcessImportResult } from "../main/process/io"
+export type {
+  ProcessImportResult,
+  ProcessRunIncidentExport,
+} from "../main/process/io"
 // Re-export the ask_user_question types so the renderer can type the panel.
 export type {
   Question,

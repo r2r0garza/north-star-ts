@@ -94,6 +94,7 @@ import {
 } from "./model-request-retry"
 import { generateTitle } from "./title"
 export { generateTitle } from "./title"
+import { sanitizeFailureContext } from "../tasks/process/failure-sanitizer"
 import { appendMessage, getMaxMessageSeq } from "../db/repositories/messages"
 import {
   findPriorToolCallLifecycleByInvocation,
@@ -121,6 +122,7 @@ import { getWorkspace } from "../db/repositories/workspaces"
 import { getProject } from "../db/repositories/projects"
 import { getAccount } from "../db/repositories/provider-accounts"
 import type { Conversation } from "../db/types"
+import type { FailureContext, FailureStage } from "../db/types"
 import { runClaudeConversation, runCodexConversation } from "./cli"
 import { normalizeClaudeModel } from "./cli/claude"
 import { makePolicyEngine } from "./approval/engine"
@@ -326,6 +328,7 @@ export interface ChatRequest {
 export interface ChatResult {
   content?: string
   error?: string
+  failure?: FailureContext
   // Stable code for renderer actions that should not depend on parsing the
   // human-readable error text.
   errorCode?: "execution_backend_unavailable"
@@ -347,14 +350,48 @@ function failTurn(
   conversationId: string,
   message: string,
   retryable = false,
-  errorCode?: ChatResult["errorCode"]
+  errorCode?: ChatResult["errorCode"],
+  failure?: FailureContext
 ): ChatResult {
   appendMessage({
     conversationId,
     role: "assistant",
     content: `⚠️ The turn ended early: ${message}`,
   })
-  return { error: message, retryable, errorCode }
+  return {
+    error: message,
+    retryable,
+    ...(errorCode ? { errorCode } : {}),
+    ...(failure ? { failure } : {}),
+  }
+}
+
+function agentFailure(input: {
+  code: string
+  stage: FailureStage
+  message: string
+  retryable?: boolean
+  taskId?: string
+  processRunId?: string
+  processPhaseRunId?: string
+  cause?: string | null
+}): FailureContext {
+  return sanitizeFailureContext({
+    code: input.code,
+    stage: input.stage,
+    message: input.message,
+    retryable: input.retryable === true,
+    attempt: null,
+    maxAttempts: null,
+    runId: input.processRunId ?? null,
+    phaseRunId: input.processPhaseRunId ?? null,
+    phaseId: null,
+    taskId: input.taskId ?? null,
+    workerTaskId: input.taskId ?? null,
+    agentName: null,
+    cause: input.cause ?? null,
+    occurredAt: Date.now(),
+  })
 }
 
 function isToolErrorResult(result: string): boolean {
@@ -610,15 +647,48 @@ export async function runAgentLoop(
   const hasWorkspace = typeof workspace === "string" && workspace.length > 0
   if (hasWorkspace) {
     if (!isAbsolute(workspace!)) {
-      return { error: "A valid absolute workspace path is required." }
+      const message = "A valid absolute workspace path is required."
+      return {
+        error: message,
+        failure: agentFailure({
+          code: "invalid_workspace",
+          stage: "agent_setup",
+          message,
+          taskId,
+          processRunId: opts.processRunId,
+          processPhaseRunId: opts.processPhaseRunId,
+        }),
+      }
     }
     try {
       const info = await stat(workspace!)
       if (!info.isDirectory()) {
-        return { error: `Workspace is not a directory: ${workspace}` }
+        const message = `Workspace is not a directory: ${workspace}`
+        return {
+          error: message,
+          failure: agentFailure({
+            code: "invalid_workspace",
+            stage: "agent_setup",
+            message,
+            taskId,
+            processRunId: opts.processRunId,
+            processPhaseRunId: opts.processPhaseRunId,
+          }),
+        }
       }
     } catch {
-      return { error: `Workspace does not exist: ${workspace}` }
+      const message = `Workspace does not exist: ${workspace}`
+      return {
+        error: message,
+        failure: agentFailure({
+          code: "invalid_workspace",
+          stage: "agent_setup",
+          message,
+          taskId,
+          processRunId: opts.processRunId,
+          processPhaseRunId: opts.processPhaseRunId,
+        }),
+      }
     }
   }
 
@@ -1841,12 +1911,39 @@ export async function runAgentLoop(
     }
     if (error instanceof ModelRequestRetryExhaustedError) {
       console.error("Model request retry budget exhausted:", error)
-      return failTurn(conversationId, error.message, false)
+      const failure =
+        taskId || opts.processRunId || opts.processPhaseRunId
+          ? agentFailure({
+              code: "model_request_retry_exhausted",
+              stage: "model_request",
+              message: error.message,
+              taskId,
+              processRunId: opts.processRunId,
+              processPhaseRunId: opts.processPhaseRunId,
+              cause: error.name,
+            })
+          : undefined
+      return failTurn(conversationId, error.message, false, undefined, failure)
     }
-    console.error("Portkey request failed:", error)
+    console.error("Agent loop failed:", error)
     const message = error instanceof Error ? error.message : "Request failed"
     const retryable = isTransientError(error)
-    return failTurn(conversationId, message, retryable)
+    const failure =
+      taskId || opts.processRunId || opts.processPhaseRunId
+        ? agentFailure({
+            code: retryable
+              ? "transient_model_request_failed"
+              : "model_request_failed",
+            stage: "model_request",
+            message,
+            retryable,
+            taskId,
+            processRunId: opts.processRunId,
+            processPhaseRunId: opts.processPhaseRunId,
+            cause: error instanceof Error ? error.name : null,
+          })
+        : undefined
+    return failTurn(conversationId, message, retryable, undefined, failure)
   } finally {
     // Drop this turn's auto-mode setter (only live turns registered one). Guard
     // against a newer turn for the same conversation having replaced it.

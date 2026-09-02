@@ -300,9 +300,7 @@ export function registerDbHandlers(
     (_e, input: { name: string; description?: string | null }) =>
       processes.createProcessDefinition(input)
   )
-  ipcMain.handle("db:processes:list", () =>
-    processes.listProcessDefinitions()
-  )
+  ipcMain.handle("db:processes:list", () => processes.listProcessDefinitions())
   ipcMain.handle(
     "db:processes:get",
     (_e, id: string) => processes.getProcessGraph(id) ?? null
@@ -428,8 +426,15 @@ export function registerDbHandlers(
   )
   ipcMain.handle(
     "db:processes:phaseRuns:list",
-    (_e, opts: { runId?: string; parentId?: string | null; phaseId?: string }) =>
-      processes.listPhaseRuns(opts)
+    (
+      _e,
+      opts: { runId?: string; parentId?: string | null; phaseId?: string }
+    ) => processes.listPhaseRuns(opts)
+  )
+  ipcMain.handle(
+    "db:processes:phaseAttempts:list",
+    (_e, opts: { runId?: string; phaseRunId?: string }) =>
+      processes.listPhaseAttempts(opts)
   )
 
   // Live dashboards (plan 033). Structured CRUD the dashboards view + the
@@ -437,8 +442,10 @@ export function registerDbHandlers(
   // conversation-scoped); widgets + their cached data hang off it.
   ipcMain.handle(
     "db:dashboards:create",
-    (_e, input: { name: string; description?: string | null; layout?: unknown }) =>
-      dashboards.createDashboard(input)
+    (
+      _e,
+      input: { name: string; description?: string | null; layout?: unknown }
+    ) => dashboards.createDashboard(input)
   )
   ipcMain.handle("db:dashboards:list", () => dashboards.listDashboards())
   ipcMain.handle(

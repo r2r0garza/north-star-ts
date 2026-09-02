@@ -1,4 +1,6 @@
 import { createHash } from "crypto"
+import { app } from "electron"
+import { join } from "path"
 import { runAgentLoop, generateTitle } from "../../agent"
 import { SHUTDOWN_ABORT_REASON, PAUSE_ABORT_REASON } from "../../agent/abort"
 import {
@@ -98,6 +100,15 @@ function settleAbortedRun(runId: string, signal: AbortSignal): void {
     status: "cancelled",
     finishedAt: Date.now(),
   })
+}
+
+function processFailureDiagnosticDir(): string | null {
+  try {
+    const userData = app?.getPath?.("userData")
+    return userData ? join(userData, "process-failure-diagnostics") : null
+  } catch {
+    return null
+  }
 }
 
 // Map an aborted executor to a runner result by WHY it aborted (plan 038.3): a
@@ -331,6 +342,7 @@ export class ProcessService {
       processes.updatePhaseRun(phaseRunId, {
         status: "pending",
         error: null,
+        failure: null,
         startedAt: null,
         finishedAt: null,
         reworkNote: feedback,
@@ -417,6 +429,7 @@ export class ProcessService {
       processes.updatePhaseRun(phaseRun.id, {
         status: "pending",
         error: null,
+        failure: null,
         startedAt: null,
         finishedAt: null,
         reworkNote: null,
@@ -636,6 +649,7 @@ export class ProcessService {
         // rides in so the closure enforces MAX_PROCESS_DEPTH and recurses at depth+1.
         runSubProcess: this.makeRunSubProcess(run, taskId, emit),
         processDepth: depth,
+        failureDiagnosticDir: processFailureDiagnosticDir(),
         // Cross-phase flag-back (plan 031.2): the definition's autonomy toggle, and
         // the reset applier (delegated to flagback.ts — one reset code path shared
         // with the confirm route).
@@ -775,14 +789,50 @@ export class ProcessService {
         // generic sub-process message below.
         const settled = processes.getProcessRun(childRun.id)
         if (settled?.status !== "failed")
-          return { error: err instanceof Error ? err.message : String(err) }
+          return {
+            error: err instanceof Error ? err.message : String(err),
+            failure: {
+              code: "subprocess_exception",
+              stage: "subprocess",
+              message: err instanceof Error ? err.message : String(err),
+              retryable: false,
+              attempt: null,
+              maxAttempts: null,
+              runId: childRun.id,
+              phaseRunId: phaseRun.id,
+              phaseId: phase.id,
+              taskId,
+              workerTaskId: phaseRun.taskId,
+              agentName: phaseRun.agentName,
+              cause: err instanceof Error ? err.name : null,
+              occurredAt: Date.now(),
+            },
+          }
       }
 
       const settled = processes.getProcessRun(childRun.id)
       if (signal.aborted || settled?.status === "cancelled")
         return { stopped: true }
       if (settled?.status !== "completed")
-        return { error: "sub-process run failed", retryable: false }
+        return {
+          error: "sub-process run failed",
+          retryable: false,
+          failure: {
+            code: "subprocess_run_failed",
+            stage: "subprocess",
+            message: "sub-process run failed",
+            retryable: false,
+            attempt: null,
+            maxAttempts: null,
+            runId: childRun.id,
+            phaseRunId: phaseRun.id,
+            phaseId: phase.id,
+            taskId,
+            workerTaskId: phaseRun.taskId,
+            agentName: phaseRun.agentName,
+            occurredAt: Date.now(),
+          },
+        }
       return {
         content: this.aggregateSubProcessContent(phaseRun.id) ?? undefined,
       }
@@ -890,6 +940,7 @@ export class ProcessService {
           agentName,
           title: `${phase.name}${agentName ? `: ${agentName}` : ""}`,
         })
+      let workerTaskId = existingWorkerTask?.id ?? null
       if (!resumingWorker) {
         // Back the worker with a task row so it's not listed as a standalone chat
         // and is cascade-deleted with the source session (spawnSubagent shape).
@@ -900,6 +951,7 @@ export class ProcessService {
           title: phase.name,
           input: { kind: "process_phase", phaseRunId: phaseRun.id, agentName },
         })
+        workerTaskId = workerTask.id
         processes.updatePhaseRun(phaseRun.id, {
           taskId: workerTask.id,
           agentName,
@@ -923,6 +975,7 @@ export class ProcessService {
           agentDir: workspace,
           userMessage: resumingWorker ? undefined : prompt,
           abort: childAbort,
+          taskId: workerTaskId ?? undefined,
           // Phases are autonomous; the phase gate is the HITL point.
           autoMode: true,
           // Cross-phase flag-back context (plan 031.2): lets this worker's
@@ -937,7 +990,11 @@ export class ProcessService {
         if (result.stopped || childAbort.signal.aborted)
           return { stopped: true }
         if (result.error)
-          return { error: result.error, retryable: result.retryable }
+          return {
+            error: result.error,
+            retryable: result.retryable,
+            failure: result.failure,
+          }
         const output = this.lastAssistantOutput(
           processes.getPhaseRun(phaseRun.id) ?? phaseRun
         )
@@ -945,7 +1002,25 @@ export class ProcessService {
         processes.updatePhaseRun(phaseRun.id, { outputIdentity })
         return { content: result.content, outputIdentity } satisfies PhaseResult
       } catch (err) {
-        return { error: err instanceof Error ? err.message : String(err) }
+        return {
+          error: err instanceof Error ? err.message : String(err),
+          failure: {
+            code: "phase_worker_exception",
+            stage: "tool_execution",
+            message: err instanceof Error ? err.message : String(err),
+            retryable: false,
+            attempt: null,
+            maxAttempts: null,
+            runId: run.id,
+            phaseRunId: phaseRun.id,
+            phaseId: phase.id,
+            taskId: run.taskId,
+            workerTaskId,
+            agentName,
+            cause: err instanceof Error ? err.name : null,
+            occurredAt: Date.now(),
+          },
+        }
       }
     }
   }
@@ -988,6 +1063,7 @@ export class ProcessService {
           agentName,
           title: `${phase.name} (decompose)${agentName ? `: ${agentName}` : ""}`,
         })
+      let workerTaskId = existingWorkerTask?.id ?? null
       if (!resumingWorker) {
         const workerTask = createTask({
           conversationId: worker.id,
@@ -1000,6 +1076,7 @@ export class ProcessService {
             agentName,
           },
         })
+        workerTaskId = workerTask.id
         processes.updatePhaseRun(phaseRun.id, {
           taskId: workerTask.id,
           agentName,
@@ -1035,6 +1112,7 @@ export class ProcessService {
           agentDir: workspace,
           userMessage: resumingWorker ? undefined : prompt,
           abort: childAbort,
+          taskId: workerTaskId ?? undefined,
           autoMode: true,
           // Headless worker — no user to answer a clarifying question.
           suppressUserQuestions: true,
@@ -1043,7 +1121,11 @@ export class ProcessService {
         if (result.stopped || childAbort.signal.aborted)
           return { stopped: true }
         if (result.error)
-          return { error: result.error, retryable: result.retryable }
+          return {
+            error: result.error,
+            retryable: result.retryable,
+            failure: result.failure,
+          }
         const subtasks = parseDecomposition(result.content ?? "")
         if (subtasks.length === 0)
           // A parse miss is deterministic given the same transcript — a retry
@@ -1051,11 +1133,44 @@ export class ProcessService {
           // mark it retryable (bounded by MAX_PHASE_ATTEMPTS in the scheduler).
           return {
             error: "decomposition produced no parseable sub-tasks",
+            failure: {
+              code: "decomposition_unparseable",
+              stage: "output_validation",
+              message: "decomposition produced no parseable sub-tasks",
+              retryable: true,
+              attempt,
+              maxAttempts: null,
+              runId: run.id,
+              phaseRunId: phaseRun.id,
+              phaseId: phase.id,
+              taskId: run.taskId,
+              workerTaskId,
+              agentName,
+              occurredAt: Date.now(),
+            },
             retryable: true,
           }
         return { subtasks } satisfies DecomposeResult
       } catch (err) {
-        return { error: err instanceof Error ? err.message : String(err) }
+        return {
+          error: err instanceof Error ? err.message : String(err),
+          failure: {
+            code: "decomposition_exception",
+            stage: "decomposition",
+            message: err instanceof Error ? err.message : String(err),
+            retryable: false,
+            attempt,
+            maxAttempts: null,
+            runId: run.id,
+            phaseRunId: phaseRun.id,
+            phaseId: phase.id,
+            taskId: run.taskId,
+            workerTaskId,
+            agentName,
+            cause: err instanceof Error ? err.name : null,
+            occurredAt: Date.now(),
+          },
+        }
       }
     }
   }
@@ -1135,8 +1250,9 @@ export class ProcessService {
           agentName,
           title: `${phase.name} (review)${agentName ? `: ${agentName}` : ""}`,
         })
+      let workerTaskId = existingWorkerTask?.id ?? null
       if (!resumingWorker) {
-        createTask({
+        const workerTask = createTask({
           conversationId: worker.id,
           sourceConversationId: run.sourceConversationId ?? worker.id,
           status: "completed",
@@ -1149,6 +1265,7 @@ export class ProcessService {
             reviewTargetOutputIdentity,
           },
         })
+        workerTaskId = workerTask.id
       }
 
       const childAbort = new AbortController()
@@ -1174,6 +1291,7 @@ export class ProcessService {
           agentDir: workspace,
           userMessage: resumingWorker ? undefined : prompt,
           abort: childAbort,
+          taskId: workerTaskId ?? undefined,
           autoMode: true,
           // Headless reviewer — no user to answer a clarifying question.
           suppressUserQuestions: true,
@@ -1186,6 +1304,7 @@ export class ProcessService {
             approved: false,
             error: result.error,
             retryable: result.retryable,
+            failure: result.failure,
             targetOutputIdentity: reviewTargetOutputIdentity,
           }
         const verdict = parseVerdict(result.content ?? "")
@@ -1193,6 +1312,21 @@ export class ProcessService {
           return {
             approved: false,
             error: "validator returned an unparseable verdict",
+            failure: {
+              code: "validator_unparseable",
+              stage: "output_validation",
+              message: "validator returned an unparseable verdict",
+              retryable: false,
+              attempt: null,
+              maxAttempts: null,
+              runId: run.id,
+              phaseRunId: phaseRun.id,
+              phaseId: phase.id,
+              taskId: run.taskId,
+              workerTaskId,
+              agentName,
+              occurredAt: Date.now(),
+            },
             targetOutputIdentity: reviewTargetOutputIdentity,
           }
         return {
@@ -1204,6 +1338,22 @@ export class ProcessService {
         return {
           approved: false,
           error: err instanceof Error ? err.message : String(err),
+          failure: {
+            code: "validator_exception",
+            stage: "reviewer",
+            message: err instanceof Error ? err.message : String(err),
+            retryable: false,
+            attempt: null,
+            maxAttempts: null,
+            runId: run.id,
+            phaseRunId: phaseRun.id,
+            phaseId: phase.id,
+            taskId: run.taskId,
+            workerTaskId,
+            agentName,
+            cause: err instanceof Error ? err.name : null,
+            occurredAt: Date.now(),
+          },
           targetOutputIdentity: reviewTargetOutputIdentity,
         }
       }

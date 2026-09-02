@@ -1,9 +1,9 @@
 ---
-status: OPEN
+status: CLOSED
 severity: P2
 trigger: "A failed process and a transcript ending at a tool request do not reveal whether dispatch, execution, persistence, review, or the next API call failed"
 created: 2026-09-01
-updated: 2026-09-01
+updated: 2026-09-02
 ---
 
 # Preserve failure stages and recovery history across process boundaries
@@ -49,18 +49,18 @@ surface the failure honestly; do not claim it was durably recorded in that DB.
 
 ## Acceptance criteria
 
-- [ ] Inject each stage failure and assert its typed stage and identity survive
+- [x] Inject each stage failure and assert its typed stage and identity survive
   agent, worker, phase, nested run, and user-visible error boundaries.
-- [ ] A tool error followed by an API error is shown as two distinct events;
+- [x] A tool error followed by an API error is shown as two distinct events;
   the last visible tool request is not blamed automatically.
-- [ ] Retrying/exhausted/review-unavailable states survive reload and show the
+- [x] Retrying/exhausted/review-unavailable states survive reload and show the
   correct action without relying on an in-memory event subscription.
-- [ ] Earlier attempts remain inspectable after retry, linked to the same phase.
-- [ ] Terminal runs have no active spinner unless backed by genuinely active
+- [x] Earlier attempts remain inspectable after retry, linked to the same phase.
+- [x] Terminal runs have no active spinner unless backed by genuinely active
   work under a documented draining policy; test durable rows as well as display.
-- [ ] Cancellation and approval holds are not relabeled as API errors.
-- [ ] Redaction and size-limit tests cover provider errors and tool failures.
-- [ ] A support/export record includes app build and nested failure identity so
+- [x] Cancellation and approval holds are not relabeled as API errors.
+- [x] Redaction and size-limit tests cover provider errors and tool failures.
+- [x] A support/export record includes app build and nested failure identity so
   incidents from another computer can be investigated without speculation.
 
 ## Scope and dependencies
@@ -73,3 +73,37 @@ monitor, and task transcript UI. Define the shared record early alongside
 the runtime emits authoritative state. Preserve the nested-failure fix from
 commit `5a8058c`; do not reopen it solely because older records contain stale rows.
 
+## Implementation progress
+
+2026-09-02: Added `FailureContext` records for agent-loop setup/model failures
+and process worker/decomposition/reviewer/sub-process boundaries. Process phase
+runs now persist the latest failure JSON, `process_phase` task events include it,
+and `process_phase_attempts` stores failed retry attempts so earlier failed
+attempts remain inspectable after a later retry succeeds. The process monitor
+renders the typed stage/code/attempt metadata while preserving the legacy error
+fallback.
+
+2026-09-02: Closed the remaining follow-up slices. Fault-injection coverage now
+exercises every declared failure stage, tool and API failures remain distinct,
+retry/review recovery states are reload-safe, attempt history is visible in the
+monitor, control-flow states do not create false failure records, diagnostics are
+redacted and byte-capped, support exports include nested failure identity, and DB
+persistence failures surface as `result_persistence` with a best-effort external
+diagnostic fallback.
+
+Closure follow-ups were split into:
+[087](./087-process-failure-stage-fault-injection-coverage.md),
+[088](./088-process-tool-error-then-api-error-distinct-events.md),
+[089](./089-process-recovery-states-survive-reload.md),
+[090](./090-process-attempt-history-ui.md),
+[091](./091-process-cancel-and-approval-not-failures.md),
+[092](./092-process-failure-redaction-and-size-limits.md),
+[093](./093-process-support-export-failure-identity.md), and
+[094](./094-process-failure-db-persistence-fallback.md).
+
+Verification across the closure slices included:
+
+- `pnpm exec vitest run src/main/tasks/process/scheduler.test.ts src/main/tasks/process/service.test.ts src/main/process/io.test.ts src/main/tasks/runner.test.ts`
+- `pnpm exec vitest run src/main/tasks/process/failure-sanitizer.test.ts src/main/agent/tool-error-feedback.integration.test.ts`
+- `pnpm exec vitest run src/renderer/src/components/process-screen.test.tsx`
+- `pnpm run typecheck`

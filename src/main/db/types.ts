@@ -174,6 +174,36 @@ export interface TaskCheckpoint {
   createdAt: number
 }
 
+export type FailureStage =
+  | "agent_setup"
+  | "model_request"
+  | "tool_dispatch"
+  | "tool_execution"
+  | "result_persistence"
+  | "output_validation"
+  | "decomposition"
+  | "reviewer"
+  | "subprocess"
+  | "scheduler"
+
+export interface FailureContext {
+  code: string
+  stage: FailureStage
+  message: string
+  retryable: boolean
+  attempt: number | null
+  maxAttempts: number | null
+  runId: string | null
+  phaseRunId: string | null
+  phaseId: string | null
+  taskId: string | null
+  workerTaskId: string | null
+  agentName: string | null
+  toolCallId?: string | null
+  cause?: string | null
+  occurredAt: number
+}
+
 // The workspace index (plan 008). Deterministic, incremental, resumable.
 
 // The stage a run has reached. Stages enrich cumulatively; `symbols`/`embeddings`
@@ -589,6 +619,7 @@ export interface ProcessPhaseRun {
   title: string | null
   iteration: number
   error: string | null
+  failure: FailureContext | null
   startedAt: number | null
   finishedAt: number | null
   // The "Request changes" feedback note injected into this phase-run's re-run
@@ -609,6 +640,23 @@ export interface ProcessPhaseRun {
   // set for on_each_subtask consumer instances. Lets flag-back reset only the
   // instance tied to a reworked source sub-task (per-child, not the whole batch).
   sourceChildRunId: string | null
+}
+
+export interface ProcessPhaseAttempt {
+  id: string
+  runId: string
+  phaseRunId: string
+  phaseId: string
+  taskId: string | null
+  workerTaskId: string | null
+  agentName: string | null
+  stage: FailureStage
+  status: "failed"
+  attempt: number | null
+  maxAttempts: number | null
+  error: string
+  failure: FailureContext
+  createdAt: number
 }
 
 // A cross-phase rework flag (plan 031.2): a phase-worker found a defect an earlier

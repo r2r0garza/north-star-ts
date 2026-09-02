@@ -1,6 +1,7 @@
 import { readFile, writeFile } from "fs/promises"
 import { basename } from "path"
 import {
+  app,
   BrowserWindow,
   dialog,
   ipcMain,
@@ -12,6 +13,7 @@ import type { ProcessService } from "../tasks/process/service"
 import { getProcessRun } from "../db/repositories/processes"
 import {
   exportProcessDefinition,
+  exportProcessRunIncident,
   importProcessExport,
   type ProcessImportResult,
 } from "../process/io"
@@ -134,6 +136,41 @@ export function registerProcessHandlers(
       title: "Export process",
       defaultPath: `${safeName || "process"}.json`,
       filters: [{ name: "Process JSON", extensions: ["json"] }],
+    }
+    const result = win
+      ? await dialog.showSaveDialog(win, options)
+      : await dialog.showSaveDialog(options)
+    if (result.canceled || !result.filePath) return { canceled: true }
+
+    await writeFile(
+      result.filePath,
+      `${JSON.stringify(exported, null, 2)}\n`,
+      "utf-8"
+    )
+    return { path: result.filePath, canceled: false }
+  })
+
+  ipcMain.handle("process:exportRunIncident", async (_e, runId: string) => {
+    const exported = exportProcessRunIncident(runId, {
+      name: app.getName(),
+      version: app.getVersion(),
+      build:
+        process.env.BUILD_VERSION ??
+        process.env.GIT_COMMIT ??
+        process.env.VITE_GIT_COMMIT ??
+        null,
+    })
+    const run = exported.runs.find((candidate) => candidate.id === runId)
+    const safeName = `${run?.processName ?? "process"}-${runId}`
+      .trim()
+      .replace(/[^a-z0-9._ -]+/gi, "-")
+      .replace(/\s+/g, " ")
+      .slice(0, 110)
+    const win = BrowserWindow.getFocusedWindow() ?? undefined
+    const options: SaveDialogOptions = {
+      title: "Export process run incident",
+      defaultPath: `${safeName || "process-run-incident"}.json`,
+      filters: [{ name: "Process Incident JSON", extensions: ["json"] }],
     }
     const result = win
       ? await dialog.showSaveDialog(win, options)
