@@ -555,7 +555,7 @@ describe.skipIf(!sqliteLoads)("SCHEMA_V9 — orphan reap (plan 022)", () => {
     // Apply V9 (the reaper) and any later migrations, up to the latest version.
     runMigrations(db)
 
-    expect(db.pragma("user_version", { simple: true })).toBe(34)
+    expect(db.pragma("user_version", { simple: true })).toBe(35)
 
     // Reaped: orphan + its nested descendant, and all their state.
     const taskIds = (

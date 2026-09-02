@@ -197,6 +197,10 @@ export const builtInTools = [
   ...webTools,
 ]
 
+export const testExports = {
+  byName,
+}
+
 export function getToolEffects(name: string): ToolEffects | undefined {
   return byName.get(name)?.effects
 }
