@@ -1,4 +1,4 @@
-import { access, mkdtemp, mkdir, writeFile } from "fs/promises"
+import { access, mkdtemp, mkdir, readFile, writeFile } from "fs/promises"
 import { join } from "path"
 import { tmpdir } from "os"
 import { randomUUID } from "crypto"
@@ -84,7 +84,7 @@ import { createTask, getTask } from "../db/repositories/tasks"
 import { upsertWorkspace } from "../db/repositories/workspaces"
 import * as processes from "../db/repositories/processes"
 import { ProcessService } from "../tasks/process/service"
-import { runAgentLoop } from "."
+import { resolveApproval, runAgentLoop } from "."
 import {
   repairDanglingToolCalls,
   unknownSideEffectingToolCalls,
@@ -94,6 +94,8 @@ import {
   toolDefinitions,
   type Tool,
 } from "./tools"
+import { testCommandSessions } from "./tools/command_session_tools"
+import { LocalEnvironment } from "./env/local"
 import { TOOL_EFFECTS } from "./tools/types"
 import type { TaskEventPayload } from "../tasks/runner"
 
@@ -134,6 +136,9 @@ function streamText(content: string): AsyncIterable<any> {
     }
   })()
 }
+
+const nodeCmd = (code: string) =>
+  `${JSON.stringify(process.execPath)} -e ${JSON.stringify(code)}`
 
 function streamLengthToolCall(): AsyncIterable<any> {
   return (async function* () {
@@ -206,6 +211,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks()
+  testCommandSessions.clear()
   toolRegistry.byName.delete("test_throw_tool")
   toolRegistry.byName.delete("test_unoffered_tool")
   const registered = toolDefinitions.findIndex(
@@ -215,6 +221,210 @@ afterEach(() => {
 })
 
 describe.skipIf(!sqliteLoads)("agent loop tool-error feedback", () => {
+  it.each([
+    { background: false, separateTurns: false },
+    { background: false, separateTurns: true },
+    { background: true, separateTurns: true },
+  ])(
+    "approves and executes deliberate reruns ($background background, $separateTurns separate turns)",
+    async ({ background, separateTurns }) => {
+      const workspace = await makeWorkspace()
+      const conversation = createConversation({ mode: "interactive" })
+      const command = nodeCmd(
+        "require('fs').appendFileSync('runs.txt', 'x'); console.log('idle completion')"
+      )
+      const approvals: string[] = []
+      const run = () =>
+        runAgentLoop({
+          conversationId: conversation.id,
+          workspace,
+          userMessage: approvals.length
+            ? "Run that test again, please."
+            : "Run the test.",
+          abort: new AbortController(),
+          onEvent: (event) => {
+            if (event.type !== "approval") return
+            approvals.push(event.reason)
+            queueMicrotask(() => resolveApproval(event.requestId, "approved"))
+          },
+        })
+
+      for (const attempt of [1, 2]) {
+        scriptedCompletions.push(() =>
+          streamToolCalls([
+            {
+              id: `run_${attempt}`,
+              name: "exec_command",
+              arguments: JSON.stringify({ command, background }),
+            },
+          ])
+        )
+        if (background) {
+          scriptedCompletions.push((request) => {
+            expect(lastMessage(request, "tool")?.content).not.toContain(
+              "ERROR["
+            )
+            return streamToolCalls([
+              {
+                id: `wait_${attempt}`,
+                name: "wait_for_events",
+                arguments: "{}",
+              },
+            ])
+          })
+        }
+        if (separateTurns || attempt === 2) {
+          scriptedCompletions.push((request) => {
+            expect(lastMessage(request, "tool")?.content).not.toContain(
+              "ERROR["
+            )
+            return streamText("Test finished.")
+          })
+          expect(await run()).toEqual({ content: "Test finished." })
+        }
+      }
+      expect(approvals).toHaveLength(2)
+      expect(await readFile(join(workspace, "runs.txt"), "utf8")).toBe("xx")
+    }
+  )
+
+  it("reuses completed identical calls within the same model request", async () => {
+    const workspace = await makeWorkspace()
+    const conversation = createConversation({ mode: "interactive" })
+    const command = nodeCmd("require('fs').appendFileSync('once.txt', 'x')")
+    scriptedCompletions.push(() =>
+      streamToolCalls(
+        ["original", "duplicate"].map((id) => ({
+          id,
+          name: "exec_command",
+          arguments: JSON.stringify({ command }),
+        }))
+      )
+    )
+    scriptedCompletions.push((request) => {
+      expect(lastMessage(request, "tool")?.content).not.toContain("ERROR[")
+      return streamText("Done.")
+    })
+    expect(
+      await runAgentLoop({
+        conversationId: conversation.id,
+        workspace,
+        userMessage: "Run once.",
+        abort: new AbortController(),
+        autoMode: true,
+        onEvent: () => {},
+      })
+    ).toEqual({ content: "Done." })
+    expect(await readFile(join(workspace, "once.txt"), "utf8")).toBe("x")
+    const results = contentsByCallId(conversation.id)
+    expect(results.get("duplicate")).toBe(results.get("original"))
+  })
+
+  it("executes distinct writes sharing an approval identity in the same request", async () => {
+    const workspace = await makeWorkspace()
+    const conversation = createConversation({ mode: "interactive" })
+    scriptedCompletions.push(() =>
+      streamToolCalls(
+        ["one", "two"].map((content) => ({
+          id: `write_${content}`,
+          name: "write_file_tool",
+          arguments: JSON.stringify({
+            path: "chunks.txt",
+            mode: "append",
+            content,
+          }),
+        }))
+      )
+    )
+    scriptedCompletions.push(() => streamText("Done."))
+    expect(
+      await runAgentLoop({
+        conversationId: conversation.id,
+        workspace,
+        userMessage: "Write both chunks.",
+        abort: new AbortController(),
+        autoMode: true,
+        onEvent: () => {},
+      })
+    ).toEqual({ content: "Done." })
+    expect(await readFile(join(workspace, "chunks.txt"), "utf8")).toBe("onetwo")
+  })
+
+  it("does not reuse a denial when a later request repeats the command", async () => {
+    const workspace = await makeWorkspace()
+    const conversation = createConversation({ mode: "interactive" })
+    let approvals = 0
+    for (const decision of ["denied", "approved"] as const) {
+      scriptedCompletions.push(() =>
+        streamToolCalls([
+          {
+            id: `run_${decision}`,
+            name: "exec_command",
+            arguments: JSON.stringify({
+              command: nodeCmd("console.log('ran again')"),
+            }),
+          },
+        ])
+      )
+      scriptedCompletions.push((request) => {
+        expect(lastMessage(request, "tool")?.content).toContain(
+          decision === "denied" ? "ERROR[denied]" : "ran again"
+        )
+        return streamText("Done.")
+      })
+      expect(
+        await runAgentLoop({
+          conversationId: conversation.id,
+          workspace,
+          userMessage: "Run the command.",
+          abort: new AbortController(),
+          onEvent: (event) => {
+            if (event.type !== "approval") return
+            approvals += 1
+            queueMicrotask(() => resolveApproval(event.requestId, decision))
+          },
+        })
+      ).toEqual({ content: "Done." })
+    }
+    expect(approvals).toBe(2)
+  })
+
+  it("reports the classifier reason for a hard block", async () => {
+    const spawn = vi
+      .spyOn(LocalEnvironment.prototype, "spawnCommand")
+      .mockImplementation(async () => {
+        throw new Error("Must not spawn a blocked command")
+      })
+    const workspace = await makeWorkspace()
+    const conversation = createConversation({ mode: "interactive" })
+    scriptedCompletions.push(() =>
+      streamToolCalls([
+        {
+          id: "hard_block",
+          name: "exec_command",
+          arguments: JSON.stringify({ command: "rm -rf /" }),
+        },
+      ])
+    )
+    scriptedCompletions.push((request) => {
+      expect(lastMessage(request, "tool")?.content).toBe(
+        "ERROR[blocked]: recursive delete of root filesystem"
+      )
+      return streamText("Blocked.")
+    })
+    expect(
+      await runAgentLoop({
+        conversationId: conversation.id,
+        workspace,
+        userMessage: "Check the block.",
+        abort: new AbortController(),
+        autoMode: true,
+        onEvent: () => {},
+      })
+    ).toEqual({ content: "Blocked." })
+    expect(spawn).not.toHaveBeenCalled()
+  })
+
   it("blocks equivalent fresh-id mutations after an unknown operation", async () => {
     const workspace = await makeWorkspace()
     const conversation = createConversation({ mode: "interactive" })
@@ -285,7 +495,11 @@ describe.skipIf(!sqliteLoads)("agent loop tool-error feedback", () => {
       expect(lastMessage(request, "tool")).toMatchObject({
         tool_call_id: "call_retry",
       })
-      expect(lastMessage(request, "tool")?.content).toContain("ERROR[blocked]")
+      expect(lastMessage(request, "tool")?.content).toContain(
+        "ERROR[tool_reconciliation_blocked]"
+      )
+      expect(lastMessage(request, "tool")?.content).toContain("unknown outcome")
+      expect(lastMessage(request, "tool")?.content).not.toContain("blocklist")
       return streamText("Blocked duplicate.")
     })
 
@@ -548,6 +762,60 @@ describe.skipIf(!sqliteLoads)("agent loop tool-error feedback", () => {
     ])
     expect(lifecycle.every((row) => row.startedAt !== null)).toBe(true)
     expect(lifecycle.every((row) => row.settledAt !== null)).toBe(true)
+  })
+
+  it("waits for owned background command completion before finalizing", async () => {
+    const workspace = await makeWorkspace()
+    const conversation = createConversation({ mode: "interactive" })
+
+    scriptedCompletions.push(() =>
+      streamToolCalls([
+        {
+          id: "start_background",
+          name: "exec_command",
+          arguments: JSON.stringify({
+            command: nodeCmd(
+              "setTimeout(() => { process.stdout.write('background done\\n'); process.exit(0) }, 60)"
+            ),
+            background: true,
+          }),
+        },
+      ])
+    )
+    scriptedCompletions.push(() => streamText("No more work right now."))
+    scriptedCompletions.push((request) => {
+      const runtimeEvent = lastMessage(request, "user")
+      expect(runtimeEvent?.content).toContain(
+        "Runtime event: background command completion"
+      )
+      expect(runtimeEvent?.content).toContain("background done")
+      return streamText("Observed the background completion.")
+    })
+
+    const events: TaskEventPayload[] = []
+    const result = await runAgentLoop({
+      conversationId: conversation.id,
+      workspace,
+      userMessage: "start a background command",
+      abort: new AbortController(),
+      autoMode: true,
+      onEvent: (event) => events.push(event),
+    })
+
+    expect(result).toEqual({ content: "Observed the background completion." })
+    expect(
+      events
+        .filter((event) => event.type === "command_wait")
+        .map((event) => event.phase)
+    ).toEqual(["start", "done"])
+    expect(completionRequests).toHaveLength(3)
+    expect(
+      listMessages(conversation.id).some((message) =>
+        String(message.content ?? "").includes(
+          "Runtime event: background command completion"
+        )
+      )
+    ).toBe(true)
   })
 
   it("does not execute a known tool body when plan mode makes it unavailable", async () => {

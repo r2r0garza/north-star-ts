@@ -8,10 +8,13 @@ import type { ChildProcess, spawn } from "child_process"
 import {
   execCommandTool,
   pollCommandTool,
+  terminateOwnedCommandSessions,
   terminateCommandTool,
   testCommandSessions,
+  waitForEventsTool,
   writeStdinTool,
 } from "./command_session_tools"
+import { CommandCompletionInbox } from "../command-completion-inbox"
 import { runShellTool } from "./run_shell_tool"
 import { LocalEnvironment } from "../env/local"
 import type {
@@ -220,14 +223,29 @@ afterEach(() => {
 describe("command session tools", () => {
   it("returns completed output inline for quick commands", async () => {
     const result = parseResult(
+      await execCommandTool.execute({ command: "echo hello" }, ctx())
+    )
+
+    expect(result.status).toBe("completed")
+    expect(result.output).toContain("hello")
+    expect(result.sessionId).toBeUndefined()
+  })
+
+  it("waits for foreground commands that outlast the old yield interval", async () => {
+    const result = parseResult(
       await execCommandTool.execute(
-        { command: "echo hello", yield_ms: 1000 },
+        {
+          command: nodeCmd(
+            "setTimeout(() => { process.stdout.write('done\\n'); process.exit(0) }, 80)"
+          ),
+          yield_ms: 1,
+        },
         ctx()
       )
     )
 
     expect(result.status).toBe("completed")
-    expect(result.output).toContain("hello")
+    expect(result.output).toBe("done\n")
     expect(result.sessionId).toBeUndefined()
   })
 
@@ -435,7 +453,7 @@ describe("command session tools", () => {
           {
             command: "python3 - <<'PY'\nprint('stoppable')\nPY",
             timeout_ms: 5000,
-            yield_ms: 1,
+            background: true,
           },
           ctx({ workspace, env })
         )
@@ -545,22 +563,113 @@ describe("command session tools", () => {
           command: nodeCmd(
             "process.stdout.write('one\\n'); setTimeout(() => process.stdout.write('two\\n'), 200); setTimeout(() => process.exit(0), 280)"
           ),
-          yield_ms: 80,
+          background: true,
         },
         ctx()
       )
     )
 
     expect(started.status).toBe("running")
-    expect(started.output).toBe("one\n")
     const sessionId = String(started.sessionId)
-    const cursor = Number(started.cursor)
 
-    const polled = await pollUntilTerminal(sessionId, cursor)
+    const polled = await pollUntilTerminal(sessionId, Number(started.cursor))
 
     expect(polled.status).toBe("completed")
+    expect(String(polled.output)).toContain("one")
     expect(String(polled.output)).toContain("two")
-    expect(String(polled.output)).not.toContain("one")
+  })
+
+  it("waits for background command completion events without polling", async () => {
+    const inbox = new CommandCompletionInbox()
+    const owner = {
+      conversationId: "c1",
+      workspace: tmpdir(),
+      runId: "run-1",
+    }
+    const started = parseResult(
+      await execCommandTool.execute(
+        {
+          command: nodeCmd(
+            "setTimeout(() => { process.stdout.write('event done\\n'); process.exit(0) }, 40)"
+          ),
+          background: true,
+        },
+        ctx({
+          workspace: owner.workspace,
+          commandCompletions: inbox,
+          commandCompletionOwner: owner,
+        })
+      )
+    )
+    inbox.markInitialResultPersisted(owner, String(started.sessionId))
+
+    const waited = parseResult(
+      await waitForEventsTool.execute(
+        { session_ids: [String(started.sessionId)] },
+        ctx({
+          workspace: owner.workspace,
+          commandCompletions: inbox,
+          commandCompletionOwner: owner,
+        })
+      )
+    )
+
+    expect(waited.status).toBe("completed")
+    const completions = waited.completions as Array<Record<string, unknown>>
+    expect(completions).toHaveLength(1)
+    expect(completions[0].sessionId).toBe(started.sessionId)
+    expect(completions[0].status).toBe("completed")
+    expect(completions[0].output).toBe("event done\n")
+  })
+
+  it("does not expose completion events across run owners", async () => {
+    const inbox = new CommandCompletionInbox()
+    const owner = {
+      conversationId: "c1",
+      workspace: tmpdir(),
+      runId: "run-1",
+    }
+    const otherOwner = { ...owner, conversationId: "c2", runId: "run-2" }
+    const started = parseResult(
+      await execCommandTool.execute(
+        {
+          command: nodeCmd("process.stdout.write('secret\\n')"),
+          background: true,
+        },
+        ctx({
+          workspace: owner.workspace,
+          commandCompletions: inbox,
+          commandCompletionOwner: owner,
+        })
+      )
+    )
+    inbox.markInitialResultPersisted(owner, String(started.sessionId))
+    await new Promise((resolve) => setTimeout(resolve, 40))
+
+    const forged = parseResult(
+      await waitForEventsTool.execute(
+        { session_ids: [String(started.sessionId)] },
+        ctx({
+          workspace: owner.workspace,
+          conversationId: otherOwner.conversationId,
+          commandCompletions: inbox,
+          commandCompletionOwner: otherOwner,
+        })
+      )
+    )
+    const valid = parseResult(
+      await waitForEventsTool.execute(
+        { session_ids: [String(started.sessionId)] },
+        ctx({
+          workspace: owner.workspace,
+          commandCompletions: inbox,
+          commandCompletionOwner: owner,
+        })
+      )
+    )
+
+    expect(forged.status).toBe("empty")
+    expect(valid.status).toBe("completed")
   })
 
   it("keeps completed command output pageable when the model page cap is hit", async () => {
@@ -607,21 +716,35 @@ describe("command session tools", () => {
             `process.stdout.write(${JSON.stringify(expected)}); setTimeout(() => {}, 1000)`
           ),
           max_output_bytes: 1024 * 1024,
-          yield_ms: 100,
+          background: true,
         },
         ctx()
       )
     )
 
-    expect(started.status).toBe("running")
-    expect(started.modelTruncated).toBe(true)
-    expect(started.omittedBytes).toBeGreaterThan(0)
-    expect(String(started.output)).toContain(prefix)
-    expect(String(started.output)).not.toContain(suffix)
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    const withOutput = parseResult(
+      await pollCommandTool.execute(
+        {
+          session_id: String(started.sessionId),
+          max_output_bytes: 1024 * 1024,
+        },
+        ctx()
+      )
+    )
 
-    await expect(collectRecoverableOutput(started)).resolves.toBe(expected)
+    expect(withOutput.status).toBe("running")
+    expect(withOutput.modelTruncated).toBe(true)
+    expect(withOutput.omittedBytes).toBeGreaterThan(0)
+    expect(String(withOutput.output)).toContain(prefix)
+    expect(String(withOutput.output)).not.toContain(suffix)
+
+    await expect(collectRecoverableOutput(withOutput)).resolves.toBe(expected)
     await terminateCommandTool.execute(
-      { session_id: String(started.sessionId), cursor: Number(started.cursor) },
+      {
+        session_id: String(started.sessionId),
+        cursor: Number(withOutput.cursor),
+      },
       ctx()
     )
   })
@@ -631,7 +754,7 @@ describe("command session tools", () => {
       await execCommandTool.execute(
         {
           command: nodeCmd("setTimeout(() => {}, 5000)"),
-          yield_ms: 10,
+          background: true,
         },
         ctx()
       )
@@ -652,7 +775,7 @@ describe("command session tools", () => {
           command: nodeCmd(
             "let data=''; process.stdin.on('data', c => data += c); process.stdin.on('end', () => { process.stdout.write(data.toUpperCase()); })"
           ),
-          yield_ms: 10,
+          background: true,
         },
         ctx()
       )
@@ -913,11 +1036,13 @@ describe("command session tools", () => {
             "process.stdout.write('日本語'); setTimeout(() => {}, 1000)"
           ),
           max_output_bytes: 32,
-          yield_ms: 100,
+          background: true,
         },
         ctx()
       )
     )
+
+    await new Promise((resolve) => setTimeout(resolve, 100))
 
     const polled = parseResult(
       await pollCommandTool.execute(
@@ -939,7 +1064,10 @@ describe("command session tools", () => {
   it("rejects sessions from another conversation", async () => {
     const started = parseResult(
       await execCommandTool.execute(
-        { command: nodeCmd("setTimeout(() => {}, 1000)"), yield_ms: 10 },
+        {
+          command: nodeCmd("setTimeout(() => {}, 1000)"),
+          background: true,
+        },
         ctx()
       )
     )
@@ -955,7 +1083,10 @@ describe("command session tools", () => {
   it("terminates a running command", async () => {
     const started = parseResult(
       await execCommandTool.execute(
-        { command: nodeCmd("setTimeout(() => {}, 5000)"), yield_ms: 10 },
+        {
+          command: nodeCmd("setTimeout(() => {}, 5000)"),
+          background: true,
+        },
         ctx()
       )
     )
@@ -968,5 +1099,50 @@ describe("command session tools", () => {
     )
 
     expect(result.status).toBe("terminated")
+  })
+
+  it("terminates running background commands owned by a cancelled run", async () => {
+    const inbox = new CommandCompletionInbox()
+    const owner = {
+      conversationId: "c1",
+      workspace: tmpdir(),
+      runId: "run-cancel",
+    }
+    const started = parseResult(
+      await execCommandTool.execute(
+        {
+          command: nodeCmd("setTimeout(() => {}, 5000)"),
+          background: true,
+        },
+        ctx({
+          workspace: owner.workspace,
+          commandCompletions: inbox,
+          commandCompletionOwner: owner,
+        })
+      )
+    )
+
+    inbox.cancelRun(owner)
+    await terminateOwnedCommandSessions(owner)
+
+    const stopped = parseResult(
+      await pollCommandTool.execute(
+        { session_id: String(started.sessionId) },
+        ctx({ workspace: owner.workspace })
+      )
+    )
+    expect(stopped.status).toBe("terminated")
+
+    const events = parseResult(
+      await waitForEventsTool.execute(
+        { session_ids: [String(started.sessionId)] },
+        ctx({
+          workspace: owner.workspace,
+          commandCompletions: inbox,
+          commandCompletionOwner: owner,
+        })
+      )
+    )
+    expect(events.status).toBe("empty")
   })
 })

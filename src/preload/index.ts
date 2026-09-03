@@ -129,6 +129,7 @@ export type ChatEvent =
   | { type: "plan_mode"; enabled: boolean }
   // The backend activated auto mode (present_plan approved with Auto mode).
   | { type: "auto_mode"; enabled: boolean }
+  | { type: "command_wait"; phase: "start" | "done"; sessionIds?: string[] }
 
 // Runner lifecycle events appended to task_events alongside ChatEvents (mirrors
 // RunnerLifecycleEvent in the task runner).

@@ -1,4 +1,8 @@
 import type { Gate } from "../approval/types"
+import type {
+  CommandCompletionInbox,
+  CommandCompletionOwner,
+} from "../command-completion-inbox"
 import type { Environment } from "../env/types"
 import type { TodoStatus } from "../../db/types"
 import type { BrowserHandle } from "../../browser/manager"
@@ -166,6 +170,11 @@ export interface ToolContext {
   // agent. The spawn tool rejects spawning any name already in this chain (cycle
   // guard); the spawn helper appends the child's name when recursing.
   agentAncestors?: string[]
+  // Run-scoped background command completion inbox. `exec_command` registers
+  // background sessions here, and the agent loop drains/waits on this same owner
+  // before later model requests or finalization.
+  commandCompletions?: CommandCompletionInbox
+  commandCompletionOwner?: CommandCompletionOwner
   // --- Process phase context (plan 031.2 cross-phase flag-back) ---
   // Set ONLY when this turn is a Process phase worker (makeRunPhase forks the
   // conversation with these). The flag_for_rework tool uses them to load the run's

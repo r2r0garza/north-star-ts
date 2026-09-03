@@ -7,6 +7,10 @@ import type {
   CommandExit,
   CommandSessionHandle,
 } from "../env/types"
+import type {
+  CommandCompletionInbox,
+  CommandCompletionOwner,
+} from "../command-completion-inbox"
 import { truncateForModel, toolError } from "./output"
 import { TOOL_EFFECTS, type Tool, type ToolContext } from "./types"
 
@@ -48,6 +52,10 @@ interface AgentCommandSession {
   cleanupError?: CommandCleanupError
   timeout: NodeJS.Timeout
   cleanup?: NodeJS.Timeout
+  settled: Promise<void>
+  resolveSettled: () => void
+  completionInbox?: CommandCompletionInbox
+  completionOwner?: CommandCompletionOwner
 }
 
 interface RenderedOutput {
@@ -73,7 +81,7 @@ export const execCommandTool: Tool = {
     function: {
       name: "exec_command",
       description:
-        "Run a shell command in the workspace. Quick commands return completed output inline; long-running commands return a session id that can be polled, written to, or terminated.",
+        "Run a shell command in the workspace. Use the foreground default when the next action depends on final output. Set background true only when independent work can continue; the runtime will deliver completion through wait_for_events when you run out of independent work.",
       parameters: {
         type: "object",
         properties: {
@@ -88,11 +96,6 @@ export const execCommandTool: Tool = {
             description:
               "Maximum lifetime in milliseconds. Defaults to 30000; capped at 600000.",
           },
-          yield_ms: {
-            type: "integer",
-            description:
-              "How long to wait for initial output before returning a running session. Defaults to 1000; capped at 30000.",
-          },
           max_output_bytes: {
             type: "integer",
             description:
@@ -103,16 +106,25 @@ export const execCommandTool: Tool = {
             description:
               "Run under a pseudo-terminal when true. Defaults to false.",
           },
+          background: {
+            type: "boolean",
+            description:
+              "Return immediately with a session id after launch when true. Defaults to false, which waits until the command exits, times out, or is cancelled.",
+          },
         },
         required: ["command"],
       },
     },
   },
   execute: async (args, ctx) => {
-    const result = await startCommand(args, ctx, { compatibility: false })
+    const result = await startCommand(args, ctx, {
+      compatibility: false,
+      background: args.background === true,
+    })
     if ("error" in result) return result.error
     return renderCommandResult(result.session, result.output, {
       includeSessionId:
+        args.background === true ||
         result.session.status === "running" ||
         result.output.cursor < result.output.totalBytes,
     })
@@ -161,7 +173,7 @@ export const pollCommandTool: Tool = {
     function: {
       name: "poll_command",
       description:
-        "Poll a command session for new bounded output since a cursor and return current command status.",
+        "Inspect a command session for bounded output since a cursor and return current status. Use this deliberately to check partial output; do not call it on a timer just to discover normal background completion.",
       parameters: {
         type: "object",
         properties: {
@@ -184,6 +196,89 @@ export const pollCommandTool: Tool = {
     return renderCommandResult(session.session, output, {
       includeSessionId: true,
     })
+  },
+}
+
+export const waitForEventsTool: Tool = {
+  effects: TOOL_EFFECTS.openWorldRead,
+  definition: {
+    type: "function",
+    function: {
+      name: "wait_for_events",
+      description:
+        "Wait for background command completion events owned by this run after independent work has run out. Returns queued completions immediately, waits for a future completion when matching commands are still running, and returns a clear empty result when there are no matching pending commands.",
+      parameters: {
+        type: "object",
+        properties: {
+          session_ids: {
+            type: "array",
+            items: { type: "string" },
+            description:
+              "Optional background command session IDs to wait for. Omit to wait for any command owned by this run.",
+          },
+        },
+      },
+    },
+  },
+  execute: async (args, ctx) => {
+    const inbox = ctx.commandCompletions
+    const owner = ctx.commandCompletionOwner
+    if (!inbox || !owner) {
+      return toolError(
+        "unavailable",
+        "No runtime event inbox is available for this turn."
+      )
+    }
+    const sessionIds = Array.isArray(args.session_ids)
+      ? args.session_ids.filter((id): id is string => typeof id === "string")
+      : undefined
+    let events = inbox.drain(owner, { sessionIds })
+    if (events.length === 0 && inbox.hasPending(owner, sessionIds)) {
+      await inbox.waitForEvent(owner, { sessionIds, signal: ctx.signal })
+      events = inbox.drain(owner, { sessionIds })
+    }
+    if (events.length === 0) {
+      return JSON.stringify(
+        {
+          status: "empty",
+          message:
+            "No matching pending background commands or completion events are owned by this run.",
+          completions: [],
+        },
+        null,
+        2
+      )
+    }
+    const result = JSON.stringify(
+      {
+        status: "completed",
+        completions: events.map((event) => ({
+          eventId: event.id,
+          sessionId: event.sessionId,
+          runId: event.runId,
+          command: event.command,
+          cwd: event.cwd,
+          createdAt: event.createdAt,
+          status: event.status,
+          exitCode: event.exitCode,
+          signal: event.signal,
+          durationMs: event.durationMs,
+          cursor: event.cursor,
+          nextCursor: event.nextCursor,
+          totalBytes: event.totalBytes,
+          droppedBytes: event.droppedBytes,
+          omittedBytes: event.omittedBytes,
+          modelTruncated: event.modelTruncated,
+          truncated: event.truncated,
+          cleanupError: event.cleanupError,
+          output: event.output,
+        })),
+      },
+      null,
+      2
+    )
+    inbox.markConsumed(events.map((event) => event.id))
+    return result
   },
 }
 
@@ -220,7 +315,7 @@ export async function runShellCompatibility(
   const result = await startCommand(
     { ...args, max_output_bytes: args.max_output_bytes ?? MAX_OUTPUT_BYTES },
     ctx,
-    { compatibility: true }
+    { compatibility: true, background: false }
   )
   if ("error" in result) return result.error
 
@@ -246,7 +341,7 @@ export async function runShellCompatibility(
 async function startCommand(
   args: Record<string, unknown>,
   ctx: ToolContext,
-  opts: { compatibility: boolean }
+  opts: { compatibility: boolean; background: boolean }
 ): Promise<
   | {
       session: AgentCommandSession
@@ -300,8 +395,7 @@ async function startCommand(
     return {
       error: toolError(
         "blocked",
-        "This command is on the unconditional blocklist and was not run.",
-        "run it yourself in a terminal outside the agent if you truly need it"
+        "The execution gate blocked this command; it was not run."
       ),
     }
   }
@@ -348,6 +442,13 @@ async function startCommand(
     handle,
     maxOutputBytes,
     timeoutMs,
+    completion:
+      opts.background && ctx.commandCompletions && ctx.commandCompletionOwner
+        ? {
+            inbox: ctx.commandCompletions,
+            owner: ctx.commandCompletionOwner,
+          }
+        : undefined,
   })
   const onAbort = () => void terminateSession(session)
   if (ctx.signal) {
@@ -358,10 +459,9 @@ async function startCommand(
     )
   }
 
-  await waitForSettle(
-    session,
-    opts.compatibility ? timeoutMs : yieldMs(args.yield_ms)
-  )
+  if (opts.compatibility || !opts.background) {
+    await waitForSettled(session)
+  }
   return {
     session,
     output: renderSince(session, 0, maxOutputBytes),
@@ -377,7 +477,15 @@ function createSession(input: {
   handle: CommandSessionHandle
   maxOutputBytes: number
   timeoutMs: number
+  completion?: {
+    inbox: CommandCompletionInbox
+    owner: CommandCompletionOwner
+  }
 }): AgentCommandSession {
+  let resolveSettled: () => void = () => {}
+  const settled = new Promise<void>((resolve) => {
+    resolveSettled = resolve
+  })
   const session: AgentCommandSession = {
     id: randomUUID(),
     conversationId: input.conversationId,
@@ -395,6 +503,10 @@ function createSession(input: {
     signal: null,
     timedOut: false,
     cleanupError: undefined,
+    settled,
+    resolveSettled,
+    completionInbox: input.completion?.inbox,
+    completionOwner: input.completion?.owner,
     timeout: setTimeout(() => {
       session.timedOut = true
       session.status = "timed_out"
@@ -402,6 +514,9 @@ function createSession(input: {
     }, input.timeoutMs),
   }
   sessions.set(session.id, session)
+  input.completion?.inbox.register(session.id, input.completion.owner, {
+    releaseRetainedOutput: () => releaseSession(session.id),
+  })
   input.handle.onData((chunk) =>
     appendOutput(session, chunk.stream, chunk.data)
   )
@@ -451,9 +566,87 @@ function settleSession(session: AgentCommandSession, exit: CommandExit): void {
   session.signal = exit.signal
   session.cleanupError = exit.cleanupError
   if (session.status === "running") session.status = "completed"
+  session.resolveSettled()
+  if (session.completionInbox && session.completionOwner) {
+    const output = renderSince(session, 0)
+    session.completionInbox.enqueue({
+      sessionId: session.id,
+      owner: session.completionOwner,
+      event: commandCompletionEvent(session, output),
+    })
+  }
+  scheduleSessionCleanup(session)
+}
+
+function commandCompletionEvent(
+  session: AgentCommandSession,
+  output: RenderedOutput
+) {
+  return {
+    sessionId: session.id,
+    command: session.command,
+    cwd: session.cwd,
+    status: session.status,
+    exitCode: session.exitCode,
+    signal: session.signal,
+    durationMs: Date.now() - session.createdAt,
+    cursor: output.cursor,
+    nextCursor: output.nextCursor,
+    totalBytes: output.totalBytes,
+    droppedBytes: output.droppedBytes,
+    omittedBytes: output.omittedBytes,
+    modelTruncated: output.modelTruncated,
+    truncated: output.truncated,
+    cleanupError: session.cleanupError,
+    output: output.output,
+  }
+}
+
+function scheduleSessionCleanup(session: AgentCommandSession): void {
   session.cleanup = setTimeout(() => {
-    sessions.delete(session.id)
+    if (
+      session.completionInbox &&
+      session.completionOwner &&
+      !session.completionInbox.canReleaseSession(
+        session.completionOwner,
+        session.id
+      )
+    ) {
+      scheduleSessionCleanup(session)
+      return
+    }
+    releaseSession(session.id)
   }, COMPLETED_SESSION_TTL_MS)
+}
+
+function releaseSession(sessionId: string): void {
+  const session = sessions.get(sessionId)
+  if (!session || session.status === "running") return
+  if (session.cleanup) clearTimeout(session.cleanup)
+  sessions.delete(sessionId)
+}
+
+function sameCompletionOwner(
+  a: CommandCompletionOwner,
+  b: CommandCompletionOwner
+): boolean {
+  return (
+    a.conversationId === b.conversationId &&
+    a.workspace === b.workspace &&
+    a.runId === b.runId
+  )
+}
+
+export async function terminateOwnedCommandSessions(
+  owner: CommandCompletionOwner
+): Promise<void> {
+  const owned = [...sessions.values()].filter(
+    (session) =>
+      session.status === "running" &&
+      session.completionOwner &&
+      sameCompletionOwner(session.completionOwner, owner)
+  )
+  await Promise.all(owned.map((session) => terminateSession(session)))
 }
 
 async function terminateSession(session: AgentCommandSession): Promise<void> {
@@ -660,6 +853,11 @@ async function waitForSettle(
 ): Promise<void> {
   if (session.status !== "running") return
   await waitForExitOrDelay(session, ms)
+}
+
+async function waitForSettled(session: AgentCommandSession): Promise<void> {
+  if (session.status !== "running" && session.status !== "terminated") return
+  await session.settled
 }
 
 function waitForExitOrDelay(

@@ -183,6 +183,14 @@ describe("RegexCommandClassifier — hardline (hard_block)", () => {
   it("does not hard-block 'echo reboot' (not at command position)", () => {
     expect(classify("echo reboot")?.level).toBe("allow")
   })
+
+  it("does not hard-block node -e arrow functions", () => {
+    expect(
+      classify(
+        'node -e "setTimeout(() => { console.log(\'idle completion\') }, 5000)"'
+      )?.level
+    ).toBe("require_approval")
+  })
 })
 
 describe("RegexCommandClassifier — dangerous (require_approval)", () => {

@@ -189,8 +189,8 @@ function createWindow(): void {
   // Local const for in-function use (clean non-null narrowing in the closures
   // below); the module-level `mainWindow` mirrors it for external pushes.
   const win = new BrowserWindow({
-    width: 1100,
-    height: 800,
+    width: 1278,
+    height: 823,
     show: false,
     autoHideMenuBar: true,
     // Remove the OS title bar so the sidebar/chat reach the top. On macOS,

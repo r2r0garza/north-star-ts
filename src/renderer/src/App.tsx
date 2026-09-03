@@ -128,8 +128,13 @@ type LiveSegment =
 interface LiveTurn {
   segments: LiveSegment[]
   question: { requestId: string; questions: Question[] } | null
+  commandWait: boolean
 }
-const EMPTY_LIVE: LiveTurn = { segments: [], question: null }
+const EMPTY_LIVE: LiveTurn = {
+  segments: [],
+  question: null,
+  commandWait: false,
+}
 
 type ExternalSourceKind = "github" | "copilot" | "cursor" | "claude" | "codex"
 
@@ -1314,6 +1319,11 @@ function App(
             // The user approved the plan with "Auto mode" — activate auto for
             // the remainder of this turn and beyond (until conversation switch).
             if (event.enabled) setAgentMode("auto")
+          } else if (event.type === "command_wait") {
+            updateLive(turnConvoId, (turn) => ({
+              ...turn,
+              commandWait: event.phase === "start",
+            }))
           }
         }
       )
@@ -2366,7 +2376,21 @@ function App(
                           <MarkerIcon>
                             <Spinner />
                           </MarkerIcon>
-                          <MarkerContent>Thinking…</MarkerContent>
+                          <MarkerContent>
+                            {liveTurn?.commandWait
+                              ? "Waiting for background command…"
+                              : "Thinking…"}
+                          </MarkerContent>
+                        </Marker>
+                      )}
+                      {liveSegments.length > 0 && liveTurn?.commandWait && (
+                        <Marker>
+                          <MarkerIcon>
+                            <Spinner />
+                          </MarkerIcon>
+                          <MarkerContent>
+                            Waiting for background command…
+                          </MarkerContent>
                         </Marker>
                       )}
                     </MessageContent>

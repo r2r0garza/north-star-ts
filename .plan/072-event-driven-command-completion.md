@@ -1,8 +1,21 @@
 # PR72: Event-driven command completion
 
-> Status: **PLANNED — NEXT UP**. Support foreground waiting and background
+> Status: **IN PROGRESS**. Support foreground waiting and background
 > execution through `exec_command`, and deliver command completion to the agent
 > without repeated model-driven polling.
+
+## Progress
+
+- Implemented the command-session layer slice: `exec_command` now defaults to
+  foreground waiting until the command reaches a settled backend exit, while
+  `background: true` returns a session ID immediately after launch. The old
+  `yield_ms` argument is no longer advertised on `exec_command`; `write_stdin`
+  keeps its short settle wait for interactive sessions.
+- Split the remaining automatic background notification work into
+  `073-background-command-completion-notifications.md`.
+- Split transcript retention/retry semantics into
+  `074-command-completion-transcript-retention.md`, and UI/compatibility/parity
+  cleanup into `075-command-completion-ui-compatibility-parity.md`.
 
 ## Problem
 

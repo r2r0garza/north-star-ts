@@ -203,6 +203,11 @@ export function deriveLabel(
     }
     case "run_todos_in_background":
       return "Run tasks in the background"
+    case "wait_for_events":
+      if (status === "running") return "Waiting for background command"
+      if (status === "error") return "Command wait failed"
+      if (status === "interrupted") return "Command wait interrupted"
+      return "Background command completed"
     default:
       return name
   }

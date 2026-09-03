@@ -11,6 +11,7 @@ import {
   execCommandTool,
   pollCommandTool,
   terminateCommandTool,
+  waitForEventsTool,
   writeStdinTool,
 } from "./command_session_tools"
 import {
@@ -85,6 +86,7 @@ const workspaceTools: Tool[] = [
   execCommandTool,
   writeStdinTool,
   pollCommandTool,
+  waitForEventsTool,
   terminateCommandTool,
   workspaceDiagnosticsTool,
   runTestsTool,
