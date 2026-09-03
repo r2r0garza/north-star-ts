@@ -90,6 +90,12 @@ describe.skipIf(!sqliteLoads)("model request retry budgets repo", () => {
       maxElapsedMs: 120_000,
       now: 1000,
     })
+    recordFailure({
+      conversationId,
+      logicalRoundId: "after-seq:3",
+      error: "empty model response\n\n[model_response_diagnostic] {}",
+      now: 1500,
+    })
 
     const completed = completeBudget({
       conversationId,
@@ -98,6 +104,9 @@ describe.skipIf(!sqliteLoads)("model request retry budgets repo", () => {
     })
 
     expect(completed.status).toBe("completed")
+    expect(completed.lastError).toBe(
+      "empty model response\n\n[model_response_diagnostic] {}"
+    )
     expect(completed.completedAt).toBe(2000)
     expect(completed.exhaustedAt).toBeNull()
   })

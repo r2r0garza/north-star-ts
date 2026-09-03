@@ -110,11 +110,29 @@ function Shell() {
   const [terminalOpenByConversation, setTerminalOpenByConversation] = useState<
     Record<string, boolean>
   >({})
+  const [freshTerminalConversationId, setFreshTerminalConversationId] =
+    useState(() => crypto.randomUUID())
+  const [adoptedTerminalConversation, setAdoptedTerminalConversation] =
+    useState<{ from: string; to: string } | null>(null)
   const appRef = useRef<AppHandle | null>(null)
   const setActivity = (open: boolean) => {
     setActivityOpen(open)
     writeActivityOpen(open)
   }
+  const closeFreshTerminalSessions = useCallback((conversationId: string) => {
+    void window.cowork.terminal
+      .list()
+      .then((sessions) =>
+        Promise.all(
+          sessions
+            .filter((session) => session.conversationId === conversationId)
+            .map((session) => window.cowork.terminal.kill(session.id))
+        )
+      )
+      .catch((err) => {
+        console.warn("[terminal] failed to close fresh sessions:", err)
+      })
+  }, [])
   // Which content the right panel shows: "info" (Workspace Activity), "browser"
   // (the agent's live browser), or "changes" (the changed-file review). Global
   // (one choice for the whole app), persisted to a cookie like the open state.
@@ -127,24 +145,26 @@ function Shell() {
   // The active conversation's workspace root, reported up from App. Needed by the
   // sidebar's Changes review (git diffs + file:// previews) and browser opens.
   const [workspacePath, setWorkspacePath] = useState("")
+  const terminalConversationId =
+    activeConversationId ?? freshTerminalConversationId
   const terminalAvailable =
     view !== "Chat" &&
-    activeConversationId !== null &&
+    terminalConversationId !== "" &&
     workspacePath.trim() !== ""
   const terminalOpen =
-    terminalAvailable && activeConversationId
-      ? (terminalOpenByConversation[activeConversationId] ?? false)
+    terminalAvailable && terminalConversationId
+      ? (terminalOpenByConversation[terminalConversationId] ?? false)
       : false
   const setTerminalOpenForActive = useCallback(
     (open: boolean | ((open: boolean) => boolean)) => {
-      if (!activeConversationId) return
+      if (!terminalConversationId) return
       setTerminalOpenByConversation((state) => {
-        const current = state[activeConversationId] ?? false
+        const current = state[terminalConversationId] ?? false
         const next = typeof open === "function" ? open(current) : open
-        return { ...state, [activeConversationId]: next }
+        return { ...state, [terminalConversationId]: next }
       })
     },
-    [activeConversationId]
+    [terminalConversationId]
   )
   const toggleTerminal = useCallback(() => {
     if (!terminalAvailable) return
@@ -347,9 +367,13 @@ function Shell() {
   // Switching views starts a fresh conversation for that view (the sidebar
   // shows prior ones to reopen).
   function handleViewChange(next: View) {
+    if (!activeConversationId) {
+      closeFreshTerminalSessions(freshTerminalConversationId)
+    }
     setView(next)
     setActiveConversationId(null)
     setPendingProjectId(null)
+    setFreshTerminalConversationId(crypto.randomUUID())
     setAgentsOpen(false)
     setSkillsOpen(false)
     setProcessOpen(false)
@@ -361,6 +385,9 @@ function Shell() {
   // pending project is only for uncreated conversations; clear it (App reads the
   // stored conversation's own project).
   function handleSelectConversation(id: string, mode: Mode) {
+    if (!activeConversationId) {
+      closeFreshTerminalSessions(freshTerminalConversationId)
+    }
     setView(MODE_TO_VIEW[mode])
     setActiveConversationId(id)
     setPendingProjectId(null)
@@ -374,8 +401,12 @@ function Shell() {
   // Start a fresh conversation, optionally in a project (its directory is
   // auto-adopted for workspace views).
   function handleNewConversation(projectId: string | null = null) {
+    if (!activeConversationId) {
+      closeFreshTerminalSessions(freshTerminalConversationId)
+    }
     setActiveConversationId(null)
     setPendingProjectId(projectId)
+    setFreshTerminalConversationId(crypto.randomUUID())
     setAgentsOpen(false)
     setSkillsOpen(false)
     setProcessOpen(false)
@@ -521,7 +552,17 @@ function Shell() {
             conversationId={activeConversationId}
             pendingProjectId={pendingProjectId}
             onConversationCreated={(id) => {
+              const pendingId = freshTerminalConversationId
+              void window.cowork.terminal.adoptConversation(pendingId, id)
+              setAdoptedTerminalConversation({ from: pendingId, to: id })
               setActiveConversationId(id)
+              setTerminalOpenByConversation((state) => {
+                if (!(pendingId in state)) return state
+                const next = { ...state, [id]: state[pendingId] }
+                delete next[pendingId]
+                return next
+              })
+              setFreshTerminalConversationId(crypto.randomUUID())
               refreshConversations()
             }}
             onConversationChanged={refreshConversations}
@@ -545,8 +586,11 @@ function Shell() {
         )}
         <TerminalDrawer
           open={terminalAvailable && terminalOpen}
-          conversationId={activeConversationId}
+          conversationId={terminalConversationId}
           workspace={workspacePath}
+          replaceSessionsOnWorkspaceChange={activeConversationId === null}
+          adoptedConversation={adoptedTerminalConversation}
+          onAdoptionApplied={() => setAdoptedTerminalConversation(null)}
           onOpenChange={setTerminalOpenForActive}
           onAddSelectionToMessage={(text) =>
             appRef.current?.appendTerminalSelection(text)

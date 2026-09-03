@@ -30,6 +30,12 @@ export function registerTerminalHandlers(terminals: TerminalService): void {
   ipcMain.handle("terminal:kill", (_event, id: string) => {
     terminals.kill(id)
   })
+  ipcMain.handle(
+    "terminal:adopt-conversation",
+    (_event, fromConversationId: string, toConversationId: string) => {
+      terminals.adoptConversation(fromConversationId, toConversationId)
+    }
+  )
 
   const subscriptions = new Map<
     WebContents,

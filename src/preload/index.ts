@@ -746,6 +746,12 @@ const api = {
       ipcRenderer.invoke("terminal:resize", id, cols, rows) as Promise<void>,
     kill: (id: string) =>
       ipcRenderer.invoke("terminal:kill", id) as Promise<void>,
+    adoptConversation: (fromConversationId: string, toConversationId: string) =>
+      ipcRenderer.invoke(
+        "terminal:adopt-conversation",
+        fromConversationId,
+        toConversationId
+      ) as Promise<void>,
     onData: (cb: (event: TerminalDataEvent) => void) => {
       const listener = (_e: IpcRendererEvent, event: TerminalDataEvent) =>
         cb(event)

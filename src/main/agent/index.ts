@@ -93,6 +93,8 @@ import {
 import {
   createCompletionRoundWithRetry,
   ModelRequestRetryExhaustedError,
+  ModelResponseValidationError,
+  type CompletionRound,
 } from "./model-request-retry"
 import { generateTitle } from "./title"
 export { generateTitle } from "./title"
@@ -469,6 +471,50 @@ function appendCommandCompletionEvents(input: {
   input.messages.push({ role: "user", content })
   commandCompletionInbox.markConsumed(input.events.map((event) => event.id))
   return true
+}
+
+function validateModelRoundForLoop(input: {
+  round: CompletionRound
+  commandCompletionPending: boolean
+}): void {
+  const structuredToolCalls = accumulateToolCalls(input.round.toolFragments)
+  const recovered = extractTextToolCalls(input.round.text)
+  const text = recovered.text.trim()
+  const hasToolCalls =
+    structuredToolCalls.length > 0 || recovered.toolCalls.length > 0
+  if (text || hasToolCalls || input.commandCompletionPending) return
+
+  if (input.round.finishReason === "length") {
+    throw new ModelResponseValidationError(
+      "The model hit the output limit before returning a usable answer. Retry with a narrower request or a higher output cap.",
+      { retryable: false }
+    )
+  }
+
+  if (input.round.finishReason === "content_filter") {
+    throw new ModelResponseValidationError(
+      "The model response was blocked by a content filter before returning a usable answer.",
+      { retryable: false }
+    )
+  }
+
+  if (
+    input.round.finishReason !== null &&
+    input.round.finishReason !== "stop"
+  ) {
+    const finishReason = input.round.finishReason
+      .replace(/[\u0000-\u001f\u007f]/g, "")
+      .slice(0, 80)
+    throw new ModelResponseValidationError(
+      `The model ended with unsupported finish reason "${finishReason}" before returning a usable answer.`,
+      { retryable: false }
+    )
+  }
+
+  throw new ModelResponseValidationError(
+    "The model returned no usable answer. The turn ended before it could finish.",
+    { retryable: true }
+  )
 }
 
 function parseCommandSessionId(result: string): string | undefined {
@@ -1581,6 +1627,19 @@ export async function runAgentLoop(
         logicalRoundId,
         signal: abort.signal,
         isTransientError,
+        validateRound: (round) =>
+          validateModelRoundForLoop({
+            round,
+            commandCompletionPending: commandCompletionInbox.hasPending(
+              commandCompletionOwner
+            ),
+          }),
+        requestIdentity: {
+          accountId: llm.accountId,
+          modelId: llm.model,
+          apiMode: llm.apiMode,
+        },
+        recoverVisibleText: (rawText) => extractTextToolCalls(rawText).text,
         request: () =>
           createCompletion(
             llm.client,
@@ -1654,7 +1713,9 @@ export async function runAgentLoop(
 
       if (toolCalls.length === 0) {
         if (commandCompletionInbox.hasPending(commandCompletionOwner)) {
-          appendMessage({ conversationId, role: "assistant", content: text })
+          if (text.trim()) {
+            appendMessage({ conversationId, role: "assistant", content: text })
+          }
           completeModelRequestRetryBudget({ conversationId, logicalRoundId })
           onEvent({ type: "command_wait", phase: "start" })
           await commandCompletionInbox.waitForEvent(commandCompletionOwner, {

@@ -100,6 +100,11 @@ import {
 } from "@/lib/timeline"
 import { cn } from "@/lib/utils"
 import { maybeNotify } from "@/lib/notify"
+import {
+  EMPTY_CHAT_SUCCESS_ERROR,
+  chatResultNotification,
+  isUnexpectedEmptyChatSuccess,
+} from "@/lib/chat-result"
 import type {
   Question,
   QuestionAnswer,
@@ -1332,6 +1337,7 @@ function App(
       // — otherwise a turn that ends mid-work after some text would stop silently.
       // (Transient — immediately superseded by the reconcile below, which also
       // reads the persisted error note.)
+      const unexpectedEmptySuccess = isUnexpectedEmptyChatSuccess(data)
       if (data.error) {
         if (data.errorCode === "execution_backend_unavailable") {
           toast.error("Selected execution backend is unavailable", {
@@ -1359,7 +1365,10 @@ function App(
         updateLive(turnConvoId, (turn) =>
           appendLiveFinalText(turn, "⏹ Stopped")
         )
-      } else if (data.content) {
+      } else if (
+        typeof data.content === "string" &&
+        data.content.trim().length > 0
+      ) {
         // Final answer with no streamed text (rare): seed a text segment so the
         // bubble isn't empty. If text already streamed, it's already shown.
         updateLive(turnConvoId, (turn) =>
@@ -1367,15 +1376,18 @@ function App(
             ? turn
             : appendLiveText(turn, data.content!)
         )
+      } else if (unexpectedEmptySuccess) {
+        updateLive(turnConvoId, (turn) =>
+          appendLiveFinalText(turn, `Error: ${EMPTY_CHAT_SUCCESS_ERROR}`)
+        )
       }
       // Desktop notification on settle: error vs done. A clean user-initiated
       // stop is silent (the user is right here). The body is a short snippet of
       // the outcome; maybeNotify suppresses it when the window is focused on this
       // very conversation.
-      if (data.error) {
-        void notify(turnConvoId, "turnError", snippet(data.error))
-      } else if (!data.stopped) {
-        void notify(turnConvoId, "turnComplete", "The agent finished its turn.")
+      const notification = chatResultNotification(data, snippet)
+      if (notification) {
+        void notify(turnConvoId, notification.kind, notification.body)
       }
     } catch (error) {
       const msg = error instanceof Error ? error.message : "Request failed"

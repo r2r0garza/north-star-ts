@@ -137,6 +137,19 @@ function streamText(content: string): AsyncIterable<any> {
   })()
 }
 
+function streamEmpty(finishReason: string | null): AsyncIterable<any> {
+  return (async function* () {
+    yield {
+      choices: [
+        {
+          delta: {},
+          finish_reason: finishReason,
+        },
+      ],
+    }
+  })()
+}
+
 const nodeCmd = (code: string) =>
   `${JSON.stringify(process.execPath)} -e ${JSON.stringify(code)}`
 
@@ -782,7 +795,7 @@ describe.skipIf(!sqliteLoads)("agent loop tool-error feedback", () => {
         },
       ])
     )
-    scriptedCompletions.push(() => streamText("No more work right now."))
+    scriptedCompletions.push(() => streamEmpty("stop"))
     scriptedCompletions.push((request) => {
       const runtimeEvent = lastMessage(request, "user")
       expect(runtimeEvent?.content).toContain(
@@ -810,6 +823,14 @@ describe.skipIf(!sqliteLoads)("agent loop tool-error feedback", () => {
     ).toEqual(["start", "done"])
     expect(completionRequests).toHaveLength(3)
     expect(
+      listMessages(conversation.id).some(
+        (message) =>
+          message.role === "assistant" &&
+          typeof message.content === "string" &&
+          message.content.trim().length === 0
+      )
+    ).toBe(false)
+    expect(
       listMessages(conversation.id).some((message) =>
         String(message.content ?? "").includes(
           "Runtime event: background command completion"
@@ -817,6 +838,168 @@ describe.skipIf(!sqliteLoads)("agent loop tool-error feedback", () => {
       )
     ).toBe(true)
   })
+
+  it("retries an empty final model response without persisting a blank assistant message", async () => {
+    const workspace = await makeWorkspace()
+    const conversation = createConversation({ mode: "interactive" })
+
+    scriptedCompletions.push(() => streamEmpty("stop"))
+    scriptedCompletions.push(() => streamText("Recovered final answer."))
+
+    const result = await runAgentLoop({
+      conversationId: conversation.id,
+      workspace,
+      userMessage: "finish the task",
+      abort: new AbortController(),
+      onEvent: () => {},
+    })
+
+    expect(result).toEqual({ content: "Recovered final answer." })
+    expect(completionRequests).toHaveLength(2)
+    const budget = getBudget(conversation.id, "after-seq:1")
+    expect(budget).toMatchObject({
+      status: "completed",
+      attemptsConsumed: 2,
+    })
+    expect(budget!.lastError).toContain(
+      "The model returned no usable answer. The turn ended before it could finish."
+    )
+    expect(budget!.lastError).toContain("[model_response_diagnostic]")
+    const assistantMessages = listMessages(conversation.id).filter(
+      (message) => message.role === "assistant"
+    )
+    expect(assistantMessages.map((message) => message.content)).toEqual([
+      "Recovered final answer.",
+    ])
+  })
+
+  it("fails repeated empty final model responses without completing the retry budget", async () => {
+    const workspace = await makeWorkspace()
+    const conversation = createConversation({ mode: "interactive" })
+
+    scriptedCompletions.push(() => streamEmpty("stop"))
+    scriptedCompletions.push(() => streamEmpty("stop"))
+    scriptedCompletions.push(() => streamEmpty("stop"))
+
+    const result = await runAgentLoop({
+      conversationId: conversation.id,
+      workspace,
+      userMessage: "finish the task",
+      abort: new AbortController(),
+      onEvent: () => {},
+    })
+
+    expect(result.error).toContain("The model returned no usable answer")
+    expect(result.retryable).toBe(false)
+    expect(completionRequests).toHaveLength(3)
+    const budget = getBudget(conversation.id, "after-seq:1")
+    expect(budget).toMatchObject({
+      status: "exhausted",
+      attemptsConsumed: 3,
+    })
+    expect(budget!.lastError).toContain(
+      "The model returned no usable answer. The turn ended before it could finish."
+    )
+    expect(budget!.lastError).toContain("[model_response_diagnostic]")
+    const assistantMessages = listMessages(conversation.id).filter(
+      (message) => message.role === "assistant"
+    )
+    expect(assistantMessages).toHaveLength(1)
+    expect(assistantMessages[0].content).toContain(
+      "The model returned no usable answer"
+    )
+  })
+
+  it("exposes exhausted empty responses as nonretryable process worker failures", async () => {
+    const workspace = await makeWorkspace()
+    const conversation = createConversation({ mode: "interactive" })
+
+    scriptedCompletions.push(() => streamEmpty("stop"))
+    scriptedCompletions.push(() => streamEmpty("stop"))
+    scriptedCompletions.push(() => streamEmpty("stop"))
+
+    const result = await runAgentLoop({
+      conversationId: conversation.id,
+      workspace,
+      userMessage: "finish the process phase",
+      abort: new AbortController(),
+      processRunId: "process-run",
+      processPhaseRunId: "phase-run",
+      onEvent: () => {},
+    })
+
+    expect(result.error).toContain("The model returned no usable answer")
+    expect(result.retryable).toBe(false)
+    expect(result.failure).toMatchObject({
+      code: "model_request_retry_exhausted",
+      stage: "model_request",
+      retryable: false,
+      runId: "process-run",
+      phaseRunId: "phase-run",
+    })
+    expect(getBudget(conversation.id, "after-seq:1")).toMatchObject({
+      status: "exhausted",
+      attemptsConsumed: 3,
+    })
+  })
+
+  it("fails empty length responses without an automatic retry", async () => {
+    const workspace = await makeWorkspace()
+    const conversation = createConversation({ mode: "interactive" })
+
+    scriptedCompletions.push(() => streamEmpty("length"))
+
+    const result = await runAgentLoop({
+      conversationId: conversation.id,
+      workspace,
+      userMessage: "finish the task",
+      abort: new AbortController(),
+      onEvent: () => {},
+    })
+
+    expect(result.error).toContain("output limit")
+    expect(result.retryable).toBe(false)
+    expect(completionRequests).toHaveLength(1)
+    expect(getBudget(conversation.id, "after-seq:1")).toMatchObject({
+      status: "exhausted",
+      attemptsConsumed: 1,
+    })
+  })
+
+  it.each([
+    {
+      finishReason: "content_filter",
+      expected: "content filter",
+    },
+    {
+      finishReason: "unexpected_reason",
+      expected: 'unsupported finish reason "unexpected_reason"',
+    },
+  ])(
+    "fails empty $finishReason responses without an automatic retry",
+    async ({ finishReason, expected }) => {
+      const workspace = await makeWorkspace()
+      const conversation = createConversation({ mode: "interactive" })
+
+      scriptedCompletions.push(() => streamEmpty(finishReason))
+
+      const result = await runAgentLoop({
+        conversationId: conversation.id,
+        workspace,
+        userMessage: "finish the task",
+        abort: new AbortController(),
+        onEvent: () => {},
+      })
+
+      expect(result.error).toContain(expected)
+      expect(result.retryable).toBe(false)
+      expect(completionRequests).toHaveLength(1)
+      expect(getBudget(conversation.id, "after-seq:1")).toMatchObject({
+        status: "exhausted",
+        attemptsConsumed: 1,
+      })
+    }
+  )
 
   it("does not execute a known tool body when plan mode makes it unavailable", async () => {
     const workspace = await makeWorkspace()

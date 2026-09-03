@@ -1,5 +1,5 @@
 import type { ToolCallDelta } from "./tool-stream"
-import type { ModelRequestRetryBudget } from "../db/types"
+import type { ApiMode, ModelRequestRetryBudget } from "../db/types"
 import {
   consumeAttempt as consumeModelRequestRetryAttempt,
   exhaustBudget as exhaustModelRequestRetryBudget,
@@ -17,6 +17,7 @@ export interface CompletionRound {
   text: string
   toolFragments: ToolCallDelta[]
   finishReason: string | null
+  diagnostics: ModelResponseAttemptDiagnostics
 }
 
 export class ModelRequestRetryExhaustedError extends Error {
@@ -25,6 +26,55 @@ export class ModelRequestRetryExhaustedError extends Error {
     this.name = "ModelRequestRetryExhaustedError"
   }
 }
+
+export class ModelResponseValidationError extends Error {
+  readonly retryable: boolean
+  diagnostics?: ModelResponseAttemptDiagnostics
+
+  constructor(
+    message: string,
+    options?: {
+      retryable?: boolean
+      diagnostics?: ModelResponseAttemptDiagnostics
+    }
+  ) {
+    super(message)
+    this.name = "ModelResponseValidationError"
+    this.retryable = options?.retryable === true
+    this.diagnostics = options?.diagnostics
+  }
+}
+
+export interface ModelResponseRequestIdentity {
+  accountId: string
+  modelId: string
+  apiMode: ApiMode
+}
+
+export interface ModelResponseAttemptDiagnostics {
+  code: string
+  message: string
+  request: ModelResponseRequestIdentity | null
+  elapsedMs: number
+  chunkCount: number
+  choiceSeen: boolean
+  deltaSeen: boolean
+  rawTextCharCount: number
+  recoveredVisibleTextCharCount: number
+  toolFragmentCount: number
+  terminalToolCallCount: number
+  finishReason: string | null
+  refusalFieldRecognized: boolean | null
+  reasoningFieldRecognized: boolean | null
+  providerRequestId: string | null
+  usage: {
+    promptTokens?: number
+    completionTokens?: number
+    totalTokens?: number
+  } | null
+}
+
+export const MODEL_RESPONSE_DIAGNOSTIC_MAX_BYTES = 4096
 
 export interface RetryClock {
   now(): number
@@ -131,30 +181,173 @@ function contentToText(content: unknown): string {
   return ""
 }
 
+function cappedString(value: unknown, max = 160): string | null {
+  if (typeof value !== "string") return null
+  const trimmed = value.replace(/[\u0000-\u001f\u007f]/g, "").slice(0, max)
+  return trimmed.length > 0 ? trimmed : null
+}
+
+function finiteNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined
+}
+
+function usageFromChunk(chunk: any): ModelResponseAttemptDiagnostics["usage"] {
+  const usage = chunk?.usage
+  if (!usage || typeof usage !== "object") return null
+  const promptTokens = finiteNumber(usage.prompt_tokens)
+  const completionTokens = finiteNumber(usage.completion_tokens)
+  const totalTokens = finiteNumber(usage.total_tokens)
+  if (
+    promptTokens === undefined &&
+    completionTokens === undefined &&
+    totalTokens === undefined
+  ) {
+    return null
+  }
+  return { promptTokens, completionTokens, totalTokens }
+}
+
+function providerRequestIdFromChunk(chunk: any): string | null {
+  return (
+    cappedString(chunk?._request_id) ??
+    cappedString(chunk?.request_id) ??
+    cappedString(chunk?.response?.request_id) ??
+    null
+  )
+}
+
+function diagnosticErrorText(input: {
+  message: string
+  diagnostics?: ModelResponseAttemptDiagnostics
+}): string {
+  if (!input.diagnostics) return input.message
+  const message =
+    cappedString(input.message, 500) ?? "model response validation failed"
+  const payload = boundedDiagnosticPayload(input.diagnostics)
+  return `${message}\n\n[model_response_diagnostic] ${payload}`
+}
+
+function boundedDiagnosticPayload(
+  diagnostics: ModelResponseAttemptDiagnostics
+): string {
+  const capped: ModelResponseAttemptDiagnostics = {
+    ...diagnostics,
+    code: diagnostics.code.slice(0, 80),
+    message: diagnostics.message.slice(0, 300),
+    finishReason: cappedString(diagnostics.finishReason, 80),
+    providerRequestId: cappedString(diagnostics.providerRequestId, 160),
+    request: diagnostics.request
+      ? {
+          accountId: diagnostics.request.accountId.slice(0, 160),
+          modelId: diagnostics.request.modelId.slice(0, 160),
+          apiMode: diagnostics.request.apiMode,
+        }
+      : null,
+  }
+  let json = JSON.stringify(capped)
+  const max = MODEL_RESPONSE_DIAGNOSTIC_MAX_BYTES
+  while (Buffer.byteLength(json, "utf8") > max && capped.message.length > 0) {
+    capped.message = capped.message.slice(
+      0,
+      Math.max(0, capped.message.length - 50)
+    )
+    json = JSON.stringify(capped)
+  }
+  if (Buffer.byteLength(json, "utf8") <= max) return json
+  return JSON.stringify({
+    code: capped.code,
+    message: capped.message.slice(0, 80),
+    request: capped.request,
+    elapsedMs: capped.elapsedMs,
+    chunkCount: capped.chunkCount,
+    choiceSeen: capped.choiceSeen,
+    deltaSeen: capped.deltaSeen,
+    rawTextCharCount: capped.rawTextCharCount,
+    recoveredVisibleTextCharCount: capped.recoveredVisibleTextCharCount,
+    toolFragmentCount: capped.toolFragmentCount,
+    terminalToolCallCount: capped.terminalToolCallCount,
+    finishReason: capped.finishReason,
+    refusalFieldRecognized: capped.refusalFieldRecognized,
+    reasoningFieldRecognized: capped.reasoningFieldRecognized,
+  })
+}
+
 async function consumeCompletionStream(
   stream: AsyncIterable<any>,
-  signal: AbortSignal
+  signal: AbortSignal,
+  input: {
+    startedAt: number
+    now: () => number
+    requestIdentity?: ModelResponseRequestIdentity | null
+    recoverVisibleText?: (rawText: string) => string
+  }
 ): Promise<CompletionRound> {
   let text = ""
   const toolFragments: ToolCallDelta[] = []
   let finishReason: string | null = null
+  let chunkCount = 0
+  let choiceSeen = false
+  let deltaSeen = false
+  let refusalFieldRecognized: boolean | null = null
+  let reasoningFieldRecognized: boolean | null = null
+  let providerRequestId: string | null = null
+  let usage: ModelResponseAttemptDiagnostics["usage"] = null
+  const terminalToolCallIndexes = new Set<number>()
 
   for await (const chunk of stream) {
     if (signal.aborted) break
-    const choice = chunk.choices[0]
+    chunkCount += 1
+    providerRequestId ??= providerRequestIdFromChunk(chunk)
+    usage ??= usageFromChunk(chunk)
+    const choice = chunk.choices?.[0]
+    if (choice) choiceSeen = true
     if (choice?.finish_reason) finishReason = choice.finish_reason
     const delta = choice?.delta
     if (!delta) continue
+    deltaSeen = true
+    if (Object.prototype.hasOwnProperty.call(delta, "refusal")) {
+      refusalFieldRecognized = true
+    }
+    if (
+      Object.prototype.hasOwnProperty.call(delta, "reasoning") ||
+      Object.prototype.hasOwnProperty.call(delta, "reasoning_content")
+    ) {
+      reasoningFieldRecognized = true
+    }
 
     const piece = contentToText(delta.content)
     if (piece) text += piece
 
     for (const tc of (delta.tool_calls ?? []) as ToolCallDelta[]) {
       toolFragments.push(tc)
+      if (typeof tc.index === "number") terminalToolCallIndexes.add(tc.index)
     }
   }
 
-  return { text, toolFragments, finishReason }
+  const recoveredText = input.recoverVisibleText?.(text) ?? text
+  return {
+    text,
+    toolFragments,
+    finishReason,
+    diagnostics: {
+      code: "model_response_validation_failed",
+      message: "",
+      request: input.requestIdentity ?? null,
+      elapsedMs: Math.max(0, input.now() - input.startedAt),
+      chunkCount,
+      choiceSeen,
+      deltaSeen,
+      rawTextCharCount: text.length,
+      recoveredVisibleTextCharCount: recoveredText.length,
+      toolFragmentCount: toolFragments.length,
+      terminalToolCallCount: terminalToolCallIndexes.size,
+      finishReason,
+      refusalFieldRecognized,
+      reasoningFieldRecognized,
+      providerRequestId,
+      usage,
+    },
+  }
 }
 
 export async function createCompletionRoundWithRetry(input: {
@@ -162,6 +355,9 @@ export async function createCompletionRoundWithRetry(input: {
   logicalRoundId: string
   request: () => Promise<AsyncIterable<any>>
   isTransientError: (error: unknown) => boolean
+  validateRound?: (round: CompletionRound) => void
+  requestIdentity?: ModelResponseRequestIdentity | null
+  recoverVisibleText?: (rawText: string) => string
   signal: AbortSignal
   clock?: RetryClock
   random?: () => number
@@ -173,6 +369,7 @@ export async function createCompletionRoundWithRetry(input: {
     logicalRoundId,
     request,
     isTransientError,
+    validateRound,
     signal,
     random,
   } = input
@@ -202,23 +399,55 @@ export async function createCompletionRoundWithRetry(input: {
     }
 
     try {
+      const startedAt = clock.now()
       const stream = await request()
-      return await consumeCompletionStream(stream, signal)
+      const round = await consumeCompletionStream(stream, signal, {
+        startedAt,
+        now: clock.now,
+        requestIdentity: input.requestIdentity,
+        recoverVisibleText: input.recoverVisibleText,
+      })
+      if (!signal.aborted && validateRound) {
+        try {
+          validateRound(round)
+        } catch (validationError) {
+          if (validationError instanceof ModelResponseValidationError) {
+            validationError.diagnostics = {
+              ...round.diagnostics,
+              code: "model_response_validation_failed",
+              message: validationError.message,
+            }
+          }
+          throw validationError
+        }
+      }
+      return round
     } catch (error) {
       lastError = error
       const message = error instanceof Error ? error.message : String(error)
+      const persistedError = diagnosticErrorText({
+        message,
+        diagnostics:
+          error instanceof ModelResponseValidationError
+            ? error.diagnostics
+            : undefined,
+      })
       repository.recordFailure({
         conversationId,
         logicalRoundId,
-        error: message,
+        error: persistedError,
         now: clock.now(),
       })
       if (signal.aborted) throw error
-      if (!isTransientError(error)) {
+      const retryable =
+        error instanceof ModelResponseValidationError
+          ? error.retryable
+          : isTransientError(error)
+      if (!retryable) {
         repository.exhaustBudget({
           conversationId,
           logicalRoundId,
-          error: message,
+          error: persistedError,
           now: clock.now(),
         })
         throw error
@@ -237,7 +466,7 @@ export async function createCompletionRoundWithRetry(input: {
         repository.exhaustBudget({
           conversationId,
           logicalRoundId,
-          error: message,
+          error: persistedError,
           now: clock.now(),
         })
         break

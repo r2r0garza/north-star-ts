@@ -16,7 +16,9 @@ import {
 } from "../db/repositories/model-request-retry-budgets"
 import {
   createCompletionRoundWithRetry,
+  MODEL_RESPONSE_DIAGNOSTIC_MAX_BYTES,
   ModelRequestRetryExhaustedError,
+  ModelResponseValidationError,
   type RetryClock,
 } from "./model-request-retry"
 
@@ -39,6 +41,40 @@ function streamText(content: string): AsyncIterable<any> {
       choices: [{ delta: { content }, finish_reason: "stop" }],
     }
   })()
+}
+
+function streamEmpty(finishReason: string | null): AsyncIterable<any> {
+  return (async function* () {
+    yield {
+      choices: [{ delta: {}, finish_reason: finishReason }],
+    }
+  })()
+}
+
+function streamChunk(chunk: any): AsyncIterable<any> {
+  return (async function* () {
+    yield chunk
+  })()
+}
+
+function parseDiagnostic(lastError: string | null): any {
+  expect(lastError).toContain("[model_response_diagnostic]")
+  const json = lastError!.slice(
+    lastError!.indexOf("[model_response_diagnostic]") +
+      "[model_response_diagnostic]".length
+  )
+  return JSON.parse(json.trim())
+}
+
+function rejectEmptyRound(round: {
+  text: string
+  toolFragments: unknown[]
+  finishReason: string | null
+}): void {
+  if (round.text.trim() || round.toolFragments.length > 0) return
+  throw new ModelResponseValidationError("empty model response", {
+    retryable: round.finishReason === null || round.finishReason === "stop",
+  })
 }
 
 function failingPartialStream(error: Error): AsyncIterable<any> {
@@ -438,5 +474,332 @@ describe.skipIf(!sqliteLoads)("model request retry coordinator", () => {
       attemptsConsumed: 1,
       lastError: "gateway 503",
     })
+  })
+
+  it("retries transient empty stop responses within the same logical round", async () => {
+    const clock = makeClock()
+    let attempts = 0
+
+    const round = await createCompletionRoundWithRetry({
+      conversationId,
+      logicalRoundId: "after-seq:11",
+      signal: new AbortController().signal,
+      clock,
+      random: () => 0,
+      isTransientError: () => false,
+      validateRound: rejectEmptyRound,
+      request: async () => {
+        attempts += 1
+        return attempts === 1 ? streamEmpty("stop") : streamText("accepted")
+      },
+    })
+
+    expect(round.text).toBe("accepted")
+    expect(attempts).toBe(2)
+    expect(clock.sleeps).toEqual([0])
+    expect(getBudget(conversationId, "after-seq:11")).toMatchObject({
+      status: "in_progress",
+      attemptsConsumed: 2,
+    })
+    const diagnostic = parseDiagnostic(
+      getBudget(conversationId, "after-seq:11")!.lastError
+    )
+    expect(diagnostic).toMatchObject({
+      message: "empty model response",
+      chunkCount: 1,
+      choiceSeen: true,
+      deltaSeen: true,
+      finishReason: "stop",
+      rawTextCharCount: 0,
+      recoveredVisibleTextCharCount: 0,
+    })
+  })
+
+  it("exhausts repeated transient empty stop responses", async () => {
+    const clock = makeClock()
+    let attempts = 0
+
+    await expect(
+      createCompletionRoundWithRetry({
+        conversationId,
+        logicalRoundId: "after-seq:12",
+        signal: new AbortController().signal,
+        clock,
+        random: () => 0,
+        config: {
+          maxAttempts: 2,
+          baseDelayMs: 1000,
+          maxDelayMs: 30_000,
+          maxElapsedMs: 120_000,
+        },
+        isTransientError: () => false,
+        validateRound: rejectEmptyRound,
+        request: async () => {
+          attempts += 1
+          return streamEmpty("stop")
+        },
+      })
+    ).rejects.toThrow(
+      "Model request failed after 2 attempts: empty model response"
+    )
+
+    expect(attempts).toBe(2)
+    expect(getBudget(conversationId, "after-seq:12")).toMatchObject({
+      status: "exhausted",
+      attemptsConsumed: 2,
+    })
+    expect(getBudget(conversationId, "after-seq:12")!.lastError).toContain(
+      "[model_response_diagnostic]"
+    )
+  })
+
+  it("does not retry deterministic empty length responses", async () => {
+    const clock = makeClock()
+    let attempts = 0
+
+    await expect(
+      createCompletionRoundWithRetry({
+        conversationId,
+        logicalRoundId: "after-seq:13",
+        signal: new AbortController().signal,
+        clock,
+        isTransientError: () => true,
+        validateRound: rejectEmptyRound,
+        request: async () => {
+          attempts += 1
+          return streamEmpty("length")
+        },
+      })
+    ).rejects.toThrow("empty model response")
+
+    expect(attempts).toBe(1)
+    expect(clock.sleeps).toEqual([])
+    expect(getBudget(conversationId, "after-seq:13")).toMatchObject({
+      status: "exhausted",
+      attemptsConsumed: 1,
+    })
+    const diagnostic = parseDiagnostic(
+      getBudget(conversationId, "after-seq:13")!.lastError
+    )
+    expect(diagnostic.finishReason).toBe("length")
+  })
+
+  it("does not grant a new attempt when an empty response arrives after the deadline", async () => {
+    let now = 1000
+    const clock: RetryClock & { sleeps: number[] } = {
+      sleeps: [],
+      now: () => now,
+      sleep: async (ms) => {
+        clock.sleeps.push(ms)
+        now += ms
+      },
+    }
+    let attempts = 0
+
+    await expect(
+      createCompletionRoundWithRetry({
+        conversationId,
+        logicalRoundId: "after-seq:14",
+        signal: new AbortController().signal,
+        clock,
+        random: () => 0,
+        config: {
+          maxAttempts: 3,
+          baseDelayMs: 1000,
+          maxDelayMs: 30_000,
+          maxElapsedMs: 100,
+        },
+        isTransientError: () => false,
+        validateRound: rejectEmptyRound,
+        request: async () => {
+          attempts += 1
+          now = 1200
+          return streamEmpty("stop")
+        },
+      })
+    ).rejects.toThrow(
+      "Model request failed after 1 attempts: empty model response"
+    )
+
+    expect(attempts).toBe(1)
+    expect(clock.sleeps).toEqual([])
+    expect(getBudget(conversationId, "after-seq:14")).toMatchObject({
+      status: "exhausted",
+      attemptsConsumed: 1,
+    })
+    expect(getBudget(conversationId, "after-seq:14")!.lastError).toContain(
+      "[model_response_diagnostic]"
+    )
+  })
+
+  it("records distinct bounded diagnostics for empty stream shapes", async () => {
+    const cases = [
+      {
+        id: "empty-eof",
+        stream: (async function* () {})(),
+        expected: { chunkCount: 0, choiceSeen: false, deltaSeen: false },
+      },
+      {
+        id: "refusal-only",
+        stream: streamChunk({
+          choices: [
+            { delta: { refusal: "blocked sentinel" }, finish_reason: "stop" },
+          ],
+        }),
+        expected: {
+          refusalFieldRecognized: true,
+          reasoningFieldRecognized: null,
+        },
+      },
+      {
+        id: "reasoning-only",
+        stream: streamChunk({
+          choices: [
+            {
+              delta: { reasoning_content: "hidden sentinel" },
+              finish_reason: "stop",
+            },
+          ],
+        }),
+        expected: {
+          reasoningFieldRecognized: true,
+          refusalFieldRecognized: null,
+        },
+      },
+    ]
+
+    for (const testCase of cases) {
+      await expect(
+        createCompletionRoundWithRetry({
+          conversationId,
+          logicalRoundId: `after-seq:${testCase.id}`,
+          signal: new AbortController().signal,
+          clock: makeClock(),
+          config: {
+            maxAttempts: 1,
+            baseDelayMs: 1000,
+            maxDelayMs: 30_000,
+            maxElapsedMs: 120_000,
+          },
+          isTransientError: () => false,
+          validateRound: rejectEmptyRound,
+          request: async () => testCase.stream,
+        })
+      ).rejects.toThrow("empty model response")
+
+      const diagnostic = parseDiagnostic(
+        getBudget(conversationId, `after-seq:${testCase.id}`)!.lastError
+      )
+      expect(diagnostic).toMatchObject(testCase.expected)
+      expect(JSON.stringify(diagnostic)).not.toContain("sentinel")
+    }
+  })
+
+  it("records resolved request identity, usage, provider request id, recovered text, and tool counts", async () => {
+    await expect(
+      createCompletionRoundWithRetry({
+        conversationId,
+        logicalRoundId: "after-seq:diagnostic-rich",
+        signal: new AbortController().signal,
+        clock: makeClock(),
+        config: {
+          maxAttempts: 1,
+          baseDelayMs: 1000,
+          maxDelayMs: 30_000,
+          maxElapsedMs: 120_000,
+        },
+        requestIdentity: {
+          accountId: "acct-1",
+          modelId: "model-1",
+          apiMode: "completions",
+        },
+        recoverVisibleText: () => "",
+        isTransientError: () => false,
+        validateRound: () => {
+          throw new ModelResponseValidationError("empty model response", {
+            retryable: false,
+          })
+        },
+        request: async () =>
+          streamChunk({
+            _request_id: "req-123",
+            usage: {
+              prompt_tokens: 10,
+              completion_tokens: 2,
+              total_tokens: 12,
+            },
+            choices: [
+              {
+                delta: {
+                  content: "<tool_call>{}</tool_call>",
+                  tool_calls: [{ index: 3 }],
+                },
+                finish_reason: "stop",
+              },
+            ],
+          }),
+      })
+    ).rejects.toThrow("empty model response")
+
+    const diagnostic = parseDiagnostic(
+      getBudget(conversationId, "after-seq:diagnostic-rich")!.lastError
+    )
+    expect(diagnostic).toMatchObject({
+      request: {
+        accountId: "acct-1",
+        modelId: "model-1",
+        apiMode: "completions",
+      },
+      providerRequestId: "req-123",
+      usage: { promptTokens: 10, completionTokens: 2, totalTokens: 12 },
+      rawTextCharCount: "<tool_call>{}</tool_call>".length,
+      recoveredVisibleTextCharCount: 0,
+      toolFragmentCount: 1,
+      terminalToolCallCount: 1,
+    })
+  })
+
+  it("caps adversarial diagnostic serialization and keeps it valid", async () => {
+    const hostile = "credential://secret@example.com/".repeat(500)
+
+    await expect(
+      createCompletionRoundWithRetry({
+        conversationId,
+        logicalRoundId: "after-seq:hostile-diagnostic",
+        signal: new AbortController().signal,
+        clock: makeClock(),
+        config: {
+          maxAttempts: 1,
+          baseDelayMs: 1000,
+          maxDelayMs: 30_000,
+          maxElapsedMs: 120_000,
+        },
+        requestIdentity: {
+          accountId: hostile,
+          modelId: hostile,
+          apiMode: "completions",
+        },
+        isTransientError: () => false,
+        validateRound: () => {
+          throw new ModelResponseValidationError(hostile, { retryable: false })
+        },
+        request: async () =>
+          streamChunk({
+            _request_id: hostile,
+            choices: [{ delta: {}, finish_reason: hostile }],
+          }),
+      })
+    ).rejects.toThrow(hostile)
+
+    const lastError = getBudget(
+      conversationId,
+      "after-seq:hostile-diagnostic"
+    )!.lastError!
+    const diagnostic = parseDiagnostic(lastError)
+    expect(
+      Buffer.byteLength(JSON.stringify(diagnostic), "utf8")
+    ).toBeLessThanOrEqual(MODEL_RESPONSE_DIAGNOSTIC_MAX_BYTES)
+    expect(diagnostic.providerRequestId.length).toBeLessThanOrEqual(160)
+    expect(diagnostic.request.accountId.length).toBeLessThanOrEqual(160)
   })
 })
