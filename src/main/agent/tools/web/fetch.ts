@@ -1,6 +1,7 @@
 import { TOOL_EFFECTS, type Tool, type ToolContext } from "../types"
 import type { ToolAction } from "../../approval/types"
 import { toolError, truncateForModel } from "../output"
+import { renderContextEnvelope } from "../../context/provenance"
 import { extractReadable } from "./extract"
 import {
   SafeFetchBodyTooLargeError,
@@ -97,9 +98,13 @@ export const webFetchTool: Tool = {
 
       // Non-HTML (JSON, plain text, etc.): return the body as-is (truncated).
       if (!contentType.includes("html")) {
-        return truncateForModel(
+        const body = truncateForModel(
           `Fetched ${parsed.href} (${contentType || "unknown type"}):\n\n${text}`
         ).text
+        return renderContextEnvelope(
+          { trust: "untrusted_data", channel: "web", source: parsed.href },
+          body
+        )
       }
 
       const { title, markdown } = extractReadable(text)
@@ -109,7 +114,10 @@ export const webFetchTool: Tool = {
         }, but no readable text content was found.`
       }
       const header = `# ${title || parsed.href}\nSource: ${parsed.href}\n\n`
-      return truncateForModel(header + markdown).text
+      return renderContextEnvelope(
+        { trust: "untrusted_data", channel: "web", source: parsed.href },
+        truncateForModel(header + markdown).text
+      )
     } catch (err) {
       if (err instanceof SafeFetchTimeoutError) {
         return toolError("timeout", err.message)

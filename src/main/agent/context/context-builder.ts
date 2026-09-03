@@ -1,6 +1,10 @@
 import { listMessages } from "../../db/repositories/messages"
 import { defaultTokenCounter, type TokenCounter } from "./token-counter"
 import type { Message } from "../../db/types"
+import {
+  renderContextEnvelope,
+  type ContextProvenance,
+} from "./provenance"
 
 // An OpenAI-compatible chat message, the shape Portkey expects. The agent feeds
 // the array this builder returns straight into the chat completion request.
@@ -34,6 +38,7 @@ export interface ContextSection {
   name: string
   priority: number
   content: string
+  provenance?: ContextProvenance
 }
 
 // Priorities for the built-in sections. Ascending = dropped first under budget
@@ -149,7 +154,13 @@ export class ContextBuilder {
     // assembled prompt reads consistently turn to turn.
     const blocks = [baseSystemPrompt]
     for (const section of present) {
-      if (admitted.has(section.name)) blocks.push(section.content)
+      if (admitted.has(section.name)) {
+        blocks.push(
+          section.provenance
+            ? renderContextEnvelope(section.provenance, section.content)
+            : section.content
+        )
+      }
     }
     return blocks.join("\n\n")
   }

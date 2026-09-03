@@ -227,6 +227,11 @@ describe("command session tools", () => {
     )
 
     expect(result.status).toBe("completed")
+    expect(result.provenance).toMatchObject({
+      trust: "untrusted_data",
+      channel: "command",
+      source: "exec_command",
+    })
     expect(result.output).toContain("hello")
     expect(result.sessionId).toBeUndefined()
   })
@@ -486,6 +491,10 @@ describe("command session tools", () => {
       )
 
       expect(result).toContain("[exit code 0]")
+      expect(result).toContain(
+        "[context provenance: trust=untrusted_data channel=command"
+      )
+      expect(result).toContain("DATA: [exit code 0]")
       expect(result).toContain("print('compat')")
       expect(seen.commands[0]).toMatch(
         /^python ".*cowork-python-heredoc-.*\.py"$/

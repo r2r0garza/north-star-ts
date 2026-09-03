@@ -11,6 +11,7 @@ import type {
   CommandCompletionInbox,
   CommandCompletionOwner,
 } from "../command-completion-inbox"
+import { renderContextEnvelope } from "../context/provenance"
 import { truncateForModel, toolError } from "./output"
 import { TOOL_EFFECTS, type Tool, type ToolContext } from "./types"
 
@@ -329,8 +330,14 @@ export async function runShellCompatibility(
       ? `terminated by signal ${result.session.signal}`
       : `exit code ${result.session.exitCode ?? "unknown"}`
   sessions.delete(result.session.id)
-  const rendered =
+  const rendered = renderContextEnvelope(
+    {
+      trust: "untrusted_data",
+      channel: "command",
+      source: "run_shell_tool",
+    },
     `[${status}]\n${truncateForModel(stripAnsi(output.output)).text}`.trimEnd()
+  )
   if (!result.session.cleanupError) return rendered
   return toolError(
     "cleanup_failed",
@@ -829,6 +836,11 @@ function stringifyCommandResult(
 ): string {
   const durationMs = Date.now() - session.createdAt
   const body = {
+    provenance: {
+      trust: "untrusted_data",
+      channel: "command",
+      source: "exec_command",
+    },
     status: session.status,
     ...(opts.includeSessionId ? { sessionId: session.id } : {}),
     cursor: output.cursor,

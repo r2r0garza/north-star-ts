@@ -7,6 +7,7 @@ import { readHostTextLines } from "../env/read-text-lines"
 import { supportedDocumentKind } from "./document_extraction_tool"
 import { renderMetadata, toolError } from "./output"
 import { isSkillResourceUri, resolveSkillResourcePath } from "./skill_resources"
+import { renderContextEnvelope } from "../context/provenance"
 
 // Largest file we'll read into context. Matches the attachment cap in
 // agent/index.ts so the agent's two file-ingestion paths are bounded alike.
@@ -173,17 +174,24 @@ export const readFileTool: Tool = {
       )
       .join("\n")
 
-    return `${numbered}\n${renderMetadata({
-      startLine: window.startLine,
-      endLine: window.endLine,
-      hasMore: window.hasMore,
-      nextOffset: window.nextOffset,
-      fileBytes: window.fileBytes,
-      truncated: window.truncated,
-      revision: window.revision,
-      lineTooLong: window.lineTooLong,
-      skippedLineRemainder: window.skippedLineRemainder,
-      limitCapped: requestedLimit !== limit || undefined,
-    })}`
+    return renderContextEnvelope(
+      {
+        trust: "untrusted_data",
+        channel: readable.source === "host" ? "user" : "file",
+        source: path,
+      },
+      `${numbered}\n${renderMetadata({
+        startLine: window.startLine,
+        endLine: window.endLine,
+        hasMore: window.hasMore,
+        nextOffset: window.nextOffset,
+        fileBytes: window.fileBytes,
+        truncated: window.truncated,
+        revision: window.revision,
+        lineTooLong: window.lineTooLong,
+        skippedLineRemainder: window.skippedLineRemainder,
+        limitCapped: requestedLimit !== limit || undefined,
+      })}`
+    )
   },
 }

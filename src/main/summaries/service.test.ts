@@ -457,11 +457,14 @@ describe.skipIf(!sqliteLoads)("SummaryService.execute (executor)", () => {
     })
     const user =
       lastBase?.messages?.find((m) => m.role === "user")?.content ?? ""
+    const system =
+      lastBase?.messages?.find((m) => m.role === "system")?.content ?? ""
     // Delimited as data, not an open chat log ending in a completion cue.
     expect(user).toContain("<new_turns>")
     expect(user).toContain("</new_turns>")
     expect(user).toContain("<prior_summary>")
     expect(user).not.toMatch(/UPDATED SUMMARY:\s*$/)
     expect(user).toContain("do NOT add any turns of your own")
+    expect(system).toContain("Preserve source/trust boundaries")
   })
 })

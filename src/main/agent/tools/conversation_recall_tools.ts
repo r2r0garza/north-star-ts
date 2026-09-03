@@ -6,6 +6,7 @@ import {
   conversationSearch,
   conversationTreeSearch,
 } from "../../db/repositories/conversation-recall"
+import { withProvenanceJson } from "../context/provenance"
 
 const ROLE_VALUES: MessageRole[] = ["system", "user", "assistant", "tool"]
 
@@ -50,7 +51,17 @@ export const conversationSearchTool: Tool = {
     const parsed = parseSearchArgs(args)
     if ("error" in parsed) return parsed.error
     const hits = conversationSearch(conversationId, parsed.query, parsed)
-    return JSON.stringify({ scope: "conversation", hits })
+    return JSON.stringify(
+      withProvenanceJson(
+        { scope: "conversation", hits },
+        {
+          trust: "untrusted_data",
+          channel: "recall",
+          source: "conversation_search",
+          persisted: true,
+        }
+      )
+    )
   },
 }
 
@@ -99,14 +110,24 @@ export const conversationReadTool: Tool = {
       endSeq ?? undefined,
       maxMessages ?? undefined
     )
-    return JSON.stringify({
-      scope: "conversation",
-      messages: messages.map(renderMessage),
-      capped:
-        typeof maxMessages === "number" && messages.length >= maxMessages
-          ? true
-          : undefined,
-    })
+    return JSON.stringify(
+      withProvenanceJson(
+        {
+          scope: "conversation",
+          messages: messages.map(renderMessage),
+          capped:
+            typeof maxMessages === "number" && messages.length >= maxMessages
+              ? true
+              : undefined,
+        },
+        {
+          trust: "untrusted_data",
+          channel: "recall",
+          source: "conversation_read",
+          persisted: true,
+        }
+      )
+    )
   },
 }
 
@@ -151,7 +172,17 @@ export const conversationTreeSearchTool: Tool = {
       includeTasks: args.include_tasks !== false,
       includeSubagents: args.include_subagents !== false,
     })
-    return JSON.stringify({ scope: "conversation_tree", hits })
+    return JSON.stringify(
+      withProvenanceJson(
+        { scope: "conversation_tree", hits },
+        {
+          trust: "untrusted_data",
+          channel: "recall",
+          source: "conversation_tree_search",
+          persisted: true,
+        }
+      )
+    )
   },
 }
 

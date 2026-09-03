@@ -271,6 +271,12 @@ describe("summarySection", () => {
     expect(section!.priority).toBeGreaterThan(SECTION_PRIORITY.skills)
     expect(section!.content).toContain("use sqlite")
     expect(section!.content).toContain("Conversation summary so far")
+    expect(section!.provenance).toEqual({
+      trust: "untrusted_data",
+      channel: "memory",
+      source: "conversation_summary",
+      persisted: true,
+    })
   })
 })
 
@@ -283,6 +289,10 @@ describe("browserStateSection", () => {
     expect(section.content).toContain("authoritative current state")
     // No stale URL should leak into a nothing-open section.
     expect(section.content).not.toContain("http")
+    expect(section.provenance).toMatchObject({
+      trust: "system",
+      channel: "runtime",
+    })
   })
 
   it("names the current page when a tab is open", () => {
@@ -329,6 +339,10 @@ describe("environmentSection", () => {
     expect(section!.content).not.toContain("Workspace:")
     expect(section!.content).not.toContain("Platform:")
     expect(section!.content).not.toContain("Git")
+    expect(section!.provenance).toMatchObject({
+      trust: "system",
+      channel: "runtime",
+    })
   })
 
   it("omits the model line when no model resolves", async () => {

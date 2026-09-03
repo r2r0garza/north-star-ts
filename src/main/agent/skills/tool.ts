@@ -3,6 +3,7 @@ import { dirname, join, relative } from "path"
 import { TOOL_EFFECTS, type Tool } from "../tools/types"
 import { registerSkillResourceRoot } from "../tools/skill_resources"
 import type { SkillMetadata } from "./types"
+import { renderContextEnvelope } from "../context/provenance"
 
 const MAX_MANIFEST_ENTRIES = 200
 const MAX_MANIFEST_BYTES = 16 * 1024
@@ -44,17 +45,25 @@ export function createReadSkillTool(skills: SkillMetadata[]): Tool {
       const root = dirname(skill.path)
       registerSkillResourceRoot(ctx, { name: skill.name, root })
       const manifest = await bundledResourceManifest(root)
-      return [
-        skill.body.trimEnd(),
-        "",
-        "---",
-        `Skill resource root: skill://${skill.name}/`,
-        "Use this read-only skill:// URI prefix for files bundled beside this SKILL.md. " +
-          "Writes, edits, renames, and deletions to skill resources are not allowed.",
-        manifest,
-      ]
-        .filter(Boolean)
-        .join("\n")
+      return renderContextEnvelope(
+        {
+          trust: "approved_instruction",
+          channel: "skill",
+          source: skill.name,
+          persisted: true,
+        },
+        [
+          skill.body.trimEnd(),
+          "",
+          "---",
+          `Skill resource root: skill://${skill.name}/`,
+          "Use this read-only skill:// URI prefix for files bundled beside this SKILL.md. " +
+            "Writes, edits, renames, and deletions to skill resources are not allowed.",
+          manifest,
+        ]
+          .filter(Boolean)
+          .join("\n")
+      )
     },
   }
 }

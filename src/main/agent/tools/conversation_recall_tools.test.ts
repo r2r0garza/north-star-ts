@@ -29,7 +29,13 @@ describe("conversation recall tools", () => {
       { query: "needle", conversation_id: "other" },
       { workspace: "", conversationId: "current" }
     )
-    expect(JSON.parse(result).scope).toBe("conversation")
+    const parsed = JSON.parse(result)
+    expect(parsed.scope).toBe("conversation")
+    expect(parsed.provenance).toMatchObject({
+      trust: "untrusted_data",
+      channel: "recall",
+      persisted: true,
+    })
   })
 
   it("reads current conversation messages", async () => {

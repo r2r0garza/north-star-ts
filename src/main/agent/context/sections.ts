@@ -71,6 +71,11 @@ export function browserStateSection(state: BrowserState | null): ContextSection 
         "history mentions a page, it has since been closed — do NOT report it as " +
         "open. This line is the authoritative current state. Call browser_navigate " +
         "to open a page.",
+      provenance: {
+        trust: "system",
+        channel: "runtime",
+        source: "browser_state",
+      },
     }
   }
   const lines = [`- Current page: ${state.url}`]
@@ -89,6 +94,11 @@ export function browserStateSection(state: BrowserState | null): ContextSection 
     name: "browser_state",
     priority: SECTION_PRIORITY.browserState,
     content,
+    provenance: {
+      trust: "system",
+      channel: "runtime",
+      source: "browser_state",
+    },
   }
 }
 
@@ -181,6 +191,12 @@ export function summarySection(
     priority: SECTION_PRIORITY.summary,
     content,
     coversThrough: record.coversThrough,
+    provenance: {
+      trust: "untrusted_data",
+      channel: "memory",
+      source: "conversation_summary",
+      persisted: true,
+    },
   }
 }
 
@@ -273,5 +289,10 @@ export async function environmentSection(opts: {
     name: "environment",
     priority: SECTION_PRIORITY.environment,
     content,
+    provenance: {
+      trust: "system",
+      channel: "runtime",
+      source: "environment",
+    },
   }
 }
