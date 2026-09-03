@@ -197,7 +197,7 @@ describe("RegexCommandClassifier — hardline (hard_block)", () => {
   it("does not hard-block node -e arrow functions", () => {
     expect(
       classify(
-        'node -e "setTimeout(() => { console.log(\'idle completion\') }, 5000)"'
+        "node -e \"setTimeout(() => { console.log('idle completion') }, 5000)\""
       )?.level
     ).toBe("require_approval")
   })
@@ -929,6 +929,21 @@ describe("BrowserActionClassifier", () => {
       level: "require_explicit_approval",
       reason: "Browser action may commit an external change",
     })
+    expect(
+      bc.classify({
+        tool: "browser_select_option",
+        kind: "browser",
+        summary: 'Select "Mexico" in combobox "Country"',
+        identity: "browser_select_option:e1:Mexico",
+        detail: {
+          actionType: "select_option",
+          interactionKind: "consequential_commit",
+        },
+      })
+    ).toMatchObject({
+      level: "require_explicit_approval",
+      reason: "Browser action may commit an external change",
+    })
   })
 
   it("builds different click identities for same-labelled controls on different records", () => {
@@ -981,6 +996,33 @@ describe("BrowserActionClassifier", () => {
     expect(first).toContain("payload_sha256=")
     expect(first).not.toContain(firstPayload)
     expect(second).not.toContain(secondPayload)
+  })
+
+  it("binds select-option identities to the target fingerprint and requested option", () => {
+    const base = {
+      action: "select_option" as const,
+      origin: "https://app.example",
+      url: "https://app.example/profile",
+      target: 'combobox "Country"',
+      ref: "e1",
+      targetFingerprint: "ref=e1|role=combobox|selector=#country",
+    }
+    const mexico = browserActionIdentity({
+      ...base,
+      payloadHash: hashBrowserPayload("Mexico"),
+    })
+    const canada = browserActionIdentity({
+      ...base,
+      payloadHash: hashBrowserPayload("Canada"),
+    })
+    const otherControl = browserActionIdentity({
+      ...base,
+      targetFingerprint: "ref=e2|role=combobox|selector=#billing-country",
+      payloadHash: hashBrowserPayload("Mexico"),
+    })
+
+    expect(mexico).not.toBe(canada)
+    expect(mexico).not.toBe(otherControl)
   })
 
   it("returns null for non-browser actions (lets other classifiers run)", () => {

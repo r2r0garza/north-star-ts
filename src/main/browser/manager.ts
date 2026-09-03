@@ -7,6 +7,7 @@ import type {
   BrowserRefDescription,
   InteractionResult,
   NavigateResult,
+  SelectOptionResult,
   ScreenshotResult,
 } from "./session"
 import type {
@@ -83,6 +84,7 @@ export interface BrowserHandle {
   hover(ref: string): Promise<InteractionResult>
   drag(fromRef: string, toRef: string): Promise<InteractionResult>
   type(ref: string, text: string, submit: boolean): Promise<InteractionResult>
+  selectOption(ref: string, option: string): Promise<SelectOptionResult>
   wait(input: BrowserWaitInput): Promise<NavigateResult>
   console(options: {
     cursor?: number
@@ -465,6 +467,13 @@ export class BrowserManager {
           ref,
           text,
           submit,
+          INTERACT_TIMEOUT_MS,
+          signal
+        ),
+      selectOption: (ref, option) =>
+        this.ensureTab(conversationId).selectOption(
+          ref,
+          option,
           INTERACT_TIMEOUT_MS,
           signal
         ),

@@ -59,10 +59,23 @@ export interface InteractionResult {
   title: string
 }
 
+export interface SelectOptionResult extends InteractionResult {
+  option: string
+  value: string | null
+}
+
 export interface BrowserRefDescription {
   ref: string
   target: string
   targetFingerprint: string
+}
+
+interface BrowserRefEntry {
+  backendNodeId: number
+  label: string
+  targetFingerprint: string
+  role: string
+  dom: PickedElementDomDetails | null
 }
 
 // Raised when a ref isn't in the current map (stale after navigation, or the
@@ -87,10 +100,7 @@ export class BrowserSession {
   // ref → backendDOMNodeId for the most recent snapshot. Cleared on navigation,
   // since node ids don't survive a document swap. A short label (role + name) is
   // kept alongside so an interaction can report what it acted on.
-  private refs = new Map<
-    string,
-    { backendNodeId: number; label: string; targetFingerprint: string }
-  >()
+  private refs = new Map<string, BrowserRefEntry>()
 
   // Called with the element the user picked in pick mode. Set by the manager so
   // the pick can be forwarded to the main app renderer.
@@ -649,10 +659,7 @@ export class BrowserSession {
     const wc = this.view.webContents
     const dbg = wc.debugger
     this.refs.clear()
-    const nextRefs = new Map<
-      string,
-      { backendNodeId: number; label: string; targetFingerprint: string }
-    >()
+    const nextRefs = new Map<string, BrowserRefEntry>()
     const lines: string[] = []
     let bytes = 0
     let refCounter = 0
@@ -736,19 +743,23 @@ export class BrowserSession {
             const ref = `e${++refCounter}`
             const boundedName = name ? boundedSnapshotValue(name) : null
             const label = boundedName ? `${role} "${boundedName}"` : role
+            const dom = domResult?.result?.value ?? null
+            const state = snapshotStateAnnotation(role, dom)
             const line = name
-              ? `[${ref}] ${role}: ${boundedName}`
-              : `[${ref}] ${role}`
+              ? `[${ref}] ${role}: ${boundedName}${state}`
+              : `[${ref}] ${role}${state}`
             if (!appendLine(line)) break
             nextRefs.set(ref, {
               backendNodeId: node.backendDOMNodeId,
               label,
+              role,
+              dom,
               targetFingerprint: browserTargetFingerprint({
                 ref,
                 backendNodeId: node.backendDOMNodeId,
                 role,
                 name,
-                dom: domResult?.result?.value ?? null,
+                dom,
               }),
             })
           } else {
@@ -986,6 +997,7 @@ export class BrowserSession {
   ): Promise<InteractionResult> {
     const entry = this.requireRef(ref)
     const dbg = this.view.webContents.debugger
+    await this.assertEditableTextTarget(entry, timeoutMs, signal)
     await sendCommand(
       dbg,
       "DOM.focus",
@@ -1016,6 +1028,84 @@ export class BrowserSession {
       await this.settle(timeoutMs, signal)
     }
     return this.interactionResult(entry.label)
+  }
+
+  async selectOption(
+    ref: string,
+    option: string,
+    timeoutMs: number,
+    signal?: AbortSignal
+  ): Promise<SelectOptionResult> {
+    const entry = this.requireRef(ref)
+    await this.ensureAttached(timeoutMs, signal)
+
+    let attempt = await this.selectOptionAttempt(
+      entry,
+      option,
+      false,
+      timeoutMs,
+      signal
+    )
+
+    if (attempt.status === "needs_open") {
+      await this.dispatchClick(entry.backendNodeId, timeoutMs, signal)
+      await this.settle(timeoutMs, signal)
+      this.refs.clear()
+      attempt = await this.selectOptionAttempt(
+        entry,
+        option,
+        false,
+        timeoutMs,
+        signal
+      )
+    }
+
+    if (attempt.status === "needs_filter") {
+      attempt = await this.selectOptionAttempt(
+        entry,
+        option,
+        true,
+        timeoutMs,
+        signal
+      )
+      await this.settle(timeoutMs, signal)
+      this.refs.clear()
+      attempt = await this.selectOptionAttempt(
+        entry,
+        option,
+        false,
+        timeoutMs,
+        signal
+      )
+    }
+
+    if (attempt.status === "needs_click") {
+      const backendNodeId = await this.backendNodeIdForSelectionSlot(
+        attempt.slot,
+        timeoutMs,
+        signal
+      )
+      await this.dispatchClick(backendNodeId, timeoutMs, signal)
+      await this.settle(timeoutMs, signal)
+      this.refs.clear()
+      attempt = await this.selectOptionAttempt(
+        entry,
+        option,
+        false,
+        timeoutMs,
+        signal
+      )
+    }
+
+    if (attempt.status !== "success") {
+      throw new Error(selectOptionFailureMessage(attempt))
+    }
+
+    return {
+      ...this.interactionResult(attempt.controlLabel || entry.label),
+      option: attempt.optionLabel,
+      value: attempt.value,
+    }
   }
 
   // Go back in history, waiting for the resulting load to settle.
@@ -1197,14 +1287,176 @@ export class BrowserSession {
   }
 
   // Resolve a ref or throw StaleRefError.
-  private requireRef(ref: string): {
-    backendNodeId: number
-    label: string
-    targetFingerprint: string
-  } {
+  private requireRef(ref: string): BrowserRefEntry {
     const entry = this.refs.get(ref)
     if (!entry) throw new StaleRefError(ref)
     return entry
+  }
+
+  private async resolveRefObject(
+    entry: BrowserRefEntry,
+    timeoutMs: number,
+    signal?: AbortSignal
+  ): Promise<string> {
+    await this.ensureAttached(timeoutMs, signal)
+    const { object } = await sendCommand<{
+      object?: { objectId?: string }
+    }>(
+      this.view.webContents.debugger,
+      "DOM.resolveNode",
+      { backendNodeId: entry.backendNodeId },
+      timeoutMs,
+      signal
+    )
+    if (!object?.objectId) throw new Error("Could not resolve element ref.")
+    return object.objectId
+  }
+
+  private async assertEditableTextTarget(
+    entry: BrowserRefEntry,
+    timeoutMs: number,
+    signal?: AbortSignal
+  ): Promise<void> {
+    const objectId = await this.resolveRefObject(entry, timeoutMs, signal)
+    try {
+      const { result } = await sendCommand<{
+        result?: { value?: EditableCheckResult }
+      }>(
+        this.view.webContents.debugger,
+        "Runtime.callFunctionOn",
+        {
+          objectId,
+          functionDeclaration: EDITABLE_TEXT_TARGET_CHECK,
+          returnByValue: true,
+          silent: true,
+        },
+        timeoutMs,
+        signal
+      )
+      const value = result?.value
+      if (value?.editable === true) return
+      const reason = value?.reason || "Target is not an editable text field."
+      if (value?.selectionControl) {
+        throw new Error(
+          `${reason} Use browser_select_option for dropdown choices.`
+        )
+      }
+      throw new Error(reason)
+    } finally {
+      await sendCommand(
+        this.view.webContents.debugger,
+        "Runtime.releaseObject",
+        { objectId },
+        timeoutMs
+      ).catch(() => undefined)
+    }
+  }
+
+  private async selectOptionAttempt(
+    entry: BrowserRefEntry,
+    option: string,
+    applyFilter: boolean,
+    timeoutMs: number,
+    signal?: AbortSignal
+  ): Promise<SelectAttemptResult> {
+    const objectId = await this.resolveRefObject(entry, timeoutMs, signal)
+    try {
+      const { result, exceptionDetails } = await sendCommand<{
+        result?: { value?: SelectAttemptResult }
+        exceptionDetails?: { text?: string }
+      }>(
+        this.view.webContents.debugger,
+        "Runtime.callFunctionOn",
+        {
+          objectId,
+          functionDeclaration: SELECT_OPTION_ATTEMPT,
+          arguments: [{ value: option }, { value: applyFilter }],
+          returnByValue: true,
+          awaitPromise: true,
+          silent: true,
+        },
+        timeoutMs,
+        signal
+      )
+      if (exceptionDetails) {
+        throw new Error(exceptionDetails.text || "browser_select_option threw.")
+      }
+      return (
+        result?.value ?? { status: "failed", reason: "No selection result." }
+      )
+    } finally {
+      await sendCommand(
+        this.view.webContents.debugger,
+        "Runtime.releaseObject",
+        { objectId },
+        timeoutMs
+      ).catch(() => undefined)
+    }
+  }
+
+  private async backendNodeIdForSelectionSlot(
+    slot: number,
+    timeoutMs: number,
+    signal?: AbortSignal
+  ): Promise<number> {
+    const dbg = this.view.webContents.debugger
+    const { result } = await sendCommand<{
+      result?: { objectId?: string }
+    }>(
+      dbg,
+      "Runtime.evaluate",
+      {
+        expression: `window.__coworkSelectOptionTargets && window.__coworkSelectOptionTargets[${slot}]`,
+      },
+      timeoutMs,
+      signal
+    )
+    const objectId = result?.objectId
+    if (!objectId) throw new Error("The selected option disappeared.")
+    try {
+      const { nodes } = await sendCommand<{ nodes?: AXNode[] }>(
+        dbg,
+        "Accessibility.getPartialAXTree",
+        { objectId, fetchRelatives: false },
+        timeoutMs,
+        signal
+      )
+      const backendNodeId = nodes?.[0]?.backendDOMNodeId
+      if (typeof backendNodeId !== "number") {
+        throw new Error("The selected option is no longer addressable.")
+      }
+      return backendNodeId
+    } finally {
+      await sendCommand(
+        dbg,
+        "Runtime.releaseObject",
+        { objectId },
+        timeoutMs
+      ).catch(() => undefined)
+    }
+  }
+
+  private async dispatchClick(
+    backendNodeId: number,
+    timeoutMs: number,
+    signal?: AbortSignal
+  ): Promise<void> {
+    const dbg = this.view.webContents.debugger
+    const { x, y } = await this.centerOf(backendNodeId, timeoutMs, signal)
+    await sendCommand(
+      dbg,
+      "Input.dispatchMouseEvent",
+      { type: "mousePressed", x, y, button: "left", clickCount: 1 },
+      timeoutMs,
+      signal
+    )
+    await sendCommand(
+      dbg,
+      "Input.dispatchMouseEvent",
+      { type: "mouseReleased", x, y, button: "left", clickCount: 1 },
+      timeoutMs,
+      signal
+    )
   }
 
   private waitForCondition(
@@ -1607,6 +1859,50 @@ const DESCRIBE_PICKED_ELEMENT = `function () {
     node instanceof HTMLInputElement || node instanceof HTMLTextAreaElement
       ? clean(node.value) || clean(node.placeholder)
       : null
+  const role = node.getAttribute("role")
+  const type =
+    node instanceof HTMLInputElement ? clean(node.type || "text") : null
+  const value =
+    node instanceof HTMLInputElement ||
+    node instanceof HTMLTextAreaElement ||
+    node instanceof HTMLSelectElement
+      ? clean(node.value)
+      : clean(node.getAttribute("aria-valuetext")) ||
+        clean(node.getAttribute("aria-valuenow"))
+  const readonly =
+    node instanceof HTMLInputElement || node instanceof HTMLTextAreaElement
+      ? node.readOnly
+      : node.getAttribute("aria-readonly") === "true"
+  const disabled =
+    node instanceof HTMLButtonElement ||
+    node instanceof HTMLInputElement ||
+    node instanceof HTMLSelectElement ||
+    node instanceof HTMLTextAreaElement ||
+    node instanceof HTMLOptionElement
+      ? node.disabled
+      : node.getAttribute("aria-disabled") === "true"
+  const expanded = node.hasAttribute("aria-expanded")
+    ? node.getAttribute("aria-expanded") === "true"
+    : null
+  const selected =
+    node instanceof HTMLOptionElement
+      ? node.selected
+      : node.getAttribute("aria-selected") === "true"
+  const multiselect =
+    node instanceof HTMLSelectElement
+      ? node.multiple
+      : node.getAttribute("aria-multiselectable") === "true"
+  const editable =
+    node.isContentEditable ||
+    node instanceof HTMLTextAreaElement ||
+    (node instanceof HTMLInputElement &&
+      !node.readOnly &&
+      !node.disabled &&
+      !/^(button|checkbox|color|file|hidden|image|radio|range|reset|submit)$/i.test(node.type)) ||
+    (role === "combobox" &&
+      (node instanceof HTMLInputElement ||
+        node.isContentEditable ||
+        node.getAttribute("aria-readonly") === "false"))
   const text = clean(node.innerText) || ""
   const name =
     clean(node.getAttribute("aria-label")) ||
@@ -1619,7 +1915,230 @@ const DESCRIBE_PICKED_ELEMENT = `function () {
     tag: node.tagName.toLowerCase(),
     text,
     name,
+    type,
+    value,
+    editable,
+    readonly,
+    disabled,
+    selected,
+    expanded,
+    multiselect,
   }
+}`
+
+const EDITABLE_TEXT_TARGET_CHECK = `function () {
+  const node = this && this.nodeType === 1 ? this : this && this.parentElement
+  if (!node) return { editable: false, reason: "Target is not an element." }
+  const role = node.getAttribute("role")
+  const tag = node.tagName
+  const disabled =
+    "disabled" in node ? Boolean(node.disabled) : node.getAttribute("aria-disabled") === "true"
+  const readOnly =
+    "readOnly" in node ? Boolean(node.readOnly) : node.getAttribute("aria-readonly") === "true"
+  const selectionControl =
+    tag === "SELECT" ||
+    role === "listbox" ||
+    role === "option" ||
+    role === "menuitemradio" ||
+    (role === "combobox" && !(node instanceof HTMLInputElement) && !node.isContentEditable)
+  if (disabled) return { editable: false, reason: "Target is disabled.", selectionControl }
+  if (readOnly) return { editable: false, reason: "Target is read-only.", selectionControl }
+  if (node.isContentEditable) return { editable: true }
+  if (node instanceof HTMLTextAreaElement) return { editable: true }
+  if (node instanceof HTMLInputElement) {
+    if (/^(button|checkbox|color|file|hidden|image|radio|range|reset|submit)$/i.test(node.type)) {
+      return {
+        editable: false,
+        reason: "Target input type is not editable text.",
+        selectionControl,
+      }
+    }
+    return { editable: true }
+  }
+  if (role === "combobox" && node.getAttribute("aria-readonly") === "false") {
+    return { editable: true }
+  }
+  return {
+    editable: false,
+    reason: selectionControl
+      ? "Target is a selection control, not an editable text field."
+      : "Target is not an editable text field.",
+    selectionControl,
+  }
+}`
+
+const SELECT_OPTION_ATTEMPT = `function (requestedOption, applyFilter) {
+  const control = this && this.nodeType === 1 ? this : this && this.parentElement
+  const normalize = (value) => String(value || "").replace(/\\s+/g, " ").trim()
+  const normalizedRequested = normalize(requestedOption)
+  const lowerRequested = normalizedRequested.toLocaleLowerCase()
+  const labelOf = (el) =>
+    normalize(
+      el.getAttribute("aria-label") ||
+        el.label ||
+        el.innerText ||
+        el.textContent ||
+        el.value ||
+        ""
+    )
+  const visible = (el) => {
+    const style = window.getComputedStyle(el)
+    if (style.display === "none" || style.visibility === "hidden") return false
+    const rect = el.getBoundingClientRect()
+    return rect.width > 0 && rect.height > 0
+  }
+  const disabled = (el) =>
+    ("disabled" in el && Boolean(el.disabled)) ||
+    el.getAttribute("aria-disabled") === "true"
+  const availableLabels = (items) => items.map((item) => item.label).filter(Boolean).slice(0, 20)
+  const uniqueMatch = (items) => {
+    const exact = items.filter((item) => item.normalized === normalizedRequested)
+    if (exact.length === 1) return exact[0]
+    if (exact.length > 1) {
+      return { error: "More than one option exactly matches.", available: availableLabels(exact) }
+    }
+    const folded = items.filter((item) => item.normalized.toLocaleLowerCase() === lowerRequested)
+    if (folded.length === 1) return folded[0]
+    if (folded.length > 1) {
+      return { error: "More than one option matches case-insensitively.", available: availableLabels(folded) }
+    }
+    return null
+  }
+  const controlLabel = () => {
+    const role = control.getAttribute("role") || control.tagName.toLowerCase()
+    const name =
+      normalize(control.getAttribute("aria-label")) ||
+      normalize(control.getAttribute("title")) ||
+      normalize(control.innerText) ||
+      normalize(control.value)
+    return name ? role + " \\"" + name + "\\"" : role
+  }
+  if (!control || !normalizedRequested) {
+    return { status: "failed", reason: "A non-empty option label is required." }
+  }
+  if (control instanceof HTMLSelectElement) {
+    const items = Array.from(control.options).map((option) => ({
+      element: option,
+      label: labelOf(option),
+      normalized: normalize(option.label || option.textContent || option.value),
+      disabled: option.disabled || option.parentElement?.disabled === true,
+      value: option.value,
+    }))
+    const match = uniqueMatch(items)
+    if (match && match.error) {
+      return { status: "failed", reason: match.error, available: match.available }
+    }
+    if (!match) {
+      return {
+        status: "failed",
+        reason: "No enabled option matches exactly.",
+        available: availableLabels(items),
+      }
+    }
+    if (match.disabled) {
+      return {
+        status: "failed",
+        reason: "The matching option is disabled.",
+        available: availableLabels(items),
+      }
+    }
+    control.value = match.value
+    match.element.selected = true
+    control.dispatchEvent(new Event("input", { bubbles: true }))
+    control.dispatchEvent(new Event("change", { bubbles: true }))
+    const selected = control.selectedOptions[0]
+    const selectedLabel = selected ? labelOf(selected) : ""
+    if (normalize(selectedLabel) !== match.normalized) {
+      return {
+        status: "failed",
+        reason: "The page did not keep the requested selection.",
+        available: availableLabels(items),
+      }
+    }
+    return {
+      status: "success",
+      controlLabel: controlLabel(),
+      optionLabel: selectedLabel,
+      value: control.value || null,
+    }
+  }
+
+  const role = control.getAttribute("role")
+  const expanded = control.getAttribute("aria-expanded")
+  const ids = []
+  for (const attr of ["aria-controls", "aria-owns"]) {
+    for (const id of normalize(control.getAttribute(attr)).split(" ")) {
+      if (id) ids.push(id)
+    }
+  }
+  let scopes = ids
+    .map((id) => document.getElementById(id))
+    .filter(Boolean)
+    .filter(visible)
+  if (role === "listbox") scopes = [control]
+  if (scopes.length === 0) {
+    scopes = Array.from(document.querySelectorAll('[role="listbox"], [role="menu"]')).filter(visible)
+  }
+  if (scopes.length === 0 && expanded !== "true" && role !== "listbox") {
+    return { status: "needs_open", reason: "Selection popup is closed." }
+  }
+  if (scopes.length !== 1) {
+    return {
+      status: "failed",
+      reason: "Could not identify a unique option popup for this control.",
+    }
+  }
+  const options = Array.from(
+    scopes[0].querySelectorAll('[role="option"], [role="menuitemradio"]')
+  )
+    .filter(visible)
+    .map((element) => ({
+      element,
+      label: labelOf(element),
+      normalized: labelOf(element),
+      disabled: disabled(element),
+    }))
+  const match = uniqueMatch(options)
+  if (match && match.error) {
+    return { status: "failed", reason: match.error, available: match.available }
+  }
+  if (!match) {
+    const editable =
+      control instanceof HTMLInputElement ||
+      control.isContentEditable ||
+      control.getAttribute("aria-readonly") === "false"
+    if (applyFilter && editable) {
+      if (control instanceof HTMLInputElement || control instanceof HTMLTextAreaElement) {
+        control.value = normalizedRequested
+      } else {
+        control.textContent = normalizedRequested
+      }
+      control.dispatchEvent(new InputEvent("input", { bubbles: true, data: normalizedRequested, inputType: "insertText" }))
+      return { status: "needs_open", reason: "Filtered the combobox; options must be rediscovered." }
+    }
+    if (editable) {
+      return {
+        status: "needs_filter",
+        reason: "No rendered option matches exactly; the combobox may need filtering.",
+        available: availableLabels(options),
+      }
+    }
+    return {
+      status: "failed",
+      reason: "No enabled option matches exactly.",
+      available: availableLabels(options),
+    }
+  }
+  if (match.disabled) {
+    return {
+      status: "failed",
+      reason: "The matching option is disabled.",
+      available: availableLabels(options),
+    }
+  }
+  window.__coworkSelectOptionTargets = window.__coworkSelectOptionTargets || []
+  const slot = window.__coworkSelectOptionTargets.push(match.element) - 1
+  return { status: "needs_click", slot, optionLabel: match.label }
 }`
 
 // Bounded page-world candidate discovery for browser_snapshot. This deliberately
@@ -1735,7 +2254,33 @@ interface PickedElementDomDetails {
   tag: string
   text: string
   name: string | null
+  type?: string | null
+  value?: string | null
+  editable?: boolean
+  readonly?: boolean
+  disabled?: boolean
+  selected?: boolean
+  expanded?: boolean | null
+  multiselect?: boolean
 }
+
+interface EditableCheckResult {
+  editable: boolean
+  reason?: string
+  selectionControl?: boolean
+}
+
+type SelectAttemptResult =
+  | {
+      status: "success"
+      controlLabel: string
+      optionLabel: string
+      value: string | null
+    }
+  | { status: "needs_open"; reason: string; available?: string[] }
+  | { status: "needs_filter"; reason: string; available?: string[] }
+  | { status: "needs_click"; slot: number; optionLabel: string }
+  | { status: "failed"; reason: string; available?: string[] }
 
 function axString(value?: AXValue): string | null {
   return value?.value?.trim() || null
@@ -1745,6 +2290,38 @@ function boundedSnapshotValue(value: string): string {
   const normalized = value.replace(/\s+/g, " ").trim()
   if (normalized.length <= SNAPSHOT_MAX_VALUE_CHARS) return normalized
   return `${normalized.slice(0, SNAPSHOT_MAX_VALUE_CHARS - 3)}...`
+}
+
+function snapshotStateAnnotation(
+  role: string,
+  dom: PickedElementDomDetails | null
+): string {
+  if (!dom) return ""
+  const states: string[] = []
+  if (dom.expanded === true) states.push("expanded")
+  if (dom.expanded === false) states.push("collapsed")
+  if (dom.editable) states.push("editable")
+  if (
+    role === "combobox" ||
+    role === "listbox" ||
+    dom.tag === "select" ||
+    dom.readonly
+  ) {
+    if (!dom.editable) states.push("readonly")
+  }
+  if (dom.selected) states.push("selected")
+  if (dom.disabled) states.push("disabled")
+  if (dom.multiselect) states.push("multiselect")
+  if (dom.value) states.push(`value="${boundedSnapshotValue(dom.value)}"`)
+  return states.length ? ` [${states.join(", ")}]` : ""
+}
+
+function selectOptionFailureMessage(result: SelectAttemptResult): string {
+  const available =
+    "available" in result && result.available?.length
+      ? ` Available options: ${result.available.map((label) => `"${label}"`).join(", ")}.`
+      : ""
+  return `${"reason" in result ? result.reason : "Selection did not complete."}${available}`
 }
 
 function browserTargetFingerprint(input: {

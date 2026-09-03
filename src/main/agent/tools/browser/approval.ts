@@ -56,6 +56,7 @@ export function browserActionIdentity(input: {
     | "click"
     | "type"
     | "type_submit"
+    | "select_option"
     | "hover"
     | "drag"
     | "wait"

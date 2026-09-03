@@ -45,6 +45,7 @@ export const CATEGORY_TOOLS: Record<string, string[]> = {
     "browser_hover",
     "browser_drag",
     "browser_type",
+    "browser_select_option",
     "browser_wait",
     "browser_console",
     "browser_network",

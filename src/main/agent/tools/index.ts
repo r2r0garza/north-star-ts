@@ -59,6 +59,7 @@ import { browserClickTool } from "./browser/click"
 import { browserHoverTool } from "./browser/hover"
 import { browserDragTool } from "./browser/drag"
 import { browserTypeTool } from "./browser/type"
+import { browserSelectOptionTool } from "./browser/select-option"
 import { browserWaitTool } from "./browser/wait"
 import { browserConsoleTool } from "./browser/console"
 import { browserNetworkTool } from "./browser/network"
@@ -155,6 +156,7 @@ const browserTools: Tool[] = [
   browserHoverTool,
   browserDragTool,
   browserTypeTool,
+  browserSelectOptionTool,
   browserWaitTool,
   browserConsoleTool,
   browserNetworkTool,

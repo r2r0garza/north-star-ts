@@ -32,6 +32,7 @@ export class BrowserActionClassifier implements ActionClassifier {
     if (action.kind !== "browser") return null
     if (
       action.tool === "browser_click" ||
+      action.tool === "browser_select_option" ||
       action.detail?.interactionKind === "consequential_commit"
     ) {
       return {

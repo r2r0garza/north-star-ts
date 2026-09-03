@@ -255,6 +255,9 @@ describe("BrowserSession.snapshot", () => {
           if (match) return { result: { objectId: `candidate-${match[1]}` } }
           return {}
         }
+        if (method === "DOM.resolveNode") {
+          return { object: { objectId: "resolved-ref" } }
+        }
         if (method === "Accessibility.getPartialAXTree") {
           const objectId = String(params?.objectId ?? "")
           const index = Number(objectId.replace("candidate-", ""))
@@ -269,6 +272,19 @@ describe("BrowserSession.snapshot", () => {
           }
         }
         if (method === "DOM.focus" || method === "Input.insertText") return {}
+        if (
+          method === "Runtime.callFunctionOn" &&
+          String(params?.functionDeclaration ?? "").includes("selectionControl")
+        ) {
+          return {
+            result: {
+              value: {
+                editable: false,
+                reason: "Target is not an editable text field.",
+              },
+            },
+          }
+        }
         return {}
       }
     )
@@ -284,13 +300,9 @@ describe("BrowserSession.snapshot", () => {
     expect(outline).not.toContain("[e101]")
     expect(outline).toContain("[Snapshot truncated:")
 
-    await expect(
-      session.type("e100", "ok", false, 1_000)
-    ).resolves.toMatchObject({
-      target: 'button "Button 99"',
-      url: "https://example.com",
-      title: "Example",
-    })
+    await expect(session.type("e100", "ok", false, 1_000)).rejects.toThrow(
+      "not an editable text field"
+    )
     await expect(session.type("e101", "no", false, 1_000)).rejects.toThrow(
       StaleRefError
     )
@@ -324,6 +336,15 @@ describe("BrowserSession.snapshot", () => {
               },
             ],
           }
+        }
+        if (method === "DOM.resolveNode") {
+          return { object: { objectId: "resolved-ref" } }
+        }
+        if (
+          method === "Runtime.callFunctionOn" &&
+          String(params?.functionDeclaration ?? "").includes("selectionControl")
+        ) {
+          return { result: { value: { editable: true } } }
         }
         if (method === "DOM.focus" || method === "Input.insertText") return {}
         return {}
@@ -381,6 +402,229 @@ describe("BrowserSession.snapshot", () => {
 
     expect(Buffer.byteLength(outline, "utf8")).toBeLessThanOrEqual(20_000)
     expect(outline).toContain("[Snapshot truncated:")
+  })
+
+  it("annotates selection controls and rejects browser_type before focusing them", async () => {
+    const session = new BrowserSession()
+    const webContents = electronMock.instances[0]
+    webContents.currentUrl = "https://example.com/form"
+    webContents.title = "Form"
+
+    webContents.debugger.sendCommand.mockImplementation(
+      async (method, params) => {
+        if (method === "Runtime.evaluate") {
+          const expression = String(params?.expression ?? "")
+          if (params?.returnByValue === true) {
+            return { result: { value: { count: 1, truncated: false } } }
+          }
+          if (expression.includes("__coworkSnapshotCandidates[0]")) {
+            return { result: { objectId: "select-candidate" } }
+          }
+          return {}
+        }
+        if (method === "Accessibility.getPartialAXTree") {
+          return {
+            nodes: [
+              {
+                backendDOMNodeId: 77,
+                role: { value: "combobox" },
+                name: { value: "Country" },
+              },
+            ],
+          }
+        }
+        if (method === "DOM.resolveNode") {
+          return { object: { objectId: "resolved-select" } }
+        }
+        if (method === "Runtime.callFunctionOn") {
+          const fn = String(params?.functionDeclaration ?? "")
+          if (fn.includes("selectionControl")) {
+            return {
+              result: {
+                value: {
+                  editable: false,
+                  reason:
+                    "Target is a selection control, not an editable text field.",
+                  selectionControl: true,
+                },
+              },
+            }
+          }
+          return {
+            result: {
+              value: {
+                selector: "#country",
+                tag: "select",
+                text: "",
+                name: "Country",
+                value: "Canada",
+                editable: false,
+                readonly: true,
+                expanded: false,
+              },
+            },
+          }
+        }
+        return {}
+      }
+    )
+
+    await expect(session.snapshot(1_000)).resolves.toContain(
+      '[e1] combobox: Country [collapsed, readonly, value="Canada"]'
+    )
+    await expect(session.type("e1", "Mexico", false, 1_000)).rejects.toThrow(
+      "Use browser_select_option"
+    )
+    expect(webContents.debugger.sendCommand).not.toHaveBeenCalledWith(
+      "DOM.focus",
+      expect.anything()
+    )
+    expect(webContents.debugger.sendCommand).not.toHaveBeenCalledWith(
+      "Input.insertText",
+      expect.anything()
+    )
+  })
+
+  it("selects a native option by exact label and reports the committed value", async () => {
+    const session = new BrowserSession()
+    const webContents = electronMock.instances[0]
+    webContents.currentUrl = "https://example.com/form"
+    webContents.title = "Form"
+
+    webContents.debugger.sendCommand.mockImplementation(
+      async (method, params) => {
+        if (method === "Runtime.evaluate") {
+          const expression = String(params?.expression ?? "")
+          if (params?.returnByValue === true) {
+            return { result: { value: { count: 1, truncated: false } } }
+          }
+          if (expression.includes("__coworkSnapshotCandidates[0]")) {
+            return { result: { objectId: "select-candidate" } }
+          }
+          return {}
+        }
+        if (method === "Accessibility.getPartialAXTree") {
+          return {
+            nodes: [
+              {
+                backendDOMNodeId: 77,
+                role: { value: "combobox" },
+                name: { value: "Country" },
+              },
+            ],
+          }
+        }
+        if (method === "DOM.resolveNode") {
+          return { object: { objectId: "resolved-select" } }
+        }
+        if (method === "Runtime.callFunctionOn") {
+          const fn = String(params?.functionDeclaration ?? "")
+          if (fn.includes("requestedOption")) {
+            expect(params?.arguments).toEqual([
+              { value: "Mexico" },
+              { value: false },
+            ])
+            return {
+              result: {
+                value: {
+                  status: "success",
+                  controlLabel: 'combobox "Country"',
+                  optionLabel: "Mexico",
+                  value: "mx",
+                },
+              },
+            }
+          }
+          return {
+            result: {
+              value: {
+                selector: "#country",
+                tag: "select",
+                text: "",
+                name: "Country",
+                value: "Canada",
+              },
+            },
+          }
+        }
+        return {}
+      }
+    )
+
+    await session.snapshot(1_000)
+    await expect(
+      session.selectOption("e1", "Mexico", 1_000)
+    ).resolves.toMatchObject({
+      target: 'combobox "Country"',
+      option: "Mexico",
+      value: "mx",
+      url: "https://example.com/form",
+      title: "Form",
+    })
+  })
+
+  it("reports available labels when option selection fails", async () => {
+    const session = new BrowserSession()
+    const webContents = electronMock.instances[0]
+
+    webContents.debugger.sendCommand.mockImplementation(
+      async (method, params) => {
+        if (method === "Runtime.evaluate") {
+          const expression = String(params?.expression ?? "")
+          if (params?.returnByValue === true) {
+            return { result: { value: { count: 1, truncated: false } } }
+          }
+          if (expression.includes("__coworkSnapshotCandidates[0]")) {
+            return { result: { objectId: "select-candidate" } }
+          }
+          return {}
+        }
+        if (method === "Accessibility.getPartialAXTree") {
+          return {
+            nodes: [
+              {
+                backendDOMNodeId: 77,
+                role: { value: "combobox" },
+                name: { value: "Country" },
+              },
+            ],
+          }
+        }
+        if (method === "DOM.resolveNode") {
+          return { object: { objectId: "resolved-select" } }
+        }
+        if (method === "Runtime.callFunctionOn") {
+          const fn = String(params?.functionDeclaration ?? "")
+          if (fn.includes("requestedOption")) {
+            return {
+              result: {
+                value: {
+                  status: "failed",
+                  reason: "No enabled option matches exactly.",
+                  available: ["Canada", "Mexico"],
+                },
+              },
+            }
+          }
+          return {
+            result: {
+              value: {
+                selector: "#country",
+                tag: "select",
+                text: "",
+                name: "Country",
+              },
+            },
+          }
+        }
+        return {}
+      }
+    )
+
+    await session.snapshot(1_000)
+    await expect(session.selectOption("e1", "Peru", 1_000)).rejects.toThrow(
+      'Available options: "Canada", "Mexico".'
+    )
   })
 })
 

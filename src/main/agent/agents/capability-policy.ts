@@ -91,6 +91,8 @@ const GITHUB_TOOLS: Record<string, string[]> = {
   "browser/hover": ["browser_hover"],
   "browser/drag": ["browser_drag"],
   "browser/type": ["browser_type"],
+  "browser/selectOption": ["browser_select_option"],
+  "browser/select": ["browser_select_option"],
   "browser/wait": ["browser_wait"],
   "browser/console": ["browser_console"],
   "browser/network": ["browser_network"],

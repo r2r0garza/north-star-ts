@@ -86,6 +86,7 @@ describe("agentToolAllowlist", () => {
     expect(allow.has("browser_navigate")).toBe(true)
     expect(allow.has("browser_screenshot")).toBe(true)
     expect(allow.has("browser_hover")).toBe(true)
+    expect(allow.has("browser_select_option")).toBe(true)
     expect(allow.has("browser_network")).toBe(true)
     expect(allow.has("browser_evaluate")).toBe(false)
     expect(allow.has("spawn_subagent")).toBe(true)
