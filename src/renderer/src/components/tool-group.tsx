@@ -285,7 +285,7 @@ export function ApprovalCard({
   const { requestId } = approval
   // Delegation (handing work to a background task) is asked every time — there's
   // no "always allow" for it, so hide that affordance for delegate approvals.
-  const allowRemember = approval.kind !== "delegate"
+  const allowRemember = approval.kind !== "delegate" && !approval.explicit
   // Web and browser approvals are tied to current external/session state, so
   // their "remember" is scoped to this conversation. Other gated actions remember
   // per workspace.
@@ -298,7 +298,10 @@ export function ApprovalCard({
     <div className="flex flex-col gap-2 rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-xs">
       <div className="flex items-center gap-2 font-medium text-destructive">
         <ShieldAlert className="size-3.5 shrink-0" />
-        <span>Approval required — {approval.reason}</span>
+        <span>
+          {approval.explicit ? "Explicit approval required" : "Approval required"}{" "}
+          — {approval.reason}
+        </span>
       </div>
       <pre className="max-w-full overflow-hidden rounded-md bg-muted px-2 py-1.5 break-words whitespace-pre-wrap text-muted-foreground">
         {approval.summary}

@@ -41,6 +41,7 @@ type PendingGate =
       summary: string
       reason: string
       actionKind?: string
+      explicit?: boolean
       detail?: Record<string, unknown>
     }
   | { kind: "question"; requestId: string; questions: Question[] }
@@ -60,6 +61,7 @@ function latestGate(events: TaskEventPayload[]): PendingGate | null {
         summary: ev.summary,
         reason: ev.reason,
         actionKind: ev.kind,
+        explicit: ev.explicit,
         detail: ev.detail,
       }
     } else if (ev.type === "question") {
@@ -176,6 +178,7 @@ function TaskRow({
             summary: gate.summary,
             reason: gate.reason,
             kind: gate.actionKind,
+            explicit: gate.explicit,
             detail: gate.detail,
             status: "pending",
           }}

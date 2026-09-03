@@ -102,8 +102,8 @@ export const presentPlanTool: Tool = {
           approved: true,
           autoMode: true,
           message:
-            "Plan approved with Auto mode — plan mode is off and all subsequent " +
-            "actions are automatically approved. Implement the approved plan now.",
+            "Plan approved with Auto mode — plan mode is off and approval-required " +
+            "actions are automatically approved for this run. Implement the approved plan now.",
         })
       }
       return JSON.stringify({

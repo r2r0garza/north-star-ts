@@ -145,6 +145,15 @@ item is its plan file; the ordered-list number is its current priority rank.
 
 ## Done
 
+- **`077` — Prompt-injection persistence and action integrity.** Completed in this branch.
+  Added a protected `require_explicit_approval` policy tier that sandbox auto-approval and
+  ordinary allowlist rules cannot bypass, while still honoring Auto mode as run-level pre-approval;
+  applied it to consequential browser commits, browser
+  evaluation, and external MCP calls; surfaced explicit approval state through live and durable task
+  approval cards; hardened automatic memory extraction so only validated user-origin candidates can
+  enter staging or managed memory skills; and added skill-content security validation for create/write
+  and import paths. Verified with focused approval/memory/skill tests, `pnpm typecheck`, and
+  `pnpm build`.
 - **`076` — Prompt-injection trust boundaries and regression harness.** Completed in this branch.
   Added shared provenance metadata and context envelopes, labeled runtime/summary/skill/index sections,
   wrapped untrusted file/web/MCP/command ingress, preserved recall provenance in JSON outputs, updated

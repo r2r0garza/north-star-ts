@@ -1,6 +1,6 @@
 # PR77: Prompt-injection persistence and action-integrity controls
 
-> Status: **PLANNED**. Depends on `076`'s trust/provenance model. This plan closes the highest-impact
+> Status: **COMPLETED**. Depends on `076`'s trust/provenance model. This plan closes the highest-impact
 > paths: persistent memory/skills and consequential actions taken after untrusted content is consumed.
 
 ## Context
@@ -18,7 +18,8 @@ workspace, browser, MCP, or shell actions without a human seeing the causal sour
 ## Goal
 
 1. Prevent untrusted instructions from being promoted into memory or installed skills.
-2. Add an explicit-approval tier for narrow high-impact actions that Auto mode cannot bypass.
+2. Add an explicit-approval tier for narrow high-impact actions that sandbox auto-approval and ordinary
+   allowlist rules cannot bypass. Auto mode remains run-level user pre-approval.
 3. Bind approval display to the concrete action and the untrusted sources that influenced it.
 4. Preserve useful automation and avoid prompting for every ordinary read or reversible workspace edit.
 
@@ -58,7 +59,9 @@ Direct user preferences may still be remembered when auto memory is enabled. The
 
 Extend the policy decision model with a narrow level such as `require_explicit_approval`:
 
-- unlike ordinary `require_approval`, it is never bypassed by Auto mode or sandbox auto-approval;
+- unlike ordinary `require_approval`, it is never bypassed by sandbox auto-approval or ordinary
+  remembered allowlist grants;
+- Auto mode is treated as explicit run-level pre-approval and may approve this tier for the current run;
 - a prior allowlist rule does not cover it unless that rule type explicitly supports the same protected
   action and destination;
 - hard blocks retain precedence.
@@ -87,8 +90,8 @@ require a new gate.
 - Confirm legitimate direct user identity/preferences and workspace facts still persist.
 - Confirm model-produced facts without source IDs are rejected and atomic writes preserve the prior file
   on malformed output or interruption.
-- Confirm Auto mode cannot bypass `require_explicit_approval`, while hard blocks and ordinary approval
-  semantics remain unchanged.
+- Confirm Auto mode approves `require_explicit_approval` only as run-level pre-approval, while hard
+  blocks, sandbox auto-approval, allowlists, and ordinary approval semantics remain unchanged.
 - Confirm approval identities reject changed destination/payload/source context.
 - Add regression cases for poisoned imported skills and inert generated drafts.
 - Run focused memory/policy/approval tests, `pnpm typecheck`, `pnpm build`, and a real-app exercise.
@@ -97,4 +100,3 @@ require a new gate.
 
 - Turning memory into the workflow repetition database, automatic deletion of user-authored skills, or
   requiring human review for every agent action.
-

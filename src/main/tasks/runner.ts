@@ -865,6 +865,7 @@ export class TaskRunner {
                     tool: event.tool,
                     summary: event.summary,
                     reason: event.reason,
+                    explicit: event.explicit,
                     requestId: event.requestId,
                     toolCallId: event.id,
                   },

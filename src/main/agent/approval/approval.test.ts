@@ -5,6 +5,7 @@ import { RegexCommandClassifier } from "./regex-classifier"
 import { FileActionClassifier } from "./file-classifier"
 import { DelegationClassifier } from "./delegation-classifier"
 import { BrowserActionClassifier } from "./browser-classifier"
+import { McpActionClassifier } from "./mcp-classifier"
 import { analyzeShellCommand, shellActionForCommand } from "./shell-analyzer"
 import {
   browserActionIdentity,
@@ -121,6 +122,15 @@ function browserSubmitType(target: string, payloadSummary: string): ToolAction {
       interactionKind: "consequential_commit",
       submit: true,
     },
+  }
+}
+
+function mcpCall(): ToolAction {
+  return {
+    tool: "mcp_github_create_issue",
+    kind: "mcp",
+    summary: "Call GitHub MCP create issue",
+    identity: "mcp:github:create_issue",
   }
 }
 
@@ -513,6 +523,15 @@ describe("PolicyEngine — precedence", () => {
     ).toBe("allow")
   })
 
+  it("allowlist does not downgrade explicit approval", () => {
+    const engine = new PolicyEngine([new BrowserActionClassifier()], allowAll)
+    expect(
+      engine.decide(browserConsequentialClick("Delete"), {
+        sandboxed: true,
+      }).level
+    ).toBe("require_explicit_approval")
+  })
+
   it("hard_block is never overridable by the allowlist", () => {
     const engine = new PolicyEngine([classifier], allowAll)
     expect(engine.decide(shell("rm -rf /"), { sandboxed: true }).level).toBe(
@@ -758,6 +777,44 @@ describe("PolicyEngine — sandbox auto-approve", () => {
       "hard_block"
     )
   })
+
+  it("NEVER downgrades explicit approval, even sandboxed with an all-yes policy", () => {
+    const sandboxAll: SandboxPolicyLookup = { autoApproves: () => true }
+    const engine = new PolicyEngine(
+      [new BrowserActionClassifier()],
+      allowNone,
+      sandboxAll
+    )
+    expect(
+      engine.decide(browserSubmitType("Message", "Publish customer note"), {
+        sandboxed: true,
+      }).level
+    ).toBe("require_explicit_approval")
+  })
+})
+
+describe("Explicit action-integrity approvals", () => {
+  const allowNone: AllowlistLookup = { isAllowed: () => false }
+
+  it("classifies consequential browser commits as explicit approvals", () => {
+    const engine = new PolicyEngine([new BrowserActionClassifier()], allowNone)
+    expect(
+      engine.decide(browserConsequentialClick("Publish"), {
+        sandboxed: true,
+      })
+    ).toMatchObject({
+      level: "require_explicit_approval",
+      reason: "Browser action may commit an external change",
+    })
+  })
+
+  it("classifies MCP calls as explicit approvals", () => {
+    const engine = new PolicyEngine([new McpActionClassifier()], allowNone)
+    expect(engine.decide(mcpCall(), { sandboxed: true })).toMatchObject({
+      level: "require_explicit_approval",
+      reason: "Calling an external MCP server",
+    })
+  })
 })
 
 describe("DelegationClassifier", () => {
@@ -826,7 +883,7 @@ describe("BrowserActionClassifier", () => {
           },
         })
       ).toMatchObject({
-        level: "require_approval",
+        level: "require_explicit_approval",
         reason: "Browser action may commit an external change",
       })
     }
@@ -863,13 +920,13 @@ describe("BrowserActionClassifier", () => {
     expect(
       bc.classify(browserConsequentialClick('button "Delete account"'))
     ).toMatchObject({
-      level: "require_approval",
+      level: "require_explicit_approval",
       reason: "Browser action may commit an external change",
     })
     expect(
       bc.classify(browserSubmitType('textbox "Email"', "[email] (16 chars)"))
     ).toMatchObject({
-      level: "require_approval",
+      level: "require_explicit_approval",
       reason: "Browser action may commit an external change",
     })
   })
@@ -938,7 +995,7 @@ describe("PolicyEngine — browser interaction carve-out (local backend)", () =>
 
   it("requires approval for a browser click on a local backend", () => {
     expect(engine.decide(browserClick("e3"), { sandboxed: false }).level).toBe(
-      "require_approval"
+      "require_explicit_approval"
     )
   })
 
@@ -947,12 +1004,12 @@ describe("PolicyEngine — browser interaction carve-out (local backend)", () =>
       engine.decide(browserConsequentialClick('button "Purchase"'), {
         sandboxed: false,
       }).level
-    ).toBe("require_approval")
+    ).toBe("require_explicit_approval")
     expect(
       engine.decide(browserSubmitType('textbox "Message"', "hello (5 chars)"), {
         sandboxed: false,
       }).level
-    ).toBe("require_approval")
+    ).toBe("require_explicit_approval")
   })
 
   it("still requires approval for navigation on a local backend", () => {

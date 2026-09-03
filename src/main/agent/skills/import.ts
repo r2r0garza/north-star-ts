@@ -4,6 +4,7 @@ import path from "path"
 import { tmpdir } from "os"
 import AdmZip from "adm-zip"
 import { MAX_SKILL_FILE_SIZE, parseSkill, validateName } from "./loader"
+import { assertSkillSecurity } from "./security"
 
 // Import a skill from disk into a writable source root, either as a single
 // SKILL.md file or a .zip of a skill folder. The name is derived from the
@@ -30,6 +31,7 @@ export async function importSkillFromMarkdown(
     throw new Error("Skill file is too large.")
   }
   const name = deriveName(content, sourcePath, targetRoot)
+  assertSkillSecurity(content)
   const skillDir = path.join(targetRoot, name)
   if (existsSync(skillDir)) {
     throw new Error(`A skill named '${name}' already exists here.`)
@@ -90,7 +92,9 @@ export async function importSkillFromZip(
 
   // Derive + validate the name from the located SKILL.md.
   const skillMd = files.find((f) => f.rel === prefix + "SKILL.md")!
-  const name = deriveName(skillMd.entry.getData().toString("utf-8"), prefix + "SKILL.md", targetRoot)
+  const skillContent = skillMd.entry.getData().toString("utf-8")
+  const name = deriveName(skillContent, prefix + "SKILL.md", targetRoot)
+  assertSkillSecurity(skillContent)
 
   const skillDir = path.join(targetRoot, name)
   if (existsSync(skillDir)) {

@@ -1283,6 +1283,7 @@ function App(
                   reason: event.reason,
                   status: "pending",
                   kind: event.kind,
+                  explicit: event.explicit,
                   detail: event.detail,
                 },
               }))
@@ -1580,6 +1581,7 @@ function App(
   useEffect(() => {
     if (!pendingApproval) return
     const { requestId, kind } = pendingApproval
+    const explicit = pendingApproval.explicit === true
     // Global DOM KeyboardEvent (App imports React's KeyboardEvent type for the
     // composer handler; this window listener needs the DOM one).
     function onKeyDown(e: globalThis.KeyboardEvent) {
@@ -1593,8 +1595,8 @@ function App(
         e.preventDefault()
         resolveApproval(requestId, "denied")
       } else if (e.key.toLowerCase() === "s") {
-        // Session/workspace approve — only when the card offers it (not delegate).
-        if (kind === "delegate") return
+        // Session/workspace approve — only when the card offers it.
+        if (kind === "delegate" || explicit) return
         e.preventDefault()
         resolveApproval(
           requestId,

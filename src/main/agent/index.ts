@@ -164,6 +164,7 @@ interface PendingApproval {
   action: ToolAction
   workspacePath?: string
   conversationId?: string
+  explicit?: boolean
 }
 const pendingApprovals = new Map<string, PendingApproval>()
 
@@ -242,7 +243,7 @@ export function setAutoModeForConversation(
   if (!on) return
   // Auto-approve whatever this conversation is blocked on right now. Sequential
   // gating means at most one pending approval per conversation, but resolve all
-  // matching just in case. No `remember` — Auto is a session stance, not a rule.
+  // matching just in case. No `remember` — Auto is a run stance, not a rule.
   for (const [requestId, pending] of pendingApprovals) {
     if (pending.conversationId === conversationId) {
       resolveApproval(requestId, "approved")
@@ -267,6 +268,7 @@ export function resolveApproval(
   pendingApprovals.delete(requestId)
   if (
     decision === "approved" &&
+    !pending.explicit &&
     remember === "workspace" &&
     pending.workspacePath
   ) {
@@ -280,6 +282,7 @@ export function resolveApproval(
     })
   } else if (
     decision === "approved" &&
+    !pending.explicit &&
     remember === "conversation" &&
     pending.conversationId
   ) {
@@ -648,6 +651,7 @@ export type ChatEvent =
       // "always allow in this workspace" button, since delegation is asked every
       // time. Optional so older persisted events without it still parse.
       kind?: ActionKind
+      explicit?: boolean
       detail?: Record<string, unknown>
     }
   // The agent is asking the user clarifying questions (ask_user_question). `id`
@@ -722,8 +726,10 @@ export interface RunAgentLoopOptions {
   // touch the workspace. Session-only (the renderer passes it per send; not
   // persisted). Ignored for chat mode. Flips off mid-turn when the user approves.
   planMode?: boolean
-  // Start this turn in auto mode: all require_approval gate decisions are
+  // Start this turn in auto mode: ordinary require_approval gate decisions are
   // automatically approved so the agent acts without confirmation prompts.
+  // Protected require_explicit_approval decisions are also approved: enabling
+  // Auto mode is the user's run-level pre-approval.
   // Session-only. Honored in every mode including chat (chat's browser_navigate
   // is a require_approval action). Can also be activated mid-turn when the user
   // picks "Yes, approve and work in Auto mode" in the plan approval question.
@@ -989,14 +995,12 @@ export async function runAgentLoop(
   // approval. Consulted before the shared PolicyEngine in the per-turn gate.
   const planModeClassifier = new PlanModeClassifier(() => planMode)
 
-  // Auto mode: auto-approve any action that would otherwise require human
-  // confirmation (require_approval → approved). Hard-blocks from classifiers
-  // (e.g. plan-mode) are never bypassed. MUTABLE: present_plan can activate it
-  // mid-turn when the user picks "Yes, approve and work in Auto mode". Available
-  // in every mode including chat — unlike plan mode it doesn't depend on the
-  // workspace toolset; chat's browser_navigate is a require_approval action auto
-  // mode suppresses too. The renderer only sends autoMode where a mode toggle is
-  // offered, so it's honored verbatim here.
+  // Auto mode: auto-approve human confirmations
+  // (require_approval/require_explicit_approval → approved). Hard-blocks are
+  // never bypassed. Enabling Auto mode is the user's run-level pre-approval, so
+  // the user does not need to monitor an Auto-mode run for permission requests.
+  // MUTABLE: present_plan can activate it mid-turn when the user picks "Yes,
+  // approve and work in Auto mode".
   let autoMode = !!opts.autoMode
   // The turn-level auto-mode mutator: flips the live var and notifies the UI.
   // Shared by present_plan (via ctx.setAutoMode) and the mid-turn dropdown toggle
@@ -1976,7 +1980,7 @@ export async function runAgentLoop(
             return { result: errResult }
           }
           // The approval gate for this tool call. `allow` and `hard_block` resolve
-          // synchronously; `require_approval` emits an event and blocks until the
+          // synchronously; approval decisions emit an event and block until the
           // renderer calls resolveApproval over IPC. The event carries the tool-
           // call `id` (so the renderer attaches the card to the right marker) and
           // a process-unique `requestId` keying the pending map — the renderer
@@ -2012,8 +2016,7 @@ export async function runAgentLoop(
               gatedResult = `ERROR[blocked]: ${decision.reason}`
               return Promise.resolve("blocked")
             }
-            // Auto mode: automatically approve any action that would otherwise
-            // require human confirmation. Hard-blocks still block (handled above).
+            const explicit = decision.level === "require_explicit_approval"
             if (autoMode) return Promise.resolve("approved")
             const requestId = randomUUID()
             persistLifecycle(() =>
@@ -2030,6 +2033,7 @@ export async function runAgentLoop(
               summary: action.summary,
               reason: decision.reason,
               kind: action.kind,
+              explicit,
               detail: action.detail,
             })
             return new Promise<GateOutcome>((resolve) => {
@@ -2038,6 +2042,7 @@ export async function runAgentLoop(
                 action,
                 workspacePath: workspace,
                 conversationId,
+                explicit,
               })
               // If the turn is stopped while waiting on this approval, release the
               // gate (as a denial) so the loop can unwind instead of hanging — the

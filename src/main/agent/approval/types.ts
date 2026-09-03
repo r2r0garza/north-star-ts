@@ -44,10 +44,14 @@ export interface ToolAction {
 // A classifier's verdict for an action. A `require_approval` verdict may carry a
 // `category` (e.g. "workspace_mutation", "destructive_fs") so a sandbox policy
 // can choose to auto-approve *selected* categories inside a container — see
-// PolicyEngine.decide. `hard_block` has no category: it is never downgradable.
+// PolicyEngine.decide. `require_explicit_approval` is a protected tier: sandbox
+// auto-approval and ordinary allowlist rules cannot bypass it. Auto mode is
+// run-level user pre-approval and is handled by the live gate.
+// `hard_block` has no category: it is never downgradable.
 export type ActionDecision =
   | { level: "allow"; reason?: string }
   | { level: "require_approval"; reason: string; category?: string }
+  | { level: "require_explicit_approval"; reason: string; category?: string }
   | { level: "hard_block"; reason: string }
 
 // Classifies a tool action. A classifier returns null for action kinds it

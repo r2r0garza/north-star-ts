@@ -46,6 +46,7 @@ import {
   importSkillFromMarkdown,
   importSkillFromZip,
 } from "./agent/skills/import"
+import { assertSkillSecurity } from "./agent/skills/security"
 import {
   agentSources,
   agentSourceEntries as getAgentSourceEntries,
@@ -729,6 +730,7 @@ ipcMain.handle(
   async (_event, filePath: string, content: string): Promise<void> => {
     assertSkillPath(filePath)
     assertNotManagedMemorySkill(filePath)
+    assertSkillSecurity(content)
     await writeFile(filePath, content, "utf-8")
   }
 )
@@ -764,9 +766,11 @@ ipcMain.handle(
     if (existsSync(skillDir)) {
       throw new Error(`A skill named '${name}' already exists here.`)
     }
+    const content = skillScaffold(name, description, body)
+    assertSkillSecurity(content)
     await mkdir(skillDir, { recursive: true })
     const filePath = join(skillDir, "SKILL.md")
-    await writeFile(filePath, skillScaffold(name, description, body), "utf-8")
+    await writeFile(filePath, content, "utf-8")
     return filePath
   }
 )

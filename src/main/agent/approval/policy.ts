@@ -28,10 +28,10 @@ export interface SandboxPolicyLookup {
   autoApproves(category: string | undefined): boolean
 }
 
-// The single decision point for every gated action. Consults the allowlist
-// first, then an ordered list of classifiers (first non-null verdict wins). A
-// `hard_block` from a classifier is never overridable by the allowlist — the
-// allowlist can only turn a `require_approval` into an implicit allow.
+// The single decision point for every gated action. Classifies first, then
+// consults downgrade paths only for ordinary `require_approval`. A `hard_block`
+// or `require_explicit_approval` verdict is never overridable by Auto/sandbox
+// policy or by ordinary allowlist rules.
 export class PolicyEngine {
   constructor(
     private readonly classifiers: ActionClassifier[],
@@ -52,9 +52,14 @@ export class PolicyEngine {
       }
     }
 
-    // The single safety invariant: a hard_block returns here, before ANY
-    // downgrade path below. Neither the allowlist nor the sandbox can reach it.
-    if (verdict.level === "hard_block") return verdict
+    // Protected verdicts return here, before ANY downgrade path below. Neither
+    // the allowlist nor the sandbox can reach them.
+    if (
+      verdict.level === "hard_block" ||
+      verdict.level === "require_explicit_approval"
+    ) {
+      return verdict
+    }
 
     if (
       ctx.localProfile === "read-only" &&

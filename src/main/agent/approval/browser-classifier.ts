@@ -35,8 +35,14 @@ export class BrowserActionClassifier implements ActionClassifier {
       action.detail?.interactionKind === "consequential_commit"
     ) {
       return {
-        level: "require_approval",
+        level: "require_explicit_approval",
         reason: "Browser action may commit an external change",
+      }
+    }
+    if (action.tool === "browser_evaluate") {
+      return {
+        level: "require_explicit_approval",
+        reason: "Browser evaluation can read or change page state",
       }
     }
     if (INTERACTION_TOOLS.has(action.tool)) {
