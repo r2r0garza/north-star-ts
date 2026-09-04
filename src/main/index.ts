@@ -25,6 +25,8 @@ import {
   setAutoModeForConversation,
   type ChatRequest,
 } from "./agent"
+import { cancelAllQuestions } from "./agent/questions/broker"
+import { closeCliMcpBridge } from "./agent/mcp-server"
 import {
   pickWorkspace,
   pickFiles,
@@ -1237,5 +1239,10 @@ app.on("will-quit", () => {
   // Disconnect every pooled MCP client (stops spawned stdio processes / closes
   // HTTP sessions). Fire-and-forget; the process is exiting.
   void getMcpManager().disposeAll()
+  // The other MCP role (plan 045): close the loopback listener CLI children
+  // connect to, clearing every outstanding grant and releasing anything still
+  // blocked on a question.
+  void closeCliMcpBridge()
+  cancelAllQuestions()
   closeDb()
 })

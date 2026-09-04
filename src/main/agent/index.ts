@@ -2,6 +2,7 @@ import { randomUUID } from "crypto"
 import { stat } from "fs/promises"
 import { basename, dirname, isAbsolute } from "path"
 import { SHUTDOWN_ABORT_REASON } from "./abort"
+import { askUser } from "./questions/broker"
 import {
   toolDefinitions,
   browserToolDefinitions,
@@ -144,13 +145,7 @@ import type {
   GateOutcome,
   ToolAction,
 } from "./approval/types"
-import type {
-  Ask,
-  AskResult,
-  EnqueueTask,
-  Question,
-  QuestionAnswer,
-} from "./tools/types"
+import type { Ask, AskResult, EnqueueTask, Question } from "./tools/types"
 
 // The single approval policy, shared across turns. Built by the shared factory
 // (approval/engine.ts) so the deterministic dashboard-refresh executor (033.3)
@@ -301,23 +296,11 @@ export function resolveApproval(
   pending.resolve(decision)
 }
 
-// One pending ask_user_question round-trip, awaited inside the `ask` function.
-// Keyed by a process-unique requestId so an answer can't resolve another turn's
-// question (mirrors pendingApprovals).
-const pendingQuestions = new Map<string, (result: AskResult) => void>()
-
-// Called from the renderer over IPC ("chat:answer") to deliver the user's
-// answers to a pending ask_user_question. No-op if the request is gone (already
-// answered or the turn was stopped).
-export function resolveQuestion(
-  requestId: string,
-  answers: QuestionAnswer[]
-): void {
-  const resolve = pendingQuestions.get(requestId)
-  if (!resolve) return
-  pendingQuestions.delete(requestId)
-  resolve({ status: "answered", answers })
-}
+// Pending ask_user_question round trips live in the conversation-scoped broker
+// (`./questions/broker`), shared with the CLI MCP bridge so both surfaces answer
+// through the same `chat:answer` IPC. Re-exported here because the main-process
+// IPC handler has always imported it from this module.
+export { resolveQuestion } from "./questions/broker"
 
 export interface ChatRequest {
   // The conversation this turn belongs to. Messages are persisted under it and
@@ -889,6 +872,9 @@ export async function runAgentLoop(
     return runClaudeConversation({
       conversation,
       workspace,
+      // Gates the MCP bridge's ask_user_question the same way it gates the
+      // internal tool: a headless worker gets no question surface at all.
+      suppressUserQuestions: opts.suppressUserQuestions,
       // The CLI paths return before `agentDir` is resolved below, so scope their
       // memory the same way it would have been: confinement workspace, else the
       // conversation's own directory.
@@ -912,6 +898,7 @@ export async function runAgentLoop(
     return runCodexConversation({
       conversation,
       workspace,
+      suppressUserQuestions: opts.suppressUserQuestions,
       memoryWorkspaceDir: hasWorkspace
         ? workspace
         : resolveConversationDir(conversation),
@@ -2086,21 +2073,12 @@ export async function runAgentLoop(
           // or the turn is stopped (resolves "cancelled" so the loop unwinds).
           const ask: Ask = (questions): Promise<AskResult> => {
             callSignal.throwIfAborted()
-            const requestId = randomUUID()
-            onEvent({ type: "question", id: call.id, requestId, questions })
-            return new Promise<AskResult>((resolve) => {
-              pendingQuestions.set(requestId, resolve)
-              callSignal.addEventListener(
-                "abort",
-                () => {
-                  // Shutdown: leave unresolved so no synthetic answer is persisted
-                  // and the task reconciles to interrupted (mirrors the gate above).
-                  if (callSignal.reason === SHUTDOWN_ABORT_REASON) return
-                  if (pendingQuestions.delete(requestId))
-                    resolve({ status: "cancelled" })
-                },
-                { once: true }
-              )
+            return askUser({
+              conversationId,
+              toolCallId: call.id,
+              questions,
+              emit: onEvent,
+              signal: callSignal,
             })
           }
           // read_skill ignores these fields. With a workspace, file tools confine

@@ -1,9 +1,12 @@
 # PR45: North Star MCP bridge for CLI providers
 
-> Status: **NOT STARTED**. Depends on `041` (Claude Code, implemented) and
-> `042` (Codex CLI) for the two client adapters. The bridge foundation can be
-> built against Claude first, but the phase is complete only after both CLIs
-> pass the same contract tests and live smoke test.
+> Status: **`045.2` IMPLEMENTED; `045.1` NOT STARTED.** The delivery order was
+> inverted: `index_query` needs its own changes first, so the bridge foundation
+> (§Core design 1-3) shipped with `045.2`'s `ask_user_question` as its only tool
+> adapter. `045.1` now reduces to extracting the shared `index_query` service,
+> registering its adapter, and widening the grant — the server, grants,
+> injection, and lifecycle are already in place. The phase is complete only after
+> both CLIs pass the same contract tests and the live smoke test.
 
 ## Context
 
@@ -194,31 +197,82 @@ not enforce anything and would make behavior less predictable.
 
 ## Delivery slices
 
-### 045.1 — Bridge foundation + `index_query`
+### 045.1 — `index_query` (remaining)
 
-1. Add the lazy authenticated Streamable HTTP server and lifecycle cleanup.
-2. Add per-turn grant mint/revoke/expiry and exact tool filtering.
-3. Extract and register the shared `index_query` service.
-4. Inject the bridge into Claude and Codex first/resume argv without touching
-   user or workspace MCP files.
-5. Map MCP tool start/result events through each CLI's existing JSONL activity
-   stream so users can see `north-star · index_query` in the transcript.
-6. Advertise the connection in CLI-provider UI copy as “North Star tools:
-   workspace index”; no general enable/disable setting is needed for this
+Steps 1, 2, 4, and 5 below landed with `045.2`; what is left is the tool itself.
+
+1. ~~Add the lazy authenticated Streamable HTTP server and lifecycle cleanup.~~
+2. ~~Add per-turn grant mint/revoke/expiry and exact tool filtering.~~
+3. Extract and register the shared `index_query` service. Add `"index_query"` to
+   `CLI_MCP_TOOLS`, an adapter beside `mcp-server/tools/ask-user-question.ts`,
+   and a `grantedTools` branch. The grant already carries the server-derived
+   workspace (`null` for Chat), so the adapter refuses when it is absent rather
+   than treating the app-owned chat cwd as an indexed project.
+4. ~~Inject the bridge into Claude and Codex first/resume argv without touching
+   user or workspace MCP files.~~
+5. ~~Map MCP tool start/result events through each CLI's existing JSONL activity
+   stream.~~ Claude's `tool_use` blocks already carry `mcp__north-star__<tool>`;
+   `parseCodexEvent` now surfaces `mcp_tool_call` items as `north-star · <tool>`.
+6. Advertise the connection in CLI-provider UI copy as "North Star tools:
+   workspace index"; no general enable/disable setting is needed for this
    read-only first slice.
 
-### 045.2 — Human round trip (`ask_user_question`)
+### 045.2 — Human round trip (`ask_user_question`) — IMPLEMENTED
 
-1. Extract the current renderer question flow behind a conversation-scoped
-   broker usable by both `runAgentLoop` and MCP requests.
-2. Register `ask_user_question` only for a live foreground CLI turn with an
-   attached renderer. The MCP call awaits the existing UI answer and returns the
-   normalized answer JSON.
-3. Stop, renderer dismissal, bridge revocation, or app quit resolves the pending
-   call as cancelled—never leaves the CLI hanging.
-4. Set an explicit MCP/CLI tool timeout long enough for human response, while
+1. ~~Extract the current renderer question flow behind a conversation-scoped
+   broker usable by both `runAgentLoop` and MCP requests.~~
+   `agent/questions/broker.ts` owns every pending round trip — the internal
+   loop's `ask` and the bridge both call `askUser`, and `chat:answer` still
+   resolves them through the same `resolveQuestion` (re-exported from
+   `agent/index.ts`, so the IPC handler was untouched).
+   `agent/questions/normalize.ts` holds the bounds, validation, and answer shape
+   the internal tool and the MCP adapter share.
+2. ~~Register `ask_user_question` only for a live foreground CLI turn with an
+   attached renderer.~~ Gated on the existing `suppressUserQuestions` flag,
+   threaded from `runAgentLoop` into both CLI runners: a headless Process worker
+   gets an empty grant, and an empty grant skips injection entirely rather than
+   advertising a server with nothing to serve.
+3. ~~Stop, renderer dismissal, bridge revocation, or app quit resolves the
+   pending call as cancelled.~~ The runner's `finally` revokes on every exit path
+   (success, failure, Stop, spawn error); revocation cancels that conversation's
+   pending questions, and `will-quit` closes the listener and clears everything.
+4. ~~Set an explicit MCP/CLI tool timeout long enough for human response, while
    keeping a final bounded expiry and showing the waiting state in the activity
-   UI.
+   UI.~~ A 1h broker expiry against a 65min client-side timeout
+   (`MCP_TOOL_TIMEOUT` for Claude, `tool_timeout_sec` for Codex) so North Star's
+   bound fires first and the CLI gets a normal "dismissed" tool result rather
+   than a transport error.
+
+**Steering the CLIs toward the bridge.** Registering the tool is not enough:
+both CLIs are tuned to ask the user in prose, and a tool they can see still goes
+unused. Measured live against `claude -p` and `codex exec` on the prompt
+"ask me a multiple choice question" (n=3 per cell):
+
+| Lever | Claude (sonnet) | Codex `gpt-5.5` | Codex `gpt-5.6-sol` |
+| --- | --- | --- | --- |
+| Hedged tool description + MCP server `instructions` | 0/3 | 0/1 | 0/1 |
+| Blunt imperative description + `instructions` | 0/3 | 2/3 | 0/3 |
+| Blunt description + `--append-system-prompt` | 3/3 | n/a | n/a |
+
+All three ship. The MCP `instructions` field (returned on `initialize`) is the
+in-protocol place for "how to use this server" and costs nothing. The tool
+description is deliberately NOT the internal tool's wording: inside
+`runAgentLoop` the tool is the only way to reach the user, so "don't overuse it"
+is right, whereas a CLI can always fall back to prose and needs the opposite
+push. `--append-system-prompt` is the only lever that moves Claude, and it moves
+it reliably. Codex has no per-run append flag (`experimental_instructions_file`
+*replaces* base instructions, so it is not a substitute) and relies on the
+description alone; closing that gap is open work.
+
+**Deliberate deviations from the design above.** The listener is plain
+`node:http` rather than the SDK's Express helper: `express` is a transitive
+dependency of the SDK, not a declared one, and `StreamableHTTPServerTransport`
+carries the same DNS-rebinding protection (`enableDnsRebindingProtection` plus
+`allowedHosts`/`allowedOrigins`) directly. Tools register through the low-level
+`Server` + `ListTools`/`CallTool` handlers rather than `McpServer`, so each
+adapter publishes hand-written JSON Schema without adding a `zod` dependency.
+`enableJsonResponse` is left off so a question call streams as SSE and gets the
+transport's 15s keep-alive frames while a human is deciding.
 
 Process/todo/dashboard tools are candidates after these slices demonstrate the
 capability model. Each should receive its own write-policy decision; they are not
@@ -279,8 +333,13 @@ implicitly included in `045.2`.
 
 - Model discovery/import or proxying model inference through MCP.
 - Replacing Claude/Codex native file, search, edit, or shell tools.
-- Injecting North Star skills, system prompts, or the complete internal tool
-  registry.
+- Injecting North Star skills, mode/system prompts, or the complete internal tool
+  registry. **Narrowly amended by `045.2`:** Claude's argv carries one
+  `--append-system-prompt` sentence naming the granted bridge tools, because the
+  gentler levers were measured and do not work — see "Steering the CLIs toward
+  the bridge" below. It appends to Claude's own prompt rather than replacing it,
+  names only this bridge's tools, and is omitted entirely for an empty grant.
+  North Star's mode prompts, skills, and internal tool registry remain out.
 - Exposing the bridge outside the local machine or supporting remote/cloud CLI
   workers.
 - OAuth for the app-owned loopback endpoint.

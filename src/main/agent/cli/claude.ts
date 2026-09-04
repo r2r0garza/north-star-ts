@@ -39,6 +39,10 @@ export function buildClaudeArgs(input: {
   model: string
   isolated?: boolean
   systemPrompt?: string
+  // North Star MCP bridge argv (plan 045). Appended to first-turn AND resume
+  // commands alike: the child process is recreated per app turn even when its
+  // native conversation resumes, so the injection is never inherited.
+  mcpArgs?: string[]
 }): string[] {
   const args = input.resume
     ? [
@@ -66,6 +70,9 @@ export function buildClaudeArgs(input: {
   if (input.systemPrompt) {
     args.push("--system-prompt", input.systemPrompt)
   }
+  // Deliberately no --strict-mcp-config: the user's own project/global MCP
+  // servers must keep loading alongside ours.
+  if (input.mcpArgs?.length) args.push(...input.mcpArgs)
   return args
 }
 
@@ -173,6 +180,10 @@ export async function runClaudeCode(input: {
   onEvent: (event: CliTurnEvent) => void
   isolated?: boolean
   systemPrompt?: string
+  mcpArgs?: string[]
+  // Merged over the host CLI environment. Carries the MCP bearer token, which
+  // must never reach argv.
+  extraEnv?: NodeJS.ProcessEnv
 }): Promise<{ content?: string; error?: string; stopped?: boolean }> {
   const child = spawn(
     "claude",
@@ -183,10 +194,11 @@ export async function runClaudeCode(input: {
       model: input.model,
       isolated: input.isolated,
       systemPrompt: input.systemPrompt,
+      mcpArgs: input.mcpArgs,
     }),
     {
       cwd: input.cwd,
-      env: await hostCliEnv(),
+      env: { ...(await hostCliEnv()), ...input.extraEnv },
       detached: process.platform !== "win32",
       stdio: ["ignore", "pipe", "pipe"],
     }

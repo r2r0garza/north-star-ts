@@ -39,8 +39,13 @@ export function buildCodexArgs(input: {
   skipGitRepoCheck: boolean
   model?: string | null
   sandbox?: "read-only" | "workspace-write"
+  // North Star MCP bridge overrides (plan 045). Global `-c` flags, so they are
+  // prepended before the subcommand and apply to `exec` and `exec resume`
+  // alike. Nothing is written to the user's ~/.codex/config.toml.
+  mcpArgs?: string[]
 }): string[] {
   const args = [
+    ...(input.mcpArgs ?? []),
     "exec",
     "--json",
     "--sandbox",
@@ -100,6 +105,35 @@ export function parseCodexEvent(
     if (item.type === "agent_message" && typeof item.text === "string") {
       state.finalText = item.text
       emit({ type: "text", text: item.text })
+      return
+    }
+    // MCP tool calls (including North Star's own bridge, plan 045) so the
+    // transcript shows `north-star · ask_user_question` while the turn waits on
+    // the question panel, rather than a silent gap.
+    if (item.type === "mcp_tool_call" && id) {
+      const server = typeof item.server === "string" ? item.server : "mcp"
+      const tool = typeof item.tool === "string" ? item.tool : "tool"
+      const name = `${server} · ${tool}`
+      if (event.type === "item.started") {
+        emit({
+          type: "tool_start",
+          id,
+          name,
+          arguments: stringify(item.arguments ?? {}),
+        })
+      } else {
+        const status =
+          typeof item.status === "string" ? `status: ${item.status}` : ""
+        const error = typeof item.error === "string" ? item.error : ""
+        emit({
+          type: "tool_done",
+          id,
+          name,
+          result: [stringify(item.result ?? ""), error, status]
+            .filter(Boolean)
+            .join("\n"),
+        })
+      }
       return
     }
     if (item.type === "command_execution" && id) {
@@ -170,6 +204,10 @@ export async function runCodexCli(input: {
   model?: string | null
   signal: AbortSignal
   onEvent: (event: CliTurnEvent) => void
+  mcpArgs?: string[]
+  // Merged over the host CLI environment. Carries the MCP bearer token, which
+  // must never reach argv.
+  extraEnv?: NodeJS.ProcessEnv
 }): Promise<{
   content?: string
   threadId?: string
@@ -185,10 +223,11 @@ export async function runCodexCli(input: {
       threadId: input.threadId,
       model: input.model,
       skipGitRepoCheck: git === null,
+      mcpArgs: input.mcpArgs,
     }),
     {
       cwd: input.cwd,
-      env: await hostCliEnv(),
+      env: { ...(await hostCliEnv()), ...input.extraEnv },
       detached: process.platform !== "win32",
       stdio: ["ignore", "pipe", "pipe"],
     }

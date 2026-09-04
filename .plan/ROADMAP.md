@@ -12,10 +12,17 @@ item is its plan file; the ordered-list number is its current priority rank.
    authenticated Streamable HTTP server on an ephemeral `127.0.0.1` port for the Claude Code and Codex
    subprocesses we launch. Inject the endpoint per turn (`claude --mcp-config`; Codex transient `-c`
    override), never modify project/global CLI configs, and bind a short-lived bearer capability to the
-   server-known conversation/workspace/tool allowlist. `045.1` proves the bridge with the read-only,
-   North-Star-specific `index_query`; `045.2` adapts the existing renderer-backed
-   `ask_user_question` round trip. Explicit adapters only—no blanket `runTool()` export, no external
-   MCP proxy, and no duplicate filesystem/shell tools. Side-effect policy remains enforced server-side.
+   server-known conversation/workspace/tool allowlist. Explicit adapters only—no blanket `runTool()`
+   export, no external MCP proxy, and no duplicate filesystem/shell tools. Side-effect policy remains
+   enforced server-side. **`045.2` is done**: the slices were inverted because `index_query` needs its
+   own changes first, so the bridge foundation shipped alongside the renderer-backed
+   `ask_user_question` round trip (conversation-scoped question broker, per-turn grants, Claude
+   `--mcp-config` / Codex `-c` injection, `will-quit` teardown). Registering the tool proved not to be
+   enough — both CLIs default to asking in prose — so the slice also ships three steering levers, of
+   which only a one-sentence Claude `--append-system-prompt` actually moves Claude (measured 0/6 without
+   it, 4/4 with); `045`'s out-of-scope line is amended to permit exactly that narrow steer.
+   **`045.1` remains**: extract the shared `index_query` service, add its adapter, widen the grant, add
+   the CLI-provider UI copy, and close the Codex steering gap (no per-run append flag exists).
 2. **`069` — Process intake policies and inspectable assumptions.** Give each Process an explicit run-
    entry contract instead of injecting a mandatory Planning phase: **Proceed with assumptions**
    (default, no preflight gate), **Approve initial plan** (side-effect-free execution brief + one durable

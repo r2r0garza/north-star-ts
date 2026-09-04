@@ -107,3 +107,42 @@ describe("Codex CLI adapter", () => {
     expect(state.finalText).toBe("CODEX_RESUME_OK")
   })
 })
+
+describe("Codex MCP activity", () => {
+  it("surfaces an MCP tool call so the bridge is visible in the transcript", () => {
+    const events: CliTurnEvent[] = []
+    const state: CodexParseState = {}
+    parseCodexEvent(
+      {
+        type: "item.started",
+        item: {
+          id: "mcp-1",
+          type: "mcp_tool_call",
+          server: "north-star",
+          tool: "ask_user_question",
+          arguments: { questions: [] },
+        },
+      },
+      (event) => events.push(event),
+      state
+    )
+    parseCodexEvent(
+      {
+        type: "item.completed",
+        item: {
+          id: "mcp-1",
+          type: "mcp_tool_call",
+          server: "north-star",
+          tool: "ask_user_question",
+          status: "completed",
+          result: '{"answers":[]}',
+        },
+      },
+      (event) => events.push(event),
+      state
+    )
+    expect(events.map((e) => e.type)).toEqual(["tool_start", "tool_done"])
+    expect(events[0].name).toBe("north-star · ask_user_question")
+    expect(events[1].result).toContain("answers")
+  })
+})
