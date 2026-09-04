@@ -5,16 +5,20 @@ import { captureSpawn } from "../env/spawn-util"
 import { hostCliEnv } from "../env/host-cli-env"
 import type { CliTurnEvent } from "./claude"
 
+// `gpt-5.3-codex` and its Spark variant are rejected outright ("not supported when
+// using Codex with a ChatGPT account") on ChatGPT-auth logins, which is how the
+// CLI is usually signed in — so the default must be a model both auth modes
+// accept. Verified live against `codex exec`: gpt-5.5 and gpt-5.6-sol work.
 export const CODEX_CLI_MODELS = [
-  { id: "gpt-5.3-codex", name: "GPT-5.3 Codex", favorite: true },
+  { id: "gpt-5.5", name: "GPT-5.5", favorite: true },
+  { id: "gpt-5.3-codex", name: "GPT-5.3 Codex", favorite: false },
   { id: "gpt-5.3-codex-spark", name: "GPT-5.3 Codex Spark", favorite: false },
-  { id: "gpt-5.5", name: "GPT-5.5", favorite: false },
   { id: "gpt-5.6-sol", name: "GPT-5.6 Sol", favorite: false },
   { id: "gpt-5.6-terra", name: "GPT-5.6 Terra", favorite: false },
   { id: "gpt-5.6-luna", name: "GPT-5.6 Luna", favorite: false },
 ] as const
 
-export const DEFAULT_CODEX_CLI_MODEL = "gpt-5.3-codex"
+export const DEFAULT_CODEX_CLI_MODEL = "gpt-5.5"
 
 export function normalizeCodexModel(model: string | null | undefined): string {
   const value = model?.trim().toLowerCase()

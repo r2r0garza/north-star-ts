@@ -544,7 +544,7 @@ function App(
         : configuredModelId
       : effectiveAccount?.account.provider === "codex_cli"
         ? !configuredModelId || configuredModelId === "codex-cli"
-          ? "gpt-5.3-codex"
+          ? "gpt-5.5"
           : configuredModelId
         : configuredModelId
   const effectiveModel = effectiveAccount?.models.find(

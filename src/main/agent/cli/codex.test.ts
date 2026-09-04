@@ -10,9 +10,10 @@ import {
 import type { CliTurnEvent } from "./claude"
 
 describe("Codex CLI adapter", () => {
-  it("uses GPT-5.3 Codex for unset or legacy provider-only selections", () => {
-    expect(normalizeCodexModel(null)).toBe("gpt-5.3-codex")
-    expect(normalizeCodexModel("codex-cli")).toBe("gpt-5.3-codex")
+  it("uses GPT-5.5 for unset or legacy provider-only selections", () => {
+    // gpt-5.3-codex is rejected on ChatGPT-auth logins, so it can't be default.
+    expect(normalizeCodexModel(null)).toBe("gpt-5.5")
+    expect(normalizeCodexModel("codex-cli")).toBe("gpt-5.5")
     expect(normalizeCodexModel("gpt-5.6-sol")).toBe("gpt-5.6-sol")
   })
 
@@ -31,7 +32,7 @@ describe("Codex CLI adapter", () => {
       "-C",
       "/tmp/codex-chat",
       "--model",
-      "gpt-5.3-codex",
+      "gpt-5.5",
       "--skip-git-repo-check",
       "inspect this",
     ])
