@@ -1,9 +1,9 @@
 # PR81: Semantic merge and contradiction resolution for automatic memory
 
-> Status: **PLANNED**. Follow-up to the automatic-memory reliability and write-path work on
+> Status: **COMPLETED**. Follow-up to the automatic-memory reliability and write-path work on
 > `feat/agent-hardening`. That work made the pipeline stop _losing_ facts; this one makes it stop
-> _accumulating_ them. Prerequisite for opening extraction to assistant/tool-derived evidence
-> (see Open questions), because that raises fact volume several-fold.
+> _accumulating_ them. Unblocks opening extraction to assistant/tool-derived evidence
+> (see Out of scope), which raises fact volume several-fold.
 
 ## Context
 
@@ -37,69 +37,104 @@ date at which memory starts actively losing information.
 3. Make supersession expressible, which today it is not: a flat bullet list carries no ordering or
    provenance, so "newer wins" cannot even be evaluated.
 
-## Likely shape (hypothesis — revisit per Open questions)
+## Shape as built
 
 ### Per-fact metadata
 
-The blocker for contradiction resolution is that a category file is an undifferentiated bullet
-list. Add bounded per-fact metadata — first seen, last confirmed, source turn/conversation — so a
-merge can reason about recency and a poisoned or wrong fact is traceable. This is the same sidecar
-`077` item 6 specified and that was never built; do it once, here, and let both features use it.
+Each `memory-<category>` directory gains a `facts.json` sidecar (`src/main/agent/memory/facts.ts`).
+A fact carries `firstSeenAt`, `lastConfirmedAt`, `confirmations`, bounded `sources` (the
+conversation ids the claim came from), and a `status` of `active` or `superseded` with
+`supersededBy`/`supersededAt`. `SKILL.md` is rendered from the store, so the store is the source of
+truth — but a bullet present in `SKILL.md` and unknown to the store is adopted back on load, which
+is both the migration path from the flat-list format and the recovery path for a hand edit that got
+past the tool-layer refusal. An unreadable sidecar is treated as absent, not as empty.
 
-Storage options: an HTML-comment suffix per bullet (keeps `SKILL.md` a single human-readable file,
-survives the existing `^- ` parsing), or a sibling `facts.json` with `SKILL.md` rendered from it
-(cleaner, but the skill file stops being the source of truth). Lean sidecar-rendered.
+Provenance reaches the store because the staging heading now carries the conversation:
+`### 10:00 - Durable user-stated facts (conversation <id>)`. Promotion parses staged bullets per
+section instead of grepping every `- ` line, so the attribution survives the batch.
 
 ### Merge step
 
-Runs inside `editCategorySkill`, after the deterministic pass, before the write:
+Runs inside `editCategorySkill`, after a deterministic pass, before the write:
 
-- Input: current items (with metadata) + the incoming facts for that category.
-- Output: strict JSON — a merged list plus, per output item, which input items it subsumes, so the
-  result is checkable rather than trusted.
-- Reject and keep the prior file when: the response does not parse, an output item subsumes nothing,
-  or the merged list drops more items than the subsumption map accounts for. Port the reference's
-  shrink guard and make it explicit rather than a magic tolerance of two.
-- The write already goes through `writeFileAtomic`, so a rejected merge cannot leave a torn file.
+- The deterministic pass first: an incoming fact that byte-matches a stored one is a **confirmation**
+  — it bumps `lastConfirmedAt`/`confirmations` and adds no row, at no model cost.
+- Whatever is left is clustered against the stored facts. **No lexical neighbour means no model
+  call**: there is nothing to collapse or contradict, so the facts are appended. With the incoming
+  batch already deduplicated, this is the common case, and it is what bounds cost to ≤1 call per
+  affected category per promotion.
+- The merge returns strict JSON: a merged list plus, per output item, the input numbers it subsumes.
+  `validateMerge` accepts it only when **every input index is claimed exactly once** (nothing is
+  dropped unaccounted for), no survivor absorbs more than `MERGE_MAX_SUBSUMED` inputs, every survivor
+  is lexically similar to each input it claims, and no survivor's text is forbidden.
+- That similarity requirement _is_ the shrink guard, made explicit rather than a tolerance of two:
+  collapse is bounded by how alike the items actually are, so a weak model can neither summarize a
+  category away nor invent a survivor unsupported by what it claims to subsume.
+- A rejection leaves the category file **byte-identical** — sidecar included — and returns `retry`,
+  so the batch replays on the next sweep. Replay is safe because it is idempotent: facts already
+  stored come back as exact restatements and are confirmed in place. A provider outage returns
+  `unavailable` and burns no attempt, matching the classifier's existing semantics. On the final
+  attempt the batch is stored deterministically rather than dropped.
 
-Cost: one call per affected category per promotion (≤4). Bound it — skip the merge entirely when the
-incoming facts deterministically dedup to nothing, which is the common case.
+Two smaller fixes fell out of the same code. `editCategorySkill` now takes a **per-category-file
+lock**: the swap lock is per recent dir, which never protected the two global categories from two
+workspaces promoting at once. And a promotion that changes nothing no longer rewrites the files,
+which kept workspace memory churn out of dev-server reloads.
 
 ### Scope crossing
 
-The npm/pnpm case is not solvable inside one file: the two facts live in different files at
-different scopes. v1 should at minimum **detect** it — when a workspace fact contradicts a global
-one, prefer the workspace fact for injection and flag the global one — rather than silently
-injecting both. Full cross-scope reconciliation is probably its own plan.
+Detected, not reconciled. After a workspace category gains facts, they are checked against the
+global categories. Lexical similarity is the wrong filter here — the npm/pnpm pair shares one token
+and scores far below the merge floor — so a shared distinctive token decides only _what the model is
+asked about_, and the model decides only what is recorded; the same token test then re-validates the
+pair it reports, so an invented pairing is discarded.
 
-## Open questions to resolve BEFORE building
+A confirmed conflict is recorded in the **workspace** sidecar and rendered as a `## Scope overrides`
+section in the workspace `SKILL.md`, naming the global fact it overrides. The global file is never
+edited from inside a workspace: it is shared by every workspace, so a fact that is wrong here is not
+wrong there. Fact parsing stops at the first `## ` heading, so the override note is never read back
+as a fact.
 
-1. **Merge granularity.** Whole category per merge (simple, but re-litigates 200 settled facts and
-   risks drift on every write) versus only the cluster of existing items lexically near the incoming
-   facts (cheaper, bounded blast radius, may miss a distant contradiction). Lean clustered.
-2. **Delete versus supersede.** Should a merge be allowed to remove a row, or only mark it
-   superseded and stop injecting it? Supersede is recoverable and auditable; delete keeps the file
-   readable. Interacts with whether `SKILL.md` is source of truth or rendered.
-3. **Does the cap survive?** If merge works, is `CATEGORY_ITEM_CAP` still the right backstop, and
-   does eviction still go by age once recency metadata exists?
-4. **Ordering with assistant-derived extraction.** Assistant/tool evidence multiplies restatement
-   volume, which is what makes merge necessary — but merge is also what makes that extraction safe
-   to enable. Confirm merge lands first.
-5. **Model selection.** The merge runs on the configured memory model, which users may set cheap.
-   A weak model rewriting memory wholesale is the risk the shrink guard exists for; decide whether
-   merge requires a minimum capability or degrades to deterministic dedup.
+## Questions resolved during the build
 
-## Verification (when built)
+1. **Merge granularity — clustered.** A merge sees only the existing rows lexically near the incoming
+   facts (`clusterForIncoming`, Dice ≥ `MERGE_SIMILARITY_FLOOR`, capped at `MERGE_CLUSTER_CAP`),
+   never all 200. Bounded cost, bounded blast radius; a distant contradiction is missed, which is the
+   accepted trade.
+2. **Delete versus supersede — supersede.** A merged-away row keeps its text in `facts.json` with
+   `status: "superseded"`, `supersededBy`, and `supersededAt`, and stops being rendered into
+   `SKILL.md`. Auditable and recoverable without making the skill file unreadable, because the skill
+   file is rendered from the sidecar rather than being the source of truth.
+3. **Does the cap survive — yes, as a backstop, with recency-aware eviction.** `CATEGORY_ITEM_CAP`
+   stays at 200 active rows, but eviction now drops the least-recently-confirmed fact rather than the
+   oldest-inserted one: a fact restated across months outlives one mentioned once. Superseded rows
+   have their own retention cap so the sidecar cannot grow without bound.
+4. **Ordering with assistant-derived extraction — merge landed first.** Extraction is unchanged and
+   still user-origin only.
+5. **Model selection — no capability floor; guards do the work.** The merge runs on whatever memory
+   model is configured. A response that fails the subsumption accounting is rejected and the batch is
+   retried; on the final attempt the batch is stored deterministically instead of being dropped, so a
+   persistently weak model degrades to the old append-and-dedup behaviour rather than losing facts.
 
-- A restatement of a stored fact in different words collapses to one row, keeping the more complete
-  phrasing; the row count does not grow.
-- A contradicting fact ("the roadmap moved to `docs/ROADMAP.md`") replaces its predecessor rather
-  than appending; the superseded row stops being injected.
-- A merge whose model call fails, returns unparseable output, or drops unaccounted items leaves the
-  category file byte-identical, and the batch is retried on the next sweep.
-- The npm/pnpm cross-scope pair is detected and reported; the workspace fact wins injection.
-- Existing memory service tests still pass, plus new cases for subsumption accounting and the
-  shrink guard.
+## Verification
+
+Covered by `src/main/agent/memory/facts.test.ts` (20 cases, pure guards) and the new
+`semantic merge` suite in `src/main/agent/memory/service.test.ts` (8 end-to-end cases):
+
+- A restatement in different words collapses to one row keeping the fuller phrasing; the row count
+  does not grow, and an exact restatement is confirmed in place with no model call at all.
+- A contradicting fact ("the roadmap moved to `docs/ROADMAP.md`") replaces its predecessor; the
+  superseded row keeps its provenance in `facts.json` and stops being rendered.
+- A merge that fails to parse, drops an unaccounted input, claims one twice, subsumes nothing,
+  points out of range, or collapses unrelated facts is rejected — the category file stays
+  byte-identical and the batch is retried; a provider outage retries without burning an attempt;
+  the fifth attempt stores deterministically instead of dropping the batch.
+- The npm/pnpm cross-scope pair is detected, logged, and rendered as a workspace scope override; the
+  global file is left untouched, and the override note is not adopted as a fact on the next write.
+- Recency-aware eviction keeps a still-restated fact over a stale one at the cap.
+- Existing memory service tests (16) still pass unchanged. `pnpm typecheck` and `pnpm build` clean;
+  the two other failing suites in the repo (`read_file_tool`, container docker/podman) fail on
+  `main` as well and are unrelated.
 
 ## Out of scope
 

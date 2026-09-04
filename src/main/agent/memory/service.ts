@@ -9,15 +9,48 @@ import {
   NoActiveProviderError,
   type LlmSelection,
 } from "../providers"
+import {
+  activeFacts,
+  adoptSkillBullets,
+  appendFact,
+  applyMerge,
+  clampMemoryFact,
+  clusterForIncoming,
+  confirmFact,
+  emptyFactStore,
+  enforceStoreCaps,
+  factKey,
+  parseFactStore,
+  serializeFactStore,
+  sharesDistinctiveToken,
+  validateMerge,
+  type FactStore,
+  type IncomingFact,
+  type MemoryFact,
+  type MergeOutputItem,
+} from "./facts"
+
+// A merge either produced an accountable result, could not be reached, or came
+// back with something the guards refuse. The last two are deliberately distinct:
+// only the third is the batch's fault, and only it burns a retry attempt.
+type MergeOutcome = MergeOutputItem[] | "unavailable" | "rejected"
 
 const STALE_LOCK_MS = 5 * 60 * 1000
 const MEMORY_MAX_OUTPUT_TOKENS = 1500
+// A merge has to return every input item it was shown, so its output budget
+// scales with the cluster, not with the handful of incoming facts.
+const MERGE_MAX_OUTPUT_TOKENS = 3000
+const SCOPE_CHECK_MAX_OUTPUT_TOKENS = 400
 const INACTIVITY_BOUNDARY_MS = 45 * 60 * 1000
 const MAINTENANCE_INTERVAL_MS = 5 * 60 * 1000
 const STAGING_RECORD_BOUNDARY = 20
 const STAGING_BYTE_BOUNDARY = 24 * 1024
-const CATEGORY_ITEM_CAP = 200
 const KNOWN_RECENT_DIR_CAP = 20
+// Global facts offered to one cross-scope contradiction check, and workspace
+// facts checked against them. Both are hard bounds on a call that runs at most
+// once per promotion.
+const SCOPE_GLOBAL_CANDIDATE_CAP = 40
+const SCOPE_LOCAL_CANDIDATE_CAP = 12
 // A processing batch the model answers but whose answer we cannot use is
 // retried a bounded number of times, then dropped with a loud log rather than
 // retried forever. Provider outages don't consume an attempt.
@@ -123,16 +156,39 @@ function recentDirFor(workspaceDir?: string): string {
   )
 }
 
+// Identity and preferences are about the user, not the project, so they live in
+// the global tree no matter which workspace recorded them. Knowledge and lessons
+// follow the workspace when there is one.
+function isGlobalCategory(category: MemoryCategory): boolean {
+  return category === "identity" || category === "preferences"
+}
+
+const GLOBAL_CATEGORIES: MemoryCategory[] = ["identity", "preferences"]
+
 function categorySkillPath(
   category: MemoryCategory,
   workspaceDir?: string
 ): string {
-  const global = category === "identity" || category === "preferences"
   const root =
-    global || !workspaceDir
+    isGlobalCategory(category) || !workspaceDir
       ? globalSkillsDir()
       : workspaceSkillsDir(workspaceDir)
   return path.join(root, `memory-${category}`, "SKILL.md")
+}
+
+// Sidecar holding per-fact metadata (first seen, last confirmed, provenance,
+// supersession). SKILL.md is rendered from it, so it is the source of truth —
+// but a bullet only present in SKILL.md is still adopted back on load, so a
+// missing or unreadable sidecar degrades to the old flat-list behaviour instead
+// of erasing anything.
+function factStorePath(
+  category: MemoryCategory,
+  workspaceDir?: string
+): string {
+  return path.join(
+    path.dirname(categorySkillPath(category, workspaceDir)),
+    "facts.json"
+  )
 }
 
 function recentSkillPath(workspaceDir?: string): string {
@@ -371,21 +427,41 @@ function pendingRecentDirs(state: MemoryState): string[] {
   return dirs
 }
 
-// One swap per recent dir at a time. Two concurrent swaps over the same
-// category files are a lost-update race: both read, both write, one wins.
-const swapChains = new Map<string, Promise<unknown>>()
-
-function withSwapLock<T>(recentDir: string, fn: () => Promise<T>): Promise<T> {
-  const prior = swapChains.get(recentDir) ?? Promise.resolve()
+// Serializes work on a shared resource by chaining onto whatever is already
+// queued for that key. Read-modify-write over a memory file is a lost-update
+// race otherwise: both sides read, both write, one wins.
+function chainOn<T>(
+  chains: Map<string, Promise<unknown>>,
+  key: string,
+  fn: () => Promise<T>
+): Promise<T> {
+  const prior = chains.get(key) ?? Promise.resolve()
   const run = prior.then(fn, fn)
-  swapChains.set(
-    recentDir,
+  chains.set(
+    key,
     run.then(
       () => undefined,
       () => undefined
     )
   )
   return run
+}
+
+// One swap per recent dir at a time.
+const swapChains = new Map<string, Promise<unknown>>()
+
+function withSwapLock<T>(recentDir: string, fn: () => Promise<T>): Promise<T> {
+  return chainOn(swapChains, recentDir, fn)
+}
+
+// The swap lock is per recent dir, which is not enough for the two global
+// categories: identity and preferences are shared by every workspace, so two
+// workspaces promoting at once used to read-modify-write the same file
+// concurrently. This lock is per category file, which is the actual resource.
+const categoryChains = new Map<string, Promise<unknown>>()
+
+function withCategoryLock<T>(file: string, fn: () => Promise<T>): Promise<T> {
+  return chainOn(categoryChains, file, fn)
 }
 
 function stagingRecordCount(staging: string): number {
@@ -495,10 +571,6 @@ function parseJsonObject(
   } catch {
     return undefined
   }
-}
-
-function clampMemoryFact(text: string): string {
-  return text.replace(/\s+/g, " ").trim().slice(0, 500)
 }
 
 function validMemoryCategory(value: unknown): value is MemoryCategory {
@@ -624,24 +696,37 @@ function parseFrontmatter(content: string): {
   return { frontmatter: match[1], body: match[2] }
 }
 
+// Bullets belonging to the fact list itself. Everything from the first `## `
+// heading down is rendered commentary — today the scope-override section — and
+// must never be read back as facts, or a note about a conflict would become a
+// memory on the next write.
 function existingItems(content: string): string[] {
   const { body } = parseFrontmatter(content)
+  const facts = body.replace(/<!--[\s\S]*?-->/g, "").split(/^## /m)[0]
   return (
-    body
-      .replace(/<!--[\s\S]*?-->/g, "")
+    facts
       .match(/^- .+/gm)
       ?.map((line) => line.slice(2).trim())
       .filter(Boolean) ?? []
   )
 }
 
-function factLines(content: string): string[] {
-  return (
-    content
-      .match(/^- .+/gm)
-      ?.map((line) => line.slice(2).trim())
-      .filter(Boolean) ?? []
-  )
+// Staged bullets carry the conversation they were extracted from, recorded in
+// the batch heading. Parsing per section rather than grepping every `- ` line
+// is what preserves that provenance through promotion.
+function parseStagedFacts(content: string): IncomingFact[] {
+  const out: IncomingFact[] = []
+  let conversationId: string | undefined
+  for (const line of content.split(/\r?\n/)) {
+    if (line.startsWith("### ")) {
+      conversationId = /\(conversation ([A-Za-z0-9_-]{1,64})\)/.exec(line)?.[1]
+      continue
+    }
+    if (!line.startsWith("- ")) continue
+    const text = clampMemoryFact(line.slice(2))
+    if (text) out.push({ text, conversationId })
+  }
+  return out
 }
 
 function extractKeywords(summaryText: string): string[] {
@@ -695,8 +780,16 @@ async function appendSessionLog(
   )
 }
 
+// Conversation ids reach the staging file as a heading annotation, so they must
+// survive a round trip through markdown without needing an escape scheme.
+function stagingConversationTag(conversationId: string): string {
+  const safe = conversationId.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 64)
+  return safe ? ` (conversation ${safe})` : ""
+}
+
 async function appendTurnSummary(
   recentDir: string,
+  conversationId: string,
   userText: string,
   assistantText: string
 ): Promise<void> {
@@ -768,7 +861,7 @@ Return JSON only:
   await mkdir(recentDir, { recursive: true })
   await appendFile(
     stagingPathFromRecentDir(recentDir),
-    `\n### ${time} - Durable user-stated facts\n${lines.join("\n")}\n`,
+    `\n### ${time} - Durable user-stated facts${stagingConversationTag(conversationId)}\n${lines.join("\n")}\n`,
     "utf-8"
   )
 }
@@ -838,13 +931,18 @@ async function performSwap(recentDir: string): Promise<void> {
         await rm(processingFile, { force: true })
         return
       }
+      const priorAttempts = readAttempts(raw)
 
       // Refresh memory-recent first: it is a local file write that can't fail
       // for provider reasons, and it should reflect the batch even if the
       // classifier is unavailable.
       await writeRecentSkill(recentDir, pending)
 
-      const outcome = await classifyAndDistribute(pending, recentDir)
+      const outcome = await classifyAndDistribute(
+        pending,
+        recentDir,
+        priorAttempts
+      )
       if (outcome === "ok") {
         await rm(processingFile, { force: true })
         return
@@ -857,7 +955,7 @@ async function performSwap(recentDir: string): Promise<void> {
         return
       }
 
-      const attempts = readAttempts(raw) + 1
+      const attempts = priorAttempts + 1
       if (attempts >= PROCESSING_ATTEMPT_LIMIT) {
         console.error(
           `[memory] dropping staged batch after ${attempts} unusable classifier responses (${recentDir})`
@@ -896,9 +994,11 @@ function toFactIndices(value: unknown, total: number): number[] {
 
 async function classifyAndDistribute(
   summaryContent: string,
-  recentDir: string
+  recentDir: string,
+  priorAttempts: number
 ): Promise<ClassifyOutcome> {
-  const facts = factLines(summaryContent)
+  const staged = parseStagedFacts(summaryContent)
+  const facts = staged.map((entry) => entry.text)
   if (facts.length === 0) return "ok"
 
   const workspaceDir = workspaceFromRecentDir(recentDir)
@@ -930,31 +1030,42 @@ Return JSON only, referring to facts by their number. Every number from 1 to ${f
   const classified = parseJsonObject(result)
   if (!classified) return "retry"
 
-  const buckets = new Map<MemoryCategory, string[]>()
+  const buckets = new Map<MemoryCategory, IncomingFact[]>()
   const assigned = new Set<number>()
   for (const category of MEMORY_CATEGORIES) {
     for (const index of toFactIndices(classified[category], facts.length)) {
       if (assigned.has(index)) continue
       assigned.add(index)
       const list = buckets.get(category) ?? []
-      list.push(facts[index])
+      list.push(staged[index])
       buckets.set(category, list)
     }
   }
 
   // Anything the classifier skipped still gets stored. Losing a fact because a
   // model omitted its number is exactly the silent drop this rewrite removes.
-  const unassigned = facts.filter((_, index) => !assigned.has(index))
+  const unassigned = staged.filter((_, index) => !assigned.has(index))
   if (unassigned.length > 0) {
     const list = buckets.get(FALLBACK_CATEGORY) ?? []
     buckets.set(FALLBACK_CATEGORY, [...list, ...unassigned])
   }
 
-  await Promise.all(
+  // The last attempt stores deterministically instead of insisting on a merge
+  // it has already failed to get four times. Retrying a merge is worth doing;
+  // dropping the batch because a weak model never produces an accountable one
+  // is not, and that is the only other way out of the attempt limit.
+  const lastAttempt = priorAttempts + 1 >= PROCESSING_ATTEMPT_LIMIT
+
+  const outcomes = await Promise.all(
     [...buckets.entries()].map(([category, categoryFacts]) =>
-      editCategorySkill(category, categoryFacts, workspaceDir)
+      editCategorySkill(category, categoryFacts, workspaceDir, lastAttempt)
     )
   )
+  if (outcomes.includes("unavailable")) return "unavailable"
+  // A rejected merge leaves that category untouched and replays the whole
+  // batch. Replay is safe because it is idempotent: facts already stored come
+  // back as exact restatements and are confirmed in place, not appended.
+  if (outcomes.includes("retry")) return "retry"
   return "ok"
 }
 
@@ -968,48 +1079,286 @@ function workspaceFromRecentDir(recentDir: string): string | undefined {
     : undefined
 }
 
-async function editCategorySkill(
+// Reads a category's active facts without taking its lock or writing anything.
+// Used by the cross-scope check, which must be able to look at the global
+// categories while a workspace category is mid-write.
+async function readCategoryFacts(
   category: MemoryCategory,
-  newFacts: string[],
   workspaceDir?: string
-): Promise<void> {
-  const file = categorySkillPath(category, workspaceDir)
-  await writeIfMissing(file, skillScaffold(category))
-  const current = await readText(file)
-  const currentItems = existingItems(current)
+): Promise<string[]> {
+  const store = parseFactStore(
+    await readText(factStorePath(category, workspaceDir))
+  )
+  if (store) return activeFacts(store).map((fact) => fact.text)
+  return existingItems(
+    await readText(categorySkillPath(category, workspaceDir))
+  )
+}
+
+function renderCategorySkill(
+  category: MemoryCategory,
+  store: FactStore
+): string {
   const heading = CATEGORY_HEADINGS[category]
+  const items = activeFacts(store)
+  const byId = new Map(items.map((fact) => [fact.id, fact]))
+  const conflicts = store.conflicts.filter((conflict) =>
+    byId.has(conflict.factId)
+  )
+  const description = `${heading}. Currently ${items.length} records.`
 
-  // Screen only what's arriving. Re-screening stored items on every rewrite
-  // silently deleted facts that were accepted earlier.
-  const accepted = newFacts
-    .map((fact) => clampMemoryFact(fact))
-    .filter((fact) => fact && !isForbiddenMemoryText(fact))
-
-  const merged: string[] = []
-  const seen = new Set<string>()
-  for (const item of [...currentItems, ...accepted]) {
-    const clean = clampMemoryFact(item)
-    if (!clean) continue
-    const key = clean.toLowerCase()
-    if (seen.has(key)) continue
-    seen.add(key)
-    merged.push(clean)
-  }
-  // Over the cap, drop the oldest. The previous cap kept the oldest 200 and
-  // silently discarded everything new once a category filled up.
-  const kept = merged.slice(-CATEGORY_ITEM_CAP)
-  if (kept.length === 0) return
-
-  const description = `${heading}. Currently ${kept.length} records.`
-  const body =
+  let body =
     `\n# ${heading}\n\n` +
     `${MANAGED_FILE_NOTICE}\n` +
-    kept.map((item) => `- ${item}`).join("\n") +
+    items.map((fact) => `- ${fact.text}`).join("\n") +
     "\n"
-  await writeFileAtomic(
-    file,
-    `---\nname: memory-${category}\ndescription: |\n  ${description}\nmetadata:\n  managed-by: memory\n---\n${body}`
+
+  // Rendered on the workspace side only. The global file is shared by every
+  // workspace, so a fact that is wrong here cannot be edited or hidden there —
+  // what this section does is make the workspace fact win where it applies, and
+  // say plainly which global fact it is overriding.
+  if (conflicts.length > 0) {
+    body +=
+      `\n## Scope overrides\n\n` +
+      `These workspace facts take precedence over conflicting global memory here:\n\n` +
+      conflicts
+        .map(
+          (conflict) =>
+            `- ${byId.get(conflict.factId)?.text} — overrides global memory-${conflict.globalCategory}: "${conflict.globalText}"`
+        )
+        .join("\n") +
+      "\n"
+  }
+
+  return `---\nname: memory-${category}\ndescription: |\n  ${description}\nmetadata:\n  managed-by: memory\n---\n${body}`
+}
+
+async function editCategorySkill(
+  category: MemoryCategory,
+  incoming: IncomingFact[],
+  workspaceDir?: string,
+  deterministicOnly = false
+): Promise<ClassifyOutcome> {
+  const file = categorySkillPath(category, workspaceDir)
+  return withCategoryLock(file, async () => {
+    await writeIfMissing(file, skillScaffold(category))
+    const storeFile = factStorePath(category, workspaceDir)
+    const priorStore = parseFactStore(await readText(storeFile))
+    const store = priorStore ?? emptyFactStore()
+    const now = new Date().toISOString()
+    // Migration from the flat-list format, and recovery of any hand edit that
+    // got past the tool-layer refusal: a bullet the store has never seen is
+    // evidence of a fact, so it is adopted rather than overwritten.
+    const adopted = adoptSkillBullets(
+      store,
+      existingItems(await readText(file)),
+      now
+    )
+    // A promotion that changes nothing must not rewrite the files: a workspace
+    // memory file churning on every sweep shows up as dev-server reloads.
+    let changed = !priorStore || adopted > 0
+
+    // Screen only what's arriving. Re-screening stored items on every rewrite
+    // silently deleted facts that were accepted earlier.
+    const accepted = incoming
+      .map((fact) => ({ ...fact, text: clampMemoryFact(fact.text) }))
+      .filter((fact) => fact.text && !isForbiddenMemoryText(fact.text))
+
+    // Deterministic pass. An exact restatement is a confirmation, not a row:
+    // it moves the fact's recency forward and costs nothing.
+    const byKey = new Map(
+      activeFacts(store).map((fact) => [factKey(fact.text), fact])
+    )
+    const novel: IncomingFact[] = []
+    const novelKeys = new Set<string>()
+    for (const candidate of accepted) {
+      const key = factKey(candidate.text)
+      const hit = byKey.get(key)
+      if (hit) {
+        confirmFact(hit, now, candidate.conversationId)
+        changed = true
+        continue
+      }
+      if (novelKeys.has(key)) continue
+      novelKeys.add(key)
+      novel.push(candidate)
+    }
+
+    let stored: MemoryFact[] = []
+    if (novel.length > 0) {
+      changed = true
+      const existing = activeFacts(store)
+      const clusterIndices = clusterForIncoming(existing, novel)
+      // No lexical neighbour means there is nothing for a merge to collapse or
+      // contradict, so the model call is skipped entirely. With the incoming
+      // facts already deduplicated above, this is the common case.
+      if (clusterIndices.length === 0 || deterministicOnly) {
+        stored = novel.map((candidate) => appendFact(store, candidate, now))
+      } else {
+        const cluster = clusterIndices.map((index) => existing[index])
+        const merge = await mergeCluster(category, cluster, novel)
+        if (merge === "unavailable") return "unavailable"
+        if (merge === "rejected") return "retry"
+        stored = applyMerge(
+          store,
+          cluster.map((fact) => fact.id),
+          novel,
+          merge,
+          now
+        )
+      }
+    }
+
+    // Cross-scope contradictions are not solvable inside one file: the two
+    // facts live in different files at different scopes. Detect and record;
+    // full reconciliation is its own problem. Only workspace-scoped categories
+    // can cross a scope — identity and preferences land in the global tree even
+    // when a workspace recorded them, and would otherwise be checked against
+    // themselves.
+    if (workspaceDir && !isGlobalCategory(category) && stored.length > 0) {
+      await detectScopeConflicts(store, stored, now).catch((err) =>
+        console.warn("[memory] scope conflict check failed:", err)
+      )
+    }
+
+    enforceStoreCaps(store)
+    if (!changed || activeFacts(store).length === 0) return "ok"
+    await writeFileAtomic(storeFile, serializeFactStore(store))
+    await writeFileAtomic(file, renderCategorySkill(category, store))
+    return "ok"
+  })
+}
+
+// Returns the validated merge, or why it could not be used. "unavailable" is a
+// provider outage (retry, no attempt burned); "rejected" is a model that
+// answered with something the guards refuse (retry, attempt burned). Both leave
+// the category file untouched — a merge is never allowed to be the reason a
+// fact changes shape without an accountable explanation.
+async function mergeCluster(
+  category: MemoryCategory,
+  cluster: MemoryFact[],
+  novel: IncomingFact[]
+): Promise<MergeOutcome> {
+  const inputs = [
+    ...cluster.map((fact) => fact.text),
+    ...novel.map((fact) => fact.text),
+  ]
+  const response = await memoryComplete(
+    `Merge new facts into an existing memory category ("${CATEGORY_HEADINGS[category]}").
+
+Existing memory items:
+${cluster.map((fact, i) => `${i + 1}. ${fact.text}`).join("\n")}
+
+New facts:
+${novel.map((fact, i) => `${cluster.length + i + 1}. ${fact.text}`).join("\n")}
+
+Rules:
+1. Every input number from 1 to ${inputs.length} must appear in exactly one output item's "subsumes". Nothing may be dropped.
+2. When two items state the same thing in different words, return ONE output item using the more complete phrasing and list both numbers in its "subsumes".
+3. When an existing item and a new fact conflict, return the NEW fact's wording and list both numbers in its "subsumes". The newer statement replaces the older one.
+4. Otherwise keep the item exactly as it is: one output item, its text unchanged, its own number in "subsumes".
+5. Never combine items about different subjects, and never write text that the items it subsumes do not support.
+6. An output item may subsume at most 5 inputs.
+
+Return JSON only:
+{
+  "merged": [
+    { "text": "One merged memory item.", "subsumes": [1, ${cluster.length + 1}] }
+  ]
+}`,
+    MERGE_MAX_OUTPUT_TOKENS
   )
+  if (response === undefined) return "unavailable"
+  const parsed = parseJsonObject(response)
+  if (!parsed) {
+    console.warn(`[memory] merge response unparseable (memory-${category})`)
+    return "rejected"
+  }
+  const validation = validateMerge(inputs, parsed, isForbiddenMemoryText)
+  if (!validation.ok) {
+    console.warn(
+      `[memory] merge rejected (memory-${category}): ${validation.rejection.reason}`
+    )
+    return "rejected"
+  }
+  return validation.items
+}
+
+// Detects the case the flat-list design could not express: a workspace fact
+// that contradicts a global one, where both are injected and neither wins.
+// Lexical similarity is the wrong filter here — the npm/pnpm pair that motivated
+// this shares one token and scores far below the merge floor — so a shared
+// distinctive token decides only what the model is *asked* about, and the model
+// decides only what is recorded.
+async function detectScopeConflicts(
+  store: FactStore,
+  candidates: MemoryFact[],
+  now: string
+): Promise<void> {
+  const local = candidates.slice(0, SCOPE_LOCAL_CANDIDATE_CAP)
+  const globalFacts: { category: MemoryCategory; text: string }[] = []
+  for (const category of GLOBAL_CATEGORIES) {
+    for (const text of await readCategoryFacts(category)) {
+      globalFacts.push({ category, text })
+    }
+  }
+  const related = globalFacts
+    .filter((entry) =>
+      local.some((fact) => sharesDistinctiveToken(fact.text, entry.text))
+    )
+    .slice(0, SCOPE_GLOBAL_CANDIDATE_CAP)
+  if (related.length === 0) return
+
+  const response = await memoryComplete(
+    `Some facts recorded for one workspace may contradict facts recorded globally for the user.
+
+Workspace facts:
+${local.map((fact, i) => `${i + 1}. ${fact.text}`).join("\n")}
+
+Global facts:
+${related.map((entry, i) => `G${i + 1}. ${entry.text}`).join("\n")}
+
+Report only DIRECT contradictions: pairs that cannot both be true, or cannot both be followed, at the same time. A workspace fact that is merely more specific than a global one is not a contradiction. If there are none, return {"conflicts":[]}.
+
+Return JSON only:
+{ "conflicts": [ { "workspace": 1, "global": 2 } ] }`,
+    SCOPE_CHECK_MAX_OUTPUT_TOKENS
+  )
+  const parsed = parseJsonObject(response)
+  if (!parsed || !Array.isArray(parsed.conflicts)) return
+
+  for (const entry of parsed.conflicts.slice(0, 10)) {
+    if (!entry || typeof entry !== "object") continue
+    const record = entry as Record<string, unknown>
+    const localIndex = Number(record.workspace)
+    const globalIndex = Number(record.global)
+    if (!Number.isInteger(localIndex) || !Number.isInteger(globalIndex))
+      continue
+    const fact = local[localIndex - 1]
+    const other = related[globalIndex - 1]
+    if (!fact || !other) continue
+    // The pre-filter is also the check: a pair with nothing in common is a
+    // pairing the model invented, not a contradiction it found.
+    if (!sharesDistinctiveToken(fact.text, other.text)) continue
+    if (
+      store.conflicts.some(
+        (existing) =>
+          existing.factId === fact.id &&
+          factKey(existing.globalText) === factKey(other.text)
+      )
+    ) {
+      continue
+    }
+    store.conflicts.push({
+      factId: fact.id,
+      globalCategory: other.category,
+      globalText: other.text,
+      detectedAt: now,
+    })
+    console.warn(
+      `[memory] cross-scope conflict: workspace fact "${fact.text}" contradicts global memory-${other.category} fact "${other.text}"; the workspace fact takes precedence here`
+    )
+  }
 }
 
 export async function recordMemoryTurn(input: RecordTurnInput): Promise<void> {
@@ -1051,9 +1400,12 @@ export async function recordMemoryTurn(input: RecordTurnInput): Promise<void> {
     (err) => console.warn("[memory] log append failed:", err)
   )
   if (!userText) return
-  await appendTurnSummary(recentDir, userText, input.assistantText).catch(
-    (err) => console.warn("[memory] extraction failed:", err)
-  )
+  await appendTurnSummary(
+    recentDir,
+    input.conversationId,
+    userText,
+    input.assistantText
+  ).catch((err) => console.warn("[memory] extraction failed:", err))
 }
 
 function swapBlockedByLiveLock(state: MemoryState): boolean {

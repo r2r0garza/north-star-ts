@@ -84,14 +84,6 @@ item is its plan file; the ordered-list number is its current priority rank.
    misses ≠ absent" caveat. Primarily a prompt edit (`interactive-system-prompt.md` /
    `north-star-system-prompt.md`); Chat mode stays untouched. Optional priority tweak to
    `SECTION_PRIORITY.index` to be decided at execution.
-10. **`081` — Memory semantic merge and contradiction resolution.** Automatic memory de-duplicates by
-    byte equality only, so restatements pile up and superseded facts are never replaced — this repo's
-    own store holds six near-identical process-template rows and a live npm-versus-pnpm contradiction
-    across the global/workspace scope boundary. Add bounded per-fact metadata (the sidecar `077` item 6
-    specified and never shipped), then a guarded merge step in `editCategorySkill` that collapses
-    restatements and replaces contradictions, rejecting any merge that cannot account for the items it
-    dropped. Prerequisite for opening extraction to assistant/tool-derived evidence, which multiplies
-    restatement volume.
 
 ## Deferred
 
@@ -149,6 +141,23 @@ item is its plan file; the ordered-list number is its current priority rank.
 
 ## Done
 
+- **`081` — Memory semantic merge and contradiction resolution.** Completed in this branch.
+  Automatic memory de-duplicated by byte equality only, so restatements piled up and superseded facts
+  were never replaced. Added a per-fact `facts.json` sidecar (first seen, last confirmed,
+  confirmations, source conversations, supersession) that `SKILL.md` is now rendered from, with
+  unknown bullets adopted back so the flat-list format migrates and hand edits are recovered rather
+  than erased. Staged batches carry their conversation id so provenance survives promotion. A guarded
+  merge step in `editCategorySkill` collapses restatements and replaces contradictions, accepted only
+  when every input is accounted for exactly once, no survivor absorbs more than five inputs, and
+  every survivor is lexically similar to each input it claims — the shrink guard, derived rather than
+  a magic tolerance. A rejected merge leaves the category byte-identical and replays the batch
+  idempotently; a provider outage burns no attempt; the final attempt stores deterministically
+  instead of dropping facts. Cross-scope contradictions (the live npm-versus-pnpm pair) are detected
+  via a shared-token filter, recorded in the workspace sidecar, and rendered as a `## Scope overrides`
+  section — the shared global file is reported on, never rewritten from inside one workspace. Also
+  added a per-category-file lock (the swap lock never protected the two global categories from
+  concurrent workspaces) and suppressed no-op rewrites. Verified with 28 new memory tests plus the
+  existing 16, `pnpm typecheck`, and `pnpm build`.
 - **`080` — Semantic browser option selection and safe text entry.** Completed in this branch.
   Added `browser_select_option(ref, option)` with exact/case-insensitive-unique option matching,
   native select commits, accessible custom combobox/listbox option activation, bounded available-option
