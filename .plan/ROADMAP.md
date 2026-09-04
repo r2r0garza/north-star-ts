@@ -7,15 +7,7 @@ item is its plan file; the ordered-list number is its current priority rank.
 
 ## Next up
 
-1. **`078` — Global workflow repetition detection.** Independently of Automatic memory, default-on Skill
-   suggestions record successful root executions, match the same reusable workflow globally across
-   conversations/projects/cwds, and become eligible at three distinct successes. Persist bounded,
-   provenance-aware evidence and scope hints without generating or installing skills.
-2. **`079` — Reviewed skill drafts and approved installation.** Generate an inert versioned draft from
-   `078` evidence, then let the user Approve, Request changes, Not now, or Reject. Infer Global versus
-   workspace location from actual dependencies, default portable/uncertain skills to Global, and install
-   only the exact approved revision through `077`'s guarded boundary.
-3. **`045` — North Star MCP bridge for CLI providers.** After `042`, make North Star a second, distinct
+1. **`045` — North Star MCP bridge for CLI providers.** After `042`, make North Star a second, distinct
    MCP role: it remains a client of user-configured external servers, and also hosts a lazy,
    authenticated Streamable HTTP server on an ephemeral `127.0.0.1` port for the Claude Code and Codex
    subprocesses we launch. Inject the endpoint per turn (`claude --mcp-config`; Codex transient `-c`
@@ -24,7 +16,7 @@ item is its plan file; the ordered-list number is its current priority rank.
    North-Star-specific `index_query`; `045.2` adapts the existing renderer-backed
    `ask_user_question` round trip. Explicit adapters only—no blanket `runTool()` export, no external
    MCP proxy, and no duplicate filesystem/shell tools. Side-effect policy remains enforced server-side.
-4. **`069` — Process intake policies and inspectable assumptions.** Give each Process an explicit run-
+2. **`069` — Process intake policies and inspectable assumptions.** Give each Process an explicit run-
    entry contract instead of injecting a mandatory Planning phase: **Proceed with assumptions**
    (default, no preflight gate), **Approve initial plan** (side-effect-free execution brief + one durable
    approval/revision loop), or **Strict input contract** (definition-authored required fields validated
@@ -33,7 +25,7 @@ item is its plan file; the ordered-list number is its current priority rank.
    assumptions log with origin/confidence/impact/status and monitor UI. Human clarification pauses and
    resumes the correct worker; it remains distinct from internal Agent exchanges (`039`). Split strict
    deterministic intake first, then assumptions/questions, then approve-plan preflight.
-5. **`039` — Inspectable Process consultations / Agent exchanges.** A running phase may consult a
+3. **`039` — Inspectable Process consultations / Agent exchanges.** A running phase may consult a
    **completed phase in the same run** and receive a context-grounded answer. The user observes the
    durable exchange but cannot reply; intervention stays in existing Process controls. Before adding
    consultation, persist an explicit phase result and move downstream aggregation away from "latest
@@ -42,7 +34,7 @@ item is its plan file; the ordered-list number is its current priority rank.
    consultation. v1 is synchronous, same-run, completed-target, capped, and read-only in the monitor;
    discovered defects recommend rework through the existing flag policy rather than silently changing
    completed artifacts. Split `039.1` result integrity, then `039.2` consultation/storage/monitor.
-6. **`032` — Process visual canvas.** The explicitly-deferred half of `026` (which shipped the
+4. **`032` — Process visual canvas.** The explicitly-deferred half of `026` (which shipped the
    **list-based** DAG builder and recorded a **visual node/edge canvas** as "later"). Renderer-first +
    one additive migration; **no engine/scheduling/routing change**. Phases become draggable **nodes**,
    dependencies **edges** drawn between handles (same `on_complete`/`on_each_subtask` trigger, same
@@ -56,14 +48,14 @@ item is its plan file; the ordered-list number is its current priority rank.
    toggle vs replace (lean **coexist**). The Radix-`Dialog` takeover means the inspector keeps
    `NativeSelect` (the `023`/`026` `pointer-events:none` finding). **Live-run-on-canvas deferred** — v1
    keeps the `026` nested-list monitor. Independent of `029`/`031`.
-7. **`010` — Container runtime profiles.** Decouple Workspace (the files) from Runtime (the env a
+5. **`010` — Container runtime profiles.** Decouple Workspace (the files) from Runtime (the env a
    tool call executes in). Replace the raw container `image` string with a named **profile**
    (`node` | `python` | `fullstack`), resolved to an image in the env factory; default/fallback =
    `fullstack` (Node + Python) so a Node repo that later adds a Python backend doesn't wedge.
    One profile per conversation, user-overridable in settings. Kills the "one workspace = one image
    forever" assumption **without** building auto-routing or image management (both deferred). Small
    refactor of `env/factory.ts` + `container.ts` + execution settings (JSON blob — no migration).
-8. **`024` — Index filesystem/git watcher.** The "live file watching" follow-up `008` deferred (and
+6. **`024` — Index filesystem/git watcher.** The "live file watching" follow-up `008` deferred (and
    `014` re-deferred). Today the workspace index — and the compact summary `buildIndexSummary`
    injects into the system prompt on every message send — only refreshes when
    `IndexService.ensureRunning` is called, which fires on conversation create/update or manual
@@ -78,7 +70,7 @@ item is its plan file; the ordered-list number is its current priority rank.
    gated by a new **"Watch workspace for changes"** toggle in the Workspace Indexing settings group
    (global store, no migration). Open Qs: watcher mechanism (`chokidar` vs core `fs.watch` vs
    `@parcel/watcher`), watch scope/lifetime, debounce window, churn backpressure.
-9. **`040` — Index-grounding prompts.** Add a short, always-present line to the Interactive and North
+7. **`040` — Index-grounding prompts.** Add a short, always-present line to the Interactive and North
    Star mode prompts steering the agent to consult `index_query_tool` for cheap orientation (symbols,
    file lists, importers) before broad searches or manual walks, preserving the "advisory, may be stale,
    misses ≠ absent" caveat. Primarily a prompt edit (`interactive-system-prompt.md` /
@@ -87,6 +79,14 @@ item is its plan file; the ordered-list number is its current priority rank.
 
 ## Deferred
 
+- **`078` — Global workflow repetition detection.** Independently of Automatic memory, default-on Skill
+  suggestions record successful root executions, match the same reusable workflow globally across
+  conversations/projects/cwds, and become eligible at three distinct successes. Persist bounded,
+  provenance-aware evidence and scope hints without generating or installing skills.
+- **`079` — Reviewed skill drafts and approved installation.** Generate an inert versioned draft from
+  `078` evidence, then let the user Approve, Request changes, Not now, or Reject. Infer Global versus
+  workspace location from actual dependencies, default portable/uncertain skills to Global, and install
+  only the exact approved revision through `077`'s guarded boundary.
 - **`070` — Pods: autonomous agent teams with mutable work graphs. DEFERRED SEED.** A Pod is not a
   saved roster or a loose Process: it owns an objective and may create, split, assign, cancel,
   reprioritize, and revisit work within a charter, budget, and externally defined completion contract.
