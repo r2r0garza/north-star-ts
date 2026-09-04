@@ -107,7 +107,7 @@ import {
 } from "./config/system-name"
 import { resolveBrandTheme } from "./config/theme"
 import {
-  parkPendingMemoryForQuit,
+  parkPendingMemoryForQuitSync,
   reconcilePendingMemoryOnStartup,
   startMemoryMaintenance,
   stopMemoryMaintenance,
@@ -1211,22 +1211,27 @@ app.on("window-all-closed", () => {
 // survives a stray window close), but during quit it would cancel the quit and
 // leave the process (and its renderer children) running. Runs before will-quit.
 let memoryParkedForQuit = false
-app.on("before-quit", (event) => {
+app.on("before-quit", () => {
   browserManager.prepareForQuit()
-  // Park staged memory into its durable processing file before the process
-  // goes away, otherwise the batch waits in staging until the user happens to
-  // send another message in that same scope. This is a file move, not a model
-  // call, so the delay is milliseconds; the next launch classifies it. Bounded
-  // so a slow disk can never wedge quit.
+  // Park staged memory into its durable processing file before the process goes
+  // away, otherwise the batch waits in staging until the user happens to send
+  // another message in that same scope. This is a file move, not a model call,
+  // so it costs milliseconds.
+  //
+  // It runs synchronously and never cancels the quit. Deferring the quit to
+  // await the park instead (preventDefault, then app.quit() once it settled)
+  // deadlocked macOS's Cmd+Q: the OS had already answered
+  // applicationShouldTerminate with NSTerminateCancel, so the re-issued quit
+  // closed every window but never terminated, and the app sat there windowless
+  // until a second Cmd+Q. before-quit can still fire more than once (a quit
+  // cancelled elsewhere, then retried), so the latch keeps this to one pass.
   if (memoryParkedForQuit) return
   memoryParkedForQuit = true
-  event.preventDefault()
-  void Promise.race([
-    parkPendingMemoryForQuit().catch((err) =>
-      console.warn("[memory] quit park failed:", err)
-    ),
-    new Promise((resolve) => setTimeout(resolve, 2000)),
-  ]).finally(() => app.quit())
+  try {
+    parkPendingMemoryForQuitSync()
+  } catch (err) {
+    console.warn("[memory] quit park failed:", err)
+  }
 })
 
 // Stop the task runner (abort in-flight tasks; next boot's reconcile recovers
@@ -1246,3 +1251,4 @@ app.on("will-quit", () => {
   cancelAllQuestions()
   closeDb()
 })
+

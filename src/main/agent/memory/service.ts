@@ -1,5 +1,12 @@
 import { app } from "electron"
 import { mkdir, readFile, writeFile, appendFile, rename, rm } from "fs/promises"
+import {
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+  renameSync,
+  rmSync,
+} from "fs"
 import path from "path"
 import { dataDirName } from "../../config/system-name"
 import * as settingsService from "../../settings/service"
@@ -218,6 +225,15 @@ async function readText(file: string): Promise<string> {
   }
 }
 
+// Sync twin of readText, for the quit path (see parkPendingMemoryForQuitSync).
+function readTextSync(file: string): string {
+  try {
+    return readFileSync(file, "utf-8")
+  } catch {
+    return ""
+  }
+}
+
 // Scratch location for atomic writes. Kept inside the install's dot-directory
 // (<root>/<dataDir>/.tmp) rather than beside the target, so a workspace write
 // never creates a visible file in the project tree — that churn shows up as dev
@@ -254,6 +270,24 @@ async function writeFileAtomic(file: string, content: string): Promise<void> {
     await rename(tmp, file)
   } catch (err) {
     await rm(tmp, { force: true }).catch(() => {})
+    throw err
+  }
+}
+
+// Sync twin of writeFileAtomic, for the quit path.
+function writeFileAtomicSync(file: string, content: string): void {
+  mkdirSync(path.dirname(file), { recursive: true })
+  const tmp = tempPathFor(file)
+  mkdirSync(path.dirname(tmp), { recursive: true })
+  try {
+    writeFileSync(tmp, content, "utf-8")
+    renameSync(tmp, file)
+  } catch (err) {
+    try {
+      rmSync(tmp, { force: true })
+    } catch {
+      // Best effort: the scratch file is already unreachable.
+    }
     throw err
   }
 }
@@ -352,8 +386,7 @@ function emptyState(): MemoryState {
   }
 }
 
-async function loadState(): Promise<MemoryState> {
-  const raw = await readText(stateFile())
+function parseState(raw: string): MemoryState {
   if (!raw) return emptyState()
   try {
     const parsed = JSON.parse(raw) as Partial<MemoryState>
@@ -381,6 +414,14 @@ async function loadState(): Promise<MemoryState> {
     console.warn("[memory] state file unreadable, starting from empty:", err)
     return emptyState()
   }
+}
+
+async function loadState(): Promise<MemoryState> {
+  return parseState(await readText(stateFile()))
+}
+
+function loadStateSync(): MemoryState {
+  return parseState(readTextSync(stateFile()))
 }
 
 async function saveState(state: MemoryState): Promise<void> {
@@ -1489,14 +1530,37 @@ async function runIdleMaintenance(): Promise<void> {
 // Quit path: park staged bullets into the durable processing file for every
 // known scope. Deliberately model-free so it finishes in milliseconds — the
 // next launch's startup sweep does the classification.
-export async function parkPendingMemoryForQuit(): Promise<void> {
+//
+// Synchronous on purpose. `before-quit` cannot await, and the async version of
+// this had to preventDefault() the quit and re-issue app.quit() when the park
+// settled. On macOS that re-entered a terminate the OS had already cancelled
+// (Cmd+Q -> applicationShouldTerminate -> NSTerminateCancel): the retry got as
+// far as closing every window but never terminated, leaving a windowless
+// process behind and forcing the user to press Cmd+Q a second time. Doing the
+// work inline keeps the very first quit authoritative.
+export function parkPendingMemoryForQuitSync(): void {
   if (!settingsService.getMemory().enabled) return
-  const state = await loadState()
-  await Promise.all(
-    pendingRecentDirs(state).map((dir) =>
-      parkStaging(dir).catch((err) =>
-        console.warn(`[memory] quit park failed for ${dir}:`, err)
-      )
-    )
+  for (const dir of pendingRecentDirs(loadStateSync())) {
+    try {
+      parkStagingSync(dir)
+    } catch (err) {
+      console.warn(`[memory] quit park failed for ${dir}:`, err)
+    }
+  }
+}
+
+// Sync twin of parkStaging, minus its return value (the quit path never reads
+// it). Same write order: the durable processing file lands before staging is
+// cleared, so a kill in between duplicates a bullet rather than losing it.
+function parkStagingSync(recentDir: string): void {
+  const stagingFile = stagingPathFromRecentDir(recentDir)
+  const processingFile = processingPathFromRecentDir(recentDir)
+  const staged = readTextSync(stagingFile).trim()
+  if (!staged) return
+  const prior = stripAttempts(readTextSync(processingFile)).trim()
+  writeFileAtomicSync(
+    processingFile,
+    prior ? `${prior}\n${staged}\n` : `${staged}\n`
   )
+  writeFileSync(stagingFile, "", "utf-8")
 }
