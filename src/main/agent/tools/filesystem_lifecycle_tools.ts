@@ -3,7 +3,12 @@ import type { Environment, StatInfo } from "../env/types"
 import type { Tool, ToolContext } from "./types"
 import { TOOL_EFFECTS } from "./types"
 import type { ToolAction } from "../approval/types"
-import { fileRevision, isNotFoundError } from "./file/mutation"
+import {
+  fileRevision,
+  isManagedMemoryPath,
+  isNotFoundError,
+  MANAGED_MEMORY_WRITE_ERROR,
+} from "./file/mutation"
 import { renderMetadata, toolError } from "./output"
 import { isSkillResourceUri, resolveSkillResourcePath } from "./skill_resources"
 
@@ -173,6 +178,9 @@ export const createDirectoryTool: Tool = {
     } catch (error) {
       return toolError("not_allowed", (error as Error).message)
     }
+    if (isManagedMemoryPath(target)) {
+      return toolError("not_allowed", MANAGED_MEMORY_WRITE_ERROR)
+    }
     const protectedRoot = await rootGuard(env, target, "create")
     if (protectedRoot) return protectedRoot
     const gate = await gateMutation(ctx, {
@@ -263,6 +271,9 @@ export const movePathTool: Tool = {
       target = env.resolveLexical(to)
     } catch (error) {
       return toolError("not_allowed", (error as Error).message)
+    }
+    if (isManagedMemoryPath(source) || isManagedMemoryPath(target)) {
+      return toolError("not_allowed", MANAGED_MEMORY_WRITE_ERROR)
     }
     const protectedRoot = await rootGuard(env, source, "move")
     if (protectedRoot) return protectedRoot
@@ -369,6 +380,9 @@ export const deletePathTool: Tool = {
       if (isNotFoundError(error))
         return toolError("not_found", `No such path: ${path}`)
       return toolError("not_allowed", (error as Error).message)
+    }
+    if (isManagedMemoryPath(target)) {
+      return toolError("not_allowed", MANAGED_MEMORY_WRITE_ERROR)
     }
     const protectedRoot = await rootGuard(env, target, "delete")
     if (protectedRoot) return protectedRoot

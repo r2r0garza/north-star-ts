@@ -84,6 +84,14 @@ item is its plan file; the ordered-list number is its current priority rank.
    misses ≠ absent" caveat. Primarily a prompt edit (`interactive-system-prompt.md` /
    `north-star-system-prompt.md`); Chat mode stays untouched. Optional priority tweak to
    `SECTION_PRIORITY.index` to be decided at execution.
+10. **`081` — Memory semantic merge and contradiction resolution.** Automatic memory de-duplicates by
+    byte equality only, so restatements pile up and superseded facts are never replaced — this repo's
+    own store holds six near-identical process-template rows and a live npm-versus-pnpm contradiction
+    across the global/workspace scope boundary. Add bounded per-fact metadata (the sidecar `077` item 6
+    specified and never shipped), then a guarded merge step in `editCategorySkill` that collapses
+    restatements and replaces contradictions, rejecting any merge that cannot account for the items it
+    dropped. Prerequisite for opening extraction to assistant/tool-derived evidence, which multiplies
+    restatement volume.
 
 ## Deferred
 

@@ -11,6 +11,7 @@ import {
 } from "../../db/repositories/cli-sessions"
 import type { Conversation } from "../../db/types"
 import type { ChatEvent, ChatResult } from "../index"
+import { recordMemoryTurn } from "../memory/service"
 import { normalizeClaudeModel, runClaudeCode } from "./claude"
 import { normalizeCodexModel, runCodexCli } from "./codex"
 
@@ -42,6 +43,10 @@ export async function resolveCliCwd(input: {
 export async function runCodexConversation(input: {
   conversation: Conversation
   workspace?: string
+  // Memory scope for this turn, resolved by the caller the same way the main
+  // agent loop resolves it. These CLI paths return before that loop runs, and
+  // previously recorded no memory at all.
+  memoryWorkspaceDir?: string
   userMessage?: string
   model?: string | null
   abort: AbortController
@@ -63,6 +68,9 @@ export async function runCodexConversation(input: {
     prompt = latestUser?.content ?? "Continue."
   }
 
+  // Visible prose this turn produced. Accumulated from the stream so a stopped
+  // or failed turn still has its work recorded, not just a clean completion.
+  let assistantText = ""
   try {
     const cwd = await resolveCliCwd({
       conversation: input.conversation,
@@ -78,6 +86,7 @@ export async function runCodexConversation(input: {
       signal: input.abort.signal,
       onEvent: (event) => {
         if (event.type === "text" && event.text) {
+          assistantText += event.text
           input.onEvent({ type: "token", delta: event.text })
         } else if (event.type === "tool_start" && event.id && event.name) {
           toolNames.set(event.id, event.name)
@@ -119,6 +128,7 @@ export async function runCodexConversation(input: {
       })
       return { error: result.error }
     }
+    if (result.content) assistantText = result.content
     appendMessage({
       conversationId: input.conversation.id,
       role: "assistant",
@@ -133,12 +143,25 @@ export async function runCodexConversation(input: {
       content: `The Codex CLI turn ended early: ${message}`,
     })
     return { error: message }
+  } finally {
+    // Every exit path, matching the main agent loop. `userMessage` is undefined
+    // on a resume, which tells the service to log the turn without extracting.
+    void recordMemoryTurn({
+      conversationId: input.conversation.id,
+      userText: input.userMessage,
+      assistantText,
+      workspaceDir: input.memoryWorkspaceDir,
+    }).catch((err) => console.warn("[memory] turn record failed:", err))
   }
 }
 
 export async function runClaudeConversation(input: {
   conversation: Conversation
   workspace?: string
+  // Memory scope for this turn, resolved by the caller the same way the main
+  // agent loop resolves it. These CLI paths return before that loop runs, and
+  // previously recorded no memory at all.
+  memoryWorkspaceDir?: string
   userMessage?: string
   model?: string | null
   abort: AbortController
@@ -160,6 +183,9 @@ export async function runClaudeConversation(input: {
     prompt = latestUser?.content ?? "Continue."
   }
 
+  // Visible prose this turn produced. Accumulated from the stream so a stopped
+  // or failed turn still has its work recorded, not just a clean completion.
+  let assistantText = ""
   try {
     const cwd = await resolveCliCwd({
       conversation: input.conversation,
@@ -179,6 +205,7 @@ export async function runClaudeConversation(input: {
       signal: input.abort.signal,
       onEvent: (event) => {
         if (event.type === "text" && event.text) {
+          assistantText += event.text
           input.onEvent({ type: "token", delta: event.text })
         } else if (event.type === "tool_start" && event.id && event.name) {
           toolNames.set(event.id, event.name)
@@ -221,6 +248,7 @@ export async function runClaudeConversation(input: {
       })
       return { error: result.error }
     }
+    if (result.content) assistantText = result.content
     appendMessage({
       conversationId: input.conversation.id,
       role: "assistant",
@@ -235,5 +263,14 @@ export async function runClaudeConversation(input: {
       content: `⚠️ The Claude Code turn ended early: ${message}`,
     })
     return { error: message }
+  } finally {
+    // Every exit path, matching the main agent loop. `userMessage` is undefined
+    // on a resume, which tells the service to log the turn without extracting.
+    void recordMemoryTurn({
+      conversationId: input.conversation.id,
+      userText: input.userMessage,
+      assistantText,
+      workspaceDir: input.memoryWorkspaceDir,
+    }).catch((err) => console.warn("[memory] turn record failed:", err))
   }
 }

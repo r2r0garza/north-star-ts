@@ -1,5 +1,10 @@
+import { basename } from "path"
 import type { ActionClassifier, ActionDecision, ToolAction } from "./types"
 import { normalizeCommand } from "./normalize"
+import {
+  isManagedMemoryPath,
+  MANAGED_MEMORY_WRITE_ERROR,
+} from "../memory/paths"
 import {
   analyzeShellCommand,
   type ShellCommandAnalysis,
@@ -311,6 +316,41 @@ function compile(patterns: Pattern[]): Array<[RegExp, string, string]> {
 const HARDLINE_COMPILED = compile(HARDLINE_PATTERNS)
 const DANGEROUS_COMPILED = compile(DANGEROUS_PATTERNS)
 
+// Executables that write the paths handed to them. Redirect targets are caught
+// separately via candidateWritePaths; this catches the `tee`/`sed -i`/`cp` shape
+// that carries its destination in argv instead.
+const FILE_MUTATING_EXECUTABLES = new Set([
+  "cp",
+  "dd",
+  "install",
+  "ln",
+  "mv",
+  "patch",
+  "rm",
+  "sed",
+  "shred",
+  "tee",
+  "truncate",
+])
+
+// Reads are deliberately not blocked: memory-recent points the agent at
+// reference/ for raw detail, and grepping it is legitimate.
+function managedMemoryWriteTarget(
+  analysis: ShellCommandAnalysis
+): string | undefined {
+  const redirected = analysis.candidateWritePaths.find(isManagedMemoryPath)
+  if (redirected) return redirected
+  for (const segment of [...analysis.segments, ...analysis.substitutions]) {
+    const executable = segment.executable ? basename(segment.executable) : ""
+    if (!FILE_MUTATING_EXECUTABLES.has(executable)) continue
+    const target = [...segment.argv, ...segment.rawArgv].find(
+      isManagedMemoryPath
+    )
+    if (target) return target
+  }
+  return undefined
+}
+
 export class RegexCommandClassifier implements ActionClassifier {
   classify(action: ToolAction): ActionDecision | null {
     if (action.kind !== "shell") return null
@@ -332,6 +372,17 @@ export class RegexCommandClassifier implements ActionClassifier {
       )
       if (segmentHardline) {
         return { level: "hard_block", reason: segmentHardline.description }
+      }
+    }
+
+    // Hard-blocked rather than gated: require_approval is auto-approved in Auto
+    // mode, and a shell write here bypasses every extraction check the memory
+    // pipeline applies. The file tools refuse this path too.
+    const memoryTarget = managedMemoryWriteTarget(analysis)
+    if (memoryTarget) {
+      return {
+        level: "hard_block",
+        reason: `${MANAGED_MEMORY_WRITE_ERROR} (blocked target: ${memoryTarget})`,
       }
     }
 

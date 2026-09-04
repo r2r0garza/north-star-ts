@@ -889,6 +889,12 @@ export async function runAgentLoop(
     return runClaudeConversation({
       conversation,
       workspace,
+      // The CLI paths return before `agentDir` is resolved below, so scope their
+      // memory the same way it would have been: confinement workspace, else the
+      // conversation's own directory.
+      memoryWorkspaceDir: hasWorkspace
+        ? workspace
+        : resolveConversationDir(conversation),
       userMessage,
       model: normalizeClaudeModel(
         conversation.modelId ??
@@ -906,6 +912,9 @@ export async function runAgentLoop(
     return runCodexConversation({
       conversation,
       workspace,
+      memoryWorkspaceDir: hasWorkspace
+        ? workspace
+        : resolveConversationDir(conversation),
       userMessage,
       model:
         conversation.modelId ??
@@ -1448,6 +1457,14 @@ export async function runAgentLoop(
   // read_file_tool, scoped to this attachment list, which supports paging).
   let persistedUserContent: string | undefined
   let modelUserContent: string | undefined
+  // Visible prose this turn produced, kept outside the loop so the memory
+  // recorder in `finally` can see it. The loop's own `text` is per-round and is
+  // gone by the time an abort, a truncation, or a thrown error unwinds.
+  let turnAssistantText = ""
+  // A transient failure is re-run by the caller with the same user message.
+  // Recording it would double the reference log and spend a second extraction
+  // call on text the retry is about to record anyway.
+  let turnWillRetry = false
   if (userMessage !== undefined) {
     let userContent = userMessage || "What files are in the workspace?"
     let modelContent =
@@ -1712,6 +1729,11 @@ export async function runAgentLoop(
       // tool fragments, so a retry cannot execute an abandoned partial tool call
       // or duplicate partial prose in the live UI.
       let text = round.text
+      if (text) {
+        turnAssistantText = turnAssistantText
+          ? `${turnAssistantText}\n\n${text}`
+          : text
+      }
       const finishReason = round.finishReason
 
       // Stopped mid-stream (we broke out above): persist whatever text streamed
@@ -1793,17 +1815,6 @@ export async function runAgentLoop(
         // (and a reopened conversation) has the full transcript.
         appendMessage({ conversationId, role: "assistant", content: text })
         completeModelRequestRetryBudget({ conversationId, logicalRoundId })
-        if (
-          persistedUserContent !== undefined &&
-          (opts.agentDepth ?? 0) === 0
-        ) {
-          void recordMemoryTurn({
-            conversationId,
-            userText: persistedUserContent,
-            assistantText: text,
-            workspaceDir: agentDir,
-          }).catch((err) => console.warn("[memory] turn record failed:", err))
-        }
         return { content: text }
       }
 
@@ -2281,6 +2292,7 @@ export async function runAgentLoop(
     const message = error instanceof Error ? error.message : "Request failed"
     const retryable =
       !(error instanceof ToolLifecycleError) && isTransientError(error)
+    turnWillRetry = retryable
     const failure =
       error instanceof ToolLifecycleError ||
       taskId ||
@@ -2311,6 +2323,21 @@ export async function runAgentLoop(
         : undefined
     return failTurn(conversationId, message, retryable, undefined, failure)
   } finally {
+    // Record the turn for automatic memory on EVERY terminal path, not only the
+    // clean final-answer one. Turns that end in a user stop, an output-cap
+    // truncation, or a thrown model error still carry durable user-stated facts,
+    // and previously contributed nothing at all — not even a reference log.
+    // A resume passes no persistedUserContent. It is still recorded: the service
+    // logs the turn to reference/ and skips extraction when there is no new user
+    // message, so a durable task no longer runs for hours leaving no trace.
+    if (!turnWillRetry && (opts.agentDepth ?? 0) === 0) {
+      void recordMemoryTurn({
+        conversationId,
+        userText: persistedUserContent,
+        assistantText: turnAssistantText,
+        workspaceDir: agentDir,
+      }).catch((err) => console.warn("[memory] turn record failed:", err))
+    }
     if (abort.signal.aborted) {
       commandCompletionInbox.cancelRun(commandCompletionOwner)
       await terminateOwnedCommandSessions(commandCompletionOwner)

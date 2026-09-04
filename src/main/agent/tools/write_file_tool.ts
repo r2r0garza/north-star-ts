@@ -9,7 +9,9 @@ import {
   cleanupMessage,
   fileTooLargeMessage,
   fileRevision,
+  isManagedMemoryPath,
   isNotFoundError,
+  MANAGED_MEMORY_WRITE_ERROR,
   MUTATION_SOURCE_LIMITS,
   revisionOfText,
   validRevision,
@@ -108,6 +110,9 @@ export const writeFileTool: Tool = {
 
     const env = ctx.env ?? new LocalEnvironment(ctx.workspace)
     const target = await env.resolve(path)
+    if (isManagedMemoryPath(target)) {
+      return toolError("not_allowed", MANAGED_MEMORY_WRITE_ERROR)
+    }
 
     let existingInfo
     try {

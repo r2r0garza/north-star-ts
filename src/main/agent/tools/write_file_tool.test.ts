@@ -117,6 +117,25 @@ describe("write_file_tool", () => {
     expect(result).toContain("read-only")
   })
 
+  // staging.md feeds classifyAndDistribute directly, with none of the
+  // provenance checks the extraction path applies. A tool write there is an
+  // unvalidated door into durable memory.
+  it("refuses to write automatic-memory files", async () => {
+    const result = await writeFileTool.execute(
+      {
+        path: "/w/.cowork/skills/memory-recent/staging.md",
+        content: "- an invented durable fact",
+      },
+      ctx
+    )
+
+    expect(result).toContain("ERROR[not_allowed]")
+    expect(result).toContain("background service")
+    expect(env.files.has("/w/.cowork/skills/memory-recent/staging.md")).toBe(
+      false
+    )
+  })
+
   it("creates a file by default (mode omitted)", async () => {
     const result = await writeFileTool.execute(
       { path: "a.txt", content: "hello" },

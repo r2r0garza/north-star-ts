@@ -67,6 +67,13 @@ export function validRevision(value: unknown): string | undefined {
   return /^[a-f0-9]{64}$/i.test(value) ? value.toLowerCase() : undefined
 }
 
+// The tool layer's memory guard. Defined in the memory module so the approval
+// classifier can share the exact same predicate for shell commands.
+export {
+  isManagedMemoryPath,
+  MANAGED_MEMORY_WRITE_ERROR,
+} from "../../memory/paths"
+
 export function makeTempPath(target: string): string {
   return join(dirname(target), `.north-star-${randomUUID()}.tmp`)
 }

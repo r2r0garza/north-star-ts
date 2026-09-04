@@ -8,6 +8,8 @@ import {
   cleanupMessage,
   fileTooLargeMessage,
   fileRevision,
+  isManagedMemoryPath,
+  MANAGED_MEMORY_WRITE_ERROR,
   MUTATION_SOURCE_LIMITS,
   validRevision,
 } from "./file/mutation"
@@ -101,6 +103,9 @@ export const editFileTool: Tool = {
 
     const env = ctx.env ?? new LocalEnvironment(ctx.workspace)
     const target = await env.resolve(path)
+    if (isManagedMemoryPath(target)) {
+      return toolError("not_allowed", MANAGED_MEMORY_WRITE_ERROR)
+    }
 
     let info
     try {

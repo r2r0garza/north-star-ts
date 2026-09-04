@@ -104,7 +104,12 @@ import {
   mainAgentName,
 } from "./config/system-name"
 import { resolveBrandTheme } from "./config/theme"
-import { reconcilePendingMemoryOnStartup } from "./agent/memory/service"
+import {
+  parkPendingMemoryForQuit,
+  reconcilePendingMemoryOnStartup,
+  startMemoryMaintenance,
+  stopMemoryMaintenance,
+} from "./agent/memory/service"
 
 // The durable task runner — a singleton owned by the main process. Started in
 // app.whenReady (after the DB handlers register) and stopped on will-quit.
@@ -1183,6 +1188,9 @@ app.whenReady().then(() => {
   void reconcilePendingMemoryOnStartup().catch((err) =>
     console.warn("[memory] startup reconcile failed:", err)
   )
+  // Nothing else is time-triggered: the inactivity boundary and any batch left
+  // stranded by a crashed or offline classifier are only noticed on this tick.
+  startMemoryMaintenance()
   createWindow()
 
   app.on("activate", () => {
@@ -1200,13 +1208,29 @@ app.on("window-all-closed", () => {
 // veto. That veto hides-instead-of-closes on a normal user close (so a session
 // survives a stray window close), but during quit it would cancel the quit and
 // leave the process (and its renderer children) running. Runs before will-quit.
-app.on("before-quit", () => {
+let memoryParkedForQuit = false
+app.on("before-quit", (event) => {
   browserManager.prepareForQuit()
+  // Park staged memory into its durable processing file before the process
+  // goes away, otherwise the batch waits in staging until the user happens to
+  // send another message in that same scope. This is a file move, not a model
+  // call, so the delay is milliseconds; the next launch classifies it. Bounded
+  // so a slow disk can never wedge quit.
+  if (memoryParkedForQuit) return
+  memoryParkedForQuit = true
+  event.preventDefault()
+  void Promise.race([
+    parkPendingMemoryForQuit().catch((err) =>
+      console.warn("[memory] quit park failed:", err)
+    ),
+    new Promise((resolve) => setTimeout(resolve, 2000)),
+  ]).finally(() => app.quit())
 })
 
 // Stop the task runner (abort in-flight tasks; next boot's reconcile recovers
 // them) and flush the WAL + close the DB cleanly on quit.
 app.on("will-quit", () => {
+  stopMemoryMaintenance()
   void taskRunner.stop()
   browserManager.dispose()
   terminalService.dispose()

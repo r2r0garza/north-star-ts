@@ -12,6 +12,8 @@ import {
   cleanupMessage,
   FileTooLargeError,
   fileTooLargeMessage,
+  isManagedMemoryPath,
+  MANAGED_MEMORY_WRITE_ERROR,
 } from "./file/mutation"
 import { isSkillResourceUri } from "./skill_resources"
 
@@ -135,6 +137,16 @@ export const applyPatchTool: Tool = {
     }
 
     const env = ctx.env ?? new LocalEnvironment(ctx.workspace)
+    if (
+      operations.some(
+        (op) =>
+          isManagedMemoryPath(env.resolveLexical(op.path)) ||
+          ("new_path" in op &&
+            isManagedMemoryPath(env.resolveLexical(op.new_path)))
+      )
+    ) {
+      return toolError("not_allowed", MANAGED_MEMORY_WRITE_ERROR)
+    }
     let planned: PlannedPatch
     try {
       planned = await planPatch(env, operations)
