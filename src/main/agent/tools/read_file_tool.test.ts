@@ -92,10 +92,11 @@ describe("read_file_tool", () => {
       { workspace }
     )
 
-    expect(first).toContain("1\trow-1\n2\trow-2")
+    // Content lines carry the untrusted-data prefix from the trust envelope.
+    expect(first).toContain("DATA: 1\trow-1\nDATA: 2\trow-2")
     expect(first).toContain('"hasMore":true')
     expect(first).toContain('"nextOffset":3')
-    expect(next).toContain("3\trow-3\n4\trow-4")
+    expect(next).toContain("DATA: 3\trow-3\nDATA: 4\trow-4")
     expect(next).toContain('"nextOffset":5')
 
     const final = await readFileTool.execute(
