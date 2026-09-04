@@ -201,7 +201,9 @@ export class ContainerEnvironment implements Environment {
       )
     }
     const rel = relative(this.cfg.workspace, p)
-    return rel ? posix.join(MOUNT, rel.split(/[\\/]/).join("/")) : MOUNT
+    // Split on the host separator only: on POSIX a backslash is a legal
+    // filename character and must not be rewritten into a path boundary.
+    return rel ? posix.join(MOUNT, rel.split(sep).join("/")) : MOUNT
   }
 
   private async validateContainerPath(
