@@ -1,10 +1,17 @@
 import type { Question } from "../tools/types"
+import type { BrowserHandle } from "../../browser/manager"
+import { BROWSER_MCP_TOOL_NAMES } from "./tools/browser"
 
 export type CliMcpProvider = "claude_code" | "codex_cli"
 
 // The bare North Star tool names the bridge knows how to serve. A grant's
 // allowlist is intersected with these, so an unknown name can never register.
-export const CLI_MCP_TOOLS = ["ask_user_question"] as const
+// The browser names come from the internal tool definitions, so the two lists
+// cannot drift.
+export const CLI_MCP_TOOLS = [
+  "ask_user_question",
+  ...BROWSER_MCP_TOOL_NAMES,
+] as const
 export type CliMcpToolName = (typeof CLI_MCP_TOOLS)[number]
 
 // The MCP server name both CLIs see. Claude namespaces its tools as
@@ -28,6 +35,14 @@ export interface CliMcpQuestionSink {
   signal: AbortSignal
 }
 
+// The agent browser for one CLI turn, plus that turn's abort signal. Supplied by
+// the CLI runner when it mints a grant, so the MCP adapter never reaches for the
+// BrowserManager singleton itself (the agent module can't import it — cycle).
+export interface CliMcpBrowserSink {
+  browser: BrowserHandle
+  signal: AbortSignal
+}
+
 // Everything the server needs to authorize and scope one CLI turn. The token
 // (not MCP arguments) determines all of it.
 export interface CliMcpGrant {
@@ -38,6 +53,7 @@ export interface CliMcpGrant {
   allowedTools: ReadonlySet<CliMcpToolName>
   expiresAt: number
   question: CliMcpQuestionSink | null
+  browser: CliMcpBrowserSink | null
 }
 
 // What a runner needs to inject the bridge into a child process.

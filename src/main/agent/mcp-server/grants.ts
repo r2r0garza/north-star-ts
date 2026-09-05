@@ -4,6 +4,7 @@ import {
   CLI_MCP_TOOLS,
   type CliMcpGrant,
   type CliMcpProvider,
+  type CliMcpBrowserSink,
   type CliMcpQuestionSink,
   type CliMcpToolName,
 } from "./types"
@@ -33,6 +34,7 @@ export interface MintGrantInput {
   // dropped rather than registered.
   tools: readonly string[]
   question?: CliMcpQuestionSink | null
+  browser?: CliMcpBrowserSink | null
   ttlMs?: number
   now?: number
 }
@@ -57,6 +59,7 @@ export function mintGrant(input: MintGrantInput): MintedGrant {
     allowedTools: allowed,
     expiresAt: (input.now ?? Date.now()) + (input.ttlMs ?? GRANT_TTL_MS),
     question: input.question ?? null,
+    browser: input.browser ?? null,
     secret,
   }
   grants.set(id, stored)

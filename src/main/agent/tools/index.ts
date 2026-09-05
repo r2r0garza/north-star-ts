@@ -148,7 +148,9 @@ const otherTools: Tool[] = [
 // Browser tools — offered when the conversation has an agent browser available,
 // independent of the workspace (a Chat session can open a URL too). Dispatchable
 // via runTool; runChat adds their definitions from `browserToolDefinitions`.
-const browserTools: Tool[] = [
+// Exported for the CLI MCP bridge (plan 045), which registers exactly these and
+// nothing else — an explicit allowlist, not a blanket runTool() passthrough.
+export const browserTools: Tool[] = [
   browserNavigateTool,
   browserSnapshotTool,
   browserScreenshotTool,

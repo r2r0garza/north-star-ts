@@ -23,16 +23,32 @@ import {
   type CliMcpInjection,
   type CliMcpProvider,
   type CliMcpToolName,
+  BROWSER_MCP_TOOL_NAMES,
 } from "../mcp-server"
+import type { BrowserHandle } from "../../browser/manager"
 
 // The North Star tools a CLI turn may reach over the MCP bridge (plan 045).
 // `ask_user_question` is offered only when someone is watching this turn and can
 // actually answer — a headless Process worker gets an empty grant, and with no
 // tools to serve we skip the bridge entirely rather than injecting a dead server.
-function bridgeToolsFor(input: {
+// Exported for tests: the browser half of this is only reachable if runAgentLoop
+// actually forwards `provideBrowser` to the runner, which is exactly what once
+// silently regressed (every option here is optional, so types can't catch it).
+export function bridgeToolsFor(input: {
   suppressUserQuestions?: boolean
+  hasBrowser: boolean
 }): CliMcpToolName[] {
-  return input.suppressUserQuestions ? [] : ["ask_user_question"]
+  const tools: CliMcpToolName[] = []
+  if (!input.suppressUserQuestions) tools.push("ask_user_question")
+  // Granted whenever this turn has a handle to give. Claude Code has no browser
+  // of its own (only WebFetch and shelling out to `open`), so this is a real
+  // capability gain there. Codex DOES have one — `browser_use`/`computer_use`
+  // are stable and on, surfacing as its `cua_repl` tool — and it also defers all
+  // MCP tools behind a tool search (`tool_search_always_defer_mcp_tools`, now a
+  // permanent default), so it reaches for its own browser unless asked for ours.
+  // Ours is still the one visible in the app, bound to the conversation's tab.
+  if (input.hasBrowser) tools.push(...BROWSER_MCP_TOOL_NAMES)
+  return tools
 }
 
 // Mint this turn's grant. Returns null when nothing is granted; throws when the
@@ -46,6 +62,7 @@ async function openBridge(input: {
   tools: CliMcpToolName[]
   onEvent: (event: ChatEvent) => void
   signal: AbortSignal
+  browser: BrowserHandle | undefined
 }): Promise<CliMcpInjection | null> {
   if (input.tools.length === 0) return null
   try {
@@ -56,6 +73,9 @@ async function openBridge(input: {
       provider: input.provider,
       tools: input.tools,
       question: { emit: input.onEvent, signal: input.signal },
+      browser: input.browser
+        ? { browser: input.browser, signal: input.signal }
+        : null,
     })
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error)
@@ -94,6 +114,10 @@ export async function runCodexConversation(input: {
   // Withhold the MCP bridge's ask_user_question: this turn has nobody watching
   // who could answer. Mirrors RunAgentLoopOptions.suppressUserQuestions.
   suppressUserQuestions?: boolean
+  // Build the agent browser handle for this turn (RunAgentLoopOptions.provideBrowser).
+  // Injected by the caller rather than imported — the agent module can't reach
+  // the BrowserManager singleton. Absent where there is no browser.
+  provideBrowser?: (signal: AbortSignal) => BrowserHandle
   // Memory scope for this turn, resolved by the caller the same way the main
   // agent loop resolves it. These CLI paths return before that loop runs, and
   // previously recorded no memory at all.
@@ -136,9 +160,10 @@ export async function runCodexConversation(input: {
       cwd,
       workspace: input.conversation.mode === "chat" ? null : cwd,
       provider: "codex_cli",
-      tools: bridgeToolsFor(input),
+      tools: bridgeToolsFor({ ...input, hasBrowser: !!input.provideBrowser }),
       onEvent: input.onEvent,
       signal: input.abort.signal,
+      browser: input.provideBrowser?.(input.abort.signal),
     })
     const toolNames = new Map<string, string>()
     const result = await runCodexCli({
@@ -229,6 +254,10 @@ export async function runClaudeConversation(input: {
   // Withhold the MCP bridge's ask_user_question: this turn has nobody watching
   // who could answer. Mirrors RunAgentLoopOptions.suppressUserQuestions.
   suppressUserQuestions?: boolean
+  // Build the agent browser handle for this turn (RunAgentLoopOptions.provideBrowser).
+  // Injected by the caller rather than imported — the agent module can't reach
+  // the BrowserManager singleton. Absent where there is no browser.
+  provideBrowser?: (signal: AbortSignal) => BrowserHandle
   // Memory scope for this turn, resolved by the caller the same way the main
   // agent loop resolves it. These CLI paths return before that loop runs, and
   // previously recorded no memory at all.
@@ -275,9 +304,10 @@ export async function runClaudeConversation(input: {
       cwd,
       workspace: input.conversation.mode === "chat" ? null : cwd,
       provider: "claude_code",
-      tools: bridgeToolsFor(input),
+      tools: bridgeToolsFor({ ...input, hasBrowser: !!input.provideBrowser }),
       onEvent: input.onEvent,
       signal: input.abort.signal,
+      browser: input.provideBrowser?.(input.abort.signal),
     })
     if (bridge) {
       // App-owned session config. Holds the URL and a ${VAR} placeholder — never

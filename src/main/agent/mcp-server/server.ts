@@ -11,12 +11,14 @@ import {
   askUserQuestionMcpTool,
   callAskUserQuestion,
 } from "./tools/ask-user-question"
+import { browserMcpTools, callBrowserTool } from "./tools/browser"
 import {
   CLI_MCP_SERVER_NAME,
   CLI_MCP_TOKEN_ENV,
   type CliMcpGrant,
   type CliMcpInjection,
   type CliMcpProvider,
+  type CliMcpBrowserSink,
   type CliMcpQuestionSink,
   type CliMcpToolName,
 } from "./types"
@@ -60,9 +62,17 @@ let inFlight = 0
 // The tools this grant may see: the intersection of what the server implements
 // and what the grant allows. Unknown names never reach here (mintGrant filters).
 function grantedTools(grant: CliMcpGrant) {
-  const tools: Array<typeof askUserQuestionMcpTool> = []
+  const tools: Array<{
+    name: string
+    description: string
+    inputSchema: { type: "object"; [key: string]: unknown }
+    annotations?: Record<string, unknown>
+  }> = []
   if (grant.allowedTools.has("ask_user_question")) {
     tools.push(askUserQuestionMcpTool)
+  }
+  for (const tool of browserMcpTools) {
+    if (grant.allowedTools.has(tool.name as CliMcpToolName)) tools.push(tool)
   }
   return tools
 }
@@ -83,6 +93,15 @@ function buildInstructions(grant: CliMcpGrant): string | undefined {
         "to you, so the turn keeps going instead of stopping for them to type a reply. " +
         "Asking in prose still reaches them, but costs them a round trip you don't have " +
         "to spend."
+    )
+  }
+  if (grant.allowedTools.has("browser_navigate")) {
+    lines.push(
+      "The browser tools drive a real browser window inside North Star that the " +
+        "user may be watching — not a headless fetch. Use them to open a page, " +
+        "read it with `browser_snapshot`, see it with `browser_screenshot`, and " +
+        "interact with it. `browser_handoff` passes control to the user for " +
+        "anything only a human can do, such as a CAPTCHA or a login."
     )
   }
   if (lines.length === 0) return undefined
@@ -146,10 +165,7 @@ function buildServer(grant: CliMcpGrant): Server {
     if (name === "ask_user_question") {
       return callAskUserQuestion(request.params.arguments, grant)
     }
-    return {
-      content: [{ type: "text" as const, text: `Unknown tool: ${name}` }],
-      isError: true,
-    }
+    return callBrowserTool(name, request.params.arguments, grant)
   })
   return server
 }
@@ -303,6 +319,7 @@ export interface GrantCliMcpAccessInput {
   provider: CliMcpProvider
   tools: readonly CliMcpToolName[]
   question?: CliMcpQuestionSink | null
+  browser?: CliMcpBrowserSink | null
 }
 
 // Mint a per-turn grant and return everything the runner needs to inject the
@@ -319,6 +336,7 @@ export async function grantCliMcpAccess(
     provider: input.provider,
     tools: input.tools,
     question: input.question ?? null,
+    browser: input.browser ?? null,
   })
   return {
     url: started.url,

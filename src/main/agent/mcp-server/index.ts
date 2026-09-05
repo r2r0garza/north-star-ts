@@ -5,6 +5,7 @@ export {
   writeClaudeMcpConfig,
   type ClaudeMcpConfigFile,
 } from "./inject"
+export { BROWSER_MCP_TOOL_NAMES } from "./tools/browser"
 export {
   closeCliMcpBridge,
   getCliMcpBridge,

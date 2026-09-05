@@ -864,17 +864,29 @@ export async function runAgentLoop(
   const effectiveAccount = effectiveAccountId
     ? getAccount(effectiveAccountId)
     : undefined
-  if (effectiveAccount?.provider === "claude_code") {
+  if (
+    effectiveAccount?.provider === "claude_code" ||
+    effectiveAccount?.provider === "codex_cli"
+  ) {
     if (!conversation) return { error: "Conversation not found." }
     if (!effectiveAccount.enabled) {
-      return { error: "The selected Claude Code provider is disabled." }
+      const label =
+        effectiveAccount.provider === "claude_code"
+          ? "Claude Code"
+          : "Codex CLI"
+      return { error: `The selected ${label} provider is disabled.` }
     }
-    return runClaudeConversation({
+    // Built ONCE and shared by both runners. They previously took separate
+    // object literals, and a bridge option added to one but not the other went
+    // unnoticed (types can't catch it — every field here is optional).
+    const cliTurn = {
       conversation,
       workspace,
       // Gates the MCP bridge's ask_user_question the same way it gates the
       // internal tool: a headless worker gets no question surface at all.
       suppressUserQuestions: opts.suppressUserQuestions,
+      // Lends the CLI North Star's browser over the bridge (plan 045).
+      provideBrowser: opts.provideBrowser,
       // The CLI paths return before `agentDir` is resolved below, so scope their
       // memory the same way it would have been: confinement workspace, else the
       // conversation's own directory.
@@ -882,33 +894,18 @@ export async function runAgentLoop(
         ? workspace
         : resolveConversationDir(conversation),
       userMessage,
-      model: normalizeClaudeModel(
-        conversation.modelId ??
-          (conversation.accountId === null ? defaultLlm.activeModelId : null)
-      ),
       abort,
       onEvent,
-    })
-  }
-  if (effectiveAccount?.provider === "codex_cli") {
-    if (!conversation) return { error: "Conversation not found." }
-    if (!effectiveAccount.enabled) {
-      return { error: "The selected Codex CLI provider is disabled." }
     }
-    return runCodexConversation({
-      conversation,
-      workspace,
-      suppressUserQuestions: opts.suppressUserQuestions,
-      memoryWorkspaceDir: hasWorkspace
-        ? workspace
-        : resolveConversationDir(conversation),
-      userMessage,
-      model:
-        conversation.modelId ??
-        (conversation.accountId === null ? defaultLlm.activeModelId : null),
-      abort,
-      onEvent,
-    })
+    const modelId =
+      conversation.modelId ??
+      (conversation.accountId === null ? defaultLlm.activeModelId : null)
+    return effectiveAccount.provider === "claude_code"
+      ? runClaudeConversation({
+          ...cliTurn,
+          model: normalizeClaudeModel(modelId),
+        })
+      : runCodexConversation({ ...cliTurn, model: modelId })
   }
 
   // The directory used to DISCOVER workspace-level agents (and the composer's
