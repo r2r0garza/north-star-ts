@@ -25,6 +25,112 @@ export function normalizeCodexModel(model: string | null | undefined): string {
   return !value || value === "codex-cli" ? DEFAULT_CODEX_CLI_MODEL : value
 }
 
+// ---------------------------------------------------------------------------
+// The JSONL protocol `codex exec --json` speaks.
+//
+// These mirror the event types @openai/codex-sdk publishes for the same stream
+// (it wraps this very CLI). We describe the protocol here rather than depend on
+// that package: it pins an exact `@openai/codex` release and drags in a ~288MB
+// platform binary, which would bypass the user's own `codex` login and bloat the
+// packaged app. Types cost nothing; the binary is the whole package.
+//
+// The point is that parseCodexEvent below is checked against the real payload
+// shapes. Reading fields off `Record<string, any>` is what let failed MCP tool
+// calls render with an empty error string — `error` is an object, not a string.
+// ---------------------------------------------------------------------------
+
+export type CodexItemStatus = "in_progress" | "completed" | "failed"
+
+export interface CodexAgentMessageItem {
+  id: string
+  type: "agent_message"
+  text: string
+}
+
+export interface CodexReasoningItem {
+  id: string
+  type: "reasoning"
+  text: string
+}
+
+export interface CodexCommandExecutionItem {
+  id: string
+  type: "command_execution"
+  command: string
+  aggregated_output: string
+  // Absent while running, and explicitly `null` in the CLI's in-progress frames.
+  exit_code?: number | null
+  status: CodexItemStatus
+}
+
+export interface CodexFileChangeItem {
+  id: string
+  type: "file_change"
+  changes: { path: string; kind: "add" | "delete" | "update" }[]
+  status: "completed" | "failed"
+}
+
+export interface CodexMcpToolCallItem {
+  id: string
+  type: "mcp_tool_call"
+  server: string
+  tool: string
+  arguments: unknown
+  result?: unknown
+  // An object — see the note above.
+  error?: { message: string }
+  status: CodexItemStatus
+}
+
+export interface CodexWebSearchItem {
+  id: string
+  type: "web_search"
+  query: string
+}
+
+export interface CodexTodoListItem {
+  id: string
+  type: "todo_list"
+  items: { text: string; completed: boolean }[]
+}
+
+export interface CodexErrorItem {
+  id: string
+  type: "error"
+  message: string
+}
+
+export type CodexThreadItem =
+  | CodexAgentMessageItem
+  | CodexReasoningItem
+  | CodexCommandExecutionItem
+  | CodexFileChangeItem
+  | CodexMcpToolCallItem
+  | CodexWebSearchItem
+  | CodexTodoListItem
+  | CodexErrorItem
+
+export interface CodexUsage {
+  input_tokens: number
+  cached_input_tokens: number
+  cache_write_input_tokens: number
+  output_tokens: number
+  reasoning_output_tokens: number
+}
+
+export type CodexThreadEvent =
+  | { type: "thread.started"; thread_id: string }
+  | { type: "turn.started" }
+  | { type: "turn.completed"; usage: CodexUsage }
+  | { type: "turn.failed"; error?: { message?: string } }
+  | { type: "item.started"; item: CodexThreadItem }
+  | { type: "item.updated"; item: CodexThreadItem }
+  | { type: "item.completed"; item: CodexThreadItem }
+  // `error` is the shape the installed CLI emits; `message` is what current
+  // releases carry. The stream is a cross-version contract we don't control, so
+  // both spellings stay readable.
+  | { type: "error"; message?: string; error?: string }
+
 export interface CodexParseState {
   finalText?: string
   threadId?: string
@@ -32,9 +138,18 @@ export interface CodexParseState {
   usage?: unknown
 }
 
+// The prompt travels on stdin, not argv. `-` is how `codex exec` is told to read
+// it from there — and it is required for the `resume` subcommand, which unlike a
+// first turn does NOT fall back to stdin when the prompt argument is missing.
+// Both paths verified against codex-cli 0.149.1.
+//
+// Keeping the prompt out of argv avoids the ARG_MAX ceiling on long messages and
+// stops it showing up in `ps`, the same reason the MCP bearer token is passed
+// through the environment instead.
+const CODEX_PROMPT_STDIN = "-"
+
 export function buildCodexArgs(input: {
   cwd: string
-  message: string
   threadId?: string | null
   skipGitRepoCheck: boolean
   model?: string | null
@@ -56,7 +171,7 @@ export function buildCodexArgs(input: {
   args.push("--model", normalizeCodexModel(input.model))
   if (input.skipGitRepoCheck) args.push("--skip-git-repo-check")
   if (input.threadId) args.push("resume", input.threadId)
-  args.push(input.message)
+  args.push(CODEX_PROMPT_STDIN)
   return args
 }
 
@@ -75,93 +190,101 @@ export function parseCodexEvent(
   state: CodexParseState
 ): void {
   if (!value || typeof value !== "object") return
-  const event = value as Record<string, any>
+  // The single unchecked boundary: JSON.parse hands back `unknown` and the CLI
+  // is the only writer. Every field access past here is type-checked, with
+  // runtime guards kept on the strings that reach the UI.
+  const event = value as CodexThreadEvent
 
-  if (event.type === "thread.started" && typeof event.thread_id === "string") {
-    state.threadId = event.thread_id
-    return
-  }
-
-  if (event.type === "turn.completed") {
-    state.usage = event.usage
-    return
-  }
-
-  if (event.type === "error") {
-    state.error =
-      (typeof event.message === "string" && event.message) ||
-      (typeof event.error === "string" && event.error) ||
-      "Codex CLI reported an error."
-    return
-  }
-
-  if (
-    (event.type === "item.started" || event.type === "item.completed") &&
-    event.item &&
-    typeof event.item === "object"
-  ) {
-    const item = event.item as Record<string, any>
-    const id = typeof item.id === "string" ? item.id : undefined
-    if (item.type === "agent_message" && typeof item.text === "string") {
-      state.finalText = item.text
-      emit({ type: "text", text: item.text })
+  switch (event.type) {
+    case "thread.started":
+      if (typeof event.thread_id === "string") state.threadId = event.thread_id
       return
-    }
-    // MCP tool calls (including North Star's own bridge, plan 045) so the
-    // transcript shows `north-star · ask_user_question` while the turn waits on
-    // the question panel, rather than a silent gap.
-    if (item.type === "mcp_tool_call" && id) {
-      const server = typeof item.server === "string" ? item.server : "mcp"
-      const tool = typeof item.tool === "string" ? item.tool : "tool"
-      const name = `${server} · ${tool}`
-      if (event.type === "item.started") {
-        emit({
-          type: "tool_start",
-          id,
-          name,
-          arguments: stringify(item.arguments ?? {}),
-        })
-      } else {
-        const status =
-          typeof item.status === "string" ? `status: ${item.status}` : ""
-        const error = typeof item.error === "string" ? item.error : ""
-        emit({
-          type: "tool_done",
-          id,
-          name,
-          result: [stringify(item.result ?? ""), error, status]
-            .filter(Boolean)
-            .join("\n"),
-        })
-      }
+    case "turn.completed":
+      state.usage = event.usage
       return
+    // Previously unhandled, so a failed turn fell through to the generic "no
+    // assistant message" error and lost the CLI's actual reason.
+    case "turn.failed":
+      state.error = event.error?.message || "Codex CLI reported an error."
+      return
+    case "error":
+      state.error =
+        event.message || event.error || "Codex CLI reported an error."
+      return
+    case "item.started":
+    case "item.completed":
+      break
+    default:
+      return
+  }
+
+  const item = event.item
+  if (!item || typeof item !== "object") return
+  const started = event.type === "item.started"
+
+  if (item.type === "agent_message") {
+    if (typeof item.text !== "string") return
+    state.finalText = item.text
+    emit({ type: "text", text: item.text })
+    return
+  }
+
+  const id = typeof item.id === "string" ? item.id : undefined
+  if (!id) return
+
+  // MCP tool calls (including North Star's own bridge, plan 045) so the
+  // transcript shows `north-star · ask_user_question` while the turn waits on
+  // the question panel, rather than a silent gap.
+  if (item.type === "mcp_tool_call") {
+    const server = typeof item.server === "string" ? item.server : "mcp"
+    const tool = typeof item.tool === "string" ? item.tool : "tool"
+    const name = `${server} · ${tool}`
+    if (started) {
+      emit({
+        type: "tool_start",
+        id,
+        name,
+        arguments: stringify(item.arguments ?? {}),
+      })
+    } else {
+      const status =
+        typeof item.status === "string" ? `status: ${item.status}` : ""
+      const error = item.error?.message ?? ""
+      emit({
+        type: "tool_done",
+        id,
+        name,
+        result: [stringify(item.result ?? ""), error, status]
+          .filter(Boolean)
+          .join("\n"),
+      })
     }
-    if (item.type === "command_execution" && id) {
-      const command =
-        typeof item.command === "string" ? item.command : "Codex command"
-      if (event.type === "item.started") {
-        emit({
-          type: "tool_start",
-          id,
-          name: command,
-          arguments: stringify({ command }),
-        })
-      } else {
-        const output =
-          typeof item.aggregated_output === "string"
-            ? item.aggregated_output
-            : ""
-        const status =
-          typeof item.status === "string" ? `status: ${item.status}` : ""
-        const exit =
-          typeof item.exit_code === "number" ? `exit: ${item.exit_code}` : ""
-        emit({
-          type: "tool_done",
-          id,
-          name: command,
-          result: [output, exit, status].filter(Boolean).join("\n"),
-        })
-      }
+    return
+  }
+
+  if (item.type === "command_execution") {
+    const command =
+      typeof item.command === "string" ? item.command : "Codex command"
+    if (started) {
+      emit({
+        type: "tool_start",
+        id,
+        name: command,
+        arguments: stringify({ command }),
+      })
+    } else {
+      const output =
+        typeof item.aggregated_output === "string" ? item.aggregated_output : ""
+      const status =
+        typeof item.status === "string" ? `status: ${item.status}` : ""
+      const exit =
+        typeof item.exit_code === "number" ? `exit: ${item.exit_code}` : ""
+      emit({
+        type: "tool_done",
+        id,
+        name: command,
+        result: [output, exit, status].filter(Boolean).join("\n"),
+      })
     }
   }
 }
@@ -219,7 +342,6 @@ export async function runCodexCli(input: {
     "codex",
     buildCodexArgs({
       cwd: input.cwd,
-      message: input.message,
       threadId: input.threadId,
       model: input.model,
       skipGitRepoCheck: git === null,
@@ -229,9 +351,15 @@ export async function runCodexCli(input: {
       cwd: input.cwd,
       env: { ...(await hostCliEnv()), ...input.extraEnv },
       detached: process.platform !== "win32",
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: ["pipe", "pipe", "pipe"],
     }
   )
+
+  // The prompt, then EOF — the CLI blocks on stdin until the stream closes.
+  // A turn killed before the write lands surfaces as EPIPE, which is not a
+  // failure worth reporting over the abort itself.
+  child.stdin?.on("error", () => {})
+  child.stdin?.end(input.message)
 
   const state: CodexParseState = {}
   const stderr: Buffer[] = []

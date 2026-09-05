@@ -121,7 +121,6 @@ describe("Codex CLI MCP injection", () => {
     for (const threadId of [null, "thread-7"]) {
       const args = buildCodexArgs({
         cwd: "/tmp/ws",
-        message: "hello",
         threadId,
         skipGitRepoCheck: false,
         model: "gpt-5.3-codex",
@@ -134,7 +133,6 @@ describe("Codex CLI MCP injection", () => {
     expect(
       buildCodexArgs({
         cwd: "/tmp/ws",
-        message: "hello",
         threadId: "thread-7",
         skipGitRepoCheck: false,
         mcpArgs,
@@ -142,14 +140,16 @@ describe("Codex CLI MCP injection", () => {
     ).toContain("resume")
   })
 
-  it("passes args as an array with no shell quoting layer", () => {
+  it("keeps the prompt out of argv entirely", () => {
+    // The message now travels on stdin; `-` is the placeholder telling the CLI
+    // to read it from there. Nothing user-authored reaches the process list.
     const args = buildCodexArgs({
       cwd: "/tmp/ws",
-      message: 'a "quoted" message; rm -rf /',
       skipGitRepoCheck: false,
       mcpArgs: codexMcpArgs(INJECTION),
     })
-    expect(args.at(-1)).toBe('a "quoted" message; rm -rf /')
+    expect(args.at(-1)).toBe("-")
+    expect(args).not.toContain('a "quoted" message; rm -rf /')
   })
 
   it("puts the token only in the child environment", () => {
