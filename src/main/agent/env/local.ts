@@ -22,6 +22,7 @@ import { tmpdir } from "os"
 import { StringDecoder } from "string_decoder"
 import * as pty from "node-pty"
 import { captureSpawn } from "./spawn-util"
+import { hostCliEnv } from "./host-cli-env"
 import {
   buildRipgrepArgs,
   parseRipgrepJson,
@@ -75,6 +76,7 @@ type SpawnFn = typeof spawn
 interface LocalEnvironmentDeps {
   resolveRipgrepPath?: () => string
   spawn?: SpawnFn
+  hostCliEnv?: typeof hostCliEnv
   platform?: NodeJS.Platform
   searchTimeoutMs?: number
   searchMaxOutputBytes?: number
@@ -299,11 +301,12 @@ export class LocalEnvironment implements Environment {
       commandToRun = materialized.command
     }
 
-    const child = this.spawnShell(commandToRun, opts.cwd, [
-      "ignore",
-      "pipe",
-      "pipe",
-    ])
+    const child = this.spawnShell(
+      commandToRun,
+      opts.cwd,
+      ["ignore", "pipe", "pipe"],
+      await this.hostEnv()
+    )
     try {
       const result = await captureSpawn(child, { ...opts, killGroup: true })
       if (!cleanupPath) return result
@@ -325,7 +328,9 @@ export class LocalEnvironment implements Environment {
       shell: false,
       detached: this.commandPlatform() !== "win32",
       stdio: ["ignore", "pipe", "pipe"],
-      env: opts.env ? { ...process.env, ...opts.env } : process.env,
+      // An explicit opts.env keeps its documented precedence: it layers over the
+      // normalized host environment rather than replacing it.
+      env: { ...(await this.hostEnv()), ...(opts.env ?? {}) },
     })
     return captureSpawn(child, { ...opts, killGroup: true })
   }
@@ -352,6 +357,8 @@ export class LocalEnvironment implements Environment {
       commandToRun = materialized.command
     }
 
+    const hostEnv = await this.hostEnv()
+
     let handle: CommandSessionHandle
     if (opts.tty) {
       const shell = this.shellInvocation(commandToRun, false)
@@ -361,7 +368,7 @@ export class LocalEnvironment implements Environment {
           cols: 80,
           rows: 24,
           cwd: opts.cwd,
-          env: { ...process.env, TERM: "xterm-256color" },
+          env: { ...hostEnv, TERM: "xterm-256color" },
         })
         handle = new PtyCommandHandle(term, opts.signal)
       } catch (error) {
@@ -376,11 +383,12 @@ export class LocalEnvironment implements Environment {
     }
 
     try {
-      const child = this.spawnShell(commandToRun, opts.cwd, [
-        "pipe",
-        "pipe",
-        "pipe",
-      ])
+      const child = this.spawnShell(
+        commandToRun,
+        opts.cwd,
+        ["pipe", "pipe", "pipe"],
+        hostEnv
+      )
       handle = new ChildProcessCommandHandle(child, {
         killGroup: true,
         signal: opts.signal,
@@ -418,6 +426,22 @@ export class LocalEnvironment implements Environment {
     return this.deps.spawn ?? spawn
   }
 
+  // The environment every Local command runs under. Resolving it means spawning
+  // a login shell, so it is memoized per instance on top of the process-wide
+  // cache in hostCliEnv() — a LocalEnvironment is constructed per tool call in
+  // several places, and none of them should pay for a second probe.
+  //
+  // The constructor cannot await, so this is lazy rather than injected: every
+  // command entry point is already async. A probe failure must never make
+  // commands unavailable, so it degrades to the inherited environment.
+  private hostEnvPromise?: Promise<NodeJS.ProcessEnv>
+  private hostEnv(): Promise<NodeJS.ProcessEnv> {
+    this.hostEnvPromise ??= (this.deps.hostCliEnv ?? hostCliEnv)().catch(
+      () => ({ ...process.env })
+    )
+    return this.hostEnvPromise
+  }
+
   // Grep the workspace through ripgrep, parsing `--json` so file names and
   // content are never split with ad-hoc delimiters. Patterns/globs are argv data.
   async search(opts: SearchOptions): Promise<SearchResult> {
@@ -442,6 +466,9 @@ export class LocalEnvironment implements Environment {
         shell: false,
         detached: this.commandPlatform() !== "win32",
         stdio: ["ignore", "pipe", "pipe"],
+        // Normally resolveRipgrepPath returns the packaged absolute path and this
+        // is immaterial; it matters for the "rg" PATH fallback used in dev.
+        env: await this.hostEnv(),
       }
     )
     const res = await captureSpawn(child, {
@@ -494,10 +521,16 @@ export class LocalEnvironment implements Environment {
     }
   }
 
+  // `env` is passed explicitly rather than inherited: a GUI-launched Electron
+  // process carries a minimal PATH, so the captured shell (/bin/sh -c, which
+  // sources nothing) would otherwise miss anything the user installed through
+  // their login shell. The sandboxed branch needs it for the same reason — the
+  // seatbelt profile restricts writes and network, not executable lookup.
   private spawnShell(
     command: string,
     cwd: string,
-    stdio: ["ignore" | "pipe", "pipe", "pipe"] | ["pipe", "pipe", "pipe"]
+    stdio: ["ignore" | "pipe", "pipe", "pipe"] | ["pipe", "pipe", "pipe"],
+    env: NodeJS.ProcessEnv
   ): ChildProcess {
     if (this.profile === "host-access") {
       return this.commandSpawn()(command, {
@@ -505,6 +538,7 @@ export class LocalEnvironment implements Environment {
         shell: true,
         detached: this.commandPlatform() !== "win32",
         stdio,
+        env,
       })
     }
     const shell = this.shellInvocation(command, true)
@@ -513,6 +547,7 @@ export class LocalEnvironment implements Environment {
       shell: false,
       detached: this.commandPlatform() !== "win32",
       stdio,
+      env,
     })
   }
 

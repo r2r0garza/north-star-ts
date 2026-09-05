@@ -68,6 +68,19 @@ export function registerSettingsHandlers(): void {
   ipcMain.handle("settings:setAgentSources", (_e, next: AgentSourcesSettings) =>
     settingsService.setAgentSources(next)
   )
+  ipcMain.handle(
+    "settings:setAgentSourceVisibility",
+    (_e, source: string, visible: boolean) => {
+      const current = settingsService.getAgentSources()
+      return settingsService.setAgentSources({
+        ...current,
+        visibleExternalSources: {
+          ...current.visibleExternalSources,
+          [source]: visible,
+        },
+      })
+    }
+  )
 
   ipcMain.handle("settings:getMcpSources", () =>
     settingsService.getMcpSources()

@@ -121,6 +121,9 @@ export interface SkillSourcesSettings {
 // See agent/agents/sources.ts.
 export interface AgentSourcesSettings {
   folders: string[]
+  // External providers shown in agent catalog and picker surfaces. Missing keys
+  // default to visible so newly added providers preserve existing behavior.
+  visibleExternalSources: Record<string, boolean>
 }
 
 // Extra MCP-source folders the user registers in Settings → Capabilities, on top
@@ -222,7 +225,10 @@ const DEFAULT_INDEXING: IndexingSettings = {
 
 const DEFAULT_SKILL_SOURCES: SkillSourcesSettings = { folders: [] }
 
-const DEFAULT_AGENT_SOURCES: AgentSourcesSettings = { folders: [] }
+const DEFAULT_AGENT_SOURCES: AgentSourcesSettings = {
+  folders: [],
+  visibleExternalSources: {},
+}
 const DEFAULT_MCP_SOURCES: McpSourcesSettings = { folders: [] }
 
 const DEFAULT_BROWSER: BrowserSettings = {
@@ -479,13 +485,26 @@ function loadAgentSources(): AgentSourcesSettings {
         folders: Array.isArray(parsed.folders)
           ? parsed.folders.filter((f): f is string => typeof f === "string")
           : DEFAULT_AGENT_SOURCES.folders,
+        visibleExternalSources:
+          parsed.visibleExternalSources &&
+          typeof parsed.visibleExternalSources === "object" &&
+          !Array.isArray(parsed.visibleExternalSources)
+            ? Object.fromEntries(
+                Object.entries(parsed.visibleExternalSources).filter(
+                  ([, value]): value is boolean => typeof value === "boolean"
+                )
+              )
+            : DEFAULT_AGENT_SOURCES.visibleExternalSources,
       }
       return agentSourcesCache
     } catch {
       // Corrupt blob — fall through to defaults.
     }
   }
-  agentSourcesCache = { folders: [...DEFAULT_AGENT_SOURCES.folders] }
+  agentSourcesCache = {
+    folders: [...DEFAULT_AGENT_SOURCES.folders],
+    visibleExternalSources: { ...DEFAULT_AGENT_SOURCES.visibleExternalSources },
+  }
   return agentSourcesCache
 }
 

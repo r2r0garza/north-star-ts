@@ -411,8 +411,14 @@ ipcMain.handle("skills:list", async (_event, workspace?: string) => {
 // agents are excluded here (they're only reachable as another agent's child).
 ipcMain.handle("agents:list", async (_event, workspace?: string) => {
   const agents = await loadAgents(agentSources(workspace))
+  const { visibleExternalSources = {} } = settingsService.getAgentSources()
   return agents
-    .filter((a) => a.userInvocable)
+    .filter(
+      (a) =>
+        a.userInvocable &&
+        (a.sourceKind === "north_star" ||
+          visibleExternalSources[a.sourceKind] !== false)
+    )
     .map(
       ({
         refId,

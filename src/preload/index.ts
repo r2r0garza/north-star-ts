@@ -1265,6 +1265,12 @@ const api = {
         "settings:setAgentSources",
         next
       ) as Promise<AgentSourcesSettings>,
+    setAgentSourceVisibility: (source: string, visible: boolean) =>
+      ipcRenderer.invoke(
+        "settings:setAgentSourceVisibility",
+        source,
+        visible
+      ) as Promise<AgentSourcesSettings>,
     getMcpSources: () =>
       ipcRenderer.invoke(
         "settings:getMcpSources"

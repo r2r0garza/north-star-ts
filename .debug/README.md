@@ -1,19 +1,20 @@
 # Tool hardening debug queue
 
-Last audited: **2026-09-02**, against the current `feat/agent-hardening` working
-tree. The 96 briefs below cover tool hardening and the subsequent agent/process
+Last audited: **2026-09-04**, against the current `feat/agent-hardening` working
+tree. The 97 briefs below cover tool hardening and the subsequent agent/process
 recovery work. Numeric IDs are stable creation order.
 
 ## Current queue
 
 **The queue is not fully closed:** 93 briefs are Closed, Fixed, or Resolved;
 061 is Implemented with a documented execution boundary; 048 and 054 remain
-Partial.
+Partial; 097 is Resolved.
 
 | ID  | Remaining work                                                                                                                                                                                                               | Tracking / prerequisite                                                                                                                                                                                        |
 | --- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 048 | Sandbox enforcement coverage and user-facing documentation distinguishing approval, command classification, and OS isolation. Native Linux/Windows sandbox adapters remain deferred; unsupported Local profiles fail closed. | [Linux adapter plan](../.plan/053-linux-local-sandbox-adapter.md), [Windows adapter plan](../.plan/054-windows-local-sandbox-adapter.md)                                                                       |
 | 054 | Bind local filesystem validation and use to opened directory handles; repeated path validation only mitigates the parent-symlink race.                                                                                       | [ADR 009](../.decisions/009-local-filesystem-openat-helper.md) deliberately retains Partial status; [native helper plan](../.plan/055-local-filesystem-openat-helper.md) exists but is Not Started / deferred. |
+| 097 | Normalize the environment inherited by Local commands so GUI-launched Host access sessions can resolve executables from the user's login-shell PATH.                                                                         | Reuse the existing [`hostCliEnv`](../src/main/agent/env/host-cli-env.ts) path normalization across Local command modes.                                                                                       |
 
 061 provides read-only `skill://` resource access. Direct execution of bundled
 scripts through shell URI rewriting remains outside its implemented scope, as
@@ -126,6 +127,7 @@ tracking consistency; partial/deferred work remains visible until verified.
 | 094 | P2       | Closed                        | [Handle process failure diagnostic persistence failures honestly](./094-process-failure-db-persistence-fallback.md)                 | Persistence failure diagnostics                    |
 | 095 | P2       | Fixed                         | [Reject empty terminal model responses](./095-empty-model-response-reported-as-complete.md)                                         | Conversation completion and model-request recovery |
 | 096 | P2       | CLOSED                        | [Preserve model response failure diagnostics](./096-model-response-failure-diagnostics.md)                                          | Model-response evidence and bounded diagnostics    |
+| 097 | P2       | RESOLVED                        | [Local Host access commands miss the login-shell PATH](./097-local-host-access-misses-login-shell-path.md)                           | Local command environment                          |
 
 ## Maintaining the queue
 

@@ -738,10 +738,15 @@ function App(
   // <workspace>/.cowork/agents and <workspace>/.github/agents), mirroring skills.
   useEffect(() => reloadAgents(), [reloadAgents])
 
-  // Re-scan externally edited agent files when the app comes back into focus.
+  // Re-scan externally edited files and refresh when the Agents screen changes
+  // which external providers should be visible in the picker.
   useEffect(() => {
     window.addEventListener("focus", reloadAgents)
-    return () => window.removeEventListener("focus", reloadAgents)
+    window.addEventListener("agent-source-visibility-changed", reloadAgents)
+    return () => {
+      window.removeEventListener("focus", reloadAgents)
+      window.removeEventListener("agent-source-visibility-changed", reloadAgents)
+    }
   }, [reloadAgents])
 
   // Report the workspace root up to the Shell so the sidebar Changes review + the

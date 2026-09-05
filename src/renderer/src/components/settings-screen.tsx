@@ -578,6 +578,7 @@ export function SettingsScreen({
     if (current.folders.includes(picked.path)) return
     if (agentSources?.some((r) => r.path === picked.path)) return
     await window.cowork.settings.setAgentSources({
+      ...current,
       folders: [...current.folders, picked.path],
     })
     await refreshAgentSources()
@@ -586,6 +587,7 @@ export function SettingsScreen({
   async function removeAgentFolder(path: string) {
     const current = await window.cowork.settings.getAgentSources()
     await window.cowork.settings.setAgentSources({
+      ...current,
       folders: current.folders.filter((f) => f !== path),
     })
     await refreshAgentSources()

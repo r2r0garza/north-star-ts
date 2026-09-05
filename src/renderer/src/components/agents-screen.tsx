@@ -121,6 +121,8 @@ const TOOL_CATEGORY_DESCRIPTIONS: Record<
 // folders (source dir + name), since the same name can appear in several.
 type CatalogAgent = AgentDefinition & { key: string; kind: AgentFolder["kind"] }
 
+type ExternalSourceKind = Exclude<AgentDefinition["sourceKind"], "north_star">
+
 function agentKey(sourcePath: string, name: string): string {
   return `${sourcePath} ${name}`
 }
@@ -153,6 +155,28 @@ function matchesQuery(a: AgentDefinition, query: string): boolean {
     displayName(a).toLowerCase().includes(q) ||
     a.description.toLowerCase().includes(q)
   )
+}
+
+function isVisibleAgent(
+  agent: AgentDefinition,
+  query: string,
+  enabledSources: Record<string, boolean>
+): boolean {
+  return (
+    agent.sourceKind === "north_star" ||
+    enabledSources[agent.sourceKind] !== false
+  ) && matchesQuery(agent, query)
+}
+
+function sourceLabel(sourceKind: ExternalSourceKind): string {
+  switch (sourceKind) {
+    case "github":
+      return "GitHub Copilot"
+    case "codex":
+      return "Codex"
+    default:
+      return sourceKind[0].toUpperCase() + sourceKind.slice(1)
+  }
 }
 
 // The editable field set (mirrors the main-process AgentFields).
@@ -200,6 +224,9 @@ export function AgentsScreen({ onClose }: { onClose: () => void }) {
   // Free-text filter over the cards (matches name + description). Applies across
   // all three tabs.
   const [query, setQuery] = useState("")
+  // External source visibility is persisted in settings. Unlisted providers
+  // default to visible so newly discovered sources preserve existing behavior.
+  const [enabledSources, setEnabledSources] = useState<Record<string, boolean>>({})
   // Skill names for the skills picker's "Choose" list. Loaded once on mount.
   const [skillNames, setSkillNames] = useState<string[]>([])
   // Enabled MCP server names for the MCP-servers "Choose" picker.
@@ -227,6 +254,14 @@ export function AgentsScreen({ onClose }: { onClose: () => void }) {
   const selected = useMemo(
     () => allAgents.find((a) => a.key === selectedKey) ?? null,
     [allAgents, selectedKey]
+  )
+
+  const externalSources = useMemo(
+    () =>
+      [...new Set(allAgents.map((agent) => agent.sourceKind))]
+        .filter((source): source is ExternalSourceKind => source !== "north_star")
+        .sort(),
+    [allAgents]
   )
 
   // All agent names (deduped) for the children picker's "Choose" list.
@@ -257,6 +292,9 @@ export function AgentsScreen({ onClose }: { onClose: () => void }) {
   // (main.tsx renders it conditionally), so it starts fresh each time.
   useEffect(() => {
     loadTree()
+    window.cowork.settings
+      .getAgentSources()
+      .then((settings) => setEnabledSources(settings.visibleExternalSources))
     window.cowork.skills
       .list()
       .then((rows) => setSkillNames(rows.map((s) => s.name)))
@@ -595,12 +633,41 @@ export function AgentsScreen({ onClose }: { onClose: () => void }) {
             </div>
           </div>
 
-          <div className="shrink-0 border-b px-4 py-2">
+          <div className="shrink-0 space-y-2 border-b px-4 py-2">
             <FilterInput
               value={query}
               onChange={setQuery}
               placeholder="Filter agents…"
             />
+            {externalSources.length > 0 && (
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+                <span className="text-xs text-muted-foreground">Sources</span>
+                {externalSources.map((source) => (
+                  <Label key={source} className="flex items-center gap-2 text-xs">
+                    <Switch
+                      size="sm"
+                      checked={enabledSources[source] !== false}
+                      onCheckedChange={(checked) => {
+                        const visibleExternalSources = {
+                          ...enabledSources,
+                          [source]: checked,
+                        }
+                        setEnabledSources(visibleExternalSources)
+                        void window.cowork.settings
+                          .setAgentSourceVisibility(source, checked)
+                          .then(() => {
+                            window.dispatchEvent(
+                              new Event("agent-source-visibility-changed")
+                            )
+                          })
+                      }}
+                      aria-label={`${enabledSources[source] !== false ? "Hide" : "Show"} ${sourceLabel(source)} agents`}
+                    />
+                    {sourceLabel(source)}
+                  </Label>
+                ))}
+              </div>
+            )}
           </div>
 
           <ScrollArea className="min-h-0 flex-1">
@@ -609,7 +676,7 @@ export function AgentsScreen({ onClose }: { onClose: () => void }) {
                 {(() => {
                   const cards = (tree?.global ?? []).flatMap((f) =>
                     f.agents
-                      .filter((a) => matchesQuery(a, query))
+                      .filter((a) => isVisibleAgent(a, query, enabledSources))
                       .map((a) => (
                         <AgentCard
                           key={a.refId ?? agentKey(f.path, a.name)}
@@ -641,6 +708,7 @@ export function AgentsScreen({ onClose }: { onClose: () => void }) {
                     key={ws.path}
                     ws={ws}
                     query={query}
+                    enabledSources={enabledSources}
                     onOpen={selectAgent}
                     onDelete={deleteAgent}
                   />
@@ -653,7 +721,7 @@ export function AgentsScreen({ onClose }: { onClose: () => void }) {
                 )}
                 {tree?.custom.map((folder) => {
                   const matched = folder.agents.filter((a) =>
-                    matchesQuery(a, query)
+                    isVisibleAgent(a, query, enabledSources)
                   )
                   return (
                     <div key={folder.path} className="space-y-2">
@@ -1222,19 +1290,22 @@ function AgentCard({
 function WorkspaceSection({
   ws,
   query,
+  enabledSources,
   onOpen,
   onDelete,
 }: {
   ws: AgentTree["workspaces"][number]
   query: string
+  enabledSources: Record<string, boolean>
   onOpen: (key: string) => void
   onDelete: (a: CatalogAgent) => void
 }) {
   const [open, setOpen] = useState(false)
-  const filtering = query.trim().length > 0
+  const filtering =
+    query.trim().length > 0 || Object.values(enabledSources).includes(false)
   const wsAgents = ws.folders
     .flatMap((f) => f.agents.map((a) => ({ folder: f, agent: a })))
-    .filter(({ agent }) => matchesQuery(agent, query))
+    .filter(({ agent }) => isVisibleAgent(agent, query, enabledSources))
   // A filtered section with no matches drops out entirely.
   if (filtering && wsAgents.length === 0) return null
   return (

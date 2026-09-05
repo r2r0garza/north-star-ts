@@ -194,6 +194,35 @@ describe("settings service — title generation", () => {
   })
 })
 
+describe("settings service — agent sources", () => {
+  it("defaults external providers to visible and preserves an explicit preference", () => {
+    expect(service.getAgentSources()).toEqual({
+      folders: [],
+      visibleExternalSources: {},
+    })
+
+    service.setAgentSources({
+      folders: ["/custom/agents"],
+      visibleExternalSources: { claude: false, cursor: true },
+    })
+    service._resetCacheForTests()
+
+    expect(service.getAgentSources()).toEqual({
+      folders: ["/custom/agents"],
+      visibleExternalSources: { claude: false, cursor: true },
+    })
+  })
+
+  it("fills visibility defaults for saved settings from before provider filters", () => {
+    store.set("agentSources", JSON.stringify({ folders: ["/custom/agents"] }))
+
+    expect(service.getAgentSources()).toEqual({
+      folders: ["/custom/agents"],
+      visibleExternalSources: {},
+    })
+  })
+})
+
 describe("settings service — conversations", () => {
   it("defaults the startup view to the main agent mode", () => {
     expect(service.getConversations()).toEqual({ defaultMode: "north_star" })

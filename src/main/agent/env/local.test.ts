@@ -24,6 +24,7 @@ import {
 } from "./local"
 import { runToolCallBatches } from "../tool-batch-scheduler"
 import { TOOL_EFFECTS } from "../tools/types"
+import type { CommandSessionHandle } from "./types"
 import { SearchExecutionError, SearchPatternError } from "./ripgrep"
 import { applyPatchTool } from "../tools/apply_patch_tool"
 import {
@@ -1278,3 +1279,184 @@ it("stops paged reads between chunks and closes the file handle on cancellation"
   expect(reads).toBe(1)
   expect(opened.fd).toBe(-1)
 })
+
+// Regression coverage for .debug/097: a GUI-launched Electron process carries a
+// minimal PATH, and the captured shell (/bin/sh -c) sources no dotfiles, so
+// Local commands used to miss anything installed through the user's login shell.
+// These tests use a synthetic executable and a synthetic normalized environment,
+// so they never depend on the developer machine's node manager, pnpm, or shell.
+describe.skipIf(process.platform === "win32")(
+  "LocalEnvironment host environment",
+  () => {
+    const SENTINEL = "ns-sentinel-tool"
+    let binDir: string
+    let hostEnvCalls: number
+
+    const hostEnvWith = (extra: NodeJS.ProcessEnv = {}) => {
+      hostEnvCalls = 0
+      return async () => {
+        hostEnvCalls++
+        return { ...extra, PATH: binDir } as NodeJS.ProcessEnv
+      }
+    }
+
+    const collect = (handle: CommandSessionHandle) =>
+      new Promise<string>((resolve) => {
+        let out = ""
+        handle.onData((chunk) => {
+          out += chunk.data.toString("utf8")
+        })
+        handle.onExit(() => resolve(out))
+      })
+
+    beforeEach(async () => {
+      binDir = await mkdtemp(join(tmpdir(), "env-sentinel-bin-"))
+      const script = join(binDir, SENTINEL)
+      await writeFile(script, "#!/bin/sh\necho sentinel-ok\n", "utf8")
+      await chmod(script, 0o755)
+    })
+    afterEach(async () => {
+      await rm(binDir, { recursive: true, force: true })
+    })
+
+    it("resolves an executable found only on the normalized host PATH", async () => {
+      const local = new LocalEnvironment(workspace, "host-access", {
+        hostCliEnv: hostEnvWith(),
+      })
+      const r = await local.exec(SENTINEL, {
+        cwd: workspace,
+        timeoutMs: 5000,
+        maxOutputBytes: 1024,
+      })
+
+      expect(r.exitCode).toBe(0)
+      expect(r.stdout.toString("utf8").trim()).toBe("sentinel-ok")
+    })
+
+    it("still fails when the normalized environment does not contain it", async () => {
+      const local = new LocalEnvironment(workspace, "host-access", {
+        hostCliEnv: async () => ({ ...process.env, PATH: "/usr/bin:/bin" }),
+      })
+      const r = await local.exec(SENTINEL, {
+        cwd: workspace,
+        timeoutMs: 5000,
+        maxOutputBytes: 1024,
+      })
+
+      expect(r.exitCode).toBe(127)
+    })
+
+    it("resolves the same executable through a non-TTY command session", async () => {
+      const local = new LocalEnvironment(workspace, "host-access", {
+        hostCliEnv: hostEnvWith(),
+      })
+      const handle = await local.spawnCommand(SENTINEL, {
+        cwd: workspace,
+        tty: false,
+      })
+
+      expect((await collect(handle)).trim()).toBe("sentinel-ok")
+    })
+
+    it("resolves the same executable through a TTY command session", async () => {
+      const local = new LocalEnvironment(workspace, "host-access", {
+        hostCliEnv: hostEnvWith(),
+      })
+      const handle = await local.spawnCommand(SENTINEL, {
+        cwd: workspace,
+        tty: true,
+      })
+
+      expect(await collect(handle)).toContain("sentinel-ok")
+    })
+
+    it("passes the normalized environment to execFile", async () => {
+      const local = new LocalEnvironment(workspace, "host-access", {
+        hostCliEnv: hostEnvWith({ NS_SENTINEL_VAR: "from-host-env" }),
+      })
+      const r = await local.execFile(
+        process.execPath,
+        ["-e", "process.stdout.write(String(process.env.NS_SENTINEL_VAR))"],
+        { cwd: workspace, timeoutMs: 5000, maxOutputBytes: 1024 }
+      )
+
+      expect(r.stdout.toString("utf8")).toBe("from-host-env")
+    })
+
+    it("lets an explicit execFile env override the normalized value", async () => {
+      const local = new LocalEnvironment(workspace, "host-access", {
+        hostCliEnv: hostEnvWith({ NS_SENTINEL_VAR: "from-host-env" }),
+      })
+      const r = await local.execFile(
+        process.execPath,
+        ["-e", "process.stdout.write(String(process.env.NS_SENTINEL_VAR))"],
+        {
+          cwd: workspace,
+          timeoutMs: 5000,
+          maxOutputBytes: 1024,
+          env: { NS_SENTINEL_VAR: "explicit-override" },
+        }
+      )
+
+      expect(r.stdout.toString("utf8")).toBe("explicit-override")
+    })
+
+    it("carries login-shell variables beyond PATH into commands", async () => {
+      const local = new LocalEnvironment(workspace, "host-access", {
+        hostCliEnv: hostEnvWith({ PNPM_HOME: "/synthetic/pnpm" }),
+      })
+      const r = await local.exec('printf "%s" "$PNPM_HOME"', {
+        cwd: workspace,
+        timeoutMs: 5000,
+        maxOutputBytes: 1024,
+      })
+
+      expect(r.stdout.toString("utf8")).toBe("/synthetic/pnpm")
+    })
+
+    it("keeps commands runnable when the login-shell probe fails", async () => {
+      const local = new LocalEnvironment(workspace, "host-access", {
+        hostCliEnv: async () => {
+          throw new Error("login shell probe failed")
+        },
+      })
+      const r = await local.exec("echo still-running", {
+        cwd: workspace,
+        timeoutMs: 5000,
+        maxOutputBytes: 1024,
+      })
+
+      expect(r.exitCode).toBe(0)
+      expect(r.stdout.toString("utf8").trim()).toBe("still-running")
+    })
+
+    it("resolves the host environment once per environment instance", async () => {
+      const local = new LocalEnvironment(workspace, "host-access", {
+        hostCliEnv: hostEnvWith(),
+      })
+      const opts = { cwd: workspace, timeoutMs: 5000, maxOutputBytes: 1024 }
+      await local.exec(SENTINEL, opts)
+      await local.exec(SENTINEL, opts)
+      await local.execFile(process.execPath, ["-e", ""], opts)
+
+      expect(hostEnvCalls).toBe(1)
+    })
+
+    it.skipIf(process.platform !== "darwin")(
+      "resolves it under the sandboxed workspace-write profile too",
+      async () => {
+        const local = new LocalEnvironment(workspace, "workspace-write", {
+          hostCliEnv: hostEnvWith(),
+        })
+        const r = await local.exec(SENTINEL, {
+          cwd: workspace,
+          timeoutMs: 5000,
+          maxOutputBytes: 1024,
+        })
+
+        expect(r.exitCode).toBe(0)
+        expect(r.stdout.toString("utf8").trim()).toBe("sentinel-ok")
+      }
+    )
+  }
+)
