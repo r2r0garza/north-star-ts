@@ -14,6 +14,7 @@ import type { ChatEvent, ChatResult } from "../index"
 import { recordMemoryTurn } from "../memory/service"
 import { normalizeClaudeModel, runClaudeCode } from "./claude"
 import { normalizeCodexModel, runCodexCli } from "./codex"
+import { CliTranscriptRecorder } from "./transcript"
 import {
   claudeMcpArgs,
   cliMcpEnv,
@@ -146,6 +147,7 @@ export async function runCodexConversation(input: {
   // Visible prose this turn produced. Accumulated from the stream so a stopped
   // or failed turn still has its work recorded, not just a clean completion.
   let assistantText = ""
+  const transcript = new CliTranscriptRecorder(input.conversation.id)
   let bridge: CliMcpInjection | null = null
   try {
     const cwd = await resolveCliCwd({
@@ -175,6 +177,7 @@ export async function runCodexConversation(input: {
       mcpArgs: bridge ? codexMcpArgs(bridge) : undefined,
       extraEnv: bridge ? cliMcpEnv(bridge, "codex_cli") : undefined,
       onEvent: (event) => {
+        transcript.record(event)
         if (event.type === "text" && event.text) {
           assistantText += event.text
           input.onEvent({ type: "token", delta: event.text })
@@ -202,6 +205,9 @@ export async function runCodexConversation(input: {
       setCliSession(input.conversation.id, "codex_cli", result.threadId)
     }
     touchCliSession(input.conversation.id, "codex_cli")
+    transcript.persist(
+      result.error || result.stopped ? undefined : (result.content ?? "")
+    )
     if (result.stopped) {
       appendMessage({
         conversationId: input.conversation.id,
@@ -219,14 +225,10 @@ export async function runCodexConversation(input: {
       return { error: result.error }
     }
     if (result.content) assistantText = result.content
-    appendMessage({
-      conversationId: input.conversation.id,
-      role: "assistant",
-      content: result.content ?? "",
-    })
     return { content: result.content }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
+    transcript.persist()
     appendMessage({
       conversationId: input.conversation.id,
       role: "assistant",
@@ -286,6 +288,7 @@ export async function runClaudeConversation(input: {
   // Visible prose this turn produced. Accumulated from the stream so a stopped
   // or failed turn still has its work recorded, not just a clean completion.
   let assistantText = ""
+  const transcript = new CliTranscriptRecorder(input.conversation.id)
   let bridge: CliMcpInjection | null = null
   let mcpConfig: { path: string; cleanup: () => Promise<void> } | null = null
   try {
@@ -330,6 +333,7 @@ export async function runClaudeConversation(input: {
         bridge && mcpConfig ? claudeMcpArgs(bridge, mcpConfig.path) : undefined,
       extraEnv: bridge ? cliMcpEnv(bridge, "claude_code") : undefined,
       onEvent: (event) => {
+        transcript.record(event)
         if (event.type === "text" && event.text) {
           assistantText += event.text
           input.onEvent({ type: "token", delta: event.text })
@@ -354,6 +358,9 @@ export async function runClaudeConversation(input: {
       },
     })
     touchCliSession(input.conversation.id, "claude_code")
+    transcript.persist(
+      result.error || result.stopped ? undefined : (result.content ?? "")
+    )
     if (result.stopped) {
       appendMessage({
         conversationId: input.conversation.id,
@@ -375,14 +382,10 @@ export async function runClaudeConversation(input: {
       return { error: result.error }
     }
     if (result.content) assistantText = result.content
-    appendMessage({
-      conversationId: input.conversation.id,
-      role: "assistant",
-      content: result.content ?? "",
-    })
     return { content: result.content }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
+    transcript.persist()
     appendMessage({
       conversationId: input.conversation.id,
       role: "assistant",
