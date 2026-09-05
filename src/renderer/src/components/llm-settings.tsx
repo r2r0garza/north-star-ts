@@ -71,7 +71,7 @@ const PROVIDERS: Array<{ value: Provider; label: string; enabled: boolean }> = [
   { value: "openai_compatible", label: "OpenAI-compatible", enabled: true },
   { value: "openai", label: "OpenAI", enabled: true },
   { value: "claude_code", label: "Claude Code CLI", enabled: true },
-  { value: "codex_cli", label: "Codex CLI", enabled: true },
+  { value: "codex_cli", label: "Codex CLI - Experimental", enabled: true },
   { value: "anthropic", label: "Anthropic", enabled: false },
   { value: "google", label: "Google", enabled: false },
   { value: "azure_openai", label: "Azure OpenAI", enabled: false },
