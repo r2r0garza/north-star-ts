@@ -1,8 +1,31 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { mkdtemp, rm, writeFile } from "fs/promises"
 import { join } from "path"
 import { tmpdir } from "os"
+import { deflateSync } from "zlib"
 import AdmZip from "adm-zip"
+
+// Page images are encoded through Electron's nativeImage, which doesn't exist
+// under vitest. The stub records what it was handed so the decode → BGRA → JPEG
+// → emitImage path can be asserted without a real encoder.
+const encodedBitmaps: Array<{ width: number; height: number; bytes: number }> =
+  []
+vi.mock("electron", () => ({
+  nativeImage: {
+    createFromBitmap: (
+      buffer: Buffer,
+      { width, height }: { width: number; height: number }
+    ) => {
+      encodedBitmaps.push({ width, height, bytes: buffer.length })
+      const handle = {
+        resize: () => handle,
+        toJPEG: () => Buffer.from("stub-jpeg-bytes"),
+      }
+      return handle
+    },
+  },
+}))
+
 import { readDocumentTool } from "./document_extraction_tool"
 
 let workspace: string
@@ -21,6 +44,66 @@ function zip(entries: Record<string, string | Buffer>): Buffer {
     archive.addFile(name, Buffer.isBuffer(data) ? data : Buffer.from(data))
   }
   return archive.toBuffer()
+}
+
+// Assembles a structurally valid PDF: real objects and an xref table with real
+// byte offsets. A parser that actually parses (rather than regexing raw bytes)
+// requires this, so the fixtures double as a guard against regressing to one.
+function buildPdf(objects: string[], trailer: Record<string, string> = {}) {
+  const header = "%PDF-1.4\n"
+  const offsets: number[] = [0]
+  let body = ""
+  for (const [index, object] of objects.entries()) {
+    offsets.push(header.length + body.length)
+    body += `${index + 1} 0 obj\n${object}\nendobj\n`
+  }
+  const startxref = header.length + body.length
+  let xref = `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`
+  for (let i = 1; i <= objects.length; i++) {
+    xref += `${String(offsets[i]).padStart(10, "0")} 00000 n \n`
+  }
+  const extra = Object.entries(trailer)
+    .map(([key, value]) => `/${key} ${value}`)
+    .join(" ")
+  xref += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R ${extra} >>\nstartxref\n${startxref}\n%%EOF\n`
+  return Buffer.from(header + body + xref, "latin1")
+}
+
+function pdfStream(dict: string, data: Buffer) {
+  return `<< ${dict} /Length ${data.length} >>\nstream\n${data.toString("latin1")}\nendstream`
+}
+
+function textPdf() {
+  return buildPdf(
+    [
+      "<< /Type /Catalog /Pages 2 0 R >>",
+      "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>",
+      pdfStream(
+        "",
+        Buffer.from("BT /F1 24 Tf 72 700 Td (Visible text) Tj ET\n", "latin1")
+      ),
+      "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+      "<< /Title (Hello PDF) /Author (Test Suite) >>",
+    ],
+    { Info: "6 0 R" }
+  )
+}
+
+// One page that paints a single image and shows no text — the shape of a scan or
+// a slide deck exported to PDF.
+function imageOnlyPdf(width = 8, height = 8) {
+  const rgb = Buffer.alloc(width * height * 3, 40)
+  return buildPdf([
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /XObject << /Im1 5 0 R >> >> /Contents 4 0 R >>",
+    pdfStream("", Buffer.from("q 612 0 0 792 0 0 cm /Im1 Do Q\n", "latin1")),
+    pdfStream(
+      `/Type /XObject /Subtype /Image /Width ${width} /Height ${height} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /FlateDecode`,
+      deflateSync(rgb)
+    ),
+  ])
 }
 
 function metadata(result: string): Record<string, unknown> {
@@ -153,14 +236,8 @@ describe("read_document", () => {
     expect(next).toContain("output 1: x")
   })
 
-  it("extracts simple PDF metadata and uncompressed text operators", async () => {
-    await writeFile(
-      join(workspace, "note.pdf"),
-      Buffer.from(
-        "%PDF-1.4\n1 0 obj << /Type /Page >> endobj\n2 0 obj << /Title (Hello PDF) >> endobj\nstream\n(Visible text) Tj\nendstream\n%%EOF",
-        "latin1"
-      )
-    )
+  it("extracts PDF text and metadata per page", async () => {
+    await writeFile(join(workspace, "note.pdf"), textPdf())
 
     const result = await readDocumentTool.execute(
       { path: "note.pdf", include_metadata: true },
@@ -168,8 +245,79 @@ describe("read_document", () => {
     )
 
     expect(result).toContain('"title": "Hello PDF"')
+    expect(result).toContain('"author": "Test Suite"')
     expect(result).toContain("[page page=1]\nVisible text")
-    expect(result).toContain("PDF v1 extraction")
+    expect(metadata(result)).toMatchObject({ type: "pdf", warnings: [] })
+  })
+
+  it("never emits bytes that are not text from a PDF", async () => {
+    // The page draws an image and shows no text. Scanning the file's raw bytes
+    // (the old behavior) matched compressed image data as if it were a text
+    // operator and reported the binary as page content.
+    await writeFile(join(workspace, "scan.pdf"), imageOnlyPdf())
+
+    const result = await readDocumentTool.execute(
+      { path: "scan.pdf" },
+      { workspace }
+    )
+
+    expect(result).toContain("[page page=1]")
+    expect(result).toContain("no text layer")
+    // No control bytes: real text may be any Unicode, but decoded image data
+    // reaching the model as "text" always shows up as control characters.
+    const body = result.slice(0, result.indexOf("[metadata]"))
+    expect(body).not.toMatch(/[\x00-\x08\x0b\x0c\x0e-\x1f]/)
+  })
+
+  it("sends a page with no text layer to the vision model as an image", async () => {
+    encodedBitmaps.length = 0
+    await writeFile(join(workspace, "scan.pdf"), imageOnlyPdf())
+    const images: Array<{ jpegBase64: string; alt: string }> = []
+
+    const result = await readDocumentTool.execute(
+      { path: "scan.pdf" },
+      { workspace, emitImage: (image) => images.push(image) }
+    )
+
+    expect(images).toHaveLength(1)
+    expect(images[0].alt).toBe("scan.pdf — page 1")
+    expect(Buffer.from(images[0].jpegBase64, "base64").toString()).toBe(
+      "stub-jpeg-bytes"
+    )
+    // The decoded page reached the encoder as a full BGRA bitmap.
+    expect(encodedBitmaps).toEqual([{ width: 8, height: 8, bytes: 8 * 8 * 4 }])
+    expect(metadata(result)).toMatchObject({ pageImagesSent: 1 })
+    expect(String(metadata(result).warnings)).toContain("no text layer")
+  })
+
+  it("reads a PDF without images when the caller cannot show them", async () => {
+    await writeFile(join(workspace, "scan.pdf"), imageOnlyPdf())
+
+    // No emitImage (a headless caller): the read still succeeds, and the result
+    // says outright that a page was not shown rather than implying it was empty.
+    const result = await readDocumentTool.execute(
+      { path: "scan.pdf" },
+      { workspace }
+    )
+
+    expect(metadata(result)).toMatchObject({
+      pageImagesSent: 0,
+      pageImagesWithheld: 1,
+    })
+  })
+
+  it("rejects a malformed PDF instead of inventing content", async () => {
+    await writeFile(
+      join(workspace, "broken.pdf"),
+      Buffer.from("%PDF-1.4\nnot actually a pdf\n%%EOF", "latin1")
+    )
+
+    const result = await readDocumentTool.execute(
+      { path: "broken.pdf" },
+      { workspace }
+    )
+
+    expect(result).toContain("ERROR[extract_failed]")
   })
 
   it("extracts basic image metadata only", async () => {

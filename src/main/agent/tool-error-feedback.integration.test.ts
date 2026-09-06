@@ -1844,4 +1844,60 @@ describe.skipIf(!sqliteLoads)("tool batch durability and cancellation", () => {
       ["second", "second"],
     ])
   })
+
+  it("offers read_document alongside read_file_tool for a Chat document attachment", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "north-star-attach-"))
+    const pdf = join(dir, "report.pdf")
+    const notes = join(dir, "notes.txt")
+    await writeFile(pdf, "%PDF-1.4\n", "utf-8")
+    await writeFile(notes, "plain text\n", "utf-8")
+    const conversation = createConversation({ mode: "chat" })
+
+    scriptedCompletions.push((request) => {
+      expect(request.tools).toContain("read_file_tool")
+      expect(request.tools).toContain("read_document")
+      // The note must route each attachment to the reader that can parse it —
+      // read_file_tool would only return ERROR[binary] for the PDF.
+      const content = lastMessage(request, "user")?.content as string
+      expect(content).toContain("read with read_file_tool: notes.txt")
+      expect(content).toContain("read with read_document: report.pdf")
+      return streamText("Read it.")
+    })
+
+    const result = await runAgentLoop({
+      conversationId: conversation.id,
+      attachments: [notes, pdf],
+      userMessage: "summarize these",
+      abort: new AbortController(),
+      onEvent: () => {},
+    })
+
+    expect(result).toEqual({ content: "Read it." })
+  })
+
+  it("withholds read_document when no Chat attachment needs it", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "north-star-attach-"))
+    const notes = join(dir, "notes.txt")
+    await writeFile(notes, "plain text\n", "utf-8")
+    const conversation = createConversation({ mode: "chat" })
+
+    scriptedCompletions.push((request) => {
+      expect(request.tools).toContain("read_file_tool")
+      expect(request.tools).not.toContain("read_document")
+      expect(lastMessage(request, "user")?.content).toContain(
+        "read with read_file_tool: notes.txt"
+      )
+      return streamText("Read it.")
+    })
+
+    const result = await runAgentLoop({
+      conversationId: conversation.id,
+      attachments: [notes],
+      userMessage: "summarize this",
+      abort: new AbortController(),
+      onEvent: () => {},
+    })
+
+    expect(result).toEqual({ content: "Read it." })
+  })
 })

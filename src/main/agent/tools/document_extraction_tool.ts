@@ -16,6 +16,18 @@ const MAX_BLOCK_LIMIT = 200
 const MAX_RESULT_BYTES = 192 * 1024
 const MAX_CELL_TEXT_BYTES = 4096
 const MAX_NOTEBOOK_OUTPUT_BYTES = 16 * 1024
+// A PDF page with no text layer is a picture (a scan, or a slide exported as an
+// image). Those pages are handed to the vision model instead — but only a few
+// per call: each one costs an image in the turn, and decoding is the expensive
+// part of reading a PDF. The block cursor pages through the rest.
+const MAX_PAGE_IMAGES = 3
+const PAGE_IMAGE_JPEG_QUALITY = 80
+// Long-edge cap for an emitted page image. Vision models downsample above ~1568px
+// anyway, so a 300-dpi scan is resized before encoding rather than after.
+const MAX_PAGE_IMAGE_EDGE = 1568
+// A page whose image never finishes decoding is reported as unavailable rather
+// than left to hold the whole read open.
+const PAGE_IMAGE_TIMEOUT_MS = 15000
 
 type DocumentKind = "pdf" | "docx" | "xlsx" | "pptx" | "ipynb" | "image"
 
@@ -26,6 +38,9 @@ export interface ExtractedBlock {
   rows?: string[][]
   formula?: string
   value?: string
+  // A PDF page carrying no text layer. Its content, if any, is in the page image
+  // emitted alongside the result rather than in `text`.
+  imageOnly?: boolean
 }
 
 interface ExtractedDocument {
@@ -33,6 +48,13 @@ interface ExtractedDocument {
   metadata: Record<string, unknown>
   blocks: ExtractedBlock[]
   warnings: string[]
+  // Renders one page to a JPEG for the vision model, or null when that page
+  // paints no image (a genuinely blank page). Set only by the PDF extractor, and
+  // called only for the text-less pages in the window actually being returned —
+  // decoding every page of a long scan up front would be wasted work.
+  renderPageJpeg?: (page: number) => Promise<Buffer | null>
+  // Releases the parser's worker/buffers. Called once the result is rendered.
+  dispose?: () => Promise<void>
 }
 
 type Readable =
@@ -445,48 +467,162 @@ function extractIpynb(data: Buffer): ExtractedDocument {
   }
 }
 
-function pdfString(raw: string): string {
-  return raw.replace(/\\([nrtbf()\\])/g, (_, ch: string) => {
-    switch (ch) {
-      case "n":
-        return "\n"
-      case "r":
-        return "\r"
-      case "t":
-        return "\t"
-      case "b":
-        return "\b"
-      case "f":
-        return "\f"
-      default:
-        return ch
+// Encodes one decoded page bitmap as a JPEG for the vision model. pdfjs hands
+// back RGB or RGBA; Electron's nativeImage wants BGRA, so the channels are
+// swapped in one pass. Electron is imported lazily and failure is non-fatal:
+// outside the app (unit tests) a PDF still reads, it just yields no image.
+async function encodePageJpeg(image: {
+  data: Uint8ClampedArray | Uint8Array
+  width: number
+  height: number
+}): Promise<Buffer | null> {
+  const { data, width, height } = image
+  const pixels = width * height
+  if (!pixels) return null
+  const channels = Math.floor(data.length / pixels)
+  if (channels !== 3 && channels !== 4) return null
+  const bgra = Buffer.allocUnsafe(pixels * 4)
+  for (
+    let i = 0, src = 0, dst = 0;
+    i < pixels;
+    i++, src += channels, dst += 4
+  ) {
+    bgra[dst] = data[src + 2]
+    bgra[dst + 1] = data[src + 1]
+    bgra[dst + 2] = data[src]
+    bgra[dst + 3] = channels === 4 ? data[src + 3] : 255
+  }
+  try {
+    const { nativeImage } = await import("electron")
+    let handle = nativeImage.createFromBitmap(bgra, { width, height })
+    const longEdge = Math.max(width, height)
+    if (longEdge > MAX_PAGE_IMAGE_EDGE) {
+      const scale = MAX_PAGE_IMAGE_EDGE / longEdge
+      handle = handle.resize({
+        width: Math.max(1, Math.round(width * scale)),
+        height: Math.max(1, Math.round(height * scale)),
+        quality: "good",
+      })
     }
-  })
+    return handle.toJPEG(PAGE_IMAGE_JPEG_QUALITY)
+  } catch {
+    return null
+  }
 }
 
-function extractPdf(data: Buffer): ExtractedDocument {
-  const text = data.toString("latin1")
+async function extractPdf(data: Buffer): Promise<ExtractedDocument> {
+  // Imported lazily: pdfjs is ESM-only and sizeable, so only an actual PDF read
+  // pays for it — the other extractors and the tool's tests never load it.
+  const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs")
+  const loadingTask = pdfjs.getDocument({
+    // A document is untrusted input, so the parser gets no reach into the host:
+    // no system font lookup and no network fetches for missing resources.
+    data: new Uint8Array(data),
+    disableFontFace: true,
+    useSystemFonts: false,
+    // Keep going past a damaged page rather than failing the whole read.
+    stopAtErrors: false,
+  })
+  const doc = await loadingTask.promise
+
   const blocks: ExtractedBlock[] = []
-  const pageCount = [...text.matchAll(/\/Type\s*\/Page\b/g)].length
-  const metadata: Record<string, unknown> = { pages: pageCount || undefined }
+  const metadata: Record<string, unknown> = { pages: doc.numPages }
+  const info = await doc.getMetadata().catch(() => null)
   for (const key of ["Title", "Author", "Subject", "Creator", "Producer"]) {
-    const value = new RegExp(`/${key}\\s*\\(([^)]*)\\)`).exec(text)?.[1]
-    if (value) metadata[key.toLowerCase()] = pdfString(value)
+    const value = (info?.info as Record<string, unknown> | undefined)?.[key]
+    if (typeof value === "string" && value.trim()) {
+      metadata[key.toLowerCase()] = value.trim()
+    }
   }
-  const strings = [...text.matchAll(/\(([^()]*)\)\s*T[Jj]/g)].map((m) =>
-    pdfString(m[1]).trim()
-  )
-  const combined = strings.filter(Boolean).join("\n")
-  if (combined) {
-    blocks.push({ kind: "page", text: combined, location: { page: 1 } })
+
+  const textlessPages: number[] = []
+  for (let page = 1; page <= doc.numPages; page++) {
+    let text = ""
+    try {
+      const content = await (await doc.getPage(page)).getTextContent()
+      for (const item of content.items) {
+        if (!("str" in item)) continue
+        text += item.str
+        if (item.hasEOL) text += "\n"
+      }
+    } catch {
+      // A page that fails to parse is reported as such rather than skipped, so
+      // the model never mistakes a gap for an empty page.
+      blocks.push({
+        kind: "page",
+        text: "(this page could not be parsed)",
+        location: { page },
+      })
+      continue
+    }
+    text = text.trim()
+    if (text) {
+      blocks.push({ kind: "page", text, location: { page } })
+      continue
+    }
+    textlessPages.push(page)
+    blocks.push({
+      kind: "page",
+      text: "(no text layer on this page — see the page image)",
+      location: { page },
+      imageOnly: true,
+    })
   }
+
+  const warnings: string[] = []
+  if (textlessPages.length === doc.numPages && doc.numPages > 0) {
+    warnings.push(
+      `This PDF has no text layer on any of its ${doc.numPages} pages — it is a scan or an image export. Pages are supplied as images instead; read them from the images, not from the text blocks.`
+    )
+  } else if (textlessPages.length > 0) {
+    warnings.push(
+      `No text layer on ${textlessPages.length} of ${doc.numPages} pages (${textlessPages.slice(0, 10).join(", ")}${textlessPages.length > 10 ? ", …" : ""}); those pages are supplied as images.`
+    )
+  }
+
   return {
     type: "pdf",
     metadata,
     blocks,
-    warnings: [
-      "PDF v1 extraction reads metadata and simple uncompressed text operators only; complex layout, compressed streams, and encrypted PDFs may be partial.",
-    ],
+    warnings,
+    renderPageJpeg: async (page: number) => {
+      try {
+        const handle = await doc.getPage(page)
+        const ops = await handle.getOperatorList()
+        const index = ops.fnArray.findIndex(
+          (fn: number) =>
+            fn === pdfjs.OPS.paintImageXObject ||
+            fn === pdfjs.OPS.paintImageXObjectRepeat ||
+            fn === pdfjs.OPS.paintInlineImageXObject
+        )
+        if (index < 0) return null
+        const name = ops.argsArray[index][0]
+        if (typeof name !== "string") return null
+        // Decoded images land in the page's object store asynchronously, so the
+        // callback form is required — a plain get() throws while the object is
+        // still pending, which is the common case for anything small.
+        const image = await new Promise<{
+          data?: Uint8ClampedArray | Uint8Array
+          width?: number
+          height?: number
+        } | null>((resolve) => {
+          const timer = setTimeout(() => resolve(null), PAGE_IMAGE_TIMEOUT_MS)
+          handle.objs.get(name, (value: unknown) => {
+            clearTimeout(timer)
+            resolve(value as { data?: Uint8ClampedArray } | null)
+          })
+        })
+        if (!image?.data || !image.width || !image.height) return null
+        return await encodePageJpeg({
+          data: image.data,
+          width: image.width,
+          height: image.height,
+        })
+      } catch {
+        return null
+      }
+    },
+    dispose: () => loadingTask.destroy(),
   }
 }
 
@@ -568,11 +704,11 @@ function extractImage(data: Buffer, path: string): ExtractedDocument {
   }
 }
 
-function extractDocument(
+async function extractDocument(
   data: Buffer,
   path: string,
   kind: DocumentKind
-): ExtractedDocument {
+): Promise<ExtractedDocument> {
   switch (kind) {
     case "docx":
       return extractDocx(data)
@@ -639,6 +775,9 @@ export const readDocumentTool: Tool = {
       name: "read_document",
       description:
         "Read a bounded, provenance-preserving view of PDF, DOCX, XLSX, PPTX, IPYNB, or basic image metadata. " +
+        "PDF text is returned per page. A PDF page with no text layer (a scan, or slides exported as images) " +
+        "is sent to you as an image instead — read those pages from the image; a few are sent per call, so use " +
+        "the cursor to reach the rest. " +
         "Does not execute macros, formulas, notebook cells, embedded objects, or network links.",
       parameters: {
         type: "object",
@@ -719,7 +858,7 @@ export const readDocumentTool: Tool = {
 
     let doc: ExtractedDocument
     try {
-      doc = extractDocument(data, path, kind)
+      doc = await extractDocument(data, path, kind)
     } catch (error) {
       return toolError(
         "extract_failed",
@@ -753,6 +892,28 @@ export const readDocumentTool: Tool = {
       ? encodeCursor({ ...filter, index: nextIndex })
       : undefined
 
+    // Pages with no text layer are pictures, so they go to the vision model as
+    // images. Only the pages in the window actually being returned are decoded
+    // (decoding is the expensive part of reading a PDF), and only a few of those
+    // — the cursor walks through the rest a call at a time.
+    let pageImagesSent = 0
+    let pageImagesAvailable = 0
+    const emitImage = ctx.emitImage
+    for (const block of pageBlocks) {
+      if (!block.imageOnly || block.location.page == null) continue
+      pageImagesAvailable++
+      if (!emitImage || !doc.renderPageJpeg) continue
+      if (pageImagesSent >= MAX_PAGE_IMAGES) continue
+      const jpeg = await doc.renderPageJpeg(block.location.page)
+      if (!jpeg) continue
+      emitImage({
+        jpegBase64: jpeg.toString("base64"),
+        alt: `${basename(path)} — page ${block.location.page}`,
+      })
+      pageImagesSent++
+    }
+    await doc.dispose?.().catch(() => {})
+
     const parts = [
       `Document: ${path}`,
       typeof args.include_metadata === "boolean" && args.include_metadata
@@ -777,6 +938,13 @@ export const readDocumentTool: Tool = {
       warnings: doc.warnings,
       outputTruncated: capped.truncated,
       limitCapped: requestedLimit !== limit || undefined,
+      pageImagesSent: pageImagesAvailable > 0 ? pageImagesSent : undefined,
+      // Says outright that some image-only pages in this window were NOT shown,
+      // so an unseen page is never mistaken for an empty one.
+      pageImagesWithheld:
+        pageImagesAvailable > pageImagesSent
+          ? pageImagesAvailable - pageImagesSent
+          : undefined,
     })}`
   },
 }

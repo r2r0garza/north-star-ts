@@ -23,6 +23,10 @@ import { terminateOwnedCommandSessions } from "./tools/command_session_tools"
 import type { BrowserHandle } from "../browser/manager"
 import { TOOL_EFFECTS, type ToolImage } from "./tools/types"
 import { readFileTool } from "./tools/read_file_tool"
+import {
+  readDocumentTool,
+  supportedDocumentKind,
+} from "./tools/document_extraction_tool"
 import { accumulateToolCalls, extractTextToolCalls } from "./tool-stream"
 import { runToolCallBatches, ToolLifecycleError } from "./tool-batch-scheduler"
 import {
@@ -963,9 +967,22 @@ export async function runAgentLoop(
 
   // Filesystem tools are confined to a workspace, so the full set is only
   // offered when one exists. A Chat session has no workspace; instead it offers
-  // just read_file_tool, scoped to the files the user attached (the attachment
-  // list is the read allowlist — see read_file_tool's resolveReadable).
+  // the read tools, scoped to the files the user attached (the attachment list
+  // is the read allowlist — see read_file_tool's resolveReadable).
   const hasAttachments = !!attachments && attachments.length > 0
+
+  // read_file_tool only handles UTF-8 text: on a PDF/DOCX/XLSX/PPTX/IPYNB/image
+  // it fails with `binary` and points at read_document. So when an attachment is
+  // one of those, read_document is offered alongside it — otherwise Chat hits a
+  // dead end where the error names a tool that was never on the toolset. Both
+  // resolve attachments through the same allowlist and read straight from the
+  // host, so neither needs a workspace.
+  const attachedDocuments = hasAttachments
+    ? attachments!.filter((p) => supportedDocumentKind(p) !== null)
+    : []
+  const attachedTextFiles = hasAttachments
+    ? attachments!.filter((p) => supportedDocumentKind(p) === null)
+    : []
 
   // This conversation's LLM selection (provider account + model). Null fields
   // fall back to the global default inside resolveLlm, so a session that never
@@ -1133,7 +1150,9 @@ export async function runAgentLoop(
             )
           : toolDefinitions
         : hasAttachments
-          ? [readFileTool.definition]
+          ? attachedDocuments.length > 0
+            ? [readFileTool.definition, readDocumentTool.definition]
+            : [readFileTool.definition]
           : []),
       ...(showTodos
         ? // run_todos_in_background delegates to a background writer, so it's
@@ -1456,8 +1475,26 @@ export async function runAgentLoop(
         ? forcedSkills.modelMessage
         : userContent
     if (hasAttachments) {
-      const names = attachments!.map((p) => basename(p)).join(", ")
-      const note = `Attached files (read with read_file_tool when needed): ${names}`
+      // Name the reader that actually works per file: read_file_tool is text-only,
+      // so pointing it at an attached PDF/DOCX/etc. just burns a turn on a `binary`
+      // error. Only non-empty groups are listed, so the all-text case (the common
+      // one) still reads as a single list.
+      const noteParts: string[] = []
+      if (attachedTextFiles.length > 0) {
+        noteParts.push(
+          `read with read_file_tool: ${attachedTextFiles
+            .map((p) => basename(p))
+            .join(", ")}`
+        )
+      }
+      if (attachedDocuments.length > 0) {
+        noteParts.push(
+          `read with read_document: ${attachedDocuments
+            .map((p) => basename(p))
+            .join(", ")}`
+        )
+      }
+      const note = `Attached files (${noteParts.join("; ")})`
       userContent = userContent ? `${userContent}\n\n${note}` : note
       modelContent = modelContent ? `${modelContent}\n\n${note}` : note
     }
