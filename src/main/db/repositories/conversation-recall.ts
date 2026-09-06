@@ -154,7 +154,11 @@ function searchScoped(
   opts: ConversationSearchOptions
 ): ConversationSearchHit[] {
   const match = toFtsQuery(query)
-  const limit = normalizeLimit(opts.limit, SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX)
+  const limit = normalizeLimit(
+    opts.limit,
+    SEARCH_LIMIT_DEFAULT,
+    SEARCH_LIMIT_MAX
+  )
   const roleClause = roleFilter(opts.roles)
   const seqClause = sequenceFilter(opts)
   const sql = `WITH ${scopeCteSql}
@@ -194,9 +198,7 @@ function searchScoped(
 }
 
 function toFtsQuery(query: string): string {
-  const terms = query
-    .match(/[\p{L}\p{N}_@./:-]+/gu)
-    ?.slice(0, MAX_QUERY_TERMS)
+  const terms = query.match(/[\p{L}\p{N}_@./:-]+/gu)?.slice(0, MAX_QUERY_TERMS)
   if (!terms?.length) {
     throw new Error("Search query must contain at least one searchable term.")
   }
@@ -231,11 +233,7 @@ function sequenceFilter(opts: ConversationSearchOptions): {
   return { sql: clauses.join("\n"), args }
 }
 
-function normalizeLimit(
-  value: unknown,
-  fallback: number,
-  max: number
-): number {
+function normalizeLimit(value: unknown, fallback: number, max: number): number {
   return typeof value === "number" && Number.isFinite(value) && value > 0
     ? Math.min(Math.floor(value), max)
     : fallback

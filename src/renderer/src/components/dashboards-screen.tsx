@@ -37,10 +37,7 @@ import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { Label } from "@/components/ui/label"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import {
-  NativeSelect,
-  NativeSelectOption,
-} from "@/components/ui/native-select"
+import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select"
 import {
   Dialog,
   DialogContent,
@@ -118,8 +115,7 @@ interface TableWidgetConfig {
 // The rows a widget renders, normalized to an array of flat objects.
 function asRows(data: unknown): Array<Record<string, unknown>> {
   if (Array.isArray(data)) return data as Array<Record<string, unknown>>
-  if (data && typeof data === "object")
-    return [data as Record<string, unknown>]
+  if (data && typeof data === "object") return [data as Record<string, unknown>]
   return []
 }
 
@@ -151,8 +147,7 @@ function waitForTask(taskId: string): Promise<void> {
       if (
         event.type === "task_completed" ||
         event.type === "task_failed" ||
-        (event.type === "status_change" &&
-          TERMINAL_TASK_STATUSES.has(event.to))
+        (event.type === "status_change" && TERMINAL_TASK_STATUSES.has(event.to))
       ) {
         finish()
       }
@@ -188,7 +183,10 @@ function ChartWidget({
   const chartConfig: ChartConfig = Object.fromEntries(
     series.map((s, i) => [
       s.key,
-      { label: s.label ?? s.key, color: s.color ?? SERIES_COLORS[i % SERIES_COLORS.length] },
+      {
+        label: s.label ?? s.key,
+        color: s.color ?? SERIES_COLORS[i % SERIES_COLORS.length],
+      },
     ])
   )
 
@@ -347,7 +345,11 @@ function WidgetBody({
           {data.error ?? "This recipe needs approval to refresh."}
         </p>
         {approvable ? (
-          <Button size="sm" variant="outline" onClick={() => onApprove(widget.id)}>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => onApprove(widget.id)}
+          >
             <ShieldCheck className="size-4" />
             Approve this recipe
           </Button>
@@ -373,15 +375,24 @@ function WidgetBody({
   switch (widget.type) {
     case "chart":
       return (
-        <ChartWidget config={(widget.config ?? {}) as ChartWidgetConfig} rows={rows} />
+        <ChartWidget
+          config={(widget.config ?? {}) as ChartWidgetConfig}
+          rows={rows}
+        />
       )
     case "stat":
       return (
-        <StatWidget config={(widget.config ?? {}) as StatWidgetConfig} rows={rows} />
+        <StatWidget
+          config={(widget.config ?? {}) as StatWidgetConfig}
+          rows={rows}
+        />
       )
     default:
       return (
-        <TableWidget config={(widget.config ?? {}) as TableWidgetConfig} rows={rows} />
+        <TableWidget
+          config={(widget.config ?? {}) as TableWidgetConfig}
+          rows={rows}
+        />
       )
   }
 }
@@ -546,12 +557,7 @@ export function DashboardsScreen({ onClose }: { onClose: () => void }) {
           w?: number
           h?: number
         }
-        if (
-          cur.x !== l.x ||
-          cur.y !== l.y ||
-          cur.w !== l.w ||
-          cur.h !== l.h
-        ) {
+        if (cur.x !== l.x || cur.y !== l.y || cur.w !== l.w || cur.h !== l.h) {
           changed = true
           await window.cowork.db.dashboards.widgets.update(w.id, {
             pos: { x: l.x, y: l.y, w: l.w, h: l.h },
@@ -647,7 +653,9 @@ export function DashboardsScreen({ onClose }: { onClose: () => void }) {
                         {d.pinned ? (
                           <Pin className="size-3 shrink-0 fill-current text-muted-foreground" />
                         ) : null}
-                        <span className="min-w-0 flex-1 truncate">{d.name}</span>
+                        <span className="min-w-0 flex-1 truncate">
+                          {d.name}
+                        </span>
                       </button>
                     </div>
                   </ContextMenuTrigger>
@@ -826,7 +834,7 @@ export function DashboardsScreen({ onClose }: { onClose: () => void }) {
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
               onClick={confirmDelete}
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              className="text-destructive-foreground bg-destructive hover:bg-destructive/90"
             >
               Delete
             </AlertDialogAction>
@@ -1058,9 +1066,7 @@ function AddWidgetDialog({
               id="widget-type"
               className="w-full"
               value={type}
-              onChange={(e) =>
-                setType(e.target.value as DashboardWidgetType)
-              }
+              onChange={(e) => setType(e.target.value as DashboardWidgetType)}
             >
               <NativeSelectOption value="chart">Chart</NativeSelectOption>
               <NativeSelectOption value="stat">Stat</NativeSelectOption>

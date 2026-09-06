@@ -1,10 +1,7 @@
 import { listMessages } from "../../db/repositories/messages"
 import { defaultTokenCounter, type TokenCounter } from "./token-counter"
 import type { Message } from "../../db/types"
-import {
-  renderContextEnvelope,
-  type ContextProvenance,
-} from "./provenance"
+import { renderContextEnvelope, type ContextProvenance } from "./provenance"
 
 // An OpenAI-compatible chat message, the shape Portkey expects. The agent feeds
 // the array this builder returns straight into the chat completion request.

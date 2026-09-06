@@ -69,9 +69,9 @@ describe("isTransientError", () => {
   })
 
   it("keeps deterministic errors non-retryable despite the cause walk", () => {
-    expect(isTransientError({ status: 404, cause: { code: "ECONNRESET" } })).toBe(
-      false
-    ) // a real 4xx status short-circuits before the cause is consulted
+    expect(
+      isTransientError({ status: 404, cause: { code: "ECONNRESET" } })
+    ).toBe(false) // a real 4xx status short-circuits before the cause is consulted
     expect(isTransientError(new Error("bad request"))).toBe(false)
     expect(isTransientError({ message: "invalid argument" })).toBe(false)
   })

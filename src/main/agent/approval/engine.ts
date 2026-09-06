@@ -1,4 +1,8 @@
-import { PolicyEngine, type AllowlistLookup, type SandboxPolicyLookup } from "./policy"
+import {
+  PolicyEngine,
+  type AllowlistLookup,
+  type SandboxPolicyLookup,
+} from "./policy"
 import type { ToolAction } from "./types"
 import { RegexCommandClassifier } from "./regex-classifier"
 import { FileActionClassifier } from "./file-classifier"

@@ -56,7 +56,7 @@ function MessageScrollerContent({
     <MessageScrollerPrimitive.Content
       data-slot="message-scroller-content"
       className={cn(
-        "flex h-max min-h-full min-w-0 max-w-full flex-col gap-6",
+        "flex h-max min-h-full max-w-full min-w-0 flex-col gap-6",
         className
       )}
       {...props}

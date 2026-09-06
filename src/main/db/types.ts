@@ -545,6 +545,34 @@ export interface PhaseCompletionReceipt {
   checkedAt: number | null
 }
 
+export type ProcessRuntimeSlot =
+  | "worker"
+  | "decomposer"
+  | "router"
+  | "validator"
+
+export interface ProcessRuntimeSelection {
+  accountId?: string | null
+  modelId?: string | null
+  // Portable exports may name a provider instead of a local account id. The local
+  // runtime resolver ignores it until an import remaps it to an account.
+  provider?: Provider | null
+}
+
+export type ProcessRuntimeConfig = Partial<
+  Record<ProcessRuntimeSlot, ProcessRuntimeSelection>
+>
+
+export interface ProcessRuntimeSnapshotSelection {
+  accountId: string | null
+  modelId: string | null
+  source: "phase_agent" | "phase" | "run" | "source_conversation" | "default"
+}
+
+export type ProcessRuntimeSnapshot = Partial<
+  Record<ProcessRuntimeSlot, ProcessRuntimeSnapshotSelection>
+>
+
 export interface ProcessPhase {
   // Omitted only in pre-contract in-memory callers; persisted rows are explicit.
   completionContract?: PhaseCompletionContract
@@ -578,6 +606,7 @@ export interface ProcessPhase {
   // exclusive with fan_out (and the agent pool is unused) — validated in the repo.
   // Null = an ordinary agent phase.
   subprocessId: string | null
+  runtimeConfig?: ProcessRuntimeConfig | null
   position: number
 }
 
@@ -589,6 +618,7 @@ export interface ProcessPhaseAgent {
   agentName: string
   skills: string[] | null
   tools: string[] | null
+  runtimeConfig?: ProcessRuntimeConfig | null
   position: number
 }
 
@@ -623,6 +653,7 @@ export interface ProcessRun {
   // this run. Null for a top-level run. Lets the monitor nest the child run under
   // the phase and crash-resume re-attach (find-by-parent) instead of restarting.
   parentPhaseRunId: string | null
+  runtimeConfig?: ProcessRuntimeConfig | null
   status: ProcessRunStatus
   startedAt: number | null
   finishedAt: number | null
@@ -666,6 +697,7 @@ export interface ProcessPhaseRun {
   // set for on_each_subtask consumer instances. Lets flag-back reset only the
   // instance tied to a reworked source sub-task (per-child, not the whole batch).
   sourceChildRunId: string | null
+  runtimeSnapshot?: ProcessRuntimeSnapshot | null
 }
 
 export interface ProcessPhaseAttempt {

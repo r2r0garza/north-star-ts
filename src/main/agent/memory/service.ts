@@ -1,12 +1,6 @@
 import { app } from "electron"
 import { mkdir, readFile, writeFile, appendFile, rename, rm } from "fs/promises"
-import {
-  mkdirSync,
-  readFileSync,
-  writeFileSync,
-  renameSync,
-  rmSync,
-} from "fs"
+import { mkdirSync, readFileSync, writeFileSync, renameSync, rmSync } from "fs"
 import path from "path"
 import { dataDirName } from "../../config/system-name"
 import * as settingsService from "../../settings/service"

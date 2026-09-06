@@ -82,9 +82,8 @@ export async function route(input: RouteInput): Promise<string> {
       [undefined, { signal }],
       apiMode
     )
-    const choice = (
-      res as { choices?: { message?: { content?: unknown } }[] }
-    ).choices?.[0]
+    const choice = (res as { choices?: { message?: { content?: unknown } }[] })
+      .choices?.[0]
     const reply = contentToText(choice?.message?.content)
     return matchAgent(reply, pool) ?? fallback
   } catch (err) {

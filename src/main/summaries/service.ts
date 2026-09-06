@@ -216,7 +216,9 @@ function contentToText(content: unknown): string {
   if (Array.isArray(content)) {
     return content
       .map((part) =>
-        typeof part === "string" ? part : ((part as { text?: string })?.text ?? "")
+        typeof part === "string"
+          ? part
+          : ((part as { text?: string })?.text ?? "")
       )
       .join("")
   }

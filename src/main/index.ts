@@ -1257,4 +1257,3 @@ app.on("will-quit", () => {
   cancelAllQuestions()
   closeDb()
 })
-

@@ -163,9 +163,10 @@ function isVisibleAgent(
   enabledSources: Record<string, boolean>
 ): boolean {
   return (
-    agent.sourceKind === "north_star" ||
-    enabledSources[agent.sourceKind] !== false
-  ) && matchesQuery(agent, query)
+    (agent.sourceKind === "north_star" ||
+      enabledSources[agent.sourceKind] !== false) &&
+    matchesQuery(agent, query)
+  )
 }
 
 function sourceLabel(sourceKind: ExternalSourceKind): string {
@@ -226,7 +227,9 @@ export function AgentsScreen({ onClose }: { onClose: () => void }) {
   const [query, setQuery] = useState("")
   // External source visibility is persisted in settings. Unlisted providers
   // default to visible so newly discovered sources preserve existing behavior.
-  const [enabledSources, setEnabledSources] = useState<Record<string, boolean>>({})
+  const [enabledSources, setEnabledSources] = useState<Record<string, boolean>>(
+    {}
+  )
   // Skill names for the skills picker's "Choose" list. Loaded once on mount.
   const [skillNames, setSkillNames] = useState<string[]>([])
   // Enabled MCP server names for the MCP-servers "Choose" picker.
@@ -259,7 +262,9 @@ export function AgentsScreen({ onClose }: { onClose: () => void }) {
   const externalSources = useMemo(
     () =>
       [...new Set(allAgents.map((agent) => agent.sourceKind))]
-        .filter((source): source is ExternalSourceKind => source !== "north_star")
+        .filter(
+          (source): source is ExternalSourceKind => source !== "north_star"
+        )
         .sort(),
     [allAgents]
   )
@@ -643,7 +648,10 @@ export function AgentsScreen({ onClose }: { onClose: () => void }) {
               <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
                 <span className="text-xs text-muted-foreground">Sources</span>
                 {externalSources.map((source) => (
-                  <Label key={source} className="flex items-center gap-2 text-xs">
+                  <Label
+                    key={source}
+                    className="flex items-center gap-2 text-xs"
+                  >
                     <Switch
                       size="sm"
                       checked={enabledSources[source] !== false}

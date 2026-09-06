@@ -295,7 +295,7 @@ function ProjectSection({
             onClick={onNewConversation}
             disabled={!canCreate}
             title={
-              canCreate ? "New conversation" : createHint ?? "Not available"
+              canCreate ? "New conversation" : (createHint ?? "Not available")
             }
             aria-label="New conversation"
             className="flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
@@ -524,7 +524,9 @@ export function AppSidebar({
   }
 
   // Resolve a workspace_id to its absolute path for display (null/unknown → null).
-  function workspacePath(workspaceId: string | null | undefined): string | null {
+  function workspacePath(
+    workspaceId: string | null | undefined
+  ): string | null {
     if (!workspaceId) return null
     return workspaces.find((w) => w.id === workspaceId)?.path ?? null
   }

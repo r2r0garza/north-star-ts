@@ -4,7 +4,11 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "fs"
 import { tmpdir } from "os"
 import { join } from "path"
 import { GitService } from "./service"
-import type { Environment, ExecFileOptions, ExecResult } from "../agent/env/types"
+import type {
+  Environment,
+  ExecFileOptions,
+  ExecResult,
+} from "../agent/env/types"
 
 let gitAvailable = true
 try {

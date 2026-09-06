@@ -92,7 +92,7 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
     const db = new Database(":memory:")
     db.pragma("foreign_keys = ON")
     runMigrations(db)
-    expect(db.pragma("user_version", { simple: true })).toBe(41)
+    expect(db.pragma("user_version", { simple: true })).toBe(42)
     expect(db.pragma("foreign_key_check")).toHaveLength(0)
     db.close()
   })
@@ -461,6 +461,95 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
       db.pragma("table_info(process_phase_runs)") as Array<{ name: string }>
     ).map((c) => c.name)
     expect(phaseRunCols).toContain("output_identity")
+    db.close()
+  })
+
+  it("adds process runtime config/snapshot columns", () => {
+    const db = new Database(":memory:")
+    db.pragma("foreign_keys = ON")
+    runMigrations(db)
+    const phaseCols = (
+      db.pragma("table_info(process_phases)") as Array<{ name: string }>
+    ).map((c) => c.name)
+    expect(phaseCols).toContain("runtime_config")
+    const agentCols = (
+      db.pragma("table_info(process_phase_agents)") as Array<{ name: string }>
+    ).map((c) => c.name)
+    expect(agentCols).toContain("runtime_config")
+    const runCols = (
+      db.pragma("table_info(process_runs)") as Array<{ name: string }>
+    ).map((c) => c.name)
+    expect(runCols).toContain("runtime_config")
+    const phaseRunCols = (
+      db.pragma("table_info(process_phase_runs)") as Array<{ name: string }>
+    ).map((c) => c.name)
+    expect(phaseRunCols).toContain("runtime_snapshot")
+    db.close()
+  })
+
+  it("repairs missing process runtime columns even when user_version is already current or newer", () => {
+    const db = new Database(":memory:")
+    db.pragma("foreign_keys = ON")
+    runMigrations(db)
+    db.exec(`
+      CREATE TABLE process_phases_without_runtime AS
+        SELECT id, process_id, key, name, routing, gate_policy, fan_out,
+               position, max_rework_rounds, dot_folder, validator,
+               validator_max_iterations, validator_agent, subprocess_id,
+               completion_contract
+        FROM process_phases;
+      DROP TABLE process_phases;
+      ALTER TABLE process_phases_without_runtime RENAME TO process_phases;
+
+      CREATE TABLE process_phase_agents_without_runtime AS
+        SELECT id, phase_id, agent_name, role, position
+        FROM process_phase_agents;
+      DROP TABLE process_phase_agents;
+      ALTER TABLE process_phase_agents_without_runtime RENAME TO process_phase_agents;
+
+      CREATE TABLE process_runs_without_runtime AS
+        SELECT id, process_id, task_id, title, status, input, output, error,
+               completion_contracts, started_at, completed_at, created_at,
+               updated_at
+        FROM process_runs;
+      DROP TABLE process_runs;
+      ALTER TABLE process_runs_without_runtime RENAME TO process_runs;
+
+      CREATE TABLE process_phase_runs_without_runtime AS
+        SELECT id, run_id, phase_id, task_id, status, input, output, gate_status,
+               gate_response, rework_round, validator_round, validator_status,
+               validator_notes, validator_history, parent_phase_run_id,
+               fan_out_key, output_identity, failure, completion_receipt,
+               started_at, completed_at, created_at, updated_at
+        FROM process_phase_runs;
+      DROP TABLE process_phase_runs;
+      ALTER TABLE process_phase_runs_without_runtime RENAME TO process_phase_runs;
+      PRAGMA user_version = 45;
+    `)
+
+    runMigrations(db)
+
+    expect(db.pragma("user_version", { simple: true })).toBe(45)
+    expect(
+      (db.pragma("table_info(process_phases)") as Array<{ name: string }>).map(
+        (c) => c.name
+      )
+    ).toContain("runtime_config")
+    expect(
+      (
+        db.pragma("table_info(process_phase_agents)") as Array<{ name: string }>
+      ).map((c) => c.name)
+    ).toContain("runtime_config")
+    expect(
+      (db.pragma("table_info(process_runs)") as Array<{ name: string }>).map(
+        (c) => c.name
+      )
+    ).toContain("runtime_config")
+    expect(
+      (
+        db.pragma("table_info(process_phase_runs)") as Array<{ name: string }>
+      ).map((c) => c.name)
+    ).toContain("runtime_snapshot")
     db.close()
   })
 

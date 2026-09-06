@@ -491,7 +491,8 @@ function loadAgentSources(): AgentSourcesSettings {
           !Array.isArray(parsed.visibleExternalSources)
             ? Object.fromEntries(
                 Object.entries(parsed.visibleExternalSources).filter(
-                  ([, value]): value is boolean => typeof value === "boolean"
+                  (entry): entry is [string, boolean] =>
+                    typeof entry[1] === "boolean"
                 )
               )
             : DEFAULT_AGENT_SOURCES.visibleExternalSources,

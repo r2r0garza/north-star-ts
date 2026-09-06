@@ -88,7 +88,46 @@ const MIGRATIONS: Array<(db: Database.Database) => void> = [
   (db) => db.exec(SCHEMA_V39),
   (db) => db.exec(SCHEMA_V40),
   (db) => db.exec(SCHEMA_V41),
+  ensureProcessRuntimeProfileColumns,
 ]
+
+function tableExists(db: Database.Database, table: string): boolean {
+  return Boolean(
+    db
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?"
+      )
+      .get(table)
+  )
+}
+
+function columnExists(
+  db: Database.Database,
+  table: string,
+  column: string
+): boolean {
+  if (!tableExists(db, table)) return false
+  return (db.pragma(`table_info(${table})`) as Array<{ name: string }>).some(
+    (info) => info.name === column
+  )
+}
+
+function addColumnIfMissing(
+  db: Database.Database,
+  table: string,
+  column: string,
+  definition: string
+): void {
+  if (!tableExists(db, table) || columnExists(db, table, column)) return
+  db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition};`)
+}
+
+function ensureProcessRuntimeProfileColumns(db: Database.Database): void {
+  addColumnIfMissing(db, "process_phases", "runtime_config", "TEXT")
+  addColumnIfMissing(db, "process_phase_agents", "runtime_config", "TEXT")
+  addColumnIfMissing(db, "process_runs", "runtime_config", "TEXT")
+  addColumnIfMissing(db, "process_phase_runs", "runtime_snapshot", "TEXT")
+}
 
 // Apply every migration newer than the database's current user_version, each in
 // its own transaction, then stamp the new version. Synchronous (better-sqlite3).
@@ -101,11 +140,11 @@ const MIGRATIONS: Array<(db: Database.Database) => void> = [
 // the per-migration transactions.
 export function runMigrations(db: Database.Database): void {
   const current = db.pragma("user_version", { simple: true }) as number
-  if (current >= MIGRATIONS.length) return
   const fkWasOn = db.pragma("foreign_keys", { simple: true }) === 1
   if (fkWasOn) db.pragma("foreign_keys = OFF")
   try {
-    for (let version = current; version < MIGRATIONS.length; version++) {
+    const startVersion = Math.min(current, MIGRATIONS.length)
+    for (let version = startVersion; version < MIGRATIONS.length; version++) {
       const migrate = MIGRATIONS[version]
       const apply = db.transaction(() => {
         migrate(db)
@@ -114,6 +153,15 @@ export function runMigrations(db: Database.Database): void {
       })
       apply()
     }
+
+    // Development and prerelease databases can have a user_version stamped ahead
+    // of this source tree after migration history is rebased or a build is run
+    // against an experimental schema. The normal loop correctly skips those DBs,
+    // so keep additive process runtime columns self-healing instead of making
+    // users repair SQLite by hand.
+    db.transaction(() => {
+      ensureProcessRuntimeProfileColumns(db)
+    })()
   } finally {
     if (fkWasOn) db.pragma("foreign_keys = ON")
   }

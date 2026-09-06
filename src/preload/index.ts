@@ -24,6 +24,7 @@ import type {
   ProcessRun,
   ProcessPhaseAttempt,
   ProcessPhaseRun,
+  ProcessRuntimeConfig,
   ProcessRunStatus,
   PhaseRunStatus,
   PhaseRouting,
@@ -393,6 +394,7 @@ const api = {
       // into the workspaces table server-side and stamped on the run so its
       // phase workers have a cwd (file/shell tools fail closed without one).
       workspacePath?: string | null
+      runtimeConfig?: ProcessRuntimeConfig | null
     }) => ipcRenderer.invoke("process:startRun", input) as Promise<ProcessRun>,
     // Cancel a run (aborts its backing task; running phases unwind).
     cancel: (processRunId: string) =>
@@ -1002,6 +1004,7 @@ const api = {
           validatorMaxIterations?: number
           validatorAgent?: string | null
           subprocessId?: string | null
+          runtimeConfig?: ProcessRuntimeConfig | null
           position: number
         }) =>
           ipcRenderer.invoke(
@@ -1027,6 +1030,7 @@ const api = {
             validatorMaxIterations?: number
             validatorAgent?: string | null
             subprocessId?: string | null
+            runtimeConfig?: ProcessRuntimeConfig | null
             position?: number
           }
         ) =>
@@ -1044,6 +1048,7 @@ const api = {
           agentName: string
           skills?: string[] | null
           tools?: string[] | null
+          runtimeConfig?: ProcessRuntimeConfig | null
           position: number
         }) =>
           ipcRenderer.invoke(
@@ -1606,6 +1611,11 @@ export type {
   ProcessRun,
   ProcessPhaseAttempt,
   ProcessPhaseRun,
+  ProcessRuntimeConfig,
+  ProcessRuntimeSelection,
+  ProcessRuntimeSlot,
+  ProcessRuntimeSnapshot,
+  ProcessRuntimeSnapshotSelection,
   ProcessGraph,
   ProcessRunStatus,
   PhaseRunStatus,

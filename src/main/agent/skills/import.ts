@@ -173,7 +173,9 @@ function normalizeEntryName(entryName: string): string | null {
 //                                               → prefix "foo/"
 // Rejects zero/multiple SKILL.md and a mixed layout (files outside the folder).
 function resolveSkillPrefix(relPaths: string[]): string {
-  const skillMds = relPaths.filter((p) => p === "SKILL.md" || p.endsWith("/SKILL.md"))
+  const skillMds = relPaths.filter(
+    (p) => p === "SKILL.md" || p.endsWith("/SKILL.md")
+  )
   if (skillMds.length === 0) {
     throw new Error("The zip archive has no SKILL.md.")
   }
@@ -197,7 +199,9 @@ function resolveSkillPrefix(relPaths: string[]): string {
   // Guard against a deeper nest (e.g. "a/b/SKILL.md" with nothing at a/): the
   // SKILL.md must sit directly under the single wrapping folder.
   if (prefix !== topFolder) {
-    throw new Error("The SKILL.md must be at the archive root or one folder deep.")
+    throw new Error(
+      "The SKILL.md must be at the archive root or one folder deep."
+    )
   }
   return prefix
 }

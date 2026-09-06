@@ -64,9 +64,7 @@ describe("spawn_subagent guards", () => {
   })
 
   it("empty children whitelist allows any name and returns the child content", async () => {
-    const spawnSubagent = vi
-      .fn()
-      .mockResolvedValue({ content: "the answer" })
+    const spawnSubagent = vi.fn().mockResolvedValue({ content: "the answer" })
     const r = await run(
       { agent_name: "anything", prompt: "do it" },
       { spawnSubagent, agentChildren: [], agentDepth: 0, agentAncestors: [] }

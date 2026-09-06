@@ -29,9 +29,14 @@ import type { TaskRunner, TaskExecutor } from "../runner"
 import type { LlmSelection } from "../../agent/providers"
 import { route } from "./router"
 import type {
+  Conversation,
   ProcessGraph,
   ProcessPhase,
+  ProcessPhaseAgent,
   ProcessPhaseRun,
+  ProcessRuntimeConfig,
+  ProcessRuntimeSlot,
+  ProcessRuntimeSnapshotSelection,
   ProcessRun,
 } from "../../db/types"
 import {
@@ -81,6 +86,12 @@ interface ProcessWorkerTaskInput {
   agentName?: string | null
   validatorRound?: number
   reviewTargetOutputIdentity?: string | null
+  runtime?: unknown
+}
+
+type RuntimeResolution = {
+  selection: LlmSelection
+  snapshot: ProcessRuntimeSnapshotSelection
 }
 
 // Settle an aborted run's status by WHY it aborted (plan 038.3). A SHUTDOWN (app
@@ -112,6 +123,98 @@ function processFailureDiagnosticDir(): string | null {
   }
 }
 
+function runtimeSelection(
+  config: ProcessPhase["runtimeConfig"],
+  slot: ProcessRuntimeSlot
+) {
+  return config?.[slot] ?? (slot === "worker" ? undefined : config?.worker)
+}
+
+function resolveRuntime(input: {
+  run: ProcessRun
+  source?: Conversation
+  phase: ProcessPhase
+  slot: ProcessRuntimeSlot
+  phaseAgent?: ProcessPhaseAgent | null
+}): RuntimeResolution {
+  const { run, source, phase, slot, phaseAgent } = input
+  const agentSelection = phaseAgent
+    ? runtimeSelection(phaseAgent.runtimeConfig, slot)
+    : undefined
+  if (agentSelection) {
+    return {
+      selection: {
+        accountId: agentSelection.accountId ?? null,
+        modelId: agentSelection.modelId ?? null,
+      },
+      snapshot: {
+        accountId: agentSelection.accountId ?? null,
+        modelId: agentSelection.modelId ?? null,
+        source: "phase_agent",
+      },
+    }
+  }
+
+  const phaseSelection = runtimeSelection(phase.runtimeConfig, slot)
+  if (phaseSelection) {
+    return {
+      selection: {
+        accountId: phaseSelection.accountId ?? null,
+        modelId: phaseSelection.modelId ?? null,
+      },
+      snapshot: {
+        accountId: phaseSelection.accountId ?? null,
+        modelId: phaseSelection.modelId ?? null,
+        source: "phase",
+      },
+    }
+  }
+
+  const runSelection = runtimeSelection(run.runtimeConfig, slot)
+  if (runSelection) {
+    return {
+      selection: {
+        accountId: runSelection.accountId ?? null,
+        modelId: runSelection.modelId ?? null,
+      },
+      snapshot: {
+        accountId: runSelection.accountId ?? null,
+        modelId: runSelection.modelId ?? null,
+        source: "run",
+      },
+    }
+  }
+
+  return {
+    selection: {
+      accountId: source?.accountId ?? null,
+      modelId: source?.modelId ?? null,
+    },
+    snapshot: {
+      accountId: source?.accountId ?? null,
+      modelId: source?.modelId ?? null,
+      source:
+        source?.accountId || source?.modelId
+          ? "source_conversation"
+          : "default",
+    },
+  }
+}
+
+function snapshotRuntime(
+  phaseRun: ProcessPhaseRun,
+  slot: ProcessRuntimeSlot,
+  resolution: RuntimeResolution
+): void {
+  const current = processes.getPhaseRun(phaseRun.id) ?? phaseRun
+  processes.updatePhaseRun(phaseRun.id, {
+    runtimeSnapshot: {
+      ...(current.runtimeSnapshot ?? {}),
+      [slot]: resolution.snapshot,
+    },
+  })
+}
+
 // Map an aborted executor to a runner result by WHY it aborted (plan 038.3): a
 // resumable SHUTDOWN/PAUSE → `paused` (the runner leaves it recoverable — a
 // process_run auto-resumes), a genuine cancel → `stopped` (terminal `cancelled`).
@@ -135,6 +238,7 @@ export class ProcessService {
     // screen has no source conversation to inherit a workspace from, so the
     // picked folder is deduped into the workspaces table and stamped on the run.
     workspacePath?: string | null
+    runtimeConfig?: ProcessRuntimeConfig | null
   }): Promise<ProcessRun> {
     const definition = processes.getProcessDefinition(input.processId)
     if (!definition) throw new Error(`unknown process '${input.processId}'`)
@@ -148,6 +252,7 @@ export class ProcessService {
       sourceConversationId: input.sourceConversationId,
       workspaceId,
       objective: input.objective,
+      runtimeConfig: input.runtimeConfig,
       status: "queued",
     })
 
@@ -923,14 +1028,30 @@ export class ProcessService {
       // Resolve the phase's agent BEFORE forking the worker: for a `dispatch`
       // phase this routes over the pool per (sub-)task, using `prompt` as the
       // classification signal (plan 025.3). `single` phases resolve pool[0].
+      const routerRuntime = resolveRuntime({
+        run,
+        source,
+        phase,
+        slot: "router",
+      })
       const agentName = await this.resolveAgent(phase, {
         taskPrompt: prompt,
-        selection: {
-          accountId: source?.accountId ?? null,
-          modelId: source?.modelId ?? null,
-        },
+        selection: routerRuntime.selection,
         workspace,
         signal,
+      })
+      if (phase.routing === "dispatch") {
+        snapshotRuntime(phaseRun, "router", routerRuntime)
+      }
+      const phaseAgent = processes
+        .listPhaseAgents(phase.id)
+        .find((agent) => agent.agentName === agentName)
+      const workerRuntime = resolveRuntime({
+        run,
+        source,
+        phase,
+        slot: "worker",
+        phaseAgent,
       })
 
       const existingWorkerTask =
@@ -944,8 +1065,8 @@ export class ProcessService {
         createConversation({
           mode: source?.mode ?? "interactive",
           workspaceId,
-          accountId: source?.accountId ?? null,
-          modelId: source?.modelId ?? null,
+          accountId: workerRuntime.selection.accountId,
+          modelId: workerRuntime.selection.modelId,
           agentName,
           title: `${phase.name}${agentName ? `: ${agentName}` : ""}`,
         })
@@ -958,7 +1079,12 @@ export class ProcessService {
           sourceConversationId: run.sourceConversationId ?? worker.id,
           status: "completed",
           title: phase.name,
-          input: { kind: "process_phase", phaseRunId: phaseRun.id, agentName },
+          input: {
+            kind: "process_phase",
+            phaseRunId: phaseRun.id,
+            agentName,
+            runtime: workerRuntime.snapshot,
+          },
         })
         workerTaskId = workerTask.id
         processes.updatePhaseRun(phaseRun.id, {
@@ -966,6 +1092,7 @@ export class ProcessService {
           agentName,
         })
       }
+      snapshotRuntime(phaseRun, "worker", workerRuntime)
 
       // Chain a child controller so run-level cancel unwinds the phase worker.
       const childAbort = new AbortController()
@@ -1050,6 +1177,16 @@ export class ProcessService {
       // The decomposition (planning) pass runs on pool[0]; each resulting CHILD
       // routes independently over the pool in makeRunPhase (plan 025.3).
       const agentName = await this.resolveAgent(phase)
+      const phaseAgent = processes
+        .listPhaseAgents(phase.id)
+        .find((agent) => agent.agentName === agentName)
+      const decomposerRuntime = resolveRuntime({
+        run,
+        source,
+        phase,
+        slot: "decomposer",
+        phaseAgent,
+      })
 
       // Prefer the run's own picked workspace (plan 026), falling back to the
       // source conversation's — same rule as makeRunPhase.
@@ -1071,8 +1208,8 @@ export class ProcessService {
         createConversation({
           mode: source?.mode ?? "interactive",
           workspaceId,
-          accountId: source?.accountId ?? null,
-          modelId: source?.modelId ?? null,
+          accountId: decomposerRuntime.selection.accountId,
+          modelId: decomposerRuntime.selection.modelId,
           agentName,
           title: `${phase.name} (decompose)${agentName ? `: ${agentName}` : ""}`,
         })
@@ -1087,6 +1224,7 @@ export class ProcessService {
             kind: "process_phase_decompose",
             phaseRunId: phaseRun.id,
             agentName,
+            runtime: decomposerRuntime.snapshot,
           },
         })
         workerTaskId = workerTask.id
@@ -1095,6 +1233,7 @@ export class ProcessService {
           agentName,
         })
       }
+      snapshotRuntime(phaseRun, "decomposer", decomposerRuntime)
 
       const childAbort = new AbortController()
       if (signal.aborted) childAbort.abort(signal.reason)
@@ -1234,6 +1373,14 @@ export class ProcessService {
       // agent (pool[0]) when none is configured.
       const pool = processes.listPhaseAgents(phase.id)
       const agentName = phase.validatorAgent ?? pool[0]?.agentName ?? null
+      const phaseAgent = pool.find((agent) => agent.agentName === agentName)
+      const validatorRuntime = resolveRuntime({
+        run,
+        source,
+        phase,
+        slot: "validator",
+        phaseAgent,
+      })
 
       const workspaceId = run.workspaceId ?? source?.workspaceId ?? null
       const workspace = workspaceId
@@ -1258,8 +1405,8 @@ export class ProcessService {
         createConversation({
           mode: source?.mode ?? "interactive",
           workspaceId,
-          accountId: source?.accountId ?? null,
-          modelId: source?.modelId ?? null,
+          accountId: validatorRuntime.selection.accountId,
+          modelId: validatorRuntime.selection.modelId,
           agentName,
           title: `${phase.name} (review)${agentName ? `: ${agentName}` : ""}`,
         })
@@ -1276,10 +1423,12 @@ export class ProcessService {
             agentName,
             validatorRound,
             reviewTargetOutputIdentity,
+            runtime: validatorRuntime.snapshot,
           },
         })
         workerTaskId = workerTask.id
       }
+      snapshotRuntime(phaseRun, "validator", validatorRuntime)
 
       const childAbort = new AbortController()
       if (signal.aborted) childAbort.abort(signal.reason)

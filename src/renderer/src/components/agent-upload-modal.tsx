@@ -7,10 +7,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { Label } from "@/components/ui/label"
-import {
-  NativeSelect,
-  NativeSelectOption,
-} from "@/components/ui/native-select"
+import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select"
 import { toast } from "sonner"
 
 // The upload modal for importing one-or-more agents: a dashed drop zone that is
@@ -84,9 +81,7 @@ export function AgentUploadModal({
         )
       }
       if (failures.length > 0) {
-        toast.error(
-          `${failures.length} failed: ${failures.join("; ")}`
-        )
+        toast.error(`${failures.length} failed: ${failures.join("; ")}`)
       }
       if (firstNewPath) {
         onImported(firstNewPath, dir)
@@ -154,9 +149,7 @@ export function AgentUploadModal({
         >
           <FolderPlus className="size-7 text-muted-foreground" />
           <span className="text-sm text-muted-foreground">
-            {importing
-              ? "Importing…"
-              : "Drag and drop or click to upload"}
+            {importing ? "Importing…" : "Drag and drop or click to upload"}
           </span>
         </button>
 

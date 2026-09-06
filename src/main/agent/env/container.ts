@@ -792,8 +792,8 @@ PY
     opts: ExecFileOptions
   ): Promise<ExecResult> {
     const env = await (this.cfg.hostCliEnv ?? hostCliEnv)()
-    const containerEnv = Object.entries(opts.env ?? {}).flatMap(([key, value]) =>
-      value === undefined ? [] : ["-e", `${key}=${value}`]
+    const containerEnv = Object.entries(opts.env ?? {}).flatMap(
+      ([key, value]) => (value === undefined ? [] : ["-e", `${key}=${value}`])
     )
     const child = (this.cfg.runtimeSpawn ?? spawn)(
       this.cfg.runtime,

@@ -745,7 +745,10 @@ function App(
     window.addEventListener("agent-source-visibility-changed", reloadAgents)
     return () => {
       window.removeEventListener("focus", reloadAgents)
-      window.removeEventListener("agent-source-visibility-changed", reloadAgents)
+      window.removeEventListener(
+        "agent-source-visibility-changed",
+        reloadAgents
+      )
     }
   }, [reloadAgents])
 

@@ -10,6 +10,7 @@ import {
 } from "electron"
 import type { TaskRunner } from "../tasks/runner"
 import type { ProcessService } from "../tasks/process/service"
+import type { ProcessRuntimeConfig } from "../db/types"
 import { getProcessRun } from "../db/repositories/processes"
 import {
   exportProcessDefinition,
@@ -38,6 +39,7 @@ export function registerProcessHandlers(
         sourceConversationId: string | null
         objective: string
         workspacePath?: string | null
+        runtimeConfig?: ProcessRuntimeConfig | null
       }
     ) => processService.startRun(input)
   )

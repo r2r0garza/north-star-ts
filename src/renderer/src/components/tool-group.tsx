@@ -299,7 +299,9 @@ export function ApprovalCard({
       <div className="flex items-center gap-2 font-medium text-destructive">
         <ShieldAlert className="size-3.5 shrink-0" />
         <span>
-          {approval.explicit ? "Explicit approval required" : "Approval required"}{" "}
+          {approval.explicit
+            ? "Explicit approval required"
+            : "Approval required"}{" "}
           — {approval.reason}
         </span>
       </div>

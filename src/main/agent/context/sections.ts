@@ -60,7 +60,9 @@ export function taskStateSection(
 // an explicit "nothing is open" — otherwise the model has no current fact to
 // consult and falls back to whatever page it last mentioned in the conversation
 // (reporting a stale, already-closed page as if it were still open).
-export function browserStateSection(state: BrowserState | null): ContextSection {
+export function browserStateSection(
+  state: BrowserState | null
+): ContextSection {
   if (!state) {
     return {
       name: "browser_state",

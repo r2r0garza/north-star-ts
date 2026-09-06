@@ -1202,3 +1202,13 @@ ALTER TABLE process_phases ADD COLUMN completion_contract TEXT NOT NULL DEFAULT 
 ALTER TABLE process_runs ADD COLUMN completion_contracts TEXT;
 ALTER TABLE process_phase_runs ADD COLUMN completion_receipt TEXT;
 `
+
+// v42: process runtime profiles. Definitions carry portable/intended runtime
+// preferences, runs snapshot the run-level default, and phase-runs snapshot the
+// concrete selection source used for each worker boundary.
+export const SCHEMA_V42 = `
+ALTER TABLE process_phases ADD COLUMN runtime_config TEXT;
+ALTER TABLE process_phase_agents ADD COLUMN runtime_config TEXT;
+ALTER TABLE process_runs ADD COLUMN runtime_config TEXT;
+ALTER TABLE process_phase_runs ADD COLUMN runtime_snapshot TEXT;
+`

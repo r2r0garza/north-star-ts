@@ -84,7 +84,10 @@ export function getMaskedApiKey(accountId: string): string | undefined {
 
 // Persist an MCP server's OAuth token JSON (encrypted). Throws if secure storage
 // is unavailable.
-export function setMcpOauthTokens(serverName: string, tokensJson: string): void {
+export function setMcpOauthTokens(
+  serverName: string,
+  tokensJson: string
+): void {
   assertAvailable()
   mcpServers.setOauthTokens(serverName, safeStorage.encryptString(tokensJson))
 }
@@ -100,7 +103,10 @@ export function getMcpOauthTokens(serverName: string): string | undefined {
 }
 
 // Persist an MCP server's dynamic client-registration JSON (encrypted).
-export function setMcpOauthClient(serverName: string, clientJson: string): void {
+export function setMcpOauthClient(
+  serverName: string,
+  clientJson: string
+): void {
   assertAvailable()
   mcpServers.setOauthClient(serverName, safeStorage.encryptString(clientJson))
 }

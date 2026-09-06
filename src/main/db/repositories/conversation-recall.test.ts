@@ -26,10 +26,7 @@ function freshConversation(): string {
 }
 
 function message(conversationId: string, content: string): void {
-  appendMessage(
-    { conversationId, role: "user", content },
-    { count: () => 1 }
-  )
+  appendMessage({ conversationId, role: "user", content }, { count: () => 1 })
 }
 
 describe.skipIf(!sqliteLoads)("conversation recall repository", () => {
@@ -59,7 +56,11 @@ describe.skipIf(!sqliteLoads)("conversation recall repository", () => {
     const conversation = freshConversation()
     message(conversation, "needle early")
     appendMessage(
-      { conversationId: conversation, role: "assistant", content: "needle late" },
+      {
+        conversationId: conversation,
+        role: "assistant",
+        content: "needle late",
+      },
       { count: () => 1 }
     )
 

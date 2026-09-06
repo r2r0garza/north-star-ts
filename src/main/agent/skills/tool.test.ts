@@ -31,7 +31,7 @@ describe("read_skill", () => {
 
     expect(ctx.skillResourceRoots).toEqual({ dashboard: skillDir })
     expect(result).toContain(
-      "[context provenance: trust=approved_instruction channel=skill source=\"dashboard\" persisted=true]"
+      '[context provenance: trust=approved_instruction channel=skill source="dashboard" persisted=true]'
     )
     expect(result).toContain("INSTRUCTION: # Test")
     expect(result).toContain("Skill resource root: skill://dashboard/")

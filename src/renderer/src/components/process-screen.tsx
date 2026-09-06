@@ -104,9 +104,12 @@ import { ScrollArea } from "@/components/ui/scroll-area"
 import {
   Combobox,
   ComboboxContent,
+  ComboboxCollection,
   ComboboxEmpty,
+  ComboboxGroup,
   ComboboxInput,
   ComboboxItem,
+  ComboboxLabel,
   ComboboxList,
   ComboboxTrigger,
   ComboboxValue,
@@ -116,6 +119,7 @@ import { cn, formatRelativeTime } from "@/lib/utils"
 import { agentDisplay, agentRunTitle } from "@/lib/agent-display"
 import type {
   AgentSummary,
+  AccountWithModels,
   EdgeTrigger,
   PhaseGatePolicy,
   PhaseRouting,
@@ -126,6 +130,9 @@ import type {
   ProcessPhaseAgent,
   ProcessPhaseAttempt,
   ProcessPhaseRun,
+  ProcessRuntimeConfig,
+  ProcessRuntimeSelection,
+  ProcessRuntimeSlot,
   ProcessRun,
   Approval,
   Task,
@@ -238,6 +245,156 @@ const OWN_AGENT = "__own__"
 // Sentinel for the sub-process picker's "none" option (plan 038.1) — same Radix
 // empty-value constraint as OWN_AGENT. Maps to null (an ordinary agent phase).
 const NO_SUBPROCESS = "__none__"
+const INHERIT_RUNTIME = "__inherit__"
+const RUNTIME_SLOTS: Array<{ slot: ProcessRuntimeSlot; label: string }> = [
+  { slot: "worker", label: "Worker" },
+  { slot: "router", label: "Router" },
+  { slot: "decomposer", label: "Decomposer" },
+  { slot: "validator", label: "Validator" },
+]
+
+function runtimeValue(selection?: ProcessRuntimeSelection | null): string {
+  return selection?.accountId && selection.modelId
+    ? `${selection.accountId}::${selection.modelId}`
+    : INHERIT_RUNTIME
+}
+
+function runtimeLabel(
+  providers: AccountWithModels[],
+  selection?: ProcessRuntimeSelection | null
+): string {
+  if (!selection?.accountId || !selection.modelId) return "Inherit"
+  const account = providers.find((p) => p.account.id === selection.accountId)
+  const model = account?.models.find((m) => m.modelId === selection.modelId)
+  return `${account?.account.displayName ?? selection.accountId} / ${model?.modelName ?? selection.modelId}`
+}
+
+function nextRuntimeConfig(
+  current: ProcessRuntimeConfig | null | undefined,
+  slot: ProcessRuntimeSlot,
+  selection: ProcessRuntimeSelection | null
+): ProcessRuntimeConfig | null {
+  const next: ProcessRuntimeConfig = { ...(current ?? {}) }
+  if (selection) next[slot] = selection
+  else delete next[slot]
+  return Object.keys(next).length > 0 ? next : null
+}
+
+type RuntimePickerItem = {
+  value: string
+  label: string
+  accountId: string | null
+  modelId: string | null
+  provider: ProcessRuntimeSelection["provider"]
+}
+
+type RuntimePickerGroup = {
+  value: string
+  label: string
+  items: RuntimePickerItem[]
+}
+
+function RuntimePicker({
+  label,
+  providers,
+  value,
+  onChange,
+}: {
+  label: string
+  providers: AccountWithModels[]
+  value?: ProcessRuntimeSelection | null
+  onChange: (next: ProcessRuntimeSelection | null) => void
+}) {
+  const groups = useMemo<RuntimePickerGroup[]>(
+    () => [
+      {
+        value: "runtime",
+        label: "Runtime",
+        items: [
+          {
+            value: INHERIT_RUNTIME,
+            label: "Inherit",
+            accountId: null,
+            modelId: null,
+            provider: null,
+          },
+        ],
+      },
+      ...providers
+        .filter((entry) => entry.models.length > 0)
+        .map((entry) => ({
+          value: entry.account.id,
+          label: entry.account.displayName,
+          items: entry.models.map((model) => ({
+            value: `${entry.account.id}::${model.modelId}`,
+            label: model.modelName?.trim() || model.modelId,
+            accountId: entry.account.id,
+            modelId: model.modelId,
+            provider: entry.account.provider,
+          })),
+        })),
+    ],
+    [providers]
+  )
+  const selectedItem: RuntimePickerItem | null =
+    value?.accountId && value.modelId
+      ? (groups
+          .flatMap((group) => group.items)
+          .find((item) => item.value === runtimeValue(value)) ?? null)
+      : groups[0].items[0]
+
+  return (
+    <label className="flex min-w-44 flex-col gap-1 text-xs">
+      <span className="text-muted-foreground">{label}</span>
+      <Combobox
+        items={groups}
+        value={selectedItem}
+        isItemEqualToValue={(a, b) => a?.value === b?.value}
+        onValueChange={(item: RuntimePickerItem | null) => {
+          if (!item || !item.accountId || !item.modelId) return onChange(null)
+          onChange({
+            accountId: item.accountId,
+            modelId: item.modelId,
+            provider: item.provider,
+          })
+        }}
+      >
+        <ComboboxTrigger className="flex h-7 max-w-72 min-w-44 items-center justify-between gap-1 rounded-[min(var(--radius-md),10px)] border border-input bg-transparent px-2.5 text-xs transition-colors hover:bg-accent/50 dark:bg-input/30">
+          <ComboboxValue placeholder="Inherit">
+            {(item: RuntimePickerItem | null) => (
+              <span className="truncate">
+                {item?.label ?? runtimeLabel(providers, value)}
+              </span>
+            )}
+          </ComboboxValue>
+        </ComboboxTrigger>
+        <ComboboxContent className="w-80 min-w-80">
+          <ComboboxInput placeholder="Search models…" showTrigger={false} />
+          <ComboboxEmpty>No models found.</ComboboxEmpty>
+          <ComboboxList>
+            {(group: RuntimePickerGroup) => (
+              <ComboboxGroup key={group.value} items={group.items}>
+                <ComboboxLabel>{group.label}</ComboboxLabel>
+                <ComboboxCollection>
+                  {(item: RuntimePickerItem) => (
+                    <ComboboxItem key={item.value} value={item}>
+                      <span className="truncate">{item.label}</span>
+                      {item.modelId && item.modelId !== item.label && (
+                        <span className="ml-auto max-w-40 truncate font-mono text-[10px] text-muted-foreground">
+                          {item.modelId}
+                        </span>
+                      )}
+                    </ComboboxItem>
+                  )}
+                </ComboboxCollection>
+              </ComboboxGroup>
+            )}
+          </ComboboxList>
+        </ComboboxContent>
+      </Combobox>
+    </label>
+  )
+}
 
 function agentValue(agent: AgentSummary): string {
   return agent.ref ?? agent.name
@@ -301,6 +458,7 @@ export function ProcessScreen({ onClose }: { onClose: () => void }) {
   // users author agents in-app; the builder degrades gracefully (a free-text
   // agent name still works via the pool row).
   const [agents, setAgents] = useState<AgentSummary[]>([])
+  const [providerModels, setProviderModels] = useState<AccountWithModels[]>([])
   const [pendingDelete, setPendingDelete] = useState<ProcessDefinition | null>(
     null
   )
@@ -320,6 +478,10 @@ export function ProcessScreen({ onClose }: { onClose: () => void }) {
       .list()
       .then(setAgents)
       .catch(() => setAgents([]))
+    window.cowork.providers
+      .listWithModels()
+      .then(setProviderModels)
+      .catch(() => setProviderModels([]))
   }, [loadDefinitions])
 
   // Esc closes the view, dropping the user back to their last open conversation.
@@ -506,6 +668,7 @@ export function ProcessScreen({ onClose }: { onClose: () => void }) {
               key={selected.id}
               definition={selected}
               agents={agents}
+              providerModels={providerModels}
               definitions={definitions ?? []}
               onDefinitionChanged={loadDefinitions}
             />
@@ -514,6 +677,7 @@ export function ProcessScreen({ onClose }: { onClose: () => void }) {
               key={selected.id}
               definition={selected}
               activeRunId={activeRunId}
+              providerModels={providerModels}
               onSelectRun={setActiveRunId}
             />
           )}
@@ -770,11 +934,13 @@ function deriveKey(name: string, otherKeys: Iterable<string>): string {
 export function ProcessBuilder({
   definition,
   agents,
+  providerModels = [],
   definitions,
   onDefinitionChanged,
 }: {
   definition: ProcessDefinition
   agents: AgentSummary[]
+  providerModels?: AccountWithModels[]
   definitions: ProcessDefinition[]
   onDefinitionChanged: () => void
 }) {
@@ -971,6 +1137,7 @@ export function ProcessBuilder({
                   phases={phases}
                   graph={graph}
                   agents={agents}
+                  providerModels={providerModels}
                   definitions={definitions}
                   onChanged={reload}
                 />
@@ -994,6 +1161,7 @@ function PhaseCard({
   phases,
   graph,
   agents,
+  providerModels,
   definitions,
   onChanged,
 }: {
@@ -1001,6 +1169,7 @@ function PhaseCard({
   phases: ProcessPhase[]
   graph: ProcessGraph
   agents: AgentSummary[]
+  providerModels: AccountWithModels[]
   definitions: ProcessDefinition[]
   onChanged: () => void
 }) {
@@ -1090,6 +1259,7 @@ function PhaseCard({
     validatorMaxIterations?: number
     validatorAgent?: string | null
     subprocessId?: string | null
+    runtimeConfig?: ProcessRuntimeConfig | null
   }) {
     try {
       await window.cowork.db.processes.phases.update(phase.id, patch)
@@ -1358,6 +1528,45 @@ function PhaseCard({
                   </span>
                 </label>
               )}
+            </div>
+          )}
+
+          {providerModels.length > 0 && (
+            <div className="space-y-2 rounded-md border border-dashed p-2">
+              <div className="text-xs font-medium">Runtime profile</div>
+              <div className="flex flex-wrap gap-2">
+                {RUNTIME_SLOTS.map(({ slot, label }) => {
+                  if (slot === "router" && phase.routing !== "dispatch")
+                    return null
+                  if (slot === "decomposer" && !phase.fanOut) return null
+                  if (
+                    slot === "validator" &&
+                    (!phase.validator || phase.fanOut || !!phase.subprocessId)
+                  )
+                    return null
+                  return (
+                    <RuntimePicker
+                      key={slot}
+                      label={label}
+                      providers={providerModels}
+                      value={phase.runtimeConfig?.[slot]}
+                      onChange={(selection) =>
+                        patchPhase({
+                          runtimeConfig: nextRuntimeConfig(
+                            phase.runtimeConfig,
+                            slot,
+                            selection
+                          ),
+                        })
+                      }
+                    />
+                  )
+                })}
+              </div>
+              <p className="text-[10px] text-muted-foreground">
+                Inherit uses the run/default model. Phase overrides are
+                snapshotted onto each phase run for debugging and replay.
+              </p>
             </div>
           )}
 
@@ -1800,10 +2009,12 @@ function phaseRunsForDisplay(
 function RunMonitor({
   definition,
   activeRunId,
+  providerModels,
   onSelectRun,
 }: {
   definition: ProcessDefinition
   activeRunId: string | null
+  providerModels: AccountWithModels[]
   onSelectRun: (runId: string) => void
 }) {
   const [runs, setRuns] = useState<ProcessRun[] | null>(null)
@@ -2214,12 +2425,17 @@ function RunMonitor({
 
   // Start a new run of this definition (from the New Run modal). Refreshes the
   // run list, selects the new run, and closes the modal.
-  async function startNewRun(objective: string, workspacePath: string) {
+  async function startNewRun(
+    objective: string,
+    workspacePath: string,
+    runtimeConfig: ProcessRuntimeConfig | null
+  ) {
     const started = await window.cowork.process.startRun({
       processId: definition.id,
       sourceConversationId: null,
       objective: objective.trim(),
       workspacePath: workspacePath.trim(),
+      runtimeConfig,
     })
     setRuns(await loadRuns())
     onSelectRun(started.id)
@@ -2260,6 +2476,7 @@ function RunMonitor({
         <NewRunModal
           open={newRunOpen}
           onOpenChange={setNewRunOpen}
+          providerModels={providerModels}
           onRun={startNewRun}
         />
       </div>
@@ -2345,6 +2562,7 @@ function RunMonitor({
       <NewRunModal
         open={newRunOpen}
         onOpenChange={setNewRunOpen}
+        providerModels={providerModels}
         onRun={startNewRun}
       />
 
@@ -4071,14 +4289,22 @@ function FlagCard({
 function NewRunModal({
   open,
   onOpenChange,
+  providerModels,
   onRun,
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
-  onRun: (objective: string, workspacePath: string) => Promise<void>
+  providerModels: AccountWithModels[]
+  onRun: (
+    objective: string,
+    workspacePath: string,
+    runtimeConfig: ProcessRuntimeConfig | null
+  ) => Promise<void>
 }) {
   const [objective, setObjective] = useState("")
   const [folder, setFolder] = useState("")
+  const [runtimeConfig, setRuntimeConfig] =
+    useState<ProcessRuntimeConfig | null>(null)
   const [starting, setStarting] = useState(false)
 
   // Reset the form whenever the modal opens, so a reopen starts clean.
@@ -4086,6 +4312,7 @@ function NewRunModal({
     if (open) {
       setObjective("")
       setFolder("")
+      setRuntimeConfig(null)
       setStarting(false)
     }
   }, [open])
@@ -4099,7 +4326,7 @@ function NewRunModal({
     if (!folder.trim()) return
     setStarting(true)
     try {
-      await onRun(objective, folder)
+      await onRun(objective, folder, runtimeConfig)
     } catch (err) {
       toast.error(`Could not start run: ${err}`)
       setStarting(false)
@@ -4173,6 +4400,23 @@ function NewRunModal({
               </Button>
             )}
           </div>
+          {providerModels.length > 0 && (
+            <div className="flex flex-col gap-1.5">
+              <RuntimePicker
+                label="Default model for this run"
+                providers={providerModels}
+                value={runtimeConfig?.worker}
+                onChange={(selection) =>
+                  setRuntimeConfig(
+                    nextRuntimeConfig(runtimeConfig, "worker", selection)
+                  )
+                }
+              />
+              <span className="text-xs text-muted-foreground">
+                Phase runtime overrides still win over this run default.
+              </span>
+            </div>
+          )}
         </div>
         <DialogFooter>
           <Button

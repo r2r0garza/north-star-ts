@@ -12,7 +12,12 @@ const action = (kind: ToolAction["kind"]): ToolAction => ({
 describe("PlanModeClassifier", () => {
   it("hard-blocks workspace-mutating kinds while plan mode is on", () => {
     const c = new PlanModeClassifier(() => true)
-    for (const kind of ["file_write", "file_edit", "shell", "delegate"] as const) {
+    for (const kind of [
+      "file_write",
+      "file_edit",
+      "shell",
+      "delegate",
+    ] as const) {
       expect(c.classify(action(kind))).toEqual({
         level: "hard_block",
         reason: expect.stringContaining("Plan mode"),

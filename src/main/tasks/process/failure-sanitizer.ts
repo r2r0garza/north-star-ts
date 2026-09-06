@@ -15,10 +15,7 @@ export function sanitizeFailureContext(
 ): FailureContext {
   return {
     ...failure,
-    message: sanitizeFailureText(
-      failure.message,
-      FAILURE_MESSAGE_MAX_BYTES
-    ),
+    message: sanitizeFailureText(failure.message, FAILURE_MESSAGE_MAX_BYTES),
     cause:
       failure.cause == null
         ? failure.cause
@@ -56,10 +53,7 @@ function redactSensitiveFailureText(text: string): string {
     (_match, keyQuote, key, valueQuote) =>
       `${keyQuote}${key}${keyQuote}:${valueQuote}${REDACTED}${valueQuote}`
   )
-  out = out.replace(
-    /Bearer\s+[A-Za-z0-9._~+/=-]{8,}/gi,
-    `Bearer ${REDACTED}`
-  )
+  out = out.replace(/Bearer\s+[A-Za-z0-9._~+/=-]{8,}/gi, `Bearer ${REDACTED}`)
   out = out.replace(
     /\b(sk-[A-Za-z0-9_-]{8,}|pk-[A-Za-z0-9_-]{8,}|OPENAI_API_KEY[=:][^\s,;)}\]]+)/g,
     REDACTED

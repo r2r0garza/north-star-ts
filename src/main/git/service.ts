@@ -344,8 +344,10 @@ export class GitService {
         branch: branch.stdout.toString("utf8").trim(),
       }
     }
-    const sha = (await this.git(["rev-parse", "--short=12", "HEAD"], root))
-      .stdout.toString("utf8")
+    const sha = (
+      await this.git(["rev-parse", "--short=12", "HEAD"], root)
+    ).stdout
+      .toString("utf8")
       .trim()
     return { isRepo: true, root, detached: true, sha }
   }
@@ -377,7 +379,9 @@ export class GitService {
     if (path.startsWith("-")) throw new Error("Paths may not start with '-'.")
     const resolved = resolveInWorkspace(this.workspace, path)
     const rel =
-      resolved === this.workspace ? "" : resolved.slice(this.workspace.length + 1)
+      resolved === this.workspace
+        ? ""
+        : resolved.slice(this.workspace.length + 1)
     return rel.split(sep).join("/")
   }
 }

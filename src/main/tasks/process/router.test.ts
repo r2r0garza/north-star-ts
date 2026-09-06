@@ -114,7 +114,8 @@ describe("route", () => {
       selection,
       signal: new AbortController().signal,
     })
-    const user = lastBase?.messages?.find((m) => m.role === "user")?.content ?? ""
+    const user =
+      lastBase?.messages?.find((m) => m.role === "user")?.content ?? ""
     expect(user).toContain("frontend: React/CSS UI work")
     expect(user).toContain("backend: APIs and databases")
     expect(user).toContain("Style the login page")

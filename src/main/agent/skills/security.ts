@@ -26,9 +26,15 @@ const FORBIDDEN_AUTHORITY_PATTERNS: Array<[RegExp, string]> = [
 ]
 
 const SUSPICIOUS_RESOURCE_PATTERNS: Array<[RegExp, string]> = [
-  [/\]\(\s*(?:file:|~\/|\/|[A-Za-z]:[\\/])[^)]*\)/, "links to an absolute local path"],
+  [
+    /\]\(\s*(?:file:|~\/|\/|[A-Za-z]:[\\/])[^)]*\)/,
+    "links to an absolute local path",
+  ],
   [/\]\(\s*(?:\.\.\/|[^)]*\/\.\.\/)[^)]*\)/, "links outside the skill folder"],
-  [/\b(?:file:|~\/|\/(?:etc|var|private|Users|home|root)\b)/, "references a sensitive local path"],
+  [
+    /\b(?:file:|~\/|\/(?:etc|var|private|Users|home|root)\b)/,
+    "references a sensitive local path",
+  ],
 ]
 
 export function validateSkillSecurity(content: string): string[] {

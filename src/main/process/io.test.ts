@@ -45,6 +45,13 @@ describe.skipIf(!sqliteLoads)("process import/export", () => {
     const text = JSON.stringify(exported)
 
     expect(exported.formatVersion).toBe(1)
+    expect(exported.phases[0].runtimeConfig).toMatchObject({
+      worker: { provider: "openai", modelId: "gpt-5.5" },
+      validator: { provider: "anthropic", modelId: "opus" },
+    })
+    expect(exported.phases[0].agents[0].runtimeConfig).toMatchObject({
+      worker: { provider: "codex_cli", modelId: "gpt-5.5" },
+    })
     expect(exported.phases.map((p) => p.key)).toEqual(["plan", "build"])
     expect(exported.edges).toEqual([
       { fromKey: "plan", toKey: "build", trigger: "on_each_subtask" },
@@ -343,6 +350,10 @@ function seedGraph() {
     validatorMaxIterations: 3,
     validatorAgent:
       'agentref:v1:{"sourceKind":"cursor","scope":"global","definitionPath":"/tmp/reviewer.md","nativeName":"reviewer"}',
+    runtimeConfig: {
+      worker: { provider: "openai", modelId: "gpt-5.5" },
+      validator: { provider: "anthropic", modelId: "opus" },
+    },
     position: 1,
   })
   const build = createPhase({
@@ -365,6 +376,9 @@ function seedGraph() {
       'agentref:v1:{"sourceKind":"north_star","scope":"workspace","definitionPath":"/tmp/coder.agent.md","nativeName":"coder"}',
     skills: ["react"],
     tools: [],
+    runtimeConfig: {
+      worker: { provider: "codex_cli", modelId: "gpt-5.5" },
+    },
     position: 0,
   })
   createEdge({

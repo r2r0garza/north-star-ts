@@ -50,10 +50,7 @@ describe("write_plan_tool", () => {
   })
 
   it("reports unavailable without a conversationId", async () => {
-    const res = await writePlanTool.execute(
-      { content: "x" },
-      { workspace: "" }
-    )
+    const res = await writePlanTool.execute({ content: "x" }, { workspace: "" })
     expect(res).toContain("ERROR[unavailable]")
   })
 })

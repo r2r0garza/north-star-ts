@@ -12,8 +12,10 @@ function lineClass(line: string): string {
     return "text-muted-foreground" // file headers
   }
   if (line.startsWith("@@")) return "text-sky-500 dark:text-sky-400"
-  if (line.startsWith("+")) return "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
-  if (line.startsWith("-")) return "bg-red-500/10 text-red-700 dark:text-red-300"
+  if (line.startsWith("+"))
+    return "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+  if (line.startsWith("-"))
+    return "bg-red-500/10 text-red-700 dark:text-red-300"
   if (line.startsWith("diff ") || line.startsWith("index ")) {
     return "text-muted-foreground/70"
   }

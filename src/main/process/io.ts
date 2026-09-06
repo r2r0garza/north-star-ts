@@ -20,6 +20,9 @@ import type {
   FailureContext,
   PhaseGatePolicy,
   PhaseRouting,
+  Provider,
+  ProcessRuntimeConfig,
+  ProcessRuntimeSelection,
   ProcessPhaseAttempt,
   ProcessPhase,
   ProcessPhaseRun,
@@ -49,6 +52,17 @@ const AGENT_SOURCE_KINDS: readonly ExternalAgentSourceKind[] = [
   "codex",
 ]
 const AGENT_SCOPES: readonly AgentScope[] = ["global", "workspace", "custom"]
+const PROVIDERS: readonly Provider[] = [
+  "portkey",
+  "openai_compatible",
+  "openai",
+  "claude_code",
+  "codex_cli",
+  "anthropic",
+  "google",
+  "azure_openai",
+]
+const RUNTIME_SLOTS = ["worker", "decomposer", "router", "validator"] as const
 
 export interface PortableAgentDescriptor {
   sourceKind: ExternalAgentSourceKind
@@ -65,6 +79,7 @@ export interface ProcessExportPhaseAgent {
   agent: PortableAgentDescriptor | { legacyName: string }
   skills: string[] | null
   tools: string[] | null
+  runtimeConfig?: ProcessRuntimeConfig | null
   position: number
 }
 
@@ -81,6 +96,7 @@ export interface ProcessExportPhase {
   validatorMaxIterations: number
   validatorAgent: PortableAgentDescriptor | { legacyName: string } | null
   subprocess: PortableSubprocessDescriptor | null
+  runtimeConfig?: ProcessRuntimeConfig | null
   position: number
   agents: ProcessExportPhaseAgent[]
 }
@@ -255,6 +271,7 @@ export function buildProcessExport(graph: ProcessGraph): ProcessExport {
       agent: agentToExport(agent.agentName),
       skills: agent.skills,
       tools: agent.tools,
+      runtimeConfig: agent.runtimeConfig ?? null,
       position: agent.position,
     })
     agentsByPhaseId.set(agent.phaseId, list)
@@ -288,6 +305,7 @@ export function buildProcessExport(graph: ProcessGraph): ProcessExport {
             ? agentToExport(phase.validatorAgent)
             : null,
           subprocess: subprocess ? { name: subprocess.name } : null,
+          runtimeConfig: phase.runtimeConfig ?? null,
           position: phase.position,
           agents: (agentsByPhaseId.get(phase.id) ?? []).sort(
             (a, b) => a.position - b.position
@@ -391,6 +409,7 @@ export function importProcessExport(input: unknown): ProcessImportResult {
             )
           : null,
         subprocessId,
+        runtimeConfig: phase.runtimeConfig,
         position: phase.position,
       })
       phaseIdByKey.set(phase.key, created.id)
@@ -405,6 +424,7 @@ export function importProcessExport(input: unknown): ProcessImportResult {
           ),
           skills: agent.skills,
           tools: agent.tools,
+          runtimeConfig: agent.runtimeConfig,
           position: agent.position,
         })
       }
@@ -628,6 +648,10 @@ function validateProcessExport(input: unknown): ProcessExport {
               phase.subprocess,
               `phases[${index}].subprocess`
             ),
+      runtimeConfig: validateRuntimeConfig(
+        phase.runtimeConfig,
+        `phases[${index}].runtimeConfig`
+      ),
       position: nonNegativeInteger(phase.position, `phases[${index}].position`),
       agents: requireArray(phase.agents, `phases[${index}].agents`).map(
         (rawAgent, agentIndex) => {
@@ -647,6 +671,10 @@ function validateProcessExport(input: unknown): ProcessExport {
             tools: nullableStringArray(
               agent.tools,
               `phases[${index}].agents[${agentIndex}].tools`
+            ),
+            runtimeConfig: validateRuntimeConfig(
+              agent.runtimeConfig,
+              `phases[${index}].agents[${agentIndex}].runtimeConfig`
             ),
             position: nonNegativeInteger(
               agent.position,
@@ -714,6 +742,41 @@ function validateSubprocessDescriptor(
 ): PortableSubprocessDescriptor {
   const obj = requireRecord(input, path)
   return { name: nonEmptyString(obj.name, `${path}.name`) }
+}
+
+function validateRuntimeConfig(
+  input: unknown,
+  path: string
+): ProcessRuntimeConfig | null {
+  if (input === null || input === undefined) return null
+  const obj = requireRecord(input, path)
+  const config: ProcessRuntimeConfig = {}
+  for (const slot of RUNTIME_SLOTS) {
+    if (!(slot in obj) || obj[slot] === undefined || obj[slot] === null)
+      continue
+    config[slot] = validateRuntimeSelection(obj[slot], `${path}.${slot}`)
+  }
+  return Object.keys(config).length > 0 ? config : null
+}
+
+function validateRuntimeSelection(
+  input: unknown,
+  path: string
+): ProcessRuntimeSelection {
+  const obj = requireRecord(input, path)
+  const accountId =
+    obj.accountId === null || obj.accountId === undefined
+      ? null
+      : nonEmptyString(obj.accountId, `${path}.accountId`)
+  const modelId =
+    obj.modelId === null || obj.modelId === undefined
+      ? null
+      : nonEmptyString(obj.modelId, `${path}.modelId`)
+  const provider =
+    obj.provider === null || obj.provider === undefined
+      ? null
+      : enumValue(obj.provider, PROVIDERS, `${path}.provider`)
+  return { accountId, modelId, provider }
 }
 
 function isRecord(input: unknown): input is Record<string, unknown> {

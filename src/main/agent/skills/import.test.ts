@@ -41,10 +41,7 @@ function writeMd(fileName: string, content: string): string {
 }
 
 // Build a .zip in scratch from an { entryName: content } map and return its path.
-function writeZip(
-  fileName: string,
-  entries: Record<string, string>
-): string {
+function writeZip(fileName: string, entries: Record<string, string>): string {
   const zip = new AdmZip()
   for (const [name, content] of Object.entries(entries)) {
     zip.addFile(name, Buffer.from(content, "utf-8"))

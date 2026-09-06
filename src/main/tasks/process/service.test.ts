@@ -18,6 +18,8 @@ const loopCalls: {
   userMessage?: string
   processCompletionInstruction?: string
   suppressUserQuestions?: boolean
+  accountId?: string | null
+  modelId?: string | null
 }[] = []
 // A validator reviewer's scripted replies (plan 031.1): each call to a REVIEW
 // prompt (validatorPrompt begins "# Review the") shifts one reply off this queue;
@@ -70,6 +72,14 @@ vi.mock("../../agent", () => ({
       userMessage: input.userMessage,
       processCompletionInstruction: input.processCompletionInstruction,
       suppressUserQuestions: input.suppressUserQuestions,
+      accountId: db
+        .prepare("SELECT account_id FROM conversations WHERE id = ?")
+        .pluck()
+        .get(input.conversationId) as string | null,
+      modelId: db
+        .prepare("SELECT model_id FROM conversations WHERE id = ?")
+        .pluck()
+        .get(input.conversationId) as string | null,
     })
     const msg = input.userMessage ?? ""
     const abortIdx = abortOnMessage.findIndex((a) => msg.includes(a.match))
@@ -219,6 +229,54 @@ beforeEach(() => {
 })
 
 describe.skipIf(!sqliteLoads)("ProcessService dispatch routing", () => {
+  it("uses and snapshots a phase worker runtime override", async () => {
+    const def = processes.createProcessDefinition({ name: "T" })
+    const phase = processes.createPhase({
+      processId: def.id,
+      key: "implement",
+      name: "Implement",
+      position: 0,
+      runtimeConfig: {
+        worker: { accountId: "phase-account", modelId: "phase-model" },
+      },
+    })
+
+    const { taskId } = seedTaskRow()
+    const run = processes.createProcessRun({
+      processId: def.id,
+      sourceConversationId: null,
+      taskId,
+      objective: "build it",
+      status: "running",
+      runtimeConfig: {
+        worker: { accountId: "run-account", modelId: "run-model" },
+      },
+    })
+
+    const svc = new ProcessService(fakeRunner)
+    await svc.execute({
+      task: { id: taskId, input: { processRunId: run.id } } as never,
+      signal: new AbortController().signal,
+      emit: () => {},
+      workspace: undefined,
+    })
+
+    expect(loopCalls[0]).toMatchObject({
+      accountId: "phase-account",
+      modelId: "phase-model",
+    })
+    const phaseRun = processes
+      .listPhaseRuns({ runId: run.id, parentId: null })
+      .find((pr) => pr.phaseId === phase.id)!
+    expect(phaseRun.runtimeSnapshot).toMatchObject({
+      worker: {
+        accountId: "phase-account",
+        modelId: "phase-model",
+        source: "phase",
+      },
+    })
+  })
+
   it("records the routed agent_name on a dispatch phase's run", async () => {
     // One dispatch phase with a two-agent pool (frontend, backend).
     const def = processes.createProcessDefinition({ name: "T" })

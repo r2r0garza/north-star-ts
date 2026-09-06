@@ -35,9 +35,9 @@ export function createProject(input: {
 }
 
 export function getProject(id: string): Project | undefined {
-  const row = getDb()
-    .prepare("SELECT * FROM projects WHERE id = ?")
-    .get(id) as ProjectRow | undefined
+  const row = getDb().prepare("SELECT * FROM projects WHERE id = ?").get(id) as
+    | ProjectRow
+    | undefined
   return row ? toProject(row) : undefined
 }
 

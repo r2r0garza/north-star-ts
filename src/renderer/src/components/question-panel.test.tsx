@@ -54,11 +54,7 @@ afterEach(() => {
 const single = (n: number): Question => ({
   question: `Q${n}?`,
   header: `Q${n}`,
-  options: [
-    { label: `A${n}` },
-    { label: `B${n}` },
-    { label: `C${n}` },
-  ],
+  options: [{ label: `A${n}` }, { label: `B${n}` }, { label: `C${n}` }],
 })
 
 describe("QuestionPanel keyboard flow", () => {

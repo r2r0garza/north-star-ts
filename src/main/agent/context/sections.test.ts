@@ -133,7 +133,8 @@ describe("taskStateSection", () => {
 })
 
 function rule(
-  over: Partial<ActionAllowlistRule> & Pick<ActionAllowlistRule, "kind" | "identity" | "scope">
+  over: Partial<ActionAllowlistRule> &
+    Pick<ActionAllowlistRule, "kind" | "identity" | "scope">
 ): ActionAllowlistRule {
   return {
     id: `${over.kind}:${over.identity}:${over.scope}`,
@@ -147,7 +148,9 @@ function rule(
   }
 }
 
-function approval(over: Partial<Approval> & Pick<Approval, "status">): Approval {
+function approval(
+  over: Partial<Approval> & Pick<Approval, "status">
+): Approval {
   return {
     id: over.status + Math.random().toString(36).slice(2),
     taskId: "t1",
@@ -169,7 +172,9 @@ describe("approvalsSection", () => {
   })
 
   it("renders an already-allowed line for an in-scope rule", () => {
-    rules = [rule({ kind: "shell", identity: "git status", scope: "workspace" })]
+    rules = [
+      rule({ kind: "shell", identity: "git status", scope: "workspace" }),
+    ]
     approvals = []
     const section = approvalsSection({
       conversationId: "c1",
@@ -202,7 +207,8 @@ describe("approvalsSection", () => {
       conversationId: "c1",
       workspacePath: "/ws",
     })
-    const occurrences = section!.content.split("shell ls [workspace]").length - 1
+    const occurrences =
+      section!.content.split("shell ls [workspace]").length - 1
     expect(occurrences).toBe(1)
   })
 
@@ -413,7 +419,10 @@ describe("environmentSection", () => {
   })
 
   it("shows a detached HEAD by short sha", async () => {
-    gitBranch = { path: ".git/HEAD", value: { detached: true, sha: "deadbeef1234" } }
+    gitBranch = {
+      path: ".git/HEAD",
+      value: { detached: true, sha: "deadbeef1234" },
+    }
     modelLabel = "m"
     execImpl = () =>
       Promise.resolve({

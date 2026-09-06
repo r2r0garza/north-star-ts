@@ -33,7 +33,7 @@ describe("process failure sanitization", () => {
         code: "provider_unauthorized",
         stage: "model_request",
         message:
-          "Provider failed Authorization: Bearer sk-live-secret-token x-api-key=raw-secret response body: {\"error\":\"bad\",\"api_key\":\"nested-secret\"}",
+          'Provider failed Authorization: Bearer sk-live-secret-token x-api-key=raw-secret response body: {"error":"bad","api_key":"nested-secret"}',
         cause:
           "GatewayError cookie: sessionid=secret; OPENAI_API_KEY=sk-other-secret",
       })
@@ -53,7 +53,7 @@ describe("process failure sanitization", () => {
     expect(sanitized.message).toContain("x-api-key=[redacted]")
     expect(sanitized.message).not.toContain("sk-live-secret-token")
     expect(sanitized.message).not.toContain("raw-secret")
-    expect(sanitized.message).not.toContain("\"bad\"")
+    expect(sanitized.message).not.toContain('"bad"')
     expect(sanitized.cause).toContain("cookie=[redacted]")
     expect(sanitized.cause).not.toContain("sk-other-secret")
   })
@@ -63,7 +63,7 @@ describe("process failure sanitization", () => {
       failure({
         stage: "tool_execution",
         message:
-          "tool arguments: {\"path\":\"/Users/alice/private/project/.env\",\"token\":\"abc123\"}\ntool result: wrote /private/var/folders/yj/cache/out.txt",
+          'tool arguments: {"path":"/Users/alice/private/project/.env","token":"abc123"}\ntool result: wrote /private/var/folders/yj/cache/out.txt',
         cause:
           "failed reading /home/alice/.ssh/id_rsa and C:\\Users\\alice\\AppData\\secret.txt",
       })
@@ -89,9 +89,9 @@ describe("process failure sanitization", () => {
     expect(Buffer.byteLength(sanitized.message, "utf8")).toBeLessThanOrEqual(
       FAILURE_MESSAGE_MAX_BYTES
     )
-    expect(Buffer.byteLength(sanitized.cause ?? "", "utf8")).toBeLessThanOrEqual(
-      FAILURE_CAUSE_MAX_BYTES
-    )
+    expect(
+      Buffer.byteLength(sanitized.cause ?? "", "utf8")
+    ).toBeLessThanOrEqual(FAILURE_CAUSE_MAX_BYTES)
     expect(sanitized.message).toContain("[truncated]")
     expect(sanitized.cause).toContain("[truncated]")
   })
