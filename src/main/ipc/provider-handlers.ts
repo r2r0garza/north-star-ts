@@ -1,4 +1,4 @@
-import { app, ipcMain } from "electron"
+import { app, ipcMain, shell } from "electron"
 import * as providerAccountsRepo from "../db/repositories/provider-accounts"
 import * as modelsRepo from "../db/repositories/models"
 import * as externalModelMappingsRepo from "../db/repositories/external-agent-model-mappings"
@@ -19,6 +19,13 @@ import type {
 } from "../db/types"
 import { CLAUDE_CODE_MODELS, detectClaudeCode } from "../agent/cli/claude"
 import { CODEX_CLI_MODELS, detectCodexCli } from "../agent/cli/codex"
+import {
+  completeCodexSubscriptionDeviceAuth,
+  CODEX_SUBSCRIPTION_BASE_URL,
+  CODEX_SUBSCRIPTION_MODELS,
+  preflightCodexSubscriptionBackend,
+  requestCodexSubscriptionDeviceCode,
+} from "../agent/providers/codex-subscription"
 import {
   listMappingViews,
   resolveExternalAgentModel,
@@ -109,6 +116,16 @@ export function registerProviderHandlers(): void {
         })
         if (model.favorite) modelsRepo.updateModel(added.id, { favorite: true })
       }
+    } else if (account.provider === "codex_subscription") {
+      for (const model of CODEX_SUBSCRIPTION_MODELS) {
+        const added = modelsRepo.addModel({
+          accountId: account.id,
+          modelId: model.id,
+          modelName: model.name,
+          origin: "seeded",
+        })
+        if (model.favorite) modelsRepo.updateModel(added.id, { favorite: true })
+      }
     }
     return toView(account)
   })
@@ -117,6 +134,36 @@ export function registerProviderHandlers(): void {
   )
   ipcMain.handle("providers:detectCodexCli", () =>
     detectCodexCli(app.getPath("userData"))
+  )
+  ipcMain.handle(
+    "providers:preflightCodexSubscription",
+    async (_e, id: string) => {
+      const account = providerAccountsRepo.getAccount(id)
+      if (!account || account.provider !== "codex_subscription") {
+        return { ok: false, error: "Codex subscription account not found." }
+      }
+      if (!account.enabled) {
+        return { ok: false, error: "This experimental provider is disabled." }
+      }
+      if (!account.hasKey) {
+        return {
+          ok: false,
+          error:
+            "Missing ChatGPT/Codex auth token. Add credentials or use Codex CLI instead.",
+        }
+      }
+      if (modelsRepo.listModels(id).length === 0) {
+        return { ok: false, error: "No model is configured for this account." }
+      }
+      return preflightCodexSubscriptionBackend({
+        baseUrl: account.baseUrl ?? CODEX_SUBSCRIPTION_BASE_URL,
+        bearerToken: secrets.getApiKey(account.id) ?? "",
+        persistSecret: (secret) => {
+          secrets.setApiKey(account.id, secret)
+          invalidateProviderClient()
+        },
+      })
+    }
   )
   ipcMain.handle("providers:reorder", (_e, orderedIds: string[]) =>
     providerAccountsRepo.reorderAccounts(orderedIds).map(toView)
@@ -184,6 +231,50 @@ export function registerProviderHandlers(): void {
   ipcMain.handle(
     "providers:getMaskedKey",
     (_e, id: string) => secrets.getMaskedApiKey(id) ?? null
+  )
+  ipcMain.handle("providers:beginCodexSubscriptionAuth", async () => {
+    try {
+      const device = await requestCodexSubscriptionDeviceCode({})
+      void shell.openExternal(device.verificationUri)
+      return { ok: true, ...device }
+    } catch (err) {
+      return {
+        ok: false,
+        error:
+          err instanceof Error ? err.message : "Failed to start Codex sign-in.",
+      }
+    }
+  })
+  ipcMain.handle(
+    "providers:completeCodexSubscriptionAuth",
+    async (
+      _e,
+      input: {
+        id: string
+        deviceAuthId: string
+        userCode: string
+        intervalSeconds: number
+      }
+    ) => {
+      try {
+        const account = providerAccountsRepo.getAccount(input.id)
+        if (!account || account.provider !== "codex_subscription") {
+          return { ok: false, error: "Codex subscription account not found." }
+        }
+        const secret = await completeCodexSubscriptionDeviceAuth(input)
+        secrets.setApiKey(input.id, secret)
+        invalidateProviderClient()
+        return { ok: true }
+      } catch (err) {
+        return {
+          ok: false,
+          error:
+            err instanceof Error
+              ? err.message
+              : "Failed to complete Codex sign-in.",
+        }
+      }
+    }
   )
 
   // ── Models ──────────────────────────────────────────────────────────────

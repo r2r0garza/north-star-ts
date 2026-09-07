@@ -1404,6 +1404,7 @@ const api = {
       patch: {
         displayName?: string
         baseUrl?: string | null
+        apiMode?: "completions" | "responses" | "codex_responses"
         enabled?: boolean
       }
     ) =>
@@ -1422,6 +1423,27 @@ const api = {
       ipcRenderer.invoke("providers:getMaskedKey", id) as Promise<
         string | null
       >,
+    beginCodexSubscriptionAuth: () =>
+      ipcRenderer.invoke("providers:beginCodexSubscriptionAuth") as Promise<
+        | {
+            ok: true
+            verificationUri: string
+            userCode: string
+            deviceAuthId: string
+            intervalSeconds: number
+          }
+        | { ok: false; error?: string }
+      >,
+    completeCodexSubscriptionAuth: (input: {
+      id: string
+      deviceAuthId: string
+      userCode: string
+      intervalSeconds: number
+    }) =>
+      ipcRenderer.invoke(
+        "providers:completeCodexSubscriptionAuth",
+        input
+      ) as Promise<{ ok: boolean; error?: string }>,
     // Every account paired with its models — for the composer's grouped picker.
     listWithModels: () =>
       ipcRenderer.invoke("providers:listWithModels") as Promise<
@@ -1445,6 +1467,15 @@ const api = {
       ipcRenderer.invoke("providers:detectCodexCli") as Promise<{
         installed: boolean
         version?: string
+        error?: string
+      }>,
+    preflightCodexSubscription: (id: string) =>
+      ipcRenderer.invoke(
+        "providers:preflightCodexSubscription",
+        id
+      ) as Promise<{
+        ok: boolean
+        endpoint?: string
         error?: string
       }>,
     reorder: (orderedIds: string[]) =>

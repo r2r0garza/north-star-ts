@@ -328,6 +328,7 @@ export type Provider =
   | "openai"
   | "claude_code"
   | "codex_cli"
+  | "codex_subscription"
   | "anthropic"
   | "google"
   | "azure_openai"
@@ -336,7 +337,7 @@ export type Provider =
 // (the universal path used by every provider today); `responses` is reserved for
 // a future OpenAI Responses (/responses) adapter. Persisted on the account so the
 // provider layer can branch without a per-request probe.
-export type ApiMode = "completions" | "responses"
+export type ApiMode = "completions" | "responses" | "codex_responses"
 
 // Where a model row came from: hand-typed by the user, imported from the
 // gateway's /models catalog, or auto-seeded on account creation. Drives the UI

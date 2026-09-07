@@ -3,8 +3,9 @@ import OpenAI from "openai"
 import * as providerAccountsRepo from "../../db/repositories/provider-accounts"
 import * as modelsRepo from "../../db/repositories/models"
 import * as settingsService from "../../settings/service"
-import { getApiKey } from "../../settings/secrets"
+import { getApiKey, setApiKey } from "../../settings/secrets"
 import type { ApiMode, ProviderAccount } from "../../db/types"
+import { buildCodexSubscriptionClient } from "./codex-subscription"
 
 // The LLM routing layer. Resolves a provider account + model — either an explicit
 // per-conversation selection or the global default (the settings `llm` blob) —
@@ -136,10 +137,11 @@ function buildClient(account: ProviderAccount): LlmClient {
   if (
     account.provider !== "portkey" &&
     account.provider !== "openai_compatible" &&
-    account.provider !== "openai"
+    account.provider !== "openai" &&
+    account.provider !== "codex_subscription"
   ) {
     throw new NoActiveProviderError(
-      `Provider "${account.provider}" is not wired yet. Pick a Portkey, OpenAI, or OpenAI-compatible account.`
+      `Provider "${account.provider}" is not wired yet. Pick a Portkey, OpenAI, OpenAI-compatible, or experimental Codex subscription account.`
     )
   }
   const apiKey = getApiKey(account.id)
@@ -150,14 +152,27 @@ function buildClient(account: ProviderAccount): LlmClient {
   }
   // A base URL is required for the two gateway providers; native `openai` may omit
   // it (the SDK defaults to api.openai.com).
-  if (!account.baseUrl && account.provider !== "openai") {
+  if (
+    !account.baseUrl &&
+    account.provider !== "openai" &&
+    account.provider !== "codex_subscription"
+  ) {
     throw new NoActiveProviderError(
       `The provider "${account.displayName}" has no base URL set. Add one in Settings.`
     )
   }
 
   let client: LlmClient
-  if (account.provider === "portkey") {
+  if (account.provider === "codex_subscription") {
+    client = buildCodexSubscriptionClient({
+      baseUrl: account.baseUrl,
+      bearerToken: apiKey,
+      persistSecret: (secret) => {
+        setApiKey(account.id, secret)
+        clientCache.delete(account.id)
+      },
+    })
+  } else if (account.provider === "portkey") {
     const portkey = new Portkey({ baseURL: account.baseUrl!, apiKey })
     // Portkey's SDK owns one hidden retry by default. The agent loop owns the
     // model-request retry budget, so disable SDK-level multiplication.
@@ -284,7 +299,13 @@ export function hasActiveProvider(): boolean {
           : models.length > 0
       }
       if (!account.hasKey) return false
-      if (!account.baseUrl && account.provider !== "openai") return false
+      if (
+        !account.baseUrl &&
+        account.provider !== "openai" &&
+        account.provider !== "codex_subscription"
+      ) {
+        return false
+      }
       const models = modelsRepo.listModels(account.id)
       return modelId
         ? models.some((m) => m.modelId === modelId)
@@ -465,10 +486,10 @@ export async function createCompletion(
   extraArgs: unknown[] = [],
   apiMode: ApiMode = "completions"
 ): Promise<any> {
-  // Seam for a future OpenAI Responses (/responses) adapter. Only "completions"
-  // is implemented today; a "responses" account is rejected loudly rather than
-  // silently mis-routed, so wiring it later is an additive change here (plus a
-  // request/stream/tool-call translation) with no call-site churn.
+  // Seam for a future official OpenAI Responses (/responses) adapter. The
+  // experimental Codex subscription client below implements its own Responses
+  // bridge under apiMode='codex_responses'; the generic 'responses' mode remains
+  // rejected so it is not silently mis-routed through chat completions.
   if (apiMode === "responses") {
     throw new Error(
       "The OpenAI Responses API (/responses) is not supported yet; use an account with apiMode 'completions'."

@@ -58,6 +58,7 @@ const PROVIDERS: readonly Provider[] = [
   "openai",
   "claude_code",
   "codex_cli",
+  "codex_subscription",
   "anthropic",
   "google",
   "azure_openai",

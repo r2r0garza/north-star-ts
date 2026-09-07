@@ -72,6 +72,11 @@ const PROVIDERS: Array<{ value: Provider; label: string; enabled: boolean }> = [
   { value: "openai", label: "OpenAI", enabled: true },
   { value: "claude_code", label: "Claude Code CLI", enabled: true },
   { value: "codex_cli", label: "Codex CLI - Experimental", enabled: true },
+  {
+    value: "codex_subscription",
+    label: "Codex subscription - Experimental",
+    enabled: true,
+  },
   { value: "anthropic", label: "Anthropic", enabled: false },
   { value: "google", label: "Google", enabled: false },
   { value: "azure_openai", label: "Azure OpenAI", enabled: false },
@@ -80,7 +85,11 @@ const PROVIDERS: Array<{ value: Provider; label: string; enabled: boolean }> = [
 // Native OpenAI can omit a base URL (the SDK defaults to api.openai.com); every
 // other wired provider is a gateway that requires one.
 function requiresBaseUrl(provider: Provider): boolean {
-  return provider !== "openai" && !isCliProvider(provider)
+  return (
+    provider !== "openai" &&
+    provider !== "codex_subscription" &&
+    !isCliProvider(provider)
+  )
 }
 
 function isCliProvider(provider: Provider): boolean {
@@ -89,6 +98,10 @@ function isCliProvider(provider: Provider): boolean {
 
 function providerLabel(provider: Provider): string {
   return PROVIDERS.find((p) => p.value === provider)?.label ?? provider
+}
+
+function isCodexSubscription(provider: Provider): boolean {
+  return provider === "codex_subscription"
 }
 
 const ORIGIN_LABEL: Record<ModelOrigin, string> = {
@@ -233,8 +246,10 @@ export function ProvidersTab({ state }: { state: LlmState }) {
                   provider?.provider === "claude_code"
                     ? "sonnet"
                     : provider?.provider === "codex_cli"
-                      ? "gpt-5.3-codex"
-                      : null
+                      ? "gpt-5.5"
+                      : provider?.provider === "codex_subscription"
+                        ? "gpt-5.5"
+                        : null
                 const next = {
                   activeAccountId: id,
                   activeModelId: cliDefault,
@@ -345,6 +360,17 @@ function AccountCard({
     version?: string
     error?: string
   } | null>(null)
+  const [preflight, setPreflight] = useState<{
+    ok: boolean
+    endpoint?: string
+    error?: string
+  } | null>(null)
+  const [codexDeviceAuth, setCodexDeviceAuth] = useState<{
+    verificationUri: string
+    userCode: string
+    deviceAuthId: string
+    intervalSeconds: number
+  } | null>(null)
 
   useEffect(() => {
     if (!open || !isCliProvider(account.provider)) return
@@ -389,6 +415,46 @@ function AccountCard({
 
   async function setEnabled(enabled: boolean) {
     await window.cowork.providers.update(account.id, { enabled })
+    await onChange()
+  }
+
+  async function checkCodexSubscription() {
+    setPreflight(null)
+    setPreflight(
+      await window.cowork.providers.preflightCodexSubscription(account.id)
+    )
+  }
+
+  async function startCodexSubscriptionAuth() {
+    setBusy(true)
+    setError(null)
+    setCodexDeviceAuth(null)
+    const device = await window.cowork.providers.beginCodexSubscriptionAuth()
+    setBusy(false)
+    if (!device.ok) {
+      setError(device.error ?? "Failed to start Codex sign-in.")
+      return
+    }
+    setCodexDeviceAuth(device)
+  }
+
+  async function finishCodexSubscriptionAuth() {
+    if (!codexDeviceAuth) return
+    setBusy(true)
+    setError(null)
+    const result = await window.cowork.providers.completeCodexSubscriptionAuth({
+      id: account.id,
+      deviceAuthId: codexDeviceAuth.deviceAuthId,
+      userCode: codexDeviceAuth.userCode,
+      intervalSeconds: codexDeviceAuth.intervalSeconds,
+    })
+    setBusy(false)
+    if (!result.ok) {
+      setError(result.error ?? "Failed to complete Codex sign-in.")
+      return
+    }
+    setCodexDeviceAuth(null)
+    setEditingKey(false)
     await onChange()
   }
 
@@ -468,6 +534,13 @@ function AccountCard({
           </div>
         ) : (
           <>
+            {isCodexSubscription(account.provider) && (
+              <p className="rounded-md bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+                Experimental, private ChatGPT/Codex backend. Use only with
+                user-owned credentials; Codex CLI and official API providers
+                remain the supported fallback.
+              </p>
+            )}
             <Field>
               <FieldLabel htmlFor={`base-${account.id}`}>Base URL</FieldLabel>
               <Input
@@ -475,13 +548,71 @@ function AccountCard({
                 value={baseUrl}
                 onChange={(e) => setBaseUrl(e.target.value)}
                 onBlur={saveBaseUrl}
-                placeholder="https://gateway.example.com/v1"
+                placeholder={
+                  isCodexSubscription(account.provider)
+                    ? "Default: https://chatgpt.com/backend-api/codex"
+                    : "https://gateway.example.com/v1"
+                }
               />
             </Field>
 
             <Field>
-              <FieldLabel htmlFor={`key-${account.id}`}>API key</FieldLabel>
-              {editingKey ? (
+              <FieldLabel htmlFor={`key-${account.id}`}>
+                {isCodexSubscription(account.provider)
+                  ? "ChatGPT/Codex sign-in"
+                  : "API key"}
+              </FieldLabel>
+              {isCodexSubscription(account.provider) ? (
+                <div className="flex flex-col gap-2 rounded-md border border-dashed border-border p-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button
+                      size="sm"
+                      onClick={startCodexSubscriptionAuth}
+                      disabled={!secureOk || busy}
+                    >
+                      {busy ? <Spinner /> : "Sign in with browser"}
+                    </Button>
+                    {account.hasKey && (
+                      <>
+                        <span className="font-mono text-sm text-muted-foreground">
+                          {account.maskedKey ?? "•••• set"}
+                        </span>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="text-destructive"
+                          onClick={clearKey}
+                        >
+                          Clear
+                        </Button>
+                      </>
+                    )}
+                  </div>
+                  {codexDeviceAuth && (
+                    <div className="flex flex-col gap-2 rounded-md bg-muted px-3 py-2 text-xs">
+                      <p>
+                        Browser opened to {codexDeviceAuth.verificationUri}.
+                        Enter this code, then click Done:
+                      </p>
+                      <span className="font-mono text-base font-semibold tracking-widest">
+                        {codexDeviceAuth.userCode}
+                      </span>
+                      <Button
+                        size="sm"
+                        className="self-start"
+                        onClick={finishCodexSubscriptionAuth}
+                        disabled={busy}
+                      >
+                        {busy ? <Spinner /> : "Done signing in"}
+                      </Button>
+                    </div>
+                  )}
+                  <FieldDescription>
+                    North Star encrypts the OAuth token payload in the main
+                    process. The renderer never receives stored token values.
+                  </FieldDescription>
+                </div>
+              ) : editingKey ? (
                 <div className="flex items-center gap-2">
                   <Input
                     id={`key-${account.id}`}
@@ -538,6 +669,31 @@ function AccountCard({
                 </FieldDescription>
               )}
             </Field>
+            {isCodexSubscription(account.provider) && (
+              <div className="flex flex-col gap-2 rounded-md bg-muted px-3 py-2 text-xs">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="self-start"
+                  onClick={checkCodexSubscription}
+                >
+                  Check configuration
+                </Button>
+                {preflight && (
+                  <p
+                    className={
+                      preflight.ok
+                        ? "text-muted-foreground"
+                        : "text-destructive"
+                    }
+                  >
+                    {preflight.ok
+                      ? `Ready to try ${preflight.endpoint ?? "the Codex backend"}. Live requests may still fail if the private endpoint changes.`
+                      : preflight.error}
+                  </p>
+                )}
+              </div>
+            )}
           </>
         )}
       </CollapsibleContent>
@@ -568,6 +724,9 @@ function NewAccountForm({
       provider,
       displayName: name,
       baseUrl: baseUrl.trim() || null,
+      apiMode: isCodexSubscription(provider)
+        ? "codex_responses"
+        : "completions",
     })
     await onSaved(account.id)
     onDone()
@@ -613,11 +772,20 @@ function NewAccountForm({
             value={baseUrl}
             onChange={(e) => setBaseUrl(e.target.value)}
             placeholder={
-              needsBaseUrl
-                ? "https://gateway.example.com/v1"
-                : "Leave blank for api.openai.com"
+              isCodexSubscription(provider)
+                ? "Leave blank for chatgpt.com/backend-api/codex"
+                : needsBaseUrl
+                  ? "https://gateway.example.com/v1"
+                  : "Leave blank for api.openai.com"
             }
           />
+          {isCodexSubscription(provider) && (
+            <FieldDescription>
+              Experimental/private backend. North Star stores only encrypted
+              auth material in the main process; the renderer never reads it
+              back.
+            </FieldDescription>
+          )}
         </Field>
       )}
       <div className="flex justify-end gap-2">
@@ -956,24 +1124,29 @@ function AccountModelsSection({
       </CollapsibleTrigger>
 
       <CollapsibleContent className="flex flex-col gap-3 px-3 pb-3">
-        {isCliProvider(account.provider) ? (
+        {isCliProvider(account.provider) ||
+        isCodexSubscription(account.provider) ? (
           <>
             <p className="text-xs text-muted-foreground">
               {account.provider === "claude_code"
                 ? "Claude Code manages model availability. Choose a durable alias; Sonnet is used when no explicit alias is selected."
-                : "Codex CLI manages model availability. Choose the model passed to codex exec with --model."}
+                : account.provider === "codex_cli"
+                  ? "Codex CLI manages model availability. Choose the model passed to codex exec with --model."
+                  : "Experimental Codex subscription models are user-maintained aliases. Add a custom model if your account exposes a different id."}
             </p>
             <div className="flex flex-col gap-2">
               {(account.provider === "claude_code"
                 ? ["sonnet", "haiku", "opus", "fable"]
-                : [
-                    "gpt-5.3-codex",
-                    "gpt-5.3-codex-spark",
-                    "gpt-5.5",
-                    "gpt-5.6-sol",
-                    "gpt-5.6-terra",
-                    "gpt-5.6-luna",
-                  ]
+                : account.provider === "codex_cli"
+                  ? [
+                      "gpt-5.5",
+                      "gpt-5.3-codex",
+                      "gpt-5.3-codex-spark",
+                      "gpt-5.6-sol",
+                      "gpt-5.6-terra",
+                      "gpt-5.6-luna",
+                    ]
+                  : ["gpt-5.5", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]
               ).map((alias) => {
                 const model = models?.find((entry) => entry.modelId === alias)
                 const selected =
@@ -983,7 +1156,7 @@ function AccountModelsSection({
                       alias ===
                         (account.provider === "claude_code"
                           ? "sonnet"
-                          : "gpt-5.3-codex")))
+                          : "gpt-5.5")))
                 return (
                   <button
                     key={alias}
@@ -1004,7 +1177,9 @@ function AccountModelsSection({
                       {((account.provider === "claude_code" &&
                         alias === "sonnet") ||
                         (account.provider === "codex_cli" &&
-                          alias === "gpt-5.3-codex")) && (
+                          alias === "gpt-5.5") ||
+                        (account.provider === "codex_subscription" &&
+                          alias === "gpt-5.5")) && (
                         <Badge variant="outline">fallback</Badge>
                       )}
                       {selected && <Badge>default</Badge>}
@@ -1013,6 +1188,32 @@ function AccountModelsSection({
                 )
               })}
             </div>
+            {isCodexSubscription(account.provider) && (
+              <div className="flex flex-col gap-2 rounded-lg border border-dashed border-border p-3">
+                <FieldLabel htmlFor={`new-model-${account.id}`}>
+                  Add a custom experimental model
+                </FieldLabel>
+                <Input
+                  id={`new-model-${account.id}`}
+                  value={newId}
+                  onChange={(e) => setNewId(e.target.value)}
+                  placeholder="Model id (e.g. gpt-5.5)"
+                />
+                <Input
+                  value={newName}
+                  onChange={(e) => setNewName(e.target.value)}
+                  placeholder="Custom display name (optional)"
+                />
+                <Button
+                  size="sm"
+                  className="self-end"
+                  onClick={addModel}
+                  disabled={!newId.trim()}
+                >
+                  <Plus className="size-4" /> Add
+                </Button>
+              </div>
+            )}
           </>
         ) : (
           <>

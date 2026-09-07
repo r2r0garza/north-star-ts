@@ -41,6 +41,7 @@ import {
   SCHEMA_V39,
   SCHEMA_V40,
   SCHEMA_V41,
+  SCHEMA_V43,
 } from "./schema"
 
 // Ordered migrations. Index 0 runs to reach user_version 1, index 1 to reach 2,
@@ -89,6 +90,7 @@ const MIGRATIONS: Array<(db: Database.Database) => void> = [
   (db) => db.exec(SCHEMA_V40),
   (db) => db.exec(SCHEMA_V41),
   ensureProcessRuntimeProfileColumns,
+  (db) => db.exec(SCHEMA_V43),
 ]
 
 function tableExists(db: Database.Database, table: string): boolean {
@@ -129,6 +131,21 @@ function ensureProcessRuntimeProfileColumns(db: Database.Database): void {
   addColumnIfMissing(db, "process_phase_runs", "runtime_snapshot", "TEXT")
 }
 
+function ensureCodexSubscriptionProviderConstraints(
+  db: Database.Database
+): void {
+  const row = db
+    .prepare(
+      "SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'provider_accounts'"
+    )
+    .get() as { sql?: string } | undefined
+  const sql = row?.sql ?? ""
+  if (sql.includes("codex_subscription") && sql.includes("codex_responses")) {
+    return
+  }
+  db.exec(SCHEMA_V43)
+}
+
 // Apply every migration newer than the database's current user_version, each in
 // its own transaction, then stamp the new version. Synchronous (better-sqlite3).
 //
@@ -157,10 +174,11 @@ export function runMigrations(db: Database.Database): void {
     // Development and prerelease databases can have a user_version stamped ahead
     // of this source tree after migration history is rebased or a build is run
     // against an experimental schema. The normal loop correctly skips those DBs,
-    // so keep additive process runtime columns self-healing instead of making
-    // users repair SQLite by hand.
+    // so keep prerelease schema drift self-healing instead of making users repair
+    // SQLite by hand.
     db.transaction(() => {
       ensureProcessRuntimeProfileColumns(db)
+      ensureCodexSubscriptionProviderConstraints(db)
     })()
   } finally {
     if (fkWasOn) db.pragma("foreign_keys = ON")

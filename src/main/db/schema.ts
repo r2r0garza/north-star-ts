@@ -1212,3 +1212,30 @@ ALTER TABLE process_phase_agents ADD COLUMN runtime_config TEXT;
 ALTER TABLE process_runs ADD COLUMN runtime_config TEXT;
 ALTER TABLE process_phase_runs ADD COLUMN runtime_snapshot TEXT;
 `
+
+// v43 (plan 086): experimental ChatGPT/Codex subscription backend. This is a
+// distinct provider/account mode, not an OpenAI SDK base URL swap. SQLite cannot
+// widen either CHECK constraint in place, so rebuild provider_accounts to admit
+// provider='codex_subscription' and api_mode='codex_responses'.
+export const SCHEMA_V43 = `
+CREATE TABLE provider_accounts_v43 (
+  id            TEXT PRIMARY KEY,
+  provider      TEXT NOT NULL CHECK (provider IN
+                  ('portkey','openai_compatible','openai','claude_code','codex_cli','codex_subscription','anthropic','google','azure_openai')),
+  display_name  TEXT NOT NULL,
+  base_url      TEXT,
+  encrypted_key BLOB,
+  api_mode      TEXT NOT NULL DEFAULT 'completions'
+                  CHECK (api_mode IN ('completions','responses','codex_responses')),
+  enabled       INTEGER NOT NULL DEFAULT 1,
+  created_at    INTEGER NOT NULL,
+  last_used_at  INTEGER,
+  position      INTEGER NOT NULL DEFAULT 0
+);
+INSERT INTO provider_accounts_v43
+  (id, provider, display_name, base_url, encrypted_key, api_mode, enabled, created_at, last_used_at, position)
+SELECT id, provider, display_name, base_url, encrypted_key, api_mode, enabled, created_at, last_used_at, position
+FROM provider_accounts;
+DROP TABLE provider_accounts;
+ALTER TABLE provider_accounts_v43 RENAME TO provider_accounts;
+`

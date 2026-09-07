@@ -92,7 +92,7 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
     const db = new Database(":memory:")
     db.pragma("foreign_keys = ON")
     runMigrations(db)
-    expect(db.pragma("user_version", { simple: true })).toBe(42)
+    expect(db.pragma("user_version", { simple: true })).toBe(43)
     expect(db.pragma("foreign_key_check")).toHaveLength(0)
     db.close()
   })
@@ -265,6 +265,75 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
         .pluck()
         .all()
     ).toEqual(["claude_code", "codex_cli"])
+    db.close()
+  })
+
+  it("widens provider and api_mode constraints for Codex subscription (v43)", () => {
+    const db = new Database(":memory:")
+    db.pragma("foreign_keys = ON")
+    runMigrations(db)
+
+    db.prepare(
+      `INSERT INTO provider_accounts
+        (id, provider, display_name, api_mode, enabled, position, created_at)
+       VALUES ('codex-sub', 'codex_subscription', 'Codex Subscription', 'codex_responses', 1, 0, 0)`
+    ).run()
+    db.prepare(
+      `INSERT INTO models
+        (id, account_id, model_id, model_name, origin, favorite, created_at, updated_at)
+       VALUES ('model', 'codex-sub', 'gpt-5.5', 'GPT-5.5', 'seeded', 1, 0, 0)`
+    ).run()
+
+    expect(
+      db
+        .prepare(
+          "SELECT provider, api_mode FROM provider_accounts WHERE id = 'codex-sub'"
+        )
+        .get()
+    ).toEqual({
+      provider: "codex_subscription",
+      api_mode: "codex_responses",
+    })
+    expect(db.pragma("foreign_key_check")).toHaveLength(0)
+    db.close()
+  })
+
+  it("repairs stale provider constraints when user_version is already current", () => {
+    const db = new Database(":memory:")
+    db.pragma("foreign_keys = ON")
+    runMigrations(db)
+    db.exec(`
+      CREATE TABLE provider_accounts_without_codex_subscription (
+        id            TEXT PRIMARY KEY,
+        provider      TEXT NOT NULL CHECK (provider IN
+                    ('portkey','openai_compatible','openai','claude_code','codex_cli','anthropic','google','azure_openai')),
+        display_name  TEXT NOT NULL,
+        base_url      TEXT,
+        encrypted_key BLOB,
+        api_mode      TEXT NOT NULL DEFAULT 'completions'
+                    CHECK (api_mode IN ('completions','responses')),
+        enabled       INTEGER NOT NULL DEFAULT 1,
+        created_at    INTEGER NOT NULL,
+        last_used_at  INTEGER,
+        position      INTEGER NOT NULL DEFAULT 0
+      );
+      INSERT INTO provider_accounts_without_codex_subscription
+        (id, provider, display_name, base_url, encrypted_key, api_mode, enabled, created_at, last_used_at, position)
+      SELECT id, provider, display_name, base_url, encrypted_key, api_mode, enabled, created_at, last_used_at, position
+      FROM provider_accounts;
+      DROP TABLE provider_accounts;
+      ALTER TABLE provider_accounts_without_codex_subscription RENAME TO provider_accounts;
+      PRAGMA user_version = 43;
+    `)
+
+    runMigrations(db)
+
+    db.prepare(
+      `INSERT INTO provider_accounts
+        (id, provider, display_name, api_mode, enabled, position, created_at)
+       VALUES ('codex-sub', 'codex_subscription', 'Codex Subscription', 'codex_responses', 1, 0, 0)`
+    ).run()
+    expect(db.pragma("foreign_key_check")).toHaveLength(0)
     db.close()
   })
 
