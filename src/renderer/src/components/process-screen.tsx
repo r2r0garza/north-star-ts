@@ -305,7 +305,19 @@ function RuntimePicker({
   value?: ProcessRuntimeSelection | null
   onChange: (next: ProcessRuntimeSelection | null) => void
 }) {
-  const groups = useMemo<RuntimePickerGroup[]>(
+  const [providerFilter, setProviderFilter] = useState<string | null>(null)
+  const [searchQuery, setSearchQuery] = useState("")
+  const providerFilters = useMemo(
+    () =>
+      providers
+        .filter((entry) => entry.models.length > 0)
+        .map((entry) => ({
+          id: entry.account.id,
+          label: entry.account.displayName,
+        })),
+    [providers]
+  )
+  const allGroups = useMemo<RuntimePickerGroup[]>(
     () => [
       {
         value: "runtime",
@@ -336,12 +348,27 @@ function RuntimePicker({
     ],
     [providers]
   )
+  const groups = useMemo<RuntimePickerGroup[]>(() => {
+    if (!providerFilter || searchQuery.trim()) return allGroups
+    return allGroups
+      .map((group) =>
+        group.value === "runtime"
+          ? group
+          : {
+              ...group,
+              items: group.items.filter(
+                (item) => item.accountId === providerFilter
+              ),
+            }
+      )
+      .filter((group) => group.value === "runtime" || group.items.length > 0)
+  }, [allGroups, providerFilter, searchQuery])
   const selectedItem: RuntimePickerItem | null =
     value?.accountId && value.modelId
-      ? (groups
+      ? (allGroups
           .flatMap((group) => group.items)
           .find((item) => item.value === runtimeValue(value)) ?? null)
-      : groups[0].items[0]
+      : allGroups[0].items[0]
 
   return (
     <label className="flex min-w-44 flex-col gap-1 text-xs">
@@ -349,8 +376,14 @@ function RuntimePicker({
       <Combobox
         items={groups}
         value={selectedItem}
+        inputValue={searchQuery}
         isItemEqualToValue={(a, b) => a?.value === b?.value}
+        onInputValueChange={(next) => setSearchQuery(next)}
+        onOpenChange={(open) => {
+          if (!open) setSearchQuery("")
+        }}
         onValueChange={(item: RuntimePickerItem | null) => {
+          setSearchQuery("")
           if (!item || !item.accountId || !item.modelId) return onChange(null)
           onChange({
             accountId: item.accountId,
@@ -370,6 +403,31 @@ function RuntimePicker({
         </ComboboxTrigger>
         <ComboboxContent className="w-80 min-w-80">
           <ComboboxInput placeholder="Search models…" showTrigger={false} />
+          {providerFilters.length > 1 && (
+            <div className="flex flex-wrap gap-1 border-b border-border/60 p-1">
+              <Button
+                type="button"
+                variant={!providerFilter ? "secondary" : "ghost"}
+                size="xs"
+                onClick={() => setProviderFilter(null)}
+              >
+                All
+              </Button>
+              {providerFilters.map((provider) => (
+                <Button
+                  key={provider.id}
+                  type="button"
+                  variant={
+                    providerFilter === provider.id ? "secondary" : "ghost"
+                  }
+                  size="xs"
+                  onClick={() => setProviderFilter(provider.id)}
+                >
+                  {provider.label}
+                </Button>
+              ))}
+            </div>
+          )}
           <ComboboxEmpty>No models found.</ComboboxEmpty>
           <ComboboxList>
             {(group: RuntimePickerGroup) => (
@@ -402,6 +460,36 @@ function agentValue(agent: AgentSummary): string {
 
 function agentLabel(agent: AgentSummary): string {
   return agent.label ?? agent.name
+}
+
+function agentSourceLabel(sourceKind: string): string {
+  switch (sourceKind) {
+    case "north_star":
+      return window.cowork.system().displayName
+    case "github":
+      return "GitHub"
+    case "copilot":
+      return "Copilot"
+    case "cursor":
+      return "Cursor"
+    case "claude":
+      return "Claude"
+    case "codex":
+      return "Codex"
+    default:
+      return sourceKind
+        .replaceAll("_", " ")
+        .replace(/\b\w/g, (character) => character.toUpperCase())
+  }
+}
+
+function agentSourceFilters(agents: AgentSummary[]) {
+  return Array.from(new Set(agents.map((agent) => agent.sourceKind))).map(
+    (sourceKind) => ({
+      id: sourceKind,
+      label: agentSourceLabel(sourceKind),
+    })
+  )
 }
 
 function AgentIdentityBadge({
@@ -1193,6 +1281,14 @@ function PhaseCard({
     () => new Map(agents.map((agent) => [agentValue(agent), agent])),
     [agents]
   )
+  const [reviewerAgentSourceFilter, setReviewerAgentSourceFilter] = useState<
+    string | null
+  >(null)
+  const [reviewerAgentSearchQuery, setReviewerAgentSearchQuery] = useState("")
+  const [poolAgentSourceFilter, setPoolAgentSourceFilter] = useState<
+    string | null
+  >(null)
+  const [poolAgentSearchQuery, setPoolAgentSearchQuery] = useState("")
   const reviewerAgentItems = useMemo(
     () => [
       {
@@ -1205,17 +1301,53 @@ function PhaseCard({
         label: agentLabel(agent),
         description: agent.description,
         name: agent.name,
+        sourceKind: agent.sourceKind,
         source: [agent.sourceKind, agent.scope].filter(Boolean).join(" · "),
       })),
     ],
     [agents]
   )
+  const reviewerAgentSourceFilters = useMemo(
+    () => agentSourceFilters(agents),
+    [agents]
+  )
+  const filteredReviewerAgentItems = useMemo(() => {
+    if (!reviewerAgentSourceFilter || reviewerAgentSearchQuery.trim()) {
+      return reviewerAgentItems
+    }
+    return reviewerAgentItems.filter(
+      (item) =>
+        !("sourceKind" in item) || item.sourceKind === reviewerAgentSourceFilter
+    )
+  }, [reviewerAgentItems, reviewerAgentSearchQuery, reviewerAgentSourceFilter])
   const selectedReviewerAgent =
     reviewerAgentItems.find(
       (item) =>
         item.value === (phase.validatorAgent ?? OWN_AGENT) ||
         ("name" in item && item.name === phase.validatorAgent)
     ) ?? reviewerAgentItems[0]
+  const addableAgentItems = useMemo(
+    () =>
+      addable.map((agent) => ({
+        value: agentValue(agent),
+        label: agentLabel(agent),
+        description: agent.description,
+        sourceKind: agent.sourceKind,
+      })),
+    [addable]
+  )
+  const poolAgentSourceFilters = useMemo(
+    () => agentSourceFilters(addable),
+    [addable]
+  )
+  const filteredAddableAgentItems = useMemo(() => {
+    if (!poolAgentSourceFilter || poolAgentSearchQuery.trim()) {
+      return addableAgentItems
+    }
+    return addableAgentItems.filter(
+      (item) => item.sourceKind === poolAgentSourceFilter
+    )
+  }, [addableAgentItems, poolAgentSearchQuery, poolAgentSourceFilter])
   // Collapsed by default — a built graph is mostly read; expand to edit.
   const [expanded, setExpanded] = useState(false)
   const depCount = incoming.length
@@ -1708,10 +1840,18 @@ function PhaseCard({
               >
                 <span className="text-muted-foreground">Reviewer</span>
                 <Combobox
-                  items={reviewerAgentItems}
+                  items={filteredReviewerAgentItems}
                   value={selectedReviewerAgent}
+                  inputValue={reviewerAgentSearchQuery}
                   isItemEqualToValue={(a, b) => a?.value === b?.value}
+                  onInputValueChange={(next) =>
+                    setReviewerAgentSearchQuery(next)
+                  }
+                  onOpenChange={(open) => {
+                    if (!open) setReviewerAgentSearchQuery("")
+                  }}
                   onValueChange={(item: { value: string } | null) => {
+                    setReviewerAgentSearchQuery("")
                     if (!item) return
                     void patchPhase({
                       validatorAgent:
@@ -1733,9 +1873,40 @@ function PhaseCard({
                       placeholder="Search reviewer agents…"
                       showTrigger={false}
                     />
+                    {reviewerAgentSourceFilters.length > 1 && (
+                      <div className="flex flex-wrap gap-1 border-b border-border/60 p-1">
+                        <Button
+                          type="button"
+                          variant={
+                            !reviewerAgentSourceFilter ? "secondary" : "ghost"
+                          }
+                          size="xs"
+                          onClick={() => setReviewerAgentSourceFilter(null)}
+                        >
+                          All
+                        </Button>
+                        {reviewerAgentSourceFilters.map((source) => (
+                          <Button
+                            key={source.id}
+                            type="button"
+                            variant={
+                              reviewerAgentSourceFilter === source.id
+                                ? "secondary"
+                                : "ghost"
+                            }
+                            size="xs"
+                            onClick={() =>
+                              setReviewerAgentSourceFilter(source.id)
+                            }
+                          >
+                            {source.label}
+                          </Button>
+                        ))}
+                      </div>
+                    )}
                     <ComboboxEmpty>No agents found.</ComboboxEmpty>
                     <ComboboxList>
-                      {(item: (typeof reviewerAgentItems)[number]) => (
+                      {(item: (typeof filteredReviewerAgentItems)[number]) => (
                         <ComboboxItem key={item.value} value={item}>
                           <span className="flex min-w-0 flex-col gap-0.5">
                             <span className="truncate">{item.label}</span>
@@ -1860,14 +2031,16 @@ function PhaseCard({
                 // It's an action picker — selecting adds to the pool and the value
                 // stays unselected, so the trigger always reads "Add agent…".
                 <Combobox
-                  items={addable.map((a) => ({
-                    value: agentValue(a),
-                    label: agentLabel(a),
-                    description: a.description,
-                  }))}
+                  items={filteredAddableAgentItems}
                   value={null}
+                  inputValue={poolAgentSearchQuery}
                   isItemEqualToValue={(a, b) => a?.value === b?.value}
+                  onInputValueChange={(next) => setPoolAgentSearchQuery(next)}
+                  onOpenChange={(open) => {
+                    if (!open) setPoolAgentSearchQuery("")
+                  }}
                   onValueChange={(item: { value: string } | null) => {
+                    setPoolAgentSearchQuery("")
                     if (item) void addPoolAgent(item.value)
                   }}
                 >
@@ -1879,6 +2052,35 @@ function PhaseCard({
                       placeholder="Search agents…"
                       showTrigger={false}
                     />
+                    {poolAgentSourceFilters.length > 1 && (
+                      <div className="flex flex-wrap gap-1 border-b border-border/60 p-1">
+                        <Button
+                          type="button"
+                          variant={
+                            !poolAgentSourceFilter ? "secondary" : "ghost"
+                          }
+                          size="xs"
+                          onClick={() => setPoolAgentSourceFilter(null)}
+                        >
+                          All
+                        </Button>
+                        {poolAgentSourceFilters.map((source) => (
+                          <Button
+                            key={source.id}
+                            type="button"
+                            variant={
+                              poolAgentSourceFilter === source.id
+                                ? "secondary"
+                                : "ghost"
+                            }
+                            size="xs"
+                            onClick={() => setPoolAgentSourceFilter(source.id)}
+                          >
+                            {source.label}
+                          </Button>
+                        ))}
+                      </div>
+                    )}
                     <ComboboxEmpty>No agents found.</ComboboxEmpty>
                     <ComboboxList>
                       {(item: {

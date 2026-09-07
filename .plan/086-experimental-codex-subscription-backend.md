@@ -1,6 +1,6 @@
 # PR86: Experimental Codex subscription backend
 
-> Status: **PLANNED**. Explores an opt-in `chatgpt.com/backend-api/codex` runtime connector without making it the public-product foundation.
+> Status: **COMPLETED**. Explores an opt-in `chatgpt.com/backend-api/codex` runtime connector without making it the public-product foundation.
 
 > **For Hermes:** Implement with the `north-star-project`, `coding-agent-adapters`, and `test-driven-development` skills. Do not commit unless the user explicitly asks.
 

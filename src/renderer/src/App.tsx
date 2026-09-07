@@ -3,6 +3,7 @@ import {
   useCallback,
   useEffect,
   useImperativeHandle,
+  useMemo,
   useRef,
   useState,
 } from "react"
@@ -152,6 +153,35 @@ interface PendingModelMapping {
   models: ModelEntry[]
   reason: string
   resume: "send" | "background"
+}
+
+type AgentPickerItem = {
+  value: string
+  label: string
+  description?: string
+  name?: string
+  sourceKind?: string
+}
+
+function agentSourceLabel(sourceKind: string, systemName: string): string {
+  switch (sourceKind) {
+    case "north_star":
+      return systemName
+    case "github":
+      return "GitHub"
+    case "copilot":
+      return "Copilot"
+    case "cursor":
+      return "Cursor"
+    case "claude":
+      return "Claude"
+    case "codex":
+      return "Codex"
+    default:
+      return sourceKind
+        .replaceAll("_", " ")
+        .replace(/\b\w/g, (character) => character.toUpperCase())
+  }
 }
 
 // Append streamed assistant text. Extends the trailing text segment when the
@@ -381,7 +411,9 @@ function App(
   // from the synchronous system bridge. Used to label the per-view empty-session
   // heading — "<agent> - Chat", "<agent> - Interactive", "<agent> - Autonomous
   // Tasks" (the North Star tab's heading is dynamic with the agent name).
-  const agentName = window.cowork.system().mainAgentName
+  const system = window.cowork.system()
+  const agentName = system.mainAgentName
+  const systemName = system.displayName
 
   const [workspace, setWorkspace] = useState("")
   // Whether the workspace is locked to a project's directory (the conversation
@@ -1656,16 +1688,28 @@ function App(
   }
   // Combobox items use { value: "accountId::modelId", label } objects — Base UI
   // filters and displays on `label` automatically. Grouped by provider account.
-  const modelGroups = accountsWithModels
-    .filter((a) => a.models.length > 0)
-    .map((a) => ({
-      value: a.account.id,
-      label: a.account.displayName,
-      items: a.models.map((m) => ({
-        value: `${a.account.id}::${m.modelId}`,
-        label: m.modelName && m.modelName.trim() ? m.modelName : m.modelId,
-      })),
-    }))
+  const [modelAccountFilter, setModelAccountFilter] = useState<string | null>(
+    null
+  )
+  const [modelSearchQuery, setModelSearchQuery] = useState("")
+  const modelGroups = useMemo(
+    () =>
+      accountsWithModels
+        .filter((a) => a.models.length > 0)
+        .map((a) => ({
+          value: a.account.id,
+          label: a.account.displayName,
+          items: a.models.map((m) => ({
+            value: `${a.account.id}::${m.modelId}`,
+            label: m.modelName && m.modelName.trim() ? m.modelName : m.modelId,
+          })),
+        })),
+    [accountsWithModels]
+  )
+  const filteredModelGroups = useMemo(() => {
+    if (!modelAccountFilter || modelSearchQuery.trim()) return modelGroups
+    return modelGroups.filter((group) => group.value === modelAccountFilter)
+  }, [modelAccountFilter, modelGroups, modelSearchQuery])
   const selectedItem =
     effAccountId && effModelId
       ? (modelGroups
@@ -1678,10 +1722,16 @@ function App(
     : "Configure provider…"
   const modelPicker = hasSelectableModels ? (
     <Combobox
-      items={modelGroups}
+      items={filteredModelGroups}
       value={selectedItem}
+      inputValue={modelSearchQuery}
       isItemEqualToValue={(a, b) => a?.value === b?.value}
+      onInputValueChange={(next) => setModelSearchQuery(next)}
+      onOpenChange={(open) => {
+        if (!open) setModelSearchQuery("")
+      }}
       onValueChange={(item) => {
+        setModelSearchQuery("")
         if (!item) return
         const sep = item.value.indexOf("::")
         if (sep < 0) return
@@ -1697,6 +1747,31 @@ function App(
       </ComboboxTrigger>
       <ComboboxContent className="w-72 min-w-72">
         <ComboboxInput placeholder="Search models…" showTrigger={false} />
+        {modelGroups.length > 1 && (
+          <div className="flex flex-wrap gap-1 border-b border-border/60 p-1">
+            <Button
+              type="button"
+              variant={!modelAccountFilter ? "secondary" : "ghost"}
+              size="xs"
+              onClick={() => setModelAccountFilter(null)}
+            >
+              All
+            </Button>
+            {modelGroups.map((group) => (
+              <Button
+                key={group.value}
+                type="button"
+                variant={
+                  modelAccountFilter === group.value ? "secondary" : "ghost"
+                }
+                size="xs"
+                onClick={() => setModelAccountFilter(group.value)}
+              >
+                {group.label}
+              </Button>
+            ))}
+          </div>
+        )}
         <ComboboxEmpty>No models found.</ComboboxEmpty>
         <ComboboxList>
           {(group: {
@@ -1733,10 +1808,16 @@ function App(
   // the selected model name appears as a native tooltip.
   const modelPickerCompact = hasSelectableModels ? (
     <Combobox
-      items={modelGroups}
+      items={filteredModelGroups}
       value={selectedItem}
+      inputValue={modelSearchQuery}
       isItemEqualToValue={(a, b) => a?.value === b?.value}
+      onInputValueChange={(next) => setModelSearchQuery(next)}
+      onOpenChange={(open) => {
+        if (!open) setModelSearchQuery("")
+      }}
       onValueChange={(item) => {
+        setModelSearchQuery("")
         if (!item) return
         const sep = item.value.indexOf("::")
         if (sep < 0) return
@@ -1751,6 +1832,31 @@ function App(
       </ComboboxTrigger>
       <ComboboxContent className="w-72 min-w-72">
         <ComboboxInput placeholder="Search models…" showTrigger={false} />
+        {modelGroups.length > 1 && (
+          <div className="flex flex-wrap gap-1 border-b border-border/60 p-1">
+            <Button
+              type="button"
+              variant={!modelAccountFilter ? "secondary" : "ghost"}
+              size="xs"
+              onClick={() => setModelAccountFilter(null)}
+            >
+              All
+            </Button>
+            {modelGroups.map((group) => (
+              <Button
+                key={group.value}
+                type="button"
+                variant={
+                  modelAccountFilter === group.value ? "secondary" : "ghost"
+                }
+                size="xs"
+                onClick={() => setModelAccountFilter(group.value)}
+              >
+                {group.label}
+              </Button>
+            ))}
+          </div>
+        )}
         <ComboboxEmpty>No models found.</ComboboxEmpty>
         <ComboboxList>
           {(group: {
@@ -1790,20 +1896,36 @@ function App(
   // each other item is an agent (filtered by name). Compact (icon-only) when the
   // right panel squeezes the toolbar. The selected agent's prompt is prepended
   // to ours per turn.
-  const agentItems: {
-    value: string
-    label: string
-    description?: string
-    name?: string
-  }[] = [
+  const [agentSourceFilter, setAgentSourceFilter] = useState<string | null>(
+    null
+  )
+  const [agentSearchQuery, setAgentSearchQuery] = useState("")
+  const agentItems: AgentPickerItem[] = [
     { value: "", label: "Default (no agent)" },
     ...agents.map((a) => ({
       value: a.ref ?? a.name,
       label: a.label ?? a.name,
       description: a.description,
       name: a.name,
+      sourceKind: a.sourceKind,
     })),
   ]
+  const agentSourceFilters = useMemo(
+    () =>
+      Array.from(new Set(agents.map((agent) => agent.sourceKind))).map(
+        (sourceKind) => ({
+          id: sourceKind,
+          label: agentSourceLabel(sourceKind, systemName),
+        })
+      ),
+    [agents, systemName]
+  )
+  const filteredAgentItems = useMemo(() => {
+    if (!agentSourceFilter || agentSearchQuery.trim()) return agentItems
+    return agentItems.filter(
+      (item) => !item.sourceKind || item.sourceKind === agentSourceFilter
+    )
+  }, [agentItems, agentSearchQuery, agentSourceFilter])
   const selectedAgentItem =
     agentItems.find(
       (it) =>
@@ -1827,18 +1949,22 @@ function App(
     </ComboboxItem>
   )
   const onAgentValueChange = (item: { value: string } | null) => {
+    setAgentSearchQuery("")
     if (!item) return
     void selectAgent(item.value || null)
   }
   const agentPicker =
     agents.length > 0 ? (
       <Combobox
-        items={agentItems}
+        items={filteredAgentItems}
         value={selectedAgentItem}
+        inputValue={agentSearchQuery}
         isItemEqualToValue={(a, b) => a?.value === b?.value}
+        onInputValueChange={(next) => setAgentSearchQuery(next)}
         onValueChange={onAgentValueChange}
         onOpenChange={(open) => {
           if (open) reloadAgents()
+          else setAgentSearchQuery("")
         }}
       >
         <ComboboxTrigger
@@ -1860,6 +1986,31 @@ function App(
         </ComboboxTrigger>
         <ComboboxContent className="w-72 min-w-72">
           <ComboboxInput placeholder="Search agents…" showTrigger={false} />
+          {agentSourceFilters.length > 1 && (
+            <div className="flex flex-wrap gap-1 border-b border-border/60 p-1">
+              <Button
+                type="button"
+                variant={!agentSourceFilter ? "secondary" : "ghost"}
+                size="xs"
+                onClick={() => setAgentSourceFilter(null)}
+              >
+                All
+              </Button>
+              {agentSourceFilters.map((source) => (
+                <Button
+                  key={source.id}
+                  type="button"
+                  variant={
+                    agentSourceFilter === source.id ? "secondary" : "ghost"
+                  }
+                  size="xs"
+                  onClick={() => setAgentSourceFilter(source.id)}
+                >
+                  {source.label}
+                </Button>
+              ))}
+            </div>
+          )}
           <ComboboxEmpty>No agents found.</ComboboxEmpty>
           <ComboboxList>{renderAgentItem}</ComboboxList>
         </ComboboxContent>
@@ -1871,12 +2022,15 @@ function App(
   const agentPickerCompact =
     agents.length > 0 ? (
       <Combobox
-        items={agentItems}
+        items={filteredAgentItems}
         value={selectedAgentItem}
+        inputValue={agentSearchQuery}
         isItemEqualToValue={(a, b) => a?.value === b?.value}
+        onInputValueChange={(next) => setAgentSearchQuery(next)}
         onValueChange={onAgentValueChange}
         onOpenChange={(open) => {
           if (open) reloadAgents()
+          else setAgentSearchQuery("")
         }}
       >
         <ComboboxTrigger
@@ -1896,6 +2050,31 @@ function App(
         </ComboboxTrigger>
         <ComboboxContent className="w-72 min-w-72">
           <ComboboxInput placeholder="Search agents…" showTrigger={false} />
+          {agentSourceFilters.length > 1 && (
+            <div className="flex flex-wrap gap-1 border-b border-border/60 p-1">
+              <Button
+                type="button"
+                variant={!agentSourceFilter ? "secondary" : "ghost"}
+                size="xs"
+                onClick={() => setAgentSourceFilter(null)}
+              >
+                All
+              </Button>
+              {agentSourceFilters.map((source) => (
+                <Button
+                  key={source.id}
+                  type="button"
+                  variant={
+                    agentSourceFilter === source.id ? "secondary" : "ghost"
+                  }
+                  size="xs"
+                  onClick={() => setAgentSourceFilter(source.id)}
+                >
+                  {source.label}
+                </Button>
+              ))}
+            </div>
+          )}
           <ComboboxEmpty>No agents found.</ComboboxEmpty>
           <ComboboxList>{renderAgentItem}</ComboboxList>
         </ComboboxContent>
