@@ -20,22 +20,29 @@ today that fires from a narrow set of triggers, *none of which react to the work
 There is **no filesystem or git watcher anywhere in `src/main`** (confirmed: no `chokidar`,
 `fs.watch`, `watchFile`, or `FSWatcher` usage). So the index — and the compact summary
 `buildIndexSummary` injects into the Interactive/North Star system prompt on **every message send**
-(`src/main/agent/index.ts:494`) — is only as fresh as the last time a run happened to fire.
+— is only as fresh as the last time a run happened to fire.
 
 Every line of that summary is a snapshot read from the index DB (`getRunByWorkspace`, `countByExt`,
 `listMetadata`, `countSymbols`), so **all of it can be stale**: file counts, `package.json`
 name/scripts, config presence, README excerpt, symbol count, and the **git branch**.
 
-**Why the git branch stands out.** It's the one field that changes *without any file content
-changing*. Stage 1 (`file_map`) is hash-skip incremental, so a `git checkout` that swaps branches
-but leaves the working tree identical (e.g. checking out a just-merged branch) produces **zero
-dirty files** — nothing to re-index — while the branch label the agent sees is whatever
-`.git/HEAD` said at the last run. Branches flip constantly; file bodies don't. So the branch drifts
-farthest, fastest. (When a run *does* fire, the branch self-heals: the metadata stage re-reads
+**Clarification: built-in agent turns already receive the current branch.** Independently of the
+index summary, `environmentSection` reads Git live while assembling each `runAgentLoop` turn
+(`src/main/agent/context/sections.ts`), so its `## Environment` block reflects the branch at send
+time. This plan does not add that live prompt behavior. Its branch-related purpose is to keep the
+persisted index metadata and advisory index summary current between index runs, avoiding
+contradictory duplicate branch information and keeping `index_query_tool` metadata correct.
+
+**Why the indexed git branch stands out.** It's the one metadata field that changes *without any
+working-tree file content changing*. Stage 1 (`file_map`) is hash-skip incremental, so a `git
+checkout` that swaps branches but leaves the working tree identical (e.g. checking out a
+just-merged branch) produces **zero dirty files** — nothing to re-index — while the index DB still
+records whatever `.git/HEAD` said at the last run. Branches flip constantly; file bodies don't. So
+the indexed value drifts farthest, fastest. (When a run *does* fire, the metadata stage re-reads
 `.git/HEAD` unconditionally every run — `src/main/index/service.ts:322`. The bug is trigger
 frequency, not read logic.)
 
-Observed symptom that motivated this plan: the injected summary reported
+Observed symptom that motivated this plan: the advisory workspace-index summary reported
 `Git branch: pr21-approvals-context-section` while the user was actually on `main`.
 
 ## Goal
@@ -64,7 +71,9 @@ of paths).
 > the full watcher proves too janky. A strictly-cheaper non-watcher variant also exists: read
 > `.git/HEAD` **live** inside `buildIndexSummary` instead of from the metadata row (single small
 > file read via the existing `readGitBranch`). That was considered and rejected as the *primary*
-> fix because it only patches the summary surface, not the index the `index_query_tool` reads.
+> fix because it only patches the advisory summary surface, not the index metadata that
+> `index_query_tool` reads. It is not needed for the built-in per-turn Environment block, which
+> already reads the current branch live.
 
 ### Option B — full workspace watcher (recommended scope)
 A real recursive watcher over the workspace root that debounces bursts and kicks
@@ -181,8 +190,9 @@ Workspace Indexing
 ## Verification (when built)
 
 - **The motivating case:** on branch `A`, index; `git checkout B` (identical working tree, e.g. a
-  merged branch) with **no** conversation activity → within the debounce window the summary's
-  `Git branch:` line updates to `B`. (Reproduces the original bug: was stuck on a stale branch.)
+  merged branch) with **no** conversation activity → within the debounce window the index
+  metadata and advisory summary's `Git branch:` line update to `B`. The built-in per-turn
+  Environment block already reports `B` live even before this watcher runs.
 - **File change:** edit a source file → an incremental re-index fires (only that file re-hashed /
   re-symbol'd), symbol count / file map reflect it on the next message.
 - **Add / delete:** new file appears in the index; deleted file's rows are removed.
