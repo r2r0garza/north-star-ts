@@ -2450,55 +2450,53 @@ function App(
     </>
   )
 
-  // Empty session: center the heading + composer vertically so the user can
-  // start typing right away.
-  if (isEmpty) {
-    return (
-      <div className="relative flex h-full w-full flex-col items-center justify-center overflow-hidden px-4">
-        <div className="w-full max-w-[min(90%,48rem)]">
-          <div className="mb-6 text-center text-sm text-muted-foreground">
-            {view === "Chat" ? (
-              <>
-                <p className="font-medium text-foreground">
-                  {agentName} - Chat
-                </p>
-                <p>Ask anything. Attach files with the + button.</p>
-              </>
-            ) : view === "Interactive" ? (
-              <>
-                <p className="font-medium text-foreground">
-                  {agentName} - Interactive
-                </p>
-                <p>Pick a workspace folder, then ask the agent about it.</p>
-              </>
-            ) : (
-              <>
-                <p className="font-medium text-foreground">
-                  {agentName} - Autonomous Tasks
-                </p>
-                <p>
-                  Give it a goal. It will plan, run tools, and report progress.
-                </p>
-              </>
-            )}
-          </div>
-          <div className="mx-auto max-w-3xl">{composer}</div>
-        </div>
-      </div>
-    )
-  }
+  // Keep both the welcome copy and composer mounted through the first send. The
+  // welcome dissolves while the composer moves, rather than swapping entire
+  // layouts in the same render.
+  const welcome = (
+    <div
+      aria-hidden={!isEmpty}
+      className={cn(
+        "conversation-welcome text-center text-sm text-muted-foreground",
+        isEmpty && "conversation-welcome--visible"
+      )}
+    >
+      {view === "Chat" ? (
+        <>
+          <p className="font-medium text-foreground">{agentName} - Chat</p>
+          <p>Ask anything. Attach files with the + button.</p>
+        </>
+      ) : view === "Interactive" ? (
+        <>
+          <p className="font-medium text-foreground">
+            {agentName} - Interactive
+          </p>
+          <p>Pick a workspace folder, then ask the agent about it.</p>
+        </>
+      ) : (
+        <>
+          <p className="font-medium text-foreground">
+            {agentName} - Autonomous Tasks
+          </p>
+          <p>Give it a goal. It will plan, run tools, and report progress.</p>
+        </>
+      )}
+    </div>
+  )
+
   return (
     // pt-11 clears the Shell's floating top drag bar (h-11, holding the
     // Info/Browser/Changes toggle): the scroll region starts BELOW it, so
     // messages scrolling up are clipped at the bar's edge instead of passing
-    // under it. The composer sits inside this column, so it's unaffected.
+    // under it.
     <div className="relative flex h-full w-full flex-col overflow-hidden pt-11">
+      {welcome}
       {/* Conversation — MessageScroller handles auto-follow + scroll-to-bottom.
           The window drag bar lives in Shell, above this column. */}
       <MessageScrollerProvider autoScroll defaultScrollPosition="last-anchor">
         <MessageScroller className="min-h-0 flex-1">
           <MessageScrollerViewport>
-            <MessageScrollerContent className="mx-auto w-full max-w-[min(90%,72rem)] gap-4 px-4 py-6">
+            <MessageScrollerContent className="mx-auto w-full max-w-[min(90%,72rem)] gap-4 px-4 py-6 pb-44">
               {displayTimeline.map((item, i) => {
                 const isLast = i === displayTimeline.length - 1 && !loading
                 if (item.kind === "tools") {
@@ -2608,8 +2606,19 @@ function App(
       {/* Composer — with the pending approval or question prompt popped out just
           above it, so it stays in one fixed place regardless of transcript
           scrolling. Gating is sequential, so these are mutually exclusive. */}
-      <div className="border-t bg-background">
-        <div className="mx-auto w-full max-w-[min(90%,72rem)] px-4 py-4">
+      <div
+        className={cn(
+          "conversation-composer border-t bg-background",
+          isEmpty && "conversation-composer--centered border-transparent",
+          !isEmpty && "border-border"
+        )}
+      >
+        <div
+          className={cn(
+            "mx-auto w-full px-4 py-4",
+            isEmpty ? "max-w-[min(90%,48rem)]" : "max-w-[min(90%,72rem)]"
+          )}
+        >
           {pendingApproval && (
             <div className="mb-3 animate-in duration-200 fade-in-0 slide-in-from-bottom-4">
               <ApprovalCard
