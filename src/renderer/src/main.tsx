@@ -11,6 +11,7 @@ import {
   ActivityToggle,
   SidebarModeToggle,
   readActivityOpen,
+  readActivityPanelWidth,
   writeActivityOpen,
   readSidebarMode,
   writeSidebarMode,
@@ -107,6 +108,9 @@ function Shell() {
   // elements that merely overlap it) and "Run in background" can reveal it when
   // a task starts. Seeded from — and persisted back to — the panel's cookie.
   const [activityOpen, setActivityOpen] = useState(readActivityOpen)
+  const [activityPanelWidth, setActivityPanelWidth] = useState(() =>
+    readActivityOpen() ? readActivityPanelWidth(readSidebarMode()) : 0
+  )
   const [terminalOpenByConversation, setTerminalOpenByConversation] = useState<
     Record<string, boolean>
   >({})
@@ -210,6 +214,19 @@ function Shell() {
   const handleBrowserPoppedOutChange = (poppedOut: boolean) => {
     setActivity(!poppedOut)
   }
+  // Keep theme + panel-mode controls immediately to the left of Terminal when the
+  // right panel is closed. When it opens, only that group moves left by the
+  // panel's width so it remains in the main content area; Terminal and the
+  // panel's own visibility control stay attached to the window edge.
+  const rightControlOffset = reserveWindowControls ? 140 : 16
+  const terminalRightOffset = rightControlOffset + 32
+  // Once the panel is open, the mode controls sit just outside its left edge;
+  // Terminal and the panel toggle remain within the panel's header area.
+  const modeRightOffset = activityPanelWidth
+    ? activityPanelWidth + 8
+    : terminalAvailable
+      ? terminalRightOffset + 30
+      : rightControlOffset + 32
 
   useTerminalShortcut(terminalAvailable, toggleTerminal)
 
@@ -453,7 +470,7 @@ function Shell() {
               dashboardsOpen
             )
           }
-          reserveWindowControls={reserveWindowControls}
+          rightOffset={modeRightOffset}
         />
         {terminalAvailable &&
           !(
@@ -466,7 +483,7 @@ function Shell() {
             <TerminalToggle
               open={terminalOpen}
               onToggle={toggleTerminal}
-              reserveWindowControls={reserveWindowControls}
+              rightOffset={terminalRightOffset}
             />
           )}
         {!(
@@ -614,6 +631,7 @@ function Shell() {
         onHistoryExpandedChange={setHistoryExpanded}
         onRanInBackground={() => setActivity(true)}
         onBrowserPoppedOutChange={handleBrowserPoppedOutChange}
+        onWidthChange={setActivityPanelWidth}
       />
       <TaskCompletionToasts
         conversationId={activeConversationId}

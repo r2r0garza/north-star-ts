@@ -45,11 +45,11 @@ function isTerminalCopyShortcut(event: KeyboardEvent): boolean {
 export function TerminalToggle({
   open,
   onToggle,
-  reserveWindowControls = false,
+  rightOffset,
 }: {
   open: boolean
   onToggle: () => void
-  reserveWindowControls?: boolean
+  rightOffset: number
 }) {
   return (
     <button
@@ -57,10 +57,8 @@ export function TerminalToggle({
       onClick={onToggle}
       aria-label={open ? "Hide terminal" : "Show terminal"}
       title={open ? "Hide terminal" : "Show terminal"}
-      className={cn(
-        "absolute top-2.5 z-30 flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors [-webkit-app-region:no-drag] hover:bg-muted hover:text-foreground",
-        reserveWindowControls ? "right-[19.25rem]" : "right-[11.5rem]"
-      )}
+      className="absolute top-2.5 z-30 flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors [-webkit-app-region:no-drag] hover:bg-muted hover:text-foreground"
+      style={{ right: rightOffset }}
     >
       <Terminal className="size-4.5" />
     </button>
