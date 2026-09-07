@@ -42,6 +42,7 @@ import {
   SCHEMA_V40,
   SCHEMA_V41,
   SCHEMA_V43,
+  SCHEMA_V44,
 } from "./schema"
 
 // Ordered migrations. Index 0 runs to reach user_version 1, index 1 to reach 2,
@@ -91,6 +92,7 @@ const MIGRATIONS: Array<(db: Database.Database) => void> = [
   (db) => db.exec(SCHEMA_V41),
   ensureProcessRuntimeProfileColumns,
   (db) => db.exec(SCHEMA_V43),
+  (db) => db.exec(SCHEMA_V44),
 ]
 
 function tableExists(db: Database.Database, table: string): boolean {
@@ -129,6 +131,25 @@ function ensureProcessRuntimeProfileColumns(db: Database.Database): void {
   addColumnIfMissing(db, "process_phase_agents", "runtime_config", "TEXT")
   addColumnIfMissing(db, "process_runs", "runtime_config", "TEXT")
   addColumnIfMissing(db, "process_phase_runs", "runtime_snapshot", "TEXT")
+}
+
+function ensureProjectPositionColumn(db: Database.Database): void {
+  if (!tableExists(db, "projects")) return
+  const hadPosition = columnExists(db, "projects", "position")
+  addColumnIfMissing(db, "projects", "position", "INTEGER NOT NULL DEFAULT 0")
+  if (!hadPosition) {
+    db.exec(`
+      WITH ordered AS (
+        SELECT id, ROW_NUMBER() OVER (ORDER BY updated_at DESC) - 1 AS pos
+        FROM projects
+      )
+      UPDATE projects
+      SET position = (SELECT pos FROM ordered WHERE ordered.id = projects.id);
+    `)
+  }
+  db.exec(
+    "CREATE INDEX IF NOT EXISTS idx_projects_position ON projects(position, updated_at DESC);"
+  )
 }
 
 function ensureCodexSubscriptionProviderConstraints(
@@ -179,6 +200,7 @@ export function runMigrations(db: Database.Database): void {
     db.transaction(() => {
       ensureProcessRuntimeProfileColumns(db)
       ensureCodexSubscriptionProviderConstraints(db)
+      ensureProjectPositionColumn(db)
     })()
   } finally {
     if (fkWasOn) db.pragma("foreign_keys = ON")

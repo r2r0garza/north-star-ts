@@ -1239,3 +1239,18 @@ FROM provider_accounts;
 DROP TABLE provider_accounts;
 ALTER TABLE provider_accounts_v43 RENAME TO provider_accounts;
 `
+
+// v44: user-defined sidebar project ordering. Existing projects are backfilled
+// to preserve the previous updated_at DESC display order, then all future
+// reorders write explicit zero-based positions. New projects enter at the top,
+// matching the old "newly updated first" behavior until the user reorders them.
+export const SCHEMA_V44 = `
+ALTER TABLE projects ADD COLUMN position INTEGER NOT NULL DEFAULT 0;
+WITH ordered AS (
+  SELECT id, ROW_NUMBER() OVER (ORDER BY updated_at DESC) - 1 AS pos
+  FROM projects
+)
+UPDATE projects
+SET position = (SELECT pos FROM ordered WHERE ordered.id = projects.id);
+CREATE INDEX idx_projects_position ON projects(position, updated_at DESC);
+`

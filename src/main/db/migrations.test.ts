@@ -92,7 +92,7 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
     const db = new Database(":memory:")
     db.pragma("foreign_keys = ON")
     runMigrations(db)
-    expect(db.pragma("user_version", { simple: true })).toBe(43)
+    expect(db.pragma("user_version", { simple: true })).toBe(44)
     expect(db.pragma("foreign_key_check")).toHaveLength(0)
     db.close()
   })
@@ -323,7 +323,7 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
       FROM provider_accounts;
       DROP TABLE provider_accounts;
       ALTER TABLE provider_accounts_without_codex_subscription RENAME TO provider_accounts;
-      PRAGMA user_version = 43;
+      PRAGMA user_version = 44;
     `)
 
     runMigrations(db)
@@ -334,6 +334,37 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
        VALUES ('codex-sub', 'codex_subscription', 'Codex Subscription', 'codex_responses', 1, 0, 0)`
     ).run()
     expect(db.pragma("foreign_key_check")).toHaveLength(0)
+    db.close()
+  })
+
+  it("repairs missing project positions when user_version is already current", () => {
+    const db = new Database(":memory:")
+    db.pragma("foreign_keys = ON")
+    runMigrations(db)
+    db.exec(`
+      INSERT INTO projects
+        (id, name, workspace_id, position, created_at, updated_at)
+      VALUES
+        ('older', 'Older', NULL, 0, 0, 100),
+        ('newer', 'Newer', NULL, 1, 0, 200);
+
+      CREATE TABLE projects_without_position AS
+        SELECT id, name, workspace_id, created_at, updated_at
+        FROM projects;
+      DROP TABLE projects;
+      ALTER TABLE projects_without_position RENAME TO projects;
+      PRAGMA user_version = 44;
+    `)
+
+    runMigrations(db)
+
+    const rows = db
+      .prepare("SELECT id, position FROM projects ORDER BY position ASC")
+      .all() as Array<{ id: string; position: number }>
+    expect(rows).toEqual([
+      { id: "newer", position: 0 },
+      { id: "older", position: 1 },
+    ])
     db.close()
   })
 
@@ -560,6 +591,7 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
     const db = new Database(":memory:")
     db.pragma("foreign_keys = ON")
     runMigrations(db)
+    db.pragma("foreign_keys = OFF")
     db.exec(`
       CREATE TABLE process_phases_without_runtime AS
         SELECT id, process_id, key, name, routing, gate_policy, fan_out,
@@ -571,25 +603,24 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
       ALTER TABLE process_phases_without_runtime RENAME TO process_phases;
 
       CREATE TABLE process_phase_agents_without_runtime AS
-        SELECT id, phase_id, agent_name, role, position
+        SELECT id, phase_id, agent_name, skills, tools, position
         FROM process_phase_agents;
       DROP TABLE process_phase_agents;
       ALTER TABLE process_phase_agents_without_runtime RENAME TO process_phase_agents;
 
       CREATE TABLE process_runs_without_runtime AS
-        SELECT id, process_id, task_id, title, status, input, output, error,
-               completion_contracts, started_at, completed_at, created_at,
-               updated_at
+        SELECT id, process_id, source_conversation_id, task_id, objective,
+               status, started_at, finished_at, created_at, workspace_id,
+               title, parent_phase_run_id, completion_contracts
         FROM process_runs;
       DROP TABLE process_runs;
       ALTER TABLE process_runs_without_runtime RENAME TO process_runs;
 
       CREATE TABLE process_phase_runs_without_runtime AS
-        SELECT id, run_id, phase_id, task_id, status, input, output, gate_status,
-               gate_response, rework_round, validator_round, validator_status,
-               validator_notes, validator_history, parent_phase_run_id,
-               fan_out_key, output_identity, failure, completion_receipt,
-               started_at, completed_at, created_at, updated_at
+        SELECT id, run_id, phase_id, parent_id, status, task_id, agent_name,
+               iteration, error, started_at, finished_at, title, rework_note,
+               rework_round, validator_round, source_child_run_id,
+               output_identity, failure, completion_receipt
         FROM process_phase_runs;
       DROP TABLE process_phase_runs;
       ALTER TABLE process_phase_runs_without_runtime RENAME TO process_phase_runs;
@@ -816,7 +847,7 @@ describe.skipIf(!sqliteLoads)("SCHEMA_V9 — orphan reap (plan 022)", () => {
     // Apply V9 (the reaper) and any later migrations, up to the latest version.
     runMigrations(db)
 
-    expect(db.pragma("user_version", { simple: true })).toBe(41)
+    expect(db.pragma("user_version", { simple: true })).toBe(44)
 
     // Reaped: orphan + its nested descendant, and all their state.
     const taskIds = (

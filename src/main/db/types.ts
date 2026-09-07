@@ -54,6 +54,7 @@ export interface Project {
   id: string
   name: string
   workspaceId: string | null
+  position: number
   createdAt: number
   updatedAt: number
 }

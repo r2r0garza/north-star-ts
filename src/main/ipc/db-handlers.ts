@@ -202,6 +202,9 @@ export function registerDbHandlers(
   ipcMain.handle("db:projects:delete", (_e, id: string) =>
     projects.deleteProject(id)
   )
+  ipcMain.handle("db:projects:reorder", (_e, ids: string[]) =>
+    projects.reorderProjects(ids)
+  )
 
   // Tasks (storage-only)
   ipcMain.handle(

@@ -886,6 +886,8 @@ const api = {
         ipcRenderer.invoke("db:projects:update", id, patch) as Promise<Project>,
       delete: (id: string) =>
         ipcRenderer.invoke("db:projects:delete", id) as Promise<void>,
+      reorder: (ids: string[]) =>
+        ipcRenderer.invoke("db:projects:reorder", ids) as Promise<Project[]>,
     },
     tasks: {
       create: (input: {

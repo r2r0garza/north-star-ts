@@ -1,10 +1,18 @@
-import { useCallback, useEffect, useRef, useState } from "react"
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ComponentProps,
+  type CSSProperties,
+} from "react"
 import {
   BellDot,
   BookOpen,
   Bot,
   ChevronRight,
   FolderPlus,
+  GripVertical,
   LayoutDashboard,
   MoreHorizontal,
   Pin,
@@ -60,6 +68,27 @@ import {
 import { Button } from "@/components/ui/button"
 import { ButtonGroup } from "@/components/ui/button-group"
 import { ProjectDialog } from "@/components/project-dialog"
+import {
+  DndContext,
+  KeyboardSensor,
+  MeasuringStrategy,
+  PointerSensor,
+  closestCorners,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+  type DragStartEvent,
+} from "@dnd-kit/core"
+import {
+  SortableContext,
+  arrayMove,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable"
+import { CSS } from "@dnd-kit/utilities"
+import { toast } from "sonner"
+import { cn } from "@/lib/utils"
 import type { Conversation, Mode, Project, Workspace } from "@/types"
 
 export const VIEWS = ["Chat", "Interactive", "North Star"] as const
@@ -83,6 +112,11 @@ const NEW_LABEL: Record<View, string> = {
   Interactive: "New Session",
   "North Star": "New Task",
 }
+
+type SortableHandleProps = Pick<
+  ReturnType<typeof useSortable>,
+  "attributes" | "listeners"
+>
 
 // A single session row. Right-click opens a context menu with Rename (inline
 // edit) and Delete. Both persist to the DB and update the in-memory list.
@@ -255,6 +289,11 @@ function ProjectSection({
   onTogglePin,
   onEditProject,
   onDeleteProject,
+  sortableHandle,
+  sortableStyle,
+  sortableHeaderRef,
+  isSorting,
+  sortingActive,
 }: {
   // The project this section represents, or null for the "No Project" bucket.
   project: Project | null
@@ -279,11 +318,32 @@ function ProjectSection({
   onTogglePin: (id: string) => void
   onEditProject?: () => void
   onDeleteProject?: () => void
+  sortableHandle?: SortableHandleProps
+  sortableStyle?: CSSProperties
+  sortableHeaderRef?: (node: HTMLElement | null) => void
+  isSorting?: boolean
+  sortingActive?: boolean
 }) {
   return (
-    <Collapsible defaultOpen className="group/section">
+    <Collapsible
+      style={sortableStyle}
+      defaultOpen
+      className={cn("group/section", isSorting && "opacity-60")}
+    >
       <SidebarGroup className="py-1">
-        <div className="flex items-center gap-1 px-2">
+        <div ref={sortableHeaderRef} className="flex items-center gap-1 px-2">
+          {project && sortableHandle && (
+            <button
+              type="button"
+              className="-ml-1 flex size-5 shrink-0 cursor-grab touch-none items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground active:cursor-grabbing"
+              title="Drag to reorder"
+              aria-label={`Drag to reorder ${project.name}`}
+              {...sortableHandle.attributes}
+              {...sortableHandle.listeners}
+            >
+              <GripVertical className="size-3.5" />
+            </button>
+          )}
           <CollapsibleTrigger className="flex flex-1 items-center gap-1 overflow-hidden text-xs font-medium text-muted-foreground hover:text-foreground">
             <ChevronRight className="size-3.5 shrink-0 transition-transform group-data-[state=open]/section:rotate-90" />
             <span className="truncate" title={label}>
@@ -327,36 +387,68 @@ function ProjectSection({
             </DropdownMenu>
           )}
         </div>
-        <CollapsibleContent>
-          <SidebarGroupContent>
-            <SidebarMenu>
-              {conversations.length === 0 && (
-                <p className="px-2 py-1 text-xs text-muted-foreground/70">
-                  No conversations yet.
-                </p>
-              )}
-              {conversations.map((c) => (
-                <SessionRow
-                  key={c.id}
-                  conversation={c}
-                  isActive={c.id === activeConversationId}
-                  isRunning={runningConvos.has(c.id)}
-                  isWaiting={waitingConvos.has(c.id)}
-                  moveTargets={moveTargetsFor(c)}
-                  onSelect={() => onSelectConversation(c.id, c.mode)}
-                  onRename={(title) => onRenameConversation(c.id, title)}
-                  onDelete={() => onDeleteConversation(c)}
-                  onMoveToProject={(projectId) =>
-                    onMoveToProject(c.id, projectId)
-                  }
-                  onTogglePin={() => onTogglePin(c.id)}
-                />
-              ))}
-            </SidebarMenu>
-          </SidebarGroupContent>
-        </CollapsibleContent>
+        {!sortingActive && (
+          <CollapsibleContent>
+            <SidebarGroupContent>
+              <SidebarMenu>
+                {conversations.length === 0 && (
+                  <p className="px-2 py-1 text-xs text-muted-foreground/70">
+                    No conversations yet.
+                  </p>
+                )}
+                {conversations.map((c) => (
+                  <SessionRow
+                    key={c.id}
+                    conversation={c}
+                    isActive={c.id === activeConversationId}
+                    isRunning={runningConvos.has(c.id)}
+                    isWaiting={waitingConvos.has(c.id)}
+                    moveTargets={moveTargetsFor(c)}
+                    onSelect={() => onSelectConversation(c.id, c.mode)}
+                    onRename={(title) => onRenameConversation(c.id, title)}
+                    onDelete={() => onDeleteConversation(c)}
+                    onMoveToProject={(projectId) =>
+                      onMoveToProject(c.id, projectId)
+                    }
+                    onTogglePin={() => onTogglePin(c.id)}
+                  />
+                ))}
+              </SidebarMenu>
+            </SidebarGroupContent>
+          </CollapsibleContent>
+        )}
       </SidebarGroup>
     </Collapsible>
+  )
+}
+
+function SortableProjectSection(
+  props: Omit<
+    ComponentProps<typeof ProjectSection>,
+    "sortableHandle" | "sortableStyle" | "sortableHeaderRef" | "isSorting"
+  > & { project: Project }
+) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: props.project.id })
+  const sortableStyle: CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    zIndex: isDragging ? 1 : undefined,
+  }
+  return (
+    <ProjectSection
+      {...props}
+      sortableHandle={{ attributes, listeners }}
+      sortableStyle={sortableStyle}
+      sortableHeaderRef={setNodeRef}
+      isSorting={isDragging}
+    />
   )
 }
 
@@ -421,6 +513,13 @@ export function AppSidebar({
   // Project create/edit dialog. `editingProject` null = create mode.
   const [projectDialogOpen, setProjectDialogOpen] = useState(false)
   const [editingProject, setEditingProject] = useState<Project | null>(null)
+  const [sortingProjectId, setSortingProjectId] = useState<string | null>(null)
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+    })
+  )
 
   // Fetch conversations + projects together. Re-run on the shell's refreshKey
   // (conversation changes) and after local project CRUD.
@@ -486,6 +585,34 @@ export function AppSidebar({
   const visibleProjects = projects.filter(
     (p) => (byProject.get(p.id)?.length ?? 0) > 0 || canCreateInProject(p)
   )
+
+  function startReorderingProjects(event: DragStartEvent) {
+    setSortingProjectId(String(event.active.id))
+  }
+
+  async function reorderProjects(event: DragEndEvent) {
+    const { active, over } = event
+    try {
+      if (!over || active.id === over.id) return
+      const oldIndex = projects.findIndex((project) => project.id === active.id)
+      const newIndex = projects.findIndex((project) => project.id === over.id)
+      if (oldIndex === -1 || newIndex === -1) return
+
+      const reordered = arrayMove(projects, oldIndex, newIndex).map(
+        (project, position) => ({ ...project, position })
+      )
+      setProjects(reordered)
+      const saved = await window.cowork.db.projects.reorder(
+        reordered.map((project) => project.id)
+      )
+      setProjects(saved)
+    } catch (err) {
+      toast.error(`Could not reorder projects: ${err}`)
+      await refetch()
+    } finally {
+      setSortingProjectId(null)
+    }
+  }
 
   async function renameConversation(id: string, title: string) {
     // Optimistic update, then persist.
@@ -676,28 +803,43 @@ export function AppSidebar({
         </Button>
       </div>
       <SidebarContent>
-        {visibleProjects.map((p) => (
-          <ProjectSection
-            key={p.id}
-            project={p}
-            label={p.name}
-            conversations={byProject.get(p.id) ?? []}
-            canCreate={canCreateInProject(p)}
-            createHint={CREATE_HINT}
-            moveTargetsFor={moveTargetsFor}
-            activeConversationId={activeConversationId}
-            runningConvos={runningConvos}
-            waitingConvos={waitingConvos}
-            onNewConversation={() => onNewConversation(p.id)}
-            onSelectConversation={onSelectConversation}
-            onRenameConversation={renameConversation}
-            onDeleteConversation={setPendingDelete}
-            onMoveToProject={moveConversationToProject}
-            onTogglePin={togglePin}
-            onEditProject={() => openEditProject(p)}
-            onDeleteProject={() => setPendingProjectDelete(p)}
-          />
-        ))}
+        <DndContext
+          sensors={sensors}
+          collisionDetection={closestCorners}
+          measuring={{ droppable: { strategy: MeasuringStrategy.Always } }}
+          onDragStart={startReorderingProjects}
+          onDragEnd={reorderProjects}
+          onDragCancel={() => setSortingProjectId(null)}
+        >
+          <SortableContext
+            items={visibleProjects.map((p) => p.id)}
+            strategy={verticalListSortingStrategy}
+          >
+            {visibleProjects.map((p) => (
+              <SortableProjectSection
+                key={p.id}
+                project={p}
+                label={p.name}
+                conversations={byProject.get(p.id) ?? []}
+                canCreate={canCreateInProject(p)}
+                createHint={CREATE_HINT}
+                moveTargetsFor={moveTargetsFor}
+                activeConversationId={activeConversationId}
+                runningConvos={runningConvos}
+                waitingConvos={waitingConvos}
+                onNewConversation={() => onNewConversation(p.id)}
+                onSelectConversation={onSelectConversation}
+                onRenameConversation={renameConversation}
+                onDeleteConversation={setPendingDelete}
+                onMoveToProject={moveConversationToProject}
+                onTogglePin={togglePin}
+                onEditProject={() => openEditProject(p)}
+                onDeleteProject={() => setPendingProjectDelete(p)}
+                sortingActive={sortingProjectId !== null}
+              />
+            ))}
+          </SortableContext>
+        </DndContext>
         {/* The "No Project" bucket — always shown (existing/ungrouped chats). */}
         <ProjectSection
           project={null}
