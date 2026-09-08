@@ -791,10 +791,9 @@ function App(
   }, [workspace, isChat, onWorkspaceChange])
 
   // Fetch the git branch for the current workspace folder. Clears when the
-  // folder is deselected or when it's not a git repo. Also re-runs whenever the
-  // window regains focus: the branch can change out from under us (the user
-  // switches branches in their IDE while the app is in the background), and a
-  // one-shot read on folder-select would otherwise show a stale branch forever.
+  // folder is deselected or when it's not a git repo. Refreshes on focus and on a
+  // lightweight interval so branch switches made in an IDE/terminal update while
+  // the app stays focused on the same conversation.
   useEffect(() => {
     const path = workspace.trim()
     if (!path || isChat) {
@@ -802,20 +801,24 @@ function App(
       return
     }
     let cancelled = false
+    let refreshSeq = 0
     const refresh = () => {
+      const seq = ++refreshSeq
       window.cowork.git
         .branch(path)
         .then((branch) => {
-          if (!cancelled) setGitBranch(branch)
+          if (!cancelled && seq === refreshSeq) setGitBranch(branch)
         })
         .catch(() => {
-          if (!cancelled) setGitBranch(null)
+          if (!cancelled && seq === refreshSeq) setGitBranch(null)
         })
     }
     refresh()
+    const interval = window.setInterval(refresh, 2000)
     window.addEventListener("focus", refresh)
     return () => {
       cancelled = true
+      window.clearInterval(interval)
       window.removeEventListener("focus", refresh)
     }
   }, [workspace, isChat])
@@ -2490,7 +2493,6 @@ function App(
     // messages scrolling up are clipped at the bar's edge instead of passing
     // under it.
     <div className="relative flex h-full w-full flex-col overflow-hidden pt-11">
-      {welcome}
       {/* Conversation — MessageScroller handles auto-follow + scroll-to-bottom.
           The window drag bar lives in Shell, above this column. */}
       <MessageScrollerProvider autoScroll defaultScrollPosition="last-anchor">
@@ -2619,6 +2621,7 @@ function App(
             isEmpty ? "max-w-[min(90%,48rem)]" : "max-w-[min(90%,72rem)]"
           )}
         >
+          {welcome}
           {pendingApproval && (
             <div className="mb-3 animate-in duration-200 fade-in-0 slide-in-from-bottom-4">
               <ApprovalCard

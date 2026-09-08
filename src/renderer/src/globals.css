@@ -133,15 +133,16 @@
    Keeping these elements mounted lets the copy dissolve before the composer
    settles at the bottom and reveals its divider. */
 .conversation-welcome {
-  position: absolute;
-  top: calc(50% - 5rem);
-  left: 50%;
-  z-index: 1;
-  width: min(90%, 48rem);
-  transform: translate(-50%, -1rem);
+  width: 100%;
+  max-height: 0;
+  margin-bottom: 0;
+  transform: translateY(-0.5rem);
   opacity: 0;
+  overflow: hidden;
   pointer-events: none;
   transition:
+    max-height 240ms ease-out,
+    margin-bottom 240ms ease-out,
     opacity 180ms ease-out,
     transform 240ms ease-out,
     visibility 0s linear 240ms;
@@ -149,10 +150,14 @@
 }
 
 .conversation-welcome--visible {
-  transform: translate(-50%, 0);
+  max-height: 4rem;
+  margin-bottom: 0.75rem;
+  transform: translateY(0);
   opacity: 1;
   visibility: visible;
   transition:
+    max-height 260ms ease-out,
+    margin-bottom 260ms ease-out,
     opacity 200ms ease-out,
     transform 260ms ease-out,
     visibility 0s;
