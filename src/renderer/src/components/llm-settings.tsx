@@ -425,6 +425,20 @@ function AccountCard({
     )
   }
 
+  async function debugCodexModels() {
+    setBusy(true)
+    setError(null)
+    const result = await window.cowork.providers.debugCodexSubscriptionModels(
+      account.id
+    )
+    setBusy(false)
+    if (!result.ok) {
+      setError(result.error ?? "Codex models debug probe failed.")
+      return
+    }
+    toast.success("Codex models response logged to the dev terminal.")
+  }
+
   async function startCodexSubscriptionAuth() {
     setBusy(true)
     setError(null)
@@ -671,14 +685,23 @@ function AccountCard({
             </Field>
             {isCodexSubscription(account.provider) && (
               <div className="flex flex-col gap-2 rounded-md bg-muted px-3 py-2 text-xs">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="self-start"
-                  onClick={checkCodexSubscription}
-                >
-                  Check configuration
-                </Button>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={checkCodexSubscription}
+                  >
+                    Check configuration
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={debugCodexModels}
+                    disabled={busy || !account.hasKey}
+                  >
+                    Log models response
+                  </Button>
+                </div>
                 {preflight && (
                   <p
                     className={

@@ -4,16 +4,22 @@ import {
   completeCodexSubscriptionDeviceAuth,
   codexSubscriptionResponseToChat,
   buildCodexSubscriptionClient,
+  parseCodexSubscriptionModels,
+  probeCodexSubscriptionModelEndpointCandidates,
+  probeCodexSubscriptionModelsEndpoint,
   preflightCodexSubscriptionBackend,
   redactCodexSubscriptionError,
   resolveCodexSubscriptionAuth,
   requestCodexSubscriptionDeviceCode,
 } from "./codex-subscription"
 
-function jwtWithExp(exp: number): string {
+function jwtWithExp(
+  exp: number,
+  extraClaims: Record<string, unknown> = {}
+): string {
   const b64 = (value: unknown) =>
     Buffer.from(JSON.stringify(value)).toString("base64url")
-  return `${b64({ alg: "none" })}.${b64({ exp })}.sig`
+  return `${b64({ alg: "none" })}.${b64({ exp, ...extraClaims })}.sig`
 }
 
 describe("codex subscription adapter", () => {
@@ -183,6 +189,209 @@ describe("codex subscription adapter", () => {
     ).toBe(
       "401 Authorization: Bearer [redacted] cookie=[redacted] access_token=[redacted]"
     )
+  })
+
+  it("parses common Codex model catalog shapes", () => {
+    expect(
+      parseCodexSubscriptionModels({
+        data: [
+          { id: "gpt-5.6-sol" },
+          { model: "gpt-5.6-terra" },
+          { slug: "gpt-5.6-luna" },
+        ],
+      })
+    ).toEqual(["gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra"])
+
+    expect(
+      parseCodexSubscriptionModels({
+        models: [
+          {
+            slug: "gpt-5.6-terra",
+            visibility: "list",
+            priority: 20,
+            shell_type: "default",
+          },
+          {
+            slug: "gpt-5.5-wm",
+            visibility: "list",
+            priority: 10,
+            shell_type: "default",
+          },
+          {
+            slug: "gpt-5.6-sol",
+            visibility: "list",
+            priority: 5,
+            shell_type: "default",
+          },
+          {
+            slug: "gpt-6.0-ultra",
+            visibility: "list",
+            priority: 15,
+            shell_type: "default",
+          },
+          {
+            slug: "gpt-5.6-luna",
+            visibility: "hidden",
+            priority: 1,
+            shell_type: "default",
+          },
+          {
+            slug: "gpt-5.6-terra",
+            visibility: "list",
+            priority: 30,
+            shell_type: "default",
+          },
+          {
+            slug: "gpt-4o",
+            visibility: "list",
+            priority: 40,
+            shell_type: "default",
+          },
+          {
+            slug: "gpt-5.6-disabled",
+            visibility: "list",
+            priority: 50,
+            shell_type: "disabled",
+          },
+        ],
+      })
+    ).toEqual(["gpt-5.6-sol", "gpt-6.0-ultra", "gpt-5.6-terra"])
+  })
+
+  it("fetches the Codex subscription model catalog", async () => {
+    const token = jwtWithExp(999, {
+      "https://api.openai.com/auth.chatgpt_account_id": "account-1",
+    })
+    const client = buildCodexSubscriptionClient({
+      baseUrl: "https://chatgpt.com/backend-api/codex",
+      bearerToken: token,
+      fetchImpl: async (url: RequestInfo | URL, init?: RequestInit) => {
+        const requested = new URL(String(url))
+        expect(requested.origin + requested.pathname).toBe(
+          "https://chatgpt.com/backend-api/codex/models"
+        )
+        expect(requested.searchParams.get("client_version")).toBe("0.151.0")
+        expect(init?.method).toBe("GET")
+        expect(init?.headers).toMatchObject({
+          accept: "application/json",
+          authorization: `Bearer ${token}`,
+          "chatgpt-account-id": "account-1",
+          originator: "codex_cli_rs",
+          "openai-beta": "responses=experimental",
+        })
+        expect((init?.headers as Record<string, string>)["user-agent"]).toMatch(
+          /^codex_cli_rs\/0\.151\.0 /
+        )
+        return Response.json({
+          models: [
+            {
+              slug: "gpt-5.6-sol",
+              visibility: "list",
+              priority: 1,
+              shell_type: "default",
+            },
+            {
+              slug: "gpt-4o",
+              visibility: "list",
+              priority: 2,
+              shell_type: "default",
+            },
+          ],
+        })
+      },
+    })
+
+    await expect(client.models.list()).resolves.toEqual({
+      data: [{ id: "gpt-5.6-sol" }],
+    })
+  })
+
+  it("returns the raw Codex subscription model catalog probe body", async () => {
+    const result = await probeCodexSubscriptionModelsEndpoint({
+      baseUrl: "https://chatgpt.com/backend-api/codex",
+      bearerToken: "access-token",
+      fetchImpl: async (url: RequestInfo | URL, init?: RequestInit) => {
+        const requested = new URL(String(url))
+        expect(requested.origin + requested.pathname).toBe(
+          "https://chatgpt.com/backend-api/codex/models"
+        )
+        expect(requested.searchParams.get("client_version")).toBe("0.151.0")
+        expect(init?.headers).toMatchObject({
+          accept: "application/json",
+          authorization: "Bearer access-token",
+        })
+        return Response.json({ detail: "ok" }, { status: 202 })
+      },
+    })
+
+    expect(result).toEqual({
+      endpoint:
+        "https://chatgpt.com/backend-api/codex/models?client_version=0.151.0",
+      status: 202,
+      ok: true,
+      body: '{"detail":"ok"}',
+    })
+  })
+
+  it("probes candidate ChatGPT model catalog endpoints", async () => {
+    const seen: string[] = []
+    const results = await probeCodexSubscriptionModelEndpointCandidates({
+      baseUrl: "https://chatgpt.com/backend-api/codex",
+      bearerToken: "access-token",
+      fetchImpl: async (url: RequestInfo | URL) => {
+        seen.push(String(url))
+        return Response.json({ models: [] })
+      },
+    })
+
+    expect(seen).toEqual([
+      "https://chatgpt.com/backend-api/codex/models?client_version=0.151.0",
+    ])
+    expect(results).toHaveLength(1)
+  })
+
+  it("refreshes Codex auth when the model catalog rejects the access token", async () => {
+    const persisted: string[] = []
+    const initialToken = jwtWithExp(Math.floor(Date.now() / 1000) + 3600)
+    const refreshedToken = jwtWithExp(Math.floor(Date.now() / 1000) + 7200)
+    let catalogCalls = 0
+    const client = buildCodexSubscriptionClient({
+      bearerToken: JSON.stringify({
+        access_token: initialToken,
+        refresh_token: "refresh-me",
+      }),
+      persistSecret: (next) => {
+        persisted.push(next)
+      },
+      fetchImpl: async (url: RequestInfo | URL, init?: RequestInit) => {
+        if (String(url) === "https://auth.openai.com/oauth/token") {
+          return Response.json({ access_token: refreshedToken })
+        }
+        catalogCalls += 1
+        const requested = new URL(String(url))
+        expect(requested.origin + requested.pathname).toBe(
+          "https://chatgpt.com/backend-api/codex/models"
+        )
+        expect(requested.searchParams.get("client_version")).toBe("0.151.0")
+        expect((init?.headers as Record<string, string>).authorization).toBe(
+          catalogCalls === 1
+            ? `Bearer ${initialToken}`
+            : `Bearer ${refreshedToken}`
+        )
+        if (catalogCalls === 1) {
+          return Response.json(
+            { error: { message: "expired" } },
+            { status: 401 }
+          )
+        }
+        return Response.json({ data: [{ id: "gpt-5.6-sol" }] })
+      },
+    })
+
+    await expect(client.models.list()).resolves.toEqual({
+      data: [{ id: "gpt-5.6-sol" }],
+    })
+    expect(persisted).toHaveLength(1)
   })
 
   it("classifies preflight auth failures without exposing tokens", async () => {

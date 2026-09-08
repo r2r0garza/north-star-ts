@@ -562,6 +562,12 @@ function App(
     if (!settingsOpen) void reloadLlm()
   }, [settingsOpen, reloadLlm])
 
+  useEffect(() => {
+    return window.cowork.providers.onModelsChanged(() => {
+      void reloadLlm()
+    })
+  }, [reloadLlm])
+
   // The effective selection = the conversation's own pick, else the default.
   const effAccountId = selAccountId ?? defaultLlm?.activeAccountId ?? null
   const effectiveAccount = effAccountId

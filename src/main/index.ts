@@ -84,7 +84,10 @@ import { openInIde } from "./ide/open"
 import { resolveInWorkspaceReal } from "./agent/tools/workspace"
 import { registerDbHandlers } from "./ipc/db-handlers"
 import { registerSettingsHandlers } from "./ipc/settings-handlers"
-import { registerProviderHandlers } from "./ipc/provider-handlers"
+import {
+  refreshCodexSubscriptionModelsOnStartup,
+  registerProviderHandlers,
+} from "./ipc/provider-handlers"
 import { registerMcpHandlers } from "./ipc/mcp-handlers"
 import { getMcpManager } from "./agent/mcp"
 import { registerTaskHandlers } from "./ipc/task-handlers"
@@ -1121,6 +1124,9 @@ ipcMain.on("system:name", (event) => {
     theme: resolveBrandTheme(),
   }
 })
+ipcMain.on("app:is-packaged", (event) => {
+  event.returnValue = app.isPackaged
+})
 
 app.whenReady().then(() => {
   // Register DB-backed IPC handlers now — the connection opens lazily on first
@@ -1195,6 +1201,12 @@ app.whenReady().then(() => {
   initUserSkills()
   void reconcilePendingMemoryOnStartup().catch((err) =>
     console.warn("[memory] startup reconcile failed:", err)
+  )
+  void refreshCodexSubscriptionModelsOnStartup(() => {
+    const wc = mainWindow?.webContents
+    if (wc && !wc.isDestroyed()) wc.send("providers:models-changed")
+  }).catch((err) =>
+    console.warn("[providers] startup Codex model refresh failed:", err)
   )
   // Nothing else is time-triggered: the inactivity boundary and any batch left
   // stranded by a crashed or offline classifier are only noticed on this tick.

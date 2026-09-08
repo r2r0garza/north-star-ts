@@ -602,6 +602,7 @@ const api = {
   // Whether the window is currently fullscreen (macOS traffic lights hidden).
   isFullScreen: () => ipcRenderer.invoke("is-fullscreen") as Promise<boolean>,
   platform: process.platform,
+  isPackaged: ipcRenderer.sendSync("app:is-packaged") as boolean,
   // Subscribe to fullscreen changes. Returns an unsubscribe function.
   onFullScreenChange: (cb: (value: boolean) => void) => {
     const listener = (_e: IpcRendererEvent, value: boolean) => cb(value)
@@ -1451,6 +1452,13 @@ const api = {
       ipcRenderer.invoke("providers:listWithModels") as Promise<
         AccountWithModels[]
       >,
+    onModelsChanged: (cb: () => void) => {
+      const listener = () => cb()
+      ipcRenderer.on("providers:models-changed", listener)
+      return () => {
+        ipcRenderer.removeListener("providers:models-changed", listener)
+      }
+    },
     // The DEFAULT provider/model for new conversations (per-conversation overrides
     // are stored on the conversation row via db.conversations.update).
     getDefault: () =>
@@ -1480,6 +1488,11 @@ const api = {
         endpoint?: string
         error?: string
       }>,
+    debugCodexSubscriptionModels: (id: string) =>
+      ipcRenderer.invoke(
+        "providers:debugCodexSubscriptionModels",
+        id
+      ) as Promise<{ ok: boolean; error?: string }>,
     reorder: (orderedIds: string[]) =>
       ipcRenderer.invoke("providers:reorder", orderedIds) as Promise<
         AccountView[]

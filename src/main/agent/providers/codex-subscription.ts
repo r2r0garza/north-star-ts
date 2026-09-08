@@ -15,6 +15,9 @@ export const DEFAULT_CODEX_SUBSCRIPTION_MODEL = "gpt-5.5"
 const CODEX_AUTH_ISSUER = "https://auth.openai.com"
 const CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 const CODEX_OAUTH_TOKEN_URL = "https://auth.openai.com/oauth/token"
+const CODEX_SUBSCRIPTION_CLIENT_VERSION = "0.151.0"
+const CHATGPT_ACCOUNT_ID_CLAIM =
+  "https://api.openai.com/auth.chatgpt_account_id"
 
 type ChatMessage = {
   role?: string
@@ -406,7 +409,7 @@ function parseCodexSecret(secret: string): CodexSubscriptionSecret | null {
   }
 }
 
-function jwtExpSeconds(token: string): number | null {
+function jwtClaims(token: string): Record<string, unknown> | null {
   const payload = token.split(".")[1]
   if (!payload) return null
   try {
@@ -416,10 +419,24 @@ function jwtExpSeconds(token: string): number | null {
       "="
     )
     const claims = JSON.parse(Buffer.from(padded, "base64").toString("utf8"))
-    return typeof claims.exp === "number" ? claims.exp : null
+    return claims && typeof claims === "object"
+      ? (claims as Record<string, unknown>)
+      : null
   } catch {
     return null
   }
+}
+
+function jwtExpSeconds(token: string): number | null {
+  const exp = jwtClaims(token)?.exp
+  return typeof exp === "number" ? exp : null
+}
+
+function codexSubscriptionAccountId(token: string): string | null {
+  const accountId = jwtClaims(token)?.[CHATGPT_ACCOUNT_ID_CLAIM]
+  return typeof accountId === "string" && accountId.trim()
+    ? accountId.trim()
+    : null
 }
 
 function codexAccessTokenIsExpiring(
@@ -434,6 +451,127 @@ function codexAccessTokenIsExpiring(
 function endpointFor(baseUrl: string | null | undefined): string {
   const base = (baseUrl || CODEX_SUBSCRIPTION_BASE_URL).replace(/\/+$/, "")
   return base.endsWith("/responses") ? base : `${base}/responses`
+}
+
+function modelsEndpointFor(baseUrl: string | null | undefined): string {
+  const base = (baseUrl || CODEX_SUBSCRIPTION_BASE_URL).replace(/\/+$/, "")
+  const endpoint = base.endsWith("/models")
+    ? base
+    : base.endsWith("/responses")
+      ? `${base.slice(0, -10)}/models`
+      : `${base}/models`
+  const url = new URL(endpoint)
+  url.searchParams.set("client_version", CODEX_SUBSCRIPTION_CLIENT_VERSION)
+  return url.toString()
+}
+
+function modelProbeEndpointsFor(baseUrl: string | null | undefined): string[] {
+  return [modelsEndpointFor(baseUrl)]
+}
+
+function codexUserAgent(): string {
+  const os =
+    process.platform === "darwin"
+      ? "Mac OS"
+      : process.platform === "win32"
+        ? "Windows"
+        : "Linux"
+  return `codex_cli_rs/${CODEX_SUBSCRIPTION_CLIENT_VERSION} (${os}; ${process.arch}) unknown`
+}
+
+function codexDiscoveryHeaders(accessToken: string): Record<string, string> {
+  const headers: Record<string, string> = {
+    accept: "application/json",
+    authorization: `Bearer ${accessToken}`,
+    originator: "codex_cli_rs",
+    "openai-beta": "responses=experimental",
+    "user-agent": codexUserAgent(),
+  }
+  const accountId = codexSubscriptionAccountId(accessToken)
+  if (accountId) headers["chatgpt-account-id"] = accountId
+  return headers
+}
+
+function collectFallbackModelIds(value: unknown, ids: Set<string>): void {
+  if (!value) return
+  if (typeof value === "string") {
+    const trimmed = value.trim()
+    if (trimmed) ids.add(trimmed)
+    return
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) collectFallbackModelIds(item, ids)
+    return
+  }
+  if (typeof value !== "object") return
+
+  const record = value as Record<string, unknown>
+  for (const key of ["id", "model", "slug"]) {
+    collectFallbackModelIds(record[key], ids)
+  }
+}
+
+function parsePriority(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value)
+    ? value
+    : Number.MAX_SAFE_INTEGER
+}
+
+function isCodexModelSlug(slug: string): boolean {
+  if (!/^gpt-\d+\.\d+(?:$|-[a-z0-9-]+$)/.test(slug)) return false
+  const suffix = slug.match(/^gpt-\d+\.\d+-(.+)$/)?.[1] ?? ""
+  return !new Set(["wm"]).has(suffix)
+}
+
+export function parseCodexSubscriptionModels(json: unknown): string[] {
+  if (json && typeof json === "object" && !Array.isArray(json)) {
+    const models = (json as Record<string, unknown>).models
+    if (
+      Array.isArray(models) &&
+      models.every((model) => model && typeof model === "object")
+    ) {
+      const seen = new Set<string>()
+      return models
+        .map((model, index) => ({
+          index,
+          record: model as Record<string, unknown>,
+        }))
+        .filter(({ record }) => {
+          const slug = typeof record.slug === "string" ? record.slug.trim() : ""
+          const visibility =
+            typeof record.visibility === "string" ? record.visibility : ""
+          const shellType =
+            typeof record.shell_type === "string" ? record.shell_type : ""
+          return (
+            isCodexModelSlug(slug) &&
+            visibility === "list" &&
+            shellType !== "disabled"
+          )
+        })
+        .sort((a, b) => {
+          const priorityDelta =
+            parsePriority(a.record.priority) - parsePriority(b.record.priority)
+          return priorityDelta || a.index - b.index
+        })
+        .map(({ record }) => String(record.slug).trim())
+        .filter((slug) => {
+          if (seen.has(slug)) return false
+          seen.add(slug)
+          return true
+        })
+    }
+  }
+
+  const ids = new Set<string>()
+  if (json && typeof json === "object" && !Array.isArray(json)) {
+    const record = json as Record<string, unknown>
+    const catalog =
+      record.data ?? record.models ?? record.available_models ?? record.items
+    collectFallbackModelIds(catalog, ids)
+  } else {
+    collectFallbackModelIds(json, ids)
+  }
+  return [...ids].sort((a, b) => a.localeCompare(b))
 }
 
 export async function preflightCodexSubscriptionBackend(input: {
@@ -587,6 +725,93 @@ export async function resolveCodexSubscriptionAuth(
   return { ...refreshed, refreshed: true }
 }
 
+async function probeCodexSubscriptionModelsEndpointUrl(input: {
+  endpoint: string
+  bearerToken: string
+  fetchImpl?: typeof fetch
+  persistSecret?: (secret: string) => void | Promise<void>
+}): Promise<{
+  endpoint: string
+  status: number
+  ok: boolean
+  body: string
+}> {
+  const fetchImpl = input.fetchImpl ?? fetch
+  let auth = await resolveCodexSubscriptionAuth({
+    secret: input.bearerToken,
+    fetchImpl,
+    persistSecret: input.persistSecret,
+  })
+  const send = (accessToken: string) =>
+    fetchImpl(input.endpoint, {
+      method: "GET",
+      headers: codexDiscoveryHeaders(accessToken),
+    })
+  let res = await send(auth.accessToken)
+  if ((res.status === 401 || res.status === 403) && !auth.refreshed) {
+    auth = await resolveCodexSubscriptionAuth({
+      secret: auth.secret,
+      forceRefresh: true,
+      fetchImpl,
+      persistSecret: input.persistSecret,
+    })
+    res = await send(auth.accessToken)
+  }
+  return {
+    endpoint: input.endpoint,
+    status: res.status,
+    ok: res.ok,
+    body: await res.text(),
+  }
+}
+
+export async function probeCodexSubscriptionModelsEndpoint(input: {
+  baseUrl?: string | null
+  bearerToken: string
+  fetchImpl?: typeof fetch
+  persistSecret?: (secret: string) => void | Promise<void>
+}): Promise<{
+  endpoint: string
+  status: number
+  ok: boolean
+  body: string
+}> {
+  return probeCodexSubscriptionModelsEndpointUrl({
+    ...input,
+    endpoint: modelsEndpointFor(input.baseUrl),
+  })
+}
+
+export async function probeCodexSubscriptionModelEndpointCandidates(input: {
+  baseUrl?: string | null
+  bearerToken: string
+  fetchImpl?: typeof fetch
+  persistSecret?: (secret: string) => void | Promise<void>
+}): Promise<
+  Array<{
+    endpoint: string
+    status: number
+    ok: boolean
+    body: string
+  }>
+> {
+  const endpoints = modelProbeEndpointsFor(input.baseUrl)
+  const results: Array<{
+    endpoint: string
+    status: number
+    ok: boolean
+    body: string
+  }> = []
+  for (const endpoint of endpoints) {
+    const result = await probeCodexSubscriptionModelsEndpointUrl({
+      ...input,
+      endpoint,
+    })
+    results.push(result)
+  }
+  return results
+}
+
 export async function requestCodexSubscriptionDeviceCode(input: {
   fetchImpl?: typeof fetch
 }): Promise<{
@@ -688,6 +913,34 @@ export function buildCodexSubscriptionClient(input: {
   persistSecret?: (secret: string) => void | Promise<void>
 }): LlmClient {
   const fetchImpl = input.fetchImpl ?? fetch
+  const listModels = async () => {
+    const probe = await probeCodexSubscriptionModelsEndpoint({
+      baseUrl: input.baseUrl,
+      bearerToken: input.bearerToken,
+      fetchImpl,
+      persistSecret: input.persistSecret,
+    })
+    let json: unknown = {}
+    try {
+      json = probe.body ? JSON.parse(probe.body) : {}
+    } catch {
+      throw new Error("Codex models endpoint returned invalid JSON.")
+    }
+    if (!probe.ok) {
+      const detail =
+        json && typeof json === "object"
+          ? ((json as any).error?.message ?? probe.body)
+          : probe.body
+      const error = new Error(
+        redactCodexSubscriptionError(
+          `Codex models endpoint failed (${probe.status}): ${detail}.`
+        )
+      ) as Error & { status?: number }
+      error.status = probe.status
+      throw error
+    }
+    return { data: parseCodexSubscriptionModels(json).map((id) => ({ id })) }
+  }
   const create = async (body: Record<string, unknown>, ...rest: unknown[]) => {
     const opts = rest[1] as { signal?: AbortSignal } | undefined
     const model = typeof body.model === "string" ? body.model : ""
@@ -758,6 +1011,6 @@ export function buildCodexSubscriptionClient(input: {
   }
   return {
     chat: { completions: { create } },
-    models: { list: async () => ({ data: [] }) },
+    models: { list: listModels },
   }
 }

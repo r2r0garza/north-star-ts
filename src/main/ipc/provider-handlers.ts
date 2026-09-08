@@ -24,6 +24,7 @@ import {
   CODEX_SUBSCRIPTION_BASE_URL,
   CODEX_SUBSCRIPTION_MODELS,
   preflightCodexSubscriptionBackend,
+  probeCodexSubscriptionModelEndpointCandidates,
   requestCodexSubscriptionDeviceCode,
 } from "../agent/providers/codex-subscription"
 import {
@@ -82,6 +83,36 @@ function clearTitleGenerationForModel(
 export interface AccountWithModels {
   account: AccountView
   models: ModelEntry[]
+}
+
+export async function refreshCodexSubscriptionModelsOnStartup(
+  onRefreshed?: () => void
+): Promise<void> {
+  const accounts = providerAccountsRepo
+    .listAccounts()
+    .filter(
+      (account) =>
+        account.provider === "codex_subscription" &&
+        account.enabled &&
+        account.hasKey
+    )
+
+  await Promise.all(
+    accounts.map(async (account) => {
+      try {
+        const ids = await fetchGatewayModelIds(account.id)
+        if (ids.length > 0) {
+          modelsRepo.mergeGatewayModels(account.id, ids)
+          onRefreshed?.()
+        }
+      } catch (err) {
+        console.warn(
+          `[providers] Codex model refresh failed for ${account.displayName}:`,
+          err instanceof Error ? err.message : err
+        )
+      }
+    })
+  )
 }
 
 export function registerProviderHandlers(): void {
@@ -163,6 +194,46 @@ export function registerProviderHandlers(): void {
           invalidateProviderClient()
         },
       })
+    }
+  )
+  ipcMain.handle(
+    "providers:debugCodexSubscriptionModels",
+    async (_e, id: string): Promise<{ ok: boolean; error?: string }> => {
+      if (app.isPackaged) {
+        return { ok: false, error: "Debug probe is available in development." }
+      }
+      try {
+        const account = providerAccountsRepo.getAccount(id)
+        if (!account || account.provider !== "codex_subscription") {
+          return { ok: false, error: "Codex subscription account not found." }
+        }
+        if (!account.hasKey) {
+          return {
+            ok: false,
+            error: "Missing ChatGPT/Codex auth token. Sign in first.",
+          }
+        }
+        const results = await probeCodexSubscriptionModelEndpointCandidates({
+          baseUrl: account.baseUrl ?? CODEX_SUBSCRIPTION_BASE_URL,
+          bearerToken: secrets.getApiKey(account.id) ?? "",
+          persistSecret: (secret) => {
+            secrets.setApiKey(account.id, secret)
+            invalidateProviderClient()
+          },
+        })
+        console.info("[providers] Codex models debug probe candidates")
+        for (const result of results) {
+          console.info("[providers] endpoint:", result.endpoint)
+          console.info("[providers] status:", result.status)
+          console.info("[providers] body:")
+          console.info(result.body)
+        }
+        return { ok: results.some((result) => result.ok) }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        console.warn("[providers] Codex models debug probe failed:", message)
+        return { ok: false, error: message }
+      }
     }
   )
   ipcMain.handle("providers:reorder", (_e, orderedIds: string[]) =>
