@@ -71,6 +71,15 @@ function quoteWindowsArg(arg: string): string {
   return `"${arg.replace(/"/g, '\\"')}"`
 }
 
+// Electron's module resolver returns virtual `app.asar/...` paths even for
+// files that electron-builder placed beside the archive in
+// `app.asar.unpacked`. Node's spawn cannot execute through the virtual archive
+// path, so point executable paths at their real on-disk location. Match both
+// path separators so this stays testable and works on every packaged target.
+export function normalizeAsarUnpackedExecutablePath(path: string): string {
+  return path.replace(/([\\/])app\.asar([\\/])/g, "$1app.asar.unpacked$2")
+}
+
 type SpawnFn = typeof spawn
 
 interface LocalEnvironmentDeps {
@@ -96,7 +105,7 @@ function resolveRipgrepPath(): string {
     // lets electron-builder unpack the packaged binary from node_modules.
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const mod = require("@vscode/ripgrep") as { rgPath?: string }
-    if (mod.rgPath) return mod.rgPath
+    if (mod.rgPath) return normalizeAsarUnpackedExecutablePath(mod.rgPath)
   } catch {
     // Fall through to PATH lookup for development and focused tests.
   }

@@ -20,6 +20,7 @@ import { join } from "path"
 import {
   LocalEnvironment,
   materializePythonHeredocCommand,
+  normalizeAsarUnpackedExecutablePath,
   normalizeHostShellCommand,
 } from "./local"
 import { runToolCallBatches } from "../tool-batch-scheduler"
@@ -45,6 +46,34 @@ if (canInspectProcesses) {
 
 const nodeCmd = (code: string) =>
   `${JSON.stringify(process.execPath)} -e ${JSON.stringify(code)}`
+
+describe("normalizeAsarUnpackedExecutablePath", () => {
+  it("leaves development executable paths unchanged", () => {
+    const path = "/workspace/node_modules/@vscode/ripgrep-darwin-arm64/bin/rg"
+
+    expect(normalizeAsarUnpackedExecutablePath(path)).toBe(path)
+  })
+
+  it("maps a packaged POSIX executable path to app.asar.unpacked", () => {
+    expect(
+      normalizeAsarUnpackedExecutablePath(
+        "/Applications/North Star.app/Contents/Resources/app.asar/node_modules/@vscode/ripgrep-darwin-arm64/bin/rg"
+      )
+    ).toBe(
+      "/Applications/North Star.app/Contents/Resources/app.asar.unpacked/node_modules/@vscode/ripgrep-darwin-arm64/bin/rg"
+    )
+  })
+
+  it("maps a packaged Windows executable path to app.asar.unpacked", () => {
+    expect(
+      normalizeAsarUnpackedExecutablePath(
+        "C:\\Program Files\\North Star\\resources\\app.asar\\node_modules\\@vscode\\ripgrep-win32-x64\\bin\\rg.exe"
+      )
+    ).toBe(
+      "C:\\Program Files\\North Star\\resources\\app.asar.unpacked\\node_modules\\@vscode\\ripgrep-win32-x64\\bin\\rg.exe"
+    )
+  })
+})
 
 beforeEach(async () => {
   workspace = await mkdtemp(join(tmpdir(), "env-local-"))

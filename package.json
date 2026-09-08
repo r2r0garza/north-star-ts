@@ -28,7 +28,8 @@
     "asarUnpack": [
       "**/node_modules/better-sqlite3/**",
       "**/node_modules/node-pty/**",
-      "**/node_modules/@vscode/ripgrep/**"
+      "**/node_modules/@vscode/ripgrep/**",
+      "**/node_modules/@vscode/ripgrep-*/**"
     ],
     "mac": {
       "target": "dmg",
