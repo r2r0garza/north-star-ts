@@ -693,14 +693,16 @@ function AccountCard({
                   >
                     Check configuration
                   </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={debugCodexModels}
-                    disabled={busy || !account.hasKey}
-                  >
-                    Log models response
-                  </Button>
+                  {!window.cowork.isPackaged && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={debugCodexModels}
+                      disabled={busy || !account.hasKey}
+                    >
+                      Log models response
+                    </Button>
+                  )}
                 </div>
                 {preflight && (
                   <p
