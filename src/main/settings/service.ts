@@ -121,6 +121,9 @@ export interface SkillSourcesSettings {
 // See agent/agents/sources.ts.
 export interface AgentSourcesSettings {
   folders: string[]
+  // External providers shown in agent catalog and picker surfaces. Missing keys
+  // default to visible so newly added providers preserve existing behavior.
+  visibleExternalSources: Record<string, boolean>
 }
 
 // Extra MCP-source folders the user registers in Settings → Capabilities, on top
@@ -175,6 +178,16 @@ export interface NotificationSettings {
   onTaskComplete: boolean
 }
 
+export interface OnboardingSettings {
+  hideStartupGuide: boolean
+}
+
+export type DefaultConversationMode = "chat" | "interactive" | "north_star"
+
+export interface ConversationSettings {
+  defaultMode: DefaultConversationMode
+}
+
 // Default container image when a runtime is chosen but no image is set.
 const DEFAULT_CONTAINER_IMAGE = "node:20-bookworm"
 
@@ -212,7 +225,10 @@ const DEFAULT_INDEXING: IndexingSettings = {
 
 const DEFAULT_SKILL_SOURCES: SkillSourcesSettings = { folders: [] }
 
-const DEFAULT_AGENT_SOURCES: AgentSourcesSettings = { folders: [] }
+const DEFAULT_AGENT_SOURCES: AgentSourcesSettings = {
+  folders: [],
+  visibleExternalSources: {},
+}
 const DEFAULT_MCP_SOURCES: McpSourcesSettings = { folders: [] }
 
 const DEFAULT_BROWSER: BrowserSettings = {
@@ -234,6 +250,14 @@ const DEFAULT_NOTIFICATIONS: NotificationSettings = {
   onTurnComplete: true,
   onTurnError: true,
   onTaskComplete: true,
+}
+
+const DEFAULT_ONBOARDING: OnboardingSettings = {
+  hideStartupGuide: false,
+}
+
+const DEFAULT_CONVERSATIONS: ConversationSettings = {
+  defaultMode: "north_star",
 }
 
 function defaultExecution(): ExecutionSettings {
@@ -263,6 +287,8 @@ const KEY_BROWSER = "browser"
 const KEY_THEME = "theme"
 const KEY_IDE = "ide"
 const KEY_NOTIFICATIONS = "notifications"
+const KEY_ONBOARDING = "onboarding"
+const KEY_CONVERSATIONS = "conversations"
 
 let executionCache: ExecutionSettings | undefined
 let permissionsCache: PermissionSettings | undefined
@@ -277,6 +303,8 @@ let browserCache: BrowserSettings | undefined
 let themeCache: ThemeSettings | undefined
 let ideCache: IdeSettings | undefined
 let notificationsCache: NotificationSettings | undefined
+let onboardingCache: OnboardingSettings | undefined
+let conversationsCache: ConversationSettings | undefined
 // Tracks whether an execution row exists, so getExecutionConfig can fall back to
 // the COWORK_ENV_RUNTIME env var until the user writes a backend choice.
 let executionPersisted = false
@@ -457,13 +485,27 @@ function loadAgentSources(): AgentSourcesSettings {
         folders: Array.isArray(parsed.folders)
           ? parsed.folders.filter((f): f is string => typeof f === "string")
           : DEFAULT_AGENT_SOURCES.folders,
+        visibleExternalSources:
+          parsed.visibleExternalSources &&
+          typeof parsed.visibleExternalSources === "object" &&
+          !Array.isArray(parsed.visibleExternalSources)
+            ? Object.fromEntries(
+                Object.entries(parsed.visibleExternalSources).filter(
+                  (entry): entry is [string, boolean] =>
+                    typeof entry[1] === "boolean"
+                )
+              )
+            : DEFAULT_AGENT_SOURCES.visibleExternalSources,
       }
       return agentSourcesCache
     } catch {
       // Corrupt blob — fall through to defaults.
     }
   }
-  agentSourcesCache = { folders: [...DEFAULT_AGENT_SOURCES.folders] }
+  agentSourcesCache = {
+    folders: [...DEFAULT_AGENT_SOURCES.folders],
+    visibleExternalSources: { ...DEFAULT_AGENT_SOURCES.visibleExternalSources },
+  }
   return agentSourcesCache
 }
 
@@ -565,6 +607,48 @@ function loadNotifications(): NotificationSettings {
   return notificationsCache
 }
 
+function loadOnboarding(): OnboardingSettings {
+  if (onboardingCache) return onboardingCache
+  const raw = settingsRepo.getSetting(KEY_ONBOARDING)
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw) as Partial<OnboardingSettings>
+      onboardingCache = {
+        hideStartupGuide:
+          parsed.hideStartupGuide ?? DEFAULT_ONBOARDING.hideStartupGuide,
+      }
+      return onboardingCache
+    } catch {
+      // Corrupt blob — fall through to defaults.
+    }
+  }
+  onboardingCache = { ...DEFAULT_ONBOARDING }
+  return onboardingCache
+}
+
+function loadConversations(): ConversationSettings {
+  if (conversationsCache) return conversationsCache
+  const raw = settingsRepo.getSetting(KEY_CONVERSATIONS)
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw) as Partial<ConversationSettings>
+      conversationsCache = {
+        defaultMode:
+          parsed.defaultMode === "chat" ||
+          parsed.defaultMode === "interactive" ||
+          parsed.defaultMode === "north_star"
+            ? parsed.defaultMode
+            : DEFAULT_CONVERSATIONS.defaultMode,
+      }
+      return conversationsCache
+    } catch {
+      // Corrupt blob — fall through to defaults.
+    }
+  }
+  conversationsCache = { ...DEFAULT_CONVERSATIONS }
+  return conversationsCache
+}
+
 // ── Reads ────────────────────────────────────────────────────────────────────
 
 export function getExecution(): ExecutionSettings {
@@ -633,6 +717,14 @@ export function getIde(): IdeSettings {
 
 export function getNotifications(): NotificationSettings {
   return loadNotifications()
+}
+
+export function getOnboarding(): OnboardingSettings {
+  return loadOnboarding()
+}
+
+export function getConversations(): ConversationSettings {
+  return loadConversations()
 }
 
 // Whether the sandbox policy auto-approves a given action category. Consulted by
@@ -714,6 +806,20 @@ export function setNotifications(
   return next
 }
 
+export function setOnboarding(next: OnboardingSettings): OnboardingSettings {
+  settingsRepo.setSetting(KEY_ONBOARDING, JSON.stringify(next))
+  onboardingCache = next
+  return next
+}
+
+export function setConversations(
+  next: ConversationSettings
+): ConversationSettings {
+  settingsRepo.setSetting(KEY_CONVERSATIONS, JSON.stringify(next))
+  conversationsCache = next
+  return next
+}
+
 // Invalidation hook fired whenever the active LLM selection changes, so the
 // provider routing layer can drop its cached client and the next turn rebuilds
 // with the new account/model. Registered by the providers module to avoid a
@@ -760,5 +866,7 @@ export function _resetCacheForTests(): void {
   themeCache = undefined
   ideCache = undefined
   notificationsCache = undefined
+  onboardingCache = undefined
+  conversationsCache = undefined
   executionPersisted = false
 }

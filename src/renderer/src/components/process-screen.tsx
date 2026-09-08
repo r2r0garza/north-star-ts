@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   ArrowLeft,
+  Bot,
   ChevronRight,
   Circle,
   CheckCircle2,
+  Download,
+  FileText,
   XCircle,
   FolderOpen,
   GripVertical,
@@ -16,6 +19,7 @@ import {
   ShieldAlert,
   SkipForward,
   Trash2,
+  Upload,
   XIcon,
 } from "lucide-react"
 import {
@@ -64,6 +68,15 @@ import {
 } from "@/components/ui/select"
 import { TaskTranscriptSheet } from "@/components/task-transcript-sheet"
 import { ChangedFilesBar } from "@/components/changed-files-bar"
+import { DiffView } from "@/components/diff-view"
+import { Markdown } from "@/components/markdown"
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+  SheetDescription,
+} from "@/components/ui/sheet"
 import {
   buildTimeline,
   changedFilesFromCalls,
@@ -91,17 +104,22 @@ import { ScrollArea } from "@/components/ui/scroll-area"
 import {
   Combobox,
   ComboboxContent,
+  ComboboxCollection,
   ComboboxEmpty,
+  ComboboxGroup,
   ComboboxInput,
   ComboboxItem,
+  ComboboxLabel,
   ComboboxList,
   ComboboxTrigger,
   ComboboxValue,
 } from "@/components/ui/combobox"
 import { toast } from "sonner"
 import { cn, formatRelativeTime } from "@/lib/utils"
+import { agentDisplay, agentRunTitle } from "@/lib/agent-display"
 import type {
   AgentSummary,
+  AccountWithModels,
   EdgeTrigger,
   PhaseGatePolicy,
   PhaseRouting,
@@ -110,11 +128,17 @@ import type {
   ProcessGraph,
   ProcessPhase,
   ProcessPhaseAgent,
+  ProcessPhaseAttempt,
   ProcessPhaseRun,
+  ProcessRuntimeConfig,
+  ProcessRuntimeSelection,
+  ProcessRuntimeSlot,
   ProcessRun,
+  Approval,
   Task,
   TaskEventPayload,
   TaskLiveEvent,
+  GitDiffResult,
 } from "@/types"
 
 // The durable approval row's `request` blob for a process gate (mirrors
@@ -122,19 +146,75 @@ import type {
 // keys the monitor's gate map — so we can drop a settled gate on reconcile. A
 // process_flag_gate (plan 031.2) additionally carries the flag's target + reason
 // so the monitor renders the confirmation card off the approvals row alone.
-interface ProcessGateRequest {
+export interface ProcessGateRequest {
   kind: "process_phase_gate" | "process_validator_gate" | "process_flag_gate"
   phaseKey: string
   phaseRunId: string
   requestId: string
+  approvalPacket?: ProcessApprovalPacket
   flagId?: string
   flagTargetKey?: string
   flagReason?: string
 }
 
+export interface GateInfo {
+  requestId: string
+  gateKind: "phase" | "validator"
+}
+
+interface ApprovalArtifact {
+  path: string
+  name: string
+  kind: "edit" | "write"
+  fileType: "code" | "html" | "document"
+  provenance: "phase_attributed" | "workspace"
+}
+
+interface ApprovalValidation {
+  label: string
+  status: "passed" | "failed" | "unknown"
+  command: string | null
+  output: string | null
+}
+
+export interface ProcessApprovalPacket {
+  requestId: string
+  processRunId: string
+  phaseRunId: string
+  reworkRound: number
+  createdAt: number
+  summary: {
+    outcome: string
+    materialChanges: string[]
+    validationSummary: string
+    caveats: string[]
+  }
+  artifacts: ApprovalArtifact[]
+  validations: ApprovalValidation[]
+  downstream: Array<{ phaseId: string; name: string }>
+  evidenceWarnings: string[]
+  transcriptTaskId: string | null
+}
+
+interface ApprovalReviewTarget {
+  phaseRun: ProcessPhaseRun
+  name: string
+  gateKind?: "phase" | "validator"
+  requestId?: string
+  packet?: ProcessApprovalPacket
+  files?: ChangedFile[]
+  canRequestChanges: boolean
+}
+
+interface FileTextResult {
+  content: string | null
+  truncated: boolean
+  error: string | null
+}
+
 // A pending cross-phase rework flag awaiting human confirmation (plan 031.2),
 // rendered on the FLAGGING phase-run's card.
-interface FlagGateInfo {
+export interface FlagGateInfo {
   requestId: string
   targetKey: string
   reason: string
@@ -165,6 +245,294 @@ const OWN_AGENT = "__own__"
 // Sentinel for the sub-process picker's "none" option (plan 038.1) — same Radix
 // empty-value constraint as OWN_AGENT. Maps to null (an ordinary agent phase).
 const NO_SUBPROCESS = "__none__"
+const INHERIT_RUNTIME = "__inherit__"
+const RUNTIME_SLOTS: Array<{ slot: ProcessRuntimeSlot; label: string }> = [
+  { slot: "worker", label: "Worker" },
+  { slot: "router", label: "Router" },
+  { slot: "decomposer", label: "Decomposer" },
+  { slot: "validator", label: "Validator" },
+]
+
+function runtimeValue(selection?: ProcessRuntimeSelection | null): string {
+  return selection?.accountId && selection.modelId
+    ? `${selection.accountId}::${selection.modelId}`
+    : INHERIT_RUNTIME
+}
+
+function runtimeLabel(
+  providers: AccountWithModels[],
+  selection?: ProcessRuntimeSelection | null
+): string {
+  if (!selection?.accountId || !selection.modelId) return "Inherit"
+  const account = providers.find((p) => p.account.id === selection.accountId)
+  const model = account?.models.find((m) => m.modelId === selection.modelId)
+  return `${account?.account.displayName ?? selection.accountId} / ${model?.modelName ?? selection.modelId}`
+}
+
+function nextRuntimeConfig(
+  current: ProcessRuntimeConfig | null | undefined,
+  slot: ProcessRuntimeSlot,
+  selection: ProcessRuntimeSelection | null
+): ProcessRuntimeConfig | null {
+  const next: ProcessRuntimeConfig = { ...(current ?? {}) }
+  if (selection) next[slot] = selection
+  else delete next[slot]
+  return Object.keys(next).length > 0 ? next : null
+}
+
+type RuntimePickerItem = {
+  value: string
+  label: string
+  accountId: string | null
+  modelId: string | null
+  provider: ProcessRuntimeSelection["provider"]
+}
+
+type RuntimePickerGroup = {
+  value: string
+  label: string
+  items: RuntimePickerItem[]
+}
+
+function RuntimePicker({
+  label,
+  providers,
+  value,
+  onChange,
+}: {
+  label: string
+  providers: AccountWithModels[]
+  value?: ProcessRuntimeSelection | null
+  onChange: (next: ProcessRuntimeSelection | null) => void
+}) {
+  const [providerFilter, setProviderFilter] = useState<string | null>(null)
+  const [searchQuery, setSearchQuery] = useState("")
+  const providerFilters = useMemo(
+    () =>
+      providers
+        .filter((entry) => entry.models.length > 0)
+        .map((entry) => ({
+          id: entry.account.id,
+          label: entry.account.displayName,
+        })),
+    [providers]
+  )
+  const allGroups = useMemo<RuntimePickerGroup[]>(
+    () => [
+      {
+        value: "runtime",
+        label: "Runtime",
+        items: [
+          {
+            value: INHERIT_RUNTIME,
+            label: "Inherit",
+            accountId: null,
+            modelId: null,
+            provider: null,
+          },
+        ],
+      },
+      ...providers
+        .filter((entry) => entry.models.length > 0)
+        .map((entry) => ({
+          value: entry.account.id,
+          label: entry.account.displayName,
+          items: entry.models.map((model) => ({
+            value: `${entry.account.id}::${model.modelId}`,
+            label: model.modelName?.trim() || model.modelId,
+            accountId: entry.account.id,
+            modelId: model.modelId,
+            provider: entry.account.provider,
+          })),
+        })),
+    ],
+    [providers]
+  )
+  const groups = useMemo<RuntimePickerGroup[]>(() => {
+    if (!providerFilter || searchQuery.trim()) return allGroups
+    return allGroups
+      .map((group) =>
+        group.value === "runtime"
+          ? group
+          : {
+              ...group,
+              items: group.items.filter(
+                (item) => item.accountId === providerFilter
+              ),
+            }
+      )
+      .filter((group) => group.value === "runtime" || group.items.length > 0)
+  }, [allGroups, providerFilter, searchQuery])
+  const selectedItem: RuntimePickerItem | null =
+    value?.accountId && value.modelId
+      ? (allGroups
+          .flatMap((group) => group.items)
+          .find((item) => item.value === runtimeValue(value)) ?? null)
+      : allGroups[0].items[0]
+
+  return (
+    <label className="flex min-w-44 flex-col gap-1 text-xs">
+      <span className="text-muted-foreground">{label}</span>
+      <Combobox
+        items={groups}
+        value={selectedItem}
+        inputValue={searchQuery}
+        isItemEqualToValue={(a, b) => a?.value === b?.value}
+        onInputValueChange={(next) => setSearchQuery(next)}
+        onOpenChange={(open) => {
+          if (!open) setSearchQuery("")
+        }}
+        onValueChange={(item: RuntimePickerItem | null) => {
+          setSearchQuery("")
+          if (!item || !item.accountId || !item.modelId) return onChange(null)
+          onChange({
+            accountId: item.accountId,
+            modelId: item.modelId,
+            provider: item.provider,
+          })
+        }}
+      >
+        <ComboboxTrigger className="flex h-7 max-w-72 min-w-44 items-center justify-between gap-1 rounded-[min(var(--radius-md),10px)] border border-input bg-transparent px-2.5 text-xs transition-colors hover:bg-accent/50 dark:bg-input/30">
+          <ComboboxValue placeholder="Inherit">
+            {(item: RuntimePickerItem | null) => (
+              <span className="truncate">
+                {item?.label ?? runtimeLabel(providers, value)}
+              </span>
+            )}
+          </ComboboxValue>
+        </ComboboxTrigger>
+        <ComboboxContent className="w-80 min-w-80">
+          <ComboboxInput placeholder="Search models…" showTrigger={false} />
+          {providerFilters.length > 1 && (
+            <div className="flex flex-wrap gap-1 border-b border-border/60 p-1">
+              <Button
+                type="button"
+                variant={!providerFilter ? "secondary" : "ghost"}
+                size="xs"
+                onClick={() => setProviderFilter(null)}
+              >
+                All
+              </Button>
+              {providerFilters.map((provider) => (
+                <Button
+                  key={provider.id}
+                  type="button"
+                  variant={
+                    providerFilter === provider.id ? "secondary" : "ghost"
+                  }
+                  size="xs"
+                  onClick={() => setProviderFilter(provider.id)}
+                >
+                  {provider.label}
+                </Button>
+              ))}
+            </div>
+          )}
+          <ComboboxEmpty>No models found.</ComboboxEmpty>
+          <ComboboxList>
+            {(group: RuntimePickerGroup) => (
+              <ComboboxGroup key={group.value} items={group.items}>
+                <ComboboxLabel>{group.label}</ComboboxLabel>
+                <ComboboxCollection>
+                  {(item: RuntimePickerItem) => (
+                    <ComboboxItem key={item.value} value={item}>
+                      <span className="truncate">{item.label}</span>
+                      {item.modelId && item.modelId !== item.label && (
+                        <span className="ml-auto max-w-40 truncate font-mono text-[10px] text-muted-foreground">
+                          {item.modelId}
+                        </span>
+                      )}
+                    </ComboboxItem>
+                  )}
+                </ComboboxCollection>
+              </ComboboxGroup>
+            )}
+          </ComboboxList>
+        </ComboboxContent>
+      </Combobox>
+    </label>
+  )
+}
+
+function agentValue(agent: AgentSummary): string {
+  return agent.ref ?? agent.name
+}
+
+function agentLabel(agent: AgentSummary): string {
+  return agent.label ?? agent.name
+}
+
+function agentSourceLabel(sourceKind: string): string {
+  switch (sourceKind) {
+    case "north_star":
+      return window.cowork.system().displayName
+    case "github":
+      return "GitHub"
+    case "copilot":
+      return "Copilot"
+    case "cursor":
+      return "Cursor"
+    case "claude":
+      return "Claude"
+    case "codex":
+      return "Codex"
+    default:
+      return sourceKind
+        .replaceAll("_", " ")
+        .replace(/\b\w/g, (character) => character.toUpperCase())
+  }
+}
+
+function agentSourceFilters(agents: AgentSummary[]) {
+  return Array.from(new Set(agents.map((agent) => agent.sourceKind))).map(
+    (sourceKind) => ({
+      id: sourceKind,
+      label: agentSourceLabel(sourceKind),
+    })
+  )
+}
+
+function AgentIdentityBadge({
+  value,
+  metadata,
+  onRemove,
+}: {
+  value: string
+  metadata?: AgentSummary
+  onRemove?: () => void
+}) {
+  const display = agentDisplay(value, metadata)
+  const details = [display.source, display.scope].filter(Boolean).join(" · ")
+
+  return (
+    <Badge
+      variant={onRemove ? "secondary" : "outline"}
+      className={cn(
+        "max-w-full gap-1.5 pr-1 pl-2",
+        onRemove ? "py-1" : "h-5 text-[10px]"
+      )}
+      title={details ? `${display.name} · ${details}` : display.name}
+    >
+      <Bot className="size-3 shrink-0 text-muted-foreground" />
+      <span className="min-w-0 truncate font-medium">{display.name}</span>
+      {display.source && (
+        <span className="shrink-0 border-l border-foreground/10 pl-1.5 text-[10px] font-normal text-muted-foreground">
+          {display.source}
+        </span>
+      )}
+      {onRemove && (
+        <button
+          type="button"
+          onClick={onRemove}
+          className="shrink-0 rounded-sm p-0.5 transition-colors hover:bg-background/60 hover:text-foreground"
+          aria-label={`Remove ${display.name}`}
+        >
+          <XIcon className="size-3" />
+        </button>
+      )}
+    </Badge>
+  )
+}
 
 export function ProcessScreen({ onClose }: { onClose: () => void }) {
   const [definitions, setDefinitions] = useState<ProcessDefinition[] | null>(
@@ -178,14 +546,16 @@ export function ProcessScreen({ onClose }: { onClose: () => void }) {
   // users author agents in-app; the builder degrades gracefully (a free-text
   // agent name still works via the pool row).
   const [agents, setAgents] = useState<AgentSummary[]>([])
+  const [providerModels, setProviderModels] = useState<AccountWithModels[]>([])
   const [pendingDelete, setPendingDelete] = useState<ProcessDefinition | null>(
     null
   )
   // Free-text filter over the process cards (matches name + description).
   const [query, setQuery] = useState("")
 
-  const loadDefinitions = useCallback(() => {
-    window.cowork.db.processes.list().then(setDefinitions)
+  const loadDefinitions = useCallback(async () => {
+    const list = await window.cowork.db.processes.list()
+    setDefinitions(list)
   }, [])
 
   // Load on mount. The component is mounted only while the Process view is open
@@ -196,6 +566,10 @@ export function ProcessScreen({ onClose }: { onClose: () => void }) {
       .list()
       .then(setAgents)
       .catch(() => setAgents([]))
+    window.cowork.providers
+      .listWithModels()
+      .then(setProviderModels)
+      .catch(() => setProviderModels([]))
   }, [loadDefinitions])
 
   // Esc closes the view, dropping the user back to their last open conversation.
@@ -256,6 +630,37 @@ export function ProcessScreen({ onClose }: { onClose: () => void }) {
       setActiveRunId(null)
     } catch (err) {
       toast.error(`Could not create process: ${err}`)
+    }
+  }
+
+  async function importDefinition() {
+    try {
+      const result = await window.cowork.process.importDefinition()
+      if (result.canceled) return
+      await loadDefinitions()
+      setSelectedId(result.processId)
+      setPane("builder")
+      setActiveRunId(null)
+      if (result.warnings.length > 0) {
+        toast.warning(
+          `Imported with ${result.warnings.length} warning${result.warnings.length === 1 ? "" : "s"}`,
+          { description: result.warnings.slice(0, 2).join(" ") }
+        )
+      } else {
+        toast.success(`Imported ${result.path}`)
+      }
+    } catch (err) {
+      toast.error(`Could not import process: ${err}`)
+    }
+  }
+
+  async function exportDefinition(definition: ProcessDefinition) {
+    try {
+      const result = await window.cowork.process.exportDefinition(definition.id)
+      if (result.canceled) return
+      toast.success(`Exported ${definition.name}`)
+    } catch (err) {
+      toast.error(`Could not export process: ${err}`)
     }
   }
 
@@ -351,6 +756,7 @@ export function ProcessScreen({ onClose }: { onClose: () => void }) {
               key={selected.id}
               definition={selected}
               agents={agents}
+              providerModels={providerModels}
               definitions={definitions ?? []}
               onDefinitionChanged={loadDefinitions}
             />
@@ -359,6 +765,7 @@ export function ProcessScreen({ onClose }: { onClose: () => void }) {
               key={selected.id}
               definition={selected}
               activeRunId={activeRunId}
+              providerModels={providerModels}
               onSelectRun={setActiveRunId}
             />
           )}
@@ -372,15 +779,26 @@ export function ProcessScreen({ onClose }: { onClose: () => void }) {
                 ? "…"
                 : `${definitions.length} ${definitions.length === 1 ? "process" : "processes"}`}
             </span>
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              onClick={createDefinition}
-            >
-              <Plus className="size-4" />
-              New Process
-            </Button>
+            <div className="flex items-center gap-2">
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={importDefinition}
+              >
+                <Upload className="size-4" />
+                Import
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={createDefinition}
+              >
+                <Plus className="size-4" />
+                New Process
+              </Button>
+            </div>
           </div>
 
           <div className="shrink-0 border-b px-4 py-2">
@@ -416,6 +834,7 @@ export function ProcessScreen({ onClose }: { onClose: () => void }) {
                         setPane("builder")
                         setActiveRunId(null)
                       }}
+                      onExport={() => exportDefinition(d)}
                       onDelete={() => setPendingDelete(d)}
                     />
                   ))}
@@ -501,10 +920,12 @@ function CardGrid({ children }: { children: React.ReactNode }) {
 function ProcessCard({
   definition,
   onOpen,
+  onExport,
   onDelete,
 }: {
   definition: ProcessDefinition
   onOpen: () => void
+  onExport: () => void
   onDelete: () => void
 }) {
   return (
@@ -523,7 +944,18 @@ function ProcessCard({
     >
       <CardHeader>
         <CardTitle className="truncate">{definition.name}</CardTitle>
-        <CardAction>
+        <CardAction className="flex items-center gap-1">
+          <button
+            type="button"
+            aria-label={`Export ${definition.name}`}
+            onClick={(e) => {
+              e.stopPropagation()
+              onExport()
+            }}
+            className="rounded p-1 text-muted-foreground opacity-0 transition-opacity group-hover/card:opacity-100 hover:bg-muted hover:text-foreground focus:opacity-100"
+          >
+            <Download className="size-3.5" />
+          </button>
           <button
             type="button"
             aria-label={`Delete ${definition.name}`}
@@ -587,14 +1019,16 @@ function deriveKey(name: string, otherKeys: Iterable<string>): string {
 // through the `db.processes.*` CRUD then reloads the whole graph — the
 // mutate-then-refetch pattern from SkillsScreen — since agent-pool and edge rows
 // have no update verb (edit = delete + recreate).
-function ProcessBuilder({
+export function ProcessBuilder({
   definition,
   agents,
+  providerModels = [],
   definitions,
   onDefinitionChanged,
 }: {
   definition: ProcessDefinition
   agents: AgentSummary[]
+  providerModels?: AccountWithModels[]
   definitions: ProcessDefinition[]
   onDefinitionChanged: () => void
 }) {
@@ -640,6 +1074,11 @@ function ProcessBuilder({
           phases.map((p) => p.key)
         ),
         name,
+        completionContract: {
+          policy: "validated",
+          version: 1,
+          requiredArtifacts: [],
+        },
         position: n,
       })
       reload()
@@ -786,6 +1225,7 @@ function ProcessBuilder({
                   phases={phases}
                   graph={graph}
                   agents={agents}
+                  providerModels={providerModels}
                   definitions={definitions}
                   onChanged={reload}
                 />
@@ -809,6 +1249,7 @@ function PhaseCard({
   phases,
   graph,
   agents,
+  providerModels,
   definitions,
   onChanged,
 }: {
@@ -816,6 +1257,7 @@ function PhaseCard({
   phases: ProcessPhase[]
   graph: ProcessGraph
   agents: AgentSummary[]
+  providerModels: AccountWithModels[]
   definitions: ProcessDefinition[]
   onChanged: () => void
 }) {
@@ -834,7 +1276,78 @@ function PhaseCard({
   const upstreamCandidates = phases.filter((p) => p.id !== phase.id)
   // Agents not already in the pool, for the add dropdown.
   const poolNames = new Set(pool.map((a) => a.agentName))
-  const addable = agents.filter((a) => !poolNames.has(a.name))
+  const addable = agents.filter((a) => !poolNames.has(agentValue(a)))
+  const agentsByValue = useMemo(
+    () => new Map(agents.map((agent) => [agentValue(agent), agent])),
+    [agents]
+  )
+  const [reviewerAgentSourceFilter, setReviewerAgentSourceFilter] = useState<
+    string | null
+  >(null)
+  const [reviewerAgentSearchQuery, setReviewerAgentSearchQuery] = useState("")
+  const [poolAgentSourceFilter, setPoolAgentSourceFilter] = useState<
+    string | null
+  >(null)
+  const [poolAgentSearchQuery, setPoolAgentSearchQuery] = useState("")
+  const reviewerAgentItems = useMemo(
+    () => [
+      {
+        value: OWN_AGENT,
+        label: "Phase's own agent",
+        description: "Use the phase's first pool agent",
+      },
+      ...agents.map((agent) => ({
+        value: agentValue(agent),
+        label: agentLabel(agent),
+        description: agent.description,
+        name: agent.name,
+        sourceKind: agent.sourceKind,
+        source: [agent.sourceKind, agent.scope].filter(Boolean).join(" · "),
+      })),
+    ],
+    [agents]
+  )
+  const reviewerAgentSourceFilters = useMemo(
+    () => agentSourceFilters(agents),
+    [agents]
+  )
+  const filteredReviewerAgentItems = useMemo(() => {
+    if (!reviewerAgentSourceFilter || reviewerAgentSearchQuery.trim()) {
+      return reviewerAgentItems
+    }
+    return reviewerAgentItems.filter(
+      (item) =>
+        !("sourceKind" in item) || item.sourceKind === reviewerAgentSourceFilter
+    )
+  }, [reviewerAgentItems, reviewerAgentSearchQuery, reviewerAgentSourceFilter])
+  const selectedReviewerAgent =
+    reviewerAgentItems.find(
+      (item) =>
+        item.value === (phase.validatorAgent ?? OWN_AGENT) ||
+        ("name" in item && item.name === phase.validatorAgent)
+    ) ?? reviewerAgentItems[0]
+  const addableAgentItems = useMemo(
+    () =>
+      addable.map((agent) => ({
+        value: agentValue(agent),
+        label: agentLabel(agent),
+        description: agent.description,
+        sourceKind: agent.sourceKind,
+      })),
+    [addable]
+  )
+  const poolAgentSourceFilters = useMemo(
+    () => agentSourceFilters(addable),
+    [addable]
+  )
+  const filteredAddableAgentItems = useMemo(() => {
+    if (!poolAgentSourceFilter || poolAgentSearchQuery.trim()) {
+      return addableAgentItems
+    }
+    return addableAgentItems.filter(
+      (item) => item.sourceKind === poolAgentSourceFilter
+    )
+  }, [addableAgentItems, poolAgentSearchQuery, poolAgentSourceFilter])
   // Collapsed by default — a built graph is mostly read; expand to edit.
   const [expanded, setExpanded] = useState(false)
   const depCount = incoming.length
@@ -873,10 +1386,12 @@ function PhaseCard({
     fanOut?: boolean
     maxReworkRounds?: number
     dotFolder?: boolean
+    completionContract?: ProcessPhase["completionContract"]
     validator?: boolean
     validatorMaxIterations?: number
     validatorAgent?: string | null
     subprocessId?: string | null
+    runtimeConfig?: ProcessRuntimeConfig | null
   }) {
     try {
       await window.cowork.db.processes.phases.update(phase.id, patch)
@@ -1078,6 +1593,115 @@ function PhaseCard({
             </span>
           </div>
 
+          {!phase.subprocessId && (
+            <div className="space-y-2 text-xs">
+              <label className="flex items-center gap-2">
+                <Switch
+                  aria-label="Validated completion"
+                  checked={phase.completionContract?.policy === "validated"}
+                  onCheckedChange={(checked) =>
+                    patchPhase({
+                      completionContract: checked
+                        ? {
+                            policy: "validated",
+                            version: 1,
+                            requiredArtifacts: [],
+                          }
+                        : { policy: "legacy" },
+                    })
+                  }
+                />
+                {phase.completionContract?.policy === "validated"
+                  ? "Validated completion v1"
+                  : "Legacy completion: an ended turn counts as success"}
+              </label>
+              <p className="text-muted-foreground">
+                Changes apply to new runs. Existing runs retain their recorded
+                policy.
+              </p>
+              {phase.completionContract?.policy === "validated" && (
+                <label className="block space-y-1">
+                  <span>
+                    Required workspace files (one relative path per line)
+                  </span>
+                  <Textarea
+                    key={JSON.stringify(
+                      phase.completionContract.requiredArtifacts
+                    )}
+                    aria-label="Required workspace files"
+                    defaultValue={phase.completionContract.requiredArtifacts.join(
+                      "\n"
+                    )}
+                    onBlur={(e) => {
+                      const requiredArtifacts = e.target.value
+                        .split("\n")
+                        .map((s) => s.trim())
+                        .filter(Boolean)
+                      if (
+                        JSON.stringify(requiredArtifacts) !==
+                        JSON.stringify(
+                          phase.completionContract?.policy === "validated"
+                            ? phase.completionContract.requiredArtifacts
+                            : []
+                        )
+                      )
+                        patchPhase({
+                          completionContract: {
+                            policy: "validated",
+                            version: 1,
+                            requiredArtifacts,
+                          },
+                        })
+                    }}
+                  />
+                  <span className="text-muted-foreground">
+                    Checks file presence. Use a validator for semantic review.
+                    Fan-out checks apply to every child.
+                  </span>
+                </label>
+              )}
+            </div>
+          )}
+
+          {providerModels.length > 0 && (
+            <div className="space-y-2 rounded-md border border-dashed p-2">
+              <div className="text-xs font-medium">Runtime profile</div>
+              <div className="flex flex-wrap gap-2">
+                {RUNTIME_SLOTS.map(({ slot, label }) => {
+                  if (slot === "router" && phase.routing !== "dispatch")
+                    return null
+                  if (slot === "decomposer" && !phase.fanOut) return null
+                  if (
+                    slot === "validator" &&
+                    (!phase.validator || phase.fanOut || !!phase.subprocessId)
+                  )
+                    return null
+                  return (
+                    <RuntimePicker
+                      key={slot}
+                      label={label}
+                      providers={providerModels}
+                      value={phase.runtimeConfig?.[slot]}
+                      onChange={(selection) =>
+                        patchPhase({
+                          runtimeConfig: nextRuntimeConfig(
+                            phase.runtimeConfig,
+                            slot,
+                            selection
+                          ),
+                        })
+                      }
+                    />
+                  )
+                })}
+              </div>
+              <p className="text-[10px] text-muted-foreground">
+                Inherit uses the run/default model. Phase overrides are
+                snapshotted onto each phase run for debugging and replay.
+              </p>
+            </div>
+          )}
+
           {/* Row 2: routing / gate / fan-out. */}
           <div className="flex flex-wrap items-center gap-4">
             <label className="flex items-center gap-2 text-xs">
@@ -1215,30 +1839,94 @@ function PhaseCard({
                 title="The agent that reviews this phase's output. Defaults to the phase's own first pool agent."
               >
                 <span className="text-muted-foreground">Reviewer</span>
-                <Select
-                  // Radix Select can't use an empty-string value, so the "own
-                  // agent" default (null) maps to a sentinel option.
-                  value={phase.validatorAgent ?? OWN_AGENT}
-                  onValueChange={(v) =>
-                    patchPhase({
-                      validatorAgent: v === OWN_AGENT ? null : v,
-                    })
+                <Combobox
+                  items={filteredReviewerAgentItems}
+                  value={selectedReviewerAgent}
+                  inputValue={reviewerAgentSearchQuery}
+                  isItemEqualToValue={(a, b) => a?.value === b?.value}
+                  onInputValueChange={(next) =>
+                    setReviewerAgentSearchQuery(next)
                   }
+                  onOpenChange={(open) => {
+                    if (!open) setReviewerAgentSearchQuery("")
+                  }}
+                  onValueChange={(item: { value: string } | null) => {
+                    setReviewerAgentSearchQuery("")
+                    if (!item) return
+                    void patchPhase({
+                      validatorAgent:
+                        item.value === OWN_AGENT ? null : item.value,
+                    })
+                  }}
                 >
-                  <SelectTrigger size="sm" className="text-xs">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value={OWN_AGENT}>
-                      Phase&apos;s own agent
-                    </SelectItem>
-                    {agents.map((a) => (
-                      <SelectItem key={a.name} value={a.name}>
-                        {a.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                  <ComboboxTrigger className="flex h-7 max-w-64 min-w-44 items-center justify-between gap-1 rounded-[min(var(--radius-md),10px)] border border-input bg-transparent px-2.5 text-xs transition-colors hover:bg-accent/50 dark:bg-input/30">
+                    <ComboboxValue>
+                      {(item: (typeof reviewerAgentItems)[number] | null) => (
+                        <span className="truncate">
+                          {item?.label ?? "Phase's own agent"}
+                        </span>
+                      )}
+                    </ComboboxValue>
+                  </ComboboxTrigger>
+                  <ComboboxContent className="w-80 min-w-80">
+                    <ComboboxInput
+                      placeholder="Search reviewer agents…"
+                      showTrigger={false}
+                    />
+                    {reviewerAgentSourceFilters.length > 1 && (
+                      <div className="flex flex-wrap gap-1 border-b border-border/60 p-1">
+                        <Button
+                          type="button"
+                          variant={
+                            !reviewerAgentSourceFilter ? "secondary" : "ghost"
+                          }
+                          size="xs"
+                          onClick={() => setReviewerAgentSourceFilter(null)}
+                        >
+                          All
+                        </Button>
+                        {reviewerAgentSourceFilters.map((source) => (
+                          <Button
+                            key={source.id}
+                            type="button"
+                            variant={
+                              reviewerAgentSourceFilter === source.id
+                                ? "secondary"
+                                : "ghost"
+                            }
+                            size="xs"
+                            onClick={() =>
+                              setReviewerAgentSourceFilter(source.id)
+                            }
+                          >
+                            {source.label}
+                          </Button>
+                        ))}
+                      </div>
+                    )}
+                    <ComboboxEmpty>No agents found.</ComboboxEmpty>
+                    <ComboboxList>
+                      {(item: (typeof filteredReviewerAgentItems)[number]) => (
+                        <ComboboxItem key={item.value} value={item}>
+                          <span className="flex min-w-0 flex-col gap-0.5">
+                            <span className="truncate">{item.label}</span>
+                            {(item.description ||
+                              ("source" in item && item.source)) && (
+                              <span className="line-clamp-2 text-[10px] text-muted-foreground">
+                                {[
+                                  item.description,
+                                  "source" in item ? item.source : undefined,
+                                ]
+                                  .filter(Boolean)
+                                  .join(" · ")}
+                              </span>
+                            )}
+                          </span>
+                        </ComboboxItem>
+                      )}
+                    </ComboboxList>
+                  </ComboboxContent>
+                </Combobox>
               </label>
               <label
                 className="flex items-center gap-2 text-xs"
@@ -1321,19 +2009,17 @@ function PhaseCard({
                 )}
               </span>
               <div className="flex flex-wrap items-center gap-1.5">
-                {pool.map((a) => (
-                  <Badge key={a.id} variant="secondary" className="gap-1 pr-1">
-                    {a.agentName}
-                    <button
-                      type="button"
-                      onClick={() => removePoolAgent(a.id)}
-                      className="rounded-sm p-0.5 hover:bg-background/60"
-                      aria-label={`Remove ${a.agentName}`}
-                    >
-                      <XIcon className="size-3" />
-                    </button>
-                  </Badge>
-                ))}
+                {pool.map((a) => {
+                  const catalogAgent = agentsByValue.get(a.agentName)
+                  return (
+                    <AgentIdentityBadge
+                      key={a.id}
+                      value={a.agentName}
+                      metadata={catalogAgent}
+                      onRemove={() => removePoolAgent(a.id)}
+                    />
+                  )
+                })}
                 {pool.length === 0 && (
                   <span className="text-xs text-muted-foreground">
                     No agents — the phase falls back to the default agent.
@@ -1345,14 +2031,16 @@ function PhaseCard({
                 // It's an action picker — selecting adds to the pool and the value
                 // stays unselected, so the trigger always reads "Add agent…".
                 <Combobox
-                  items={addable.map((a) => ({
-                    value: a.name,
-                    label: a.name,
-                    description: a.description,
-                  }))}
+                  items={filteredAddableAgentItems}
                   value={null}
+                  inputValue={poolAgentSearchQuery}
                   isItemEqualToValue={(a, b) => a?.value === b?.value}
+                  onInputValueChange={(next) => setPoolAgentSearchQuery(next)}
+                  onOpenChange={(open) => {
+                    if (!open) setPoolAgentSearchQuery("")
+                  }}
                   onValueChange={(item: { value: string } | null) => {
+                    setPoolAgentSearchQuery("")
                     if (item) void addPoolAgent(item.value)
                   }}
                 >
@@ -1364,6 +2052,35 @@ function PhaseCard({
                       placeholder="Search agents…"
                       showTrigger={false}
                     />
+                    {poolAgentSourceFilters.length > 1 && (
+                      <div className="flex flex-wrap gap-1 border-b border-border/60 p-1">
+                        <Button
+                          type="button"
+                          variant={
+                            !poolAgentSourceFilter ? "secondary" : "ghost"
+                          }
+                          size="xs"
+                          onClick={() => setPoolAgentSourceFilter(null)}
+                        >
+                          All
+                        </Button>
+                        {poolAgentSourceFilters.map((source) => (
+                          <Button
+                            key={source.id}
+                            type="button"
+                            variant={
+                              poolAgentSourceFilter === source.id
+                                ? "secondary"
+                                : "ghost"
+                            }
+                            size="xs"
+                            onClick={() => setPoolAgentSourceFilter(source.id)}
+                          >
+                            {source.label}
+                          </Button>
+                        ))}
+                      </div>
+                    )}
                     <ComboboxEmpty>No agents found.</ComboboxEmpty>
                     <ComboboxList>
                       {(item: {
@@ -1467,21 +2184,52 @@ const ACTIVE_RUN_STATUSES = new Set([
   "paused",
 ])
 
+// A terminal run cannot still own live phase work. Older runs created before the
+// nested-failure drain fix can nevertheless contain `running`/`ready` rows because
+// their scheduler exited before observing parallel siblings. Keep those historical
+// rows from rendering an infinite spinner; the transcript remains available and a
+// retry still reads the untouched durable frontier from the main process.
+const TERMINAL_RUN_STATUSES = new Set(["completed", "failed", "cancelled"])
+const LIVE_PHASE_STATUSES = new Set<PhaseRunStatus>([
+  "ready",
+  "running",
+  "waiting_for_approval",
+])
+
+function phaseRunsForDisplay(
+  run: ProcessRun | null,
+  phaseRuns: ProcessPhaseRun[]
+): ProcessPhaseRun[] {
+  if (!run || !TERMINAL_RUN_STATUSES.has(run.status)) return phaseRuns
+  return phaseRuns.map((phaseRun) =>
+    LIVE_PHASE_STATUSES.has(phaseRun.status)
+      ? { ...phaseRun, status: "cancelled" }
+      : phaseRun
+  )
+}
+
 function RunMonitor({
   definition,
   activeRunId,
+  providerModels,
   onSelectRun,
 }: {
   definition: ProcessDefinition
   activeRunId: string | null
+  providerModels: AccountWithModels[]
   onSelectRun: (runId: string) => void
 }) {
   const [runs, setRuns] = useState<ProcessRun[] | null>(null)
   const [run, setRun] = useState<ProcessRun | null>(null)
   const [phaseRuns, setPhaseRuns] = useState<ProcessPhaseRun[]>([])
   const [graph, setGraph] = useState<ProcessGraph | null>(null)
-  // phaseRunId → the pending gate's requestId (derived from the event stream).
-  const [gates, setGates] = useState<Record<string, string>>({})
+  // phaseRunId → the pending phase/validator gate (derived from the event stream).
+  const [gates, setGates] = useState<Record<string, GateInfo>>({})
+  // requestId → durable request blob, including the approval review packet when
+  // available. Rebuilt from approvals on load/replay and refreshed on live gates.
+  const [gateRequests, setGateRequests] = useState<
+    Record<string, ProcessGateRequest>
+  >({})
   // phaseRunId → a pending cross-phase rework flag awaiting confirmation (plan
   // 031.2): the flagging phase's card shows the target + reason with Approve
   // send-back / Dismiss. Sourced from the durable approvals list (the flag gate's
@@ -1497,6 +2245,9 @@ function RunMonitor({
   // The phase-run whose worker transcript is open (null = closed). Resolved from
   // the phase-run's taskId → the worker Task the read-only sheet renders.
   const [viewingTask, setViewingTask] = useState<Task | null>(null)
+  const [reviewTarget, setReviewTarget] = useState<ApprovalReviewTarget | null>(
+    null
+  )
   // Absolute path of the run's workspace, resolved from run.workspaceId (there's
   // no workspaces.get — list-and-find). Fed to the per-phase file chips (plan
   // 030b) to build file:// URLs, git diffs, and open-in-editor. "" when unknown.
@@ -1506,7 +2257,11 @@ function RunMonitor({
   // no-op if the phase never spawned a worker (taskId null) or the task vanished.
   async function openTranscript(phaseRun: ProcessPhaseRun) {
     if (!phaseRun.taskId) return
-    const task = await window.cowork.db.tasks.get(phaseRun.taskId)
+    await openTaskById(phaseRun.taskId)
+  }
+
+  async function openTaskById(taskId: string) {
+    const task = await window.cowork.db.tasks.get(taskId)
     if (task) setViewingTask(task)
   }
 
@@ -1524,7 +2279,7 @@ function RunMonitor({
       window.cowork.db.processes.phaseRuns.list({ runId: activeRunId }),
     ])
     setRun(r)
-    setPhaseRuns(prs)
+    setPhaseRuns(phaseRunsForDisplay(r, prs))
   }, [activeRunId])
   const refetchRef = useRef(refetch)
   refetchRef.current = refetch
@@ -1551,6 +2306,8 @@ function RunMonitor({
   // Load the selected run + rebuild the gate map from its replayed event stream.
   useEffect(() => {
     setGates({})
+    setGateRequests({})
+    setReviewTarget(null)
     if (!activeRunId) {
       setRun(null)
       setPhaseRuns([])
@@ -1573,33 +2330,13 @@ function RunMonitor({
         window.cowork.db.approvals.list({ taskId }),
       ]).then(([events, approvals]) => {
         if (cancelled) return
-        const gates = deriveGates(
-          events.map((e) => e.payload as TaskEventPayload)
-        )
-        const flagInfo: Record<string, FlagGateInfo> = {}
-        for (const a of approvals) {
-          const req = a.request as ProcessGateRequest | null
-          if (a.status === "pending") {
-            // A pending flag gate: record its target + reason so PhaseRunItem can
-            // render the confirmation card (keyed by the flagging phase-run).
-            if (req?.kind === "process_flag_gate")
-              flagInfo[req.phaseRunId] = {
-                requestId: req.requestId,
-                targetKey: req.flagTargetKey ?? "",
-                reason: req.flagReason ?? "",
-              }
-            continue
-          }
-          // Drop the gate only if THIS settled row is the one the map is showing
-          // (match by requestId, not phaseRunId): after a "Request changes" round
-          // a phase-run has both a denied old row and a fresh pending gate — the
-          // denied row must not clear the live one (plan 029). Applies to all gate
-          // kinds (phase / validator / flag).
-          if (req && gates[req.phaseRunId] === req.requestId)
-            delete gates[req.phaseRunId]
-        }
-        setGates(gates)
-        setFlagGates(flagInfo)
+        const recovered = recoverProcessMonitorGates({
+          events: events.map((e) => e.payload as TaskEventPayload),
+          approvals,
+        })
+        setGates(recovered.gates)
+        setFlagGates(recovered.flagGates)
+        setGateRequests(recovered.requests)
       })
     })
     return () => {
@@ -1623,9 +2360,11 @@ function RunMonitor({
           // (plan 031.2). Cheap: only the pending flag rows are kept.
           window.cowork.db.approvals.list({ taskId }).then((approvals) => {
             const info: Record<string, FlagGateInfo> = {}
+            const requests: Record<string, ProcessGateRequest> = {}
             for (const a of approvals) {
-              if (a.status !== "pending") continue
               const req = a.request as ProcessGateRequest | null
+              if (req?.requestId) requests[req.requestId] = req
+              if (a.status !== "pending") continue
               if (req?.kind === "process_flag_gate")
                 info[req.phaseRunId] = {
                   requestId: req.requestId,
@@ -1634,6 +2373,7 @@ function RunMonitor({
                 }
             }
             setFlagGates(info)
+            setGateRequests(requests)
           })
           void refetchRef.current()
           setRefreshTick((t) => t + 1)
@@ -1709,6 +2449,42 @@ function RunMonitor({
     [graph]
   )
 
+  const canRequestChangesForPhase = useCallback(
+    (phaseRun: ProcessPhaseRun) => {
+      const max = phaseMaxRework(phaseRun.phaseId)
+      return (
+        !phaseIsContainer(phaseRun.phaseId) &&
+        !(max > 0 && phaseRun.reworkRound >= max)
+      )
+    },
+    [phaseIsContainer, phaseMaxRework]
+  )
+
+  const openApprovalReview = useCallback(
+    (
+      phaseRun: ProcessPhaseRun,
+      name: string,
+      requestId?: string,
+      files?: ChangedFile[]
+    ) => {
+      const packet = requestId
+        ? gateRequests[requestId]?.approvalPacket
+        : undefined
+      const request = requestId ? gateRequests[requestId] : undefined
+      setReviewTarget({
+        phaseRun,
+        name,
+        gateKind:
+          request?.kind === "process_validator_gate" ? "validator" : "phase",
+        requestId,
+        packet,
+        files,
+        canRequestChanges: canRequestChangesForPhase(phaseRun),
+      })
+    },
+    [canRequestChangesForPhase, gateRequests]
+  )
+
   // Split into top-level phase runs (parentId null) and their children, so the
   // monitor can nest fan-out / on_each_subtask instances under their container.
   const { topLevel, childrenOf } = useMemo(() => {
@@ -1739,6 +2515,9 @@ function RunMonitor({
   async function approve(requestId: string, phaseRunId: string) {
     if (!run) return
     clearGate(phaseRunId)
+    setReviewTarget((target) =>
+      target?.requestId === requestId ? null : target
+    )
     try {
       await window.cowork.process.approve({ processRunId: run.id, requestId })
     } catch (err) {
@@ -1748,6 +2527,9 @@ function RunMonitor({
   async function deny(requestId: string, phaseRunId: string) {
     if (!run) return
     clearGate(phaseRunId)
+    setReviewTarget((target) =>
+      target?.requestId === requestId ? null : target
+    )
     try {
       await window.cowork.process.deny({ processRunId: run.id, requestId })
     } catch (err) {
@@ -1764,6 +2546,9 @@ function RunMonitor({
   ) {
     if (!run) return
     clearGate(phaseRunId)
+    setReviewTarget((target) =>
+      target?.requestId === requestId ? null : target
+    )
     try {
       await window.cowork.process.requestChanges({
         processRunId: run.id,
@@ -1772,6 +2557,22 @@ function RunMonitor({
       })
     } catch (err) {
       toast.error(`Could not request changes: ${err}`)
+    }
+  }
+
+  async function retryReview(requestId: string, phaseRunId: string) {
+    if (!run) return
+    clearGate(phaseRunId)
+    setReviewTarget((target) =>
+      target?.requestId === requestId ? null : target
+    )
+    try {
+      await window.cowork.process.retryReview({
+        processRunId: run.id,
+        requestId,
+      })
+    } catch (err) {
+      toast.error(`Could not retry review: ${err}`)
     }
   }
 
@@ -1813,14 +2614,30 @@ function RunMonitor({
     }
   }
 
+  async function exportRunIncident() {
+    if (!run) return
+    try {
+      const result = await window.cowork.process.exportRunIncident(run.id)
+      if (result.canceled) return
+      toast.success("Exported process incident")
+    } catch (err) {
+      toast.error(`Could not export process incident: ${err}`)
+    }
+  }
+
   // Start a new run of this definition (from the New Run modal). Refreshes the
   // run list, selects the new run, and closes the modal.
-  async function startNewRun(objective: string, workspacePath: string) {
+  async function startNewRun(
+    objective: string,
+    workspacePath: string,
+    runtimeConfig: ProcessRuntimeConfig | null
+  ) {
     const started = await window.cowork.process.startRun({
       processId: definition.id,
       sourceConversationId: null,
       objective: objective.trim(),
       workspacePath: workspacePath.trim(),
+      runtimeConfig,
     })
     setRuns(await loadRuns())
     onSelectRun(started.id)
@@ -1861,6 +2678,7 @@ function RunMonitor({
         <NewRunModal
           open={newRunOpen}
           onOpenChange={setNewRunOpen}
+          providerModels={providerModels}
           onRun={startNewRun}
         />
       </div>
@@ -1920,27 +2738,42 @@ function RunMonitor({
         {/* A failed run can retry from its failure frontier: the failed phase(s)
             and blocked dependents re-run; completed phases don't. */}
         {run && run.status === "failed" && (
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            onClick={() => window.cowork.process.restart(run.id)}
-          >
-            <RotateCcw className="size-3.5" />
-            Retry
-          </Button>
+          <>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={exportRunIncident}
+            >
+              <Download className="size-3.5" />
+              Export Incident
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={() => window.cowork.process.restart(run.id)}
+            >
+              <RotateCcw className="size-3.5" />
+              Restart run
+            </Button>
+          </>
         )}
       </div>
 
       <NewRunModal
         open={newRunOpen}
         onOpenChange={setNewRunOpen}
+        providerModels={providerModels}
         onRun={startNewRun}
       />
 
       {/* Phase list. */}
       <ScrollArea className="min-h-0 flex-1">
         <div className="mx-auto flex max-w-3xl flex-col gap-2 px-6 py-4">
+          {run && graph && (
+            <RunCompletionSummary run={run} phases={graph.phases} />
+          )}
           {run?.objective && (
             <p className="mb-2 rounded-md bg-muted px-3 py-2 text-xs text-muted-foreground">
               {run.objective}
@@ -1964,8 +2797,12 @@ function RunMonitor({
               key={pr.id}
               phaseRun={pr}
               name={phaseName(pr.phaseId)}
-              gateRequestId={gates[pr.id]}
+              gateInfo={gates[pr.id]}
+              gateRequest={
+                gates[pr.id] ? gateRequests[gates[pr.id].requestId] : undefined
+              }
               gates={gates}
+              gateRequests={gateRequests}
               flagGate={flagGates[pr.id]}
               childFlagGates={flagGates}
               childRuns={childrenOf.get(pr.id) ?? []}
@@ -1987,9 +2824,12 @@ function RunMonitor({
               onApprove={approve}
               onDeny={deny}
               onRequestChanges={requestChanges}
+              onRetryReview={retryReview}
               onConfirmFlag={confirmFlag}
               onDismissFlag={dismissFlag}
               onOpenTranscript={openTranscript}
+              onOpenTask={openTaskById}
+              onOpenReview={openApprovalReview}
             />
           ))}
         </div>
@@ -2003,6 +2843,17 @@ function RunMonitor({
         onOpenChange={(o) => {
           if (!o) setViewingTask(null)
         }}
+      />
+      <ApprovalReviewDrawer
+        target={reviewTarget}
+        workspacePath={workspacePath}
+        onOpenChange={(open) => {
+          if (!open) setReviewTarget(null)
+        }}
+        onApprove={approve}
+        onDeny={deny}
+        onRequestChanges={requestChanges}
+        onOpenTranscript={openTranscript}
       />
     </div>
   )
@@ -2020,10 +2871,12 @@ function PhaseFileChips({
   taskId,
   status,
   workspacePath,
+  onReviewFiles,
 }: {
   taskId: string
   status: PhaseRunStatus
   workspacePath: string
+  onReviewFiles: (files: ChangedFile[]) => void
 }) {
   const [files, setFiles] = useState<ChangedFile[]>([])
 
@@ -2056,10 +2909,7 @@ function PhaseFileChips({
       onOpenHtml={(relPath) => {
         void window.cowork.openInEditor(workspacePath, relPath)
       }}
-      onReviewAll={(fs) => {
-        for (const f of fs)
-          void window.cowork.openInEditor(workspacePath, f.path)
-      }}
+      onReviewAll={onReviewFiles}
     />
   )
 }
@@ -2069,8 +2919,10 @@ function PhaseFileChips({
 function PhaseRunItem({
   phaseRun,
   name,
-  gateRequestId,
+  gateInfo,
+  gateRequest,
   gates,
+  gateRequests,
   flagGate,
   childFlagGates,
   childRuns,
@@ -2084,16 +2936,21 @@ function PhaseRunItem({
   onApprove,
   onDeny,
   onRequestChanges,
+  onRetryReview,
   onConfirmFlag,
   onDismissFlag,
   onOpenTranscript,
+  onOpenTask,
+  onOpenReview,
 }: {
   phaseRun: ProcessPhaseRun
   name: string
-  gateRequestId: string | undefined
+  gateInfo: GateInfo | undefined
+  gateRequest: ProcessGateRequest | undefined
   // The full phaseRunId → gate requestId map, threaded down so a nested sub-process
   // run's own phase gates render actionable cards (plan 038.2).
-  gates: Record<string, string>
+  gates: Record<string, GateInfo>
+  gateRequests: Record<string, ProcessGateRequest>
   // A pending cross-phase rework flag this phase raised, awaiting confirmation
   // (plan 031.2). Undefined when there's none.
   flagGate: FlagGateInfo | undefined
@@ -2124,16 +2981,24 @@ function PhaseRunItem({
     phaseRunId: string,
     feedback: string
   ) => void
+  onRetryReview: (requestId: string, phaseRunId: string) => void
   onConfirmFlag: (requestId: string, phaseRunId: string) => void
   onDismissFlag: (requestId: string, phaseRunId: string) => void
   // Open a phase/child's worker transcript (only rows with a taskId).
   onOpenTranscript: (phaseRun: ProcessPhaseRun) => void
+  onOpenTask: (taskId: string) => void
+  onOpenReview: (
+    phaseRun: ProcessPhaseRun,
+    name: string,
+    requestId?: string,
+    files?: ChangedFile[]
+  ) => void
 }) {
   // A gated phase's own row stays `completed` in the DB — the gate is a run-level
   // hold on its dependents (the requestId rides the event + a durable approval
   // row, not the phase status). So drive the card off the gate map, not the
   // phase-run status, and OVERRIDE the displayed status to read as awaiting.
-  const gated = gateRequestId !== undefined
+  const gated = gateInfo !== undefined
   const displayStatus = gated ? "waiting_for_approval" : phaseRun.status
   const clickable = phaseRun.taskId !== null
 
@@ -2150,18 +3015,42 @@ function PhaseRunItem({
         <StatusIcon status={displayStatus} />
         <span className="min-w-0 flex-1 truncate font-medium">{name}</span>
         {phaseRun.agentName && (
-          <Badge variant="outline" className="shrink-0 font-mono text-[10px]">
-            {phaseRun.agentName}
-          </Badge>
+          <AgentIdentityBadge value={phaseRun.agentName} />
         )}
         <PhaseStatusLabel status={displayStatus} />
       </div>
 
-      {phaseRun.error && (
+      <PhaseCompletionEvidence receipt={phaseRun.completionReceipt} />
+      {phaseRun.failure && (
+        <div className="flex flex-wrap gap-1.5 text-xs text-muted-foreground">
+          <span className="rounded border px-1.5 py-0.5">
+            {phaseRun.failure.stage}
+          </span>
+          <span className="rounded border px-1.5 py-0.5">
+            {phaseRun.failure.code}
+          </span>
+          {phaseRun.failure.attempt !== null && (
+            <span className="rounded border px-1.5 py-0.5">
+              attempt {phaseRun.failure.attempt}
+              {phaseRun.failure.maxAttempts !== null
+                ? `/${phaseRun.failure.maxAttempts}`
+                : ""}
+            </span>
+          )}
+        </div>
+      )}
+
+      {(phaseRun.failure?.message ?? phaseRun.error) && (
         <pre className="overflow-x-auto rounded-md bg-destructive/5 px-2 py-1.5 text-xs text-destructive">
-          {phaseRun.error}
+          {phaseRun.failure?.message ?? phaseRun.error}
         </pre>
       )}
+
+      <PhaseAttemptHistory
+        phaseRunId={phaseRun.id}
+        refreshKey={refreshTick}
+        onOpenTask={onOpenTask}
+      />
 
       {/* Files this phase's worker produced (plan 030b). */}
       {phaseRun.taskId && (
@@ -2169,6 +3058,9 @@ function PhaseRunItem({
           taskId={phaseRun.taskId}
           status={phaseRun.status}
           workspacePath={workspacePath}
+          onReviewFiles={(files) =>
+            onOpenReview(phaseRun, name, gateInfo?.requestId, files)
+          }
         />
       )}
 
@@ -2177,14 +3069,18 @@ function PhaseRunItem({
       {gated && (
         <GateCard
           name={name}
-          requestId={gateRequestId}
+          requestId={gateInfo.requestId}
           phaseRunId={phaseRun.id}
+          gateKind={gateInfo.gateKind}
           reworkRound={phaseRun.reworkRound}
           maxReworkRounds={maxReworkRounds}
           isContainer={isContainer}
           onApprove={onApprove}
           onDeny={onDeny}
           onRequestChanges={onRequestChanges}
+          onRetryReview={onRetryReview}
+          packet={gateRequest?.approvalPacket}
+          onViewDetails={() => onOpenReview(phaseRun, name, gateInfo.requestId)}
         />
       )}
 
@@ -2204,6 +3100,11 @@ function PhaseRunItem({
         <div className="flex flex-col gap-1 border-l-2 pl-3">
           {childRuns.map((c, i) => {
             const clickable = c.taskId !== null
+            const childName = agentRunTitle(
+              c.title,
+              `${phaseName(c.phaseId)} #${i + 1}`,
+              c.agentName
+            )
             return (
               <div key={c.id} className="flex flex-col gap-0.5">
                 <div
@@ -2217,17 +3118,8 @@ function PhaseRunItem({
                   }
                 >
                   <StatusIcon status={c.status} />
-                  <span className="min-w-0 flex-1 truncate">
-                    {c.title ?? `${phaseName(c.phaseId)} #${i + 1}`}
-                  </span>
-                  {c.agentName && (
-                    <Badge
-                      variant="outline"
-                      className="shrink-0 font-mono text-[10px]"
-                    >
-                      {c.agentName}
-                    </Badge>
-                  )}
+                  <span className="min-w-0 flex-1 truncate">{childName}</span>
+                  {c.agentName && <AgentIdentityBadge value={c.agentName} />}
                   <PhaseStatusLabel status={c.status} />
                 </div>
                 {/* This sub-task's produced files (plan 030b). */}
@@ -2237,9 +3129,19 @@ function PhaseRunItem({
                       taskId={c.taskId}
                       status={c.status}
                       workspacePath={workspacePath}
+                      onReviewFiles={(files) =>
+                        onOpenReview(c, childName, undefined, files)
+                      }
                     />
                   </div>
                 )}
+                <div className="pl-1">
+                  <PhaseAttemptHistory
+                    phaseRunId={c.id}
+                    refreshKey={refreshTick}
+                    onOpenTask={onOpenTask}
+                  />
+                </div>
                 {/* A per-child rework flag this INSTANCE raised (plan 031.2):
                     an on_each_subtask consumer instance that flagged its source
                     sub-task. Rendered here since the instance is a nested child,
@@ -2248,7 +3150,7 @@ function PhaseRunItem({
                   <div className="pl-1">
                     <FlagCard
                       flagGate={childFlagGates[c.id]}
-                      flaggerName={c.title ?? phaseName(c.phaseId)}
+                      flaggerName={childName}
                       onConfirm={() =>
                         onConfirmFlag(childFlagGates[c.id].requestId, c.id)
                       }
@@ -2266,15 +3168,19 @@ function PhaseRunItem({
                       parentPhaseRunId={c.id}
                       workspacePath={workspacePath}
                       onOpenTranscript={onOpenTranscript}
+                      onOpenTask={onOpenTask}
                       refreshTick={refreshTick}
                       depth={0}
                       gates={gates}
+                      gateRequests={gateRequests}
                       flagGates={childFlagGates}
                       onApprove={onApprove}
                       onDeny={onDeny}
                       onRequestChanges={onRequestChanges}
+                      onRetryReview={onRetryReview}
                       onConfirmFlag={onConfirmFlag}
                       onDismissFlag={onDismissFlag}
+                      onOpenReview={onOpenReview}
                     />
                   </div>
                 )}
@@ -2294,18 +3200,207 @@ function PhaseRunItem({
           parentPhaseRunId={phaseRun.id}
           workspacePath={workspacePath}
           onOpenTranscript={onOpenTranscript}
+          onOpenTask={onOpenTask}
           refreshTick={refreshTick}
           depth={0}
           gates={gates}
+          gateRequests={gateRequests}
           flagGates={childFlagGates}
           onApprove={onApprove}
           onDeny={onDeny}
           onRequestChanges={onRequestChanges}
+          onRetryReview={onRetryReview}
           onConfirmFlag={onConfirmFlag}
           onDismissFlag={onDismissFlag}
+          onOpenReview={onOpenReview}
         />
       )}
     </div>
+  )
+}
+
+export function PhaseCompletionEvidence({
+  receipt,
+}: {
+  receipt: ProcessPhaseRun["completionReceipt"]
+}) {
+  return (
+    <>
+      {receipt && (
+        <details className="rounded border p-2 text-xs">
+          <summary>Declared outcome v1: {receipt.outcome.status}</summary>
+          <p className="mt-2 whitespace-pre-wrap">{receipt.outcome.output}</p>
+          <p className="whitespace-pre-wrap">
+            Evidence: {receipt.outcome.evidence}
+          </p>
+          {receipt.outcome.nextAction && (
+            <p>Next action: {receipt.outcome.nextAction}</p>
+          )}
+          <p>
+            {receipt.checkedAt === null
+              ? "Required file checks have not passed"
+              : `Files checked: ${receipt.checkedArtifacts.join(", ") || "none"}`}
+          </p>
+          <p className="text-muted-foreground">
+            A declared outcome and file checks do not establish semantic
+            correctness.
+          </p>
+        </details>
+      )}
+    </>
+  )
+}
+
+export function RunCompletionSummary({
+  run,
+  phases,
+}: {
+  run: Pick<ProcessRun, "completionContracts">
+  phases: ProcessPhase[]
+}) {
+  return (
+    <details className="rounded border p-2 text-xs text-muted-foreground">
+      <summary>Recorded completion policies</summary>
+      {phases.map((phase) => {
+        const contract =
+          run.completionContracts == null
+            ? { policy: "legacy" as const }
+            : run.completionContracts[phase.id]
+        return (
+          <p key={phase.id}>
+            {phase.name}:{" "}
+            {contract?.policy === "validated"
+              ? `Validated v${contract.version}`
+              : contract?.policy === "legacy"
+                ? "Legacy (ended turn counts as success)"
+                : "Missing policy: start a new run"}
+            {contract?.policy === "validated" &&
+              contract.requiredArtifacts.length > 0 &&
+              `; required files: ${contract.requiredArtifacts.join(", ")}`}
+          </p>
+        )
+      })}
+    </details>
+  )
+}
+
+function formatAttemptTime(timestamp: number): string {
+  return new Date(timestamp).toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  })
+}
+
+function attemptLabel(attempt: ProcessPhaseAttempt): string {
+  if (attempt.attempt === null) return "attempt unknown"
+  return `attempt ${attempt.attempt}${
+    attempt.maxAttempts !== null ? `/${attempt.maxAttempts}` : ""
+  }`
+}
+
+// Compact durable failure-audit disclosure. The current phase row may have
+// succeeded after a retry, so this reads process_phase_attempts instead of the
+// latest phaseRun.failure field.
+export function PhaseAttemptHistory({
+  phaseRunId,
+  refreshKey,
+  onOpenTask,
+}: {
+  phaseRunId: string
+  refreshKey?: unknown
+  onOpenTask: (taskId: string) => void
+}) {
+  const [attempts, setAttempts] = useState<ProcessPhaseAttempt[]>([])
+  const [open, setOpen] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    window.cowork.db.processes.phaseAttempts
+      .list({ phaseRunId })
+      .then((rows) => {
+        if (!cancelled) setAttempts(rows)
+      })
+      .catch(() => {
+        if (!cancelled) setAttempts([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [phaseRunId, refreshKey])
+
+  if (attempts.length === 0) return null
+
+  return (
+    <Collapsible open={open} onOpenChange={setOpen}>
+      <CollapsibleTrigger asChild>
+        <button
+          type="button"
+          className="flex w-fit items-center gap-1 rounded-md border px-2 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
+        >
+          <ChevronRight
+            className={cn("size-3.5 transition-transform", open && "rotate-90")}
+          />
+          Attempt history
+          <Badge variant="secondary" className="h-4 px-1 text-[10px]">
+            {attempts.length}
+          </Badge>
+        </button>
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        <div className="mt-2 flex flex-col gap-1.5 rounded-md border bg-muted/30 p-2">
+          {attempts.map((attempt) => {
+            const taskId = attempt.workerTaskId ?? attempt.taskId
+            return (
+              <div
+                key={attempt.id}
+                className="flex flex-col gap-1 rounded border bg-background/70 px-2 py-1.5 text-xs"
+              >
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <Badge variant="outline" className="h-5">
+                    {attemptLabel(attempt)}
+                  </Badge>
+                  <Badge variant="outline" className="h-5">
+                    {attempt.stage}
+                  </Badge>
+                  <Badge variant="outline" className="h-5">
+                    {attempt.failure.code}
+                  </Badge>
+                  <Badge
+                    variant={
+                      attempt.failure.retryable ? "secondary" : "outline"
+                    }
+                    className="h-5"
+                  >
+                    {attempt.failure.retryable ? "retryable" : "not retryable"}
+                  </Badge>
+                  <span className="text-[11px] text-muted-foreground">
+                    {formatAttemptTime(attempt.createdAt)}
+                  </span>
+                  {taskId && (
+                    <Button
+                      type="button"
+                      size="xs"
+                      variant="ghost"
+                      className="ml-auto h-6"
+                      onClick={() => onOpenTask(taskId)}
+                      title={taskId}
+                    >
+                      <FileText className="size-3" />
+                      Transcript
+                    </Button>
+                  )}
+                </div>
+                <p className="line-clamp-2 text-muted-foreground">
+                  {attempt.failure.message || attempt.error}
+                </p>
+              </div>
+            )
+          })}
+        </div>
+      </CollapsibleContent>
+    </Collapsible>
   )
 }
 
@@ -2314,20 +3409,129 @@ function PhaseRunItem({
 // run's own gated phases can render the same actionable card (plan 038.2). Request
 // changes is hidden for a container phase (backend rejects it) or at the per-phase
 // rework cap (0 = unlimited).
-function GateCard({
+function compactApprovalSummary(packet: ProcessApprovalPacket): string {
+  const changes =
+    packet.artifacts.length > 0
+      ? `Changed ${packet.artifacts.length} file${packet.artifacts.length === 1 ? "" : "s"}.`
+      : packet.summary.materialChanges[0] || "No changed files were recorded."
+  const caveat = packet.summary.caveats[0]
+  return [
+    packet.summary.outcome,
+    changes,
+    packet.summary.validationSummary,
+    caveat,
+  ]
+    .filter(Boolean)
+    .join(" ")
+}
+
+function approvalEvidenceCounts(packet: ProcessApprovalPacket): string {
+  const parts: string[] = []
+  if (packet.artifacts.length > 0)
+    parts.push(
+      `${packet.artifacts.length} file${packet.artifacts.length === 1 ? "" : "s"}`
+    )
+  if (packet.validations.length > 0) {
+    const failed = packet.validations.filter(
+      (v) => v.status === "failed"
+    ).length
+    parts.push(
+      failed > 0
+        ? `${failed} validation failed`
+        : `${packet.validations.length} validation passed`
+    )
+  }
+  if (packet.evidenceWarnings.length > 0)
+    parts.push(`${packet.evidenceWarnings.length} warning`)
+  if (parts.length === 0) parts.push("transcript available")
+  return parts.join(" · ")
+}
+
+function validatorGateCopy(name: string, packet?: ProcessApprovalPacket) {
+  const outcome = packet?.summary.outcome ?? ""
+  const unavailable = outcome.includes("could not be validated")
+  const exhausted = outcome.includes("exhausted validator review")
+  if (unavailable) {
+    return {
+      title: `“${name}” is held because the validator review is unavailable.`,
+      fallback:
+        "The phase worker completed, but the validator did not produce a usable approval. Retry the review, request changes, deny, or manually override the unavailable review.",
+    }
+  }
+  if (exhausted) {
+    return {
+      title: `“${name}” exhausted validator review rounds.`,
+      fallback:
+        "The phase worker completed, but the validator did not approve it within the configured review budget. Request changes, deny, or manually override the exhausted review.",
+    }
+  }
+  return {
+    title: `“${name}” is held for validator review.`,
+    fallback:
+      "The phase worker completed, but the validator did not provide an approval. Retry the review, request changes, deny, or manually override the validator hold.",
+  }
+}
+
+function languageForPath(path: string): string {
+  const ext = path.split(".").pop()?.toLowerCase() ?? ""
+  const map: Record<string, string> = {
+    ts: "typescript",
+    tsx: "tsx",
+    js: "javascript",
+    jsx: "jsx",
+    json: "json",
+    css: "css",
+    scss: "scss",
+    html: "html",
+    md: "markdown",
+    mdx: "mdx",
+    py: "python",
+    rb: "ruby",
+    rs: "rust",
+    go: "go",
+    java: "java",
+    kt: "kotlin",
+    swift: "swift",
+    c: "c",
+    h: "c",
+    cpp: "cpp",
+    hpp: "cpp",
+    cs: "csharp",
+    sh: "bash",
+    zsh: "bash",
+    yml: "yaml",
+    yaml: "yaml",
+    toml: "toml",
+    sql: "sql",
+  }
+  return map[ext] ?? ""
+}
+
+function renderFileTextMarkdown(path: string, content: string): string {
+  if (/\.(md|mdx)$/i.test(path)) return content
+  const lang = languageForPath(path)
+  return `\`\`\`${lang}\n${content.replace(/```/g, "``\\`")}\n\`\`\``
+}
+
+export function GateCard({
   name,
   requestId,
   phaseRunId,
+  gateKind,
   reworkRound,
   maxReworkRounds,
   isContainer,
   onApprove,
   onDeny,
   onRequestChanges,
+  onRetryReview,
+  packet,
+  onViewDetails,
 }: {
   name: string
   requestId: string
   phaseRunId: string
+  gateKind: "phase" | "validator"
   reworkRound: number
   maxReworkRounds: number
   isContainer: boolean
@@ -2338,22 +3542,62 @@ function GateCard({
     phaseRunId: string,
     feedback: string
   ) => void
+  onRetryReview: (requestId: string, phaseRunId: string) => void
+  packet?: ProcessApprovalPacket
+  onViewDetails: () => void
 }) {
   const [reworkOpen, setReworkOpen] = useState(false)
   const [reworkText, setReworkText] = useState("")
   const atReworkCap = maxReworkRounds > 0 && reworkRound >= maxReworkRounds
   const canRequestChanges = !isContainer && !atReworkCap
+  const canRetryReview = gateKind === "validator"
+  const validatorCopy =
+    gateKind === "validator" ? validatorGateCopy(name, packet) : null
+  const title =
+    gateKind === "validator"
+      ? validatorCopy!.title
+      : `“${name}” is done — approve to release its downstream phases.`
+  const summary = packet
+    ? compactApprovalSummary(packet)
+    : gateKind === "validator"
+      ? validatorCopy!.fallback
+      : "Review the worker transcript before approving this phase."
+  const approveLabel = gateKind === "validator" ? "Manual override" : "Approve"
+  const evidenceCounts = packet
+    ? approvalEvidenceCounts(packet)
+    : `${reworkRound > 0 ? `round ${reworkRound} · ` : ""}transcript available`
   return (
     <div className="flex flex-col gap-2 rounded-lg border border-amber-500/40 bg-amber-500/5 p-3 text-xs">
       <div className="flex items-center gap-2 font-medium text-amber-600 dark:text-amber-500">
         <ShieldAlert className="size-3.5 shrink-0" />
-        <span>
-          “{name}” is done — approve to release its downstream phases.
-        </span>
+        <span>{title}</span>
+      </div>
+      <p className="leading-relaxed text-foreground/85">{summary}</p>
+      <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+        <span className="min-w-0 flex-1 truncate">{evidenceCounts}</span>
+        <Button
+          size="xs"
+          variant="secondary"
+          className="shrink-0"
+          onClick={onViewDetails}
+        >
+          <FileText className="size-3" />
+          View details
+        </Button>
       </div>
       <div className="flex flex-wrap items-center gap-2">
+        {canRetryReview && (
+          <Button
+            size="xs"
+            variant="outline"
+            onClick={() => onRetryReview(requestId, phaseRunId)}
+          >
+            <RotateCcw className="size-3" />
+            Retry review
+          </Button>
+        )}
         <Button size="xs" onClick={() => onApprove(requestId, phaseRunId)}>
-          Approve <Kbd className="ml-1.5">⏎</Kbd>
+          {approveLabel} <Kbd className="ml-1.5">⏎</Kbd>
         </Button>
         <Button
           size="xs"
@@ -2372,6 +3616,12 @@ function GateCard({
           </Button>
         )}
       </div>
+      {gateKind === "validator" && (
+        <p className="text-[11px] text-muted-foreground">
+          Manual override records a human decision and releases downstream
+          phases without a validator approval.
+        </p>
+      )}
       {atReworkCap && !isContainer && (
         <p className="text-[11px] text-muted-foreground">
           Rework limit reached ({maxReworkRounds}). Approve or deny to continue.
@@ -2416,6 +3666,445 @@ function GateCard({
   )
 }
 
+function ApprovalReviewDrawer({
+  target,
+  workspacePath,
+  onOpenChange,
+  onApprove,
+  onDeny,
+  onRequestChanges,
+  onOpenTranscript,
+}: {
+  target: ApprovalReviewTarget | null
+  workspacePath: string
+  onOpenChange: (open: boolean) => void
+  onApprove: (requestId: string, phaseRunId: string) => void
+  onDeny: (requestId: string, phaseRunId: string) => void
+  onRequestChanges: (
+    requestId: string,
+    phaseRunId: string,
+    feedback: string
+  ) => void
+  onOpenTranscript: (phaseRun: ProcessPhaseRun) => void
+}) {
+  const [selectedPath, setSelectedPath] = useState<string | null>(null)
+  const [diff, setDiff] = useState<GitDiffResult | null>(null)
+  const [diffLoading, setDiffLoading] = useState(false)
+  const [fileText, setFileText] = useState<FileTextResult | null>(null)
+  const [fileTextLoading, setFileTextLoading] = useState(false)
+  const [feedbackOpen, setFeedbackOpen] = useState(false)
+  const [feedback, setFeedback] = useState("")
+
+  const artifacts = useMemo<ApprovalArtifact[]>(() => {
+    if (target?.packet?.artifacts.length) return target.packet.artifacts
+    return (target?.files ?? []).map((file) => ({
+      path: file.path,
+      name: file.baseName,
+      kind: file.kind,
+      fileType: file.fileType === "html" ? "html" : "code",
+      provenance: "workspace",
+    }))
+  }, [target?.files, target?.packet])
+
+  const selected =
+    artifacts.find((a) => a.path === selectedPath) ?? artifacts[0]
+
+  useEffect(() => {
+    setSelectedPath(artifacts[0]?.path ?? null)
+    setDiff(null)
+    setFileText(null)
+    setFeedbackOpen(false)
+    setFeedback("")
+  }, [target?.phaseRun.id, target?.requestId, artifacts])
+
+  useEffect(() => {
+    if (!selected || selected.fileType === "html" || !workspacePath) {
+      setDiff(null)
+      setDiffLoading(false)
+    } else {
+      let cancelled = false
+      setDiffLoading(true)
+      window.cowork.git
+        .diff(workspacePath, selected.path)
+        .then((res) => {
+          if (!cancelled) setDiff(res)
+        })
+        .catch(() => {
+          if (!cancelled) setDiff(null)
+        })
+        .finally(() => {
+          if (!cancelled) setDiffLoading(false)
+        })
+      return () => {
+        cancelled = true
+      }
+    }
+  }, [selected, workspacePath])
+
+  useEffect(() => {
+    if (!selected || selected.fileType === "html" || !workspacePath) {
+      setFileText(null)
+      setFileTextLoading(false)
+      return
+    }
+    const readText = window.cowork.files.readText
+    if (typeof readText !== "function") {
+      setFileText({
+        content: null,
+        truncated: false,
+        error: "File preview is unavailable until the app is restarted.",
+      })
+      setFileTextLoading(false)
+      return
+    }
+    let cancelled = false
+    setFileTextLoading(true)
+    readText(workspacePath, selected.path)
+      .then((res) => {
+        if (!cancelled) setFileText(res)
+      })
+      .catch((err) => {
+        if (!cancelled)
+          setFileText({
+            content: null,
+            truncated: false,
+            error: err instanceof Error ? err.message : String(err),
+          })
+      })
+      .finally(() => {
+        if (!cancelled) setFileTextLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [selected, workspacePath])
+
+  const packet = target?.packet
+  const requestId = target?.requestId
+  const phaseRunId = target?.phaseRun.id
+  const hasDiff = !!diff?.diff.trim()
+  const isValidatorGate = target?.gateKind === "validator"
+
+  return (
+    <Sheet open={target !== null} onOpenChange={onOpenChange}>
+      <SheetContent
+        side="right"
+        className="flex !w-[min(96vw,82rem)] !max-w-[min(96vw,82rem)] flex-col gap-0 p-0"
+      >
+        <SheetHeader className="border-b px-4 py-3">
+          <SheetTitle className="truncate">
+            {target
+              ? isValidatorGate
+                ? `Validator override review: ${target.name}`
+                : `Approval review: ${target.name}`
+              : "Approval review"}
+          </SheetTitle>
+          <SheetDescription>
+            {packet
+              ? `Round ${packet.reworkRound} · ${new Date(packet.createdAt).toLocaleString()}`
+              : "Review evidence before deciding."}
+          </SheetDescription>
+        </SheetHeader>
+
+        <div className="grid min-h-0 flex-1 grid-cols-[minmax(18rem,22rem)_minmax(0,1fr)]">
+          <ScrollArea className="border-r">
+            <div className="flex flex-col gap-4 p-4 text-sm">
+              <section className="flex flex-col gap-2">
+                <h3 className="text-xs font-semibold text-muted-foreground uppercase">
+                  Overview
+                </h3>
+                <p className="text-sm leading-relaxed">
+                  {packet
+                    ? compactApprovalSummary(packet)
+                    : isValidatorGate
+                      ? "No approval packet was attached to this validator gate. Use the transcript and current workspace files as fallback evidence before retrying or manually overriding."
+                      : "No approval packet was attached to this request. Use the transcript and current workspace files as fallback evidence."}
+                </p>
+                {isValidatorGate && (
+                  <p className="rounded-md border border-amber-500/40 bg-amber-500/5 px-2 py-1.5 text-xs text-amber-700 dark:text-amber-400">
+                    Approving this gate is recorded as a manual override of an
+                    unavailable validator review.
+                  </p>
+                )}
+                {packet?.downstream.length ? (
+                  <p className="text-xs text-muted-foreground">
+                    {isValidatorGate
+                      ? "Manual override releases "
+                      : "Approval releases "}
+                    {packet.downstream.map((d) => d.name).join(", ")}.
+                  </p>
+                ) : (
+                  <p className="text-xs text-muted-foreground">
+                    No downstream phase metadata was recorded.
+                  </p>
+                )}
+              </section>
+
+              <section className="flex flex-col gap-2">
+                <h3 className="text-xs font-semibold text-muted-foreground uppercase">
+                  Artifacts
+                </h3>
+                {artifacts.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">
+                    No file artifacts were recorded.
+                  </p>
+                ) : (
+                  artifacts.map((artifact) => (
+                    <button
+                      type="button"
+                      key={artifact.path}
+                      onClick={() => setSelectedPath(artifact.path)}
+                      className={cn(
+                        "flex items-center gap-2 rounded-md border px-2 py-1.5 text-left text-xs hover:bg-accent",
+                        selected?.path === artifact.path && "bg-accent"
+                      )}
+                    >
+                      <FileText className="size-3.5 shrink-0 text-muted-foreground" />
+                      <span className="min-w-0 flex-1 truncate">
+                        {artifact.path}
+                      </span>
+                      <Badge variant="secondary" className="text-[10px]">
+                        {artifact.provenance === "workspace"
+                          ? "workspace"
+                          : "phase"}
+                      </Badge>
+                    </button>
+                  ))
+                )}
+              </section>
+
+              <section className="flex flex-col gap-2">
+                <h3 className="text-xs font-semibold text-muted-foreground uppercase">
+                  Validation
+                </h3>
+                {packet?.validations.length ? (
+                  packet.validations.map((validation, i) => (
+                    <div
+                      key={`${validation.label}:${i}`}
+                      className="rounded-md border px-2 py-1.5 text-xs"
+                    >
+                      <div className="flex items-center gap-2">
+                        <StatusDot status={validation.status} />
+                        <span className="min-w-0 flex-1 truncate">
+                          {validation.label}
+                        </span>
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <p className="text-xs text-muted-foreground">
+                    No structured validation was recorded.
+                  </p>
+                )}
+              </section>
+
+              {packet?.evidenceWarnings.length ? (
+                <section className="flex flex-col gap-1 rounded-md border border-amber-500/40 bg-amber-500/5 p-2 text-xs text-amber-700 dark:text-amber-400">
+                  {packet.evidenceWarnings.map((warning) => (
+                    <p key={warning}>{warning}</p>
+                  ))}
+                </section>
+              ) : null}
+            </div>
+          </ScrollArea>
+
+          <div className="flex min-w-0 flex-col">
+            <ScrollArea className="min-h-0 flex-1">
+              <div className="p-4">
+                {selected ? (
+                  <div className="flex flex-col gap-3">
+                    <div className="flex items-center gap-2">
+                      <span className="min-w-0 flex-1 truncate text-sm font-medium">
+                        {selected.path}
+                      </span>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={!workspacePath}
+                        onClick={() => {
+                          if (workspacePath)
+                            void window.cowork.openInEditor(
+                              workspacePath,
+                              selected.path
+                            )
+                        }}
+                      >
+                        <FolderOpen className="size-3.5" />
+                        Open in editor
+                      </Button>
+                    </div>
+                    {selected.fileType === "html" && workspacePath ? (
+                      <iframe
+                        src={`file://${workspacePath}/${selected.path}`}
+                        title={selected.name}
+                        sandbox=""
+                        className="h-[32rem] w-full rounded-md border bg-white"
+                      />
+                    ) : diffLoading ? (
+                      <p className="text-sm text-muted-foreground">
+                        Loading diff…
+                      </p>
+                    ) : hasDiff ? (
+                      <DiffView
+                        result={diff}
+                        className="max-h-[32rem] rounded-md border"
+                      />
+                    ) : fileTextLoading ? (
+                      <p className="text-sm text-muted-foreground">
+                        Loading file…
+                      </p>
+                    ) : fileText?.content !== null &&
+                      fileText?.content !== undefined ? (
+                      <div className="max-h-[32rem] overflow-auto rounded-md border p-3">
+                        <Markdown
+                          content={renderFileTextMarkdown(
+                            selected.path,
+                            fileText.content
+                          )}
+                        />
+                        {fileText.truncated && (
+                          <p className="mt-2 text-xs text-muted-foreground">
+                            File preview truncated.
+                          </p>
+                        )}
+                      </div>
+                    ) : (
+                      <p className="rounded-md border px-3 py-2 text-sm text-muted-foreground">
+                        {fileText?.error ??
+                          "No diff or text preview available."}
+                      </p>
+                    )}
+                  </div>
+                ) : packet?.validations.length ? (
+                  <div className="flex flex-col gap-3">
+                    {packet.validations.map((validation, i) => (
+                      <div
+                        key={`${validation.label}:output:${i}`}
+                        className="rounded-md border"
+                      >
+                        <div className="flex items-center gap-2 border-b px-3 py-2 text-sm">
+                          <StatusDot status={validation.status} />
+                          <span className="font-medium">
+                            {validation.label}
+                          </span>
+                        </div>
+                        <pre className="max-h-80 overflow-auto p-3 text-xs">
+                          {validation.output || "No output recorded."}
+                        </pre>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="flex flex-col gap-2 text-sm text-muted-foreground">
+                    <p>No artifact or validation evidence is available.</p>
+                    {target?.phaseRun.taskId && (
+                      <Button
+                        variant="outline"
+                        className="w-fit"
+                        onClick={() => onOpenTranscript(target.phaseRun)}
+                      >
+                        Open transcript
+                      </Button>
+                    )}
+                  </div>
+                )}
+              </div>
+            </ScrollArea>
+
+            <div className="border-t p-3">
+              {feedbackOpen && (
+                <div className="mb-3 flex flex-col gap-2">
+                  <Textarea
+                    rows={3}
+                    value={feedback}
+                    onChange={(e) => setFeedback(e.target.value)}
+                    placeholder="What should change before this phase is approved?"
+                  />
+                  <div className="flex items-center gap-2">
+                    <Button
+                      size="sm"
+                      disabled={!requestId || !phaseRunId || !feedback.trim()}
+                      onClick={() => {
+                        if (!requestId || !phaseRunId) return
+                        onRequestChanges(requestId, phaseRunId, feedback.trim())
+                      }}
+                    >
+                      Send back
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => {
+                        setFeedback("")
+                        setFeedbackOpen(false)
+                      }}
+                    >
+                      Cancel
+                    </Button>
+                  </div>
+                </div>
+              )}
+              <div className="flex items-center gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={!requestId || !target?.canRequestChanges}
+                  onClick={() => setFeedbackOpen(true)}
+                >
+                  Request changes
+                </Button>
+                <Button
+                  size="sm"
+                  variant="destructive"
+                  disabled={!requestId || !phaseRunId}
+                  onClick={() => {
+                    if (requestId && phaseRunId) onDeny(requestId, phaseRunId)
+                  }}
+                >
+                  Deny
+                </Button>
+                <Button
+                  size="sm"
+                  className="ml-auto"
+                  disabled={!requestId || !phaseRunId}
+                  onClick={() => {
+                    if (requestId && phaseRunId)
+                      onApprove(requestId, phaseRunId)
+                  }}
+                >
+                  {isValidatorGate ? "Manual override" : "Approve"}
+                </Button>
+                {target?.phaseRun.taskId && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => onOpenTranscript(target.phaseRun)}
+                  >
+                    Transcript
+                  </Button>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      </SheetContent>
+    </Sheet>
+  )
+}
+
+function StatusDot({ status }: { status: ApprovalValidation["status"] }) {
+  return (
+    <span
+      className={cn(
+        "size-2 rounded-full",
+        status === "passed" && "bg-emerald-500",
+        status === "failed" && "bg-destructive",
+        status === "unknown" && "bg-muted-foreground"
+      )}
+    />
+  )
+}
+
 // The nested run beneath a sub-process phase-run (plan 038.1). Collapsed by
 // default; on expand it lazily fetches the child run (by parent_phase_run_id), its
 // definition graph, and its phase-runs, then renders them as a compact tree —
@@ -2430,26 +4119,32 @@ function SubProcessNestedRun({
   parentPhaseRunId,
   workspacePath,
   onOpenTranscript,
+  onOpenTask,
   refreshTick,
   depth,
   gates,
+  gateRequests,
   flagGates,
   onApprove,
   onDeny,
   onRequestChanges,
+  onRetryReview,
   onConfirmFlag,
   onDismissFlag,
+  onOpenReview,
 }: {
   parentPhaseRunId: string
   workspacePath: string
   onOpenTranscript: (phaseRun: ProcessPhaseRun) => void
+  onOpenTask: (taskId: string) => void
   // Bumped by the monitor on every live task event; re-fetches the child run's
   // rows while expanded so a running nested run's phases update live (plan 038.1).
   refreshTick: number
   depth: number
   // The shared task's gate/flag maps (keyed by phase-run id) + control callbacks,
   // threaded down so a nested run's own gates/flags are actionable (plan 038.2).
-  gates: Record<string, string>
+  gates: Record<string, GateInfo>
+  gateRequests: Record<string, ProcessGateRequest>
   flagGates: Record<string, FlagGateInfo>
   onApprove: (requestId: string, phaseRunId: string) => void
   onDeny: (requestId: string, phaseRunId: string) => void
@@ -2458,8 +4153,15 @@ function SubProcessNestedRun({
     phaseRunId: string,
     feedback: string
   ) => void
+  onRetryReview: (requestId: string, phaseRunId: string) => void
   onConfirmFlag: (requestId: string, phaseRunId: string) => void
   onDismissFlag: (requestId: string, phaseRunId: string) => void
+  onOpenReview: (
+    phaseRun: ProcessPhaseRun,
+    name: string,
+    requestId?: string,
+    files?: ChangedFile[]
+  ) => void
 }) {
   const [open, setOpen] = useState(false)
   const [graph, setGraph] = useState<ProcessGraph | null>(null)
@@ -2482,7 +4184,7 @@ function SubProcessNestedRun({
       window.cowork.db.processes.phaseRuns.list({ runId: childRun.id }),
     ])
     setGraph(g)
-    setPhaseRuns(prs)
+    setPhaseRuns(phaseRunsForDisplay(childRun, prs))
     setLoaded(true)
   }, [parentPhaseRunId])
 
@@ -2563,10 +4265,13 @@ function SubProcessNestedRun({
             // A gate on this nested phase surfaces via the shared task's approvals
             // (plan 038.2). An approve-gated phase stays `completed` in the DB, so
             // override the displayed status to read as awaiting (as PhaseRunItem does).
-            const gateRequestId = gates[pr.id]
-            const displayStatus = gateRequestId
-              ? "waiting_for_approval"
-              : pr.status
+            const gateInfo = gates[pr.id]
+            const displayStatus = gateInfo ? "waiting_for_approval" : pr.status
+            const runName = agentRunTitle(
+              pr.title,
+              phaseName(pr.phaseId),
+              pr.agentName
+            )
             return (
               <div key={pr.id} className="flex flex-col gap-0.5">
                 <div
@@ -2578,38 +4283,40 @@ function SubProcessNestedRun({
                   title={pr.taskId ? "View this phase's transcript" : undefined}
                 >
                   <StatusIcon status={displayStatus} />
-                  <span className="min-w-0 flex-1 truncate">
-                    {pr.title ?? phaseName(pr.phaseId)}
-                  </span>
-                  {pr.agentName && (
-                    <Badge
-                      variant="outline"
-                      className="shrink-0 font-mono text-[10px]"
-                    >
-                      {pr.agentName}
-                    </Badge>
-                  )}
+                  <span className="min-w-0 flex-1 truncate">{runName}</span>
+                  {pr.agentName && <AgentIdentityBadge value={pr.agentName} />}
                   <PhaseStatusLabel status={displayStatus} />
                 </div>
                 {/* An approve gate raised inside this nested run (plan 038.2). */}
-                {gateRequestId && (
+                {gateInfo && (
                   <GateCard
-                    name={pr.title ?? phaseName(pr.phaseId)}
-                    requestId={gateRequestId}
+                    name={runName}
+                    requestId={gateInfo.requestId}
                     phaseRunId={pr.id}
+                    gateKind={gateInfo.gateKind}
                     reworkRound={pr.reworkRound}
                     maxReworkRounds={maxRework(pr.phaseId)}
                     isContainer={isContainer(pr.phaseId)}
                     onApprove={onApprove}
                     onDeny={onDeny}
                     onRequestChanges={onRequestChanges}
+                    onRetryReview={onRetryReview}
+                    packet={gateRequests[gateInfo.requestId]?.approvalPacket}
+                    onViewDetails={() =>
+                      onOpenReview(pr, runName, gateInfo.requestId)
+                    }
                   />
                 )}
+                <PhaseAttemptHistory
+                  phaseRunId={pr.id}
+                  refreshKey={refreshTick}
+                  onOpenTask={onOpenTask}
+                />
                 {/* A cross-phase rework flag this nested phase raised (plan 038.2). */}
                 {flagGates[pr.id] && (
                   <FlagCard
                     flagGate={flagGates[pr.id]}
-                    flaggerName={pr.title ?? phaseName(pr.phaseId)}
+                    flaggerName={runName}
                     onConfirm={() =>
                       onConfirmFlag(flagGates[pr.id].requestId, pr.id)
                     }
@@ -2629,8 +4336,15 @@ function SubProcessNestedRun({
                     >
                       <StatusIcon status={c.status} />
                       <span className="min-w-0 flex-1 truncate">
-                        {c.title ?? `${phaseName(c.phaseId)} #${i + 1}`}
+                        {agentRunTitle(
+                          c.title,
+                          `${phaseName(c.phaseId)} #${i + 1}`,
+                          c.agentName
+                        )}
                       </span>
+                      {c.agentName && (
+                        <AgentIdentityBadge value={c.agentName} />
+                      )}
                       <PhaseStatusLabel status={c.status} />
                     </div>
                     {/* A per-child rework flag a nested on_each_subtask instance
@@ -2639,7 +4353,11 @@ function SubProcessNestedRun({
                       <div className="ml-3">
                         <FlagCard
                           flagGate={flagGates[c.id]}
-                          flaggerName={c.title ?? phaseName(c.phaseId)}
+                          flaggerName={agentRunTitle(
+                            c.title,
+                            phaseName(c.phaseId),
+                            c.agentName
+                          )}
                           onConfirm={() =>
                             onConfirmFlag(flagGates[c.id].requestId, c.id)
                           }
@@ -2649,6 +4367,13 @@ function SubProcessNestedRun({
                         />
                       </div>
                     )}
+                    <div className="ml-3">
+                      <PhaseAttemptHistory
+                        phaseRunId={c.id}
+                        refreshKey={refreshTick}
+                        onOpenTask={onOpenTask}
+                      />
+                    </div>
                     {/* A combined fan-out + sub-process phase inside the nested run
                         (plan 038.3): each child dispatched its own sub-process. */}
                     {isSubProcess(pr.phaseId) &&
@@ -2659,15 +4384,19 @@ function SubProcessNestedRun({
                             parentPhaseRunId={c.id}
                             workspacePath={workspacePath}
                             onOpenTranscript={onOpenTranscript}
+                            onOpenTask={onOpenTask}
                             refreshTick={refreshTick}
                             depth={depth + 1}
                             gates={gates}
+                            gateRequests={gateRequests}
                             flagGates={flagGates}
                             onApprove={onApprove}
                             onDeny={onDeny}
                             onRequestChanges={onRequestChanges}
+                            onRetryReview={onRetryReview}
                             onConfirmFlag={onConfirmFlag}
                             onDismissFlag={onDismissFlag}
+                            onOpenReview={onOpenReview}
                           />
                         </div>
                       )}
@@ -2682,15 +4411,19 @@ function SubProcessNestedRun({
                       parentPhaseRunId={pr.id}
                       workspacePath={workspacePath}
                       onOpenTranscript={onOpenTranscript}
+                      onOpenTask={onOpenTask}
                       refreshTick={refreshTick}
                       depth={depth + 1}
                       gates={gates}
+                      gateRequests={gateRequests}
                       flagGates={flagGates}
                       onApprove={onApprove}
                       onDeny={onDeny}
                       onRequestChanges={onRequestChanges}
+                      onRetryReview={onRetryReview}
                       onConfirmFlag={onConfirmFlag}
                       onDismissFlag={onDismissFlag}
+                      onOpenReview={onOpenReview}
                     />
                   )}
               </div>
@@ -2758,14 +4491,22 @@ function FlagCard({
 function NewRunModal({
   open,
   onOpenChange,
+  providerModels,
   onRun,
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
-  onRun: (objective: string, workspacePath: string) => Promise<void>
+  providerModels: AccountWithModels[]
+  onRun: (
+    objective: string,
+    workspacePath: string,
+    runtimeConfig: ProcessRuntimeConfig | null
+  ) => Promise<void>
 }) {
   const [objective, setObjective] = useState("")
   const [folder, setFolder] = useState("")
+  const [runtimeConfig, setRuntimeConfig] =
+    useState<ProcessRuntimeConfig | null>(null)
   const [starting, setStarting] = useState(false)
 
   // Reset the form whenever the modal opens, so a reopen starts clean.
@@ -2773,6 +4514,7 @@ function NewRunModal({
     if (open) {
       setObjective("")
       setFolder("")
+      setRuntimeConfig(null)
       setStarting(false)
     }
   }, [open])
@@ -2786,7 +4528,7 @@ function NewRunModal({
     if (!folder.trim()) return
     setStarting(true)
     try {
-      await onRun(objective, folder)
+      await onRun(objective, folder, runtimeConfig)
     } catch (err) {
       toast.error(`Could not start run: ${err}`)
       setStarting(false)
@@ -2860,6 +4602,23 @@ function NewRunModal({
               </Button>
             )}
           </div>
+          {providerModels.length > 0 && (
+            <div className="flex flex-col gap-1.5">
+              <RuntimePicker
+                label="Default model for this run"
+                providers={providerModels}
+                value={runtimeConfig?.worker}
+                onChange={(selection) =>
+                  setRuntimeConfig(
+                    nextRuntimeConfig(runtimeConfig, "worker", selection)
+                  )
+                }
+              />
+              <span className="text-xs text-muted-foreground">
+                Phase runtime overrides still win over this run default.
+              </span>
+            </div>
+          )}
         </div>
         <DialogFooter>
           <Button
@@ -2891,16 +4650,22 @@ function NewRunModal({
 // A FLAG gate (plan 031.2, gateKind "flag") is EXCLUDED — it's rendered by the
 // separate flagGates map / card, not the generic approve card, so it must not
 // land here (else a flagging phase would show both cards).
-function foldGate(
-  gates: Record<string, string>,
+export function foldGate(
+  gates: Record<string, GateInfo>,
   ev: Extract<TaskEventPayload, { type: "process_phase" }>
-): Record<string, string> {
+): Record<string, GateInfo> {
   if (
     ev.status === "waiting_for_approval" &&
     ev.requestId &&
     ev.gateKind !== "flag"
   ) {
-    return { ...gates, [ev.phaseRunId]: ev.requestId }
+    return {
+      ...gates,
+      [ev.phaseRunId]: {
+        requestId: ev.requestId,
+        gateKind: ev.gateKind === "validator" ? "validator" : "phase",
+      },
+    }
   }
   if (gates[ev.phaseRunId]) {
     const next = { ...gates }
@@ -2912,12 +4677,44 @@ function foldGate(
 
 // Rebuild the whole gate map from a replayed event stream (newest wins per
 // phase). Used to recover pending gates after the monitor (re)mounts.
-function deriveGates(events: TaskEventPayload[]): Record<string, string> {
-  let gates: Record<string, string> = {}
+export function deriveGates(
+  events: TaskEventPayload[]
+): Record<string, GateInfo> {
+  let gates: Record<string, GateInfo> = {}
   for (const ev of events) {
     if (ev.type === "process_phase") gates = foldGate(gates, ev)
   }
   return gates
+}
+
+export function recoverProcessMonitorGates(input: {
+  events: TaskEventPayload[]
+  approvals: Approval[]
+}): {
+  gates: Record<string, GateInfo>
+  flagGates: Record<string, FlagGateInfo>
+  requests: Record<string, ProcessGateRequest>
+} {
+  const gates = deriveGates(input.events)
+  const flagGates: Record<string, FlagGateInfo> = {}
+  const requests: Record<string, ProcessGateRequest> = {}
+  for (const approval of input.approvals) {
+    const req = approval.request as ProcessGateRequest | null
+    if (req?.requestId) requests[req.requestId] = req
+    if (approval.status === "pending") {
+      if (req?.kind === "process_flag_gate") {
+        flagGates[req.phaseRunId] = {
+          requestId: req.requestId,
+          targetKey: req.flagTargetKey ?? "",
+          reason: req.flagReason ?? "",
+        }
+      }
+      continue
+    }
+    if (req && gates[req.phaseRunId]?.requestId === req.requestId)
+      delete gates[req.phaseRunId]
+  }
+  return { gates, flagGates, requests }
 }
 
 function runLabel(run: ProcessRun): string {

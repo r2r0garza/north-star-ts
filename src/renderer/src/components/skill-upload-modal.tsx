@@ -7,10 +7,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { Label } from "@/components/ui/label"
-import {
-  NativeSelect,
-  NativeSelectOption,
-} from "@/components/ui/native-select"
+import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select"
 import { toast } from "sonner"
 
 // The upload modal for importing a skill: a dashed drop zone that is both
@@ -128,9 +125,7 @@ export function SkillUploadModal({
         >
           <FolderPlus className="size-7 text-muted-foreground" />
           <span className="text-sm text-muted-foreground">
-            {importing
-              ? "Importing…"
-              : "Drag and drop or click to upload"}
+            {importing ? "Importing…" : "Drag and drop or click to upload"}
           </span>
         </button>
 
@@ -155,8 +150,8 @@ export function SkillUploadModal({
           <p className="font-medium">File requirements</p>
           <ul className="list-disc space-y-1 pl-5 text-xs text-muted-foreground">
             <li>
-              <span className="font-mono">.md</span> file must contain skill name
-              and description formatted in YAML
+              <span className="font-mono">.md</span> file must contain skill
+              name and description formatted in YAML
             </li>
             <li>
               <span className="font-mono">.zip</span> file must include a{" "}

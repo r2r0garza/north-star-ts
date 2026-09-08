@@ -107,6 +107,14 @@ export function writeSidebarMode(mode: SidebarMode): void {
   writeCookie(MODE_COOKIE_NAME, mode)
 }
 
+// The Shell uses this to keep its drag-bar controls clear of an open panel before
+// the panel mounts and reports width changes from a browser/Changes resize.
+export function readActivityPanelWidth(mode: SidebarMode): number {
+  return mode === "browser" || mode === "changes"
+    ? readBrowserWidth()
+    : 18 * 16
+}
+
 function readBrowserWidth(): number {
   const raw = Number(readCookie(BROWSER_WIDTH_COOKIE_NAME))
   if (Number.isFinite(raw) && raw >= BROWSER_MIN_WIDTH) return raw
@@ -160,21 +168,21 @@ export function SidebarModeToggle({
   mode,
   onModeChange,
   showModeSelect = true,
-  reserveWindowControls = false,
+  rightOffset,
 }: {
   mode: SidebarMode
   onModeChange: (mode: SidebarMode) => void
   // Hide the Info/Browser/Changes mode dropdown (it's conversation-specific)
   // while keeping the theme toggle, e.g. on the Skills/Agents/Processes overlays.
   showModeSelect?: boolean
-  reserveWindowControls?: boolean
+  // Distance from the window's right edge. The Shell grows this by the open
+  // panel's width, keeping the controls in the main content area.
+  rightOffset: number
 }) {
   return (
     <div
-      className={cn(
-        "absolute top-2 z-10 flex items-center gap-1 [-webkit-app-region:no-drag]",
-        reserveWindowControls ? "right-[11.25rem]" : "right-14"
-      )}
+      className="absolute top-2 z-10 flex items-center gap-1 transition-[right] duration-200 ease-linear [-webkit-app-region:no-drag]"
+      style={{ right: rightOffset }}
     >
       <ThemeToggle />
       {showModeSelect && (
@@ -439,6 +447,7 @@ export function ActivityPanel({
   onHistoryExpandedChange,
   onRanInBackground,
   onBrowserPoppedOutChange,
+  onWidthChange,
 }: {
   conversationId: string | null
   // Controlled open state (the Shell owns it so the toggle can live in the drag
@@ -474,6 +483,9 @@ export function ActivityPanel({
   // Called when the browser pops out to / docks back from its own window, so the
   // Shell can collapse the panel on pop-out (and re-open on dock).
   onBrowserPoppedOutChange?: (poppedOut: boolean) => void
+  // Reports the current rendered panel width so the Shell can position controls
+  // beside rather than over an open panel.
+  onWidthChange?: (width: number) => void
 }) {
   const [browserWidth, setBrowserWidth] = React.useState(readBrowserWidth)
 
@@ -527,6 +539,10 @@ export function ActivityPanel({
         ? "Changes"
         : "Workspace Activity"
   const titleBelowChrome = reserveWindowControls && mode === "info"
+
+  React.useEffect(() => {
+    onWidthChange?.(open ? (wideMode ? browserWidth : 18 * 16) : 0)
+  }, [browserWidth, onWidthChange, open, wideMode])
 
   return (
     // Layout gap that the main content flexes against (width animates to 0 when

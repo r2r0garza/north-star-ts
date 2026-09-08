@@ -3,22 +3,58 @@ import type { AgentDefinition } from "./types"
 // Maps the friendly tool CATEGORIES an agent declares in its `tools` frontmatter
 // to the internal tool `function.name` values the agent loop offers. A custom
 // agent narrows its toolset by category; this is where a category expands.
-const CATEGORY_TOOLS: Record<string, string[]> = {
+export const CATEGORY_TOOLS: Record<string, string[]> = {
   read: ["read_file_tool", "list_files_tool"],
+  document_read: ["read_document"],
   search: ["search_tool", "index_query_tool"],
+  recall: ["conversation_search", "conversation_read"],
+  tree_recall: ["conversation_tree_search"],
+  navigation: [
+    "workspace_symbols",
+    "document_symbols",
+    "go_to_definition",
+    "find_references",
+    "hover_type",
+  ],
+  lsp: [
+    "workspace_symbols",
+    "document_symbols",
+    "go_to_definition",
+    "find_references",
+    "hover_type",
+  ],
   edit: ["edit_file_tool", "write_file_tool", "apply_patch_tool"],
-  execute: ["exec_command", "write_stdin", "poll_command", "terminate_command"],
+  filesystem: ["stat_path", "create_directory", "move_path"],
+  delete: ["delete_path"],
+  git_read: ["git_status", "git_diff", "git_log", "git_show", "git_branches"],
+  execute: [
+    "exec_command",
+    "write_stdin",
+    "poll_command",
+    "wait_for_events",
+    "terminate_command",
+  ],
+  diagnostics: ["workspace_diagnostics"],
+  test: ["run_tests", "get_test_results"],
   web: ["web_search", "web_fetch"],
   browser: [
     "browser_navigate",
     "browser_snapshot",
     "browser_screenshot",
     "browser_click",
+    "browser_hover",
+    "browser_drag",
     "browser_type",
+    "browser_select_option",
+    "browser_wait",
+    "browser_console",
+    "browser_network",
+    "browser_handle_dialog",
     "browser_back",
     "browser_close",
     "browser_handoff",
   ],
+  browser_advanced: ["browser_evaluate"],
   todo: ["todo_write", "run_todos_in_background"],
   // `dashboard` → the live-dashboard authoring tool (plan 033.2). Offered in
   // interactive modes (buildTools gates it on showTodos); this mapping lets a

@@ -49,3 +49,8 @@ utf8-test.txt
 verify-a.txt
 verify-moved.txt
 verify-new.txt
+
+.playwright-mcp/
+
+workspace-test.txt
+.cowork/.tmp/

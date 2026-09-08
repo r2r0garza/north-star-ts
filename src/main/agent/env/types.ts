@@ -45,6 +45,10 @@ export interface ExecOptions {
   signal?: AbortSignal
 }
 
+export interface ExecFileOptions extends ExecOptions {
+  env?: Record<string, string | undefined>
+}
+
 export type CommandStream = "stdout" | "stderr" | "pty"
 
 export interface CommandChunk {
@@ -117,11 +121,13 @@ export interface StatInfo {
   // Permission bits only; callers must not infer ownership, ACLs, or platform
   // flags from this value.
   mode?: number
+  mtimeMs?: number
   isFile(): boolean
   isDirectory(): boolean
 }
 
 export interface ReadTextLinesOptions {
+  signal?: AbortSignal
   // 1-based line number to start at.
   offset: number
   // Maximum complete lines to return.
@@ -227,13 +233,24 @@ export interface Environment {
   // Atomically install an already-written file at `to`, failing if `to` exists.
   // The source file remains for caller-owned cleanup.
   installFileNoReplace?(from: string, to: string): Promise<void>
+  renameNoReplace?(from: string, to: string): Promise<void>
   removeFile(path: string): Promise<void>
+  removeDirectory?(path: string, opts?: { recursive?: boolean }): Promise<void>
+  mkdir?(path: string): Promise<void>
   mkdirp(path: string): Promise<void>
   stat(path: string): Promise<StatInfo>
   readdir(path: string): Promise<DirEntry[]>
   listDir?(path: string, opts: ListDirOptions): Promise<ListDirResult>
 
   exec(command: string, opts: ExecOptions): Promise<ExecResult>
+
+  // Run a program with argv data, never through a shell. Tools use this when
+  // model-supplied strings must remain ordinary arguments.
+  execFile?(
+    file: string,
+    args: string[],
+    opts: ExecFileOptions
+  ): Promise<ExecResult>
 
   // Spawn a command session that can be polled and written to. Implementations
   // return immediately with a live handle; the agent session manager owns output

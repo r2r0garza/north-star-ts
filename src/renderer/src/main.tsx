@@ -11,6 +11,7 @@ import {
   ActivityToggle,
   SidebarModeToggle,
   readActivityOpen,
+  readActivityPanelWidth,
   writeActivityOpen,
   readSidebarMode,
   writeSidebarMode,
@@ -22,6 +23,7 @@ import { AgentsScreen } from "@/components/agents-screen"
 import { McpScreen } from "@/components/mcp-screen"
 import { ProcessScreen } from "@/components/process-screen"
 import { DashboardsScreen } from "@/components/dashboards-screen"
+import { StartupGuideDialog } from "@/components/startup-guide-dialog"
 import { TaskTranscriptSheet } from "@/components/task-transcript-sheet"
 import { TaskCompletionToasts } from "@/components/task-completion-toasts"
 import {
@@ -36,6 +38,12 @@ import { maybeNotify, refreshNotificationSettings } from "@/lib/notify"
 import { applyThemeCss } from "@/lib/theme"
 import { cn } from "@/lib/utils"
 import App, { type AppHandle } from "./App"
+
+const DEFAULT_MODE_TO_VIEW = {
+  chat: "Chat",
+  interactive: "Interactive",
+  north_star: "North Star",
+} as const satisfies Record<string, View>
 
 // Deterministic infrastructure task kinds that repaint their own UI in place and
 // run automatically (on open / poll), so a completion OS-notification would just
@@ -91,6 +99,7 @@ function Shell() {
   // in-panel destination in the center region; authors/views live dashboards
   // (plan 033). Mutually exclusive with the other footer overlays.
   const [dashboardsOpen, setDashboardsOpen] = useState(false)
+  const [startupGuideOpen, setStartupGuideOpen] = useState(false)
   // Which tab Settings opens on. First launch (no provider configured) opens
   // straight to Providers so the user can set one up.
   const [settingsTab, setSettingsTab] = useState("backend")
@@ -99,14 +108,35 @@ function Shell() {
   // elements that merely overlap it) and "Run in background" can reveal it when
   // a task starts. Seeded from — and persisted back to — the panel's cookie.
   const [activityOpen, setActivityOpen] = useState(readActivityOpen)
+  const [activityPanelWidth, setActivityPanelWidth] = useState(() =>
+    readActivityOpen() ? readActivityPanelWidth(readSidebarMode()) : 0
+  )
   const [terminalOpenByConversation, setTerminalOpenByConversation] = useState<
     Record<string, boolean>
   >({})
+  const [freshTerminalConversationId, setFreshTerminalConversationId] =
+    useState(() => crypto.randomUUID())
+  const [adoptedTerminalConversation, setAdoptedTerminalConversation] =
+    useState<{ from: string; to: string } | null>(null)
   const appRef = useRef<AppHandle | null>(null)
   const setActivity = (open: boolean) => {
     setActivityOpen(open)
     writeActivityOpen(open)
   }
+  const closeFreshTerminalSessions = useCallback((conversationId: string) => {
+    void window.cowork.terminal
+      .list()
+      .then((sessions) =>
+        Promise.all(
+          sessions
+            .filter((session) => session.conversationId === conversationId)
+            .map((session) => window.cowork.terminal.kill(session.id))
+        )
+      )
+      .catch((err) => {
+        console.warn("[terminal] failed to close fresh sessions:", err)
+      })
+  }, [])
   // Which content the right panel shows: "info" (Workspace Activity), "browser"
   // (the agent's live browser), or "changes" (the changed-file review). Global
   // (one choice for the whole app), persisted to a cookie like the open state.
@@ -119,24 +149,26 @@ function Shell() {
   // The active conversation's workspace root, reported up from App. Needed by the
   // sidebar's Changes review (git diffs + file:// previews) and browser opens.
   const [workspacePath, setWorkspacePath] = useState("")
+  const terminalConversationId =
+    activeConversationId ?? freshTerminalConversationId
   const terminalAvailable =
     view !== "Chat" &&
-    activeConversationId !== null &&
+    terminalConversationId !== "" &&
     workspacePath.trim() !== ""
   const terminalOpen =
-    terminalAvailable && activeConversationId
-      ? (terminalOpenByConversation[activeConversationId] ?? false)
+    terminalAvailable && terminalConversationId
+      ? (terminalOpenByConversation[terminalConversationId] ?? false)
       : false
   const setTerminalOpenForActive = useCallback(
     (open: boolean | ((open: boolean) => boolean)) => {
-      if (!activeConversationId) return
+      if (!terminalConversationId) return
       setTerminalOpenByConversation((state) => {
-        const current = state[activeConversationId] ?? false
+        const current = state[terminalConversationId] ?? false
         const next = typeof open === "function" ? open(current) : open
-        return { ...state, [activeConversationId]: next }
+        return { ...state, [terminalConversationId]: next }
       })
     },
-    [activeConversationId]
+    [terminalConversationId]
   )
   const toggleTerminal = useCallback(() => {
     if (!terminalAvailable) return
@@ -182,6 +214,19 @@ function Shell() {
   const handleBrowserPoppedOutChange = (poppedOut: boolean) => {
     setActivity(!poppedOut)
   }
+  // Keep theme + panel-mode controls immediately to the left of Terminal when the
+  // right panel is closed. When it opens, only that group moves left by the
+  // panel's width so it remains in the main content area; Terminal and the
+  // panel's own visibility control stay attached to the window edge.
+  const rightControlOffset = reserveWindowControls ? 140 : 16
+  const terminalRightOffset = rightControlOffset + 32
+  // Once the panel is open, the mode controls sit just outside its left edge;
+  // Terminal and the panel toggle remain within the panel's header area.
+  const modeRightOffset = activityPanelWidth
+    ? activityPanelWidth + 8
+    : terminalAvailable
+      ? terminalRightOffset + 30
+      : rightControlOffset + 32
 
   useTerminalShortcut(terminalAvailable, toggleTerminal)
 
@@ -190,10 +235,42 @@ function Shell() {
     return window.cowork.onFullScreenChange(setFullscreen)
   }, [])
 
+  useEffect(() => {
+    let cancelled = false
+    window.cowork.settings
+      .getConversations()
+      .then((settings) => {
+        if (!cancelled) setView(DEFAULT_MODE_TO_VIEW[settings.defaultMode])
+      })
+      .catch((err) => {
+        console.warn("[settings] failed to load conversation settings:", err)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
   // Brand the window title from the customizable system name (NEXT_system_name),
   // overriding the static "Cowork" baked into index.html.
   useEffect(() => {
     document.title = window.cowork.system().displayName
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    window.cowork.settings
+      .getOnboarding()
+      .then((settings) => {
+        if (!cancelled && !settings.hideStartupGuide) {
+          setStartupGuideOpen(true)
+        }
+      })
+      .catch((err) => {
+        console.warn("[settings] failed to load onboarding settings:", err)
+      })
+    return () => {
+      cancelled = true
+    }
   }, [])
 
   // Tell the agent browser which conversation is active, so it shows that
@@ -307,9 +384,13 @@ function Shell() {
   // Switching views starts a fresh conversation for that view (the sidebar
   // shows prior ones to reopen).
   function handleViewChange(next: View) {
+    if (!activeConversationId) {
+      closeFreshTerminalSessions(freshTerminalConversationId)
+    }
     setView(next)
     setActiveConversationId(null)
     setPendingProjectId(null)
+    setFreshTerminalConversationId(crypto.randomUUID())
     setAgentsOpen(false)
     setSkillsOpen(false)
     setProcessOpen(false)
@@ -321,6 +402,9 @@ function Shell() {
   // pending project is only for uncreated conversations; clear it (App reads the
   // stored conversation's own project).
   function handleSelectConversation(id: string, mode: Mode) {
+    if (!activeConversationId) {
+      closeFreshTerminalSessions(freshTerminalConversationId)
+    }
     setView(MODE_TO_VIEW[mode])
     setActiveConversationId(id)
     setPendingProjectId(null)
@@ -334,8 +418,12 @@ function Shell() {
   // Start a fresh conversation, optionally in a project (its directory is
   // auto-adopted for workspace views).
   function handleNewConversation(projectId: string | null = null) {
+    if (!activeConversationId) {
+      closeFreshTerminalSessions(freshTerminalConversationId)
+    }
     setActiveConversationId(null)
     setPendingProjectId(projectId)
+    setFreshTerminalConversationId(crypto.randomUUID())
     setAgentsOpen(false)
     setSkillsOpen(false)
     setProcessOpen(false)
@@ -348,6 +436,16 @@ function Shell() {
   function handleConversationDeleted(id: string) {
     if (id === activeConversationId) setActiveConversationId(null)
     refreshConversations()
+  }
+
+  function dismissStartupGuide(dontShowAgain: boolean) {
+    setStartupGuideOpen(false)
+    if (!dontShowAgain) return
+    void window.cowork.settings
+      .setOnboarding({ hideStartupGuide: true })
+      .catch((err) => {
+        console.warn("[settings] failed to save onboarding settings:", err)
+      })
   }
 
   return (
@@ -372,7 +470,7 @@ function Shell() {
               dashboardsOpen
             )
           }
-          reserveWindowControls={reserveWindowControls}
+          rightOffset={modeRightOffset}
         />
         {terminalAvailable &&
           !(
@@ -385,7 +483,7 @@ function Shell() {
             <TerminalToggle
               open={terminalOpen}
               onToggle={toggleTerminal}
-              reserveWindowControls={reserveWindowControls}
+              rightOffset={terminalRightOffset}
             />
           )}
         {!(
@@ -471,7 +569,17 @@ function Shell() {
             conversationId={activeConversationId}
             pendingProjectId={pendingProjectId}
             onConversationCreated={(id) => {
+              const pendingId = freshTerminalConversationId
+              void window.cowork.terminal.adoptConversation(pendingId, id)
+              setAdoptedTerminalConversation({ from: pendingId, to: id })
               setActiveConversationId(id)
+              setTerminalOpenByConversation((state) => {
+                if (!(pendingId in state)) return state
+                const next = { ...state, [id]: state[pendingId] }
+                delete next[pendingId]
+                return next
+              })
+              setFreshTerminalConversationId(crypto.randomUUID())
               refreshConversations()
             }}
             onConversationChanged={refreshConversations}
@@ -495,8 +603,11 @@ function Shell() {
         )}
         <TerminalDrawer
           open={terminalAvailable && terminalOpen}
-          conversationId={activeConversationId}
+          conversationId={terminalConversationId}
           workspace={workspacePath}
+          replaceSessionsOnWorkspaceChange={activeConversationId === null}
+          adoptedConversation={adoptedTerminalConversation}
+          onAdoptionApplied={() => setAdoptedTerminalConversation(null)}
           onOpenChange={setTerminalOpenForActive}
           onAddSelectionToMessage={(text) =>
             appRef.current?.appendTerminalSelection(text)
@@ -508,7 +619,9 @@ function Shell() {
         open={activityOpen}
         mode={sidebarMode}
         reserveWindowControls={reserveWindowControls}
-        browserObscured={settingsOpen || viewingTask !== null}
+        browserObscured={
+          settingsOpen || startupGuideOpen || viewingTask !== null
+        }
         workspace={workspacePath}
         changedFiles={reviewFiles}
         onOpenHtml={openHtmlInBrowser}
@@ -518,12 +631,18 @@ function Shell() {
         onHistoryExpandedChange={setHistoryExpanded}
         onRanInBackground={() => setActivity(true)}
         onBrowserPoppedOutChange={handleBrowserPoppedOutChange}
+        onWidthChange={setActivityPanelWidth}
       />
       <TaskCompletionToasts
         conversationId={activeConversationId}
         onReveal={revealHistory}
       />
       <Toaster />
+      <StartupGuideDialog
+        agentName={window.cowork.system().mainAgentName}
+        open={startupGuideOpen}
+        onDismiss={dismissStartupGuide}
+      />
       <TaskTranscriptSheet
         task={viewingTask}
         open={viewingTask !== null}

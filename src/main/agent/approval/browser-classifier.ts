@@ -18,7 +18,10 @@ import type { ActionClassifier, ActionDecision, ToolAction } from "./types"
 // The set of browser tools that are still treated as reversible page/session
 // controls. Anything else with kind "browser" is treated as navigation.
 const INTERACTION_TOOLS = new Set([
+  "browser_hover",
+  "browser_drag",
   "browser_type",
+  "browser_wait",
   "browser_back",
   "browser_close",
   "browser_handoff",
@@ -29,11 +32,18 @@ export class BrowserActionClassifier implements ActionClassifier {
     if (action.kind !== "browser") return null
     if (
       action.tool === "browser_click" ||
+      action.tool === "browser_select_option" ||
       action.detail?.interactionKind === "consequential_commit"
     ) {
       return {
-        level: "require_approval",
+        level: "require_explicit_approval",
         reason: "Browser action may commit an external change",
+      }
+    }
+    if (action.tool === "browser_evaluate") {
+      return {
+        level: "require_explicit_approval",
+        reason: "Browser evaluation can read or change page state",
       }
     }
     if (INTERACTION_TOOLS.has(action.tool)) {

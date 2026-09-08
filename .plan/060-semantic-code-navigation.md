@@ -1,8 +1,8 @@
 # PR60: Semantic code navigation tools
 
-> Status: **NOT STARTED**. Adds precise definitions, references, symbols, hover/type
-> information, and language-service diagnostics. Regex search remains available but is
-> never presented as semantic analysis.
+> Status: **DONE**. Implemented by `803f4c1` with TypeScript/JavaScript semantic
+> symbols, definitions, references, hover/type information, semantic diagnostics, and
+> capability mappings.
 
 ## Context
 
@@ -86,4 +86,3 @@ own trust, availability, timeout, and cleanup design.
 - Rename, code actions, refactors, formatting, or applying compiler fixes.
 - Pretending text matches are semantic references.
 - Installing language servers automatically.
-

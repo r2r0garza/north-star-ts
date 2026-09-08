@@ -56,6 +56,11 @@ selection has to fork the pipeline much earlier than `buildClient`:
   spawn with the right flags + `cwd`, feed the user message, stream stdout back, persist the turn. This
   also means our per-conversation **agent selection, skills/tools overrides, and model-context features
   do not apply** to a CLI conversation — the UI should reflect that (hide/disable those controls).
+  **Qualified by `045`:** the "CLI owns its loop" rule stands unchanged — a CLI turn still never enters
+  `runAgentLoop` and never inherits its tool/context registry. What it *does* get is the small set of
+  North Star tools explicitly granted for that one turn over the loopback MCP bridge (`045.2` ships
+  `ask_user_question`). Those arrive as ordinary MCP tools the CLI chose to call, authorized by a
+  per-turn bearer grant, not as our internal tool registry.
 - **Always "auto" — there is no interactive posture.** A non-interactive subprocess has **no TTY**, so
   the CLI physically cannot render an approval prompt. Every CLI turn therefore runs in **auto/allow
   mode by construction** (`claude --permission-mode`+`--allowedTools`, `copilot --allow-all-tools`

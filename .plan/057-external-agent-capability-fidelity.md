@@ -1,8 +1,8 @@
 # PR57: External agent capability fidelity and compatibility diagnostics
 
-> Status: **NOT STARTED**. Depends on `056`'s source-specific parsers and stable
-> references. This is the enforcement boundary: an external definition may narrow
-> North Star's runtime, but can never widen it.
+> Status: **DONE**. Implemented by `05af95e` with source-specific capability
+> policies, exact tool-category mapping, MCP filtering, no automatic external-agent
+> read floor, and compatibility diagnostics.
 
 ## Context
 

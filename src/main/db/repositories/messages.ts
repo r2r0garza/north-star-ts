@@ -119,6 +119,15 @@ export function listMessages(conversationId: string): Message[] {
   return rows.map(toMessage)
 }
 
+export function getMaxMessageSeq(conversationId: string): number {
+  const row = getDb()
+    .prepare(
+      "SELECT COALESCE(MAX(seq), 0) AS maxSeq FROM messages WHERE conversation_id = ?"
+    )
+    .get(conversationId) as { maxSeq: number }
+  return row.maxSeq
+}
+
 export function deleteMessage(id: string): void {
   getDb().prepare("DELETE FROM messages WHERE id = ?").run(id)
 }

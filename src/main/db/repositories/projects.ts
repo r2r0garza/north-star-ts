@@ -6,6 +6,7 @@ interface ProjectRow {
   id: string
   name: string
   workspace_id: string | null
+  position: number
   created_at: number
   updated_at: number
 }
@@ -15,6 +16,7 @@ function toProject(row: ProjectRow): Project {
     id: row.id,
     name: row.name,
     workspaceId: row.workspace_id,
+    position: row.position,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   }
@@ -26,24 +28,30 @@ export function createProject(input: {
 }): Project {
   const id = randomUUID()
   const now = Date.now()
+  const nextPosition =
+    ((
+      getDb()
+        .prepare("SELECT MIN(position) AS position FROM projects")
+        .get() as { position: number | null }
+    ).position ?? 0) - 1
   getDb()
     .prepare(
-      "INSERT INTO projects (id, name, workspace_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)"
+      "INSERT INTO projects (id, name, workspace_id, position, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)"
     )
-    .run(id, input.name, input.workspaceId ?? null, now, now)
+    .run(id, input.name, input.workspaceId ?? null, nextPosition, now, now)
   return getProject(id)!
 }
 
 export function getProject(id: string): Project | undefined {
-  const row = getDb()
-    .prepare("SELECT * FROM projects WHERE id = ?")
-    .get(id) as ProjectRow | undefined
+  const row = getDb().prepare("SELECT * FROM projects WHERE id = ?").get(id) as
+    | ProjectRow
+    | undefined
   return row ? toProject(row) : undefined
 }
 
 export function listProjects(): Project[] {
   const rows = getDb()
-    .prepare("SELECT * FROM projects ORDER BY updated_at DESC")
+    .prepare("SELECT * FROM projects ORDER BY position ASC, updated_at DESC")
     .all() as ProjectRow[]
   return rows.map(toProject)
 }
@@ -80,4 +88,26 @@ export function updateProject(
 // survive and fall back to the "No Project" bucket (runtime FK enforcement is ON).
 export function deleteProject(id: string): void {
   getDb().prepare("DELETE FROM projects WHERE id = ?").run(id)
+}
+
+export function reorderProjects(ids: string[]): Project[] {
+  const uniqueIds = Array.from(new Set(ids))
+  const existing = new Set(listProjects().map((project) => project.id))
+  if (uniqueIds.length !== existing.size) {
+    throw new Error("Project reorder must include every project exactly once")
+  }
+  for (const id of uniqueIds) {
+    if (!existing.has(id)) {
+      throw new Error(`Unknown project id: ${id}`)
+    }
+  }
+
+  const update = getDb().prepare(
+    "UPDATE projects SET position = ?, updated_at = ? WHERE id = ?"
+  )
+  const now = Date.now()
+  getDb().transaction(() => {
+    uniqueIds.forEach((id, position) => update.run(position, now, id))
+  })()
+  return listProjects()
 }

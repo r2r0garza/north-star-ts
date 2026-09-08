@@ -90,9 +90,7 @@ export function ProjectDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>
-            {project ? "Edit project" : "New project"}
-          </DialogTitle>
+          <DialogTitle>{project ? "Edit project" : "New project"}</DialogTitle>
           <DialogDescription>
             Group conversations under a project. A directory is optional — with
             one, the project can be used for Interactive and North Star and new

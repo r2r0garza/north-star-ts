@@ -255,6 +255,9 @@ describe("BrowserSession.snapshot", () => {
           if (match) return { result: { objectId: `candidate-${match[1]}` } }
           return {}
         }
+        if (method === "DOM.resolveNode") {
+          return { object: { objectId: "resolved-ref" } }
+        }
         if (method === "Accessibility.getPartialAXTree") {
           const objectId = String(params?.objectId ?? "")
           const index = Number(objectId.replace("candidate-", ""))
@@ -269,6 +272,19 @@ describe("BrowserSession.snapshot", () => {
           }
         }
         if (method === "DOM.focus" || method === "Input.insertText") return {}
+        if (
+          method === "Runtime.callFunctionOn" &&
+          String(params?.functionDeclaration ?? "").includes("selectionControl")
+        ) {
+          return {
+            result: {
+              value: {
+                editable: false,
+                reason: "Target is not an editable text field.",
+              },
+            },
+          }
+        }
         return {}
       }
     )
@@ -284,13 +300,9 @@ describe("BrowserSession.snapshot", () => {
     expect(outline).not.toContain("[e101]")
     expect(outline).toContain("[Snapshot truncated:")
 
-    await expect(
-      session.type("e100", "ok", false, 1_000)
-    ).resolves.toMatchObject({
-      target: 'button "Button 99"',
-      url: "https://example.com",
-      title: "Example",
-    })
+    await expect(session.type("e100", "ok", false, 1_000)).rejects.toThrow(
+      "not an editable text field"
+    )
     await expect(session.type("e101", "no", false, 1_000)).rejects.toThrow(
       StaleRefError
     )
@@ -324,6 +336,15 @@ describe("BrowserSession.snapshot", () => {
               },
             ],
           }
+        }
+        if (method === "DOM.resolveNode") {
+          return { object: { objectId: "resolved-ref" } }
+        }
+        if (
+          method === "Runtime.callFunctionOn" &&
+          String(params?.functionDeclaration ?? "").includes("selectionControl")
+        ) {
+          return { result: { value: { editable: true } } }
         }
         if (method === "DOM.focus" || method === "Input.insertText") return {}
         return {}
@@ -381,5 +402,390 @@ describe("BrowserSession.snapshot", () => {
 
     expect(Buffer.byteLength(outline, "utf8")).toBeLessThanOrEqual(20_000)
     expect(outline).toContain("[Snapshot truncated:")
+  })
+
+  it("annotates selection controls and rejects browser_type before focusing them", async () => {
+    const session = new BrowserSession()
+    const webContents = electronMock.instances[0]
+    webContents.currentUrl = "https://example.com/form"
+    webContents.title = "Form"
+
+    webContents.debugger.sendCommand.mockImplementation(
+      async (method, params) => {
+        if (method === "Runtime.evaluate") {
+          const expression = String(params?.expression ?? "")
+          if (params?.returnByValue === true) {
+            return { result: { value: { count: 1, truncated: false } } }
+          }
+          if (expression.includes("__coworkSnapshotCandidates[0]")) {
+            return { result: { objectId: "select-candidate" } }
+          }
+          return {}
+        }
+        if (method === "Accessibility.getPartialAXTree") {
+          return {
+            nodes: [
+              {
+                backendDOMNodeId: 77,
+                role: { value: "combobox" },
+                name: { value: "Country" },
+              },
+            ],
+          }
+        }
+        if (method === "DOM.resolveNode") {
+          return { object: { objectId: "resolved-select" } }
+        }
+        if (method === "Runtime.callFunctionOn") {
+          const fn = String(params?.functionDeclaration ?? "")
+          if (fn.includes("selectionControl")) {
+            return {
+              result: {
+                value: {
+                  editable: false,
+                  reason:
+                    "Target is a selection control, not an editable text field.",
+                  selectionControl: true,
+                },
+              },
+            }
+          }
+          return {
+            result: {
+              value: {
+                selector: "#country",
+                tag: "select",
+                text: "",
+                name: "Country",
+                value: "Canada",
+                editable: false,
+                readonly: true,
+                expanded: false,
+              },
+            },
+          }
+        }
+        return {}
+      }
+    )
+
+    await expect(session.snapshot(1_000)).resolves.toContain(
+      '[e1] combobox: Country [collapsed, readonly, value="Canada"]'
+    )
+    await expect(session.type("e1", "Mexico", false, 1_000)).rejects.toThrow(
+      "Use browser_select_option"
+    )
+    expect(webContents.debugger.sendCommand).not.toHaveBeenCalledWith(
+      "DOM.focus",
+      expect.anything()
+    )
+    expect(webContents.debugger.sendCommand).not.toHaveBeenCalledWith(
+      "Input.insertText",
+      expect.anything()
+    )
+  })
+
+  it("selects a native option by exact label and reports the committed value", async () => {
+    const session = new BrowserSession()
+    const webContents = electronMock.instances[0]
+    webContents.currentUrl = "https://example.com/form"
+    webContents.title = "Form"
+
+    webContents.debugger.sendCommand.mockImplementation(
+      async (method, params) => {
+        if (method === "Runtime.evaluate") {
+          const expression = String(params?.expression ?? "")
+          if (params?.returnByValue === true) {
+            return { result: { value: { count: 1, truncated: false } } }
+          }
+          if (expression.includes("__coworkSnapshotCandidates[0]")) {
+            return { result: { objectId: "select-candidate" } }
+          }
+          return {}
+        }
+        if (method === "Accessibility.getPartialAXTree") {
+          return {
+            nodes: [
+              {
+                backendDOMNodeId: 77,
+                role: { value: "combobox" },
+                name: { value: "Country" },
+              },
+            ],
+          }
+        }
+        if (method === "DOM.resolveNode") {
+          return { object: { objectId: "resolved-select" } }
+        }
+        if (method === "Runtime.callFunctionOn") {
+          const fn = String(params?.functionDeclaration ?? "")
+          if (fn.includes("requestedOption")) {
+            expect(params?.arguments).toEqual([
+              { value: "Mexico" },
+              { value: false },
+            ])
+            return {
+              result: {
+                value: {
+                  status: "success",
+                  controlLabel: 'combobox "Country"',
+                  optionLabel: "Mexico",
+                  value: "mx",
+                },
+              },
+            }
+          }
+          return {
+            result: {
+              value: {
+                selector: "#country",
+                tag: "select",
+                text: "",
+                name: "Country",
+                value: "Canada",
+              },
+            },
+          }
+        }
+        return {}
+      }
+    )
+
+    await session.snapshot(1_000)
+    await expect(
+      session.selectOption("e1", "Mexico", 1_000)
+    ).resolves.toMatchObject({
+      target: 'combobox "Country"',
+      option: "Mexico",
+      value: "mx",
+      url: "https://example.com/form",
+      title: "Form",
+    })
+  })
+
+  it("reports available labels when option selection fails", async () => {
+    const session = new BrowserSession()
+    const webContents = electronMock.instances[0]
+
+    webContents.debugger.sendCommand.mockImplementation(
+      async (method, params) => {
+        if (method === "Runtime.evaluate") {
+          const expression = String(params?.expression ?? "")
+          if (params?.returnByValue === true) {
+            return { result: { value: { count: 1, truncated: false } } }
+          }
+          if (expression.includes("__coworkSnapshotCandidates[0]")) {
+            return { result: { objectId: "select-candidate" } }
+          }
+          return {}
+        }
+        if (method === "Accessibility.getPartialAXTree") {
+          return {
+            nodes: [
+              {
+                backendDOMNodeId: 77,
+                role: { value: "combobox" },
+                name: { value: "Country" },
+              },
+            ],
+          }
+        }
+        if (method === "DOM.resolveNode") {
+          return { object: { objectId: "resolved-select" } }
+        }
+        if (method === "Runtime.callFunctionOn") {
+          const fn = String(params?.functionDeclaration ?? "")
+          if (fn.includes("requestedOption")) {
+            return {
+              result: {
+                value: {
+                  status: "failed",
+                  reason: "No enabled option matches exactly.",
+                  available: ["Canada", "Mexico"],
+                },
+              },
+            }
+          }
+          return {
+            result: {
+              value: {
+                selector: "#country",
+                tag: "select",
+                text: "",
+                name: "Country",
+              },
+            },
+          }
+        }
+        return {}
+      }
+    )
+
+    await session.snapshot(1_000)
+    await expect(session.selectOption("e1", "Peru", 1_000)).rejects.toThrow(
+      'Available options: "Canada", "Mexico".'
+    )
+  })
+})
+
+describe("BrowserSession advanced browser tools", () => {
+  beforeEach(() => {
+    electronMock.instances.length = 0
+  })
+
+  async function seedTwoRefs(session: BrowserSession) {
+    const webContents = electronMock.instances[0]
+    webContents.currentUrl = "https://example.com"
+    webContents.title = "Example"
+    webContents.debugger.sendCommand.mockImplementation(
+      async (method, params) => {
+        if (method === "Runtime.evaluate") {
+          const expression = String(params?.expression ?? "")
+          if (params?.returnByValue === true) {
+            return { result: { value: { count: 2, truncated: false } } }
+          }
+          const match = expression.match(/__coworkSnapshotCandidates\[(\d+)\]/)
+          if (match) return { result: { objectId: `candidate-${match[1]}` } }
+          return {}
+        }
+        if (method === "Accessibility.getPartialAXTree") {
+          const index = Number(
+            String(params?.objectId ?? "").replace("candidate-", "")
+          )
+          return {
+            nodes: [
+              {
+                backendDOMNodeId: 10 + index,
+                role: { value: "button" },
+                name: { value: index === 0 ? "Source" : "Target" },
+              },
+            ],
+          }
+        }
+        if (method === "DOM.getBoxModel") {
+          const backendNodeId = Number(params?.backendNodeId)
+          const offset = backendNodeId === 10 ? 0 : 100
+          return {
+            model: {
+              content: [offset, 0, offset + 20, 0, offset + 20, 20, offset, 20],
+            },
+          }
+        }
+        return {}
+      }
+    )
+    await session.snapshot(1_000)
+    return webContents
+  }
+
+  it("hovers and drags snapshot refs with bounded CDP mouse events", async () => {
+    const session = new BrowserSession()
+    const webContents = await seedTwoRefs(session)
+
+    await expect(session.hover("e1", 1_000)).resolves.toMatchObject({
+      target: 'button "Source"',
+      url: "https://example.com",
+    })
+    await expect(session.drag("e1", "e2", 1_000)).resolves.toMatchObject({
+      target: 'button "Source" to button "Target"',
+      url: "https://example.com",
+    })
+
+    expect(webContents.debugger.sendCommand).toHaveBeenCalledWith(
+      "Input.dispatchMouseEvent",
+      expect.objectContaining({ type: "mouseMoved", x: 10, y: 10 })
+    )
+    expect(webContents.debugger.sendCommand).toHaveBeenCalledWith(
+      "Input.dispatchMouseEvent",
+      expect.objectContaining({ type: "mouseReleased", x: 110, y: 10 })
+    )
+  })
+
+  it("records redacted console and network ring-buffer entries", () => {
+    const session = new BrowserSession()
+    const webContents = electronMock.instances[0]
+
+    webContents.debugger.emit("message", {}, "Runtime.consoleAPICalled", {
+      type: "error",
+      timestamp: 100,
+      args: [{ value: "authorization: ghp_abcdefghijklmnopqrstuvwxyz123456" }],
+      stackTrace: {
+        callFrames: [
+          { url: "https://example.com/app?token=secret", lineNumber: 4 },
+        ],
+      },
+    })
+    webContents.debugger.emit("message", {}, "Network.requestWillBeSent", {
+      requestId: "1",
+      type: "Fetch",
+      request: {
+        method: "GET",
+        url: "https://example.com/api?access_token=secret&ok=1",
+      },
+    })
+    webContents.debugger.emit("message", {}, "Network.responseReceived", {
+      requestId: "1",
+      type: "Fetch",
+      response: {
+        status: 500,
+        url: "https://example.com/api?access_token=secret&ok=1",
+      },
+    })
+    webContents.debugger.emit("message", {}, "Network.loadingFinished", {
+      requestId: "1",
+    })
+
+    expect(session.console({ level: "error" }).entries).toEqual([
+      expect.objectContaining({
+        level: "error",
+        text: "authorization=[redacted]",
+        url: "https://example.com/app?token=%5Bredacted%5D",
+        line: 5,
+      }),
+    ])
+    expect(session.network({ status: 500 }).entries).toEqual([
+      expect.objectContaining({
+        requestId: "1",
+        method: "GET",
+        url: "https://example.com/api?access_token=%5Bredacted%5D&ok=1",
+        status: 500,
+      }),
+    ])
+  })
+
+  it("tracks and handles pending JavaScript dialogs", async () => {
+    const session = new BrowserSession()
+    const webContents = electronMock.instances[0]
+    webContents.currentUrl = "https://example.com"
+    webContents.debugger.sendCommand.mockResolvedValue({})
+    webContents.debugger.emit("message", {}, "Page.javascriptDialogOpening", {
+      type: "prompt",
+      message: "Enter value",
+      defaultPrompt: "abc",
+      url: "https://example.com",
+    })
+
+    expect(session.dialog()).toEqual({
+      type: "prompt",
+      message: "Enter value",
+      defaultPrompt: "abc",
+      url: "https://example.com/",
+    })
+    await expect(
+      session.handleDialog("accept", "ok", 1_000)
+    ).resolves.toMatchObject({ url: "https://example.com" })
+    expect(webContents.debugger.sendCommand).toHaveBeenCalledWith(
+      "Page.handleJavaScriptDialog",
+      { accept: true, promptText: "ok" }
+    )
+    expect(session.dialog()).toBeNull()
+  })
+
+  it("rejects function-literal evaluate expressions before page execution", async () => {
+    const session = new BrowserSession()
+
+    await expect(session.evaluate("() => 1", 1_000)).rejects.toThrow(
+      "rejects function literals"
+    )
   })
 })

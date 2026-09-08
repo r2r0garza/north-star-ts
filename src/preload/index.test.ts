@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it, vi } from "vitest"
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 
 const electron = vi.hoisted(() => ({
   api: null as any,
@@ -28,6 +28,12 @@ beforeAll(async () => {
   await import("./index")
 })
 
+beforeEach(() => {
+  electron.invoke.mockClear()
+  electron.on.mockClear()
+  electron.removeListener.mockClear()
+})
+
 describe("preload shared subscriptions", () => {
   it("keeps one task subscription until the last renderer consumer leaves", () => {
     const stopA = electron.api.tasks.onEvent(vi.fn())
@@ -42,5 +48,20 @@ describe("preload shared subscriptions", () => {
     stopB()
     expect(electron.invoke).toHaveBeenCalledTimes(2)
     expect(electron.invoke).toHaveBeenLastCalledWith("task:unsubscribe")
+  })
+
+  it("keeps one todo subscription until the last renderer consumer leaves", () => {
+    const stopA = electron.api.db.todos.onChange(vi.fn())
+    const stopB = electron.api.db.todos.onChange(vi.fn())
+
+    expect(electron.invoke).toHaveBeenCalledTimes(1)
+    expect(electron.invoke).toHaveBeenLastCalledWith("db:todos:subscribe")
+
+    stopA()
+    expect(electron.invoke).toHaveBeenCalledTimes(1)
+
+    stopB()
+    expect(electron.invoke).toHaveBeenCalledTimes(2)
+    expect(electron.invoke).toHaveBeenLastCalledWith("db:todos:unsubscribe")
   })
 })

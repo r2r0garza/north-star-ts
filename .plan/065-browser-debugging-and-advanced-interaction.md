@@ -1,7 +1,8 @@
 # PR65: Browser debugging and advanced interaction tools
 
-> Status: **NOT STARTED**. Extends the existing conversation-scoped browser with
-> bounded debugging evidence and missing interaction primitives.
+> Status: **DONE**. Implemented by `ab1b572` with bounded wait/hover/drag/dialog
+> tools, console and network buffers, gated `browser_evaluate`, browser approval
+> updates, and session tests.
 
 ## Goal
 
@@ -68,4 +69,3 @@ advanced capability under `057`.
 
 - Full Playwright API/code execution, download/upload automation, credential capture,
   unredacted request/response bodies, or background browser use without a live tab.
-

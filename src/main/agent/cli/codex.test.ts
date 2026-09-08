@@ -10,9 +10,10 @@ import {
 import type { CliTurnEvent } from "./claude"
 
 describe("Codex CLI adapter", () => {
-  it("uses GPT-5.3 Codex for unset or legacy provider-only selections", () => {
-    expect(normalizeCodexModel(null)).toBe("gpt-5.3-codex")
-    expect(normalizeCodexModel("codex-cli")).toBe("gpt-5.3-codex")
+  it("uses GPT-5.5 for unset or legacy provider-only selections", () => {
+    // gpt-5.3-codex is rejected on ChatGPT-auth logins, so it can't be default.
+    expect(normalizeCodexModel(null)).toBe("gpt-5.5")
+    expect(normalizeCodexModel("codex-cli")).toBe("gpt-5.5")
     expect(normalizeCodexModel("gpt-5.6-sol")).toBe("gpt-5.6-sol")
   })
 
@@ -20,7 +21,6 @@ describe("Codex CLI adapter", () => {
     expect(
       buildCodexArgs({
         cwd: "/tmp/codex-chat",
-        message: "inspect this",
         skipGitRepoCheck: true,
       })
     ).toEqual([
@@ -31,9 +31,9 @@ describe("Codex CLI adapter", () => {
       "-C",
       "/tmp/codex-chat",
       "--model",
-      "gpt-5.3-codex",
+      "gpt-5.5",
       "--skip-git-repo-check",
-      "inspect this",
+      "-",
     ])
   })
 
@@ -41,7 +41,6 @@ describe("Codex CLI adapter", () => {
     expect(
       buildCodexArgs({
         cwd: "/workspace",
-        message: "continue",
         threadId: "thread-id",
         model: "gpt-5.6-terra",
         skipGitRepoCheck: false,
@@ -57,7 +56,7 @@ describe("Codex CLI adapter", () => {
       "gpt-5.6-terra",
       "resume",
       "thread-id",
-      "continue",
+      "-",
     ])
   })
 
@@ -104,5 +103,91 @@ describe("Codex CLI adapter", () => {
     }
     expect(state.threadId).toBe("01a03b92-67e5-7823-b246-a5180f091f46")
     expect(state.finalText).toBe("CODEX_RESUME_OK")
+  })
+})
+
+describe("Codex MCP activity", () => {
+  it("surfaces an MCP tool call so the bridge is visible in the transcript", () => {
+    const events: CliTurnEvent[] = []
+    const state: CodexParseState = {}
+    parseCodexEvent(
+      {
+        type: "item.started",
+        item: {
+          id: "mcp-1",
+          type: "mcp_tool_call",
+          server: "north-star",
+          tool: "ask_user_question",
+          arguments: { questions: [] },
+        },
+      },
+      (event) => events.push(event),
+      state
+    )
+    parseCodexEvent(
+      {
+        type: "item.completed",
+        item: {
+          id: "mcp-1",
+          type: "mcp_tool_call",
+          server: "north-star",
+          tool: "ask_user_question",
+          status: "completed",
+          result: '{"answers":[]}',
+        },
+      },
+      (event) => events.push(event),
+      state
+    )
+    expect(events.map((e) => e.type)).toEqual(["tool_start", "tool_done"])
+    expect(events[0].name).toBe("north-star · ask_user_question")
+    expect(events[1].result).toContain("answers")
+  })
+})
+
+describe("Codex failure reporting", () => {
+  it("surfaces the message from a failed MCP tool call", () => {
+    // `error` is an object on the wire. Read as a string it went silently
+    // missing, so bridge failures reached the transcript blank.
+    const events: CliTurnEvent[] = []
+    parseCodexEvent(
+      {
+        type: "item.completed",
+        item: {
+          id: "mcp-1",
+          type: "mcp_tool_call",
+          server: "north-star",
+          tool: "ask_user_question",
+          status: "failed",
+          error: { message: "the question panel went away" },
+        },
+      },
+      (event) => events.push(event),
+      {}
+    )
+    expect(events[0].result).toContain("the question panel went away")
+    expect(events[0].result).toContain("status: failed")
+  })
+
+  it("keeps the CLI's reason when a turn fails", () => {
+    // Unhandled before, so the turn ended on the generic "no assistant
+    // message" error instead of what Codex actually reported.
+    const state: CodexParseState = {}
+    parseCodexEvent(
+      { type: "turn.failed", error: { message: "model stream disconnected" } },
+      vi.fn(),
+      state
+    )
+    expect(state.error).toBe("model stream disconnected")
+  })
+
+  it("still reports a fatal stream error", () => {
+    const state: CodexParseState = {}
+    parseCodexEvent(
+      { type: "error", message: "usage limit reached" },
+      vi.fn(),
+      state
+    )
+    expect(state.error).toBe("usage limit reached")
   })
 })

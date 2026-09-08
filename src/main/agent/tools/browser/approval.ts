@@ -52,7 +52,15 @@ export function hashBrowserPayload(text: string): string {
 }
 
 export function browserActionIdentity(input: {
-  action: "click" | "type" | "type_submit"
+  action:
+    | "click"
+    | "type"
+    | "type_submit"
+    | "select_option"
+    | "hover"
+    | "drag"
+    | "wait"
+    | "dialog"
   url: string
   origin: string
   target: string

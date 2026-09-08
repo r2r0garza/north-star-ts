@@ -4,7 +4,10 @@ import { TOOL_EFFECTS, type Tool, type ToolContext } from "./types"
 import { LocalEnvironment } from "../env/local"
 import type { Environment, StatInfo } from "../env/types"
 import { readHostTextLines } from "../env/read-text-lines"
+import { supportedDocumentKind } from "./document_extraction_tool"
 import { renderMetadata, toolError } from "./output"
+import { isSkillResourceUri, resolveSkillResourcePath } from "./skill_resources"
+import { renderContextEnvelope } from "../context/provenance"
 
 // Largest file we'll read into context. Matches the attachment cap in
 // agent/index.ts so the agent's two file-ingestion paths are bounded alike.
@@ -28,6 +31,9 @@ async function resolveReadable(
   env: Environment,
   path: string
 ): Promise<Readable> {
+  if (isSkillResourceUri(path)) {
+    return { source: "host", path: await resolveSkillResourcePath(ctx, path) }
+  }
   if (ctx.workspace) {
     return { source: "env", path: await env.resolve(path) }
   }
@@ -48,6 +54,7 @@ async function resolveReadable(
 // real offset/limit pagination for large files and returns continuation metadata.
 export const readFileTool: Tool = {
   effects: TOOL_EFFECTS.readOnlyParallel,
+  executionPolicy: { timeoutMs: 30000 },
   definition: {
     type: "function",
     function: {
@@ -62,7 +69,8 @@ export const readFileTool: Tool = {
             type: "string",
             description:
               "The file to read. In a workspace, a path relative to the workspace " +
-              "root. In a Chat session, the name (or path) of one of the attached files.",
+              "root, or an activated skill resource URI like skill://name/path. " +
+              "In a Chat session, the name (or path) of one of the attached files.",
           },
           offset: {
             type: "integer",
@@ -104,7 +112,12 @@ export const readFileTool: Tool = {
         ? Math.floor(args.limit)
         : DEFAULT_LIMIT
     const limit = Math.min(requestedLimit, MAX_LIMIT)
-    const readOpts = { offset, limit, maxBytes: MAX_READ_BYTES }
+    const readOpts = {
+      offset,
+      limit,
+      maxBytes: MAX_READ_BYTES,
+      signal: ctx.signal,
+    }
     const readTextAt = async (p: string, fileBytes: number) => {
       if (readable.source === "env") return env.readTextLines(p, readOpts)
       const handle = await hostOpen(p, "r")
@@ -130,9 +143,13 @@ export const readFileTool: Tool = {
       window = await readTextAt(target, info.size)
     } catch (error) {
       if ((error as Error).message === "BINARY_FILE") {
+        const kind = supportedDocumentKind(path)
         return toolError(
           "binary",
-          `File appears to be binary, not text: ${path}`
+          `File appears to be binary, not text: ${path}`,
+          kind
+            ? "Use read_document for supported binary documents and image metadata."
+            : undefined
         )
       }
       return toolError(
@@ -157,17 +174,24 @@ export const readFileTool: Tool = {
       )
       .join("\n")
 
-    return `${numbered}\n${renderMetadata({
-      startLine: window.startLine,
-      endLine: window.endLine,
-      hasMore: window.hasMore,
-      nextOffset: window.nextOffset,
-      fileBytes: window.fileBytes,
-      truncated: window.truncated,
-      revision: window.revision,
-      lineTooLong: window.lineTooLong,
-      skippedLineRemainder: window.skippedLineRemainder,
-      limitCapped: requestedLimit !== limit || undefined,
-    })}`
+    return renderContextEnvelope(
+      {
+        trust: "untrusted_data",
+        channel: readable.source === "host" ? "user" : "file",
+        source: path,
+      },
+      `${numbered}\n${renderMetadata({
+        startLine: window.startLine,
+        endLine: window.endLine,
+        hasMore: window.hasMore,
+        nextOffset: window.nextOffset,
+        fileBytes: window.fileBytes,
+        truncated: window.truncated,
+        revision: window.revision,
+        lineTooLong: window.lineTooLong,
+        skippedLineRemainder: window.skippedLineRemainder,
+        limitCapped: requestedLimit !== limit || undefined,
+      })}`
+    )
   },
 }

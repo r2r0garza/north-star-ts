@@ -1,3 +1,4 @@
+import { ToolLifecycleError } from "../tool-batch-scheduler"
 import type { Tool, ToolContext, ToolEffects } from "./types"
 import { listFilesTool } from "./list_files_tool"
 import { readFileTool } from "./read_file_tool"
@@ -10,8 +11,40 @@ import {
   execCommandTool,
   pollCommandTool,
   terminateCommandTool,
+  waitForEventsTool,
   writeStdinTool,
 } from "./command_session_tools"
+import {
+  getTestResultsTool,
+  runTestsTool,
+  workspaceDiagnosticsTool,
+} from "./test_diagnostics_tools"
+import {
+  documentSymbolsTool,
+  findReferencesTool,
+  goToDefinitionTool,
+  hoverTypeTool,
+  workspaceSymbolsTool,
+} from "./code_navigation_tools"
+import {
+  createDirectoryTool,
+  deletePathTool,
+  movePathTool,
+  statPathTool,
+} from "./filesystem_lifecycle_tools"
+import {
+  gitBranchesTool,
+  gitDiffTool,
+  gitLogTool,
+  gitShowTool,
+  gitStatusTool,
+} from "./git_tools"
+import { readDocumentTool } from "./document_extraction_tool"
+import {
+  conversationReadTool,
+  conversationSearchTool,
+  conversationTreeSearchTool,
+} from "./conversation_recall_tools"
 import { todoWriteTool } from "./todo_tool"
 import { askUserQuestionTool } from "./ask_user_question_tool"
 import { runTodosInBackgroundTool } from "./run_todos_in_background"
@@ -23,7 +56,15 @@ import { browserNavigateTool } from "./browser/navigate"
 import { browserSnapshotTool } from "./browser/snapshot"
 import { browserScreenshotTool } from "./browser/screenshot"
 import { browserClickTool } from "./browser/click"
+import { browserHoverTool } from "./browser/hover"
+import { browserDragTool } from "./browser/drag"
 import { browserTypeTool } from "./browser/type"
+import { browserSelectOptionTool } from "./browser/select-option"
+import { browserWaitTool } from "./browser/wait"
+import { browserConsoleTool } from "./browser/console"
+import { browserNetworkTool } from "./browser/network"
+import { browserHandleDialogTool } from "./browser/dialog"
+import { browserEvaluateTool } from "./browser/evaluate"
 import { browserBackTool } from "./browser/back"
 import { browserCloseTool } from "./browser/close"
 import { browserHandoffTool } from "./browser/handoff"
@@ -46,7 +87,26 @@ const workspaceTools: Tool[] = [
   execCommandTool,
   writeStdinTool,
   pollCommandTool,
+  waitForEventsTool,
   terminateCommandTool,
+  workspaceDiagnosticsTool,
+  runTestsTool,
+  getTestResultsTool,
+  workspaceSymbolsTool,
+  documentSymbolsTool,
+  goToDefinitionTool,
+  findReferencesTool,
+  hoverTypeTool,
+  statPathTool,
+  createDirectoryTool,
+  movePathTool,
+  deletePathTool,
+  gitStatusTool,
+  gitDiffTool,
+  gitLogTool,
+  gitShowTool,
+  gitBranchesTool,
+  readDocumentTool,
 ]
 
 // Legacy compatibility tools remain executable by name for old/internal callers,
@@ -64,6 +124,9 @@ const otherTools: Tool[] = [
   askUserQuestionTool,
   runTodosInBackgroundTool,
   indexQueryTool,
+  conversationSearchTool,
+  conversationReadTool,
+  conversationTreeSearchTool,
   // Plan-mode tools: offered by runChat only while plan mode is active. Not in
   // toolDefinitions; dispatchable via runTool. read_plan is also offered after
   // approval so the implementing turn can re-read the approved plan.
@@ -85,12 +148,22 @@ const otherTools: Tool[] = [
 // Browser tools — offered when the conversation has an agent browser available,
 // independent of the workspace (a Chat session can open a URL too). Dispatchable
 // via runTool; runChat adds their definitions from `browserToolDefinitions`.
-const browserTools: Tool[] = [
+// Exported for the CLI MCP bridge (plan 045), which registers exactly these and
+// nothing else — an explicit allowlist, not a blanket runTool() passthrough.
+export const browserTools: Tool[] = [
   browserNavigateTool,
   browserSnapshotTool,
   browserScreenshotTool,
   browserClickTool,
+  browserHoverTool,
+  browserDragTool,
   browserTypeTool,
+  browserSelectOptionTool,
+  browserWaitTool,
+  browserConsoleTool,
+  browserNetworkTool,
+  browserHandleDialogTool,
+  browserEvaluateTool,
   browserBackTool,
   browserCloseTool,
   browserHandoffTool,
@@ -131,8 +204,16 @@ export const builtInTools = [
   ...webTools,
 ]
 
+export const testExports = {
+  byName,
+}
+
 export function getToolEffects(name: string): ToolEffects | undefined {
   return byName.get(name)?.effects
+}
+
+export function getToolExecutionPolicy(name: string) {
+  return byName.get(name)?.executionPolicy
 }
 
 // Run a tool call by name. Returns a string result (or an error message).
@@ -146,6 +227,7 @@ export async function runTool(
   try {
     return await tool.execute(args, ctx)
   } catch (err) {
+    if (err instanceof ToolLifecycleError) throw err
     return `Error running ${name}: ${
       err instanceof Error ? err.message : String(err)
     }`
@@ -162,5 +244,10 @@ export { readPlanTool } from "./read_plan_tool"
 export { presentPlanTool } from "./present_plan_tool"
 export { flagForReworkTool } from "./flag_for_rework"
 export { dashboardWriteTool } from "./dashboard_write"
+export {
+  conversationReadTool,
+  conversationSearchTool,
+  conversationTreeSearchTool,
+} from "./conversation_recall_tools"
 
 export type { Tool, ToolContext } from "./types"

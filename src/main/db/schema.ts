@@ -981,3 +981,276 @@ JOIN (
 ) AS alias
 WHERE provider = 'codex_cli';
 `
+
+// v33 (plan 058): explicit external-agent model mappings. Source model tokens
+// from GitHub/Cursor/Claude/Codex definitions never fuzzy-match into the
+// destination account catalog. A mapping is namespaced by source system and
+// destination account; exact active-catalog IDs can resolve without a row.
+export const SCHEMA_V33 = `
+CREATE TABLE external_agent_model_mappings (
+  source_kind              TEXT NOT NULL CHECK (source_kind IN ('github','copilot','cursor','claude','codex')),
+  source_model             TEXT NOT NULL,
+  normalized_source_model  TEXT NOT NULL,
+  destination_account_id   TEXT NOT NULL REFERENCES provider_accounts(id) ON DELETE CASCADE,
+  destination_model_id     TEXT NOT NULL,
+  created_at               INTEGER NOT NULL,
+  updated_at               INTEGER NOT NULL,
+  PRIMARY KEY (source_kind, normalized_source_model, destination_account_id)
+);
+CREATE INDEX idx_external_agent_model_mappings_account
+  ON external_agent_model_mappings(destination_account_id);
+`
+
+// v34 (plan 064): conversation-scoped recall. Full-text search is indexed by
+// message text and serialized tool-call arguments, while conversation/role/seq
+// metadata stays unindexed for strict server-owned scope filtering.
+export const SCHEMA_V34 = `
+CREATE VIRTUAL TABLE message_fts USING fts5(
+  message_id UNINDEXED,
+  conversation_id UNINDEXED,
+  seq UNINDEXED,
+  role UNINDEXED,
+  created_at UNINDEXED,
+  tool_name UNINDEXED,
+  content,
+  tokenize = 'unicode61'
+);
+
+INSERT INTO message_fts
+  (message_id, conversation_id, seq, role, created_at, tool_name, content)
+SELECT
+  id,
+  conversation_id,
+  seq,
+  role,
+  created_at,
+  tool_name,
+  trim(COALESCE(content, '') || ' ' || COALESCE(tool_calls, ''))
+FROM messages
+WHERE trim(COALESCE(content, '') || ' ' || COALESCE(tool_calls, '')) <> '';
+
+CREATE TRIGGER messages_ai_message_fts AFTER INSERT ON messages BEGIN
+  INSERT INTO message_fts
+    (message_id, conversation_id, seq, role, created_at, tool_name, content)
+  SELECT
+    NEW.id,
+    NEW.conversation_id,
+    NEW.seq,
+    NEW.role,
+    NEW.created_at,
+    NEW.tool_name,
+    trim(COALESCE(NEW.content, '') || ' ' || COALESCE(NEW.tool_calls, ''))
+  WHERE trim(COALESCE(NEW.content, '') || ' ' || COALESCE(NEW.tool_calls, '')) <> '';
+END;
+
+CREATE TRIGGER messages_ad_message_fts AFTER DELETE ON messages BEGIN
+  DELETE FROM message_fts WHERE message_id = OLD.id;
+END;
+`
+
+// v35: distinguish ~/.copilot/agents from .github/agents in external-agent
+// model mappings. SQLite cannot widen a CHECK constraint in place, so rebuild the
+// small mapping table and preserve existing rows.
+export const SCHEMA_V35 = `
+ALTER TABLE external_agent_model_mappings RENAME TO external_agent_model_mappings_old;
+
+CREATE TABLE external_agent_model_mappings (
+  source_kind              TEXT NOT NULL CHECK (source_kind IN ('github','copilot','cursor','claude','codex')),
+  source_model             TEXT NOT NULL,
+  normalized_source_model  TEXT NOT NULL,
+  destination_account_id   TEXT NOT NULL REFERENCES provider_accounts(id) ON DELETE CASCADE,
+  destination_model_id     TEXT NOT NULL,
+  created_at               INTEGER NOT NULL,
+  updated_at               INTEGER NOT NULL,
+  PRIMARY KEY (source_kind, normalized_source_model, destination_account_id)
+);
+
+INSERT INTO external_agent_model_mappings
+  (source_kind, source_model, normalized_source_model,
+   destination_account_id, destination_model_id, created_at, updated_at)
+SELECT
+  source_kind, source_model, normalized_source_model,
+  destination_account_id, destination_model_id, created_at, updated_at
+FROM external_agent_model_mappings_old;
+
+DROP TABLE external_agent_model_mappings_old;
+
+CREATE INDEX idx_external_agent_model_mappings_account
+  ON external_agent_model_mappings(destination_account_id);
+`
+
+// v36 (debug 072): durable retry budgets for native model request rounds. The
+// logical round id is owned by the agent loop and is stable across resume for
+// the same persisted transcript boundary, while attempts are consumed before
+// each provider transport call so a crash mid-request does not refresh budget.
+export const SCHEMA_V36 = `
+CREATE TABLE model_request_retry_budgets (
+  id                  TEXT PRIMARY KEY,
+  conversation_id     TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  logical_round_id    TEXT NOT NULL,
+  status              TEXT NOT NULL CHECK (status IN ('in_progress','completed','exhausted')),
+  attempts_consumed   INTEGER NOT NULL,
+  max_attempts        INTEGER NOT NULL,
+  first_attempt_at    INTEGER NOT NULL,
+  deadline_at         INTEGER NOT NULL,
+  last_error          TEXT,
+  completed_at        INTEGER,
+  exhausted_at        INTEGER,
+  created_at          INTEGER NOT NULL,
+  updated_at          INTEGER NOT NULL,
+  UNIQUE (conversation_id, logical_round_id)
+);
+CREATE INDEX idx_model_request_retry_budgets_conversation
+  ON model_request_retry_budgets(conversation_id, logical_round_id);
+`
+
+// v37 (debug 075): explicit user retry creates a fresh retry budget linked to
+// the exhausted model request it supersedes. The logical round id remains the
+// transcript boundary used by the agent loop; parent_budget_id/retry_sequence
+// preserve the audit chain across user-authorized retries.
+export const SCHEMA_V37 = `
+ALTER TABLE model_request_retry_budgets
+  ADD COLUMN parent_budget_id TEXT REFERENCES model_request_retry_budgets(id) ON DELETE SET NULL;
+ALTER TABLE model_request_retry_budgets
+  ADD COLUMN retry_sequence INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE model_request_retry_budgets
+  ADD COLUMN source TEXT NOT NULL DEFAULT 'automatic'
+    CHECK (source IN ('automatic','user_retry'));
+CREATE INDEX idx_model_request_retry_budgets_parent
+  ON model_request_retry_budgets(parent_budget_id);
+`
+
+// v38 (debug 077): durable per-tool-call lifecycle evidence. The transcript must
+// remain API-valid, but recovery cannot infer every crash boundary from messages
+// alone. This table records intent before approval/execution, records start
+// immediately before invoking a tool body, and records terminal outcomes as each
+// call settles. `logical_round_id` is the same persisted transcript boundary used
+// by model retry budgets; `assistant_message_id` links to the tool-call-bearing
+// message when available. Legacy transcript-only calls simply have no row and
+// are treated conservatively by recovery.
+export const SCHEMA_V38 = `
+CREATE TABLE tool_call_lifecycle (
+  id                    TEXT PRIMARY KEY,
+  conversation_id       TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  assistant_message_id  TEXT REFERENCES messages(id) ON DELETE SET NULL,
+  logical_round_id      TEXT NOT NULL,
+  tool_call_id          TEXT NOT NULL,
+  tool_name             TEXT NOT NULL,
+  arguments             TEXT NOT NULL,
+  invocation_id         TEXT NOT NULL,
+  identity              TEXT NOT NULL,
+  state                 TEXT NOT NULL CHECK (state IN
+                          ('prepared','waiting_for_approval','started',
+                           'settled_success','settled_error','not_started',
+                           'unknown')),
+  result                TEXT,
+  error                 TEXT,
+  prepared_at           INTEGER NOT NULL,
+  waiting_at            INTEGER,
+  started_at            INTEGER,
+  settled_at            INTEGER,
+  updated_at            INTEGER NOT NULL,
+  UNIQUE (conversation_id, tool_call_id)
+);
+CREATE INDEX idx_tool_call_lifecycle_conversation
+  ON tool_call_lifecycle(conversation_id, state);
+CREATE INDEX idx_tool_call_lifecycle_message
+  ON tool_call_lifecycle(assistant_message_id);
+CREATE INDEX idx_tool_call_lifecycle_invocation
+  ON tool_call_lifecycle(conversation_id, invocation_id, updated_at DESC);
+`
+
+// v39 (debug 085): bind validator review results to the exact phase-worker
+// output they reviewed. The value is derived from the worker task plus its final
+// assistant message and is cleared on reset/rework before being stamped again by
+// the next successful worker output. Pure ADD COLUMN.
+export const SCHEMA_V39 = `
+ALTER TABLE process_phase_runs ADD COLUMN output_identity TEXT;
+`
+
+// v40 (debug 069): preserve structured process failure context and failed
+// attempt history across process/task boundaries. The phase row carries the
+// latest failure for monitor reloads; process_phase_attempts keeps each failed
+// retry/exhaustion event inspectable even when the phase later re-runs.
+export const SCHEMA_V40 = `
+ALTER TABLE process_phase_runs ADD COLUMN failure TEXT;
+CREATE TABLE process_phase_attempts (
+  id                 TEXT PRIMARY KEY,
+  run_id             TEXT NOT NULL REFERENCES process_runs(id) ON DELETE CASCADE,
+  phase_run_id       TEXT NOT NULL REFERENCES process_phase_runs(id) ON DELETE CASCADE,
+  phase_id           TEXT NOT NULL REFERENCES process_phases(id),
+  task_id            TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+  worker_task_id     TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+  agent_name         TEXT,
+  stage              TEXT NOT NULL,
+  status             TEXT NOT NULL,
+  attempt            INTEGER,
+  max_attempts       INTEGER,
+  error              TEXT NOT NULL,
+  failure            TEXT NOT NULL,
+  created_at         INTEGER NOT NULL
+);
+CREATE INDEX idx_process_phase_attempts_phase_run
+  ON process_phase_attempts(phase_run_id, created_at ASC);
+CREATE INDEX idx_process_phase_attempts_run
+  ON process_phase_attempts(run_id, created_at ASC);
+`
+
+// Completion policy is opt-in for existing definitions and immutable per run.
+export const SCHEMA_V41 = `
+ALTER TABLE process_phases ADD COLUMN completion_contract TEXT NOT NULL DEFAULT '{"policy":"legacy"}';
+ALTER TABLE process_runs ADD COLUMN completion_contracts TEXT;
+ALTER TABLE process_phase_runs ADD COLUMN completion_receipt TEXT;
+`
+
+// v42: process runtime profiles. Definitions carry portable/intended runtime
+// preferences, runs snapshot the run-level default, and phase-runs snapshot the
+// concrete selection source used for each worker boundary.
+export const SCHEMA_V42 = `
+ALTER TABLE process_phases ADD COLUMN runtime_config TEXT;
+ALTER TABLE process_phase_agents ADD COLUMN runtime_config TEXT;
+ALTER TABLE process_runs ADD COLUMN runtime_config TEXT;
+ALTER TABLE process_phase_runs ADD COLUMN runtime_snapshot TEXT;
+`
+
+// v43 (plan 086): experimental ChatGPT/Codex subscription backend. This is a
+// distinct provider/account mode, not an OpenAI SDK base URL swap. SQLite cannot
+// widen either CHECK constraint in place, so rebuild provider_accounts to admit
+// provider='codex_subscription' and api_mode='codex_responses'.
+export const SCHEMA_V43 = `
+CREATE TABLE provider_accounts_v43 (
+  id            TEXT PRIMARY KEY,
+  provider      TEXT NOT NULL CHECK (provider IN
+                  ('portkey','openai_compatible','openai','claude_code','codex_cli','codex_subscription','anthropic','google','azure_openai')),
+  display_name  TEXT NOT NULL,
+  base_url      TEXT,
+  encrypted_key BLOB,
+  api_mode      TEXT NOT NULL DEFAULT 'completions'
+                  CHECK (api_mode IN ('completions','responses','codex_responses')),
+  enabled       INTEGER NOT NULL DEFAULT 1,
+  created_at    INTEGER NOT NULL,
+  last_used_at  INTEGER,
+  position      INTEGER NOT NULL DEFAULT 0
+);
+INSERT INTO provider_accounts_v43
+  (id, provider, display_name, base_url, encrypted_key, api_mode, enabled, created_at, last_used_at, position)
+SELECT id, provider, display_name, base_url, encrypted_key, api_mode, enabled, created_at, last_used_at, position
+FROM provider_accounts;
+DROP TABLE provider_accounts;
+ALTER TABLE provider_accounts_v43 RENAME TO provider_accounts;
+`
+
+// v44: user-defined sidebar project ordering. Existing projects are backfilled
+// to preserve the previous updated_at DESC display order, then all future
+// reorders write explicit zero-based positions. New projects enter at the top,
+// matching the old "newly updated first" behavior until the user reorders them.
+export const SCHEMA_V44 = `
+ALTER TABLE projects ADD COLUMN position INTEGER NOT NULL DEFAULT 0;
+WITH ordered AS (
+  SELECT id, ROW_NUMBER() OVER (ORDER BY updated_at DESC) - 1 AS pos
+  FROM projects
+)
+UPDATE projects
+SET position = (SELECT pos FROM ordered WHERE ordered.id = projects.id);
+CREATE INDEX idx_projects_position ON projects(position, updated_at DESC);
+`

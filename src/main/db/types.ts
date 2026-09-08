@@ -54,6 +54,7 @@ export interface Project {
   id: string
   name: string
   workspaceId: string | null
+  position: number
   createdAt: number
   updatedAt: number
 }
@@ -95,6 +96,35 @@ export interface Message {
   toolName: string | null
   tokenEstimate: number | null
   createdAt: number
+}
+
+export type ToolCallLifecycleState =
+  | "prepared"
+  | "waiting_for_approval"
+  | "started"
+  | "settled_success"
+  | "settled_error"
+  | "not_started"
+  | "unknown"
+
+export interface ToolCallLifecycle {
+  id: string
+  conversationId: string
+  assistantMessageId: string | null
+  logicalRoundId: string
+  toolCallId: string
+  toolName: string
+  arguments: string
+  invocationId: string
+  identity: string
+  state: ToolCallLifecycleState
+  result: string | null
+  error: string | null
+  preparedAt: number
+  waitingAt: number | null
+  startedAt: number | null
+  settledAt: number | null
+  updatedAt: number
 }
 
 // The rolling conversation summary (SCHEMA_V10, plan 019). One row per
@@ -143,6 +173,36 @@ export interface TaskCheckpoint {
   label: string | null
   state: unknown
   createdAt: number
+}
+
+export type FailureStage =
+  | "agent_setup"
+  | "model_request"
+  | "tool_dispatch"
+  | "tool_execution"
+  | "result_persistence"
+  | "output_validation"
+  | "decomposition"
+  | "reviewer"
+  | "subprocess"
+  | "scheduler"
+
+export interface FailureContext {
+  code: string
+  stage: FailureStage
+  message: string
+  retryable: boolean
+  attempt: number | null
+  maxAttempts: number | null
+  runId: string | null
+  phaseRunId: string | null
+  phaseId: string | null
+  taskId: string | null
+  workerTaskId: string | null
+  agentName: string | null
+  toolCallId?: string | null
+  cause?: string | null
+  occurredAt: number
 }
 
 // The workspace index (plan 008). Deterministic, incremental, resumable.
@@ -269,6 +329,7 @@ export type Provider =
   | "openai"
   | "claude_code"
   | "codex_cli"
+  | "codex_subscription"
   | "anthropic"
   | "google"
   | "azure_openai"
@@ -277,13 +338,20 @@ export type Provider =
 // (the universal path used by every provider today); `responses` is reserved for
 // a future OpenAI Responses (/responses) adapter. Persisted on the account so the
 // provider layer can branch without a per-request probe.
-export type ApiMode = "completions" | "responses"
+export type ApiMode = "completions" | "responses" | "codex_responses"
 
 // Where a model row came from: hand-typed by the user, imported from the
 // gateway's /models catalog, or auto-seeded on account creation. Drives the UI
 // badge and the gateway-import merge (re-import refreshes `gateway` rows; it
 // never deletes `manual`/`seeded` ones).
 export type ModelOrigin = "manual" | "gateway" | "seeded"
+
+export type ExternalAgentModelSourceKind =
+  | "github"
+  | "copilot"
+  | "cursor"
+  | "claude"
+  | "codex"
 
 // A configured connection to an LLM provider. The API key is NEVER held here in
 // plaintext — `hasKey` reflects whether ciphertext is stored (the row's actual
@@ -313,6 +381,41 @@ export interface ModelEntry {
   modelName: string | null
   origin: ModelOrigin
   favorite: boolean
+  createdAt: number
+  updatedAt: number
+}
+
+export interface ExternalAgentModelMapping {
+  sourceKind: ExternalAgentModelSourceKind
+  sourceModel: string
+  normalizedSourceModel: string
+  destinationAccountId: string
+  destinationModelId: string
+  createdAt: number
+  updatedAt: number
+}
+
+export type ModelRequestRetryBudgetStatus =
+  | "in_progress"
+  | "completed"
+  | "exhausted"
+export type ModelRequestRetryBudgetSource = "automatic" | "user_retry"
+
+export interface ModelRequestRetryBudget {
+  id: string
+  conversationId: string
+  logicalRoundId: string
+  parentBudgetId: string | null
+  retrySequence: number
+  source: ModelRequestRetryBudgetSource
+  status: ModelRequestRetryBudgetStatus
+  attemptsConsumed: number
+  maxAttempts: number
+  firstAttemptAt: number
+  deadlineAt: number
+  lastError: string | null
+  completedAt: number | null
+  exhaustedAt: number | null
   createdAt: number
   updatedAt: number
 }
@@ -423,7 +526,58 @@ export interface ProcessDefinition {
   updatedAt: number
 }
 
+export type PhaseCompletionContract =
+  | { policy: "legacy" }
+  | { policy: "validated"; version: 1; requiredArtifacts: string[] }
+
+export interface PhaseOutcome {
+  version: 1
+  attemptId: string
+  status: "completed" | "blocked" | "failed"
+  output: string
+  evidence: string
+  reason?: string
+  nextAction?: string
+}
+
+export interface PhaseCompletionReceipt {
+  outcome: PhaseOutcome
+  checkedArtifacts: string[]
+  // Null until all configured checks pass.
+  checkedAt: number | null
+}
+
+export type ProcessRuntimeSlot =
+  | "worker"
+  | "decomposer"
+  | "router"
+  | "validator"
+
+export interface ProcessRuntimeSelection {
+  accountId?: string | null
+  modelId?: string | null
+  // Portable exports may name a provider instead of a local account id. The local
+  // runtime resolver ignores it until an import remaps it to an account.
+  provider?: Provider | null
+}
+
+export type ProcessRuntimeConfig = Partial<
+  Record<ProcessRuntimeSlot, ProcessRuntimeSelection>
+>
+
+export interface ProcessRuntimeSnapshotSelection {
+  accountId: string | null
+  modelId: string | null
+  source: "phase_agent" | "phase" | "run" | "source_conversation" | "default"
+}
+
+export type ProcessRuntimeSnapshot = Partial<
+  Record<ProcessRuntimeSlot, ProcessRuntimeSnapshotSelection>
+>
+
 export interface ProcessPhase {
+  // Omitted only in pre-contract in-memory callers; persisted rows are explicit.
+  completionContract?: PhaseCompletionContract
   id: string
   processId: string
   key: string
@@ -454,6 +608,7 @@ export interface ProcessPhase {
   // exclusive with fan_out (and the agent pool is unused) — validated in the repo.
   // Null = an ordinary agent phase.
   subprocessId: string | null
+  runtimeConfig?: ProcessRuntimeConfig | null
   position: number
 }
 
@@ -465,6 +620,7 @@ export interface ProcessPhaseAgent {
   agentName: string
   skills: string[] | null
   tools: string[] | null
+  runtimeConfig?: ProcessRuntimeConfig | null
   position: number
 }
 
@@ -477,6 +633,8 @@ export interface ProcessEdge {
 }
 
 export interface ProcessRun {
+  // Null/absent marks pre-contract runs: permanently legacy on resume.
+  completionContracts?: Record<string, PhaseCompletionContract> | null
   id: string
   processId: string | null
   sourceConversationId: string | null
@@ -497,6 +655,7 @@ export interface ProcessRun {
   // this run. Null for a top-level run. Lets the monitor nest the child run under
   // the phase and crash-resume re-attach (find-by-parent) instead of restarting.
   parentPhaseRunId: string | null
+  runtimeConfig?: ProcessRuntimeConfig | null
   status: ProcessRunStatus
   startedAt: number | null
   finishedAt: number | null
@@ -504,6 +663,7 @@ export interface ProcessRun {
 }
 
 export interface ProcessPhaseRun {
+  completionReceipt?: PhaseCompletionReceipt | null
   id: string
   runId: string
   phaseId: string
@@ -518,6 +678,7 @@ export interface ProcessPhaseRun {
   title: string | null
   iteration: number
   error: string | null
+  failure: FailureContext | null
   startedAt: number | null
   finishedAt: number | null
   // The "Request changes" feedback note injected into this phase-run's re-run
@@ -529,11 +690,33 @@ export interface ProcessPhaseRun {
   // has sent this phase-run back. Kept SEPARATE from reworkRound (which drives the
   // 029 count-based gate re-detection and must not be perturbed). Default 0.
   validatorRound: number
+  // Stable identity of the current completed worker output reviewed by a
+  // validator. Cleared on reset/rework and stamped after each successful worker
+  // completion so stale reviewer results cannot settle a replacement output.
+  outputIdentity: string | null
   // First-class on_each_subtask lineage (plan 031.2): the source fan-out CHILD
   // this consumer instance consumes. Null for ordinary runs and fan-out children;
   // set for on_each_subtask consumer instances. Lets flag-back reset only the
   // instance tied to a reworked source sub-task (per-child, not the whole batch).
   sourceChildRunId: string | null
+  runtimeSnapshot?: ProcessRuntimeSnapshot | null
+}
+
+export interface ProcessPhaseAttempt {
+  id: string
+  runId: string
+  phaseRunId: string
+  phaseId: string
+  taskId: string | null
+  workerTaskId: string | null
+  agentName: string | null
+  stage: FailureStage
+  status: "failed"
+  attempt: number | null
+  maxAttempts: number | null
+  error: string
+  failure: FailureContext
+  createdAt: number
 }
 
 // A cross-phase rework flag (plan 031.2): a phase-worker found a defect an earlier

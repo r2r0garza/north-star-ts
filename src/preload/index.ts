@@ -6,6 +6,7 @@ import type {
   Approval,
   ApprovalStatus,
   Conversation,
+  FailureContext,
   Message,
   Mode,
   Project,
@@ -21,16 +22,21 @@ import type {
   ProcessPhaseAgent,
   ProcessEdge,
   ProcessRun,
+  ProcessPhaseAttempt,
   ProcessPhaseRun,
+  ProcessRuntimeConfig,
   ProcessRunStatus,
   PhaseRunStatus,
   PhaseRouting,
+  PhaseCompletionContract,
   PhaseGatePolicy,
   EdgeTrigger,
   Dashboard,
   DashboardGraph,
   DashboardWidget,
   DashboardWidgetData,
+  ExternalAgentModelMapping,
+  ExternalAgentModelSourceKind,
 } from "../main/db/types"
 import type { ActionKind } from "../main/agent/approval/types"
 import type { PickedElement } from "../main/browser/types"
@@ -50,6 +56,8 @@ import type {
   ThemeSettings,
   IdeSettings,
   NotificationSettings,
+  OnboardingSettings,
+  ConversationSettings,
   LocalRuntimeProfile,
 } from "../main/settings/service"
 import type {
@@ -68,6 +76,10 @@ import type {
   AccountWithModels,
 } from "../main/ipc/provider-handlers"
 import type { ModelEntry, IndexPriority, McpServerDef } from "../main/db/types"
+import type {
+  ExternalAgentModelResolution,
+  ResolvedMappingView,
+} from "../main/agent/runtime/model-resolution"
 import type { IndexStatus } from "../main/ipc/index-handlers"
 import type { ApproveResult } from "../main/dashboards/service"
 import type {
@@ -81,6 +93,10 @@ import type {
   TerminalProfile,
   TerminalSessionView,
 } from "../main/terminal/types"
+import type {
+  ProcessImportResult,
+  ProcessRunIncidentExport,
+} from "../main/process/io"
 
 // Streaming events emitted during a chat turn (mirrors ChatEvent in the agent).
 export type ChatEvent =
@@ -103,6 +119,7 @@ export type ChatEvent =
       // The action kind being approved (e.g. "delegate"). The renderer hides the
       // "always allow" affordance for delegate approvals. Optional for back-compat.
       kind?: ActionKind
+      explicit?: boolean
       detail?: Record<string, unknown>
     }
   | {
@@ -114,6 +131,7 @@ export type ChatEvent =
   | { type: "plan_mode"; enabled: boolean }
   // The backend activated auto mode (present_plan approved with Auto mode).
   | { type: "auto_mode"; enabled: boolean }
+  | { type: "command_wait"; phase: "start" | "done"; sessionIds?: string[] }
 
 // Runner lifecycle events appended to task_events alongside ChatEvents (mirrors
 // RunnerLifecycleEvent in the task runner).
@@ -143,6 +161,7 @@ export type RunnerLifecycleEvent =
       // Which gate kind a waiting_for_approval event is (plan 031.2): "phase" /
       // "validator" use the generic approve card; "flag" uses the rework card.
       gateKind?: "phase" | "validator" | "flag"
+      failure?: FailureContext | null
     }
 
 // The full event vocabulary a task emits, live or replayed from task_events.
@@ -157,6 +176,11 @@ export type TaskLiveEvent = {
   id: number
 }
 
+export type TodoChangeEvent = {
+  conversationId: string
+  todos: Todo[]
+}
+
 // A skill as surfaced to the composer's slash menu — just what the picker needs
 // to display and match on. The full body stays in the main process (read_skill).
 export type SkillSummary = {
@@ -168,8 +192,22 @@ export type SkillSummary = {
 // dropdown needs to display and match on. The full definition (body, tools,
 // skills, children) stays in the main process and is resolved per turn.
 export type AgentSummary = {
+  ref: string
+  refId: string
+  agentRef: {
+    sourceKind: string
+    scope: string
+    definitionPath: string
+    nativeName: string
+  }
+  sourceKind: string
+  scope: string
   name: string
+  nativeName: string
   description: string
+  label: string
+  sourceMetadata?: unknown
+  diagnostics: Array<{ severity: string; code: string; message: string }>
 }
 
 let terminalSubscriptionCount = 0
@@ -192,6 +230,20 @@ function retainTaskSubscription(): void {
     void ipcRenderer.invoke("task:subscribe")
   }
 }
+
+let todoSubscriptionCount = 0
+function retainTodoSubscription(): void {
+  if (todoSubscriptionCount++ === 0) {
+    void ipcRenderer.invoke("db:todos:subscribe")
+  }
+}
+function releaseTodoSubscription(): void {
+  if (todoSubscriptionCount === 0) return
+  todoSubscriptionCount -= 1
+  if (todoSubscriptionCount === 0) {
+    void ipcRenderer.invoke("db:todos:unsubscribe")
+  }
+}
 function releaseTaskSubscription(): void {
   if (taskSubscriptionCount === 0) return
   taskSubscriptionCount -= 1
@@ -212,6 +264,7 @@ const api = {
       message: string
       workspace?: string
       attachments?: string[]
+      skills?: string[]
       // Start the turn in plan mode (interactive/north_star only): read/search +
       // write_plan only, until the user approves via present_plan.
       planMode?: boolean
@@ -341,6 +394,7 @@ const api = {
       // into the workspaces table server-side and stamped on the run so its
       // phase workers have a cwd (file/shell tools fail closed without one).
       workspacePath?: string | null
+      runtimeConfig?: ProcessRuntimeConfig | null
     }) => ipcRenderer.invoke("process:startRun", input) as Promise<ProcessRun>,
     // Cancel a run (aborts its backing task; running phases unwind).
     cancel: (processRunId: string) =>
@@ -371,11 +425,28 @@ const api = {
       feedback: string
     }) =>
       ipcRenderer.invoke("process:requestChanges", payload) as Promise<void>,
+    // Retry only a failed validator review against the existing completed phase
+    // output. Does not send the phase worker back for rework.
+    retryReview: (payload: { processRunId: string; requestId: string }) =>
+      ipcRenderer.invoke("process:retryReview", payload) as Promise<void>,
     // Cross-phase rework flag confirmation (plan 031.2).
     confirmFlag: (payload: { processRunId: string; requestId: string }) =>
       ipcRenderer.invoke("process:confirmFlag", payload) as Promise<void>,
     dismissFlag: (payload: { processRunId: string; requestId: string }) =>
       ipcRenderer.invoke("process:dismissFlag", payload) as Promise<void>,
+    exportDefinition: (processId: string) =>
+      ipcRenderer.invoke("process:export", processId) as Promise<
+        { path: string; canceled: false } | { canceled: true }
+      >,
+    exportRunIncident: (processRunId: string) =>
+      ipcRenderer.invoke("process:exportRunIncident", processRunId) as Promise<
+        { path: string; canceled: false } | { canceled: true }
+      >,
+    importDefinition: () =>
+      ipcRenderer.invoke("process:import") as Promise<
+        | (ProcessImportResult & { path: string; canceled: false })
+        | { canceled: true }
+      >,
   },
   pickWorkspace: () =>
     ipcRenderer.invoke("pick-workspace") as Promise<{
@@ -503,6 +574,12 @@ const api = {
   files: {
     list: (workspace: string, query: string) =>
       ipcRenderer.invoke("files:list", workspace, query) as Promise<string[]>,
+    readText: (workspace: string, relPath: string) =>
+      ipcRenderer.invoke("files:readText", workspace, relPath) as Promise<{
+        content: string | null
+        truncated: boolean
+        error: string | null
+      }>,
   },
   // Read the current git branch for a workspace folder. Resolves with the
   // branch name, a short detached-HEAD SHA, or null when not a git repo.
@@ -672,6 +749,12 @@ const api = {
       ipcRenderer.invoke("terminal:resize", id, cols, rows) as Promise<void>,
     kill: (id: string) =>
       ipcRenderer.invoke("terminal:kill", id) as Promise<void>,
+    adoptConversation: (fromConversationId: string, toConversationId: string) =>
+      ipcRenderer.invoke(
+        "terminal:adopt-conversation",
+        fromConversationId,
+        toConversationId
+      ) as Promise<void>,
     onData: (cb: (event: TerminalDataEvent) => void) => {
       const listener = (_e: IpcRendererEvent, event: TerminalDataEvent) =>
         cb(event)
@@ -760,6 +843,17 @@ const api = {
       // happen via the agent's todo_write tool, not the renderer.
       list: (conversationId: string) =>
         ipcRenderer.invoke("db:todos:list", conversationId) as Promise<Todo[]>,
+      // Subscribe to committed todo mutations. Returns an unsubscribe function.
+      onChange: (cb: (event: TodoChangeEvent) => void) => {
+        const listener = (_event: IpcRendererEvent, payload: TodoChangeEvent) =>
+          cb(payload)
+        ipcRenderer.on("db:todos:change", listener)
+        retainTodoSubscription()
+        return () => {
+          ipcRenderer.removeListener("db:todos:change", listener)
+          releaseTodoSubscription()
+        }
+      },
     },
     workspaces: {
       list: () =>
@@ -792,6 +886,8 @@ const api = {
         ipcRenderer.invoke("db:projects:update", id, patch) as Promise<Project>,
       delete: (id: string) =>
         ipcRenderer.invoke("db:projects:delete", id) as Promise<void>,
+      reorder: (ids: string[]) =>
+        ipcRenderer.invoke("db:projects:reorder", ids) as Promise<Project[]>,
     },
     tasks: {
       create: (input: {
@@ -905,10 +1001,12 @@ const api = {
           fanOut?: boolean
           maxReworkRounds?: number
           dotFolder?: boolean
+          completionContract?: PhaseCompletionContract
           validator?: boolean
           validatorMaxIterations?: number
           validatorAgent?: string | null
           subprocessId?: string | null
+          runtimeConfig?: ProcessRuntimeConfig | null
           position: number
         }) =>
           ipcRenderer.invoke(
@@ -929,10 +1027,12 @@ const api = {
             fanOut?: boolean
             maxReworkRounds?: number
             dotFolder?: boolean
+            completionContract?: PhaseCompletionContract
             validator?: boolean
             validatorMaxIterations?: number
             validatorAgent?: string | null
             subprocessId?: string | null
+            runtimeConfig?: ProcessRuntimeConfig | null
             position?: number
           }
         ) =>
@@ -950,6 +1050,7 @@ const api = {
           agentName: string
           skills?: string[] | null
           tools?: string[] | null
+          runtimeConfig?: ProcessRuntimeConfig | null
           position: number
         }) =>
           ipcRenderer.invoke(
@@ -1005,6 +1106,13 @@ const api = {
           ipcRenderer.invoke("db:processes:phaseRuns:list", opts) as Promise<
             ProcessPhaseRun[]
           >,
+      },
+      phaseAttempts: {
+        list: (opts: { runId?: string; phaseRunId?: string }) =>
+          ipcRenderer.invoke(
+            "db:processes:phaseAttempts:list",
+            opts
+          ) as Promise<ProcessPhaseAttempt[]>,
       },
     },
 
@@ -1164,6 +1272,12 @@ const api = {
         "settings:setAgentSources",
         next
       ) as Promise<AgentSourcesSettings>,
+    setAgentSourceVisibility: (source: string, visible: boolean) =>
+      ipcRenderer.invoke(
+        "settings:setAgentSourceVisibility",
+        source,
+        visible
+      ) as Promise<AgentSourcesSettings>,
     getMcpSources: () =>
       ipcRenderer.invoke(
         "settings:getMcpSources"
@@ -1196,6 +1310,24 @@ const api = {
         "settings:setNotifications",
         next
       ) as Promise<NotificationSettings>,
+    getOnboarding: () =>
+      ipcRenderer.invoke(
+        "settings:getOnboarding"
+      ) as Promise<OnboardingSettings>,
+    setOnboarding: (next: OnboardingSettings) =>
+      ipcRenderer.invoke(
+        "settings:setOnboarding",
+        next
+      ) as Promise<OnboardingSettings>,
+    getConversations: () =>
+      ipcRenderer.invoke(
+        "settings:getConversations"
+      ) as Promise<ConversationSettings>,
+    setConversations: (next: ConversationSettings) =>
+      ipcRenderer.invoke(
+        "settings:setConversations",
+        next
+      ) as Promise<ConversationSettings>,
     // The selectable IDEs (id + label) for the Settings dropdown. Static list;
     // mirrored from the main-process IDE registry so the renderer needs no import.
     ideOptions: () =>
@@ -1274,6 +1406,7 @@ const api = {
       patch: {
         displayName?: string
         baseUrl?: string | null
+        apiMode?: "completions" | "responses" | "codex_responses"
         enabled?: boolean
       }
     ) =>
@@ -1292,6 +1425,27 @@ const api = {
       ipcRenderer.invoke("providers:getMaskedKey", id) as Promise<
         string | null
       >,
+    beginCodexSubscriptionAuth: () =>
+      ipcRenderer.invoke("providers:beginCodexSubscriptionAuth") as Promise<
+        | {
+            ok: true
+            verificationUri: string
+            userCode: string
+            deviceAuthId: string
+            intervalSeconds: number
+          }
+        | { ok: false; error?: string }
+      >,
+    completeCodexSubscriptionAuth: (input: {
+      id: string
+      deviceAuthId: string
+      userCode: string
+      intervalSeconds: number
+    }) =>
+      ipcRenderer.invoke(
+        "providers:completeCodexSubscriptionAuth",
+        input
+      ) as Promise<{ ok: boolean; error?: string }>,
     // Every account paired with its models — for the composer's grouped picker.
     listWithModels: () =>
       ipcRenderer.invoke("providers:listWithModels") as Promise<
@@ -1315,6 +1469,15 @@ const api = {
       ipcRenderer.invoke("providers:detectCodexCli") as Promise<{
         installed: boolean
         version?: string
+        error?: string
+      }>,
+    preflightCodexSubscription: (id: string) =>
+      ipcRenderer.invoke(
+        "providers:preflightCodexSubscription",
+        id
+      ) as Promise<{
+        ok: boolean
+        endpoint?: string
         error?: string
       }>,
     reorder: (orderedIds: string[]) =>
@@ -1343,6 +1506,44 @@ const api = {
         ok: boolean
         error?: string
       }>,
+  },
+
+  externalModels: {
+    listMappings: () =>
+      ipcRenderer.invoke("externalModels:listMappings") as Promise<
+        ResolvedMappingView[]
+      >,
+    saveMapping: (input: {
+      sourceKind: ExternalAgentModelSourceKind
+      sourceModel: string
+      destinationAccountId: string
+      destinationModelId: string
+    }) =>
+      ipcRenderer.invoke(
+        "externalModels:saveMapping",
+        input
+      ) as Promise<ExternalAgentModelMapping>,
+    deleteMapping: (
+      sourceKind: ExternalAgentModelSourceKind,
+      sourceModel: string,
+      destinationAccountId: string
+    ) =>
+      ipcRenderer.invoke(
+        "externalModels:deleteMapping",
+        sourceKind,
+        sourceModel,
+        destinationAccountId
+      ) as Promise<void>,
+    resolve: (input: {
+      sourceKind: ExternalAgentModelSourceKind
+      sourceModel?: string | null
+      destinationAccountId: string
+      conversationModelId: string
+    }) =>
+      ipcRenderer.invoke(
+        "externalModels:resolve",
+        input
+      ) as Promise<ExternalAgentModelResolution>,
   },
 
   // External MCP servers (stdio + streamable HTTP). DEFINITIONS live in mcp.json
@@ -1425,6 +1626,7 @@ export type {
   Approval,
   ApprovalStatus,
   Conversation,
+  FailureContext,
   Message,
   Mode,
   Project,
@@ -1440,7 +1642,13 @@ export type {
   ProcessPhaseAgent,
   ProcessEdge,
   ProcessRun,
+  ProcessPhaseAttempt,
   ProcessPhaseRun,
+  ProcessRuntimeConfig,
+  ProcessRuntimeSelection,
+  ProcessRuntimeSlot,
+  ProcessRuntimeSnapshot,
+  ProcessRuntimeSnapshotSelection,
   ProcessGraph,
   ProcessRunStatus,
   PhaseRunStatus,
@@ -1454,6 +1662,10 @@ export type {
   DashboardWidgetType,
   DashboardWidgetDataStatus,
 } from "../main/db/types"
+export type {
+  ProcessImportResult,
+  ProcessRunIncidentExport,
+} from "../main/process/io"
 // Re-export the ask_user_question types so the renderer can type the panel.
 export type {
   Question,
@@ -1476,6 +1688,8 @@ export type {
   ThemeSettings,
   IdeSettings,
   NotificationSettings,
+  OnboardingSettings,
+  ConversationSettings,
   Backend,
   LocalRuntimeProfile,
   FilePermission,
@@ -1505,7 +1719,13 @@ export type {
   ModelOrigin,
   ProviderAccount,
   ModelEntry,
+  ExternalAgentModelMapping,
+  ExternalAgentModelSourceKind,
 } from "../main/db/types"
+export type {
+  ExternalAgentModelResolution,
+  ResolvedMappingView,
+} from "../main/agent/runtime/model-resolution"
 export type {
   AccountView,
   AccountWithModels,

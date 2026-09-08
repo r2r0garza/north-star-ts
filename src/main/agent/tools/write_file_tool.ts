@@ -9,11 +9,14 @@ import {
   cleanupMessage,
   fileTooLargeMessage,
   fileRevision,
+  isManagedMemoryPath,
   isNotFoundError,
+  MANAGED_MEMORY_WRITE_ERROR,
   MUTATION_SOURCE_LIMITS,
   revisionOfText,
   validRevision,
 } from "./file/mutation"
+import { isSkillResourceUri } from "./skill_resources"
 
 // Creates, overwrites, or appends to a file inside the workspace, creating
 // parent directories as needed. Writes atomically and returns a short
@@ -34,7 +37,8 @@ export const writeFileTool: Tool = {
         "automatically. Prefer edit_file_tool to modify an existing file. Use " +
         "create for small new files; for a large generated file, write it in " +
         "chunks — one create call, then repeated append calls — which avoids " +
-        "truncating a huge single argument.",
+        "truncating a huge single argument. Omit `expected_revision` for create; " +
+        "never send empty, zero-filled, or invented revision placeholders.",
       parameters: {
         type: "object",
         properties: {
@@ -60,7 +64,7 @@ export const writeFileTool: Tool = {
           expected_revision: {
             type: "string",
             description:
-              "Optional SHA-256 revision from read_file_tool metadata. Required to protect a known prior read across overwrite/append calls.",
+              "Optional SHA-256 revision from read_file_tool metadata. Omit for create. For overwrite/append, include only a real revision returned by read_file_tool or a prior successful write_file_tool call; never use empty, zero-filled, or invented placeholders.",
           },
         },
         required: ["path", "content"],
@@ -70,6 +74,12 @@ export const writeFileTool: Tool = {
   execute: async (args, ctx) => {
     const path = typeof args.path === "string" ? args.path : ""
     if (!path) return toolError("bad_args", "A `path` is required.")
+    if (isSkillResourceUri(path)) {
+      return toolError(
+        "not_allowed",
+        "Skill resources are read-only and cannot be written."
+      )
+    }
     if (typeof args.content !== "string") {
       return toolError("bad_args", "`content` must be a string.")
     }
@@ -81,16 +91,28 @@ export const writeFileTool: Tool = {
         '`mode` must be "create", "overwrite", or "append".'
       )
     }
-    const expectedRevision = validRevision(args.expected_revision)
-    if (args.expected_revision !== undefined && !expectedRevision) {
+    const rawExpectedRevision =
+      mode === "create" && args.expected_revision === ""
+        ? undefined
+        : args.expected_revision
+    const expectedRevision = validRevision(rawExpectedRevision)
+    if (rawExpectedRevision !== undefined && !expectedRevision) {
+      const hint =
+        mode === "create"
+          ? "omit `expected_revision` for create calls"
+          : "use the real revision returned by read_file_tool or a prior successful write_file_tool call"
       return toolError(
         "bad_args",
-        "`expected_revision` must be a 64-character SHA-256 hex digest."
+        "`expected_revision` must be a 64-character SHA-256 hex digest.",
+        hint
       )
     }
 
     const env = ctx.env ?? new LocalEnvironment(ctx.workspace)
     const target = await env.resolve(path)
+    if (isManagedMemoryPath(target)) {
+      return toolError("not_allowed", MANAGED_MEMORY_WRITE_ERROR)
+    }
 
     let existingInfo
     try {

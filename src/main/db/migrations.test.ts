@@ -1,3 +1,4 @@
+import * as schema from "./schema"
 import { describe, it, expect } from "vitest"
 import Database from "better-sqlite3"
 import { runMigrations } from "./migrations"
@@ -13,6 +14,9 @@ import {
   SCHEMA_V30,
   SCHEMA_V31,
   SCHEMA_V32,
+  SCHEMA_V33,
+  SCHEMA_V34,
+  SCHEMA_V38,
 } from "./schema"
 import { sqliteLoadsForTests } from "../test/sqlite"
 
@@ -88,8 +92,139 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
     const db = new Database(":memory:")
     db.pragma("foreign_keys = ON")
     runMigrations(db)
-    expect(db.pragma("user_version", { simple: true })).toBe(32)
+    expect(db.pragma("user_version", { simple: true })).toBe(44)
     expect(db.pragma("foreign_key_check")).toHaveLength(0)
+    db.close()
+  })
+
+  it("adds durable tool-call lifecycle records in v38", () => {
+    const db = new Database(":memory:")
+    db.pragma("foreign_keys = ON")
+    runMigrations(db)
+    seedConversation(db, "conversation")
+    db.prepare(
+      "INSERT INTO messages (id, conversation_id, seq, role, tool_calls, created_at) VALUES ('assistant', 'conversation', 1, 'assistant', '[]', 0)"
+    ).run()
+    db.prepare(
+      `INSERT INTO tool_call_lifecycle
+        (id, conversation_id, assistant_message_id, logical_round_id,
+         tool_call_id, tool_name, arguments, invocation_id, identity, state,
+         prepared_at, updated_at)
+       VALUES ('life', 'conversation', 'assistant', 'after-seq:1',
+         'call-1', 'read_file_tool', '{}', 'toolinv_test', '{}',
+         'prepared', 0, 0)`
+    ).run()
+    expect(
+      db
+        .prepare("SELECT state FROM tool_call_lifecycle WHERE id = 'life'")
+        .pluck()
+        .get()
+    ).toBe("prepared")
+    expect(SCHEMA_V38).toContain("tool_call_lifecycle")
+    db.close()
+  })
+
+  it("adds durable linked model request retry budgets through v37", () => {
+    const db = new Database(":memory:")
+    db.pragma("foreign_keys = ON")
+    runMigrations(db)
+    seedConversation(db, "conversation")
+    db.prepare(
+      `INSERT INTO model_request_retry_budgets
+        (id, conversation_id, logical_round_id, status, attempts_consumed,
+         max_attempts, first_attempt_at, deadline_at, created_at, updated_at)
+       VALUES ('budget', 'conversation', 'after-seq:1', 'in_progress', 1, 3, 1000, 121000, 1000, 1000)`
+    ).run()
+    expect(
+      db
+        .prepare(
+          "SELECT deadline_at FROM model_request_retry_budgets WHERE id = 'budget'"
+        )
+        .pluck()
+        .get()
+    ).toBe(121000)
+    expect(
+      db
+        .prepare(
+          "SELECT retry_sequence, source, parent_budget_id FROM model_request_retry_budgets WHERE id = 'budget'"
+        )
+        .get()
+    ).toEqual({
+      retry_sequence: 0,
+      source: "automatic",
+      parent_budget_id: null,
+    })
+    db.close()
+  })
+
+  it("adds external agent model mappings in v33", () => {
+    const db = new Database(":memory:")
+    db.pragma("foreign_keys = ON")
+    runMigrations(db)
+    db.prepare(
+      `INSERT INTO provider_accounts
+        (id, provider, display_name, api_mode, enabled, position, created_at)
+       VALUES ('account', 'openai', 'OpenAI', 'completions', 1, 0, 0)`
+    ).run()
+    db.prepare(
+      `INSERT INTO external_agent_model_mappings
+        (source_kind, source_model, normalized_source_model,
+         destination_account_id, destination_model_id, created_at, updated_at)
+       VALUES ('claude', 'Haiku', 'haiku', 'account', 'anthropic/haiku', 0, 0)`
+    ).run()
+    expect(
+      db
+        .prepare(
+          "SELECT destination_model_id FROM external_agent_model_mappings"
+        )
+        .pluck()
+        .get()
+    ).toBe("anthropic/haiku")
+    db.close()
+  })
+
+  it("adds message FTS recall index in v34", () => {
+    const db = new Database(":memory:")
+    db.pragma("foreign_keys = ON")
+    runMigrations(db)
+    seedConversation(db, "conversation")
+    db.prepare(
+      "INSERT INTO messages (id, conversation_id, seq, role, content, created_at) VALUES ('m1', 'conversation', 1, 'user', 'remember the red adapter', 0)"
+    ).run()
+    expect(
+      db
+        .prepare(
+          "SELECT message_id FROM message_fts WHERE message_fts MATCH 'red'"
+        )
+        .pluck()
+        .all()
+    ).toEqual(["m1"])
+    db.prepare("DELETE FROM conversations WHERE id = 'conversation'").run()
+    expect(count(db, "message_fts")).toBe(0)
+    db.close()
+  })
+
+  it("widens external agent model mappings for Copilot in v35", () => {
+    const db = new Database(":memory:")
+    db.pragma("foreign_keys = ON")
+    runMigrations(db)
+    db.prepare(
+      `INSERT INTO provider_accounts
+        (id, provider, display_name, api_mode, enabled, position, created_at)
+       VALUES ('account', 'openai', 'OpenAI', 'completions', 1, 0, 0)`
+    ).run()
+    db.prepare(
+      `INSERT INTO external_agent_model_mappings
+        (source_kind, source_model, normalized_source_model,
+         destination_account_id, destination_model_id, created_at, updated_at)
+       VALUES ('copilot', 'GPT-5', 'gpt-5', 'account', 'openai/gpt-5', 0, 0)`
+    ).run()
+    expect(
+      db
+        .prepare("SELECT source_kind FROM external_agent_model_mappings")
+        .pluck()
+        .get()
+    ).toBe("copilot")
     db.close()
   })
 
@@ -130,6 +265,106 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
         .pluck()
         .all()
     ).toEqual(["claude_code", "codex_cli"])
+    db.close()
+  })
+
+  it("widens provider and api_mode constraints for Codex subscription (v43)", () => {
+    const db = new Database(":memory:")
+    db.pragma("foreign_keys = ON")
+    runMigrations(db)
+
+    db.prepare(
+      `INSERT INTO provider_accounts
+        (id, provider, display_name, api_mode, enabled, position, created_at)
+       VALUES ('codex-sub', 'codex_subscription', 'Codex Subscription', 'codex_responses', 1, 0, 0)`
+    ).run()
+    db.prepare(
+      `INSERT INTO models
+        (id, account_id, model_id, model_name, origin, favorite, created_at, updated_at)
+       VALUES ('model', 'codex-sub', 'gpt-5.5', 'GPT-5.5', 'seeded', 1, 0, 0)`
+    ).run()
+
+    expect(
+      db
+        .prepare(
+          "SELECT provider, api_mode FROM provider_accounts WHERE id = 'codex-sub'"
+        )
+        .get()
+    ).toEqual({
+      provider: "codex_subscription",
+      api_mode: "codex_responses",
+    })
+    expect(db.pragma("foreign_key_check")).toHaveLength(0)
+    db.close()
+  })
+
+  it("repairs stale provider constraints when user_version is already current", () => {
+    const db = new Database(":memory:")
+    db.pragma("foreign_keys = ON")
+    runMigrations(db)
+    db.exec(`
+      CREATE TABLE provider_accounts_without_codex_subscription (
+        id            TEXT PRIMARY KEY,
+        provider      TEXT NOT NULL CHECK (provider IN
+                    ('portkey','openai_compatible','openai','claude_code','codex_cli','anthropic','google','azure_openai')),
+        display_name  TEXT NOT NULL,
+        base_url      TEXT,
+        encrypted_key BLOB,
+        api_mode      TEXT NOT NULL DEFAULT 'completions'
+                    CHECK (api_mode IN ('completions','responses')),
+        enabled       INTEGER NOT NULL DEFAULT 1,
+        created_at    INTEGER NOT NULL,
+        last_used_at  INTEGER,
+        position      INTEGER NOT NULL DEFAULT 0
+      );
+      INSERT INTO provider_accounts_without_codex_subscription
+        (id, provider, display_name, base_url, encrypted_key, api_mode, enabled, created_at, last_used_at, position)
+      SELECT id, provider, display_name, base_url, encrypted_key, api_mode, enabled, created_at, last_used_at, position
+      FROM provider_accounts;
+      DROP TABLE provider_accounts;
+      ALTER TABLE provider_accounts_without_codex_subscription RENAME TO provider_accounts;
+      PRAGMA user_version = 44;
+    `)
+
+    runMigrations(db)
+
+    db.prepare(
+      `INSERT INTO provider_accounts
+        (id, provider, display_name, api_mode, enabled, position, created_at)
+       VALUES ('codex-sub', 'codex_subscription', 'Codex Subscription', 'codex_responses', 1, 0, 0)`
+    ).run()
+    expect(db.pragma("foreign_key_check")).toHaveLength(0)
+    db.close()
+  })
+
+  it("repairs missing project positions when user_version is already current", () => {
+    const db = new Database(":memory:")
+    db.pragma("foreign_keys = ON")
+    runMigrations(db)
+    db.exec(`
+      INSERT INTO projects
+        (id, name, workspace_id, position, created_at, updated_at)
+      VALUES
+        ('older', 'Older', NULL, 0, 0, 100),
+        ('newer', 'Newer', NULL, 1, 0, 200);
+
+      CREATE TABLE projects_without_position AS
+        SELECT id, name, workspace_id, created_at, updated_at
+        FROM projects;
+      DROP TABLE projects;
+      ALTER TABLE projects_without_position RENAME TO projects;
+      PRAGMA user_version = 44;
+    `)
+
+    runMigrations(db)
+
+    const rows = db
+      .prepare("SELECT id, position FROM projects ORDER BY position ASC")
+      .all() as Array<{ id: string; position: number }>
+    expect(rows).toEqual([
+      { id: "newer", position: 0 },
+      { id: "older", position: 1 },
+    ])
     db.close()
   })
 
@@ -318,6 +553,136 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
     db.close()
   })
 
+  it("adds the phase output identity column (v39, debug 085)", () => {
+    const db = new Database(":memory:")
+    db.pragma("foreign_keys = ON")
+    runMigrations(db)
+    const phaseRunCols = (
+      db.pragma("table_info(process_phase_runs)") as Array<{ name: string }>
+    ).map((c) => c.name)
+    expect(phaseRunCols).toContain("output_identity")
+    db.close()
+  })
+
+  it("adds process runtime config/snapshot columns", () => {
+    const db = new Database(":memory:")
+    db.pragma("foreign_keys = ON")
+    runMigrations(db)
+    const phaseCols = (
+      db.pragma("table_info(process_phases)") as Array<{ name: string }>
+    ).map((c) => c.name)
+    expect(phaseCols).toContain("runtime_config")
+    const agentCols = (
+      db.pragma("table_info(process_phase_agents)") as Array<{ name: string }>
+    ).map((c) => c.name)
+    expect(agentCols).toContain("runtime_config")
+    const runCols = (
+      db.pragma("table_info(process_runs)") as Array<{ name: string }>
+    ).map((c) => c.name)
+    expect(runCols).toContain("runtime_config")
+    const phaseRunCols = (
+      db.pragma("table_info(process_phase_runs)") as Array<{ name: string }>
+    ).map((c) => c.name)
+    expect(phaseRunCols).toContain("runtime_snapshot")
+    db.close()
+  })
+
+  it("repairs missing process runtime columns even when user_version is already current or newer", () => {
+    const db = new Database(":memory:")
+    db.pragma("foreign_keys = ON")
+    runMigrations(db)
+    db.pragma("foreign_keys = OFF")
+    db.exec(`
+      CREATE TABLE process_phases_without_runtime AS
+        SELECT id, process_id, key, name, routing, gate_policy, fan_out,
+               position, max_rework_rounds, dot_folder, validator,
+               validator_max_iterations, validator_agent, subprocess_id,
+               completion_contract
+        FROM process_phases;
+      DROP TABLE process_phases;
+      ALTER TABLE process_phases_without_runtime RENAME TO process_phases;
+
+      CREATE TABLE process_phase_agents_without_runtime AS
+        SELECT id, phase_id, agent_name, skills, tools, position
+        FROM process_phase_agents;
+      DROP TABLE process_phase_agents;
+      ALTER TABLE process_phase_agents_without_runtime RENAME TO process_phase_agents;
+
+      CREATE TABLE process_runs_without_runtime AS
+        SELECT id, process_id, source_conversation_id, task_id, objective,
+               status, started_at, finished_at, created_at, workspace_id,
+               title, parent_phase_run_id, completion_contracts
+        FROM process_runs;
+      DROP TABLE process_runs;
+      ALTER TABLE process_runs_without_runtime RENAME TO process_runs;
+
+      CREATE TABLE process_phase_runs_without_runtime AS
+        SELECT id, run_id, phase_id, parent_id, status, task_id, agent_name,
+               iteration, error, started_at, finished_at, title, rework_note,
+               rework_round, validator_round, source_child_run_id,
+               output_identity, failure, completion_receipt
+        FROM process_phase_runs;
+      DROP TABLE process_phase_runs;
+      ALTER TABLE process_phase_runs_without_runtime RENAME TO process_phase_runs;
+      PRAGMA user_version = 45;
+    `)
+
+    runMigrations(db)
+
+    expect(db.pragma("user_version", { simple: true })).toBe(45)
+    expect(
+      (db.pragma("table_info(process_phases)") as Array<{ name: string }>).map(
+        (c) => c.name
+      )
+    ).toContain("runtime_config")
+    expect(
+      (
+        db.pragma("table_info(process_phase_agents)") as Array<{ name: string }>
+      ).map((c) => c.name)
+    ).toContain("runtime_config")
+    expect(
+      (db.pragma("table_info(process_runs)") as Array<{ name: string }>).map(
+        (c) => c.name
+      )
+    ).toContain("runtime_config")
+    expect(
+      (
+        db.pragma("table_info(process_phase_runs)") as Array<{ name: string }>
+      ).map((c) => c.name)
+    ).toContain("runtime_snapshot")
+    db.close()
+  })
+
+  it("adds process failure context columns and attempt audit table (v40, debug 069)", () => {
+    const db = new Database(":memory:")
+    db.pragma("foreign_keys = ON")
+    runMigrations(db)
+    const phaseRunCols = (
+      db.pragma("table_info(process_phase_runs)") as Array<{ name: string }>
+    ).map((c) => c.name)
+    expect(phaseRunCols).toContain("failure")
+    const attemptsTable = db
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='process_phase_attempts'"
+      )
+      .get()
+    expect(attemptsTable).toBeTruthy()
+    const attemptCols = (
+      db.pragma("table_info(process_phase_attempts)") as Array<{ name: string }>
+    ).map((c) => c.name)
+    expect(attemptCols).toEqual(
+      expect.arrayContaining([
+        "phase_run_id",
+        "worker_task_id",
+        "stage",
+        "attempt",
+        "max_attempts",
+        "failure",
+      ])
+    )
+    db.close()
+  })
+
   it("adds the flag-back schema (v22, plan 031.2)", () => {
     const db = new Database(":memory:")
     db.pragma("foreign_keys = ON")
@@ -482,7 +847,7 @@ describe.skipIf(!sqliteLoads)("SCHEMA_V9 — orphan reap (plan 022)", () => {
     // Apply V9 (the reaper) and any later migrations, up to the latest version.
     runMigrations(db)
 
-    expect(db.pragma("user_version", { simple: true })).toBe(30)
+    expect(db.pragma("user_version", { simple: true })).toBe(44)
 
     // Reaped: orphan + its nested descendant, and all their state.
     const taskIds = (
@@ -504,6 +869,34 @@ describe.skipIf(!sqliteLoads)("SCHEMA_V9 — orphan reap (plan 022)", () => {
 
     // No dangling references after FKs are re-enabled.
     expect(db.pragma("foreign_key_check")).toHaveLength(0)
+    db.close()
+  })
+})
+
+describe.skipIf(!sqliteLoads)("completion policy migration", () => {
+  it("keeps existing phases and in-flight runs explicitly legacy", () => {
+    const db = new Database(":memory:")
+    for (let n = 1; n <= 40; n++)
+      db.exec((schema as Record<string, string>)[`SCHEMA_V${n}`])
+    db.pragma("user_version = 40")
+    db.exec(`
+      INSERT INTO process_definitions (id, name, created_at, updated_at) VALUES ('p', 'Existing', 1, 1);
+      INSERT INTO process_phases (id, process_id, key, name, position) VALUES ('phase', 'p', 'work', 'Work', 0);
+      INSERT INTO process_runs (id, process_id, status, created_at) VALUES ('run', 'p', 'running', 1);
+      INSERT INTO process_phase_runs (id, run_id, phase_id, status) VALUES ('pr', 'run', 'phase', 'running');
+    `)
+    runMigrations(db)
+    expect(
+      db.prepare("SELECT completion_contract FROM process_phases").get()
+    ).toEqual({ completion_contract: '{"policy":"legacy"}' })
+    expect(
+      db.prepare("SELECT completion_contracts FROM process_runs").get()
+    ).toEqual({ completion_contracts: null })
+    expect(
+      db
+        .prepare("SELECT status, completion_receipt FROM process_phase_runs")
+        .get()
+    ).toEqual({ status: "running", completion_receipt: null })
     db.close()
   })
 })

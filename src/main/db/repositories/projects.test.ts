@@ -14,6 +14,7 @@ import {
   listProjects,
   updateProject,
   deleteProject,
+  reorderProjects,
 } from "./projects"
 import { upsertWorkspace, deleteWorkspace } from "./workspaces"
 import { createConversation, getConversation } from "./conversations"
@@ -51,13 +52,36 @@ describe.skipIf(!sqliteLoads)("projects", () => {
     expect(getProject(p.id)?.workspaceId).toBeNull()
   })
 
-  it("lists projects most-recently-updated first", () => {
+  it("lists projects by explicit position", () => {
+    const a = createProject({ name: "A" })
+    const b = createProject({ name: "B" })
+    reorderProjects([a.id, b.id])
+    updateProject(b.id, { name: "B2" })
+    const names = listProjects().map((p) => p.name)
+    expect(names).toEqual(["A", "B2"])
+  })
+
+  it("places newly-created projects at the top until manually reordered", () => {
+    createProject({ name: "A" })
+    createProject({ name: "B" })
+    expect(listProjects().map((p) => p.name)).toEqual(["B", "A"])
+  })
+
+  it("reorders projects", () => {
+    const a = createProject({ name: "A" })
+    const b = createProject({ name: "B" })
+    const c = createProject({ name: "C" })
+    const reordered = reorderProjects([b.id, c.id, a.id])
+    expect(reordered.map((p) => p.name)).toEqual(["B", "C", "A"])
+    expect(listProjects().map((p) => p.position)).toEqual([0, 1, 2])
+  })
+
+  it("rejects incomplete project reorders", () => {
     const a = createProject({ name: "A" })
     createProject({ name: "B" })
-    // Touch A so it becomes the most recently updated.
-    updateProject(a.id, { name: "A2" })
-    const names = listProjects().map((p) => p.name)
-    expect(names[0]).toBe("A2")
+    expect(() => reorderProjects([a.id])).toThrow(
+      "Project reorder must include every project exactly once"
+    )
   })
 
   it("keeps conversations but nulls their project_id when a project is deleted", () => {

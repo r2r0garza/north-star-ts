@@ -29,8 +29,14 @@ export function applyThemeCss(theme: { light: string; dark: string } | null) {
 
 // Recolor + apply from an accent/neutral hex pair (nulls fall back to the
 // built-in defaults). The live-preview entry point for Settings → Appearance.
-export function applyThemeColors(accent: string | null, neutral: string | null) {
+export function applyThemeColors(
+  accent: string | null,
+  neutral: string | null
+) {
   applyThemeCss(
-    themeCssFromHexes(accent || DEFAULT_ACCENT_HEX, neutral || DEFAULT_NEUTRAL_HEX)
+    themeCssFromHexes(
+      accent || DEFAULT_ACCENT_HEX,
+      neutral || DEFAULT_NEUTRAL_HEX
+    )
   )
 }

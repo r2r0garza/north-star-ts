@@ -1,7 +1,23 @@
-import { ipcMain } from "electron"
+import { readFile, writeFile } from "fs/promises"
+import { basename } from "path"
+import {
+  app,
+  BrowserWindow,
+  dialog,
+  ipcMain,
+  type OpenDialogOptions,
+  type SaveDialogOptions,
+} from "electron"
 import type { TaskRunner } from "../tasks/runner"
 import type { ProcessService } from "../tasks/process/service"
+import type { ProcessRuntimeConfig } from "../db/types"
 import { getProcessRun } from "../db/repositories/processes"
+import {
+  exportProcessDefinition,
+  exportProcessRunIncident,
+  importProcessExport,
+  type ProcessImportResult,
+} from "../process/io"
 
 // Control channels for the Process engine (plan 025). Definition/run CRUD lives
 // on the `db:processes:*` channels (db-handlers.ts); these are the *control verbs*
@@ -23,6 +39,7 @@ export function registerProcessHandlers(
         sourceConversationId: string | null
         objective: string
         workspacePath?: string | null
+        runtimeConfig?: ProcessRuntimeConfig | null
       }
     ) => processService.startRun(input)
   )
@@ -47,11 +64,9 @@ export function registerProcessHandlers(
     processService.restartRun(processRunId)
   )
 
-  // Approve a phase gate. A process gate has no in-memory agent promise (the
-  // scheduler threw and unwound, settling the task `paused`), so unlike
-  // task:approve we don't touch the agent gate resolver — we settle the durable
-  // approval row (recordApprovalDecision) and RESUME the paused task, which
-  // re-runs the scheduler; it sees the gate approved and releases the dependents.
+  // Approve a process gate. The service keeps normal phase approval and
+  // validator manual override decisions distinct, then resumes the paused task so
+  // the scheduler can reconcile the durable gate row.
   ipcMain.handle(
     "process:approve",
     (
@@ -61,10 +76,7 @@ export function registerProcessHandlers(
         requestId: string
       }
     ) => {
-      const run = getProcessRun(payload.processRunId)
-      if (!run?.taskId) return
-      runner.recordApprovalDecision(run.taskId, payload.requestId, "approved")
-      runner.resume(run.taskId)
+      processService.approve(payload)
     }
   )
 
@@ -92,6 +104,14 @@ export function registerProcessHandlers(
     ) => processService.requestChanges(payload)
   )
 
+  // Retry only a failed validator review for a validator gate. The completed phase
+  // worker output is reused; only the reviewer runs again.
+  ipcMain.handle(
+    "process:retryReview",
+    (_e, payload: { processRunId: string; requestId: string }) =>
+      processService.retryReview(payload)
+  )
+
   // Confirm / dismiss a cross-phase rework flag (plan 031.2). Delegated to the
   // service: confirm applies the flag's reset (target + downstream) and resumes;
   // dismiss settles the flag denied and resumes as if unflagged.
@@ -104,5 +124,96 @@ export function registerProcessHandlers(
     "process:dismissFlag",
     (_e, payload: { processRunId: string; requestId: string }) =>
       processService.dismissFlag(payload)
+  )
+
+  ipcMain.handle("process:export", async (_e, processId: string) => {
+    const exported = exportProcessDefinition(processId)
+    const safeName = exported.definition.name
+      .trim()
+      .replace(/[^a-z0-9._ -]+/gi, "-")
+      .replace(/\s+/g, " ")
+      .slice(0, 80)
+    const win = BrowserWindow.getFocusedWindow() ?? undefined
+    const options: SaveDialogOptions = {
+      title: "Export process",
+      defaultPath: `${safeName || "process"}.json`,
+      filters: [{ name: "Process JSON", extensions: ["json"] }],
+    }
+    const result = win
+      ? await dialog.showSaveDialog(win, options)
+      : await dialog.showSaveDialog(options)
+    if (result.canceled || !result.filePath) return { canceled: true }
+
+    await writeFile(
+      result.filePath,
+      `${JSON.stringify(exported, null, 2)}\n`,
+      "utf-8"
+    )
+    return { path: result.filePath, canceled: false }
+  })
+
+  ipcMain.handle("process:exportRunIncident", async (_e, runId: string) => {
+    const exported = exportProcessRunIncident(runId, {
+      name: app.getName(),
+      version: app.getVersion(),
+      build:
+        process.env.BUILD_VERSION ??
+        process.env.GIT_COMMIT ??
+        process.env.VITE_GIT_COMMIT ??
+        null,
+    })
+    const run = exported.runs.find((candidate) => candidate.id === runId)
+    const safeName = `${run?.processName ?? "process"}-${runId}`
+      .trim()
+      .replace(/[^a-z0-9._ -]+/gi, "-")
+      .replace(/\s+/g, " ")
+      .slice(0, 110)
+    const win = BrowserWindow.getFocusedWindow() ?? undefined
+    const options: SaveDialogOptions = {
+      title: "Export process run incident",
+      defaultPath: `${safeName || "process-run-incident"}.json`,
+      filters: [{ name: "Process Incident JSON", extensions: ["json"] }],
+    }
+    const result = win
+      ? await dialog.showSaveDialog(win, options)
+      : await dialog.showSaveDialog(options)
+    if (result.canceled || !result.filePath) return { canceled: true }
+
+    await writeFile(
+      result.filePath,
+      `${JSON.stringify(exported, null, 2)}\n`,
+      "utf-8"
+    )
+    return { path: result.filePath, canceled: false }
+  })
+
+  ipcMain.handle(
+    "process:import",
+    async (): Promise<
+      | (ProcessImportResult & { path: string; canceled: false })
+      | { canceled: true }
+    > => {
+      const win = BrowserWindow.getFocusedWindow() ?? undefined
+      const options: OpenDialogOptions = {
+        title: "Import process",
+        properties: ["openFile"],
+        filters: [{ name: "Process JSON", extensions: ["json"] }],
+      }
+      const result = win
+        ? await dialog.showOpenDialog(win, options)
+        : await dialog.showOpenDialog(options)
+      if (result.canceled || result.filePaths.length === 0) {
+        return { canceled: true }
+      }
+
+      const path = result.filePaths[0]
+      const raw = await readFile(path, "utf-8")
+      const parsed = JSON.parse(raw) as unknown
+      return {
+        ...importProcessExport(parsed),
+        path: basename(path),
+        canceled: false,
+      }
+    }
   )
 }

@@ -25,6 +25,8 @@ import {
   setAutoModeForConversation,
   type ChatRequest,
 } from "./agent"
+import { cancelAllQuestions } from "./agent/questions/broker"
+import { closeCliMcpBridge } from "./agent/mcp-server"
 import {
   pickWorkspace,
   pickFiles,
@@ -46,7 +48,12 @@ import {
   importSkillFromMarkdown,
   importSkillFromZip,
 } from "./agent/skills/import"
-import { agentSources, userAgentsDir } from "./agent/agents/sources"
+import { assertSkillSecurity } from "./agent/skills/security"
+import {
+  agentSources,
+  agentSourceEntries as getAgentSourceEntries,
+  userAgentsDir,
+} from "./agent/agents/sources"
 import {
   loadAgents,
   listSource as listAgentSource,
@@ -64,7 +71,6 @@ import type {
 } from "./agent/skills/types"
 import type {
   AgentSourceRow,
-  AgentSourceKind,
   AgentTree,
   AgentFolder,
 } from "./agent/agents/types"
@@ -73,6 +79,7 @@ import * as settingsService from "./settings/service"
 import { listWorkspaceFiles } from "./files/list"
 import { readGitBranch } from "./index/metadata"
 import { gitDiffFile } from "./git/diff"
+import { GitService } from "./git/service"
 import { openInIde } from "./ide/open"
 import { resolveInWorkspaceReal } from "./agent/tools/workspace"
 import { registerDbHandlers } from "./ipc/db-handlers"
@@ -99,7 +106,12 @@ import {
   mainAgentName,
 } from "./config/system-name"
 import { resolveBrandTheme } from "./config/theme"
-import { reconcilePendingMemoryOnStartup } from "./agent/memory/service"
+import {
+  parkPendingMemoryForQuitSync,
+  reconcilePendingMemoryOnStartup,
+  startMemoryMaintenance,
+  stopMemoryMaintenance,
+} from "./agent/memory/service"
 
 // The durable task runner — a singleton owned by the main process. Started in
 // app.whenReady (after the DB handlers register) and stopped on will-quit.
@@ -185,8 +197,8 @@ function createWindow(): void {
   // Local const for in-function use (clean non-null narrowing in the closures
   // below); the module-level `mainWindow` mirrors it for external pushes.
   const win = new BrowserWindow({
-    width: 1100,
-    height: 800,
+    width: 1278,
+    height: 823,
     show: false,
     autoHideMenuBar: true,
     // Remove the OS title bar so the sidebar/chat reach the top. On macOS,
@@ -399,33 +411,41 @@ ipcMain.handle("skills:list", async (_event, workspace?: string) => {
 // agents are excluded here (they're only reachable as another agent's child).
 ipcMain.handle("agents:list", async (_event, workspace?: string) => {
   const agents = await loadAgents(agentSources(workspace))
+  const { visibleExternalSources = {} } = settingsService.getAgentSources()
   return agents
-    .filter((a) => a.userInvocable)
-    .map(({ name, description }) => ({ name, description }))
+    .filter(
+      (a) =>
+        a.userInvocable &&
+        (a.sourceKind === "north_star" ||
+          visibleExternalSources[a.sourceKind] !== false)
+    )
+    .map(
+      ({
+        refId,
+        ref,
+        sourceKind,
+        scope,
+        name,
+        nativeName,
+        description,
+        label,
+        sourceMetadata,
+        diagnostics,
+      }) => ({
+        ref: refId,
+        refId,
+        agentRef: ref,
+        sourceKind,
+        scope,
+        name,
+        nativeName,
+        description,
+        label,
+        sourceMetadata,
+        diagnostics,
+      })
+    )
 })
-
-// The kind-tagged agent-source dirs for a workspace, in load order. Mirrors
-// skillSourceEntries: user + user-registered custom folders, plus the workspace
-// dirs when a workspace is passed. Backs agents:sources (counts) for the Settings
-// → Capabilities "Agent folders" table.
-function agentSourceEntries(
-  workspace?: string
-): Array<{ path: string; kind: AgentSourceKind }> {
-  const custom = settingsService.getAgentSources().folders
-  const dataDir = dataDirName()
-  const entries: Array<{ path: string; kind: AgentSourceKind }> = [
-    { path: userAgentsDir(), kind: "user" },
-    ...custom.map((path) => ({ path, kind: "custom" as const })),
-  ]
-  if (workspace) {
-    entries.push({ path: join(workspace, ".github", "agents"), kind: "github" })
-    entries.push({
-      path: join(workspace, dataDir, "agents"),
-      kind: "workspace",
-    })
-  }
-  return entries
-}
 
 // Enumerate the agent sources (user + custom) for Settings → Capabilities, each
 // tagged with its kind and its current agent count. Mirrors the load order.
@@ -433,10 +453,10 @@ ipcMain.handle(
   "agents:sources",
   async (_event, workspace?: string): Promise<AgentSourceRow[]> => {
     return Promise.all(
-      agentSourceEntries(workspace).map(async ({ path, kind }) => ({
-        path,
-        kind,
-        agentCount: (await listAgentSource(path)).length,
+      getAgentSourceEntries(workspace).map(async (entry) => ({
+        path: entry.path,
+        kind: entry.kind,
+        agentCount: (await listAgentSource(entry.path, entry)).length,
       }))
     )
   }
@@ -446,43 +466,43 @@ ipcMain.handle(
 // agents. Enumerates workspaces itself so the view populates with no active
 // conversation. Folders are included even when empty. Mirrors skills:tree.
 ipcMain.handle("agents:tree", async (): Promise<AgentTree> => {
-  const dataDir = dataDirName()
   const toFolder = async (
-    path: string,
-    label: string,
-    kind: AgentFolder["kind"]
+    entry: ReturnType<typeof getAgentSourceEntries>[number]
   ): Promise<AgentFolder> => ({
-    path,
-    label,
-    kind,
-    agents: await listAgentSource(path),
+    path: entry.path,
+    label: entry.label,
+    kind: entry.kind,
+    agents: await listAgentSource(entry.path, entry),
   })
 
-  const global = [await toFolder(userAgentsDir(), "Global", "user")]
+  const global = await Promise.all(
+    getAgentSourceEntries()
+      .filter((entry) => entry.scope === "global")
+      .map(toFolder)
+  )
 
   const workspaces = await Promise.all(
     listWorkspaces().map(async (ws) => ({
       label: ws.name ?? baseName(ws.path),
       path: ws.path,
-      folders: await Promise.all([
-        toFolder(
-          join(ws.path, ".github", "agents"),
-          ".github/agents",
-          "github"
-        ),
-        toFolder(
-          join(ws.path, dataDir, "agents"),
-          `${dataDir}/agents`,
-          "workspace"
-        ),
-      ]),
+      folders: await Promise.all(
+        getAgentSourceEntries(ws.path)
+          .filter((entry) => entry.scope === "workspace")
+          .map(toFolder)
+      ),
     }))
   )
 
   const custom = await Promise.all(
-    settingsService
-      .getAgentSources()
-      .folders.map((folder) => toFolder(folder, baseName(folder), "custom"))
+    settingsService.getAgentSources().folders.map((folder) =>
+      toFolder({
+        path: folder,
+        label: baseName(folder),
+        kind: "custom",
+        sourceKind: "north_star",
+        scope: "custom",
+      })
+    )
   )
 
   return { global, workspaces, custom }
@@ -723,6 +743,7 @@ ipcMain.handle(
   async (_event, filePath: string, content: string): Promise<void> => {
     assertSkillPath(filePath)
     assertNotManagedMemorySkill(filePath)
+    assertSkillSecurity(content)
     await writeFile(filePath, content, "utf-8")
   }
 )
@@ -758,9 +779,11 @@ ipcMain.handle(
     if (existsSync(skillDir)) {
       throw new Error(`A skill named '${name}' already exists here.`)
     }
+    const content = skillScaffold(name, description, body)
+    assertSkillSecurity(content)
     await mkdir(skillDir, { recursive: true })
     const filePath = join(skillDir, "SKILL.md")
-    await writeFile(filePath, skillScaffold(name, description, body), "utf-8")
+    await writeFile(filePath, content, "utf-8")
     return filePath
   }
 )
@@ -883,11 +906,15 @@ const AGENT_SUFFIX = ".agent.md"
 // dirs for EVERY known workspace. Read is permitted everywhere; writes use the
 // narrower writableAgentRoots().
 function allAgentRoots(): string[] {
-  const dataDir = dataDirName()
-  const roots = [userAgentsDir(), ...settingsService.getAgentSources().folders]
+  const roots = [
+    userAgentsDir(),
+    ...settingsService.getAgentSources().folders,
+    ...getAgentSourceEntries()
+      .filter((entry) => entry.sourceKind !== "north_star")
+      .map((entry) => entry.path),
+  ]
   for (const ws of listWorkspaces()) {
-    roots.push(join(ws.path, ".github", "agents"))
-    roots.push(join(ws.path, dataDir, "agents"))
+    roots.push(...getAgentSourceEntries(ws.path).map((entry) => entry.path))
   }
   return roots.map((r) => resolve(r))
 }
@@ -903,8 +930,12 @@ function writableAgentRoots(): string[] {
 // known agent-source dir. Same traversal / sibling-prefix protection as skills.
 function assertAgentPath(filePath: string): void {
   const resolved = resolve(filePath)
-  if (!basename(resolved).endsWith(AGENT_SUFFIX)) {
-    throw new Error(`Refusing non-.agent.md path: ${filePath}`)
+  const allowedFile =
+    basename(resolved).endsWith(AGENT_SUFFIX) ||
+    extname(resolved) === ".md" ||
+    extname(resolved) === ".toml"
+  if (!allowedFile) {
+    throw new Error(`Refusing non-agent definition path: ${filePath}`)
   }
   const inside = allAgentRoots().some(
     (root) => resolved === root || resolved.startsWith(root + sep)
@@ -940,12 +971,60 @@ ipcMain.handle(
     return listWorkspaceFiles(workspace.trim(), query ?? "", Date.now())
   }
 )
+const FILE_READ_TEXT_LIMIT = 256 * 1024
+ipcMain.handle(
+  "files:readText",
+  async (
+    _event,
+    workspace: string,
+    relPath: string
+  ): Promise<{
+    content: string | null
+    truncated: boolean
+    error: string | null
+  }> => {
+    if (!workspace?.trim() || !relPath?.trim())
+      return { content: null, truncated: false, error: "No path." }
+    let abs: string
+    try {
+      abs = await resolveInWorkspaceReal(workspace.trim(), relPath.trim())
+    } catch {
+      return {
+        content: null,
+        truncated: false,
+        error: "Path is outside the workspace.",
+      }
+    }
+    try {
+      const bytes = await readFile(abs)
+      const truncated = bytes.byteLength > FILE_READ_TEXT_LIMIT
+      const slice = truncated ? bytes.subarray(0, FILE_READ_TEXT_LIMIT) : bytes
+      return {
+        content: slice.toString("utf8"),
+        truncated,
+        error: null,
+      }
+    } catch (err) {
+      return {
+        content: null,
+        truncated: false,
+        error: err instanceof Error ? err.message : String(err),
+      }
+    }
+  }
+)
 // Read the current git branch for a workspace folder. Returns the branch name
 // string, a short SHA when the HEAD is detached, or null when the folder is not
 // a git repo. Prefers the `git` CLI (correct for worktrees/subdirs/packed refs),
 // falling back to a direct .git/HEAD read when git isn't on PATH.
 ipcMain.handle("git:branch", async (_event, path: string) => {
   if (!path?.trim()) return null
+  try {
+    const serviceBranch = await new GitService(path.trim()).branchName()
+    if (serviceBranch) return serviceBranch
+  } catch {
+    // Fall back to the legacy zero-dependency reader when git is unavailable.
+  }
   const result = await readGitBranch(path.trim())
   if (!result) return null
   const val = result.value as {
@@ -1117,6 +1196,9 @@ app.whenReady().then(() => {
   void reconcilePendingMemoryOnStartup().catch((err) =>
     console.warn("[memory] startup reconcile failed:", err)
   )
+  // Nothing else is time-triggered: the inactivity boundary and any batch left
+  // stranded by a crashed or offline classifier are only noticed on this tick.
+  startMemoryMaintenance()
   createWindow()
 
   app.on("activate", () => {
@@ -1134,18 +1216,44 @@ app.on("window-all-closed", () => {
 // veto. That veto hides-instead-of-closes on a normal user close (so a session
 // survives a stray window close), but during quit it would cancel the quit and
 // leave the process (and its renderer children) running. Runs before will-quit.
+let memoryParkedForQuit = false
 app.on("before-quit", () => {
   browserManager.prepareForQuit()
+  // Park staged memory into its durable processing file before the process goes
+  // away, otherwise the batch waits in staging until the user happens to send
+  // another message in that same scope. This is a file move, not a model call,
+  // so it costs milliseconds.
+  //
+  // It runs synchronously and never cancels the quit. Deferring the quit to
+  // await the park instead (preventDefault, then app.quit() once it settled)
+  // deadlocked macOS's Cmd+Q: the OS had already answered
+  // applicationShouldTerminate with NSTerminateCancel, so the re-issued quit
+  // closed every window but never terminated, and the app sat there windowless
+  // until a second Cmd+Q. before-quit can still fire more than once (a quit
+  // cancelled elsewhere, then retried), so the latch keeps this to one pass.
+  if (memoryParkedForQuit) return
+  memoryParkedForQuit = true
+  try {
+    parkPendingMemoryForQuitSync()
+  } catch (err) {
+    console.warn("[memory] quit park failed:", err)
+  }
 })
 
 // Stop the task runner (abort in-flight tasks; next boot's reconcile recovers
 // them) and flush the WAL + close the DB cleanly on quit.
 app.on("will-quit", () => {
+  stopMemoryMaintenance()
   void taskRunner.stop()
   browserManager.dispose()
   terminalService.dispose()
   // Disconnect every pooled MCP client (stops spawned stdio processes / closes
   // HTTP sessions). Fire-and-forget; the process is exiting.
   void getMcpManager().disposeAll()
+  // The other MCP role (plan 045): close the loopback listener CLI children
+  // connect to, clearing every outstanding grant and releasing anything still
+  // blocked on a question.
+  void closeCliMcpBridge()
+  cancelAllQuestions()
   closeDb()
 })

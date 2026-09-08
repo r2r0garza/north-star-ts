@@ -60,7 +60,9 @@ export function taskStateSection(
 // an explicit "nothing is open" — otherwise the model has no current fact to
 // consult and falls back to whatever page it last mentioned in the conversation
 // (reporting a stale, already-closed page as if it were still open).
-export function browserStateSection(state: BrowserState | null): ContextSection {
+export function browserStateSection(
+  state: BrowserState | null
+): ContextSection {
   if (!state) {
     return {
       name: "browser_state",
@@ -71,6 +73,11 @@ export function browserStateSection(state: BrowserState | null): ContextSection 
         "history mentions a page, it has since been closed — do NOT report it as " +
         "open. This line is the authoritative current state. Call browser_navigate " +
         "to open a page.",
+      provenance: {
+        trust: "system",
+        channel: "runtime",
+        source: "browser_state",
+      },
     }
   }
   const lines = [`- Current page: ${state.url}`]
@@ -89,6 +96,11 @@ export function browserStateSection(state: BrowserState | null): ContextSection 
     name: "browser_state",
     priority: SECTION_PRIORITY.browserState,
     content,
+    provenance: {
+      trust: "system",
+      channel: "runtime",
+      source: "browser_state",
+    },
   }
 }
 
@@ -181,6 +193,12 @@ export function summarySection(
     priority: SECTION_PRIORITY.summary,
     content,
     coversThrough: record.coversThrough,
+    provenance: {
+      trust: "untrusted_data",
+      channel: "memory",
+      source: "conversation_summary",
+      persisted: true,
+    },
   }
 }
 
@@ -273,5 +291,10 @@ export async function environmentSection(opts: {
     name: "environment",
     priority: SECTION_PRIORITY.environment,
     content,
+    provenance: {
+      trust: "system",
+      channel: "runtime",
+      source: "environment",
+    },
   }
 }

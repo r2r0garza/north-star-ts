@@ -51,6 +51,7 @@ import { XIcon, Plus, Trash2 } from "lucide-react"
 import {
   ProvidersTab,
   ModelsTab,
+  ModelMappingsTab,
   useLlmSettings,
 } from "@/components/llm-settings"
 import type {
@@ -63,6 +64,7 @@ import type {
   ThemeSettings,
   IdeSettings,
   NotificationSettings,
+  ConversationSettings,
   Backend,
   LocalRuntimeProfile,
   LocalProfileCapabilities,
@@ -153,6 +155,7 @@ const LOCAL_PROFILE_ORDER: LocalRuntimeProfile[] = [
 const SECTIONS: Array<{ value: string; label: string }> = [
   { value: "providers", label: "Providers" },
   { value: "models", label: "Models" },
+  { value: "model-mappings", label: "Model mappings" },
   { value: "backend", label: "Backend" },
   { value: "permissions", label: "Permissions" },
   { value: "indexing", label: "Context" },
@@ -206,7 +209,11 @@ const AGENT_SOURCE_KIND_LABEL: Record<AgentSourceRow["kind"], string> = {
   user: "User",
   custom: "Custom",
   github: "Workspace",
+  copilot: "Workspace",
   workspace: "Workspace",
+  cursor: "Workspace",
+  claude: "Workspace",
+  codex: "Workspace",
 }
 
 const MCP_SOURCE_KIND_LABEL: Record<McpSourceRow["kind"], string> = {
@@ -409,6 +416,8 @@ export function SettingsScreen({
   >([])
   const [notifications, setNotifications] =
     useState<NotificationSettings | null>(null)
+  const [conversations, setConversations] =
+    useState<ConversationSettings | null>(null)
   // The last-persisted theme override, and the in-progress draft the Appearance
   // pickers edit. The draft drives a live preview; Save persists it, Reset clears
   // the override, and closing without Save restores `savedTheme` (drops preview).
@@ -457,6 +466,7 @@ export function SettingsScreen({
       window.cowork.settings.getIde(),
       window.cowork.settings.ideOptions(),
       window.cowork.settings.getNotifications(),
+      window.cowork.settings.getConversations(),
       window.cowork.settings.checkRuntimes(),
       window.cowork.settings.localProfileCapabilities(),
       window.cowork.settings.getTheme(),
@@ -472,6 +482,7 @@ export function SettingsScreen({
         ideCfg,
         ideOpts,
         notif,
+        conv,
         rt,
         profileCaps,
         theme,
@@ -489,6 +500,7 @@ export function SettingsScreen({
         setIde(ideCfg)
         setIdeOptions(ideOpts)
         setNotifications(notif)
+        setConversations(conv)
         setRuntimes(rt)
         setLocalProfileCaps(profileCaps)
         setSavedTheme(theme)
@@ -566,6 +578,7 @@ export function SettingsScreen({
     if (current.folders.includes(picked.path)) return
     if (agentSources?.some((r) => r.path === picked.path)) return
     await window.cowork.settings.setAgentSources({
+      ...current,
       folders: [...current.folders, picked.path],
     })
     await refreshAgentSources()
@@ -574,6 +587,7 @@ export function SettingsScreen({
   async function removeAgentFolder(path: string) {
     const current = await window.cowork.settings.getAgentSources()
     await window.cowork.settings.setAgentSources({
+      ...current,
       folders: current.folders.filter((f) => f !== path),
     })
     await refreshAgentSources()
@@ -674,6 +688,10 @@ export function SettingsScreen({
   async function saveNotifications(next: NotificationSettings) {
     setNotifications(next)
     await window.cowork.settings.setNotifications(next)
+  }
+  async function saveConversations(next: ConversationSettings) {
+    setConversations(next)
+    await window.cowork.settings.setConversations(next)
   }
 
   // Update the theme draft AND live-preview it immediately (recolor the whole
@@ -797,7 +815,8 @@ export function SettingsScreen({
               titleGeneration &&
               browser &&
               ide &&
-              notifications && (
+              notifications &&
+              conversations && (
                 <Tabs
                   orientation="vertical"
                   defaultValue={initialTab}
@@ -827,6 +846,7 @@ export function SettingsScreen({
                     <div className="flex min-h-0 w-full max-w-2xl flex-col">
                       <ProvidersTab state={llm} />
                       <ModelsTab state={llm} />
+                      <ModelMappingsTab />
 
                       {/* Backend picker — Local / Docker / Podman, gated by availability. */}
                       <TabsContent
@@ -1048,6 +1068,36 @@ export function SettingsScreen({
                         value="conversations"
                         className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto py-6"
                       >
+                        <Field>
+                          <FieldLabel htmlFor="default-mode">
+                            Default mode
+                          </FieldLabel>
+                          <Select
+                            value={conversations.defaultMode}
+                            onValueChange={(value) =>
+                              saveConversations({
+                                defaultMode:
+                                  value as ConversationSettings["defaultMode"],
+                              })
+                            }
+                          >
+                            <SelectTrigger id="default-mode" className="w-60">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="chat">Chat</SelectItem>
+                              <SelectItem value="interactive">
+                                Interactive
+                              </SelectItem>
+                              <SelectItem value="north_star">
+                                {window.cowork.system().mainAgentName}
+                              </SelectItem>
+                            </SelectContent>
+                          </Select>
+                          <FieldDescription>
+                            The view selected when the app opens.
+                          </FieldDescription>
+                        </Field>
                         <Field orientation="horizontal">
                           <FieldContent>
                             <FieldLabel htmlFor="memory-enabled">

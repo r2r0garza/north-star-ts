@@ -16,12 +16,16 @@ vi.mock("../../db/connection", () => ({ getDb: () => db }))
 const loopCalls: {
   conversationId: string
   userMessage?: string
+  processCompletionInstruction?: string
   suppressUserQuestions?: boolean
+  accountId?: string | null
+  modelId?: string | null
 }[] = []
 // A validator reviewer's scripted replies (plan 031.1): each call to a REVIEW
 // prompt (validatorPrompt begins "# Review the") shifts one reply off this queue;
-// the reply is the reviewer worker's final message (a JSON verdict). Empty queue →
-// the default "done" (unparseable → the caller fails open, i.e. approves).
+// the reply is the reviewer worker's final message (a JSON verdict). Empty queue
+// yields the default "done", which is unparseable and should hold the phase.
+const outcomeReplies: Array<(instruction: string) => string> = []
 const reviewReplies: string[] = []
 // Substrings that make a worker whose userMessage contains one return a
 // non-retryable error the FIRST time it's seen (then succeed on a re-run) — lets a
@@ -35,6 +39,13 @@ const decomposeReplies: string[] = []
 // (plan 038.3) — simulates a quit/cancel mid-run. Each entry carries the reason so a
 // test can exercise the resumable (shutdown) vs terminal (cancel) branches.
 const abortOnMessage: Array<{ match: string; reason?: symbol }> = []
+// Workers a test needs to hold in-flight. Used to prove that a failed nested run
+// does not let the parent scheduler terminate while a parallel sibling is active.
+const holdOnMessage: Array<{
+  match: string
+  entered: () => void
+  wait: Promise<void>
+}> = []
 let runAbort: AbortController | null = null
 // A stable SHUTDOWN_ABORT_REASON identity. service.ts imports it from the leaf
 // `../../agent/abort` (mocked below with this same hoisted sentinel), so its
@@ -53,12 +64,22 @@ vi.mock("../../agent", () => ({
   runAgentLoop: async (input: {
     conversationId: string
     userMessage?: string
+    processCompletionInstruction?: string
     suppressUserQuestions?: boolean
   }) => {
     loopCalls.push({
       conversationId: input.conversationId,
       userMessage: input.userMessage,
+      processCompletionInstruction: input.processCompletionInstruction,
       suppressUserQuestions: input.suppressUserQuestions,
+      accountId: db
+        .prepare("SELECT account_id FROM conversations WHERE id = ?")
+        .pluck()
+        .get(input.conversationId) as string | null,
+      modelId: db
+        .prepare("SELECT model_id FROM conversations WHERE id = ?")
+        .pluck()
+        .get(input.conversationId) as string | null,
     })
     const msg = input.userMessage ?? ""
     const abortIdx = abortOnMessage.findIndex((a) => msg.includes(a.match))
@@ -72,17 +93,29 @@ vi.mock("../../agent", () => ({
       failOnce.splice(failIdx, 1)
       return { error: "boom", retryable: false }
     }
+    const hold = holdOnMessage.find((h) => msg.includes(h.match))
+    if (hold) {
+      hold.entered()
+      await hold.wait
+    }
     const isReview = msg.startsWith("# Review the")
+    const isResumedReview =
+      input.userMessage === undefined && reviewReplies.length > 0
     // A fan-out decomposition worker (plan 025.1) is asked to reply with ONLY a
     // JSON array of sub-task briefings. `decomposeReplies` lets a test script the
     // split; the default is two sub-tasks so a fan-out phase spawns children.
     const isDecompose = msg.startsWith("# Process phase (fan-out):")
-    const content = isDecompose
-      ? (decomposeReplies.shift() ??
-        JSON.stringify(["sub-task 1", "sub-task 2"]))
-      : isReview && reviewReplies.length
-        ? reviewReplies.shift()!
-        : "done"
+    const isResumedDecompose =
+      input.userMessage === undefined && decomposeReplies.length > 0
+    const content =
+      isDecompose || isResumedDecompose
+        ? (decomposeReplies.shift() ??
+          JSON.stringify(["sub-task 1", "sub-task 2"]))
+        : (isReview || isResumedReview) && reviewReplies.length
+          ? reviewReplies.shift()!
+          : outcomeReplies.length && input.processCompletionInstruction
+            ? outcomeReplies.shift()!(input.processCompletionInstruction)
+            : "done"
     // Give the worker a final assistant message (its "output").
     db.prepare(
       "INSERT INTO messages (id, conversation_id, seq, role, content, created_at) VALUES (?, ?, ?, 'assistant', ?, ?)"
@@ -119,11 +152,16 @@ vi.mock("../../agent/agents/loader", () => ({
 }))
 
 import * as processes from "../../db/repositories/processes"
+import { appendMessage } from "../../db/repositories/messages"
 import {
   createApproval,
   getApproval,
   listApprovals,
 } from "../../db/repositories/approvals"
+import {
+  markToolCallStarted,
+  recordToolCallIntents,
+} from "../../db/repositories/tool-call-lifecycle"
 import { ProcessService } from "./service"
 import type { TaskEventPayload } from "../runner"
 
@@ -144,21 +182,101 @@ function seedTaskRow(): { taskId: string } {
   return { taskId }
 }
 
+function conversationIdForTask(taskId: string): string {
+  return (
+    db
+      .prepare("SELECT conversation_id FROM tasks WHERE id = ?")
+      .get(taskId)! as { conversation_id: string }
+  ).conversation_id
+}
+
+function seedUnknownSideEffect(taskId: string): void {
+  const conversationId = conversationIdForTask(taskId)
+  const assistant = appendMessage({
+    conversationId,
+    role: "assistant",
+    toolCalls: [
+      {
+        id: "write-unknown",
+        name: "write_file_tool",
+        arguments: JSON.stringify({ path: "out.txt", content: "data" }),
+      },
+    ],
+  })
+  recordToolCallIntents({
+    conversationId,
+    assistantMessageId: assistant.id,
+    logicalRoundId: "round-1",
+    calls: assistant.toolCalls ?? [],
+  })
+  markToolCallStarted({ conversationId, toolCallId: "write-unknown" })
+}
+
 beforeEach(() => {
   if (!sqliteLoads) return
   db = new Database(":memory:")
   runMigrations(db)
   loopCalls.length = 0
   reviewReplies.length = 0
+  outcomeReplies.length = 0
   failOnce.length = 0
   decomposeReplies.length = 0
   abortOnMessage.length = 0
+  holdOnMessage.length = 0
   runAbort = null
   nextReply = ""
   for (const k of Object.keys(descriptions)) delete descriptions[k]
 })
 
 describe.skipIf(!sqliteLoads)("ProcessService dispatch routing", () => {
+  it("uses and snapshots a phase worker runtime override", async () => {
+    const def = processes.createProcessDefinition({ name: "T" })
+    const phase = processes.createPhase({
+      processId: def.id,
+      key: "implement",
+      name: "Implement",
+      position: 0,
+      runtimeConfig: {
+        worker: { accountId: "phase-account", modelId: "phase-model" },
+      },
+    })
+
+    const { taskId } = seedTaskRow()
+    const run = processes.createProcessRun({
+      processId: def.id,
+      sourceConversationId: null,
+      taskId,
+      objective: "build it",
+      status: "running",
+      runtimeConfig: {
+        worker: { accountId: "run-account", modelId: "run-model" },
+      },
+    })
+
+    const svc = new ProcessService(fakeRunner)
+    await svc.execute({
+      task: { id: taskId, input: { processRunId: run.id } } as never,
+      signal: new AbortController().signal,
+      emit: () => {},
+      workspace: undefined,
+    })
+
+    expect(loopCalls[0]).toMatchObject({
+      accountId: "phase-account",
+      modelId: "phase-model",
+    })
+    const phaseRun = processes
+      .listPhaseRuns({ runId: run.id, parentId: null })
+      .find((pr) => pr.phaseId === phase.id)!
+    expect(phaseRun.runtimeSnapshot).toMatchObject({
+      worker: {
+        accountId: "phase-account",
+        modelId: "phase-model",
+        source: "phase",
+      },
+    })
+  })
+
   it("records the routed agent_name on a dispatch phase's run", async () => {
     // One dispatch phase with a two-agent pool (frontend, backend).
     const def = processes.createProcessDefinition({ name: "T" })
@@ -402,6 +520,47 @@ describe.skipIf(!sqliteLoads)("ProcessService restartRun", () => {
     expect(restarted).toEqual([])
     expect(processes.getProcessRun(run.id)!.status).toBe("running")
   })
+
+  it("blocks a failed-frontier restart when a process worker has an unknown side-effecting outcome", async () => {
+    const def = processes.createProcessDefinition({ name: "T" })
+    const phase = processes.createPhase({
+      processId: def.id,
+      key: "impl",
+      name: "Implement",
+      position: 0,
+    })
+    const { taskId } = seedTaskRow()
+    db.prepare("UPDATE tasks SET status = 'failed' WHERE id = ?").run(taskId)
+    const run = processes.createProcessRun({
+      processId: def.id,
+      sourceConversationId: null,
+      taskId,
+      objective: "do it",
+      status: "failed",
+    })
+    const phaseRun = processes.createPhaseRun({
+      runId: run.id,
+      phaseId: phase.id,
+      status: "failed",
+    })
+    const worker = seedTaskRow()
+    processes.updatePhaseRun(phaseRun.id, { taskId: worker.taskId })
+    seedUnknownSideEffect(worker.taskId)
+
+    const restarted: string[] = []
+    const runner = {
+      enqueueKind: () => ({ id: "t" }),
+      restart: (id: string) => restarted.push(id),
+    } as never
+    const svc = new ProcessService(runner)
+
+    expect(() => svc.restartRun(run.id)).toThrow(
+      "side-effecting tool outcomes are unknown"
+    )
+    expect(processes.getPhaseRun(phaseRun.id)!.status).toBe("failed")
+    expect(processes.getProcessRun(run.id)!.status).toBe("failed")
+    expect(restarted).toEqual([])
+  })
 })
 
 describe.skipIf(!sqliteLoads)(
@@ -577,16 +736,16 @@ describe.skipIf(!sqliteLoads)(
           workspace: undefined,
         })
 
-      // First drive fails: the inner phase boomed → child run failed → parent run
-      // failed. The parent's sub-process phase-run is left `running` (the child
-      // driveRun threw, so it was never settled — the R6 divergence 038.2 handles);
-      // the child run + its inner phase are `failed`.
+      // First drive fails: the inner phase boomed → child run failed → parent
+      // sub-process phase failed → parent run failed. The failure must cross the
+      // nested-run boundary as a normal PhaseResult, not strand the parent phase in
+      // `running`.
       await drive()
       expect(processes.getProcessRun(run.id)!.status).toBe("failed")
       const implRun = processes
         .listPhaseRuns({ runId: run.id, parentId: null })
         .find((pr) => pr.phaseId === implPhaseId)!
-      expect(implRun.status).toBe("running")
+      expect(implRun.status).toBe("failed")
       const childRun = processes.getProcessRunByParentPhaseRunId(implRun.id)!
       expect(childRun.status).toBe("failed")
       const innerRun = processes.listPhaseRuns({ runId: childRun.id })[0]
@@ -605,6 +764,106 @@ describe.skipIf(!sqliteLoads)(
       expect(
         processes.getProcessRunByParentPhaseRunId(implRun.id)!.status
       ).toBe("completed")
+    })
+
+    it("drains a parallel sub-process before marking the parent run failed", async () => {
+      const failedSub = processes.createProcessDefinition({
+        name: "Failed sub",
+      })
+      processes.createPhase({
+        processId: failedSub.id,
+        key: "fail",
+        name: "Fail child",
+        position: 0,
+      })
+      const slowSub = processes.createProcessDefinition({ name: "Slow sub" })
+      processes.createPhase({
+        processId: slowSub.id,
+        key: "slow",
+        name: "Slow child",
+        position: 0,
+      })
+      const parent = processes.createProcessDefinition({ name: "Parent" })
+      const failedPhase = processes.createPhase({
+        processId: parent.id,
+        key: "failed-sub",
+        name: "Failed sub-process",
+        subprocessId: failedSub.id,
+        position: 0,
+      })
+      const slowPhase = processes.createPhase({
+        processId: parent.id,
+        key: "slow-sub",
+        name: "Slow sub-process",
+        subprocessId: slowSub.id,
+        position: 1,
+      })
+
+      let markSlowStarted!: () => void
+      const slowStarted = new Promise<void>((resolve) => {
+        markSlowStarted = resolve
+      })
+      let releaseSlow!: () => void
+      const slowRelease = new Promise<void>((resolve) => {
+        releaseSlow = resolve
+      })
+      holdOnMessage.push({
+        match: "Slow child",
+        entered: markSlowStarted,
+        wait: slowRelease,
+      })
+      failOnce.push("Fail child")
+
+      const { taskId } = seedTaskRow()
+      const run = processes.createProcessRun({
+        processId: parent.id,
+        sourceConversationId: null,
+        taskId,
+        objective: "run both",
+        status: "running",
+      })
+      const svc = new ProcessService(fakeRunner)
+      const execution = svc.execute({
+        task: { id: taskId, input: { processRunId: run.id } } as never,
+        signal: new AbortController().signal,
+        emit: () => {},
+        workspace: undefined,
+      })
+
+      await slowStarted
+      await vi.waitFor(() => {
+        const rows = processes.listPhaseRuns({
+          runId: run.id,
+          parentId: null,
+        })
+        expect(rows.find((pr) => pr.phaseId === failedPhase.id)?.status).toBe(
+          "failed"
+        )
+      })
+
+      // The sibling is genuinely still active, so the enclosing run must remain
+      // active too. This is the state combination that used to show Failed + spinner.
+      expect(processes.getProcessRun(run.id)?.status).toBe("running")
+      expect(
+        processes
+          .listPhaseRuns({ runId: run.id, parentId: null })
+          .find((pr) => pr.phaseId === slowPhase.id)?.status
+      ).toBe("running")
+
+      releaseSlow()
+      const result = await execution
+      expect((result as { error?: string }).error).toBe(
+        "a process phase failed"
+      )
+      expect(processes.getProcessRun(run.id)?.status).toBe("failed")
+      const rows = processes.listPhaseRuns({ runId: run.id, parentId: null })
+      expect(rows.find((pr) => pr.phaseId === failedPhase.id)?.status).toBe(
+        "failed"
+      )
+      expect(rows.find((pr) => pr.phaseId === slowPhase.id)?.status).toBe(
+        "completed"
+      )
+      expect(rows.some((pr) => pr.status === "running")).toBe(false)
     })
 
     it("request-changes on a sub-process phase re-drives the whole child with feedback (plan 038.2)", async () => {
@@ -800,6 +1059,262 @@ describe.skipIf(!sqliteLoads)(
   }
 )
 
+describe.skipIf(!sqliteLoads)("ProcessService worker resume", () => {
+  it("reuses an existing phase worker conversation without a fresh kickoff", async () => {
+    const def = processes.createProcessDefinition({ name: "Resume" })
+    const phase = processes.createPhase({
+      processId: def.id,
+      key: "impl",
+      name: "Implement",
+      position: 0,
+    })
+    const { taskId } = seedTaskRow()
+    const run = processes.createProcessRun({
+      processId: def.id,
+      sourceConversationId: null,
+      taskId,
+      objective: "resume safely",
+      status: "running",
+    })
+    const phaseRun = processes.createPhaseRun({
+      runId: run.id,
+      phaseId: phase.id,
+      status: "pending",
+    })
+    const existingWorker = seedTaskRow()
+    processes.updatePhaseRun(phaseRun.id, { taskId: existingWorker.taskId })
+
+    const svc = new ProcessService(fakeRunner)
+    await svc.execute({
+      task: { id: taskId, input: { processRunId: run.id } } as never,
+      signal: new AbortController().signal,
+      emit: () => {},
+      workspace: undefined,
+    })
+
+    expect(loopCalls).toHaveLength(1)
+    expect(loopCalls[0].conversationId).toBe(
+      (
+        db
+          .prepare("SELECT conversation_id FROM tasks WHERE id = ?")
+          .get(existingWorker.taskId)! as { conversation_id: string }
+      ).conversation_id
+    )
+    expect(loopCalls[0].userMessage).toBeUndefined()
+    expect(
+      (
+        db
+          .prepare(
+            "SELECT COUNT(*) AS count FROM tasks WHERE input LIKE '%process_phase%'"
+          )
+          .get()! as { count: number }
+      ).count
+    ).toBe(0)
+    expect(processes.getPhaseRun(phaseRun.id)?.status).toBe("completed")
+  })
+
+  it("reuses an existing decomposition worker conversation without a fresh kickoff", async () => {
+    const def = processes.createProcessDefinition({ name: "Resume fan-out" })
+    const phase = processes.createPhase({
+      processId: def.id,
+      key: "split",
+      name: "Split",
+      fanOut: true,
+      position: 0,
+    })
+    const { taskId } = seedTaskRow()
+    const run = processes.createProcessRun({
+      processId: def.id,
+      sourceConversationId: null,
+      taskId,
+      objective: "resume split",
+      status: "running",
+    })
+    const phaseRun = processes.createPhaseRun({
+      runId: run.id,
+      phaseId: phase.id,
+      status: "pending",
+    })
+    const existingWorker = seedTaskRow()
+    processes.updatePhaseRun(phaseRun.id, { taskId: existingWorker.taskId })
+    decomposeReplies.push(JSON.stringify(["resumed sub-task"]))
+
+    const svc = new ProcessService(fakeRunner)
+    await svc.execute({
+      task: { id: taskId, input: { processRunId: run.id } } as never,
+      signal: new AbortController().signal,
+      emit: () => {},
+      workspace: undefined,
+    })
+
+    expect(loopCalls[0].conversationId).toBe(
+      (
+        db
+          .prepare("SELECT conversation_id FROM tasks WHERE id = ?")
+          .get(existingWorker.taskId)! as { conversation_id: string }
+      ).conversation_id
+    )
+    expect(loopCalls[0].userMessage).toBeUndefined()
+    expect(
+      (
+        db
+          .prepare(
+            "SELECT COUNT(*) AS count FROM tasks WHERE input LIKE '%process_phase_decompose%'"
+          )
+          .get()! as { count: number }
+      ).count
+    ).toBe(0)
+    expect(
+      processes
+        .listPhaseRuns({ runId: run.id, parentId: phaseRun.id })
+        .map((child) => child.title)
+    ).toEqual(["resumed sub-task"])
+  })
+
+  it("reuses an existing validator worker conversation without a fresh review kickoff", async () => {
+    const def = processes.createProcessDefinition({ name: "Resume validator" })
+    const phase = processes.createPhase({
+      processId: def.id,
+      key: "impl",
+      name: "Implement",
+      validator: true,
+      position: 0,
+    })
+    const { taskId } = seedTaskRow()
+    const run = processes.createProcessRun({
+      processId: def.id,
+      sourceConversationId: null,
+      taskId,
+      objective: "resume review",
+      status: "running",
+    })
+    const phaseRun = processes.createPhaseRun({
+      runId: run.id,
+      phaseId: phase.id,
+      status: "pending",
+    })
+    const workerTask = seedTaskRow()
+    processes.updatePhaseRun(phaseRun.id, {
+      taskId: workerTask.taskId,
+      validatorRound: 0,
+      outputIdentity: "phase-output:v1:current",
+    })
+    const existingReviewer = seedTaskRow()
+    db.prepare("UPDATE tasks SET input = ? WHERE id = ?").run(
+      JSON.stringify({
+        kind: "process_phase_validate",
+        phaseRunId: phaseRun.id,
+        agentName: null,
+        validatorRound: 0,
+        reviewTargetOutputIdentity: "phase-output:v1:current",
+      }),
+      existingReviewer.taskId
+    )
+    const retryGate = createApproval({
+      taskId,
+      request: {
+        kind: "process_validator_gate",
+        phaseKey: "impl",
+        phaseRunId: phaseRun.id,
+        requestId: randomUUID(),
+      },
+    })
+    db.prepare(
+      "UPDATE approvals SET status = 'denied', decision = ? WHERE id = ?"
+    ).run(JSON.stringify({ retryReview: true }), retryGate.id)
+    reviewReplies.push('{"approved": true}')
+
+    const svc = new ProcessService(fakeRunner)
+    await svc.execute({
+      task: { id: taskId, input: { processRunId: run.id } } as never,
+      signal: new AbortController().signal,
+      emit: () => {},
+      workspace: undefined,
+    })
+
+    const validatorCall = loopCalls.find(
+      (c) => c.conversationId === conversationIdForTask(existingReviewer.taskId)
+    )
+    expect(validatorCall?.userMessage).toBeUndefined()
+    expect(
+      (
+        db
+          .prepare(
+            "SELECT COUNT(*) AS count FROM tasks WHERE input LIKE '%process_phase_validate%'"
+          )
+          .get()! as { count: number }
+      ).count
+    ).toBe(1)
+    expect(processes.getPhaseRun(phaseRun.id)?.status).toBe("completed")
+  })
+
+  it("does not resume an existing validator worker for a stale output identity", async () => {
+    const def = processes.createProcessDefinition({ name: "Stale validator" })
+    const phase = processes.createPhase({
+      processId: def.id,
+      key: "impl",
+      name: "Implement",
+      validator: true,
+      position: 0,
+    })
+    const { taskId } = seedTaskRow()
+    const run = processes.createProcessRun({
+      processId: def.id,
+      sourceConversationId: null,
+      taskId,
+      objective: "resume review",
+      status: "running",
+    })
+    const phaseRun = processes.createPhaseRun({
+      runId: run.id,
+      phaseId: phase.id,
+      status: "pending",
+    })
+    const staleReviewer = seedTaskRow()
+    db.prepare("UPDATE tasks SET input = ? WHERE id = ?").run(
+      JSON.stringify({
+        kind: "process_phase_validate",
+        phaseRunId: phaseRun.id,
+        agentName: null,
+        validatorRound: 0,
+        reviewTargetOutputIdentity: "phase-output:v1:old",
+      }),
+      staleReviewer.taskId
+    )
+    reviewReplies.push('{"approved": true}')
+
+    const svc = new ProcessService(fakeRunner)
+    await svc.execute({
+      task: { id: taskId, input: { processRunId: run.id } } as never,
+      signal: new AbortController().signal,
+      emit: () => {},
+      workspace: undefined,
+    })
+
+    const staleValidatorCall = loopCalls.find(
+      (c) => c.conversationId === conversationIdForTask(staleReviewer.taskId)
+    )
+    expect(staleValidatorCall).toBeUndefined()
+    const reviewTasks = (
+      db
+        .prepare(
+          "SELECT input FROM tasks WHERE input LIKE '%process_phase_validate%'"
+        )
+        .all() as Array<{ input: string }>
+    ).map(
+      (row) => JSON.parse(row.input) as { reviewTargetOutputIdentity?: string }
+    )
+    expect(reviewTasks).toHaveLength(2)
+    const currentIdentity = processes.getPhaseRun(phaseRun.id)?.outputIdentity
+    expect(currentIdentity).toMatch(/^phase-output:v1:/)
+    expect(reviewTasks).toContainEqual(
+      expect.objectContaining({
+        reviewTargetOutputIdentity: currentIdentity,
+      })
+    )
+  })
+})
+
 describe.skipIf(!sqliteLoads)(
   "ProcessService requestChanges (plan 029)",
   () => {
@@ -899,6 +1414,29 @@ describe.skipIf(!sqliteLoads)(
       // Run flipped back to running; the backing task resumed.
       expect(updated?.status).toBe("running")
       expect(resumed).toEqual([run.taskId])
+    })
+
+    it("blocks request-changes rerun when the phase worker has an unknown side-effecting outcome", () => {
+      const { run, aRun, requestId, approvalId } = seedGatedPhase()
+      const worker = seedTaskRow()
+      processes.updatePhaseRun(aRun.id, { taskId: worker.taskId })
+      seedUnknownSideEffect(worker.taskId)
+      const { runner, resumed } = makeRunner()
+      const svc = new ProcessService(runner)
+
+      expect(() =>
+        svc.requestChanges({
+          processRunId: run.id,
+          requestId,
+          feedback: "tighten the copy",
+        })
+      ).toThrow("side-effecting tool outcomes are unknown")
+      expect(getApproval(approvalId)!.status).toBe("pending")
+      expect(processes.getPhaseRun(aRun.id)!.status).toBe("completed")
+      expect(processes.getProcessRun(run.id)!.status).toBe(
+        "waiting_for_approval"
+      )
+      expect(resumed).toEqual([])
     })
 
     it("rejects at the per-phase rework cap", () => {
@@ -1045,7 +1583,7 @@ describe.skipIf(!sqliteLoads)("ProcessService validator (plan 031.1)", () => {
     expect(reviewRuns).toHaveLength(2)
   })
 
-  it("fails open (completes) when the reviewer's verdict is unparseable", async () => {
+  it("holds the phase when the reviewer's verdict is unparseable", async () => {
     const def = processes.createProcessDefinition({ name: "T" })
     const phase = processes.createPhase({
       processId: def.id,
@@ -1059,9 +1597,8 @@ describe.skipIf(!sqliteLoads)("ProcessService validator (plan 031.1)", () => {
       agentName: "coder",
       position: 0,
     })
-    // The reviewer replies with non-JSON prose → parseVerdict returns null →
-    // fail open (approve). (Empty reviewReplies also yields the "done" default,
-    // which is likewise unparseable — assert the explicit prose case here.)
+    // The reviewer replies with non-JSON prose → parseVerdict returns null, which
+    // is a failed review boundary rather than an approval.
     reviewReplies.push("looks fine to me")
 
     const { taskId } = seedTaskRow()
@@ -1074,23 +1611,174 @@ describe.skipIf(!sqliteLoads)("ProcessService validator (plan 031.1)", () => {
     })
 
     const svc = new ProcessService(fakeRunner)
-    await svc.execute({
+    const result = await svc.execute({
       task: { id: taskId, input: { processRunId: run.id } } as never,
       signal: new AbortController().signal,
       emit: () => {},
       workspace: undefined,
     })
+    expect(result).toEqual({ paused: true })
 
     const phaseRun = processes
       .listPhaseRuns({ runId: run.id, parentId: null })
       .find((pr) => pr.phaseId === phase.id)!
-    expect(phaseRun.status).toBe("completed")
-    // Approved on the first review → no re-run, validator round stays 0.
+    expect(phaseRun.status).toBe("waiting_for_approval")
+    expect(phaseRun.error).toBe("validator returned an unparseable verdict")
     expect(phaseRun.validatorRound).toBe(0)
+    const pending = listApprovals({ taskId, status: "pending" })
+    expect(pending).toHaveLength(1)
+    expect(pending[0].request).toMatchObject({
+      kind: "process_validator_gate",
+      phaseRunId: phaseRun.id,
+    })
     const workerRuns = loopCalls.filter((c) =>
       c.userMessage?.startsWith("# Process phase")
     )
     expect(workerRuns).toHaveLength(1)
+  })
+
+  it("retryReview resets only the validator boundary and preserves the phase worker", () => {
+    const def = processes.createProcessDefinition({ name: "T" })
+    const phase = processes.createPhase({
+      processId: def.id,
+      key: "impl",
+      name: "Implement",
+      validator: true,
+      position: 0,
+    })
+    const topTask = seedTaskRow()
+    const workerTask = seedTaskRow()
+    const reviewTask = seedTaskRow()
+    db.prepare("UPDATE tasks SET input = ? WHERE id = ?").run(
+      JSON.stringify({
+        kind: "process_phase_validate",
+        phaseRunId: "placeholder",
+        validatorRound: 0,
+      }),
+      reviewTask.taskId
+    )
+    const run = processes.createProcessRun({
+      processId: def.id,
+      sourceConversationId: null,
+      taskId: topTask.taskId,
+      objective: "build it",
+      status: "waiting_for_approval",
+    })
+    const phaseRun = processes.createPhaseRun({
+      runId: run.id,
+      phaseId: phase.id,
+      status: "waiting_for_approval",
+    })
+    processes.updatePhaseRun(phaseRun.id, {
+      taskId: workerTask.taskId,
+      error: "validator returned an unparseable verdict",
+      finishedAt: Date.now(),
+      validatorRound: 0,
+      reworkRound: 0,
+    })
+    db.prepare("UPDATE tasks SET input = ? WHERE id = ?").run(
+      JSON.stringify({
+        kind: "process_phase_validate",
+        phaseRunId: phaseRun.id,
+        validatorRound: 0,
+      }),
+      reviewTask.taskId
+    )
+    const requestId = randomUUID()
+    const approval = createApproval({
+      taskId: topTask.taskId,
+      request: {
+        kind: "process_validator_gate",
+        phaseKey: "impl",
+        phaseRunId: phaseRun.id,
+        requestId,
+      },
+    })
+    const resumed: string[] = []
+    const svc = new ProcessService({
+      enqueueKind: () => ({ id: "t" }),
+      resume: (id: string) => resumed.push(id),
+    } as never)
+
+    const updated = svc.retryReview({ processRunId: run.id, requestId })
+
+    expect(getApproval(approval.id)!.status).toBe("denied")
+    expect(getApproval(approval.id)!.decision).toEqual({ retryReview: true })
+    const fresh = processes.getPhaseRun(phaseRun.id)!
+    expect(fresh.status).toBe("pending")
+    expect(fresh.taskId).toBe(workerTask.taskId)
+    expect(fresh.error).toBeNull()
+    expect(fresh.validatorRound).toBe(0)
+    expect(fresh.reworkRound).toBe(0)
+    expect(
+      (
+        db
+          .prepare("SELECT COUNT(*) AS count FROM tasks WHERE id = ?")
+          .get(reviewTask.taskId) as { count: number }
+      ).count
+    ).toBe(0)
+    expect(updated?.status).toBe("running")
+    expect(resumed).toEqual([topTask.taskId])
+  })
+
+  it("approves a validator gate as an audited manual override", () => {
+    const def = processes.createProcessDefinition({ name: "T" })
+    const phase = processes.createPhase({
+      processId: def.id,
+      key: "impl",
+      name: "Implement",
+      validator: true,
+      position: 0,
+    })
+    const topTask = seedTaskRow()
+    const run = processes.createProcessRun({
+      processId: def.id,
+      sourceConversationId: null,
+      taskId: topTask.taskId,
+      objective: "build it",
+      status: "waiting_for_approval",
+    })
+    const phaseRun = processes.createPhaseRun({
+      runId: run.id,
+      phaseId: phase.id,
+      status: "waiting_for_approval",
+    })
+    processes.updatePhaseRun(phaseRun.id, {
+      error: "validator returned an unparseable verdict",
+    })
+    const requestId = randomUUID()
+    const approval = createApproval({
+      taskId: topTask.taskId,
+      request: {
+        kind: "process_validator_gate",
+        phaseKey: "impl",
+        phaseRunId: phaseRun.id,
+        requestId,
+      },
+    })
+    const resumed: string[] = []
+    const markedRunning: string[] = []
+    const svc = new ProcessService({
+      enqueueKind: () => ({ id: "t" }),
+      markRunning: (id: string) => markedRunning.push(id),
+      resume: (id: string) => resumed.push(id),
+    } as never)
+
+    const updated = svc.approve({ processRunId: run.id, requestId })
+
+    expect(updated?.status).toBe("waiting_for_approval")
+    expect(getApproval(approval.id)!.status).toBe("approved")
+    expect(getApproval(approval.id)!.decision).toEqual({
+      manualOverride: true,
+      gateKind: "process_validator_gate",
+      requestId,
+      phaseKey: "impl",
+      phaseRunId: phaseRun.id,
+      failureReason: "validator returned an unparseable verdict",
+      actor: "user",
+    })
+    expect(markedRunning).toEqual([topTask.taskId])
+    expect(resumed).toEqual([topTask.taskId])
   })
 })
 
@@ -1186,6 +1874,146 @@ describe.skipIf(!sqliteLoads)(
       expect(resumed).toEqual([run.taskId])
     })
 
+    it("re-runs whole fan-out decomposition with the flag reason in the worker prompt", async () => {
+      const def = processes.createProcessDefinition({ name: "T" })
+      const impl = processes.createPhase({
+        processId: def.id,
+        key: "impl",
+        name: "Implement",
+        fanOut: true,
+        position: 0,
+      })
+      const verify = processes.createPhase({
+        processId: def.id,
+        key: "verify",
+        name: "Verify",
+        position: 1,
+      })
+      processes.createEdge({
+        processId: def.id,
+        fromPhaseId: impl.id,
+        toPhaseId: verify.id,
+      })
+      decomposeReplies.push(
+        JSON.stringify(["old api split", "old ui split"]),
+        JSON.stringify(["replacement api split", "replacement ui split"])
+      )
+
+      const { taskId } = seedTaskRow()
+      const run = processes.createProcessRun({
+        processId: def.id,
+        sourceConversationId: null,
+        taskId,
+        objective: "ship it",
+        status: "running",
+      })
+      const { runner, resumed } = makeRunner()
+      const svc = new ProcessService(runner)
+      const task = { id: taskId, input: { processRunId: run.id } } as never
+      await svc.execute({
+        task,
+        signal: new AbortController().signal,
+        emit: () => {},
+        workspace: undefined,
+      })
+
+      const implRun = processes
+        .listPhaseRuns({ runId: run.id, parentId: null })
+        .find((pr) => pr.phaseId === impl.id)!
+      const verifyRun = processes
+        .listPhaseRuns({ runId: run.id, parentId: null })
+        .find((pr) => pr.phaseId === verify.id)!
+      const reason = "split api work from ui work before assigning children"
+      const flag = processes.createFlag({
+        runId: run.id,
+        flaggingPhaseRunId: verifyRun.id,
+        targetPhaseId: impl.id,
+        reason,
+      })
+      const requestId = randomUUID()
+      createApproval({
+        taskId,
+        request: {
+          kind: "process_flag_gate",
+          phaseKey: "verify",
+          phaseRunId: verifyRun.id,
+          requestId,
+          flagId: flag.id,
+          flagTargetKey: "impl",
+          flagReason: reason,
+        },
+      })
+
+      svc.confirmFlag({ processRunId: run.id, requestId })
+      expect(resumed).toEqual([taskId])
+      expect(processes.getPhaseRun(implRun.id)?.reworkNote).toBe(reason)
+      loopCalls.length = 0
+
+      await svc.execute({
+        task,
+        signal: new AbortController().signal,
+        emit: () => {},
+        workspace: undefined,
+      })
+
+      const decomposePrompt = loopCalls.find((c) =>
+        c.userMessage?.startsWith("# Process phase (fan-out): Implement")
+      )?.userMessage
+      expect(decomposePrompt).toContain("## Requested changes")
+      expect(decomposePrompt).toContain(reason)
+      expect(decomposePrompt).toContain("ONLY a JSON array of strings")
+    })
+
+    it("keeps fan-out rework feedback on decomposition parse retry", async () => {
+      const def = processes.createProcessDefinition({ name: "T" })
+      const impl = processes.createPhase({
+        processId: def.id,
+        key: "impl",
+        name: "Implement",
+        fanOut: true,
+        position: 0,
+      })
+      decomposeReplies.push("not json", JSON.stringify(["fixed split"]))
+
+      const { taskId } = seedTaskRow()
+      const run = processes.createProcessRun({
+        processId: def.id,
+        sourceConversationId: null,
+        taskId,
+        objective: "ship it",
+        status: "running",
+      })
+      const implRun = processes.createPhaseRun({
+        runId: run.id,
+        phaseId: impl.id,
+        status: "pending",
+      })
+      processes.updatePhaseRun(implRun.id, {
+        reworkNote: "use smaller independent briefings",
+      })
+
+      const svc = new ProcessService(fakeRunner)
+      await svc.execute({
+        task: { id: taskId, input: { processRunId: run.id } } as never,
+        signal: new AbortController().signal,
+        emit: () => {},
+        workspace: undefined,
+      })
+
+      const decomposePrompts = loopCalls
+        .map((c) => c.userMessage ?? "")
+        .filter((m) => m.startsWith("# Process phase (fan-out): Implement"))
+      expect(decomposePrompts).toHaveLength(2)
+      expect(decomposePrompts[0]).toContain("use smaller independent briefings")
+      expect(decomposePrompts[0]).not.toContain(
+        "Your previous reply could not be parsed"
+      )
+      expect(decomposePrompts[1]).toContain("use smaller independent briefings")
+      expect(decomposePrompts[1]).toContain(
+        "Your previous reply could not be parsed"
+      )
+    })
+
     it("dismissFlag leaves the target intact, marks the flag dismissed, resumes", () => {
       const { run, aRun, flag, requestId, approvalId } = seedFlag()
       const { runner, resumed } = makeRunner()
@@ -1210,3 +2038,101 @@ describe.skipIf(!sqliteLoads)(
     })
   }
 )
+
+describe.skipIf(!sqliteLoads)("ProcessService validated completion", () => {
+  const reply = (instruction: string) =>
+    JSON.stringify({
+      version: 1,
+      attemptId: instruction.match(/attemptId: "([^"]+)"/)?.[1],
+      status: "completed",
+      output: "Finished",
+      evidence: "Verified the requested result",
+    })
+  function setup(validator = false) {
+    const def = processes.createProcessDefinition({ name: "Validated" })
+    const phase = processes.createPhase({
+      processId: def.id,
+      key: "work",
+      name: "Work",
+      position: 0,
+      validator,
+      completionContract: {
+        policy: "validated",
+        version: 1,
+        requiredArtifacts: [],
+      },
+    })
+    const { taskId } = seedTaskRow()
+    const run = processes.createProcessRun({
+      processId: def.id,
+      sourceConversationId: null,
+      taskId,
+      status: "running",
+    })
+    const svc = new ProcessService({ resume: vi.fn() } as never)
+    const execute = () =>
+      svc.execute({
+        task: { id: taskId, input: { processRunId: run.id } } as never,
+        signal: new AbortController().signal,
+        emit: () => {},
+        workspace: undefined,
+      })
+    return { phase, run, taskId, svc, execute }
+  }
+  it("uses the recorded contract and refreshes instructions without a new user message on resume", async () => {
+    const { phase, run, execute } = setup()
+    const row = processes.createPhaseRun({
+      runId: run.id,
+      phaseId: phase.id,
+      status: "pending",
+    })
+    const worker = seedTaskRow()
+    processes.updatePhaseRun(row.id, { taskId: worker.taskId })
+    processes.updatePhase(phase.id, {
+      completionContract: { policy: "legacy" },
+    })
+    outcomeReplies.push(reply)
+    await execute()
+    expect(loopCalls[0].userMessage).toBeUndefined()
+    expect(loopCalls[0].processCompletionInstruction).toContain(
+      "Required phase outcome"
+    )
+    expect(
+      processes.getPhaseRun(row.id)?.completionReceipt?.outcome.status
+    ).toBe("completed")
+    expect(processes.getPhaseRun(row.id)?.taskId).toBe(worker.taskId)
+  })
+  it("retains the receipt on review-only retry and clears it for semantic rework", async () => {
+    const { run, taskId, svc, execute } = setup(true)
+    outcomeReplies.push(reply)
+    reviewReplies.push("unparseable")
+    await execute()
+    let row = processes.listPhaseRuns({ runId: run.id })[0]
+    const receipt = row.completionReceipt
+    const identity = row.outputIdentity
+    expect(receipt?.outcome.status).toBe("completed")
+    expect(row.status).toBe("waiting_for_approval")
+    const gate = listApprovals({ taskId }).find((a) => a.status === "pending")!
+    svc.retryReview({
+      processRunId: run.id,
+      requestId: (gate.request as { requestId: string }).requestId,
+    })
+    expect(processes.getPhaseRun(row.id)?.completionReceipt).toEqual(receipt)
+    expect(processes.getPhaseRun(row.id)?.outputIdentity).toBe(identity)
+    reviewReplies.push(
+      '{"approved": false, "feedback": "Revise the result"}',
+      '{"approved": true}'
+    )
+    outcomeReplies.push(reply)
+    await execute()
+    row = processes.getPhaseRun(row.id)!
+    expect(row.status).toBe("completed")
+    expect(row.completionReceipt?.outcome.attemptId).not.toBe(
+      receipt?.outcome.attemptId
+    )
+    expect(row.validatorRound).toBe(1)
+    expect(
+      loopCalls.filter((c) => c.processCompletionInstruction)
+    ).toHaveLength(2)
+  })
+})

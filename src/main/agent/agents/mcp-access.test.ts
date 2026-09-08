@@ -4,14 +4,27 @@ import type { AgentDefinition } from "./types"
 
 // Build a minimal AgentDefinition carrying only the mcpServers tri-state.
 function agent(mcpServers: AgentDefinition["mcpServers"]): AgentDefinition {
+  const ref = {
+    sourceKind: "north_star" as const,
+    scope: "global" as const,
+    definitionPath: "/x/a.agent.md",
+    nativeName: "a",
+  }
   return {
     name: "a",
+    nativeName: "a",
     description: "d",
     mcpServers,
     userInvocable: true,
     body: "",
-    path: "",
-    source: "user",
+    path: ref.definitionPath,
+    source: "/x",
+    ref,
+    refId: `agentref:v1:${JSON.stringify(ref)}`,
+    sourceKind: "north_star",
+    scope: "global",
+    label: "North Star: a",
+    diagnostics: [],
   }
 }
 

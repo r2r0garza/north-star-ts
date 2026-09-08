@@ -37,6 +37,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
 import { Markdown } from "@/components/markdown"
 import { AgentUploadModal } from "@/components/agent-upload-modal"
 import { toast } from "sonner"
@@ -57,26 +63,72 @@ import type { AgentDefinition, AgentFolder, AgentTree } from "@/types"
 // github + workspace agents are read-only here (viewable only). "Add new agent"
 // is disabled on the Workspace tab since workspace folders are not writable here.
 
-// The 8 friendly tool categories, in display order. Mirrors TOOL_CATEGORIES in
-// the main process (src/main/agent/agents/tool-categories.ts). Duplicated here
-// rather than imported to avoid pulling a main-process module into the renderer.
+// Friendly tool categories, in alphabetical order. Mirrors TOOL_CATEGORIES in the
+// main process (src/main/agent/agents/tool-categories.ts). Duplicated here rather
+// than imported to avoid pulling a main-process module into the renderer.
 const TOOL_CATEGORIES = [
-  "read",
-  "search",
+  "agent",
+  "browser",
+  "browser_advanced",
+  "dashboard",
+  "delete",
+  "diagnostics",
+  "document_read",
   "edit",
   "execute",
-  "web",
-  "browser",
+  "filesystem",
+  "git_read",
+  "lsp",
+  "navigation",
+  "read",
+  "recall",
+  "search",
+  "test",
   "todo",
-  "agent",
+  "tree_recall",
+  "web",
 ] as const
+
+const TOOL_CATEGORY_DESCRIPTIONS: Record<
+  (typeof TOOL_CATEGORIES)[number],
+  string
+> = {
+  read: "Read files and list workspace directories.",
+  document_read:
+    "Extract text and structure from documents, PDFs, slides, and spreadsheets.",
+  search: "Search files and query the code index.",
+  recall: "Search and read this conversation's history.",
+  tree_recall: "Search this conversation plus delegated worker histories.",
+  navigation:
+    "Use code intelligence for symbols, definitions, references, and hover types.",
+  lsp: "Alias for code navigation tools.",
+  edit: "Edit, write, and patch files.",
+  filesystem: "Inspect, create, and move filesystem paths.",
+  delete: "Delete files or directories.",
+  git_read: "Read Git status, diffs, logs, branches, and commit details.",
+  execute: "Run and manage shell commands.",
+  diagnostics: "Read workspace diagnostics.",
+  test: "Run tests and inspect test results.",
+  web: "Search and fetch web pages.",
+  browser: "Navigate and interact with browser pages.",
+  browser_advanced: "Evaluate JavaScript in the browser.",
+  todo: "Manage todos and send todo work to the background.",
+  dashboard: "Create or update live dashboards.",
+  agent: "Spawn permitted child agents.",
+}
 
 // A flat, addressable agent: its definition + folder kind + a key unique across
 // folders (source dir + name), since the same name can appear in several.
 type CatalogAgent = AgentDefinition & { key: string; kind: AgentFolder["kind"] }
 
+type ExternalSourceKind = Exclude<AgentDefinition["sourceKind"], "north_star">
+
 function agentKey(sourcePath: string, name: string): string {
   return `${sourcePath} ${name}`
+}
+
+function displayName(agent: AgentDefinition): string {
+  return agent.label ?? agent.name
 }
 
 // Whether a folder kind is writable (editable/deletable) in this UI.
@@ -99,8 +151,33 @@ function matchesQuery(a: AgentDefinition, query: string): boolean {
   const q = query.trim().toLowerCase()
   if (!q) return true
   return (
-    a.name.toLowerCase().includes(q) || a.description.toLowerCase().includes(q)
+    a.name.toLowerCase().includes(q) ||
+    displayName(a).toLowerCase().includes(q) ||
+    a.description.toLowerCase().includes(q)
   )
+}
+
+function isVisibleAgent(
+  agent: AgentDefinition,
+  query: string,
+  enabledSources: Record<string, boolean>
+): boolean {
+  return (
+    (agent.sourceKind === "north_star" ||
+      enabledSources[agent.sourceKind] !== false) &&
+    matchesQuery(agent, query)
+  )
+}
+
+function sourceLabel(sourceKind: ExternalSourceKind): string {
+  switch (sourceKind) {
+    case "github":
+      return "GitHub Copilot"
+    case "codex":
+      return "Codex"
+    default:
+      return sourceKind[0].toUpperCase() + sourceKind.slice(1)
+  }
 }
 
 // The editable field set (mirrors the main-process AgentFields).
@@ -148,6 +225,11 @@ export function AgentsScreen({ onClose }: { onClose: () => void }) {
   // Free-text filter over the cards (matches name + description). Applies across
   // all three tabs.
   const [query, setQuery] = useState("")
+  // External source visibility is persisted in settings. Unlisted providers
+  // default to visible so newly discovered sources preserve existing behavior.
+  const [enabledSources, setEnabledSources] = useState<Record<string, boolean>>(
+    {}
+  )
   // Skill names for the skills picker's "Choose" list. Loaded once on mount.
   const [skillNames, setSkillNames] = useState<string[]>([])
   // Enabled MCP server names for the MCP-servers "Choose" picker.
@@ -166,7 +248,7 @@ export function AgentsScreen({ onClose }: { onClose: () => void }) {
     return folders.flatMap((f) =>
       f.agents.map((a) => ({
         ...a,
-        key: agentKey(f.path, a.name),
+        key: a.refId ?? agentKey(f.path, a.name),
         kind: f.kind,
       }))
     )
@@ -175,6 +257,16 @@ export function AgentsScreen({ onClose }: { onClose: () => void }) {
   const selected = useMemo(
     () => allAgents.find((a) => a.key === selectedKey) ?? null,
     [allAgents, selectedKey]
+  )
+
+  const externalSources = useMemo(
+    () =>
+      [...new Set(allAgents.map((agent) => agent.sourceKind))]
+        .filter(
+          (source): source is ExternalSourceKind => source !== "north_star"
+        )
+        .sort(),
+    [allAgents]
   )
 
   // All agent names (deduped) for the children picker's "Choose" list.
@@ -187,7 +279,9 @@ export function AgentsScreen({ onClose }: { onClose: () => void }) {
   const writableDirs = useMemo(() => {
     if (!tree) return [] as Array<{ path: string; label: string }>
     return [
-      ...tree.global.map((f) => ({ path: f.path, label: "Global (user)" })),
+      ...tree.global
+        .filter((f) => isWritable(f.kind))
+        .map((f) => ({ path: f.path, label: f.label })),
       ...tree.custom.map((f) => ({
         path: f.path,
         label: `Custom · ${f.label}`,
@@ -203,6 +297,9 @@ export function AgentsScreen({ onClose }: { onClose: () => void }) {
   // (main.tsx renders it conditionally), so it starts fresh each time.
   useEffect(() => {
     loadTree()
+    window.cowork.settings
+      .getAgentSources()
+      .then((settings) => setEnabledSources(settings.visibleExternalSources))
     window.cowork.skills
       .list()
       .then((rows) => setSkillNames(rows.map((s) => s.name)))
@@ -214,7 +311,9 @@ export function AgentsScreen({ onClose }: { onClose: () => void }) {
       .tree()
       .then((t) => {
         const names = new Set<string>()
-        const collect = (folders: { servers: { name: string; enabled: boolean }[] }[]) => {
+        const collect = (
+          folders: { servers: { name: string; enabled: boolean }[] }[]
+        ) => {
           for (const f of folders)
             for (const s of f.servers) if (s.enabled) names.add(s.name)
         }
@@ -444,7 +543,7 @@ export function AgentsScreen({ onClose }: { onClose: () => void }) {
       ) : mode.kind === "edit" && draft && selected ? (
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
           <FormHeader
-            title={selected.name}
+            title={displayName(selected)}
             subtitle={selected.path}
             saving={saving}
             saveLabel={saving ? "Saving…" : "Save"}
@@ -473,7 +572,7 @@ export function AgentsScreen({ onClose }: { onClose: () => void }) {
                 <ArrowLeft />
               </Button>
               <div className="min-w-0">
-                <p className="truncate font-medium">{selected.name}</p>
+                <p className="truncate font-medium">{displayName(selected)}</p>
                 <p className="truncate font-mono text-xs text-muted-foreground">
                   {selected.path}
                 </p>
@@ -539,12 +638,44 @@ export function AgentsScreen({ onClose }: { onClose: () => void }) {
             </div>
           </div>
 
-          <div className="shrink-0 border-b px-4 py-2">
+          <div className="shrink-0 space-y-2 border-b px-4 py-2">
             <FilterInput
               value={query}
               onChange={setQuery}
               placeholder="Filter agents…"
             />
+            {externalSources.length > 0 && (
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+                <span className="text-xs text-muted-foreground">Sources</span>
+                {externalSources.map((source) => (
+                  <Label
+                    key={source}
+                    className="flex items-center gap-2 text-xs"
+                  >
+                    <Switch
+                      size="sm"
+                      checked={enabledSources[source] !== false}
+                      onCheckedChange={(checked) => {
+                        const visibleExternalSources = {
+                          ...enabledSources,
+                          [source]: checked,
+                        }
+                        setEnabledSources(visibleExternalSources)
+                        void window.cowork.settings
+                          .setAgentSourceVisibility(source, checked)
+                          .then(() => {
+                            window.dispatchEvent(
+                              new Event("agent-source-visibility-changed")
+                            )
+                          })
+                      }}
+                      aria-label={`${enabledSources[source] !== false ? "Hide" : "Show"} ${sourceLabel(source)} agents`}
+                    />
+                    {sourceLabel(source)}
+                  </Label>
+                ))}
+              </div>
+            )}
           </div>
 
           <ScrollArea className="min-h-0 flex-1">
@@ -553,16 +684,18 @@ export function AgentsScreen({ onClose }: { onClose: () => void }) {
                 {(() => {
                   const cards = (tree?.global ?? []).flatMap((f) =>
                     f.agents
-                      .filter((a) => matchesQuery(a, query))
+                      .filter((a) => isVisibleAgent(a, query, enabledSources))
                       .map((a) => (
                         <AgentCard
-                          key={agentKey(f.path, a.name)}
+                          key={a.refId ?? agentKey(f.path, a.name)}
                           agent={{
                             ...a,
-                            key: agentKey(f.path, a.name),
+                            key: a.refId ?? agentKey(f.path, a.name),
                             kind: f.kind,
                           }}
-                          onOpen={() => selectAgent(agentKey(f.path, a.name))}
+                          onOpen={() =>
+                            selectAgent(a.refId ?? agentKey(f.path, a.name))
+                          }
                           onDelete={deleteAgent}
                         />
                       ))
@@ -583,6 +716,7 @@ export function AgentsScreen({ onClose }: { onClose: () => void }) {
                     key={ws.path}
                     ws={ws}
                     query={query}
+                    enabledSources={enabledSources}
                     onOpen={selectAgent}
                     onDelete={deleteAgent}
                   />
@@ -595,7 +729,7 @@ export function AgentsScreen({ onClose }: { onClose: () => void }) {
                 )}
                 {tree?.custom.map((folder) => {
                   const matched = folder.agents.filter((a) =>
-                    matchesQuery(a, query)
+                    isVisibleAgent(a, query, enabledSources)
                   )
                   return (
                     <div key={folder.path} className="space-y-2">
@@ -607,14 +741,16 @@ export function AgentsScreen({ onClose }: { onClose: () => void }) {
                       <CardGrid>
                         {matched.map((a) => (
                           <AgentCard
-                            key={agentKey(folder.path, a.name)}
+                            key={a.refId ?? agentKey(folder.path, a.name)}
                             agent={{
                               ...a,
-                              key: agentKey(folder.path, a.name),
+                              key: a.refId ?? agentKey(folder.path, a.name),
                               kind: folder.kind,
                             }}
                             onOpen={() =>
-                              selectAgent(agentKey(folder.path, a.name))
+                              selectAgent(
+                                a.refId ?? agentKey(folder.path, a.name)
+                              )
                             }
                             onDelete={deleteAgent}
                           />
@@ -793,6 +929,7 @@ function AgentForm({
           allLabel="All tools"
           noneLabel="Read-only (read + search)"
           options={TOOL_CATEGORIES as readonly string[]}
+          descriptions={TOOL_CATEGORY_DESCRIPTIONS}
           value={draft.tools}
           onChange={(tools) => onChange({ ...draft, tools })}
         />
@@ -867,6 +1004,7 @@ function TriStatePicker({
   allLabel,
   noneLabel,
   options,
+  descriptions,
   value,
   onChange,
   emptyOptionsNote,
@@ -876,6 +1014,7 @@ function TriStatePicker({
   allLabel: string
   noneLabel: string
   options: readonly string[]
+  descriptions?: Record<string, string>
   value: string[] | undefined
   onChange: (v: string[] | undefined) => void
   emptyOptionsNote?: string
@@ -913,31 +1052,45 @@ function TriStatePicker({
         </SelectContent>
       </Select>
       {mode === "choose" && (
-        <div className="rounded-md border p-3">
-          {options.length === 0 ? (
-            <p className="text-xs text-muted-foreground">
-              {emptyOptionsNote ?? "Nothing to choose."}
-            </p>
-          ) : (
-            <div className="grid grid-cols-2 gap-x-4 gap-y-2">
-              {options.map((name) => {
-                const checked = !!value?.includes(name)
-                return (
-                  <label
-                    key={name}
-                    className="flex cursor-pointer items-center gap-2 text-sm"
-                  >
-                    <Checkbox
-                      checked={checked}
-                      onCheckedChange={(v) => toggle(name, v === true)}
-                    />
-                    <span className="truncate">{name}</span>
-                  </label>
-                )
-              })}
-            </div>
-          )}
-        </div>
+        <TooltipProvider>
+          <div className="rounded-md border p-3">
+            {options.length === 0 ? (
+              <p className="text-xs text-muted-foreground">
+                {emptyOptionsNote ?? "Nothing to choose."}
+              </p>
+            ) : (
+              <div className="grid grid-cols-2 gap-x-4 gap-y-2">
+                {options.map((name) => {
+                  const checked = !!value?.includes(name)
+                  const description = descriptions?.[name]
+                  const item = (
+                    <label className="flex min-w-0 cursor-pointer items-center gap-2 text-sm">
+                      <Checkbox
+                        checked={checked}
+                        onCheckedChange={(v) => toggle(name, v === true)}
+                      />
+                      <span className="truncate">{name}</span>
+                    </label>
+                  )
+                  return (
+                    <div key={name} className="min-w-0">
+                      {description ? (
+                        <Tooltip>
+                          <TooltipTrigger asChild>{item}</TooltipTrigger>
+                          <TooltipContent side="top" align="start">
+                            {description}
+                          </TooltipContent>
+                        </Tooltip>
+                      ) : (
+                        item
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+        </TooltipProvider>
       )}
     </div>
   )
@@ -951,6 +1104,8 @@ function AgentView({ agent }: { agent: AgentDefinition }) {
       <div className="max-w-2xl space-y-4 px-6 py-5">
         <p className="text-sm text-muted-foreground">{agent.description}</p>
         <div className="grid grid-cols-[8rem_1fr] gap-x-4 gap-y-1.5 text-sm">
+          <ViewRow label="Source" value={agent.sourceKind ?? "north_star"} />
+          <ViewRow label="Scope" value={agent.scope ?? "custom"} />
           <ViewRow
             label="Tools"
             value={triSummary(agent.tools, "All tools", "Read-only")}
@@ -965,16 +1120,20 @@ function AgentView({ agent }: { agent: AgentDefinition }) {
           />
           <ViewRow
             label="MCP servers"
-            value={triSummary(
-              agent.mcpServers,
-              "All enabled servers",
-              "None"
-            )}
+            value={triSummary(agent.mcpServers, "All enabled servers", "None")}
           />
           <ViewRow
             label="User-invocable"
             value={agent.userInvocable ? "Yes" : "No"}
           />
+          {agent.diagnostics && agent.diagnostics.length > 0 && (
+            <ViewRow
+              label="Diagnostics"
+              value={agent.diagnostics
+                .map((d) => `${d.severity}: ${d.message}`)
+                .join("; ")}
+            />
+          )}
         </div>
         <div className="border-t pt-4">
           <Markdown content={agent.body} />
@@ -1104,7 +1263,7 @@ function AgentCard({
       className="cursor-pointer transition-shadow hover:ring-foreground/25 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
     >
       <CardHeader>
-        <CardTitle className="truncate">{agent.name}</CardTitle>
+        <CardTitle className="truncate">{displayName(agent)}</CardTitle>
         <CardAction className="flex items-center gap-1">
           {writable ? (
             <button
@@ -1139,19 +1298,22 @@ function AgentCard({
 function WorkspaceSection({
   ws,
   query,
+  enabledSources,
   onOpen,
   onDelete,
 }: {
   ws: AgentTree["workspaces"][number]
   query: string
+  enabledSources: Record<string, boolean>
   onOpen: (key: string) => void
   onDelete: (a: CatalogAgent) => void
 }) {
   const [open, setOpen] = useState(false)
-  const filtering = query.trim().length > 0
+  const filtering =
+    query.trim().length > 0 || Object.values(enabledSources).includes(false)
   const wsAgents = ws.folders
     .flatMap((f) => f.agents.map((a) => ({ folder: f, agent: a })))
-    .filter(({ agent }) => matchesQuery(agent, query))
+    .filter(({ agent }) => isVisibleAgent(agent, query, enabledSources))
   // A filtered section with no matches drops out entirely.
   if (filtering && wsAgents.length === 0) return null
   return (
@@ -1178,13 +1340,15 @@ function WorkspaceSection({
           <CardGrid>
             {wsAgents.map(({ folder, agent }) => (
               <AgentCard
-                key={agentKey(folder.path, agent.name)}
+                key={agent.refId ?? agentKey(folder.path, agent.name)}
                 agent={{
                   ...agent,
-                  key: agentKey(folder.path, agent.name),
+                  key: agent.refId ?? agentKey(folder.path, agent.name),
                   kind: folder.kind,
                 }}
-                onOpen={() => onOpen(agentKey(folder.path, agent.name))}
+                onOpen={() =>
+                  onOpen(agent.refId ?? agentKey(folder.path, agent.name))
+                }
                 onDelete={onDelete}
               />
             ))}

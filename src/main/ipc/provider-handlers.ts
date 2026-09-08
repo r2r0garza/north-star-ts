@@ -1,6 +1,7 @@
-import { app, ipcMain } from "electron"
+import { app, ipcMain, shell } from "electron"
 import * as providerAccountsRepo from "../db/repositories/provider-accounts"
 import * as modelsRepo from "../db/repositories/models"
+import * as externalModelMappingsRepo from "../db/repositories/external-agent-model-mappings"
 import * as secrets from "../settings/secrets"
 import * as settingsService from "../settings/service"
 import {
@@ -11,9 +12,24 @@ import {
 import type { CreateAccountInput } from "../db/repositories/provider-accounts"
 import type { AddModelInput } from "../db/repositories/models"
 import type { LlmSettings } from "../settings/service"
-import type { ModelEntry, ProviderAccount } from "../db/types"
+import type {
+  ExternalAgentModelSourceKind,
+  ModelEntry,
+  ProviderAccount,
+} from "../db/types"
 import { CLAUDE_CODE_MODELS, detectClaudeCode } from "../agent/cli/claude"
 import { CODEX_CLI_MODELS, detectCodexCli } from "../agent/cli/codex"
+import {
+  completeCodexSubscriptionDeviceAuth,
+  CODEX_SUBSCRIPTION_BASE_URL,
+  CODEX_SUBSCRIPTION_MODELS,
+  preflightCodexSubscriptionBackend,
+  requestCodexSubscriptionDeviceCode,
+} from "../agent/providers/codex-subscription"
+import {
+  listMappingViews,
+  resolveExternalAgentModel,
+} from "../agent/runtime/model-resolution"
 
 // IPC for LLM provider accounts, their models, API keys (safeStorage), and the
 // active selection. The renderer NEVER receives a plaintext key — only `hasKey`
@@ -100,6 +116,16 @@ export function registerProviderHandlers(): void {
         })
         if (model.favorite) modelsRepo.updateModel(added.id, { favorite: true })
       }
+    } else if (account.provider === "codex_subscription") {
+      for (const model of CODEX_SUBSCRIPTION_MODELS) {
+        const added = modelsRepo.addModel({
+          accountId: account.id,
+          modelId: model.id,
+          modelName: model.name,
+          origin: "seeded",
+        })
+        if (model.favorite) modelsRepo.updateModel(added.id, { favorite: true })
+      }
     }
     return toView(account)
   })
@@ -108,6 +134,36 @@ export function registerProviderHandlers(): void {
   )
   ipcMain.handle("providers:detectCodexCli", () =>
     detectCodexCli(app.getPath("userData"))
+  )
+  ipcMain.handle(
+    "providers:preflightCodexSubscription",
+    async (_e, id: string) => {
+      const account = providerAccountsRepo.getAccount(id)
+      if (!account || account.provider !== "codex_subscription") {
+        return { ok: false, error: "Codex subscription account not found." }
+      }
+      if (!account.enabled) {
+        return { ok: false, error: "This experimental provider is disabled." }
+      }
+      if (!account.hasKey) {
+        return {
+          ok: false,
+          error:
+            "Missing ChatGPT/Codex auth token. Add credentials or use Codex CLI instead.",
+        }
+      }
+      if (modelsRepo.listModels(id).length === 0) {
+        return { ok: false, error: "No model is configured for this account." }
+      }
+      return preflightCodexSubscriptionBackend({
+        baseUrl: account.baseUrl ?? CODEX_SUBSCRIPTION_BASE_URL,
+        bearerToken: secrets.getApiKey(account.id) ?? "",
+        persistSecret: (secret) => {
+          secrets.setApiKey(account.id, secret)
+          invalidateProviderClient()
+        },
+      })
+    }
   )
   ipcMain.handle("providers:reorder", (_e, orderedIds: string[]) =>
     providerAccountsRepo.reorderAccounts(orderedIds).map(toView)
@@ -136,6 +192,7 @@ export function registerProviderHandlers(): void {
     }
   )
   ipcMain.handle("providers:delete", (_e, id: string) => {
+    externalModelMappingsRepo.deleteMappingsForAccount(id)
     providerAccountsRepo.deleteAccount(id)
     // If the deleted account was active, clear the selection so the next turn
     // surfaces a clean "configure a provider" error instead of a stale id.
@@ -175,6 +232,50 @@ export function registerProviderHandlers(): void {
     "providers:getMaskedKey",
     (_e, id: string) => secrets.getMaskedApiKey(id) ?? null
   )
+  ipcMain.handle("providers:beginCodexSubscriptionAuth", async () => {
+    try {
+      const device = await requestCodexSubscriptionDeviceCode({})
+      void shell.openExternal(device.verificationUri)
+      return { ok: true, ...device }
+    } catch (err) {
+      return {
+        ok: false,
+        error:
+          err instanceof Error ? err.message : "Failed to start Codex sign-in.",
+      }
+    }
+  })
+  ipcMain.handle(
+    "providers:completeCodexSubscriptionAuth",
+    async (
+      _e,
+      input: {
+        id: string
+        deviceAuthId: string
+        userCode: string
+        intervalSeconds: number
+      }
+    ) => {
+      try {
+        const account = providerAccountsRepo.getAccount(input.id)
+        if (!account || account.provider !== "codex_subscription") {
+          return { ok: false, error: "Codex subscription account not found." }
+        }
+        const secret = await completeCodexSubscriptionDeviceAuth(input)
+        secrets.setApiKey(input.id, secret)
+        invalidateProviderClient()
+        return { ok: true }
+      } catch (err) {
+        return {
+          ok: false,
+          error:
+            err instanceof Error
+              ? err.message
+              : "Failed to complete Codex sign-in.",
+        }
+      }
+    }
+  )
 
   // ── Models ──────────────────────────────────────────────────────────────
   ipcMain.handle("models:list", (_e, accountId: string) =>
@@ -207,6 +308,7 @@ export function registerProviderHandlers(): void {
     invalidateProviderClient() // the active model may have been removed
   })
   ipcMain.handle("models:deleteForAccount", (_e, accountId: string) => {
+    externalModelMappingsRepo.deleteMappingsForAccount(accountId)
     modelsRepo.deleteModelsForAccount(accountId)
     const llm = settingsService.getLlm()
     if (llm.activeAccountId === accountId) {
@@ -263,4 +365,40 @@ export function registerProviderHandlers(): void {
   )
   // Whether a usable provider+model is configured (drives first-launch + Send gate).
   ipcMain.handle("providers:hasActive", () => hasActiveProvider())
+
+  // ── External agent model mappings (plan 058) ───────────────────────────────
+  ipcMain.handle("externalModels:listMappings", () => listMappingViews())
+  ipcMain.handle(
+    "externalModels:saveMapping",
+    (
+      _e,
+      input: externalModelMappingsRepo.UpsertExternalAgentModelMappingInput
+    ) => externalModelMappingsRepo.upsertMapping(input)
+  )
+  ipcMain.handle(
+    "externalModels:deleteMapping",
+    (
+      _e,
+      sourceKind: ExternalAgentModelSourceKind,
+      sourceModel: string,
+      destinationAccountId: string
+    ) =>
+      externalModelMappingsRepo.deleteMapping(
+        sourceKind,
+        sourceModel,
+        destinationAccountId
+      )
+  )
+  ipcMain.handle(
+    "externalModels:resolve",
+    (
+      _e,
+      input: {
+        sourceKind: ExternalAgentModelSourceKind
+        sourceModel?: string | null
+        destinationAccountId: string
+        conversationModelId: string
+      }
+    ) => resolveExternalAgentModel(input)
+  )
 }

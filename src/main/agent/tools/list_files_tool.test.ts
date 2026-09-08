@@ -28,6 +28,23 @@ describe("list_files_tool", () => {
     expect(result).toContain('"index.ts"')
   })
 
+  it("lists activated skill resource directories", async () => {
+    const skillRoot = await mkdtemp(join(tmpdir(), "list-skill-resource-"))
+    try {
+      await mkdir(join(skillRoot, "references"), { recursive: true })
+      await writeFile(join(skillRoot, "references", "template.html"), "")
+
+      const result = await listFilesTool.execute(
+        { path: "skill://dashboard/references" },
+        { workspace, skillResourceRoots: { dashboard: skillRoot } }
+      )
+
+      expect(result).toContain('"template.html"')
+    } finally {
+      await rm(skillRoot, { recursive: true, force: true })
+    }
+  })
+
   it("rejects workspace symlinks to external directories without listing names", async () => {
     await writeFile(join(external, "external-sentinel.txt"), "secret\n")
     await symlink(external, join(workspace, "outside"))

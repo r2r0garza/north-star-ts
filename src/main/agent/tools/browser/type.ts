@@ -8,11 +8,9 @@ import {
   summarizeBrowserPayload,
 } from "./approval"
 
-// Type text into an element (input, textarea, search box) in the agent browser,
-// targeted by a `ref` from the most recent browser_snapshot. Optionally presses
-// Enter afterward to submit. Gated as a `browser` interaction: plain typing
-// remains usable, while submitted typing requires a distinct approval because it
-// can send, purchase, delete, or otherwise commit a form.
+// Type text into an editable text element in the agent browser, targeted by a
+// `ref` from the most recent browser_snapshot. Dropdown values belong to
+// browser_select_option instead.
 export const browserTypeTool: Tool = {
   effects: TOOL_EFFECTS.openWorldMutation,
   definition: {
@@ -20,11 +18,12 @@ export const browserTypeTool: Tool = {
     function: {
       name: "browser_type",
       description:
-        "Type text into a form field in the agent browser. Target it with a " +
+        "Type text into an editable text field in the agent browser. Target it with a " +
         '`ref` from the most recent browser_snapshot (e.g. "e5"). Set `submit` ' +
         "true to press Enter after typing (e.g. to submit a search or form). If " +
         "the page changed since your last snapshot, call browser_snapshot again " +
-        "first to get fresh refs.",
+        "first to get fresh refs. For dropdown/listbox/combobox choices, use " +
+        "browser_select_option instead.",
       parameters: {
         type: "object",
         properties: {

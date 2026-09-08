@@ -1,10 +1,16 @@
+import { parseCompletionContract } from "../../process/completion-contract"
 import { randomUUID } from "crypto"
 import { getDb } from "../connection"
 import type {
   EdgeTrigger,
+  PhaseCompletionContract,
+  PhaseCompletionReceipt,
+  FailureContext,
+  FailureStage,
   PhaseGatePolicy,
   PhaseRouting,
   PhaseRunStatus,
+  ProcessPhaseAttempt,
   ProcessDefinition,
   ProcessEdge,
   ProcessFlag,
@@ -13,6 +19,8 @@ import type {
   ProcessPhase,
   ProcessPhaseAgent,
   ProcessPhaseRun,
+  ProcessRuntimeConfig,
+  ProcessRuntimeSnapshot,
   ProcessRun,
   ProcessRunStatus,
 } from "../types"
@@ -44,6 +52,8 @@ function toDefinition(row: ProcessDefinitionRow): ProcessDefinition {
 }
 
 interface ProcessPhaseRow {
+  completion_contract: string
+  runtime_config: string | null
   id: string
   process_id: string
   key: string
@@ -62,6 +72,9 @@ interface ProcessPhaseRow {
 
 function toPhase(row: ProcessPhaseRow): ProcessPhase {
   return {
+    completionContract: parseCompletionContract(
+      JSON.parse(row.completion_contract)
+    ),
     id: row.id,
     processId: row.process_id,
     key: row.key,
@@ -75,6 +88,7 @@ function toPhase(row: ProcessPhaseRow): ProcessPhase {
     validatorMaxIterations: row.validator_max_iterations,
     validatorAgent: row.validator_agent,
     subprocessId: row.subprocess_id,
+    runtimeConfig: parseRuntimeConfig(row.runtime_config),
     position: row.position,
   }
 }
@@ -85,6 +99,7 @@ interface ProcessPhaseAgentRow {
   agent_name: string
   skills: string | null
   tools: string | null
+  runtime_config: string | null
   position: number
 }
 
@@ -96,6 +111,7 @@ function toPhaseAgent(row: ProcessPhaseAgentRow): ProcessPhaseAgent {
     // Tri-state: SQL NULL → null (agent's own); a JSON array → [] or [list].
     skills: row.skills === null ? null : (JSON.parse(row.skills) as string[]),
     tools: row.tools === null ? null : (JSON.parse(row.tools) as string[]),
+    runtimeConfig: parseRuntimeConfig(row.runtime_config),
     position: row.position,
   }
 }
@@ -119,6 +135,8 @@ function toEdge(row: ProcessEdgeRow): ProcessEdge {
 }
 
 interface ProcessRunRow {
+  completion_contracts: string | null
+  runtime_config: string | null
   id: string
   process_id: string | null
   source_conversation_id: string | null
@@ -135,6 +153,10 @@ interface ProcessRunRow {
 
 function toRun(row: ProcessRunRow): ProcessRun {
   return {
+    completionContracts:
+      row.completion_contracts === null
+        ? null
+        : JSON.parse(row.completion_contracts),
     id: row.id,
     processId: row.process_id,
     sourceConversationId: row.source_conversation_id,
@@ -143,6 +165,7 @@ function toRun(row: ProcessRunRow): ProcessRun {
     objective: row.objective,
     title: row.title,
     parentPhaseRunId: row.parent_phase_run_id,
+    runtimeConfig: parseRuntimeConfig(row.runtime_config),
     status: row.status,
     startedAt: row.started_at,
     finishedAt: row.finished_at,
@@ -151,6 +174,8 @@ function toRun(row: ProcessRunRow): ProcessRun {
 }
 
 interface ProcessPhaseRunRow {
+  completion_receipt: string | null
+  runtime_snapshot: string | null
   id: string
   run_id: string
   phase_id: string
@@ -161,16 +186,22 @@ interface ProcessPhaseRunRow {
   title: string | null
   iteration: number
   error: string | null
+  failure: string | null
   started_at: number | null
   finished_at: number | null
   rework_note: string | null
   rework_round: number
   validator_round: number
+  output_identity: string | null
   source_child_run_id: string | null
 }
 
 function toPhaseRun(row: ProcessPhaseRunRow): ProcessPhaseRun {
   return {
+    completionReceipt:
+      row.completion_receipt === null
+        ? null
+        : JSON.parse(row.completion_receipt),
     id: row.id,
     runId: row.run_id,
     phaseId: row.phase_id,
@@ -181,12 +212,90 @@ function toPhaseRun(row: ProcessPhaseRunRow): ProcessPhaseRun {
     title: row.title,
     iteration: row.iteration,
     error: row.error,
+    failure:
+      row.failure === null ? null : (JSON.parse(row.failure) as FailureContext),
     startedAt: row.started_at,
     finishedAt: row.finished_at,
     reworkNote: row.rework_note,
     reworkRound: row.rework_round,
     validatorRound: row.validator_round,
+    outputIdentity: row.output_identity,
     sourceChildRunId: row.source_child_run_id,
+    runtimeSnapshot: parseRuntimeSnapshot(row.runtime_snapshot),
+  }
+}
+
+function parseRuntimeConfig(value: string | null): ProcessRuntimeConfig | null {
+  if (value === null) return null
+  try {
+    const parsed = JSON.parse(value) as unknown
+    return parsed && typeof parsed === "object"
+      ? (parsed as ProcessRuntimeConfig)
+      : null
+  } catch {
+    return null
+  }
+}
+
+function parseRuntimeSnapshot(
+  value: string | null
+): ProcessRuntimeSnapshot | null {
+  if (value === null) return null
+  try {
+    const parsed = JSON.parse(value) as unknown
+    return parsed && typeof parsed === "object"
+      ? (parsed as ProcessRuntimeSnapshot)
+      : null
+  } catch {
+    return null
+  }
+}
+
+function stringifyRuntimeConfig(
+  value: ProcessRuntimeConfig | null | undefined
+): string | null {
+  return value == null ? null : JSON.stringify(value)
+}
+
+function stringifyRuntimeSnapshot(
+  value: ProcessRuntimeSnapshot | null | undefined
+): string | null {
+  return value == null ? null : JSON.stringify(value)
+}
+
+interface ProcessPhaseAttemptRow {
+  id: string
+  run_id: string
+  phase_run_id: string
+  phase_id: string
+  task_id: string | null
+  worker_task_id: string | null
+  agent_name: string | null
+  stage: FailureStage
+  status: "failed"
+  attempt: number | null
+  max_attempts: number | null
+  error: string
+  failure: string
+  created_at: number
+}
+
+function toPhaseAttempt(row: ProcessPhaseAttemptRow): ProcessPhaseAttempt {
+  return {
+    id: row.id,
+    runId: row.run_id,
+    phaseRunId: row.phase_run_id,
+    phaseId: row.phase_id,
+    taskId: row.task_id,
+    workerTaskId: row.worker_task_id,
+    agentName: row.agent_name,
+    stage: row.stage,
+    status: row.status,
+    attempt: row.attempt,
+    maxAttempts: row.max_attempts,
+    error: row.error,
+    failure: JSON.parse(row.failure) as FailureContext,
+    createdAt: row.created_at,
   }
 }
 
@@ -320,6 +429,8 @@ function assertSubprocessValid(
 }
 
 export function createPhase(input: {
+  completionContract?: PhaseCompletionContract
+  runtimeConfig?: ProcessRuntimeConfig | null
   processId: string
   key: string
   name: string
@@ -334,11 +445,12 @@ export function createPhase(input: {
   subprocessId?: string | null
   position: number
 }): ProcessPhase {
+  const contract = parseCompletionContract(input.completionContract)
   assertSubprocessValid(input.processId, input.subprocessId, input.fanOut)
   const id = randomUUID()
   getDb()
     .prepare(
-      "INSERT INTO process_phases (id, process_id, key, name, routing, gate_policy, fan_out, max_rework_rounds, dot_folder, validator, validator_max_iterations, validator_agent, subprocess_id, position) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+      "INSERT INTO process_phases (id, process_id, key, name, routing, gate_policy, fan_out, max_rework_rounds, dot_folder, validator, validator_max_iterations, validator_agent, subprocess_id, position, completion_contract, runtime_config) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )
     .run(
       id,
@@ -354,7 +466,9 @@ export function createPhase(input: {
       input.validatorMaxIterations ?? 0,
       input.validatorAgent ?? null,
       input.subprocessId ?? null,
-      input.position
+      input.position,
+      JSON.stringify(contract),
+      stringifyRuntimeConfig(input.runtimeConfig)
     )
   return getPhase(id)!
 }
@@ -378,6 +492,7 @@ export function listPhases(processId: string): ProcessPhase[] {
 export function updatePhase(
   id: string,
   patch: {
+    completionContract?: PhaseCompletionContract
     key?: string
     name?: string
     routing?: PhaseRouting
@@ -389,6 +504,7 @@ export function updatePhase(
     validatorMaxIterations?: number
     validatorAgent?: string | null
     subprocessId?: string | null
+    runtimeConfig?: ProcessRuntimeConfig | null
     position?: number
   }
 ): ProcessPhase {
@@ -409,6 +525,12 @@ export function updatePhase(
   }
   const sets: string[] = []
   const values: unknown[] = []
+  if (patch.completionContract !== undefined) {
+    sets.push("completion_contract = ?")
+    values.push(
+      JSON.stringify(parseCompletionContract(patch.completionContract))
+    )
+  }
   if (patch.key !== undefined) {
     sets.push("key = ?")
     values.push(patch.key)
@@ -453,6 +575,10 @@ export function updatePhase(
     sets.push("subprocess_id = ?")
     values.push(patch.subprocessId)
   }
+  if (patch.runtimeConfig !== undefined) {
+    sets.push("runtime_config = ?")
+    values.push(stringifyRuntimeConfig(patch.runtimeConfig))
+  }
   if (patch.position !== undefined) {
     sets.push("position = ?")
     values.push(patch.position)
@@ -477,12 +603,13 @@ export function createPhaseAgent(input: {
   agentName: string
   skills?: string[] | null
   tools?: string[] | null
+  runtimeConfig?: ProcessRuntimeConfig | null
   position: number
 }): ProcessPhaseAgent {
   const id = randomUUID()
   getDb()
     .prepare(
-      "INSERT INTO process_phase_agents (id, phase_id, agent_name, skills, tools, position) VALUES (?, ?, ?, ?, ?, ?)"
+      "INSERT INTO process_phase_agents (id, phase_id, agent_name, skills, tools, runtime_config, position) VALUES (?, ?, ?, ?, ?, ?, ?)"
     )
     .run(
       id,
@@ -490,6 +617,7 @@ export function createPhaseAgent(input: {
       input.agentName,
       input.skills == null ? null : JSON.stringify(input.skills),
       input.tools == null ? null : JSON.stringify(input.tools),
+      stringifyRuntimeConfig(input.runtimeConfig),
       input.position
     )
   return getPhaseAgent(id)!
@@ -572,13 +700,14 @@ export function createProcessRun(input: {
   objective?: string | null
   // A nested run's caller (plan 038.1): the sub-process phase-run that started it.
   parentPhaseRunId?: string | null
+  runtimeConfig?: ProcessRuntimeConfig | null
   status?: ProcessRunStatus
 }): ProcessRun {
   const id = randomUUID()
   const now = Date.now()
   getDb()
     .prepare(
-      "INSERT INTO process_runs (id, process_id, source_conversation_id, workspace_id, task_id, objective, parent_phase_run_id, status, started_at, finished_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+      "INSERT INTO process_runs (id, process_id, source_conversation_id, workspace_id, task_id, objective, parent_phase_run_id, status, started_at, finished_at, created_at, completion_contracts, runtime_config) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )
     .run(
       id,
@@ -591,7 +720,16 @@ export function createProcessRun(input: {
       input.status ?? "queued",
       null,
       null,
-      now
+      now,
+      JSON.stringify(
+        Object.fromEntries(
+          (input.processId ? listPhases(input.processId) : []).map((phase) => [
+            phase.id,
+            phase.completionContract,
+          ])
+        )
+      ),
+      stringifyRuntimeConfig(input.runtimeConfig)
     )
   return getProcessRun(id)!
 }
@@ -694,11 +832,12 @@ export function createPhaseRun(input: {
   // The source fan-out child this on_each_subtask consumer instance consumes
   // (plan 031.2 lineage). Null/omitted for ordinary runs and fan-out children.
   sourceChildRunId?: string | null
+  runtimeSnapshot?: ProcessRuntimeSnapshot | null
 }): ProcessPhaseRun {
   const id = randomUUID()
   getDb()
     .prepare(
-      "INSERT INTO process_phase_runs (id, run_id, phase_id, parent_id, status, task_id, agent_name, title, iteration, error, started_at, finished_at, source_child_run_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+      "INSERT INTO process_phase_runs (id, run_id, phase_id, parent_id, status, task_id, agent_name, title, iteration, error, started_at, finished_at, source_child_run_id, runtime_snapshot) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )
     .run(
       id,
@@ -713,7 +852,8 @@ export function createPhaseRun(input: {
       null,
       null,
       null,
-      input.sourceChildRunId ?? null
+      input.sourceChildRunId ?? null,
+      stringifyRuntimeSnapshot(input.runtimeSnapshot)
     )
   return getPhaseRun(id)!
 }
@@ -765,11 +905,15 @@ export function updatePhaseRun(
     agentName?: string | null
     iteration?: number
     error?: string | null
+    failure?: FailureContext | null
     startedAt?: number | null
     finishedAt?: number | null
     reworkNote?: string | null
     reworkRound?: number
     validatorRound?: number
+    outputIdentity?: string | null
+    completionReceipt?: PhaseCompletionReceipt | null
+    runtimeSnapshot?: ProcessRuntimeSnapshot | null
   }
 ): ProcessPhaseRun {
   const sets: string[] = []
@@ -794,6 +938,10 @@ export function updatePhaseRun(
     sets.push("error = ?")
     values.push(patch.error)
   }
+  if (patch.failure !== undefined) {
+    sets.push("failure = ?")
+    values.push(patch.failure === null ? null : JSON.stringify(patch.failure))
+  }
   if (patch.startedAt !== undefined) {
     sets.push("started_at = ?")
     values.push(patch.startedAt)
@@ -814,6 +962,22 @@ export function updatePhaseRun(
     sets.push("validator_round = ?")
     values.push(patch.validatorRound)
   }
+  if (patch.completionReceipt !== undefined || patch.outputIdentity === null) {
+    sets.push("completion_receipt = ?")
+    values.push(
+      patch.outputIdentity === null || !patch.completionReceipt
+        ? null
+        : JSON.stringify(patch.completionReceipt)
+    )
+  }
+  if (patch.outputIdentity !== undefined) {
+    sets.push("output_identity = ?")
+    values.push(patch.outputIdentity)
+  }
+  if (patch.runtimeSnapshot !== undefined) {
+    sets.push("runtime_snapshot = ?")
+    values.push(stringifyRuntimeSnapshot(patch.runtimeSnapshot))
+  }
   if (sets.length > 0) {
     values.push(id)
     getDb()
@@ -821,6 +985,73 @@ export function updatePhaseRun(
       .run(...values)
   }
   return getPhaseRun(id)!
+}
+
+export function createPhaseAttempt(input: {
+  runId: string
+  phaseRunId: string
+  phaseId: string
+  taskId?: string | null
+  workerTaskId?: string | null
+  agentName?: string | null
+  stage: FailureStage
+  attempt?: number | null
+  maxAttempts?: number | null
+  error: string
+  failure: FailureContext
+}): ProcessPhaseAttempt {
+  const id = randomUUID()
+  const now = Date.now()
+  getDb()
+    .prepare(
+      "INSERT INTO process_phase_attempts (id, run_id, phase_run_id, phase_id, task_id, worker_task_id, agent_name, stage, status, attempt, max_attempts, error, failure, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'failed', ?, ?, ?, ?, ?)"
+    )
+    .run(
+      id,
+      input.runId,
+      input.phaseRunId,
+      input.phaseId,
+      input.taskId ?? null,
+      input.workerTaskId ?? null,
+      input.agentName ?? null,
+      input.stage,
+      input.attempt ?? null,
+      input.maxAttempts ?? null,
+      input.error,
+      JSON.stringify(input.failure),
+      now
+    )
+  return getPhaseAttempt(id)!
+}
+
+export function getPhaseAttempt(id: string): ProcessPhaseAttempt | undefined {
+  const row = getDb()
+    .prepare("SELECT * FROM process_phase_attempts WHERE id = ?")
+    .get(id) as ProcessPhaseAttemptRow | undefined
+  return row ? toPhaseAttempt(row) : undefined
+}
+
+export function listPhaseAttempts(opts: {
+  runId?: string
+  phaseRunId?: string
+}): ProcessPhaseAttempt[] {
+  const clauses: string[] = []
+  const values: unknown[] = []
+  if (opts.runId) {
+    clauses.push("run_id = ?")
+    values.push(opts.runId)
+  }
+  if (opts.phaseRunId) {
+    clauses.push("phase_run_id = ?")
+    values.push(opts.phaseRunId)
+  }
+  const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : ""
+  const rows = getDb()
+    .prepare(
+      `SELECT * FROM process_phase_attempts ${where} ORDER BY created_at ASC`
+    )
+    .all(...values) as ProcessPhaseAttemptRow[]
+  return rows.map(toPhaseAttempt)
 }
 
 // Delete a phase-run and its descendant children (the parent_id FK is

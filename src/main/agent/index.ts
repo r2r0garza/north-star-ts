@@ -1,7 +1,8 @@
 import { randomUUID } from "crypto"
 import { stat } from "fs/promises"
-import { basename, isAbsolute } from "path"
+import { basename, dirname, isAbsolute } from "path"
 import { SHUTDOWN_ABORT_REASON } from "./abort"
+import { askUser } from "./questions/broker"
 import {
   toolDefinitions,
   browserToolDefinitions,
@@ -9,6 +10,7 @@ import {
   webFetchDefinition,
   runTool,
   getToolEffects,
+  getToolExecutionPolicy,
   todoWriteTool,
   askUserQuestionTool,
   runTodosInBackgroundTool,
@@ -17,12 +19,16 @@ import {
   readPlanTool,
   presentPlanTool,
 } from "./tools"
+import { terminateOwnedCommandSessions } from "./tools/command_session_tools"
 import type { BrowserHandle } from "../browser/manager"
 import { TOOL_EFFECTS, type ToolImage } from "./tools/types"
 import { readFileTool } from "./tools/read_file_tool"
+import {
+  readDocumentTool,
+  supportedDocumentKind,
+} from "./tools/document_extraction_tool"
 import { accumulateToolCalls, extractTextToolCalls } from "./tool-stream"
-import type { ToolCallDelta } from "./tool-stream"
-import { runToolCallBatches } from "./tool-batch-scheduler"
+import { runToolCallBatches, ToolLifecycleError } from "./tool-batch-scheduler"
 import {
   listTodos,
   replaceTodos,
@@ -34,7 +40,9 @@ import { buildTodoListPrompt } from "./todo-prompt"
 import { loadSkills } from "./skills/loader"
 import { buildSkillsPrompt } from "./skills/prompt"
 import { createReadSkillTool } from "./skills/tool"
+import { forcedSkillNames } from "./skills/forced"
 import { skillSources } from "./skills/sources"
+import { registerSkillResourceRootInMap } from "./tools/skill_resources"
 import { recordMemoryTurn } from "./memory/service"
 import { loadAgent, loadAgents } from "./agents/loader"
 import { agentSources } from "./agents/sources"
@@ -46,7 +54,14 @@ import {
   isUniversalTool,
 } from "./agents/tool-categories"
 import { buildSubagentsPrompt } from "./agents/prompt"
-import { resolveMcpServers } from "./agents/mcp-access"
+import {
+  agentCapabilityPolicy,
+  agentCapabilitySummary,
+  externalAgentToolFilter,
+  resolvePolicyChildren,
+  resolvePolicyMcpServers,
+  resolvePolicySkills,
+} from "./agents/capability-policy"
 import { getMcpManager, parsePrefixedName, enabledServerNames } from "./mcp"
 import type { McpToolDefinition } from "./mcp"
 import { spawnSubagentTool } from "./tools/spawn_subagent"
@@ -60,6 +75,7 @@ import {
   SECTION_PRIORITY,
   type ContextSection,
 } from "./context/context-builder"
+import { renderContextEnvelope } from "./context/provenance"
 import {
   taskStateSection,
   approvalsSection,
@@ -80,9 +96,38 @@ import {
   NoActiveProviderError,
   type LlmSelection,
 } from "./providers"
+import {
+  createCompletionRoundWithRetry,
+  ModelRequestRetryExhaustedError,
+  ModelResponseValidationError,
+  type CompletionRound,
+} from "./model-request-retry"
 import { generateTitle } from "./title"
 export { generateTitle } from "./title"
-import { appendMessage } from "../db/repositories/messages"
+import { sanitizeFailureContext } from "../tasks/process/failure-sanitizer"
+import { appendMessage, getMaxMessageSeq } from "../db/repositories/messages"
+import {
+  findPriorToolCallLifecycleByInvocation,
+  getToolCallLifecycle,
+  markToolCallNotStarted,
+  markToolCallSettled,
+  markToolCallStarted,
+  markToolCallUnknown,
+  markToolCallWaitingForApproval,
+  normalizeToolActionIdentity,
+  normalizeToolCallIdentity,
+  recordToolCallIntents,
+  updateToolCallOperationIdentity,
+} from "../db/repositories/tool-call-lifecycle"
+import {
+  completeBudget as completeModelRequestRetryBudget,
+  exhaustBudget as exhaustModelRequestRetryBudget,
+} from "../db/repositories/model-request-retry-budgets"
+import {
+  commandCompletionInbox,
+  type CommandCompletionEvent,
+  type CommandCompletionOwner,
+} from "./command-completion-inbox"
 import {
   getConversation,
   createConversation,
@@ -93,6 +138,7 @@ import { getWorkspace } from "../db/repositories/workspaces"
 import { getProject } from "../db/repositories/projects"
 import { getAccount } from "../db/repositories/provider-accounts"
 import type { Conversation } from "../db/types"
+import type { FailureContext, FailureStage } from "../db/types"
 import { runClaudeConversation, runCodexConversation } from "./cli"
 import { normalizeClaudeModel } from "./cli/claude"
 import { makePolicyEngine } from "./approval/engine"
@@ -103,13 +149,7 @@ import type {
   GateOutcome,
   ToolAction,
 } from "./approval/types"
-import type {
-  Ask,
-  AskResult,
-  EnqueueTask,
-  Question,
-  QuestionAnswer,
-} from "./tools/types"
+import type { Ask, AskResult, EnqueueTask, Question } from "./tools/types"
 
 // The single approval policy, shared across turns. Built by the shared factory
 // (approval/engine.ts) so the deterministic dashboard-refresh executor (033.3)
@@ -123,6 +163,7 @@ interface PendingApproval {
   action: ToolAction
   workspacePath?: string
   conversationId?: string
+  explicit?: boolean
 }
 const pendingApprovals = new Map<string, PendingApproval>()
 
@@ -201,7 +242,7 @@ export function setAutoModeForConversation(
   if (!on) return
   // Auto-approve whatever this conversation is blocked on right now. Sequential
   // gating means at most one pending approval per conversation, but resolve all
-  // matching just in case. No `remember` — Auto is a session stance, not a rule.
+  // matching just in case. No `remember` — Auto is a run stance, not a rule.
   for (const [requestId, pending] of pendingApprovals) {
     if (pending.conversationId === conversationId) {
       resolveApproval(requestId, "approved")
@@ -226,6 +267,7 @@ export function resolveApproval(
   pendingApprovals.delete(requestId)
   if (
     decision === "approved" &&
+    !pending.explicit &&
     remember === "workspace" &&
     pending.workspacePath
   ) {
@@ -239,6 +281,7 @@ export function resolveApproval(
     })
   } else if (
     decision === "approved" &&
+    !pending.explicit &&
     remember === "conversation" &&
     pending.conversationId
   ) {
@@ -257,23 +300,11 @@ export function resolveApproval(
   pending.resolve(decision)
 }
 
-// One pending ask_user_question round-trip, awaited inside the `ask` function.
-// Keyed by a process-unique requestId so an answer can't resolve another turn's
-// question (mirrors pendingApprovals).
-const pendingQuestions = new Map<string, (result: AskResult) => void>()
-
-// Called from the renderer over IPC ("chat:answer") to deliver the user's
-// answers to a pending ask_user_question. No-op if the request is gone (already
-// answered or the turn was stopped).
-export function resolveQuestion(
-  requestId: string,
-  answers: QuestionAnswer[]
-): void {
-  const resolve = pendingQuestions.get(requestId)
-  if (!resolve) return
-  pendingQuestions.delete(requestId)
-  resolve({ status: "answered", answers })
-}
+// Pending ask_user_question round trips live in the conversation-scoped broker
+// (`./questions/broker`), shared with the CLI MCP bridge so both surfaces answer
+// through the same `chat:answer` IPC. Re-exported here because the main-process
+// IPC handler has always imported it from this module.
+export { resolveQuestion } from "./questions/broker"
 
 export interface ChatRequest {
   // The conversation this turn belongs to. Messages are persisted under it and
@@ -285,6 +316,8 @@ export interface ChatRequest {
   workspace?: string
   // Absolute paths of files to inline into the prompt (Chat view attachments).
   attachments?: string[]
+  // Skill names explicitly selected by the user through slash mentions.
+  skills?: string[]
   // Start this turn in plan mode (interactive/north_star only). See
   // RunAgentLoopOptions.planMode.
   planMode?: boolean
@@ -296,6 +329,7 @@ export interface ChatRequest {
 export interface ChatResult {
   content?: string
   error?: string
+  failure?: FailureContext
   // Stable code for renderer actions that should not depend on parsing the
   // human-readable error text.
   errorCode?: "execution_backend_unavailable"
@@ -317,14 +351,261 @@ function failTurn(
   conversationId: string,
   message: string,
   retryable = false,
-  errorCode?: ChatResult["errorCode"]
+  errorCode?: ChatResult["errorCode"],
+  failure?: FailureContext
 ): ChatResult {
-  appendMessage({
-    conversationId,
-    role: "assistant",
-    content: `⚠️ The turn ended early: ${message}`,
+  try {
+    appendMessage({
+      conversationId,
+      role: "assistant",
+      content: `⚠️ The turn ended early: ${message}`,
+    })
+  } catch {
+    console.error("Unable to persist agent failure", {
+      conversationId,
+      stage: "result_persistence",
+    })
+    failure ??= agentFailure({
+      code: "failure_persistence_failed",
+      stage: "result_persistence",
+      message: "Unable to persist agent failure",
+    })
+  }
+  return {
+    error: message,
+    retryable,
+    ...(errorCode ? { errorCode } : {}),
+    ...(failure ? { failure } : {}),
+  }
+}
+
+function agentFailure(input: {
+  code: string
+  stage: FailureStage
+  message: string
+  retryable?: boolean
+  taskId?: string
+  processRunId?: string
+  processPhaseRunId?: string
+  cause?: string | null
+  toolCallId?: string
+}): FailureContext {
+  return sanitizeFailureContext({
+    code: input.code,
+    stage: input.stage,
+    message: input.message,
+    retryable: input.retryable === true,
+    attempt: null,
+    maxAttempts: null,
+    runId: input.processRunId ?? null,
+    phaseRunId: input.processPhaseRunId ?? null,
+    phaseId: null,
+    taskId: input.taskId ?? null,
+    workerTaskId: input.taskId ?? null,
+    agentName: null,
+    toolCallId: input.toolCallId,
+    cause: input.cause ?? null,
+    occurredAt: Date.now(),
   })
-  return { error: message, retryable, errorCode }
+}
+
+function isToolErrorResult(result: string): boolean {
+  return result.startsWith("ERROR[") || result.startsWith("Error running ")
+}
+
+function commandCompletionMessage(events: CommandCompletionEvent[]): string {
+  return JSON.stringify(
+    {
+      type: "background_command_completions",
+      completions: events.map((event) => ({
+        eventId: event.id,
+        sessionId: event.sessionId,
+        runId: event.runId,
+        command: event.command,
+        cwd: event.cwd,
+        createdAt: event.createdAt,
+        status: event.status,
+        exitCode: event.exitCode,
+        signal: event.signal,
+        durationMs: event.durationMs,
+        cursor: event.cursor,
+        nextCursor: event.nextCursor,
+        totalBytes: event.totalBytes,
+        droppedBytes: event.droppedBytes,
+        omittedBytes: event.omittedBytes,
+        modelTruncated: event.modelTruncated,
+        truncated: event.truncated,
+        cleanupError: event.cleanupError,
+        output: event.output,
+      })),
+    },
+    null,
+    2
+  )
+}
+
+function appendCommandCompletionEvents(input: {
+  conversationId: string
+  messages: any[]
+  owner: CommandCompletionOwner
+  events: CommandCompletionEvent[]
+}): boolean {
+  if (input.events.length === 0) return false
+  const content =
+    "Runtime event: background command completion(s).\n\n" +
+    renderContextEnvelope(
+      {
+        trust: "untrusted_data",
+        channel: "command",
+        source: "background_command_completion",
+      },
+      commandCompletionMessage(input.events)
+    )
+  appendMessage({
+    conversationId: input.conversationId,
+    role: "user",
+    content,
+  })
+  input.messages.push({ role: "user", content })
+  commandCompletionInbox.markConsumed(input.events.map((event) => event.id))
+  return true
+}
+
+function validateModelRoundForLoop(input: {
+  round: CompletionRound
+  commandCompletionPending: boolean
+}): void {
+  const structuredToolCalls = accumulateToolCalls(input.round.toolFragments)
+  const recovered = extractTextToolCalls(input.round.text)
+  const text = recovered.text.trim()
+  const hasToolCalls =
+    structuredToolCalls.length > 0 || recovered.toolCalls.length > 0
+  if (text || hasToolCalls || input.commandCompletionPending) return
+
+  if (input.round.finishReason === "length") {
+    throw new ModelResponseValidationError(
+      "The model hit the output limit before returning a usable answer. Retry with a narrower request or a higher output cap.",
+      { retryable: false }
+    )
+  }
+
+  if (input.round.finishReason === "content_filter") {
+    throw new ModelResponseValidationError(
+      "The model response was blocked by a content filter before returning a usable answer.",
+      { retryable: false }
+    )
+  }
+
+  if (
+    input.round.finishReason !== null &&
+    input.round.finishReason !== "stop"
+  ) {
+    const finishReason = input.round.finishReason
+      .replace(/[\u0000-\u001f\u007f]/g, "")
+      .slice(0, 80)
+    throw new ModelResponseValidationError(
+      `The model ended with unsupported finish reason "${finishReason}" before returning a usable answer.`,
+      { retryable: false }
+    )
+  }
+
+  throw new ModelResponseValidationError(
+    "The model returned no usable answer. The turn ended before it could finish.",
+    { retryable: true }
+  )
+}
+
+function parseCommandSessionId(result: string): string | undefined {
+  try {
+    const parsed = JSON.parse(result) as { sessionId?: unknown }
+    return typeof parsed.sessionId === "string" && parsed.sessionId
+      ? parsed.sessionId
+      : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function reconciledSideEffectingToolResult(input: {
+  conversationId: string
+  callId: string
+  callName: string
+  effects: ReturnType<typeof getToolEffects>
+}): string | undefined {
+  if (input.effects?.readOnly) return undefined
+  const current = getToolCallLifecycle(input.conversationId, input.callId)
+  if (!current) return undefined
+  const prior = findPriorToolCallLifecycleByInvocation({
+    conversationId: input.conversationId,
+    invocationId: current.invocationId,
+    excludeToolCallId: input.callId,
+  })
+
+  // An unresolved side effect still needs reconciliation across model rounds.
+  // Check it before cached results so a later blocked retry cannot hide it.
+  const unknown = prior.find(
+    (row) => row.state === "unknown" || row.state === "started"
+  )
+  if (unknown) {
+    return (
+      `ERROR[tool_reconciliation_blocked]: an equivalent ${input.callName} ` +
+      `invocation has an unknown outcome (${unknown.invocationId}). ` +
+      "The operation was not retried to avoid duplicating side effects."
+    )
+  }
+
+  // A later model request may intentionally repeat a command or edit the same
+  // file. Only reuse a result within the original request, with identical tool
+  // arguments: approval identities can omit payloads such as file contents.
+  const callIdentity = normalizeToolCallIdentity({
+    id: current.toolCallId,
+    name: current.toolName,
+    arguments: current.arguments,
+  })
+  const settled = prior.find(
+    (row) =>
+      (row.state === "settled_success" || row.state === "settled_error") &&
+      row.logicalRoundId === current.logicalRoundId &&
+      normalizeToolCallIdentity({
+        id: row.toolCallId,
+        name: row.toolName,
+        arguments: row.arguments,
+      }) === callIdentity
+  )
+  if (settled) {
+    return (
+      settled.result ??
+      settled.error ??
+      `ERROR[tool_reconciled]: equivalent ${input.callName} already settled.`
+    )
+  }
+
+  return undefined
+}
+
+function reconcileSideEffectingToolAction(input: {
+  conversationId: string
+  callId: string
+  callName: string
+  action: ToolAction
+  effects: ReturnType<typeof getToolEffects>
+}): string | undefined {
+  if (input.effects?.readOnly) return undefined
+  const current = updateToolCallOperationIdentity({
+    conversationId: input.conversationId,
+    toolCallId: input.callId,
+    identity: normalizeToolActionIdentity({
+      kind: input.action.kind,
+      identity: input.action.identity,
+    }),
+  })
+  if (!current) return undefined
+  return reconciledSideEffectingToolResult({
+    conversationId: input.conversationId,
+    callId: input.callId,
+    callName: input.callName,
+    effects: input.effects,
+  })
 }
 
 // Streaming events emitted during a turn. `token` is a text delta to append to
@@ -357,6 +638,7 @@ export type ChatEvent =
       // "always allow in this workspace" button, since delegation is asked every
       // time. Optional so older persisted events without it still parse.
       kind?: ActionKind
+      explicit?: boolean
       detail?: Record<string, unknown>
     }
   // The agent is asking the user clarifying questions (ask_user_question). `id`
@@ -375,21 +657,11 @@ export type ChatEvent =
   // The backend activated auto mode (present_plan approved with Auto mode).
   // The renderer uses this to switch its agentMode state to "auto".
   | { type: "auto_mode"; enabled: boolean }
+  // The run is parked waiting for owned background command sessions to settle.
+  // Stop remains available because this is still the same in-flight turn.
+  | { type: "command_wait"; phase: "start" | "done"; sessionIds?: string[] }
 
 type OnEvent = (event: ChatEvent) => void
-
-// Normalize a content value (string or array of parts) to plain text.
-function contentToText(content: unknown): string {
-  if (typeof content === "string") return content
-  if (Array.isArray(content)) {
-    return content
-      .map((part: any) =>
-        typeof part === "string" ? part : (part?.text ?? "")
-      )
-      .join("")
-  }
-  return ""
-}
 
 // Options for the core agentic loop. The caller owns the AbortController and its
 // registration/teardown, so the live `chat` path can key it by conversationId
@@ -404,6 +676,8 @@ export interface RunAgentLoopOptions {
   workspace?: string
   // Absolute paths of files to inline into the prompt (Chat view attachments).
   attachments?: string[]
+  // Skill names explicitly selected by the user through slash mentions.
+  skills?: string[]
   // A fresh user message to persist before the loop starts (a new turn). Omitted
   // when a durable task resumes — the loop continues from the already-persisted
   // transcript with no new user turn, since context is rebuilt from stored
@@ -439,8 +713,10 @@ export interface RunAgentLoopOptions {
   // touch the workspace. Session-only (the renderer passes it per send; not
   // persisted). Ignored for chat mode. Flips off mid-turn when the user approves.
   planMode?: boolean
-  // Start this turn in auto mode: all require_approval gate decisions are
+  // Start this turn in auto mode: ordinary require_approval gate decisions are
   // automatically approved so the agent acts without confirmation prompts.
+  // Protected require_explicit_approval decisions are also approved: enabling
+  // Auto mode is the user's run-level pre-approval.
   // Session-only. Honored in every mode including chat (chat's browser_navigate
   // is a require_approval action). Can also be activated mid-turn when the user
   // picks "Yes, approve and work in Auto mode" in the plan approval question.
@@ -465,6 +741,8 @@ export interface RunAgentLoopOptions {
   // the run's graph + record a durable cross-phase rework flag. Absent otherwise.
   processRunId?: string
   processPhaseRunId?: string
+  // Process-only format instruction, refreshed even when resuming a transcript.
+  processCompletionInstruction?: string
   // Withhold the ask_user_question tool: this turn has NO interactive user to
   // answer a clarifying question, so offering the tool only lets the worker stall
   // until it's interrupted. Set by every Process worker fork (phase / decompose /
@@ -508,9 +786,22 @@ function resolveConversationDir(
 export async function runAgentLoop(
   opts: RunAgentLoopOptions
 ): Promise<ChatResult> {
-  const { conversationId, workspace, attachments, userMessage, abort, taskId } =
-    opts
+  const {
+    conversationId,
+    workspace,
+    attachments,
+    userMessage,
+    abort,
+    taskId,
+    skills: selectedSkillNames,
+  } = opts
   const onEvent: OnEvent = opts.onEvent ?? (() => {})
+  const runId = randomUUID()
+  const commandCompletionOwner: CommandCompletionOwner = {
+    conversationId,
+    workspace: workspace ?? "",
+    runId,
+  }
 
   // The workspace is optional. When provided it must be a real directory and
   // the agent's filesystem tools are confined to it; the Chat view sends no
@@ -518,15 +809,48 @@ export async function runAgentLoop(
   const hasWorkspace = typeof workspace === "string" && workspace.length > 0
   if (hasWorkspace) {
     if (!isAbsolute(workspace!)) {
-      return { error: "A valid absolute workspace path is required." }
+      const message = "A valid absolute workspace path is required."
+      return {
+        error: message,
+        failure: agentFailure({
+          code: "invalid_workspace",
+          stage: "agent_setup",
+          message,
+          taskId,
+          processRunId: opts.processRunId,
+          processPhaseRunId: opts.processPhaseRunId,
+        }),
+      }
     }
     try {
       const info = await stat(workspace!)
       if (!info.isDirectory()) {
-        return { error: `Workspace is not a directory: ${workspace}` }
+        const message = `Workspace is not a directory: ${workspace}`
+        return {
+          error: message,
+          failure: agentFailure({
+            code: "invalid_workspace",
+            stage: "agent_setup",
+            message,
+            taskId,
+            processRunId: opts.processRunId,
+            processPhaseRunId: opts.processPhaseRunId,
+          }),
+        }
       }
     } catch {
-      return { error: `Workspace does not exist: ${workspace}` }
+      const message = `Workspace does not exist: ${workspace}`
+      return {
+        error: message,
+        failure: agentFailure({
+          code: "invalid_workspace",
+          stage: "agent_setup",
+          message,
+          taskId,
+          processRunId: opts.processRunId,
+          processPhaseRunId: opts.processPhaseRunId,
+        }),
+      }
     }
   }
 
@@ -544,38 +868,48 @@ export async function runAgentLoop(
   const effectiveAccount = effectiveAccountId
     ? getAccount(effectiveAccountId)
     : undefined
-  if (effectiveAccount?.provider === "claude_code") {
+  if (
+    effectiveAccount?.provider === "claude_code" ||
+    effectiveAccount?.provider === "codex_cli"
+  ) {
     if (!conversation) return { error: "Conversation not found." }
     if (!effectiveAccount.enabled) {
-      return { error: "The selected Claude Code provider is disabled." }
+      const label =
+        effectiveAccount.provider === "claude_code"
+          ? "Claude Code"
+          : "Codex CLI"
+      return { error: `The selected ${label} provider is disabled.` }
     }
-    return runClaudeConversation({
+    // Built ONCE and shared by both runners. They previously took separate
+    // object literals, and a bridge option added to one but not the other went
+    // unnoticed (types can't catch it — every field here is optional).
+    const cliTurn = {
       conversation,
       workspace,
+      // Gates the MCP bridge's ask_user_question the same way it gates the
+      // internal tool: a headless worker gets no question surface at all.
+      suppressUserQuestions: opts.suppressUserQuestions,
+      // Lends the CLI North Star's browser over the bridge (plan 045).
+      provideBrowser: opts.provideBrowser,
+      // The CLI paths return before `agentDir` is resolved below, so scope their
+      // memory the same way it would have been: confinement workspace, else the
+      // conversation's own directory.
+      memoryWorkspaceDir: hasWorkspace
+        ? workspace
+        : resolveConversationDir(conversation),
       userMessage,
-      model: normalizeClaudeModel(
-        conversation.modelId ??
-          (conversation.accountId === null ? defaultLlm.activeModelId : null)
-      ),
       abort,
       onEvent,
-    })
-  }
-  if (effectiveAccount?.provider === "codex_cli") {
-    if (!conversation) return { error: "Conversation not found." }
-    if (!effectiveAccount.enabled) {
-      return { error: "The selected Codex CLI provider is disabled." }
     }
-    return runCodexConversation({
-      conversation,
-      workspace,
-      userMessage,
-      model:
-        conversation.modelId ??
-        (conversation.accountId === null ? defaultLlm.activeModelId : null),
-      abort,
-      onEvent,
-    })
+    const modelId =
+      conversation.modelId ??
+      (conversation.accountId === null ? defaultLlm.activeModelId : null)
+    return effectiveAccount.provider === "claude_code"
+      ? runClaudeConversation({
+          ...cliTurn,
+          model: normalizeClaudeModel(modelId),
+        })
+      : runCodexConversation({ ...cliTurn, model: modelId })
   }
 
   // The directory used to DISCOVER workspace-level agents (and the composer's
@@ -599,6 +933,7 @@ export async function runAgentLoop(
   const agent = conversation?.agentName
     ? await loadAgent(conversation.agentName, agentDir)
     : null
+  const capabilityPolicy = agentCapabilityPolicy(agent)
 
   // Load skills (user → workspace, last-wins), then build the read_skill tool and
   // the Skills System prompt section. Only skill metadata enters the prompt;
@@ -606,17 +941,48 @@ export async function runAgentLoop(
   // `skills` frontmatter, filter to its allowlist (tri-state: omitted → all;
   // [] → none; [list] → only those) before building the tool + prompt.
   const allSkills = await loadSkills(skillSources(agentDir))
-  const skills =
-    agent?.skills === undefined
-      ? allSkills
-      : allSkills.filter((s) => agent.skills!.includes(s.name))
+  const skills = resolvePolicySkills(agent, allSkills, capabilityPolicy)
   const readSkillTool = createReadSkillTool(skills)
+  const forcedSkills = forcedSkillNames(userMessage, selectedSkillNames)
+  const availableSkillNames = new Set(skills.map((skill) => skill.name))
+  const unknownSkill = forcedSkills.names.find(
+    (name) => !availableSkillNames.has(name)
+  )
+  if (unknownSkill) {
+    const available = [...availableSkillNames].join(", ") || "(none)"
+    return {
+      error: `No skill named "${unknownSkill}". Available skills: ${available}`,
+    }
+  }
+  const skillResourceRoots: Record<string, string> = {}
+  for (const name of forcedSkills.names) {
+    const skill = skills.find((s) => s.name === name)
+    if (skill) {
+      registerSkillResourceRootInMap(skillResourceRoots, {
+        name: skill.name,
+        root: dirname(skill.path),
+      })
+    }
+  }
 
   // Filesystem tools are confined to a workspace, so the full set is only
   // offered when one exists. A Chat session has no workspace; instead it offers
-  // just read_file_tool, scoped to the files the user attached (the attachment
-  // list is the read allowlist — see read_file_tool's resolveReadable).
+  // the read tools, scoped to the files the user attached (the attachment list
+  // is the read allowlist — see read_file_tool's resolveReadable).
   const hasAttachments = !!attachments && attachments.length > 0
+
+  // read_file_tool only handles UTF-8 text: on a PDF/DOCX/XLSX/PPTX/IPYNB/image
+  // it fails with `binary` and points at read_document. So when an attachment is
+  // one of those, read_document is offered alongside it — otherwise Chat hits a
+  // dead end where the error names a tool that was never on the toolset. Both
+  // resolve attachments through the same allowlist and read straight from the
+  // host, so neither needs a workspace.
+  const attachedDocuments = hasAttachments
+    ? attachments!.filter((p) => supportedDocumentKind(p) !== null)
+    : []
+  const attachedTextFiles = hasAttachments
+    ? attachments!.filter((p) => supportedDocumentKind(p) === null)
+    : []
 
   // This conversation's LLM selection (provider account + model). Null fields
   // fall back to the global default inside resolveLlm, so a session that never
@@ -639,14 +1005,12 @@ export async function runAgentLoop(
   // approval. Consulted before the shared PolicyEngine in the per-turn gate.
   const planModeClassifier = new PlanModeClassifier(() => planMode)
 
-  // Auto mode: auto-approve any action that would otherwise require human
-  // confirmation (require_approval → approved). Hard-blocks from classifiers
-  // (e.g. plan-mode) are never bypassed. MUTABLE: present_plan can activate it
-  // mid-turn when the user picks "Yes, approve and work in Auto mode". Available
-  // in every mode including chat — unlike plan mode it doesn't depend on the
-  // workspace toolset; chat's browser_navigate is a require_approval action auto
-  // mode suppresses too. The renderer only sends autoMode where a mode toggle is
-  // offered, so it's honored verbatim here.
+  // Auto mode: auto-approve human confirmations
+  // (require_approval/require_explicit_approval → approved). Hard-blocks are
+  // never bypassed. Enabling Auto mode is the user's run-level pre-approval, so
+  // the user does not need to monitor an Auto-mode run for permission requests.
+  // MUTABLE: present_plan can activate it mid-turn when the user picks "Yes,
+  // approve and work in Auto mode".
   let autoMode = !!opts.autoMode
   // The turn-level auto-mode mutator: flips the live var and notifies the UI.
   // Shared by present_plan (via ctx.setAutoMode) and the mid-turn dropdown toggle
@@ -681,7 +1045,11 @@ export async function runAgentLoop(
   // the universal floor, handled in buildTools); null = no restriction (omitted
   // frontmatter → full mode-appropriate toolset). Computed once — it doesn't
   // change mid-turn like planMode does.
-  const agentToolNames = agentToolAllowlist(agent)
+  const agentToolNames = capabilityPolicy ? null : agentToolAllowlist(agent)
+  const externalToolAllowed = externalAgentToolFilter(
+    capabilityPolicy,
+    !!opts.suppressUserQuestions
+  )
 
   // Subagent spawning. The spawn_subagent tool is offered only when BOTH gates
   // pass: the agent's `tools` includes the `agent` category AND its `children`
@@ -692,17 +1060,18 @@ export async function runAgentLoop(
   // max depth can't offer the tool (its children could never spawn anyway).
   const canSpawn =
     !!agent &&
-    agentToolsIncludeCategory(agent, "agent") &&
-    agent.children !== undefined &&
+    (capabilityPolicy
+      ? capabilityPolicy.children.kind !== "none"
+      : agentToolsIncludeCategory(agent, "agent") &&
+        agent.children !== undefined) &&
     (opts.agentDepth ?? 0) < MAX_AGENT_DEPTH
   let spawnableChildren: AgentDefinition[] = []
   if (canSpawn) {
     const loadable = await loadAgents(agentSources(agentDir))
-    const allow = agent!.children!
-    spawnableChildren = loadable.filter(
-      (a) =>
-        a.name !== agent!.name && // never list self
-        (allow.length === 0 || allow.includes(a.name))
+    spawnableChildren = resolvePolicyChildren(
+      agent!,
+      loadable,
+      capabilityPolicy
     )
   }
   const offerSpawn = canSpawn && spawnableChildren.length > 0
@@ -720,7 +1089,11 @@ export async function runAgentLoop(
   let mcpTools: McpToolDefinition[] = []
   {
     const enabledNames = await enabledServerNames(mcpWorkspace)
-    const allowedNames = resolveMcpServers(agent, enabledNames)
+    const allowedNames = resolvePolicyMcpServers(
+      agent,
+      enabledNames,
+      capabilityPolicy
+    )
     if (allowedNames.length > 0) {
       mcpTools = await getMcpManager().listToolsFor(
         allowedNames,
@@ -759,13 +1132,15 @@ export async function runAgentLoop(
   // no filesystem tools; plan mode still drops mutating tools). Universal tools
   // (ask_user_question, read_skill, plan-mode handoff) bypass the allowlist.
   const applyAgentTools = (defs: { function: { name: string } }[]) =>
-    agentToolNames === null
-      ? defs
-      : defs.filter(
-          (d) =>
-            isUniversalTool(d.function.name) ||
-            agentToolNames.has(d.function.name)
-        )
+    externalToolAllowed
+      ? defs.filter((d) => externalToolAllowed(d.function.name))
+      : agentToolNames === null
+        ? defs
+        : defs.filter(
+            (d) =>
+              isUniversalTool(d.function.name) ||
+              agentToolNames.has(d.function.name)
+          )
   const buildTools = () =>
     applyAgentTools([
       ...(hasWorkspace
@@ -775,7 +1150,9 @@ export async function runAgentLoop(
             )
           : toolDefinitions
         : hasAttachments
-          ? [readFileTool.definition]
+          ? attachedDocuments.length > 0
+            ? [readFileTool.definition, readDocumentTool.definition]
+            : [readFileTool.definition]
           : []),
       ...(showTodos
         ? // run_todos_in_background delegates to a background writer, so it's
@@ -837,9 +1214,23 @@ export async function runAgentLoop(
   // stays non-droppable): the agent's persona/instructions sit on top of ours so
   // they frame everything the model reads, without discarding the mode behavior.
   const modePrompt = await loadSystemPrompt(conversation?.mode)
-  const baseSystemPrompt = agent
-    ? `${agent.body.trim()}\n\n${modePrompt}`
-    : modePrompt
+  const baseSystemPrompt =
+    (agent
+      ? `${renderContextEnvelope(
+          {
+            trust: "approved_instruction",
+            channel: "agent",
+            source: agent.name,
+            persisted: true,
+          },
+          agent.body.trim()
+        )}\n\n${modePrompt}`
+      : modePrompt) +
+    (opts.processRunId &&
+    opts.processPhaseRunId &&
+    opts.processCompletionInstruction
+      ? `\n\n${opts.processCompletionInstruction}`
+      : "")
   const sections: ContextSection[] = []
 
   // Environment orientation: date + model always, and (when a workspace exists)
@@ -867,6 +1258,26 @@ export async function runAgentLoop(
     sections.push(browserStateSection(browser.state()))
   }
 
+  if (agent && capabilityPolicy) {
+    const capabilitySummary = agentCapabilitySummary(
+      agent,
+      capabilityPolicy,
+      buildTools().map((d) => d.function.name)
+    )
+    if (capabilitySummary) {
+      sections.push({
+        name: "external_agent_capabilities",
+        priority: SECTION_PRIORITY.skills,
+        content: capabilitySummary,
+        provenance: {
+          trust: "system",
+          channel: "runtime",
+          source: "external_agent_capabilities",
+        },
+      })
+    }
+  }
+
   // Skills: the read_skill catalog. Kept longest under budget pressure (highest
   // priority) — dropping it would hide capabilities the agent is told it has.
   const skillsPrompt = buildSkillsPrompt(skills)
@@ -875,6 +1286,34 @@ export async function runAgentLoop(
       name: "skills",
       priority: SECTION_PRIORITY.skills,
       content: skillsPrompt,
+      provenance: {
+        trust: "approved_instruction",
+        channel: "skill",
+        source: "skill_catalog",
+        persisted: true,
+      },
+    })
+  }
+  const selectedSkills = skills.filter((s) =>
+    forcedSkills.names.includes(s.name)
+  )
+  if (selectedSkills.length > 0) {
+    sections.push({
+      name: "selected_skills",
+      priority: SECTION_PRIORITY.skills,
+      content:
+        "## User-selected skills\n" +
+        "The user explicitly selected these skills with slash mentions. Treat them as activated for this turn; their bundled files are available as read-only skill resources:\n" +
+        selectedSkills
+          .map((s) => `- ${s.name}: skill://${s.name}/`)
+          .join("\n") +
+        "\nCall read_skill for full instructions if the selected skill instructions are not already in context.",
+      provenance: {
+        trust: "approved_instruction",
+        channel: "skill",
+        source: "selected_skills",
+        persisted: true,
+      },
     })
   }
 
@@ -889,6 +1328,12 @@ export async function runAgentLoop(
         name: "subagents",
         priority: SECTION_PRIORITY.skills,
         content: subagentsPrompt,
+        provenance: {
+          trust: "approved_instruction",
+          channel: "agent",
+          source: "subagent_catalog",
+          persisted: true,
+        },
       })
     }
   }
@@ -981,6 +1426,12 @@ export async function runAgentLoop(
         name: "index",
         priority: SECTION_PRIORITY.index,
         content: indexSummary,
+        provenance: {
+          trust: "untrusted_data",
+          channel: "file",
+          source: "workspace_index_summary",
+          persisted: true,
+        },
       })
     }
   }
@@ -991,15 +1442,11 @@ export async function runAgentLoop(
   // would carry an assistant tool_call with no matching `tool` message and the
   // next request would 400.
   //
-  // The repair mode depends on the caller, distinguished by `userMessage`:
-  //  - A durable-task RESUME passes no userMessage ("carry on"). Roll the
-  //    incomplete turn back so the agent re-plans and re-issues the gated tool —
-  //    the gate re-prompts (plan 012). A synthetic result would look like a
-  //    finished call and the action would never be retried.
-  //  - A live-chat turn passes a fresh userMessage. Synthesize an "interrupted"
-  //    result and let the new message drive (live chat is ephemeral; the user
-  //    retries by typing). A first task run also has no dangling tail, so its
-  //    rollback is a no-op.
+  // The repair mode depends on the caller, distinguished by `userMessage`.
+  // Durable-task resumes pass no userMessage ("carry on"), while live-chat turns
+  // pass a fresh userMessage. Both modes now preserve the assistant tool-call
+  // evidence and repair unanswered calls from durable lifecycle state; "rollback"
+  // remains a compatibility spelling for task callers.
   repairDanglingToolCalls(
     conversationId,
     userMessage === undefined ? "rollback" : "synthesize"
@@ -1012,15 +1459,49 @@ export async function runAgentLoop(
   // files by name (contents are NOT inlined: the model reads them on demand via
   // read_file_tool, scoped to this attachment list, which supports paging).
   let persistedUserContent: string | undefined
+  let modelUserContent: string | undefined
+  // Visible prose this turn produced, kept outside the loop so the memory
+  // recorder in `finally` can see it. The loop's own `text` is per-round and is
+  // gone by the time an abort, a truncation, or a thrown error unwinds.
+  let turnAssistantText = ""
+  // A transient failure is re-run by the caller with the same user message.
+  // Recording it would double the reference log and spend a second extraction
+  // call on text the retry is about to record anyway.
+  let turnWillRetry = false
   if (userMessage !== undefined) {
     let userContent = userMessage || "What files are in the workspace?"
+    let modelContent =
+      forcedSkills.modelMessage !== undefined
+        ? forcedSkills.modelMessage
+        : userContent
     if (hasAttachments) {
-      const names = attachments!.map((p) => basename(p)).join(", ")
-      const note = `Attached files (read with read_file_tool when needed): ${names}`
+      // Name the reader that actually works per file: read_file_tool is text-only,
+      // so pointing it at an attached PDF/DOCX/etc. just burns a turn on a `binary`
+      // error. Only non-empty groups are listed, so the all-text case (the common
+      // one) still reads as a single list.
+      const noteParts: string[] = []
+      if (attachedTextFiles.length > 0) {
+        noteParts.push(
+          `read with read_file_tool: ${attachedTextFiles
+            .map((p) => basename(p))
+            .join(", ")}`
+        )
+      }
+      if (attachedDocuments.length > 0) {
+        noteParts.push(
+          `read with read_document: ${attachedDocuments
+            .map((p) => basename(p))
+            .join(", ")}`
+        )
+      }
+      const note = `Attached files (${noteParts.join("; ")})`
       userContent = userContent ? `${userContent}\n\n${note}` : note
+      modelContent = modelContent ? `${modelContent}\n\n${note}` : note
     }
     persistedUserContent = userContent
-    // With attachments inlined, so history reflects what the model actually saw.
+    modelUserContent = modelContent
+    // Persist the literal user text. A leading /skill command may be stripped
+    // only in the in-memory model message below, after the history is rebuilt.
     appendMessage({ conversationId, role: "user", content: userContent })
   }
 
@@ -1035,6 +1516,111 @@ export async function runAgentLoop(
     tokenBudget:
       settingsService.getIndexing().summarizeTokenThreshold || undefined,
   })
+  if (
+    modelUserContent !== undefined &&
+    modelUserContent !== persistedUserContent
+  ) {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i]?.role === "user") {
+        messages[i] = { ...messages[i], content: modelUserContent }
+        break
+      }
+    }
+  }
+
+  for (const name of forcedSkills.names) {
+    const id = randomUUID()
+    const args = JSON.stringify({ name })
+    messages.push({
+      role: "assistant",
+      content: null,
+      tool_calls: [
+        {
+          id,
+          type: "function",
+          function: {
+            name: readSkillTool.definition.function.name,
+            arguments: args,
+          },
+        },
+      ],
+    })
+    const assistantMessage = appendMessage({
+      conversationId,
+      role: "assistant",
+      content: null,
+      toolCalls: [
+        {
+          id,
+          name: readSkillTool.definition.function.name,
+          arguments: args,
+        },
+      ],
+    })
+    recordToolCallIntents({
+      conversationId,
+      assistantMessageId: assistantMessage.id,
+      logicalRoundId: `forced-skill:${name}`,
+      calls: [
+        {
+          id,
+          name: readSkillTool.definition.function.name,
+          arguments: args,
+        },
+      ],
+    })
+    markToolCallStarted({ conversationId, toolCallId: id })
+    onEvent({
+      type: "tool",
+      phase: "start",
+      id,
+      name: readSkillTool.definition.function.name,
+      arguments: args,
+    })
+    let result: string
+    try {
+      result = await readSkillTool.execute(
+        { name },
+        {
+          workspace: workspace ?? "",
+          attachments,
+          conversationId,
+          skillResourceRoots,
+        }
+      )
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      markToolCallSettled({
+        conversationId,
+        toolCallId: id,
+        state: "settled_error",
+        error: message,
+      })
+      throw err
+    }
+    messages.push({ role: "tool", tool_call_id: id, content: result })
+    appendMessage({
+      conversationId,
+      role: "tool",
+      content: result,
+      toolCallId: id,
+      toolName: readSkillTool.definition.function.name,
+    })
+    markToolCallSettled({
+      conversationId,
+      toolCallId: id,
+      state: isToolErrorResult(result) ? "settled_error" : "settled_success",
+      result,
+      error: isToolErrorResult(result) ? result : null,
+    })
+    onEvent({
+      type: "tool",
+      phase: "done",
+      id,
+      name: readSkillTool.definition.function.name,
+      result,
+    })
+  }
 
   // Debug aid (settings.logSystemPrompt): dump the verbatim system block for this
   // turn to system-prompt-logs/. Best-effort and fire-and-forget — never blocks or
@@ -1123,71 +1709,53 @@ export async function runAgentLoop(
       // round-trip regains the full filesystem toolset.
       const tools = buildTools()
       const offeredNames = offeredToolNames(tools)
+      const logicalRoundId = `after-seq:${getMaxMessageSeq(conversationId)}`
 
-      const stream = await createCompletion(
-        llm.client,
-        llm.model,
-        MAX_OUTPUT_TOKENS,
-        { messages, tools, stream: true },
-        [
-          undefined,
-          // The abort signal. On the OpenAI-backed path the SDK forwards it to
-          // fetch, so an abort tears the stream down directly. On the Portkey path
-          // (3.1.0) it does NOT forward — Portkey only checks `signal.aborted` after
-          // an error — so there the real cancellation is the `break` in the consume
-          // loop below: breaking runs the stream iterator's return()/reader.cancel(),
-          // which tears down the HTTP body.
-          { signal: abort.signal },
-        ],
-        llm.apiMode
-      )
+      const round = await createCompletionRoundWithRetry({
+        conversationId,
+        logicalRoundId,
+        signal: abort.signal,
+        isTransientError,
+        validateRound: (round) =>
+          validateModelRoundForLoop({
+            round,
+            commandCompletionPending: commandCompletionInbox.hasPending(
+              commandCompletionOwner
+            ),
+          }),
+        requestIdentity: {
+          accountId: llm.accountId,
+          modelId: llm.model,
+          apiMode: llm.apiMode,
+        },
+        recoverVisibleText: (rawText) => extractTextToolCalls(rawText).text,
+        request: () =>
+          createCompletion(
+            llm.client,
+            llm.model,
+            MAX_OUTPUT_TOKENS,
+            { messages, tools, stream: true },
+            [
+              undefined,
+              // The abort signal. On the OpenAI-backed path the SDK forwards it to
+              // fetch. On the Portkey path, breaking the iterator cancels the body.
+              { signal: abort.signal },
+            ],
+            llm.apiMode
+          ),
+      })
 
-      // Reassemble the streamed turn. Text deltas are forwarded live; tool-call
-      // fragments arrive piecemeal and are collected here, then reassembled by
-      // `accumulateToolCalls` (which handles providers that omit `index`).
-      let text = ""
-      let withheldText = false
-      const toolFragments: ToolCallDelta[] = []
-      // The provider's reason for ending the turn (last non-null wins). "length"
-      // means the output hit the token cap — the response (and any tool-call JSON
-      // mid-stream) is truncated, so we must NOT try to parse it as complete.
-      let finishReason: string | null = null
-
-      for await (const chunk of stream) {
-        // Stop pressed mid-stream: break so the iterator cancels the reader and
-        // the HTTP stream stops. The post-loop abort check unwinds the turn.
-        if (abort.signal.aborted) break
-
-        const choice = chunk.choices[0]
-        if (choice?.finish_reason) finishReason = choice.finish_reason
-        const delta = choice?.delta
-        if (!delta) continue
-
-        const piece = contentToText(delta.content)
-        if (piece) {
-          text += piece
-          const trimmed = text.trimStart()
-          const mayBeTextToolCall =
-            !streamedText &&
-            ("[TOOL_CALL:".startsWith(trimmed) ||
-              trimmed.startsWith("[TOOL_CALL:"))
-          if (mayBeTextToolCall) {
-            withheldText = true
-            continue
-          }
-          const visiblePiece = withheldText ? text : piece
-          withheldText = false
-          // First visible token of a later turn: separate it from prior text.
-          if (text === visiblePiece && streamedText)
-            onEvent({ type: "token", delta: "\n\n" })
-          streamedText = true
-          onEvent({ type: "token", delta: visiblePiece })
-        }
-
-        for (const tc of (delta.tool_calls ?? []) as ToolCallDelta[]) {
-          toolFragments.push(tc)
-        }
+      // Reassemble the streamed turn only after the request has completed. Each
+      // failed transport/stream attempt buffers and discards its partial text and
+      // tool fragments, so a retry cannot execute an abandoned partial tool call
+      // or duplicate partial prose in the live UI.
+      let text = round.text
+      if (text) {
+        turnAssistantText = turnAssistantText
+          ? `${turnAssistantText}\n\n${text}`
+          : text
       }
+      const finishReason = round.finishReason
 
       // Stopped mid-stream (we broke out above): persist whatever text streamed
       // so far plus the stop note, and end the turn. Don't act on a partial
@@ -1203,11 +1771,11 @@ export async function runAgentLoop(
         return { stopped: true }
       }
 
-      const structuredToolCalls = accumulateToolCalls(toolFragments)
+      const structuredToolCalls = accumulateToolCalls(round.toolFragments)
       const recovered = extractTextToolCalls(text)
       text = recovered.text
       const toolCalls = [...structuredToolCalls, ...recovered.toolCalls]
-      if (withheldText && recovered.toolCalls.length === 0 && text) {
+      if (text) {
         if (streamedText) onEvent({ type: "token", delta: "\n\n" })
         onEvent({ type: "token", delta: text })
         streamedText = true
@@ -1229,24 +1797,45 @@ export async function runAgentLoop(
           role: "assistant",
           content: `⚠️ ${note}`,
         })
-        return { error: note, retryable: true }
+        exhaustModelRequestRetryBudget({
+          conversationId,
+          logicalRoundId,
+          error: note,
+        })
+        return { error: note, retryable: false }
       }
 
       if (toolCalls.length === 0) {
+        if (commandCompletionInbox.hasPending(commandCompletionOwner)) {
+          if (text.trim()) {
+            appendMessage({ conversationId, role: "assistant", content: text })
+          }
+          completeModelRequestRetryBudget({ conversationId, logicalRoundId })
+          onEvent({ type: "command_wait", phase: "start" })
+          await commandCompletionInbox.waitForEvent(commandCompletionOwner, {
+            signal: abort.signal,
+          })
+          onEvent({ type: "command_wait", phase: "done" })
+          if (abort.signal.aborted) {
+            appendMessage({
+              conversationId,
+              role: "assistant",
+              content: "⏹ Stopped by user.",
+            })
+            return { stopped: true }
+          }
+          appendCommandCompletionEvents({
+            conversationId,
+            messages,
+            owner: commandCompletionOwner,
+            events: commandCompletionInbox.drain(commandCompletionOwner),
+          })
+          continue
+        }
         // No tool calls — this is the final answer. Persist it so the next turn
         // (and a reopened conversation) has the full transcript.
         appendMessage({ conversationId, role: "assistant", content: text })
-        if (
-          persistedUserContent !== undefined &&
-          (opts.agentDepth ?? 0) === 0
-        ) {
-          void recordMemoryTurn({
-            conversationId,
-            userText: persistedUserContent,
-            assistantText: text,
-            workspaceDir: agentDir,
-          }).catch((err) => console.warn("[memory] turn record failed:", err))
-        }
+        completeModelRequestRetryBudget({ conversationId, logicalRoundId })
         return { content: text }
       }
 
@@ -1261,7 +1850,7 @@ export async function runAgentLoop(
           function: { name: c.name, arguments: c.arguments },
         })),
       })
-      appendMessage({
+      const assistantMessage = appendMessage({
         conversationId,
         role: "assistant",
         content: text || null,
@@ -1271,22 +1860,72 @@ export async function runAgentLoop(
           arguments: c.arguments,
         })),
       })
+      recordToolCallIntents({
+        conversationId,
+        assistantMessageId: assistantMessage.id,
+        logicalRoundId,
+        calls: toolCalls,
+      })
+      completeModelRequestRetryBudget({ conversationId, logicalRoundId })
+      const effectsForCall = (name: string) => {
+        if (name === readSkillTool.definition.function.name) {
+          return TOOL_EFFECTS.readOnlySequential
+        }
+        return (
+          mcpTools.find((tool) => tool.function.name === name)?.effects ??
+          getToolEffects(name)
+        )
+      }
 
       // Execute requested tool calls in maximal consecutive batches. Only
       // workspace-confined read-only tools marked parallel-safe can overlap; all
       // mutations, browser actions, questions, approvals, shell calls,
       // delegation, web/MCP, and unannotated calls remain one-call barriers.
       const toolResults = await runToolCallBatches(toolCalls, {
-        onBatchSettled: (results) => {
-          // Persist each settled batch before the next barrier begins. Within a
-          // read batch, rows stay in the model's original call order even if
-          // individual reads finished out of order.
-          for (const { call, result } of results) {
-            messages.push({
-              role: "tool",
-              tool_call_id: call.id,
-              content: result,
+        // Durable lifecycle evidence is keyed by call ID and written as soon as
+        // each call settles. Repair can reconstruct an interrupted transcript
+        // from it; ordered message projection need not wait to make results safe.
+        onSettled: (settled) => {
+          const { call } = settled
+          // A cancelled approval wait has not authorized any backend work.
+          if (
+            settled.outcome === "unknown" &&
+            getToolCallLifecycle(conversationId, call.id)?.state ===
+              "waiting_for_approval"
+          ) {
+            settled.outcome = "not_started"
+            settled.result =
+              "Interrupted before tool execution started; re-request approval if still needed."
+            settled.error = false
+          }
+          const { result, error, outcome } = settled
+          if (outcome === "unknown") {
+            markToolCallUnknown({
+              conversationId,
+              toolCallId: call.id,
+              error: result,
             })
+          } else if (outcome === "not_started") {
+            markToolCallNotStarted({
+              conversationId,
+              toolCallId: call.id,
+              result,
+            })
+          } else {
+            markToolCallSettled({
+              conversationId,
+              toolCallId: call.id,
+              state:
+                error || isToolErrorResult(result)
+                  ? "settled_error"
+                  : "settled_success",
+              result,
+              error: error || isToolErrorResult(result) ? result : null,
+            })
+          }
+        },
+        onBatchSettled: (results) => {
+          for (const { call, result } of results) {
             appendMessage({
               conversationId,
               role: "tool",
@@ -1294,25 +1933,33 @@ export async function runAgentLoop(
               toolCallId: call.id,
               toolName: call.name,
             })
+            if (call.name === "exec_command") {
+              const sessionId = parseCommandSessionId(result)
+              if (sessionId) {
+                commandCompletionInbox.markInitialResultPersisted(
+                  commandCompletionOwner,
+                  sessionId
+                )
+              }
+            }
+            messages.push({
+              role: "tool",
+              tool_call_id: call.id,
+              content: result,
+            })
           }
         },
-        effectsFor: (name) => {
-          if (name === readSkillTool.definition.function.name) {
-            return TOOL_EFFECTS.readOnlySequential
-          }
-          return (
-            mcpTools.find((tool) => tool.function.name === name)?.effects ??
-            getToolEffects(name)
-          )
-        },
-        onStart: (call) =>
+        policyFor: (call) => getToolExecutionPolicy(call.name),
+        effectsFor: effectsForCall,
+        onStart: (call) => {
           onEvent({
             type: "tool",
             phase: "start",
             id: call.id,
             name: call.name,
             arguments: call.arguments,
-          }),
+          })
+        },
         onDone: (call, result) =>
           onEvent({
             type: "tool",
@@ -1321,10 +1968,28 @@ export async function runAgentLoop(
             name: call.name,
             result,
           }),
-        execute: async (call) => {
+        signal: abort.signal,
+        execute: async (call, _index, callSignal) => {
+          const persistLifecycle = <T>(action: () => T): T => {
+            try {
+              return action()
+            } catch (error) {
+              throw new ToolLifecycleError("result_persistence", call.id, error)
+            }
+          }
+          persistLifecycle(() =>
+            markToolCallStarted({ conversationId, toolCallId: call.id })
+          )
           const callImages: ToolImage[] = []
           const unavailable = unavailableToolResult(call.name, offeredNames)
           if (unavailable) return { result: unavailable }
+          const reconciled = reconciledSideEffectingToolResult({
+            conversationId,
+            callId: call.id,
+            callName: call.name,
+            effects: effectsForCall(call.name),
+          })
+          if (reconciled !== undefined) return { result: reconciled }
           // The model's streamed tool-call arguments are occasionally malformed JSON
           // even when the turn wasn't length-truncated (a mid-stream glitch, or an
           // unescaped character in a large blob — e.g. a big write_file_tool payload).
@@ -1347,12 +2012,25 @@ export async function runAgentLoop(
             return { result: errResult }
           }
           // The approval gate for this tool call. `allow` and `hard_block` resolve
-          // synchronously; `require_approval` emits an event and blocks until the
+          // synchronously; approval decisions emit an event and block until the
           // renderer calls resolveApproval over IPC. The event carries the tool-
           // call `id` (so the renderer attaches the card to the right marker) and
           // a process-unique `requestId` keying the pending map — the renderer
           // echoes the latter back, so a decision can't resolve another turn's gate.
+          let gatedResult: string | undefined
           const gate: Gate = (action): Promise<GateOutcome> => {
+            callSignal.throwIfAborted()
+            const reconciled = reconcileSideEffectingToolAction({
+              conversationId,
+              callId: call.id,
+              callName: call.name,
+              action,
+              effects: effectsForCall(call.name),
+            })
+            if (reconciled !== undefined) {
+              gatedResult = reconciled
+              return Promise.resolve("blocked")
+            }
             // Plan mode hard-blocks workspace mutations regardless of the offered
             // toolset (belt-and-suspenders: the mutating tools are already withheld
             // from buildTools()). Reads the LIVE flag, so once a plan is approved
@@ -1366,12 +2044,19 @@ export async function runAgentLoop(
                 localProfile,
               })
             if (decision.level === "allow") return Promise.resolve("approved")
-            if (decision.level === "hard_block")
+            if (decision.level === "hard_block") {
+              gatedResult = `ERROR[blocked]: ${decision.reason}`
               return Promise.resolve("blocked")
-            // Auto mode: automatically approve any action that would otherwise
-            // require human confirmation. Hard-blocks still block (handled above).
+            }
+            const explicit = decision.level === "require_explicit_approval"
             if (autoMode) return Promise.resolve("approved")
             const requestId = randomUUID()
+            persistLifecycle(() =>
+              markToolCallWaitingForApproval({
+                conversationId,
+                toolCallId: call.id,
+              })
+            )
             onEvent({
               type: "approval",
               id: call.id,
@@ -1380,6 +2065,7 @@ export async function runAgentLoop(
               summary: action.summary,
               reason: decision.reason,
               kind: action.kind,
+              explicit,
               detail: action.detail,
             })
             return new Promise<GateOutcome>((resolve) => {
@@ -1388,6 +2074,7 @@ export async function runAgentLoop(
                 action,
                 workspacePath: workspace,
                 conversationId,
+                explicit,
               })
               // If the turn is stopped while waiting on this approval, release the
               // gate (as a denial) so the loop can unwind instead of hanging — the
@@ -1397,35 +2084,35 @@ export async function runAgentLoop(
               // the user never made and wedge resume (plan 012). The process is
               // exiting anyway; the task stays waiting_for_approval and reconciles
               // to interrupted on next boot.
-              abort.signal.addEventListener(
+              callSignal.addEventListener(
                 "abort",
                 () => {
-                  if (abort.signal.reason === SHUTDOWN_ABORT_REASON) return
+                  if (callSignal.reason === SHUTDOWN_ABORT_REASON) return
                   if (pendingApprovals.delete(requestId)) resolve("denied")
                 },
                 { once: true }
               )
+            }).then((outcome) => {
+              callSignal.throwIfAborted()
+              if (outcome === "approved") {
+                persistLifecycle(() =>
+                  markToolCallStarted({ conversationId, toolCallId: call.id })
+                )
+              }
+              return outcome
             })
           }
           // The clarification prompt for ask_user_question. Emits a `question`
           // event and blocks until the renderer answers (chat:answer → resolveQuestion)
           // or the turn is stopped (resolves "cancelled" so the loop unwinds).
           const ask: Ask = (questions): Promise<AskResult> => {
-            const requestId = randomUUID()
-            onEvent({ type: "question", id: call.id, requestId, questions })
-            return new Promise<AskResult>((resolve) => {
-              pendingQuestions.set(requestId, resolve)
-              abort.signal.addEventListener(
-                "abort",
-                () => {
-                  // Shutdown: leave unresolved so no synthetic answer is persisted
-                  // and the task reconciles to interrupted (mirrors the gate above).
-                  if (abort.signal.reason === SHUTDOWN_ABORT_REASON) return
-                  if (pendingQuestions.delete(requestId))
-                    resolve({ status: "cancelled" })
-                },
-                { once: true }
-              )
+            callSignal.throwIfAborted()
+            return askUser({
+              conversationId,
+              toolCallId: call.id,
+              questions,
+              emit: onEvent,
+              signal: callSignal,
             })
           }
           // read_skill ignores these fields. With a workspace, file tools confine
@@ -1434,22 +2121,38 @@ export async function runAgentLoop(
             workspace: workspace ?? "",
             attachments,
             conversationId,
+            invocationId: getToolCallLifecycle(conversationId, call.id)
+              ?.invocationId,
             gate,
             ask,
             env,
-            signal: abort.signal,
-            enqueueTask: opts.enqueueTask,
+            signal: callSignal,
+            enqueueTask: opts.enqueueTask
+              ? (
+                  input: Parameters<NonNullable<typeof opts.enqueueTask>>[0]
+                ) => {
+                  callSignal.throwIfAborted()
+                  return opts.enqueueTask!(input)
+                }
+              : undefined,
             browser,
-            emitImage: (image: ToolImage) => callImages.push(image),
+            emitImage: (image: ToolImage) => {
+              if (!callSignal.aborted) callImages.push(image)
+            },
+            skillResourceRoots,
             // present_plan calls this on approval; the selected backend is already
             // running, so the next loop iteration can safely unlock mutations.
             setPlanMode: (on: boolean) => {
+              callSignal.throwIfAborted()
               planMode = on
               onEvent({ type: "plan_mode", enabled: on })
             },
             // present_plan calls this when the user picks "approve and Auto mode".
             // Shared with the mid-turn dropdown toggle (autoModeSetters registry).
-            setAutoMode,
+            setAutoMode: (on: boolean) => {
+              callSignal.throwIfAborted()
+              setAutoMode(on)
+            },
             // Subagent spawning: wired only when the running agent may spawn, so
             // the tool reports "unavailable" otherwise (it's also not offered).
             // agentChildren is the authorization whitelist; depth/ancestors bound
@@ -1464,7 +2167,7 @@ export async function runAgentLoop(
                     // (Chat's project dir, not the confinement workspace).
                     agentDir,
                     parentConversation: conversation,
-                    parentSignal: abort.signal,
+                    parentSignal: callSignal,
                     depth: (opts.agentDepth ?? 0) + 1,
                     ancestors: [
                       ...(opts.agentAncestors ?? []),
@@ -1475,6 +2178,8 @@ export async function runAgentLoop(
             agentChildren: agent?.children,
             agentDepth: opts.agentDepth ?? 0,
             agentAncestors: opts.agentAncestors ?? [],
+            commandCompletions: commandCompletionInbox,
+            commandCompletionOwner,
             processRunId: opts.processRunId,
             processPhaseRunId: opts.processPhaseRunId,
           }
@@ -1495,11 +2200,18 @@ export async function runAgentLoop(
             })
             result =
               outcome === "approved"
-                ? await getMcpManager().callTool(
-                    call.name,
-                    args,
-                    mcpWorkspace,
-                    abort.signal
+                ? renderContextEnvelope(
+                    {
+                      trust: "untrusted_data",
+                      channel: "mcp",
+                      source: call.name,
+                    },
+                    await getMcpManager().callTool(
+                      call.name,
+                      args,
+                      mcpWorkspace,
+                      callSignal
+                    )
                   )
                 : `ERROR[mcp]: the user ${
                     outcome === "blocked" ? "blocked" : "declined"
@@ -1510,10 +2222,27 @@ export async function runAgentLoop(
                 ? await readSkillTool.execute(args, ctx)
                 : await runTool(call.name, args, ctx)
           }
-          return { result, images: callImages }
+          // Keep the actual gate result, including recovered successes and the
+          // reason for a block, instead of a tool's generic blocked message.
+          return { result: gatedResult ?? result, images: callImages }
         },
       })
+      if (
+        !abort.signal.aborted &&
+        toolResults.some((result) => result.outcome === "unknown")
+      ) {
+        return failTurn(
+          conversationId,
+          "A tool outcome is unknown. Reconcile its effects before continuing."
+        )
+      }
       const turnImages = toolResults.flatMap((result) => result.images)
+      appendCommandCompletionEvents({
+        conversationId,
+        messages,
+        owner: commandCompletionOwner,
+        events: commandCompletionInbox.drain(commandCompletionOwner),
+      })
 
       // If any tool produced an image this round (browser_screenshot), inject it
       // as a user message with image content parts so the vision model sees it on
@@ -1542,7 +2271,7 @@ export async function runAgentLoop(
     // A user Stop aborts the in-flight stream, which surfaces here as an abort
     // error. That's a clean stop, not a failure: persist a neutral note (so the
     // transcript shows where it stopped) and return without an error banner.
-    if (abort.signal.aborted) {
+    if (abort.signal.aborted && !(error instanceof ToolLifecycleError)) {
       appendMessage({
         conversationId,
         role: "assistant",
@@ -1550,11 +2279,83 @@ export async function runAgentLoop(
       })
       return { stopped: true }
     }
-    console.error("Portkey request failed:", error)
+    if (error instanceof ModelRequestRetryExhaustedError) {
+      console.error("Model request retry budget exhausted:", error)
+      const failure =
+        taskId || opts.processRunId || opts.processPhaseRunId
+          ? agentFailure({
+              code: "model_request_retry_exhausted",
+              stage: "model_request",
+              message: error.message,
+              taskId,
+              processRunId: opts.processRunId,
+              processPhaseRunId: opts.processPhaseRunId,
+              cause: error.name,
+            })
+          : undefined
+      return failTurn(conversationId, error.message, false, undefined, failure)
+    }
+    console.error(
+      "Agent loop failed:",
+      error instanceof ToolLifecycleError
+        ? { stage: error.stage, toolCallId: error.toolCallId }
+        : error
+    )
     const message = error instanceof Error ? error.message : "Request failed"
-    const retryable = isTransientError(error)
-    return failTurn(conversationId, message, retryable)
+    const retryable =
+      !(error instanceof ToolLifecycleError) && isTransientError(error)
+    turnWillRetry = retryable
+    const failure =
+      error instanceof ToolLifecycleError ||
+      taskId ||
+      opts.processRunId ||
+      opts.processPhaseRunId
+        ? agentFailure({
+            toolCallId:
+              error instanceof ToolLifecycleError
+                ? error.toolCallId
+                : undefined,
+            code:
+              error instanceof ToolLifecycleError
+                ? "tool_lifecycle_failed"
+                : retryable
+                  ? "transient_model_request_failed"
+                  : "model_request_failed",
+            stage:
+              error instanceof ToolLifecycleError
+                ? error.stage
+                : "model_request",
+            message,
+            retryable,
+            taskId,
+            processRunId: opts.processRunId,
+            processPhaseRunId: opts.processPhaseRunId,
+            cause: error instanceof Error ? error.name : null,
+          })
+        : undefined
+    return failTurn(conversationId, message, retryable, undefined, failure)
   } finally {
+    // Record the turn for automatic memory on EVERY terminal path, not only the
+    // clean final-answer one. Turns that end in a user stop, an output-cap
+    // truncation, or a thrown model error still carry durable user-stated facts,
+    // and previously contributed nothing at all — not even a reference log.
+    // A resume passes no persistedUserContent. It is still recorded: the service
+    // logs the turn to reference/ and skips extraction when there is no new user
+    // message, so a durable task no longer runs for hours leaving no trace.
+    if (!turnWillRetry && (opts.agentDepth ?? 0) === 0) {
+      void recordMemoryTurn({
+        conversationId,
+        userText: persistedUserContent,
+        assistantText: turnAssistantText,
+        workspaceDir: agentDir,
+      }).catch((err) => console.warn("[memory] turn record failed:", err))
+    }
+    if (abort.signal.aborted) {
+      commandCompletionInbox.cancelRun(commandCompletionOwner)
+      await terminateOwnedCommandSessions(commandCompletionOwner)
+    } else {
+      commandCompletionInbox.cleanupRun(commandCompletionOwner)
+    }
     // Drop this turn's auto-mode setter (only live turns registered one). Guard
     // against a newer turn for the same conversation having replaced it.
     if (isLiveTurn && autoModeSetters.get(conversationId) === setAutoMode) {
@@ -1674,6 +2475,7 @@ export async function runChat(
     message,
     workspace,
     attachments,
+    skills,
     planMode,
     autoMode,
   }: ChatRequest,
@@ -1708,6 +2510,7 @@ export async function runChat(
       conversationId,
       workspace,
       attachments,
+      skills,
       userMessage: message,
       planMode,
       autoMode,

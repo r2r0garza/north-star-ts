@@ -21,7 +21,8 @@ export const browserClickTool: Tool = {
         "Click an element in the agent browser. Target it with a `ref` from the " +
         'most recent browser_snapshot (e.g. "e3"). If the page changed since ' +
         "your last snapshot, call browser_snapshot again first to get fresh refs. " +
-        "Use this to walk through and verify a flow in an app.",
+        "Use this to walk through and verify a flow in an app. For setting a " +
+        "dropdown/listbox/combobox value, prefer browser_select_option.",
       parameters: {
         type: "object",
         properties: {

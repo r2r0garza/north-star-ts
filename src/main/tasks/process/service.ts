@@ -1,10 +1,20 @@
+import { completionInstruction } from "./completion"
+import { createHash } from "crypto"
+import { app } from "electron"
+import { join } from "path"
 import { runAgentLoop, generateTitle } from "../../agent"
 import { SHUTDOWN_ABORT_REASON, PAUSE_ABORT_REASON } from "../../agent/abort"
 import {
   createConversation,
+  deleteConversation,
   getConversation,
 } from "../../db/repositories/conversations"
-import { createTask, getTask } from "../../db/repositories/tasks"
+import {
+  createTask,
+  deleteTask,
+  getTask,
+  listTasks,
+} from "../../db/repositories/tasks"
 import { listMessages } from "../../db/repositories/messages"
 import { getWorkspace, upsertWorkspace } from "../../db/repositories/workspaces"
 import * as processes from "../../db/repositories/processes"
@@ -19,9 +29,14 @@ import type { TaskRunner, TaskExecutor } from "../runner"
 import type { LlmSelection } from "../../agent/providers"
 import { route } from "./router"
 import type {
+  Conversation,
   ProcessGraph,
   ProcessPhase,
+  ProcessPhaseAgent,
   ProcessPhaseRun,
+  ProcessRuntimeConfig,
+  ProcessRuntimeSlot,
+  ProcessRuntimeSnapshotSelection,
   ProcessRun,
 } from "../../db/types"
 import {
@@ -51,6 +66,7 @@ import {
   resetRunRecursive,
   resetSubProcessChild,
 } from "./flagback"
+import { unknownSideEffectingToolCalls } from "../../agent/repair"
 
 // The DAG orchestrator task kind (plan 025). One ProcessService per app, holding
 // the runner reference so startRun can enqueue the process_run task. The executor
@@ -62,6 +78,20 @@ export const PROCESS_RUN_KIND = "process_run"
 // executor finds its run on first run AND on autoResume after a crash.
 interface ProcessRunInput {
   processRunId?: string
+}
+
+interface ProcessWorkerTaskInput {
+  kind?: string
+  phaseRunId?: string
+  agentName?: string | null
+  validatorRound?: number
+  reviewTargetOutputIdentity?: string | null
+  runtime?: unknown
+}
+
+type RuntimeResolution = {
+  selection: LlmSelection
+  snapshot: ProcessRuntimeSnapshotSelection
 }
 
 // Settle an aborted run's status by WHY it aborted (plan 038.3). A SHUTDOWN (app
@@ -81,6 +111,107 @@ function settleAbortedRun(runId: string, signal: AbortSignal): void {
   processes.updateProcessRun(runId, {
     status: "cancelled",
     finishedAt: Date.now(),
+  })
+}
+
+function processFailureDiagnosticDir(): string | null {
+  try {
+    const userData = app?.getPath?.("userData")
+    return userData ? join(userData, "process-failure-diagnostics") : null
+  } catch {
+    return null
+  }
+}
+
+function runtimeSelection(
+  config: ProcessPhase["runtimeConfig"],
+  slot: ProcessRuntimeSlot
+) {
+  return config?.[slot] ?? (slot === "worker" ? undefined : config?.worker)
+}
+
+function resolveRuntime(input: {
+  run: ProcessRun
+  source?: Conversation
+  phase: ProcessPhase
+  slot: ProcessRuntimeSlot
+  phaseAgent?: ProcessPhaseAgent | null
+}): RuntimeResolution {
+  const { run, source, phase, slot, phaseAgent } = input
+  const agentSelection = phaseAgent
+    ? runtimeSelection(phaseAgent.runtimeConfig, slot)
+    : undefined
+  if (agentSelection) {
+    return {
+      selection: {
+        accountId: agentSelection.accountId ?? null,
+        modelId: agentSelection.modelId ?? null,
+      },
+      snapshot: {
+        accountId: agentSelection.accountId ?? null,
+        modelId: agentSelection.modelId ?? null,
+        source: "phase_agent",
+      },
+    }
+  }
+
+  const phaseSelection = runtimeSelection(phase.runtimeConfig, slot)
+  if (phaseSelection) {
+    return {
+      selection: {
+        accountId: phaseSelection.accountId ?? null,
+        modelId: phaseSelection.modelId ?? null,
+      },
+      snapshot: {
+        accountId: phaseSelection.accountId ?? null,
+        modelId: phaseSelection.modelId ?? null,
+        source: "phase",
+      },
+    }
+  }
+
+  const runSelection = runtimeSelection(run.runtimeConfig, slot)
+  if (runSelection) {
+    return {
+      selection: {
+        accountId: runSelection.accountId ?? null,
+        modelId: runSelection.modelId ?? null,
+      },
+      snapshot: {
+        accountId: runSelection.accountId ?? null,
+        modelId: runSelection.modelId ?? null,
+        source: "run",
+      },
+    }
+  }
+
+  return {
+    selection: {
+      accountId: source?.accountId ?? null,
+      modelId: source?.modelId ?? null,
+    },
+    snapshot: {
+      accountId: source?.accountId ?? null,
+      modelId: source?.modelId ?? null,
+      source:
+        source?.accountId || source?.modelId
+          ? "source_conversation"
+          : "default",
+    },
+  }
+}
+
+function snapshotRuntime(
+  phaseRun: ProcessPhaseRun,
+  slot: ProcessRuntimeSlot,
+  resolution: RuntimeResolution
+): void {
+  const current = processes.getPhaseRun(phaseRun.id) ?? phaseRun
+  processes.updatePhaseRun(phaseRun.id, {
+    runtimeSnapshot: {
+      ...(current.runtimeSnapshot ?? {}),
+      [slot]: resolution.snapshot,
+    },
   })
 }
 
@@ -107,6 +238,7 @@ export class ProcessService {
     // screen has no source conversation to inherit a workspace from, so the
     // picked folder is deduped into the workspaces table and stamped on the run.
     workspacePath?: string | null
+    runtimeConfig?: ProcessRuntimeConfig | null
   }): Promise<ProcessRun> {
     const definition = processes.getProcessDefinition(input.processId)
     if (!definition) throw new Error(`unknown process '${input.processId}'`)
@@ -120,6 +252,7 @@ export class ProcessService {
       sourceConversationId: input.sourceConversationId,
       workspaceId,
       objective: input.objective,
+      runtimeConfig: input.runtimeConfig,
       status: "queued",
     })
 
@@ -166,6 +299,7 @@ export class ProcessService {
       return run
     const graph = processes.getProcessGraph(run.processId)
     if (!graph) return run
+    this.assertNoUnknownProcessWorkerOutcomes(run)
 
     const tx = getDb().transaction(() => {
       resetRunRecursive({ taskId: run.taskId!, run, graph, mode: "frontier" })
@@ -178,6 +312,55 @@ export class ProcessService {
     })
     this.runner.restart(run.taskId)
     return updated
+  }
+
+  // Approve a pending process gate. A validator gate approval is explicitly a
+  // human manual override of an unavailable/exhausted review, not a validator
+  // approval, so persist that distinction in the decision blob before resuming.
+  approve(input: {
+    processRunId: string
+    requestId: string
+  }): ProcessRun | undefined {
+    const { processRunId, requestId } = input
+    const run = processes.getProcessRun(processRunId)
+    if (!run?.taskId) return run
+
+    const approval = listApprovals({ taskId: run.taskId }).find((a) => {
+      const req = a.request as { requestId?: string } | null
+      return req?.requestId === requestId && a.status === "pending"
+    })
+    if (!approval) return run
+
+    const req = approval.request as {
+      kind?: string
+      phaseKey?: string
+      phaseRunId?: string
+    } | null
+
+    if (req?.kind === "process_validator_gate") {
+      const phaseRun = req.phaseRunId
+        ? processes.getPhaseRun(req.phaseRunId)
+        : undefined
+      resolveApproval(approval.id, {
+        status: "approved",
+        decision: {
+          manualOverride: true,
+          gateKind: "process_validator_gate",
+          requestId,
+          phaseKey: req.phaseKey ?? null,
+          phaseRunId: req.phaseRunId ?? null,
+          failureReason: phaseRun?.error ?? null,
+          actor: "user",
+        },
+      })
+      this.runner.markRunning(run.taskId)
+      this.runner.resume(run.taskId)
+      return processes.getProcessRun(processRunId)
+    }
+
+    this.runner.recordApprovalDecision(run.taskId, requestId, "approved")
+    this.runner.resume(run.taskId)
+    return processes.getProcessRun(processRunId)
   }
 
   // Request changes on a gated phase (plan 029): the third gate decision beside
@@ -225,6 +408,7 @@ export class ProcessService {
     // for the container guard below.
     const owningRun = processes.getProcessRun(phaseRun.runId)
     if (!owningRun) return topRun
+    this.assertNoUnknownPhaseWorkerOutcomes(phaseRun)
     const owningGraph = owningRun.processId
       ? processes.getProcessGraph(owningRun.processId)
       : undefined
@@ -264,6 +448,7 @@ export class ProcessService {
       processes.updatePhaseRun(phaseRunId, {
         status: "pending",
         error: null,
+        failure: null,
         startedAt: null,
         finishedAt: null,
         reworkNote: feedback,
@@ -272,6 +457,7 @@ export class ProcessService {
         // the re-run a fresh budget of automatic validator rounds. Harmless on a
         // non-validator phase (stays 0).
         validatorRound: 0,
+        outputIdentity: null,
       })
       // A SUB-PROCESS phase (plan 038.2): the phase's work is a nested run, so the
       // rework_note alone re-runs nothing. Whole-reset the child run with the
@@ -290,6 +476,74 @@ export class ProcessService {
 
     // better-sqlite3 is synchronous, so the tx has committed — resume re-drives
     // the (paused) backing task, which rebuilds runByPhaseId from the fresh DB.
+    const updated = processes.getProcessRun(processRunId)
+    this.runner.resume(taskId)
+    return updated
+  }
+
+  // Retry only the validator reviewer for a validator-unavailable gate (plan 084).
+  // The phase worker already completed and its taskId is the stable review input;
+  // do not reset that worker, do not bump reworkRound, and do not consume a
+  // validatorRound (valid negative verdicts own that counter). Instead, settle the
+  // current validator gate with an audit marker, remove the stale reviewer worker
+  // for this same validatorRound so makeValidate sends a fresh prompt, flip the
+  // phase back to pending, and resume the owning run.
+  retryReview(input: {
+    processRunId: string
+    requestId: string
+  }): ProcessRun | undefined {
+    const { processRunId, requestId } = input
+    const topRun = processes.getProcessRun(processRunId)
+    if (!topRun?.taskId) return topRun
+    const taskId = topRun.taskId
+
+    const approval = listApprovals({ taskId }).find((a) => {
+      const req = a.request as { requestId?: string; kind?: string } | null
+      return (
+        req?.requestId === requestId &&
+        req.kind === "process_validator_gate" &&
+        a.status === "pending"
+      )
+    })
+    if (!approval) return topRun
+    const req = approval.request as { phaseRunId?: string } | null
+    const phaseRunId = req?.phaseRunId
+    if (!phaseRunId) return topRun
+
+    const phaseRun = processes.getPhaseRun(phaseRunId)
+    if (!phaseRun?.taskId) return topRun
+    const phase = processes.getPhase(phaseRun.phaseId)
+    if (!phase?.validator) return topRun
+    const owningRun = processes.getProcessRun(phaseRun.runId)
+    if (!owningRun) return topRun
+
+    const staleReviewTask = this.findProcessWorkerTask(
+      phaseRun.id,
+      "process_phase_validate",
+      phaseRun.validatorRound
+    )
+
+    const tx = getDb().transaction(() => {
+      resolveApproval(approval.id, {
+        status: "denied",
+        decision: { retryReview: true },
+      })
+      if (staleReviewTask) {
+        deleteTask(staleReviewTask.id)
+        deleteConversation(staleReviewTask.conversationId)
+      }
+      processes.updatePhaseRun(phaseRun.id, {
+        status: "pending",
+        error: null,
+        failure: null,
+        startedAt: null,
+        finishedAt: null,
+        reworkNote: null,
+      })
+      this.flipRunningToTop(owningRun)
+    })
+    tx()
+
     const updated = processes.getProcessRun(processRunId)
     this.runner.resume(taskId)
     return updated
@@ -339,6 +593,7 @@ export class ProcessService {
     const req = approval.request as { flagId?: string } | null
     const flag = req?.flagId ? processes.getFlag(req.flagId) : undefined
     if (!flag || flag.status !== "pending") return topRun
+    this.assertNoUnknownProcessWorkerOutcomes(topRun)
 
     // The flag targets a phase in the run that OWNS it — the top-level run for a
     // top-level flag, or a nested sub-process run for a child-internal flag (plan
@@ -492,6 +747,14 @@ export class ProcessService {
         taskId,
         signal,
         emit,
+        workspace: (() => {
+          const id =
+            run.workspaceId ??
+            (run.sourceConversationId
+              ? getConversation(run.sourceConversationId)?.workspaceId
+              : null)
+          return id ? getWorkspace(id)?.path : undefined
+        })(),
         runPhase: this.makeRunPhase(run),
         decompose: this.makeDecompose(run),
         buildEachSubtaskPrompt: this.makeBuildEachSubtaskPrompt(run),
@@ -500,6 +763,7 @@ export class ProcessService {
         // rides in so the closure enforces MAX_PROCESS_DEPTH and recurses at depth+1.
         runSubProcess: this.makeRunSubProcess(run, taskId, emit),
         processDepth: depth,
+        failureDiagnosticDir: processFailureDiagnosticDir(),
         // Cross-phase flag-back (plan 031.2): the definition's autonomy toggle, and
         // the reset applier (delegated to flagback.ts — one reset code path shared
         // with the confirm route).
@@ -614,22 +878,75 @@ export class ProcessService {
       }
 
       // Drive the nested run inline at depth+1, sharing the parent's task/signal/emit.
-      // A GateBlockedError inside propagates (pauses the whole run); an abort/failure
-      // sets the child run's status, which we map back to the parent phase-run below.
-      await this.driveRun({
-        run: childRun,
-        graph: childGraph,
-        taskId,
-        signal,
-        emit,
-        depth: depth + 1,
-      })
+      // A GateBlockedError inside propagates (pauses the whole run). A normal child
+      // failure also throws after driveRun stamps the child run `failed`; absorb that
+      // throw here so the parent scheduler can settle THIS phase-run failed and keep
+      // draining its other in-flight siblings. Letting it escape made the top-level
+      // run terminal immediately while parallel sub-process phase-runs stayed forever
+      // `running` (there was no scheduler left to observe their completion).
+      try {
+        await this.driveRun({
+          run: childRun,
+          graph: childGraph,
+          taskId,
+          signal,
+          emit,
+          depth: depth + 1,
+        })
+      } catch (err) {
+        if (err instanceof GateBlockedError) throw err
+        if (signal.aborted) return { stopped: true }
+
+        // A child scheduling failure is an expected PhaseResult at this boundary.
+        // If the child did not manage to stamp itself failed, preserve the original
+        // error instead of hiding an unexpected infrastructure exception behind the
+        // generic sub-process message below.
+        const settled = processes.getProcessRun(childRun.id)
+        if (settled?.status !== "failed")
+          return {
+            error: err instanceof Error ? err.message : String(err),
+            failure: {
+              code: "subprocess_exception",
+              stage: "subprocess",
+              message: err instanceof Error ? err.message : String(err),
+              retryable: false,
+              attempt: null,
+              maxAttempts: null,
+              runId: childRun.id,
+              phaseRunId: phaseRun.id,
+              phaseId: phase.id,
+              taskId,
+              workerTaskId: phaseRun.taskId,
+              agentName: phaseRun.agentName,
+              cause: err instanceof Error ? err.name : null,
+              occurredAt: Date.now(),
+            },
+          }
+      }
 
       const settled = processes.getProcessRun(childRun.id)
       if (signal.aborted || settled?.status === "cancelled")
         return { stopped: true }
       if (settled?.status !== "completed")
-        return { error: "sub-process run failed", retryable: false }
+        return {
+          error: "sub-process run failed",
+          retryable: false,
+          failure: {
+            code: "subprocess_run_failed",
+            stage: "subprocess",
+            message: "sub-process run failed",
+            retryable: false,
+            attempt: null,
+            maxAttempts: null,
+            runId: childRun.id,
+            phaseRunId: phaseRun.id,
+            phaseId: phase.id,
+            taskId,
+            workerTaskId: phaseRun.taskId,
+            agentName: phaseRun.agentName,
+            occurredAt: Date.now(),
+          },
+        }
       return {
         content: this.aggregateSubProcessContent(phaseRun.id) ?? undefined,
       }
@@ -676,7 +993,7 @@ export class ProcessService {
   // precedent), and return the outcome. Phases run in AUTO mode — the phase's
   // gate_policy is the human-in-the-loop control point, not per-tool prompts.
   private makeRunPhase(run: ProcessRun): RunPhase {
-    return async ({ phase, phaseRun, subtaskPrompt, signal }) => {
+    return async ({ phase, phaseRun, subtaskPrompt, attemptId, signal }) => {
       const source = run.sourceConversationId
         ? getConversation(run.sourceConversationId)
         : undefined
@@ -688,6 +1005,8 @@ export class ProcessService {
       const workspace = workspaceId
         ? getWorkspace(workspaceId)?.path
         : undefined
+      const reworkNote =
+        processes.getPhaseRun(phaseRun.id)?.reworkNote ?? undefined
 
       // A fan-out CHILD runs its decomposed sub-task briefing verbatim; a normal
       // phase gets the generic self-contained kickoff (plan 025.1).
@@ -703,44 +1022,77 @@ export class ProcessService {
           // re-runs this closure within one runPhaseWithRetry call and stamps a new
           // note each round, so the passed-in phaseRun object is stale. Null for a
           // first run.
-          reworkNote:
-            processes.getPhaseRun(phaseRun.id)?.reworkNote ?? undefined,
+          reworkNote,
         })
 
       // Resolve the phase's agent BEFORE forking the worker: for a `dispatch`
       // phase this routes over the pool per (sub-)task, using `prompt` as the
       // classification signal (plan 025.3). `single` phases resolve pool[0].
+      const routerRuntime = resolveRuntime({
+        run,
+        source,
+        phase,
+        slot: "router",
+      })
       const agentName = await this.resolveAgent(phase, {
         taskPrompt: prompt,
-        selection: {
-          accountId: source?.accountId ?? null,
-          modelId: source?.modelId ?? null,
-        },
+        selection: routerRuntime.selection,
         workspace,
         signal,
       })
+      if (phase.routing === "dispatch") {
+        snapshotRuntime(phaseRun, "router", routerRuntime)
+      }
+      const phaseAgent = processes
+        .listPhaseAgents(phase.id)
+        .find((agent) => agent.agentName === agentName)
+      const workerRuntime = resolveRuntime({
+        run,
+        source,
+        phase,
+        slot: "worker",
+        phaseAgent,
+      })
 
-      const worker = createConversation({
-        mode: source?.mode ?? "interactive",
-        workspaceId,
-        accountId: source?.accountId ?? null,
-        modelId: source?.modelId ?? null,
-        agentName,
-        title: `${phase.name}${agentName ? `: ${agentName}` : ""}`,
-      })
-      // Back the worker with a task row so it's not listed as a standalone chat
-      // and is cascade-deleted with the source session (spawnSubagent shape).
-      const workerTask = createTask({
-        conversationId: worker.id,
-        sourceConversationId: run.sourceConversationId ?? worker.id,
-        status: "completed",
-        title: phase.name,
-        input: { kind: "process_phase", phaseRunId: phaseRun.id, agentName },
-      })
-      processes.updatePhaseRun(phaseRun.id, {
-        taskId: workerTask.id,
-        agentName,
-      })
+      const existingWorkerTask =
+        !reworkNote && phaseRun.taskId ? getTask(phaseRun.taskId) : undefined
+      const existingWorker = existingWorkerTask
+        ? getConversation(existingWorkerTask.conversationId)
+        : undefined
+      const resumingWorker = !!existingWorkerTask && !!existingWorker
+      const worker =
+        existingWorker ??
+        createConversation({
+          mode: source?.mode ?? "interactive",
+          workspaceId,
+          accountId: workerRuntime.selection.accountId,
+          modelId: workerRuntime.selection.modelId,
+          agentName,
+          title: `${phase.name}${agentName ? `: ${agentName}` : ""}`,
+        })
+      let workerTaskId = existingWorkerTask?.id ?? null
+      if (!resumingWorker) {
+        // Back the worker with a task row so it's not listed as a standalone chat
+        // and is cascade-deleted with the source session (spawnSubagent shape).
+        const workerTask = createTask({
+          conversationId: worker.id,
+          sourceConversationId: run.sourceConversationId ?? worker.id,
+          status: "completed",
+          title: phase.name,
+          input: {
+            kind: "process_phase",
+            phaseRunId: phaseRun.id,
+            agentName,
+            runtime: workerRuntime.snapshot,
+          },
+        })
+        workerTaskId = workerTask.id
+        processes.updatePhaseRun(phaseRun.id, {
+          taskId: workerTask.id,
+          agentName,
+        })
+      }
+      snapshotRuntime(phaseRun, "worker", workerRuntime)
 
       // Chain a child controller so run-level cancel unwinds the phase worker.
       const childAbort = new AbortController()
@@ -757,14 +1109,19 @@ export class ProcessService {
           conversationId: worker.id,
           workspace,
           agentDir: workspace,
-          userMessage: prompt,
+          userMessage: resumingWorker ? undefined : prompt,
           abort: childAbort,
+          taskId: workerTaskId ?? undefined,
           // Phases are autonomous; the phase gate is the HITL point.
           autoMode: true,
           // Cross-phase flag-back context (plan 031.2): lets this worker's
           // flag_for_rework tool reach the run's graph + record a durable flag.
           processRunId: run.id,
           processPhaseRunId: phaseRun.id,
+          processCompletionInstruction: completionInstruction(
+            phase.completionContract ?? { policy: "legacy" },
+            attemptId
+          ),
           // Headless worker: no user to answer a clarifying question (it would only
           // stall until interrupted). The kickoff frames the work as self-contained.
           suppressUserQuestions: true,
@@ -773,10 +1130,37 @@ export class ProcessService {
         if (result.stopped || childAbort.signal.aborted)
           return { stopped: true }
         if (result.error)
-          return { error: result.error, retryable: result.retryable }
-        return { content: result.content } satisfies PhaseResult
+          return {
+            error: result.error,
+            retryable: result.retryable,
+            failure: result.failure,
+          }
+        const output = this.lastAssistantOutput(
+          processes.getPhaseRun(phaseRun.id) ?? phaseRun
+        )
+        const outputIdentity = output?.identity ?? null
+        processes.updatePhaseRun(phaseRun.id, { outputIdentity })
+        return { content: result.content, outputIdentity } satisfies PhaseResult
       } catch (err) {
-        return { error: err instanceof Error ? err.message : String(err) }
+        return {
+          error: err instanceof Error ? err.message : String(err),
+          failure: {
+            code: "phase_worker_exception",
+            stage: "tool_execution",
+            message: err instanceof Error ? err.message : String(err),
+            retryable: false,
+            attempt: null,
+            maxAttempts: null,
+            runId: run.id,
+            phaseRunId: phaseRun.id,
+            phaseId: phase.id,
+            taskId: run.taskId,
+            workerTaskId,
+            agentName,
+            cause: err instanceof Error ? err.name : null,
+            occurredAt: Date.now(),
+          },
+        }
       }
     }
   }
@@ -793,6 +1177,16 @@ export class ProcessService {
       // The decomposition (planning) pass runs on pool[0]; each resulting CHILD
       // routes independently over the pool in makeRunPhase (plan 025.3).
       const agentName = await this.resolveAgent(phase)
+      const phaseAgent = processes
+        .listPhaseAgents(phase.id)
+        .find((agent) => agent.agentName === agentName)
+      const decomposerRuntime = resolveRuntime({
+        run,
+        source,
+        phase,
+        slot: "decomposer",
+        phaseAgent,
+      })
 
       // Prefer the run's own picked workspace (plan 026), falling back to the
       // source conversation's — same rule as makeRunPhase.
@@ -800,30 +1194,46 @@ export class ProcessService {
       const workspace = workspaceId
         ? getWorkspace(workspaceId)?.path
         : undefined
+      const reworkNote =
+        processes.getPhaseRun(phaseRun.id)?.reworkNote ?? undefined
 
-      const worker = createConversation({
-        mode: source?.mode ?? "interactive",
-        workspaceId,
-        accountId: source?.accountId ?? null,
-        modelId: source?.modelId ?? null,
-        agentName,
-        title: `${phase.name} (decompose)${agentName ? `: ${agentName}` : ""}`,
-      })
-      const workerTask = createTask({
-        conversationId: worker.id,
-        sourceConversationId: run.sourceConversationId ?? worker.id,
-        status: "completed",
-        title: `${phase.name} (decompose)`,
-        input: {
-          kind: "process_phase_decompose",
-          phaseRunId: phaseRun.id,
+      const existingWorkerTask =
+        !reworkNote && phaseRun.taskId ? getTask(phaseRun.taskId) : undefined
+      const existingWorker = existingWorkerTask
+        ? getConversation(existingWorkerTask.conversationId)
+        : undefined
+      const resumingWorker = !!existingWorkerTask && !!existingWorker
+      const worker =
+        existingWorker ??
+        createConversation({
+          mode: source?.mode ?? "interactive",
+          workspaceId,
+          accountId: decomposerRuntime.selection.accountId,
+          modelId: decomposerRuntime.selection.modelId,
           agentName,
-        },
-      })
-      processes.updatePhaseRun(phaseRun.id, {
-        taskId: workerTask.id,
-        agentName,
-      })
+          title: `${phase.name} (decompose)${agentName ? `: ${agentName}` : ""}`,
+        })
+      let workerTaskId = existingWorkerTask?.id ?? null
+      if (!resumingWorker) {
+        const workerTask = createTask({
+          conversationId: worker.id,
+          sourceConversationId: run.sourceConversationId ?? worker.id,
+          status: "completed",
+          title: `${phase.name} (decompose)`,
+          input: {
+            kind: "process_phase_decompose",
+            phaseRunId: phaseRun.id,
+            agentName,
+            runtime: decomposerRuntime.snapshot,
+          },
+        })
+        workerTaskId = workerTask.id
+        processes.updatePhaseRun(phaseRun.id, {
+          taskId: workerTask.id,
+          agentName,
+        })
+      }
+      snapshotRuntime(phaseRun, "decomposer", decomposerRuntime)
 
       const childAbort = new AbortController()
       if (signal.aborted) childAbort.abort(signal.reason)
@@ -841,6 +1251,10 @@ export class ProcessService {
           phase,
           objective: run.objective ?? "",
           upstream: this.collectUpstream(run, phase),
+          // Whole-container rework stores feedback on the fan-out parent run.
+          // Re-read it per attempt so retries and post-reset resumes do not use a
+          // stale phaseRun object.
+          reworkNote,
         }) + (attempt > 1 ? decompositionRetryNote : "")
 
       try {
@@ -848,8 +1262,9 @@ export class ProcessService {
           conversationId: worker.id,
           workspace,
           agentDir: workspace,
-          userMessage: prompt,
+          userMessage: resumingWorker ? undefined : prompt,
           abort: childAbort,
+          taskId: workerTaskId ?? undefined,
           autoMode: true,
           // Headless worker — no user to answer a clarifying question.
           suppressUserQuestions: true,
@@ -858,7 +1273,11 @@ export class ProcessService {
         if (result.stopped || childAbort.signal.aborted)
           return { stopped: true }
         if (result.error)
-          return { error: result.error, retryable: result.retryable }
+          return {
+            error: result.error,
+            retryable: result.retryable,
+            failure: result.failure,
+          }
         const subtasks = parseDecomposition(result.content ?? "")
         if (subtasks.length === 0)
           // A parse miss is deterministic given the same transcript — a retry
@@ -866,11 +1285,44 @@ export class ProcessService {
           // mark it retryable (bounded by MAX_PHASE_ATTEMPTS in the scheduler).
           return {
             error: "decomposition produced no parseable sub-tasks",
+            failure: {
+              code: "decomposition_unparseable",
+              stage: "output_validation",
+              message: "decomposition produced no parseable sub-tasks",
+              retryable: true,
+              attempt,
+              maxAttempts: null,
+              runId: run.id,
+              phaseRunId: phaseRun.id,
+              phaseId: phase.id,
+              taskId: run.taskId,
+              workerTaskId,
+              agentName,
+              occurredAt: Date.now(),
+            },
             retryable: true,
           }
         return { subtasks } satisfies DecomposeResult
       } catch (err) {
-        return { error: err instanceof Error ? err.message : String(err) }
+        return {
+          error: err instanceof Error ? err.message : String(err),
+          failure: {
+            code: "decomposition_exception",
+            stage: "decomposition",
+            message: err instanceof Error ? err.message : String(err),
+            retryable: false,
+            attempt,
+            maxAttempts: null,
+            runId: run.id,
+            phaseRunId: phaseRun.id,
+            phaseId: phase.id,
+            taskId: run.taskId,
+            workerTaskId,
+            agentName,
+            cause: err instanceof Error ? err.name : null,
+            occurredAt: Date.now(),
+          },
+        }
       }
     }
   }
@@ -904,10 +1356,10 @@ export class ProcessService {
   // judge the phase's output against the objective. The reviewer's own agent is
   // `phase.validatorAgent` (else the phase's pool[0]); its conversation is
   // separate from the phase worker's, so we do NOT overwrite the phase-run's
-  // taskId/agentName. Returns the parsed verdict; an unparseable reply FAILS OPEN
-  // (approved) so a broken reviewer never wedges the run.
+  // taskId/agentName. Returns the parsed verdict; an unparseable reply is a failed
+  // review boundary and must not approve the phase.
   private makeValidate(run: ProcessRun): Validate {
-    return async ({ phase, phaseRun, signal }) => {
+    return async ({ phase, phaseRun, outputIdentity, signal }) => {
       const source = run.sourceConversationId
         ? getConversation(run.sourceConversationId)
         : undefined
@@ -915,36 +1367,68 @@ export class ProcessService {
       // The phase worker's output is the review input — read it BEFORE forking the
       // reviewer (the reviewer's conversation would otherwise be the latest).
       const phaseOutput = this.lastAssistantContent(phaseRun)
+      const reviewTargetOutputIdentity = outputIdentity
 
       // The dedicated reviewer agent, falling back to the phase's own resolved
       // agent (pool[0]) when none is configured.
       const pool = processes.listPhaseAgents(phase.id)
       const agentName = phase.validatorAgent ?? pool[0]?.agentName ?? null
+      const phaseAgent = pool.find((agent) => agent.agentName === agentName)
+      const validatorRuntime = resolveRuntime({
+        run,
+        source,
+        phase,
+        slot: "validator",
+        phaseAgent,
+      })
 
       const workspaceId = run.workspaceId ?? source?.workspaceId ?? null
       const workspace = workspaceId
         ? getWorkspace(workspaceId)?.path
         : undefined
 
-      const worker = createConversation({
-        mode: source?.mode ?? "interactive",
-        workspaceId,
-        accountId: source?.accountId ?? null,
-        modelId: source?.modelId ?? null,
-        agentName,
-        title: `${phase.name} (review)${agentName ? `: ${agentName}` : ""}`,
-      })
-      createTask({
-        conversationId: worker.id,
-        sourceConversationId: run.sourceConversationId ?? worker.id,
-        status: "completed",
-        title: `${phase.name} (review)`,
-        input: {
-          kind: "process_phase_validate",
-          phaseRunId: phaseRun.id,
+      const validatorRound =
+        processes.getPhaseRun(phaseRun.id)?.validatorRound ??
+        phaseRun.validatorRound
+      const existingWorkerTask = this.findProcessWorkerTask(
+        phaseRun.id,
+        "process_phase_validate",
+        validatorRound,
+        reviewTargetOutputIdentity
+      )
+      const existingWorker = existingWorkerTask
+        ? getConversation(existingWorkerTask.conversationId)
+        : undefined
+      const resumingWorker = !!existingWorkerTask && !!existingWorker
+      const worker =
+        existingWorker ??
+        createConversation({
+          mode: source?.mode ?? "interactive",
+          workspaceId,
+          accountId: validatorRuntime.selection.accountId,
+          modelId: validatorRuntime.selection.modelId,
           agentName,
-        },
-      })
+          title: `${phase.name} (review)${agentName ? `: ${agentName}` : ""}`,
+        })
+      let workerTaskId = existingWorkerTask?.id ?? null
+      if (!resumingWorker) {
+        const workerTask = createTask({
+          conversationId: worker.id,
+          sourceConversationId: run.sourceConversationId ?? worker.id,
+          status: "completed",
+          title: `${phase.name} (review)`,
+          input: {
+            kind: "process_phase_validate",
+            phaseRunId: phaseRun.id,
+            agentName,
+            validatorRound,
+            reviewTargetOutputIdentity,
+            runtime: validatorRuntime.snapshot,
+          },
+        })
+        workerTaskId = workerTask.id
+      }
+      snapshotRuntime(phaseRun, "validator", validatorRuntime)
 
       const childAbort = new AbortController()
       if (signal.aborted) childAbort.abort(signal.reason)
@@ -967,8 +1451,9 @@ export class ProcessService {
           conversationId: worker.id,
           workspace,
           agentDir: workspace,
-          userMessage: prompt,
+          userMessage: resumingWorker ? undefined : prompt,
           abort: childAbort,
+          taskId: workerTaskId ?? undefined,
           autoMode: true,
           // Headless reviewer — no user to answer a clarifying question.
           suppressUserQuestions: true,
@@ -981,17 +1466,57 @@ export class ProcessService {
             approved: false,
             error: result.error,
             retryable: result.retryable,
+            failure: result.failure,
+            targetOutputIdentity: reviewTargetOutputIdentity,
           }
         const verdict = parseVerdict(result.content ?? "")
-        // Unparseable verdict → fail open (approve). A broken/ambiguous reviewer
-        // must never wedge the run; the iteration cap already bounds real loops.
-        if (!verdict) return { approved: true }
-        return { approved: verdict.approved, feedback: verdict.feedback }
+        if (!verdict)
+          return {
+            approved: false,
+            error: "validator returned an unparseable verdict",
+            failure: {
+              code: "validator_unparseable",
+              stage: "output_validation",
+              message: "validator returned an unparseable verdict",
+              retryable: false,
+              attempt: null,
+              maxAttempts: null,
+              runId: run.id,
+              phaseRunId: phaseRun.id,
+              phaseId: phase.id,
+              taskId: run.taskId,
+              workerTaskId,
+              agentName,
+              occurredAt: Date.now(),
+            },
+            targetOutputIdentity: reviewTargetOutputIdentity,
+          }
+        return {
+          approved: verdict.approved,
+          feedback: verdict.feedback,
+          targetOutputIdentity: reviewTargetOutputIdentity,
+        }
       } catch (err) {
-        // A thrown reviewer is treated as an error (fail-open in the scheduler).
         return {
           approved: false,
           error: err instanceof Error ? err.message : String(err),
+          failure: {
+            code: "validator_exception",
+            stage: "reviewer",
+            message: err instanceof Error ? err.message : String(err),
+            retryable: false,
+            attempt: null,
+            maxAttempts: null,
+            runId: run.id,
+            phaseRunId: phaseRun.id,
+            phaseId: phase.id,
+            taskId: run.taskId,
+            workerTaskId,
+            agentName,
+            cause: err instanceof Error ? err.name : null,
+            occurredAt: Date.now(),
+          },
+          targetOutputIdentity: reviewTargetOutputIdentity,
         }
       }
     }
@@ -1111,15 +1636,87 @@ export class ProcessService {
 
   // The final assistant message of a phase's worker conversation (its "output").
   private lastAssistantContent(phaseRun: ProcessPhaseRun): string | null {
+    return this.lastAssistantOutput(phaseRun)?.content ?? null
+  }
+
+  private lastAssistantOutput(
+    phaseRun: ProcessPhaseRun
+  ): { content: string; identity: string } | null {
     if (!phaseRun.taskId) return null
     // The worker conversation id is the phase-run's backing task's conversation.
     const workerTask = getTask(phaseRun.taskId)
     if (!workerTask) return null
     const messages = listMessages(workerTask.conversationId)
     for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i].role === "assistant" && messages[i].content)
-        return messages[i].content
+      const message = messages[i]
+      if (message.role === "assistant" && message.content) {
+        const digest = createHash("sha256")
+          .update(message.content)
+          .digest("hex")
+        return {
+          content: message.content,
+          identity: `phase-output:v1:${phaseRun.taskId}:${message.id}:${digest}`,
+        }
+      }
     }
     return null
+  }
+
+  private findProcessWorkerTask(
+    phaseRunId: string,
+    kind: string,
+    validatorRound?: number,
+    reviewTargetOutputIdentity?: string | null
+  ) {
+    return listTasks().find((task) => {
+      const input = task.input as ProcessWorkerTaskInput | null
+      if (input?.kind !== kind || input.phaseRunId !== phaseRunId) return false
+      if (validatorRound === undefined) return true
+      if (input.validatorRound !== validatorRound) return false
+      if (reviewTargetOutputIdentity === undefined) return true
+      return (
+        (input.reviewTargetOutputIdentity ?? null) ===
+        reviewTargetOutputIdentity
+      )
+    })
+  }
+
+  private assertNoUnknownPhaseWorkerOutcomes(phaseRun: ProcessPhaseRun): void {
+    const tasks = [
+      phaseRun.taskId ? getTask(phaseRun.taskId) : undefined,
+      ...listTasks().filter((task) => {
+        const input = task.input as ProcessWorkerTaskInput | null
+        return (
+          input?.phaseRunId === phaseRun.id &&
+          (input.kind === "process_phase_validate" ||
+            input.kind === "process_phase" ||
+            input.kind === "process_phase_decompose")
+        )
+      }),
+    ].filter((task): task is NonNullable<typeof task> => task !== undefined)
+
+    const seen = new Set<string>()
+    const unknown: string[] = []
+    for (const task of tasks) {
+      if (seen.has(task.id)) continue
+      seen.add(task.id)
+      const calls = unknownSideEffectingToolCalls(task.conversationId)
+      for (const call of calls) unknown.push(call.name)
+    }
+    if (unknown.length === 0) return
+    throw new Error(
+      `cannot rerun process phase while side-effecting tool outcomes are unknown: ${[...new Set(unknown)].join(", ")}`
+    )
+  }
+
+  private assertNoUnknownProcessWorkerOutcomes(run: ProcessRun): void {
+    const visit = (cur: ProcessRun): void => {
+      for (const phaseRun of processes.listPhaseRuns({ runId: cur.id })) {
+        this.assertNoUnknownPhaseWorkerOutcomes(phaseRun)
+        const child = processes.getProcessRunByParentPhaseRunId(phaseRun.id)
+        if (child) visit(child)
+      }
+    }
+    visit(run)
   }
 }

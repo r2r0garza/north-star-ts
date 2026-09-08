@@ -194,6 +194,55 @@ describe("settings service — title generation", () => {
   })
 })
 
+describe("settings service — agent sources", () => {
+  it("defaults external providers to visible and preserves an explicit preference", () => {
+    expect(service.getAgentSources()).toEqual({
+      folders: [],
+      visibleExternalSources: {},
+    })
+
+    service.setAgentSources({
+      folders: ["/custom/agents"],
+      visibleExternalSources: { claude: false, cursor: true },
+    })
+    service._resetCacheForTests()
+
+    expect(service.getAgentSources()).toEqual({
+      folders: ["/custom/agents"],
+      visibleExternalSources: { claude: false, cursor: true },
+    })
+  })
+
+  it("fills visibility defaults for saved settings from before provider filters", () => {
+    store.set("agentSources", JSON.stringify({ folders: ["/custom/agents"] }))
+
+    expect(service.getAgentSources()).toEqual({
+      folders: ["/custom/agents"],
+      visibleExternalSources: {},
+    })
+  })
+})
+
+describe("settings service — conversations", () => {
+  it("defaults the startup view to the main agent mode", () => {
+    expect(service.getConversations()).toEqual({ defaultMode: "north_star" })
+  })
+
+  it("round-trips the default conversation mode", () => {
+    service.setConversations({ defaultMode: "chat" })
+    service._resetCacheForTests()
+    expect(service.getConversations()).toEqual({ defaultMode: "chat" })
+  })
+
+  it("falls back to the main agent mode for corrupt or unknown values", () => {
+    store.set("conversations", JSON.stringify({ defaultMode: "bogus" }))
+    expect(service.getConversations()).toEqual({ defaultMode: "north_star" })
+    service._resetCacheForTests()
+    store.set("conversations", "{not json")
+    expect(service.getConversations()).toEqual({ defaultMode: "north_star" })
+  })
+})
+
 describe("settings service — sandboxAutoApproves", () => {
   it("returns false when auto-approve is off", () => {
     service.setExecution({
@@ -366,5 +415,22 @@ describe("settings service — theme (brand colors)", () => {
   it("falls back to defaults on a corrupt blob", () => {
     store.set("theme", "{not json")
     expect(service.getTheme()).toEqual({ accent: null, neutral: null })
+  })
+})
+
+describe("settings service — onboarding", () => {
+  it("defaults to showing the startup guide", () => {
+    expect(service.getOnboarding()).toEqual({ hideStartupGuide: false })
+  })
+
+  it("round-trips the startup guide dismissal preference", () => {
+    service.setOnboarding({ hideStartupGuide: true })
+    service._resetCacheForTests()
+    expect(service.getOnboarding()).toEqual({ hideStartupGuide: true })
+  })
+
+  it("falls back to defaults on a corrupt blob", () => {
+    store.set("onboarding", "{not json")
+    expect(service.getOnboarding()).toEqual({ hideStartupGuide: false })
   })
 })

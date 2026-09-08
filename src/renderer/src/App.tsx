@@ -3,6 +3,7 @@ import {
   useCallback,
   useEffect,
   useImperativeHandle,
+  useMemo,
   useRef,
   useState,
 } from "react"
@@ -24,6 +25,13 @@ import {
   X,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 import { Markdown } from "@/components/markdown"
 import { VIEW_TO_MODE, type View } from "@/components/sidebar"
 import {
@@ -83,6 +91,7 @@ import {
 } from "@/components/ui/combobox"
 import {
   buildTimeline,
+  deriveLabel,
   toToolUse,
   isErrorResult,
   baseName as lastSegment,
@@ -92,11 +101,17 @@ import {
 } from "@/lib/timeline"
 import { cn } from "@/lib/utils"
 import { maybeNotify } from "@/lib/notify"
+import {
+  EMPTY_CHAT_SUCCESS_ERROR,
+  chatResultNotification,
+  isUnexpectedEmptyChatSuccess,
+} from "@/lib/chat-result"
 import type {
   Question,
   QuestionAnswer,
   LlmSettings,
   AccountWithModels,
+  ModelEntry,
   SkillSummary,
   AgentSummary,
   PickedElement,
@@ -119,8 +134,55 @@ type LiveSegment =
 interface LiveTurn {
   segments: LiveSegment[]
   question: { requestId: string; questions: Question[] } | null
+  commandWait: boolean
 }
-const EMPTY_LIVE: LiveTurn = { segments: [], question: null }
+const EMPTY_LIVE: LiveTurn = {
+  segments: [],
+  question: null,
+  commandWait: false,
+}
+
+type ExternalSourceKind = "github" | "copilot" | "cursor" | "claude" | "codex"
+
+interface PendingModelMapping {
+  agent: AgentSummary
+  sourceKind: ExternalSourceKind
+  sourceModel: string
+  destinationAccountId: string
+  destinationModelId: string | null
+  models: ModelEntry[]
+  reason: string
+  resume: "send" | "background"
+}
+
+type AgentPickerItem = {
+  value: string
+  label: string
+  description?: string
+  name?: string
+  sourceKind?: string
+}
+
+function agentSourceLabel(sourceKind: string, systemName: string): string {
+  switch (sourceKind) {
+    case "north_star":
+      return systemName
+    case "github":
+      return "GitHub"
+    case "copilot":
+      return "Copilot"
+    case "cursor":
+      return "Cursor"
+    case "claude":
+      return "Claude"
+    case "codex":
+      return "Codex"
+    default:
+      return sourceKind
+        .replaceAll("_", " ")
+        .replace(/\b\w/g, (character) => character.toUpperCase())
+  }
+}
 
 // Append streamed assistant text. Extends the trailing text segment when the
 // last event was also text (so a token stream coalesces), otherwise starts a new
@@ -140,6 +202,38 @@ function appendLiveText(turn: LiveTurn, delta: string): LiveTurn {
     ...turn,
     segments: [...turn.segments, { kind: "text", text: delta }],
   }
+}
+
+function externalSourceKind(value: string): ExternalSourceKind | null {
+  return value === "github" ||
+    value === "copilot" ||
+    value === "cursor" ||
+    value === "claude" ||
+    value === "codex"
+    ? value
+    : null
+}
+
+function metadataRecord(agent: AgentSummary): Record<string, unknown> {
+  return typeof agent.sourceMetadata === "object" &&
+    agent.sourceMetadata !== null
+    ? (agent.sourceMetadata as Record<string, unknown>)
+    : {}
+}
+
+function sourceModelToken(agent: AgentSummary): string | null {
+  const metadata = metadataRecord(agent)
+  const direct = metadata.model
+  if (typeof direct === "string" && direct.trim()) return direct.trim()
+  const sections = metadata.sections
+  if (typeof sections === "object" && sections !== null) {
+    const agentSection = (sections as Record<string, unknown>).agent
+    if (typeof agentSection === "object" && agentSection !== null) {
+      const raw = (agentSection as Record<string, unknown>).model
+      if (typeof raw === "string" && raw.trim()) return raw.trim()
+    }
+  }
+  return null
 }
 
 // Register a started tool call. Appends to the trailing tools group when the last
@@ -317,7 +411,9 @@ function App(
   // from the synchronous system bridge. Used to label the per-view empty-session
   // heading — "<agent> - Chat", "<agent> - Interactive", "<agent> - Autonomous
   // Tasks" (the North Star tab's heading is dynamic with the agent name).
-  const agentName = window.cowork.system().mainAgentName
+  const system = window.cowork.system()
+  const agentName = system.mainAgentName
+  const systemName = system.displayName
 
   const [workspace, setWorkspace] = useState("")
   // Whether the workspace is locked to a project's directory (the conversation
@@ -364,6 +460,8 @@ function App(
   // conversation it's carried into create() on first send. Mirrors selModelId.
   const [agents, setAgents] = useState<AgentSummary[]>([])
   const [selAgentName, setSelAgentName] = useState<string | null>(null)
+  const [pendingModelMapping, setPendingModelMapping] =
+    useState<PendingModelMapping | null>(null)
   const [menu, setMenu] = useState<{ kind: MentionKind; query: string } | null>(
     null
   )
@@ -478,7 +576,7 @@ function App(
         : configuredModelId
       : effectiveAccount?.account.provider === "codex_cli"
         ? !configuredModelId || configuredModelId === "codex-cli"
-          ? "gpt-5.3-codex"
+          ? "gpt-5.5"
           : configuredModelId
         : configuredModelId
   const effectiveModel = effectiveAccount?.models.find(
@@ -672,10 +770,18 @@ function App(
   // <workspace>/.cowork/agents and <workspace>/.github/agents), mirroring skills.
   useEffect(() => reloadAgents(), [reloadAgents])
 
-  // Re-scan externally edited agent files when the app comes back into focus.
+  // Re-scan externally edited files and refresh when the Agents screen changes
+  // which external providers should be visible in the picker.
   useEffect(() => {
     window.addEventListener("focus", reloadAgents)
-    return () => window.removeEventListener("focus", reloadAgents)
+    window.addEventListener("agent-source-visibility-changed", reloadAgents)
+    return () => {
+      window.removeEventListener("focus", reloadAgents)
+      window.removeEventListener(
+        "agent-source-visibility-changed",
+        reloadAgents
+      )
+    }
   }, [reloadAgents])
 
   // Report the workspace root up to the Shell so the sidebar Changes review + the
@@ -685,10 +791,9 @@ function App(
   }, [workspace, isChat, onWorkspaceChange])
 
   // Fetch the git branch for the current workspace folder. Clears when the
-  // folder is deselected or when it's not a git repo. Also re-runs whenever the
-  // window regains focus: the branch can change out from under us (the user
-  // switches branches in their IDE while the app is in the background), and a
-  // one-shot read on folder-select would otherwise show a stale branch forever.
+  // folder is deselected or when it's not a git repo. Refreshes on focus and on a
+  // lightweight interval so branch switches made in an IDE/terminal update while
+  // the app stays focused on the same conversation.
   useEffect(() => {
     const path = workspace.trim()
     if (!path || isChat) {
@@ -696,20 +801,24 @@ function App(
       return
     }
     let cancelled = false
+    let refreshSeq = 0
     const refresh = () => {
+      const seq = ++refreshSeq
       window.cowork.git
         .branch(path)
         .then((branch) => {
-          if (!cancelled) setGitBranch(branch)
+          if (!cancelled && seq === refreshSeq) setGitBranch(branch)
         })
         .catch(() => {
-          if (!cancelled) setGitBranch(null)
+          if (!cancelled && seq === refreshSeq) setGitBranch(null)
         })
     }
     refresh()
+    const interval = window.setInterval(refresh, 2000)
     window.addEventListener("focus", refresh)
     return () => {
       cancelled = true
+      window.clearInterval(interval)
       window.removeEventListener("focus", refresh)
     }
   }, [workspace, isChat])
@@ -940,6 +1049,59 @@ function App(
     ])
   }
 
+  async function preflightExternalAgentModel(
+    resume: PendingModelMapping["resume"]
+  ): Promise<boolean> {
+    if (!selAgentName || !effAccountId || !effModelId) return true
+    const agent = agents.find(
+      (candidate) =>
+        candidate.ref === selAgentName ||
+        candidate.refId === selAgentName ||
+        candidate.name === selAgentName
+    )
+    if (!agent) return true
+    const sourceKind = externalSourceKind(agent.sourceKind)
+    if (!sourceKind) return true
+    const sourceModel = sourceModelToken(agent)
+    if (!sourceModel) return true
+    const resolution = await window.cowork.externalModels.resolve({
+      sourceKind,
+      sourceModel,
+      destinationAccountId: effAccountId,
+      conversationModelId: effModelId,
+    })
+    if (resolution.status !== "unresolved") return true
+    const accountModels =
+      accountsWithModels.find((entry) => entry.account.id === effAccountId)
+        ?.models ?? []
+    setPendingModelMapping({
+      agent,
+      sourceKind,
+      sourceModel,
+      destinationAccountId: effAccountId,
+      destinationModelId: accountModels[0]?.modelId ?? null,
+      models: accountModels,
+      reason: resolution.reason,
+      resume,
+    })
+    return false
+  }
+
+  async function savePendingModelMapping() {
+    if (!pendingModelMapping?.destinationModelId) return
+    await window.cowork.externalModels.saveMapping({
+      sourceKind: pendingModelMapping.sourceKind,
+      sourceModel: pendingModelMapping.sourceModel,
+      destinationAccountId: pendingModelMapping.destinationAccountId,
+      destinationModelId: pendingModelMapping.destinationModelId,
+    })
+    const resume = pendingModelMapping.resume
+    setPendingModelMapping(null)
+    requestAnimationFrame(() => {
+      void (resume === "background" ? runInBackground() : sendMessage())
+    })
+  }
+
   function removeAttachment(path: string) {
     setAttachments((prev) => prev.filter((p) => p !== path))
   }
@@ -1017,10 +1179,10 @@ function App(
 
   async function sendMessage() {
     if (!canSend) return
-    // Expand confirmed mention tokens before sending, so the model reliably
-    // reads them: `/git-commit` → `git-commit skill`, `@src/foo.ts` → `src/foo.ts`.
-    // The expanded text is also what's shown in the optimistic timeline, so the
-    // transcript matches what the agent received.
+    if (!(await preflightExternalAgentModel("send"))) return
+    // Expand confirmed file mentions before sending, so the model gets bare
+    // workspace paths (`@src/foo.ts` → `src/foo.ts`). Skill mentions stay literal
+    // in the transcript and are sent separately as deterministic invocations.
     const base = expandMentions(message, confirmedMentions).trim()
     // Prepend a descriptor per picked element (if any) so the agent knows exactly
     // which on-page element(s) the user is pointing at. It can act on each two
@@ -1108,6 +1270,7 @@ function App(
           // Chat sends no workspace and inlines attachments instead.
           workspace: isChat ? undefined : workspace.trim(),
           attachments: isChat ? sentAttachments : undefined,
+          skills: [...confirmedSkills],
           // Plan mode is interactive/north_star only (never Chat); auto mode is
           // available everywhere, including Chat (suppresses browser_navigate
           // prompts).
@@ -1143,6 +1306,11 @@ function App(
                 ...t,
                 result: event.result,
                 status: isErrorResult(event.result) ? "error" : "done",
+                label: deriveLabel(
+                  t.name,
+                  t.args,
+                  isErrorResult(event.result) ? "error" : "done"
+                ),
                 approval: undefined,
               }))
             )
@@ -1158,6 +1326,7 @@ function App(
                   reason: event.reason,
                   status: "pending",
                   kind: event.kind,
+                  explicit: event.explicit,
                   detail: event.detail,
                 },
               }))
@@ -1199,6 +1368,11 @@ function App(
             // The user approved the plan with "Auto mode" — activate auto for
             // the remainder of this turn and beyond (until conversation switch).
             if (event.enabled) setAgentMode("auto")
+          } else if (event.type === "command_wait") {
+            updateLive(turnConvoId, (turn) => ({
+              ...turn,
+              commandWait: event.phase === "start",
+            }))
           }
         }
       )
@@ -1207,6 +1381,7 @@ function App(
       // — otherwise a turn that ends mid-work after some text would stop silently.
       // (Transient — immediately superseded by the reconcile below, which also
       // reads the persisted error note.)
+      const unexpectedEmptySuccess = isUnexpectedEmptyChatSuccess(data)
       if (data.error) {
         if (data.errorCode === "execution_backend_unavailable") {
           toast.error("Selected execution backend is unavailable", {
@@ -1234,7 +1409,10 @@ function App(
         updateLive(turnConvoId, (turn) =>
           appendLiveFinalText(turn, "⏹ Stopped")
         )
-      } else if (data.content) {
+      } else if (
+        typeof data.content === "string" &&
+        data.content.trim().length > 0
+      ) {
         // Final answer with no streamed text (rare): seed a text segment so the
         // bubble isn't empty. If text already streamed, it's already shown.
         updateLive(turnConvoId, (turn) =>
@@ -1242,15 +1420,18 @@ function App(
             ? turn
             : appendLiveText(turn, data.content!)
         )
+      } else if (unexpectedEmptySuccess) {
+        updateLive(turnConvoId, (turn) =>
+          appendLiveFinalText(turn, `Error: ${EMPTY_CHAT_SUCCESS_ERROR}`)
+        )
       }
       // Desktop notification on settle: error vs done. A clean user-initiated
       // stop is silent (the user is right here). The body is a short snippet of
       // the outcome; maybeNotify suppresses it when the window is focused on this
       // very conversation.
-      if (data.error) {
-        void notify(turnConvoId, "turnError", snippet(data.error))
-      } else if (!data.stopped) {
-        void notify(turnConvoId, "turnComplete", "The agent finished its turn.")
+      const notification = chatResultNotification(data, snippet)
+      if (notification) {
+        void notify(turnConvoId, notification.kind, notification.body)
       }
     } catch (error) {
       const msg = error instanceof Error ? error.message : "Request failed"
@@ -1296,6 +1477,7 @@ function App(
   // attachment-only path can come later).
   async function runInBackground() {
     if (!canSend || isChat) return
+    if (!(await preflightExternalAgentModel("background"))) return
     const text = message.trim()
 
     // Ensure a conversation exists — created lazily, mirroring sendMessage. For
@@ -1442,6 +1624,7 @@ function App(
   useEffect(() => {
     if (!pendingApproval) return
     const { requestId, kind } = pendingApproval
+    const explicit = pendingApproval.explicit === true
     // Global DOM KeyboardEvent (App imports React's KeyboardEvent type for the
     // composer handler; this window listener needs the DOM one).
     function onKeyDown(e: globalThis.KeyboardEvent) {
@@ -1455,8 +1638,8 @@ function App(
         e.preventDefault()
         resolveApproval(requestId, "denied")
       } else if (e.key.toLowerCase() === "s") {
-        // Session/workspace approve — only when the card offers it (not delegate).
-        if (kind === "delegate") return
+        // Session/workspace approve — only when the card offers it.
+        if (kind === "delegate" || explicit) return
         e.preventDefault()
         resolveApproval(
           requestId,
@@ -1508,16 +1691,28 @@ function App(
   }
   // Combobox items use { value: "accountId::modelId", label } objects — Base UI
   // filters and displays on `label` automatically. Grouped by provider account.
-  const modelGroups = accountsWithModels
-    .filter((a) => a.models.length > 0)
-    .map((a) => ({
-      value: a.account.id,
-      label: a.account.displayName,
-      items: a.models.map((m) => ({
-        value: `${a.account.id}::${m.modelId}`,
-        label: m.modelName && m.modelName.trim() ? m.modelName : m.modelId,
-      })),
-    }))
+  const [modelAccountFilter, setModelAccountFilter] = useState<string | null>(
+    null
+  )
+  const [modelSearchQuery, setModelSearchQuery] = useState("")
+  const modelGroups = useMemo(
+    () =>
+      accountsWithModels
+        .filter((a) => a.models.length > 0)
+        .map((a) => ({
+          value: a.account.id,
+          label: a.account.displayName,
+          items: a.models.map((m) => ({
+            value: `${a.account.id}::${m.modelId}`,
+            label: m.modelName && m.modelName.trim() ? m.modelName : m.modelId,
+          })),
+        })),
+    [accountsWithModels]
+  )
+  const filteredModelGroups = useMemo(() => {
+    if (!modelAccountFilter || modelSearchQuery.trim()) return modelGroups
+    return modelGroups.filter((group) => group.value === modelAccountFilter)
+  }, [modelAccountFilter, modelGroups, modelSearchQuery])
   const selectedItem =
     effAccountId && effModelId
       ? (modelGroups
@@ -1530,10 +1725,16 @@ function App(
     : "Configure provider…"
   const modelPicker = hasSelectableModels ? (
     <Combobox
-      items={modelGroups}
+      items={filteredModelGroups}
       value={selectedItem}
+      inputValue={modelSearchQuery}
       isItemEqualToValue={(a, b) => a?.value === b?.value}
+      onInputValueChange={(next) => setModelSearchQuery(next)}
+      onOpenChange={(open) => {
+        if (!open) setModelSearchQuery("")
+      }}
       onValueChange={(item) => {
+        setModelSearchQuery("")
         if (!item) return
         const sep = item.value.indexOf("::")
         if (sep < 0) return
@@ -1549,6 +1750,31 @@ function App(
       </ComboboxTrigger>
       <ComboboxContent className="w-72 min-w-72">
         <ComboboxInput placeholder="Search models…" showTrigger={false} />
+        {modelGroups.length > 1 && (
+          <div className="flex flex-wrap gap-1 border-b border-border/60 p-1">
+            <Button
+              type="button"
+              variant={!modelAccountFilter ? "secondary" : "ghost"}
+              size="xs"
+              onClick={() => setModelAccountFilter(null)}
+            >
+              All
+            </Button>
+            {modelGroups.map((group) => (
+              <Button
+                key={group.value}
+                type="button"
+                variant={
+                  modelAccountFilter === group.value ? "secondary" : "ghost"
+                }
+                size="xs"
+                onClick={() => setModelAccountFilter(group.value)}
+              >
+                {group.label}
+              </Button>
+            ))}
+          </div>
+        )}
         <ComboboxEmpty>No models found.</ComboboxEmpty>
         <ComboboxList>
           {(group: {
@@ -1585,10 +1811,16 @@ function App(
   // the selected model name appears as a native tooltip.
   const modelPickerCompact = hasSelectableModels ? (
     <Combobox
-      items={modelGroups}
+      items={filteredModelGroups}
       value={selectedItem}
+      inputValue={modelSearchQuery}
       isItemEqualToValue={(a, b) => a?.value === b?.value}
+      onInputValueChange={(next) => setModelSearchQuery(next)}
+      onOpenChange={(open) => {
+        if (!open) setModelSearchQuery("")
+      }}
       onValueChange={(item) => {
+        setModelSearchQuery("")
         if (!item) return
         const sep = item.value.indexOf("::")
         if (sep < 0) return
@@ -1603,6 +1835,31 @@ function App(
       </ComboboxTrigger>
       <ComboboxContent className="w-72 min-w-72">
         <ComboboxInput placeholder="Search models…" showTrigger={false} />
+        {modelGroups.length > 1 && (
+          <div className="flex flex-wrap gap-1 border-b border-border/60 p-1">
+            <Button
+              type="button"
+              variant={!modelAccountFilter ? "secondary" : "ghost"}
+              size="xs"
+              onClick={() => setModelAccountFilter(null)}
+            >
+              All
+            </Button>
+            {modelGroups.map((group) => (
+              <Button
+                key={group.value}
+                type="button"
+                variant={
+                  modelAccountFilter === group.value ? "secondary" : "ghost"
+                }
+                size="xs"
+                onClick={() => setModelAccountFilter(group.value)}
+              >
+                {group.label}
+              </Button>
+            ))}
+          </div>
+        )}
         <ComboboxEmpty>No models found.</ComboboxEmpty>
         <ComboboxList>
           {(group: {
@@ -1642,16 +1899,42 @@ function App(
   // each other item is an agent (filtered by name). Compact (icon-only) when the
   // right panel squeezes the toolbar. The selected agent's prompt is prepended
   // to ours per turn.
-  const agentItems: { value: string; label: string; description?: string }[] = [
+  const [agentSourceFilter, setAgentSourceFilter] = useState<string | null>(
+    null
+  )
+  const [agentSearchQuery, setAgentSearchQuery] = useState("")
+  const agentItems: AgentPickerItem[] = [
     { value: "", label: "Default (no agent)" },
     ...agents.map((a) => ({
-      value: a.name,
-      label: a.name,
+      value: a.ref ?? a.name,
+      label: a.label ?? a.name,
       description: a.description,
+      name: a.name,
+      sourceKind: a.sourceKind,
     })),
   ]
+  const agentSourceFilters = useMemo(
+    () =>
+      Array.from(new Set(agents.map((agent) => agent.sourceKind))).map(
+        (sourceKind) => ({
+          id: sourceKind,
+          label: agentSourceLabel(sourceKind, systemName),
+        })
+      ),
+    [agents, systemName]
+  )
+  const filteredAgentItems = useMemo(() => {
+    if (!agentSourceFilter || agentSearchQuery.trim()) return agentItems
+    return agentItems.filter(
+      (item) => !item.sourceKind || item.sourceKind === agentSourceFilter
+    )
+  }, [agentItems, agentSearchQuery, agentSourceFilter])
   const selectedAgentItem =
-    agentItems.find((it) => it.value === (selAgentName ?? "")) ?? null
+    agentItems.find(
+      (it) =>
+        it.value === (selAgentName ?? "") ||
+        (it.name && it.name === selAgentName)
+    ) ?? null
   const renderAgentItem = (item: {
     value: string
     label: string
@@ -1669,18 +1952,22 @@ function App(
     </ComboboxItem>
   )
   const onAgentValueChange = (item: { value: string } | null) => {
+    setAgentSearchQuery("")
     if (!item) return
     void selectAgent(item.value || null)
   }
   const agentPicker =
     agents.length > 0 ? (
       <Combobox
-        items={agentItems}
+        items={filteredAgentItems}
         value={selectedAgentItem}
+        inputValue={agentSearchQuery}
         isItemEqualToValue={(a, b) => a?.value === b?.value}
+        onInputValueChange={(next) => setAgentSearchQuery(next)}
         onValueChange={onAgentValueChange}
         onOpenChange={(open) => {
           if (open) reloadAgents()
+          else setAgentSearchQuery("")
         }}
       >
         <ComboboxTrigger
@@ -1702,6 +1989,31 @@ function App(
         </ComboboxTrigger>
         <ComboboxContent className="w-72 min-w-72">
           <ComboboxInput placeholder="Search agents…" showTrigger={false} />
+          {agentSourceFilters.length > 1 && (
+            <div className="flex flex-wrap gap-1 border-b border-border/60 p-1">
+              <Button
+                type="button"
+                variant={!agentSourceFilter ? "secondary" : "ghost"}
+                size="xs"
+                onClick={() => setAgentSourceFilter(null)}
+              >
+                All
+              </Button>
+              {agentSourceFilters.map((source) => (
+                <Button
+                  key={source.id}
+                  type="button"
+                  variant={
+                    agentSourceFilter === source.id ? "secondary" : "ghost"
+                  }
+                  size="xs"
+                  onClick={() => setAgentSourceFilter(source.id)}
+                >
+                  {source.label}
+                </Button>
+              ))}
+            </div>
+          )}
           <ComboboxEmpty>No agents found.</ComboboxEmpty>
           <ComboboxList>{renderAgentItem}</ComboboxList>
         </ComboboxContent>
@@ -1713,16 +2025,23 @@ function App(
   const agentPickerCompact =
     agents.length > 0 ? (
       <Combobox
-        items={agentItems}
+        items={filteredAgentItems}
         value={selectedAgentItem}
+        inputValue={agentSearchQuery}
         isItemEqualToValue={(a, b) => a?.value === b?.value}
+        onInputValueChange={(next) => setAgentSearchQuery(next)}
         onValueChange={onAgentValueChange}
         onOpenChange={(open) => {
           if (open) reloadAgents()
+          else setAgentSearchQuery("")
         }}
       >
         <ComboboxTrigger
-          title={selAgentName ? `Agent: ${selAgentName}` : "Select agent"}
+          title={
+            selectedAgentItem?.value
+              ? `Agent: ${selectedAgentItem.label}`
+              : "Select agent"
+          }
           className={cn(
             "flex h-7 items-center rounded-md px-2 transition-colors",
             selAgentName
@@ -1734,6 +2053,31 @@ function App(
         </ComboboxTrigger>
         <ComboboxContent className="w-72 min-w-72">
           <ComboboxInput placeholder="Search agents…" showTrigger={false} />
+          {agentSourceFilters.length > 1 && (
+            <div className="flex flex-wrap gap-1 border-b border-border/60 p-1">
+              <Button
+                type="button"
+                variant={!agentSourceFilter ? "secondary" : "ghost"}
+                size="xs"
+                onClick={() => setAgentSourceFilter(null)}
+              >
+                All
+              </Button>
+              {agentSourceFilters.map((source) => (
+                <Button
+                  key={source.id}
+                  type="button"
+                  variant={
+                    agentSourceFilter === source.id ? "secondary" : "ghost"
+                  }
+                  size="xs"
+                  onClick={() => setAgentSourceFilter(source.id)}
+                >
+                  {source.label}
+                </Button>
+              ))}
+            </div>
+          )}
           <ComboboxEmpty>No agents found.</ComboboxEmpty>
           <ComboboxList>{renderAgentItem}</ComboboxList>
         </ComboboxContent>
@@ -2022,57 +2366,139 @@ function App(
           </div>
         </div>
       </div>
+      <Dialog
+        open={pendingModelMapping !== null}
+        onOpenChange={(open) => {
+          if (!open) setPendingModelMapping(null)
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Map external model</DialogTitle>
+          </DialogHeader>
+          {pendingModelMapping && (
+            <div className="flex flex-col gap-3 text-sm">
+              <p className="text-muted-foreground">
+                {pendingModelMapping.agent.label} requests{" "}
+                <span className="font-mono text-foreground">
+                  {pendingModelMapping.sourceModel}
+                </span>
+                . Choose the destination model for this provider account.
+              </p>
+              {pendingModelMapping.reason === "stale_mapping" && (
+                <p className="rounded-md bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                  The saved mapping points at a model that is no longer in this
+                  account catalog.
+                </p>
+              )}
+              <Combobox
+                items={pendingModelMapping.models.map((model) => ({
+                  value: model.modelId,
+                  label:
+                    model.modelName && model.modelName.trim()
+                      ? model.modelName
+                      : model.modelId,
+                }))}
+                value={
+                  pendingModelMapping.destinationModelId
+                    ? {
+                        value: pendingModelMapping.destinationModelId,
+                        label: pendingModelMapping.destinationModelId,
+                      }
+                    : null
+                }
+                isItemEqualToValue={(a, b) => a?.value === b?.value}
+                onValueChange={(item) => {
+                  if (!item) return
+                  setPendingModelMapping((prev) =>
+                    prev ? { ...prev, destinationModelId: item.value } : prev
+                  )
+                }}
+              >
+                <ComboboxTrigger>
+                  <ComboboxValue placeholder="Choose destination model" />
+                </ComboboxTrigger>
+                <ComboboxContent>
+                  <ComboboxInput placeholder="Search models..." />
+                  <ComboboxEmpty>No models found</ComboboxEmpty>
+                  <ComboboxList>
+                    <ComboboxCollection>
+                      {(item: { value: string; label: string }) => (
+                        <ComboboxItem key={item.value} value={item}>
+                          <span className="truncate">{item.label}</span>
+                        </ComboboxItem>
+                      )}
+                    </ComboboxCollection>
+                  </ComboboxList>
+                </ComboboxContent>
+              </Combobox>
+            </div>
+          )}
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setPendingModelMapping(null)}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={savePendingModelMapping}
+              disabled={!pendingModelMapping?.destinationModelId}
+            >
+              Save and send
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </>
   )
 
-  // Empty session: center the heading + composer vertically so the user can
-  // start typing right away.
-  if (isEmpty) {
-    return (
-      <div className="relative flex h-full w-full flex-col items-center justify-center overflow-hidden px-4">
-        <div className="w-full max-w-[min(90%,48rem)]">
-          <div className="mb-6 text-center text-sm text-muted-foreground">
-            {view === "Chat" ? (
-              <>
-                <p className="font-medium text-foreground">
-                  {agentName} - Chat
-                </p>
-                <p>Ask anything. Attach files with the + button.</p>
-              </>
-            ) : view === "Interactive" ? (
-              <>
-                <p className="font-medium text-foreground">
-                  {agentName} - Interactive
-                </p>
-                <p>Pick a workspace folder, then ask the agent about it.</p>
-              </>
-            ) : (
-              <>
-                <p className="font-medium text-foreground">
-                  {agentName} - Autonomous Tasks
-                </p>
-                <p>Pick a workspace folder, then ask the agent about it.</p>
-              </>
-            )}
-          </div>
-          {composer}
-        </div>
-      </div>
-    )
-  }
+  // Keep both the welcome copy and composer mounted through the first send. The
+  // welcome dissolves while the composer moves, rather than swapping entire
+  // layouts in the same render.
+  const welcome = (
+    <div
+      aria-hidden={!isEmpty}
+      className={cn(
+        "conversation-welcome text-center text-sm text-muted-foreground",
+        isEmpty && "conversation-welcome--visible"
+      )}
+    >
+      {view === "Chat" ? (
+        <>
+          <p className="font-medium text-foreground">{agentName} - Chat</p>
+          <p>Ask anything. Attach files with the + button.</p>
+        </>
+      ) : view === "Interactive" ? (
+        <>
+          <p className="font-medium text-foreground">
+            {agentName} - Interactive
+          </p>
+          <p>Pick a workspace folder, then ask the agent about it.</p>
+        </>
+      ) : (
+        <>
+          <p className="font-medium text-foreground">
+            {agentName} - Autonomous Tasks
+          </p>
+          <p>Give it a goal. It will plan, run tools, and report progress.</p>
+        </>
+      )}
+    </div>
+  )
 
   return (
     // pt-11 clears the Shell's floating top drag bar (h-11, holding the
     // Info/Browser/Changes toggle): the scroll region starts BELOW it, so
     // messages scrolling up are clipped at the bar's edge instead of passing
-    // under it. The composer sits inside this column, so it's unaffected.
+    // under it.
     <div className="relative flex h-full w-full flex-col overflow-hidden pt-11">
       {/* Conversation — MessageScroller handles auto-follow + scroll-to-bottom.
           The window drag bar lives in Shell, above this column. */}
       <MessageScrollerProvider autoScroll defaultScrollPosition="last-anchor">
         <MessageScroller className="min-h-0 flex-1">
           <MessageScrollerViewport>
-            <MessageScrollerContent className="mx-auto w-full max-w-[min(90%,72rem)] gap-4 px-4 py-6">
+            <MessageScrollerContent className="mx-auto w-full max-w-[min(90%,72rem)] gap-4 px-4 py-6 pb-44">
               {displayTimeline.map((item, i) => {
                 const isLast = i === displayTimeline.length - 1 && !loading
                 if (item.kind === "tools") {
@@ -2151,7 +2577,21 @@ function App(
                           <MarkerIcon>
                             <Spinner />
                           </MarkerIcon>
-                          <MarkerContent>Thinking…</MarkerContent>
+                          <MarkerContent>
+                            {liveTurn?.commandWait
+                              ? "Waiting for background command…"
+                              : "Thinking…"}
+                          </MarkerContent>
+                        </Marker>
+                      )}
+                      {liveSegments.length > 0 && liveTurn?.commandWait && (
+                        <Marker>
+                          <MarkerIcon>
+                            <Spinner />
+                          </MarkerIcon>
+                          <MarkerContent>
+                            Waiting for background command…
+                          </MarkerContent>
                         </Marker>
                       )}
                     </MessageContent>
@@ -2168,8 +2608,20 @@ function App(
       {/* Composer — with the pending approval or question prompt popped out just
           above it, so it stays in one fixed place regardless of transcript
           scrolling. Gating is sequential, so these are mutually exclusive. */}
-      <div className="border-t bg-background">
-        <div className="mx-auto w-full max-w-[min(90%,72rem)] px-4 py-4">
+      <div
+        className={cn(
+          "conversation-composer border-t bg-background",
+          isEmpty && "conversation-composer--centered border-transparent",
+          !isEmpty && "border-border"
+        )}
+      >
+        <div
+          className={cn(
+            "mx-auto w-full px-4 py-4",
+            isEmpty ? "max-w-[min(90%,48rem)]" : "max-w-[min(90%,72rem)]"
+          )}
+        >
+          {welcome}
           {pendingApproval && (
             <div className="mb-3 animate-in duration-200 fade-in-0 slide-in-from-bottom-4">
               <ApprovalCard

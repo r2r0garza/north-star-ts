@@ -308,12 +308,17 @@ for (const runtime of ["docker", "podman"] as const) {
           ctx
         )
         expect(read).toContain("ERROR[not_allowed]")
-        await expect(
-          listFilesTool.execute({ path: link }, ctx)
-        ).rejects.toThrow("outside the workspace")
-        await expect(
-          searchTool.execute({ path: link, query: "secret" }, ctx)
-        ).rejects.toThrow("outside the workspace")
+        // list_files and search report the escape as a tool error string
+        // rather than throwing; write/edit below still reject.
+        const listed = await listFilesTool.execute({ path: link }, ctx)
+        expect(listed).toContain("ERROR[not_allowed]")
+        expect(listed).toContain("outside the workspace")
+        const searched = await searchTool.execute(
+          { path: link, query: "secret" },
+          ctx
+        )
+        expect(searched).toContain("ERROR[not_allowed]")
+        expect(searched).toContain("outside the workspace")
         await expect(
           writeFileTool.execute(
             { path: `${link}/created.txt`, content: "created" },

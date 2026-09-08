@@ -32,6 +32,17 @@ import {
   SCHEMA_V30,
   SCHEMA_V31,
   SCHEMA_V32,
+  SCHEMA_V33,
+  SCHEMA_V34,
+  SCHEMA_V35,
+  SCHEMA_V36,
+  SCHEMA_V37,
+  SCHEMA_V38,
+  SCHEMA_V39,
+  SCHEMA_V40,
+  SCHEMA_V41,
+  SCHEMA_V43,
+  SCHEMA_V44,
 } from "./schema"
 
 // Ordered migrations. Index 0 runs to reach user_version 1, index 1 to reach 2,
@@ -70,7 +81,91 @@ const MIGRATIONS: Array<(db: Database.Database) => void> = [
   (db) => db.exec(SCHEMA_V30),
   (db) => db.exec(SCHEMA_V31),
   (db) => db.exec(SCHEMA_V32),
+  (db) => db.exec(SCHEMA_V33),
+  (db) => db.exec(SCHEMA_V34),
+  (db) => db.exec(SCHEMA_V35),
+  (db) => db.exec(SCHEMA_V36),
+  (db) => db.exec(SCHEMA_V37),
+  (db) => db.exec(SCHEMA_V38),
+  (db) => db.exec(SCHEMA_V39),
+  (db) => db.exec(SCHEMA_V40),
+  (db) => db.exec(SCHEMA_V41),
+  ensureProcessRuntimeProfileColumns,
+  (db) => db.exec(SCHEMA_V43),
+  (db) => db.exec(SCHEMA_V44),
 ]
+
+function tableExists(db: Database.Database, table: string): boolean {
+  return Boolean(
+    db
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?"
+      )
+      .get(table)
+  )
+}
+
+function columnExists(
+  db: Database.Database,
+  table: string,
+  column: string
+): boolean {
+  if (!tableExists(db, table)) return false
+  return (db.pragma(`table_info(${table})`) as Array<{ name: string }>).some(
+    (info) => info.name === column
+  )
+}
+
+function addColumnIfMissing(
+  db: Database.Database,
+  table: string,
+  column: string,
+  definition: string
+): void {
+  if (!tableExists(db, table) || columnExists(db, table, column)) return
+  db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition};`)
+}
+
+function ensureProcessRuntimeProfileColumns(db: Database.Database): void {
+  addColumnIfMissing(db, "process_phases", "runtime_config", "TEXT")
+  addColumnIfMissing(db, "process_phase_agents", "runtime_config", "TEXT")
+  addColumnIfMissing(db, "process_runs", "runtime_config", "TEXT")
+  addColumnIfMissing(db, "process_phase_runs", "runtime_snapshot", "TEXT")
+}
+
+function ensureProjectPositionColumn(db: Database.Database): void {
+  if (!tableExists(db, "projects")) return
+  const hadPosition = columnExists(db, "projects", "position")
+  addColumnIfMissing(db, "projects", "position", "INTEGER NOT NULL DEFAULT 0")
+  if (!hadPosition) {
+    db.exec(`
+      WITH ordered AS (
+        SELECT id, ROW_NUMBER() OVER (ORDER BY updated_at DESC) - 1 AS pos
+        FROM projects
+      )
+      UPDATE projects
+      SET position = (SELECT pos FROM ordered WHERE ordered.id = projects.id);
+    `)
+  }
+  db.exec(
+    "CREATE INDEX IF NOT EXISTS idx_projects_position ON projects(position, updated_at DESC);"
+  )
+}
+
+function ensureCodexSubscriptionProviderConstraints(
+  db: Database.Database
+): void {
+  const row = db
+    .prepare(
+      "SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'provider_accounts'"
+    )
+    .get() as { sql?: string } | undefined
+  const sql = row?.sql ?? ""
+  if (sql.includes("codex_subscription") && sql.includes("codex_responses")) {
+    return
+  }
+  db.exec(SCHEMA_V43)
+}
 
 // Apply every migration newer than the database's current user_version, each in
 // its own transaction, then stamp the new version. Synchronous (better-sqlite3).
@@ -83,11 +178,11 @@ const MIGRATIONS: Array<(db: Database.Database) => void> = [
 // the per-migration transactions.
 export function runMigrations(db: Database.Database): void {
   const current = db.pragma("user_version", { simple: true }) as number
-  if (current >= MIGRATIONS.length) return
   const fkWasOn = db.pragma("foreign_keys", { simple: true }) === 1
   if (fkWasOn) db.pragma("foreign_keys = OFF")
   try {
-    for (let version = current; version < MIGRATIONS.length; version++) {
+    const startVersion = Math.min(current, MIGRATIONS.length)
+    for (let version = startVersion; version < MIGRATIONS.length; version++) {
       const migrate = MIGRATIONS[version]
       const apply = db.transaction(() => {
         migrate(db)
@@ -96,6 +191,17 @@ export function runMigrations(db: Database.Database): void {
       })
       apply()
     }
+
+    // Development and prerelease databases can have a user_version stamped ahead
+    // of this source tree after migration history is rebased or a build is run
+    // against an experimental schema. The normal loop correctly skips those DBs,
+    // so keep prerelease schema drift self-healing instead of making users repair
+    // SQLite by hand.
+    db.transaction(() => {
+      ensureProcessRuntimeProfileColumns(db)
+      ensureCodexSubscriptionProviderConstraints(db)
+      ensureProjectPositionColumn(db)
+    })()
   } finally {
     if (fkWasOn) db.pragma("foreign_keys = ON")
   }

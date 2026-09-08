@@ -1,110 +1,197 @@
-# PR39: Inspectable agent-to-agent messaging — a cross-phase question/answer channel
+# PR39: Inspectable Process consultations — observable agent exchanges
 
-> Status: **NOT STARTED**. ⚠️ **DESIGN-PENDING**. Lets one running phase-agent **ask another
-> phase-agent a question** and get a **context-grounded answer** — the question is delivered **into the
-> answerer's own worker conversation** (so it answers from *its* context), and the answer is delivered
-> **back into the asker's conversation together with the original question** (so the asker has the full
-> Q+A on record). Every exchange is a **durable, inspectable** record surfaced in the `026` monitor.
-> Distinct from `038` (nested execution) and from `spawn_subagent` (a fresh, context-less child).
+> Status: **NOT STARTED**. Design direction resolved; implementation details remain.
+> A running phase-agent may consult a **completed phase-agent in the same Process run** and receive an
+> answer grounded in that agent's settled context. The user can inspect the exchange but does not join
+> or reply inside it. This is a bounded Process coordination primitive, not an agent chat room.
+
+## Product decision
+
+The UI should call these **Agent exchanges**. The execution model should call one exchange a
+**consultation**.
+
+The user is an observer:
+
+- They can see who consulted whom, the question, the answer, timestamps, status, and any linked
+  assumption or rework action.
+- They cannot reply inside the exchange or become another participant.
+- They intervene through existing Process controls: pause, cancel, approve, deny, request changes,
+  confirm/dismiss rework, or restart.
+
+This keeps consultation separate from Process intake (`069`), which governs when the Process asks the
+**user** for information.
 
 ## Why this is different from what exists
 
-`spawn_subagent` (today) delegates to a **fresh** child that **cannot see any conversation** — you
-hand it a self-contained prompt and it starts blank. This feature is the opposite: agent B wants to
-consult agent **A as A already is** — A has run its phase, has a worker conversation full of context,
-and should answer **from that context**. So we don't spawn a new A; we **send a message into A's
-existing worker conversation** and let A's own `runAgentLoop` answer, then thread the result back to B.
+`spawn_subagent` delegates a self-contained task to a fresh child with no access to the caller's
+conversation. Consultation does the opposite: phase B asks phase A **as A already is**. A's worker
+conversation contains the reasoning and evidence accumulated while A performed its phase.
 
-The `025` engine makes this addressable: each phase-run has its **own worker conversation + task**
-(`service.ts` `makeRunPhase`: `createConversation` + a `process_phase` `createTask`, `taskId` stamped
-on the phase-run). So "A's conversation" and "B's conversation" are real, durable, per-phase-run ids —
-we can inject a turn into either.
+The Process engine makes both sides addressable: every phase-run owns a worker task and conversation.
+The consultation service uses those server-owned relationships; the model never supplies arbitrary
+conversation IDs.
 
-## Goal
+Normal upstream handoff still uses the phase's explicit result. Consultation is for a narrow ambiguity
+that a digest/result did not settle, for example:
 
-1. A phase-agent (B) can **ask a named other phase's agent (A) a question** via a gated
-   **`ask_agent`**-style tool, naming A by phase key / agent (bounded to phases in the same run — see
-   Open questions).
-2. The question is delivered **into A's worker conversation** as a new turn; A's `runAgentLoop` answers
-   **using A's accumulated context**; the answer returns to B.
-3. **Both sides keep the record:** B's conversation gets a durable turn = **{ question B asked, A's
-   answer }**; A's conversation gets the durable turn = **{ question received from B, A's answer }**.
-   The exchange is a persisted, **inspectable** artifact (its own rows + a `process_phase`-style event),
-   rendered in the `026` monitor as an A↔B message thread.
+> Implementation → Architecture: "Should refresh tokens rotate on every use?"
 
-## Likely shape (hypothesis — revisit per Open questions)
+## Non-negotiable invariants
 
-### A. Storage (additive, `SCHEMA_V20+`)
-- `process_messages` (id, `run_id` FK, `from_phase_run_id`, `to_phase_run_id`, `question`, `answer`
-  NULL-until-answered, `status` bare-TEXT `pending|answered|failed|declined`, created/answered_at). The
-  durable, inspectable log — one row per exchange, queryable by run for the monitor. (The actual
-  turns also land in each side's message history; this table is the **index/audit** over them.)
+### 1. A completed phase remains completed
 
-### B. The channel (engine — `service.ts` + a small `messaging.ts`)
-- A gated **`ask_agent`** tool available to a phase worker (injected via `ToolContext`, like
-  `spawnSubagent`/`enqueueTask`). Args: `target` (phase key or agent name, resolved to A's live
-  phase-run within the same run) + `question`.
-- On call: write a `process_messages` row (`pending`), then **deliver the question into A's worker
-  conversation** and run **A's `runAgentLoop` for one turn** on A's `conversationId` (A answers from its
-  own history — this is the crux: reuse A's conversation, do **not** fork a blank child). Capture A's
-  final message as the **answer**, mark the row `answered`.
-- **Return to B, with context on both sides:**
-  - B's tool result = a block containing **the question + A's answer** (so B's own transcript records
-    what it asked and what came back — the tool result *is* the durable turn in B's conversation).
-  - A's conversation now durably contains the **incoming question turn + A's answer turn** (from having
-    actually run the turn there) — so A "remembers" it was asked.
-- **Synchronous + bounded:** the exchange runs inline (the `spawnSubagent` precedent — no re-enqueue),
-  and is bounded by a **per-run message cap** + a **no-cycle / depth guard** (A asking B asking A … must
-  terminate — reuse the `MAX_AGENT_DEPTH`-style counter; a bound is mandatory, per `031`'s rule).
+Answering a consultation must not reopen the phase or permit new side effects. The answer turn runs
+under an **answer-only capability profile**:
 
-### C. Concurrency + lifecycle correctness (the hard part)
-- **A may be running, done, or not-yet-run.** If A's phase-run is `completed`, its conversation still
-  exists → inject + answer. If A is **still running**, asking it mid-flight is racy — v1 likely
-  **only allows asking a phase that has completed** (its context is settled), and errors otherwise
-  (documented limitation). If A **hasn't run**, error (can't consult an agent with no context yet).
-- **Reentrancy:** running A's loop from inside B's tool call nests loops — bound by the depth guard and
-  a per-run in-flight set so the same pair can't recurse without limit.
-- **Cancellation:** a run-level cancel must unwind an in-flight A-answer turn (chain the child
-  controller, as `makeRunPhase` already does).
+- A may use its persisted conversation context.
+- Read-only evidence lookup may be allowed if it can be confined to the run workspace.
+- File edits, shell execution, delegation, user questions, MCP side effects, browser interaction, and
+  further consultation are unavailable in v1.
+- If A discovers that its completed result is wrong, it says so and may return a structured
+  `rework_recommended` disposition. It does not silently repair artifacts after completion.
 
-### D. Monitor (`process-screen.tsx`)
-- Render `process_messages` for the selected run as an **A↔B thread** (who asked whom, the question,
-  the answer, status), nested/attached to the phases involved. Rides a new `process_phase`-style event
-  (or a dedicated event) on the run's task tail (the `026` no-new-channel pattern — filter `task:event`).
+### 2. Transcript tail is not phase output
 
-## Open questions to resolve BEFORE building
-1. **Ask a *running* agent?** v1 restrict to **completed** target phases (settled context, no mid-flight
-   race) vs allow asking a running agent (queue the question until its current turn yields). Lean
-   **completed-only in v1**, with a clear error otherwise; live-ask is a follow-up.
-2. **Targeting scope.** Only phases **within the same run** (addressable, bounded) vs any agent
-   anywhere. Lean **same-run phases only** (a process is the trust/visibility boundary); the tool lists
-   askable phases (those completed) in B's prompt.
-3. **Does A's answer turn persist in A's history (mutating A)?** Yes — that's the whole point (A answers
-   from and appends to its context). But it means a later re-run/resume of A sees the injected Q/A. Lean
-   **persist it** (it's real context) but tag the turn as an inter-agent exchange so resume/aggregation
-   can treat it distinctly if needed.
-4. **Bounds.** Per-run message cap + reentrancy/cycle depth guard values. Mandatory (no cycle guard in
-   the DAG). Lean a small cap + a depth counter mirroring `MAX_AGENT_DEPTH`.
-5. **Gate policy.** Is `ask_agent` auto-allowed (like `spawn_subagent`, since both agents are in the
-   same authored process) or gated? Lean **auto-allowed within a run** (the process author composed the
-   phases); the side-effecting tools A runs to answer still hit A's own gate.
-6. **Split on build:** `039.1` completed-target Q→A→B round-trip + storage + monitor thread; `039.2`
-   asking a running agent (queued) + richer targeting.
+Today downstream aggregation can derive a phase's output from its worker conversation. Appending a
+consultation answer would make "latest assistant message" unsafe: the answer could accidentally replace
+the official phase result.
 
-## Verification (when built)
-- **Unit:** `ask_agent` writes a `pending` row, injects the question into A's conversation, runs one A
-   turn, captures the answer, marks `answered`, and returns **Q+A** to B; B's transcript ends with the
-   Q+A turn and A's transcript contains the incoming-question + answer turns; asking a not-yet-run or
-   (v1) running phase errors; the per-run cap + depth guard stop an A↔B loop; a cancel unwinds an
-   in-flight answer.
-- **Manual (real app):** build a run where phase B (e.g. "Integrate") can ask phase A ("API design");
-  run it; watch B call `ask_agent`, see A answer from its own context, and confirm the monitor shows
-  the A↔B thread and both transcripts carry the exchange.
-- `pnpm typecheck` + `pnpm build` clean; verified in the running app.
+PR39 must first make the settled result explicit on the phase-run, likely an additive
+`result_content TEXT NULL` column (or a small versioned result table if implementation review shows it
+is already needed):
+
+- Capture `result_content` when a worker successfully completes.
+- `collectUpstream` and run aggregation read the explicit result, never the transcript tail.
+- Consultation appends conversation turns but cannot change `result_content`.
+- An authorized rework execution may replace the result deliberately after the new attempt completes;
+  the transcript remains the audit history of both attempts.
+
+### 3. Addressing and scope are server-controlled
+
+- The target must be a completed phase-run in the same Process run.
+- The worker addresses it by stable phase key; main resolves the concrete phase-run/conversation.
+- Not-yet-run, running, failed, cancelled, unrelated, and deleted phase-runs are not consultable.
+- For fan-out, v1 should require an unambiguous concrete child or reject with a list of valid targets;
+  never guess among siblings.
+
+### 4. Consultation is bounded and non-recursive
+
+- Synchronous request/answer in v1.
+- Per-run exchange cap and per-question/input/output size caps.
+- Only one answer turn is run for a consultation.
+- The answer-only profile cannot call the consultation tool, eliminating A↔B↔A recursion in v1.
+- Run cancellation unwinds an in-flight answer.
+
+### 5. Process execution remains authoritative
+
+Consultation does not create dependencies, mark phases complete, change the DAG, or automatically reset
+work. A `rework_recommended` answer is inspectable evidence; applying rework goes through the existing
+flag-back policy and approval behavior.
+
+## Proposed implementation
+
+### A. Durable storage
+
+Prefer a Process-specific table with real foreign keys over a prematurely polymorphic "all future
+orchestrators" table:
+
+```sql
+process_consultations (
+  id,
+  run_id,
+  from_phase_run_id,
+  to_phase_run_id,
+  question,
+  answer,
+  disposition,       -- answered | rework_recommended | declined | failed
+  linked_assumption_id NULL,
+  status,            -- pending | answered | failed | declined
+  created_at,
+  answered_at
+)
+```
+
+The service API can still use neutral `AgentExchange` vocabulary so a future Pod may reuse the service
+contract without weakening Process relational integrity today. If `069` lands an assumptions table
+first, use its actual key; otherwise keep the link out of the initial migration and add it later.
+
+### B. Tool and service
+
+Add a Process-worker-only tool, tentatively:
+
+```text
+consult_phase(target_phase_key, question, assumption_id?)
+```
+
+On call:
+
+1. Resolve the caller from `ToolContext`; never trust caller/run IDs from model arguments.
+2. Resolve a valid completed target in the same run.
+3. Insert the pending consultation row.
+4. Add a tagged incoming-consultation turn to A's existing conversation.
+5. Run exactly one answer turn using A's system prompt/context plus the answer-only capability profile.
+6. Persist A's answer, settle the consultation, and return the original question + answer to B's tool
+   result so both transcripts remain intelligible.
+7. Emit a durable run event so the monitor refreshes.
+
+The tool is auto-allowed inside an authored Process run because it is read-only and tightly scoped.
+The normal approval system still applies to Process controls, but the answer turn itself has no
+side-effecting tools to approve.
+
+### C. Monitor
+
+Add a collapsed **Agent exchanges** feed to the selected run and small exchange markers on involved
+phase cards. Expanding an item shows:
+
+- requester and target phase/agent;
+- question and answer;
+- pending/answered/failed/declined status and timestamps;
+- `rework_recommended` warning, if returned;
+- linked assumption/rework action, when present.
+
+The feed is read-only. No composer, unread state, typing indicators, reply action, or participant UI.
+The existing worker transcript sheets continue to show the tagged turns on each side.
+
+## Delivery split
+
+### 039.1 — Result integrity prerequisite
+
+- Persist explicit phase result content.
+- Migrate downstream aggregation away from "latest assistant message."
+- Cover normal, fan-out, validator, rework, nested Process, restart, and resume paths.
+
+### 039.2 — Completed-phase consultation
+
+- Storage/repository and Process-scoped tool.
+- Answer-only execution profile.
+- Same-run completed-target resolution and bounds.
+- Durable events and read-only monitor feed.
+
+### Later, only with demonstrated need
+
+- Queueing a question to an agent that is still running.
+- Broadcast/group exchanges.
+- Rich asynchronous mailboxes.
+- Pod collaboration semantics (`070`), which are not part of this plan.
+
+## Verification
+
+- A completed target answers from its existing conversation context.
+- The answer turn has no mutation, execution, delegation, browser, MCP-side-effect, user-question, or
+  recursive-consultation capabilities.
+- Both transcripts contain a tagged and intelligible record; the consultation row matches them.
+- Appending an answer does not change the target phase's explicit result or any downstream input.
+- A rework recommendation does not mutate/reset work until the existing flag policy authorizes it.
+- Invalid scope/status/ambiguous fan-out targets fail closed without leaking conversation IDs.
+- Per-run and payload caps are enforced; cancel unwinds an in-flight answer.
+- The monitor renders exchanges read-only and survives reload from durable state.
+- `pnpm typecheck`, focused Process tests, and `pnpm build` pass.
 
 ## Out of scope
-- **Sub-processes / nested runs** — `038` (nested *execution*, not a Q/A channel).
-- **Fresh context-less delegation** — that's `spawn_subagent` (already exists).
-- **Broadcast / group threads** (one agent asking many at once) — later; v1 is a directed A→B pair.
-- **Cross-run or cross-conversation messaging** (asking an agent outside this run) — later.
-- **Asking a still-running agent** (queued mid-flight delivery) — likely `039.2`.
+
+- User participation in an agent exchange.
+- General cross-run/cross-conversation agent chat.
+- New Process dependencies or dynamic graph editing.
+- Fresh context-less delegation (`spawn_subagent` already owns that).
+- Process intake and human clarification policy (`069`).
+- Pod work boards, live collaboration, or group threads (`070`).

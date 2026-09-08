@@ -29,6 +29,27 @@ export interface TodoInput {
   status?: unknown
 }
 
+export interface TodoChangeEvent {
+  conversationId: string
+  todos: Todo[]
+}
+
+type TodoChangeListener = (event: TodoChangeEvent) => void
+const todoChangeListeners = new Set<TodoChangeListener>()
+
+export function subscribeTodoChanges(listener: TodoChangeListener): () => void {
+  todoChangeListeners.add(listener)
+  return () => {
+    todoChangeListeners.delete(listener)
+  }
+}
+
+function publishTodoChange(event: TodoChangeEvent): void {
+  for (const listener of todoChangeListeners) {
+    listener(event)
+  }
+}
+
 interface TodoRow {
   conversation_id: string
   item_id: string
@@ -136,7 +157,9 @@ export function replaceTodos(
     })
   })
   tx()
-  return listTodos(conversationId)
+  const todos = listTodos(conversationId)
+  publishTodoChange({ conversationId, todos })
+  return todos
 }
 
 // Update existing items by id (content + status) and append new ones to the end
@@ -181,5 +204,7 @@ export function mergeTodos(conversationId: string, items: TodoInput[]): Todo[] {
     }
   })
   tx()
-  return listTodos(conversationId)
+  const todos = listTodos(conversationId)
+  publishTodoChange({ conversationId, todos })
+  return todos
 }

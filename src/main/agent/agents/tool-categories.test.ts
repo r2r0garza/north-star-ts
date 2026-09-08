@@ -7,16 +7,29 @@ import {
 import type { AgentDefinition } from "./types"
 
 function agent(tools?: string[], children?: string[]): AgentDefinition {
+  const ref = {
+    sourceKind: "north_star" as const,
+    scope: "global" as const,
+    definitionPath: "/x/a.agent.md",
+    nativeName: "a",
+  }
   return {
     name: "a",
+    nativeName: "a",
     description: "d",
     tools,
     skills: undefined,
     children,
     userInvocable: true,
     body: "",
-    path: "/x/a.agent.md",
+    path: ref.definitionPath,
     source: "/x",
+    ref,
+    refId: `agentref:v1:${JSON.stringify(ref)}`,
+    sourceKind: "north_star",
+    scope: "global",
+    label: "North Star: a",
+    diagnostics: [],
   }
 }
 
@@ -42,6 +55,7 @@ describe("agentToolAllowlist", () => {
     const allow = agentToolAllowlist(agent(["edit", "execute"]))!
     expect(allow.has("edit_file_tool")).toBe(true)
     expect(allow.has("write_file_tool")).toBe(true)
+    expect(allow.has("stat_path")).toBe(false)
     expect(allow.has("run_shell_tool")).toBe(false)
     expect(allow.has("exec_command")).toBe(true)
     // floor is always present
@@ -53,15 +67,55 @@ describe("agentToolAllowlist", () => {
 
   it("maps web/browser/agent/todo categories", () => {
     const allow = agentToolAllowlist(
-      agent(["web", "browser", "agent", "todo"])
+      agent([
+        "web",
+        "browser",
+        "agent",
+        "todo",
+        "diagnostics",
+        "document_read",
+        "test",
+        "navigation",
+        "filesystem",
+        "delete",
+        "git_read",
+      ])
     )!
     expect(allow.has("web_search")).toBe(true)
     expect(allow.has("web_fetch")).toBe(true)
     expect(allow.has("browser_navigate")).toBe(true)
     expect(allow.has("browser_screenshot")).toBe(true)
+    expect(allow.has("browser_hover")).toBe(true)
+    expect(allow.has("browser_select_option")).toBe(true)
+    expect(allow.has("browser_network")).toBe(true)
+    expect(allow.has("browser_evaluate")).toBe(false)
     expect(allow.has("spawn_subagent")).toBe(true)
     expect(allow.has("todo_write")).toBe(true)
     expect(allow.has("run_todos_in_background")).toBe(true)
+    expect(allow.has("workspace_diagnostics")).toBe(true)
+    expect(allow.has("read_document")).toBe(true)
+    expect(allow.has("run_tests")).toBe(true)
+    expect(allow.has("get_test_results")).toBe(true)
+    expect(allow.has("workspace_symbols")).toBe(true)
+    expect(allow.has("document_symbols")).toBe(true)
+    expect(allow.has("go_to_definition")).toBe(true)
+    expect(allow.has("find_references")).toBe(true)
+    expect(allow.has("hover_type")).toBe(true)
+    expect(allow.has("stat_path")).toBe(true)
+    expect(allow.has("create_directory")).toBe(true)
+    expect(allow.has("move_path")).toBe(true)
+    expect(allow.has("delete_path")).toBe(true)
+    expect(allow.has("git_status")).toBe(true)
+    expect(allow.has("git_diff")).toBe(true)
+    expect(allow.has("git_log")).toBe(true)
+    expect(allow.has("git_show")).toBe(true)
+    expect(allow.has("git_branches")).toBe(true)
+  })
+
+  it("keeps browser_evaluate behind the browser_advanced category", () => {
+    const allow = agentToolAllowlist(agent(["browser_advanced"]))!
+    expect(allow.has("browser_evaluate")).toBe(true)
+    expect(allow.has("browser_navigate")).toBe(false)
   })
 
   it("ignores unknown categories", () => {

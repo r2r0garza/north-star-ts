@@ -46,9 +46,9 @@ describe("parseDuckDuckGoHtml", () => {
   })
 
   it("returns an empty array for markup with no results", () => {
-    expect(parseDuckDuckGoHtml("<html><body>no results</body></html>", 10)).toEqual(
-      []
-    )
+    expect(
+      parseDuckDuckGoHtml("<html><body>no results</body></html>", 10)
+    ).toEqual([])
   })
 
   it("skips results missing a title or URL", () => {

@@ -1,7 +1,8 @@
 # PR62: Structured read-only Git inspection tools
 
-> Status: **NOT STARTED**. Gives read-restricted agents useful repository context
-> without granting a shell or introducing Git mutations.
+> Status: **DONE**. Implemented by `a911b1a` with a shared read-only Git service and
+> `git_status`, `git_diff`, `git_log`, `git_show`, and `git_branches` tools plus
+> Local/container support and tests.
 
 ## Goal
 
@@ -54,4 +55,3 @@ the same tools work in Local and container runtimes.
 
 - Add/restore/commit/branch creation/merge/rebase/push/fetch or any other mutation.
 - Git hosting APIs; those should arrive through MCP/connectors.
-

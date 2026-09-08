@@ -68,6 +68,11 @@ describe("themeCssFromHexes", () => {
     expect(bl).toBeCloseTo(1, 3)
     expect(bc).toBeCloseTo(0, 3)
 
+    // Sidebar list is intentionally offset from the main sidebar so the
+    // scrollable conversation region has a visible but quiet boundary.
+    expect(theme.light).toMatch(/--sidebar-list:\s*oklch\(0.965 0 0\)/)
+    expect(theme.dark).toMatch(/--sidebar-list:\s*oklch\(0.18 0 0\)/)
+
     // Dark border keeps its alpha (globals.css: oklch(1 0 0 / 10%)).
     expect(theme.dark).toMatch(/--border:\s*oklch\(1 0 0 \/ 10%\)/)
   })
@@ -89,6 +94,11 @@ describe("themeCssFromHexes", () => {
     const [, c, h] = numsOf(tokenOf(theme.light, "background")!)
     expect(c).toBeCloseTo(tint.c, 3)
     expect(h).toBeCloseTo(tint.h, 0)
+
+    const [listL, listC, listH] = numsOf(tokenOf(theme.light, "sidebar-list")!)
+    expect(listL).toBeCloseTo(0.965, 3)
+    expect(listC).toBeCloseTo(tint.c, 3)
+    expect(listH).toBeCloseTo(tint.h, 0)
   })
 
   it("falls back to defaults for an invalid hex", () => {

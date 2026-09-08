@@ -1,15 +1,28 @@
 import { describe, it, expect } from "vitest"
-import { changedFilesFromCalls, type ToolUse } from "./timeline"
+import {
+  changedFilesFromCalls,
+  deriveLabel,
+  toToolUse,
+  type ToolStatus,
+  type ToolUse,
+} from "./timeline"
 
 // Build a minimal ToolUse; only name + args.path matter to the derivation.
-function call(name: string, path?: string, id = path ?? name): ToolUse {
+function call(
+  name: string,
+  path?: string,
+  id = path ?? name,
+  status: ToolStatus = "done",
+  result = "ok"
+): ToolUse {
   return {
     id,
     name,
     label: name,
     args: path ? { path } : {},
     rawArgs: JSON.stringify(path ? { path } : {}),
-    status: "done",
+    result,
+    status,
   }
 }
 
@@ -66,5 +79,105 @@ describe("changedFilesFromCalls", () => {
 
   it("skips calls with no path arg", () => {
     expect(changedFilesFromCalls([call("write_file_tool")])).toEqual([])
+  })
+
+  it("only includes completed successful mutation calls", () => {
+    const files = changedFilesFromCalls([
+      call("write_file_tool", "ok.ts", "1"),
+      call("write_file_tool", "bad.ts", "2", "error", "ERROR[bad_args]: nope"),
+      call("edit_file_tool", "running.ts", "3", "running", undefined),
+      call("edit_file_tool", "interrupted.ts", "4", "interrupted", undefined),
+      call(
+        "edit_file_tool",
+        "also-bad.ts",
+        "5",
+        "done",
+        "ERROR[stale_file]: nope"
+      ),
+    ])
+
+    expect(files.map((f) => f.path)).toEqual(["ok.ts"])
+  })
+
+  it("includes successful apply_patch add/update/move operations", () => {
+    const files = changedFilesFromCalls([
+      {
+        id: "patch-1",
+        name: "apply_patch_tool",
+        label: "Applied patch",
+        args: {
+          operations: [
+            { type: "add", path: "new.html" },
+            { type: "update", path: "src/existing.ts" },
+            { type: "move", path: "old.ts", new_path: "src/moved.ts" },
+            { type: "delete", path: "gone.ts" },
+          ],
+        },
+        rawArgs: "",
+        result: "Applied patch: added 1, updated 1, moved 1, deleted 1.",
+        status: "done",
+      },
+    ])
+
+    expect(files.map((f) => [f.path, f.kind, f.fileType])).toEqual([
+      ["new.html", "write", "html"],
+      ["src/existing.ts", "edit", "code"],
+      ["src/moved.ts", "edit", "code"],
+    ])
+  })
+
+  it("excludes failed apply_patch operations", () => {
+    const files = changedFilesFromCalls([
+      {
+        id: "patch-1",
+        name: "apply_patch_tool",
+        label: "Patch failed",
+        args: { operations: [{ type: "add", path: "new.html" }] },
+        rawArgs: "",
+        result: "ERROR[already_exists]: new.html already exists",
+        status: "error",
+      },
+    ])
+
+    expect(files).toEqual([])
+  })
+
+  it("updates write labels by mutation status", () => {
+    const args = { path: "financial-dashboard.html" }
+
+    expect(deriveLabel("write_file_tool", args, "running")).toBe(
+      "Writing financial-dashboard.html"
+    )
+    expect(deriveLabel("write_file_tool", args, "done")).toBe(
+      "Wrote financial-dashboard.html"
+    )
+    expect(deriveLabel("write_file_tool", args, "error")).toBe(
+      "Write failed financial-dashboard.html"
+    )
+    expect(deriveLabel("write_file_tool", args, "interrupted")).toBe(
+      "Write interrupted financial-dashboard.html"
+    )
+  })
+
+  it("starts live write rows with a running label", () => {
+    const use = toToolUse({
+      id: "call-1",
+      name: "write_file_tool",
+      arguments: JSON.stringify({ path: "index.html" }),
+    })
+
+    expect(use.label).toBe("Writing index.html")
+    expect(use.status).toBe("running")
+  })
+
+  it("updates patch labels by mutation status", () => {
+    expect(deriveLabel("apply_patch_tool", {}, "running")).toBe(
+      "Applying patch"
+    )
+    expect(deriveLabel("apply_patch_tool", {}, "done")).toBe("Applied patch")
+    expect(deriveLabel("apply_patch_tool", {}, "error")).toBe("Patch failed")
+    expect(deriveLabel("apply_patch_tool", {}, "interrupted")).toBe(
+      "Patch interrupted"
+    )
   })
 })

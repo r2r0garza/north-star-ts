@@ -1,7 +1,20 @@
-import { describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { mkdtemp, mkdir, rm, writeFile } from "fs/promises"
+import { tmpdir } from "os"
+import { join } from "path"
 import { SearchExecutionError, SearchPatternError } from "../env/ripgrep"
 import type { Environment } from "../env/types"
 import { searchTool } from "./search_tool"
+
+let workspace: string
+
+beforeEach(async () => {
+  workspace = await mkdtemp(join(tmpdir(), "search-tool-ws-"))
+})
+
+afterEach(async () => {
+  await rm(workspace, { recursive: true, force: true })
+})
 
 const failingEnv = (err: Error): Environment =>
   ({
@@ -39,6 +52,27 @@ const truncatingEnv = (): Environment =>
   }) as unknown as Environment
 
 describe("search_tool", () => {
+  it("searches activated skill resource directories", async () => {
+    const skillRoot = await mkdtemp(join(tmpdir(), "search-skill-resource-"))
+    try {
+      await mkdir(join(skillRoot, "references"), { recursive: true })
+      await writeFile(
+        join(skillRoot, "references", "template.html"),
+        "<main>needle</main>\n"
+      )
+
+      const result = await searchTool.execute(
+        { query: "needle", path: "skill://dashboard/references" },
+        { workspace, skillResourceRoots: { dashboard: skillRoot } }
+      )
+
+      expect(result).toContain("template.html:1")
+      expect(result).toContain("<main>needle</main>")
+    } finally {
+      await rm(skillRoot, { recursive: true, force: true })
+    }
+  })
+
   it("renders infrastructure failures as search errors even in regex mode", async () => {
     const result = await searchTool.execute(
       { query: "needle", mode: "regex" },

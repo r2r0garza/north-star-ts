@@ -1,4 +1,8 @@
 import type { Gate } from "../approval/types"
+import type {
+  CommandCompletionInbox,
+  CommandCompletionOwner,
+} from "../command-completion-inbox"
 import type { Environment } from "../env/types"
 import type { TodoStatus } from "../../db/types"
 import type { BrowserHandle } from "../../browser/manager"
@@ -102,6 +106,10 @@ export interface ToolContext {
   attachments?: string[]
   // The conversation this turn belongs to — used to scope approval decisions.
   conversationId?: string
+  // Stable durable identity for the currently executing tool call. Unlike the
+  // provider's transient tool-call id, this is derived before execution from the
+  // conversation plus normalized operation and survives regenerated call ids.
+  invocationId?: string
   // The single approval pipeline every gated tool routes through (see
   // ../approval). A tool builds a ToolAction and awaits `gate(action)` before
   // performing a side effect. Absent in contexts that don't gate (e.g. unit
@@ -131,16 +139,20 @@ export interface ToolContext {
   // Attach an image to the current turn for the vision model (see ToolImage /
   // EmitImage). Used by browser_screenshot; absent where images can't be shown.
   emitImage?: EmitImage
+  // Read-only auxiliary roots registered by read_skill during this turn. Keys
+  // are skill names; values are absolute host paths to the selected skill folder.
+  skillResourceRoots?: Record<string, string>
   // Flip plan mode on/off for the CURRENT turn (see present_plan_tool). Set by the
   // real agent loop, which holds plan mode as a mutable flag and rebuilds the
   // toolset each iteration — so approving a plan (setPlanMode(false)) unlocks the
   // filesystem tools for the same turn. Absent where plan mode isn't in play.
   setPlanMode?: (on: boolean) => void
   // Activate auto mode for the CURRENT turn (see present_plan_tool). When on,
-  // all require_approval gate decisions are automatically approved so the agent
-  // implements without any confirmation prompts. Set by present_plan when the
-  // user picks "Yes, approve and work in Auto mode". Absent where auto mode
-  // isn't in play.
+  // ordinary require_approval gate decisions are automatically approved so the
+  // agent implements without confirmation prompts. Protected
+  // require_explicit_approval decisions are also approved: enabling Auto mode is
+  // the user's run-level pre-approval. Set by present_plan when the user picks
+  // "Yes, approve and work in Auto mode". Absent where auto mode isn't in play.
   setAutoMode?: (on: boolean) => void
   // --- Subagent spawning (custom-agent fleet) ---
   // Spawn a permitted child agent and block for its answer (see spawn_subagent).
@@ -159,6 +171,11 @@ export interface ToolContext {
   // agent. The spawn tool rejects spawning any name already in this chain (cycle
   // guard); the spawn helper appends the child's name when recursing.
   agentAncestors?: string[]
+  // Run-scoped background command completion inbox. `exec_command` registers
+  // background sessions here, and the agent loop drains/waits on this same owner
+  // before later model requests or finalization.
+  commandCompletions?: CommandCompletionInbox
+  commandCompletionOwner?: CommandCompletionOwner
   // --- Process phase context (plan 031.2 cross-phase flag-back) ---
   // Set ONLY when this turn is a Process phase worker (makeRunPhase forks the
   // conversation with these). The flag_for_rework tool uses them to load the run's
@@ -225,7 +242,17 @@ export const TOOL_EFFECTS = {
 // A tool the agent can call. `definition` is the OpenAI-compatible schema
 // Portkey expects; `effects` declares scheduling/approval-relevant side effects;
 // `execute` runs server-side and returns a string result.
+export interface ToolExecutionPolicy {
+  // Execution budget measured from dispatch. Bounded filesystem/database reads
+  // use 30s; process-backed searches/git allow 35s around their 30s backend
+  // deadline; extraction/navigation allow 120s for parsing/index startup.
+  // Omit for human waits and resumable commands whose backend owns deadlines.
+  // Expiry aborts ctx.signal; unsupported cleanup remains an unknown mutation.
+  timeoutMs?: number
+}
+
 export interface Tool {
+  executionPolicy?: ToolExecutionPolicy
   effects: ToolEffects
   definition: {
     type: "function"

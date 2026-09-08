@@ -86,6 +86,20 @@ export class TerminalService extends EventEmitter<TerminalEvents> {
     return view
   }
 
+  adoptConversation(
+    fromConversationId: string,
+    toConversationId: string
+  ): void {
+    const from = fromConversationId.trim()
+    const to = toConversationId.trim()
+    if (!from || !to || from === to) return
+    for (const session of this.sessions.values()) {
+      if (session.view.conversationId === from) {
+        session.view = { ...session.view, conversationId: to }
+      }
+    }
+  }
+
   write(id: string, data: string): void {
     this.sessions.get(id)?.pty.write(data)
   }

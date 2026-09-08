@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   getConversation: vi.fn(),
   updateConversation: vi.fn(),
   listTodos: vi.fn(() => []),
+  subscribeTodoChanges: vi.fn(() => vi.fn()),
 }))
 
 vi.mock("electron", () => ({
@@ -32,6 +33,23 @@ vi.mock("../db/repositories/todos", () => ({
   listTodos: mocks.listTodos,
 }))
 
+vi.mock("../db/repositories", () => ({
+  conversations: {},
+  messages: {},
+  workspaces: {},
+  projects: {},
+  tasks: {},
+  taskEvents: {},
+  checkpoints: {},
+  approvals: {},
+  todos: {
+    listTodos: mocks.listTodos,
+    subscribeTodoChanges: mocks.subscribeTodoChanges,
+  },
+  processes: {},
+  dashboards: {},
+}))
+
 vi.mock("../tasks/todo-run", () => ({
   TODO_RUN_KICKOFF: "kickoff",
   actionableTodos: vi.fn(() => []),
@@ -41,6 +59,7 @@ vi.mock("../tasks/todo-run", () => ({
 
 import { registerTaskHandlers } from "./task-handlers"
 import { registerTerminalHandlers } from "./terminal-handlers"
+import { registerDbHandlers } from "./db-handlers"
 
 class FakeWebContents extends EventEmitter {
   destroyed = false
@@ -56,6 +75,7 @@ beforeEach(() => {
   mocks.generateTitle.mockReset().mockResolvedValue("Generated title")
   mocks.getConversation.mockReset()
   mocks.updateConversation.mockReset()
+  mocks.subscribeTodoChanges.mockReset().mockReturnValue(vi.fn())
 })
 
 describe("WebContents subscription lifecycle", () => {
@@ -94,6 +114,24 @@ describe("WebContents subscription lifecycle", () => {
     const sender = new FakeWebContents()
     const subscribe = mocks.handlers.get("task:subscribe")!
     const unsubscribe = mocks.handlers.get("task:unsubscribe")!
+
+    for (let i = 0; i < 15; i += 1) {
+      subscribe({ sender })
+      expect(sender.listenerCount("destroyed")).toBe(1)
+      unsubscribe({ sender })
+      expect(sender.listenerCount("destroyed")).toBe(0)
+    }
+    expect(stop).toHaveBeenCalledTimes(15)
+  })
+
+  it("removes todo destroyed listeners on every explicit unsubscribe", () => {
+    const stop = vi.fn()
+    mocks.subscribeTodoChanges.mockReturnValue(stop)
+    registerDbHandlers()
+
+    const sender = new FakeWebContents()
+    const subscribe = mocks.handlers.get("db:todos:subscribe")!
+    const unsubscribe = mocks.handlers.get("db:todos:unsubscribe")!
 
     for (let i = 0; i < 15; i += 1) {
       subscribe({ sender })

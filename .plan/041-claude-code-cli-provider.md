@@ -16,6 +16,12 @@ approval gate, plan/default/auto mode behavior, and backend container selection
 do not apply to the turn. We persist the user/assistant messages in our DB for
 history, but Claude owns the execution.
 
+**Qualified by `045`:** Claude still owns its loop and inherits none of our tool
+registry. It does receive the explicitly granted North Star MCP bridge tools for
+the turn — injected with a session-only `--mcp-config` (never the user's or the
+project's MCP files, and never `--strict-mcp-config`) plus a narrow
+`--allowedTools` entry. `045.2` grants `ask_user_question`.
+
 ## Verified CLI behavior
 
 Probes saved under `cli_probes/claude/`.

@@ -1,5 +1,14 @@
+import {
+  checkPhaseOutcome,
+  parsePhaseOutcome,
+  runCompletionContract,
+} from "./completion"
 import { randomUUID } from "crypto"
+import { mkdirSync, writeFileSync } from "fs"
+import { join } from "path"
 import { createApproval, listApprovals } from "../../db/repositories/approvals"
+import { listMessages } from "../../db/repositories/messages"
+import { getTask } from "../../db/repositories/tasks"
 import {
   createCheckpoint,
   listCheckpoints,
@@ -15,7 +24,13 @@ import {
 } from "./checkpoints"
 import { SHUTDOWN_ABORT_REASON, PAUSE_ABORT_REASON } from "../../agent/abort"
 import type { TaskEventPayload } from "../runner"
+import {
+  sanitizeFailureContext,
+  sanitizeFailureText,
+} from "./failure-sanitizer"
 import type {
+  FailureContext,
+  FailureStage,
   ProcessFlag,
   ProcessGraph,
   ProcessPhase,
@@ -86,7 +101,9 @@ export class GateBlockedError extends Error {
 // The outcome of running one phase's worker (the injected runPhase resolves it).
 export interface PhaseResult {
   content?: string
+  outputIdentity?: string | null
   error?: string
+  failure?: FailureContext
   stopped?: boolean
   retryable?: boolean
 }
@@ -97,6 +114,7 @@ export interface PhaseResult {
 export type RunPhase = (input: {
   phaseRun: ProcessPhaseRun
   phase: ProcessPhase
+  attemptId: string
   subtaskPrompt?: string
   // Chained to the run's abort signal by the caller.
   signal: AbortSignal
@@ -129,6 +147,7 @@ export type RunSubProcess = (input: {
 export interface DecomposeResult {
   subtasks?: string[]
   error?: string
+  failure?: FailureContext
   stopped?: boolean
   retryable?: boolean
 }
@@ -157,12 +176,15 @@ export type BuildEachSubtaskPrompt = (input: {
 // judges a completed phase's output: `approved` gates whether the phase settles
 // completed; `feedback` (when rejected) is injected into the phase's re-run
 // kickoff (the 029 rework channel). error/stopped mirror a normal phase result
-// so a cancelled/failed review unwinds like the phase worker itself. Injected so
-// tests can stub the reviewer.
+// so a cancelled/failed review unwinds like the phase worker itself. Any `error`
+// is a failed review boundary, not approval. Injected so tests can stub the
+// reviewer.
 export interface ValidateResult {
   approved: boolean
   feedback?: string
+  targetOutputIdentity?: string | null
   error?: string
+  failure?: FailureContext
   stopped?: boolean
   retryable?: boolean
 }
@@ -170,10 +192,12 @@ export interface ValidateResult {
 export type Validate = (input: {
   phase: ProcessPhase
   phaseRun: ProcessPhaseRun
+  outputIdentity: string | null
   signal: AbortSignal
 }) => Promise<ValidateResult>
 
 export interface SchedulerCtx {
+  workspace?: string
   run: ProcessRun
   graph: ProcessGraph
   // The process_run backing task id — the anchor for approvals + checkpoints.
@@ -210,6 +234,179 @@ export interface SchedulerCtx {
   // service increments it for a nested run. Threaded to runSubProcess for the
   // MAX_PROCESS_DEPTH backstop.
   processDepth?: number
+  // Best-effort external sink for failure diagnostics when SQLite persistence
+  // throws while recording the phase row, failed-attempt audit, or task event.
+  failureDiagnosticDir?: string | null
+}
+
+interface FailurePersistenceFallbackResult {
+  path: string | null
+  error: string | null
+}
+
+export class FailurePersistenceError extends Error {
+  constructor(
+    readonly failure: FailureContext,
+    readonly fallback: FailurePersistenceFallbackResult
+  ) {
+    super(failure.message)
+    this.name = "FailurePersistenceError"
+  }
+}
+
+function processFailure(input: {
+  resultFailure?: FailureContext
+  code: string
+  stage: FailureStage
+  message: string
+  retryable?: boolean
+  attempt?: number | null
+  maxAttempts?: number | null
+  run: ProcessRun
+  phase: ProcessPhase
+  phaseRun: ProcessPhaseRun
+  taskId: string
+}): FailureContext {
+  return sanitizeFailureContext({
+    code: input.resultFailure?.code ?? input.code,
+    stage: input.resultFailure?.stage ?? input.stage,
+    message: input.resultFailure?.message ?? input.message,
+    retryable: input.resultFailure?.retryable ?? input.retryable === true,
+    attempt: input.attempt ?? input.resultFailure?.attempt ?? null,
+    maxAttempts: input.maxAttempts ?? input.resultFailure?.maxAttempts ?? null,
+    runId: input.resultFailure?.runId ?? input.run.id,
+    phaseRunId: input.resultFailure?.phaseRunId ?? input.phaseRun.id,
+    phaseId: input.resultFailure?.phaseId ?? input.phase.id,
+    taskId: input.resultFailure?.taskId ?? input.taskId,
+    workerTaskId:
+      input.resultFailure?.workerTaskId ?? input.phaseRun.taskId ?? null,
+    agentName:
+      input.resultFailure?.agentName ?? input.phaseRun.agentName ?? null,
+    toolCallId: input.resultFailure?.toolCallId ?? null,
+    cause: input.resultFailure?.cause ?? null,
+    occurredAt: input.resultFailure?.occurredAt ?? Date.now(),
+  })
+}
+
+function recordFailedAttempt(input: {
+  run: ProcessRun
+  phase: ProcessPhase
+  phaseRun: ProcessPhaseRun
+  taskId: string
+  failure: FailureContext
+}): void {
+  processes.createPhaseAttempt({
+    runId: input.run.id,
+    phaseRunId: input.phaseRun.id,
+    phaseId: input.phase.id,
+    taskId: input.taskId,
+    workerTaskId: input.failure.workerTaskId,
+    agentName: input.failure.agentName,
+    stage: input.failure.stage,
+    attempt: input.failure.attempt,
+    maxAttempts: input.failure.maxAttempts,
+    error: input.failure.message,
+    failure: input.failure,
+  })
+}
+
+function errMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
+}
+
+function failureSummary(failure: FailureContext): string {
+  return `${failure.stage}/${failure.code}: ${failure.message}`
+}
+
+function writeFailurePersistenceFallback(input: {
+  ctx: SchedulerCtx
+  run: ProcessRun
+  phase: ProcessPhase
+  phaseRun: ProcessPhaseRun
+  originalFailure: FailureContext
+  persistenceError: unknown
+}): FailurePersistenceFallbackResult {
+  if (!input.ctx.failureDiagnosticDir) return { path: null, error: null }
+  try {
+    const dir = input.ctx.failureDiagnosticDir
+    mkdirSync(dir, { recursive: true })
+    const path = join(
+      dir,
+      `process-failure-${input.run.id}-${input.phaseRun.id}-${Date.now()}.json`
+    )
+    writeFileSync(
+      path,
+      JSON.stringify(
+        {
+          formatVersion: 1,
+          writtenAt: new Date().toISOString(),
+          runId: input.run.id,
+          processId: input.run.processId,
+          taskId: input.ctx.taskId,
+          phaseId: input.phase.id,
+          phaseKey: input.phase.key,
+          phaseRunId: input.phaseRun.id,
+          originalFailure: input.originalFailure,
+          persistenceFailure: {
+            message: sanitizeFailureText(
+              errMessage(input.persistenceError),
+              512
+            ),
+          },
+        },
+        null,
+        2
+      ),
+      "utf8"
+    )
+    return { path, error: null }
+  } catch (err) {
+    return {
+      path: null,
+      error: sanitizeFailureText(errMessage(err), 512),
+    }
+  }
+}
+
+function persistenceFailure(input: {
+  ctx: SchedulerCtx
+  run: ProcessRun
+  phase: ProcessPhase
+  phaseRun: ProcessPhaseRun
+  originalFailure: FailureContext
+  persistenceError: unknown
+  fallback: FailurePersistenceFallbackResult
+}): FailureContext {
+  const fallbackText = input.ctx.failureDiagnosticDir
+    ? input.fallback.path
+      ? `Best-effort fallback diagnostic: ${input.fallback.path}`
+      : `Fallback diagnostic failed: ${input.fallback.error ?? "unknown error"}`
+    : "No fallback diagnostic location is configured."
+  return sanitizeFailureContext({
+    code: "process_failure_persistence_failed",
+    stage: "result_persistence",
+    message:
+      "Process failure diagnostics were not fully persisted. " +
+      `Original failure: ${failureSummary(input.originalFailure)}. ` +
+      `Persistence failure: ${errMessage(input.persistenceError)}. ` +
+      fallbackText,
+    retryable: false,
+    attempt: input.originalFailure.attempt,
+    maxAttempts: input.originalFailure.maxAttempts,
+    runId: input.run.id,
+    phaseRunId: input.phaseRun.id,
+    phaseId: input.phase.id,
+    taskId: input.ctx.taskId,
+    workerTaskId: input.originalFailure.workerTaskId,
+    agentName: input.originalFailure.agentName,
+    toolCallId: input.originalFailure.toolCallId ?? null,
+    cause: JSON.stringify({
+      originalFailure: input.originalFailure,
+      persistenceFailure: { message: errMessage(input.persistenceError) },
+      fallback: input.fallback,
+    }),
+    occurredAt: Date.now(),
+  })
 }
 
 // A gate's durable approval request blob (stored on the approvals row). Kinds
@@ -227,6 +424,7 @@ interface GateRequest {
   phaseKey: string
   phaseRunId: string
   requestId: string
+  approvalPacket?: ProcessApprovalPacket
   // Set only on a process_flag_gate (plan 031.2): the durable process_flags row to
   // apply on confirm, plus the target key + reason so the monitor can render the
   // confirmation card off the approvals row alone (no separate flags IPC).
@@ -235,8 +433,252 @@ interface GateRequest {
   flagReason?: string
 }
 
+interface ApprovalArtifact {
+  path: string
+  name: string
+  kind: "edit" | "write"
+  fileType: "code" | "html" | "document"
+  provenance: "phase_attributed" | "workspace"
+}
+
+interface ApprovalValidation {
+  label: string
+  status: "passed" | "failed" | "unknown"
+  command: string | null
+  output: string | null
+}
+
+interface ProcessApprovalPacket {
+  requestId: string
+  processRunId: string
+  phaseRunId: string
+  reworkRound: number
+  createdAt: number
+  summary: {
+    outcome: string
+    materialChanges: string[]
+    validationSummary: string
+    caveats: string[]
+  }
+  artifacts: ApprovalArtifact[]
+  validations: ApprovalValidation[]
+  downstream: Array<{ phaseId: string; name: string }>
+  evidenceWarnings: string[]
+  transcriptTaskId: string | null
+}
+
+const MUTATION_TOOLS = new Set([
+  "edit_file_tool",
+  "write_file_tool",
+  "apply_patch_tool",
+])
+
+const VALIDATION_TOOL_NAMES = new Set([
+  "run_shell_tool",
+  "start_command",
+  "test_diagnostics",
+  "check_typescript",
+])
+
+function basename(p: string): string {
+  const parts = p.replace(/[/\\]+$/, "").split(/[/\\]/)
+  return parts[parts.length - 1] || p
+}
+
+function fileTypeOf(path: string): ApprovalArtifact["fileType"] {
+  if (/\.(html?|xhtml)$/i.test(path)) return "html"
+  if (/\.(md|mdx|txt|rst|adoc)$/i.test(path)) return "document"
+  return "code"
+}
+
+function parseArgs(raw: string): Record<string, unknown> | null {
+  try {
+    const value = JSON.parse(raw)
+    return value && typeof value === "object"
+      ? (value as Record<string, unknown>)
+      : null
+  } catch {
+    return null
+  }
+}
+
+function collectPatchArtifacts(
+  operations: unknown,
+  byPath: Map<string, ApprovalArtifact>
+): void {
+  if (!Array.isArray(operations)) return
+  for (const op of operations) {
+    if (!op || typeof op !== "object") continue
+    const record = op as Record<string, unknown>
+    const type = typeof record.type === "string" ? record.type : ""
+    const path =
+      type === "move" && typeof record.new_path === "string"
+        ? record.new_path
+        : typeof record.path === "string"
+          ? record.path
+          : ""
+    if (!path || type === "delete") continue
+    byPath.set(path, {
+      path,
+      name: basename(path),
+      kind: type === "add" ? "write" : "edit",
+      fileType: fileTypeOf(path),
+      provenance: "workspace",
+    })
+  }
+}
+
+function collectApprovalEvidence(phaseRun: ProcessPhaseRun): {
+  artifacts: ApprovalArtifact[]
+  validations: ApprovalValidation[]
+  evidenceWarnings: string[]
+} {
+  if (!phaseRun.taskId) {
+    return {
+      artifacts: [],
+      validations: [],
+      evidenceWarnings: [
+        "No worker transcript task is attached to this phase.",
+      ],
+    }
+  }
+  const task = getTask(phaseRun.taskId)
+  if (!task) {
+    return {
+      artifacts: [],
+      validations: [],
+      evidenceWarnings: ["The worker transcript task is no longer available."],
+    }
+  }
+
+  const artifacts = new Map<string, ApprovalArtifact>()
+  const validations: ApprovalValidation[] = []
+  const toolCalls = new Map<
+    string,
+    { name: string; args: Record<string, unknown> | null }
+  >()
+
+  for (const message of listMessages(task.conversationId)) {
+    for (const call of message.toolCalls ?? []) {
+      const args = parseArgs(call.arguments)
+      toolCalls.set(call.id, { name: call.name, args })
+    }
+
+    if (message.role !== "tool" || !message.toolCallId) continue
+    const call = toolCalls.get(message.toolCallId)
+    const output = message.content ?? ""
+    if (!call) continue
+    if (MUTATION_TOOLS.has(call.name) && !output.startsWith("ERROR[")) {
+      if (call.name === "apply_patch_tool") {
+        collectPatchArtifacts(call.args?.operations, artifacts)
+      } else {
+        const path = typeof call.args?.path === "string" ? call.args.path : ""
+        if (path) {
+          artifacts.set(path, {
+            path,
+            name: basename(path),
+            kind: call.name === "edit_file_tool" ? "edit" : "write",
+            fileType: fileTypeOf(path),
+            provenance: "workspace",
+          })
+        }
+      }
+    }
+    if (!VALIDATION_TOOL_NAMES.has(call.name)) continue
+    const command =
+      typeof call.args?.command === "string"
+        ? call.args.command
+        : typeof call.args?.cmd === "string"
+          ? call.args.cmd
+          : null
+    validations.push({
+      label: command ?? call.name,
+      status: output.startsWith("ERROR[") ? "failed" : "passed",
+      command,
+      output: output.slice(0, 4000),
+    })
+  }
+
+  return {
+    artifacts: [...artifacts.values()],
+    validations,
+    evidenceWarnings:
+      artifacts.size > 0
+        ? [
+            "File diffs are current workspace evidence derived from phase-attributed tool calls; they may include overlapping or subsequent edits.",
+          ]
+        : [],
+  }
+}
+
+function buildApprovalPacket(input: {
+  requestId: string
+  run: ProcessRun
+  phase: ProcessPhase
+  phaseRun: ProcessPhaseRun
+  graph: ProcessGraph
+  gateKind: "phase" | "validator"
+}): ProcessApprovalPacket {
+  const evidence = collectApprovalEvidence(input.phaseRun)
+  const downstream = input.graph.edges
+    .filter((e) => e.fromPhaseId === input.phase.id)
+    .map((e) => {
+      const p = input.graph.phases.find((phase) => phase.id === e.toPhaseId)
+      return { phaseId: e.toPhaseId, name: p?.name ?? e.toPhaseId }
+    })
+  const fileCount = evidence.artifacts.length
+  const validationCount = evidence.validations.length
+  const failedCount = evidence.validations.filter(
+    (v) => v.status === "failed"
+  ).length
+  const materialChanges =
+    fileCount > 0
+      ? evidence.artifacts
+          .slice(0, 6)
+          .map((a) => `${a.kind === "edit" ? "Edited" : "Wrote"} ${a.path}`)
+      : ["No changed files were attributed to this phase."]
+  const validationSummary =
+    validationCount === 0
+      ? "No validation commands or diagnostics were recorded."
+      : failedCount > 0
+        ? `${failedCount} of ${validationCount} recorded validation checks failed.`
+        : `${validationCount} recorded validation check${validationCount === 1 ? "" : "s"} passed.`
+  const caveats = [
+    ...evidence.evidenceWarnings,
+    ...(validationCount === 0
+      ? ["Review the transcript for manual validation details."]
+      : []),
+  ]
+  return {
+    requestId: input.requestId,
+    processRunId: input.run.id,
+    phaseRunId: input.phaseRun.id,
+    reworkRound: input.phaseRun.reworkRound,
+    createdAt: Date.now(),
+    summary: {
+      outcome:
+        input.gateKind === "validator"
+          ? input.phaseRun.error
+            ? `${input.phase.name} could not be validated: ${input.phaseRun.error}`
+            : `${input.phase.name} exhausted validator review and needs a human decision.`
+          : `${input.phase.name} completed and is ready for approval.`,
+      materialChanges,
+      validationSummary,
+      caveats,
+    },
+    artifacts: evidence.artifacts,
+    validations: evidence.validations,
+    downstream,
+    evidenceWarnings: evidence.evidenceWarnings,
+    transcriptTaskId: input.phaseRun.taskId,
+  }
+}
+
 export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
   const { graph, run } = ctx
+  // Validate snapshots before dispatching even a container/subprocess. A phase
+  // added after this run started has no recorded contract and needs a new run.
+  for (const phase of graph.phases) runCompletionContract(run, phase.id)
   const phasesById = new Map(graph.phases.map((p) => [p.id, p]))
 
   // Phases that are the target of ≥1 `on_each_subtask` edge whose SOURCE is a
@@ -423,11 +865,20 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
   const raiseGate = (phase: ProcessPhase): never => {
     const pr = runByPhaseId.get(phase.id)!
     const requestId = randomUUID()
+    const freshPr = processes.getPhaseRun(pr.id) ?? pr
     const request: GateRequest = {
       kind: "process_phase_gate",
       phaseKey: phase.key,
       phaseRunId: pr.id,
       requestId,
+      approvalPacket: buildApprovalPacket({
+        requestId,
+        run,
+        phase,
+        phaseRun: freshPr,
+        graph,
+        gateKind: "phase",
+      }),
     }
     createApproval({ taskId: ctx.taskId, request })
     markWaitingForApprovalToTop()
@@ -503,24 +954,51 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
       )
     })
 
-  // The VALIDATOR exhaustion escalation (plan 031.1). When a validator phase
-  // burns its iteration cap without approving, raise a human gate on the SAME
-  // phase-run (which is left `waiting_for_approval`, carrying the last feedback as
-  // its rework_note) so a human decides: approve as-is (→ the walk reconciles it
-  // to `completed`, releasing dependents) or request changes (029 path, which
-  // resets it for a fresh round of attempts). Mirrors raiseGate but with the
-  // validator kind and no dependents precondition — the phase-run itself is held
-  // by its non-completed status, so dependents wait without a gateResolved check.
+  const validatorReviewRetryRequested = (phaseRunId: string): boolean =>
+    validatorGateRows(phaseRunId).some(
+      (a) =>
+        a.status === "denied" &&
+        (a.decision as { retryReview?: boolean } | null)?.retryReview === true
+    )
+
+  const validatorManualOverrideApproved = (phaseRunId: string): boolean =>
+    validatorGateRows(phaseRunId).some((a) => {
+      if (a.status !== "approved") return false
+      const decision = a.decision as {
+        manualOverride?: boolean
+        gateKind?: string
+        phaseRunId?: string
+      } | null
+      return (
+        decision?.manualOverride === true &&
+        decision.gateKind === "process_validator_gate" &&
+        decision.phaseRunId === phaseRunId
+      )
+    })
+
+  // The VALIDATOR escalation (plan 031.1). When a validator phase burns its
+  // iteration cap, or the review boundary fails before a valid verdict arrives,
+  // raise a human gate on the SAME phase-run. The phase-run is left
+  // `waiting_for_approval`, so dependents wait without a gateResolved check.
   const raiseValidatorGate = (
     phase: ProcessPhase,
     phaseRun: ProcessPhaseRun
   ): never => {
     const requestId = randomUUID()
+    const freshPr = processes.getPhaseRun(phaseRun.id) ?? phaseRun
     const request: GateRequest = {
       kind: "process_validator_gate",
       phaseKey: phase.key,
       phaseRunId: phaseRun.id,
       requestId,
+      approvalPacket: buildApprovalPacket({
+        requestId,
+        run,
+        phase,
+        phaseRun: freshPr,
+        graph,
+        gateKind: "validator",
+      }),
     }
     createApproval({ taskId: ctx.taskId, request })
     markWaitingForApprovalToTop()
@@ -534,6 +1012,7 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
       parentId: phaseRun.parentId,
       requestId,
       gateKind: "validator",
+      failure: freshPr.failure,
     })
     checkpoint()
     throw new GateBlockedError()
@@ -554,8 +1033,7 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
       if (!pr) continue
       const fresh = processes.getPhaseRun(pr.id)
       if (fresh?.status !== "waiting_for_approval") continue
-      if (!validatorGateRows(pr.id).some((a) => a.status === "approved"))
-        continue
+      if (!validatorManualOverrideApproved(pr.id)) continue
       processes.updatePhaseRun(pr.id, {
         status: "completed",
         finishedAt: Date.now(),
@@ -873,12 +1351,31 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
     parentRun: ProcessPhaseRun
   ): Promise<void> => {
     if (!ctx.decompose) {
-      processes.updatePhaseRun(parentRun.id, {
-        status: "failed",
-        error: "fan-out phase has no decomposer configured",
-        finishedAt: Date.now(),
+      const latest = processes.getPhaseRun(parentRun.id) ?? parentRun
+      const failure = processFailure({
+        code: "decomposer_missing",
+        stage: "decomposition",
+        message: "fan-out phase has no decomposer configured",
+        retryable: false,
+        attempt: null,
+        maxAttempts: MAX_PHASE_ATTEMPTS,
+        run,
+        phase,
+        phaseRun: latest,
+        taskId: ctx.taskId,
       })
-      emitPhase(phase, parentRun.id, "failed")
+      persistPhaseFailure({
+        phase,
+        phaseRun: latest,
+        failure,
+        patch: {
+          status: "failed",
+          error: failure.message,
+          failure,
+          finishedAt: Date.now(),
+        },
+        emitStatus: "failed",
+      })
       return
     }
     let attempt = 0
@@ -897,23 +1394,59 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
       const subtasks = result.subtasks ?? []
       if (result.error || subtasks.length === 0) {
         const err = result.error ?? "fan-out produced no sub-tasks"
+        const latest = processes.getPhaseRun(parentRun.id) ?? parentRun
+        const failure = processFailure({
+          resultFailure: result.failure,
+          code:
+            subtasks.length === 0
+              ? "decomposition_empty"
+              : "decomposition_failed",
+          stage: subtasks.length === 0 ? "output_validation" : "decomposition",
+          message: err,
+          retryable: result.retryable,
+          attempt,
+          maxAttempts: MAX_PHASE_ATTEMPTS,
+          run,
+          phase,
+          phaseRun: latest,
+          taskId: ctx.taskId,
+        })
         if (result.retryable && attempt < MAX_PHASE_ATTEMPTS) {
-          processes.updatePhaseRun(parentRun.id, { iteration: attempt })
+          persistPhaseFailure({
+            phase,
+            phaseRun: latest,
+            failure,
+            patch: {
+              iteration: attempt,
+              error: failure.message,
+              failure,
+            },
+          })
           continue
         }
-        processes.updatePhaseRun(parentRun.id, {
-          status: "failed",
-          error: err,
-          finishedAt: Date.now(),
-          iteration: attempt,
+        persistPhaseFailure({
+          phase,
+          phaseRun: latest,
+          failure,
+          patch: {
+            status: "failed",
+            error: failure.message,
+            failure,
+            finishedAt: Date.now(),
+            iteration: attempt,
+          },
+          emitStatus: "failed",
         })
-        emitPhase(phase, parentRun.id, "failed")
         return
       }
       // Success: spawn children. The parent stays `running` — deriveFanoutParents
       // settles it once every child is terminal.
       createChildrenAtomic(parentRun, subtasks)
-      processes.updatePhaseRun(parentRun.id, { iteration: attempt })
+      processes.updatePhaseRun(parentRun.id, {
+        iteration: attempt,
+        error: null,
+        failure: null,
+      })
       return
     }
   }
@@ -1020,11 +1553,46 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
         : anyCancelled
           ? "cancelled"
           : "completed"
-      processes.updatePhaseRun(pr.id, {
+      const failedChild = children.find((c) => c.status === "failed")
+      const derivedFailure =
+        derived === "failed"
+          ? (failedChild?.failure ??
+            processFailure({
+              code: "fanout_child_failed",
+              stage: "scheduler",
+              message: failedChild?.error ?? "fan-out child failed",
+              retryable: false,
+              run,
+              phase,
+              phaseRun: pr,
+              taskId: ctx.taskId,
+            }))
+          : null
+      const patch: Parameters<typeof processes.updatePhaseRun>[1] = {
         status: derived,
+        error:
+          failedChild?.error ?? (derived === "completed" ? null : pr.error),
+        failure:
+          derived === "failed"
+            ? derivedFailure
+            : derived === "completed"
+              ? null
+              : pr.failure,
         finishedAt: Date.now(),
-      })
-      emitPhase(phase, pr.id, derived)
+      }
+      if (derivedFailure) {
+        persistPhaseFailure({
+          phase,
+          phaseRun: pr,
+          failure: derivedFailure,
+          recordAttempt: !failedChild?.failure,
+          patch,
+          emitStatus: "failed",
+        })
+      } else {
+        processes.updatePhaseRun(pr.id, patch)
+        emitPhase(phase, pr.id, derived)
+      }
       settledAny = true
     }
     return settledAny
@@ -1040,54 +1608,240 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
     // sub-DAG / container replay is plan 031.2. Inert if no validator injected.
     const runsValidator =
       phase.validator && !!ctx.validate && subtaskPrompt === undefined
+    let reviewOnlyRetry =
+      runsValidator &&
+      phaseRun.taskId !== null &&
+      validatorReviewRetryRequested(phaseRun.id)
+    const failContract = (
+      error: unknown,
+      code = "phase_completion_invalid"
+    ) => {
+      const latest = processes.getPhaseRun(phaseRun.id) ?? phaseRun
+      const failure = processFailure({
+        code,
+        stage: "output_validation",
+        message: `${error instanceof Error ? error.message : String(error)}. Resolve the issue, then Restart run.`,
+        run,
+        phase,
+        phaseRun: latest,
+        taskId: ctx.taskId,
+      })
+      persistPhaseFailure({
+        phase,
+        phaseRun: latest,
+        failure,
+        patch: {
+          status: "failed",
+          error: failure.message,
+          failure,
+          finishedAt: Date.now(),
+        },
+        emitStatus: "failed",
+      })
+    }
+    let contract
+    try {
+      contract = runCompletionContract(run, phase.id)
+    } catch (err) {
+      failContract(err)
+      return
+    }
+    // Supply the recorded policy to the service, even if the definition changed.
+    phase = { ...phase, completionContract: contract }
+    if (
+      contract.policy === "validated" &&
+      phase.validator &&
+      subtaskPrompt === undefined &&
+      !ctx.validate
+    ) {
+      failContract("Configured validator is unavailable", "validator_missing")
+      return
+    }
+    if (reviewOnlyRetry && contract.policy === "validated") {
+      const receipt = processes.getPhaseRun(phaseRun.id)?.completionReceipt
+      if (
+        !receipt ||
+        receipt.checkedAt === null ||
+        receipt.outcome.status !== "completed"
+      ) {
+        failContract("No validated worker output is available for review")
+        return
+      }
+      try {
+        await checkPhaseOutcome({
+          contract,
+          outcome: receipt.outcome,
+          workspace: ctx.workspace,
+        })
+      } catch (err) {
+        failContract(err)
+        return
+      }
+    }
     let attempt = 0
     // Chain a child controller so run-level cancel unwinds the phase worker.
     while (true) {
       attempt++
-      const result = await ctx.runPhase({
-        phaseRun,
-        phase,
-        subtaskPrompt,
-        signal: ctx.signal,
-      })
-      if (result.stopped || ctx.signal.aborted) {
-        settleStoppedPhaseRun(phase, phaseRun.id)
-        return
-      }
-      if (result.error) {
-        if (result.retryable && attempt < MAX_PHASE_ATTEMPTS) {
-          processes.updatePhaseRun(phaseRun.id, { iteration: attempt })
-          continue
-        }
+      if (!reviewOnlyRetry || attempt > 1) {
+        const attemptId = randomUUID()
         processes.updatePhaseRun(phaseRun.id, {
-          status: "failed",
-          error: result.error,
-          finishedAt: Date.now(),
-          iteration: attempt,
+          completionReceipt: null,
+          outputIdentity: null,
         })
-        emitPhase(phase, phaseRun.id, "failed")
-        return
+        const result = await ctx.runPhase({
+          attemptId,
+          phaseRun,
+          phase,
+          subtaskPrompt,
+          signal: ctx.signal,
+        })
+        if (result.stopped || ctx.signal.aborted) {
+          settleStoppedPhaseRun(phase, phaseRun.id)
+          return
+        }
+        if (result.error) {
+          const latest = processes.getPhaseRun(phaseRun.id) ?? phaseRun
+          const failure = processFailure({
+            resultFailure: result.failure,
+            code: "phase_worker_failed",
+            stage: result.failure?.stage ?? "model_request",
+            message: result.error,
+            retryable: result.retryable,
+            attempt,
+            maxAttempts: MAX_PHASE_ATTEMPTS,
+            run,
+            phase,
+            phaseRun: latest,
+            taskId: ctx.taskId,
+          })
+          if (result.retryable && attempt < MAX_PHASE_ATTEMPTS) {
+            persistPhaseFailure({
+              phase,
+              phaseRun: latest,
+              failure,
+              patch: {
+                iteration: attempt,
+                error: failure.message,
+                failure,
+              },
+            })
+            continue
+          }
+          persistPhaseFailure({
+            phase,
+            phaseRun: latest,
+            failure,
+            patch: {
+              status: "failed",
+              error: failure.message,
+              failure,
+              finishedAt: Date.now(),
+              iteration: attempt,
+            },
+            emitStatus: "failed",
+          })
+          return
+        }
+        if (contract.policy === "validated") {
+          try {
+            const outcome = parsePhaseOutcome(result.content, attemptId)
+            // Persist the declaration even when a configured file check fails.
+            processes.updatePhaseRun(phaseRun.id, {
+              completionReceipt: {
+                outcome,
+                checkedArtifacts: [],
+                checkedAt: null,
+              },
+            })
+            const receipt = await checkPhaseOutcome({
+              contract,
+              outcome,
+              workspace: ctx.workspace,
+            })
+            if (ctx.signal.aborted) {
+              settleStoppedPhaseRun(phase, phaseRun.id)
+              return
+            }
+            processes.updatePhaseRun(phaseRun.id, {
+              completionReceipt: receipt,
+            })
+            if (outcome.status !== "completed") {
+              failContract(
+                `${outcome.reason} Next action: ${outcome.nextAction}`,
+                `phase_outcome_${outcome.status}`
+              )
+              return
+            }
+          } catch (err) {
+            failContract(err)
+            return
+          }
+        }
+        if (result.outputIdentity != null) {
+          processes.updatePhaseRun(phaseRun.id, {
+            outputIdentity: result.outputIdentity,
+          })
+        }
       }
 
       // The worker succeeded. Before settling `completed`, run the validator
-      // review (plan 031.1) if enabled: an approval settles the phase; a rejection
-      // re-runs the worker with the feedback (via the 029 rework channel) until the
-      // iteration cap, at which point it escalates to a human gate.
+      // review (plan 031.1) if enabled: only a valid approval settles the phase; a
+      // valid rejection re-runs the worker with feedback (via the 029 rework
+      // channel) until the iteration cap, at which point it escalates to a human
+      // gate. Reviewer errors or invalid output hold the phase at the same gate.
       if (runsValidator) {
+        const outputIdentity =
+          processes.getPhaseRun(phaseRun.id)?.outputIdentity ?? null
         const verdict = await ctx.validate!({
           phase,
           phaseRun,
+          outputIdentity,
           signal: ctx.signal,
         })
         if (verdict.stopped || ctx.signal.aborted) {
           settleStoppedPhaseRun(phase, phaseRun.id)
           return
         }
-        // A non-approval verdict (`error` means the reviewer worker itself broke)
-        // sends the phase back — UNLESS the reviewer errored, in which case we
-        // FAIL OPEN (approve) so a broken reviewer never wedges the run. The
-        // iteration cap already bounds any productive rejection loop.
-        if (!verdict.approved && !verdict.error) {
+        const currentOutputIdentity =
+          processes.getPhaseRun(phaseRun.id)?.outputIdentity ?? null
+        if (
+          verdict.targetOutputIdentity !== undefined &&
+          verdict.targetOutputIdentity !== currentOutputIdentity
+        ) {
+          return
+        }
+        if (verdict.error) {
+          const latest = processes.getPhaseRun(phaseRun.id) ?? phaseRun
+          const failure = processFailure({
+            resultFailure: verdict.failure,
+            code: "validator_review_failed",
+            stage: verdict.failure?.stage ?? "reviewer",
+            message: verdict.error,
+            retryable: verdict.retryable,
+            attempt: latest.validatorRound + 1,
+            maxAttempts:
+              phase.validatorMaxIterations > 0
+                ? phase.validatorMaxIterations
+                : DEFAULT_VALIDATOR_ITERATIONS,
+            run,
+            phase,
+            phaseRun: latest,
+            taskId: ctx.taskId,
+          })
+          persistPhaseFailure({
+            phase,
+            phaseRun: latest,
+            failure,
+            patch: {
+              status: "waiting_for_approval",
+              error: failure.message,
+              failure,
+              reworkNote: null,
+            },
+          })
+          raiseValidatorGate(phase, processes.getPhaseRun(phaseRun.id)!)
+        }
+        if (!verdict.approved) {
           const round =
             (processes.getPhaseRun(phaseRun.id)?.validatorRound ?? 0) + 1
           const cap =
@@ -1112,7 +1866,9 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
           processes.updatePhaseRun(phaseRun.id, {
             validatorRound: round,
             reworkNote: verdict.feedback ?? null,
+            outputIdentity: null,
           })
+          reviewOnlyRetry = false
           attempt = 0
           continue
         }
@@ -1120,6 +1876,8 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
 
       processes.updatePhaseRun(phaseRun.id, {
         status: "completed",
+        error: null,
+        failure: null,
         finishedAt: Date.now(),
         iteration: attempt,
       })
@@ -1144,12 +1902,31 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
     subtaskPrompt?: string
   ): Promise<void> => {
     if (!ctx.runSubProcess) {
-      processes.updatePhaseRun(phaseRun.id, {
-        status: "failed",
-        error: "sub-process phase has no runner configured",
-        finishedAt: Date.now(),
+      const latest = processes.getPhaseRun(phaseRun.id) ?? phaseRun
+      const failure = processFailure({
+        code: "subprocess_runner_missing",
+        stage: "subprocess",
+        message: "sub-process phase has no runner configured",
+        retryable: false,
+        attempt: 1,
+        maxAttempts: 1,
+        run,
+        phase,
+        phaseRun: latest,
+        taskId: ctx.taskId,
       })
-      emitPhase(phase, phaseRun.id, "failed")
+      persistPhaseFailure({
+        phase,
+        phaseRun: latest,
+        failure,
+        patch: {
+          status: "failed",
+          error: failure.message,
+          failure,
+          finishedAt: Date.now(),
+        },
+        emitStatus: "failed",
+      })
       return
     }
     const result = await ctx.runSubProcess({
@@ -1165,16 +1942,38 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
       return
     }
     if (result.error) {
-      processes.updatePhaseRun(phaseRun.id, {
-        status: "failed",
-        error: result.error,
-        finishedAt: Date.now(),
+      const latest = processes.getPhaseRun(phaseRun.id) ?? phaseRun
+      const failure = processFailure({
+        resultFailure: result.failure,
+        code: "subprocess_failed",
+        stage: "subprocess",
+        message: result.error,
+        retryable: result.retryable,
+        attempt: 1,
+        maxAttempts: 1,
+        run,
+        phase,
+        phaseRun: latest,
+        taskId: ctx.taskId,
       })
-      emitPhase(phase, phaseRun.id, "failed")
+      persistPhaseFailure({
+        phase,
+        phaseRun: latest,
+        failure,
+        patch: {
+          status: "failed",
+          error: failure.message,
+          failure,
+          finishedAt: Date.now(),
+        },
+        emitStatus: "failed",
+      })
       return
     }
     processes.updatePhaseRun(phaseRun.id, {
       status: "completed",
+      error: null,
+      failure: null,
       finishedAt: Date.now(),
     })
     emitPhase(phase, phaseRun.id, "completed")
@@ -1194,7 +1993,89 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
       agentName: pr?.agentName ?? null,
       status,
       parentId: pr?.parentId ?? null,
+      failure: pr?.failure ?? null,
     })
+  }
+
+  const persistPhaseFailure = (input: {
+    phase: ProcessPhase
+    phaseRun: ProcessPhaseRun
+    failure: FailureContext
+    recordAttempt?: boolean
+    patch: Parameters<typeof processes.updatePhaseRun>[1]
+    emitStatus?: "failed" | "waiting_for_approval"
+  }): ProcessPhaseRun => {
+    try {
+      if (input.recordAttempt !== false) {
+        recordFailedAttempt({
+          run,
+          phase: input.phase,
+          phaseRun: input.phaseRun,
+          taskId: ctx.taskId,
+          failure: input.failure,
+        })
+      }
+      const updated = processes.updatePhaseRun(input.phaseRun.id, input.patch)
+      if (input.emitStatus) {
+        ctx.emit({
+          type: "process_phase",
+          runId: run.id,
+          phaseRunId: input.phaseRun.id,
+          phaseKey: input.phase.key,
+          agentName: updated.agentName ?? input.failure.agentName,
+          status: input.emitStatus,
+          parentId: updated.parentId,
+          failure: updated.failure ?? input.failure,
+        })
+      }
+      return updated
+    } catch (err) {
+      const fallback = writeFailurePersistenceFallback({
+        ctx,
+        run,
+        phase: input.phase,
+        phaseRun: input.phaseRun,
+        originalFailure: input.failure,
+        persistenceError: err,
+      })
+      const failure = persistenceFailure({
+        ctx,
+        run,
+        phase: input.phase,
+        phaseRun: input.phaseRun,
+        originalFailure: input.failure,
+        persistenceError: err,
+        fallback,
+      })
+      try {
+        processes.updatePhaseRun(input.phaseRun.id, {
+          status: "failed",
+          error: failure.message,
+          failure,
+          finishedAt: Date.now(),
+        })
+      } catch {
+        // The fallback diagnostic and thrown FailurePersistenceError are the source
+        // of truth when SQLite cannot even record the persistence failure.
+      }
+      try {
+        ctx.emit({
+          type: "process_phase",
+          runId: run.id,
+          phaseRunId: input.phaseRun.id,
+          phaseKey: input.phase.key,
+          agentName: input.phaseRun.agentName ?? failure.agentName,
+          status: "failed",
+          parentId: input.phaseRun.parentId,
+          failure,
+        })
+      } catch {
+        // A task_events write can be the failing persistence boundary. The task
+        // result still carries the honest error, and the external fallback may
+        // carry the original failure.
+      }
+      throw new FailurePersistenceError(failure, fallback)
+    }
   }
 
   // Whether the current abort is RESUMABLE (app quit / pause) vs a genuine user

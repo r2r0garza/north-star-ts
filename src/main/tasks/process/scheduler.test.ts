@@ -1,7 +1,17 @@
 import { describe, it, expect, beforeEach, vi } from "vitest"
 import Database from "better-sqlite3"
 import { randomUUID } from "crypto"
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  writeFileSync,
+} from "fs"
+import { tmpdir } from "os"
+import { join } from "path"
 import { runMigrations } from "../../db/migrations"
+import { appendMessage } from "../../db/repositories/messages"
 import { sqliteLoadsForTests } from "../../test/sqlite"
 
 const sqliteLoads = sqliteLoadsForTests()
@@ -14,11 +24,16 @@ vi.mock("../../db/connection", () => ({ getDb: () => db }))
 // backed tests skip rather than fail when the ABI mismatches.
 
 import * as processes from "../../db/repositories/processes"
-import { listApprovals, resolveApproval } from "../../db/repositories/approvals"
+import {
+  createApproval,
+  listApprovals,
+  resolveApproval,
+} from "../../db/repositories/approvals"
 import {
   runScheduler,
   subtaskTitle,
   GateBlockedError,
+  FailurePersistenceError,
   MAX_PROCESS_DEPTH,
   type BuildEachSubtaskPrompt,
   type Decompose,
@@ -27,9 +42,9 @@ import {
   type SchedulerCtx,
   type Validate,
 } from "./scheduler"
-import { SHUTDOWN_ABORT_REASON } from "../../agent/abort"
+import { PAUSE_ABORT_REASON, SHUTDOWN_ABORT_REASON } from "../../agent/abort"
 import type { TaskEventPayload } from "../runner"
-import type { ProcessFlag } from "../../db/types"
+import type { FailureContext, FailureStage, ProcessFlag } from "../../db/types"
 
 // Create a backing task row so approvals/checkpoints (FK to tasks) can attach.
 function freshTask(): string {
@@ -104,6 +119,7 @@ function makeCtx(
     applyFlag?: (flag: ProcessFlag) => void
     runSubProcess?: RunSubProcess
     processDepth?: number
+    failureDiagnosticDir?: string | null
   }
 ): { ctx: SchedulerCtx; events: TaskEventPayload[]; runId: string } {
   const taskId = freshTask()
@@ -131,6 +147,7 @@ function makeCtx(
     applyFlag: opts?.applyFlag,
     runSubProcess: opts?.runSubProcess,
     processDepth: opts?.processDepth,
+    failureDiagnosticDir: opts?.failureDiagnosticDir,
   }
   return { ctx, events, runId: run.id }
 }
@@ -156,6 +173,112 @@ const statusByKey = (
   const out: Record<string, string> = {}
   for (const p of graph.phases) out[p.key] = byId.get(p.id)?.status ?? "?"
   return out
+}
+
+function injectedFailure(input: {
+  stage: FailureStage
+  code?: string
+  message?: string
+  workerTaskId?: string
+  agentName?: string
+}): FailureContext {
+  return {
+    code: input.code ?? `${input.stage}_injected`,
+    stage: input.stage,
+    message: input.message ?? `${input.stage} failed`,
+    retryable: false,
+    attempt: null,
+    maxAttempts: null,
+    runId: null,
+    phaseRunId: null,
+    phaseId: null,
+    taskId: null,
+    workerTaskId: input.workerTaskId ?? null,
+    agentName: input.agentName ?? null,
+    cause: "FaultInjection",
+    occurredAt: 123,
+  }
+}
+
+function expectStructuredFailure(input: {
+  runId: string
+  processId: string
+  phaseKey: string
+  events: TaskEventPayload[]
+  phaseRunStatus?: "failed" | "waiting_for_approval"
+  eventStatus?: "failed" | "waiting_for_approval"
+  stage: FailureStage
+  code: string
+  message: string
+  attempt: number | null
+  maxAttempts: number | null
+  workerTaskId: string | null
+  agentName: string | null
+}): void {
+  const phase = processes
+    .getProcessGraph(input.processId)!
+    .phases.find((p) => p.key === input.phaseKey)!
+  const phaseRunStatus = input.phaseRunStatus ?? "failed"
+  const eventStatus = input.eventStatus ?? phaseRunStatus
+  const phaseRun = runsForKey(
+    input.runId,
+    input.processId,
+    input.phaseKey
+  ).find((r) => r.status === phaseRunStatus && r.parentId === null)!
+  const expected = {
+    code: input.code,
+    stage: input.stage,
+    message: input.message,
+    retryable: false,
+    attempt: input.attempt,
+    maxAttempts: input.maxAttempts,
+    runId: input.runId,
+    phaseRunId: phaseRun.id,
+    phaseId: phase.id,
+    taskId: expect.any(String),
+    workerTaskId: input.workerTaskId,
+    agentName: input.agentName,
+  }
+
+  expect(phaseRun.failure).toMatchObject(expected)
+
+  const attemptRows = processes.listPhaseAttempts({ phaseRunId: phaseRun.id })
+  expect(attemptRows).toHaveLength(1)
+  expect(attemptRows[0]).toMatchObject({
+    runId: input.runId,
+    phaseRunId: phaseRun.id,
+    phaseId: phase.id,
+    taskId: expected.taskId,
+    workerTaskId: input.workerTaskId,
+    agentName: input.agentName,
+    stage: input.stage,
+    attempt: input.attempt,
+    maxAttempts: input.maxAttempts,
+    error: input.message,
+    failure: expected,
+  })
+
+  const failedEvent = input.events.find(
+    (event) =>
+      event.type === "process_phase" &&
+      event.status === eventStatus &&
+      event.phaseRunId === phaseRun.id
+  )
+  expect(failedEvent).toMatchObject({
+    type: "process_phase",
+    runId: input.runId,
+    phaseRunId: phaseRun.id,
+    phaseKey: input.phaseKey,
+    status: eventStatus,
+    failure: expected,
+  })
+}
+
+function expectNoFailureRecorded(phaseRunId: string): void {
+  const phaseRun = processes.getPhaseRun(phaseRunId)!
+  expect(phaseRun.error).toBeNull()
+  expect(phaseRun.failure).toBeNull()
+  expect(processes.listPhaseAttempts({ phaseRunId })).toHaveLength(0)
 }
 
 beforeEach(() => {
@@ -278,10 +401,26 @@ describe.skipIf(!sqliteLoads)("scheduler — approval gate", () => {
     expect(ran).toEqual(["a"]) // b blocked
     expect(statusByKey(runId, pid).a).toBe("completed")
     expect(statusByKey(runId, pid).b).toBe("pending")
+    const aRun = runsForKey(runId, pid, "a").find((r) => r.parentId === null)!
+    expectNoFailureRecorded(aRun.id)
 
     // A gate approval row exists as pending; approve it.
     const pending = listApprovals({ taskId: ctx.taskId, status: "pending" })
     expect(pending).toHaveLength(1)
+    expect(pending[0].request).toMatchObject({
+      kind: "process_phase_gate",
+      phaseRunId: aRun.id,
+      approvalPacket: {
+        phaseRunId: aRun.id,
+        reworkRound: 0,
+        summary: {
+          outcome: "A completed and is ready for approval.",
+          validationSummary:
+            "No validation commands or diagnostics were recorded.",
+        },
+        downstream: [{ name: "B" }],
+      },
+    })
     resolveApproval(pending[0].id, { status: "approved" })
 
     // Resume: re-run the scheduler over the same run (fresh ctx, same taskId/run).
@@ -298,6 +437,83 @@ describe.skipIf(!sqliteLoads)("scheduler — approval gate", () => {
     })
     expect(ran).toEqual(["a", "b"])
     expect(statusByKey(runId, pid).b).toBe("completed")
+  })
+
+  it("persists attributed artifacts and validation in the approval packet", async () => {
+    const pid = buildProcess({
+      phases: [{ key: "a", gate: "approve" }, { key: "b" }],
+      edges: [["a", "b"]],
+    })
+    const runPhase: RunPhase = async ({ phaseRun }) => {
+      const workerTaskId = freshTask()
+      const worker = processes.updatePhaseRun(phaseRun.id, {
+        taskId: workerTaskId,
+      })
+      const task = db
+        .prepare("SELECT conversation_id FROM tasks WHERE id = ?")
+        .get(worker.taskId) as { conversation_id: string }
+      appendMessage({
+        conversationId: task.conversation_id,
+        role: "assistant",
+        toolCalls: [
+          {
+            id: "write-1",
+            name: "write_file_tool",
+            arguments: JSON.stringify({
+              path: "docs/plan.md",
+              content: "hello",
+            }),
+          },
+          {
+            id: "test-1",
+            name: "run_shell_tool",
+            arguments: JSON.stringify({ command: "npm test -- a" }),
+          },
+        ],
+      })
+      appendMessage({
+        conversationId: task.conversation_id,
+        role: "tool",
+        toolCallId: "write-1",
+        toolName: "write_file_tool",
+        content: "Wrote 5 bytes to docs/plan.md.",
+      })
+      appendMessage({
+        conversationId: task.conversation_id,
+        role: "tool",
+        toolCallId: "test-1",
+        toolName: "run_shell_tool",
+        content: "1 test passed",
+      })
+      return { content: "done" }
+    }
+
+    const { ctx } = makeCtx(pid, runPhase)
+    await expect(runScheduler(ctx)).rejects.toBeInstanceOf(GateBlockedError)
+
+    const [pending] = listApprovals({ taskId: ctx.taskId, status: "pending" })
+    expect(pending.request).toMatchObject({
+      approvalPacket: {
+        summary: {
+          materialChanges: ["Wrote docs/plan.md"],
+          validationSummary: "1 recorded validation check passed.",
+        },
+        artifacts: [
+          {
+            path: "docs/plan.md",
+            fileType: "document",
+            provenance: "workspace",
+          },
+        ],
+        validations: [
+          {
+            label: "npm test -- a",
+            status: "passed",
+            command: "npm test -- a",
+          },
+        ],
+      },
+    })
   })
 
   it("re-gates after a request-changes re-run, then releases (plan 029)", async () => {
@@ -485,6 +701,8 @@ describe.skipIf(!sqliteLoads)("scheduler — cancellation", () => {
     const { ctx, runId } = makeCtx(pid, runPhase, { abort })
     await runScheduler(ctx)
     expect(statusByKey(runId, pid).a).toBe("cancelled")
+    const aRun = runsForKey(runId, pid, "a").find((r) => r.parentId === null)!
+    expectNoFailureRecorded(aRun.id)
   })
 
   it("does NOT terminally cancel an in-flight phase on a resumable (shutdown) abort (plan 038.3)", async () => {
@@ -504,6 +722,27 @@ describe.skipIf(!sqliteLoads)("scheduler — cancellation", () => {
     await runScheduler(ctx)
     // Left recoverable — the abort branch skipped settling on a resumable abort.
     expect(statusByKey(runId, pid).a).not.toBe("cancelled")
+    const aRun = runsForKey(runId, pid, "a").find((r) => r.parentId === null)!
+    expectNoFailureRecorded(aRun.id)
+  })
+
+  it("does NOT record failure attempts for an in-flight phase on pause", async () => {
+    const pid = buildProcess({ phases: [{ key: "a" }] })
+    const abort = new AbortController()
+    const runPhase: RunPhase = ({ signal }) =>
+      new Promise((resolve) => {
+        abort.abort(PAUSE_ABORT_REASON)
+        signal.addEventListener("abort", () => resolve({ stopped: true }), {
+          once: true,
+        })
+      })
+    const { ctx, runId } = makeCtx(pid, runPhase, { abort })
+
+    await runScheduler(ctx)
+
+    const aRun = runsForKey(runId, pid, "a").find((r) => r.parentId === null)!
+    expect(aRun.status).toBe("running")
+    expectNoFailureRecorded(aRun.id)
   })
 })
 
@@ -521,6 +760,589 @@ describe.skipIf(!sqliteLoads)("scheduler — failed phase", () => {
     await expect(runScheduler(ctx)).rejects.toThrow(/failed/)
     expect(statusByKey(runId, pid).a).toBe("failed")
     expect(statusByKey(runId, pid).b).toBe("pending")
+  })
+
+  it("persists structured failure context on the phase row, event, and attempt audit", async () => {
+    const pid = buildProcess({
+      phases: [{ key: "a" }],
+    })
+    const workerTaskId = freshTask()
+    const runPhase: RunPhase = async ({ phase, phaseRun }) => ({
+      error: "provider timed out",
+      retryable: false,
+      failure: {
+        code: "provider_timeout",
+        stage: "model_request",
+        message: "provider timed out",
+        retryable: false,
+        attempt: null,
+        maxAttempts: null,
+        runId: "upstream-run",
+        phaseRunId: phaseRun.id,
+        phaseId: phase.id,
+        taskId: null,
+        workerTaskId,
+        agentName: "a-agent",
+        cause: "TimeoutError",
+        occurredAt: 123,
+      },
+    })
+    const { ctx, events, runId } = makeCtx(pid, runPhase)
+
+    await expect(runScheduler(ctx)).rejects.toThrow(/failed/)
+
+    const phaseRun = runsForKey(runId, pid, "a")[0]
+    expect(phaseRun.failure).toMatchObject({
+      code: "provider_timeout",
+      stage: "model_request",
+      phaseRunId: phaseRun.id,
+      workerTaskId,
+    })
+    const failedEvent = events.find(
+      (event) => event.type === "process_phase" && event.status === "failed"
+    )
+    expect(failedEvent).toMatchObject({
+      type: "process_phase",
+      phaseRunId: phaseRun.id,
+      failure: { code: "provider_timeout", stage: "model_request" },
+    })
+    const attempts = processes.listPhaseAttempts({ phaseRunId: phaseRun.id })
+    expect(attempts).toHaveLength(1)
+    expect(attempts[0]).toMatchObject({
+      phaseRunId: phaseRun.id,
+      stage: "model_request",
+      attempt: 1,
+      maxAttempts: 3,
+      workerTaskId,
+      failure: {
+        code: "provider_timeout",
+        stage: "model_request",
+        phaseRunId: phaseRun.id,
+      },
+    })
+
+    const laterCancel = new AbortController()
+    laterCancel.abort()
+    await runScheduler({
+      ...ctx,
+      run: processes.getProcessRun(runId)!,
+      signal: laterCancel.signal,
+      emit: () => {},
+    })
+
+    const preserved = processes.getPhaseRun(phaseRun.id)!
+    expect(preserved.failure).toMatchObject({
+      code: "provider_timeout",
+      stage: "model_request",
+      phaseRunId: phaseRun.id,
+      workerTaskId,
+    })
+    expect(
+      processes.listPhaseAttempts({ phaseRunId: phaseRun.id })
+    ).toHaveLength(1)
+  })
+
+  it("sanitizes structured failures before persisting phase rows, audit attempts, and events", async () => {
+    const pid = buildProcess({
+      phases: [{ key: "a" }],
+    })
+    const workerTaskId = freshTask()
+    const runPhase: RunPhase = async ({ phase, phaseRun }) => ({
+      error: "provider leaked raw data",
+      retryable: false,
+      failure: {
+        code: "provider_unauthorized",
+        stage: "model_request",
+        message:
+          'Authorization: Bearer sk-live-secret x-api-key=raw-key response body: {"prompt":"secret prompt"}',
+        retryable: false,
+        attempt: null,
+        maxAttempts: null,
+        runId: "upstream-run",
+        phaseRunId: phaseRun.id,
+        phaseId: phase.id,
+        taskId: null,
+        workerTaskId,
+        agentName: "a-agent",
+        toolCallId: "tool-call-1",
+        cause:
+          'tool arguments: {"path":"/Users/alice/private/.env","token":"secret-token"}',
+        occurredAt: 123,
+      },
+    })
+    const { ctx, events, runId } = makeCtx(pid, runPhase)
+
+    await expect(runScheduler(ctx)).rejects.toThrow(/failed/)
+
+    const phaseRun = runsForKey(runId, pid, "a")[0]
+    expect(phaseRun.failure).toMatchObject({
+      code: "provider_unauthorized",
+      stage: "model_request",
+      phaseRunId: phaseRun.id,
+      workerTaskId,
+      agentName: "a-agent",
+      toolCallId: "tool-call-1",
+    })
+    expect(phaseRun.error).toBe(phaseRun.failure?.message)
+    const serializedPhase = JSON.stringify(phaseRun.failure)
+    expect(serializedPhase).toContain("[redacted]")
+    expect(serializedPhase).not.toContain("sk-live-secret")
+    expect(serializedPhase).not.toContain("raw-key")
+    expect(serializedPhase).not.toContain("secret prompt")
+    expect(serializedPhase).not.toContain("/Users/alice")
+    expect(serializedPhase).not.toContain("secret-token")
+
+    const attempts = processes.listPhaseAttempts({ phaseRunId: phaseRun.id })
+    expect(attempts).toHaveLength(1)
+    expect(attempts[0].error).toBe(phaseRun.failure?.message)
+    expect(JSON.stringify(attempts[0].failure)).toBe(serializedPhase)
+
+    const failedEvent = events.find(
+      (event) => event.type === "process_phase" && event.status === "failed"
+    )
+    expect(JSON.stringify(failedEvent)).toContain("[redacted]")
+    expect(JSON.stringify(failedEvent)).not.toContain("sk-live-secret")
+  })
+
+  it("keeps failed retry attempts inspectable after a later attempt succeeds", async () => {
+    const pid = buildProcess({
+      phases: [{ key: "a" }],
+    })
+    let calls = 0
+    const runPhase: RunPhase = async () => {
+      calls++
+      if (calls === 1) return { error: "temporary API outage", retryable: true }
+      return { content: "ok" }
+    }
+    const { ctx, runId } = makeCtx(pid, runPhase)
+
+    await runScheduler(ctx)
+
+    const phaseRun = runsForKey(runId, pid, "a")[0]
+    expect(phaseRun.status).toBe("completed")
+    expect(phaseRun.failure).toBeNull()
+    const attempts = processes.listPhaseAttempts({ phaseRunId: phaseRun.id })
+    expect(attempts).toHaveLength(1)
+    expect(attempts[0]).toMatchObject({
+      error: "temporary API outage",
+      stage: "model_request",
+      attempt: 1,
+      maxAttempts: 3,
+    })
+  })
+
+  it("surfaces result_persistence and writes an external diagnostic when a failure attempt row cannot be persisted", async () => {
+    const pid = buildProcess({
+      phases: [{ key: "a" }],
+    })
+    const fallbackDir = mkdtempSync(join(tmpdir(), "process-failure-fallback-"))
+    const runPhase: RunPhase = async () => ({
+      error: "provider timed out",
+      retryable: false,
+      failure: injectedFailure({
+        stage: "model_request",
+        code: "provider_timeout",
+        message: "provider timed out",
+        agentName: "a-agent",
+      }),
+    })
+    const { ctx, events, runId } = makeCtx(pid, runPhase, {
+      failureDiagnosticDir: fallbackDir,
+    })
+    const spy = vi
+      .spyOn(processes, "createPhaseAttempt")
+      .mockImplementationOnce(() => {
+        throw new Error("sqlite attempt insert failed")
+      })
+
+    try {
+      await expect(runScheduler(ctx)).rejects.toThrow(FailurePersistenceError)
+    } finally {
+      spy.mockRestore()
+    }
+
+    const phaseRun = runsForKey(runId, pid, "a")[0]
+    expect(phaseRun.failure).toMatchObject({
+      stage: "result_persistence",
+      code: "process_failure_persistence_failed",
+      agentName: "a-agent",
+    })
+    expect(phaseRun.failure?.message).toContain(
+      "diagnostics were not fully persisted"
+    )
+    expect(phaseRun.failure?.message).toContain(
+      "Original failure: model_request/provider_timeout: provider timed out"
+    )
+
+    const failedEvent = events.find(
+      (event) => event.type === "process_phase" && event.status === "failed"
+    )
+    expect(failedEvent).toMatchObject({
+      type: "process_phase",
+      failure: {
+        stage: "result_persistence",
+        code: "process_failure_persistence_failed",
+      },
+    })
+
+    const files = readdirSync(fallbackDir)
+    expect(files).toHaveLength(1)
+    const fallback = JSON.parse(
+      readFileSync(join(fallbackDir, files[0]), "utf8")
+    ) as {
+      originalFailure: FailureContext
+      persistenceFailure: { message: string }
+    }
+    expect(fallback.originalFailure).toMatchObject({
+      stage: "model_request",
+      code: "provider_timeout",
+      message: "provider timed out",
+    })
+    expect(fallback.persistenceFailure.message).toBe(
+      "sqlite attempt insert failed"
+    )
+  })
+
+  it("surfaces result_persistence when the process phase task event cannot be persisted", async () => {
+    const pid = buildProcess({
+      phases: [{ key: "a" }],
+    })
+    const fallbackDir = mkdtempSync(join(tmpdir(), "process-event-fallback-"))
+    const runPhase: RunPhase = async () => ({
+      error: "provider timed out",
+      retryable: false,
+      failure: injectedFailure({
+        stage: "model_request",
+        code: "provider_timeout",
+        message: "provider timed out",
+      }),
+    })
+    const { ctx, runId } = makeCtx(pid, runPhase, {
+      failureDiagnosticDir: fallbackDir,
+    })
+    ctx.emit = (event) => {
+      if (event.type === "process_phase" && event.status === "failed") {
+        throw new Error("task_events insert failed")
+      }
+    }
+
+    await expect(runScheduler(ctx)).rejects.toThrow(FailurePersistenceError)
+
+    const phaseRun = runsForKey(runId, pid, "a")[0]
+    expect(phaseRun.failure).toMatchObject({
+      stage: "result_persistence",
+      code: "process_failure_persistence_failed",
+    })
+    expect(phaseRun.failure?.message).toContain("task_events insert failed")
+
+    const files = readdirSync(fallbackDir)
+    expect(files).toHaveLength(1)
+    const fallback = JSON.parse(
+      readFileSync(join(fallbackDir, files[0]), "utf8")
+    ) as {
+      originalFailure: FailureContext
+      persistenceFailure: { message: string }
+    }
+    expect(fallback.originalFailure.stage).toBe("model_request")
+    expect(fallback.persistenceFailure.message).toBe(
+      "task_events insert failed"
+    )
+  })
+
+  it("reports fallback diagnostic failure honestly without crashing the scheduler process", async () => {
+    const pid = buildProcess({
+      phases: [{ key: "a" }],
+    })
+    const fallbackPath = join(
+      mkdtempSync(join(tmpdir(), "process-failure-fallback-file-")),
+      "not-a-directory"
+    )
+    writeFileSync(fallbackPath, "occupied", "utf8")
+    const runPhase: RunPhase = async () => ({
+      error: "provider timed out",
+      retryable: false,
+      failure: injectedFailure({
+        stage: "model_request",
+        code: "provider_timeout",
+        message: "provider timed out",
+      }),
+    })
+    const { ctx, runId } = makeCtx(pid, runPhase, {
+      failureDiagnosticDir: fallbackPath,
+    })
+    const spy = vi
+      .spyOn(processes, "createPhaseAttempt")
+      .mockImplementationOnce(() => {
+        throw new Error("sqlite attempt insert failed")
+      })
+
+    try {
+      await expect(runScheduler(ctx)).rejects.toThrow(FailurePersistenceError)
+    } finally {
+      spy.mockRestore()
+    }
+
+    const phaseRun = runsForKey(runId, pid, "a")[0]
+    expect(phaseRun.failure?.stage).toBe("result_persistence")
+    expect(phaseRun.failure?.message).toContain("Fallback diagnostic failed")
+    expect(existsSync(fallbackPath)).toBe(true)
+  })
+
+  it.each([
+    "agent_setup",
+    "model_request",
+    "tool_dispatch",
+    "tool_execution",
+    "result_persistence",
+  ] satisfies FailureStage[])(
+    "preserves injected %s failure context across phase row, audit, and event",
+    async (stage) => {
+      const pid = buildProcess({
+        phases: [{ key: "a" }],
+      })
+      const workerTaskId = freshTask()
+      const agentName = `${stage}-agent`
+      const runPhase: RunPhase = async () => ({
+        error: `${stage} failed`,
+        retryable: false,
+        failure: injectedFailure({
+          stage,
+          workerTaskId,
+          agentName,
+        }),
+      })
+      const { ctx, events, runId } = makeCtx(pid, runPhase)
+
+      await expect(runScheduler(ctx)).rejects.toThrow(/failed/)
+
+      expectStructuredFailure({
+        runId,
+        processId: pid,
+        phaseKey: "a",
+        events,
+        stage,
+        code: `${stage}_injected`,
+        message: `${stage} failed`,
+        attempt: 1,
+        maxAttempts: 3,
+        workerTaskId,
+        agentName,
+      })
+    }
+  )
+
+  it("synthesizes structured context for a legacy string-only phase failure", async () => {
+    const pid = buildProcess({
+      phases: [{ key: "a" }],
+    })
+    const workerTaskId = freshTask()
+    const runPhase: RunPhase = async ({ phaseRun }) => {
+      processes.updatePhaseRun(phaseRun.id, {
+        taskId: workerTaskId,
+        agentName: "legacy-agent",
+      })
+      return { error: "plain worker error", retryable: false }
+    }
+    const { ctx, events, runId } = makeCtx(pid, runPhase)
+
+    await expect(runScheduler(ctx)).rejects.toThrow(/failed/)
+
+    expectStructuredFailure({
+      runId,
+      processId: pid,
+      phaseKey: "a",
+      events,
+      stage: "model_request",
+      code: "phase_worker_failed",
+      message: "plain worker error",
+      attempt: 1,
+      maxAttempts: 3,
+      workerTaskId,
+      agentName: "legacy-agent",
+    })
+  })
+
+  it("preserves injected decomposition failure context", async () => {
+    const pid = buildProcess({
+      phases: [{ key: "c", fanOut: true }],
+    })
+    const workerTaskId = freshTask()
+    const decompose: Decompose = async () => ({
+      error: "decomposition failed",
+      retryable: false,
+      failure: injectedFailure({
+        stage: "decomposition",
+        workerTaskId,
+        agentName: "decomposer",
+      }),
+    })
+    const runPhase: RunPhase = async () => ({ content: "unused" })
+    const { ctx, events, runId } = makeCtx(pid, runPhase, { decompose })
+
+    await expect(runScheduler(ctx)).rejects.toThrow(/failed/)
+
+    expectStructuredFailure({
+      runId,
+      processId: pid,
+      phaseKey: "c",
+      events,
+      stage: "decomposition",
+      code: "decomposition_injected",
+      message: "decomposition failed",
+      attempt: 1,
+      maxAttempts: 3,
+      workerTaskId,
+      agentName: "decomposer",
+    })
+  })
+
+  it("preserves injected output_validation context for malformed decomposition output", async () => {
+    const pid = buildProcess({
+      phases: [{ key: "c", fanOut: true }],
+    })
+    const workerTaskId = freshTask()
+    const decompose: Decompose = async () => ({
+      subtasks: [],
+      retryable: false,
+      failure: injectedFailure({
+        stage: "output_validation",
+        code: "decomposition_output_invalid",
+        message: "fan-out output was empty",
+        workerTaskId,
+        agentName: "decomposer",
+      }),
+    })
+    const runPhase: RunPhase = async () => ({ content: "unused" })
+    const { ctx, events, runId } = makeCtx(pid, runPhase, { decompose })
+
+    await expect(runScheduler(ctx)).rejects.toThrow(/failed/)
+
+    expectStructuredFailure({
+      runId,
+      processId: pid,
+      phaseKey: "c",
+      events,
+      stage: "output_validation",
+      code: "decomposition_output_invalid",
+      message: "fan-out output was empty",
+      attempt: 1,
+      maxAttempts: 3,
+      workerTaskId,
+      agentName: "decomposer",
+    })
+  })
+
+  it("preserves injected reviewer failure context at the validator boundary", async () => {
+    const pid = buildProcess({
+      phases: [{ key: "a", validator: true }],
+    })
+    const workerTaskId = freshTask()
+    const runPhase: RunPhase = async () => ({ content: "needs review" })
+    const validate: Validate = async () => ({
+      approved: false,
+      error: "reviewer failed",
+      retryable: false,
+      failure: injectedFailure({
+        stage: "reviewer",
+        workerTaskId,
+        agentName: "reviewer-agent",
+      }),
+    })
+    const { ctx, events, runId } = makeCtx(pid, runPhase, { validate })
+
+    await expect(runScheduler(ctx)).rejects.toThrow(GateBlockedError)
+
+    expectStructuredFailure({
+      runId,
+      processId: pid,
+      phaseKey: "a",
+      events,
+      phaseRunStatus: "waiting_for_approval",
+      eventStatus: "waiting_for_approval",
+      stage: "reviewer",
+      code: "reviewer_injected",
+      message: "reviewer failed",
+      attempt: 1,
+      maxAttempts: 3,
+      workerTaskId,
+      agentName: "reviewer-agent",
+    })
+  })
+
+  it("preserves injected subprocess failure context", async () => {
+    const childProcessId = buildProcess({ phases: [{ key: "child" }] })
+    const pid = buildProcess({
+      phases: [{ key: "a", subprocessId: childProcessId }],
+    })
+    const workerTaskId = freshTask()
+    const runPhase: RunPhase = async () => ({ content: "unused" })
+    const runSubProcess: RunSubProcess = async () => ({
+      error: "subprocess failed",
+      retryable: false,
+      failure: injectedFailure({
+        stage: "subprocess",
+        workerTaskId,
+        agentName: "subprocess-agent",
+      }),
+    })
+    const { ctx, events, runId } = makeCtx(pid, runPhase, { runSubProcess })
+
+    await expect(runScheduler(ctx)).rejects.toThrow(/failed/)
+
+    expectStructuredFailure({
+      runId,
+      processId: pid,
+      phaseKey: "a",
+      events,
+      stage: "subprocess",
+      code: "subprocess_injected",
+      message: "subprocess failed",
+      attempt: 1,
+      maxAttempts: 1,
+      workerTaskId,
+      agentName: "subprocess-agent",
+    })
+  })
+
+  it("synthesizes scheduler failure context when deriving a failed container", async () => {
+    const pid = buildProcess({
+      phases: [{ key: "c", fanOut: true }],
+    })
+    const runPhase: RunPhase = async () => ({ content: "unused" })
+    const { ctx, events, runId } = makeCtx(pid, runPhase)
+    const phase = processes
+      .getProcessGraph(pid)!
+      .phases.find((p) => p.key === "c")!
+    const parent = processes.createPhaseRun({
+      runId,
+      phaseId: phase.id,
+      status: "running",
+    })
+    const child = processes.createPhaseRun({
+      runId,
+      phaseId: phase.id,
+      parentId: parent.id,
+      status: "failed",
+    })
+    processes.updatePhaseRun(child.id, {
+      error: "child failed without structured context",
+    })
+
+    await expect(runScheduler(ctx)).rejects.toThrow(/failed/)
+
+    expectStructuredFailure({
+      runId,
+      processId: pid,
+      phaseKey: "c",
+      events,
+      stage: "scheduler",
+      code: "fanout_child_failed",
+      message: "child failed without structured context",
+      attempt: null,
+      maxAttempts: null,
+      workerTaskId: null,
+      agentName: null,
+    })
   })
 })
 
@@ -1040,6 +1862,86 @@ describe.skipIf(!sqliteLoads)("scheduler — validator (plan 031.1)", () => {
     expect(aRun.reworkRound).toBe(0)
   })
 
+  it("ignores a delayed stale validator approval for replaced output", async () => {
+    const pid = buildProcess({
+      phases: [{ key: "a", validator: true }, { key: "b" }],
+      edges: [["a", "b"]],
+    })
+    const ran: string[] = []
+    const identities = ["out-1", "out-2"]
+    const runPhase: RunPhase = async ({ phase }) => {
+      ran.push(phase.key)
+      return {
+        content: phase.key,
+        outputIdentity: identities.shift() ?? "out-2",
+      }
+    }
+    let reviews = 0
+    const validate: Validate = async ({ phaseRun, outputIdentity }) => {
+      reviews++
+      if (reviews === 1) {
+        processes.updatePhaseRun(phaseRun.id, {
+          status: "pending",
+          outputIdentity: "out-2",
+        })
+        return { approved: true, targetOutputIdentity: outputIdentity }
+      }
+      return { approved: true, targetOutputIdentity: outputIdentity }
+    }
+    const { ctx, runId } = makeCtx(pid, runPhase, { validate })
+
+    await runScheduler(ctx)
+
+    expect(ran).toEqual(["a", "a", "b"])
+    expect(reviews).toBe(2)
+    const aRun = runsForKey(runId, pid, "a").find((r) => r.parentId === null)!
+    expect(aRun.status).toBe("completed")
+    expect(aRun.outputIdentity).toBe("out-2")
+  })
+
+  it("ignores delayed stale validator rejection feedback for replaced output", async () => {
+    const pid = buildProcess({
+      phases: [{ key: "a", validator: true }, { key: "b" }],
+      edges: [["a", "b"]],
+    })
+    const ran: string[] = []
+    const identities = ["out-1", "out-2"]
+    const runPhase: RunPhase = async ({ phase, phaseRun }) => {
+      const fresh = processes.getPhaseRun(phaseRun.id)
+      ran.push(`${phase.key}${fresh?.reworkNote ? "*" : ""}`)
+      return {
+        content: phase.key,
+        outputIdentity: identities.shift() ?? "out-2",
+      }
+    }
+    let reviews = 0
+    const validate: Validate = async ({ phaseRun, outputIdentity }) => {
+      reviews++
+      if (reviews === 1) {
+        processes.updatePhaseRun(phaseRun.id, {
+          status: "pending",
+          outputIdentity: "out-2",
+        })
+        return {
+          approved: false,
+          feedback: "stale feedback",
+          targetOutputIdentity: outputIdentity,
+        }
+      }
+      return { approved: true, targetOutputIdentity: outputIdentity }
+    }
+    const { ctx, runId } = makeCtx(pid, runPhase, { validate })
+
+    await runScheduler(ctx)
+
+    expect(ran).toEqual(["a", "a", "b"])
+    expect(reviews).toBe(2)
+    const aRun = runsForKey(runId, pid, "a").find((r) => r.parentId === null)!
+    expect(aRun.status).toBe("completed")
+    expect(aRun.validatorRound).toBe(0)
+    expect(aRun.reworkNote).toBeNull()
+  })
+
   it("escalates to a human gate when the validator exhausts its cap", async () => {
     // a (validator, cap 2) -> b. The reviewer always rejects. a re-runs up to the
     // cap, then the scheduler raises a gate (throws) and b never runs.
@@ -1069,6 +1971,7 @@ describe.skipIf(!sqliteLoads)("scheduler — validator (plan 031.1)", () => {
     expect(aRun.status).toBe("waiting_for_approval")
     expect(aRun.validatorRound).toBe(2)
     expect(aRun.reworkNote).toBe("round 2")
+    expectNoFailureRecorded(aRun.id)
     expect(statusByKey(runId, pid).b).toBe("pending") // b held
 
     // The escalation raised exactly one pending gate.
@@ -1099,10 +2002,26 @@ describe.skipIf(!sqliteLoads)("scheduler — validator (plan 031.1)", () => {
     expect(ran).toEqual(["a"]) // one attempt, then straight to the gate
     expect(statusByKey(runId, pid).a).toBe("waiting_for_approval")
 
-    // Approve the exhaustion gate.
+    // Manual-override the exhaustion gate.
     const pending = listApprovals({ taskId: ctx.taskId, status: "pending" })
     expect(pending).toHaveLength(1)
-    resolveApproval(pending[0].id, { status: "approved" })
+    const request = pending[0].request as {
+      requestId: string
+      phaseKey: string
+      phaseRunId: string
+    }
+    resolveApproval(pending[0].id, {
+      status: "approved",
+      decision: {
+        manualOverride: true,
+        gateKind: "process_validator_gate",
+        requestId: request.requestId,
+        phaseKey: request.phaseKey,
+        phaseRunId: request.phaseRunId,
+        failureReason: "not good enough",
+        actor: "user",
+      },
+    })
 
     // Resume: reconcileValidatorGates flips a → completed, releasing b. The
     // validator does NOT re-run (a is no longer re-running its worker).
@@ -1119,6 +2038,47 @@ describe.skipIf(!sqliteLoads)("scheduler — validator (plan 031.1)", () => {
     })
     expect(ran).toEqual(["a", "b"])
     expect(statusByKey(runId, pid)).toEqual({ a: "completed", b: "completed" })
+  })
+
+  it("does not release a validator gate from a generic approved row", async () => {
+    const pid = buildProcess({
+      phases: [
+        { key: "a", validator: true, validatorMaxIterations: 1 },
+        { key: "b" },
+      ],
+      edges: [["a", "b"]],
+    })
+    const ran: string[] = []
+    const runPhase: RunPhase = async ({ phase }) => {
+      ran.push(phase.key)
+      return { content: phase.key }
+    }
+    const validate: Validate = async () => ({
+      approved: false,
+      feedback: "not good enough",
+    })
+    const { ctx, runId } = makeCtx(pid, runPhase, { validate })
+    await expect(runScheduler(ctx)).rejects.toBeInstanceOf(GateBlockedError)
+
+    const pending = listApprovals({ taskId: ctx.taskId, status: "pending" })
+    expect(pending).toHaveLength(1)
+    resolveApproval(pending[0].id, { status: "approved" })
+
+    await runScheduler({
+      run: processes.getProcessRun(runId)!,
+      graph: processes.getProcessGraph(pid)!,
+      taskId: ctx.taskId,
+      signal: new AbortController().signal,
+      emit: () => {},
+      runPhase,
+      validate,
+    })
+
+    expect(ran).toEqual(["a"])
+    expect(statusByKey(runId, pid)).toEqual({
+      a: "waiting_for_approval",
+      b: "pending",
+    })
   })
 
   it("uses the engine default cap when no per-phase override is set", async () => {
@@ -1139,9 +2099,9 @@ describe.skipIf(!sqliteLoads)("scheduler — validator (plan 031.1)", () => {
     expect(runs).toBe(3) // DEFAULT_VALIDATOR_ITERATIONS
   })
 
-  it("fails open (completes) when the reviewer itself errors", async () => {
-    // A broken reviewer (error result) must not wedge the run — the phase settles
-    // completed and dependents proceed.
+  it("holds the phase when the reviewer itself errors", async () => {
+    // A broken reviewer is not an approval. The phase parks at the validator gate
+    // and dependents remain unreleased.
     const pid = buildProcess({
       phases: [{ key: "a", validator: true }, { key: "b" }],
       edges: [["a", "b"]],
@@ -1152,8 +2112,118 @@ describe.skipIf(!sqliteLoads)("scheduler — validator (plan 031.1)", () => {
       error: "reviewer blew up",
     })
     const { ctx, runId } = makeCtx(pid, runPhase, { validate })
+    await expect(runScheduler(ctx)).rejects.toBeInstanceOf(GateBlockedError)
+    expect(statusByKey(runId, pid)).toEqual({
+      a: "waiting_for_approval",
+      b: "pending",
+    })
+    const aRun = runsForKey(runId, pid, "a").find((r) => r.parentId === null)!
+    expect(aRun.error).toBe("reviewer blew up")
+    expect(aRun.validatorRound).toBe(0)
+    const pending = listApprovals({ taskId: ctx.taskId, status: "pending" })
+    expect(pending).toHaveLength(1)
+  })
+
+  it("retries only the validator review after a validator-unavailable gate", async () => {
+    const pid = buildProcess({
+      phases: [{ key: "a", validator: true }, { key: "b" }],
+      edges: [["a", "b"]],
+    })
+    const { ctx, runId } = makeCtx(
+      pid,
+      async ({ phase }) => ({ content: phase.key }),
+      {
+        validate: async () => ({ approved: true }),
+      }
+    )
+    const graph = processes.getProcessGraph(pid)!
+    const a = graph.phases.find((p) => p.key === "a")!
+    const aRun = processes.createPhaseRun({
+      runId,
+      phaseId: a.id,
+      status: "pending",
+    })
+    processes.updatePhaseRun(aRun.id, {
+      taskId: freshTask(),
+      error: null,
+      validatorRound: 0,
+    })
+    createApproval({
+      taskId: ctx.taskId,
+      request: {
+        kind: "process_validator_gate",
+        phaseKey: "a",
+        phaseRunId: aRun.id,
+        requestId: randomUUID(),
+      },
+    })
+    const gate = listApprovals({ taskId: ctx.taskId })[0]
+    resolveApproval(gate.id, {
+      status: "denied",
+      decision: { retryReview: true },
+    })
+    const ran: string[] = []
+    ctx.runPhase = async ({ phase }) => {
+      ran.push(phase.key)
+      return { content: phase.key }
+    }
+
     await runScheduler(ctx)
-    expect(statusByKey(runId, pid)).toEqual({ a: "completed", b: "completed" })
+
+    expect(ran).toEqual(["b"])
+    const fresh = processes.getPhaseRun(aRun.id)!
+    expect(fresh.status).toBe("completed")
+    expect(fresh.validatorRound).toBe(0)
+    expect(fresh.reworkRound).toBe(0)
+  })
+
+  it("enters the normal validator rework loop after a retry review rejects", async () => {
+    const pid = buildProcess({
+      phases: [{ key: "a", validator: true, validatorMaxIterations: 3 }],
+    })
+    const { ctx, runId } = makeCtx(pid, async () => ({ content: "unused" }))
+    const graph = processes.getProcessGraph(pid)!
+    const a = graph.phases.find((p) => p.key === "a")!
+    const aRun = processes.createPhaseRun({
+      runId,
+      phaseId: a.id,
+      status: "pending",
+    })
+    processes.updatePhaseRun(aRun.id, {
+      taskId: freshTask(),
+      validatorRound: 0,
+    })
+    createApproval({
+      taskId: ctx.taskId,
+      request: {
+        kind: "process_validator_gate",
+        phaseKey: "a",
+        phaseRunId: aRun.id,
+        requestId: randomUUID(),
+      },
+    })
+    resolveApproval(listApprovals({ taskId: ctx.taskId })[0].id, {
+      status: "denied",
+      decision: { retryReview: true },
+    })
+    const ran: string[] = []
+    const verdicts = [
+      { approved: false, feedback: "fix it" },
+      { approved: true },
+    ]
+    ctx.runPhase = async ({ phase }) => {
+      ran.push(phase.key)
+      return { content: phase.key }
+    }
+    ctx.validate = async () => verdicts.shift()!
+
+    await runScheduler(ctx)
+
+    expect(ran).toEqual(["a"])
+    const fresh = processes.getPhaseRun(aRun.id)!
+    expect(fresh.status).toBe("completed")
+    expect(fresh.validatorRound).toBe(1)
+    expect(fresh.reworkRound).toBe(0)
   })
 
   it("does not review a phase with the validator toggle off", async () => {
@@ -1272,6 +2342,7 @@ describe.skipIf(!sqliteLoads)("scheduler — flag routing (plan 031.2)", () => {
     expect(req.flagReason).toBe("please fix")
     // The flag stays pending (confirmFlag applies it later).
     expect(processes.listFlags({ runId, status: "pending" })).toHaveLength(1)
+    expectNoFailureRecorded(bRun.id)
   })
 
   it("holds the flagging phase's dependents until the flag routes (no early dispatch)", async () => {
@@ -1790,3 +2861,150 @@ describe.skipIf(!sqliteLoads)(
     })
   }
 )
+
+describe.skipIf(!sqliteLoads)("recorded phase completion contracts", () => {
+  function validatedProcess(requiredArtifacts: string[] = []) {
+    const id = buildProcess({
+      phases: [{ key: "work" }, { key: "dependent" }],
+      edges: [["work", "dependent"]],
+    })
+    const phase = processes.listPhases(id)[0]
+    processes.updatePhase(phase.id, {
+      completionContract: {
+        policy: "validated",
+        version: 1,
+        requiredArtifacts,
+      },
+    })
+    return { id, phase }
+  }
+  const completed = (attemptId: string) =>
+    JSON.stringify({
+      version: 1,
+      attemptId,
+      status: "completed",
+      output: "Done",
+      evidence: "Verified after recovering from a tool error",
+    })
+
+  it.each(["blocked", "failed", "missing", "invalid"])(
+    "holds dependents for %s tool-free outcomes",
+    async (status) => {
+      const { id } = validatedProcess()
+      const worker = vi.fn<RunPhase>(async ({ attemptId }) => ({
+        content:
+          status === "missing"
+            ? undefined
+            : status === "invalid"
+              ? "done"
+              : JSON.stringify({
+                  version: 1,
+                  attemptId,
+                  status,
+                  output: "Incomplete",
+                  evidence: "Tool error confirmed",
+                  reason: "Access denied",
+                  nextAction: "Grant access",
+                }),
+      }))
+      const { ctx, runId } = makeCtx(id, worker)
+      await expect(runScheduler(ctx)).rejects.toThrow("a process phase failed")
+      expect(worker).toHaveBeenCalledTimes(1)
+      const rows = processes.listPhaseRuns({ runId })
+      expect(rows.find((r) => r.status === "failed")?.failure?.stage).toBe(
+        "output_validation"
+      )
+      expect(rows.some((r) => r.status === "pending")).toBe(true)
+    }
+  )
+
+  it("requires the configured file, then accepts a recovered worker on restart", async () => {
+    const { id } = validatedProcess(["report.txt"])
+    const workspace = mkdtempSync(join(tmpdir(), "phase-completion-"))
+    const { ctx, runId } = makeCtx(id, async ({ attemptId }) => ({
+      content: completed(attemptId),
+    }))
+    ctx.workspace = workspace
+    await expect(runScheduler(ctx)).rejects.toThrow()
+    const row = processes
+      .listPhaseRuns({ runId })
+      .find((r) => r.status === "failed")!
+    expect(row.error).toContain("report.txt")
+    const oldAttempt = row.completionReceipt!.outcome.attemptId
+    processes.updatePhaseRun(row.id, {
+      status: "pending",
+      outputIdentity: null,
+    })
+    writeFileSync(join(workspace, "report.txt"), "recovered")
+    await runScheduler(ctx)
+    const current = processes.getPhaseRun(row.id)!
+    expect(current.status).toBe("completed")
+    expect(current.completionReceipt?.checkedArtifacts).toEqual(["report.txt"])
+    expect(current.completionReceipt?.outcome.attemptId).not.toBe(oldAttempt)
+    expect(
+      processes.listPhaseRuns({ runId }).every((r) => r.status === "completed")
+    ).toBe(true)
+  })
+
+  it("retains the run policy across definition edits and rejects a stale attempt after reset", async () => {
+    const { id, phase } = validatedProcess()
+    let oldReply: string | undefined
+    const { ctx, runId } = makeCtx(id, async ({ attemptId }) => {
+      oldReply ??= completed(attemptId)
+      return { content: oldReply }
+    })
+    processes.updatePhase(phase.id, {
+      completionContract: { policy: "legacy" },
+    })
+    ctx.graph = processes.getProcessGraph(id)!
+    await runScheduler(ctx)
+    const row = processes
+      .listPhaseRuns({ runId })
+      .find((r) => r.phaseId === phase.id)!
+    expect(row.completionReceipt?.outcome.version).toBe(1)
+    processes.updatePhaseRun(row.id, {
+      status: "pending",
+      outputIdentity: null,
+    })
+    expect(processes.getPhaseRun(row.id)?.completionReceipt).toBeNull()
+    await expect(runScheduler(ctx)).rejects.toThrow()
+    expect(processes.getPhaseRun(row.id)?.error).toContain("stale")
+  })
+
+  it("keeps pre-contract runs legacy even after the definition opts in", async () => {
+    const { id } = validatedProcess()
+    const { ctx, runId } = makeCtx(id, async () => ({ content: "freeform" }))
+    db.prepare(
+      "UPDATE process_runs SET completion_contracts = NULL WHERE id = ?"
+    ).run(runId)
+    ctx.run = processes.getProcessRun(runId)!
+    await runScheduler(ctx)
+    expect(
+      processes.listPhaseRuns({ runId }).every((r) => r.status === "completed")
+    ).toBe(true)
+  })
+
+  it("enforces outcomes for fan-out children", async () => {
+    const id = buildProcess({
+      phases: [{ key: "split", fanOut: true }, { key: "after" }],
+      edges: [["split", "after"]],
+    })
+    const phase = processes.listPhases(id)[0]
+    processes.updatePhase(phase.id, {
+      completionContract: {
+        policy: "validated",
+        version: 1,
+        requiredArtifacts: [],
+      },
+    })
+    const worker = vi.fn<RunPhase>(async () => ({ content: "done" }))
+    const { ctx, runId } = makeCtx(id, worker, {
+      decompose: async () => ({ subtasks: ["one"] }),
+    })
+    await expect(runScheduler(ctx)).rejects.toThrow()
+    expect(worker).toHaveBeenCalledTimes(1)
+    expect(
+      processes.listPhaseRuns({ runId }).filter((r) => r.status === "failed")
+    ).toHaveLength(2)
+  })
+})

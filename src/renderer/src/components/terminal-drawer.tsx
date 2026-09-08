@@ -45,11 +45,11 @@ function isTerminalCopyShortcut(event: KeyboardEvent): boolean {
 export function TerminalToggle({
   open,
   onToggle,
-  reserveWindowControls = false,
+  rightOffset,
 }: {
   open: boolean
   onToggle: () => void
-  reserveWindowControls?: boolean
+  rightOffset: number
 }) {
   return (
     <button
@@ -57,10 +57,8 @@ export function TerminalToggle({
       onClick={onToggle}
       aria-label={open ? "Hide terminal" : "Show terminal"}
       title={open ? "Hide terminal" : "Show terminal"}
-      className={cn(
-        "absolute top-2.5 z-30 flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors [-webkit-app-region:no-drag] hover:bg-muted hover:text-foreground",
-        reserveWindowControls ? "right-[19.25rem]" : "right-[11.5rem]"
-      )}
+      className="absolute top-2.5 z-30 flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors [-webkit-app-region:no-drag] hover:bg-muted hover:text-foreground"
+      style={{ right: rightOffset }}
     >
       <Terminal className="size-4.5" />
     </button>
@@ -88,12 +86,18 @@ export function TerminalDrawer({
   open,
   conversationId,
   workspace,
+  replaceSessionsOnWorkspaceChange = false,
+  adoptedConversation = null,
+  onAdoptionApplied,
   onOpenChange,
   onAddSelectionToMessage,
 }: {
   open: boolean
   conversationId: string | null
   workspace: string
+  replaceSessionsOnWorkspaceChange?: boolean
+  adoptedConversation?: { from: string; to: string } | null
+  onAdoptionApplied?: () => void
   onOpenChange: (open: boolean) => void
   onAddSelectionToMessage: (text: string) => void
 }) {
@@ -113,6 +117,7 @@ export function TerminalDrawer({
   const skipRenameBlur = React.useRef(false)
   const renameInputRef = React.useRef<HTMLInputElement | null>(null)
   const wasOpen = React.useRef(open)
+  const previousWorkspace = React.useRef(workspace)
   const conversationSessions = React.useMemo(
     () =>
       sessions.filter(
@@ -223,6 +228,62 @@ export function TerminalDrawer({
   )
 
   React.useEffect(() => {
+    if (!adoptedConversation) return
+    const { from, to } = adoptedConversation
+    if (!from || !to || from === to) return
+    setSessions((rows) =>
+      rows.map((row) =>
+        row.conversationId === from ? { ...row, conversationId: to } : row
+      )
+    )
+    setActiveIdByConversation((state) => {
+      if (!(from in state)) return state
+      const next = { ...state, [to]: state[from] }
+      delete next[from]
+      return next
+    })
+    onAdoptionApplied?.()
+  }, [adoptedConversation, onAdoptionApplied])
+
+  React.useEffect(() => {
+    const previous = previousWorkspace.current
+    previousWorkspace.current = workspace
+    if (
+      !replaceSessionsOnWorkspaceChange ||
+      !open ||
+      !conversationId ||
+      !previous ||
+      previous === workspace
+    ) {
+      return
+    }
+
+    const staleSessions = sessions.filter(
+      (session) =>
+        session.conversationId === conversationId && session.cwd !== workspace
+    )
+    if (staleSessions.length === 0) return
+    for (const session of staleSessions) {
+      void window.cowork.terminal.kill(session.id)
+      forgetSessionUi(session.id)
+    }
+    setSessions((rows) =>
+      rows.filter((row) => !staleSessions.some((s) => s.id === row.id))
+    )
+    setActiveIdForConversation(null)
+    if (workspace) void createSession()
+  }, [
+    conversationId,
+    createSession,
+    forgetSessionUi,
+    open,
+    replaceSessionsOnWorkspaceChange,
+    sessions,
+    setActiveIdForConversation,
+    workspace,
+  ])
+
+  React.useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (
         event.key.toLowerCase() !== NEW_TERMINAL_KEYBOARD_SHORTCUT ||
@@ -277,6 +338,8 @@ export function TerminalDrawer({
     wasOpen.current = open
     if (
       !opened ||
+      !open ||
+      adoptedConversation?.to === conversationId ||
       conversationSessions.length > 0 ||
       !conversationId ||
       !workspace
@@ -285,6 +348,7 @@ export function TerminalDrawer({
     void createSession()
   }, [
     conversationId,
+    adoptedConversation,
     conversationSessions.length,
     createSession,
     open,

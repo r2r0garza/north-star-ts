@@ -5,15 +5,14 @@ import type { ActionClassifier, ActionDecision, ToolAction } from "./types"
 // write, or act on the user's behalf on a remote system), so it always requires
 // approval, exactly like web_fetch and browser navigation.
 //
-// Like those, it deliberately carries NO `category`, so the sandbox auto-approve
-// downgrade (which keys on category) never silences the prompt. Auto mode still
-// auto-approves it (handled in the gate), and the user can grant "once" or "for
-// this session" via the allowlist (keyed by the identity = the prefixed tool name).
+// This uses the explicit approval tier because MCP servers can perform protected
+// external effects under the user's connected account. Ordinary allowlist rules
+// and sandbox policy must not silently cover it.
 export class McpActionClassifier implements ActionClassifier {
   classify(action: ToolAction): ActionDecision | null {
     if (action.kind !== "mcp") return null
     return {
-      level: "require_approval",
+      level: "require_explicit_approval",
       reason: "Calling an external MCP server",
     }
   }

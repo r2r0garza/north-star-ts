@@ -4,6 +4,7 @@ export type {
   Approval,
   ApprovalStatus,
   Conversation,
+  FailureContext,
   Message,
   Mode,
   Project,
@@ -18,7 +19,11 @@ export type {
 
 // Durable task runner event types, surfaced for the Workspace Activity panel's
 // live tail subscription (window.cowork.tasks.onEvent).
-export type { TaskEventPayload, TaskLiveEvent } from "../../preload/index"
+export type {
+  TaskEventPayload,
+  TaskLiveEvent,
+  TodoChangeEvent,
+} from "../../preload/index"
 
 // ask_user_question types, surfaced for the QuestionPanel.
 export type {
@@ -80,6 +85,8 @@ export type {
   ThemeSettings,
   IdeSettings,
   NotificationSettings,
+  OnboardingSettings,
+  ConversationSettings,
   Backend,
   LocalRuntimeProfile,
   LocalProfileCapabilities,
@@ -104,6 +111,10 @@ export type {
   ModelEntry,
   AccountView,
   AccountWithModels,
+  ExternalAgentModelMapping,
+  ExternalAgentModelSourceKind,
+  ExternalAgentModelResolution,
+  ResolvedMappingView,
 } from "../../preload/index"
 
 // MCP server types, surfaced for the MCP view + agent editor picker.
@@ -126,13 +137,20 @@ export type {
   ProcessPhaseAgent,
   ProcessEdge,
   ProcessRun,
+  ProcessPhaseAttempt,
   ProcessPhaseRun,
+  ProcessRuntimeConfig,
+  ProcessRuntimeSelection,
+  ProcessRuntimeSlot,
+  ProcessRuntimeSnapshot,
+  ProcessRuntimeSnapshotSelection,
   ProcessGraph,
   ProcessRunStatus,
   PhaseRunStatus,
   PhaseRouting,
   PhaseGatePolicy,
   EdgeTrigger,
+  ProcessImportResult,
 } from "../../preload/index"
 
 // Live dashboard types (plan 033), surfaced for the Dashboards screen.

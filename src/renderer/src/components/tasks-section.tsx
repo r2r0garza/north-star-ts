@@ -41,6 +41,7 @@ type PendingGate =
       summary: string
       reason: string
       actionKind?: string
+      explicit?: boolean
       detail?: Record<string, unknown>
     }
   | { kind: "question"; requestId: string; questions: Question[] }
@@ -60,6 +61,7 @@ function latestGate(events: TaskEventPayload[]): PendingGate | null {
         summary: ev.summary,
         reason: ev.reason,
         actionKind: ev.kind,
+        explicit: ev.explicit,
         detail: ev.detail,
       }
     } else if (ev.type === "question") {
@@ -76,9 +78,18 @@ function latestGate(events: TaskEventPayload[]): PendingGate | null {
   return gate
 }
 
+function latestCommandWait(events: TaskEventPayload[]): boolean {
+  let waiting = false
+  for (const ev of events) {
+    if (ev.type === "command_wait") waiting = ev.phase === "start"
+  }
+  return waiting
+}
+
 function TaskRow({
   task,
   gate,
+  commandWait,
   onResume,
   onCancel,
   onOpen,
@@ -88,6 +99,7 @@ function TaskRow({
 }: {
   task: Task
   gate: PendingGate | null
+  commandWait: boolean
   onResume: () => void
   onCancel: () => void
   onOpen: () => void
@@ -105,6 +117,9 @@ function TaskRow({
   const isRunning = task.status === "running"
   const isInterrupted = task.status === "interrupted"
   const isWaiting = task.status === "waiting_for_approval"
+  const statusLabel = commandWait
+    ? "Waiting for background command"
+    : meta.label
 
   return (
     <div className="flex flex-col gap-2 rounded-md border bg-card p-2.5">
@@ -125,7 +140,7 @@ function TaskRow({
             ) : (
               <span className={cn("size-1.5 rounded-full", meta.dot)} />
             )}
-            <span>{meta.label}</span>
+            <span>{statusLabel}</span>
           </div>
         </button>
         <div className="flex shrink-0 gap-1">
@@ -163,6 +178,7 @@ function TaskRow({
             summary: gate.summary,
             reason: gate.reason,
             kind: gate.actionKind,
+            explicit: gate.explicit,
             detail: gate.detail,
             status: "pending",
           }}
@@ -204,10 +220,14 @@ export function TasksSection({
   const [gates, setGates] = React.useState<Record<string, PendingGate | null>>(
     {}
   )
+  const [commandWaits, setCommandWaits] = React.useState<
+    Record<string, boolean>
+  >({})
 
   const refetch = React.useCallback(async () => {
     if (!conversationId) {
       setTasks([])
+      setCommandWaits({})
       return
     }
     const rows = await window.cowork.db.tasks.list({
@@ -234,6 +254,21 @@ export function TasksSection({
       for (const [id, gate] of recovered) next[id] = gate
       return next
     })
+    const running = actionable.filter((t) => t.status === "running")
+    const recoveredWaits = await Promise.all(
+      running.map(async (t) => {
+        const events = await window.cowork.db.taskEvents.list(t.id)
+        return [
+          t.id,
+          latestCommandWait(events.map((e) => e.payload as TaskEventPayload)),
+        ] as const
+      })
+    )
+    setCommandWaits((prev) => {
+      const next = { ...prev }
+      for (const [id, waiting] of recoveredWaits) next[id] = waiting
+      return next
+    })
   }, [conversationId])
   const refetchRef = React.useRef(refetch)
   refetchRef.current = refetch
@@ -241,6 +276,7 @@ export function TasksSection({
   React.useEffect(() => {
     let cancelled = false
     setGates({})
+    setCommandWaits({})
     if (!conversationId) {
       setTasks([])
       return
@@ -282,6 +318,17 @@ export function TasksSection({
         }))
       } else if (event.type === "status_change" && event.to === "running") {
         setGates((g) => ({ ...g, [taskId]: null }))
+      } else if (event.type === "command_wait") {
+        setCommandWaits((w) => ({
+          ...w,
+          [taskId]: event.phase === "start",
+        }))
+      } else if (
+        event.type === "status_change" &&
+        event.to !== "running" &&
+        event.to !== "waiting_for_approval"
+      ) {
+        setCommandWaits((w) => ({ ...w, [taskId]: false }))
       }
       if (event.type === "token") return
       void refetchRef.current()
@@ -340,6 +387,7 @@ export function TasksSection({
           key={task.id}
           task={task}
           gate={gates[task.id] ?? null}
+          commandWait={commandWaits[task.id] === true}
           onResume={() => void resume(task.id)}
           onCancel={() => void cancel(task.id)}
           onOpen={() => onOpenTask(task)}

@@ -1,7 +1,8 @@
 # PR64: Conversation-scoped transcript recall tools
 
-> Status: **NOT STARTED**. Default authority is the current conversation—not the
-> current project. Broader recall remains separately privileged and out of scope.
+> Status: **DONE**. Implemented by `cdbae2e` with conversation-scoped FTS storage,
+> current-conversation and tree recall tools, migrations/repository coverage, and
+> capability registration.
 
 ## Context
 
@@ -73,4 +74,3 @@ the point is to recover originals.
 
 - Project/global conversation search, semantic/vector search, automatic memory writes,
   or using recall to bypass `039` phase-agent messaging.
-

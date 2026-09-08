@@ -1,4 +1,4 @@
-import { ipcMain } from "electron"
+import { ipcMain, type WebContents } from "electron"
 import {
   conversations,
   messages,
@@ -141,6 +141,32 @@ export function registerDbHandlers(
   ipcMain.handle("db:todos:list", (_e, conversationId: string) =>
     todos.listTodos(conversationId)
   )
+  const todoSubscriptions = new Map<
+    WebContents,
+    { unsubscribe: () => void; onDestroyed: () => void }
+  >()
+  const unsubscribeTodos = (sender: WebContents) => {
+    const subscription = todoSubscriptions.get(sender)
+    if (!subscription) return
+    subscription.unsubscribe()
+    sender.removeListener("destroyed", subscription.onDestroyed)
+    todoSubscriptions.delete(sender)
+  }
+  ipcMain.handle("db:todos:subscribe", (event) => {
+    const sender = event.sender
+    if (todoSubscriptions.has(sender)) return
+    const stop = todos.subscribeTodoChanges((payload) => {
+      if (!sender.isDestroyed()) {
+        sender.send("db:todos:change", payload)
+      }
+    })
+    const onDestroyed = () => unsubscribeTodos(sender)
+    todoSubscriptions.set(sender, { unsubscribe: stop, onDestroyed })
+    sender.once("destroyed", onDestroyed)
+  })
+  ipcMain.handle("db:todos:unsubscribe", (event) => {
+    unsubscribeTodos(event.sender)
+  })
 
   // Workspaces
   ipcMain.handle("db:workspaces:list", () => workspaces.listWorkspaces())
@@ -175,6 +201,9 @@ export function registerDbHandlers(
   )
   ipcMain.handle("db:projects:delete", (_e, id: string) =>
     projects.deleteProject(id)
+  )
+  ipcMain.handle("db:projects:reorder", (_e, ids: string[]) =>
+    projects.reorderProjects(ids)
   )
 
   // Tasks (storage-only)
@@ -274,9 +303,7 @@ export function registerDbHandlers(
     (_e, input: { name: string; description?: string | null }) =>
       processes.createProcessDefinition(input)
   )
-  ipcMain.handle("db:processes:list", () =>
-    processes.listProcessDefinitions()
-  )
+  ipcMain.handle("db:processes:list", () => processes.listProcessDefinitions())
   ipcMain.handle(
     "db:processes:get",
     (_e, id: string) => processes.getProcessGraph(id) ?? null
@@ -402,8 +429,15 @@ export function registerDbHandlers(
   )
   ipcMain.handle(
     "db:processes:phaseRuns:list",
-    (_e, opts: { runId?: string; parentId?: string | null; phaseId?: string }) =>
-      processes.listPhaseRuns(opts)
+    (
+      _e,
+      opts: { runId?: string; parentId?: string | null; phaseId?: string }
+    ) => processes.listPhaseRuns(opts)
+  )
+  ipcMain.handle(
+    "db:processes:phaseAttempts:list",
+    (_e, opts: { runId?: string; phaseRunId?: string }) =>
+      processes.listPhaseAttempts(opts)
   )
 
   // Live dashboards (plan 033). Structured CRUD the dashboards view + the
@@ -411,8 +445,10 @@ export function registerDbHandlers(
   // conversation-scoped); widgets + their cached data hang off it.
   ipcMain.handle(
     "db:dashboards:create",
-    (_e, input: { name: string; description?: string | null; layout?: unknown }) =>
-      dashboards.createDashboard(input)
+    (
+      _e,
+      input: { name: string; description?: string | null; layout?: unknown }
+    ) => dashboards.createDashboard(input)
   )
   ipcMain.handle("db:dashboards:list", () => dashboards.listDashboards())
   ipcMain.handle(

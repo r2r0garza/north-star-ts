@@ -61,6 +61,7 @@ const LIGHT_TOKENS: Record<string, Token> = {
   input: { l: 0.922, c: 0, h: 0, kind: "neutral" },
   ring: { l: 0.708, c: 0, h: 0, kind: "neutral" },
   sidebar: { l: 0.985, c: 0, h: 0, kind: "neutral" },
+  "sidebar-list": { l: 0.965, c: 0, h: 0, kind: "neutral" },
   "sidebar-foreground": { l: 0.145, c: 0, h: 0, kind: "neutral" },
   "sidebar-primary": { l: 0.627, c: 0.194, h: 149.214, kind: "brand" },
   "sidebar-primary-foreground": {
@@ -94,6 +95,7 @@ const DARK_TOKENS: Record<string, Token> = {
   input: { l: 1, c: 0, h: 0, a: 0.15, kind: "neutral" },
   ring: { l: 0.556, c: 0, h: 0, kind: "neutral" },
   sidebar: { l: 0.205, c: 0, h: 0, kind: "neutral" },
+  "sidebar-list": { l: 0.18, c: 0, h: 0, kind: "neutral" },
   "sidebar-foreground": { l: 0.985, c: 0, h: 0, kind: "neutral" },
   "sidebar-primary": { l: 0.723, c: 0.219, h: 149.579, kind: "brand" },
   "sidebar-primary-foreground": {

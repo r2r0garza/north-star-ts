@@ -45,13 +45,11 @@ describe("todoRunTitle", () => {
 
 describe("finishedTodoTitle", () => {
   it("counts the whole finished list and quotes the first item", () => {
+    expect(finishedTodoTitle(todos(["Ship it", "completed"]))).toBe(
+      "1 task: Ship it"
+    )
     expect(
-      finishedTodoTitle(todos(["Ship it", "completed"]))
-    ).toBe("1 task: Ship it")
-    expect(
-      finishedTodoTitle(
-        todos(["Alpha", "completed"], ["Beta", "cancelled"])
-      )
+      finishedTodoTitle(todos(["Alpha", "completed"], ["Beta", "cancelled"]))
     ).toBe("2 tasks: Alpha")
   })
   it("truncates a long first item to 50 chars", () => {

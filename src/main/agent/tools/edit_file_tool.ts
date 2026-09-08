@@ -8,9 +8,12 @@ import {
   cleanupMessage,
   fileTooLargeMessage,
   fileRevision,
+  isManagedMemoryPath,
+  MANAGED_MEMORY_WRITE_ERROR,
   MUTATION_SOURCE_LIMITS,
   validRevision,
 } from "./file/mutation"
+import { isSkillResourceUri } from "./skill_resources"
 
 // Count non-overlapping occurrences of `needle` in `haystack`.
 function countOccurrences(haystack: string, needle: string): number {
@@ -76,6 +79,12 @@ export const editFileTool: Tool = {
     const expectedRevision = validRevision(args.expected_revision)
 
     if (!path) return toolError("bad_args", "A `path` is required.")
+    if (isSkillResourceUri(path)) {
+      return toolError(
+        "not_allowed",
+        "Skill resources are read-only and cannot be edited."
+      )
+    }
     if (args.expected_revision !== undefined && !expectedRevision) {
       return toolError(
         "bad_args",
@@ -94,6 +103,9 @@ export const editFileTool: Tool = {
 
     const env = ctx.env ?? new LocalEnvironment(ctx.workspace)
     const target = await env.resolve(path)
+    if (isManagedMemoryPath(target)) {
+      return toolError("not_allowed", MANAGED_MEMORY_WRITE_ERROR)
+    }
 
     let info
     try {

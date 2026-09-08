@@ -49,6 +49,11 @@ import { createApproval, listApprovals } from "../db/repositories/approvals"
 import { appendEvent } from "../db/repositories/task-events"
 import { createCheckpoint } from "../db/repositories/task-checkpoints"
 import {
+  consumeAttempt,
+  exhaustBudget,
+  getBudget,
+} from "../db/repositories/model-request-retry-budgets"
+import {
   createConversation,
   getConversation,
 } from "../db/repositories/conversations"
@@ -105,6 +110,25 @@ describe.skipIf(!sqliteLoads)(
   () => {
     it("re-queues and re-runs a failed task, keeping its id", async () => {
       const conv = createConversation({ mode: "chat" })
+      appendMessage({ conversationId: conv.id, role: "user", content: "hi" })
+      consumeAttempt({
+        conversationId: conv.id,
+        logicalRoundId: "after-seq:1",
+        maxAttempts: 1,
+        maxElapsedMs: 120_000,
+        now: 1000,
+      })
+      exhaustBudget({
+        conversationId: conv.id,
+        logicalRoundId: "after-seq:1",
+        error: "gateway 503",
+        now: 1100,
+      })
+      appendMessage({
+        conversationId: conv.id,
+        role: "assistant",
+        content: "failed",
+      })
       const task = createTask({
         conversationId: conv.id,
         status: "failed",
@@ -121,6 +145,128 @@ describe.skipIf(!sqliteLoads)(
       // Same task id, re-run to completion.
       expect(loopCalls).toHaveLength(1)
       expect(getTask(task.id)?.status).toBe("completed")
+      const retry = getBudget(conv.id, "after-seq:2")
+      expect(retry).toMatchObject({
+        source: "user_retry",
+        retrySequence: 1,
+        attemptsConsumed: 0,
+      })
+      expect(retry?.parentBudgetId).toBe(getBudget(conv.id, "after-seq:1")?.id)
+      await runner.stop()
+    })
+
+    it("keeps completed side-effect results in the transcript on retry", async () => {
+      const conv = createConversation({ mode: "chat" })
+      appendMessage({ conversationId: conv.id, role: "user", content: "go" })
+      appendMessage({
+        conversationId: conv.id,
+        role: "assistant",
+        content: null,
+        toolCalls: [{ id: "call-1", name: "run_shell_tool", arguments: "{}" }],
+      })
+      appendMessage({
+        conversationId: conv.id,
+        role: "tool",
+        content: "executed once",
+        toolCallId: "call-1",
+        toolName: "run_shell_tool",
+      })
+      consumeAttempt({
+        conversationId: conv.id,
+        logicalRoundId: "after-seq:3",
+        maxAttempts: 1,
+        maxElapsedMs: 120_000,
+        now: 1000,
+      })
+      exhaustBudget({
+        conversationId: conv.id,
+        logicalRoundId: "after-seq:3",
+        error: "gateway 503",
+        now: 1100,
+      })
+      appendMessage({
+        conversationId: conv.id,
+        role: "assistant",
+        content: "failed",
+      })
+      const task = createTask({
+        conversationId: conv.id,
+        status: "failed",
+        input: { kind: "agent_chat", message: "go" },
+      })
+      loopImpl = async (opts) => {
+        expect(
+          listMessages(opts.conversationId).map((m) => m.content)
+        ).toContain("executed once")
+        return { content: "done" }
+      }
+
+      const runner = new TaskRunner()
+      runner.start()
+      await settle()
+      runner.restart(task.id)
+      await settle()
+
+      expect(loopCalls).toHaveLength(1)
+      expect(
+        listMessages(conv.id).filter((m) => m.toolCallId === "call-1")
+      ).toHaveLength(1)
+      await runner.stop()
+    })
+
+    it("blocks retry when a side-effecting tool outcome is unknown", async () => {
+      const conv = createConversation({ mode: "chat" })
+      appendMessage({ conversationId: conv.id, role: "user", content: "go" })
+      appendMessage({
+        conversationId: conv.id,
+        role: "assistant",
+        content: null,
+        toolCalls: [{ id: "call-1", name: "run_shell_tool", arguments: "{}" }],
+      })
+      const task = createTask({
+        conversationId: conv.id,
+        status: "failed",
+        input: { kind: "agent_chat", message: "go" },
+      })
+      const runner = new TaskRunner()
+      runner.start()
+      await settle()
+
+      expect(() => runner.restart(task.id)).toThrow(
+        "side-effecting tool outcomes are unknown"
+      )
+      await settle()
+
+      expect(loopCalls).toHaveLength(0)
+      expect(getTask(task.id)?.status).toBe("failed")
+      await runner.stop()
+    })
+
+    it("blocks manual resume when a side-effecting tool outcome is unknown", async () => {
+      const conv = createConversation({ mode: "chat" })
+      appendMessage({ conversationId: conv.id, role: "user", content: "go" })
+      appendMessage({
+        conversationId: conv.id,
+        role: "assistant",
+        content: null,
+        toolCalls: [{ id: "call-1", name: "run_shell_tool", arguments: "{}" }],
+      })
+      const task = createTask({
+        conversationId: conv.id,
+        status: "interrupted",
+        input: { kind: "agent_chat", message: "go" },
+      })
+      const runner = new TaskRunner()
+      runner.start()
+      await settle()
+
+      expect(() => runner.resume(task.id)).toThrow(
+        "side-effecting tool outcomes are unknown"
+      )
+      await settle()
+
+      expect(loopCalls).toHaveLength(0)
+      expect(getTask(task.id)?.status).toBe("interrupted")
       await runner.stop()
     })
 
@@ -241,6 +387,31 @@ describe.skipIf(!sqliteLoads)(
       ).toContain("headless work")
       expect(loopCalls).toHaveLength(1)
       expect(loopCalls[0].conversationId).toBe(finished.conversationId)
+      await runner.stop()
+    })
+
+    it("does not auto-resume an orphaned task with unknown side effects", async () => {
+      const conv = createConversation({ mode: "chat" })
+      appendMessage({ conversationId: conv.id, role: "user", content: "go" })
+      appendMessage({
+        conversationId: conv.id,
+        role: "assistant",
+        content: null,
+        toolCalls: [{ id: "call-1", name: "run_shell_tool", arguments: "{}" }],
+      })
+      const task = createTask({
+        conversationId: conv.id,
+        status: "running",
+        input: { kind: "auto_kind", message: "go" },
+      })
+
+      const runner = new TaskRunner()
+      runner.registerKind("auto_kind", { autoResume: true })
+      runner.start()
+      await settle()
+
+      expect(loopCalls).toHaveLength(0)
+      expect(getTask(task.id)?.status).toBe("interrupted")
       await runner.stop()
     })
   }
@@ -623,6 +794,79 @@ describe.skipIf(!sqliteLoads)(
         fastBackoff.maxAttempts - 1
       )
       expect(types.filter((t) => t === "task_failed")).toHaveLength(1)
+      await runner.stop()
+    })
+
+    it("keeps the retry budget after reload during backoff", async () => {
+      let calls = 0
+      const run = async () => {
+        calls++
+        return { error: "still 503", retryable: true }
+      }
+      const runner1 = new TaskRunner({
+        backoff: { baseMs: 10_000, maxMs: 10_000, maxAttempts: 3 },
+      })
+      runner1.registerKind("auto_kind", { autoResume: true, run })
+      runner1.start()
+      const task = runner1.enqueueKind({
+        kind: "auto_kind",
+        title: "recoverable process",
+        input: {},
+      })
+
+      for (
+        let i = 0;
+        i < 50 &&
+        listEvents(task.id).filter((e) => e.type === "attempt").length < 1;
+        i++
+      ) {
+        await new Promise((r) => setTimeout(r, 5))
+      }
+      expect(calls).toBe(1)
+      expect(getTask(task.id)?.status).toBe("running")
+
+      await runner1.stop()
+
+      const runner2 = new TaskRunner({ backoff: fastBackoff })
+      runner2.registerKind("auto_kind", { autoResume: true, run })
+      runner2.start()
+      await settle()
+
+      expect(calls).toBe(3)
+      expect(getTask(task.id)?.status).toBe("failed")
+      const attempts = listEvents(task.id).filter((e) => e.type === "attempt")
+      expect(attempts.map((e) => (e.payload as { n: number }).n)).toEqual([
+        1, 2,
+      ])
+      await runner2.stop()
+    })
+
+    it("resets the durable retry budget on user restart", async () => {
+      const conv = createConversation({ mode: "chat" })
+      let calls = 0
+      const run = async () => {
+        calls++
+        return { error: "still 503", retryable: true }
+      }
+      const task = createTask({
+        conversationId: conv.id,
+        status: "failed",
+        input: { kind: "auto_kind" },
+      })
+      appendEvent({ taskId: task.id, type: "attempt", payload: { n: 1 } })
+      appendEvent({ taskId: task.id, type: "attempt", payload: { n: 2 } })
+
+      const runner = new TaskRunner({ backoff: fastBackoff })
+      runner.registerKind("auto_kind", { autoResume: true, run })
+      runner.start()
+      runner.restart(task.id)
+      await settle()
+
+      expect(calls).toBe(3)
+      expect(getTask(task.id)?.status).toBe("failed")
+      expect(
+        listEvents(task.id).some((e) => e.type === "retry_budget_reset")
+      ).toBe(true)
       await runner.stop()
     })
 

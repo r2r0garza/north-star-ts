@@ -44,9 +44,13 @@ export function TodosSection({
   // Whether a still-running todo_run task already owns this conversation's list.
   // Drives the button so the user can't hand the same list off twice.
   const [activeTodoRun, setActiveTodoRun] = React.useState(false)
+  const displayedConversationRef = React.useRef<string | null>(conversationId)
+  const activeTodoRunTaskRef = React.useRef<string | null>(null)
 
   const refetch = React.useCallback(async () => {
     if (!conversationId) {
+      displayedConversationRef.current = null
+      activeTodoRunTaskRef.current = null
       setTodos([])
       setActiveTodoRun(false)
       return
@@ -74,24 +78,40 @@ export function TodosSection({
       "interrupted",
     ])
     setActiveTodoRun(!!todoRun && LIVE.has(todoRun.status))
+    activeTodoRunTaskRef.current = todoRun?.id ?? null
     const readFrom = todoRun ? todoRun.conversationId : conversationId
+    displayedConversationRef.current = readFrom
     setTodos(await window.cowork.db.todos.list(readFrom))
   }, [conversationId])
   const refetchRef = React.useRef(refetch)
   refetchRef.current = refetch
 
   React.useEffect(() => {
+    displayedConversationRef.current = conversationId
     void refetchRef.current()
   }, [conversationId])
 
-  // The agent writes todos and dispatches tasks as side effects of a turn, with
-  // no dedicated todo event. Refetch on the task event tail (cheap, debounced by
-  // React) so the list reflects todo_write writes and seeding promptly. Token
-  // deltas are ignored.
+  // Todo writes publish committed snapshots from the DB boundary. Apply matching
+  // snapshots directly; task events remain responsible for lifecycle changes
+  // such as selecting a todo_run worker conversation or clearing that state.
+  React.useEffect(() => {
+    if (!conversationId) return
+    const unsubscribe = window.cowork.db.todos.onChange((payload) => {
+      if (payload.conversationId === displayedConversationRef.current) {
+        setTodos(payload.todos)
+      }
+    })
+    return unsubscribe
+  }, [conversationId])
+
+  // Lifecycle changes for the selected todo_run can change which conversation's
+  // todos should be displayed and whether the handoff button is disabled.
   React.useEffect(() => {
     if (!conversationId) return
     const unsubscribe = window.cowork.tasks.onEvent((payload) => {
       if ((payload.event as TaskEventPayload).type === "token") return
+      const activeTaskId = activeTodoRunTaskRef.current
+      if (!activeTaskId || payload.taskId !== activeTaskId) return
       void refetchRef.current()
     })
     return unsubscribe
@@ -102,7 +122,13 @@ export function TodosSection({
     setDispatching(true)
     try {
       const task = await window.cowork.tasks.startTodos(conversationId)
-      if (task) onRanInBackground?.()
+      if (task) {
+        activeTodoRunTaskRef.current = task.id
+        displayedConversationRef.current = task.conversationId
+        setActiveTodoRun(true)
+        setTodos(await window.cowork.db.todos.list(task.conversationId))
+        onRanInBackground?.()
+      }
     } finally {
       setDispatching(false)
     }

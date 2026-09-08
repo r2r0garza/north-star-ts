@@ -15,6 +15,11 @@ The current app still owns conversation persistence and UI history, but Codex
 owns execution. Our tools, skills, workspace index, approval gate, plan/default/
 auto controls, and container backend do not apply to Codex CLI turns.
 
+**Qualified by `045`:** Codex still owns its loop and inherits none of our tool
+registry. It does receive the explicitly granted North Star MCP bridge tools for
+the turn, injected as transient global `-c mcp_servers.north-star.*` overrides
+that never touch `~/.codex/config.toml`. `045.2` grants `ask_user_question`.
+
 ## Verified CLI behavior
 
 Probes saved under `cli_probes/codex/`.
