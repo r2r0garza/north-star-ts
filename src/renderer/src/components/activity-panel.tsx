@@ -591,7 +591,7 @@ export function ActivityPanel({
                   key={kind}
                   type="button"
                   onClick={() => onOpenTab(kind)}
-                  className="rounded-md border px-3 py-1.5 text-xs transition-colors hover:bg-accent"
+                  className="w-24 rounded-md border px-3 py-1.5 text-xs transition-colors hover:bg-accent"
                 >
                   {tabLabel(kind)}
                 </button>
