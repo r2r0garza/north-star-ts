@@ -12,8 +12,8 @@ import * as dashboards from "../../db/repositories/dashboards"
 // those tools. A whole-dashboard replace write (mirrors replaceTodos): the
 // widget list sent becomes the dashboard's widgets. Returns the saved shape.
 //
-// The `recipe` is stored for the deterministic refresh executor (plan 033.3);
-// today it's advisory metadata — refresh re-prompts the agent until 033.3 lands.
+// The `recipe` is stored for the deterministic refresh executor (plan 033.3),
+// which replays the exact command or URL without involving an LLM.
 export const dashboardWriteTool: Tool = {
   effects: TOOL_EFFECTS.mutation,
   definition: {
