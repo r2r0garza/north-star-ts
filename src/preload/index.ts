@@ -181,6 +181,10 @@ export type TodoChangeEvent = {
   todos: Todo[]
 }
 
+export type ConversationChangeEvent = {
+  conversationIds: string[]
+}
+
 // A skill as surfaced to the composer's slash menu — just what the picker needs
 // to display and match on. The full body stays in the main process (read_skill).
 export type SkillSummary = {
@@ -242,6 +246,20 @@ function releaseTodoSubscription(): void {
   todoSubscriptionCount -= 1
   if (todoSubscriptionCount === 0) {
     void ipcRenderer.invoke("db:todos:unsubscribe")
+  }
+}
+
+let conversationSubscriptionCount = 0
+function retainConversationSubscription(): void {
+  if (conversationSubscriptionCount++ === 0) {
+    void ipcRenderer.invoke("db:conversations:subscribe")
+  }
+}
+function releaseConversationSubscription(): void {
+  if (conversationSubscriptionCount === 0) return
+  conversationSubscriptionCount -= 1
+  if (conversationSubscriptionCount === 0) {
+    void ipcRenderer.invoke("db:conversations:unsubscribe")
   }
 }
 function releaseTaskSubscription(): void {
@@ -832,6 +850,18 @@ const api = {
         ) as Promise<Conversation>,
       delete: (id: string) =>
         ipcRenderer.invoke("db:conversations:delete", id) as Promise<void>,
+      onChange: (cb: (event: ConversationChangeEvent) => void) => {
+        const listener = (
+          _event: IpcRendererEvent,
+          payload: ConversationChangeEvent
+        ) => cb(payload)
+        ipcRenderer.on("db:conversations:change", listener)
+        retainConversationSubscription()
+        return () => {
+          ipcRenderer.removeListener("db:conversations:change", listener)
+          releaseConversationSubscription()
+        }
+      },
     },
     messages: {
       list: (conversationId: string) =>

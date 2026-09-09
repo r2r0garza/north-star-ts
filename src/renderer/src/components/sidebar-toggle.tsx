@@ -25,7 +25,7 @@ export function SidebarToggle({
       aria-label={state === "expanded" ? "Collapse sidebar" : "Expand sidebar"}
       title={state === "expanded" ? "Collapse sidebar" : "Expand sidebar"}
       className={cn(
-        "absolute top-2.5 z-10 [-webkit-app-region:no-drag]",
+        "pointer-events-auto absolute top-2.5 z-10 [-webkit-app-region:no-drag]",
         "flex size-7 items-center justify-center rounded-md",
         "text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
         !isMac || fullscreen ? "left-4" : "left-20"

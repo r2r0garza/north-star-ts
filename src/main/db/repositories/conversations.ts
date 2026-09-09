@@ -16,6 +16,30 @@ interface ConversationRow {
   updated_at: number
 }
 
+export interface ConversationChangeEvent {
+  conversationIds: string[]
+}
+
+type ConversationChangeListener = (event: ConversationChangeEvent) => void
+const conversationChangeListeners = new Set<ConversationChangeListener>()
+
+export function subscribeConversationChanges(
+  listener: ConversationChangeListener
+): () => void {
+  conversationChangeListeners.add(listener)
+  return () => {
+    conversationChangeListeners.delete(listener)
+  }
+}
+
+function publishConversationChange(conversationIds: string[]): void {
+  if (conversationIds.length === 0) return
+  const event = { conversationIds }
+  for (const listener of conversationChangeListeners) {
+    listener(event)
+  }
+}
+
 function toConversation(row: ConversationRow): Conversation {
   return {
     id: row.id,
@@ -59,7 +83,9 @@ export function createConversation(input: {
       now,
       now
     )
-  return getConversation(id)!
+  const conversation = getConversation(id)!
+  publishConversationChange([id])
+  return conversation
 }
 
 export function getConversation(id: string): Conversation | undefined {
@@ -142,11 +168,25 @@ export function updateConversation(
   if (sets.length > 0) {
     sets.push("updated_at = ?")
     values.push(now, id)
-    getDb()
+    const result = getDb()
       .prepare(`UPDATE conversations SET ${sets.join(", ")} WHERE id = ?`)
       .run(...values)
+    if (result.changes > 0) publishConversationChange([id])
   }
   return getConversation(id)!
+}
+
+export function setConversationTitleIfUntitled(
+  id: string,
+  title: string
+): Conversation | undefined {
+  const result = getDb()
+    .prepare(
+      "UPDATE conversations SET title = ?, updated_at = ? WHERE id = ? AND (title IS NULL OR title = '')"
+    )
+    .run(title, Date.now(), id)
+  if (result.changes > 0) publishConversationChange([id])
+  return getConversation(id)
 }
 
 // Pin or unpin a conversation. Deliberately updates ONLY the `pinned` column and
@@ -157,22 +197,27 @@ export function setConversationPinned(
   id: string,
   pinned: boolean
 ): Conversation {
-  getDb()
+  const result = getDb()
     .prepare("UPDATE conversations SET pinned = ? WHERE id = ?")
     .run(pinned ? 1 : 0, id)
+  if (result.changes > 0) publishConversationChange([id])
   return getConversation(id)!
 }
 
 // Bump updated_at — called when a message is appended so the sidebar orders
 // conversations by recent activity.
 export function touchConversation(id: string): void {
-  getDb()
+  const result = getDb()
     .prepare("UPDATE conversations SET updated_at = ? WHERE id = ?")
     .run(Date.now(), id)
+  if (result.changes > 0) publishConversationChange([id])
 }
 
 export function deleteConversation(id: string): void {
-  getDb().prepare("DELETE FROM conversations WHERE id = ?").run(id)
+  const result = getDb()
+    .prepare("DELETE FROM conversations WHERE id = ?")
+    .run(id)
+  if (result.changes > 0) publishConversationChange([id])
 }
 
 // Delete several conversations in one transaction. Used by the runner's
@@ -187,7 +232,12 @@ export function deleteConversations(ids: string[]): void {
   if (unique.length === 0) return
   const db = getDb()
   const stmt = db.prepare("DELETE FROM conversations WHERE id = ?")
-  db.transaction((rows: string[]) => {
-    for (const id of rows) stmt.run(id)
+  const deleted = db.transaction((rows: string[]) => {
+    const changed: string[] = []
+    for (const id of rows) {
+      if (stmt.run(id).changes > 0) changed.push(id)
+    }
+    return changed
   })(unique)
+  publishConversationChange(deleted)
 }

@@ -129,6 +129,32 @@ export function registerDbHandlers(
       ? runner.deleteSourceConversation(id)
       : conversations.deleteConversation(id)
   })
+  const conversationSubscriptions = new Map<
+    WebContents,
+    { unsubscribe: () => void; onDestroyed: () => void }
+  >()
+  const unsubscribeConversations = (sender: WebContents) => {
+    const subscription = conversationSubscriptions.get(sender)
+    if (!subscription) return
+    subscription.unsubscribe()
+    sender.removeListener("destroyed", subscription.onDestroyed)
+    conversationSubscriptions.delete(sender)
+  }
+  ipcMain.handle("db:conversations:subscribe", (event) => {
+    const sender = event.sender
+    if (conversationSubscriptions.has(sender)) return
+    const stop = conversations.subscribeConversationChanges((payload) => {
+      if (!sender.isDestroyed()) {
+        sender.send("db:conversations:change", payload)
+      }
+    })
+    const onDestroyed = () => unsubscribeConversations(sender)
+    conversationSubscriptions.set(sender, { unsubscribe: stop, onDestroyed })
+    sender.once("destroyed", onDestroyed)
+  })
+  ipcMain.handle("db:conversations:unsubscribe", (event) => {
+    unsubscribeConversations(event.sender)
+  })
 
   // Messages (read-only from the renderer; writes happen inside runChat)
   ipcMain.handle("db:messages:list", (_e, conversationId: string) =>

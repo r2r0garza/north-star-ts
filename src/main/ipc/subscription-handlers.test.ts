@@ -5,8 +5,11 @@ const mocks = vi.hoisted(() => ({
   handlers: new Map<string, (...args: any[]) => any>(),
   generateTitle: vi.fn(),
   getConversation: vi.fn(),
-  updateConversation: vi.fn(),
+  setConversationTitleIfUntitled: vi.fn(),
   listTodos: vi.fn(() => []),
+  subscribeConversationChanges: vi.fn<
+    (listener: (payload: { conversationIds: string[] }) => void) => () => void
+  >(() => vi.fn()),
   subscribeTodoChanges: vi.fn(() => vi.fn()),
 }))
 
@@ -26,7 +29,7 @@ vi.mock("../agent", () => ({
 
 vi.mock("../db/repositories/conversations", () => ({
   getConversation: mocks.getConversation,
-  updateConversation: mocks.updateConversation,
+  setConversationTitleIfUntitled: mocks.setConversationTitleIfUntitled,
 }))
 
 vi.mock("../db/repositories/todos", () => ({
@@ -34,7 +37,9 @@ vi.mock("../db/repositories/todos", () => ({
 }))
 
 vi.mock("../db/repositories", () => ({
-  conversations: {},
+  conversations: {
+    subscribeConversationChanges: mocks.subscribeConversationChanges,
+  },
   messages: {},
   workspaces: {},
   projects: {},
@@ -74,7 +79,8 @@ beforeEach(() => {
   mocks.handlers.clear()
   mocks.generateTitle.mockReset().mockResolvedValue("Generated title")
   mocks.getConversation.mockReset()
-  mocks.updateConversation.mockReset()
+  mocks.setConversationTitleIfUntitled.mockReset()
+  mocks.subscribeConversationChanges.mockReset().mockReturnValue(vi.fn())
   mocks.subscribeTodoChanges.mockReset().mockReturnValue(vi.fn())
 })
 
@@ -141,26 +147,60 @@ describe("WebContents subscription lifecycle", () => {
     }
     expect(stop).toHaveBeenCalledTimes(15)
   })
+
+  it("forwards conversation changes and cleans up subscriptions", () => {
+    const stop = vi.fn()
+    let publish: ((payload: { conversationIds: string[] }) => void) | undefined
+    mocks.subscribeConversationChanges.mockImplementation((listener) => {
+      publish = listener
+      return stop
+    })
+    registerDbHandlers()
+
+    const sender = new FakeWebContents()
+    const subscribe = mocks.handlers.get("db:conversations:subscribe")!
+    const unsubscribe = mocks.handlers.get("db:conversations:unsubscribe")!
+
+    subscribe({ sender })
+    publish?.({ conversationIds: ["conversation-1"] })
+    expect(sender.send).toHaveBeenCalledWith("db:conversations:change", {
+      conversationIds: ["conversation-1"],
+    })
+
+    unsubscribe({ sender })
+    expect(stop).toHaveBeenCalledOnce()
+    expect(sender.listenerCount("destroyed")).toBe(0)
+  })
 })
 
 describe("background conversation titles", () => {
-  it("titles an untitled source conversation before task:start resolves", async () => {
+  it("resolves task:start without waiting for the generated title", async () => {
     const task = { id: "task-1" }
     const runner = {
       subscribe: vi.fn(() => vi.fn()),
       enqueue: vi.fn(() => task),
     } as any
+    let resolveTitle!: (title: string) => void
+    mocks.generateTitle.mockReturnValue(
+      new Promise<string>((resolve) => {
+        resolveTitle = resolve
+      })
+    )
     mocks.getConversation.mockReturnValue({ id: "conversation-1", title: null })
     registerTaskHandlers(runner)
 
     const start = mocks.handlers.get("task:start")!
-    await expect(
+    expect(
       start({}, { conversationId: "conversation-1", message: "Fix the leak" })
-    ).resolves.toBe(task)
+    ).toBe(task)
+    expect(mocks.setConversationTitleIfUntitled).not.toHaveBeenCalled()
 
-    expect(mocks.generateTitle).toHaveBeenCalledWith("Fix the leak")
-    expect(mocks.updateConversation).toHaveBeenCalledWith("conversation-1", {
-      title: "Generated title",
+    resolveTitle("Generated title")
+    await vi.waitFor(() => {
+      expect(mocks.setConversationTitleIfUntitled).toHaveBeenCalledWith(
+        "conversation-1",
+        "Generated title"
+      )
     })
   })
 

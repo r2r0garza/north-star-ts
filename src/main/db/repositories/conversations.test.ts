@@ -12,6 +12,8 @@ import {
   createConversation,
   getConversation,
   updateConversation,
+  setConversationTitleIfUntitled,
+  subscribeConversationChanges,
   listConversations,
 } from "./conversations"
 import { createTask } from "./tasks"
@@ -21,6 +23,34 @@ beforeEach(() => {
   db = new Database(":memory:")
   db.pragma("foreign_keys = ON")
   runMigrations(db)
+})
+
+describe.skipIf(!sqliteLoads)("conversations — change events", () => {
+  it("publishes committed mutations", () => {
+    const events: string[][] = []
+    const unsubscribe = subscribeConversationChanges((event) => {
+      events.push(event.conversationIds)
+    })
+
+    const conversation = createConversation({ mode: "chat" })
+    updateConversation(conversation.id, { title: "Renamed" })
+    unsubscribe()
+    updateConversation(conversation.id, { title: "Not observed" })
+
+    expect(events).toEqual([[conversation.id], [conversation.id]])
+  })
+
+  it("does not replace a title assigned while generation was in flight", () => {
+    const conversation = createConversation({ mode: "chat" })
+    updateConversation(conversation.id, { title: "Manual title" })
+
+    const unchanged = setConversationTitleIfUntitled(
+      conversation.id,
+      "Generated title"
+    )
+
+    expect(unchanged?.title).toBe("Manual title")
+  })
 })
 
 describe.skipIf(!sqliteLoads)(

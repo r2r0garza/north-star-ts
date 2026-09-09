@@ -286,6 +286,45 @@ function parseCodexResponseBody(
   return text ? JSON.parse(text) : {}
 }
 
+function responsePreview(text: string): string {
+  const compact = text.replace(/\s+/g, " ").trim()
+  const preview = compact.length > 240 ? `${compact.slice(0, 240)}...` : compact
+  return redactCodexSubscriptionError(preview || "<empty response>")
+}
+
+function codexSubscriptionError(message: string, status?: number): Error {
+  const error = new Error(redactCodexSubscriptionError(message)) as Error & {
+    status?: number
+  }
+  if (status !== undefined) error.status = status
+  return error
+}
+
+function parseCodexResponseBodyOrThrow(input: {
+  text: string
+  contentType: string
+  model: string
+  status: number
+  ok: boolean
+  statusText: string
+}): any {
+  try {
+    return parseCodexResponseBody(input.text, input.contentType, input.model)
+  } catch (error) {
+    if (input.ok) {
+      const message = error instanceof Error ? error.message : String(error)
+      throw codexSubscriptionError(
+        `Experimental Codex subscription backend returned an invalid response (${input.status}, ${input.contentType || "unknown content type"}): ${message}. Preview: ${responsePreview(input.text)}`,
+        input.status
+      )
+    }
+    throw codexSubscriptionError(
+      `Experimental Codex subscription backend failed (${input.status}): returned a non-JSON response (${input.contentType || "unknown content type"}). Preview: ${responsePreview(input.text || input.statusText)}. Use Codex CLI or an official OpenAI/OpenAI-compatible provider if this private endpoint changed.`,
+      input.status
+    )
+  }
+}
+
 export function codexSubscriptionResponseToChat(response: any): {
   choices: Array<{ message: any; finish_reason: string }>
   usage?: unknown
@@ -985,20 +1024,21 @@ export function buildCodexSubscriptionClient(input: {
         res = await send(auth.accessToken)
       }
       const text = await res.text()
-      const json = parseCodexResponseBody(
+      const contentType = res.headers.get("content-type") ?? ""
+      const json = parseCodexResponseBodyOrThrow({
         text,
-        res.headers.get("content-type") ?? "",
-        model
-      )
+        contentType,
+        model,
+        status: res.status,
+        ok: res.ok,
+        statusText: res.statusText,
+      })
       if (!res.ok) {
         const detail = json?.error?.message ?? text ?? res.statusText
-        const error = new Error(
-          redactCodexSubscriptionError(
-            `Experimental Codex subscription backend failed (${res.status}): ${detail}. Use Codex CLI or an official OpenAI/OpenAI-compatible provider if this private endpoint changed.`
-          )
-        ) as Error & { status?: number }
-        error.status = res.status
-        throw error
+        throw codexSubscriptionError(
+          `Experimental Codex subscription backend failed (${res.status}): ${detail}. Use Codex CLI or an official OpenAI/OpenAI-compatible provider if this private endpoint changed.`,
+          res.status
+        )
       }
       const chat = codexSubscriptionResponseToChat(json)
       return body.stream ? chatToSingleChunkStream(chat) : chat

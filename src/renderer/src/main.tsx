@@ -9,13 +9,12 @@ import { SidebarToggle } from "@/components/sidebar-toggle"
 import {
   ActivityPanel,
   ActivityToggle,
-  SidebarModeToggle,
+  HeaderThemeToggle,
   readActivityOpen,
   readActivityPanelWidth,
   writeActivityOpen,
-  readSidebarMode,
-  writeSidebarMode,
-  type SidebarMode,
+  type SidebarTab,
+  type SidebarTabKind,
 } from "@/components/activity-panel"
 import { SettingsScreen } from "@/components/settings-screen"
 import { SkillsScreen } from "@/components/skills-screen"
@@ -73,6 +72,13 @@ function Shell() {
   // Bumped whenever conversations change so the sidebar list refetches.
   const [refreshKey, setRefreshKey] = useState(0)
   const refreshConversations = () => setRefreshKey((k) => k + 1)
+  useEffect(
+    () =>
+      window.cowork.db.conversations.onChange(() => {
+        setRefreshKey((key) => key + 1)
+      }),
+    []
+  )
   // Conversations with a turn currently streaming, reported up from App (which
   // owns the state). Drives the per-row spinner in the sidebar.
   const [runningConvos, setRunningConvos] = useState<Set<string>>(new Set())
@@ -109,8 +115,12 @@ function Shell() {
   // a task starts. Seeded from — and persisted back to — the panel's cookie.
   const [activityOpen, setActivityOpen] = useState(readActivityOpen)
   const [activityPanelWidth, setActivityPanelWidth] = useState(() =>
-    readActivityOpen() ? readActivityPanelWidth(readSidebarMode()) : 0
+    readActivityOpen() ? readActivityPanelWidth() : 0
   )
+  const [sidebarTabState, setSidebarTabState] = useState<{
+    tabs: SidebarTab[]
+    activeTabId: string | null
+  }>({ tabs: [], activeTabId: null })
   const [terminalOpenByConversation, setTerminalOpenByConversation] = useState<
     Record<string, boolean>
   >({})
@@ -137,15 +147,34 @@ function Shell() {
         console.warn("[terminal] failed to close fresh sessions:", err)
       })
   }, [])
-  // Which content the right panel shows: "info" (Workspace Activity), "browser"
-  // (the agent's live browser), or "changes" (the changed-file review). Global
-  // (one choice for the whole app), persisted to a cookie like the open state.
-  const [sidebarMode, setSidebarMode] = useState<SidebarMode>(readSidebarMode)
-  const changeSidebarMode = (mode: SidebarMode) => {
-    setSidebarMode(mode)
-    writeSidebarMode(mode)
+  const openSidebarTab = useCallback((kind: SidebarTabKind) => {
+    setSidebarTabState((state) => {
+      const existing = state.tabs.find((tab) => tab.kind === kind)
+      const tab = existing ?? { id: crypto.randomUUID(), kind }
+      return {
+        tabs: existing ? state.tabs : [...state.tabs, tab],
+        activeTabId: tab.id,
+      }
+    })
     setActivity(true)
-  }
+  }, [])
+  const closeSidebarTab = useCallback((id: string) => {
+    setSidebarTabState((state) => {
+      const index = state.tabs.findIndex((tab) => tab.id === id)
+      const tabs = state.tabs.filter((tab) => tab.id !== id)
+      if (tabs.length === 0) {
+        setActivity(false)
+        return { tabs, activeTabId: null }
+      }
+      return {
+        tabs,
+        activeTabId:
+          state.activeTabId === id
+            ? tabs[Math.min(index, tabs.length - 1)].id
+            : state.activeTabId,
+      }
+    })
+  }, [])
   // The active conversation's workspace root, reported up from App. Needed by the
   // sidebar's Changes review (git diffs + file:// previews) and browser opens.
   const [workspacePath, setWorkspacePath] = useState("")
@@ -177,22 +206,16 @@ function Shell() {
   // Files under review in the sidebar's Changes mode, set when a transcript turn's
   // "Review all" / "+N more" is clicked.
   const [reviewFiles, setReviewFiles] = useState<ChangedFile[]>([])
-  // Open the Changes review for a turn's files: stash them, switch the panel to
-  // Changes mode, and open it.
+  // Open the Changes review for a turn's files and activate its sidebar tab.
   const openChangesReview = (files: ChangedFile[]) => {
     setReviewFiles(files)
-    setSidebarMode("changes")
-    writeSidebarMode("changes")
-    setActivity(true)
+    openSidebarTab("changes")
   }
-  // Open a workspace-relative html file in the sidebar agent browser: dock the
-  // browser, switch the panel to Browser mode, and navigate to its file:// URL.
+  // Open a workspace-relative html file in the sidebar agent browser.
   const openHtmlInBrowser = (relPath: string) => {
     if (!workspacePath) return
     window.cowork.setBrowserSurface("sidebar")
-    setSidebarMode("browser")
-    writeSidebarMode("browser")
-    setActivity(true)
+    openSidebarTab("browser")
     window.cowork.browserNavigate(`file://${workspacePath}/${relPath}`)
   }
   // The background task whose read-only transcript is open (null = closed).
@@ -203,26 +226,22 @@ function Shell() {
   const [historyExpanded, setHistoryExpanded] = useState(false)
   // Open the panel and reveal History — the completion toast's action.
   const revealHistory = () => {
-    setActivity(true)
+    openSidebarTab("info")
     setHistoryExpanded(true)
   }
-  // Popping the browser out to its own window empties the panel's browser slot,
-  // so collapse the panel to give the chat the space back; docking it back re-
-  // opens it. Choosing Info or Changes from the mode dropdown re-opens on its own
-  // (changeSidebarMode forces it open), which is the "unless they pick info/
-  // changes" case.
+  // Popping the browser out gives the chat its width back; docking reopens the
+  // panel and leaves its existing tabs intact.
   const handleBrowserPoppedOutChange = (poppedOut: boolean) => {
     setActivity(!poppedOut)
   }
-  // Keep theme + panel-mode controls immediately to the left of Terminal when the
-  // right panel is closed. When it opens, only that group moves left by the
-  // panel's width so it remains in the main content area; Terminal and the
-  // panel's own visibility control stay attached to the window edge.
+  // Keep the theme control immediately to the left of Terminal when the right
+  // panel is closed. When it opens, it moves left by the panel's width so it
+  // remains in the main content area.
   const rightControlOffset = reserveWindowControls ? 140 : 16
   const terminalRightOffset = rightControlOffset + 32
-  // Once the panel is open, the mode controls sit just outside its left edge;
+  // Once the panel is open, the theme control sits just outside its left edge;
   // Terminal and the panel toggle remain within the panel's header area.
-  const modeRightOffset = activityPanelWidth
+  const themeRightOffset = activityPanelWidth
     ? activityPanelWidth + 8
     : terminalAvailable
       ? terminalRightOffset + 30
@@ -331,16 +350,13 @@ function Shell() {
     })
   }, [activeConversationId])
 
-  // The agent navigated (with reveal-on-use) or a handoff needs the browser: open
-  // the right panel in Browser mode. The sidebar equivalent of the separate
-  // window revealing itself.
+  // The agent navigated (with reveal-on-use) or a handoff needs the browser:
+  // open and activate the Browser sidebar tab.
   useEffect(() => {
     return window.cowork.onBrowserRequestOpen(() => {
-      setSidebarMode("browser")
-      writeSidebarMode("browser")
-      setActivity(true)
+      openSidebarTab("browser")
     })
-  }, [])
+  }, [openSidebarTab])
 
   // First launch: if no LLM provider is configured yet, open Settings to the
   // Providers tab so the user configures one before sending a message.
@@ -450,28 +466,15 @@ function Shell() {
 
   return (
     <SidebarProvider className="relative">
-      {/* Top drag bar (replaces the OS title bar). The toggle is a no-drag
-          child of this region so macOS lets its click through. */}
-      <div className="absolute inset-x-0 top-0 z-20 h-11 [-webkit-app-region:drag]">
-        <SidebarToggle fullscreen={fullscreen} isMac={isMac} />
-        {/* The Info/Browser/Changes mode dropdown and the right-panel toggle are
-            conversation-specific, so hide them while a full-screen overlay
-            (Agents / Skills / Processes) is open. The theme toggle stays (it
-            lives inside SidebarModeToggle and is useful everywhere). */}
-        <SidebarModeToggle
-          mode={sidebarMode}
-          onModeChange={changeSidebarMode}
-          showModeSelect={
-            !(
-              agentsOpen ||
-              skillsOpen ||
-              processOpen ||
-              mcpOpen ||
-              dashboardsOpen
-            )
-          }
-          rightOffset={modeRightOffset}
+      {/* Top drag bar (replaces the OS title bar). Keep the open activity panel
+          outside the drag surface so its tab strip remains interactive. */}
+      <div className="pointer-events-none absolute inset-x-0 top-0 z-20 h-11">
+        <div
+          className="pointer-events-auto absolute inset-y-0 left-0 [-webkit-app-region:drag]"
+          style={{ right: activityOpen ? activityPanelWidth : 0 }}
         />
+        <SidebarToggle fullscreen={fullscreen} isMac={isMac} />
+        <HeaderThemeToggle rightOffset={themeRightOffset} />
         {terminalAvailable &&
           !(
             agentsOpen ||
@@ -589,7 +592,7 @@ function Shell() {
             onWorkspaceChange={setWorkspacePath}
             onReviewChanges={openChangesReview}
             onOpenHtml={openHtmlInBrowser}
-            onRanInBackground={() => setActivity(true)}
+            onRanInBackground={() => openSidebarTab("info")}
             onRunningConvosChange={setRunningConvos}
             onWaitingConvosChange={setWaitingConvos}
           />
@@ -617,7 +620,8 @@ function Shell() {
       <ActivityPanel
         conversationId={activeConversationId}
         open={activityOpen}
-        mode={sidebarMode}
+        tabs={sidebarTabState.tabs}
+        activeTabId={sidebarTabState.activeTabId}
         reserveWindowControls={reserveWindowControls}
         browserObscured={
           settingsOpen || startupGuideOpen || viewingTask !== null
@@ -626,10 +630,15 @@ function Shell() {
         changedFiles={reviewFiles}
         onOpenHtml={openHtmlInBrowser}
         onOpenChange={setActivity}
+        onActiveTabChange={(id) =>
+          setSidebarTabState((state) => ({ ...state, activeTabId: id }))
+        }
+        onOpenTab={openSidebarTab}
+        onCloseTab={closeSidebarTab}
         onOpenTask={setViewingTask}
         historyExpanded={historyExpanded}
         onHistoryExpandedChange={setHistoryExpanded}
-        onRanInBackground={() => setActivity(true)}
+        onRanInBackground={() => openSidebarTab("info")}
         onBrowserPoppedOutChange={handleBrowserPoppedOutChange}
         onWidthChange={setActivityPanelWidth}
       />

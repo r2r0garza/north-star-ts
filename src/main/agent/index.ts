@@ -132,6 +132,7 @@ import {
   getConversation,
   createConversation,
   updateConversation,
+  setConversationTitleIfUntitled,
 } from "../db/repositories/conversations"
 import { actionAllowlist } from "../db/repositories"
 import { getWorkspace } from "../db/repositories/workspaces"
@@ -2488,17 +2489,20 @@ export async function runChat(
   // (which owns the BrowserManager singleton) — same cycle-avoidance as above.
   provideBrowser?: (signal: AbortSignal) => BrowserHandle
 ): Promise<ChatResult> {
-  // For an untitled conversation, generate a short title from the first message
-  // with a separate (non-streaming) LLM call. Kicked off here so it runs
-  // concurrently with the agentic loop below; awaited in `finally` so it's
-  // persisted before runChat returns and the renderer refreshes the sidebar.
+  // Generate first-message metadata independently of the agent turn. Repository
+  // change subscribers refresh the sidebar as soon as the title is committed.
+  // The conditional write prevents a late result from replacing a title assigned
+  // while generation was in flight.
   const conversation = getConversation(conversationId)
-  const titlePromise =
-    conversation && !conversation.title && message.trim()
-      ? generateTitle(message).then((title) =>
-          updateConversation(conversationId, { title })
-        )
-      : null
+  if (conversation && !conversation.title && message.trim()) {
+    void generateTitle(message)
+      .then((title) => {
+        setConversationTitleIfUntitled(conversationId, title)
+      })
+      .catch((err) => {
+        console.error("conversation title persistence failed:", err)
+      })
+  }
 
   // Register the abort controller for this turn so the Stop button (chat:stop →
   // stopChat) can cancel it. One turn per conversation (the UI disables Send
@@ -2525,8 +2529,5 @@ export async function runChat(
     if (abortControllers.get(conversationId) === abort) {
       abortControllers.delete(conversationId)
     }
-    // Ensure the title write lands before runChat resolves, so the sidebar
-    // shows it as soon as the renderer refreshes. (generateTitle never rejects.)
-    if (titlePromise) await titlePromise
   }
 }

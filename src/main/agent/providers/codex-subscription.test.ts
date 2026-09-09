@@ -12,6 +12,7 @@ import {
   resolveCodexSubscriptionAuth,
   requestCodexSubscriptionDeviceCode,
 } from "./codex-subscription"
+import { isTransientError } from "."
 
 function jwtWithExp(
   exp: number,
@@ -179,6 +180,61 @@ describe("codex subscription adapter", () => {
     })) as { choices: Array<{ message: { content: string } }> }
 
     expect(result.choices[0].message.content).toBe("hey")
+  })
+
+  it("reports plain-text upstream backend failures without leaking JSON parser errors", async () => {
+    const client = buildCodexSubscriptionClient({
+      bearerToken: "access-token",
+      fetchImpl: async () =>
+        new Response("upstream connect error or disconnect/reset before headers", {
+          status: 502,
+          headers: { "content-type": "text/plain" },
+        }),
+    })
+
+    let thrown: unknown
+    try {
+      await (client.chat.completions.create({
+        model: "gpt-5.5",
+        messages: [{ role: "user", content: "hi" }],
+      }) as Promise<unknown>)
+    } catch (error) {
+      thrown = error
+    }
+
+    expect(thrown).toMatchObject({
+      status: 502,
+      message: expect.stringContaining(
+        "Experimental Codex subscription backend failed (502): returned a non-JSON response (text/plain). Preview: upstream connect error or disconnect/reset before headers."
+      ),
+    })
+    expect(isTransientError(thrown)).toBe(true)
+  })
+
+  it("keeps 4xx non-JSON backend failures non-retryable", async () => {
+    const client = buildCodexSubscriptionClient({
+      bearerToken: "access-token",
+      fetchImpl: async () =>
+        new Response("upstream auth rejected", {
+          status: 403,
+          headers: { "content-type": "text/plain" },
+        }),
+    })
+
+    let thrown: unknown
+    try {
+      await (client.chat.completions.create({
+        model: "gpt-5.5",
+        messages: [{ role: "user", content: "hi" }],
+      }) as Promise<unknown>)
+    } catch (error) {
+      thrown = error
+    }
+
+    expect(thrown).toMatchObject({
+      status: 403,
+    })
+    expect(isTransientError(thrown)).toBe(false)
   })
 
   it("redacts authorization material in errors", () => {

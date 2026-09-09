@@ -8,6 +8,7 @@ import {
   Sun,
   Moon,
   X,
+  Plus,
 } from "lucide-react"
 import { useTheme } from "next-themes"
 import { cn } from "@/lib/utils"
@@ -24,12 +25,11 @@ import {
   CollapsibleContent,
 } from "@/components/ui/collapsible"
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import { TasksSection } from "@/components/tasks-section"
 import { TasksHistorySection } from "@/components/tasks-history-section"
 import { TodosSection } from "@/components/todos-section"
@@ -51,15 +51,14 @@ import type { Task } from "@/types"
 // state (controlled by the Shell), shortcut (Cmd/Ctrl+K), and cookie, and only
 // reuses the left sidebar's visual primitives (which are plain styled divs).
 
-export type SidebarMode = "info" | "browser" | "changes"
+export type SidebarTabKind = "info" | "browser" | "changes"
+export type SidebarTab = { id: string; kind: SidebarTabKind }
 
 const ACTIVITY_COOKIE_NAME = "activity_state"
-const MODE_COOKIE_NAME = "sidebar_mode"
 const BROWSER_WIDTH_COOKIE_NAME = "sidebar_browser_width"
 const COOKIE_MAX_AGE = 60 * 60 * 24 * 7
 const ACTIVITY_KEYBOARD_SHORTCUT = "k"
-// Info mode is a fixed narrow rail; browser mode is wider and resizable.
-const INFO_WIDTH = "18rem"
+// Every sidebar surface shares one resizable width.
 const BROWSER_MIN_WIDTH = 360
 // Leave room for the chat column when the panel is dragged wide.
 const BROWSER_RIGHT_MARGIN = 320
@@ -98,21 +97,10 @@ export function writeActivityOpen(open: boolean): void {
   writeCookie(ACTIVITY_COOKIE_NAME, String(open))
 }
 
-// Read/persist the panel mode (info vs browser). Global (one choice for the whole
-// app), mirroring the open-state cookie.
-export function readSidebarMode(): SidebarMode {
-  return readCookie(MODE_COOKIE_NAME) === "browser" ? "browser" : "info"
-}
-export function writeSidebarMode(mode: SidebarMode): void {
-  writeCookie(MODE_COOKIE_NAME, mode)
-}
-
 // The Shell uses this to keep its drag-bar controls clear of an open panel before
-// the panel mounts and reports width changes from a browser/Changes resize.
-export function readActivityPanelWidth(mode: SidebarMode): number {
-  return mode === "browser" || mode === "changes"
-    ? readBrowserWidth()
-    : 18 * 16
+// the panel mounts and reports width changes from the sidebar resize.
+export function readActivityPanelWidth(): number {
+  return readBrowserWidth()
 }
 
 function readBrowserWidth(): number {
@@ -150,7 +138,7 @@ export function ActivityToggle({
       aria-label={open ? "Collapse activity panel" : "Expand activity panel"}
       title={open ? "Collapse activity panel" : "Expand activity panel"}
       className={cn(
-        "absolute top-2.5 z-10 [-webkit-app-region:no-drag]",
+        "pointer-events-auto absolute top-2.5 z-10 [-webkit-app-region:no-drag]",
         reserveWindowControls ? "right-[8.75rem]" : "right-4",
         "flex size-7 items-center justify-center rounded-md",
         "text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
@@ -161,45 +149,14 @@ export function ActivityToggle({
   )
 }
 
-// The mode dropdown — an Info/Browser selector styled like the model picker,
-// living in the drag bar next to ActivityToggle. Selecting a mode also opens the
-// panel (the Shell wires that). Must be a no-drag child of the drag region.
-export function SidebarModeToggle({
-  mode,
-  onModeChange,
-  showModeSelect = true,
-  rightOffset,
-}: {
-  mode: SidebarMode
-  onModeChange: (mode: SidebarMode) => void
-  // Hide the Info/Browser/Changes mode dropdown (it's conversation-specific)
-  // while keeping the theme toggle, e.g. on the Skills/Agents/Processes overlays.
-  showModeSelect?: boolean
-  // Distance from the window's right edge. The Shell grows this by the open
-  // panel's width, keeping the controls in the main content area.
-  rightOffset: number
-}) {
+// Theme control remains in the title bar after removing the sidebar mode menu.
+export function HeaderThemeToggle({ rightOffset }: { rightOffset: number }) {
   return (
     <div
-      className="absolute top-2 z-10 flex items-center gap-1 transition-[right] duration-200 ease-linear [-webkit-app-region:no-drag]"
+      className="pointer-events-auto absolute top-2 z-10 transition-[right] duration-200 ease-linear [-webkit-app-region:no-drag]"
       style={{ right: rightOffset }}
     >
       <ThemeToggle />
-      {showModeSelect && (
-        <Select
-          value={mode}
-          onValueChange={(v) => onModeChange(v as SidebarMode)}
-        >
-          <SelectTrigger size="sm" className="h-7">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent align="end">
-            <SelectItem value="info">Info</SelectItem>
-            <SelectItem value="browser">Browser</SelectItem>
-            <SelectItem value="changes">Changes</SelectItem>
-          </SelectContent>
-        </Select>
-      )}
     </div>
   )
 }
@@ -435,13 +392,17 @@ function BrowserPanel({
 export function ActivityPanel({
   conversationId,
   open,
-  mode,
+  tabs,
+  activeTabId,
   reserveWindowControls = false,
   browserObscured,
   workspace,
   changedFiles,
   onOpenHtml,
   onOpenChange,
+  onActiveTabChange,
+  onOpenTab,
+  onCloseTab,
   onOpenTask,
   historyExpanded,
   onHistoryExpandedChange,
@@ -453,11 +414,10 @@ export function ActivityPanel({
   // Controlled open state (the Shell owns it so the toggle can live in the drag
   // bar and "Run in background" can force the panel open).
   open: boolean
-  // Which content the panel shows (owned by the Shell so the drag-bar dropdown
-  // and the agent's request-open can drive it).
-  mode: SidebarMode
-  // Windows/Linux window controls live in the same drag row as the panel mode
-  // controls. The narrow Info rail needs its title below that row.
+  tabs: SidebarTab[]
+  activeTabId: string | null
+  // Windows/Linux window controls share the top drag row; Info retains its
+  // activity title below the tab strip.
   reserveWindowControls?: boolean
   // True while a DOM overlay (Settings / task transcript) is open. The native
   // browser view paints over the DOM, so it must hide while obscured.
@@ -470,6 +430,9 @@ export function ActivityPanel({
   // Open an html changed-file in the sidebar agent browser (from Changes mode).
   onOpenHtml: (relPath: string) => void
   onOpenChange: (open: boolean) => void
+  onActiveTabChange: (id: string) => void
+  onOpenTab: (kind: SidebarTabKind) => void
+  onCloseTab: (id: string) => void
   // Open a task's read-only transcript (the Shell hosts the viewer).
   onOpenTask: (task: Task) => void
   // Controlled expand state for the History section (collapsed by default). The
@@ -504,8 +467,8 @@ export function ActivityPanel({
     return () => window.removeEventListener("keydown", onKeyDown)
   }, [open, onOpenChange])
 
-  // Drag the panel's left edge to resize (browser mode only). newWidth grows as
-  // the cursor moves left, since the panel is pinned to the right edge.
+  // Drag the panel's left edge to resize. New width grows as the cursor moves
+  // left, since the panel is pinned to the right edge.
   const startResize = (e: React.MouseEvent) => {
     e.preventDefault()
     const onMove = (ev: MouseEvent) => {
@@ -526,27 +489,46 @@ export function ActivityPanel({
     window.addEventListener("mouseup", onUp)
   }
 
-  // Browser and Changes are the wide, resizable modes; Info stays a narrow rail.
-  const wideMode = mode === "browser" || mode === "changes"
-  const width = wideMode ? `${browserWidth}px` : INFO_WIDTH
-  // The native view is embedded here only when the panel is genuinely visible in
-  // browser mode and nothing is drawing over it.
-  const embedded = open && mode === "browser" && !browserObscured
-  const title =
-    mode === "browser"
-      ? "Browser"
-      : mode === "changes"
-        ? "Changes"
-        : "Workspace Activity"
-  const titleBelowChrome = reserveWindowControls && mode === "info"
+  const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? null
+  const activeKind = activeTab?.kind ?? null
+  // The native view is embedded here only when its tab is genuinely visible and
+  // nothing is drawing over it.
+  const embedded = open && activeKind === "browser" && !browserObscured
+  const titleBelowChrome = reserveWindowControls && activeKind === "info"
 
   React.useEffect(() => {
-    onWidthChange?.(open ? (wideMode ? browserWidth : 18 * 16) : 0)
-  }, [browserWidth, onWidthChange, open, wideMode])
+    onWidthChange?.(open ? browserWidth : 0)
+  }, [browserWidth, onWidthChange, open])
+
+  const width = `${browserWidth}px`
+  const tabLabel = (kind: SidebarTabKind) =>
+    kind === "info" ? "Info" : kind === "browser" ? "Browser" : "Changes"
+  const tabPicker = (className?: string) => (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          aria-label="Open sidebar tab"
+          title="Open sidebar tab"
+          className={cn(
+            "flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
+            className
+          )}
+        >
+          <Plus className="size-4" />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="center" className="w-32">
+        {(["info", "browser", "changes"] as SidebarTabKind[]).map((kind) => (
+          <DropdownMenuItem key={kind} onSelect={() => onOpenTab(kind)}>
+            {tabLabel(kind)}
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
 
   return (
-    // Layout gap that the main content flexes against (width animates to 0 when
-    // collapsed), mirroring the left sidebar's gap+container split.
     <div
       data-state={open ? "expanded" : "collapsed"}
       className={cn(
@@ -562,24 +544,61 @@ export function ActivityPanel({
         )}
         style={{ "--activity-width": width } as React.CSSProperties}
       >
-        {wideMode && (
-          // Resize handle in a left gutter (the pl-1 in BrowserPanel/ChangesPanel
-          // keeps content clear of it — in browser mode a DOM element under the
-          // native view can't receive clicks). Only meaningful in the wide modes.
-          <div
-            onMouseDown={startResize}
-            className="absolute inset-y-0 left-0 z-10 w-1 cursor-col-resize transition-colors hover:bg-border"
-          />
-        )}
-        {/* Clears the top drag bar / toggle row. */}
-        <SidebarHeader className="h-12 justify-center px-4">
-          {!titleBelowChrome && (
-            <span className="truncate text-xs font-medium text-sidebar-foreground/70">
-              {title}
-            </span>
+        <div
+          onMouseDown={startResize}
+          className="absolute inset-y-0 left-0 z-10 w-1 cursor-col-resize transition-colors hover:bg-border"
+        />
+        <SidebarHeader className="relative z-30 h-11 justify-center px-4 [-webkit-app-region:no-drag]">
+          {tabs.length > 0 && (
+            <div className="flex min-w-0 items-center gap-1">
+              {tabs.map((tab) => (
+                <div
+                  key={tab.id}
+                  className={cn(
+                    "flex h-7 min-w-0 items-center rounded-md text-xs transition-colors",
+                    tab.id === activeTabId
+                      ? "bg-accent text-foreground"
+                      : "text-muted-foreground hover:bg-accent hover:text-foreground"
+                  )}
+                >
+                  <button
+                    type="button"
+                    onClick={() => onActiveTabChange(tab.id)}
+                    className="truncate px-2"
+                  >
+                    {tabLabel(tab.kind)}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onCloseTab(tab.id)}
+                    aria-label={`Close ${tabLabel(tab.kind)} tab`}
+                    title={`Close ${tabLabel(tab.kind)} tab`}
+                    className="mr-1 flex size-5 items-center justify-center rounded-sm hover:bg-background/60"
+                  >
+                    <X className="size-3" />
+                  </button>
+                </div>
+              ))}
+              {tabPicker()}
+            </div>
           )}
         </SidebarHeader>
-        {mode === "browser" ? (
+        {!activeTab ? (
+          <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 p-4">
+            {(["info", "browser", "changes"] as SidebarTabKind[]).map(
+              (kind) => (
+                <button
+                  key={kind}
+                  type="button"
+                  onClick={() => onOpenTab(kind)}
+                  className="rounded-md border px-3 py-1.5 text-xs transition-colors hover:bg-accent"
+                >
+                  {tabLabel(kind)}
+                </button>
+              )
+            )}
+          </div>
+        ) : activeKind === "browser" ? (
           <div className="min-h-0 flex-1">
             <BrowserPanel
               embedded={embedded}
@@ -588,7 +607,7 @@ export function ActivityPanel({
               }
             />
           </div>
-        ) : mode === "changes" ? (
+        ) : activeKind === "changes" ? (
           <div className="min-h-0 flex-1">
             <ChangesPanel
               files={changedFiles}
@@ -601,7 +620,7 @@ export function ActivityPanel({
             {titleBelowChrome && (
               <div className="px-4 pb-1">
                 <h2 className="truncate text-xs font-medium text-sidebar-foreground/70">
-                  {title}
+                  Workspace Activity
                 </h2>
               </div>
             )}

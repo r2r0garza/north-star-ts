@@ -5,7 +5,7 @@ import type { QuestionAnswer } from "../agent/tools/types"
 import { listTodos } from "../db/repositories/todos"
 import {
   getConversation,
-  updateConversation,
+  setConversationTitleIfUntitled,
 } from "../db/repositories/conversations"
 import {
   TODO_RUN_KICKOFF,
@@ -36,10 +36,13 @@ export function registerTaskHandlers(runner: TaskRunner): void {
       const task = runner.enqueue(input)
       const conversation = getConversation(input.conversationId)
       if (!conversation?.title && input.message.trim()) {
-        return generateTitle(input.message).then((title) => {
-          updateConversation(input.conversationId, { title })
-          return task
-        })
+        void generateTitle(input.message)
+          .then((title) => {
+            setConversationTitleIfUntitled(input.conversationId, title)
+          })
+          .catch((err) => {
+            console.error("conversation title persistence failed:", err)
+          })
       }
       return task
     }

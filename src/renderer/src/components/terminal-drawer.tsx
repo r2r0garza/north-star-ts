@@ -57,7 +57,7 @@ export function TerminalToggle({
       onClick={onToggle}
       aria-label={open ? "Hide terminal" : "Show terminal"}
       title={open ? "Hide terminal" : "Show terminal"}
-      className="absolute top-2.5 z-30 flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors [-webkit-app-region:no-drag] hover:bg-muted hover:text-foreground"
+      className="pointer-events-auto absolute top-2.5 z-30 flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors [-webkit-app-region:no-drag] hover:bg-muted hover:text-foreground"
       style={{ right: rightOffset }}
     >
       <Terminal className="size-4.5" />
