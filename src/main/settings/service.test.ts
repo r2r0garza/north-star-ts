@@ -224,22 +224,45 @@ describe("settings service — agent sources", () => {
 })
 
 describe("settings service — conversations", () => {
-  it("defaults the startup view to the main agent mode", () => {
-    expect(service.getConversations()).toEqual({ defaultMode: "north_star" })
+  it("defaults the startup view to the main agent mode with background button hidden", () => {
+    expect(service.getConversations()).toEqual({
+      defaultMode: "north_star",
+      showRunInBackgroundButton: false,
+    })
   })
 
-  it("round-trips the default conversation mode", () => {
-    service.setConversations({ defaultMode: "chat" })
+  it("round-trips the conversation preferences", () => {
+    service.setConversations({
+      defaultMode: "chat",
+      showRunInBackgroundButton: true,
+    })
     service._resetCacheForTests()
-    expect(service.getConversations()).toEqual({ defaultMode: "chat" })
+    expect(service.getConversations()).toEqual({
+      defaultMode: "chat",
+      showRunInBackgroundButton: true,
+    })
+  })
+
+  it("fills the background-button default for older persisted settings", () => {
+    store.set("conversations", JSON.stringify({ defaultMode: "interactive" }))
+    expect(service.getConversations()).toEqual({
+      defaultMode: "interactive",
+      showRunInBackgroundButton: false,
+    })
   })
 
   it("falls back to the main agent mode for corrupt or unknown values", () => {
     store.set("conversations", JSON.stringify({ defaultMode: "bogus" }))
-    expect(service.getConversations()).toEqual({ defaultMode: "north_star" })
+    expect(service.getConversations()).toEqual({
+      defaultMode: "north_star",
+      showRunInBackgroundButton: false,
+    })
     service._resetCacheForTests()
     store.set("conversations", "{not json")
-    expect(service.getConversations()).toEqual({ defaultMode: "north_star" })
+    expect(service.getConversations()).toEqual({
+      defaultMode: "north_star",
+      showRunInBackgroundButton: false,
+    })
   })
 })
 

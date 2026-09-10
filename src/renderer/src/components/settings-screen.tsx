@@ -1076,6 +1076,7 @@ export function SettingsScreen({
                             value={conversations.defaultMode}
                             onValueChange={(value) =>
                               saveConversations({
+                                ...conversations,
                                 defaultMode:
                                   value as ConversationSettings["defaultMode"],
                               })
@@ -1097,6 +1098,27 @@ export function SettingsScreen({
                           <FieldDescription>
                             The view selected when the app opens.
                           </FieldDescription>
+                        </Field>
+                        <Field orientation="horizontal">
+                          <FieldContent>
+                            <FieldLabel htmlFor="run-in-background-button">
+                              Show Run in background button
+                            </FieldLabel>
+                            <FieldDescription>
+                              Show the composer button in Interactive and{" "}
+                              {window.cowork.system().mainAgentName} conversations.
+                            </FieldDescription>
+                          </FieldContent>
+                          <Switch
+                            id="run-in-background-button"
+                            checked={conversations.showRunInBackgroundButton}
+                            onCheckedChange={(checked) =>
+                              saveConversations({
+                                ...conversations,
+                                showRunInBackgroundButton: checked,
+                              })
+                            }
+                          />
                         </Field>
                         <Field orientation="horizontal">
                           <FieldContent>

@@ -547,6 +547,9 @@ function App(
     AccountWithModels[]
   >([])
   const [defaultLlm, setDefaultLlm] = useState<LlmSettings | null>(null)
+  const [showRunInBackgroundButton, setShowRunInBackgroundButton] = useState(
+    false
+  )
   // This conversation's selection (provider account + model gateway id). Persisted
   // onto the conversation row; for a not-yet-created conversation it's carried into
   // create() on first send. Null fields fall back to the default.
@@ -562,10 +565,18 @@ function App(
     setDefaultLlm(dflt)
   }, [])
 
+  const reloadConversationSettings = useCallback(async () => {
+    const settings = await window.cowork.settings.getConversations()
+    setShowRunInBackgroundButton(settings.showRunInBackgroundButton)
+  }, [])
+
   // Initial load + reload whenever Settings closes.
   useEffect(() => {
-    if (!settingsOpen) void reloadLlm()
-  }, [settingsOpen, reloadLlm])
+    if (!settingsOpen) {
+      void reloadLlm()
+      void reloadConversationSettings()
+    }
+  }, [settingsOpen, reloadLlm, reloadConversationSettings])
 
   useEffect(() => {
     return window.cowork.providers.onModelsChanged(() => {
@@ -2338,7 +2349,10 @@ function App(
           <div className="flex items-center gap-1.5">
             {/* Run the message as a durable background task (workspace views
                 only). Lives next to Send; disabled by the same gate. */}
-            {!isChat && !loading && !effectiveIsCli && (
+            {!isChat &&
+              showRunInBackgroundButton &&
+              !loading &&
+              !effectiveIsCli && (
               <Button
                 type="button"
                 size="icon"
