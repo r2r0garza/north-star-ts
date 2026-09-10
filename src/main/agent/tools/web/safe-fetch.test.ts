@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 import {
   assertPublicHttpUrl,
+  createPinnedAddressLookup,
   isPrivateOrLocalAddress,
   readResponseText,
   SafeFetchBodyTooLargeError,
@@ -64,6 +65,32 @@ describe("assertPublicHttpUrl", () => {
 })
 
 describe("safeFetch", () => {
+  it("returns an address array when Node requests all lookup results", async () => {
+    const lookup = createPinnedAddressLookup([
+      { address: "93.184.216.34", family: 4 },
+      { address: "2606:2800:220:1:248:1893:25c8:1946", family: 6 },
+    ])
+
+    await new Promise<void>((resolve, reject) => {
+      lookup("example.test", { all: true }, (err, addresses, family) => {
+        try {
+          expect(err).toBeNull()
+          expect(addresses).toEqual([
+            { address: "93.184.216.34", family: 4 },
+            {
+              address: "2606:2800:220:1:248:1893:25c8:1946",
+              family: 6,
+            },
+          ])
+          expect(family).toBeUndefined()
+          resolve()
+        } catch (assertionError) {
+          reject(assertionError)
+        }
+      })
+    })
+  })
+
   it("does not fetch direct private URLs", async () => {
     const transport: SafeFetchTransport = vi.fn()
 

@@ -109,7 +109,8 @@ export function TodosSection({
   React.useEffect(() => {
     if (!conversationId) return
     const unsubscribe = window.cowork.tasks.onEvent((payload) => {
-      if ((payload.event as TaskEventPayload).type === "token") return
+      const event = payload.event as TaskEventPayload
+      if (event.type === "token" || event.type === "stream_attempt") return
       const activeTaskId = activeTodoRunTaskRef.current
       if (!activeTaskId || payload.taskId !== activeTaskId) return
       void refetchRef.current()

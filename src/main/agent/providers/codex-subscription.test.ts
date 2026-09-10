@@ -156,6 +156,57 @@ describe("codex subscription adapter", () => {
     expect(result.choices[0].message.content).toBe("hello")
   })
 
+  it("yields Codex text deltas before a mislabeled SSE response closes", async () => {
+    const encoder = new TextEncoder()
+    let releaseTail: (() => void) | undefined
+    const waitForTail = new Promise<void>((resolve) => {
+      releaseTail = resolve
+    })
+    const client = buildCodexSubscriptionClient({
+      bearerToken: "access-token",
+      fetchImpl: async (_url: RequestInfo | URL, init?: RequestInit) => {
+        expect(init?.headers).toMatchObject({ accept: "text/event-stream" })
+        return new Response(
+          new ReadableStream<Uint8Array>({
+            async start(controller) {
+              controller.enqueue(
+                encoder.encode(
+                  'data: {"type":"response.output_text.delta","delta":"hel"}\n\n'
+                )
+              )
+              await waitForTail
+              controller.enqueue(
+                encoder.encode(
+                  'data: {"type":"response.output_text.delta","delta":"lo"}\n\n' +
+                    'data: {"type":"response.completed","response":{"id":"resp_live","status":"completed"}}\n\n'
+                )
+              )
+              controller.close()
+            },
+          }),
+          { headers: { "content-type": "application/octet-stream" } }
+        )
+      },
+    })
+
+    const stream = (await client.chat.completions.create({
+      model: "gpt-5.5",
+      messages: [{ role: "user", content: "hi" }],
+      stream: true,
+    })) as AsyncIterable<any>
+    const iterator = stream[Symbol.asyncIterator]()
+
+    await expect(iterator.next()).resolves.toMatchObject({
+      done: false,
+      value: { choices: [{ delta: { content: "hel" } }] },
+    })
+    releaseTail?.()
+    await expect(iterator.next()).resolves.toMatchObject({
+      done: false,
+      value: { choices: [{ delta: { content: "lo" } }] },
+    })
+  })
+
   it("assembles SSE streams that use event lines and omit event type in data", async () => {
     const client = buildCodexSubscriptionClient({
       bearerToken: "access-token",
@@ -186,10 +237,13 @@ describe("codex subscription adapter", () => {
     const client = buildCodexSubscriptionClient({
       bearerToken: "access-token",
       fetchImpl: async () =>
-        new Response("upstream connect error or disconnect/reset before headers", {
-          status: 502,
-          headers: { "content-type": "text/plain" },
-        }),
+        new Response(
+          "upstream connect error or disconnect/reset before headers",
+          {
+            status: 502,
+            headers: { "content-type": "text/plain" },
+          }
+        ),
     })
 
     let thrown: unknown

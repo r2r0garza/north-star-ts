@@ -20,6 +20,12 @@ export interface CompletionRound {
   diagnostics: ModelResponseAttemptDiagnostics
 }
 
+export type CompletionAttemptEvent =
+  | { type: "start"; attemptId: string; attempt: number }
+  | { type: "text"; attemptId: string; delta: string }
+  | { type: "commit"; attemptId: string }
+  | { type: "rollback"; attemptId: string; retrying: boolean }
+
 export class ModelRequestRetryExhaustedError extends Error {
   constructor(message: string) {
     super(message)
@@ -280,6 +286,8 @@ async function consumeCompletionStream(
     now: () => number
     requestIdentity?: ModelResponseRequestIdentity | null
     recoverVisibleText?: (rawText: string) => string
+    attemptId: string
+    onAttemptEvent?: (event: CompletionAttemptEvent) => void
   }
 ): Promise<CompletionRound> {
   let text = ""
@@ -316,7 +324,14 @@ async function consumeCompletionStream(
     }
 
     const piece = contentToText(delta.content)
-    if (piece) text += piece
+    if (piece) {
+      text += piece
+      input.onAttemptEvent?.({
+        type: "text",
+        attemptId: input.attemptId,
+        delta: piece,
+      })
+    }
 
     for (const tc of (delta.tool_calls ?? []) as ToolCallDelta[]) {
       toolFragments.push(tc)
@@ -358,6 +373,7 @@ export async function createCompletionRoundWithRetry(input: {
   validateRound?: (round: CompletionRound) => void
   requestIdentity?: ModelResponseRequestIdentity | null
   recoverVisibleText?: (rawText: string) => string
+  onAttemptEvent?: (event: CompletionAttemptEvent) => void
   signal: AbortSignal
   clock?: RetryClock
   random?: () => number
@@ -398,6 +414,8 @@ export async function createCompletionRoundWithRetry(input: {
       )
     }
 
+    const attemptId = `${logicalRoundId}:attempt:${attemptsUsed}`
+    input.onAttemptEvent?.({ type: "start", attemptId, attempt: attemptsUsed })
     try {
       const startedAt = clock.now()
       const stream = await request()
@@ -406,6 +424,8 @@ export async function createCompletionRoundWithRetry(input: {
         now: clock.now,
         requestIdentity: input.requestIdentity,
         recoverVisibleText: input.recoverVisibleText,
+        attemptId,
+        onAttemptEvent: input.onAttemptEvent,
       })
       if (!signal.aborted && validateRound) {
         try {
@@ -421,6 +441,7 @@ export async function createCompletionRoundWithRetry(input: {
           throw validationError
         }
       }
+      input.onAttemptEvent?.({ type: "commit", attemptId })
       return round
     } catch (error) {
       lastError = error
@@ -444,6 +465,11 @@ export async function createCompletionRoundWithRetry(input: {
           ? error.retryable
           : isTransientError(error)
       if (!retryable) {
+        input.onAttemptEvent?.({
+          type: "rollback",
+          attemptId,
+          retrying: false,
+        })
         repository.exhaustBudget({
           conversationId,
           logicalRoundId,
@@ -463,6 +489,11 @@ export async function createCompletionRoundWithRetry(input: {
       const hasAttempt = attemptsUsed < budget.maxAttempts
       const hasBudget = clock.now() + delay <= budget.deadlineAt
       if (!hasAttempt || !hasBudget) {
+        input.onAttemptEvent?.({
+          type: "rollback",
+          attemptId,
+          retrying: false,
+        })
         repository.exhaustBudget({
           conversationId,
           logicalRoundId,
@@ -472,6 +503,7 @@ export async function createCompletionRoundWithRetry(input: {
         break
       }
 
+      input.onAttemptEvent?.({ type: "rollback", attemptId, retrying: true })
       await clock.sleep(delay, signal)
       if (signal.aborted) throw error
     }

@@ -86,14 +86,12 @@ item is its plan file; the ordered-list number is its current priority rank.
 
 ## Deferred
 
-- **`078` — Global workflow repetition detection.** Independently of Automatic memory, default-on Skill
-  suggestions record successful root executions, match the same reusable workflow globally across
-  conversations/projects/cwds, and become eligible at three distinct successes. Persist bounded,
-  provenance-aware evidence and scope hints without generating or installing skills.
-- **`079` — Reviewed skill drafts and approved installation.** Generate an inert versioned draft from
-  `078` evidence, then let the user Approve, Request changes, Not now, or Reject. Infer Global versus
-  workspace location from actual dependencies, default portable/uncertain skills to Global, and install
-  only the exact approved revision through `077`'s guarded boundary.
+- **`087` — Request-scoped skill opportunities and opt-in drafting.** Reuse the existing first-message
+  title-model round trip for a structured opportunity signal, validate positive candidates against the
+  actual successful run, and ask whether to draft before generating any skill content. Retain inert,
+  versioned review and exact-revision installation through `077`/`028`; a separate user setting disables
+  both hidden detection and recommendations without affecting explicit skill authoring. Do not require
+  three global repetitions or classify every conversational utterance.
 - **`070` — Pods: autonomous agent teams with mutable work graphs. DEFERRED SEED.** A Pod is not a
   saved roster or a loose Process: it owns an objective and may create, split, assign, cancel,
   reprioritize, and revisit work within a charter, budget, and externally defined completion contract.
@@ -142,6 +140,9 @@ item is its plan file; the ordered-list number is its current priority rank.
 
 ## Superseded
 
+- **`078` + `079` — Global repetition detection and automatic skill drafting.** Superseded by `087`,
+  which detects opportunities per meaningful root request, validates them after successful execution,
+  and generates an inert draft only after the user opts in. The stable-ID plan files remain for history.
 - **`018` — Agentic goal mode.** Superseded by `025`, whose general Process engine can represent
   `018`'s fixed plan → execute → review → fix → finalize pipeline as a built-in Process
   template. The stable-ID plan file remains for history; it is not queued implementation work.

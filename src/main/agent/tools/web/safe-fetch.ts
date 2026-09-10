@@ -33,7 +33,7 @@ export type SafeFetchLookup = (
   hostname: string
 ) => Promise<Array<{ address: string; family?: number }>>
 
-type SafeFetchAddress = { address: string; family?: number }
+export type SafeFetchAddress = { address: string; family?: number }
 type RequestTransport = (
   url: URL,
   options: RequestInit,
@@ -316,7 +316,7 @@ async function requestWithPinnedAddresses(
   const body = await requestBodyToBuffer(options.body)
   const headers = requestHeaders(options.headers)
   const approvedSet = new Set(approvedAddresses.map(normalizeAddressForCompare))
-  let nextAddress = 0
+  const lookup = createPinnedAddressLookup(approvedAddresses)
 
   return new Promise<Response>((resolve, reject) => {
     const req = client.request(
@@ -328,16 +328,7 @@ async function requestWithPinnedAddresses(
         method: options.method ?? (body ? "POST" : "GET"),
         headers,
         signal,
-        lookup: (_hostname, _opts, callback) => {
-          const selected =
-            approvedAddresses[nextAddress % approvedAddresses.length]
-          nextAddress += 1
-          callback(
-            null,
-            selected.address,
-            selected.family ?? net.isIP(selected.address)
-          )
-        },
+        lookup,
       },
       (res) => {
         const remoteAddress = res.socket.remoteAddress
@@ -369,6 +360,36 @@ async function requestWithPinnedAddresses(
     if (body) req.end(body)
     else req.end()
   })
+}
+
+// Node enables network-family autoselection by default and asks custom lookup
+// functions for every address with `options.all === true`. Returning the legacy
+// single-address callback shape in that case makes Node validate an undefined
+// address and throw ERR_INVALID_IP_ADDRESS before opening a socket.
+export function createPinnedAddressLookup(
+  approvedAddresses: SafeFetchAddress[]
+): NonNullable<http.RequestOptions["lookup"]> {
+  let nextAddress = 0
+  return (_hostname, options, callback) => {
+    if (options.all) {
+      callback(
+        null,
+        approvedAddresses.map((result) => ({
+          address: result.address,
+          family: result.family ?? net.isIP(result.address),
+        }))
+      )
+      return
+    }
+
+    const selected = approvedAddresses[nextAddress % approvedAddresses.length]
+    nextAddress += 1
+    callback(
+      null,
+      selected.address,
+      selected.family ?? net.isIP(selected.address)
+    )
+  }
 }
 
 function normalizeAddressForCompare(

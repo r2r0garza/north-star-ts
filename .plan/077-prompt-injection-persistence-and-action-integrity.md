@@ -48,7 +48,7 @@ Direct user preferences may still be remembered when auto memory is enabled. The
 
 - Treat bundled/imported/unreviewed skill material as supply-chain input. Loading a skill never expands
   the runtime's authorized tool set or approval scope.
-- Only existing explicitly installed skills and proposals approved through `079` receive
+- Only existing explicitly installed skills and proposals approved through `087` receive
   `approved_instruction` classification.
 - A generated draft remains inert database content. It is absent from `skillSources()` and `read_skill`
   until approval writes it through the guarded `skills:create` path.

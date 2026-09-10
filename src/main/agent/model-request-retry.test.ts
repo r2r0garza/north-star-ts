@@ -405,9 +405,10 @@ describe.skipIf(!sqliteLoads)("model request retry coordinator", () => {
     expect(attempts).toBe(1)
   })
 
-  it("discards partial stream text and tool fragments before retrying", async () => {
+  it("rolls back partial streamed text before retrying", async () => {
     const clock = makeClock()
     let attempts = 0
+    const events: Array<Record<string, unknown>> = []
 
     const round = await createCompletionRoundWithRetry({
       conversationId,
@@ -416,6 +417,7 @@ describe.skipIf(!sqliteLoads)("model request retry coordinator", () => {
       clock,
       random: () => 0,
       isTransientError: () => true,
+      onAttemptEvent: (event) => events.push(event),
       request: async () => {
         attempts += 1
         if (attempts === 1) {
@@ -431,6 +433,26 @@ describe.skipIf(!sqliteLoads)("model request retry coordinator", () => {
       finishReason: "stop",
     })
     expect(attempts).toBe(2)
+    expect(events).toEqual([
+      { type: "start", attemptId: "after-seq:9:attempt:1", attempt: 1 },
+      {
+        type: "text",
+        attemptId: "after-seq:9:attempt:1",
+        delta: "abandoned text",
+      },
+      {
+        type: "rollback",
+        attemptId: "after-seq:9:attempt:1",
+        retrying: true,
+      },
+      { type: "start", attemptId: "after-seq:9:attempt:2", attempt: 2 },
+      {
+        type: "text",
+        attemptId: "after-seq:9:attempt:2",
+        delta: "clean retry",
+      },
+      { type: "commit", attemptId: "after-seq:9:attempt:2" },
+    ])
     expect(getBudget(conversationId, "after-seq:9")).toMatchObject({
       attemptsConsumed: 2,
       lastError: "socket died",

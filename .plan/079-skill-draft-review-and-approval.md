@@ -1,7 +1,8 @@
 # PR79: Automatic skill drafts, request-changes review, and approved installation
 
-> Status: **PLANNED**. Depends on `077`'s inert-draft/install boundary and `078`'s eligible workflow
-> evidence. The system prepares drafts automatically but never activates them without user approval.
+> Status: **SUPERSEDED BY `087`**. `087` retains reviewed, inert, approval-gated installation but replaces
+> automatic drafting after three repetitions with request-scoped detection, completion validation, and an
+> explicit **Draft skill** action. This file remains as the historical automatic-drafting design.
 
 ## Product flow
 

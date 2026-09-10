@@ -100,7 +100,14 @@ import type {
 
 // Streaming events emitted during a chat turn (mirrors ChatEvent in the agent).
 export type ChatEvent =
-  | { type: "token"; delta: string }
+  | { type: "token"; delta: string; attemptId?: string }
+  | {
+      type: "stream_attempt"
+      phase: "start" | "commit" | "rollback"
+      attemptId: string
+      attempt?: number
+      retrying?: boolean
+    }
   | {
       type: "tool"
       phase: "start"

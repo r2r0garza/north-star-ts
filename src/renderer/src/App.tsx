@@ -64,6 +64,7 @@ import {
 import { ToolGroup, ApprovalCard } from "@/components/tool-group"
 import { ChangedFilesBar } from "@/components/changed-files-bar"
 import { QuestionPanel } from "@/components/question-panel"
+import { applyStreamAttempt } from "@/lib/live-stream"
 import {
   MentionMenu,
   rankSkills,
@@ -133,11 +134,15 @@ type LiveSegment =
 // `approval`), so restoring a switched-away turn restores its approval card too.
 interface LiveTurn {
   segments: LiveSegment[]
+  streamCheckpoints: Record<string, LiveSegment[]>
+  streamRetrying: boolean
   question: { requestId: string; questions: Question[] } | null
   commandWait: boolean
 }
 const EMPTY_LIVE: LiveTurn = {
   segments: [],
+  streamCheckpoints: {},
+  streamRetrying: false,
   question: null,
   commandWait: false,
 }
@@ -1289,7 +1294,9 @@ function App(
         // turn that keeps streaming after the user switches away no longer loses
         // its tokens/tools/approval — they're preserved and restored on return.
         (event) => {
-          if (event.type === "token") {
+          if (event.type === "stream_attempt") {
+            updateLive(turnConvoId, (turn) => applyStreamAttempt(turn, event))
+          } else if (event.type === "token") {
             updateLive(turnConvoId, (turn) => appendLiveText(turn, event.delta))
           } else if (event.type === "tool" && event.phase === "start") {
             // A tool started — add a running row (label derived from its args) to
@@ -2586,7 +2593,9 @@ function App(
                           <MarkerContent>
                             {liveTurn?.commandWait
                               ? "Waiting for background command…"
-                              : "Thinking…"}
+                              : liveTurn?.streamRetrying
+                                ? "Connection interrupted — retrying…"
+                                : "Thinking…"}
                           </MarkerContent>
                         </Marker>
                       )}

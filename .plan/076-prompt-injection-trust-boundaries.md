@@ -138,4 +138,4 @@ context envelopes and authorization outcomes; avoid brittle exact prose comparis
 ## Out of scope
 
 - Claiming complete prompt-injection prevention, replacing provider safety systems, content moderation,
-  antivirus scanning, or implementing the automatic skill proposal feature (`078`/`079`).
+  antivirus scanning, or implementing the automatic skill proposal feature (`087`).

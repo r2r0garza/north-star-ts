@@ -987,14 +987,11 @@ export class TaskRunner {
   }
 
   // Persist an event to the durable log and forward it to live subscribers.
-  // Token deltas are ephemeral live-stream pieces — the durable transcript lives
-  // in `messages` (runAgentLoop persists each assistant/tool message), so
-  // persisting every token would bloat task_events for no recovery benefit. The
-  // live tail still forwards tokens so a renderer attached mid-run sees them
-  // stream, exactly like the live `chat` path.
+  // Token deltas and attempt checkpoints are ephemeral; the durable transcript
+  // lives in `messages`, so stream state only belongs on the live tail.
   private emit(taskId: string, event: TaskEventPayload): void {
     let eventId = 0
-    if (event.type !== "token") {
+    if (event.type !== "token" && event.type !== "stream_attempt") {
       eventId = appendEvent({ taskId, type: event.type, payload: event }).id
     }
     for (const listener of this.listeners) {

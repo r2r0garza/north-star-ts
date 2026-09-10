@@ -188,38 +188,64 @@ function outputText(item: any): string {
     .join("")
 }
 
-function parseSseEvents(text: string): any[] {
-  const events: any[] = []
-  const frames = text.split(/\r?\n\r?\n/)
-  for (const frame of frames) {
-    const lines = frame.split(/\r?\n/)
-    const eventType = lines
-      .find((line) => line.startsWith("event:"))
-      ?.slice(6)
-      .trim()
-    const data = lines
-      .filter((line) => line.startsWith("data:"))
-      .map((line) => line.slice(5).trimStart())
-      .join("\n")
-      .trim()
-    if (!data || data === "[DONE]") continue
-    try {
-      const parsed = JSON.parse(data)
-      if (
-        eventType &&
-        parsed &&
-        typeof parsed === "object" &&
-        typeof parsed.type !== "string"
-      ) {
-        parsed.type = eventType
-      }
-      events.push(parsed)
-    } catch {
-      // Ignore malformed frames; the terminal/content checks below decide if the
-      // stream was usable.
+function parseSseFrame(frame: string): any | null {
+  const lines = frame.split(/\r?\n/)
+  const eventType = lines
+    .find((line) => line.startsWith("event:"))
+    ?.slice(6)
+    .trim()
+  const data = lines
+    .filter((line) => line.startsWith("data:"))
+    .map((line) => line.slice(5).trimStart())
+    .join("\n")
+    .trim()
+  if (!data || data === "[DONE]") return null
+  try {
+    const parsed = JSON.parse(data)
+    if (
+      eventType &&
+      parsed &&
+      typeof parsed === "object" &&
+      typeof parsed.type !== "string"
+    ) {
+      parsed.type = eventType
     }
+    return parsed
+  } catch {
+    return null
   }
-  return events
+}
+
+function parseSseEvents(text: string): any[] {
+  return text
+    .split(/\r?\n\r?\n/)
+    .map(parseSseFrame)
+    .filter((event): event is any => event !== null)
+}
+
+async function* readSseEvents(
+  body: ReadableStream<Uint8Array>
+): AsyncIterable<any> {
+  const reader = body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ""
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      buffer += decoder.decode(value, { stream: !done })
+      const frames = buffer.split(/\r?\n\r?\n/)
+      buffer = frames.pop() ?? ""
+      for (const frame of frames) {
+        const event = parseSseFrame(frame)
+        if (event) yield event
+      }
+      if (done) break
+    }
+    const event = parseSseFrame(buffer)
+    if (event) yield event
+  } finally {
+    reader.releaseLock()
+  }
 }
 
 function codexSseToResponse(text: string, model: string): any {
@@ -367,6 +393,102 @@ export function codexSubscriptionResponseToChat(response: any): {
     ],
     usage: response?.usage,
     _request_id: response?._request_id ?? response?.id,
+  }
+}
+
+async function* codexSseToChatStream(
+  body: ReadableStream<Uint8Array>
+): AsyncIterable<any> {
+  let requestId: string | undefined
+  let emittedText = false
+  let emittedOutput = false
+  let toolIndex = 0
+  let terminal: any = null
+
+  for await (const event of readSseEvents(body)) {
+    const type = typeof event?.type === "string" ? event.type : ""
+    if (type === "error") {
+      const message =
+        event?.message ?? event?.error?.message ?? "Codex stream failed."
+      throw new Error(redactCodexSubscriptionError(String(message)))
+    }
+    if (type.includes("output_text.delta") && typeof event.delta === "string") {
+      emittedText = true
+      emittedOutput = true
+      yield {
+        _request_id: requestId,
+        choices: [{ delta: { content: event.delta } }],
+      }
+      continue
+    }
+    if (type === "response.output_item.done" && event.item) {
+      emittedOutput = true
+      if (event.item.type === "function_call") {
+        const index = toolIndex++
+        yield {
+          _request_id: requestId,
+          choices: [
+            {
+              delta: {
+                tool_calls: [
+                  {
+                    index,
+                    id: callIdFrom(event.item.call_id ?? event.item.id, index),
+                    type: "function",
+                    function: {
+                      name: sanitizeFunctionName(event.item.name),
+                      arguments: asJsonString(event.item.arguments),
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        }
+      } else if (event.item.type === "message" && !emittedText) {
+        const text = outputText(event.item)
+        if (text) {
+          emittedText = true
+          yield {
+            _request_id: requestId,
+            choices: [{ delta: { content: text } }],
+          }
+        }
+      }
+      continue
+    }
+    if (
+      type === "response.completed" ||
+      type === "response.incomplete" ||
+      type === "response.failed"
+    ) {
+      terminal = event.response ?? null
+      requestId = terminal?.id ?? requestId
+    }
+  }
+
+  if (!terminal) {
+    throw new Error(
+      emittedOutput
+        ? "Codex stream ended before a terminal response event."
+        : "Codex stream did not emit a usable response."
+    )
+  }
+  if (terminal?.status === "failed" || terminal?.status === "cancelled") {
+    const code = terminal?.error?.code ? `${terminal.error.code}: ` : ""
+    const message =
+      terminal?.error?.message ?? `Codex backend returned ${terminal.status}.`
+    throw new Error(redactCodexSubscriptionError(`${code}${message}`))
+  }
+  yield {
+    _request_id: requestId,
+    usage: terminal?.usage,
+    choices: [
+      {
+        delta: {},
+        finish_reason: toolIndex > 0 ? "tool_calls" : "stop",
+      },
+    ],
   }
 }
 
@@ -1001,6 +1123,7 @@ export function buildCodexSubscriptionClient(input: {
         method: "POST",
         signal: opts?.signal,
         headers: {
+          accept: "text/event-stream",
           authorization: `Bearer ${accessToken}`,
           "content-type": "application/json",
         },
@@ -1023,8 +1146,11 @@ export function buildCodexSubscriptionClient(input: {
         })
         res = await send(auth.accessToken)
       }
-      const text = await res.text()
       const contentType = res.headers.get("content-type") ?? ""
+      if (res.ok && body.stream && res.body) {
+        return codexSseToChatStream(res.body)
+      }
+      const text = await res.text()
       const json = parseCodexResponseBodyOrThrow({
         text,
         contentType,

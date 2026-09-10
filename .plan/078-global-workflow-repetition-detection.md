@@ -1,8 +1,8 @@
 # PR78: Global workflow repetition detection and skill-proposal evidence
 
-> Status: **PLANNED**. Depends on `076` for trust-aware evidence extraction. Independent of automatic
-> memory: **Skill suggestions are enabled by default even when auto memory is disabled.** This plan
-> records and matches successful workflows but does not generate or install skills; `079` owns that.
+> Status: **SUPERSEDED BY `087`**. `087` replaces the three-success global repetition threshold with
+> request-scoped opportunity detection, completion-time validation, and opt-in drafting. This file remains
+> as the historical design for the rejected repetition-count approach.
 
 ## Product contract
 
@@ -115,4 +115,3 @@ executions start a new candidate or remain unmatched rather than corrupting a cl
 
 - Generating skill prose, writing `SKILL.md`, proposal-review UI, or retroactively mining all historical
   conversations on first launch.
-

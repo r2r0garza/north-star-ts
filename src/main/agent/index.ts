@@ -614,7 +614,14 @@ function reconcileSideEffectingToolAction(input: {
 // tool-call `id` joins start↔done (and matches the persisted toolCallId), so the
 // live markers render identically to the ones rebuilt from storage on reload.
 export type ChatEvent =
-  | { type: "token"; delta: string }
+  | { type: "token"; delta: string; attemptId?: string }
+  | {
+      type: "stream_attempt"
+      phase: "start" | "commit" | "rollback"
+      attemptId: string
+      attempt?: number
+      retrying?: boolean
+    }
   | {
       type: "tool"
       phase: "start"
@@ -1730,6 +1737,88 @@ export async function runAgentLoop(
           apiMode: llm.apiMode,
         },
         recoverVisibleText: (rawText) => extractTextToolCalls(rawText).text,
+        onAttemptEvent: (() => {
+          let attemptText = ""
+          let withheldText = false
+          let visibleText = false
+          return (event) => {
+            if (event.type === "start") {
+              attemptText = ""
+              withheldText = false
+              visibleText = false
+              onEvent({
+                type: "stream_attempt",
+                phase: "start",
+                attemptId: event.attemptId,
+                attempt: event.attempt,
+              })
+              return
+            }
+            if (event.type === "text") {
+              attemptText += event.delta
+              const trimmed = attemptText.trimStart()
+              const mayBeTextToolCall =
+                !streamedText &&
+                ("[TOOL_CALL:".startsWith(trimmed) ||
+                  trimmed.startsWith("[TOOL_CALL:"))
+              if (mayBeTextToolCall) {
+                withheldText = true
+                return
+              }
+              const visiblePiece = withheldText ? attemptText : event.delta
+              withheldText = false
+              if (!visibleText && streamedText) {
+                onEvent({
+                  type: "token",
+                  delta: "\n\n",
+                  attemptId: event.attemptId,
+                })
+              }
+              visibleText = true
+              onEvent({
+                type: "token",
+                delta: visiblePiece,
+                attemptId: event.attemptId,
+              })
+              return
+            }
+            if (event.type === "commit") {
+              const recovered = extractTextToolCalls(attemptText)
+              if (
+                withheldText &&
+                recovered.toolCalls.length === 0 &&
+                recovered.text
+              ) {
+                if (streamedText) {
+                  onEvent({
+                    type: "token",
+                    delta: "\n\n",
+                    attemptId: event.attemptId,
+                  })
+                }
+                onEvent({
+                  type: "token",
+                  delta: recovered.text,
+                  attemptId: event.attemptId,
+                })
+                visibleText = true
+              }
+              streamedText ||= visibleText
+              onEvent({
+                type: "stream_attempt",
+                phase: "commit",
+                attemptId: event.attemptId,
+              })
+              return
+            }
+            onEvent({
+              type: "stream_attempt",
+              phase: "rollback",
+              attemptId: event.attemptId,
+              retrying: event.retrying,
+            })
+          }
+        })(),
         request: () =>
           createCompletion(
             llm.client,
@@ -1776,11 +1865,8 @@ export async function runAgentLoop(
       const recovered = extractTextToolCalls(text)
       text = recovered.text
       const toolCalls = [...structuredToolCalls, ...recovered.toolCalls]
-      if (text) {
-        if (streamedText) onEvent({ type: "token", delta: "\n\n" })
-        onEvent({ type: "token", delta: text })
-        streamedText = true
-      }
+      // Text was already forwarded incrementally by onAttemptEvent. Tool-call
+      // fragments remain buffered until this validated round reaches this point.
 
       // The turn hit the output-token ceiling. If it was cut off mid tool-call,
       // the accumulated arguments are partial/invalid JSON — parsing them below

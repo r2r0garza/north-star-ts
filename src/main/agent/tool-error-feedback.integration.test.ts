@@ -1432,7 +1432,16 @@ describe.skipIf(!sqliteLoads)("agent loop tool-error feedback", () => {
     vi.spyOn(Math, "random").mockReturnValue(0)
     const workspace = await makeWorkspace()
     const conversation = createConversation({ mode: "interactive" })
-    const tokens: string[] = []
+    const streamEvents: Array<
+      | { type: "token"; delta: string; attemptId?: string }
+      | {
+          type: "stream_attempt"
+          phase: "start" | "commit" | "rollback"
+          attemptId: string
+          attempt?: number
+          retrying?: boolean
+        }
+    > = []
 
     scriptedCompletions.push(() =>
       (async function* () {
@@ -1467,12 +1476,50 @@ describe.skipIf(!sqliteLoads)("agent loop tool-error feedback", () => {
       userMessage: "stream retry",
       abort: new AbortController(),
       onEvent: (event) => {
-        if (event.type === "token") tokens.push(event.delta)
+        if (event.type === "token" || event.type === "stream_attempt") {
+          streamEvents.push(event)
+        }
       },
     })
 
     expect(result).toEqual({ content: "clean retry" })
-    expect(tokens).toEqual(["clean retry"])
+    expect(
+      streamEvents.map(({ type, ...event }) => ({ type, ...event }))
+    ).toEqual([
+      {
+        type: "stream_attempt",
+        phase: "start",
+        attemptId: "after-seq:1:attempt:1",
+        attempt: 1,
+      },
+      {
+        type: "token",
+        delta: "abandoned text",
+        attemptId: "after-seq:1:attempt:1",
+      },
+      {
+        type: "stream_attempt",
+        phase: "rollback",
+        attemptId: "after-seq:1:attempt:1",
+        retrying: true,
+      },
+      {
+        type: "stream_attempt",
+        phase: "start",
+        attemptId: "after-seq:1:attempt:2",
+        attempt: 2,
+      },
+      {
+        type: "token",
+        delta: "clean retry",
+        attemptId: "after-seq:1:attempt:2",
+      },
+      {
+        type: "stream_attempt",
+        phase: "commit",
+        attemptId: "after-seq:1:attempt:2",
+      },
+    ])
     expect(getBudget(conversation.id, "after-seq:1")).toMatchObject({
       status: "completed",
       attemptsConsumed: 2,
