@@ -351,6 +351,12 @@ function formatPickedElement(el: PickedElement): string {
 
 export type AppHandle = {
   appendTerminalSelection: (text: string) => void
+  appendFileSelection: (selection: {
+    path: string
+    startLine: number
+    endLine: number
+    text: string
+  }) => void
   prepareComposerTransition: (destination: "empty" | "populated") => void
 }
 
@@ -559,9 +565,8 @@ function App(
     AccountWithModels[]
   >([])
   const [defaultLlm, setDefaultLlm] = useState<LlmSettings | null>(null)
-  const [showRunInBackgroundButton, setShowRunInBackgroundButton] = useState(
-    false
-  )
+  const [showRunInBackgroundButton, setShowRunInBackgroundButton] =
+    useState(false)
   // This conversation's selection (provider account + model gateway id). Persisted
   // onto the conversation row; for a not-yet-created conversation it's carried into
   // create() on first send. Null fields fall back to the default.
@@ -948,6 +953,33 @@ function App(
     })
   }, [])
 
+  const appendFileSelection = useCallback(
+    (selection: {
+      path: string
+      startLine: number
+      endLine: number
+      text: string
+    }) => {
+      if (!selection.text.trim()) return
+      const lines =
+        selection.startLine === selection.endLine
+          ? `line ${selection.startLine}`
+          : `lines ${selection.startLine}-${selection.endLine}`
+      const block = `<user_file_text path=${JSON.stringify(selection.path)} ${lines}>\n${selection.text}\n</user_file_text>`
+      setMessage((prev) => (prev.trim() ? `${prev}\n\n${block}` : block))
+      setMenu(null)
+      setMenuActive(null)
+      requestAnimationFrame(() => {
+        const node = textareaRef.current
+        if (!node) return
+        node.focus()
+        const end = node.value.length
+        node.setSelectionRange(end, end)
+      })
+    },
+    []
+  )
+
   const prepareComposerTransition = useCallback(
     (destination: "empty" | "populated") => {
       const top = composerSurfaceRef.current?.getBoundingClientRect().top
@@ -961,9 +993,10 @@ function App(
     ref,
     () => ({
       appendTerminalSelection,
+      appendFileSelection,
       prepareComposerTransition,
     }),
-    [appendTerminalSelection, prepareComposerTransition]
+    [appendFileSelection, appendTerminalSelection, prepareComposerTransition]
   )
 
   // Drop confirmed values of one kind whose marker no longer appears in `present`
@@ -2450,19 +2483,19 @@ function App(
               showRunInBackgroundButton &&
               !loading &&
               !effectiveIsCli && (
-              <Button
-                type="button"
-                size="icon"
-                variant="outline"
-                onClick={runInBackground}
-                disabled={!canSend}
-                title="Run in background"
-                aria-label="Run in background"
-                className="size-8 rounded-full"
-              >
-                <Workflow className="size-4" />
-              </Button>
-            )}
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="outline"
+                  onClick={runInBackground}
+                  disabled={!canSend}
+                  title="Run in background"
+                  aria-label="Run in background"
+                  className="size-8 rounded-full"
+                >
+                  <Workflow className="size-4" />
+                </Button>
+              )}
             {loading ? (
               <Button
                 type="button"

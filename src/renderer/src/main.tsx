@@ -632,6 +632,9 @@ function Shell() {
         workspace={workspacePath}
         changedFiles={reviewFiles}
         onOpenHtml={openHtmlInBrowser}
+        onAddFileSelection={(selection) =>
+          appRef.current?.appendFileSelection(selection)
+        }
         onOpenChange={setActivity}
         onActiveTabChange={(id) =>
           setSidebarTabState((state) => ({ ...state, activeTabId: id }))

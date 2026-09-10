@@ -108,7 +108,7 @@ export class GitService {
     const repo = await this.repoInfo()
     if (!repo.isRepo) return { isRepo: false, entries: [], truncated: false }
     const res = await this.git(
-      ["status", "--porcelain=v2", "-z", "-b"],
+      ["status", "--porcelain=v2", "-z", "-b", "--untracked-files=all"],
       repo.root
     )
     return {

@@ -22,6 +22,41 @@ function lineClass(line: string): string {
   return "text-foreground/80"
 }
 
+type DiffLine = { line: string; oldLine: number | null; newLine: number | null }
+
+function numberDiffLines(diff: string): DiffLine[] {
+  let oldLine = 0
+  let newLine = 0
+  let inHunk = false
+
+  return diff.split("\n").map((line) => {
+    const hunk = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line)
+    if (hunk) {
+      oldLine = Number(hunk[1])
+      newLine = Number(hunk[2])
+      inHunk = true
+      return { line, oldLine: null, newLine: null }
+    }
+    if (
+      !inHunk ||
+      line.startsWith("diff ") ||
+      line.startsWith("index ") ||
+      line.startsWith("---") ||
+      line.startsWith("+++")
+    ) {
+      return { line, oldLine: null, newLine: null }
+    }
+    if (line.startsWith("-")) {
+      return { line, oldLine: oldLine++, newLine: null }
+    }
+    if (line.startsWith("+")) {
+      return { line, oldLine: null, newLine: newLine++ }
+    }
+    if (line.startsWith("\\")) return { line, oldLine: null, newLine: null }
+    return { line, oldLine: oldLine++, newLine: newLine++ }
+  })
+}
+
 export function DiffView({
   result,
   className,
@@ -44,14 +79,42 @@ export function DiffView({
       </p>
     )
   }
-  const lines = result.diff.split("\n")
+  const lines = numberDiffLines(result.diff)
   return (
     <div className={cn("overflow-auto", className)}>
       <pre className="font-mono text-[11px] leading-relaxed">
         <code>
-          {lines.map((line, i) => (
-            <div key={i} className={cn("px-2", lineClass(line))}>
-              {line || " "}
+          {lines.map(({ line, oldLine, newLine }, i) => (
+            <div
+              key={i}
+              className={cn(
+                "grid grid-cols-[3ch_3ch_minmax(0,1fr)]",
+                lineClass(line)
+              )}
+            >
+              <span
+                className={cn(
+                  "pr-1 text-right select-none",
+                  oldLine !== null &&
+                    line.startsWith("-") &&
+                    "text-red-600 dark:text-red-300"
+                )}
+              >
+                {oldLine ?? ""}
+              </span>
+              <span
+                className={cn(
+                  "pr-1 text-right select-none",
+                  newLine !== null &&
+                    line.startsWith("+") &&
+                    "text-emerald-700 dark:text-emerald-300"
+                )}
+              >
+                {newLine ?? ""}
+              </span>
+              <span className="min-w-0 pr-2 break-words whitespace-pre-wrap">
+                {line || " "}
+              </span>
             </div>
           ))}
         </code>

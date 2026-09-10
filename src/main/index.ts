@@ -77,6 +77,8 @@ import type {
 import { listWorkspaces } from "./db/repositories/workspaces"
 import * as settingsService from "./settings/service"
 import { listWorkspaceFiles } from "./files/list"
+import { listWorkspaceDirectory } from "./files/tree"
+import { isBinaryBuffer } from "./agent/env/walk"
 import { readGitBranch } from "./index/metadata"
 import { gitDiffFile } from "./git/diff"
 import { GitService } from "./git/service"
@@ -978,6 +980,11 @@ ipcMain.handle(
     return listWorkspaceFiles(workspace.trim(), query ?? "", Date.now())
   }
 )
+ipcMain.handle(
+  "files:listDirectory",
+  async (_event, workspace: string, relDirectory: string) =>
+    listWorkspaceDirectory(workspace?.trim() ?? "", relDirectory?.trim() ?? "")
+)
 const FILE_READ_TEXT_LIMIT = 256 * 1024
 ipcMain.handle(
   "files:readText",
@@ -989,6 +996,7 @@ ipcMain.handle(
     content: string | null
     truncated: boolean
     error: string | null
+    kind?: "text" | "binary"
   }> => {
     if (!workspace?.trim() || !relPath?.trim())
       return { content: null, truncated: false, error: "No path." }
@@ -1006,10 +1014,14 @@ ipcMain.handle(
       const bytes = await readFile(abs)
       const truncated = bytes.byteLength > FILE_READ_TEXT_LIMIT
       const slice = truncated ? bytes.subarray(0, FILE_READ_TEXT_LIMIT) : bytes
+      if (isBinaryBuffer(slice)) {
+        return { content: null, truncated, error: null, kind: "binary" }
+      }
       return {
         content: slice.toString("utf8"),
         truncated,
         error: null,
+        kind: "text",
       }
     } catch (err) {
       return {
@@ -1040,6 +1052,14 @@ ipcMain.handle("git:branch", async (_event, path: string) => {
     sha?: string
   }
   return val.branch ?? val.sha ?? null
+})
+ipcMain.handle("git:status", async (_event, workspace: string) => {
+  if (!workspace?.trim()) return null
+  try {
+    return await new GitService(workspace.trim()).status()
+  } catch {
+    return null
+  }
 })
 // Show an OS desktop notification. The renderer decides WHETHER to notify (it
 // knows which conversation is on screen and whether the window is focused) and

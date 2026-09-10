@@ -35,8 +35,12 @@ export type {
 // Picked-element type (agent browser pick mode), surfaced for the composer chip.
 export type { PickedElement } from "../../preload/index"
 
-// Git diff result (changed-file pills + sidebar Changes review).
-export type { GitDiffResult } from "../../preload/index"
+// Git results used by changed-file previews and the sidebar file tree.
+export type {
+  GitDiffResult,
+  GitStatusEntry,
+  GitStatusResult,
+} from "../../preload/index"
 
 // Terminal profiles/sessions for the ephemeral workspace terminal drawer.
 export type {

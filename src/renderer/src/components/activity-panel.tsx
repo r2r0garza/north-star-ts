@@ -35,6 +35,7 @@ import { TasksHistorySection } from "@/components/tasks-history-section"
 import { TodosSection } from "@/components/todos-section"
 import { IndexingSection } from "@/components/indexing-section"
 import { ChangesPanel } from "@/components/changes-panel"
+import { FilesPanel } from "@/components/files-panel"
 import type { ChangedFile } from "@/lib/timeline"
 import type { Task } from "@/types"
 
@@ -51,8 +52,21 @@ import type { Task } from "@/types"
 // state (controlled by the Shell), shortcut (Cmd/Ctrl+K), and cookie, and only
 // reuses the left sidebar's visual primitives (which are plain styled divs).
 
-export type SidebarTabKind = "info" | "browser" | "changes"
+export const SIDEBAR_TAB_KINDS = [
+  "info",
+  "browser",
+  "changes",
+  "files",
+] as const
+export type SidebarTabKind = (typeof SIDEBAR_TAB_KINDS)[number]
 export type SidebarTab = { id: string; kind: SidebarTabKind }
+
+const SIDEBAR_TAB_LABELS: Record<SidebarTabKind, string> = {
+  info: "Info",
+  browser: "Browser",
+  changes: "Changes",
+  files: "Files",
+}
 
 const ACTIVITY_COOKIE_NAME = "activity_state"
 const BROWSER_WIDTH_COOKIE_NAME = "sidebar_browser_width"
@@ -399,6 +413,7 @@ export function ActivityPanel({
   workspace,
   changedFiles,
   onOpenHtml,
+  onAddFileSelection,
   onOpenChange,
   onActiveTabChange,
   onOpenTab,
@@ -429,6 +444,12 @@ export function ActivityPanel({
   changedFiles: ChangedFile[]
   // Open an html changed-file in the sidebar agent browser (from Changes mode).
   onOpenHtml: (relPath: string) => void
+  onAddFileSelection: (selection: {
+    path: string
+    startLine: number
+    endLine: number
+    text: string
+  }) => void
   onOpenChange: (open: boolean) => void
   onActiveTabChange: (id: string) => void
   onOpenTab: (kind: SidebarTabKind) => void
@@ -451,6 +472,9 @@ export function ActivityPanel({
   onWidthChange?: (width: number) => void
 }) {
   const [browserWidth, setBrowserWidth] = React.useState(readBrowserWidth)
+  const [selectedFileByWorkspace, setSelectedFileByWorkspace] = React.useState<
+    Record<string, string | null>
+  >({})
 
   // Cmd/Ctrl+K toggles the panel (the left sidebar owns Cmd/Ctrl+B).
   React.useEffect(() => {
@@ -491,6 +515,7 @@ export function ActivityPanel({
 
   const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? null
   const activeKind = activeTab?.kind ?? null
+  const filesTabOpen = tabs.some((tab) => tab.kind === "files")
   // The native view is embedded here only when its tab is genuinely visible and
   // nothing is drawing over it.
   const embedded = open && activeKind === "browser" && !browserObscured
@@ -501,8 +526,7 @@ export function ActivityPanel({
   }, [browserWidth, onWidthChange, open])
 
   const width = `${browserWidth}px`
-  const tabLabel = (kind: SidebarTabKind) =>
-    kind === "info" ? "Info" : kind === "browser" ? "Browser" : "Changes"
+  const tabLabel = (kind: SidebarTabKind) => SIDEBAR_TAB_LABELS[kind]
   const tabPicker = (className?: string) => (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -519,7 +543,7 @@ export function ActivityPanel({
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="center" className="w-32">
-        {(["info", "browser", "changes"] as SidebarTabKind[]).map((kind) => (
+        {SIDEBAR_TAB_KINDS.map((kind) => (
           <DropdownMenuItem key={kind} onSelect={() => onOpenTab(kind)}>
             {tabLabel(kind)}
           </DropdownMenuItem>
@@ -583,10 +607,27 @@ export function ActivityPanel({
             </div>
           )}
         </SidebarHeader>
-        {!activeTab ? (
-          <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 p-4">
-            {(["info", "browser", "changes"] as SidebarTabKind[]).map(
-              (kind) => (
+        {filesTabOpen && (
+          <div
+            className={cn("min-h-0 flex-1", activeKind !== "files" && "hidden")}
+          >
+            <FilesPanel
+              workspace={workspace}
+              selectedPath={selectedFileByWorkspace[workspace] ?? null}
+              onSelectedPathChange={(path) =>
+                setSelectedFileByWorkspace((current) => ({
+                  ...current,
+                  [workspace]: path,
+                }))
+              }
+              onAddSelection={onAddFileSelection}
+            />
+          </div>
+        )}
+        {activeKind !== "files" &&
+          (!activeTab ? (
+            <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 p-4">
+              {SIDEBAR_TAB_KINDS.map((kind) => (
                 <button
                   key={kind}
                   type="button"
@@ -595,84 +636,83 @@ export function ActivityPanel({
                 >
                   {tabLabel(kind)}
                 </button>
-              )
-            )}
-          </div>
-        ) : activeKind === "browser" ? (
-          <div className="min-h-0 flex-1">
-            <BrowserPanel
-              embedded={embedded}
-              onPoppedOutChange={(poppedOut) =>
-                onBrowserPoppedOutChange?.(poppedOut)
-              }
-            />
-          </div>
-        ) : activeKind === "changes" ? (
-          <div className="min-h-0 flex-1">
-            <ChangesPanel
-              files={changedFiles}
-              workspace={workspace}
-              onOpenHtml={onOpenHtml}
-            />
-          </div>
-        ) : (
-          <SidebarContent>
-            {titleBelowChrome && (
-              <div className="px-4 pb-1">
-                <h2 className="truncate text-xs font-medium text-sidebar-foreground/70">
-                  Workspace Activity
-                </h2>
-              </div>
-            )}
-            <ActivitySection title="Tasks">
-              <TasksSection
-                conversationId={conversationId}
-                onOpenTask={onOpenTask}
+              ))}
+            </div>
+          ) : activeKind === "browser" ? (
+            <div className="min-h-0 flex-1">
+              <BrowserPanel
+                embedded={embedded}
+                onPoppedOutChange={(poppedOut) =>
+                  onBrowserPoppedOutChange?.(poppedOut)
+                }
               />
-            </ActivitySection>
-            {/* Indexing: the background workspace index build for this session's
+            </div>
+          ) : activeKind === "changes" ? (
+            <div className="min-h-0 flex-1">
+              <ChangesPanel
+                files={changedFiles}
+                workspace={workspace}
+                onOpenHtml={onOpenHtml}
+              />
+            </div>
+          ) : (
+            <SidebarContent>
+              {titleBelowChrome && (
+                <div className="px-4 pb-1">
+                  <h2 className="truncate text-xs font-medium text-sidebar-foreground/70">
+                    Workspace Activity
+                  </h2>
+                </div>
+              )}
+              <ActivitySection title="Tasks">
+                <TasksSection
+                  conversationId={conversationId}
+                  onOpenTask={onOpenTask}
+                />
+              </ActivitySection>
+              {/* Indexing: the background workspace index build for this session's
                 workspace, with pause/resume/cancel/clear (plan 008). */}
-            <ActivitySection title="Indexing">
-              <IndexingSection conversationId={conversationId} />
-            </ActivitySection>
-            {/* Todos: the agent's task list for this conversation, with a handoff
+              <ActivitySection title="Indexing">
+                <IndexingSection conversationId={conversationId} />
+              </ActivitySection>
+              {/* Todos: the agent's task list for this conversation, with a handoff
                 to run the whole list in the background (plan 016). */}
-            <ActivitySection title="Todos">
-              <TodosSection
-                conversationId={conversationId}
-                onRanInBackground={onRanInBackground}
-              />
-            </ActivitySection>
-            {/* History: terminal tasks for this conversation. Collapsed by default
+              <ActivitySection title="Todos">
+                <TodosSection
+                  conversationId={conversationId}
+                  onRanInBackground={onRanInBackground}
+                />
+              </ActivitySection>
+              {/* History: terminal tasks for this conversation. Collapsed by default
                 so it doesn't crowd the situational Tasks view above. */}
-            <Collapsible
-              open={historyExpanded}
-              onOpenChange={onHistoryExpandedChange}
-            >
-              <SidebarGroup>
-                <CollapsibleTrigger asChild>
-                  <button
-                    type="button"
-                    className="group/history flex w-full items-center gap-1"
-                  >
-                    <ChevronRight className="size-3.5 text-muted-foreground transition-transform group-data-[state=open]/history:rotate-90" />
-                    <SidebarGroupLabel className="cursor-pointer">
-                      History
-                    </SidebarGroupLabel>
-                  </button>
-                </CollapsibleTrigger>
-                <CollapsibleContent>
-                  <SidebarGroupContent>
-                    <TasksHistorySection
-                      conversationId={conversationId}
-                      onOpenTask={onOpenTask}
-                    />
-                  </SidebarGroupContent>
-                </CollapsibleContent>
-              </SidebarGroup>
-            </Collapsible>
-          </SidebarContent>
-        )}
+              <Collapsible
+                open={historyExpanded}
+                onOpenChange={onHistoryExpandedChange}
+              >
+                <SidebarGroup>
+                  <CollapsibleTrigger asChild>
+                    <button
+                      type="button"
+                      className="group/history flex w-full items-center gap-1"
+                    >
+                      <ChevronRight className="size-3.5 text-muted-foreground transition-transform group-data-[state=open]/history:rotate-90" />
+                      <SidebarGroupLabel className="cursor-pointer">
+                        History
+                      </SidebarGroupLabel>
+                    </button>
+                  </CollapsibleTrigger>
+                  <CollapsibleContent>
+                    <SidebarGroupContent>
+                      <TasksHistorySection
+                        conversationId={conversationId}
+                        onOpenTask={onOpenTask}
+                      />
+                    </SidebarGroupContent>
+                  </CollapsibleContent>
+                </SidebarGroup>
+              </Collapsible>
+            </SidebarContent>
+          ))}
       </div>
     </div>
   )

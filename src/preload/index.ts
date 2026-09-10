@@ -41,6 +41,7 @@ import type {
 import type { ActionKind } from "../main/agent/approval/types"
 import type { PickedElement } from "../main/browser/types"
 import type { GitDiffResult } from "../main/git/diff"
+import type { GitStatusResult } from "../main/git/service"
 import type { Question, QuestionAnswer } from "../main/agent/tools/types"
 import type {
   ExecutionSettings,
@@ -599,11 +600,26 @@ const api = {
   files: {
     list: (workspace: string, query: string) =>
       ipcRenderer.invoke("files:list", workspace, query) as Promise<string[]>,
+    listDirectory: (workspace: string, relDirectory: string) =>
+      ipcRenderer.invoke(
+        "files:listDirectory",
+        workspace,
+        relDirectory
+      ) as Promise<{
+        entries: Array<{
+          name: string
+          path: string
+          kind: "directory" | "file" | "symlink" | "other"
+        }>
+        error: string | null
+        truncated: boolean
+      }>,
     readText: (workspace: string, relPath: string) =>
       ipcRenderer.invoke("files:readText", workspace, relPath) as Promise<{
         content: string | null
         truncated: boolean
         error: string | null
+        kind?: "text" | "binary"
       }>,
   },
   // Read the current git branch for a workspace folder. Resolves with the
@@ -611,6 +627,11 @@ const api = {
   git: {
     branch: (path: string) =>
       ipcRenderer.invoke("git:branch", path) as Promise<string | null>,
+    status: (workspace: string) =>
+      ipcRenderer.invoke(
+        "git:status",
+        workspace
+      ) as Promise<GitStatusResult | null>,
     // Working-tree diff for one workspace-relative file (backs the changed-file
     // pills). Null when not a git repo; { diff: "" } when tracked but unchanged.
     diff: (workspace: string, relPath: string) =>
@@ -1795,6 +1816,7 @@ export type { IndexStatus } from "../main/ipc/index-handlers"
 export type { ApproveResult } from "../main/dashboards/service"
 export type { PickedElement } from "../main/browser/types"
 export type { GitDiffResult } from "../main/git/diff"
+export type { GitStatusEntry, GitStatusResult } from "../main/git/service"
 export type {
   TerminalDataEvent,
   TerminalExitEvent,
