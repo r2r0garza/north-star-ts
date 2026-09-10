@@ -165,10 +165,12 @@
 
 .conversation-composer {
   position: relative;
+  left: 50%;
   z-index: 2;
   flex: none;
   width: 100%;
   max-width: 100%;
+  transform: translateX(-50%);
   transition:
     max-width 320ms cubic-bezier(0.22, 1, 0.36, 1),
     border-color 180ms ease-out;
@@ -177,9 +179,7 @@
 .conversation-composer--centered {
   position: absolute;
   bottom: calc(50% - 9rem);
-  left: 50%;
   max-width: min(90%, 48rem);
-  transform: translateX(-50%);
 }
 
 @media (prefers-reduced-motion: reduce) {

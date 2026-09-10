@@ -419,6 +419,7 @@ function Shell() {
   // stored conversation's own project).
   function handleSelectConversation(id: string, mode: Mode) {
     if (!activeConversationId) {
+      appRef.current?.prepareComposerTransition("populated")
       closeFreshTerminalSessions(freshTerminalConversationId)
     }
     setView(MODE_TO_VIEW[mode])
@@ -436,6 +437,8 @@ function Shell() {
   function handleNewConversation(projectId: string | null = null) {
     if (!activeConversationId) {
       closeFreshTerminalSessions(freshTerminalConversationId)
+    } else {
+      appRef.current?.prepareComposerTransition("empty")
     }
     setActiveConversationId(null)
     setPendingProjectId(projectId)

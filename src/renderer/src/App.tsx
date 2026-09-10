@@ -3,6 +3,7 @@ import {
   useCallback,
   useEffect,
   useImperativeHandle,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -350,6 +351,7 @@ function formatPickedElement(el: PickedElement): string {
 
 export type AppHandle = {
   appendTerminalSelection: (text: string) => void
+  prepareComposerTransition: (destination: "empty" | "populated") => void
 }
 
 type AppProps = {
@@ -479,6 +481,13 @@ function App(
   const [confirmedFiles, setConfirmedFiles] = useState<Set<string>>(new Set())
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const overlayRef = useRef<HTMLDivElement>(null)
+  const composerShellRef = useRef<HTMLDivElement>(null)
+  const composerSurfaceRef = useRef<HTMLDivElement>(null)
+  const composerTransitionRef = useRef<{
+    top: number
+    destination: "empty" | "populated"
+  } | null>(null)
+  const composerMoveRef = useRef<Animation | null>(null)
   // Guards async file-list responses: only the latest `@` query's result is
   // applied, so a slow walk for an earlier query can't clobber a newer one.
   const fileReqRef = useRef(0)
@@ -939,12 +948,22 @@ function App(
     })
   }, [])
 
+  const prepareComposerTransition = useCallback(
+    (destination: "empty" | "populated") => {
+      const top = composerSurfaceRef.current?.getBoundingClientRect().top
+      composerTransitionRef.current =
+        top === undefined ? null : { top, destination }
+    },
+    []
+  )
+
   useImperativeHandle(
     ref,
     () => ({
       appendTerminalSelection,
+      prepareComposerTransition,
     }),
-    [appendTerminalSelection]
+    [appendTerminalSelection, prepareComposerTransition]
   )
 
   // Drop confirmed values of one kind whose marker no longer appears in `present`
@@ -1247,6 +1266,10 @@ function App(
     // From here, treat `convoId` as a non-null local so the guards below read
     // cleanly (it's assigned in both branches above).
     const turnConvoId = convoId as string
+
+    // Capture the visible input position before the first message changes the
+    // composer from its centered absolute layout into normal flex flow.
+    if (isEmpty) prepareComposerTransition("populated")
 
     // Optimistically append the user message; the assistant turn renders from
     // the transient live state below until the turn settles and reconciles.
@@ -1632,6 +1655,39 @@ function App(
   // centered (an inviting "start typing" state). Once there are messages it
   // moves to its usual bottom-pinned position.
   const isEmpty = timeline.length === 0 && !loading
+
+  // The composer changes from absolute positioning to normal flex flow after the
+  // first send. Those positioning modes cannot be interpolated, so bridge their
+  // visual positions with a FLIP transform after the final layout is committed.
+  useLayoutEffect(() => {
+    const transition = composerTransitionRef.current
+    if (!transition) return
+
+    const destinationReady =
+      transition.destination === "empty"
+        ? conversationId === null && timeline.length === 0 && !loading
+        : conversationId !== null && (timeline.length > 0 || loading)
+    if (!destinationReady) return
+
+    composerTransitionRef.current = null
+    const shell = composerShellRef.current
+    const surface = composerSurfaceRef.current
+    if (!shell || !surface) return
+
+    composerMoveRef.current?.cancel()
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return
+
+    const deltaY = transition.top - surface.getBoundingClientRect().top
+    if (Math.abs(deltaY) < 1) return
+
+    composerMoveRef.current = shell.animate(
+      [{ translate: `0 ${deltaY}px` }, { translate: "0 0" }],
+      {
+        duration: 360,
+        easing: "cubic-bezier(0.22, 1, 0.36, 1)",
+      }
+    )
+  }, [conversationId, loading, timeline.length])
 
   // Sequential gating means at most one approval is pending at a time, so a
   // single panel above the composer suffices. Purely derived — it disappears
@@ -2179,7 +2235,10 @@ function App(
           ))}
         </AttachmentGroup>
       )}
-      <div className="relative rounded-2xl border border-input bg-transparent focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50">
+      <div
+        ref={composerSurfaceRef}
+        className="relative rounded-2xl border border-input bg-transparent focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50"
+      >
         {menuOpen && (
           <MentionMenu
             items={menuItems}
@@ -2676,6 +2735,7 @@ function App(
           above it, so it stays in one fixed place regardless of transcript
           scrolling. Gating is sequential, so these are mutually exclusive. */}
       <div
+        ref={composerShellRef}
         className={cn(
           "conversation-composer border-t bg-background",
           isEmpty && "conversation-composer--centered border-transparent",
