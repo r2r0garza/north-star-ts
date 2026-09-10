@@ -7,13 +7,7 @@ item is its plan file; the ordered-list number is its current priority rank.
 
 ## Next up
 
-1. **`089` — Workspace Files sidebar tab.** Add Files after Info, Browser, and Changes using the existing
-   single-tab-per-kind lifecycle. The active conversation workspace gets a read-only two-pane explorer:
-   bounded text/source preview on the left, lazy direct-child directory tree on the right, and an accessible,
-   persisted draggable separator between them. Add a dedicated workspace-confined directory IPC rather than
-   reusing the composer's capped flat typeahead; show dotfiles/gitignored entries, never follow symlinks,
-   protect against stale cross-workspace responses, and provide explicit refresh until `024` adds watching.
-2. **`045` — North Star MCP bridge for CLI providers.** After `042`, make North Star a second, distinct
+1. **`045` — North Star MCP bridge for CLI providers.** After `042`, make North Star a second, distinct
    MCP role: it remains a client of user-configured external servers, and also hosts a lazy,
    authenticated Streamable HTTP server on an ephemeral `127.0.0.1` port for the Claude Code and Codex
    subprocesses we launch. Inject the endpoint per turn (`claude --mcp-config`; Codex transient `-c`
@@ -155,6 +149,17 @@ item is its plan file; the ordered-list number is its current priority rank.
 
 ## Done
 
+- **`089` — Workspace Files sidebar tab.** Completed in this branch. Added **Files** as the fourth,
+  single-instance right-sidebar tab, with a read-only two-pane explorer: a workspace-confined, lazy
+  direct-child tree on the right and a bounded preview on the left. The new `files:listDirectory` IPC
+  deliberately remains separate from the composer's recursive, gitignore-aware typeahead; it displays
+  dotfiles and ignored entries, sorts directories first, returns POSIX-relative paths, caps pathological
+  directories, rejects traversal/absolute paths, and reports symlinks without following or expanding them.
+  The preview distinguishes text, empty, truncated, binary, and error states; supports responsive source
+  wrapping, line numbers, syntax highlighting, language/file-type icons, and a reusable Git-style working-tree
+  diff with red old-line and green new-line gutters. Tree and preview responses are stale-workspace safe;
+  refresh remains explicit pending `024`; and the internal keyboard/pointer separator persists independently
+  of the outer sidebar. Verified with focused directory-listing tests, `pnpm typecheck`, and `pnpm build`.
 - **`088` — Conversation plan-file lifecycle and 30-day retention.** Completed in this branch. Added
   best-effort single/batch plan deletion and a direct-child, symlink-safe `mtime` pruning sweep for regular
   Markdown files strictly older than 30 days. A small async conversation lifecycle layer now owns

@@ -1,6 +1,6 @@
 # PR89: Workspace Files sidebar tab
 
-> Status: **PLANNED**. Add a read-only Files tab to the right sidebar with a lazy workspace tree on the right and a selected-file preview on the left, separated by a draggable divider.
+> Status: **COMPLETE**. Added a read-only Files tab to the right sidebar with a lazy workspace tree on the right and a selected-file preview on the left, separated by a persisted, accessible draggable divider. The preview now supports syntax highlighting, line numbers, and a working-tree diff view.
 
 ## Goal
 
