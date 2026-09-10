@@ -8,6 +8,14 @@ const sqliteLoads = sqliteLoadsForTests()
 
 let db: Database.Database
 vi.mock("../../db/connection", () => ({ getDb: () => db }))
+const { cleanedConversationIds } = vi.hoisted(() => ({
+  cleanedConversationIds: [] as string[],
+}))
+vi.mock("../../conversations/lifecycle", () => ({
+  cleanupConversationArtifacts: async (ids: Iterable<string>) => {
+    cleanedConversationIds.push(...ids)
+  },
+}))
 
 // Each phase worker's agent loop is stubbed — no real LLM turn. It records the
 // agentName the forked worker conversation was stamped with, so the test can
@@ -217,6 +225,7 @@ beforeEach(() => {
   db = new Database(":memory:")
   runMigrations(db)
   loopCalls.length = 0
+  cleanedConversationIds.length = 0
   reviewReplies.length = 0
   outcomeReplies.length = 0
   failOnce.length = 0
@@ -1637,7 +1646,7 @@ describe.skipIf(!sqliteLoads)("ProcessService validator (plan 031.1)", () => {
     expect(workerRuns).toHaveLength(1)
   })
 
-  it("retryReview resets only the validator boundary and preserves the phase worker", () => {
+  it("retryReview resets only the validator boundary and preserves the phase worker", async () => {
     const def = processes.createProcessDefinition({ name: "T" })
     const phase = processes.createPhase({
       processId: def.id,
@@ -1649,6 +1658,7 @@ describe.skipIf(!sqliteLoads)("ProcessService validator (plan 031.1)", () => {
     const topTask = seedTaskRow()
     const workerTask = seedTaskRow()
     const reviewTask = seedTaskRow()
+    const reviewConversationId = conversationIdForTask(reviewTask.taskId)
     db.prepare("UPDATE tasks SET input = ? WHERE id = ?").run(
       JSON.stringify({
         kind: "process_phase_validate",
@@ -1700,7 +1710,7 @@ describe.skipIf(!sqliteLoads)("ProcessService validator (plan 031.1)", () => {
       resume: (id: string) => resumed.push(id),
     } as never)
 
-    const updated = svc.retryReview({ processRunId: run.id, requestId })
+    const updated = await svc.retryReview({ processRunId: run.id, requestId })
 
     expect(getApproval(approval.id)!.status).toBe("denied")
     expect(getApproval(approval.id)!.decision).toEqual({ retryReview: true })
@@ -1718,6 +1728,7 @@ describe.skipIf(!sqliteLoads)("ProcessService validator (plan 031.1)", () => {
       ).count
     ).toBe(0)
     expect(updated?.status).toBe("running")
+    expect(cleanedConversationIds).toEqual([reviewConversationId])
     expect(resumed).toEqual([topTask.taskId])
   })
 
@@ -2113,7 +2124,7 @@ describe.skipIf(!sqliteLoads)("ProcessService validated completion", () => {
     expect(receipt?.outcome.status).toBe("completed")
     expect(row.status).toBe("waiting_for_approval")
     const gate = listApprovals({ taskId }).find((a) => a.status === "pending")!
-    svc.retryReview({
+    await svc.retryReview({
       processRunId: run.id,
       requestId: (gate.request as { requestId: string }).requestId,
     })

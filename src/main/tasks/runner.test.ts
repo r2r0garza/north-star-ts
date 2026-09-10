@@ -11,6 +11,15 @@ const sqliteLoads = sqliteLoadsForTests()
 // pattern in db/repositories/*.test.ts).
 let db: Database.Database
 vi.mock("../db/connection", () => ({ getDb: () => db }))
+const { cleanedPlanIds } = vi.hoisted(() => ({
+  cleanedPlanIds: [] as string[],
+}))
+vi.mock("../agent/tools/plan-file", () => ({
+  deletePlanFiles: async (ids: Iterable<string>) => {
+    cleanedPlanIds.push(...ids)
+    return { removed: 0, failed: 0 }
+  },
+}))
 
 // Stub the agent core. Each test sets `loopImpl` to control what a "run" does:
 // emit events, return a result, or observe the options it was called with.
@@ -80,6 +89,7 @@ beforeEach(() => {
   db.pragma("foreign_keys = ON")
   runMigrations(db)
   loopCalls.length = 0
+  cleanedPlanIds.length = 0
   loopImpl = async () => ({ content: "done" })
 })
 
@@ -96,7 +106,7 @@ describe.skipIf(!sqliteLoads)("TaskRunner — reconcile on start", () => {
     loopImpl = async () => ({ content: "should not run" })
 
     const runner = new TaskRunner()
-    runner.start()
+    await runner.start()
     await settle()
 
     expect(getTask(task.id)?.status).toBe("interrupted")
@@ -136,7 +146,7 @@ describe.skipIf(!sqliteLoads)(
       })
       updateTask(task.id, { error: "boom" })
       const runner = new TaskRunner()
-      runner.start()
+      await runner.start()
       await settle()
 
       runner.restart(task.id)
@@ -202,7 +212,7 @@ describe.skipIf(!sqliteLoads)(
       }
 
       const runner = new TaskRunner()
-      runner.start()
+      await runner.start()
       await settle()
       runner.restart(task.id)
       await settle()
@@ -229,7 +239,7 @@ describe.skipIf(!sqliteLoads)(
         input: { kind: "agent_chat", message: "go" },
       })
       const runner = new TaskRunner()
-      runner.start()
+      await runner.start()
       await settle()
 
       expect(() => runner.restart(task.id)).toThrow(
@@ -257,7 +267,7 @@ describe.skipIf(!sqliteLoads)(
         input: { kind: "agent_chat", message: "go" },
       })
       const runner = new TaskRunner()
-      runner.start()
+      await runner.start()
       await settle()
 
       expect(() => runner.resume(task.id)).toThrow(
@@ -278,7 +288,7 @@ describe.skipIf(!sqliteLoads)(
         input: { kind: "agent_chat", message: "hi" },
       })
       const runner = new TaskRunner()
-      runner.start()
+      await runner.start()
       await settle()
 
       runner.restart(task.id)
@@ -305,7 +315,7 @@ describe.skipIf(!sqliteLoads)(
       const runner = new TaskRunner()
       // A background producer opts its kind into auto-resume BEFORE start().
       runner.registerKind("auto_kind", { autoResume: true })
-      runner.start()
+      await runner.start()
       await settle()
 
       // reconcile re-queued it (autoResume) instead of interrupting; the pump ran it.
@@ -325,7 +335,7 @@ describe.skipIf(!sqliteLoads)(
 
       const runner = new TaskRunner()
       runner.registerKind("auto_kind", { autoResume: true })
-      runner.start()
+      await runner.start()
       await settle()
 
       // The stale gate is swept (denied/superseded restart), then the task
@@ -351,7 +361,7 @@ describe.skipIf(!sqliteLoads)(
       loopImpl = async () => ({ content: "should not run" })
 
       const runner = new TaskRunner()
-      runner.start()
+      await runner.start()
       await settle()
 
       expect(getTask(task.id)?.status).toBe("interrupted")
@@ -362,7 +372,7 @@ describe.skipIf(!sqliteLoads)(
     it("enqueues a custom kind with a non-existent conversationId and still runs headless", async () => {
       const runner = new TaskRunner()
       runner.registerKind("auto_kind", { autoResume: true })
-      runner.start()
+      await runner.start()
 
       // No subscriber attached, and the source conversation does not exist: enqueue
       // must still fork a valid private worker conversation and drive the loop.
@@ -407,7 +417,7 @@ describe.skipIf(!sqliteLoads)(
 
       const runner = new TaskRunner()
       runner.registerKind("auto_kind", { autoResume: true })
-      runner.start()
+      await runner.start()
       await settle()
 
       expect(loopCalls).toHaveLength(0)
@@ -422,7 +432,7 @@ describe.skipIf(!sqliteLoads)("TaskRunner — todo_run seed (plan 016)", () => {
     const conv = createConversation({ mode: "interactive" })
     const runner = new TaskRunner()
     runner.registerKind("todo_run", { autoResume: true })
-    runner.start()
+    await runner.start()
 
     const seedTodos = [
       { itemId: "a", content: "first item", status: "completed" as const },
@@ -462,7 +472,7 @@ describe.skipIf(!sqliteLoads)("TaskRunner — todo_run seed (plan 016)", () => {
 
     const runner = new TaskRunner()
     runner.registerKind("todo_run", { autoResume: true })
-    runner.start()
+    await runner.start()
     await settle()
 
     expect(getTask(task.id)?.status).toBe("completed")
@@ -475,7 +485,7 @@ describe.skipIf(!sqliteLoads)("TaskRunner — enqueue + run", () => {
   it("persists the user message, runs the loop, completes, logs events", async () => {
     const conv = createConversation({ mode: "chat" })
     const runner = new TaskRunner()
-    runner.start()
+    await runner.start()
 
     const task = runner.enqueue({
       conversationId: conv.id,
@@ -510,7 +520,7 @@ describe.skipIf(!sqliteLoads)("TaskRunner — enqueue + run", () => {
   it("maps a stopped result to cancelled and an error to failed", async () => {
     const conv = createConversation({ mode: "chat" })
     const runner = new TaskRunner()
-    runner.start()
+    await runner.start()
 
     loopImpl = async () => ({ stopped: true })
     const stopped = runner.enqueue({ conversationId: conv.id, message: "a" })
@@ -530,7 +540,7 @@ describe.skipIf(!sqliteLoads)("TaskRunner — enqueue + run", () => {
   it("flips to waiting_for_approval when the loop emits a gate, and back on markRunning", async () => {
     const conv = createConversation({ mode: "chat" })
     const runner = new TaskRunner()
-    runner.start()
+    await runner.start()
 
     // The loop emits an approval event (the gate), then blocks until we resolve.
     let release: () => void
@@ -579,7 +589,7 @@ describe.skipIf(!sqliteLoads)(
     async function enqueueBlockedOnApproval(requestId = "req-1") {
       const conv = createConversation({ mode: "chat" })
       const runner = new TaskRunner()
-      runner.start()
+      await runner.start()
 
       let release: () => void
       const blocked = new Promise<void>((r) => {
@@ -665,7 +675,7 @@ describe.skipIf(!sqliteLoads)(
     it("on shutdown, aborts the gate with the shutdown reason and leaves it unresolved", async () => {
       const conv = createConversation({ mode: "chat" })
       const runner = new TaskRunner()
-      runner.start()
+      await runner.start()
 
       // Model the real agent loop's gate: on abort it resolves "denied" UNLESS the
       // abort is a shutdown, in which case it stays parked (no tool result). This
@@ -726,7 +736,7 @@ describe.skipIf(!sqliteLoads)(
       loopImpl = async () => ({ content: "should not run" })
 
       const runner = new TaskRunner()
-      runner.start()
+      await runner.start()
       await settle()
 
       expect(getTask(task.id)?.status).toBe("interrupted")
@@ -763,7 +773,7 @@ describe.skipIf(!sqliteLoads)(
       }
 
       const runner = new TaskRunner({ backoff: fastBackoff })
-      runner.start()
+      await runner.start()
       const task = runner.enqueue({ conversationId: conv.id, message: "go" })
       await settle()
 
@@ -781,7 +791,7 @@ describe.skipIf(!sqliteLoads)(
       loopImpl = async () => ({ error: "still 503", retryable: true })
 
       const runner = new TaskRunner({ backoff: fastBackoff })
-      runner.start()
+      await runner.start()
       const task = runner.enqueue({ conversationId: conv.id, message: "go" })
       await settle()
 
@@ -858,7 +868,7 @@ describe.skipIf(!sqliteLoads)(
 
       const runner = new TaskRunner({ backoff: fastBackoff })
       runner.registerKind("auto_kind", { autoResume: true, run })
-      runner.start()
+      await runner.start()
       runner.restart(task.id)
       await settle()
 
@@ -875,7 +885,7 @@ describe.skipIf(!sqliteLoads)(
       loopImpl = async () => ({ error: "bad args", retryable: false })
 
       const runner = new TaskRunner({ backoff: fastBackoff })
-      runner.start()
+      await runner.start()
       const task = runner.enqueue({ conversationId: conv.id, message: "go" })
       await settle()
 
@@ -892,7 +902,7 @@ describe.skipIf(!sqliteLoads)(
       loopImpl = async () => ({ stopped: true })
 
       const runner = new TaskRunner({ backoff: fastBackoff })
-      runner.start()
+      await runner.start()
       const task = runner.enqueue({ conversationId: conv.id, message: "go" })
       await settle()
 
@@ -909,7 +919,7 @@ describe.skipIf(!sqliteLoads)(
       const runner = new TaskRunner({
         backoff: { baseMs: 10_000, maxMs: 10_000, maxAttempts: 3 },
       })
-      runner.start()
+      await runner.start()
       const task = runner.enqueue({ conversationId: conv.id, message: "go" })
 
       // Wait for the first run to fail and arm the backoff timer.
@@ -934,7 +944,7 @@ describe.skipIf(!sqliteLoads)(
       const runner = new TaskRunner({
         backoff: { baseMs: 10_000, maxMs: 10_000, maxAttempts: 3 },
       })
-      runner.start()
+      await runner.start()
       runner.enqueue({ conversationId: conv.id, message: "go" })
 
       for (let i = 0; i < 50 && loopCalls.length < 1; i++) {
@@ -964,7 +974,7 @@ describe.skipIf(!sqliteLoads)(
         concurrency: 1,
         backoff: { baseMs: 20, maxMs: 20, maxAttempts: 3 },
       })
-      runner.start()
+      await runner.start()
       const a = runner.enqueue({ conversationId: convA.id, message: "task-a" })
       const b = runner.enqueue({ conversationId: convB.id, message: "task-b" })
       await settle()
@@ -1012,7 +1022,7 @@ describe.skipIf(!sqliteLoads)(
         concurrency: 2,
         backoff: { baseMs: 15, maxMs: 15, maxAttempts: 3 },
       })
-      runner.start()
+      await runner.start()
       await settle()
 
       expect(maxActive).toBe(1)
@@ -1034,7 +1044,7 @@ describe.skipIf(!sqliteLoads)(
       }
 
       const runner = new TaskRunner({ concurrency: 2 })
-      runner.start()
+      await runner.start()
       const a = runner.enqueue({ conversationId: conv.id, message: "first" })
       const b = runner.enqueue({ conversationId: conv.id, message: "second" })
       await settle()
@@ -1065,7 +1075,7 @@ describe.skipIf(!sqliteLoads)(
           return { content: "indexed" }
         },
       })
-      runner.start()
+      await runner.start()
       const task = runner.enqueueKind({ kind: "indexer", input: {} })
       await settle()
 
@@ -1090,7 +1100,7 @@ describe.skipIf(!sqliteLoads)(
         autoResume: false,
         run: async () => ({ stopped: true }),
       })
-      runner.start()
+      await runner.start()
       const ok = runner.enqueueKind({ kind: "ok", input: {} })
       const boom = runner.enqueueKind({ kind: "boom", input: {} })
       const halt = runner.enqueueKind({ kind: "halt", input: {} })
@@ -1122,7 +1132,7 @@ describe.skipIf(!sqliteLoads)(
           return { stopped: true }
         },
       })
-      runner.start()
+      await runner.start()
       const task = runner.enqueueKind({ kind: "slow_det", input: {} })
       // Let it start running.
       for (let i = 0; i < 50 && getTask(task.id)?.status !== "running"; i++) {
@@ -1157,7 +1167,7 @@ describe.skipIf(!sqliteLoads)(
           return { content: "x" }
         },
       })
-      runner.start()
+      await runner.start()
       runner.enqueueKind({ kind: "probe", input: { workspaceId: wsId } })
       await settle()
 
@@ -1180,7 +1190,7 @@ describe.skipIf(!sqliteLoads)(
           return attempts === 1 ? { paused: true } : { content: "released" }
         },
       })
-      runner.start()
+      await runner.start()
       const task = runner.enqueueKind({ kind: "gated", input: {} })
       await settle()
       expect(attempts).toBe(1)
@@ -1205,7 +1215,7 @@ describe.skipIf(!sqliteLoads)("TaskRunner — pause/resume (plan 008)", () => {
           signal.addEventListener("abort", () => resolve({ stopped: true }))
         }),
     })
-    runner.start()
+    await runner.start()
     const task = runner.enqueueKind({ kind: "slow", input: {} })
     // Let it start running.
     await new Promise((r) => setTimeout(r, 20))
@@ -1246,7 +1256,7 @@ describe.skipIf(!sqliteLoads)("TaskRunner — pause/resume (plan 008)", () => {
       autoResume: true,
       run: async () => ({ content: "x" }),
     })
-    runner.start()
+    await runner.start()
     runner.enqueueKind({ kind: "blocker", input: {} })
     await new Promise((r) => setTimeout(r, 20))
     const waiter = runner.enqueueKind({ kind: "waiter", input: {} })
@@ -1267,7 +1277,7 @@ describe.skipIf(!sqliteLoads)("TaskRunner — pause/resume (plan 008)", () => {
       autoResume: true,
       run: async () => ({ content: "x" }),
     })
-    runner.start()
+    await runner.start()
     await settle()
     // reconcile only touches running/waiting_for_approval; a paused task stays put.
     expect(getTask(task.id)?.status).toBe("paused")
@@ -1281,7 +1291,7 @@ describe.skipIf(!sqliteLoads)(
     it("deletes a sourced task, its worker conversation, and all child rows", async () => {
       const source = createConversation({ mode: "chat" })
       const runner = new TaskRunner()
-      runner.start()
+      await runner.start()
       const task = runner.enqueue({
         conversationId: source.id,
         message: "background work",
@@ -1300,6 +1310,9 @@ describe.skipIf(!sqliteLoads)(
       expect(getTask(task.id)).toBeUndefined()
       expect(getConversation(workerConvId)).toBeUndefined()
       expect(getConversation(source.id)).toBeUndefined()
+      expect(cleanedPlanIds).toEqual(
+        expect.arrayContaining([source.id, workerConvId])
+      )
       expect(listApprovals({ taskId: task.id })).toHaveLength(0)
       expect(listEvents(task.id)).toHaveLength(0)
       // No dangling references anywhere.
@@ -1310,7 +1323,7 @@ describe.skipIf(!sqliteLoads)(
     it("aborts a running task and settles it BEFORE deleting the row (no FK throw)", async () => {
       const source = createConversation({ mode: "chat" })
       const runner = new TaskRunner()
-      runner.start()
+      await runner.start()
 
       // The loop blocks until aborted; on abort it returns {stopped:true}, which
       // runOne maps to `cancelled` with a post-abort updateTask/emit — those
@@ -1348,7 +1361,7 @@ describe.skipIf(!sqliteLoads)(
     it("reaps nested tasks sourced from a worker conversation (transitive)", async () => {
       const source = createConversation({ mode: "chat" })
       const runner = new TaskRunner()
-      runner.start()
+      await runner.start()
 
       // A parent task whose loop enqueues a NESTED task sourced from its own
       // worker conversation (the recursive producer path). Enqueue once, then
@@ -1371,6 +1384,13 @@ describe.skipIf(!sqliteLoads)(
       expect(getTask(parent.id)).toBeUndefined()
       expect(getTask(nested.id)).toBeUndefined()
       expect(getConversation(nested.conversationId)).toBeUndefined()
+      expect(cleanedPlanIds).toEqual(
+        expect.arrayContaining([
+          source.id,
+          parent.conversationId,
+          nested.conversationId,
+        ])
+      )
       expect(db.pragma("foreign_key_check")).toHaveLength(0)
       await runner.stop()
     })
@@ -1403,12 +1423,13 @@ describe.skipIf(!sqliteLoads)(
 
       const runner = new TaskRunner()
       runner.registerKind("todo_run", { autoResume: true })
-      runner.start()
+      await runner.start()
       await settle()
 
       // Reaped before reconcile/seed could requeue it — gone, never ran.
       expect(getTask(task.id)).toBeUndefined()
       expect(getConversation(workerConv.id)).toBeUndefined()
+      expect(cleanedPlanIds).toContain(workerConv.id)
       expect(loopCalls).toHaveLength(0)
       expect(db.pragma("foreign_key_check")).toHaveLength(0)
       await runner.stop()
@@ -1433,7 +1454,7 @@ describe.skipIf(!sqliteLoads)(
           return { content: "indexed" }
         },
       })
-      runner.start()
+      await runner.start()
       await settle()
 
       // Not reaped (independent surface); reconcile auto-resumed it and it ran.

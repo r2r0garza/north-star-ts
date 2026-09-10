@@ -18,9 +18,11 @@ import { unknownSideEffectingToolCalls } from "../agent/repair"
 import {
   getConversation,
   createConversation,
-  deleteConversation,
-  deleteConversations,
 } from "../db/repositories/conversations"
+import {
+  deleteConversationWithArtifacts,
+  deleteConversationsWithArtifacts,
+} from "../conversations/lifecycle"
 import { getWorkspace } from "../db/repositories/workspaces"
 import { replaceTodos } from "../db/repositories/todos"
 import type {
@@ -283,8 +285,8 @@ export class TaskRunner {
   // Reconcile orphaned tasks from a previous run, seed the queue with anything
   // already `queued`, and start the pump. Call once in app.whenReady (after the
   // DB handlers are registered — the runner reads the DB synchronously).
-  start(): void {
-    this.reapOrphans()
+  async start(): Promise<void> {
+    await this.reapOrphans()
     this.reconcile()
     this.seed()
     void this.pump()
@@ -298,7 +300,7 @@ export class TaskRunner {
   // Loops until stable: deleting a worker conversation SET-NULLs any nested task
   // sourced to it, surfacing the next layer of orphans. Kinds WITH an independent
   // surface (workspace_index) are born source-less by design and are exempt.
-  private reapOrphans(): void {
+  private async reapOrphans(): Promise<void> {
     for (;;) {
       const orphans = listTasks().filter(
         (t) =>
@@ -306,7 +308,9 @@ export class TaskRunner {
           !this.capabilityOf(kindOf(t)).hasIndependentSurface
       )
       if (orphans.length === 0) return
-      for (const task of orphans) deleteConversation(task.conversationId)
+      for (const task of orphans) {
+        await deleteConversationWithArtifacts(task.conversationId)
+      }
     }
   }
 
@@ -346,7 +350,7 @@ export class TaskRunner {
     // its task + messages + todos + approvals + task_events + task_checkpoints.
     // The source session itself is deleted last (cascading any self-sourced task
     // whose conversation_id == id).
-    deleteConversations([...workerConvs, id])
+    await deleteConversationsWithArtifacts([...workerConvs, id])
   }
 
   // Register a task kind's capabilities (e.g. a background producer opting into

@@ -653,6 +653,15 @@ function codexDiscoveryHeaders(accessToken: string): Record<string, string> {
   return headers
 }
 
+function codexResponsesHeaders(accessToken: string): Record<string, string> {
+  return {
+    ...codexDiscoveryHeaders(accessToken),
+    accept: "text/event-stream",
+    "content-type": "application/json",
+    version: CODEX_SUBSCRIPTION_CLIENT_VERSION,
+  }
+}
+
 function collectFallbackModelIds(value: unknown, ids: Set<string>): void {
   if (!value) return
   if (typeof value === "string") {
@@ -1122,11 +1131,7 @@ export function buildCodexSubscriptionClient(input: {
       return fetchImpl(endpointFor(input.baseUrl), {
         method: "POST",
         signal: opts?.signal,
-        headers: {
-          accept: "text/event-stream",
-          authorization: `Bearer ${accessToken}`,
-          "content-type": "application/json",
-        },
+        headers: codexResponsesHeaders(accessToken),
         body: JSON.stringify(request),
       })
     }

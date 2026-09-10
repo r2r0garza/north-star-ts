@@ -130,9 +130,24 @@ describe("codex subscription adapter", () => {
   })
 
   it("assembles a streamed Codex response from SSE events", async () => {
+    const token = jwtWithExp(4_000_000_000, {
+      "https://api.openai.com/auth.chatgpt_account_id": "account-1",
+    })
     const client = buildCodexSubscriptionClient({
-      bearerToken: "access-token",
+      bearerToken: token,
       fetchImpl: async (_url: RequestInfo | URL, init?: RequestInit) => {
+        expect(init?.headers).toMatchObject({
+          accept: "text/event-stream",
+          authorization: `Bearer ${token}`,
+          "chatgpt-account-id": "account-1",
+          "content-type": "application/json",
+          originator: "codex_cli_rs",
+          "openai-beta": "responses=experimental",
+          version: "0.151.0",
+        })
+        expect((init?.headers as Record<string, string>)["user-agent"]).toMatch(
+          /^codex_cli_rs\/0\.151\.0 /
+        )
         expect(JSON.parse(String(init?.body))).toMatchObject({ stream: true })
         return new Response(
           [

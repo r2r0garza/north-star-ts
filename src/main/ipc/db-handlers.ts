@@ -26,6 +26,7 @@ import type { IndexService } from "../index/service"
 import type { TaskRunner } from "../tasks/runner"
 import { getIndexing } from "../settings/service"
 import { getRunByWorkspace } from "../db/repositories/index-runs"
+import { deleteConversationWithArtifacts } from "../conversations/lifecycle"
 
 // Kick off auto-indexing when a conversation gains a workspace in an indexable
 // mode (plan 008). Gated by the global auto-index setting and the per-workspace
@@ -127,7 +128,7 @@ export function registerDbHandlers(
     closeBrowserTab?.(id)
     return runner
       ? runner.deleteSourceConversation(id)
-      : conversations.deleteConversation(id)
+      : deleteConversationWithArtifacts(id)
   })
   const conversationSubscriptions = new Map<
     WebContents,

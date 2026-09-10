@@ -1,7 +1,7 @@
 # PR88: Conversation plan-file lifecycle and retention
 
-> Status: **PLANNED**. Plan-mode documents are conversation-owned temporary artifacts: delete them with
-> their conversation and prune any plan document whose last modification is more than 30 days old.
+> Status: **COMPLETED**. Plan-mode documents are conversation-owned temporary artifacts: they are deleted
+> with their conversation and regular Markdown plans older than 30 days are pruned at startup and daily.
 
 ## Context
 

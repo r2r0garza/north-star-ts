@@ -115,6 +115,10 @@ import {
   startMemoryMaintenance,
   stopMemoryMaintenance,
 } from "./agent/memory/service"
+import {
+  startPlanMaintenance,
+  stopPlanMaintenance,
+} from "./agent/tools/plan-file"
 
 // The durable task runner — a singleton owned by the main process. Started in
 // app.whenReady (after the DB handlers register) and stopped on will-quit.
@@ -1128,7 +1132,7 @@ ipcMain.on("app:is-packaged", (event) => {
   event.returnValue = app.isPackaged
 })
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   // Register DB-backed IPC handlers now — the connection opens lazily on first
   // use, after userData is available.
   registerDbHandlers(indexService, taskRunner, (id) =>
@@ -1189,7 +1193,7 @@ app.whenReady().then(() => {
     hasIndependentSurface: true,
     run: dashboardService.execute,
   })
-  taskRunner.start()
+  await taskRunner.start()
   registerTaskHandlers(taskRunner)
   registerProcessHandlers(taskRunner, processService)
   registerIndexHandlers(taskRunner, indexService)
@@ -1211,6 +1215,7 @@ app.whenReady().then(() => {
   // Nothing else is time-triggered: the inactivity boundary and any batch left
   // stranded by a crashed or offline classifier are only noticed on this tick.
   startMemoryMaintenance()
+  await startPlanMaintenance()
   createWindow()
 
   app.on("activate", () => {
@@ -1256,6 +1261,7 @@ app.on("before-quit", () => {
 // them) and flush the WAL + close the DB cleanly on quit.
 app.on("will-quit", () => {
   stopMemoryMaintenance()
+  stopPlanMaintenance()
   void taskRunner.stop()
   browserManager.dispose()
   terminalService.dispose()

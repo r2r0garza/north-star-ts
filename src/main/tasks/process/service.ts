@@ -6,9 +6,10 @@ import { runAgentLoop, generateTitle } from "../../agent"
 import { SHUTDOWN_ABORT_REASON, PAUSE_ABORT_REASON } from "../../agent/abort"
 import {
   createConversation,
-  deleteConversation,
+  deleteConversation as deleteConversationRecord,
   getConversation,
 } from "../../db/repositories/conversations"
+import { cleanupConversationArtifacts } from "../../conversations/lifecycle"
 import {
   createTask,
   deleteTask,
@@ -488,10 +489,10 @@ export class ProcessService {
   // current validator gate with an audit marker, remove the stale reviewer worker
   // for this same validatorRound so makeValidate sends a fresh prompt, flip the
   // phase back to pending, and resume the owning run.
-  retryReview(input: {
+  async retryReview(input: {
     processRunId: string
     requestId: string
-  }): ProcessRun | undefined {
+  }): Promise<ProcessRun | undefined> {
     const { processRunId, requestId } = input
     const topRun = processes.getProcessRun(processRunId)
     if (!topRun?.taskId) return topRun
@@ -530,7 +531,7 @@ export class ProcessService {
       })
       if (staleReviewTask) {
         deleteTask(staleReviewTask.id)
-        deleteConversation(staleReviewTask.conversationId)
+        deleteConversationRecord(staleReviewTask.conversationId)
       }
       processes.updatePhaseRun(phaseRun.id, {
         status: "pending",
@@ -543,6 +544,9 @@ export class ProcessService {
       this.flipRunningToTop(owningRun)
     })
     tx()
+    if (staleReviewTask) {
+      await cleanupConversationArtifacts([staleReviewTask.conversationId])
+    }
 
     const updated = processes.getProcessRun(processRunId)
     this.runner.resume(taskId)
