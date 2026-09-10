@@ -2563,7 +2563,7 @@ function App(
       <MessageScrollerProvider autoScroll defaultScrollPosition="last-anchor">
         <MessageScroller className="min-h-0 flex-1">
           <MessageScrollerViewport>
-            <MessageScrollerContent className="mx-auto w-full max-w-[min(90%,72rem)] gap-4 px-4 py-6 pb-44">
+            <MessageScrollerContent className="mx-auto w-full max-w-[min(90%,72rem)] gap-4 px-4 py-6">
               {displayTimeline.map((item, i) => {
                 const isLast = i === displayTimeline.length - 1 && !loading
                 if (item.kind === "tools") {
