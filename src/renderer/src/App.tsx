@@ -18,9 +18,12 @@ import {
   FileText,
   FolderOpen,
   GitBranch,
+  Hand,
   MousePointerClick,
   Plus,
+  Shield,
   Square,
+  Terminal,
   Workflow,
   X,
 } from "lucide-react"
@@ -1591,6 +1594,17 @@ function App(
   // matching the send path, which never sends planMode in Chat.
   const displayedMode: AgentMode =
     isChat && agentMode === "plan" ? "default" : agentMode
+  const displayedModeIcon =
+    displayedMode === "default" ? (
+      <Hand className="size-4 shrink-0" />
+    ) : displayedMode === "plan" ? (
+      <ClipboardList className="size-4 shrink-0" />
+    ) : (
+      <span className="relative flex size-4 shrink-0 items-center justify-center">
+        <Shield className="size-4" />
+        <Terminal className="absolute size-2" strokeWidth={2.5} />
+      </span>
+    )
 
   // What to actually render as the transcript. When a live turn is on screen, the
   // assistant response after the last user message is owned by the live buffer
@@ -2308,39 +2322,63 @@ function App(
                         : "text-muted-foreground hover:bg-accent hover:text-foreground"
                     )}
                   >
-                    <ClipboardList className="size-4 shrink-0" />
+                    {displayedModeIcon}
                     {!rightPanelOpen && (
                       <span className="capitalize">{displayedMode}</span>
                     )}
                     <ChevronDown className="size-3 shrink-0 opacity-60" />
                   </button>
                 </DropdownMenuTrigger>
-                <DropdownMenuContent align="start" className="min-w-36">
+                <DropdownMenuContent align="start" className="min-w-64">
                   <DropdownMenuItem
                     onClick={() => changeAgentMode("default")}
                     className={cn(
+                      "items-start gap-2 py-2",
                       displayedMode === "default" && "bg-accent font-medium"
                     )}
                   >
-                    Default
+                    <Hand className="mt-0.5 size-4 shrink-0" />
+                    <span className="flex flex-col">
+                      <span>Default</span>
+                      <span className="text-xs font-normal text-muted-foreground">
+                        Confirms actions before running them
+                      </span>
+                    </span>
                   </DropdownMenuItem>
                   {!isChat && (
                     <DropdownMenuItem
                       onClick={() => changeAgentMode("plan")}
                       className={cn(
+                        "items-start gap-2 py-2",
                         displayedMode === "plan" && "bg-accent font-medium"
                       )}
                     >
-                      Plan
+                      <ClipboardList className="mt-0.5 size-4 shrink-0" />
+                      <span className="flex flex-col">
+                        <span>Plan</span>
+                        <span className="text-xs font-normal text-muted-foreground">
+                          Plans before touching the workspace
+                        </span>
+                      </span>
                     </DropdownMenuItem>
                   )}
                   <DropdownMenuItem
                     onClick={() => changeAgentMode("auto")}
                     className={cn(
+                      "items-start gap-2 py-2",
                       displayedMode === "auto" && "bg-accent font-medium"
                     )}
                   >
-                    Auto
+                    <span className="relative mt-0.5 flex size-4 shrink-0 items-center justify-center">
+                      <Shield className="size-4" />
+                      <Terminal className="absolute size-2" strokeWidth={2.5} />
+                    </span>
+                    <span className="flex flex-col">
+                      <span>Auto</span>
+                      <span className="text-xs font-normal text-muted-foreground">
+                        Runs actions without confirmation
+                      </span>
+                    </span>
                   </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
