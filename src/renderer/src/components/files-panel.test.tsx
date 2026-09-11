@@ -58,6 +58,7 @@ describe("FilesPanel live refresh", () => {
               name: "test-folder",
               path: "test-folder",
               kind: "directory" as const,
+              ignored: true,
             },
           ],
           error: null,
@@ -72,6 +73,7 @@ describe("FilesPanel live refresh", () => {
             name: ".gitkeep",
             path: "test-folder/.gitkeep",
             kind: "file" as const,
+            ignored: false,
           },
         ],
         error: null,
@@ -110,9 +112,10 @@ describe("FilesPanel live refresh", () => {
     })
 
     const folder = container.querySelector<HTMLButtonElement>(
-      'button[title="test-folder"]'
+      'button[title="test-folder — Ignored by Git"]'
     )
     expect(folder).not.toBeNull()
+    expect(folder?.classList.contains("opacity-45")).toBe(true)
     await act(async () => folder!.click())
     expect(folderReads).toBe(1)
 

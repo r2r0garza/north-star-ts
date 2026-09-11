@@ -10,13 +10,20 @@ export function affectedCachedDirectories(
 ): string[] {
   if (overflow) return cachedDirectories
   const cached = new Set(cachedDirectories)
-  return [
-    ...new Set(
-      paths
-        .flatMap((path) => [parentDirectory(path), path])
-        .filter((path) => cached.has(path))
-    ),
-  ]
+  const affected = paths.flatMap((path) => [parentDirectory(path), path])
+  for (const path of paths) {
+    if (path.split("/").pop() !== ".gitignore") continue
+    const directory = parentDirectory(path)
+    affected.push(
+      ...cachedDirectories.filter(
+        (cachedPath) =>
+          directory === "" ||
+          cachedPath === directory ||
+          cachedPath.startsWith(`${directory}/`)
+      )
+    )
+  }
+  return [...new Set(affected.filter((path) => cached.has(path)))]
 }
 
 export function pathAffectsSelection(

@@ -58,6 +58,7 @@ type Entry = {
   name: string
   path: string
   kind: "directory" | "file" | "symlink" | "other"
+  ignored: boolean
 }
 
 type DirectoryState = {
@@ -382,13 +383,15 @@ function TreeRow({
         role="treeitem"
         aria-expanded={directory ? open : undefined}
         aria-selected={!directory && selectedPath === entry.path}
-        title={entry.path}
+        title={entry.ignored ? `${entry.path} — Ignored by Git` : entry.path}
         onClick={() =>
           directory ? onToggle(entry.path) : onSelect(entry.path)
         }
         className={cn(
           "flex w-full min-w-0 items-center gap-1 py-1 pr-2 text-left text-xs transition-colors hover:bg-accent",
-          selectedPath === entry.path && "bg-accent text-accent-foreground"
+          entry.ignored && "opacity-45",
+          selectedPath === entry.path &&
+            "bg-accent text-accent-foreground opacity-100"
         )}
         style={{ paddingLeft: `${depth * 14 + 6}px` }}
       >

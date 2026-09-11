@@ -617,6 +617,7 @@ const api = {
           name: string
           path: string
           kind: "directory" | "file" | "symlink" | "other"
+          ignored: boolean
         }>
         error: string | null
         truncated: boolean

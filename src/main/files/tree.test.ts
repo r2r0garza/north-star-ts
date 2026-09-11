@@ -1,8 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { execFileSync } from "child_process"
 import { lstat, mkdir, mkdtemp, rm, symlink, writeFile } from "fs/promises"
 import { join } from "path"
 import { tmpdir } from "os"
 import { listWorkspaceDirectory } from "./tree"
+
+let gitAvailable = true
+try {
+  execFileSync("git", ["--version"], { stdio: "ignore" })
+} catch {
+  gitAvailable = false
+}
 
 let root: string
 
@@ -38,13 +46,30 @@ describe("listWorkspaceDirectory", () => {
       "file",
       "file",
     ])
+    expect(result.entries.every((entry) => !entry.ignored)).toBe(true)
+  })
+
+  it.skipIf(!gitAvailable)("marks entries ignored by Git", async () => {
+    execFileSync("git", ["init"], { cwd: root, stdio: "ignore" })
+    const result = await listWorkspaceDirectory(root, "")
+    expect(
+      result.entries.find((entry) => entry.path === "z-file.txt")?.ignored
+    ).toBe(true)
+    expect(
+      result.entries.find((entry) => entry.path === "a-file.txt")?.ignored
+    ).toBe(false)
   })
 
   it("lists only a nested directory's direct children", async () => {
     const result = await listWorkspaceDirectory(root, "folder")
     expect(result).toMatchObject({
       entries: [
-        { name: "nested.txt", path: "folder/nested.txt", kind: "file" },
+        {
+          name: "nested.txt",
+          path: "folder/nested.txt",
+          kind: "file",
+          ignored: false,
+        },
       ],
       error: null,
     })
@@ -68,6 +93,7 @@ describe("listWorkspaceDirectory", () => {
       name: "folder-link",
       path: "folder-link",
       kind: "symlink",
+      ignored: false,
     })
     await expect(
       listWorkspaceDirectory(root, "folder-link")

@@ -20,6 +20,21 @@ describe("files live refresh", () => {
     ).toEqual(["", "src", "src/nested"])
   })
 
+  it("refreshes cached descendants when ignore rules change", () => {
+    expect(
+      affectedCachedDirectories(
+        ["src/.gitignore"],
+        ["", "src", "src/nested", "test"]
+      )
+    ).toEqual(["src", "src/nested"])
+    expect(
+      affectedCachedDirectories(
+        [".gitignore"],
+        ["", "src", "src/nested", "test"]
+      )
+    ).toEqual(["", "src", "src/nested", "test"])
+  })
+
   it("returns all cached directories after watcher overflow", () => {
     expect(affectedCachedDirectories([], ["", "src", "test"], true)).toEqual([
       "",
