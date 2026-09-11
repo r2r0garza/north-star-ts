@@ -811,6 +811,7 @@ export function FilesPanel({
 }) {
   const rootRef = React.useRef<HTMLDivElement>(null)
   const requestVersion = React.useRef(0)
+  const statusRequestVersion = React.useRef(0)
   const directoriesRef = React.useRef<Record<string, DirectoryState>>({})
   const selectedPathRef = React.useRef(selectedPath)
   const fileWatchRef = React.useRef<{
@@ -868,23 +869,46 @@ export function FilesPanel({
     [workspace]
   )
 
+  const refreshGitStatus = React.useCallback(() => {
+    const version = requestVersion.current
+    const statusVersion = ++statusRequestVersion.current
+    if (!workspace) {
+      setStatuses([])
+      return
+    }
+    void window.cowork.git.status(workspace).then((result) => {
+      if (
+        version !== requestVersion.current ||
+        statusVersion !== statusRequestVersion.current
+      )
+        return
+      if (result?.isRepo) setStatuses(result.entries)
+      else setStatuses([])
+    })
+  }, [workspace])
+
   React.useEffect(() => {
     requestVersion.current += 1
     setDirectories({})
     setExpanded(new Set())
     setStatuses([])
     if (workspace) {
-      const version = requestVersion.current
       void loadDirectory("", true)
-      void window.cowork.git.status(workspace).then((result) => {
-        if (version === requestVersion.current && result?.isRepo) {
-          setStatuses(result.entries)
-        }
-      })
+      refreshGitStatus()
     }
-    // loadDirectory intentionally only initiates a fresh root request on workspace changes.
+    // These callbacks intentionally only initiate fresh requests on workspace changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspace])
+
+  React.useEffect(() => {
+    if (!workspace) return
+    const interval = window.setInterval(refreshGitStatus, 2000)
+    window.addEventListener("focus", refreshGitStatus)
+    return () => {
+      window.clearInterval(interval)
+      window.removeEventListener("focus", refreshGitStatus)
+    }
+  }, [refreshGitStatus, workspace])
 
   React.useEffect(() => {
     if (!workspace) return
@@ -906,12 +930,7 @@ export function FilesPanel({
         setPreviewRevision((revision) => revision + 1)
       }
 
-      const version = requestVersion.current
-      void window.cowork.git.status(workspace).then((result) => {
-        if (version !== requestVersion.current) return
-        if (result?.isRepo) setStatuses(result.entries)
-        else setStatuses([])
-      })
+      refreshGitStatus()
     })
     fileWatchRef.current = subscription
     void subscription.updateDirectories(Object.keys(directoriesRef.current))
@@ -919,14 +938,18 @@ export function FilesPanel({
       if (fileWatchRef.current === subscription) fileWatchRef.current = null
       subscription.unsubscribe()
     }
-  }, [loadDirectory, workspace])
+  }, [loadDirectory, refreshGitStatus, workspace])
 
-  const watchedDirectoriesKey = Object.keys(directories).sort().join("\0")
+  const watchedDirectoriesKey = JSON.stringify(Object.keys(directories).sort())
   React.useEffect(() => {
-    void fileWatchRef.current?.updateDirectories(
-      watchedDirectoriesKey ? watchedDirectoriesKey.split("\0") : []
-    )
-  }, [watchedDirectoriesKey])
+    const subscription = fileWatchRef.current
+    if (!subscription) return
+    const watchedDirectories = JSON.parse(watchedDirectoriesKey) as string[]
+    void subscription.updateDirectories(watchedDirectories).then(() => {
+      if (fileWatchRef.current !== subscription) return
+      for (const path of watchedDirectories) void loadDirectory(path, true)
+    })
+  }, [loadDirectory, watchedDirectoriesKey])
 
   React.useEffect(() => {
     if (!selectedPath) return
@@ -973,16 +996,11 @@ export function FilesPanel({
   }
   const refresh = () => {
     requestVersion.current += 1
-    const version = requestVersion.current
     const cachedPaths = Object.keys(directoriesRef.current)
     for (const path of cachedPaths.length ? cachedPaths : [""]) {
       void loadDirectory(path, true)
     }
-    void window.cowork.git.status(workspace).then((result) => {
-      if (version !== requestVersion.current) return
-      if (result?.isRepo) setStatuses(result.entries)
-      else setStatuses([])
-    })
+    refreshGitStatus()
   }
   const resize = (next: number) => {
     const clamped = clampTreeWidth(next, panelWidth)
