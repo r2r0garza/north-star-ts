@@ -417,7 +417,7 @@ function TreeRow({
       </button>
       {directory && open && (
         <div role="group">
-          {childState?.loading ? (
+          {childState?.loading && childState.entries.length === 0 ? (
             <p className="py-1 text-center text-xs text-muted-foreground">
               Loading…
             </p>
@@ -558,11 +558,13 @@ function FilePreview({
   workspace,
   path,
   revision,
+  gitRevision,
   onAddSelection,
 }: {
   workspace: string
   path: string | null
   revision: number
+  gitRevision: number
   onAddSelection: (selection: FileSelection) => void
 }) {
   const previewRef = React.useRef<HTMLDivElement>(null)
@@ -688,7 +690,7 @@ function FilePreview({
     return () => {
       cancelled = true
     }
-  }, [path, revision, workspace])
+  }, [gitRevision, path, revision, workspace])
 
   React.useLayoutEffect(() => {
     if (showChanges) {
@@ -815,6 +817,7 @@ export function FilesPanel({
   const rootRef = React.useRef<HTMLDivElement>(null)
   const requestVersion = React.useRef(0)
   const statusRequestVersion = React.useRef(0)
+  const gitStatusSnapshot = React.useRef<string | null>(null)
   const directoriesRef = React.useRef<Record<string, DirectoryState>>({})
   const selectedPathRef = React.useRef(selectedPath)
   const fileWatchRef = React.useRef<{
@@ -830,6 +833,7 @@ export function FilesPanel({
   const [treeWidth, setTreeWidth] = React.useState(treeWidthRef.current)
   const [panelWidth, setPanelWidth] = React.useState(0)
   const [previewRevision, setPreviewRevision] = React.useState(0)
+  const [gitRevision, setGitRevision] = React.useState(0)
 
   directoriesRef.current = directories
   selectedPathRef.current = selectedPath
@@ -885,13 +889,22 @@ export function FilesPanel({
         statusVersion !== statusRequestVersion.current
       )
         return
-      if (result?.isRepo) setStatuses(result.entries)
-      else setStatuses([])
+      const entries = result?.isRepo ? result.entries : []
+      const snapshot = JSON.stringify(entries)
+      setStatuses(entries)
+      if (
+        gitStatusSnapshot.current !== null &&
+        gitStatusSnapshot.current !== snapshot
+      ) {
+        setGitRevision((revision) => revision + 1)
+      }
+      gitStatusSnapshot.current = snapshot
     })
   }, [workspace])
 
   React.useEffect(() => {
     requestVersion.current += 1
+    gitStatusSnapshot.current = null
     setDirectories({})
     setExpanded(new Set())
     setStatuses([])
@@ -1023,6 +1036,7 @@ export function FilesPanel({
           workspace={workspace}
           path={selectedPath}
           revision={previewRevision}
+          gitRevision={gitRevision}
           onAddSelection={onAddSelection}
         />
       </div>
@@ -1082,7 +1096,7 @@ export function FilesPanel({
           aria-label="Workspace files"
           className="min-h-0 flex-1 overflow-auto py-1"
         >
-          {root?.loading ? (
+          {root?.loading && root.entries.length === 0 ? (
             <p className="p-2 text-xs text-muted-foreground">Loading files…</p>
           ) : root?.error && !root.entries.length ? (
             <button
