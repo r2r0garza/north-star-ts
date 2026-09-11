@@ -37,6 +37,9 @@ export type { PickedElement } from "../../preload/index"
 
 // Git results used by changed-file previews and the sidebar file tree.
 export type {
+  GitAction,
+  GitActionResult,
+  GitCommitResult,
   GitDiffResult,
   GitStatusEntry,
   GitStatusResult,

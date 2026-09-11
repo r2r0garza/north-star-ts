@@ -23,6 +23,7 @@ import { McpScreen } from "@/components/mcp-screen"
 import { ProcessScreen } from "@/components/process-screen"
 import { DashboardsScreen } from "@/components/dashboards-screen"
 import { StartupGuideDialog } from "@/components/startup-guide-dialog"
+import { GitActions } from "@/components/git-actions"
 import { TaskTranscriptSheet } from "@/components/task-transcript-sheet"
 import { TaskCompletionToasts } from "@/components/task-completion-toasts"
 import {
@@ -232,13 +233,15 @@ function Shell() {
   // remains in the main content area.
   const rightControlOffset = reserveWindowControls ? 140 : 16
   const terminalRightOffset = rightControlOffset + 32
-  // Once the panel is open, the theme control sits just outside its left edge;
-  // Terminal and the panel toggle remain within the panel's header area.
-  const themeRightOffset = activityPanelWidth
+  // Once the panel is open, the Git and theme controls sit just outside its left
+  // edge. Git is immediately to the visual right of the theme control.
+  const gitAvailable = view !== "Chat" && workspacePath.trim() !== ""
+  const gitRightOffset = activityPanelWidth
     ? activityPanelWidth + 8
     : terminalAvailable
       ? terminalRightOffset + 30
       : rightControlOffset + 32
+  const themeRightOffset = gitAvailable ? gitRightOffset + 32 : gitRightOffset
 
   useTerminalShortcut(terminalAvailable, toggleTerminal)
 
@@ -471,6 +474,9 @@ function Shell() {
         />
         <SidebarToggle fullscreen={fullscreen} isMac={isMac} />
         <HeaderThemeToggle rightOffset={themeRightOffset} />
+        {gitAvailable && (
+          <GitActions workspace={workspacePath} rightOffset={gitRightOffset} />
+        )}
         {terminalAvailable &&
           !(
             agentsOpen ||

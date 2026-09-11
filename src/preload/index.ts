@@ -41,7 +41,11 @@ import type {
 import type { ActionKind } from "../main/agent/approval/types"
 import type { PickedElement } from "../main/browser/types"
 import type { GitDiffResult } from "../main/git/diff"
-import type { GitStatusResult } from "../main/git/service"
+import type {
+  GitActionResult,
+  GitCommitResult,
+  GitStatusResult,
+} from "../main/git/service"
 import type { Question, QuestionAnswer } from "../main/agent/tools/types"
 import type {
   ExecutionSettings,
@@ -674,6 +678,27 @@ const api = {
         workspace,
         relPath
       ) as Promise<GitDiffResult | null>,
+    fetch: (workspace: string) =>
+      ipcRenderer.invoke("git:fetch", workspace) as Promise<GitActionResult>,
+    pull: (workspace: string) =>
+      ipcRenderer.invoke("git:pull", workspace) as Promise<GitActionResult>,
+    push: (workspace: string) =>
+      ipcRenderer.invoke("git:push", workspace) as Promise<GitActionResult>,
+    commit: (workspace: string, paths: string[], message: string) =>
+      ipcRenderer.invoke(
+        "git:commit",
+        workspace,
+        paths,
+        message
+      ) as Promise<GitCommitResult>,
+    generateCommitMessage: (workspace: string, paths: string[]) =>
+      ipcRenderer.invoke(
+        "git:generateCommitMessage",
+        workspace,
+        paths
+      ) as Promise<
+        { ok: true; commitMessage: string } | { ok: false; error: string }
+      >,
   },
   // Open a workspace file in the OS default app for its type (the user's IDE, if
   // that's the default). Resolves with "" on success or an error string.
@@ -1850,7 +1875,13 @@ export type { IndexStatus } from "../main/ipc/index-handlers"
 export type { ApproveResult } from "../main/dashboards/service"
 export type { PickedElement } from "../main/browser/types"
 export type { GitDiffResult } from "../main/git/diff"
-export type { GitStatusEntry, GitStatusResult } from "../main/git/service"
+export type {
+  GitAction,
+  GitActionResult,
+  GitCommitResult,
+  GitStatusEntry,
+  GitStatusResult,
+} from "../main/git/service"
 export type {
   TerminalDataEvent,
   TerminalExitEvent,

@@ -1,12 +1,21 @@
 # PR90: Workspace Git actions and AI-assisted commits
 
-> Status: **PLANNED**. Add user-driven Fetch, Pull, Commit, and Push controls for the active workspace, including grouped file-selective commits and tool-enabled AI commit-message generation.
+> Status: **COMPLETED**. Shipped user-driven Fetch, fast-forward-only Pull, file-selective Commit, and upstream Push controls for the active workspace, including grouped selection, a repository-status light, and restricted AI-assisted Conventional Commit message generation.
 
 ## Goal
 
 Place a Git actions button in the title bar immediately to the right of the theme toggle. The button opens a menu with **Fetch**, **Pull**, **Commit**, and **Push** for the active workspace repository. Network or Git failures are shown in a modal with Git's bounded error text. Commit opens a modal where the user selects changed files, writes a commit message, and can ask a tool-enabled LLM agent to inspect the selected prospective commit and draft that message.
 
 This is a deliberate human-operated Git surface, not a new agent tool and not a general Git client.
+
+## Completed implementation
+
+- The title-bar Git button is disabled outside repositories and carries an accessible, non-pulsing status light: green for a clean worktree, amber for selected/unselected pending changes, red for merge conflicts, and muted while unavailable or initially checking. It refreshes on focus, successful Git actions, and a lightweight periodic status read without replacing the last known state during background refreshes.
+- Fetch uses `--prune`; Pull is fast-forward-only; Push requires the attached branch's configured upstream. Repository operations are serialized per root, all Git invocation stays argv-safe and non-interactive, and expected failures return bounded text to a selectable error modal.
+- The commit modal loads fresh Git status, separates tracked and untracked entries into independently collapsible groups, defaults to no file selection, excludes conflicts from selection, and commits only selected complete-file snapshots while preserving unselected and unrelated staged work.
+- **Ask AI** is a standalone completion request, not a conversation or agent run. It receives only the selected paths and may request only a server-enforced read-only diff for one selected path at a time; it receives no skills, conversation history, general tool catalog, workspace tree, or write/network authority. Model inspection has four rounds, 300 output tokens per completion, and capped tool evidence.
+- The Ask AI system prompt treats repository material as untrusted, requires a JSON-only `commit_message` response, and requests Conventional Commits with an allowed type, optional scope/body/footer, an imperative ≤72-character subject without a period, and a concise why-oriented body when warranted. Suggestions remain editable and are never committed automatically.
+- Focused Git action, commit preservation, commit-message parser/policy, and renderer tests passed alongside project typecheck and production build verification.
 
 ## Current state
 

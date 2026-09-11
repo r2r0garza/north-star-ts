@@ -46,6 +46,7 @@ import type { IconType } from "react-icons"
 import { DiffView } from "@/components/diff-view"
 import type { GitDiffResult, GitStatusEntry } from "@/types"
 import { buildFileGutterAnnotations } from "@/lib/file-gutter"
+import { invalidateGitStatus, useGitStatus } from "@/lib/git-status"
 import {
   affectedCachedDirectories,
   parentDirectory,
@@ -816,7 +817,6 @@ export function FilesPanel({
 }) {
   const rootRef = React.useRef<HTMLDivElement>(null)
   const requestVersion = React.useRef(0)
-  const statusRequestVersion = React.useRef(0)
   const gitStatusSnapshot = React.useRef<string | null>(null)
   const directoriesRef = React.useRef<Record<string, DirectoryState>>({})
   const selectedPathRef = React.useRef(selectedPath)
@@ -829,7 +829,10 @@ export function FilesPanel({
     Record<string, DirectoryState>
   >({})
   const [expanded, setExpanded] = React.useState<Set<string>>(new Set())
-  const [statuses, setStatuses] = React.useState<GitStatusEntry[]>([])
+  const gitStatus = useGitStatus(workspace)
+  const statuses: GitStatusEntry[] = gitStatus.status?.isRepo
+    ? gitStatus.status.entries
+    : []
   const [treeWidth, setTreeWidth] = React.useState(treeWidthRef.current)
   const [panelWidth, setPanelWidth] = React.useState(0)
   const [previewRevision, setPreviewRevision] = React.useState(0)
@@ -876,55 +879,27 @@ export function FilesPanel({
     [workspace]
   )
 
-  const refreshGitStatus = React.useCallback(() => {
-    const version = requestVersion.current
-    const statusVersion = ++statusRequestVersion.current
-    if (!workspace) {
-      setStatuses([])
-      return
+  React.useEffect(() => {
+    if (gitStatus.loading) return
+    const snapshot = JSON.stringify(statuses)
+    if (
+      gitStatusSnapshot.current !== null &&
+      gitStatusSnapshot.current !== snapshot
+    ) {
+      setGitRevision((revision) => revision + 1)
     }
-    void window.cowork.git.status(workspace).then((result) => {
-      if (
-        version !== requestVersion.current ||
-        statusVersion !== statusRequestVersion.current
-      )
-        return
-      const entries = result?.isRepo ? result.entries : []
-      const snapshot = JSON.stringify(entries)
-      setStatuses(entries)
-      if (
-        gitStatusSnapshot.current !== null &&
-        gitStatusSnapshot.current !== snapshot
-      ) {
-        setGitRevision((revision) => revision + 1)
-      }
-      gitStatusSnapshot.current = snapshot
-    })
-  }, [workspace])
+    gitStatusSnapshot.current = snapshot
+  }, [gitStatus.loading, statuses])
 
   React.useEffect(() => {
     requestVersion.current += 1
     gitStatusSnapshot.current = null
     setDirectories({})
     setExpanded(new Set())
-    setStatuses([])
-    if (workspace) {
-      void loadDirectory("", true)
-      refreshGitStatus()
-    }
+    if (workspace) void loadDirectory("", true)
     // These callbacks intentionally only initiate fresh requests on workspace changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspace])
-
-  React.useEffect(() => {
-    if (!workspace) return
-    const interval = window.setInterval(refreshGitStatus, 2000)
-    window.addEventListener("focus", refreshGitStatus)
-    return () => {
-      window.clearInterval(interval)
-      window.removeEventListener("focus", refreshGitStatus)
-    }
-  }, [refreshGitStatus, workspace])
 
   React.useEffect(() => {
     if (!workspace) return
@@ -946,7 +921,7 @@ export function FilesPanel({
         setPreviewRevision((revision) => revision + 1)
       }
 
-      refreshGitStatus()
+      invalidateGitStatus(workspace)
     })
     fileWatchRef.current = subscription
     void subscription.updateDirectories(Object.keys(directoriesRef.current))
@@ -954,7 +929,7 @@ export function FilesPanel({
       if (fileWatchRef.current === subscription) fileWatchRef.current = null
       subscription.unsubscribe()
     }
-  }, [loadDirectory, refreshGitStatus, workspace])
+  }, [loadDirectory, workspace])
 
   const watchedDirectoriesKey = JSON.stringify(Object.keys(directories).sort())
   React.useEffect(() => {
@@ -1016,7 +991,7 @@ export function FilesPanel({
     for (const path of cachedPaths.length ? cachedPaths : [""]) {
       void loadDirectory(path, true)
     }
-    refreshGitStatus()
+    invalidateGitStatus(workspace)
   }
   const resize = (next: number) => {
     const clamped = clampTreeWidth(next, panelWidth)

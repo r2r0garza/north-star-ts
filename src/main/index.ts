@@ -82,6 +82,7 @@ import { isBinaryBuffer } from "./agent/env/walk"
 import { readGitBranch } from "./index/metadata"
 import { gitDiffFile } from "./git/diff"
 import { GitService } from "./git/service"
+import { generateCommitMessage } from "./git/commit-message"
 import { openInIde } from "./ide/open"
 import { resolveInWorkspaceReal } from "./agent/tools/workspace"
 import { registerDbHandlers } from "./ipc/db-handlers"
@@ -1062,6 +1063,47 @@ ipcMain.handle("git:status", async (_event, workspace: string) => {
     return null
   }
 })
+for (const action of ["fetch", "pull", "push"] as const) {
+  ipcMain.handle(`git:${action}`, async (_event, workspace: unknown) => {
+    if (typeof workspace !== "string" || !workspace.trim()) {
+      return { ok: false, action, error: "Choose a workspace first." }
+    }
+    return new GitService(workspace.trim())[action]()
+  })
+}
+ipcMain.handle(
+  "git:commit",
+  async (_event, workspace: unknown, paths: unknown, message: unknown) => {
+    if (typeof workspace !== "string" || !workspace.trim()) {
+      return { ok: false, error: "Choose a workspace first." }
+    }
+    if (
+      !Array.isArray(paths) ||
+      paths.some((path) => typeof path !== "string")
+    ) {
+      return { ok: false, error: "Invalid selected files." }
+    }
+    if (typeof message !== "string") {
+      return { ok: false, error: "Enter a commit message." }
+    }
+    return new GitService(workspace.trim()).commitSelected(paths, message)
+  }
+)
+ipcMain.handle(
+  "git:generateCommitMessage",
+  async (_event, workspace: unknown, paths: unknown) => {
+    if (typeof workspace !== "string" || !workspace.trim()) {
+      return { ok: false, error: "Choose a workspace first." }
+    }
+    if (
+      !Array.isArray(paths) ||
+      paths.some((path) => typeof path !== "string")
+    ) {
+      return { ok: false, error: "Invalid selected files." }
+    }
+    return generateCommitMessage(workspace.trim(), paths)
+  }
+)
 // Show an OS desktop notification. The renderer decides WHETHER to notify (it
 // knows which conversation is on screen and whether the window is focused) and
 // calls this only when it wants one shown. Clicking the notification focuses the

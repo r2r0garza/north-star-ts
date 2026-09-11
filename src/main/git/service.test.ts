@@ -71,6 +71,62 @@ describe.skipIf(!gitAvailable)("GitService", () => {
     )
   })
 
+  it("reports commits ahead of the configured upstream", async () => {
+    git(plain, "init", "--bare")
+    git(repo, "remote", "add", "origin", plain)
+    git(repo, "push", "-u", "origin", "HEAD")
+    writeFileSync(join(repo, "tracked.txt"), "local one\n")
+    git(repo, "commit", "-am", "local one")
+    writeFileSync(join(repo, "tracked.txt"), "local two\n")
+    git(repo, "commit", "-am", "local two")
+
+    const status = await new GitService(repo).status()
+
+    expect(status.upstream).toMatch(/^origin\//)
+    expect(status.ahead).toBe(2)
+    expect(status.behind).toBe(0)
+  })
+
+  it("leaves tracking counts absent when the branch has no upstream", async () => {
+    const status = await new GitService(repo).status()
+
+    expect(status.upstream).toBeUndefined()
+    expect(status.ahead).toBeUndefined()
+    expect(status.behind).toBeUndefined()
+  })
+
+  it("sets the upstream when pushing a branch for the first time", async () => {
+    git(plain, "init", "--bare")
+    git(repo, "remote", "add", "origin", plain)
+    const branch = execFileSync("git", ["branch", "--show-current"], {
+      cwd: repo,
+    })
+      .toString()
+      .trim()
+
+    const result = await new GitService(repo).push()
+
+    expect(result).toEqual({
+      ok: true,
+      action: "push",
+      summary: `Pushed current branch and set its upstream to origin/${branch}.`,
+    })
+    expect(
+      execFileSync(
+        "git",
+        ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
+        { cwd: repo }
+      )
+        .toString()
+        .trim()
+    ).toBe(`origin/${branch}`)
+    await expect(new GitService(repo).status()).resolves.toMatchObject({
+      upstream: `origin/${branch}`,
+      ahead: 0,
+      behind: 0,
+    })
+  })
+
   it("returns bounded diffs, logs, shows, and branches", async () => {
     writeFileSync(join(repo, "tracked.txt"), "line one\nchanged\n")
     const service = new GitService(repo)
@@ -89,6 +145,61 @@ describe.skipIf(!gitAvailable)("GitService", () => {
 
     const branches = await service.branches()
     expect(branches.branches.some((b) => b.current)).toBe(true)
+  })
+
+  it("commits selected complete files while preserving unrelated staged work", async () => {
+    writeFileSync(join(repo, "tracked.txt"), "line one\nselected\n")
+    writeFileSync(join(repo, "src", "keep.ts"), "export const keep = 2\n")
+    writeFileSync(join(repo, "new.txt"), "new\n")
+    git(repo, "add", "src/keep.ts")
+
+    const result = await new GitService(repo).commitSelected(
+      ["tracked.txt", "new.txt"],
+      "selected files"
+    )
+
+    expect(result).toMatchObject({ ok: true, subject: "selected files" })
+    expect(
+      execFileSync("git", ["show", "HEAD:tracked.txt"], {
+        cwd: repo,
+      }).toString()
+    ).toContain("selected")
+    expect(
+      execFileSync("git", ["show", "HEAD:new.txt"], { cwd: repo }).toString()
+    ).toBe("new\n")
+    expect(
+      execFileSync("git", ["diff", "--cached", "--name-only"], { cwd: repo })
+        .toString()
+        .trim()
+    ).toBe("src/keep.ts")
+  })
+
+  it("commits a selected file's complete snapshot when it was partially staged", async () => {
+    writeFileSync(join(repo, "tracked.txt"), "line one\nstaged\n")
+    git(repo, "add", "tracked.txt")
+    writeFileSync(join(repo, "tracked.txt"), "line one\ncomplete\n")
+
+    const result = await new GitService(repo).commitSelected(
+      ["tracked.txt"],
+      "complete snapshot"
+    )
+
+    expect(result).toMatchObject({ ok: true })
+    expect(
+      execFileSync("git", ["show", "HEAD:tracked.txt"], {
+        cwd: repo,
+      }).toString()
+    ).toBe("line one\ncomplete\n")
+  })
+
+  it("rejects conflicted and unknown selected paths without committing", async () => {
+    const service = new GitService(repo)
+    await expect(
+      service.commitSelected(["missing.txt"], "message")
+    ).resolves.toEqual(expect.objectContaining({ ok: false }))
+    await expect(
+      service.commitSelected(["--output=/tmp/x"], "message")
+    ).resolves.toEqual(expect.objectContaining({ ok: false }))
   })
 
   it("rejects flag-like paths and remote-url revisions", async () => {

@@ -7,7 +7,13 @@ item is its plan file; the ordered-list number is its current priority rank.
 
 ## Next up
 
-1. **`045` — North Star MCP bridge for CLI providers.** After `042`, make North Star a second, distinct
+1. **`091` — Workspace branch switcher and branch creation.** Convert the composer branch badge into an
+   accessible local-branch menu with fresh listing, safe switching, and a **New branch…** modal. Branch
+   switches never force, stash, reset, clean, or discard changes; creation branches atomically from the
+   current `HEAD`, including detached HEAD. Reuse `090`'s repository operation lock, typed errors, error
+   modal, and Git-state refresh event so branch actions cannot race commits, pulls, or pushes and Files/
+   Changes views do not retain stale prior-branch state.
+2. **`045` — North Star MCP bridge for CLI providers.** After `042`, make North Star a second, distinct
    MCP role: it remains a client of user-configured external servers, and also hosts a lazy,
    authenticated Streamable HTTP server on an ephemeral `127.0.0.1` port for the Claude Code and Codex
    subprocesses we launch. Inject the endpoint per turn (`claude --mcp-config`; Codex transient `-c`
@@ -149,6 +155,16 @@ item is its plan file; the ordered-list number is its current priority rank.
 
 ## Done
 
+- **`090` — Workspace Git actions and AI-assisted commits.** Completed in this branch. Added a title-bar
+  Git menu with Fetch (`--prune`), fast-forward-only Pull, selected-file Commit, upstream Push, a
+  non-pulsing repository-status light (clean/changes/conflict/unavailable), and bounded selectable error
+  modals. The commit modal groups fresh status into independently collapsible **Tracked** and **Untracked**
+  sections with group/per-file selection, initially selecting no files, while preserving unrelated staged
+  and unselected work. **Ask AI** is a separate, selected-path-only completion request: it has no skills,
+  history, general tools, or write
+  authority, may inspect only server-enforced read-only diffs for selected files, and returns a validated,
+  editable Conventional Commit suggestion. Verified with focused Git/renderer tests, `pnpm typecheck`,
+  and `pnpm build`.
 - **`089` — Workspace Files sidebar tab.** Completed in this branch. Added **Files** as the fourth,
   single-instance right-sidebar tab, with a read-only two-pane explorer: a workspace-confined, lazy
   direct-child tree on the right and a bounded preview on the left. The new `files:listDirectory` IPC

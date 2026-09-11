@@ -6,7 +6,11 @@ import { resolveInWorkspace } from "../agent/tools/workspace"
 import type { GitDiffResult } from "./diff"
 
 const GIT_TIMEOUT_MS = 5_000
+const GIT_NETWORK_TIMEOUT_MS = 30_000
 const MAX_OUTPUT_BYTES = 512 * 1024
+const MAX_COMMIT_MESSAGE_LENGTH = 10_000
+
+const repositoryOperations = new Map<string, Promise<void>>()
 const DEFAULT_LOG_LIMIT = 20
 const MAX_LOG_LIMIT = 100
 
@@ -19,14 +23,8 @@ const GIT_ENV = {
   GIT_OPTIONAL_LOCKS: "0",
 }
 
-const GIT_GLOBAL_ARGS = [
-  "-c",
-  "color.ui=false",
-  "-c",
-  "core.pager=cat",
-  "-c",
-  "credential.helper=",
-]
+const GIT_GLOBAL_ARGS = ["-c", "color.ui=false", "-c", "core.pager=cat"]
+const GIT_READ_ONLY_ARGS = ["-c", "credential.helper="]
 
 export interface GitStatusEntry {
   path: string
@@ -42,6 +40,9 @@ export interface GitStatusResult {
   branch?: string
   detached?: boolean
   sha?: string
+  upstream?: string
+  ahead?: number
+  behind?: number
   entries: GitStatusEntry[]
   truncated: boolean
 }
@@ -88,6 +89,18 @@ export interface GitBranchesResult {
   truncated: boolean
 }
 
+export type GitAction = "fetch" | "pull" | "push"
+
+export type GitActionResult =
+  | { ok: true; action: GitAction; summary: string }
+  | { ok: false; action: GitAction; error: string }
+
+export type GitCommitResult =
+  | { ok: true; sha: string; subject: string }
+  | { ok: false; error: string }
+
+export const GIT_COMMIT_MESSAGE_MAX_LENGTH = MAX_COMMIT_MESSAGE_LENGTH
+
 type RepoInfo =
   | { isRepo: false }
   | {
@@ -111,13 +124,15 @@ export class GitService {
       ["status", "--porcelain=v2", "-z", "-b", "--untracked-files=all"],
       repo.root
     )
+    const text = res.stdout.toString("utf8")
     return {
       isRepo: true,
       root: repo.root,
       branch: repo.branch,
       detached: repo.detached,
       sha: repo.sha,
-      entries: parseStatus(res.stdout.toString("utf8")),
+      ...parseBranchTracking(text),
+      entries: parseStatus(text),
       truncated: !!res.outputTruncated,
     }
   }
@@ -315,6 +330,217 @@ export class GitService {
     return repo.branch ?? repo.sha ?? null
   }
 
+  async fetch(): Promise<GitActionResult> {
+    return this.runAction("fetch", async (repo) => {
+      await this.git(["fetch", "--prune"], repo.root, { network: true })
+      return "Fetched configured remote."
+    })
+  }
+
+  async pull(): Promise<GitActionResult> {
+    return this.runAction("pull", async (repo) => {
+      const branch = this.requireAttachedBranch(repo)
+      await this.requireUpstream(repo.root, branch)
+      await this.git(["pull", "--ff-only"], repo.root, { network: true })
+      return "Fast-forwarded current branch."
+    })
+  }
+
+  async push(): Promise<GitActionResult> {
+    return this.runAction("push", async (repo) => {
+      const branch = this.requireAttachedBranch(repo)
+      if (await this.hasUpstream(repo.root)) {
+        await this.git(["push"], repo.root, { network: true })
+        return "Pushed current branch."
+      }
+
+      const remote = await this.resolvePushRemote(repo.root, branch)
+      await this.git(["push", "--set-upstream", remote, branch], repo.root, {
+        network: true,
+      })
+      return `Pushed current branch and set its upstream to ${remote}/${branch}.`
+    })
+  }
+
+  async commitSelected(
+    paths: string[],
+    message: string
+  ): Promise<GitCommitResult> {
+    const repo = await this.repoInfo()
+    if (!repo.isRepo)
+      return { ok: false, error: "This folder is not a Git repository." }
+    return this.withRepositoryOperation(repo.root, async () => {
+      try {
+        const commitMessage = validateCommitMessage(message)
+        const selected = await this.validateSelectedPaths(repo.root, paths)
+        if (selected.paths.length === 0) {
+          return {
+            ok: false,
+            error: "Select at least one changed file to commit.",
+          }
+        }
+        // `commit --only <path>` writes complete working-tree snapshots but needs
+        // intent-to-add entries for previously untracked paths. It does not stage
+        // their contents, and a failed commit removes only the entries we added.
+        if (selected.untracked.length > 0) {
+          await this.git(["add", "-N", "--", ...selected.untracked], repo.root)
+        }
+        try {
+          await this.git(
+            ["commit", "--only", "-m", commitMessage, "--", ...selected.paths],
+            repo.root,
+            { timeoutMs: GIT_NETWORK_TIMEOUT_MS }
+          )
+        } catch (err) {
+          if (selected.untracked.length > 0) {
+            await this.git(
+              ["reset", "-q", "--", ...selected.untracked],
+              repo.root,
+              {
+                allowExitCodes: [0, 1],
+              }
+            )
+          }
+          throw err
+        }
+        const head = await this.git(
+          ["log", "-1", "--format=%h%x1f%s"],
+          repo.root
+        )
+        const [sha = "", subject = ""] = head.stdout
+          .toString("utf8")
+          .trim()
+          .split("\x1f", 2)
+        return { ok: true, sha, subject }
+      } catch (err) {
+        return { ok: false, error: sanitizeGitError(err) }
+      }
+    })
+  }
+
+  private async runAction(
+    action: GitAction,
+    operation: (repo: Extract<RepoInfo, { isRepo: true }>) => Promise<string>
+  ): Promise<GitActionResult> {
+    const repo = await this.repoInfo()
+    if (!repo.isRepo) {
+      return {
+        ok: false,
+        action,
+        error: "This folder is not a Git repository.",
+      }
+    }
+    return this.withRepositoryOperation(repo.root, async () => {
+      try {
+        return { ok: true, action, summary: await operation(repo) }
+      } catch (err) {
+        return { ok: false, action, error: sanitizeGitError(err) }
+      }
+    })
+  }
+
+  private requireAttachedBranch(
+    repo: Extract<RepoInfo, { isRepo: true }>
+  ): string {
+    if (!repo.branch || repo.detached) {
+      throw new Error("Cannot use this action while HEAD is detached.")
+    }
+    return repo.branch
+  }
+
+  private async requireUpstream(root: string, branch: string): Promise<void> {
+    if (!(await this.hasUpstream(root))) {
+      throw new Error(`Branch '${branch}' has no configured upstream.`)
+    }
+  }
+
+  private async hasUpstream(root: string): Promise<boolean> {
+    const upstream = await this.git(
+      ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
+      root,
+      { allowExitCodes: [0, 128] }
+    )
+    return upstream.exitCode === 0 && !!upstream.stdout.toString("utf8").trim()
+  }
+
+  private async resolvePushRemote(
+    root: string,
+    branch: string
+  ): Promise<string> {
+    for (const key of [`branch.${branch}.pushRemote`, "remote.pushDefault"]) {
+      const configured = await this.git(["config", "--get", key], root, {
+        allowExitCodes: [0, 1],
+      })
+      const remote = configured.stdout.toString("utf8").trim()
+      if (remote) return remote
+    }
+
+    const remotes = (await this.git(["remote"], root)).stdout
+      .toString("utf8")
+      .split("\n")
+      .map((remote) => remote.trim())
+      .filter(Boolean)
+    if (remotes.includes("origin")) return "origin"
+    if (remotes.length === 1) return remotes[0]
+    if (remotes.length === 0) {
+      throw new Error("This repository has no configured remote to push to.")
+    }
+    throw new Error(
+      `Branch '${branch}' has no configured upstream. Configure a push remote or upstream before pushing.`
+    )
+  }
+
+  private async validateSelectedPaths(
+    root: string,
+    paths: string[]
+  ): Promise<{ paths: string[]; untracked: string[] }> {
+    if (!Array.isArray(paths)) throw new Error("Invalid selected paths.")
+    const status = await this.status()
+    if (!status.isRepo || status.root !== root)
+      throw new Error("Repository state changed.")
+    const byPath = new Map(status.entries.map((entry) => [entry.path, entry]))
+    const selected: string[] = []
+    const untracked: string[] = []
+    const seen = new Set<string>()
+    for (const rawPath of paths) {
+      if (typeof rawPath !== "string") throw new Error("Invalid selected path.")
+      const path = this.validatePathInRoot(root, rawPath)
+      if (seen.has(path)) continue
+      const entry = byPath.get(path)
+      if (!entry || entry.kind === "ignored") {
+        throw new Error(`Path is not a changed file: ${path}`)
+      }
+      if (entry.kind === "unmerged") {
+        throw new Error(`Resolve conflicts in ${path} before committing.`)
+      }
+      selected.push(path)
+      if (entry.kind === "untracked") untracked.push(path)
+      seen.add(path)
+    }
+    return { paths: selected, untracked }
+  }
+
+  private async withRepositoryOperation<T>(
+    root: string,
+    operation: () => Promise<T>
+  ): Promise<T> {
+    const previous = repositoryOperations.get(root) ?? Promise.resolve()
+    let release!: () => void
+    const current = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const queued = previous.then(() => current)
+    repositoryOperations.set(root, queued)
+    await previous
+    try {
+      return await operation()
+    } finally {
+      release()
+      if (repositoryOperations.get(root) === queued)
+        repositoryOperations.delete(root)
+    }
+  }
+
   private async repoInfo(): Promise<RepoInfo> {
     const inside = await this.git(
       ["rev-parse", "--is-inside-work-tree"],
@@ -355,17 +581,31 @@ export class GitService {
   private async git(
     args: string[],
     cwd: string,
-    opts: { allowExitCodes?: number[] } = {}
+    opts: {
+      allowExitCodes?: number[]
+      network?: boolean
+      timeoutMs?: number
+    } = {}
   ): Promise<ExecResult> {
     if (!this.env.execFile) {
       throw new Error("This environment does not support argv execution.")
     }
-    const res = await this.env.execFile("git", [...GIT_GLOBAL_ARGS, ...args], {
-      cwd,
-      timeoutMs: GIT_TIMEOUT_MS,
-      maxOutputBytes: MAX_OUTPUT_BYTES * 2,
-      env: GIT_ENV,
-    })
+    const res = await this.env.execFile(
+      "git",
+      [
+        ...GIT_GLOBAL_ARGS,
+        ...(opts.network ? [] : GIT_READ_ONLY_ARGS),
+        ...args,
+      ],
+      {
+        cwd,
+        timeoutMs:
+          opts.timeoutMs ??
+          (opts.network ? GIT_NETWORK_TIMEOUT_MS : GIT_TIMEOUT_MS),
+        maxOutputBytes: MAX_OUTPUT_BYTES * 2,
+        env: GIT_ENV,
+      }
+    )
     const allowed = opts.allowExitCodes ?? [0]
     if (!allowed.includes(res.exitCode ?? -1)) {
       const detail = (res.stderr ?? res.stdout).toString("utf8").trim()
@@ -375,15 +615,35 @@ export class GitService {
   }
 
   private validatePath(path: string): string {
+    return this.validatePathInRoot(this.workspace, path)
+  }
+
+  private validatePathInRoot(root: string, path: string): string {
     if (!path || path.includes("\0")) throw new Error("Invalid path.")
     if (path.startsWith("-")) throw new Error("Paths may not start with '-'.")
-    const resolved = resolveInWorkspace(this.workspace, path)
-    const rel =
-      resolved === this.workspace
-        ? ""
-        : resolved.slice(this.workspace.length + 1)
+    const resolved = resolveInWorkspace(root, path)
+    const rel = resolved === root ? "" : resolved.slice(root.length + 1)
+    if (!rel) throw new Error("Invalid path.")
     return rel.split(sep).join("/")
   }
+}
+
+function validateCommitMessage(value: string): string {
+  if (typeof value !== "string") throw new Error("Enter a commit message.")
+  const message = value.trim()
+  if (!message) throw new Error("Enter a commit message.")
+  if (message.length > MAX_COMMIT_MESSAGE_LENGTH) {
+    throw new Error(
+      `Commit messages must be at most ${MAX_COMMIT_MESSAGE_LENGTH} characters.`
+    )
+  }
+  return message
+}
+
+function sanitizeGitError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error)
+  const clipped = truncateUtf8Text(message, 16 * 1024).text.trim()
+  return clipped || "Git operation failed."
 }
 
 function boundedLimit(value: number | undefined): number {
@@ -403,6 +663,30 @@ function validateRevision(revision: string): string {
     throw new Error("Invalid revision.")
   }
   return rev
+}
+
+function parseBranchTracking(
+  text: string
+): Pick<GitStatusResult, "upstream" | "ahead" | "behind"> {
+  let upstream: string | undefined
+  let ahead: number | undefined
+  let behind: number | undefined
+  for (const row of text.split("\0")) {
+    if (row.startsWith("# branch.upstream ")) {
+      upstream = row.slice("# branch.upstream ".length)
+    } else {
+      const match = /^# branch\.ab \+(\d+) -(\d+)$/.exec(row)
+      if (match) {
+        ahead = Number(match[1])
+        behind = Number(match[2])
+      }
+    }
+  }
+  return {
+    ...(upstream ? { upstream } : {}),
+    ...(ahead !== undefined ? { ahead } : {}),
+    ...(behind !== undefined ? { behind } : {}),
+  }
 }
 
 function parseStatus(text: string): GitStatusEntry[] {

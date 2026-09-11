@@ -104,6 +104,7 @@ import {
   type ToolUse,
 } from "@/lib/timeline"
 import { cn } from "@/lib/utils"
+import { useGitStatus } from "@/lib/git-status"
 import { maybeNotify } from "@/lib/notify"
 import {
   EMPTY_CHAT_SUCCESS_ERROR,
@@ -443,10 +444,10 @@ function App(
   // composer's folder picker is hidden: the directory always comes from the
   // project, not a per-conversation pick.
   const [lockedWorkspace, setLockedWorkspace] = useState(false)
-  // Current git branch for the selected workspace folder, or null when not a
-  // git repo (or no folder is selected). Shown as a small badge next to the
-  // folder name in the Interactive / North Star composer.
-  const [gitBranch, setGitBranch] = useState<string | null>(null)
+  const gitStatus = useGitStatus(isChat ? "" : workspace)
+  const gitBranch = gitStatus.status?.isRepo
+    ? (gitStatus.status.branch ?? gitStatus.status.sha ?? null)
+    : null
   const [attachments, setAttachments] = useState<string[]>([])
   const [message, setMessage] = useState("")
   // Agent mode: controls how the agent behaves on workspace views.
@@ -847,39 +848,6 @@ function App(
   useEffect(() => {
     onWorkspaceChange?.(isChat ? "" : workspace.trim())
   }, [workspace, isChat, onWorkspaceChange])
-
-  // Fetch the git branch for the current workspace folder. Clears when the
-  // folder is deselected or when it's not a git repo. Refreshes on focus and on a
-  // lightweight interval so branch switches made in an IDE/terminal update while
-  // the app stays focused on the same conversation.
-  useEffect(() => {
-    const path = workspace.trim()
-    if (!path || isChat) {
-      setGitBranch(null)
-      return
-    }
-    let cancelled = false
-    let refreshSeq = 0
-    const refresh = () => {
-      const seq = ++refreshSeq
-      window.cowork.git
-        .branch(path)
-        .then((branch) => {
-          if (!cancelled && seq === refreshSeq) setGitBranch(branch)
-        })
-        .catch(() => {
-          if (!cancelled && seq === refreshSeq) setGitBranch(null)
-        })
-    }
-    refresh()
-    const interval = window.setInterval(refresh, 2000)
-    window.addEventListener("focus", refresh)
-    return () => {
-      cancelled = true
-      window.clearInterval(interval)
-      window.removeEventListener("focus", refresh)
-    }
-  }, [workspace, isChat])
 
   // The confirmed mentions, in the shape the token helpers consume. Both the
   // overlay (badges) and send-time expansion read this.
