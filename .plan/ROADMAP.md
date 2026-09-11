@@ -7,13 +7,7 @@ item is its plan file; the ordered-list number is its current priority rank.
 
 ## Next up
 
-1. **`091` — Workspace branch switcher and branch creation.** Convert the composer branch badge into an
-   accessible local-branch menu with fresh listing, safe switching, and a **New branch…** modal. Branch
-   switches never force, stash, reset, clean, or discard changes; creation branches atomically from the
-   current `HEAD`, including detached HEAD. Reuse `090`'s repository operation lock, typed errors, error
-   modal, and Git-state refresh event so branch actions cannot race commits, pulls, or pushes and Files/
-   Changes views do not retain stale prior-branch state.
-2. **`045` — North Star MCP bridge for CLI providers.** After `042`, make North Star a second, distinct
+1. **`045` — North Star MCP bridge for CLI providers.** After `042`, make North Star a second, distinct
    MCP role: it remains a client of user-configured external servers, and also hosts a lazy,
    authenticated Streamable HTTP server on an ephemeral `127.0.0.1` port for the Claude Code and Codex
    subprocesses we launch. Inject the endpoint per turn (`claude --mcp-config`; Codex transient `-c`
@@ -29,7 +23,7 @@ item is its plan file; the ordered-list number is its current priority rank.
    it, 4/4 with); `045`'s out-of-scope line is amended to permit exactly that narrow steer.
    **`045.1` remains**: extract the shared `index_query` service, add its adapter, widen the grant, add
    the CLI-provider UI copy, and close the Codex steering gap (no per-run append flag exists).
-3. **`069` — Process intake policies and inspectable assumptions.** Give each Process an explicit run-
+2. **`069` — Process intake policies and inspectable assumptions.** Give each Process an explicit run-
    entry contract instead of injecting a mandatory Planning phase: **Proceed with assumptions**
    (default, no preflight gate), **Approve initial plan** (side-effect-free execution brief + one durable
    approval/revision loop), or **Strict input contract** (definition-authored required fields validated
@@ -38,7 +32,7 @@ item is its plan file; the ordered-list number is its current priority rank.
    assumptions log with origin/confidence/impact/status and monitor UI. Human clarification pauses and
    resumes the correct worker; it remains distinct from internal Agent exchanges (`039`). Split strict
    deterministic intake first, then assumptions/questions, then approve-plan preflight.
-4. **`039` — Inspectable Process consultations / Agent exchanges.** A running phase may consult a
+3. **`039` — Inspectable Process consultations / Agent exchanges.** A running phase may consult a
    **completed phase in the same run** and receive a context-grounded answer. The user observes the
    durable exchange but cannot reply; intervention stays in existing Process controls. Before adding
    consultation, persist an explicit phase result and move downstream aggregation away from "latest
@@ -47,7 +41,7 @@ item is its plan file; the ordered-list number is its current priority rank.
    consultation. v1 is synchronous, same-run, completed-target, capped, and read-only in the monitor;
    discovered defects recommend rework through the existing flag policy rather than silently changing
    completed artifacts. Split `039.1` result integrity, then `039.2` consultation/storage/monitor.
-5. **`032` — Process visual canvas.** The explicitly-deferred half of `026` (which shipped the
+4. **`032` — Process visual canvas.** The explicitly-deferred half of `026` (which shipped the
    **list-based** DAG builder and recorded a **visual node/edge canvas** as "later"). Renderer-first +
    one additive migration; **no engine/scheduling/routing change**. Phases become draggable **nodes**,
    dependencies **edges** drawn between handles (same `on_complete`/`on_each_subtask` trigger, same
@@ -61,14 +55,14 @@ item is its plan file; the ordered-list number is its current priority rank.
    toggle vs replace (lean **coexist**). The Radix-`Dialog` takeover means the inspector keeps
    `NativeSelect` (the `023`/`026` `pointer-events:none` finding). **Live-run-on-canvas deferred** — v1
    keeps the `026` nested-list monitor. Independent of `029`/`031`.
-6. **`010` — Container runtime profiles.** Decouple Workspace (the files) from Runtime (the env a
+5. **`010` — Container runtime profiles.** Decouple Workspace (the files) from Runtime (the env a
    tool call executes in). Replace the raw container `image` string with a named **profile**
    (`node` | `python` | `fullstack`), resolved to an image in the env factory; default/fallback =
    `fullstack` (Node + Python) so a Node repo that later adds a Python backend doesn't wedge.
    One profile per conversation, user-overridable in settings. Kills the "one workspace = one image
    forever" assumption **without** building auto-routing or image management (both deferred). Small
    refactor of `env/factory.ts` + `container.ts` + execution settings (JSON blob — no migration).
-7. **`024` — Index filesystem/git watcher.** The "live file watching" follow-up `008` deferred (and
+6. **`024` — Index filesystem/git watcher.** The "live file watching" follow-up `008` deferred (and
    `014` re-deferred). Today the workspace index — and the compact summary `buildIndexSummary`
    injects into the system prompt on every message send — only refreshes when
    `IndexService.ensureRunning` is called, which fires on conversation create/update or manual
@@ -83,7 +77,7 @@ item is its plan file; the ordered-list number is its current priority rank.
    gated by a new **"Watch workspace for changes"** toggle in the Workspace Indexing settings group
    (global store, no migration). Open Qs: watcher mechanism (`chokidar` vs core `fs.watch` vs
    `@parcel/watcher`), watch scope/lifetime, debounce window, churn backpressure.
-8. **`040` — Index-grounding prompts.** Add a short, always-present line to the Interactive and North
+7. **`040` — Index-grounding prompts.** Add a short, always-present line to the Interactive and North
    Star mode prompts steering the agent to consult `index_query_tool` for cheap orientation (symbols,
    file lists, importers) before broad searches or manual walks, preserving the "advisory, may be stale,
    misses ≠ absent" caveat. Primarily a prompt edit (`interactive-system-prompt.md` /
@@ -155,6 +149,15 @@ item is its plan file; the ordered-list number is its current priority rank.
 
 ## Done
 
+- **`091` — Workspace branch switcher and branch creation.** Completed in this branch. Converted the
+  composer branch badge into an accessible responsive local-branch menu that refreshes on open, marks the
+  current branch, explains detached HEAD, and reports loading/error/empty/truncated states. Added exact,
+  validated, argv-only safe switching and atomic create-and-switch operations that share `090`'s
+  per-repository queue; renderer Git controls also share mutation-busy state. Valid slash/Unicode names and
+  dirty branch creation work, while conflicting switches, invalid/ref-like names, and duplicates fail with
+  bounded errors and no forced cleanup or discard. Successful changes immediately refresh Git status and
+  invalidate/reload Files tree and preview state. Verified with real-Git and focused renderer tests, the
+  full 1,148-test suite, `pnpm typecheck`, and `pnpm build`.
 - **`090` — Workspace Git actions and AI-assisted commits.** Completed in this branch. Added a title-bar
   Git menu with Fetch (`--prune`), fast-forward-only Pull, selected-file Commit, upstream Push, a
   non-pulsing repository-status light (clean/changes/conflict/unavailable), and bounded selectable error

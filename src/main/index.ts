@@ -1063,6 +1063,30 @@ ipcMain.handle("git:status", async (_event, workspace: string) => {
     return null
   }
 })
+ipcMain.handle("git:branches", async (_event, workspace: unknown) => {
+  if (typeof workspace !== "string" || !workspace.trim()) {
+    return { isRepo: false, branches: [], truncated: false }
+  }
+  try {
+    return await new GitService(workspace.trim()).branches()
+  } catch {
+    return { isRepo: false, branches: [], truncated: false }
+  }
+})
+for (const action of ["switchBranch", "createBranch"] as const) {
+  ipcMain.handle(
+    `git:${action}`,
+    async (_event, workspace: unknown, branch: unknown) => {
+      if (typeof workspace !== "string" || !workspace.trim()) {
+        return { ok: false, error: "Choose a workspace first." }
+      }
+      if (typeof branch !== "string") {
+        return { ok: false, error: "Enter a branch name." }
+      }
+      return new GitService(workspace.trim())[action](branch)
+    }
+  )
+}
 for (const action of ["fetch", "pull", "push"] as const) {
   ipcMain.handle(`git:${action}`, async (_event, workspace: unknown) => {
     if (typeof workspace !== "string" || !workspace.trim()) {

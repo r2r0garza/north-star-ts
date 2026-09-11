@@ -20,6 +20,7 @@ import {
 import { Textarea } from "@/components/ui/textarea"
 import type { GitStatusEntry } from "@/types"
 import { useGitStatus } from "@/lib/git-status"
+import { runGitMutation, useGitMutationBusy } from "@/lib/git-operation"
 
 function committable(entry: GitStatusEntry) {
   return entry.kind !== "ignored" && entry.kind !== "unmerged"
@@ -91,6 +92,7 @@ export function GitActions({
       ? "unavailable"
       : repositoryStatus(gitStatus.status.entries)
   const [busy, setBusy] = React.useState<"fetch" | "pull" | "push" | null>(null)
+  const mutationBusy = useGitMutationBusy(workspace)
   const [commitOpen, setCommitOpen] = React.useState(false)
   const [error, setError] = React.useState<{
     title: string
@@ -100,7 +102,9 @@ export function GitActions({
   const action = async (kind: "fetch" | "pull" | "push") => {
     setBusy(kind)
     try {
-      const result = await window.cowork.git[kind](workspace)
+      const result = await runGitMutation(workspace, () =>
+        window.cowork.git[kind](workspace)
+      )
       if (!result.ok)
         setError({
           title: `${kind[0].toUpperCase()}${kind.slice(1)} failed`,
@@ -127,7 +131,7 @@ export function GitActions({
           <DropdownMenuTrigger asChild>
             <button
               type="button"
-              disabled={repoStatus === "unavailable" || !!busy}
+              disabled={repoStatus === "unavailable" || mutationBusy}
               title={
                 repoStatus === "unavailable"
                   ? "This folder is not a Git repository"
@@ -202,6 +206,7 @@ function CommitDialog({
     let cancelled = false
     setLoading(true)
     setAiError(null)
+    setMessage("")
     void window.cowork.git
       .status(workspace)
       .then((status) => {
@@ -252,10 +257,8 @@ function CommitDialog({
   const commit = async () => {
     setCommitting(true)
     try {
-      const result = await window.cowork.git.commit(
-        workspace,
-        [...selected],
-        message
+      const result = await runGitMutation(workspace, () =>
+        window.cowork.git.commit(workspace, [...selected], message)
       )
       if (!result.ok) {
         onError({ title: "Commit failed", message: result.error })

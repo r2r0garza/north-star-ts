@@ -9,6 +9,8 @@ const GIT_TIMEOUT_MS = 5_000
 const GIT_NETWORK_TIMEOUT_MS = 30_000
 const MAX_OUTPUT_BYTES = 512 * 1024
 const MAX_COMMIT_MESSAGE_LENGTH = 10_000
+const MAX_BRANCH_NAME_LENGTH = 255
+const MAX_BRANCHES = 200
 
 const repositoryOperations = new Map<string, Promise<void>>()
 const DEFAULT_LOG_LIMIT = 20
@@ -99,7 +101,12 @@ export type GitCommitResult =
   | { ok: true; sha: string; subject: string }
   | { ok: false; error: string }
 
+export type GitBranchActionResult =
+  | { ok: true; branch: string }
+  | { ok: false; error: string }
+
 export const GIT_COMMIT_MESSAGE_MAX_LENGTH = MAX_COMMIT_MESSAGE_LENGTH
+export const GIT_BRANCH_NAME_MAX_LENGTH = MAX_BRANCH_NAME_LENGTH
 
 type RepoInfo =
   | { isRepo: false }
@@ -297,6 +304,7 @@ export class GitService {
     const res = await this.git(
       [
         "for-each-ref",
+        `--count=${MAX_BRANCHES + 1}`,
         "--format=%(refname:short)\t%(upstream:short)",
         "refs/heads",
       ],
@@ -315,12 +323,25 @@ export class GitService {
           ...(upstream ? { upstream } : {}),
         }
       })
+    if (
+      repo.branch &&
+      !branches.some((branch) => branch.name === repo.branch)
+    ) {
+      branches.push({ name: repo.branch, current: true })
+    }
+    branches.sort((a, b) => {
+      if (a.current !== b.current) return a.current ? -1 : 1
+      return (
+        a.name.localeCompare(b.name, undefined, { sensitivity: "base" }) ||
+        a.name.localeCompare(b.name)
+      )
+    })
     return {
       isRepo: true,
       current: repo.branch ?? repo.sha,
       detached: repo.detached,
-      branches,
-      truncated: !!res.outputTruncated,
+      branches: branches.slice(0, MAX_BRANCHES),
+      truncated: branches.length > MAX_BRANCHES || !!res.outputTruncated,
     }
   }
 
@@ -328,6 +349,26 @@ export class GitService {
     const repo = await this.repoInfo()
     if (!repo.isRepo) return null
     return repo.branch ?? repo.sha ?? null
+  }
+
+  async switchBranch(name: string): Promise<GitBranchActionResult> {
+    return this.runBranchOperation(async (repo, branch) => {
+      if (!(await this.localBranchExists(repo.root, branch))) {
+        throw new Error(`Local branch '${branch}' does not exist.`)
+      }
+      await this.git(["switch", "--", branch], repo.root)
+      return branch
+    }, name)
+  }
+
+  async createBranch(name: string): Promise<GitBranchActionResult> {
+    return this.runBranchOperation(async (repo, branch) => {
+      if (await this.localBranchExists(repo.root, branch)) {
+        throw new Error(`Local branch '${branch}' already exists.`)
+      }
+      await this.git(["switch", "-c", branch], repo.root)
+      return branch
+    }, name)
   }
 
   async fetch(): Promise<GitActionResult> {
@@ -416,6 +457,87 @@ export class GitService {
         return { ok: false, error: sanitizeGitError(err) }
       }
     })
+  }
+
+  private async runBranchOperation(
+    operation: (
+      repo: Extract<RepoInfo, { isRepo: true }>,
+      branch: string
+    ) => Promise<string>,
+    name: string
+  ): Promise<GitBranchActionResult> {
+    let repo: RepoInfo
+    try {
+      repo = await this.repoInfo()
+    } catch (err) {
+      return { ok: false, error: sanitizeGitError(err) }
+    }
+    if (!repo.isRepo)
+      return { ok: false, error: "This folder is not a Git repository." }
+    return this.withRepositoryOperation(repo.root, async () => {
+      try {
+        const freshRepo = await this.repoInfo()
+        if (!freshRepo.isRepo || freshRepo.root !== repo.root) {
+          throw new Error("Repository state changed.")
+        }
+        const branch = await this.validateBranchName(freshRepo.root, name)
+        const expected = await operation(freshRepo, branch)
+        const result = await this.repoInfo()
+        if (
+          !result.isRepo ||
+          result.root !== freshRepo.root ||
+          result.detached ||
+          result.branch !== expected
+        ) {
+          throw new Error(
+            "Git changed HEAD but did not attach the requested branch."
+          )
+        }
+        return { ok: true, branch: result.branch }
+      } catch (err) {
+        return { ok: false, error: sanitizeGitError(err) }
+      }
+    })
+  }
+
+  private async validateBranchName(
+    root: string,
+    value: string
+  ): Promise<string> {
+    if (typeof value !== "string") throw new Error("Enter a branch name.")
+    const branch = value.trim()
+    if (!branch) throw new Error("Enter a branch name.")
+    if (branch.length > MAX_BRANCH_NAME_LENGTH) {
+      throw new Error(
+        `Branch names must be at most ${MAX_BRANCH_NAME_LENGTH} characters.`
+      )
+    }
+    if (
+      branch.startsWith("-") ||
+      branch.startsWith("refs/") ||
+      /[\0-\x1f\x7f]/.test(branch)
+    ) {
+      throw new Error("Invalid branch name.")
+    }
+    const result = await this.git(
+      ["check-ref-format", "--branch", branch],
+      root,
+      { allowExitCodes: [0, 128] }
+    )
+    if (result.exitCode !== 0) throw new Error("Invalid branch name.")
+    return branch
+  }
+
+  private async localBranchExists(
+    root: string,
+    branch: string
+  ): Promise<boolean> {
+    const result = await this.git(
+      ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`],
+      root,
+      { allowExitCodes: [0, 1] }
+    )
+    return result.exitCode === 0
   }
 
   private async runAction(

@@ -39,6 +39,9 @@ export type { PickedElement } from "../../preload/index"
 export type {
   GitAction,
   GitActionResult,
+  GitBranchActionResult,
+  GitBranchEntry,
+  GitBranchesResult,
   GitCommitResult,
   GitDiffResult,
   GitStatusEntry,

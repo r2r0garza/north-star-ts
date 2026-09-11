@@ -18,7 +18,6 @@ import {
   ClipboardList,
   FileText,
   FolderOpen,
-  GitBranch,
   Hand,
   MousePointerClick,
   Plus,
@@ -67,6 +66,7 @@ import {
 } from "@/components/ui/attachment"
 import { ToolGroup, ApprovalCard } from "@/components/tool-group"
 import { ChangedFilesBar } from "@/components/changed-files-bar"
+import { GitBranchSwitcher } from "@/components/git-branch-switcher"
 import { QuestionPanel } from "@/components/question-panel"
 import { applyStreamAttempt } from "@/lib/live-stream"
 import {
@@ -2355,22 +2355,11 @@ function App(
                     )}
                   </button>
                 )}
-                {gitBranch && !rightPanelOpen && (
-                  <span
-                    title={gitBranch}
-                    className="flex items-center gap-1 rounded bg-accent px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground"
-                  >
-                    <GitBranch className="size-3 shrink-0" />
-                    <span>{gitBranch}</span>
-                  </span>
-                )}
-                {gitBranch && rightPanelOpen && (
-                  <span
-                    title={gitBranch}
-                    className="flex items-center rounded bg-accent p-1 text-muted-foreground"
-                  >
-                    <GitBranch className="size-3" />
-                  </span>
+                {gitBranch && (
+                  <GitBranchSwitcher
+                    workspace={workspace}
+                    compact={rightPanelOpen}
+                  />
                 )}
               </>
             )}

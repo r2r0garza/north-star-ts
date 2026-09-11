@@ -21,6 +21,10 @@ function git(repo: string, ...args: string[]) {
   return execFileSync("git", args, { cwd: repo, stdio: "ignore" })
 }
 
+function gitOutput(repo: string, ...args: string[]) {
+  return execFileSync("git", args, { cwd: repo }).toString().trim()
+}
+
 describe.skipIf(!gitAvailable)("GitService", () => {
   let repo: string
   let plain: string
@@ -145,6 +149,90 @@ describe.skipIf(!gitAvailable)("GitService", () => {
 
     const branches = await service.branches()
     expect(branches.branches.some((b) => b.current)).toBe(true)
+  })
+
+  it("sorts the current branch first and caps branch listings", async () => {
+    git(repo, "branch", "zebra")
+    git(repo, "branch", "Alpha")
+    for (let index = 0; index < 205; index++) {
+      git(repo, "branch", `many/${String(index).padStart(3, "0")}`)
+    }
+
+    const branches = await new GitService(repo).branches()
+
+    expect(branches.branches).toHaveLength(200)
+    expect(branches.branches[0].current).toBe(true)
+    expect(branches.truncated).toBe(true)
+    expect(branches.branches.slice(1, 3).map((branch) => branch.name)).toEqual([
+      "Alpha",
+      "many/000",
+    ])
+  })
+
+  it("switches safely between exact local branches", async () => {
+    git(repo, "branch", "feature/safe")
+
+    await expect(
+      new GitService(repo).switchBranch("feature/safe")
+    ).resolves.toEqual({
+      ok: true,
+      branch: "feature/safe",
+    })
+    expect(gitOutput(repo, "branch", "--show-current")).toBe("feature/safe")
+  })
+
+  it("refuses a switch that would overwrite work without changing HEAD or files", async () => {
+    git(repo, "switch", "-c", "other")
+    writeFileSync(join(repo, "tracked.txt"), "other branch\n")
+    git(repo, "commit", "-am", "other")
+    git(repo, "switch", "-")
+    writeFileSync(join(repo, "tracked.txt"), "local work\n")
+    const before = gitOutput(repo, "rev-parse", "HEAD")
+
+    const result = await new GitService(repo).switchBranch("other")
+
+    expect(result).toMatchObject({ ok: false })
+    expect(gitOutput(repo, "rev-parse", "HEAD")).toBe(before)
+    expect(gitOutput(repo, "branch", "--show-current")).not.toBe("other")
+    expect(execFileSync("cat", [join(repo, "tracked.txt")]).toString()).toBe(
+      "local work\n"
+    )
+  })
+
+  it("creates slash and Unicode branches from attached and detached HEAD", async () => {
+    const attached = await new GitService(repo).createBranch("feature/café")
+    expect(attached).toEqual({ ok: true, branch: "feature/café" })
+
+    git(repo, "checkout", "--detach", "HEAD")
+    const detached = await new GitService(repo).createBranch("rescue/détaché")
+    expect(detached).toEqual({ ok: true, branch: "rescue/détaché" })
+  })
+
+  it("rejects invalid, duplicate, remote, and revision-like branch names", async () => {
+    git(repo, "branch", "existing")
+    const service = new GitService(repo)
+
+    for (const name of [
+      "",
+      "-option",
+      "bad\0name",
+      "bad\nname",
+      "HEAD~1",
+      "refs/remotes/origin/main",
+      "a".repeat(256),
+    ]) {
+      await expect(service.createBranch(name)).resolves.toMatchObject({
+        ok: false,
+      })
+    }
+    await expect(service.createBranch("existing")).resolves.toEqual({
+      ok: false,
+      error: "Local branch 'existing' already exists.",
+    })
+    await expect(service.switchBranch("origin/main")).resolves.toEqual({
+      ok: false,
+      error: "Local branch 'origin/main' does not exist.",
+    })
   })
 
   it("commits selected complete files while preserving unrelated staged work", async () => {

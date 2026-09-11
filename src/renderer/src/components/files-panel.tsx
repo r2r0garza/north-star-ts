@@ -903,6 +903,31 @@ export function FilesPanel({
 
   React.useEffect(() => {
     if (!workspace) return
+    const onGitStateChanged = (event: Event) => {
+      const detail = (
+        event as CustomEvent<{ workspace?: string; reason?: string }>
+      ).detail
+      if (
+        detail?.workspace !== workspace ||
+        (detail.reason !== "branch-switched" &&
+          detail.reason !== "branch-created")
+      )
+        return
+      requestVersion.current += 1
+      gitStatusSnapshot.current = null
+      setDirectories({})
+      setExpanded(new Set())
+      setPreviewRevision((revision) => revision + 1)
+      setGitRevision((revision) => revision + 1)
+      void loadDirectory("", true)
+    }
+    window.addEventListener("git-state-changed", onGitStateChanged)
+    return () =>
+      window.removeEventListener("git-state-changed", onGitStateChanged)
+  }, [loadDirectory, workspace])
+
+  React.useEffect(() => {
+    if (!workspace) return
     const subscription = window.cowork.files.onDidChange(workspace, (event) => {
       const cachedPaths = Object.keys(directoriesRef.current)
       const affected = affectedCachedDirectories(

@@ -43,6 +43,8 @@ import type { PickedElement } from "../main/browser/types"
 import type { GitDiffResult } from "../main/git/diff"
 import type {
   GitActionResult,
+  GitBranchActionResult,
+  GitBranchesResult,
   GitCommitResult,
   GitStatusResult,
 } from "../main/git/service"
@@ -670,6 +672,23 @@ const api = {
         "git:status",
         workspace
       ) as Promise<GitStatusResult | null>,
+    branches: (workspace: string) =>
+      ipcRenderer.invoke(
+        "git:branches",
+        workspace
+      ) as Promise<GitBranchesResult>,
+    switchBranch: (workspace: string, branch: string) =>
+      ipcRenderer.invoke(
+        "git:switchBranch",
+        workspace,
+        branch
+      ) as Promise<GitBranchActionResult>,
+    createBranch: (workspace: string, branch: string) =>
+      ipcRenderer.invoke(
+        "git:createBranch",
+        workspace,
+        branch
+      ) as Promise<GitBranchActionResult>,
     // Working-tree diff for one workspace-relative file (backs the changed-file
     // pills). Null when not a git repo; { diff: "" } when tracked but unchanged.
     diff: (workspace: string, relPath: string) =>
@@ -1878,6 +1897,9 @@ export type { GitDiffResult } from "../main/git/diff"
 export type {
   GitAction,
   GitActionResult,
+  GitBranchActionResult,
+  GitBranchEntry,
+  GitBranchesResult,
   GitCommitResult,
   GitStatusEntry,
   GitStatusResult,

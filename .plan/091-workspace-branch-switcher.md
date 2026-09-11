@@ -1,6 +1,14 @@
 # PR91: Workspace branch switcher and branch creation
 
-> Status: **PLANNED**. Turn the composer branch badge into an accessible branch menu that lists local branches, switches safely between them, and creates a new local branch through a confirmation modal.
+> Status: **COMPLETED**. The composer branch badge is now an accessible local-branch menu with safe serialized switching, atomic branch creation, bounded validation/errors, and explicit Git/Files refresh.
+
+## Completed implementation
+
+- `GitService.branches()` now returns at most 200 deterministically sorted local branches with the current branch first and an explicit truncation signal. `switchBranch()` and `createBranch()` validate names with Git, reject explicit ref namespaces and option-like/control input, verify exact local-ref existence, reuse the existing per-repository mutation queue, execute argv-only `git switch`, and verify the resulting attached HEAD.
+- Narrow `git:branches`, `git:switchBranch`, and `git:createBranch` IPC/preload methods expose only the intended operations. No generic Git command or agent mutation tool was added.
+- The static composer badge was replaced with an accessible responsive trigger. Its menu refreshes on every open, marks/disables the current branch, explains detached HEAD, and represents loading, unavailable, empty, error, and truncated states. **New branch…** opens a focused modal with inline validation and duplicate detection.
+- Renderer Git mutations share a busy coordinator so Fetch/Pull/Push/Commit and branch controls disable together while the main-process repository queue provides authoritative serialization. Successful branch changes emit the existing Git-state refresh event with workspace/reason details; the Files panel clears its tree/preview caches before reloading so prior-branch content is not retained.
+- Verified with real-Git integration coverage for bounded listing, exact switching, dirty-worktree refusal without mutation, attached/detached creation, Unicode/slash names, and invalid/duplicate/remote-like names; focused renderer tests; the full 1,148-test suite; `pnpm typecheck`; and `pnpm build`.
 
 ## Goal
 
