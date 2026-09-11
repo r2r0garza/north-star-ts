@@ -103,6 +103,7 @@ import { DashboardService, DASHBOARD_REFRESH_KIND } from "./dashboards/service"
 import { registerDashboardHandlers } from "./ipc/dashboard-handlers"
 import { BrowserManager } from "./browser/manager"
 import { registerTerminalHandlers } from "./ipc/terminal-handlers"
+import { registerFileWatchHandlers } from "./ipc/file-handlers"
 import { TerminalService } from "./terminal/service"
 import { closeDb } from "./db/connection"
 import {
@@ -1219,6 +1220,7 @@ app.whenReady().then(async () => {
   registerIndexHandlers(taskRunner, indexService)
   registerDashboardHandlers(taskRunner, dashboardService)
   registerTerminalHandlers(terminalService)
+  registerFileWatchHandlers()
   // Materialize the user-level skills dir (~/.<system>/skills) and, on first
   // launch only, seed it with the app-bundled skills so users get editable
   // copies of the built-ins.

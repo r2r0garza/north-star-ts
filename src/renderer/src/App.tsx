@@ -111,6 +111,13 @@ import {
   chatResultNotification,
   isUnexpectedEmptyChatSuccess,
 } from "@/lib/chat-result"
+import {
+  INITIAL_AGENT_MODE_SESSION,
+  adoptDraftAgentMode,
+  agentModeFor,
+  setConversationAgentMode,
+  type AgentMode,
+} from "@/lib/agent-mode"
 import type {
   Question,
   QuestionAnswer,
@@ -449,11 +456,25 @@ function App(
   //               for approval before touching the workspace.
   //   "auto"    — like "default" but all gated actions are auto-approved (no
   //               confirmation prompts).
-  // Session-only (NOT persisted) — resets on reload/restart. Cleared back to
-  // "default" when a plan is approved (plan_mode event), but NOT cleared when
-  // "auto" is activated (auto_mode event).
-  type AgentMode = "default" | "plan" | "auto"
-  const [agentMode, setAgentMode] = useState<AgentMode>("default")
+  // Session-only (NOT persisted) — resets on reload/restart, but each conversation
+  // retains its own selection while the app remains open. A not-yet-created
+  // conversation uses `draft`; that selection is adopted when first send creates
+  // its durable conversation ID.
+  const [agentModeSession, setAgentModeSession] = useState(
+    INITIAL_AGENT_MODE_SESSION
+  )
+  const agentMode = agentModeFor(agentModeSession, conversationId)
+  const setAgentModeFor = useCallback(
+    (
+      targetConversationId: string | null,
+      update: AgentMode | ((current: AgentMode) => AgentMode)
+    ) => {
+      setAgentModeSession((session) =>
+        setConversationAgentMode(session, targetConversationId, update)
+      )
+    },
+    []
+  )
   // Elements the user picked in the agent browser ("point at this button"). More
   // than one can accumulate — via the sticky picker button or Alt/Option+click on
   // a live page — so several can be sent in ONE turn. Held as pending chips above
@@ -680,11 +701,10 @@ function App(
       justCreatedRef.current = null
       return
     }
-    // A genuine switch to (or reset from) another conversation: agent mode is
-    // session-only and per-conversation, so clear it. This runs AFTER the
-    // just-created guard above, so promoting a fresh conversation mid-send (which
-    // changes conversationId) does NOT clear the agent mode the turn was sent with.
-    setAgentMode("default")
+    // Existing conversations retain their session-scoped mode while offscreen.
+    // A fresh draft has no durable identity to restore, so each newly opened blank
+    // conversation begins in Default until the user selects another mode.
+    if (!conversationId) setAgentModeFor(null, "default")
     // Switching to a different conversation no longer wipes any live state: each
     // streaming turn's text/tools/approval/question is held per-conversation in
     // `liveTurns` and rendered by looking up the id on screen. Leaving a turn that
@@ -762,7 +782,7 @@ function App(
     return () => {
       cancelled = true
     }
-  }, [conversationId, pendingProjectId])
+  }, [conversationId, pendingProjectId, setAgentModeFor])
 
   // Fetch the skill catalog for the slash menu. Extracted so it can be re-run on
   // demand (see below): the main process reads skills fresh from disk every turn,
@@ -1221,7 +1241,7 @@ function App(
   // toggled onto a running turn (it gates the toolset at turn start), so only the
   // Auto flag is propagated — mode still updates locally for the next turn.
   function changeAgentMode(mode: AgentMode) {
-    setAgentMode(mode)
+    setAgentModeFor(conversationId, mode)
     if (loading && conversationId) {
       void window.cowork.chatSetAutoMode(conversationId, mode === "auto")
     }
@@ -1294,6 +1314,7 @@ function App(
       })
       convoId = convo.id
       isNew = true
+      setAgentModeSession((session) => adoptDraftAgentMode(session, convo.id))
     }
 
     // From here, treat `convoId` as a non-null local so the guards below read
@@ -1439,18 +1460,20 @@ function App(
             // Only the backend knows whether the configured execution environment
             // started successfully, so reflect its confirmed state instead of
             // optimistically clearing the toggle when approval is submitted.
-            // When plan mode turns off and we're still in "plan" mode (not "auto"),
-            // reset to "default". If auto_mode already fired this event cycle,
-            // agentMode is already "auto" — leave it alone.
+            // Apply backend transitions to the conversation that produced the
+            // event, even if the user has switched elsewhere while its turn runs.
+            // When plan mode turns off, preserve Auto if auto_mode already fired.
             if (!event.enabled) {
-              setAgentMode((prev) => (prev === "plan" ? "default" : prev))
+              setAgentModeFor(turnConvoId, (mode) =>
+                mode === "plan" ? "default" : mode
+              )
             } else {
-              setAgentMode("plan")
+              setAgentModeFor(turnConvoId, "plan")
             }
           } else if (event.type === "auto_mode") {
-            // The user approved the plan with "Auto mode" — activate auto for
-            // the remainder of this turn and beyond (until conversation switch).
-            if (event.enabled) setAgentMode("auto")
+            // The user approved the plan with Auto mode — retain that selection
+            // for this conversation for the remainder of the app session.
+            if (event.enabled) setAgentModeFor(turnConvoId, "auto")
           } else if (event.type === "command_wait") {
             updateLive(turnConvoId, (turn) => ({
               ...turn,
@@ -1796,7 +1819,7 @@ function App(
     )?.account.provider
     const isCli = cli === "claude_code" || cli === "codex_cli"
     if (isCli) {
-      setAgentMode("default")
+      setAgentModeFor(conversationId, "default")
       setSelAgentName(null)
     }
     if (conversationId) {
@@ -2388,7 +2411,8 @@ function App(
             {rightPanelOpen && modelPickerCompact}
             {!effectiveIsCli && !rightPanelOpen && agentPicker}
             {!effectiveIsCli && rightPanelOpen && agentPickerCompact}
-            {/* Agent mode dropdown. Session-only. "Default" = normal; "Plan" =
+            {/* Agent mode dropdown. Per-conversation for this app session.
+                "Default" = normal; "Plan" =
                 read-only planning turn until approved; "Auto" = all gated
                 actions auto-approved. Chat offers only Default/Auto — plan mode
                 needs the workspace toolset. In Chat a stale "plan" (carried from

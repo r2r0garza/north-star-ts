@@ -203,6 +203,12 @@ export type SkillSummary = {
 // A custom agent as surfaced to the composer's agent picker — just what the
 // dropdown needs to display and match on. The full definition (body, tools,
 // skills, children) stays in the main process and is resolved per turn.
+export type WorkspaceFilesChangedEvent = {
+  workspace: string
+  paths: string[]
+  overflow?: boolean
+}
+
 export type AgentSummary = {
   ref: string
   refId: string
@@ -222,6 +228,7 @@ export type AgentSummary = {
   diagnostics: Array<{ severity: string; code: string; message: string }>
 }
 
+let fileWatchSubscriptionId = 0
 let terminalSubscriptionCount = 0
 function retainTerminalSubscription(): void {
   if (terminalSubscriptionCount++ === 0) {
@@ -621,6 +628,32 @@ const api = {
         error: string | null
         kind?: "text" | "binary"
       }>,
+    onDidChange: (
+      workspace: string,
+      cb: (event: WorkspaceFilesChangedEvent) => void
+    ) => {
+      const subscriptionId = ++fileWatchSubscriptionId
+      const listener = (
+        _event: IpcRendererEvent,
+        payload: WorkspaceFilesChangedEvent
+      ) => {
+        if (payload.workspace === workspace) cb(payload)
+      }
+      ipcRenderer.on("files:changed", listener)
+      void ipcRenderer.invoke("files:watch", workspace, subscriptionId)
+      return {
+        updateDirectories: (directories: string[]) =>
+          ipcRenderer.invoke(
+            "files:watchDirectories",
+            subscriptionId,
+            directories
+          ) as Promise<void>,
+        unsubscribe: () => {
+          ipcRenderer.removeListener("files:changed", listener)
+          void ipcRenderer.invoke("files:unwatch", subscriptionId)
+        },
+      }
+    },
   },
   // Read the current git branch for a workspace folder. Resolves with the
   // branch name, a short detached-HEAD SHA, or null when not a git repo.

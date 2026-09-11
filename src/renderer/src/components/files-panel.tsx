@@ -46,6 +46,11 @@ import type { IconType } from "react-icons"
 import { DiffView } from "@/components/diff-view"
 import type { GitDiffResult, GitStatusEntry } from "@/types"
 import { buildFileGutterAnnotations } from "@/lib/file-gutter"
+import {
+  affectedCachedDirectories,
+  parentDirectory,
+  pathAffectsSelection,
+} from "@/lib/files-live-refresh"
 import { placeSelectionPopover } from "@/lib/selection-popover"
 import { cn } from "@/lib/utils"
 
@@ -524,9 +529,11 @@ const FilePreviewContents = React.memo(function FilePreviewContents({
               "after:absolute after:bottom-0 after:-left-px after:size-0 after:border-y-[3px] after:border-r-0 after:border-l-[5px] after:border-y-transparent after:border-l-red-500 after:content-['']"
           )}
         />
-        <span className="sticky left-0 mr-3 bg-sidebar pr-1 text-right text-muted-foreground select-none">
-          {lineNumber}
-        </span>
+        <span
+          aria-label={`Line ${lineNumber}`}
+          data-line-number={lineNumber}
+          className="sticky left-0 mr-3 bg-sidebar pr-1 text-right text-muted-foreground select-none before:content-[attr(data-line-number)]"
+        />
         {highlightedLines ? (
           <span
             className="hljs min-w-0 break-words whitespace-pre-wrap"
@@ -547,10 +554,12 @@ const FilePreviewContents = React.memo(function FilePreviewContents({
 function FilePreview({
   workspace,
   path,
+  revision,
   onAddSelection,
 }: {
   workspace: string
   path: string | null
+  revision: number
   onAddSelection: (selection: FileSelection) => void
 }) {
   const previewRef = React.useRef<HTMLDivElement>(null)
@@ -655,7 +664,7 @@ function FilePreview({
     return () => {
       cancelled = true
     }
-  }, [hidePopover, path, workspace])
+  }, [hidePopover, path, revision, workspace])
 
   React.useEffect(() => {
     if (!path || !workspace) {
@@ -676,7 +685,7 @@ function FilePreview({
     return () => {
       cancelled = true
     }
-  }, [path, workspace])
+  }, [path, revision, workspace])
 
   React.useLayoutEffect(() => {
     if (showChanges) {
@@ -802,6 +811,12 @@ export function FilesPanel({
 }) {
   const rootRef = React.useRef<HTMLDivElement>(null)
   const requestVersion = React.useRef(0)
+  const directoriesRef = React.useRef<Record<string, DirectoryState>>({})
+  const selectedPathRef = React.useRef(selectedPath)
+  const fileWatchRef = React.useRef<{
+    updateDirectories: (directories: string[]) => Promise<void>
+    unsubscribe: () => void
+  } | null>(null)
   const treeWidthRef = React.useRef(readTreeWidth())
   const [directories, setDirectories] = React.useState<
     Record<string, DirectoryState>
@@ -810,11 +825,16 @@ export function FilesPanel({
   const [statuses, setStatuses] = React.useState<GitStatusEntry[]>([])
   const [treeWidth, setTreeWidth] = React.useState(treeWidthRef.current)
   const [panelWidth, setPanelWidth] = React.useState(0)
+  const [previewRevision, setPreviewRevision] = React.useState(0)
+
+  directoriesRef.current = directories
+  selectedPathRef.current = selectedPath
 
   const loadDirectory = React.useCallback(
     async (path: string, force = false) => {
       if (!workspace) return
-      if (!force && directories[path] && !directories[path].error) return
+      const cached = directoriesRef.current[path]
+      if (!force && cached && !cached.error) return
       const version = requestVersion.current
       setDirectories((current) => ({
         ...current,
@@ -845,7 +865,7 @@ export function FilesPanel({
         }))
       }
     },
-    [directories, workspace]
+    [workspace]
   )
 
   React.useEffect(() => {
@@ -865,6 +885,62 @@ export function FilesPanel({
     // loadDirectory intentionally only initiates a fresh root request on workspace changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspace])
+
+  React.useEffect(() => {
+    if (!workspace) return
+    const subscription = window.cowork.files.onDidChange(workspace, (event) => {
+      const cachedPaths = Object.keys(directoriesRef.current)
+      const affected = affectedCachedDirectories(
+        event.paths,
+        cachedPaths,
+        event.overflow
+      )
+      for (const path of affected) void loadDirectory(path, true)
+
+      const selected = selectedPathRef.current
+      if (
+        selected &&
+        (event.overflow ||
+          event.paths.some((path) => pathAffectsSelection(path, selected)))
+      ) {
+        setPreviewRevision((revision) => revision + 1)
+      }
+
+      const version = requestVersion.current
+      void window.cowork.git.status(workspace).then((result) => {
+        if (version !== requestVersion.current) return
+        if (result?.isRepo) setStatuses(result.entries)
+        else setStatuses([])
+      })
+    })
+    fileWatchRef.current = subscription
+    void subscription.updateDirectories(Object.keys(directoriesRef.current))
+    return () => {
+      if (fileWatchRef.current === subscription) fileWatchRef.current = null
+      subscription.unsubscribe()
+    }
+  }, [loadDirectory, workspace])
+
+  const watchedDirectoriesKey = Object.keys(directories).sort().join("\0")
+  React.useEffect(() => {
+    void fileWatchRef.current?.updateDirectories(
+      watchedDirectoriesKey ? watchedDirectoriesKey.split("\0") : []
+    )
+  }, [watchedDirectoriesKey])
+
+  React.useEffect(() => {
+    if (!selectedPath) return
+    const parent = directories[parentDirectory(selectedPath)]
+    if (
+      parent &&
+      !parent.loading &&
+      !parent.error &&
+      !parent.truncated &&
+      !parent.entries.some((entry) => entry.path === selectedPath)
+    ) {
+      onSelectedPathChange(null)
+    }
+  }, [directories, onSelectedPathChange, selectedPath])
 
   React.useEffect(() => {
     const element = rootRef.current
@@ -897,16 +973,15 @@ export function FilesPanel({
   }
   const refresh = () => {
     requestVersion.current += 1
-    setDirectories({})
-    setExpanded(new Set())
-    onSelectedPathChange(null)
-    setStatuses([])
     const version = requestVersion.current
-    void loadDirectory("", true)
+    const cachedPaths = Object.keys(directoriesRef.current)
+    for (const path of cachedPaths.length ? cachedPaths : [""]) {
+      void loadDirectory(path, true)
+    }
     void window.cowork.git.status(workspace).then((result) => {
-      if (version === requestVersion.current && result?.isRepo) {
-        setStatuses(result.entries)
-      }
+      if (version !== requestVersion.current) return
+      if (result?.isRepo) setStatuses(result.entries)
+      else setStatuses([])
     })
   }
   const resize = (next: number) => {
@@ -926,6 +1001,7 @@ export function FilesPanel({
         <FilePreview
           workspace={workspace}
           path={selectedPath}
+          revision={previewRevision}
           onAddSelection={onAddSelection}
         />
       </div>

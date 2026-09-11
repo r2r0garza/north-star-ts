@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
     (listener: (payload: { conversationIds: string[] }) => void) => () => void
   >(() => vi.fn()),
   subscribeTodoChanges: vi.fn(() => vi.fn()),
+  watchWorkspaceFiles: vi.fn(),
 }))
 
 vi.mock("electron", () => ({
@@ -55,6 +56,10 @@ vi.mock("../db/repositories", () => ({
   dashboards: {},
 }))
 
+vi.mock("../files/watcher", () => ({
+  watchWorkspaceFiles: mocks.watchWorkspaceFiles,
+}))
+
 vi.mock("../tasks/todo-run", () => ({
   TODO_RUN_KICKOFF: "kickoff",
   actionableTodos: vi.fn(() => []),
@@ -64,6 +69,7 @@ vi.mock("../tasks/todo-run", () => ({
 
 import { registerTaskHandlers } from "./task-handlers"
 import { registerTerminalHandlers } from "./terminal-handlers"
+import { registerFileWatchHandlers } from "./file-handlers"
 import { registerDbHandlers } from "./db-handlers"
 
 class FakeWebContents extends EventEmitter {
@@ -82,6 +88,7 @@ beforeEach(() => {
   mocks.setConversationTitleIfUntitled.mockReset()
   mocks.subscribeConversationChanges.mockReset().mockReturnValue(vi.fn())
   mocks.subscribeTodoChanges.mockReset().mockReturnValue(vi.fn())
+  mocks.watchWorkspaceFiles.mockReset()
 })
 
 describe("WebContents subscription lifecycle", () => {
@@ -107,6 +114,44 @@ describe("WebContents subscription lifecycle", () => {
       expect(sender.listenerCount("destroyed")).toBe(0)
       expect(terminals.listenerCount("data")).toBe(0)
     }
+  })
+
+  it("forwards file changes and only removes the matching subscription", async () => {
+    const closeFirst = vi.fn()
+    const closeSecond = vi.fn()
+    const updateDirectories = vi.fn()
+    let publish:
+      | ((payload: { workspace: string; paths: string[] }) => void)
+      | undefined
+    mocks.watchWorkspaceFiles
+      .mockImplementationOnce(async (_workspace, listener) => {
+        publish = listener
+        return { close: closeFirst, updateDirectories }
+      })
+      .mockResolvedValueOnce({ close: closeSecond, updateDirectories })
+    registerFileWatchHandlers()
+
+    const sender = new FakeWebContents()
+    const subscribe = mocks.handlers.get("files:watch")!
+    const update = mocks.handlers.get("files:watchDirectories")!
+    const unsubscribe = mocks.handlers.get("files:unwatch")!
+
+    await subscribe({ sender }, "/workspace-a", 1)
+    await update({ sender }, 1, ["", "src"])
+    expect(updateDirectories).toHaveBeenCalledWith(["", "src"])
+    publish?.({ workspace: "/workspace-a", paths: ["src/a.ts"] })
+    expect(sender.send).toHaveBeenCalledWith("files:changed", {
+      workspace: "/workspace-a",
+      paths: ["src/a.ts"],
+    })
+
+    await subscribe({ sender }, "/workspace-b", 2)
+    expect(closeFirst).toHaveBeenCalledOnce()
+    await unsubscribe({ sender }, 1)
+    expect(closeSecond).not.toHaveBeenCalled()
+    await unsubscribe({ sender }, 2)
+    expect(closeSecond).toHaveBeenCalledOnce()
+    expect(sender.listenerCount("destroyed")).toBe(0)
   })
 
   it("removes task destroyed listeners on every explicit unsubscribe", () => {
