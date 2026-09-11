@@ -32,7 +32,6 @@ import {
 } from "@/components/terminal-drawer"
 import { Toaster } from "@/components/ui/sonner"
 import type { Mode, Task } from "@/types"
-import type { ChangedFile } from "@/lib/timeline"
 import { maybeNotify, refreshNotificationSettings } from "@/lib/notify"
 import { applyThemeCss } from "@/lib/theme"
 import { cn } from "@/lib/utils"
@@ -203,14 +202,8 @@ function Shell() {
     if (!terminalAvailable) return
     setTerminalOpenForActive((open) => !open)
   }, [setTerminalOpenForActive, terminalAvailable])
-  // Files under review in the sidebar's Changes mode, set when a transcript turn's
-  // "Review all" / "+N more" is clicked.
-  const [reviewFiles, setReviewFiles] = useState<ChangedFile[]>([])
-  // Open the Changes review for a turn's files and activate its sidebar tab.
-  const openChangesReview = (files: ChangedFile[]) => {
-    setReviewFiles(files)
-    openSidebarTab("changes")
-  }
+  // Open the Files tab when a transcript turn's "Review all" / "+N more" is clicked.
+  const openFiles = () => openSidebarTab("files")
   // Open a workspace-relative html file in the sidebar agent browser.
   const openHtmlInBrowser = (relPath: string) => {
     if (!workspacePath) return
@@ -593,7 +586,7 @@ function Shell() {
             settingsOpen={settingsOpen}
             rightPanelOpen={activityOpen}
             onWorkspaceChange={setWorkspacePath}
-            onReviewChanges={openChangesReview}
+            onReviewFiles={openFiles}
             onOpenHtml={openHtmlInBrowser}
             onRanInBackground={() => openSidebarTab("info")}
             onRunningConvosChange={setRunningConvos}
@@ -630,8 +623,6 @@ function Shell() {
           settingsOpen || startupGuideOpen || viewingTask !== null
         }
         workspace={workspacePath}
-        changedFiles={reviewFiles}
-        onOpenHtml={openHtmlInBrowser}
         onAddFileSelection={(selection) =>
           appRef.current?.appendFileSelection(selection)
         }

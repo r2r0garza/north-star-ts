@@ -102,7 +102,6 @@ import {
   baseName as lastSegment,
   type TimelineItem,
   type ToolUse,
-  type ChangedFile,
 } from "@/lib/timeline"
 import { cn } from "@/lib/utils"
 import { maybeNotify } from "@/lib/notify"
@@ -387,10 +386,10 @@ type AppProps = {
   // (no icon available for it).
   rightPanelOpen: boolean
   // Report the active conversation's workspace root up to the Shell (the sidebar
-  // Changes review + browser opens need it for git diffs and file:// URLs).
+  // Files tab + browser opens need it for workspace access and file:// URLs).
   onWorkspaceChange?: (workspace: string) => void
-  // Open the sidebar Changes review scoped to a turn's changed files.
-  onReviewChanges?: (files: ChangedFile[]) => void
+  // Open the sidebar Files tab for a turn's changed files.
+  onReviewFiles?: () => void
   // Open an html changed-file in the sidebar agent browser.
   onOpenHtml?: (relPath: string) => void
   // Called after "Run in background" starts a durable task, so the Shell can
@@ -418,7 +417,7 @@ function App(
     settingsOpen,
     rightPanelOpen,
     onWorkspaceChange,
-    onReviewChanges,
+    onReviewFiles,
     onOpenHtml,
     onRanInBackground,
     onRunningConvosChange,
@@ -2692,7 +2691,7 @@ function App(
                             calls={item.calls}
                             workspace={workspace.trim()}
                             onOpenHtml={(p) => onOpenHtml?.(p)}
-                            onReviewAll={(files) => onReviewChanges?.(files)}
+                            onReviewAll={() => onReviewFiles?.()}
                           />
                         </MessageContent>
                       </Message>
@@ -2742,7 +2741,7 @@ function App(
                               calls={seg.calls}
                               workspace={workspace.trim()}
                               onOpenHtml={(p) => onOpenHtml?.(p)}
-                              onReviewAll={(files) => onReviewChanges?.(files)}
+                              onReviewAll={() => onReviewFiles?.()}
                             />
                           </div>
                         ) : seg.text ? (

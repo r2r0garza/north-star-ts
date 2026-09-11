@@ -34,9 +34,7 @@ import { TasksSection } from "@/components/tasks-section"
 import { TasksHistorySection } from "@/components/tasks-history-section"
 import { TodosSection } from "@/components/todos-section"
 import { IndexingSection } from "@/components/indexing-section"
-import { ChangesPanel } from "@/components/changes-panel"
 import { FilesPanel } from "@/components/files-panel"
-import type { ChangedFile } from "@/lib/timeline"
 import type { Task } from "@/types"
 
 // The right-hand panel. It has TWO modes, chosen from a dropdown in the drag bar
@@ -411,8 +409,6 @@ export function ActivityPanel({
   reserveWindowControls = false,
   browserObscured,
   workspace,
-  changedFiles,
-  onOpenHtml,
   onAddFileSelection,
   onOpenChange,
   onActiveTabChange,
@@ -437,13 +433,8 @@ export function ActivityPanel({
   // True while a DOM overlay (Settings / task transcript) is open. The native
   // browser view paints over the DOM, so it must hide while obscured.
   browserObscured: boolean
-  // Active conversation's workspace root (for the Changes review's git diffs +
-  // file:// previews). Empty in Chat mode / no workspace.
+  // Active conversation's workspace root. Empty in Chat mode / no workspace.
   workspace: string
-  // Files under review in Changes mode (set by "Review all" in the transcript).
-  changedFiles: ChangedFile[]
-  // Open an html changed-file in the sidebar agent browser (from Changes mode).
-  onOpenHtml: (relPath: string) => void
   onAddFileSelection: (selection: {
     path: string
     startLine: number
@@ -543,7 +534,7 @@ export function ActivityPanel({
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="center" className="w-32">
-        {SIDEBAR_TAB_KINDS.map((kind) => (
+        {SIDEBAR_TAB_KINDS.filter((kind) => kind !== "changes").map((kind) => (
           <DropdownMenuItem key={kind} onSelect={() => onOpenTab(kind)}>
             {tabLabel(kind)}
           </DropdownMenuItem>
@@ -627,16 +618,18 @@ export function ActivityPanel({
         {activeKind !== "files" &&
           (!activeTab ? (
             <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 p-4">
-              {SIDEBAR_TAB_KINDS.map((kind) => (
-                <button
-                  key={kind}
-                  type="button"
-                  onClick={() => onOpenTab(kind)}
-                  className="w-24 rounded-md border px-3 py-1.5 text-xs transition-colors hover:bg-accent"
-                >
-                  {tabLabel(kind)}
-                </button>
-              ))}
+              {SIDEBAR_TAB_KINDS.filter((kind) => kind !== "changes").map(
+                (kind) => (
+                  <button
+                    key={kind}
+                    type="button"
+                    onClick={() => onOpenTab(kind)}
+                    className="w-24 rounded-md border px-3 py-1.5 text-xs transition-colors hover:bg-accent"
+                  >
+                    {tabLabel(kind)}
+                  </button>
+                )
+              )}
             </div>
           ) : activeKind === "browser" ? (
             <div className="min-h-0 flex-1">
@@ -645,14 +638,6 @@ export function ActivityPanel({
                 onPoppedOutChange={(poppedOut) =>
                   onBrowserPoppedOutChange?.(poppedOut)
                 }
-              />
-            </div>
-          ) : activeKind === "changes" ? (
-            <div className="min-h-0 flex-1">
-              <ChangesPanel
-                files={changedFiles}
-                workspace={workspace}
-                onOpenHtml={onOpenHtml}
               />
             </div>
           ) : (

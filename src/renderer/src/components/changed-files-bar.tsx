@@ -15,7 +15,7 @@ import { cn } from "@/lib/utils"
 // from the turn's tool calls (no stored data) — see changedFilesFromCalls. Each
 // pill hovers to a quick preview (git diff for code, rendered page for html) and
 // clicks to open (IDE for code, sidebar agent browser for html). "Review all"
-// hands the full list to the sidebar "Changes" mode.
+// opens the sidebar Files tab.
 
 // How many pills to show inline before collapsing the rest into "+N more".
 const MAX_VISIBLE = 6
@@ -104,7 +104,7 @@ export function ChangedFilesBar({
   workspace: string
   // Open an html file in the sidebar agent browser.
   onOpenHtml: (relPath: string) => void
-  // Open the sidebar "Changes" review scoped to this turn's files.
+  // Open the sidebar Files tab for this turn's files.
   onReviewAll: (files: ChangedFile[]) => void
 }) {
   const files = React.useMemo(
