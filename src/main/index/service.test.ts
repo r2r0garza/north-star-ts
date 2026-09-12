@@ -177,6 +177,22 @@ describe.skipIf(!sqliteLoads)("IndexService stage 2 (metadata)", () => {
     expect((meta.git as { branch: string }).branch).toBe("feat/x")
   })
 
+  it("refreshes metadata without walking files and removes stale rows", async () => {
+    const packagePath = join(root, "package.json")
+    await writeFile(packagePath, JSON.stringify({ name: "demo" }))
+    const svc = new IndexService(fakeRunner())
+    await svc.refreshMetadata(workspaceId)
+    expect(
+      listMetadata(workspaceId).some((row) => row.kind === "package_json")
+    ).toBe(true)
+    await rm(packagePath)
+    await svc.refreshMetadata(workspaceId)
+    expect(
+      listMetadata(workspaceId).some((row) => row.kind === "package_json")
+    ).toBe(false)
+    expect(listPaths(workspaceId)).toEqual(new Set())
+  })
+
   it("advances the run through to the symbols stage on completion", async () => {
     await writeFile(join(root, "a.ts"), "x")
     const svc = new IndexService(fakeRunner())

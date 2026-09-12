@@ -1,7 +1,8 @@
 # PR24: Index filesystem/git watcher — keep the workspace index (and its summary) fresh
 
-> Status: **PLANNED** (2026-07-03). Starting hypothesis, not a locked spec — resolve the open
-> questions before building. Depends on 008 (workspace indexing: the index tables, `IndexService`,
+> Status: **COMPLETED** (2026-09-12). Shipped as a main-process Chokidar watcher for every enabled
+> host workspace, with separate recursive working-tree and resolved Git-control-path watches. Depends
+> on 008 (workspace indexing: the index tables, `IndexService`,
 > `ensureRunning`, the compact prompt summary) and 009 (durable task runner: the `workspace_index`
 > kind, pause/resume/cancel). This is the "live file watching" follow-up explicitly deferred in 008
 > ("Out of scope → Live file watching (chokidar)") and again in 014.
@@ -210,6 +211,39 @@ Workspace Indexing
 - `pnpm typecheck` + `pnpm build` clean; unit tests for the debounce/coalesce logic and the
   ignore-filter decision (pure-function seams where possible, since real FS-watch timing is hard to
   unit test); manual E2E for the branch-switch and file-edit cases.
+
+## Shipped implementation
+
+- Added a main-process `IndexWatcher`, independent of the Files sidebar's shallow explored-directory
+  watcher. It reconciles enabled index runs at startup, follows per-workspace and global settings,
+  and closes before workspace deletion and app shutdown.
+- Working-tree events honor `DEFAULT_SKIP_DIRS` and the root `.gitignore`, coalesce over a 750 ms
+  trailing window, and kick the existing low-priority incremental index. Changing `.gitignore`
+  rebuilds that workspace's watch with the new rules.
+- Git events resolve the actual `HEAD`, current loose ref, and `packed-refs` paths through Git, so
+  subdirectory workspaces and linked worktrees work. A 100 ms Git burst runs metadata-only refresh;
+  file-changing checkouts independently trigger the full incremental path.
+- Added a dirty-during-running latch: changes observed during a queued/running index produce one
+  follow-up run after settlement, while paused/interrupted tasks remain user-controlled.
+- Extracted `IndexService.refreshMetadata`, made metadata refresh remove stale rows, and added the
+  attached-HEAD short SHA alongside branch/ref.
+- Added the default-on global **Watch workspace for changes** setting with immediate start/stop.
+- Updated the Workspace Activity indexing panel to adopt watcher-created task IDs and reconcile
+  terminal status correctly. Candidate-task tracking closes the fast-task race where completion could
+  arrive before the renderer's asynchronous ownership check, and fresh status snapshots clear
+  stage-local progress (such as one dirty symbol file) so the panel returns to the full workspace
+  count without a reload.
+- Automated verification: focused Electron-runtime suites pass 72/72 (including 23 index
+  service/watcher assertions), the ordinary suite passes 1,156 with the existing SQLite-dependent
+  skips, the new renderer regression reproduces progress → completion → delayed-adoption ordering,
+  and `pnpm typecheck` plus `pnpm build` pass. The standard `pnpm test:sqlite` command is blocked by
+  the local pre-existing better-sqlite3 ABI mismatch (module 136 vs Node 137); the affected focused
+  suites were instead run successfully under Electron's matching runtime.
+- Manual UAT passed in a disposable Git workspace: file additions, edits/symbol replacement, and
+  deletions became visible through index-only queries without manual rebuilds; identical-tree branch
+  switches refreshed indexed Git metadata; the global watch toggle stopped and restarted automatic
+  refresh; and default-skip plus root-`.gitignore` paths stayed excluded. The activity panel followed
+  each background run and settled on the full indexed-file count without Cmd+R.
 
 ## Out of scope
 

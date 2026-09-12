@@ -35,7 +35,8 @@ import { deleteConversationWithArtifacts } from "../conversations/lifecycle"
 // re-firing on every create/update is safe. Failures never block the DB call.
 function maybeAutoIndex(
   conversation: Conversation,
-  service?: IndexService
+  service?: IndexService,
+  watcher?: { start: (workspaceId: string) => Promise<void> }
 ): void {
   if (!service || !conversation.workspaceId) return
   if (conversation.mode !== "interactive" && conversation.mode !== "north_star")
@@ -48,6 +49,7 @@ function maybeAutoIndex(
       conversation.workspaceId,
       conversation.mode === "north_star" ? "high" : "low"
     )
+    void watcher?.start(conversation.workspaceId)
   } catch (err) {
     console.error("auto-index trigger failed:", err)
   }
@@ -66,7 +68,11 @@ export function registerDbHandlers(
   // Close a conversation's browser tab when it's deleted (plan: tabbed browser).
   // A thin callback rather than the BrowserManager type, to keep this module
   // decoupled from the browser layer. Optional for tests/headless.
-  closeBrowserTab?: (conversationId: string) => void
+  closeBrowserTab?: (conversationId: string) => void,
+  indexWatcher?: {
+    start: (workspaceId: string) => Promise<void>
+    stop: (workspaceId: string) => Promise<void>
+  }
 ): void {
   // Conversations
   ipcMain.handle(
@@ -84,7 +90,7 @@ export function registerDbHandlers(
       }
     ) => {
       const conversation = conversations.createConversation(input)
-      maybeAutoIndex(conversation, indexService)
+      maybeAutoIndex(conversation, indexService, indexWatcher)
       return conversation
     }
   )
@@ -110,7 +116,7 @@ export function registerDbHandlers(
       }
     ) => {
       const conversation = conversations.updateConversation(id, patch)
-      maybeAutoIndex(conversation, indexService)
+      maybeAutoIndex(conversation, indexService, indexWatcher)
       return conversation
     }
   )
@@ -205,9 +211,10 @@ export function registerDbHandlers(
     (_e, id: string, patch: { name?: string }) =>
       workspaces.updateWorkspace(id, patch)
   )
-  ipcMain.handle("db:workspaces:delete", (_e, id: string) =>
+  ipcMain.handle("db:workspaces:delete", async (_e, id: string) => {
+    await indexWatcher?.stop(id)
     workspaces.deleteWorkspace(id)
-  )
+  })
 
   // Projects — a grouping of conversations with an optional default directory
   // (workspace_id). Thin repository wrappers, like the other DB channels.

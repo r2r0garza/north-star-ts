@@ -20,6 +20,7 @@ import {
 } from "../db/repositories/index-files"
 import {
   upsertMetadata,
+  deleteMetadata,
   deleteMetadataByWorkspace,
 } from "../db/repositories/index-metadata"
 import { replaceSymbolsForFile } from "../db/repositories/index-symbols"
@@ -122,6 +123,12 @@ export class IndexService {
       input: { workspaceId, priority },
     })
     upsertRun(workspaceId, { taskId: task.id })
+  }
+
+  async refreshMetadata(workspaceId: string): Promise<void> {
+    const workspace = getWorkspace(workspaceId)
+    if (!workspace) return
+    await this.writeMetadata(workspaceId, workspace.path)
   }
 
   // Clear a workspace's index entirely: drop all rows and reset the run to idle.
@@ -284,6 +291,36 @@ export class IndexService {
   }
 
   // Stage 2: parse the known high-value docs into index_metadata (one row each).
+  private async writeMetadata(
+    workspaceId: string,
+    root: string,
+    signal?: AbortSignal
+  ): Promise<void> {
+    const write = async (
+      kind: string,
+      load: () => Promise<{ path: string; value: unknown } | null>
+    ) => {
+      if (signal) this.throwIfAborted(signal)
+      const parsed = await load()
+      if (parsed) {
+        upsertMetadata({
+          workspaceId,
+          kind,
+          path: parsed.path,
+          value: parsed.value,
+        })
+      } else {
+        deleteMetadata(workspaceId, kind)
+      }
+    }
+
+    for (const doc of METADATA_FILES) {
+      await write(doc.kind, () => parseMetadataDoc(root, doc))
+    }
+    await write("vite_config", () => detectViteConfig(root))
+    await write("git", () => readGitBranch(root))
+  }
+
   private async stageMetadata(ctx: {
     workspaceId: string
     root: string
@@ -296,38 +333,7 @@ export class IndexService {
     }) => void
   }): Promise<void> {
     updateProgress(ctx.workspaceId, { stage: "metadata" })
-    for (const doc of METADATA_FILES) {
-      this.throwIfAborted(ctx.signal)
-      const parsed = await parseMetadataDoc(ctx.root, doc)
-      if (parsed) {
-        upsertMetadata({
-          workspaceId: ctx.workspaceId,
-          kind: doc.kind,
-          path: parsed.path,
-          value: parsed.value,
-        })
-      }
-    }
-    // vite config (presence-only) + git branch aren't file-parse docs.
-    this.throwIfAborted(ctx.signal)
-    const vite = await detectViteConfig(ctx.root)
-    if (vite) {
-      upsertMetadata({
-        workspaceId: ctx.workspaceId,
-        kind: "vite_config",
-        path: vite.path,
-        value: vite.value,
-      })
-    }
-    const git = await readGitBranch(ctx.root)
-    if (git) {
-      upsertMetadata({
-        workspaceId: ctx.workspaceId,
-        kind: "git",
-        path: git.path,
-        value: git.value,
-      })
-    }
+    await this.writeMetadata(ctx.workspaceId, ctx.root, ctx.signal)
     const run = getRunByWorkspace(ctx.workspaceId)
     ctx.emit({
       type: "index_progress",

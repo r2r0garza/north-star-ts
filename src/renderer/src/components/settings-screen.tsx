@@ -1051,6 +1051,27 @@ export function SettingsScreen({
                         </Field>
                         <Field orientation="horizontal">
                           <FieldContent>
+                            <FieldLabel htmlFor="idx-watch">
+                              Watch workspace for changes
+                            </FieldLabel>
+                            <FieldDescription>
+                              Refresh enabled workspace indexes in the
+                              background when files or Git branches change.
+                            </FieldDescription>
+                          </FieldContent>
+                          <Switch
+                            id="idx-watch"
+                            checked={indexing.watchWorkspaces}
+                            onCheckedChange={(checked) =>
+                              saveIndexing({
+                                ...indexing,
+                                watchWorkspaces: checked,
+                              })
+                            }
+                          />
+                        </Field>
+                        <Field orientation="horizontal">
+                          <FieldContent>
                             <FieldLabel htmlFor="idx-embed">
                               Include embeddings
                             </FieldLabel>
@@ -1106,7 +1127,8 @@ export function SettingsScreen({
                             </FieldLabel>
                             <FieldDescription>
                               Show the composer button in Interactive and{" "}
-                              {window.cowork.system().mainAgentName} conversations.
+                              {window.cowork.system().mainAgentName}{" "}
+                              conversations.
                             </FieldDescription>
                           </FieldContent>
                           <Switch

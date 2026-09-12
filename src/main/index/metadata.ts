@@ -112,7 +112,9 @@ export async function readGitBranch(
     const { stdout } = await git(["symbolic-ref", "--quiet", "HEAD"])
     const ref = stdout.trim()
     const branch = ref.replace(/^refs\/heads\//, "")
-    return { path: "git", value: { branch, ref } }
+    const { stdout: shaOut } = await git(["rev-parse", "--short=12", "HEAD"])
+    const sha = shaOut.trim()
+    return { path: "git", value: { branch, ref, ...(sha ? { sha } : {}) } }
   } catch (err) {
     // A non-zero exit from symbolic-ref means either a detached HEAD (git ran
     // fine) or git isn't available (ENOENT). Distinguish: try rev-parse for the
@@ -142,7 +144,18 @@ async function readGitBranchFromFile(
     if (head.startsWith("ref:")) {
       const ref = head.slice(4).trim()
       const branch = ref.replace(/^refs\/heads\//, "")
-      return { path: ".git/HEAD", value: { branch, ref } }
+      let sha = ""
+      try {
+        sha = (await readFile(join(root, ".git", ref), "utf8"))
+          .trim()
+          .slice(0, 12)
+      } catch {
+        // A packed or unborn ref has no loose ref file.
+      }
+      return {
+        path: ".git/HEAD",
+        value: { branch, ref, ...(sha ? { sha } : {}) },
+      }
     }
     return {
       path: ".git/HEAD",

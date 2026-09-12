@@ -23,7 +23,11 @@ export interface IndexStatus {
 // index-specific: clear, per-workspace enable/disable, and the status snapshot.
 export function registerIndexHandlers(
   runner: TaskRunner,
-  service: IndexService
+  service: IndexService,
+  watcher?: {
+    start: (workspaceId: string) => Promise<void>
+    stop: (workspaceId: string) => Promise<void>
+  }
 ): void {
   // Manually (re)start indexing for a workspace — the UI "Start"/"Rebuild"
   // action. ensureRunning is idempotent: a no-op if a build is already live, else
@@ -36,6 +40,7 @@ export function registerIndexHandlers(
         payload.workspaceId,
         payload.priority ?? run?.priority ?? "low"
       )
+      void watcher?.start(payload.workspaceId)
     }
   )
 
@@ -62,12 +67,14 @@ export function registerIndexHandlers(
       const run = getRunByWorkspace(payload.workspaceId)
       if (!payload.enabled) {
         if (run?.taskId) runner.cancel(run.taskId)
+        void watcher?.stop(payload.workspaceId)
         return
       }
       service.ensureRunning(
         payload.workspaceId,
         payload.priority ?? run?.priority ?? "low"
       )
+      void watcher?.start(payload.workspaceId)
     }
   )
 

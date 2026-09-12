@@ -24,7 +24,9 @@ import type {
 // so its in-memory cache stays coherent with the DB. Registered alongside the db
 // handlers, after app.whenReady(). This slice covers execution backend + approval
 // policy only; LLM/API-key settings are a later slice.
-export function registerSettingsHandlers(): void {
+export function registerSettingsHandlers(
+  onIndexingChange?: (settings: IndexingSettings) => void | Promise<void>
+): void {
   ipcMain.handle("settings:getExecution", () => settingsService.getExecution())
   ipcMain.handle("settings:setExecution", (_e, next: ExecutionSettings) =>
     settingsService.setExecution(next)
@@ -38,9 +40,11 @@ export function registerSettingsHandlers(): void {
   )
 
   ipcMain.handle("settings:getIndexing", () => settingsService.getIndexing())
-  ipcMain.handle("settings:setIndexing", (_e, next: IndexingSettings) =>
-    settingsService.setIndexing(next)
-  )
+  ipcMain.handle("settings:setIndexing", async (_e, next: IndexingSettings) => {
+    const saved = settingsService.setIndexing(next)
+    await onIndexingChange?.(saved)
+    return saved
+  })
 
   ipcMain.handle("settings:getMemory", () => settingsService.getMemory())
   ipcMain.handle("settings:setMemory", (_e, next: MemorySettings) =>

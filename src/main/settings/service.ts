@@ -92,6 +92,8 @@ export interface IndexingSettings {
   // Feed the index into the agent's system prompt (a compact workspace summary).
   // Off = the index still builds but the agent ignores it (useful for debugging).
   useIndexForContext: boolean
+  // Keep enabled host-workspace indexes fresh as files and Git refs change.
+  watchWorkspaces: boolean
   // Stage 4 semantic embeddings — deferred; shown disabled in the UI to signal
   // the roadmap. Persisted so the toggle round-trips, but unused in slice 1.
   includeEmbeddings: boolean
@@ -216,6 +218,7 @@ const DEFAULT_TITLE_GENERATION: TitleGenerationSettings = {
 const DEFAULT_INDEXING: IndexingSettings = {
   autoIndexNewWorkspaces: true,
   useIndexForContext: true,
+  watchWorkspaces: true,
   includeEmbeddings: false,
   // Token-only triggering by default: message count off (0), summarize once the
   // fresh tail reaches ~80k tokens. Both are user-adjustable in Settings.
@@ -437,6 +440,8 @@ function loadIndexing(): IndexingSettings {
           DEFAULT_INDEXING.autoIndexNewWorkspaces,
         useIndexForContext:
           parsed.useIndexForContext ?? DEFAULT_INDEXING.useIndexForContext,
+        watchWorkspaces:
+          parsed.watchWorkspaces ?? DEFAULT_INDEXING.watchWorkspaces,
         includeEmbeddings:
           parsed.includeEmbeddings ?? DEFAULT_INDEXING.includeEmbeddings,
         summarizeMessageThreshold:

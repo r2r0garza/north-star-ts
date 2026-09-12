@@ -62,22 +62,7 @@ item is its plan file; the ordered-list number is its current priority rank.
    One profile per conversation, user-overridable in settings. Kills the "one workspace = one image
    forever" assumption **without** building auto-routing or image management (both deferred). Small
    refactor of `env/factory.ts` + `container.ts` + execution settings (JSON blob — no migration).
-6. **`024` — Index filesystem/git watcher.** The "live file watching" follow-up `008` deferred (and
-   `014` re-deferred). Today the workspace index — and the compact summary `buildIndexSummary`
-   injects into the system prompt on every message send — only refreshes when
-   `IndexService.ensureRunning` is called, which fires on conversation create/update or manual
-   Start/Rebuild;
-   **nothing watches the filesystem or git**. So the injected summary drifts (file counts, metadata,
-   symbol count, and most visibly the **git branch** — the one field that changes on a `git checkout`
-   with an identical working tree, so the hash-skip `file_map` finds zero dirty files and never
-   re-runs). Adds an `IndexWatcher` (main-process, long-lived listener — not a `009` task) that
-   debounces workspace changes and kicks an **incremental** `ensureRunning` (`low` priority), plus a
-   targeted `.git/HEAD`+refs watch for branch/sha freshness (metadata-only refresh seam so a branch
-   flip needn't pay for a tree walk). Reuses `loadGitignore`/`DEFAULT_SKIP_DIRS` + `readGitBranch`;
-   gated by a new **"Watch workspace for changes"** toggle in the Workspace Indexing settings group
-   (global store, no migration). Open Qs: watcher mechanism (`chokidar` vs core `fs.watch` vs
-   `@parcel/watcher`), watch scope/lifetime, debounce window, churn backpressure.
-7. **`040` — Index-grounding prompts.** Add a short, always-present line to the Interactive and North
+6. **`040` — Index-grounding prompts.** Add a short, always-present line to the Interactive and North
    Star mode prompts steering the agent to consult `index_query_tool` for cheap orientation (symbols,
    file lists, importers) before broad searches or manual walks, preserving the "advisory, may be stale,
    misses ≠ absent" caveat. Primarily a prompt edit (`interactive-system-prompt.md` /
@@ -149,6 +134,20 @@ item is its plan file; the ordered-list number is its current priority rank.
 
 ## Done
 
+- **`024` — Index filesystem/git watcher.** Completed in this branch. Added a main-process Chokidar
+  watcher for every enabled host workspace, with index-compatible skip/`.gitignore` filtering and a
+  debounced low-priority incremental refresh. A separate Git watch resolves the real `HEAD`, current
+  ref, and `packed-refs` paths (including subdirectory workspaces and linked worktrees) and refreshes
+  metadata without a tree walk; attached metadata now includes branch/ref/SHA and stale metadata rows
+  are deleted. Changes during a live index latch one follow-up run without auto-resuming paused work.
+  The default-on global setting starts/stops watchers immediately, and lifecycle wiring covers startup,
+  per-workspace enable/disable, deletion, and quit. The Workspace Activity panel now safely adopts fast
+  watcher-created tasks and clears stage-local dirty-file progress when the full terminal snapshot
+  arrives, including completion-before-adoption races. Manual UAT covered automatic add/edit/delete,
+  identical-tree branch switching, watch disable/re-enable, ignore rules, index-only lookup results,
+  and live panel reconciliation without Cmd+R. Verified with 72 focused Electron-runtime tests, the
+  1,156-test ordinary suite, the renderer race regression, `pnpm typecheck`, and `pnpm build`;
+  `pnpm test:sqlite` remains blocked by the local pre-existing better-sqlite3 Node ABI mismatch.
 - **`091` — Workspace branch switcher and branch creation.** Completed in this branch. Converted the
   composer branch badge into an accessible responsive local-branch menu that refreshes on open, marks the
   current branch, explains detached HEAD, and reports loading/error/empty/truncated states. Added exact,

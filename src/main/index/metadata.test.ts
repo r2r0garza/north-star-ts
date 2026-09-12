@@ -42,11 +42,15 @@ describe.skipIf(!gitAvailable)("readGitBranch", () => {
     expect(await readGitBranch(notRepo)).toBeNull()
   })
 
-  it("reads the current branch (including slashes)", async () => {
+  it("reads the current branch, ref, and sha", async () => {
     const res = await readGitBranch(repo)
-    expect((res?.value as { branch?: string })?.branch).toBe(
-      "feat/backend-test-suite"
-    )
+    const value = res?.value as { branch?: string; ref?: string; sha?: string }
+    expect(value.branch).toBe("feat/backend-test-suite")
+    expect(value.ref).toBe("refs/heads/feat/backend-test-suite")
+    const sha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo })
+      .toString()
+      .trim()
+    expect(sha.startsWith(value.sha ?? "")).toBe(true)
   })
 
   it("reads the branch from a SUBDIRECTORY of the repo", async () => {

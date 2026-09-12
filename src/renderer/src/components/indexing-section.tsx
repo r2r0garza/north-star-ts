@@ -25,14 +25,22 @@ export function IndexingSection({
   const [workspaceId, setWorkspaceId] = React.useState<string | null>(null)
   const [status, setStatus] = React.useState<IndexStatus | null>(null)
   const [live, setLive] = React.useState<LiveProgress | null>(null)
+  const statusRequestRef = React.useRef(0)
+  const candidateTasksRef = React.useRef(new Set<string>())
 
   // Resolve the conversation's workspace, then load the index status snapshot.
   const refetch = React.useCallback(async (wsId: string | null) => {
+    const request = ++statusRequestRef.current
     if (!wsId) {
       setStatus(null)
       return
     }
-    setStatus(await window.cowork.index.status(wsId))
+    const next = await window.cowork.index.status(wsId)
+    if (request === statusRequestRef.current) {
+      candidateTasksRef.current.clear()
+      setStatus(next)
+      setLive(null)
+    }
   }, [])
   const refetchRef = React.useRef(refetch)
   refetchRef.current = refetch
@@ -59,10 +67,41 @@ export function IndexingSection({
   // snapshot on any status change (paused/cancelled/completed/running).
   React.useEffect(() => {
     if (!workspaceId) return
+    let active = true
     const unsubscribe = window.cowork.tasks.onEvent((payload) => {
       const { taskId, event } = payload
-      // Only react to this workspace's index task.
-      if (status?.taskId && taskId !== status.taskId) return
+      if (taskId !== status?.taskId) {
+        if (candidateTasksRef.current.has(taskId)) {
+          if (event.type === "status_change") {
+            void refetchRef.current(workspaceId)
+          }
+          return
+        }
+        if (event.type !== "index_progress") return
+        candidateTasksRef.current.add(taskId)
+        void (async () => {
+          const request = ++statusRequestRef.current
+          const next = await window.cowork.index.status(workspaceId)
+          if (
+            !active ||
+            request !== statusRequestRef.current ||
+            next.taskId !== taskId
+          )
+            return
+          candidateTasksRef.current.delete(taskId)
+          setStatus(next)
+          if (next.taskStatus === "queued" || next.taskStatus === "running") {
+            setLive({
+              stage: event.stage,
+              filesScanned: event.filesScanned,
+              filesTotal: event.filesTotal,
+            })
+          } else {
+            setLive(null)
+          }
+        })()
+        return
+      }
       if (event.type === "index_progress") {
         setLive({
           stage: event.stage,
@@ -73,7 +112,10 @@ export function IndexingSection({
         void refetchRef.current(workspaceId)
       }
     })
-    return unsubscribe
+    return () => {
+      active = false
+      unsubscribe()
+    }
   }, [workspaceId, status?.taskId])
 
   if (!conversationId) {

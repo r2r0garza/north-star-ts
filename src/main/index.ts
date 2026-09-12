@@ -97,6 +97,7 @@ import { registerTaskHandlers } from "./ipc/task-handlers"
 import { registerIndexHandlers } from "./ipc/index-handlers"
 import { TaskRunner } from "./tasks/runner"
 import { IndexService } from "./index/service"
+import { IndexWatcher } from "./index/watcher"
 import { SummaryService, SUMMARIZE_KIND } from "./summaries/service"
 import { ProcessService, PROCESS_RUN_KIND } from "./tasks/process/service"
 import { registerProcessHandlers } from "./ipc/process-handlers"
@@ -130,6 +131,7 @@ const taskRunner = new TaskRunner()
 // The workspace indexer (plan 008), driven as a deterministic task kind on the
 // runner above. Holds the runner reference so ensureRunning can enqueue.
 const indexService = new IndexService(taskRunner)
+const indexWatcher = new IndexWatcher(taskRunner, indexService)
 // The rolling conversation summarizer (plan 019), driven as a task kind on the
 // runner. Holds the runner reference so the post-turn trigger can enqueue.
 const summaryService = new SummaryService(taskRunner)
@@ -1222,10 +1224,15 @@ ipcMain.on("app:is-packaged", (event) => {
 app.whenReady().then(async () => {
   // Register DB-backed IPC handlers now — the connection opens lazily on first
   // use, after userData is available.
-  registerDbHandlers(indexService, taskRunner, (id) =>
-    browserManager.closeTab(id)
+  registerDbHandlers(
+    indexService,
+    taskRunner,
+    (id) => browserManager.closeTab(id),
+    indexWatcher
   )
-  registerSettingsHandlers()
+  registerSettingsHandlers((settings) =>
+    indexWatcher.setEnabled(settings.watchWorkspaces)
+  )
   registerProviderHandlers()
   registerMcpHandlers()
   // Start the durable task runner now that the DB handlers are registered (it
@@ -1283,10 +1290,11 @@ app.whenReady().then(async () => {
   await taskRunner.start()
   registerTaskHandlers(taskRunner)
   registerProcessHandlers(taskRunner, processService)
-  registerIndexHandlers(taskRunner, indexService)
+  registerIndexHandlers(taskRunner, indexService, indexWatcher)
   registerDashboardHandlers(taskRunner, dashboardService)
   registerTerminalHandlers(terminalService)
   registerFileWatchHandlers()
+  await indexWatcher.setEnabled(settingsService.getIndexing().watchWorkspaces)
   // Materialize the user-level skills dir (~/.<system>/skills) and, on first
   // launch only, seed it with the app-bundled skills so users get editable
   // copies of the built-ins.
@@ -1350,6 +1358,7 @@ app.on("before-quit", () => {
 app.on("will-quit", () => {
   stopMemoryMaintenance()
   stopPlanMaintenance()
+  void indexWatcher.stopAll()
   void taskRunner.stop()
   browserManager.dispose()
   terminalService.dispose()

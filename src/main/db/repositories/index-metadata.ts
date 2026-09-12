@@ -70,6 +70,12 @@ export function listMetadata(workspaceId: string): IndexMetadata[] {
   return rows.map(toIndexMetadata)
 }
 
+export function deleteMetadata(workspaceId: string, kind: string): void {
+  getDb()
+    .prepare("DELETE FROM index_metadata WHERE workspace_id = ? AND kind = ?")
+    .run(workspaceId, kind)
+}
+
 export function deleteMetadataByWorkspace(workspaceId: string): void {
   getDb()
     .prepare("DELETE FROM index_metadata WHERE workspace_id = ?")

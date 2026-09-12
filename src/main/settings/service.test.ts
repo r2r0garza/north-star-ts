@@ -305,6 +305,7 @@ describe("settings service — indexing (plan 008)", () => {
     expect(service.getIndexing()).toEqual({
       autoIndexNewWorkspaces: true,
       useIndexForContext: true,
+      watchWorkspaces: true,
       includeEmbeddings: false,
       summarizeMessageThreshold: 0,
       summarizeTokenThreshold: 80000,
@@ -316,6 +317,7 @@ describe("settings service — indexing (plan 008)", () => {
     service.setIndexing({
       autoIndexNewWorkspaces: false,
       useIndexForContext: false,
+      watchWorkspaces: false,
       includeEmbeddings: false,
       summarizeMessageThreshold: 50,
       summarizeTokenThreshold: 6000,
@@ -325,6 +327,7 @@ describe("settings service — indexing (plan 008)", () => {
     const idx = service.getIndexing()
     expect(idx.autoIndexNewWorkspaces).toBe(false)
     expect(idx.useIndexForContext).toBe(false)
+    expect(idx.watchWorkspaces).toBe(false)
     expect(idx.summarizeMessageThreshold).toBe(50)
     expect(idx.summarizeTokenThreshold).toBe(6000)
     expect(idx.logSystemPrompt).toBe(true)
@@ -337,6 +340,7 @@ describe("settings service — indexing (plan 008)", () => {
     service._resetCacheForTests()
     const idx = service.getIndexing()
     expect(idx.autoIndexNewWorkspaces).toBe(false)
+    expect(idx.watchWorkspaces).toBe(true)
     expect(idx.summarizeMessageThreshold).toBe(0)
     expect(idx.summarizeTokenThreshold).toBe(80000)
     expect(idx.logSystemPrompt).toBe(false)
@@ -346,6 +350,7 @@ describe("settings service — indexing (plan 008)", () => {
     service.setIndexing({
       autoIndexNewWorkspaces: false,
       useIndexForContext: true,
+      watchWorkspaces: true,
       includeEmbeddings: false,
       summarizeMessageThreshold: 0,
       summarizeTokenThreshold: 80000,
