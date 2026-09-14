@@ -1,9 +1,22 @@
 # PR40: Index-grounding guidance in the Interactive / North Star prompts
 
-> Status: **PROPOSED** (not started).
-> Small prompt change plus an optional priority tweak. Builds on the plan-008 workspace
-> index (`index_query_tool`, `buildIndexSummary`) and plan-014's `ContextBuilder` section
-> budgeting. No schema or code-path changes required for the core of it.
+> Status: **COMPLETED**. Interactive and North Star now carry durable index-first
+> orientation guidance with the existing advisory/stale caveat; Chat remains unchanged.
+> `SECTION_PRIORITY.index` remains at 10 because it already outranks the smaller environment
+> and browser-state sections while yielding to higher-value task and capability context.
+
+## Completed implementation
+
+- Added matching conditional guidance to `prompts/interactive-system-prompt.md` and
+  `prompts/north-star-system-prompt.md`: use `index_query_tool` for fast symbol/file/importer
+  orientation before broad searches or manual walks, then use normal file tools for exact reads
+  and full-text search; an index miss means "not indexed yet," not "absent."
+- Left `prompts/chat-system-prompt.md`, index/tool gating, the dynamic summary, and context
+  priorities unchanged.
+- Added `src/main/agent/system-prompt-content.test.ts` to enforce the two workspace-mode
+  inclusions and Chat exclusion against the real shipped prompt assets.
+- Verified with the ordinary test suite (1,159 passed; 562 environment/SQLite-dependent
+  skipped), `pnpm typecheck`, and `pnpm build`.
 
 ## Context
 

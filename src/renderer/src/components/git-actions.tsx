@@ -35,6 +35,17 @@ function statusLabel(entry: GitStatusEntry) {
   return "Modified"
 }
 
+function filePathLabel(path: string) {
+  const lastSlash = path.lastIndexOf("/")
+  if (lastSlash === -1) return { fileName: path, directory: null }
+
+  const directory = path.slice(0, lastSlash)
+  return {
+    fileName: path.slice(lastSlash + 1),
+    directory: `...${directory.slice(-13)}`,
+  }
+}
+
 type RepositoryStatus =
   | "checking"
   | "unavailable"
@@ -388,29 +399,40 @@ function FileGroup({
               No {title.toLowerCase()} changes.
             </p>
           ) : (
-            entries.map((entry) => (
-              <label
-                key={entry.path}
-                className="flex items-center gap-2 px-2 py-1.5 text-sm hover:bg-accent"
-              >
-                <Checkbox
-                  checked={selected.has(entry.path)}
-                  disabled={!committable(entry)}
-                  onCheckedChange={(value) =>
-                    onSelect(entry.path, value === true)
-                  }
-                />
-                <span className="min-w-16 text-xs text-muted-foreground">
-                  {statusLabel(entry)}
-                </span>
-                <span className="min-w-0 flex-1 truncate">{entry.path}</span>
-                {entry.kind === "unmerged" && (
-                  <span className="text-xs text-destructive">
-                    Resolve first
+            entries.map((entry) => {
+              const { fileName, directory } = filePathLabel(entry.path)
+              return (
+                <label
+                  key={entry.path}
+                  className="flex items-center gap-2 px-2 py-1.5 text-sm hover:bg-accent"
+                >
+                  <Checkbox
+                    checked={selected.has(entry.path)}
+                    disabled={!committable(entry)}
+                    onCheckedChange={(value) =>
+                      onSelect(entry.path, value === true)
+                    }
+                  />
+                  <span className="min-w-16 text-xs text-muted-foreground">
+                    {statusLabel(entry)}
                   </span>
-                )}
-              </label>
-            ))
+                  <span
+                    className="min-w-0 flex-1 truncate"
+                    title={entry.path}
+                  >
+                    <span>{fileName}</span>
+                    {directory && (
+                      <span className="text-muted-foreground"> {directory}</span>
+                    )}
+                  </span>
+                  {entry.kind === "unmerged" && (
+                    <span className="text-xs text-destructive">
+                      Resolve first
+                    </span>
+                  )}
+                </label>
+              )
+            })
           )}
         </div>
       )}
