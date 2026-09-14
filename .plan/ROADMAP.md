@@ -62,13 +62,6 @@ item is its plan file; the ordered-list number is its current priority rank.
    One profile per conversation, user-overridable in settings. Kills the "one workspace = one image
    forever" assumption **without** building auto-routing or image management (both deferred). Small
    refactor of `env/factory.ts` + `container.ts` + execution settings (JSON blob — no migration).
-6. **`040` — Index-grounding prompts.** Add a short, always-present line to the Interactive and North
-   Star mode prompts steering the agent to consult `index_query_tool` for cheap orientation (symbols,
-   file lists, importers) before broad searches or manual walks, preserving the "advisory, may be stale,
-   misses ≠ absent" caveat. Primarily a prompt edit (`interactive-system-prompt.md` /
-   `north-star-system-prompt.md`); Chat mode stays untouched. Optional priority tweak to
-   `SECTION_PRIORITY.index` to be decided at execution.
-
 ## Deferred
 
 - **`087` — Request-scoped skill opportunities and opt-in drafting.** Reuse the existing first-message
@@ -134,6 +127,14 @@ item is its plan file; the ordered-list number is its current priority rank.
 
 ## Done
 
+- **`040` — Index-grounding prompts.** Completed in this branch. Added matching conditional guidance
+  to the Interactive and North Star mode prompts so agents use `index_query_tool` for fast symbol,
+  file, and importer orientation before broad searches or manual walks, then fall back to normal file
+  tools for exact reads and full-text search. The guidance preserves the advisory/stale contract and
+  treats misses as "not indexed yet," not absence. Chat remains unchanged. Added real prompt-asset
+  regression coverage for both workspace modes and the Chat exclusion. Kept `SECTION_PRIORITY.index`
+  at 10 because it already sits above environment/browser-state context and below higher-value task and
+  capability sections. Verified with the 1,159-test ordinary suite, `pnpm typecheck`, and `pnpm build`.
 - **`024` — Index filesystem/git watcher.** Completed in this branch. Added a main-process Chokidar
   watcher for every enabled host workspace, with index-compatible skip/`.gitignore` filtering and a
   debounced low-priority incremental refresh. A separate Git watch resolves the real `HEAD`, current
