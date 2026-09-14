@@ -72,4 +72,34 @@ describe("GitActions commit dialog", () => {
       document.querySelector<HTMLTextAreaElement>('textarea[placeholder="Commit message"]')?.value
     ).toBe("")
   })
+
+  it("shows filenames with abbreviated directories and full paths on hover", async () => {
+    window.cowork.git.status = vi.fn().mockResolvedValue({
+      isRepo: true,
+      entries: [
+        {
+          path: "src/main/agent/tools/web/extract.ts",
+          kind: "modified",
+          index: " ",
+          worktree: "M",
+        },
+      ],
+    })
+    await act(async () => {
+      root.render(<GitActions workspace="/workspace" rightOffset={0} />)
+    })
+
+    click(document.querySelector('button[aria-label*="Git actions"]')!)
+    click(Array.from(document.querySelectorAll('[role="menuitem"]')).find((item) => item.textContent === "Commit…")!)
+
+    await act(async () => {})
+
+    const path = Array.from(document.querySelectorAll<HTMLElement>('[title]')).find(
+      (element) => element.title === "src/main/agent/tools/web/extract.ts"
+    )
+    expect(path?.textContent).toBe("extract.ts ...ent/tools/web")
+    expect(path?.querySelector(".text-muted-foreground")?.textContent).toBe(
+      " ...ent/tools/web"
+    )
+  })
 })
