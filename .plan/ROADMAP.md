@@ -7,7 +7,19 @@ item is its plan file; the ordered-list number is its current priority rank.
 
 ## Next up
 
-1. **`045` — North Star MCP bridge for CLI providers.** After `042`, make North Star a second, distinct
+1. **`092` — Agent lifecycle hooks and AI-assisted authoring.** Add guarded global hooks under
+   `~/.<system>/hooks/` as explicit `.hook.cjs` code plus non-executable `.hook.json` metadata, targetable
+   to all agents or stable selected Agent refs. V1 covers `sessionStart`, `onMessageSent`, `preTool`,
+   `postTool`, `onAgentResponse`, `sessionEnd`, and `onError`; `preTool` may veto but can never approve,
+   weaken policy, or rewrite arguments. Execute exact reviewed revisions in bounded short-lived child
+   processes—crash/protocol isolation, explicitly **not** a filesystem/network sandbox—and keep new or
+   AI-generated code disabled until separate review and enablement. Add a Hooks screen and an isolated,
+   iterative Ask AI wizard that produces inert validated drafts without write/run/enable authority. The
+   internal loop gets the full catalog; autonomous Claude Code/Codex turns get outer lifecycle events only,
+   while `preTool`/`postTool` cover North Star-owned/MCP-bridge tools but cannot intercept native CLI tools.
+   Split `092.1` contract/storage/runner, `092.2` lifecycle integration/observability, then `092.3` UI and
+   AI-assisted authoring.
+2. **`045` — North Star MCP bridge for CLI providers.** After `042`, make North Star a second, distinct
    MCP role: it remains a client of user-configured external servers, and also hosts a lazy,
    authenticated Streamable HTTP server on an ephemeral `127.0.0.1` port for the Claude Code and Codex
    subprocesses we launch. Inject the endpoint per turn (`claude --mcp-config`; Codex transient `-c`
@@ -23,7 +35,7 @@ item is its plan file; the ordered-list number is its current priority rank.
    it, 4/4 with); `045`'s out-of-scope line is amended to permit exactly that narrow steer.
    **`045.1` remains**: extract the shared `index_query` service, add its adapter, widen the grant, add
    the CLI-provider UI copy, and close the Codex steering gap (no per-run append flag exists).
-2. **`069` — Process intake policies and inspectable assumptions.** Give each Process an explicit run-
+3. **`069` — Process intake policies and inspectable assumptions.** Give each Process an explicit run-
    entry contract instead of injecting a mandatory Planning phase: **Proceed with assumptions**
    (default, no preflight gate), **Approve initial plan** (side-effect-free execution brief + one durable
    approval/revision loop), or **Strict input contract** (definition-authored required fields validated
@@ -32,7 +44,7 @@ item is its plan file; the ordered-list number is its current priority rank.
    assumptions log with origin/confidence/impact/status and monitor UI. Human clarification pauses and
    resumes the correct worker; it remains distinct from internal Agent exchanges (`039`). Split strict
    deterministic intake first, then assumptions/questions, then approve-plan preflight.
-3. **`039` — Inspectable Process consultations / Agent exchanges.** A running phase may consult a
+4. **`039` — Inspectable Process consultations / Agent exchanges.** A running phase may consult a
    **completed phase in the same run** and receive a context-grounded answer. The user observes the
    durable exchange but cannot reply; intervention stays in existing Process controls. Before adding
    consultation, persist an explicit phase result and move downstream aggregation away from "latest
@@ -41,7 +53,7 @@ item is its plan file; the ordered-list number is its current priority rank.
    consultation. v1 is synchronous, same-run, completed-target, capped, and read-only in the monitor;
    discovered defects recommend rework through the existing flag policy rather than silently changing
    completed artifacts. Split `039.1` result integrity, then `039.2` consultation/storage/monitor.
-4. **`032` — Process visual canvas.** The explicitly-deferred half of `026` (which shipped the
+5. **`032` — Process visual canvas.** The explicitly-deferred half of `026` (which shipped the
    **list-based** DAG builder and recorded a **visual node/edge canvas** as "later"). Renderer-first +
    one additive migration; **no engine/scheduling/routing change**. Phases become draggable **nodes**,
    dependencies **edges** drawn between handles (same `on_complete`/`on_each_subtask` trigger, same
@@ -55,7 +67,7 @@ item is its plan file; the ordered-list number is its current priority rank.
    toggle vs replace (lean **coexist**). The Radix-`Dialog` takeover means the inspector keeps
    `NativeSelect` (the `023`/`026` `pointer-events:none` finding). **Live-run-on-canvas deferred** — v1
    keeps the `026` nested-list monitor. Independent of `029`/`031`.
-5. **`010` — Container runtime profiles.** Decouple Workspace (the files) from Runtime (the env a
+6. **`010` — Container runtime profiles.** Decouple Workspace (the files) from Runtime (the env a
    tool call executes in). Replace the raw container `image` string with a named **profile**
    (`node` | `python` | `fullstack`), resolved to an image in the env factory; default/fallback =
    `fullstack` (Node + Python) so a Node repo that later adds a Python backend doesn't wedge.

@@ -27,6 +27,16 @@ describe("isTransientError", () => {
     expect(isTransientError({ name: "APIConnectionTimeoutError" })).toBe(true)
   })
 
+  it("treats the OpenAI overload turn-ending message as transient", () => {
+    expect(
+      isTransientError(
+        new Error(
+          "The turn ended early: Our servers are currently overloaded. Please try again later."
+        )
+      )
+    ).toBe(true)
+  })
+
   it("treats unknown or non-object errors as deterministic", () => {
     expect(isTransientError({ code: "EACCES" })).toBe(false)
     expect(isTransientError({ name: "TypeError" })).toBe(false)

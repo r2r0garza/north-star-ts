@@ -400,7 +400,8 @@ const TRANSIENT_NETWORK_CODES = new Set([
 // code lives on `.cause` — see the cause walk below), with no status/code of its
 // own. These few patterns are kept deliberately tight so a deterministic 4xx
 // body text can't trip them.
-const TRANSIENT_MESSAGE = /\b(terminated|premature close|socket hang up)\b/i
+const TRANSIENT_MESSAGE =
+  /\b(terminated|premature close|socket hang up)\b|servers are currently overloaded/i
 
 // Classify a SINGLE error object (no cause walk) into a tri-state:
 //   "transient"     → a retryable infrastructure hiccup
