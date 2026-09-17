@@ -55,6 +55,55 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
+describe("GitActions title-bar controls", () => {
+  it("renders the current branch immediately before Git actions", async () => {
+    window.cowork.git.status = vi.fn().mockResolvedValue({
+      isRepo: true,
+      branch: "feature/title-bar-branch",
+      entries: [],
+      truncated: false,
+    })
+
+    await act(async () => {
+      root.render(<GitActions workspace="/workspace" rightOffset={0} />)
+    })
+
+    const branch = document.querySelector(
+      'button[aria-label="Current Git branch: feature/title-bar-branch. Choose branch"]'
+    )
+    const actions = document.querySelector('button[aria-label*="Git actions"]')
+
+    expect(branch).not.toBeNull()
+    expect(actions).not.toBeNull()
+    expect(branch?.nextElementSibling).toBe(actions)
+  })
+
+  it("hides the branch selector when the workspace is not a Git repository", async () => {
+    window.cowork.git.status = vi.fn().mockResolvedValue({
+      isRepo: false,
+      entries: [],
+      truncated: false,
+    })
+
+    await act(async () => {
+      root.render(<GitActions workspace="/workspace" rightOffset={0} />)
+    })
+
+    expect(
+      document.querySelector('button[aria-label^="Current Git branch:"]')
+    ).toBeNull()
+    const actions = document.querySelector(
+      'button[aria-label="Not a Git repository. Git actions"]'
+    )
+    expect(actions).not.toBeNull()
+    expect(actions).toHaveProperty("disabled", true)
+
+    click(actions!)
+
+    expect(document.querySelector('[role="menuitem"]')).toBeNull()
+  })
+})
+
 describe("GitActions commit dialog", () => {
   it("surfaces unresolved subagent artifacts outside the Git dropdown", async () => {
     window.cowork.subagents.artifacts = vi.fn().mockResolvedValue([

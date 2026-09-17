@@ -67,7 +67,6 @@ import {
 } from "@/components/ui/attachment"
 import { ToolGroup, ApprovalCard } from "@/components/tool-group"
 import { ChangedFilesBar } from "@/components/changed-files-bar"
-import { GitBranchSwitcher } from "@/components/git-branch-switcher"
 import { QuestionPanel } from "@/components/question-panel"
 import { applyStreamAttempt } from "@/lib/live-stream"
 import {
@@ -106,7 +105,6 @@ import {
   type ToolUse,
 } from "@/lib/timeline"
 import { cn } from "@/lib/utils"
-import { useGitStatus } from "@/lib/git-status"
 import { maybeNotify } from "@/lib/notify"
 import {
   EMPTY_CHAT_SUCCESS_ERROR,
@@ -450,10 +448,6 @@ function App(
   // composer's folder picker is hidden: the directory always comes from the
   // project, not a per-conversation pick.
   const [lockedWorkspace, setLockedWorkspace] = useState(false)
-  const gitStatus = useGitStatus(isChat ? "" : workspace)
-  const gitBranch = gitStatus.status?.isRepo
-    ? (gitStatus.status.branch ?? gitStatus.status.sha ?? null)
-    : null
   const [attachments, setAttachments] = useState<string[]>([])
   const [message, setMessage] = useState("")
   // Agent mode: controls how the agent behaves on workspace views.
@@ -2148,9 +2142,15 @@ function App(
         >
           <Bot className="size-4 shrink-0" />
           <ComboboxValue placeholder="Agent">
-            {(value: { value: string; label: string } | null) => (
+            {(
+              value: {
+                value: string
+                label: string
+                name?: string
+              } | null
+            ) => (
               <span className="truncate">
-                {value && value.value ? value.label : "Agent"}
+                {value && value.value ? (value.name ?? value.label) : "Agent"}
               </span>
             )}
           </ComboboxValue>
@@ -2405,12 +2405,6 @@ function App(
                       </span>
                     )}
                   </button>
-                )}
-                {gitBranch && (
-                  <GitBranchSwitcher
-                    workspace={workspace}
-                    compact={rightPanelOpen}
-                  />
                 )}
               </>
             )}
@@ -2826,12 +2820,7 @@ function App(
           !isEmpty && "border-border"
         )}
       >
-        <div
-          className={cn(
-            "mx-auto w-full px-4 py-4",
-            isEmpty ? "max-w-[min(90%,48rem)]" : "max-w-[min(90%,72rem)]"
-          )}
-        >
+        <div className="mx-auto w-full max-w-[min(90%,72rem)] px-4 py-4">
           {welcome}
           {pendingApproval && (
             <div className="mb-3 animate-in duration-200 fade-in-0 slide-in-from-bottom-4">

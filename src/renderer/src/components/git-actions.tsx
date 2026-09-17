@@ -7,6 +7,7 @@ import {
   ShieldAlert,
 } from "lucide-react"
 import { toast } from "sonner"
+import { GitBranchSwitcher } from "@/components/git-branch-switcher"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import {
@@ -113,6 +114,7 @@ export function GitActions({
   const [busy, setBusy] = React.useState<"fetch" | "pull" | "push" | null>(null)
   const mutationBusy = useGitMutationBusy(workspace)
   const [commitOpen, setCommitOpen] = React.useState(false)
+  const [menuOpen, setMenuOpen] = React.useState(false)
   const [lease, setLease] = React.useState<{ label: string } | null>(null)
   const [artifacts, setArtifacts] = React.useState<SubagentArtifact[]>([])
   const [cleanupOpen, setCleanupOpen] = React.useState(false)
@@ -158,7 +160,7 @@ export function GitActions({
     const observer = new ResizeObserver(report)
     observer.observe(controls)
     return () => observer.disconnect()
-  }, [artifacts.length, onWidthChange])
+  }, [artifacts.length, gitStatus.status, onWidthChange])
 
   const action = async (kind: "fetch" | "pull" | "push") => {
     setBusy(kind)
@@ -201,7 +203,14 @@ export function GitActions({
               <span>Subagent cleanup ({artifacts.length})</span>
             </button>
           )}
-          <DropdownMenu>
+          <GitBranchSwitcher workspace={workspace} />
+          <DropdownMenu
+            open={menuOpen}
+            onOpenChange={(open) => {
+              if (open && repoStatus === "unavailable") return
+              setMenuOpen(open)
+            }}
+          >
             <DropdownMenuTrigger asChild>
               <button
                 type="button"
@@ -525,7 +534,7 @@ function CommitDialog({
             onClick={() => void askAi()}
             disabled={asking || selected.size === 0}
           >
-            {asking && <LoaderCircle className="animate-spin" />}Ask AI
+            {asking && <LoaderCircle className="animate-spin" />}AI - Create Commit Message
           </Button>
           <Button
             type="button"
