@@ -79,6 +79,22 @@ function Shell() {
       }),
     []
   )
+  useEffect(() => {
+    const openConversation = (event: Event) => {
+      const conversationId = (event as CustomEvent<{ conversationId?: string }>)
+        .detail?.conversationId
+      if (!conversationId) return
+      void window.cowork.db.conversations
+        .get(conversationId)
+        .then((conversation) => {
+          if (!conversation) return
+          handleSelectConversation(conversation.id, conversation.mode)
+        })
+    }
+    window.addEventListener("open-conversation", openConversation)
+    return () =>
+      window.removeEventListener("open-conversation", openConversation)
+  })
   // Conversations with a turn currently streaming, reported up from App (which
   // owns the state). Drives the per-row spinner in the sidebar.
   const [runningConvos, setRunningConvos] = useState<Set<string>>(new Set())
@@ -236,12 +252,15 @@ function Shell() {
   // Once the panel is open, the Git and theme controls sit just outside its left
   // edge. Git is immediately to the visual right of the theme control.
   const gitAvailable = view !== "Chat" && workspacePath.trim() !== ""
+  const [gitActionsWidth, setGitActionsWidth] = useState(28)
   const gitRightOffset = activityPanelWidth
     ? activityPanelWidth + 8
     : terminalAvailable
       ? terminalRightOffset + 30
       : rightControlOffset + 32
-  const themeRightOffset = gitAvailable ? gitRightOffset + 32 : gitRightOffset
+  const themeRightOffset = gitAvailable
+    ? gitRightOffset + gitActionsWidth + 4
+    : gitRightOffset
 
   useTerminalShortcut(terminalAvailable, toggleTerminal)
 
@@ -475,7 +494,11 @@ function Shell() {
         <SidebarToggle fullscreen={fullscreen} isMac={isMac} />
         <HeaderThemeToggle rightOffset={themeRightOffset} />
         {gitAvailable && (
-          <GitActions workspace={workspacePath} rightOffset={gitRightOffset} />
+          <GitActions
+            workspace={workspacePath}
+            rightOffset={gitRightOffset}
+            onWidthChange={setGitActionsWidth}
+          />
         )}
         {terminalAvailable &&
           !(

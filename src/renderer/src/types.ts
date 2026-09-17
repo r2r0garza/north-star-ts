@@ -15,6 +15,7 @@ export type {
   Todo,
   TodoStatus,
   Workspace,
+  SubagentArtifact,
 } from "../../preload/index"
 
 // Durable task runner event types, surfaced for the Workspace Activity panel's

@@ -1254,3 +1254,26 @@ UPDATE projects
 SET position = (SELECT pos FROM ordered WHERE ordered.id = projects.id);
 CREATE INDEX idx_projects_position ON projects(position, updated_at DESC);
 `
+
+// v45: writer-subagent artifacts intentionally do not reference conversations or
+// tasks. An unresolved crash quarantine must survive source-conversation deletion
+// until its app-owned worktree is inspected and resolved.
+export const SCHEMA_V45 = `
+CREATE TABLE IF NOT EXISTS subagent_artifacts (
+  id             TEXT PRIMARY KEY,
+  repository_id  TEXT NOT NULL,
+  session_id     TEXT NOT NULL,
+  assignment_id  TEXT NOT NULL,
+  backend        TEXT NOT NULL,
+  branch         TEXT NOT NULL,
+  worktree_path  TEXT NOT NULL,
+  marker_path    TEXT NOT NULL,
+  status         TEXT NOT NULL CHECK (status IN ('active','resolved','quarantined_cleanup_required')),
+  detail         TEXT,
+  created_at     INTEGER NOT NULL,
+  updated_at     INTEGER NOT NULL,
+  resolved_at    INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_subagent_artifacts_repository_status
+  ON subagent_artifacts(repository_id, status, created_at);
+`

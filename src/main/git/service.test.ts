@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "fs"
 import { tmpdir } from "os"
 import { join } from "path"
 import { GitService } from "./service"
+import { repositoryDelegationLeases } from "../agent/subagents/repository-lease"
 import type {
   Environment,
   ExecFileOptions,
@@ -45,6 +46,24 @@ describe.skipIf(!gitAvailable)("GitService", () => {
   afterEach(() => {
     rmSync(repo, { recursive: true, force: true })
     rmSync(plain, { recursive: true, force: true })
+  })
+
+  it("enforces repository leases inside mutation methods", async () => {
+    const lease = await repositoryDelegationLeases.acquire(repo, "writer batch")
+    writeFileSync(join(repo, "tracked.txt"), "leased\n")
+    await expect(
+      new GitService(repo).commitSelected(["tracked.txt"], "blocked")
+    ).resolves.toEqual({
+      ok: false,
+      error: "repository_busy: writer batch",
+    })
+    await expect(
+      new GitService(repo, undefined, lease.token).commitSelected(
+        ["tracked.txt"],
+        "owner"
+      )
+    ).resolves.toMatchObject({ ok: true })
+    repositoryDelegationLeases.release(lease)
   })
 
   it("returns a typed non-repo result", async () => {

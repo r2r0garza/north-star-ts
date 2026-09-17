@@ -92,7 +92,7 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
     const db = new Database(":memory:")
     db.pragma("foreign_keys = ON")
     runMigrations(db)
-    expect(db.pragma("user_version", { simple: true })).toBe(44)
+    expect(db.pragma("user_version", { simple: true })).toBe(45)
     expect(db.pragma("foreign_key_check")).toHaveLength(0)
     db.close()
   })
@@ -365,6 +365,27 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
       { id: "newer", position: 0 },
       { id: "older", position: 1 },
     ])
+    db.close()
+  })
+
+  it("repairs a missing subagent artifacts table when user_version is ahead", () => {
+    const db = new Database(":memory:")
+    db.pragma("foreign_keys = ON")
+    runMigrations(db)
+    db.exec(`
+      DROP TABLE subagent_artifacts;
+      PRAGMA user_version = 99;
+    `)
+
+    runMigrations(db)
+
+    const table = db
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'subagent_artifacts'"
+      )
+      .get()
+    expect(table).toBeTruthy()
+    expect(db.pragma("user_version", { simple: true })).toBe(99)
     db.close()
   })
 
@@ -847,7 +868,7 @@ describe.skipIf(!sqliteLoads)("SCHEMA_V9 — orphan reap (plan 022)", () => {
     // Apply V9 (the reaper) and any later migrations, up to the latest version.
     runMigrations(db)
 
-    expect(db.pragma("user_version", { simple: true })).toBe(44)
+    expect(db.pragma("user_version", { simple: true })).toBe(45)
 
     // Reaped: orphan + its nested descendant, and all their state.
     const taskIds = (

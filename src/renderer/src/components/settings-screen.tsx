@@ -1144,6 +1144,29 @@ export function SettingsScreen({
                         </Field>
                         <Field orientation="horizontal">
                           <FieldContent>
+                            <FieldLabel htmlFor="conversation-subagents">
+                              Allow agents to delegate to subagents
+                            </FieldLabel>
+                            <FieldDescription>
+                              Enable child agents for parallel research or
+                              isolated implementation. This may increase model
+                              usage and applies to new conversation turns, not
+                              Process runs.
+                            </FieldDescription>
+                          </FieldContent>
+                          <Switch
+                            id="conversation-subagents"
+                            checked={conversations.allowConversationSubagents}
+                            onCheckedChange={(checked) =>
+                              saveConversations({
+                                ...conversations,
+                                allowConversationSubagents: checked,
+                              })
+                            }
+                          />
+                        </Field>
+                        <Field orientation="horizontal">
+                          <FieldContent>
                             <FieldLabel htmlFor="memory-enabled">
                               Automatic memory
                             </FieldLabel>

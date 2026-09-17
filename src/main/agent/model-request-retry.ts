@@ -1,4 +1,5 @@
 import type { ToolCallDelta } from "./tool-stream"
+import { modelRequestPermits } from "./model-permits"
 import type { ApiMode, ModelRequestRetryBudget } from "../db/types"
 import {
   consumeAttempt as consumeModelRequestRetryAttempt,
@@ -416,7 +417,11 @@ export async function createCompletionRoundWithRetry(input: {
 
     const attemptId = `${logicalRoundId}:attempt:${attemptsUsed}`
     input.onAttemptEvent?.({ type: "start", attemptId, attempt: attemptsUsed })
+    let releasePermit: (() => void) | undefined
     try {
+      // One permit covers one request/stream only. Release it before the agent
+      // loop can execute tools, so a parent blocked in spawn_subagents holds none.
+      releasePermit = await modelRequestPermits.acquire(signal)
       const startedAt = clock.now()
       const stream = await request()
       const round = await consumeCompletionStream(stream, signal, {
@@ -506,6 +511,8 @@ export async function createCompletionRoundWithRetry(input: {
       input.onAttemptEvent?.({ type: "rollback", attemptId, retrying: true })
       await clock.sleep(delay, signal)
       if (signal.aborted) throw error
+    } finally {
+      releasePermit?.()
     }
   }
 

@@ -224,10 +224,11 @@ describe("settings service — agent sources", () => {
 })
 
 describe("settings service — conversations", () => {
-  it("defaults the startup view to the main agent mode with background button hidden", () => {
+  it("defaults the startup view to the main agent mode with optional conversation features off", () => {
     expect(service.getConversations()).toEqual({
       defaultMode: "north_star",
       showRunInBackgroundButton: false,
+      allowConversationSubagents: false,
     })
   })
 
@@ -235,19 +236,22 @@ describe("settings service — conversations", () => {
     service.setConversations({
       defaultMode: "chat",
       showRunInBackgroundButton: true,
+      allowConversationSubagents: true,
     })
     service._resetCacheForTests()
     expect(service.getConversations()).toEqual({
       defaultMode: "chat",
       showRunInBackgroundButton: true,
+      allowConversationSubagents: true,
     })
   })
 
-  it("fills the background-button default for older persisted settings", () => {
+  it("fills optional defaults for older persisted settings", () => {
     store.set("conversations", JSON.stringify({ defaultMode: "interactive" }))
     expect(service.getConversations()).toEqual({
       defaultMode: "interactive",
       showRunInBackgroundButton: false,
+      allowConversationSubagents: false,
     })
   })
 
@@ -256,12 +260,14 @@ describe("settings service — conversations", () => {
     expect(service.getConversations()).toEqual({
       defaultMode: "north_star",
       showRunInBackgroundButton: false,
+      allowConversationSubagents: false,
     })
     service._resetCacheForTests()
     store.set("conversations", "{not json")
     expect(service.getConversations()).toEqual({
       defaultMode: "north_star",
       showRunInBackgroundButton: false,
+      allowConversationSubagents: false,
     })
   })
 })

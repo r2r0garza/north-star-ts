@@ -14,6 +14,7 @@ import type {
 import { renderContextEnvelope } from "../context/provenance"
 import { truncateForModel, toolError } from "./output"
 import { TOOL_EFFECTS, type Tool, type ToolContext } from "./types"
+import { repositoryDelegationLeases } from "../subagents/repository-lease"
 
 const DEFAULT_TIMEOUT_MS = 30_000
 const MAX_TIMEOUT_MS = 600_000
@@ -434,6 +435,15 @@ async function startCommand(
           ? err.message
           : "Working directory is outside the workspace."
       ),
+    }
+  }
+  const leaseBlocker = await repositoryDelegationLeases.blocker(
+    cwd,
+    ctx.repositoryLeaseToken
+  )
+  if (leaseBlocker) {
+    return {
+      error: toolError("repository_busy", leaseBlocker.label),
     }
   }
   const handle = await env.spawnCommand(command, {

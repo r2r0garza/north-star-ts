@@ -765,19 +765,24 @@ function validateRuntimeSelection(
   path: string
 ): ProcessRuntimeSelection {
   const obj = requireRecord(input, path)
-  const accountId =
-    obj.accountId === null || obj.accountId === undefined
-      ? null
-      : nonEmptyString(obj.accountId, `${path}.accountId`)
-  const modelId =
-    obj.modelId === null || obj.modelId === undefined
-      ? null
-      : nonEmptyString(obj.modelId, `${path}.modelId`)
-  const provider =
-    obj.provider === null || obj.provider === undefined
-      ? null
-      : enumValue(obj.provider, PROVIDERS, `${path}.provider`)
-  return { accountId, modelId, provider }
+  const selection: ProcessRuntimeSelection = {}
+  if (obj.accountId !== undefined) {
+    selection.accountId =
+      obj.accountId === null
+        ? null
+        : nonEmptyString(obj.accountId, `${path}.accountId`)
+  }
+  if (obj.modelId !== undefined) {
+    selection.modelId =
+      obj.modelId === null ? null : nonEmptyString(obj.modelId, `${path}.modelId`)
+  }
+  if (obj.provider !== undefined) {
+    selection.provider =
+      obj.provider === null
+        ? null
+        : enumValue(obj.provider, PROVIDERS, `${path}.provider`)
+  }
+  return selection
 }
 
 function isRecord(input: unknown): input is Record<string, unknown> {
