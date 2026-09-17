@@ -2355,6 +2355,7 @@ function App(
                 overlayRef.current.scrollTop = e.currentTarget.scrollTop
             }}
             rows={2}
+            spellCheck
             placeholder="Send a message…"
             className="relative field-sizing-content max-h-[24.25rem] w-full resize-none bg-transparent px-4 py-3 text-sm leading-relaxed outline-none placeholder:text-muted-foreground"
           />

@@ -82,6 +82,7 @@ import { isBinaryBuffer } from "./agent/env/walk"
 import { readGitBranch } from "./index/metadata"
 import { gitDiffFile } from "./git/diff"
 import { GitService } from "./git/service"
+import { registerTextContextMenu } from "./context-menu"
 import {
   repositoryDelegationLeases,
   repositoryIdentity,
@@ -241,9 +242,11 @@ function createWindow(): void {
     webPreferences: {
       preload: join(__dirname, "../preload/index.js"),
       sandbox: false,
+      spellcheck: true,
     },
   })
   mainWindow = win
+  registerTextContextMenu(win.webContents)
   // Give the browser manager this window so it can embed the agent browser's
   // WebContentsView in the right-hand panel (the "sidebar" surface).
   browserManager.setMainWindow(win)
