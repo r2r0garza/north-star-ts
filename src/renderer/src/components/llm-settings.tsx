@@ -67,16 +67,24 @@ import type {
 // Authorization: Bearer on every request). Native OpenAI needs no base URL; the
 // others do — see `requiresBaseUrl`.
 const PROVIDERS: Array<{ value: Provider; label: string; enabled: boolean }> = [
-  { value: "portkey", label: "Portkey", enabled: true },
-  { value: "openai_compatible", label: "OpenAI-compatible", enabled: true },
-  { value: "openai", label: "OpenAI", enabled: true },
-  { value: "claude_code", label: "Claude Code CLI", enabled: true },
-  { value: "codex_cli", label: "Codex CLI - Experimental", enabled: true },
+  { value: "openai", label: "OpenAI - API", enabled: true },
   {
-    value: "codex_subscription",
-    label: "Codex subscription - Experimental",
+    value: "openai_compatible",
+    label: "OpenAI-Compatible - API",
     enabled: true,
   },
+  {
+    value: "codex_subscription",
+    label: "OpenAI Subscription - Experimental",
+    enabled: true,
+  },
+  {
+    value: "claude_code",
+    label: "Claude Code CLI - Experimental",
+    enabled: true,
+  },
+  { value: "codex_cli", label: "Codex CLI - Experimental", enabled: true },
+  { value: "portkey", label: "Portkey - API", enabled: true },
   { value: "anthropic", label: "Anthropic", enabled: false },
   { value: "google", label: "Google", enabled: false },
   { value: "azure_openai", label: "Azure OpenAI", enabled: false },
@@ -735,7 +743,7 @@ function NewAccountForm({
   onDone: () => void
   onSaved: (id: string) => Promise<void>
 }) {
-  const [provider, setProvider] = useState<Provider>("portkey")
+  const [provider, setProvider] = useState<Provider>("openai")
   const [displayName, setDisplayName] = useState("")
   const [baseUrl, setBaseUrl] = useState("")
 
@@ -772,7 +780,7 @@ function NewAccountForm({
             {PROVIDERS.map((p) => (
               <SelectItem key={p.value} value={p.value} disabled={!p.enabled}>
                 {p.label}
-                {!p.enabled ? " — coming soon" : ""}
+                {!p.enabled ? " - Coming Soon" : ""}
               </SelectItem>
             ))}
           </SelectContent>
