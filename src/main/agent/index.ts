@@ -500,9 +500,11 @@ function appendCommandCompletionEvents(input: {
     )
   appendMessage({
     conversationId: input.conversationId,
-    role: "user",
+    role: "system",
     content,
   })
+  // Chat protocols have no standalone runtime-event role. Transport the safely
+  // enveloped data as user-compatible input without storing it as human speech.
   input.messages.push({ role: "user", content })
   commandCompletionInbox.markConsumed(input.events.map((event) => event.id))
   return true

@@ -120,6 +120,9 @@ export function GitActions({
   const mutationBusy = useGitMutationBusy(workspace)
   const [commitOpen, setCommitOpen] = React.useState(false)
   const [menuOpen, setMenuOpen] = React.useState(false)
+  const [tooltipOpen, setTooltipOpen] = React.useState(false)
+  const menuOpenRef = React.useRef(false)
+  const suppressTooltipRef = React.useRef(false)
   const [lease, setLease] = React.useState<{ label: string } | null>(null)
   const [artifacts, setArtifacts] = React.useState<SubagentArtifact[]>([])
   const [cleanupOpen, setCleanupOpen] = React.useState(false)
@@ -217,10 +220,20 @@ export function GitActions({
                 (repoStatus === "unavailable" || mutationBusy || !!lease)
               )
                 return
+              menuOpenRef.current = open
+              suppressTooltipRef.current = true
+              setTooltipOpen(false)
               setMenuOpen(open)
             }}
           >
-            <Tooltip>
+            <Tooltip
+              open={tooltipOpen}
+              onOpenChange={(open) => {
+                if (open && (menuOpenRef.current || suppressTooltipRef.current))
+                  return
+                setTooltipOpen(open)
+              }}
+            >
               <TooltipTrigger asChild>
                 {repoStatus === "unavailable" || mutationBusy || lease ? (
                   <span
@@ -233,6 +246,14 @@ export function GitActions({
                         : `${statusLight.label}. Git actions`
                     }
                     tabIndex={0}
+                    onPointerMove={() => {
+                      suppressTooltipRef.current = false
+                    }}
+                    onPointerLeave={() => setTooltipOpen(false)}
+                    onBlur={() => {
+                      if (!menuOpenRef.current)
+                        suppressTooltipRef.current = false
+                    }}
                   >
                     <DropdownMenuTrigger asChild>
                       <button
@@ -262,6 +283,14 @@ export function GitActions({
                     <button
                       type="button"
                       aria-label={`${statusLight.label}. Git actions`}
+                      onPointerMove={() => {
+                        suppressTooltipRef.current = false
+                      }}
+                      onPointerLeave={() => setTooltipOpen(false)}
+                      onBlur={() => {
+                        if (!menuOpenRef.current)
+                          suppressTooltipRef.current = false
+                      }}
                       className="relative flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       <GitBranch className="size-4" />

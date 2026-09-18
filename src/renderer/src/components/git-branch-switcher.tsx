@@ -87,6 +87,9 @@ export function GitBranchSwitcher({ workspace }: { workspace: string }) {
   const gitStatus = useGitStatus(workspace)
   const mutationBusy = useGitMutationBusy(workspace)
   const [open, setOpen] = React.useState(false)
+  const [tooltipOpen, setTooltipOpen] = React.useState(false)
+  const menuOpenRef = React.useRef(false)
+  const suppressTooltipRef = React.useRef(false)
   const [branches, setBranches] = React.useState<GitBranchesResult | null>(null)
   const [loading, setLoading] = React.useState(false)
   const [listError, setListError] = React.useState<string | null>(null)
@@ -200,6 +203,9 @@ export function GitBranchSwitcher({ workspace }: { workspace: string }) {
       <DropdownMenu
         open={open}
         onOpenChange={(next) => {
+          menuOpenRef.current = next
+          suppressTooltipRef.current = true
+          setTooltipOpen(false)
           setOpen(next)
           setSearch("")
           setHighlightedIndex(0)
@@ -209,7 +215,14 @@ export function GitBranchSwitcher({ workspace }: { workspace: string }) {
           }
         }}
       >
-        <Tooltip>
+        <Tooltip
+          open={tooltipOpen}
+          onOpenChange={(next) => {
+            if (next && (menuOpenRef.current || suppressTooltipRef.current))
+              return
+            setTooltipOpen(next)
+          }}
+        >
           <TooltipTrigger asChild>
             {mutationBusy ? (
               <span
@@ -218,6 +231,13 @@ export function GitBranchSwitcher({ workspace }: { workspace: string }) {
                 aria-disabled="true"
                 aria-label={`Current Git branch: ${branch}. Choose branch`}
                 tabIndex={0}
+                onPointerMove={() => {
+                  suppressTooltipRef.current = false
+                }}
+                onPointerLeave={() => setTooltipOpen(false)}
+                onBlur={() => {
+                  if (!menuOpenRef.current) suppressTooltipRef.current = false
+                }}
               >
                 <DropdownMenuTrigger asChild>
                   <button
@@ -236,6 +256,13 @@ export function GitBranchSwitcher({ workspace }: { workspace: string }) {
                 <button
                   type="button"
                   aria-label={`Current Git branch: ${branch}. Choose branch`}
+                  onPointerMove={() => {
+                    suppressTooltipRef.current = false
+                  }}
+                  onPointerLeave={() => setTooltipOpen(false)}
+                  onBlur={() => {
+                    if (!menuOpenRef.current) suppressTooltipRef.current = false
+                  }}
                   className="flex h-7 max-w-48 items-center gap-1 rounded-md bg-accent px-2 font-mono text-[10px] text-muted-foreground transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <GitBranch className="size-3 shrink-0" />
