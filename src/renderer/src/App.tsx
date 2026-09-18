@@ -57,6 +57,12 @@ import { Bubble, BubbleContent } from "@/components/ui/bubble"
 import { Marker, MarkerIcon, MarkerContent } from "@/components/ui/marker"
 import { Spinner } from "@/components/ui/spinner"
 import {
+  Tooltip,
+  TooltipButton,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
+import {
   Attachment,
   AttachmentGroup,
   AttachmentMedia,
@@ -701,6 +707,13 @@ function App(
   // selected folder as well. All views need an LLM selection.
   const canSend =
     !!message.trim() && !loading && hasLlm && (isChat || !!workspace.trim())
+  const sendUnavailableReason = !message.trim()
+    ? "Enter a message first"
+    : !hasLlm
+      ? "Choose a model before sending"
+      : !isChat && !workspace.trim()
+        ? "Select a workspace folder before sending"
+        : null
 
   // Subscribe to elements picked in the agent browser. Each pick APPENDS a chip
   // (sticky picker button, or Alt/Option+click on a live page), so several can be
@@ -1685,6 +1698,10 @@ function App(
   // matching the send path, which never sends planMode in Chat.
   const displayedMode: AgentMode =
     isChat && agentMode === "plan" ? "default" : agentMode
+  const [modeMenuOpen, setModeMenuOpen] = useState(false)
+  const [modeTooltipOpen, setModeTooltipOpen] = useState(false)
+  const modeMenuOpenRef = useRef(false)
+  const suppressModeTooltipRef = useRef(false)
   const displayedModeIcon =
     displayedMode === "default" ? (
       <Hand className="size-4 shrink-0" />
@@ -1989,12 +2006,16 @@ function App(
         void selectModel(item.value.slice(0, sep), item.value.slice(sep + 2))
       }}
     >
-      <ComboboxTrigger
-        title={selectedItem ? selectedItem.label : "Select model"}
-        className="flex h-7 items-center rounded-md px-2 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-      >
-        <BrainCircuit className="size-4" />
-      </ComboboxTrigger>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <ComboboxTrigger className="flex h-7 items-center rounded-md px-2 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">
+            <BrainCircuit className="size-4" />
+          </ComboboxTrigger>
+        </TooltipTrigger>
+        <TooltipContent>
+          {selectedItem ? `Model: ${selectedItem.label}` : "Select model"}
+        </TooltipContent>
+      </Tooltip>
       <ComboboxContent className="w-72 min-w-72">
         <ComboboxInput placeholder="Search models…" showTrigger={false} />
         {modelGroups.length > 1 && (
@@ -2044,14 +2065,14 @@ function App(
       </ComboboxContent>
     </Combobox>
   ) : (
-    <button
+    <TooltipButton
+      tooltip={configureModelLabel.replace("…", "")}
       type="button"
-      title={configureModelLabel.replace("…", "")}
       onClick={() => onOpenSettings(configureModelTarget)}
       className="flex items-center rounded-md px-2 py-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
     >
       <BrainCircuit className="size-4" />
-    </button>
+    </TooltipButton>
   )
 
   // Custom agent picker. Only shown when the user has at least one invocable
@@ -2204,21 +2225,25 @@ function App(
           else setAgentSearchQuery("")
         }}
       >
-        <ComboboxTrigger
-          title={
-            selectedAgentItem?.value
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <ComboboxTrigger
+              className={cn(
+                "flex h-7 items-center rounded-md px-2 transition-colors",
+                selAgentName
+                  ? "bg-accent text-foreground"
+                  : "text-muted-foreground hover:bg-accent hover:text-foreground"
+              )}
+            >
+              <Bot className="size-4" />
+            </ComboboxTrigger>
+          </TooltipTrigger>
+          <TooltipContent>
+            {selectedAgentItem?.value
               ? `Agent: ${selectedAgentItem.label}`
-              : "Select agent"
-          }
-          className={cn(
-            "flex h-7 items-center rounded-md px-2 transition-colors",
-            selAgentName
-              ? "bg-accent text-foreground"
-              : "text-muted-foreground hover:bg-accent hover:text-foreground"
-          )}
-        >
-          <Bot className="size-4" />
-        </ComboboxTrigger>
+              : "Select agent"}
+          </TooltipContent>
+        </Tooltip>
         <ComboboxContent className="w-72 min-w-72">
           <ComboboxInput placeholder="Search agents…" showTrigger={false} />
           {agentSourceFilters.length > 1 && (
@@ -2363,40 +2388,47 @@ function App(
         <div className="flex items-center justify-between px-2.5 pb-2.5">
           <div className="flex items-center gap-1">
             {isChat ? (
-              <button
+              <TooltipButton
+                tooltip="Attach files"
                 type="button"
                 onClick={attachFiles}
-                title="Attach files"
                 aria-label="Attach files"
                 className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
               >
                 <Plus className="size-4" />
-              </button>
+              </TooltipButton>
             ) : (
               <>
                 {lockedWorkspace ? (
                   // The directory comes from the conversation's project and can't
                   // be changed here — show it as a static, non-clickable label.
-                  <span
-                    title={`${lastSegment(workspace)} — set by the project`}
-                    className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground"
-                  >
-                    <FolderOpen className="size-4" />
-                    {workspace && !rightPanelOpen && (
-                      <span className="max-w-40 truncate">
-                        {lastSegment(workspace)}
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <span
+                        className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground"
+                        tabIndex={0}
+                      >
+                        <FolderOpen className="size-4" />
+                        {workspace && !rightPanelOpen && (
+                          <span className="max-w-40 truncate">
+                            {lastSegment(workspace)}
+                          </span>
+                        )}
                       </span>
-                    )}
-                  </span>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      {lastSegment(workspace)} — set by the project
+                    </TooltipContent>
+                  </Tooltip>
                 ) : (
-                  <button
-                    type="button"
-                    onClick={pickWorkspace}
-                    title={
+                  <TooltipButton
+                    tooltip={
                       workspace
-                        ? lastSegment(workspace)
+                        ? `Workspace: ${lastSegment(workspace)}`
                         : "Select workspace folder"
                     }
+                    type="button"
+                    onClick={pickWorkspace}
                     className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
                   >
                     <FolderOpen className="size-4" />
@@ -2405,7 +2437,7 @@ function App(
                         {lastSegment(workspace)}
                       </span>
                     )}
-                  </button>
+                  </TooltipButton>
                 )}
               </>
             )}
@@ -2421,32 +2453,62 @@ function App(
                 a workspace view via a shared fresh conversation) displays as
                 Default, matching the send path which never sends planMode in Chat. */}
             {!effectiveIsCli && (
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <button
-                    type="button"
-                    aria-label={`Agent mode: ${displayedMode}`}
-                    title={
-                      displayedMode === "plan"
-                        ? "Plan mode on — agent plans before touching the workspace"
-                        : displayedMode === "auto"
-                          ? "Auto mode on — agent acts without asking for confirmations"
-                          : "Default mode — agent confirms actions before running them"
-                    }
-                    className={cn(
-                      "flex items-center gap-1 rounded-md px-2 py-1 text-xs transition-colors",
-                      displayedMode !== "default"
-                        ? "bg-accent text-foreground"
-                        : "text-muted-foreground hover:bg-accent hover:text-foreground"
-                    )}
-                  >
-                    {displayedModeIcon}
-                    {!rightPanelOpen && (
-                      <span className="capitalize">{displayedMode}</span>
-                    )}
-                    <ChevronDown className="size-3 shrink-0 opacity-60" />
-                  </button>
-                </DropdownMenuTrigger>
+              <DropdownMenu
+                open={modeMenuOpen}
+                onOpenChange={(open) => {
+                  modeMenuOpenRef.current = open
+                  setModeMenuOpen(open)
+                  suppressModeTooltipRef.current = true
+                  setModeTooltipOpen(false)
+                }}
+              >
+                <Tooltip
+                  open={modeTooltipOpen}
+                  onOpenChange={(open) => {
+                    if (
+                      open &&
+                      (modeMenuOpen || suppressModeTooltipRef.current)
+                    )
+                      return
+                    setModeTooltipOpen(open)
+                  }}
+                >
+                  <TooltipTrigger asChild>
+                    <DropdownMenuTrigger asChild>
+                      <button
+                        type="button"
+                        aria-label={`Agent mode: ${displayedMode}`}
+                        onPointerMove={() => {
+                          suppressModeTooltipRef.current = false
+                        }}
+                        onPointerLeave={() => setModeTooltipOpen(false)}
+                        onBlur={() => {
+                          if (!modeMenuOpenRef.current)
+                            suppressModeTooltipRef.current = false
+                        }}
+                        className={cn(
+                          "flex items-center gap-1 rounded-md px-2 py-1 text-xs transition-colors",
+                          displayedMode !== "default"
+                            ? "bg-accent text-foreground"
+                            : "text-muted-foreground hover:bg-accent hover:text-foreground"
+                        )}
+                      >
+                        {displayedModeIcon}
+                        {!rightPanelOpen && (
+                          <span className="capitalize">{displayedMode}</span>
+                        )}
+                        <ChevronDown className="size-3 shrink-0 opacity-60" />
+                      </button>
+                    </DropdownMenuTrigger>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    {displayedMode === "plan"
+                      ? "Plan mode on — agent plans before touching the workspace"
+                      : displayedMode === "auto"
+                        ? "Auto mode on — agent acts without asking for confirmations"
+                        : "Default mode — agent confirms actions before running them"}
+                  </TooltipContent>
+                </Tooltip>
                 <DropdownMenuContent align="start" className="min-w-64">
                   <DropdownMenuItem
                     onClick={() => changeAgentMode("default")}
@@ -2509,42 +2571,74 @@ function App(
               showRunInBackgroundButton &&
               !loading &&
               !effectiveIsCli && (
-                <Button
-                  type="button"
-                  size="icon"
-                  variant="outline"
-                  onClick={runInBackground}
-                  disabled={!canSend}
-                  title="Run in background"
-                  aria-label="Run in background"
-                  className="size-8 rounded-full"
-                >
-                  <Workflow className="size-4" />
-                </Button>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <span
+                      className="inline-flex"
+                      role={!canSend ? "button" : undefined}
+                      aria-disabled={!canSend ? "true" : undefined}
+                      aria-label={!canSend ? "Run in background" : undefined}
+                      tabIndex={!canSend ? 0 : undefined}
+                    >
+                      <Button
+                        type="button"
+                        size="icon"
+                        variant="outline"
+                        onClick={runInBackground}
+                        disabled={!canSend}
+                        aria-label="Run in background"
+                        className="size-8 rounded-full"
+                      >
+                        <Workflow className="size-4" />
+                      </Button>
+                    </span>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    {sendUnavailableReason ?? "Run in background"}
+                  </TooltipContent>
+                </Tooltip>
               )}
             {loading ? (
-              <Button
-                type="button"
-                size="icon"
-                onClick={stopMessage}
-                title="Stop"
-                aria-label="Stop"
-                className="size-8 rounded-full"
-              >
-                <Square className="size-3.5 fill-current" />
-              </Button>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    type="button"
+                    size="icon"
+                    onClick={stopMessage}
+                    aria-label="Stop"
+                    className="size-8 rounded-full"
+                  >
+                    <Square className="size-3.5 fill-current" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Stop</TooltipContent>
+              </Tooltip>
             ) : (
-              <Button
-                type="button"
-                size="icon"
-                onClick={sendMessage}
-                disabled={!canSend}
-                title="Send"
-                aria-label="Send"
-                className="size-8 rounded-full"
-              >
-                <ArrowUp className="size-4" />
-              </Button>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span
+                    className="inline-flex"
+                    role={!canSend ? "button" : undefined}
+                    aria-disabled={!canSend ? "true" : undefined}
+                    aria-label={!canSend ? "Send" : undefined}
+                    tabIndex={!canSend ? 0 : undefined}
+                  >
+                    <Button
+                      type="button"
+                      size="icon"
+                      onClick={sendMessage}
+                      disabled={!canSend}
+                      aria-label="Send"
+                      className="size-8 rounded-full"
+                    >
+                      <ArrowUp className="size-4" />
+                    </Button>
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent>
+                  {sendUnavailableReason ?? "Send"}
+                </TooltipContent>
+              </Tooltip>
             )}
           </div>
         </div>

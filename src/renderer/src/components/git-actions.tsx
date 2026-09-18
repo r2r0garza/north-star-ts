@@ -25,6 +25,11 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { Textarea } from "@/components/ui/textarea"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
 import type { GitStatusEntry, SubagentArtifact } from "@/types"
 import { useGitStatus } from "@/lib/git-status"
 import { runGitMutation, useGitMutationBusy } from "@/lib/git-operation"
@@ -207,41 +212,77 @@ export function GitActions({
           <DropdownMenu
             open={menuOpen}
             onOpenChange={(open) => {
-              if (open && repoStatus === "unavailable") return
+              if (
+                open &&
+                (repoStatus === "unavailable" || mutationBusy || !!lease)
+              )
+                return
               setMenuOpen(open)
             }}
           >
-            <DropdownMenuTrigger asChild>
-              <button
-                type="button"
-                disabled={
-                  repoStatus === "unavailable" || mutationBusy || !!lease
-                }
-                title={
-                  lease
-                    ? `Git actions are disabled while ${lease.label} is using this repository.`
-                    : repoStatus === "unavailable"
-                      ? "This folder is not a Git repository"
-                      : `${statusLight.label}. Git actions`
-                }
-                aria-label={
-                  lease
-                    ? `Git actions disabled: ${lease.label}`
-                    : `${statusLight.label}. Git actions`
-                }
-                className="relative flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {busy ? (
-                  <LoaderCircle className="size-4 animate-spin" />
+            <Tooltip>
+              <TooltipTrigger asChild>
+                {repoStatus === "unavailable" || mutationBusy || lease ? (
+                  <span
+                    className="inline-flex"
+                    role="button"
+                    aria-disabled="true"
+                    aria-label={
+                      lease
+                        ? `Git actions disabled: ${lease.label}`
+                        : `${statusLight.label}. Git actions`
+                    }
+                    tabIndex={0}
+                  >
+                    <DropdownMenuTrigger asChild>
+                      <button
+                        type="button"
+                        disabled
+                        aria-label={
+                          lease
+                            ? `Git actions disabled: ${lease.label}`
+                            : `${statusLight.label}. Git actions`
+                        }
+                        className="relative flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {busy ? (
+                          <LoaderCircle className="size-4 animate-spin" />
+                        ) : (
+                          <GitBranch className="size-4" />
+                        )}
+                        <span
+                          aria-hidden="true"
+                          className={`absolute top-0.5 right-0.5 size-1.5 rounded-full ring-2 ring-background ${statusLight.className}`}
+                        />
+                      </button>
+                    </DropdownMenuTrigger>
+                  </span>
                 ) : (
-                  <GitBranch className="size-4" />
+                  <DropdownMenuTrigger asChild>
+                    <button
+                      type="button"
+                      aria-label={`${statusLight.label}. Git actions`}
+                      className="relative flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      <GitBranch className="size-4" />
+                      <span
+                        aria-hidden="true"
+                        className={`absolute top-0.5 right-0.5 size-1.5 rounded-full ring-2 ring-background ${statusLight.className}`}
+                      />
+                    </button>
+                  </DropdownMenuTrigger>
                 )}
-                <span
-                  aria-hidden="true"
-                  className={`absolute top-0.5 right-0.5 size-1.5 rounded-full ring-2 ring-background ${statusLight.className}`}
-                />
-              </button>
-            </DropdownMenuTrigger>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">
+                {lease
+                  ? `Git actions are disabled while ${lease.label} is using this repository.`
+                  : repoStatus === "unavailable"
+                    ? "This folder is not a Git repository"
+                    : mutationBusy
+                      ? "Git actions are unavailable while another Git operation is running"
+                      : `${statusLight.label}. Git actions`}
+              </TooltipContent>
+            </Tooltip>
             <DropdownMenuContent align="end">
               <DropdownMenuItem onSelect={() => void action("fetch")}>
                 Fetch
@@ -534,7 +575,8 @@ function CommitDialog({
             onClick={() => void askAi()}
             disabled={asking || selected.size === 0}
           >
-            {asking && <LoaderCircle className="animate-spin" />}AI - Create Commit Message
+            {asking && <LoaderCircle className="animate-spin" />}AI - Create
+            Commit Message
           </Button>
           <Button
             type="button"

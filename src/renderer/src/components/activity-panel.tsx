@@ -12,6 +12,7 @@ import {
 } from "lucide-react"
 import { useTheme } from "next-themes"
 import { cn } from "@/lib/utils"
+import { TooltipButton } from "@/components/ui/tooltip"
 import {
   SidebarHeader,
   SidebarContent,
@@ -143,12 +144,14 @@ export function ActivityToggle({
   onToggle: () => void
   reserveWindowControls?: boolean
 }) {
+  const label = open ? "Collapse activity panel" : "Expand activity panel"
   return (
-    <button
+    <TooltipButton
+      tooltip={label}
+      side="bottom"
       type="button"
       onClick={onToggle}
-      aria-label={open ? "Collapse activity panel" : "Expand activity panel"}
-      title={open ? "Collapse activity panel" : "Expand activity panel"}
+      aria-label={label}
       className={cn(
         "pointer-events-auto absolute top-2.5 z-10 [-webkit-app-region:no-drag]",
         reserveWindowControls ? "right-[8.75rem]" : "right-4",
@@ -157,7 +160,7 @@ export function ActivityToggle({
       )}
     >
       <PanelRight className="size-4.5" />
-    </button>
+    </TooltipButton>
   )
 }
 
@@ -183,12 +186,14 @@ function ThemeToggle() {
   const [mounted, setMounted] = React.useState(false)
   React.useEffect(() => setMounted(true), [])
   const isDark = resolvedTheme === "dark"
+  const label = isDark ? "Switch to light mode" : "Switch to dark mode"
   return (
-    <button
+    <TooltipButton
+      tooltip={label}
+      side="bottom"
       type="button"
       onClick={() => setTheme(isDark ? "light" : "dark")}
-      aria-label={isDark ? "Switch to light mode" : "Switch to dark mode"}
-      title={isDark ? "Switch to light mode" : "Switch to dark mode"}
+      aria-label={label}
       className={cn(
         "flex size-7 items-center justify-center rounded-md",
         "text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
@@ -199,7 +204,7 @@ function ThemeToggle() {
       ) : (
         <Moon className="size-4" />
       )}
-    </button>
+    </TooltipButton>
   )
 }
 
@@ -323,15 +328,15 @@ function BrowserPanel({
     <div className="relative flex h-full min-h-0 flex-col pl-1">
       {/* Chrome: URL bar + reload + pick + pop-out. */}
       <div className="flex items-center gap-1 border-b px-2 py-1.5">
-        <button
+        <TooltipButton
+          tooltip="Reload"
           type="button"
           onClick={() => window.cowork.browserReload()}
           aria-label="Reload"
-          title="Reload"
           className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
         >
           <RotateCw className={cn("size-4", loading && "animate-spin")} />
-        </button>
+        </TooltipButton>
         <form onSubmit={submitUrl} className="min-w-0 flex-1">
           <input
             type="text"
@@ -343,42 +348,42 @@ function BrowserPanel({
             className="w-full rounded-md border border-input bg-transparent px-2 py-1 text-xs outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/50"
           />
         </form>
-        <button
+        <TooltipButton
+          tooltip="Pick element"
           type="button"
           onClick={() => window.cowork.browserSetPickMode(!picking)}
           aria-label="Pick element"
-          title="Pick element"
           className={cn(
             "flex size-7 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-accent hover:text-foreground",
             picking ? "bg-accent text-foreground" : "text-muted-foreground"
           )}
         >
           <SquareDashedMousePointer className="size-4" />
-        </button>
-        <button
+        </TooltipButton>
+        <TooltipButton
+          tooltip={poppedOut ? "Dock browser" : "Pop out to a window"}
           type="button"
           onClick={togglePop}
           aria-label={poppedOut ? "Dock browser" : "Pop out browser"}
-          title={poppedOut ? "Dock browser" : "Pop out to a window"}
           className={cn(
             "flex size-7 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-accent hover:text-foreground",
             poppedOut ? "bg-accent text-foreground" : "text-muted-foreground"
           )}
         >
           <ExternalLink className="size-4" />
-        </button>
+        </TooltipButton>
         {/* Close the tab — only shown when a page is actually open. The native
             view is shared with the agent, so this frees it for both. */}
         {url && (
-          <button
+          <TooltipButton
+            tooltip="Close browser tab"
             type="button"
             onClick={() => window.cowork.browserClose()}
             aria-label="Close browser tab"
-            title="Close browser tab"
             className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
           >
             <X className="size-4" />
-          </button>
+          </TooltipButton>
         )}
       </div>
       {poppedOut ? (
@@ -583,15 +588,15 @@ export function ActivityPanel({
                   >
                     {tabLabel(tab.kind)}
                   </button>
-                  <button
+                  <TooltipButton
+                    tooltip={`Close ${tabLabel(tab.kind)} tab`}
                     type="button"
                     onClick={() => onCloseTab(tab.id)}
                     aria-label={`Close ${tabLabel(tab.kind)} tab`}
-                    title={`Close ${tabLabel(tab.kind)} tab`}
                     className="mr-1 flex size-5 items-center justify-center rounded-sm hover:bg-background/60"
                   >
                     <X className="size-3" />
-                  </button>
+                  </TooltipButton>
                 </div>
               ))}
               {tabPicker()}

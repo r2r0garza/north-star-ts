@@ -2,6 +2,11 @@ import * as React from "react"
 import { Play, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Spinner } from "@/components/ui/spinner"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
 import { ApprovalCard } from "@/components/tool-group"
 import { QuestionPanel } from "@/components/question-panel"
 import { cn } from "@/lib/utils"
@@ -156,15 +161,19 @@ function TaskRow({
             </Button>
           )}
           {!isInterrupted && (
-            <Button
-              size="icon-sm"
-              variant="ghost"
-              onClick={onCancel}
-              title="Cancel task"
-              aria-label="Cancel task"
-            >
-              <X className="size-3.5" />
-            </Button>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  size="icon-sm"
+                  variant="ghost"
+                  onClick={onCancel}
+                  aria-label="Cancel task"
+                >
+                  <X className="size-3.5" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Cancel task</TooltipContent>
+            </Tooltip>
           )}
         </div>
       </div>

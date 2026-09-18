@@ -4,6 +4,7 @@ import ReactDOM from "react-dom/client"
 import "./globals.css"
 import { ThemeProvider } from "@/components/theme-provider"
 import { SidebarProvider } from "@/components/ui/sidebar"
+import { TooltipProvider } from "@/components/ui/tooltip"
 import { AppSidebar, MODE_TO_VIEW, type View } from "@/components/sidebar"
 import { SidebarToggle } from "@/components/sidebar-toggle"
 import {
@@ -483,219 +484,223 @@ function Shell() {
   }
 
   return (
-    <SidebarProvider className="relative">
-      {/* Top drag bar (replaces the OS title bar). Keep the open activity panel
+    <TooltipProvider>
+      <SidebarProvider className="relative">
+        {/* Top drag bar (replaces the OS title bar). Keep the open activity panel
           outside the drag surface so its tab strip remains interactive. */}
-      <div className="pointer-events-none absolute inset-x-0 top-0 z-20 h-11">
-        <div
-          className="pointer-events-auto absolute inset-y-0 left-0 [-webkit-app-region:drag]"
-          style={{ right: activityOpen ? activityPanelWidth : 0 }}
-        />
-        <SidebarToggle fullscreen={fullscreen} isMac={isMac} />
-        <HeaderThemeToggle rightOffset={themeRightOffset} />
-        {gitAvailable && (
-          <GitActions
-            workspace={workspacePath}
-            rightOffset={gitRightOffset}
-            onWidthChange={setGitActionsWidth}
+        <div className="pointer-events-none absolute inset-x-0 top-0 z-20 h-11">
+          <div
+            className="pointer-events-auto absolute inset-y-0 left-0 [-webkit-app-region:drag]"
+            style={{ right: activityOpen ? activityPanelWidth : 0 }}
           />
-        )}
-        {terminalAvailable &&
-          !(
+          <SidebarToggle fullscreen={fullscreen} isMac={isMac} />
+          <HeaderThemeToggle rightOffset={themeRightOffset} />
+          {gitAvailable && (
+            <GitActions
+              workspace={workspacePath}
+              rightOffset={gitRightOffset}
+              onWidthChange={setGitActionsWidth}
+            />
+          )}
+          {terminalAvailable &&
+            !(
+              agentsOpen ||
+              skillsOpen ||
+              processOpen ||
+              mcpOpen ||
+              dashboardsOpen
+            ) && (
+              <TerminalToggle
+                open={terminalOpen}
+                onToggle={toggleTerminal}
+                rightOffset={terminalRightOffset}
+              />
+            )}
+          {!(
             agentsOpen ||
             skillsOpen ||
             processOpen ||
             mcpOpen ||
             dashboardsOpen
           ) && (
-            <TerminalToggle
-              open={terminalOpen}
-              onToggle={toggleTerminal}
-              rightOffset={terminalRightOffset}
+            <ActivityToggle
+              open={activityOpen}
+              onToggle={() => setActivity(!activityOpen)}
+              reserveWindowControls={reserveWindowControls}
             />
           )}
-        {!(
-          agentsOpen ||
-          skillsOpen ||
-          processOpen ||
-          mcpOpen ||
-          dashboardsOpen
-        ) && (
-          <ActivityToggle
-            open={activityOpen}
-            onToggle={() => setActivity(!activityOpen)}
-            reserveWindowControls={reserveWindowControls}
-          />
-        )}
-      </div>
-      <AppSidebar
-        view={view}
-        onViewChange={handleViewChange}
-        activeConversationId={activeConversationId}
-        onSelectConversation={handleSelectConversation}
-        onNewConversation={handleNewConversation}
-        onConversationDeleted={handleConversationDeleted}
-        onSettingsClick={() => openSettings()}
-        onSkillsClick={() => {
-          setSkillsOpen(true)
-          setAgentsOpen(false)
-          setProcessOpen(false)
-          setMcpOpen(false)
-          setDashboardsOpen(false)
-        }}
-        onAgentsClick={() => {
-          setAgentsOpen(true)
-          setSkillsOpen(false)
-          setProcessOpen(false)
-          setMcpOpen(false)
-          setDashboardsOpen(false)
-        }}
-        onProcessClick={() => {
-          setProcessOpen(true)
-          setAgentsOpen(false)
-          setSkillsOpen(false)
-          setMcpOpen(false)
-          setDashboardsOpen(false)
-        }}
-        onMcpClick={() => {
-          setMcpOpen(true)
-          setProcessOpen(false)
-          setAgentsOpen(false)
-          setSkillsOpen(false)
-          setDashboardsOpen(false)
-        }}
-        onDashboardsClick={() => {
-          setDashboardsOpen(true)
-          setMcpOpen(false)
-          setProcessOpen(false)
-          setAgentsOpen(false)
-          setSkillsOpen(false)
-        }}
-        refreshKey={refreshKey}
-        runningConvos={runningConvos}
-        waitingConvos={waitingConvos}
-      />
-      {/* Center region: App and the Agents/Skills/Processes panels share this
+        </div>
+        <AppSidebar
+          view={view}
+          onViewChange={handleViewChange}
+          activeConversationId={activeConversationId}
+          onSelectConversation={handleSelectConversation}
+          onNewConversation={handleNewConversation}
+          onConversationDeleted={handleConversationDeleted}
+          onSettingsClick={() => openSettings()}
+          onSkillsClick={() => {
+            setSkillsOpen(true)
+            setAgentsOpen(false)
+            setProcessOpen(false)
+            setMcpOpen(false)
+            setDashboardsOpen(false)
+          }}
+          onAgentsClick={() => {
+            setAgentsOpen(true)
+            setSkillsOpen(false)
+            setProcessOpen(false)
+            setMcpOpen(false)
+            setDashboardsOpen(false)
+          }}
+          onProcessClick={() => {
+            setProcessOpen(true)
+            setAgentsOpen(false)
+            setSkillsOpen(false)
+            setMcpOpen(false)
+            setDashboardsOpen(false)
+          }}
+          onMcpClick={() => {
+            setMcpOpen(true)
+            setProcessOpen(false)
+            setAgentsOpen(false)
+            setSkillsOpen(false)
+            setDashboardsOpen(false)
+          }}
+          onDashboardsClick={() => {
+            setDashboardsOpen(true)
+            setMcpOpen(false)
+            setProcessOpen(false)
+            setAgentsOpen(false)
+            setSkillsOpen(false)
+          }}
+          refreshKey={refreshKey}
+          runningConvos={runningConvos}
+          waitingConvos={waitingConvos}
+        />
+        {/* Center region: App and the Agents/Skills/Processes panels share this
           flex slot, sitting between the sidebar gap and the activity-panel gap.
           App stays mounted (hidden, not unmounted) when a panel is open so
           streaming/turn state survives. */}
-      <div className="relative flex h-svh min-h-0 w-full min-w-0 flex-1 flex-col overflow-hidden">
-        <div
-          className={cn(
-            "flex min-h-0 min-w-0 flex-1 overflow-hidden",
-            (agentsOpen ||
-              skillsOpen ||
-              processOpen ||
-              mcpOpen ||
-              dashboardsOpen) &&
-              "hidden"
+        <div className="relative flex h-svh min-h-0 w-full min-w-0 flex-1 flex-col overflow-hidden">
+          <div
+            className={cn(
+              "flex min-h-0 min-w-0 flex-1 overflow-hidden",
+              (agentsOpen ||
+                skillsOpen ||
+                processOpen ||
+                mcpOpen ||
+                dashboardsOpen) &&
+                "hidden"
+            )}
+          >
+            <App
+              ref={appRef}
+              view={view}
+              conversationId={activeConversationId}
+              pendingProjectId={pendingProjectId}
+              onConversationCreated={(id) => {
+                const pendingId = freshTerminalConversationId
+                void window.cowork.terminal.adoptConversation(pendingId, id)
+                setAdoptedTerminalConversation({ from: pendingId, to: id })
+                setActiveConversationId(id)
+                setTerminalOpenByConversation((state) => {
+                  if (!(pendingId in state)) return state
+                  const next = { ...state, [id]: state[pendingId] }
+                  delete next[pendingId]
+                  return next
+                })
+                setFreshTerminalConversationId(crypto.randomUUID())
+                refreshConversations()
+              }}
+              onConversationChanged={refreshConversations}
+              onOpenSettings={openSettings}
+              settingsOpen={settingsOpen}
+              rightPanelOpen={activityOpen}
+              onWorkspaceChange={setWorkspacePath}
+              onReviewFiles={openFiles}
+              onOpenHtml={openHtmlInBrowser}
+              onRanInBackground={() => openSidebarTab("info")}
+              onRunningConvosChange={setRunningConvos}
+              onWaitingConvosChange={setWaitingConvos}
+            />
+          </div>
+          {agentsOpen && <AgentsScreen onClose={() => setAgentsOpen(false)} />}
+          {skillsOpen && <SkillsScreen onClose={() => setSkillsOpen(false)} />}
+          {processOpen && (
+            <ProcessScreen onClose={() => setProcessOpen(false)} />
           )}
-        >
-          <App
-            ref={appRef}
-            view={view}
-            conversationId={activeConversationId}
-            pendingProjectId={pendingProjectId}
-            onConversationCreated={(id) => {
-              const pendingId = freshTerminalConversationId
-              void window.cowork.terminal.adoptConversation(pendingId, id)
-              setAdoptedTerminalConversation({ from: pendingId, to: id })
-              setActiveConversationId(id)
-              setTerminalOpenByConversation((state) => {
-                if (!(pendingId in state)) return state
-                const next = { ...state, [id]: state[pendingId] }
-                delete next[pendingId]
-                return next
-              })
-              setFreshTerminalConversationId(crypto.randomUUID())
-              refreshConversations()
-            }}
-            onConversationChanged={refreshConversations}
-            onOpenSettings={openSettings}
-            settingsOpen={settingsOpen}
-            rightPanelOpen={activityOpen}
-            onWorkspaceChange={setWorkspacePath}
-            onReviewFiles={openFiles}
-            onOpenHtml={openHtmlInBrowser}
-            onRanInBackground={() => openSidebarTab("info")}
-            onRunningConvosChange={setRunningConvos}
-            onWaitingConvosChange={setWaitingConvos}
+          {mcpOpen && <McpScreen onClose={() => setMcpOpen(false)} />}
+          {dashboardsOpen && (
+            <DashboardsScreen onClose={() => setDashboardsOpen(false)} />
+          )}
+          <TerminalDrawer
+            open={terminalAvailable && terminalOpen}
+            conversationId={terminalConversationId}
+            workspace={workspacePath}
+            replaceSessionsOnWorkspaceChange={activeConversationId === null}
+            adoptedConversation={adoptedTerminalConversation}
+            onAdoptionApplied={() => setAdoptedTerminalConversation(null)}
+            onOpenChange={setTerminalOpenForActive}
+            onAddSelectionToMessage={(text) =>
+              appRef.current?.appendTerminalSelection(text)
+            }
           />
         </div>
-        {agentsOpen && <AgentsScreen onClose={() => setAgentsOpen(false)} />}
-        {skillsOpen && <SkillsScreen onClose={() => setSkillsOpen(false)} />}
-        {processOpen && <ProcessScreen onClose={() => setProcessOpen(false)} />}
-        {mcpOpen && <McpScreen onClose={() => setMcpOpen(false)} />}
-        {dashboardsOpen && (
-          <DashboardsScreen onClose={() => setDashboardsOpen(false)} />
-        )}
-        <TerminalDrawer
-          open={terminalAvailable && terminalOpen}
-          conversationId={terminalConversationId}
-          workspace={workspacePath}
-          replaceSessionsOnWorkspaceChange={activeConversationId === null}
-          adoptedConversation={adoptedTerminalConversation}
-          onAdoptionApplied={() => setAdoptedTerminalConversation(null)}
-          onOpenChange={setTerminalOpenForActive}
-          onAddSelectionToMessage={(text) =>
-            appRef.current?.appendTerminalSelection(text)
+        <ActivityPanel
+          conversationId={activeConversationId}
+          open={activityOpen}
+          tabs={sidebarTabState.tabs}
+          activeTabId={sidebarTabState.activeTabId}
+          reserveWindowControls={reserveWindowControls}
+          browserObscured={
+            settingsOpen || startupGuideOpen || viewingTask !== null
           }
+          workspace={workspacePath}
+          onAddFileSelection={(selection) =>
+            appRef.current?.appendFileSelection(selection)
+          }
+          onOpenChange={setActivity}
+          onActiveTabChange={(id) =>
+            setSidebarTabState((state) => ({ ...state, activeTabId: id }))
+          }
+          onOpenTab={openSidebarTab}
+          onCloseTab={closeSidebarTab}
+          onOpenTask={setViewingTask}
+          historyExpanded={historyExpanded}
+          onHistoryExpandedChange={setHistoryExpanded}
+          onRanInBackground={() => openSidebarTab("info")}
+          onBrowserPoppedOutChange={handleBrowserPoppedOutChange}
+          onWidthChange={setActivityPanelWidth}
         />
-      </div>
-      <ActivityPanel
-        conversationId={activeConversationId}
-        open={activityOpen}
-        tabs={sidebarTabState.tabs}
-        activeTabId={sidebarTabState.activeTabId}
-        reserveWindowControls={reserveWindowControls}
-        browserObscured={
-          settingsOpen || startupGuideOpen || viewingTask !== null
-        }
-        workspace={workspacePath}
-        onAddFileSelection={(selection) =>
-          appRef.current?.appendFileSelection(selection)
-        }
-        onOpenChange={setActivity}
-        onActiveTabChange={(id) =>
-          setSidebarTabState((state) => ({ ...state, activeTabId: id }))
-        }
-        onOpenTab={openSidebarTab}
-        onCloseTab={closeSidebarTab}
-        onOpenTask={setViewingTask}
-        historyExpanded={historyExpanded}
-        onHistoryExpandedChange={setHistoryExpanded}
-        onRanInBackground={() => openSidebarTab("info")}
-        onBrowserPoppedOutChange={handleBrowserPoppedOutChange}
-        onWidthChange={setActivityPanelWidth}
-      />
-      <TaskCompletionToasts
-        conversationId={activeConversationId}
-        onReveal={revealHistory}
-      />
-      <Toaster />
-      <StartupGuideDialog
-        agentName={window.cowork.system().mainAgentName}
-        open={startupGuideOpen}
-        onDismiss={dismissStartupGuide}
-      />
-      <TaskTranscriptSheet
-        task={viewingTask}
-        open={viewingTask !== null}
-        onOpenChange={(open) => {
-          if (!open) setViewingTask(null)
-        }}
-      />
-      <SettingsScreen
-        open={settingsOpen}
-        onOpenChange={(open) => {
-          setSettingsOpen(open)
-          // Re-read notification settings when the sheet closes so a change to
-          // the toggles takes effect immediately (the renderer caches them).
-          if (!open) refreshNotificationSettings()
-        }}
-        initialTab={settingsTab}
-      />
-    </SidebarProvider>
+        <TaskCompletionToasts
+          conversationId={activeConversationId}
+          onReveal={revealHistory}
+        />
+        <Toaster />
+        <StartupGuideDialog
+          agentName={window.cowork.system().mainAgentName}
+          open={startupGuideOpen}
+          onDismiss={dismissStartupGuide}
+        />
+        <TaskTranscriptSheet
+          task={viewingTask}
+          open={viewingTask !== null}
+          onOpenChange={(open) => {
+            if (!open) setViewingTask(null)
+          }}
+        />
+        <SettingsScreen
+          open={settingsOpen}
+          onOpenChange={(open) => {
+            setSettingsOpen(open)
+            // Re-read notification settings when the sheet closes so a change to
+            // the toggles takes effect immediately (the renderer caches them).
+            if (!open) refreshNotificationSettings()
+          }}
+          initialTab={settingsTab}
+        />
+      </SidebarProvider>
+    </TooltipProvider>
   )
 }
 

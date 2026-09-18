@@ -4,7 +4,6 @@ import { Tabs, TabsContent } from "@/components/ui/tabs"
 import {
   Tooltip,
   TooltipContent,
-  TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import { Switch } from "@/components/ui/switch"
@@ -173,7 +172,8 @@ const SETTINGS_GROUPS: SettingsGroup[] = [
   {
     value: "general",
     label: "General",
-    description: "Personalize how the app looks, opens files, and gets your attention.",
+    description:
+      "Personalize how the app looks, opens files, and gets your attention.",
     sections: [
       { value: "appearance", label: "Appearance" },
       { value: "editor", label: "Editor" },
@@ -184,7 +184,8 @@ const SETTINGS_GROUPS: SettingsGroup[] = [
   {
     value: "ai",
     label: "AI & Models",
-    description: "Connect an AI service and choose the models North Star can use.",
+    description:
+      "Connect an AI service and choose the models North Star can use.",
     sections: [
       { value: "providers", label: "Connections" },
       { value: "models", label: "Models" },
@@ -193,7 +194,8 @@ const SETTINGS_GROUPS: SettingsGroup[] = [
   {
     value: "agent",
     label: "Agent behavior",
-    description: "Choose how the agent uses project context, memory, and background helpers.",
+    description:
+      "Choose how the agent uses project context, memory, and background helpers.",
     sections: [
       { value: "conversations", label: "Behavior" },
       { value: "indexing", label: "Project context" },
@@ -202,7 +204,8 @@ const SETTINGS_GROUPS: SettingsGroup[] = [
   {
     value: "safety",
     label: "Safety & execution",
-    description: "Control where tools run and when the agent asks before acting.",
+    description:
+      "Control where tools run and when the agent asks before acting.",
     sections: [
       { value: "backend", label: "Environment" },
       { value: "permissions", label: "Approvals" },
@@ -965,7 +968,8 @@ export function SettingsScreen({
                       )
                     })}
                     <p className="mt-auto px-3 pt-6 text-xs leading-relaxed text-muted-foreground">
-                      Changes save automatically unless a setting says otherwise.
+                      Changes save automatically unless a setting says
+                      otherwise.
                     </p>
                   </nav>
 
@@ -984,54 +988,55 @@ export function SettingsScreen({
                           </p>
                         )}
                         {activeGroup.sections.length > 1 && (
-                          <TooltipProvider>
-                            <div
-                              className="mt-5 flex max-w-full gap-1 overflow-x-auto rounded-lg bg-muted/70 p-1"
-                              role="tablist"
-                              aria-label={`${activeGroup.label} sections`}
-                            >
-                              {activeGroup.sections.map((section) => {
-                                const selected = section.value === activeSection
-                                const disabled =
-                                  section.value === "sandbox" &&
-                                  !hasEnforcedRuntime
-                                const tab = (
-                                  <button
-                                    type="button"
-                                    role="tab"
-                                    aria-selected={selected}
-                                    disabled={disabled}
-                                    onClick={() => selectSection(section.value)}
-                                    className={`shrink-0 rounded-md px-3 py-1.5 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
-                                      selected
-                                        ? "bg-background text-foreground shadow-sm"
-                                        : "text-muted-foreground hover:text-foreground"
-                                    }`}
-                                  >
-                                    {section.label}
-                                  </button>
-                                )
-                                return disabled ? (
-                                  <Tooltip key={section.value}>
-                                    <TooltipTrigger asChild>
-                                      <span className="inline-flex" tabIndex={0}>
-                                        {tab}
-                                      </span>
-                                    </TooltipTrigger>
-                                    <TooltipContent side="bottom">
-                                      Choose Workspace write, Read only, Docker, or
-                                      Podman under Environment to enable
-                                      auto-approve.
-                                    </TooltipContent>
-                                  </Tooltip>
-                                ) : (
-                                  <span key={section.value} className="inline-flex">
-                                    {tab}
-                                  </span>
-                                )
-                              })}
-                            </div>
-                          </TooltipProvider>
+                          <div
+                            className="mt-5 flex max-w-full gap-1 overflow-x-auto rounded-lg bg-muted/70 p-1"
+                            role="tablist"
+                            aria-label={`${activeGroup.label} sections`}
+                          >
+                            {activeGroup.sections.map((section) => {
+                              const selected = section.value === activeSection
+                              const disabled =
+                                section.value === "sandbox" &&
+                                !hasEnforcedRuntime
+                              const tab = (
+                                <button
+                                  type="button"
+                                  role="tab"
+                                  aria-selected={selected}
+                                  disabled={disabled}
+                                  onClick={() => selectSection(section.value)}
+                                  className={`shrink-0 rounded-md px-3 py-1.5 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                                    selected
+                                      ? "bg-background text-foreground shadow-sm"
+                                      : "text-muted-foreground hover:text-foreground"
+                                  }`}
+                                >
+                                  {section.label}
+                                </button>
+                              )
+                              return disabled ? (
+                                <Tooltip key={section.value}>
+                                  <TooltipTrigger asChild>
+                                    <span className="inline-flex" tabIndex={0}>
+                                      {tab}
+                                    </span>
+                                  </TooltipTrigger>
+                                  <TooltipContent side="bottom">
+                                    Choose Workspace write, Read only, Docker,
+                                    or Podman under Environment to enable
+                                    auto-approve.
+                                  </TooltipContent>
+                                </Tooltip>
+                              ) : (
+                                <span
+                                  key={section.value}
+                                  className="inline-flex"
+                                >
+                                  {tab}
+                                </span>
+                              )
+                            })}
+                          </div>
                         )}
                       </div>
 
@@ -1373,135 +1378,139 @@ export function SettingsScreen({
                             </span>
                           </summary>
                           <div className="flex flex-col gap-4 border-t px-4 py-4">
-                        <Field>
-                          <FieldLabel htmlFor="memory-model">
-                            Memory model
-                          </FieldLabel>
-                          <ConversationModelPicker
-                            id="memory-model"
-                            value={modelSettingValue(memory)}
-                            options={memoryModelOptions}
-                            portalContainer={contentRef}
-                            onChange={(value) => {
-                              const selection = splitModelSettingValue(value)
-                              saveMemory({ ...memory, ...selection })
-                            }}
-                          />
-                          <FieldDescription>
-                            Used only by the background memory writer. The main
-                            agent reads memory through normal skill progressive
-                            disclosure.
-                          </FieldDescription>
-                        </Field>
-                        <Field>
-                          <FieldLabel htmlFor="title-model">
-                            Title generation model
-                          </FieldLabel>
-                          <ConversationModelPicker
-                            id="title-model"
-                            value={modelSettingValue(titleGeneration)}
-                            options={memoryModelOptions}
-                            portalContainer={contentRef}
-                            onChange={(value) => {
-                              const selection = splitModelSettingValue(value)
-                              saveTitleGeneration(selection)
-                            }}
-                          />
-                          <FieldDescription>
-                            Used only for automatic conversation titles. Pick a
-                            cheaper model here without changing the main chat
-                            model.
-                          </FieldDescription>
-                        </Field>
+                            <Field>
+                              <FieldLabel htmlFor="memory-model">
+                                Memory model
+                              </FieldLabel>
+                              <ConversationModelPicker
+                                id="memory-model"
+                                value={modelSettingValue(memory)}
+                                options={memoryModelOptions}
+                                portalContainer={contentRef}
+                                onChange={(value) => {
+                                  const selection =
+                                    splitModelSettingValue(value)
+                                  saveMemory({ ...memory, ...selection })
+                                }}
+                              />
+                              <FieldDescription>
+                                Used only by the background memory writer. The
+                                main agent reads memory through normal skill
+                                progressive disclosure.
+                              </FieldDescription>
+                            </Field>
+                            <Field>
+                              <FieldLabel htmlFor="title-model">
+                                Title generation model
+                              </FieldLabel>
+                              <ConversationModelPicker
+                                id="title-model"
+                                value={modelSettingValue(titleGeneration)}
+                                options={memoryModelOptions}
+                                portalContainer={contentRef}
+                                onChange={(value) => {
+                                  const selection =
+                                    splitModelSettingValue(value)
+                                  saveTitleGeneration(selection)
+                                }}
+                              />
+                              <FieldDescription>
+                                Used only for automatic conversation titles.
+                                Pick a cheaper model here without changing the
+                                main chat model.
+                              </FieldDescription>
+                            </Field>
 
-                        {/* Conversation-summary triggers (plan 019). A rolling
+                            {/* Conversation-summary triggers (plan 019). A rolling
                           digest regenerates when the un-summarized tail reaches
                           either threshold, whichever comes first. */}
-                        <Field orientation="horizontal">
-                          <FieldContent>
-                            <FieldLabel htmlFor="sum-msg">
-                              Summarize after N messages
-                            </FieldLabel>
-                            <FieldDescription>
-                              Regenerate the conversation summary once this many
-                              new messages accumulate. Set to 0 to trigger on
-                              tokens only.
-                            </FieldDescription>
-                          </FieldContent>
-                          <Input
-                            id="sum-msg"
-                            type="text"
-                            inputMode="numeric"
-                            pattern="[0-9]*"
-                            className="w-28"
-                            value={summaryMessageDraft}
-                            onBlur={restoreSummaryDrafts}
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter") {
-                                e.currentTarget.blur()
-                              }
-                            }}
-                            onChange={(e) => {
-                              const next = digitsOnly(e.target.value)
-                              setSummaryMessageDraft(next)
-                              saveSummaryMessageThreshold(next)
-                            }}
-                          />
-                        </Field>
-                        <Field orientation="horizontal">
-                          <FieldContent>
-                            <FieldLabel htmlFor="sum-tok">
-                              Summarize after N tokens
-                            </FieldLabel>
-                            <FieldDescription>
-                              Regenerate the summary once the un-summarized
-                              turns reach this many tokens (whichever threshold
-                              is hit first). Range 6,000–150,000.
-                            </FieldDescription>
-                          </FieldContent>
-                          <Input
-                            id="sum-tok"
-                            type="text"
-                            inputMode="numeric"
-                            pattern="[0-9]*"
-                            className="w-28"
-                            value={summaryTokenDraft}
-                            onBlur={restoreSummaryDrafts}
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter") {
-                                e.currentTarget.blur()
-                              }
-                            }}
-                            onChange={(e) => {
-                              const next = digitsOnly(e.target.value)
-                              const n = parseIntOrNull(next)
-                              if (n !== null && n > SUMMARY_TOKEN_MAX) return
-                              setSummaryTokenDraft(next)
-                              saveSummaryTokenThreshold(next)
-                            }}
-                          />
-                        </Field>
-                        <Field orientation="horizontal">
-                          <FieldContent>
-                            <FieldLabel htmlFor="log-sysprompt">
-                              Log system prompts
-                            </FieldLabel>
-                            <FieldDescription>
-                              Write each turn's assembled system prompt to
-                              system-prompt-logs/ for debugging. Off by default.
-                            </FieldDescription>
-                          </FieldContent>
-                          <Switch
-                            id="log-sysprompt"
-                            checked={indexing.logSystemPrompt}
-                            onCheckedChange={(checked) =>
-                              saveIndexing({
-                                ...indexing,
-                                logSystemPrompt: checked,
-                              })
-                            }
-                          />
-                        </Field>
+                            <Field orientation="horizontal">
+                              <FieldContent>
+                                <FieldLabel htmlFor="sum-msg">
+                                  Summarize after N messages
+                                </FieldLabel>
+                                <FieldDescription>
+                                  Regenerate the conversation summary once this
+                                  many new messages accumulate. Set to 0 to
+                                  trigger on tokens only.
+                                </FieldDescription>
+                              </FieldContent>
+                              <Input
+                                id="sum-msg"
+                                type="text"
+                                inputMode="numeric"
+                                pattern="[0-9]*"
+                                className="w-28"
+                                value={summaryMessageDraft}
+                                onBlur={restoreSummaryDrafts}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter") {
+                                    e.currentTarget.blur()
+                                  }
+                                }}
+                                onChange={(e) => {
+                                  const next = digitsOnly(e.target.value)
+                                  setSummaryMessageDraft(next)
+                                  saveSummaryMessageThreshold(next)
+                                }}
+                              />
+                            </Field>
+                            <Field orientation="horizontal">
+                              <FieldContent>
+                                <FieldLabel htmlFor="sum-tok">
+                                  Summarize after N tokens
+                                </FieldLabel>
+                                <FieldDescription>
+                                  Regenerate the summary once the un-summarized
+                                  turns reach this many tokens (whichever
+                                  threshold is hit first). Range 6,000–150,000.
+                                </FieldDescription>
+                              </FieldContent>
+                              <Input
+                                id="sum-tok"
+                                type="text"
+                                inputMode="numeric"
+                                pattern="[0-9]*"
+                                className="w-28"
+                                value={summaryTokenDraft}
+                                onBlur={restoreSummaryDrafts}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter") {
+                                    e.currentTarget.blur()
+                                  }
+                                }}
+                                onChange={(e) => {
+                                  const next = digitsOnly(e.target.value)
+                                  const n = parseIntOrNull(next)
+                                  if (n !== null && n > SUMMARY_TOKEN_MAX)
+                                    return
+                                  setSummaryTokenDraft(next)
+                                  saveSummaryTokenThreshold(next)
+                                }}
+                              />
+                            </Field>
+                            <Field orientation="horizontal">
+                              <FieldContent>
+                                <FieldLabel htmlFor="log-sysprompt">
+                                  Log system prompts
+                                </FieldLabel>
+                                <FieldDescription>
+                                  Write each turn's assembled system prompt to
+                                  system-prompt-logs/ for debugging. Off by
+                                  default.
+                                </FieldDescription>
+                              </FieldContent>
+                              <Switch
+                                id="log-sysprompt"
+                                checked={indexing.logSystemPrompt}
+                                onCheckedChange={(checked) =>
+                                  saveIndexing({
+                                    ...indexing,
+                                    logSystemPrompt: checked,
+                                  })
+                                }
+                              />
+                            </Field>
                           </div>
                         </details>
                       </TabsContent>

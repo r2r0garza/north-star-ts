@@ -2,10 +2,19 @@
 import { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { TooltipProvider } from "@/components/ui/tooltip"
 import { GitActions } from "./git-actions"
 
 let container: HTMLDivElement
 let root: Root
+
+function renderGitActions() {
+  root.render(
+    <TooltipProvider>
+      <GitActions workspace="/workspace" rightOffset={0} />
+    </TooltipProvider>
+  )
+}
 
 function click(element: Element) {
   act(() => {
@@ -65,7 +74,7 @@ describe("GitActions title-bar controls", () => {
     })
 
     await act(async () => {
-      root.render(<GitActions workspace="/workspace" rightOffset={0} />)
+      renderGitActions()
     })
 
     const branch = document.querySelector(
@@ -86,7 +95,7 @@ describe("GitActions title-bar controls", () => {
     })
 
     await act(async () => {
-      root.render(<GitActions workspace="/workspace" rightOffset={0} />)
+      renderGitActions()
     })
 
     expect(
@@ -125,7 +134,7 @@ describe("GitActions commit dialog", () => {
     ])
 
     await act(async () => {
-      root.render(<GitActions workspace="/workspace" rightOffset={0} />)
+      renderGitActions()
     })
 
     const cleanup = document.querySelector(
@@ -140,7 +149,7 @@ describe("GitActions commit dialog", () => {
 
   it("clears the commit message when reopened", async () => {
     await act(async () => {
-      root.render(<GitActions workspace="/workspace" rightOffset={0} />)
+      renderGitActions()
     })
 
     click(document.querySelector('button[aria-label*="Git actions"]')!)
@@ -195,7 +204,7 @@ describe("GitActions commit dialog", () => {
       ],
     })
     await act(async () => {
-      root.render(<GitActions workspace="/workspace" rightOffset={0} />)
+      renderGitActions()
     })
 
     click(document.querySelector('button[aria-label*="Git actions"]')!)

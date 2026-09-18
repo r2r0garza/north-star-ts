@@ -67,6 +67,12 @@ import {
 } from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
 import { ButtonGroup } from "@/components/ui/button-group"
+import {
+  Tooltip,
+  TooltipButton,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
 import { ProjectDialog } from "@/components/project-dialog"
 import {
   DndContext,
@@ -153,6 +159,9 @@ function SessionRow({
 }) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(conversation.title ?? "")
+  const [tooltipOpen, setTooltipOpen] = useState(false)
+  const contextMenuOpenRef = useRef(false)
+  const suppressTooltipRef = useRef(false)
   const inputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
@@ -198,12 +207,38 @@ function SessionRow({
 
   return (
     <SidebarMenuItem>
-      <ContextMenu>
+      <ContextMenu
+        onOpenChange={(open) => {
+          contextMenuOpenRef.current = open
+          suppressTooltipRef.current = true
+          setTooltipOpen(false)
+        }}
+      >
         <ContextMenuTrigger asChild>
           <SidebarMenuButton
             isActive={isActive}
             onClick={onSelect}
-            title={conversation.title ?? "Untitled"}
+            onPointerMove={() => {
+              suppressTooltipRef.current = false
+            }}
+            onPointerLeave={() => setTooltipOpen(false)}
+            onBlur={() => {
+              if (!contextMenuOpenRef.current)
+                suppressTooltipRef.current = false
+            }}
+            tooltip={{
+              children: conversation.title ?? "Untitled",
+              hidden: false,
+            }}
+            tooltipOpen={tooltipOpen}
+            onTooltipOpenChange={(open) => {
+              if (
+                open &&
+                (contextMenuOpenRef.current || suppressTooltipRef.current)
+              )
+                return
+              setTooltipOpen(open)
+            }}
           >
             {conversation.pinned && (
               // At-a-glance marker for pinned conversations, left of the title.
@@ -333,16 +368,16 @@ function ProjectSection({
       <SidebarGroup className="py-1">
         <div ref={sortableHeaderRef} className="flex items-center gap-1 px-2">
           {project && sortableHandle && (
-            <button
+            <TooltipButton
+              tooltip="Drag to reorder"
               type="button"
               className="-ml-1 flex size-5 shrink-0 cursor-grab touch-none items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground active:cursor-grabbing"
-              title="Drag to reorder"
               aria-label={`Drag to reorder ${project.name}`}
               {...sortableHandle.attributes}
               {...sortableHandle.listeners}
             >
               <GripVertical className="size-3.5" />
-            </button>
+            </TooltipButton>
           )}
           <CollapsibleTrigger className="flex flex-1 items-center gap-1 overflow-hidden text-xs font-medium text-muted-foreground hover:text-foreground">
             <ChevronRight className="size-3.5 shrink-0 transition-transform group-data-[state=open]/section:rotate-90" />
@@ -350,18 +385,18 @@ function ProjectSection({
               {label}
             </span>
           </CollapsibleTrigger>
-          <button
+          <TooltipButton
+            tooltip={
+              canCreate ? "New conversation" : (createHint ?? "Not available")
+            }
             type="button"
             onClick={onNewConversation}
             disabled={!canCreate}
-            title={
-              canCreate ? "New conversation" : (createHint ?? "Not available")
-            }
             aria-label="New conversation"
             className="flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
           >
             <Plus className="size-3.5" />
-          </button>
+          </TooltipButton>
           {project && (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
@@ -791,16 +826,20 @@ export function AppSidebar({
           <Plus className="size-4" />
           {NEW_LABEL[view]}
         </Button>
-        <Button
-          type="button"
-          size="sm"
-          variant="outline"
-          onClick={openCreateProject}
-          title="New project"
-          aria-label="New project"
-        >
-          <FolderPlus className="size-4" />
-        </Button>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={openCreateProject}
+              aria-label="New project"
+            >
+              <FolderPlus className="size-4" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>New project</TooltipContent>
+        </Tooltip>
       </div>
       <SidebarContent>
         <DndContext

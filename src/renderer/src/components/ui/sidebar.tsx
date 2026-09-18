@@ -493,12 +493,16 @@ function SidebarMenuButton({
   variant = "default",
   size = "default",
   tooltip,
+  tooltipOpen,
+  onTooltipOpenChange,
   className,
   ...props
 }: React.ComponentProps<"button"> & {
   asChild?: boolean
   isActive?: boolean
   tooltip?: string | React.ComponentProps<typeof TooltipContent>
+  tooltipOpen?: boolean
+  onTooltipOpenChange?: (open: boolean) => void
 } & VariantProps<typeof sidebarMenuButtonVariants>) {
   const Comp = asChild ? Slot.Root : "button"
   const { isMobile, state } = useSidebar()
@@ -525,7 +529,7 @@ function SidebarMenuButton({
   }
 
   return (
-    <Tooltip>
+    <Tooltip open={tooltipOpen} onOpenChange={onTooltipOpenChange}>
       <TooltipTrigger asChild>{button}</TooltipTrigger>
       <TooltipContent
         side="right"
