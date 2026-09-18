@@ -78,13 +78,7 @@ export function branchPickerOptions(
 
 type GitError = { title: string; message: string } | null
 
-export function GitBranchSwitcher({
-  workspace,
-  compact,
-}: {
-  workspace: string
-  compact: boolean
-}) {
+export function GitBranchSwitcher({ workspace }: { workspace: string }) {
   const gitStatus = useGitStatus(workspace)
   const mutationBusy = useGitMutationBusy(workspace)
   const [open, setOpen] = React.useState(false)
@@ -216,20 +210,17 @@ export function GitBranchSwitcher({
             disabled={mutationBusy}
             title={branch}
             aria-label={`Current Git branch: ${branch}. Choose branch`}
-            className={cn(
-              "flex items-center rounded bg-accent font-mono text-[10px] text-muted-foreground transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50",
-              compact ? "p-1" : "max-w-48 gap-1 px-1.5 py-0.5"
-            )}
+            className="flex h-7 max-w-48 items-center gap-1 rounded-md bg-accent px-2 font-mono text-[10px] text-muted-foreground transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50"
           >
             {mutationBusy ? (
               <LoaderCircle className="size-3 shrink-0 animate-spin" />
             ) : (
               <GitBranch className="size-3 shrink-0" />
             )}
-            {!compact && <span className="truncate">{branch}</span>}
+            <span className="truncate">{branch}</span>
           </button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="start" className="w-64">
+        <DropdownMenuContent align="end" className="w-64">
           <div
             className="relative p-1"
             onKeyDown={(event) => {

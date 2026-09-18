@@ -12,6 +12,7 @@ import {
   Search,
   ShieldAlert,
   Terminal,
+  Users,
   Wrench,
   type LucideIcon,
 } from "lucide-react"
@@ -47,6 +48,8 @@ const ICONS: Record<string, LucideIcon> = {
   list_files_tool: FolderOpen,
   read_skill: BookOpen,
   run_shell_tool: Terminal,
+  spawn_subagent: Users,
+  spawn_subagents: Users,
 }
 const iconFor = (name: string): LucideIcon => ICONS[name] ?? Wrench
 
@@ -192,11 +195,117 @@ export function ToolGroup({ calls }: { calls: ToolUse[] }) {
 // content reveals the arguments and the result/output. When the action is
 // awaiting human approval, the row shows an "awaiting approval" hint — the
 // actionable prompt itself renders above the composer (see App.tsx).
+interface SubagentDisplayResult {
+  id: string
+  status: string
+  identity: string
+  access: string
+  content?: string
+  error?: string
+  conversationId?: string
+  durationMs?: number
+  usage?: { totalTokens?: number }
+  branch?: string
+  commits?: string[]
+  touchedFileCount?: number
+  mergeability?: string
+  integrationBranch?: string
+  integrationStatus?: string
+}
+
+function subagentResults(result: string | undefined): SubagentDisplayResult[] | null {
+  if (!result || result.startsWith("ERROR[")) return null
+  try {
+    const parsed = JSON.parse(result) as { results?: unknown }
+    if (!Array.isArray(parsed.results)) return null
+    return parsed.results.filter(
+      (item): item is SubagentDisplayResult =>
+        !!item &&
+        typeof item === "object" &&
+        typeof (item as SubagentDisplayResult).id === "string"
+    )
+  } catch {
+    return null
+  }
+}
+
+function formatDuration(durationMs: number | undefined): string | undefined {
+  if (durationMs === undefined) return undefined
+  if (durationMs < 1_000) return `${durationMs} ms`
+  return `${(durationMs / 1_000).toFixed(durationMs < 10_000 ? 1 : 0)} s`
+}
+
+function SubagentResults({ results }: { results: SubagentDisplayResult[] }) {
+  return (
+    <div className="flex flex-col gap-2">
+      {results.map((result) => (
+        <div key={result.id} className="rounded-md border bg-muted/40 p-2">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            <span className="font-medium">{result.id}</span>
+            <span className="rounded bg-background px-1.5 py-0.5 text-[0.65rem] text-muted-foreground">
+              {result.identity} · {result.access}
+            </span>
+            <span
+              className={cn(
+                "ml-auto text-[0.7rem]",
+                result.status === "completed"
+                  ? "text-emerald-600 dark:text-emerald-400"
+                  : "text-destructive"
+              )}
+            >
+              {result.status}
+            </span>
+          </div>
+          {(result.content || result.error) && (
+            <p className="mt-1.5 break-words whitespace-pre-wrap text-muted-foreground">
+              {clip(result.error ?? result.content ?? "")}
+            </p>
+          )}
+          <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1 text-[0.68rem] text-muted-foreground">
+            {formatDuration(result.durationMs) && <span>{formatDuration(result.durationMs)}</span>}
+            {result.usage?.totalTokens !== undefined && (
+              <span>{result.usage.totalTokens.toLocaleString()} tokens</span>
+            )}
+            {result.touchedFileCount !== undefined && (
+              <span>{result.touchedFileCount} files</span>
+            )}
+            {result.commits?.length ? <span>{result.commits.length} commits</span> : null}
+            {result.mergeability && <span>merge: {result.mergeability}</span>}
+            {result.branch && <span className="font-mono">{result.branch}</span>}
+            {result.integrationStatus && (
+              <span>integration: {result.integrationStatus}</span>
+            )}
+            {result.integrationBranch && (
+              <span className="font-mono">{result.integrationBranch}</span>
+            )}
+            {result.conversationId && (
+              <button
+                type="button"
+                className="underline underline-offset-2 hover:text-foreground"
+                onClick={() =>
+                  window.dispatchEvent(
+                    new CustomEvent("open-conversation", {
+                      detail: { conversationId: result.conversationId },
+                    })
+                  )
+                }
+              >
+                Open transcript
+              </button>
+            )}
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 function ToolUseRow({ use }: { use: ToolUse }) {
   const Icon = iconFor(use.name)
   const error = use.status === "error"
   const interrupted = use.status === "interrupted"
   const awaiting = use.approval?.status === "pending"
+  const delegated = use.name === "spawn_subagents" ? subagentResults(use.result) : null
   return (
     <div className="flex max-w-full min-w-0 flex-col gap-1">
       <Collapsible className="w-full max-w-full min-w-0">
@@ -245,7 +354,9 @@ function ToolUseRow({ use }: { use: ToolUse }) {
                 {use.args ? JSON.stringify(use.args, null, 2) : use.rawArgs}
               </pre>
             )}
-            {use.result !== undefined && (
+            {delegated ? (
+              <SubagentResults results={delegated} />
+            ) : use.result !== undefined && (
               <Bubble
                 align="start"
                 variant={isErrorResult(use.result) ? "destructive" : "muted"}

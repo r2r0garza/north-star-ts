@@ -6,6 +6,10 @@ import type {
 import type { Environment } from "../env/types"
 import type { TodoStatus } from "../../db/types"
 import type { BrowserHandle } from "../../browser/manager"
+import type {
+  SpawnSubagentsInput,
+  SubagentResult,
+} from "../subagents/contracts"
 
 // A JPEG image a tool produced (currently browser_screenshot) that should be
 // shown to the vision-capable model. Tool results themselves are text-only (they
@@ -50,6 +54,9 @@ export type SpawnSubagent = (input: {
   agentName: string
   prompt: string
 }) => Promise<{ content?: string; error?: string; stopped?: boolean }>
+export type SpawnSubagents = (
+  input: SpawnSubagentsInput
+) => Promise<SubagentResult[]>
 
 // --- ask_user_question ---
 // The model asks the user one or more clarifying questions, each with preset
@@ -158,6 +165,12 @@ export interface ToolContext {
   // Spawn a permitted child agent and block for its answer (see spawn_subagent).
   // Set by the agent loop only when the running agent may spawn; absent otherwise.
   spawnSubagent?: SpawnSubagent
+  // Batch-first conversation subagents. The concrete runtime validates and
+  // resolves identities before creating child records.
+  spawnSubagents?: SpawnSubagents
+  planMode?: boolean
+  writeSubagentsEnabled?: boolean
+  repositoryLeaseToken?: string
   // Which agents the RUNNING agent may spawn (its resolved `children` tri-state):
   //   undefined → may not spawn any (spawn_subagent isn't offered)
   //   []        → may spawn any loadable agent

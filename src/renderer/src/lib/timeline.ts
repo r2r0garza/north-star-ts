@@ -43,6 +43,14 @@ export interface ToolUse {
   approval?: ToolApproval // set while a gated action awaits a human decision
 }
 
+export function approvePendingToolCalls(calls: ToolUse[]): ToolUse[] {
+  return calls.map((call) =>
+    call.approval?.status === "pending"
+      ? { ...call, approval: { ...call.approval, status: "approved" } }
+      : call
+  )
+}
+
 export type TimelineItem =
   | { kind: "text"; key: string; role: "user" | "assistant"; content: string }
   | { kind: "tools"; key: string; calls: ToolUse[] }
@@ -204,6 +212,15 @@ export function deriveLabel(
     }
     case "run_todos_in_background":
       return "Run tasks in the background"
+    case "spawn_subagents": {
+      const assignments = Array.isArray(a.assignments) ? a.assignments : []
+      if (status === "running") return `Running ${assignments.length} subagents`
+      if (status === "error") return "Subagent batch failed"
+      if (status === "interrupted") return "Subagent batch interrupted"
+      return `Ran ${assignments.length} subagents`
+    }
+    case "spawn_subagent":
+      return status === "running" ? "Running subagent" : "Ran subagent"
     case "wait_for_events":
       if (status === "running") return "Waiting for background command"
       if (status === "error") return "Command wait failed"

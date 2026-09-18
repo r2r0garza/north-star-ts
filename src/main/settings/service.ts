@@ -189,6 +189,7 @@ export type DefaultConversationMode = "chat" | "interactive" | "north_star"
 export interface ConversationSettings {
   defaultMode: DefaultConversationMode
   showRunInBackgroundButton: boolean
+  allowConversationSubagents: boolean
 }
 
 // Default container image when a runtime is chosen but no image is set.
@@ -263,6 +264,7 @@ const DEFAULT_ONBOARDING: OnboardingSettings = {
 const DEFAULT_CONVERSATIONS: ConversationSettings = {
   defaultMode: "north_star",
   showRunInBackgroundButton: false,
+  allowConversationSubagents: false,
 }
 
 function defaultExecution(): ExecutionSettings {
@@ -649,6 +651,9 @@ function loadConversations(): ConversationSettings {
         showRunInBackgroundButton:
           parsed.showRunInBackgroundButton ??
           DEFAULT_CONVERSATIONS.showRunInBackgroundButton,
+        allowConversationSubagents:
+          parsed.allowConversationSubagents ??
+          DEFAULT_CONVERSATIONS.allowConversationSubagents,
       }
       return conversationsCache
     } catch {

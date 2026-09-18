@@ -26,6 +26,7 @@ const loopCalls: {
   userMessage?: string
   processCompletionInstruction?: string
   suppressUserQuestions?: boolean
+  conversationSubagentsEnabled?: boolean
   accountId?: string | null
   modelId?: string | null
 }[] = []
@@ -74,12 +75,14 @@ vi.mock("../../agent", () => ({
     userMessage?: string
     processCompletionInstruction?: string
     suppressUserQuestions?: boolean
+    conversationSubagentsEnabled?: boolean
   }) => {
     loopCalls.push({
       conversationId: input.conversationId,
       userMessage: input.userMessage,
       processCompletionInstruction: input.processCompletionInstruction,
       suppressUserQuestions: input.suppressUserQuestions,
+      conversationSubagentsEnabled: input.conversationSubagentsEnabled,
       accountId: db
         .prepare("SELECT account_id FROM conversations WHERE id = ?")
         .pluck()
@@ -274,6 +277,7 @@ describe.skipIf(!sqliteLoads)("ProcessService dispatch routing", () => {
       accountId: "phase-account",
       modelId: "phase-model",
     })
+    expect(loopCalls[0].conversationSubagentsEnabled).toBeUndefined()
     const phaseRun = processes
       .listPhaseRuns({ runId: run.id, parentId: null })
       .find((pr) => pr.phaseId === phase.id)!

@@ -71,6 +71,7 @@ import { browserHandoffTool } from "./browser/handoff"
 import { webSearchTool } from "./web/search"
 import { webFetchTool } from "./web/fetch"
 import { spawnSubagentTool } from "./spawn_subagent"
+import { spawnSubagentsTool } from "./spawn_subagents"
 import { flagForReworkTool } from "./flag_for_rework"
 import { dashboardWriteTool } from "./dashboard_write"
 
@@ -137,6 +138,7 @@ const otherTools: Tool[] = [
   // permitted to spawn (agent tool category + children present). Not in
   // toolDefinitions; dispatchable via runTool.
   spawnSubagentTool,
+  spawnSubagentsTool,
   // flag_for_rework: offered by runChat only to a Process phase worker (plan
   // 031.2 — when opts.processRunId is set). Not in toolDefinitions.
   flagForReworkTool,
@@ -242,6 +244,7 @@ export { indexQueryTool } from "./index_query_tool"
 export { writePlanTool } from "./write_plan_tool"
 export { readPlanTool } from "./read_plan_tool"
 export { presentPlanTool } from "./present_plan_tool"
+export { spawnSubagentsTool } from "./spawn_subagents"
 export { flagForReworkTool } from "./flag_for_rework"
 export { dashboardWriteTool } from "./dashboard_write"
 export {

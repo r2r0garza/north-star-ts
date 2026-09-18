@@ -82,6 +82,19 @@ import { isBinaryBuffer } from "./agent/env/walk"
 import { readGitBranch } from "./index/metadata"
 import { gitDiffFile } from "./git/diff"
 import { GitService } from "./git/service"
+import { registerTextContextMenu } from "./context-menu"
+import {
+  repositoryDelegationLeases,
+  repositoryIdentity,
+} from "./agent/subagents/repository-lease"
+import {
+  listSubagentArtifacts,
+  settleSubagentArtifact,
+} from "./db/repositories/subagent-artifacts"
+import {
+  reconcileActiveSubagentArtifact,
+  resolveQuarantinedArtifact,
+} from "./agent/subagents/quarantine"
 import { generateCommitMessage } from "./git/commit-message"
 import { openInIde } from "./ide/open"
 import { resolveInWorkspaceReal } from "./agent/tools/workspace"
@@ -229,9 +242,11 @@ function createWindow(): void {
     webPreferences: {
       preload: join(__dirname, "../preload/index.js"),
       sandbox: false,
+      spellcheck: true,
     },
   })
   mainWindow = win
+  registerTextContextMenu(win.webContents)
   // Give the browser manager this window so it can embed the agent browser's
   // WebContentsView in the right-hand panel (the "sidebar" surface).
   browserManager.setMainWindow(win)
@@ -1085,6 +1100,8 @@ for (const action of ["switchBranch", "createBranch"] as const) {
       if (typeof branch !== "string") {
         return { ok: false, error: "Enter a branch name." }
       }
+      const blocker = await repositoryDelegationLeases.blocker(workspace.trim())
+      if (blocker) return { ok: false, error: `repository_busy: ${blocker.label}` }
       return new GitService(workspace.trim())[action](branch)
     }
   )
@@ -1093,6 +1110,10 @@ for (const action of ["fetch", "pull", "push"] as const) {
   ipcMain.handle(`git:${action}`, async (_event, workspace: unknown) => {
     if (typeof workspace !== "string" || !workspace.trim()) {
       return { ok: false, action, error: "Choose a workspace first." }
+    }
+    const blocker = await repositoryDelegationLeases.blocker(workspace.trim())
+    if (blocker) {
+      return { ok: false, action, error: `repository_busy: ${blocker.label}` }
     }
     return new GitService(workspace.trim())[action]()
   })
@@ -1112,9 +1133,33 @@ ipcMain.handle(
     if (typeof message !== "string") {
       return { ok: false, error: "Enter a commit message." }
     }
+    const blocker = await repositoryDelegationLeases.blocker(workspace.trim())
+    if (blocker) return { ok: false, error: `repository_busy: ${blocker.label}` }
     return new GitService(workspace.trim()).commitSelected(paths, message)
   }
 )
+ipcMain.handle("subagents:artifacts", async (_event, workspace?: unknown) => {
+  let repositoryId: string | undefined
+  if (typeof workspace === "string" && workspace.trim()) {
+    try {
+      repositoryId = await repositoryIdentity(workspace.trim())
+    } catch {
+      return []
+    }
+  }
+  return listSubagentArtifacts({ repositoryId, unresolved: true })
+})
+ipcMain.handle(
+  "subagents:resolveArtifact",
+  (_event, id: unknown, keepBranch: unknown) => {
+    if (typeof id !== "string") throw new Error("artifact id is required")
+    return resolveQuarantinedArtifact({ id, keepBranch: keepBranch === true })
+  }
+)
+ipcMain.handle("git:delegationLease", async (_event, workspace: unknown) => {
+  if (typeof workspace !== "string" || !workspace.trim()) return null
+  return (await repositoryDelegationLeases.blocker(workspace.trim())) ?? null
+})
 ipcMain.handle(
   "git:generateCommitMessage",
   async (_event, workspace: unknown, paths: unknown) => {
@@ -1222,6 +1267,11 @@ ipcMain.on("app:is-packaged", (event) => {
 })
 
 app.whenReady().then(async () => {
+  // In-memory leases disappear on restart. Persisted active writer artifacts
+  // therefore become conservative repository quarantine gates.
+  for (const artifact of listSubagentArtifacts({ unresolved: true })) {
+    await reconcileActiveSubagentArtifact(artifact)
+  }
   // Register DB-backed IPC handlers now — the connection opens lazily on first
   // use, after userData is available.
   registerDbHandlers(

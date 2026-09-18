@@ -63,7 +63,7 @@ export const CATEGORY_TOOLS: Record<string, string[]> = {
   // `agent` → the subagent-spawn tool. Its OFFERING has an extra gate (children
   // must also be present) applied in buildTools; this mapping just records the
   // name so an agent-scoped allowlist admits it.
-  agent: ["spawn_subagent"],
+  agent: ["spawn_subagent", "spawn_subagents"],
 }
 
 // The friendly tool-category names, in display order, for the agent editor's

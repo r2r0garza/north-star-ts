@@ -301,6 +301,38 @@ describe.skipIf(!sqliteLoads)("agent loop tool-error feedback", () => {
     }
   )
 
+  it("registers an approval before emitting it", async () => {
+    const workspace = await makeWorkspace()
+    const conversation = createConversation({ mode: "interactive" })
+    scriptedCompletions.push(() =>
+      streamToolCalls([
+        {
+          id: "synchronous_approval",
+          name: "exec_command",
+          arguments: JSON.stringify({ command: nodeCmd("console.log('ran')") }),
+        },
+      ])
+    )
+    scriptedCompletions.push((request) => {
+      expect(lastMessage(request, "tool")?.content).toContain("ran")
+      return streamText("Done.")
+    })
+
+    const result = await runAgentLoop({
+      conversationId: conversation.id,
+      workspace,
+      userMessage: "Run the command.",
+      abort: new AbortController(),
+      onEvent: (event) => {
+        if (event.type === "approval") {
+          resolveApproval(event.requestId, "approved")
+        }
+      },
+    })
+
+    expect(result).toEqual({ content: "Done." })
+  })
+
   it("reuses completed identical calls within the same model request", async () => {
     const workspace = await makeWorkspace()
     const conversation = createConversation({ mode: "interactive" })
@@ -998,6 +1030,87 @@ describe.skipIf(!sqliteLoads)("agent loop tool-error feedback", () => {
         status: "exhausted",
         attemptsConsumed: 1,
       })
+    }
+  )
+
+  it.each([
+    {
+      label: "withholds delegation from an opted-out conversation",
+      conversationSubagentsEnabled: false,
+      processRunId: undefined,
+      offered: false,
+    },
+    {
+      label: "offers delegation to an opted-in conversation",
+      conversationSubagentsEnabled: true,
+      processRunId: undefined,
+      offered: true,
+    },
+    {
+      label: "preserves delegation for direct Process-style runs",
+      conversationSubagentsEnabled: undefined,
+      processRunId: "process-run",
+      offered: true,
+    },
+  ])(
+    "$label",
+    async ({ conversationSubagentsEnabled, processRunId, offered }) => {
+      const workspace = await makeWorkspace()
+      const agentsDir = join(workspace, ".cowork", "agents")
+      await mkdir(agentsDir, { recursive: true })
+      await writeFile(
+        join(agentsDir, "parent.agent.md"),
+        [
+          "---",
+          "name: parent",
+          "description: Delegates work.",
+          "tools: [agent]",
+          "children: [child]",
+          "user-invocable: true",
+          "---",
+          "Delegate suitable work.",
+        ].join("\n"),
+        "utf-8"
+      )
+      await writeFile(
+        join(agentsDir, "child.agent.md"),
+        [
+          "---",
+          "name: child",
+          "description: Handles delegated work.",
+          "tools: [read]",
+          "---",
+          "Read files and report back.",
+        ].join("\n"),
+        "utf-8"
+      )
+      const conversation = createConversation({
+        mode: "interactive",
+        agentName: "parent",
+      })
+
+      scriptedCompletions.push((request) => {
+        expect(request.tools.includes("spawn_subagent")).toBe(offered)
+        expect(request.tools.includes("spawn_subagents")).toBe(offered)
+        const system = request.messages.find(
+          (message) => message.role === "system"
+        )?.content as string
+        expect(system.includes("## Subagents")).toBe(offered)
+        return streamText("Done.")
+      })
+
+      expect(
+        await runAgentLoop({
+          conversationId: conversation.id,
+          workspace,
+          agentDir: workspace,
+          userMessage: "Handle this task.",
+          abort: new AbortController(),
+          conversationSubagentsEnabled,
+          processRunId,
+          onEvent: () => {},
+        })
+      ).toEqual({ content: "Done." })
     }
   )
 

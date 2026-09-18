@@ -43,6 +43,7 @@ import {
   SCHEMA_V41,
   SCHEMA_V43,
   SCHEMA_V44,
+  SCHEMA_V45,
 } from "./schema"
 
 // Ordered migrations. Index 0 runs to reach user_version 1, index 1 to reach 2,
@@ -93,6 +94,7 @@ const MIGRATIONS: Array<(db: Database.Database) => void> = [
   ensureProcessRuntimeProfileColumns,
   (db) => db.exec(SCHEMA_V43),
   (db) => db.exec(SCHEMA_V44),
+  (db) => db.exec(SCHEMA_V45),
 ]
 
 function tableExists(db: Database.Database, table: string): boolean {
@@ -131,6 +133,10 @@ function ensureProcessRuntimeProfileColumns(db: Database.Database): void {
   addColumnIfMissing(db, "process_phase_agents", "runtime_config", "TEXT")
   addColumnIfMissing(db, "process_runs", "runtime_config", "TEXT")
   addColumnIfMissing(db, "process_phase_runs", "runtime_snapshot", "TEXT")
+}
+
+function ensureSubagentArtifactsTable(db: Database.Database): void {
+  db.exec(SCHEMA_V45)
 }
 
 function ensureProjectPositionColumn(db: Database.Database): void {
@@ -201,6 +207,7 @@ export function runMigrations(db: Database.Database): void {
       ensureProcessRuntimeProfileColumns(db)
       ensureCodexSubscriptionProviderConstraints(db)
       ensureProjectPositionColumn(db)
+      ensureSubagentArtifactsTable(db)
     })()
   } finally {
     if (fkWasOn) db.pragma("foreign_keys = ON")

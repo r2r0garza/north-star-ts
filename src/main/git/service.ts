@@ -4,6 +4,7 @@ import type { Environment, ExecResult } from "../agent/env/types"
 import { truncateUtf8Text } from "../agent/tools/output"
 import { resolveInWorkspace } from "../agent/tools/workspace"
 import type { GitDiffResult } from "./diff"
+import { repositoryDelegationLeases } from "../agent/subagents/repository-lease"
 
 const GIT_TIMEOUT_MS = 5_000
 const GIT_NETWORK_TIMEOUT_MS = 30_000
@@ -121,7 +122,8 @@ type RepoInfo =
 export class GitService {
   constructor(
     private readonly workspace: string,
-    private readonly env: Environment = new LocalEnvironment(workspace)
+    private readonly env: Environment = new LocalEnvironment(workspace),
+    private readonly repositoryLeaseToken?: string
   ) {}
 
   async status(): Promise<GitStatusResult> {
@@ -412,6 +414,7 @@ export class GitService {
       return { ok: false, error: "This folder is not a Git repository." }
     return this.withRepositoryOperation(repo.root, async () => {
       try {
+        await this.assertMutationAllowed(repo.root)
         const commitMessage = validateCommitMessage(message)
         const selected = await this.validateSelectedPaths(repo.root, paths)
         if (selected.paths.length === 0) {
@@ -476,6 +479,7 @@ export class GitService {
       return { ok: false, error: "This folder is not a Git repository." }
     return this.withRepositoryOperation(repo.root, async () => {
       try {
+        await this.assertMutationAllowed(repo.root)
         const freshRepo = await this.repoInfo()
         if (!freshRepo.isRepo || freshRepo.root !== repo.root) {
           throw new Error("Repository state changed.")
@@ -554,11 +558,20 @@ export class GitService {
     }
     return this.withRepositoryOperation(repo.root, async () => {
       try {
+        await this.assertMutationAllowed(repo.root)
         return { ok: true, action, summary: await operation(repo) }
       } catch (err) {
         return { ok: false, action, error: sanitizeGitError(err) }
       }
     })
+  }
+
+  private async assertMutationAllowed(root: string): Promise<void> {
+    const blocker = await repositoryDelegationLeases.blocker(
+      root,
+      this.repositoryLeaseToken
+    )
+    if (blocker) throw new Error(`repository_busy: ${blocker.label}`)
   }
 
   private requireAttachedBranch(

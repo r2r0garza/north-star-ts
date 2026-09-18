@@ -167,6 +167,27 @@ export interface TaskEvent {
   createdAt: number
 }
 
+export type SubagentArtifactStatus =
+  | "active"
+  | "resolved"
+  | "quarantined_cleanup_required"
+
+export interface SubagentArtifact {
+  id: string
+  repositoryId: string
+  sessionId: string
+  assignmentId: string
+  backend: string
+  branch: string
+  worktreePath: string
+  markerPath: string
+  status: SubagentArtifactStatus
+  detail: unknown
+  createdAt: number
+  updatedAt: number
+  resolvedAt: number | null
+}
+
 export interface TaskCheckpoint {
   id: string
   taskId: string

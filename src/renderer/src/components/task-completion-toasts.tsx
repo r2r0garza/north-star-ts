@@ -53,7 +53,7 @@ export function TaskCompletionToasts({
         if (unseen.length === 0) return
         for (const t of unseen) seen.current.add(t.id)
         fire(
-          "You have completed background tasks — open the panel (⌘J) to view history."
+          "You have completed background tasks — open the panel (⌘K) to view history."
         )
       })
     return () => {

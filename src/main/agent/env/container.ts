@@ -92,14 +92,16 @@ const IN_CONTAINER_KILL_TIMEOUT_MS = 2_000
 // per-conversation container, exec commands, route file ops through the CLI, and
 // dispose cleanly. Out of scope here: settings UI, approval changes, auto runtime
 // selection, image building. See .plan/006 for documented follow-ups.
+export function containerNameForConversation(conversationId: string): string {
+  const safeId = conversationId.replace(/[^a-zA-Z0-9_.-]/g, "-")
+  return `${systemSlug()}-env-${safeId}`
+}
+
 export class ContainerEnvironment implements Environment {
   private readonly name: string
 
   constructor(private readonly cfg: ContainerConfig) {
-    // Container names allow [a-zA-Z0-9][a-zA-Z0-9_.-]*; ids may contain other
-    // chars, so sanitize to keep `run --name` valid.
-    const safeId = cfg.conversationId.replace(/[^a-zA-Z0-9_.-]/g, "-")
-    this.name = `${systemSlug()}-env-${safeId}`
+    this.name = containerNameForConversation(cfg.conversationId)
   }
 
   // Spawn the runtime binary with raw args, capturing stdout (as a Buffer, for

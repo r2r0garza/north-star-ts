@@ -179,7 +179,7 @@
 .conversation-composer--centered {
   position: absolute;
   bottom: calc(50% - 9rem);
-  max-width: min(90%, 48rem);
+  max-width: min(90%, 72rem);
 }
 
 @media (prefers-reduced-motion: reduce) {

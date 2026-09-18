@@ -16,7 +16,7 @@ export const spawnSubagentTool: Tool = {
     function: {
       name: "spawn_subagent",
       description:
-        "Delegate a self-contained task to a specialized child agent and get its " +
+        "Compatibility single-child tool. Delegate a self-contained task to a specialized named child agent and get its " +
         "final answer back. The child runs with its own system prompt, tools, and " +
         "skills, and CANNOT see this conversation — so give it a complete, " +
         "self-contained prompt with all the context it needs. Use this when a task " +

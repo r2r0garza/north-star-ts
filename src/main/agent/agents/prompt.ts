@@ -16,7 +16,7 @@ export function buildSubagentsPrompt(spawnable: AgentDefinition[]): string {
   return `
 ## Subagents
 
-You can delegate a self-contained task to a specialized child agent with the \`spawn_subagent\` tool. It runs the child with its own system prompt, tools, and skills, then returns the child's final answer. The child cannot see this conversation, so give it a complete, self-contained prompt.
+You can delegate one self-contained task with \`spawn_subagent\`, or run 1-4 independent children concurrently with \`spawn_subagents\`. Batch assignments may use an ephemeral profile (\`clone\`, \`general\`, \`planner\`, or \`explore\`) or a named child below. Children cannot see this conversation, so include all required context. Prefer read-only parallel exploration. Writing children use Git worktrees, must commit before returning, and may fail preflight; if so, do the work yourself. The parent alone integrates returned branches.
 
 **Agents you can spawn:**
 

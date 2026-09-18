@@ -11,6 +11,7 @@ import {
 import type { KeyboardEvent } from "react"
 import { toast } from "sonner"
 import {
+  ArrowLeft,
   ArrowUp,
   Bot,
   BrainCircuit,
@@ -66,7 +67,6 @@ import {
 } from "@/components/ui/attachment"
 import { ToolGroup, ApprovalCard } from "@/components/tool-group"
 import { ChangedFilesBar } from "@/components/changed-files-bar"
-import { GitBranchSwitcher } from "@/components/git-branch-switcher"
 import { QuestionPanel } from "@/components/question-panel"
 import { applyStreamAttempt } from "@/lib/live-stream"
 import {
@@ -99,12 +99,12 @@ import {
   deriveLabel,
   toToolUse,
   isErrorResult,
+  approvePendingToolCalls,
   baseName as lastSegment,
   type TimelineItem,
   type ToolUse,
 } from "@/lib/timeline"
 import { cn } from "@/lib/utils"
-import { useGitStatus } from "@/lib/git-status"
 import { maybeNotify } from "@/lib/notify"
 import {
   EMPTY_CHAT_SUCCESS_ERROR,
@@ -439,15 +439,15 @@ function App(
   const systemName = system.displayName
 
   const [workspace, setWorkspace] = useState("")
+  const [parentConversation, setParentConversation] = useState<{
+    id: string
+    title: string | null
+  } | null>(null)
   // Whether the workspace is locked to a project's directory (the conversation
   // belongs to — or is being started in — a project that has one). When true the
   // composer's folder picker is hidden: the directory always comes from the
   // project, not a per-conversation pick.
   const [lockedWorkspace, setLockedWorkspace] = useState(false)
-  const gitStatus = useGitStatus(isChat ? "" : workspace)
-  const gitBranch = gitStatus.status?.isRepo
-    ? (gitStatus.status.branch ?? gitStatus.status.sha ?? null)
-    : null
   const [attachments, setAttachments] = useState<string[]>([])
   const [message, setMessage] = useState("")
   // Agent mode: controls how the agent behaves on workspace views.
@@ -499,6 +499,35 @@ function App(
   const [selAgentName, setSelAgentName] = useState<string | null>(null)
   const [pendingModelMapping, setPendingModelMapping] =
     useState<PendingModelMapping | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    setParentConversation(null)
+    if (!conversationId) return
+    void window.cowork.db.tasks
+      .list({ conversationId })
+      .then((tasks) => {
+        const task = tasks.find(
+          (candidate) =>
+            (candidate.input as { kind?: string } | null)?.kind ===
+              "subagent" &&
+            candidate.sourceConversationId &&
+            candidate.sourceConversationId !== conversationId
+        )
+        return task?.sourceConversationId
+          ? window.cowork.db.conversations.get(task.sourceConversationId)
+          : null
+      })
+      .then((parent) => {
+        if (!cancelled && parent) {
+          setParentConversation({ id: parent.id, title: parent.title })
+        }
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [conversationId])
   const [menu, setMenu] = useState<{ kind: MentionKind; query: string } | null>(
     null
   )
@@ -1438,9 +1467,25 @@ function App(
               setAgentModeFor(turnConvoId, "plan")
             }
           } else if (event.type === "auto_mode") {
-            // The user approved the plan with Auto mode — retain that selection
-            // for this conversation for the remainder of the app session.
-            if (event.enabled) setAgentModeFor(turnConvoId, "auto")
+            // Retain Auto for the session and immediately settle every approval
+            // card currently shown for this turn. The backend resolves both parent
+            // and child gates when Auto is enabled, but child completion can take
+            // long enough that leaving the card pending makes the toggle look
+            // ineffective.
+            if (event.enabled) {
+              setAgentModeFor(turnConvoId, "auto")
+              updateLive(turnConvoId, (turn) => ({
+                ...turn,
+                segments: turn.segments.map((segment) =>
+                  segment.kind === "tools"
+                    ? {
+                        ...segment,
+                        calls: approvePendingToolCalls(segment.calls),
+                      }
+                    : segment
+                ),
+              }))
+            }
           } else if (event.type === "command_wait") {
             updateLive(turnConvoId, (turn) => ({
               ...turn,
@@ -2097,9 +2142,15 @@ function App(
         >
           <Bot className="size-4 shrink-0" />
           <ComboboxValue placeholder="Agent">
-            {(value: { value: string; label: string } | null) => (
+            {(
+              value: {
+                value: string
+                label: string
+                name?: string
+              } | null
+            ) => (
               <span className="truncate">
-                {value && value.value ? value.label : "Agent"}
+                {value && value.value ? (value.name ?? value.label) : "Agent"}
               </span>
             )}
           </ComboboxValue>
@@ -2304,6 +2355,7 @@ function App(
                 overlayRef.current.scrollTop = e.currentTarget.scrollTop
             }}
             rows={2}
+            spellCheck
             placeholder="Send a message…"
             className="relative field-sizing-content max-h-[24.25rem] w-full resize-none bg-transparent px-4 py-3 text-sm leading-relaxed outline-none placeholder:text-muted-foreground"
           />
@@ -2354,12 +2406,6 @@ function App(
                       </span>
                     )}
                   </button>
-                )}
-                {gitBranch && (
-                  <GitBranchSwitcher
-                    workspace={workspace}
-                    compact={rightPanelOpen}
-                  />
                 )}
               </>
             )}
@@ -2630,6 +2676,26 @@ function App(
     // messages scrolling up are clipped at the bar's edge instead of passing
     // under it.
     <div className="relative flex h-full w-full flex-col overflow-hidden pt-11">
+      {parentConversation && (
+        <div className="border-b bg-muted/40 px-4 py-2">
+          <button
+            type="button"
+            className="mx-auto flex w-full max-w-[min(90%,72rem)] items-center gap-2 text-sm text-muted-foreground hover:text-foreground"
+            onClick={() =>
+              window.dispatchEvent(
+                new CustomEvent("open-conversation", {
+                  detail: { conversationId: parentConversation.id },
+                })
+              )
+            }
+          >
+            <ArrowLeft className="size-4" />
+            <span>
+              Back to {parentConversation.title || "parent conversation"}
+            </span>
+          </button>
+        </div>
+      )}
       {/* Conversation — MessageScroller handles auto-follow + scroll-to-bottom.
           The window drag bar lives in Shell, above this column. */}
       <MessageScrollerProvider autoScroll defaultScrollPosition="last-anchor">
@@ -2755,12 +2821,7 @@ function App(
           !isEmpty && "border-border"
         )}
       >
-        <div
-          className={cn(
-            "mx-auto w-full px-4 py-4",
-            isEmpty ? "max-w-[min(90%,48rem)]" : "max-w-[min(90%,72rem)]"
-          )}
-        >
+        <div className="mx-auto w-full max-w-[min(90%,72rem)] px-4 py-4">
           {welcome}
           {pendingApproval && (
             <div className="mb-3 animate-in duration-200 fade-in-0 slide-in-from-bottom-4">

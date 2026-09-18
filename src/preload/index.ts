@@ -37,6 +37,7 @@ import type {
   DashboardWidgetData,
   ExternalAgentModelMapping,
   ExternalAgentModelSourceKind,
+  SubagentArtifact,
 } from "../main/db/types"
 import type { ActionKind } from "../main/agent/approval/types"
 import type { PickedElement } from "../main/browser/types"
@@ -294,6 +295,18 @@ function releaseTaskSubscription(): void {
 // The typed API exposed to the renderer as `window.cowork`.
 // This is the ONLY surface the UI can use to reach the main process.
 const api = {
+  subagents: {
+    artifacts: (workspace?: string) =>
+      ipcRenderer.invoke("subagents:artifacts", workspace) as Promise<
+        SubagentArtifact[]
+      >,
+    resolveArtifact: (id: string, keepBranch: boolean) =>
+      ipcRenderer.invoke(
+        "subagents:resolveArtifact",
+        id,
+        keepBranch
+      ) as Promise<SubagentArtifact>,
+  },
   // Runs a chat turn. `onEvent` receives streamed tokens and tool activity;
   // the returned promise resolves with the final result. The event listener is
   // attached only for the duration of the turn and removed when it settles.
@@ -710,6 +723,12 @@ const api = {
         paths,
         message
       ) as Promise<GitCommitResult>,
+    delegationLease: (workspace: string) =>
+      ipcRenderer.invoke("git:delegationLease", workspace) as Promise<{
+        sessionId: string
+        label: string
+        acquiredAt: number
+      } | null>,
     generateCommitMessage: (workspace: string, paths: string[]) =>
       ipcRenderer.invoke(
         "git:generateCommitMessage",
@@ -1786,6 +1805,7 @@ export type {
   Todo,
   TodoStatus,
   Workspace,
+  SubagentArtifact,
   ProcessDefinition,
   ProcessPhase,
   ProcessPhaseAgent,

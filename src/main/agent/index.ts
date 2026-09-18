@@ -1,5 +1,5 @@
 import { randomUUID } from "crypto"
-import { stat } from "fs/promises"
+import { readFile, stat } from "fs/promises"
 import { basename, dirname, isAbsolute } from "path"
 import { SHUTDOWN_ABORT_REASON } from "./abort"
 import { askUser } from "./questions/broker"
@@ -18,6 +18,7 @@ import {
   writePlanTool,
   readPlanTool,
   presentPlanTool,
+  spawnSubagentsTool,
 } from "./tools"
 import { terminateOwnedCommandSessions } from "./tools/command_session_tools"
 import type { BrowserHandle } from "../browser/manager"
@@ -34,7 +35,7 @@ import {
   replaceTodos,
   isTodoListFinished,
 } from "../db/repositories/todos"
-import { createTask } from "../db/repositories/tasks"
+import { createTask, updateTask } from "../db/repositories/tasks"
 import { todoSeed, finishedTodoTitle } from "../tasks/todo-run"
 import { buildTodoListPrompt } from "./todo-prompt"
 import { loadSkills } from "./skills/loader"
@@ -65,6 +66,24 @@ import {
 import { getMcpManager, parsePrefixedName, enabledServerNames } from "./mcp"
 import type { McpToolDefinition } from "./mcp"
 import { spawnSubagentTool } from "./tools/spawn_subagent"
+import type { SpawnSubagentsInput, SubagentResult } from "./subagents/contracts"
+import {
+  composeSubagentInstructions,
+  ephemeralProfilePrompt,
+} from "./subagents/profiles"
+import { loadSpawnableAgent, loadSpawnableAgents } from "./subagents/sources"
+import { resolveSkillResourcePath } from "./tools/skill_resources"
+import { repositoryDelegationLeases } from "./subagents/repository-lease"
+import {
+  collectWriterHandback,
+  createWriterWorktree,
+  mergeability,
+  preflightWriterRepository,
+  removeWriterWorktree,
+  stageIntegrationBranch,
+  type WriterWorktree,
+} from "./subagents/worktrees"
+import { containerNameForConversation } from "./env/container"
 import { flagForReworkTool } from "./tools/flag_for_rework"
 import { dashboardWriteTool } from "./tools/dashboard_write"
 import { loadSystemPrompt } from "./system-prompt"
@@ -138,6 +157,11 @@ import { actionAllowlist } from "../db/repositories"
 import { getWorkspace } from "../db/repositories/workspaces"
 import { getProject } from "../db/repositories/projects"
 import { getAccount } from "../db/repositories/provider-accounts"
+import {
+  createSubagentArtifact,
+  listSubagentArtifacts,
+  settleSubagentArtifact,
+} from "../db/repositories/subagent-artifacts"
 import type { Conversation } from "../db/types"
 import type { FailureContext, FailureStage } from "../db/types"
 import { runClaudeConversation, runCodexConversation } from "./cli"
@@ -151,6 +175,8 @@ import type {
   ToolAction,
 } from "./approval/types"
 import type { Ask, AskResult, EnqueueTask, Question } from "./tools/types"
+import { SubagentApprovalCoordinator } from "./subagents/approval-coordinator"
+import { SubagentAutoModeRelay } from "./subagents/auto-mode"
 
 // The single approval policy, shared across turns. Built by the shared factory
 // (approval/engine.ts) so the deterministic dashboard-refresh executor (033.3)
@@ -202,6 +228,7 @@ export { SHUTDOWN_ABORT_REASON }
 // writes. A turn that still hits the ceiling is detected via finish_reason below
 // and surfaced as a clean, retryable error rather than a cryptic JSON parse throw.
 const MAX_OUTPUT_TOKENS = 8192
+const CHILD_APPROVAL_TIMEOUT_MS = 10 * 60_000
 
 // Operating rules injected as a high-priority context section when a turn is in
 // plan mode. Kept short and imperative.
@@ -233,6 +260,14 @@ export function stopChat(conversationId: string): void {
 // sync), and — when turning Auto ON — immediately approves any approval this
 // conversation is currently blocked on, so the pending prompt clears instead of
 // stranding the user (Auto means "stop asking me"). No-op if no live turn.
+function approvePendingForConversation(conversationId: string): void {
+  for (const [requestId, pending] of pendingApprovals) {
+    if (pending.conversationId === conversationId) {
+      resolveApproval(requestId, "approved")
+    }
+  }
+}
+
 export function setAutoModeForConversation(
   conversationId: string,
   on: boolean
@@ -244,11 +279,7 @@ export function setAutoModeForConversation(
   // Auto-approve whatever this conversation is blocked on right now. Sequential
   // gating means at most one pending approval per conversation, but resolve all
   // matching just in case. No `remember` — Auto is a run stance, not a rule.
-  for (const [requestId, pending] of pendingApprovals) {
-    if (pending.conversationId === conversationId) {
-      resolveApproval(requestId, "approved")
-    }
-  }
+  approvePendingForConversation(conversationId)
 }
 
 // Called from the renderer over IPC ("chat:approve") to resolve a request the
@@ -329,6 +360,11 @@ export interface ChatRequest {
 
 export interface ChatResult {
   content?: string
+  usage?: {
+    promptTokens: number
+    completionTokens: number
+    totalTokens: number
+  }
   error?: string
   failure?: FailureContext
   // Stable code for renderer actions that should not depend on parsing the
@@ -729,6 +765,10 @@ export interface RunAgentLoopOptions {
   // is a require_approval action). Can also be activated mid-turn when the user
   // picks "Yes, approve and work in Auto mode" in the plan approval question.
   autoMode?: boolean
+  // Whether this run may receive conversation delegation tools. `runChat` passes
+  // the default-off user preference as a turn-start snapshot. Omitted means
+  // enabled so direct Process/task callers preserve their existing semantics.
+  conversationSubagentsEnabled?: boolean
   // Subagent-tree depth of this run: 0 for a top-level (user- or task-driven)
   // turn, incremented each time an agent spawns a child via spawn_subagent.
   // Bounds recursion (MAX_AGENT_DEPTH). Defaults to 0.
@@ -758,6 +798,16 @@ export interface RunAgentLoopOptions {
   // which surfaces the question in the activity panel. The worker proceeds on
   // reasonable assumptions instead (its kickoff frames the work as self-contained).
   suppressUserQuestions?: boolean
+  // Child-run overrides used by conversation subagents. They are runtime-only:
+  // ephemeral identities are never persisted as conversation agent names.
+  agentOverride?: AgentDefinition | null
+  childInstructionPrefix?: string
+  allowedToolNames?: Set<string>
+  subagentRun?: boolean
+  repositoryLeaseToken?: string
+  beforeApproval?: (signal: AbortSignal) => Promise<() => void>
+  onApprovalWaitingChange?: (waiting: boolean) => void
+  registerAutoModeSetter?: (setter: (enabled: boolean) => void) => () => void
 }
 
 // The on-disk directory associated with a conversation, used to discover
@@ -938,9 +988,12 @@ export async function runAgentLoop(
   // this turn is offered. Re-resolved from disk each turn (definitions are files,
   // not DB rows). Null (no selection, or the file vanished) → the built-in main
   // agent, exactly as before.
-  const agent = conversation?.agentName
-    ? await loadAgent(conversation.agentName, agentDir)
-    : null
+  const agent =
+    opts.agentOverride !== undefined
+      ? opts.agentOverride
+      : conversation?.agentName
+        ? await loadAgent(conversation.agentName, agentDir)
+        : null
   const capabilityPolicy = agentCapabilityPolicy(agent)
 
   // Load skills (user → workspace, last-wins), then build the read_skill tool and
@@ -1020,6 +1073,7 @@ export async function runAgentLoop(
   // MUTABLE: present_plan can activate it mid-turn when the user picks "Yes,
   // approve and work in Auto mode".
   let autoMode = !!opts.autoMode
+  const autoModeSubscribers = new Set<(enabled: boolean) => void>()
   // The turn-level auto-mode mutator: flips the live var and notifies the UI.
   // Shared by present_plan (via ctx.setAutoMode) and the mid-turn dropdown toggle
   // (via the autoModeSetters registry). The gate reads `autoMode` live, so both
@@ -1027,7 +1081,9 @@ export async function runAgentLoop(
   const setAutoMode = (on: boolean) => {
     autoMode = on
     onEvent({ type: "auto_mode", enabled: on })
+    for (const subscriber of autoModeSubscribers) subscriber(on)
   }
+  const unregisterAutoModeSetter = opts.registerAutoModeSetter?.(setAutoMode)
   // Expose this turn's setter for the renderer's mid-turn Auto toggle, but only
   // for live turns (those with a renderer wired via provideBrowser). The durable
   // task runner and subagent spawns have no dropdown to toggle from, and keying
@@ -1059,14 +1115,14 @@ export async function runAgentLoop(
     !!opts.suppressUserQuestions
   )
 
-  // Subagent spawning. The spawn_subagent tool is offered only when BOTH gates
-  // pass: the agent's `tools` includes the `agent` category AND its `children`
-  // key is present (tri-state: omitted → cannot spawn even with the category;
-  // [] → any loadable agent; [list] → only those). Resolve the concrete set of
-  // spawnable child definitions now, both to gate the offering and to list them
-  // in the Subagents prompt section. Depth is also a gate: a run already at the
-  // max depth can't offer the tool (its children could never spawn anyway).
+  // Subagent spawning. Live conversations must explicitly opt in; direct Process
+  // and task callers omit the conversation-only flag and retain their authored
+  // delegation behavior. The remaining agent policy and depth gates only narrow
+  // that capability further.
+  const delegationEnabled = opts.conversationSubagentsEnabled !== false
   const canSpawn =
+    delegationEnabled &&
+    !opts.subagentRun &&
     !!agent &&
     (capabilityPolicy
       ? capabilityPolicy.children.kind !== "none"
@@ -1075,7 +1131,7 @@ export async function runAgentLoop(
     (opts.agentDepth ?? 0) < MAX_AGENT_DEPTH
   let spawnableChildren: AgentDefinition[] = []
   if (canSpawn) {
-    const loadable = await loadAgents(agentSources(agentDir))
+    const loadable = await loadSpawnableAgents(agentDir)
     spawnableChildren = resolvePolicyChildren(
       agent!,
       loadable,
@@ -1083,6 +1139,13 @@ export async function runAgentLoop(
     )
   }
   const offerSpawn = canSpawn && spawnableChildren.length > 0
+  // The built-in main agent always gets the batch tool. A custom parent gets it
+  // only when its existing agent/children policy permits delegation.
+  const offerSpawnBatch =
+    delegationEnabled &&
+    !opts.subagentRun &&
+    (opts.agentDepth ?? 0) < MAX_AGENT_DEPTH &&
+    (!agent || canSpawn)
 
   // MCP tools. Resolve which enabled servers this agent may use (its `mcpServers`
   // tri-state — omitted → all enabled; [] → none; [list] → only those), then ask
@@ -1139,8 +1202,8 @@ export async function runAgentLoop(
   // ever narrow, never widen (an agent granted `edit` in a bare Chat still gets
   // no filesystem tools; plan mode still drops mutating tools). Universal tools
   // (ask_user_question, read_skill, plan-mode handoff) bypass the allowlist.
-  const applyAgentTools = (defs: { function: { name: string } }[]) =>
-    externalToolAllowed
+  const applyAgentTools = (defs: { function: { name: string } }[]) => {
+    const agentFiltered = externalToolAllowed
       ? defs.filter((d) => externalToolAllowed(d.function.name))
       : agentToolNames === null
         ? defs
@@ -1149,6 +1212,10 @@ export async function runAgentLoop(
               isUniversalTool(d.function.name) ||
               agentToolNames.has(d.function.name)
           )
+    return opts.allowedToolNames
+      ? agentFiltered.filter((d) => opts.allowedToolNames!.has(d.function.name))
+      : agentFiltered
+  }
   const buildTools = () =>
     applyAgentTools([
       ...(hasWorkspace
@@ -1182,6 +1249,7 @@ export async function runAgentLoop(
       // side-effecting tools. Not intersected away by the allowlist — offerSpawn
       // already required the `agent` category.
       ...(offerSpawn && !planMode ? [spawnSubagentTool.definition] : []),
+      ...(offerSpawnBatch && !planMode ? [spawnSubagentsTool.definition] : []),
       // flag_for_rework: offered only to a Process phase worker (plan 031.2 — when
       // this run carries process context). Lets the worker send a defect back to an
       // upstream phase instead of fixing out of lane. Not gated by the agent
@@ -1194,7 +1262,9 @@ export async function runAgentLoop(
       // Plan-mode tools: the only write (write_plan) + the approval handoff.
       ...(planMode
         ? [writePlanTool.definition, presentPlanTool.definition]
-        : []),
+        : opts.subagentRun && opts.allowedToolNames?.has("write_plan")
+          ? [writePlanTool.definition]
+          : []),
       // read_plan: reads the conversation's own plan file (outside the workspace,
       // so read_file_tool can't). Offered whenever a plan CAN exist — both in
       // plan mode (re-read the draft) and after approval (consult it while
@@ -1223,17 +1293,27 @@ export async function runAgentLoop(
   // they frame everything the model reads, without discarding the mode behavior.
   const modePrompt = await loadSystemPrompt(conversation?.mode)
   const baseSystemPrompt =
-    (agent
+    (opts.childInstructionPrefix
       ? `${renderContextEnvelope(
           {
             trust: "approved_instruction",
             channel: "agent",
-            source: agent.name,
+            source: "subagent_identity",
             persisted: true,
           },
-          agent.body.trim()
+          opts.childInstructionPrefix
         )}\n\n${modePrompt}`
-      : modePrompt) +
+      : agent
+        ? `${renderContextEnvelope(
+            {
+              trust: "approved_instruction",
+              channel: "agent",
+              source: agent.name,
+              persisted: true,
+            },
+            agent.body.trim()
+          )}\n\n${modePrompt}`
+        : modePrompt) +
     (opts.processRunId &&
     opts.processPhaseRunId &&
     opts.processCompletionInstruction
@@ -1468,6 +1548,8 @@ export async function runAgentLoop(
   // read_file_tool, scoped to this attachment list, which supports paging).
   let persistedUserContent: string | undefined
   let modelUserContent: string | undefined
+  const turnUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 }
+  let hasTurnUsage = false
   // Visible prose this turn produced, kept outside the loop so the memory
   // recorder in `finally` can see it. The loop's own `text` is per-round and is
   // gone by the time an abort, a truncation, or a thrown error unwinds.
@@ -1839,6 +1921,15 @@ export async function runAgentLoop(
       // failed transport/stream attempt buffers and discards its partial text and
       // tool fragments, so a retry cannot execute an abandoned partial tool call
       // or duplicate partial prose in the live UI.
+      const usage = round.diagnostics.usage
+      if (usage) {
+        hasTurnUsage = true
+        turnUsage.promptTokens += usage.promptTokens ?? 0
+        turnUsage.completionTokens += usage.completionTokens ?? 0
+        turnUsage.totalTokens +=
+          usage.totalTokens ??
+          (usage.promptTokens ?? 0) + (usage.completionTokens ?? 0)
+      }
       let text = round.text
       if (text) {
         turnAssistantText = turnAssistantText
@@ -1923,7 +2014,10 @@ export async function runAgentLoop(
         // (and a reopened conversation) has the full transcript.
         appendMessage({ conversationId, role: "assistant", content: text })
         completeModelRequestRetryBudget({ conversationId, logicalRoundId })
-        return { content: text }
+        return {
+          content: text,
+          ...(hasTurnUsage ? { usage: turnUsage } : {}),
+        }
       }
 
       // Record the assistant turn (text + the tool calls it requested) so the
@@ -2105,7 +2199,7 @@ export async function runAgentLoop(
           // a process-unique `requestId` keying the pending map — the renderer
           // echoes the latter back, so a decision can't resolve another turn's gate.
           let gatedResult: string | undefined
-          const gate: Gate = (action): Promise<GateOutcome> => {
+          const gate: Gate = async (action): Promise<GateOutcome> => {
             callSignal.throwIfAborted()
             const reconciled = reconcileSideEffectingToolAction({
               conversationId,
@@ -2137,6 +2231,10 @@ export async function runAgentLoop(
             }
             const explicit = decision.level === "require_explicit_approval"
             if (autoMode) return Promise.resolve("approved")
+            const releaseApproval = opts.beforeApproval
+              ? await opts.beforeApproval(callSignal)
+              : undefined
+            opts.onApprovalWaitingChange?.(true)
             const requestId = randomUUID()
             persistLifecycle(() =>
               markToolCallWaitingForApproval({
@@ -2144,20 +2242,21 @@ export async function runAgentLoop(
                 toolCallId: call.id,
               })
             )
-            onEvent({
-              type: "approval",
-              id: call.id,
-              requestId,
-              tool: action.tool,
-              summary: action.summary,
-              reason: decision.reason,
-              kind: action.kind,
-              explicit,
-              detail: action.detail,
-            })
-            return new Promise<GateOutcome>((resolve) => {
+            const approval = new Promise<GateOutcome>((resolve) => {
+              const approvalTimeout = opts.subagentRun
+                ? setTimeout(() => {
+                    if (!pendingApprovals.delete(requestId)) return
+                    gatedResult =
+                      "ERROR[approval_timeout]: Child approval timed out."
+                    resolve("denied")
+                  }, CHILD_APPROVAL_TIMEOUT_MS)
+                : undefined
+              const resolvePending: PendingApproval["resolve"] = (outcome) => {
+                if (approvalTimeout) clearTimeout(approvalTimeout)
+                resolve(outcome)
+              }
               pendingApprovals.set(requestId, {
-                resolve,
+                resolve: resolvePending,
                 action,
                 workspacePath: workspace,
                 conversationId,
@@ -2175,19 +2274,39 @@ export async function runAgentLoop(
                 "abort",
                 () => {
                   if (callSignal.reason === SHUTDOWN_ABORT_REASON) return
-                  if (pendingApprovals.delete(requestId)) resolve("denied")
+                  if (pendingApprovals.delete(requestId))
+                    resolvePending("denied")
                 },
                 { once: true }
               )
-            }).then((outcome) => {
-              callSignal.throwIfAborted()
-              if (outcome === "approved") {
-                persistLifecycle(() =>
-                  markToolCallStarted({ conversationId, toolCallId: call.id })
-                )
-              }
-              return outcome
             })
+            // Register before announcing the request. Event handlers may enable
+            // Auto synchronously; they must be able to resolve this exact gate.
+            onEvent({
+              type: "approval",
+              id: call.id,
+              requestId,
+              tool: action.tool,
+              summary: action.summary,
+              reason: decision.reason,
+              kind: action.kind,
+              explicit,
+              detail: action.detail,
+            })
+            return approval
+              .then((outcome) => {
+                callSignal.throwIfAborted()
+                if (outcome === "approved") {
+                  persistLifecycle(() =>
+                    markToolCallStarted({ conversationId, toolCallId: call.id })
+                  )
+                }
+                return outcome
+              })
+              .finally(() => {
+                opts.onApprovalWaitingChange?.(false)
+                releaseApproval?.()
+              })
           }
           // The clarification prompt for ask_user_question. Emits a `question`
           // event and blocks until the renderer answers (chat:answer → resolveQuestion)
@@ -2204,6 +2323,21 @@ export async function runAgentLoop(
           }
           // read_skill ignores these fields. With a workspace, file tools confine
           // to it; without one, read_file_tool reads only the attached files.
+          const leaseBlocker = hasWorkspace
+            ? await repositoryDelegationLeases.blocker(
+                workspace!,
+                opts.repositoryLeaseToken
+              )
+            : undefined
+          if (
+            leaseBlocker &&
+            effectsForCall(call.name)?.readOnly === false &&
+            call.name !== "spawn_subagents"
+          ) {
+            return {
+              result: `ERROR[repository_busy]: ${leaseBlocker.label}`,
+            }
+          }
           const ctx = {
             workspace: workspace ?? "",
             attachments,
@@ -2244,6 +2378,36 @@ export async function runAgentLoop(
             // the tool reports "unavailable" otherwise (it's also not offered).
             // agentChildren is the authorization whitelist; depth/ancestors bound
             // recursion. The child's name is appended to the ancestor chain here.
+            spawnSubagents: offerSpawnBatch
+              ? (input: SpawnSubagentsInput) =>
+                  spawnSubagentBatch({
+                    input,
+                    parentConversation: conversation,
+                    parentWorkspace: hasWorkspace ? workspace : undefined,
+                    agentDir,
+                    parentAgent: agent,
+                    parentToolNames: new Set(
+                      buildTools().map((d) => d.function.name)
+                    ),
+                    skillResourceRoots,
+                    parentSignal: callSignal,
+                    parentAutoMode: autoMode,
+                    subscribeParentAutoMode: (subscriber) => {
+                      autoModeSubscribers.add(subscriber)
+                      return () => autoModeSubscribers.delete(subscriber)
+                    },
+                    parentOnEvent: onEvent,
+                    parentToolCallId: call.id,
+                    depth: (opts.agentDepth ?? 0) + 1,
+                    ancestors: [
+                      ...(opts.agentAncestors ?? []),
+                      ...(agent ? [agent.name] : []),
+                    ],
+                  })
+              : undefined,
+            planMode,
+            writeSubagentsEnabled: hasWorkspace,
+            repositoryLeaseToken: opts.repositoryLeaseToken,
             spawnSubagent: offerSpawn
               ? (input: { agentName: string; prompt: string }) =>
                   spawnSubagent({
@@ -2448,6 +2612,7 @@ export async function runAgentLoop(
     if (isLiveTurn && autoModeSetters.get(conversationId) === setAutoMode) {
       autoModeSetters.delete(conversationId)
     }
+    unregisterAutoModeSetter?.()
     // Tear down this run's execution backend (stop+remove a container; no-op for
     // Local). Never let cleanup failure mask the run's real result. The abort
     // controller is owned by the caller (runChat / the task runner), so it's
@@ -2467,6 +2632,403 @@ export async function runAgentLoop(
 // kicks off title generation, and owns the conversation-keyed AbortController so
 // the Stop button (chat:stop → stopChat) can cancel it. A "live turn" is just a
 // task with a renderer attached; the durable task runner calls runAgentLoop
+const READ_ONLY_SUBAGENT_EXTRA_TOOLS = new Set([
+  "read_skill",
+  "read_plan",
+  "write_plan",
+])
+
+function readOnlyChildTools(parentToolNames: Set<string>): Set<string> {
+  return new Set(
+    [...parentToolNames].filter((name) => {
+      if (READ_ONLY_SUBAGENT_EXTRA_TOOLS.has(name)) return true
+      const effects = getToolEffects(name)
+      return effects?.readOnly === true && !name.startsWith("browser_")
+    })
+  )
+}
+
+async function childInstructionResource(input: {
+  uri?: string
+  roots: Record<string, string>
+}): Promise<string | undefined> {
+  if (!input.uri) return undefined
+  const path = await resolveSkillResourcePath(
+    { workspace: "", skillResourceRoots: input.roots },
+    input.uri
+  )
+  const info = await stat(path)
+  if (!info.isFile()) throw new Error("instruction_uri must resolve to a file")
+  if (info.size > 64 * 1024)
+    throw new Error("instruction_uri exceeds the 64 KiB limit")
+  return readFile(path, "utf8")
+}
+
+async function spawnSubagentBatch(input: {
+  input: SpawnSubagentsInput
+  parentConversation: Conversation | undefined
+  parentWorkspace?: string
+  agentDir?: string
+  parentAgent: AgentDefinition | null
+  parentToolNames: Set<string>
+  skillResourceRoots: Record<string, string>
+  parentSignal: AbortSignal
+  parentAutoMode: boolean
+  subscribeParentAutoMode: (
+    subscriber: (enabled: boolean) => void
+  ) => () => void
+  parentOnEvent: OnEvent
+  parentToolCallId: string
+  depth: number
+  ancestors: string[]
+}): Promise<SubagentResult[]> {
+  // Resolve every identity and resource before creating records: validation is
+  // whole-call atomic. Writer environment preflight below is subset-atomic.
+  const resolved = await Promise.all(
+    input.input.assignments.map(async (assignment) => {
+      let agent: AgentDefinition | null = null
+      let identity: string
+      if (assignment.agent.type === "named") {
+        agent = await loadSpawnableAgent(assignment.agent.name, input.agentDir)
+        if (!agent)
+          throw new Error(
+            `Unknown or ineligible agent '${assignment.agent.name}'.`
+          )
+        if (
+          input.parentAgent?.children?.length &&
+          !input.parentAgent.children.includes(agent.name)
+        )
+          throw new Error(`Agent '${agent.name}' is not an allowed child.`)
+        if (input.ancestors.includes(agent.name))
+          throw new Error(
+            `Agent '${agent.name}' would create a delegation cycle.`
+          )
+        identity = agent.body
+      } else {
+        identity =
+          assignment.agent.profile === "clone" && input.parentAgent
+            ? `${input.parentAgent.body}\n\n${ephemeralProfilePrompt("clone")}`
+            : ephemeralProfilePrompt(assignment.agent.profile)
+      }
+      const instruction = await childInstructionResource({
+        uri: assignment.instructionUri,
+        roots: input.skillResourceRoots,
+      })
+      return {
+        assignment,
+        agent,
+        instructions: composeSubagentInstructions({ identity, instruction }),
+      }
+    })
+  )
+
+  const writers = resolved.filter((item) => item.assignment.access === "write")
+  let lease:
+    | Awaited<ReturnType<typeof repositoryDelegationLeases.acquire>>
+    | undefined
+  let repo: Awaited<ReturnType<typeof preflightWriterRepository>> | undefined
+  const worktrees = new Map<string, WriterWorktree>()
+  const approvalCoordinator = new SubagentApprovalCoordinator()
+  const autoModeRelay = new SubagentAutoModeRelay(
+    input.parentAutoMode,
+    approvePendingForConversation
+  )
+  const unsubscribeParentAutoMode = input.subscribeParentAutoMode((enabled) =>
+    autoModeRelay.set(enabled)
+  )
+  let writerPreflightError: string | undefined
+  if (writers.length > 0) {
+    if (!input.parentWorkspace) {
+      writerPreflightError =
+        "Write subagents require a workspace-backed Git repository."
+    } else {
+      try {
+        lease = await repositoryDelegationLeases.acquire(
+          input.parentWorkspace,
+          `Subagent batch ${writers.map((w) => w.assignment.id).join(", ")}`
+        )
+        repo = await preflightWriterRepository(input.parentWorkspace)
+        if (
+          listSubagentArtifacts({
+            repositoryId: lease.repositoryId,
+            unresolved: true,
+          }).length > 0
+        ) {
+          throw new Error(
+            "repository_quarantined: interrupted writer artifacts require review. Use the amber 'Subagent cleanup' control in the top bar before starting writers"
+          )
+        }
+        for (const writer of writers) {
+          worktrees.set(
+            writer.assignment.id,
+            await createWriterWorktree({
+              root: repo.root,
+              baseOid: repo.baseOid,
+              lease,
+              assignmentId: writer.assignment.id,
+            })
+          )
+        }
+      } catch (error) {
+        writerPreflightError =
+          error instanceof Error ? error.message : String(error)
+        for (const worktree of worktrees.values()) {
+          if (repo) await removeWriterWorktree(repo.root, worktree, true)
+        }
+        worktrees.clear()
+        if (lease) repositoryDelegationLeases.release(lease)
+        lease = undefined
+      }
+    }
+  }
+
+  const runChild = async (
+    item: (typeof resolved)[number]
+  ): Promise<SubagentResult> => {
+    const { assignment, agent, instructions } = item
+    const identity =
+      assignment.agent.type === "named"
+        ? assignment.agent.name
+        : assignment.agent.profile
+    if (assignment.access === "write" && writerPreflightError) {
+      return {
+        id: assignment.id,
+        status: "failed",
+        identity,
+        access: assignment.access,
+        error: `Writer preflight failed: ${writerPreflightError}. Do this work in the parent instead.`,
+      }
+    }
+    const worktree = worktrees.get(assignment.id)
+    const worker = createConversation({
+      mode: input.parentConversation?.mode ?? "interactive",
+      workspaceId: input.parentConversation?.workspaceId ?? null,
+      accountId: input.parentConversation?.accountId ?? null,
+      modelId: input.parentConversation?.modelId ?? null,
+      agentName: agent?.name ?? null,
+      title: `${assignment.id}: ${assignment.prompt.slice(0, 48)}`,
+    })
+    const task = createTask({
+      conversationId: worker.id,
+      sourceConversationId: input.parentConversation?.id ?? worker.id,
+      status: "running",
+      title: assignment.id,
+      input: {
+        kind: "subagent",
+        assignmentId: assignment.id,
+        identity,
+        access: assignment.access,
+        baseOid: worktree?.baseOid,
+        branch: worktree?.branch,
+        worktreePath: worktree?.path,
+        repositoryId: lease?.repositoryId,
+      },
+    })
+    const executionConfig = settingsService.getExecutionConfig()
+    const artifact =
+      worktree && lease
+        ? createSubagentArtifact({
+            repositoryId: lease.repositoryId,
+            sessionId: lease.sessionId,
+            assignmentId: assignment.id,
+            backend: executionConfig.kind,
+            branch: worktree.branch,
+            worktreePath: worktree.path,
+            markerPath: worktree.markerPath,
+            detail:
+              executionConfig.kind === "container"
+                ? {
+                    runtime: executionConfig.runtime,
+                    containerName: containerNameForConversation(worker.id),
+                  }
+                : undefined,
+          })
+        : undefined
+    const childAbort = new AbortController()
+    let timeout: NodeJS.Timeout | undefined
+    let approvalWaiting = false
+    const scheduleLeaseTimeout = () => {
+      if (!lease || childAbort.signal.aborted) return
+      if (timeout) clearTimeout(timeout)
+      timeout = setTimeout(
+        () => {
+          const kind = repositoryDelegationLeases.timeoutKind(lease!)
+          if (kind) childAbort.abort(new Error(`delegation_${kind}_timeout`))
+          else scheduleLeaseTimeout()
+        },
+        repositoryDelegationLeases.nextTimeoutMs(lease) + 1
+      )
+    }
+    if (lease) scheduleLeaseTimeout()
+    else {
+      timeout = setTimeout(
+        () => childAbort.abort(new Error("delegation_active_timeout")),
+        30 * 60_000
+      )
+    }
+    const stop = () => childAbort.abort(input.parentSignal.reason)
+    if (input.parentSignal.aborted) stop()
+    else input.parentSignal.addEventListener("abort", stop, { once: true })
+    const startedAt = Date.now()
+    let preserveBranch = false
+    try {
+      const childTools =
+        assignment.access === "read"
+          ? readOnlyChildTools(input.parentToolNames)
+          : new Set(
+              [...input.parentToolNames].filter(
+                (name) =>
+                  !name.startsWith("browser_") &&
+                  name !== "ask_user_question" &&
+                  name !== "run_todos_in_background" &&
+                  name !== "present_plan" &&
+                  name !== "spawn_subagent" &&
+                  name !== "spawn_subagents"
+              )
+            )
+      if (
+        assignment.agent.type === "ephemeral" &&
+        assignment.agent.profile === "planner"
+      ) {
+        childTools.add("write_plan")
+        childTools.add("read_plan")
+      }
+      const result = await runAgentLoop({
+        conversationId: worker.id,
+        workspace: worktree?.path ?? input.parentWorkspace,
+        agentDir: input.agentDir,
+        agentOverride: agent,
+        childInstructionPrefix: instructions,
+        allowedToolNames: childTools,
+        userMessage: assignment.prompt,
+        abort: childAbort,
+        autoMode: input.parentAutoMode,
+        registerAutoModeSetter: (setter) =>
+          autoModeRelay.register(worker.id, setter),
+        onEvent: (event) => {
+          if (event.type === "approval") {
+            input.parentOnEvent({ ...event, id: input.parentToolCallId })
+          }
+        },
+        agentDepth: input.depth,
+        agentAncestors: input.ancestors,
+        suppressUserQuestions: true,
+        subagentRun: true,
+        repositoryLeaseToken: lease?.token,
+        beforeApproval: (signal) => approvalCoordinator.acquire(signal),
+        onApprovalWaitingChange: (waiting) => {
+          if (approvalWaiting === waiting || !lease) return
+          approvalWaiting = waiting
+          if (waiting) repositoryDelegationLeases.pause(lease)
+          else repositoryDelegationLeases.resume(lease)
+          scheduleLeaseTimeout()
+        },
+      })
+      if (result.stopped || childAbort.signal.aborted)
+        throw new Error("child stopped")
+      if (result.error) throw new Error(result.error)
+      let handback:
+        | Awaited<ReturnType<typeof collectWriterHandback>>
+        | undefined
+      let verdict: Awaited<ReturnType<typeof mergeability>> | undefined
+      if (worktree && repo) {
+        handback = await collectWriterHandback(repo.root, worktree)
+        verdict = await mergeability(repo.root, repo.baseOid, worktree.branch)
+        preserveBranch = true
+      }
+      const fullResult = {
+        content: result.content ?? "",
+        durationMs: Date.now() - startedAt,
+        ...handback,
+        mergeability: verdict,
+        usage: result.usage,
+      }
+      updateTask(task.id, { status: "completed", result: fullResult })
+      if (artifact) settleSubagentArtifact(artifact.id, "resolved", fullResult)
+      return {
+        id: assignment.id,
+        status: "completed",
+        identity,
+        access: assignment.access,
+        content: result.content ?? "",
+        taskId: task.id,
+        conversationId: worker.id,
+        durationMs: fullResult.durationMs,
+        usage: result.usage,
+        branch: handback?.branch,
+        commits: handback?.commits,
+        touchedFiles: handback?.touchedFiles.slice(0, 50),
+        touchedFileCount: handback?.touchedFiles.length,
+        touchedFilesTruncated:
+          (handback?.touchedFiles.length ?? 0) > 50 || undefined,
+        mergeability: verdict?.status,
+        conflictingPaths: verdict?.paths.slice(0, 50),
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      updateTask(task.id, {
+        status: childAbort.signal.aborted ? "cancelled" : "failed",
+        error: message,
+      })
+      if (artifact) {
+        settleSubagentArtifact(artifact.id, "resolved", { error: message })
+      }
+      return {
+        id: assignment.id,
+        status: childAbort.signal.aborted ? "stopped" : "failed",
+        identity,
+        access: assignment.access,
+        error: message,
+        taskId: task.id,
+        conversationId: worker.id,
+      }
+    } finally {
+      if (timeout) clearTimeout(timeout)
+      if (approvalWaiting && lease) repositoryDelegationLeases.resume(lease)
+      input.parentSignal.removeEventListener("abort", stop)
+      if (worktree && repo) {
+        await removeWriterWorktree(repo.root, worktree, !preserveBranch)
+      }
+    }
+  }
+
+  try {
+    const results = await Promise.all(resolved.map(runChild))
+    if (input.input.prepareIntegration && lease && repo) {
+      const branches = results
+        .filter(
+          (result) =>
+            result.access === "write" &&
+            result.status === "completed" &&
+            typeof result.branch === "string"
+        )
+        .map((result) => result.branch!)
+      if (branches.length > 0) {
+        const integration = await stageIntegrationBranch({
+          root: repo.root,
+          baseOid: repo.baseOid,
+          branches,
+          lease,
+        })
+        for (const result of results) {
+          if (result.access !== "write" || result.status !== "completed")
+            continue
+          result.integrationStatus = integration.status
+          result.integrationBranch = integration.branch
+          result.integrationError = integration.error
+          if (integration.paths.length > 0) {
+            result.conflictingPaths = integration.paths.slice(0, 50)
+          }
+        }
+      }
+    }
+    return results
+  } finally {
+    unsubscribeParentAutoMode()
+    if (lease) repositoryDelegationLeases.release(lease)
+  }
+}
+
 // Spawn a custom agent as a subagent and block for its final answer. Called
 // (indirectly, via ctx.spawnSubagent) from the spawn_subagent tool, which has
 // already enforced the depth/cycle/whitelist gates. Runs a NESTED runAgentLoop
@@ -2494,7 +3056,7 @@ async function spawnSubagent(input: {
   // Resolve the child definition up front so an unknown name fails cleanly
   // without creating an orphan worker conversation. Discovery uses the parent's
   // agentDir (not the confinement workspace) so a Chat child is found too.
-  const child = await loadAgent(input.agentName, input.agentDir)
+  const child = await loadSpawnableAgent(input.agentName, input.agentDir)
   if (!child) {
     return { error: `Unknown agent '${input.agentName}'.` }
   }
@@ -2540,12 +3102,18 @@ async function spawnSubagent(input: {
       // project link and (for Chat) no confinement workspace, so it couldn't
       // re-derive it. This keeps the child's own agent + grandchildren resolvable.
       agentDir: input.agentDir,
+      agentOverride: child,
+      childInstructionPrefix: composeSubagentInstructions({
+        identity: child.body,
+      }),
       userMessage: input.prompt,
       abort: childAbort,
       // No renderer for the child — its transcript is still persisted durably.
       onEvent: () => {},
       agentDepth: input.depth,
       agentAncestors: input.ancestors,
+      suppressUserQuestions: true,
+      subagentRun: true,
     })
     if (result.stopped || childAbort.signal.aborted) return { stopped: true }
     if (result.error) return { error: result.error }
@@ -2604,6 +3172,10 @@ export async function runChat(
       userMessage: message,
       planMode,
       autoMode,
+      // Snapshot the opt-in at turn start. Process workers call runAgentLoop
+      // directly and intentionally do not consult this conversation preference.
+      conversationSubagentsEnabled:
+        settingsService.getConversations().allowConversationSubagents,
       onEvent,
       abort,
       enqueueTask,
