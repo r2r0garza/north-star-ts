@@ -1,6 +1,12 @@
 import { useEffect, useRef, useState } from "react"
 import { Dialog as DialogPrimitive } from "radix-ui"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Tabs, TabsContent } from "@/components/ui/tabs"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
 import { Switch } from "@/components/ui/switch"
 import { Input } from "@/components/ui/input"
 import {
@@ -151,22 +157,93 @@ const LOCAL_PROFILE_ORDER: LocalRuntimeProfile[] = [
   "read-only",
 ]
 
-// The nav-rail sections, in order. Sandbox is gated on an enforced backend.
-const SECTIONS: Array<{ value: string; label: string }> = [
-  { value: "providers", label: "Providers" },
-  { value: "models", label: "Models" },
-  { value: "model-mappings", label: "Model mappings" },
-  { value: "backend", label: "Backend" },
-  { value: "permissions", label: "Permissions" },
-  { value: "indexing", label: "Context" },
-  { value: "conversations", label: "Conversations" },
-  { value: "capabilities", label: "Capabilities" },
-  { value: "browser", label: "Browser" },
-  { value: "appearance", label: "Appearance" },
-  { value: "editor", label: "Editor" },
-  { value: "notifications", label: "Notifications" },
-  { value: "sandbox", label: "Sandbox" },
+type SettingsSection = {
+  value: string
+  label: string
+}
+
+type SettingsGroup = {
+  value: string
+  label: string
+  description: string
+  sections: SettingsSection[]
+}
+
+const SETTINGS_GROUPS: SettingsGroup[] = [
+  {
+    value: "general",
+    label: "General",
+    description: "Personalize how the app looks, opens files, and gets your attention.",
+    sections: [
+      { value: "appearance", label: "Appearance" },
+      { value: "editor", label: "Editor" },
+      { value: "browser", label: "Browser" },
+      { value: "notifications", label: "Notifications" },
+    ],
+  },
+  {
+    value: "ai",
+    label: "AI & Models",
+    description: "Connect an AI service and choose the models North Star can use.",
+    sections: [
+      { value: "providers", label: "Connections" },
+      { value: "models", label: "Models" },
+    ],
+  },
+  {
+    value: "agent",
+    label: "Agent behavior",
+    description: "Choose how the agent uses project context, memory, and background helpers.",
+    sections: [
+      { value: "conversations", label: "Behavior" },
+      { value: "indexing", label: "Project context" },
+    ],
+  },
+  {
+    value: "safety",
+    label: "Safety & execution",
+    description: "Control where tools run and when the agent asks before acting.",
+    sections: [
+      { value: "backend", label: "Environment" },
+      { value: "permissions", label: "Approvals" },
+      { value: "sandbox", label: "Auto-approve" },
+    ],
+  },
+  {
+    value: "advanced",
+    label: "Advanced",
+    description: "Manage specialist integrations and compatibility settings.",
+    sections: [
+      { value: "capabilities", label: "Source folders" },
+      { value: "model-mappings", label: "Model mappings" },
+    ],
+  },
 ]
+
+const SECTION_ALIASES: Record<string, string> = {
+  general: "appearance",
+  ai: "providers",
+  agent: "conversations",
+  safety: "backend",
+  advanced: "capabilities",
+}
+
+function resolveSettingsSection(value: string): string {
+  const candidate = SECTION_ALIASES[value] ?? value
+  return SETTINGS_GROUPS.some((group) =>
+    group.sections.some((section) => section.value === candidate)
+  )
+    ? candidate
+    : "appearance"
+}
+
+function settingsGroupFor(section: string): SettingsGroup {
+  return (
+    SETTINGS_GROUPS.find((group) =>
+      group.sections.some((candidate) => candidate.value === section)
+    ) ?? SETTINGS_GROUPS[0]
+  )
+}
 
 // Per-event notification toggles, in display order. Labels + help mirror the
 // NotificationSettings flags in the main-process settings service.
@@ -387,7 +464,7 @@ function ConversationModelPicker({
 export function SettingsScreen({
   open,
   onOpenChange,
-  initialTab = "backend",
+  initialTab = "appearance",
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -396,6 +473,10 @@ export function SettingsScreen({
   initialTab?: string
 }) {
   const contentRef = useRef<HTMLDivElement | null>(null)
+  const [activeSection, setActiveSection] = useState(() =>
+    resolveSettingsSection(initialTab)
+  )
+  const lastSectionByGroup = useRef<Record<string, string>>({})
   const [execution, setExecution] = useState<ExecutionSettings | null>(null)
   const [permissions, setPermissions] = useState<PermissionSettings | null>(
     null
@@ -450,6 +531,14 @@ export function SettingsScreen({
     Backend,
     "local"
   > | null>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const section = resolveSettingsSection(initialTab)
+    setActiveSection(section)
+    const group = settingsGroupFor(section)
+    lastSectionByGroup.current[group.value] = section
+  }, [open, initialTab])
 
   // Load current settings + runtime availability whenever the screen opens.
   useEffect(() => {
@@ -762,6 +851,36 @@ export function SettingsScreen({
     isContainer ||
     execution?.localProfile === "workspace-write" ||
     execution?.localProfile === "read-only"
+  const activeGroup = settingsGroupFor(activeSection)
+  const activeAccount = llm.accounts?.find(
+    (account) => account.id === llm.active?.activeAccountId
+  )
+  const groupStatus =
+    activeGroup.value === "ai"
+      ? activeAccount
+        ? `${activeAccount.displayName}${llm.active?.activeModelId ? ` · ${llm.active.activeModelId}` : ""}`
+        : "No AI connection selected"
+      : activeGroup.value === "agent"
+        ? `${memory?.enabled ? "Memory on" : "Memory off"} · ${indexing?.useIndexForContext ? "Project context on" : "Project context off"}`
+        : activeGroup.value === "safety" && execution
+          ? execution.backend === "local"
+            ? `Runs on this machine · ${LOCAL_PROFILE_META[execution.localProfile].label}`
+            : `Runs in an isolated ${execution.backend === "docker" ? "Docker" : "Podman"} container`
+          : null
+
+  function selectSection(section: string) {
+    setActiveSection(section)
+    const group = settingsGroupFor(section)
+    lastSectionByGroup.current[group.value] = section
+  }
+
+  function selectGroup(group: SettingsGroup) {
+    const remembered = lastSectionByGroup.current[group.value]
+    const section = group.sections.some((item) => item.value === remembered)
+      ? remembered
+      : group.sections[0].value
+    selectSection(section)
+  }
 
   function runtimeOptionDisabled(rt: Runtime): boolean {
     return runtimes != null && runtimes[rt] !== "available"
@@ -819,31 +938,103 @@ export function SettingsScreen({
               conversations && (
                 <Tabs
                   orientation="vertical"
-                  defaultValue={initialTab}
+                  value={activeSection}
+                  onValueChange={selectSection}
                   className="flex min-h-0 flex-1 gap-0"
                 >
-                  {/* Left nav rail — the six sections as a vertical list. */}
-                  <TabsList
-                    variant="line"
-                    className="h-full w-56 shrink-0 items-stretch justify-start gap-0.5 overflow-y-auto border-r p-3"
-                  >
-                    {SECTIONS.map((s) => (
-                      <TabsTrigger
-                        key={s.value}
-                        value={s.value}
-                        disabled={s.value === "sandbox" && !hasEnforcedRuntime}
-                        className="px-3 py-1.5"
-                      >
-                        {s.label}
-                      </TabsTrigger>
-                    ))}
-                  </TabsList>
+                  <nav className="flex h-full w-60 shrink-0 flex-col gap-1 overflow-y-auto border-r p-3">
+                    <p className="px-3 pb-2 text-xs font-medium tracking-wide text-muted-foreground uppercase">
+                      Preferences
+                    </p>
+                    {SETTINGS_GROUPS.map((group) => {
+                      const selected = group.value === activeGroup.value
+                      return (
+                        <button
+                          key={group.value}
+                          type="button"
+                          onClick={() => selectGroup(group)}
+                          aria-current={selected ? "page" : undefined}
+                          className={`rounded-lg px-3 py-2 text-left text-sm font-medium transition-colors ${
+                            selected
+                              ? "bg-accent text-accent-foreground"
+                              : "text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+                          }`}
+                        >
+                          {group.label}
+                        </button>
+                      )
+                    })}
+                    <p className="mt-auto px-3 pt-6 text-xs leading-relaxed text-muted-foreground">
+                      Changes save automatically unless a setting says otherwise.
+                    </p>
+                  </nav>
 
-                  {/* Content area — comfortable max-width so forms don't stretch
-                    edge-to-edge on a wide monitor. Each TabsContent is the flex
-                    child that scrolls its own overflow (as the bodies expect). */}
-                  <div className="flex min-h-0 flex-1 justify-center overflow-hidden px-6">
-                    <div className="flex min-h-0 w-full max-w-2xl flex-col">
+                  <div className="flex min-h-0 flex-1 justify-center overflow-hidden px-8">
+                    <div className="flex min-h-0 w-full max-w-3xl flex-col">
+                      <div className="shrink-0 border-b py-6">
+                        <h2 className="font-heading text-xl font-medium">
+                          {activeGroup.label}
+                        </h2>
+                        <p className="mt-1 text-sm text-muted-foreground">
+                          {activeGroup.description}
+                        </p>
+                        {groupStatus && (
+                          <p className="mt-3 inline-flex rounded-full bg-muted px-2.5 py-1 text-xs font-medium text-muted-foreground">
+                            {groupStatus}
+                          </p>
+                        )}
+                        {activeGroup.sections.length > 1 && (
+                          <TooltipProvider>
+                            <div
+                              className="mt-5 flex max-w-full gap-1 overflow-x-auto rounded-lg bg-muted/70 p-1"
+                              role="tablist"
+                              aria-label={`${activeGroup.label} sections`}
+                            >
+                              {activeGroup.sections.map((section) => {
+                                const selected = section.value === activeSection
+                                const disabled =
+                                  section.value === "sandbox" &&
+                                  !hasEnforcedRuntime
+                                const tab = (
+                                  <button
+                                    type="button"
+                                    role="tab"
+                                    aria-selected={selected}
+                                    disabled={disabled}
+                                    onClick={() => selectSection(section.value)}
+                                    className={`shrink-0 rounded-md px-3 py-1.5 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                                      selected
+                                        ? "bg-background text-foreground shadow-sm"
+                                        : "text-muted-foreground hover:text-foreground"
+                                    }`}
+                                  >
+                                    {section.label}
+                                  </button>
+                                )
+                                return disabled ? (
+                                  <Tooltip key={section.value}>
+                                    <TooltipTrigger asChild>
+                                      <span className="inline-flex" tabIndex={0}>
+                                        {tab}
+                                      </span>
+                                    </TooltipTrigger>
+                                    <TooltipContent side="bottom">
+                                      Choose Workspace write, Read only, Docker, or
+                                      Podman under Environment to enable
+                                      auto-approve.
+                                    </TooltipContent>
+                                  </Tooltip>
+                                ) : (
+                                  <span key={section.value} className="inline-flex">
+                                    {tab}
+                                  </span>
+                                )
+                              })}
+                            </div>
+                          </TooltipProvider>
+                        )}
+                      </div>
+
                       <ProvidersTab state={llm} />
                       <ModelsTab state={llm} />
                       <ModelMappingsTab />
@@ -855,7 +1046,7 @@ export function SettingsScreen({
                       >
                         <Field>
                           <FieldLabel htmlFor="backend-select">
-                            Execution backend
+                            Where tools run
                           </FieldLabel>
                           <Select
                             value={execution.backend}
@@ -866,13 +1057,13 @@ export function SettingsScreen({
                             </SelectTrigger>
                             <SelectContent>
                               <SelectItem value="local">
-                                Local (this machine)
+                                This machine
                               </SelectItem>
                               <SelectItem
                                 value="docker"
                                 disabled={runtimeOptionDisabled("docker")}
                               >
-                                Docker
+                                Docker container
                                 {runtimes
                                   ? ` — ${RUNTIME_STATUS_LABEL[runtimes.docker]}`
                                   : ""}
@@ -881,7 +1072,7 @@ export function SettingsScreen({
                                 value="podman"
                                 disabled={runtimeOptionDisabled("podman")}
                               >
-                                Podman
+                                Podman container
                                 {runtimes
                                   ? ` — ${RUNTIME_STATUS_LABEL[runtimes.podman]}`
                                   : ""}
@@ -897,7 +1088,7 @@ export function SettingsScreen({
                         {execution.backend === "local" && (
                           <Field>
                             <FieldLabel htmlFor="local-profile-select">
-                              Local profile
+                              Access on this machine
                             </FieldLabel>
                             <Select
                               value={execution.localProfile}
@@ -1070,18 +1261,6 @@ export function SettingsScreen({
                             }
                           />
                         </Field>
-                        <Field orientation="horizontal">
-                          <FieldContent>
-                            <FieldLabel htmlFor="idx-embed">
-                              Include embeddings
-                            </FieldLabel>
-                            <FieldDescription>
-                              Semantic search over the index — coming in a later
-                              release.
-                            </FieldDescription>
-                          </FieldContent>
-                          <Switch id="idx-embed" checked={false} disabled />
-                        </Field>
                       </TabsContent>
 
                       {/* Conversation lifecycle — memory, summarization, and prompt logs. */}
@@ -1184,6 +1363,16 @@ export function SettingsScreen({
                             }
                           />
                         </Field>
+                        <details className="group rounded-lg border bg-muted/20">
+                          <summary className="cursor-pointer list-none px-4 py-3 font-medium marker:content-none">
+                            <span className="flex items-center justify-between gap-4">
+                              Advanced conversation controls
+                              <span className="text-xs font-normal text-muted-foreground group-open:hidden">
+                                Models, summaries, and debugging
+                              </span>
+                            </span>
+                          </summary>
+                          <div className="flex flex-col gap-4 border-t px-4 py-4">
                         <Field>
                           <FieldLabel htmlFor="memory-model">
                             Memory model
@@ -1313,6 +1502,8 @@ export function SettingsScreen({
                             }
                           />
                         </Field>
+                          </div>
+                        </details>
                       </TabsContent>
 
                       {/* Capabilities — skill-source folders. The built-in sources

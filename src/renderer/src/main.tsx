@@ -122,9 +122,9 @@ function Shell() {
   // (plan 033). Mutually exclusive with the other footer overlays.
   const [dashboardsOpen, setDashboardsOpen] = useState(false)
   const [startupGuideOpen, setStartupGuideOpen] = useState(false)
-  // Which tab Settings opens on. First launch (no provider configured) opens
-  // straight to Providers so the user can set one up.
-  const [settingsTab, setSettingsTab] = useState("backend")
+  // Which section Settings opens on. Normal entry starts in General; first launch
+  // goes straight to AI connections so the user can configure a provider.
+  const [settingsTab, setSettingsTab] = useState("appearance")
   // Whether the right-hand Workspace Activity panel is open. Controlled here so
   // the toggle can live in the drag bar (macOS swallows clicks on floating
   // elements that merely overlap it) and "Run in background" can reveal it when
@@ -384,7 +384,7 @@ function Shell() {
     })
   }, [])
 
-  function openSettings(tab = "backend") {
+  function openSettings(tab = "appearance") {
     setSettingsTab(tab)
     setSettingsOpen(true)
     setAgentsOpen(false)
