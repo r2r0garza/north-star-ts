@@ -13,18 +13,13 @@ item is its plan file; the ordered-list number is its current priority rank.
    immediately on pointer hover or keyboard focus, with an always-exposed no-hover fallback. Copy the exact
    user text or assistant Markdown source, preserve persisted/optimistic/live timestamps, avoid layout shift,
    and keep tool groups separate from message actions.
-2. **`092` — Agent lifecycle hooks and AI-assisted authoring.** Add guarded global hooks under
-   `~/.<system>/hooks/` as explicit `.hook.cjs` code plus non-executable `.hook.json` metadata, targetable
-   to all agents or stable selected Agent refs. V1 covers `sessionStart`, `onMessageSent`, `preTool`,
-   `postTool`, `onAgentResponse`, `sessionEnd`, and `onError`; `preTool` may veto but can never approve,
-   weaken policy, or rewrite arguments. Execute exact reviewed revisions in bounded short-lived child
-   processes—crash/protocol isolation, explicitly **not** a filesystem/network sandbox—and keep new or
-   AI-generated code disabled until separate review and enablement. Add a Hooks screen and an isolated,
-   iterative Ask AI wizard that produces inert validated drafts without write/run/enable authority. The
-   internal loop gets the full catalog; autonomous Claude Code/Codex turns get outer lifecycle events only,
-   while `preTool`/`postTool` cover North Star-owned/MCP-bridge tools but cannot intercept native CLI tools.
-   Split `092.1` contract/storage/runner, `092.2` lifecycle integration/observability, then `092.3` UI and
-   AI-assisted authoring.
+2. **`092.1` — Agent lifecycle hook contract, storage, runner, and safety controls.** Define versioned
+   event/result/metadata schemas, canonical guarded `.hook.cjs` + `.hook.json` storage under
+   `~/.<system>/hooks/`, exact-source-hash review state, stable Agent-ref targeting, deterministic matching,
+   and safe failure policies. Build the bounded short-lived child-process protocol with cancellation,
+   process-tree cleanup, packaged-runtime coverage, and sanitized diagnostics. This slice establishes the
+   executable-code boundary but does not yet connect hooks to agent lifecycles or add the full Hooks screen
+   and AI authoring wizard; those remain deferred as `092.2` and `092.3`.
 3. **`045` — North Star MCP bridge for CLI providers.** After `042`, make North Star a second, distinct
    MCP role: it remains a client of user-configured external servers, and also hosts a lazy,
    authenticated Streamable HTTP server on an ephemeral `127.0.0.1` port for the Claude Code and Codex
@@ -41,7 +36,21 @@ item is its plan file; the ordered-list number is its current priority rank.
    it, 4/4 with); `045`'s out-of-scope line is amended to permit exactly that narrow steer.
    **`045.1` remains**: extract the shared `index_query` service, add its adapter, widen the grant, add
    the CLI-provider UI copy, and close the Codex steering gap (no per-run append flag exists).
-4. **`069` — Process intake policies and inspectable assumptions.** Give each Process an explicit run-
+4. **`082` — Runtime-aware Process run-monitor badges.** Render each phase's actual persisted runtime
+   provider/model from `process_phase_runs.runtime_snapshot` instead of the stale/default agent badge path.
+   Preserve a sensible fallback for historical runs without snapshots and add focused display regressions;
+   execution and runtime selection remain unchanged.
+5. **`083` — Per-agent runtime override UI.** Expose the existing
+   `process_phase_agents.runtime_config` capability in the Process builder so each phase-pool agent may
+   select a worker provider/model or inherit phase/run defaults. Reuse the existing runtime picker and
+   persistence/import-export paths, keep orchestration slots at phase/run scope, and preserve precedence:
+   phase-agent override → phase override → run default → source/global fallback.
+6. **`067` — Conversation-scoped workspace checkpoints.** Add a reversible safety layer for autonomous
+   edits using conversation+workspace-scoped, content-addressed app-data manifests and blobs. Provide
+   bounded create/list/diff/restore operations with conflict-aware previews, explicit approval, quotas,
+   retention, and crash-safe lifecycle handling. Preserve unrelated user changes and never wrap destructive
+   `git reset`/`checkout`/`clean` operations.
+7. **`069` — Process intake policies and inspectable assumptions.** Give each Process an explicit run-
    entry contract instead of injecting a mandatory Planning phase: **Proceed with assumptions**
    (default, no preflight gate), **Approve initial plan** (side-effect-free execution brief + one durable
    approval/revision loop), or **Strict input contract** (definition-authored required fields validated
@@ -50,7 +59,7 @@ item is its plan file; the ordered-list number is its current priority rank.
    assumptions log with origin/confidence/impact/status and monitor UI. Human clarification pauses and
    resumes the correct worker; it remains distinct from internal Agent exchanges (`039`). Split strict
    deterministic intake first, then assumptions/questions, then approve-plan preflight.
-5. **`039` — Inspectable Process consultations / Agent exchanges.** A running phase may consult a
+8. **`039` — Inspectable Process consultations / Agent exchanges.** A running phase may consult a
    **completed phase in the same run** and receive a context-grounded answer. The user observes the
    durable exchange but cannot reply; intervention stays in existing Process controls. Before adding
    consultation, persist an explicit phase result and move downstream aggregation away from "latest
@@ -59,29 +68,37 @@ item is its plan file; the ordered-list number is its current priority rank.
    consultation. v1 is synchronous, same-run, completed-target, capped, and read-only in the monitor;
    discovered defects recommend rework through the existing flag policy rather than silently changing
    completed artifacts. Split `039.1` result integrity, then `039.2` consultation/storage/monitor.
-6. **`032` — Process visual canvas.** The explicitly-deferred half of `026` (which shipped the
-   **list-based** DAG builder and recorded a **visual node/edge canvas** as "later"). Renderer-first +
-   one additive migration; **no engine/scheduling/routing change**. Phases become draggable **nodes**,
-   dependencies **edges** drawn between handles (same `on_complete`/`on_each_subtask` trigger, same
-   per-phase routing/gate/fan-out/agent-pool inspector), all mapping 1:1 onto the existing
-   `db:processes:*` CRUD (mutate-then-refetch). Net-new: `SCHEMA_V19` adds nullable `pos_x`/`pos_y` to
-   `process_phases` (a plain `ADD COLUMN` — the `025` tables avoid CHECK-rebuilds by design) so layout
-   persists, with deterministic **auto-layout** for legacy definitions (`NULL` coords) + a **Tidy**
-   action; a new `process-canvas.tsx` + the phase inspector extracted for reuse by both the list card
-   and the canvas node. Open Qs: canvas lib (lean **`@xyflow/react`** lazy-loaded, `dagre`/built-in for
-   layout — watch the ~2.6 MB renderer bundle) vs hand-rolled SVG; keep the list builder as a coexisting
-   toggle vs replace (lean **coexist**). The Radix-`Dialog` takeover means the inspector keeps
-   `NativeSelect` (the `023`/`026` `pointer-events:none` finding). **Live-run-on-canvas deferred** — v1
-   keeps the `026` nested-list monitor. Independent of `029`/`031`.
-7. **`010` — Container runtime profiles.** Decouple Workspace (the files) from Runtime (the env a
-   tool call executes in). Replace the raw container `image` string with a named **profile**
-   (`node` | `python` | `fullstack`), resolved to an image in the env factory; default/fallback =
-   `fullstack` (Node + Python) so a Node repo that later adds a Python backend doesn't wedge.
-   One profile per conversation, user-overridable in settings. Kills the "one workspace = one image
-   forever" assumption **without** building auto-routing or image management (both deferred). Small
-   refactor of `env/factory.ts` + `container.ts` + execution settings (JSON blob — no migration).
+9. **`084` — Process import account-remapping UX.** Analyze imported Process runtime selections before
+   writing, distinguish locally resolved, matchable, ambiguous, and unresolved provider/model references,
+   and let the user map each unresolved reference to a local account/model or choose inheritance. Keep
+   account IDs machine-local, preserve portable import/export intent, and avoid raw account-ID failures.
+10. **`085` — Process template library.** Add a small, polished built-in catalog of portable starter
+    Processes backed by the existing import/create validation path. Let users preview and instantiate
+    useful workflows without starting from a blank graph; templates inherit runtime by default and never
+    hard-code local provider-account IDs.
+
 ## Deferred
 
+- **`010` — Container runtime profiles — RE-ANALYSIS REQUIRED.** The original plan predates substantial
+  improvements to execution environments, runtime selection, Process runtime overrides, provider routing,
+  and settings. Its `node` / `python` / `fullstack` profile model, per-conversation scope, image migration,
+  and operational assumptions must be re-audited against the current architecture and the plan rewritten
+  before implementation. Preserve the underlying goal—decouple Workspace files from execution Runtime—but
+  do not implement the stale design as written.
+- **`092.2` — Agent lifecycle integration and observability.** After `092.1` proves the executable hook
+  boundary, connect outer events across internal live/durable/Process/subagent paths without duplicates;
+  add lifecycle-safe internal `preTool`/`postTool`, outer CLI events, North Star MCP-bridge coverage,
+  bounded invocation summaries, compatibility reporting, cancellation, quarantine, and restart behavior.
+- **`092.3` — Hooks screen and AI-assisted authoring.** After the runner and lifecycle integration are
+  established, add the Hooks management/detail/editor/test/history surface, agent targeting and provider
+  compatibility matrix, then an isolated iterative Ask AI wizard that creates inert validated drafts with
+  no write/run/enable authority. New and generated code remains disabled until exact-revision review and
+  explicit enablement.
+- **`032` — Process visual canvas.** The explicitly deferred visual half of `026`: draggable phase nodes,
+  dependency edges, persisted layout, deterministic auto-layout, and a shared phase inspector over the
+  existing Process CRUD. Re-analyze its stale schema/version assumptions before implementation, choose the
+  canvas/layout library deliberately, retain the proven keyboard-friendly list builder, and keep live-run
+  visualization out of the first canvas slice.
 - **`087` — Request-scoped skill opportunities and opt-in drafting.** Reuse the existing first-message
   title-model round trip for a structured opportunity signal, validate positive candidates against the
   actual successful run, and ask whether to draft before generating any skill content. Retain inert,
@@ -100,9 +117,6 @@ item is its plan file; the ordered-list number is its current priority rank.
   Environment-backed kernel contract. Adds revision-safe structured cell edits and separately
   execution-gated cell runs with Stop/timeouts/output caps; never installs kernels or treats notebook
   reading as permission to execute code.
-- **`067` — Conversation-scoped workspace checkpoints.** Content-addressed app-data manifests/blobs,
-  safe conflict-aware preview/restore, quotas/retention, and conversation+workspace scope. Preserves
-  unrelated user changes and never wraps destructive `git reset`/`checkout`/`clean`.
 - **`068` — Progressive tool discovery.** Implement only after measurements show the growing catalog
   hurts context or selection. `tool_search` searches/activates only the already-authorized catalog
   after mode/workspace/agent/MCP policy; denied tools are neither revealed nor activated, and stale
@@ -145,6 +159,12 @@ item is its plan file; the ordered-list number is its current priority rank.
 
 ## Done
 
+- **`086` — Experimental Codex subscription backend.** Completed in `41b38be` with subsequent model,
+  retry, and UI updates. Added the opt-in `codex_subscription` provider and `codex_responses` transport,
+  main-process credential/auth handling, fixed model catalog and provider settings, runtime/provider
+  integration, schema/migration support, and focused tests while keeping Codex CLI and official API
+  providers separate. The backend remains explicitly experimental because it depends on an undocumented
+  endpoint and must not become the stable public-product foundation.
 - **`040` — Index-grounding prompts.** Completed in this branch. Added matching conditional guidance
   to the Interactive and North Star mode prompts so agents use `index_query_tool` for fast symbol,
   file, and importer orientation before broad searches or manual walks, then fall back to normal file
