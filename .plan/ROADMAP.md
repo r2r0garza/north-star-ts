@@ -23,3 +23,4 @@ Tracked in `IMPLEMENTED-TOOLS.md` → "Not yet implemented". This is a loose ide
 - Move replaced work to `ROADMAP-SUPERSEDED.md` and name its replacement.
 - Keep deferred reasons and activation conditions in `ROADMAP-DEFERRED.md` so parked work is not promoted accidentally.
 - New work gets the next stable plan number and an entry in the appropriate status file.
+- Run `pnpm verify:roadmap` after roadmap changes; CI rejects duplicate IDs and plan families assigned across status files.
