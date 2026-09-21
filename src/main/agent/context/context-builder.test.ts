@@ -78,6 +78,29 @@ describe("ContextBuilder — sections (plan 014)", () => {
     { name: "index", priority: SECTION_PRIORITY.index, content: "INDEX" },
   ]
 
+  it("maps persisted command completion runtime context to untrusted transport input", () => {
+    history = [
+      msg(
+        1,
+        "system",
+        'Runtime event: background command completion(s).\n\n[context provenance: trust=untrusted_data channel=command source="background_command_completion"]\nDATA: done'
+      ),
+    ]
+
+    const out = new ContextBuilder().build("c1", {
+      baseSystemPrompt: "SYS",
+    })
+
+    expect(out).toEqual([
+      { role: "system", content: "SYS" },
+      {
+        role: "user",
+        content:
+          'Runtime event: background command completion(s).\n\n[context provenance: trust=untrusted_data channel=command source="background_command_completion"]\nDATA: done',
+      },
+    ])
+  })
+
   it("folds sections into the system block in declaration order", () => {
     const b = new ContextBuilder()
     const out = b.build("c1", {

@@ -17,6 +17,11 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { Input } from "@/components/ui/input"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
 import { useGitStatus } from "@/lib/git-status"
 import { runGitMutation, useGitMutationBusy } from "@/lib/git-operation"
 import type { GitBranchEntry, GitBranchesResult } from "@/types"
@@ -82,6 +87,9 @@ export function GitBranchSwitcher({ workspace }: { workspace: string }) {
   const gitStatus = useGitStatus(workspace)
   const mutationBusy = useGitMutationBusy(workspace)
   const [open, setOpen] = React.useState(false)
+  const [tooltipOpen, setTooltipOpen] = React.useState(false)
+  const menuOpenRef = React.useRef(false)
+  const suppressTooltipRef = React.useRef(false)
   const [branches, setBranches] = React.useState<GitBranchesResult | null>(null)
   const [loading, setLoading] = React.useState(false)
   const [listError, setListError] = React.useState<string | null>(null)
@@ -195,6 +203,9 @@ export function GitBranchSwitcher({ workspace }: { workspace: string }) {
       <DropdownMenu
         open={open}
         onOpenChange={(next) => {
+          menuOpenRef.current = next
+          suppressTooltipRef.current = true
+          setTooltipOpen(false)
           setOpen(next)
           setSearch("")
           setHighlightedIndex(0)
@@ -204,22 +215,68 @@ export function GitBranchSwitcher({ workspace }: { workspace: string }) {
           }
         }}
       >
-        <DropdownMenuTrigger asChild>
-          <button
-            type="button"
-            disabled={mutationBusy}
-            title={branch}
-            aria-label={`Current Git branch: ${branch}. Choose branch`}
-            className="flex h-7 max-w-48 items-center gap-1 rounded-md bg-accent px-2 font-mono text-[10px] text-muted-foreground transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50"
-          >
+        <Tooltip
+          open={tooltipOpen}
+          onOpenChange={(next) => {
+            if (next && (menuOpenRef.current || suppressTooltipRef.current))
+              return
+            setTooltipOpen(next)
+          }}
+        >
+          <TooltipTrigger asChild>
             {mutationBusy ? (
-              <LoaderCircle className="size-3 shrink-0 animate-spin" />
+              <span
+                className="inline-flex"
+                role="button"
+                aria-disabled="true"
+                aria-label={`Current Git branch: ${branch}. Choose branch`}
+                tabIndex={0}
+                onPointerMove={() => {
+                  suppressTooltipRef.current = false
+                }}
+                onPointerLeave={() => setTooltipOpen(false)}
+                onBlur={() => {
+                  if (!menuOpenRef.current) suppressTooltipRef.current = false
+                }}
+              >
+                <DropdownMenuTrigger asChild>
+                  <button
+                    type="button"
+                    disabled
+                    aria-label={`Current Git branch: ${branch}. Choose branch`}
+                    className="flex h-7 max-w-48 items-center gap-1 rounded-md bg-accent px-2 font-mono text-[10px] text-muted-foreground transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <LoaderCircle className="size-3 shrink-0 animate-spin" />
+                    <span className="truncate">{branch}</span>
+                  </button>
+                </DropdownMenuTrigger>
+              </span>
             ) : (
-              <GitBranch className="size-3 shrink-0" />
+              <DropdownMenuTrigger asChild>
+                <button
+                  type="button"
+                  aria-label={`Current Git branch: ${branch}. Choose branch`}
+                  onPointerMove={() => {
+                    suppressTooltipRef.current = false
+                  }}
+                  onPointerLeave={() => setTooltipOpen(false)}
+                  onBlur={() => {
+                    if (!menuOpenRef.current) suppressTooltipRef.current = false
+                  }}
+                  className="flex h-7 max-w-48 items-center gap-1 rounded-md bg-accent px-2 font-mono text-[10px] text-muted-foreground transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <GitBranch className="size-3 shrink-0" />
+                  <span className="truncate">{branch}</span>
+                </button>
+              </DropdownMenuTrigger>
             )}
-            <span className="truncate">{branch}</span>
-          </button>
-        </DropdownMenuTrigger>
+          </TooltipTrigger>
+          <TooltipContent side="bottom">
+            {mutationBusy
+              ? "Branch switching is unavailable while a Git operation is running"
+              : `Switch branch · ${branch}`}
+          </TooltipContent>
+        </Tooltip>
         <DropdownMenuContent align="end" className="w-64">
           <div
             className="relative p-1"

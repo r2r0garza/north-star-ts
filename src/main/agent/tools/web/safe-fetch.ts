@@ -44,6 +44,7 @@ type RequestTransport = (
 export interface SafeFetchOptions extends RequestInit {
   lookup?: SafeFetchLookup
   maxRedirects?: number
+  stopAtCrossOriginRedirect?: boolean
   timeoutMs?: number | null
   transport?: RequestTransport
 }
@@ -69,6 +70,14 @@ export class SafeFetchBodyTooLargeError extends Error {
 
   constructor(maxBodyBytes: number) {
     super(`Response body exceeded ${maxBodyBytes} decoded bytes.`)
+  }
+}
+
+export class SafeFetchCrossOriginRedirectError extends Error {
+  name = "SafeFetchCrossOriginRedirectError"
+
+  constructor(readonly url: URL) {
+    super(`Redirect requires approval for ${url.origin}.`)
   }
 }
 
@@ -236,6 +245,7 @@ export async function safeFetch(
   const {
     lookup,
     maxRedirects = MAX_REDIRECTS,
+    stopAtCrossOriginRedirect = false,
     timeoutMs = DEFAULT_TIMEOUT_MS,
     signal,
     transport = requestWithPinnedAddresses,
@@ -266,7 +276,12 @@ export async function safeFetch(
       if (hop === maxRedirects) {
         throw new UnsafeUrlError("Too many redirects while fetching URL.")
       }
-      current = new URL(location, current)
+      const next = new URL(location, current)
+      if (next.origin !== current.origin && stopAtCrossOriginRedirect) {
+        await abortable(assertPublicHttpUrl(next, lookup), deadline.signal)
+        throw new SafeFetchCrossOriginRedirectError(next)
+      }
+      current = next
     }
 
     throw new UnsafeUrlError("Too many redirects while fetching URL.")

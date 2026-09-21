@@ -8,7 +8,7 @@ on:
 
 jobs:
   test:
-    name: Typecheck and unit tests
+    name: Typecheck, roadmap, and unit tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -16,6 +16,7 @@ jobs:
         with:
           node-version: 20
           cache: pnpm
+      - run: node scripts/verify-roadmap.mjs
       - run: corepack enable
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck

@@ -1,4 +1,5 @@
 import type { Message as DbMessage } from "@/types"
+import { isCommandCompletionEvent } from "../../../shared/runtime-messages"
 
 // The transcript is rendered from a timeline of items rather than a flat list of
 // messages, so tool activity can be interleaved with text in the order it
@@ -264,6 +265,9 @@ export function buildTimeline(rows: DbMessage[]): TimelineItem[] {
 
   for (const m of rows) {
     if (m.role === "user") {
+      // Compatibility for events persisted before runtime context switched from
+      // the user role to the system role. They were never human-authored entries.
+      if (isCommandCompletionEvent(m.content)) continue
       if (m.content?.trim()) {
         items.push({
           kind: "text",
@@ -301,7 +305,8 @@ export function buildTimeline(rows: DbMessage[]): TimelineItem[] {
         use.label = deriveLabel(use.name, use.args, use.status)
       }
     }
-    // role:"system" is never persisted; ignore if present.
+    // Runtime context may be persisted as role:"system" for future model turns,
+    // but it is not part of the human-visible transcript.
   }
 
   // Any call still "running" after replaying all stored rows never got a result

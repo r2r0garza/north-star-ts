@@ -18,6 +18,7 @@ import {
   Presentation,
   RefreshCw,
 } from "lucide-react"
+import { TooltipButton } from "@/components/ui/tooltip"
 import {
   DiCss3,
   DiHtml5,
@@ -741,15 +742,15 @@ function FilePreview({
             Changes
           </button>
         )}
-        <button
+        <TooltipButton
+          tooltip="Open in editor"
           type="button"
           onClick={() => void window.cowork.openInEditor(workspace, path)}
           aria-label="Open in editor"
-          title="Open in editor"
           className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
         >
           <ExternalLink className="size-3.5" />
-        </button>
+        </TooltipButton>
       </div>
       {state.truncated && !showChanges && (
         <p className="border-b px-2 py-1 text-xs text-muted-foreground">
@@ -1081,15 +1082,15 @@ export function FilesPanel({
       >
         <div className="flex items-center justify-between border-b px-2 py-1.5">
           <span className="text-xs font-medium">Files</span>
-          <button
+          <TooltipButton
+            tooltip="Refresh files"
             type="button"
             onClick={refresh}
-            title="Refresh files"
             aria-label="Refresh files"
             className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
           >
             <RefreshCw className="size-3.5" />
-          </button>
+          </TooltipButton>
         </div>
         <div
           role="tree"

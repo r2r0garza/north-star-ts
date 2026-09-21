@@ -13,6 +13,7 @@
     "test": "vitest run",
     "test:sqlite": "node scripts/test-sqlite.mjs",
     "test:watch": "vitest",
+    "verify:roadmap": "node scripts/verify-roadmap.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "postinstall": "electron-rebuild -f -w better-sqlite3,node-pty"
   },

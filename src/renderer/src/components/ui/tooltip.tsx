@@ -30,6 +30,40 @@ function TooltipTrigger({
   return <TooltipPrimitive.Trigger data-slot="tooltip-trigger" {...props} />
 }
 
+function TooltipButton({
+  tooltip,
+  side,
+  disabled,
+  ...props
+}: React.ComponentProps<"button"> & {
+  tooltip: React.ReactNode
+  side?: React.ComponentProps<typeof TooltipPrimitive.Content>["side"]
+}) {
+  const button = <button disabled={disabled} {...props} />
+  const label = props["aria-label"]
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        {disabled ? (
+          <span
+            className="inline-flex"
+            role="button"
+            aria-disabled="true"
+            aria-label={typeof label === "string" ? label : undefined}
+            tabIndex={0}
+          >
+            {button}
+          </span>
+        ) : (
+          button
+        )}
+      </TooltipTrigger>
+      <TooltipContent side={side}>{tooltip}</TooltipContent>
+    </Tooltip>
+  )
+}
+
 function TooltipContent({
   className,
   sideOffset = 0,
@@ -54,4 +88,10 @@ function TooltipContent({
   )
 }
 
-export { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger }
+export {
+  Tooltip,
+  TooltipButton,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+}

@@ -6,8 +6,9 @@
 // A conversation's view/mode. One per view: Chat / Interactive / North Star.
 export type Mode = "chat" | "interactive" | "north_star"
 
-// Roles persisted in the messages table. `system` is allowed by the schema but
-// never persisted — the system prompt is rebuilt per turn (skills are dynamic).
+// Roles persisted in the messages table. The main system prompt is rebuilt per
+// turn; `system` rows are also used as an internal storage role for durable runtime
+// context. Providers receive that context through a lower-trust transport role.
 export type MessageRole = "system" | "user" | "assistant" | "tool"
 
 // Durable task lifecycle. `paused` is a deliberate durable state (plan 008): a

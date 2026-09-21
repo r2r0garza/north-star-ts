@@ -17,6 +17,7 @@ import {
   ContextMenuTrigger,
 } from "@/components/ui/context-menu"
 import { cn } from "@/lib/utils"
+import { TooltipButton } from "@/components/ui/tooltip"
 import { toast } from "sonner"
 import type { TerminalProfile, TerminalSessionView } from "@/types"
 
@@ -51,17 +52,19 @@ export function TerminalToggle({
   onToggle: () => void
   rightOffset: number
 }) {
+  const label = open ? "Hide terminal" : "Show terminal"
   return (
-    <button
+    <TooltipButton
+      tooltip={label}
+      side="bottom"
       type="button"
       onClick={onToggle}
-      aria-label={open ? "Hide terminal" : "Show terminal"}
-      title={open ? "Hide terminal" : "Show terminal"}
+      aria-label={label}
       className="pointer-events-auto absolute top-2.5 z-30 flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors [-webkit-app-region:no-drag] hover:bg-muted hover:text-foreground"
       style={{ right: rightOffset }}
     >
       <Terminal className="size-4.5" />
-    </button>
+    </TooltipButton>
   )
 }
 

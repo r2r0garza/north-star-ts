@@ -863,10 +863,12 @@ describe.skipIf(!sqliteLoads)("agent loop tool-error feedback", () => {
       )
     ).toBe(false)
     expect(
-      listMessages(conversation.id).some((message) =>
-        String(message.content ?? "").includes(
-          "Runtime event: background command completion"
-        )
+      listMessages(conversation.id).some(
+        (message) =>
+          message.role === "system" &&
+          String(message.content ?? "").includes(
+            "Runtime event: background command completion"
+          )
       )
     ).toBe(true)
   })
@@ -1120,6 +1122,7 @@ describe.skipIf(!sqliteLoads)("agent loop tool-error feedback", () => {
 
     scriptedCompletions.push((request) => {
       expect(request.tools).not.toContain("write_file_tool")
+      expect(request.tools).toContain("web_fetch")
       return streamToolCalls([
         {
           id: "call_write",

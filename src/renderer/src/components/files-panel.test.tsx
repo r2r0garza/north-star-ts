@@ -2,6 +2,7 @@
 import { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { TooltipProvider } from "@/components/ui/tooltip"
 import { FilesPanel } from "./files-panel"
 
 type Deferred<T> = {
@@ -102,12 +103,14 @@ describe("FilesPanel live refresh", () => {
 
     await act(async () => {
       root.render(
-        <FilesPanel
-          workspace="/workspace"
-          selectedPath={null}
-          onSelectedPathChange={vi.fn()}
-          onAddSelection={vi.fn()}
-        />
+        <TooltipProvider>
+          <FilesPanel
+            workspace="/workspace"
+            selectedPath={null}
+            onSelectedPathChange={vi.fn()}
+            onAddSelection={vi.fn()}
+          />
+        </TooltipProvider>
       )
     })
 
@@ -189,12 +192,14 @@ describe("FilesPanel live refresh", () => {
 
     await act(async () => {
       root.render(
-        <FilesPanel
-          workspace="/workspace"
-          selectedPath={null}
-          onSelectedPathChange={vi.fn()}
-          onAddSelection={vi.fn()}
-        />
+        <TooltipProvider>
+          <FilesPanel
+            workspace="/workspace"
+            selectedPath={null}
+            onSelectedPathChange={vi.fn()}
+            onAddSelection={vi.fn()}
+          />
+        </TooltipProvider>
       )
     })
 
@@ -285,12 +290,14 @@ describe("FilesPanel live refresh", () => {
 
     await act(async () => {
       root.render(
-        <FilesPanel
-          workspace="/workspace"
-          selectedPath="file.ts"
-          onSelectedPathChange={vi.fn()}
-          onAddSelection={vi.fn()}
-        />
+        <TooltipProvider>
+          <FilesPanel
+            workspace="/workspace"
+            selectedPath="file.ts"
+            onSelectedPathChange={vi.fn()}
+            onAddSelection={vi.fn()}
+          />
+        </TooltipProvider>
       )
     })
 

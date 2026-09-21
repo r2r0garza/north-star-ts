@@ -40,7 +40,6 @@ import {
 import {
   Tooltip,
   TooltipContent,
-  TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import { Markdown } from "@/components/markdown"
@@ -1052,45 +1051,43 @@ function TriStatePicker({
         </SelectContent>
       </Select>
       {mode === "choose" && (
-        <TooltipProvider>
-          <div className="rounded-md border p-3">
-            {options.length === 0 ? (
-              <p className="text-xs text-muted-foreground">
-                {emptyOptionsNote ?? "Nothing to choose."}
-              </p>
-            ) : (
-              <div className="grid grid-cols-2 gap-x-4 gap-y-2">
-                {options.map((name) => {
-                  const checked = !!value?.includes(name)
-                  const description = descriptions?.[name]
-                  const item = (
-                    <label className="flex min-w-0 cursor-pointer items-center gap-2 text-sm">
-                      <Checkbox
-                        checked={checked}
-                        onCheckedChange={(v) => toggle(name, v === true)}
-                      />
-                      <span className="truncate">{name}</span>
-                    </label>
-                  )
-                  return (
-                    <div key={name} className="min-w-0">
-                      {description ? (
-                        <Tooltip>
-                          <TooltipTrigger asChild>{item}</TooltipTrigger>
-                          <TooltipContent side="top" align="start">
-                            {description}
-                          </TooltipContent>
-                        </Tooltip>
-                      ) : (
-                        item
-                      )}
-                    </div>
-                  )
-                })}
-              </div>
-            )}
-          </div>
-        </TooltipProvider>
+        <div className="rounded-md border p-3">
+          {options.length === 0 ? (
+            <p className="text-xs text-muted-foreground">
+              {emptyOptionsNote ?? "Nothing to choose."}
+            </p>
+          ) : (
+            <div className="grid grid-cols-2 gap-x-4 gap-y-2">
+              {options.map((name) => {
+                const checked = !!value?.includes(name)
+                const description = descriptions?.[name]
+                const item = (
+                  <label className="flex min-w-0 cursor-pointer items-center gap-2 text-sm">
+                    <Checkbox
+                      checked={checked}
+                      onCheckedChange={(v) => toggle(name, v === true)}
+                    />
+                    <span className="truncate">{name}</span>
+                  </label>
+                )
+                return (
+                  <div key={name} className="min-w-0">
+                    {description ? (
+                      <Tooltip>
+                        <TooltipTrigger asChild>{item}</TooltipTrigger>
+                        <TooltipContent side="top" align="start">
+                          {description}
+                        </TooltipContent>
+                      </Tooltip>
+                    ) : (
+                      item
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
       )}
     </div>
   )

@@ -2,6 +2,11 @@ import * as React from "react"
 import { Play, Pause, X, Trash2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Spinner } from "@/components/ui/spinner"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
 import type { IndexStatus, TaskEventPayload } from "@/types"
 
 // The Indexing section of the Workspace Activity panel (plan 008). Resolves the
@@ -232,15 +237,19 @@ export function IndexingSection({
               <Pause className="size-3.5" />
               Pause
             </Button>
-            <Button
-              size="icon-sm"
-              variant="ghost"
-              onClick={() => void cancel()}
-              title="Cancel indexing"
-              aria-label="Cancel indexing"
-            >
-              <X className="size-3.5" />
-            </Button>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  size="icon-sm"
+                  variant="ghost"
+                  onClick={() => void cancel()}
+                  aria-label="Cancel indexing"
+                >
+                  <X className="size-3.5" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Cancel indexing</TooltipContent>
+            </Tooltip>
           </>
         )}
         {isPaused && (

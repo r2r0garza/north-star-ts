@@ -2,6 +2,7 @@ import { listMessages } from "../../db/repositories/messages"
 import { defaultTokenCounter, type TokenCounter } from "./token-counter"
 import type { Message } from "../../db/types"
 import { renderContextEnvelope, type ContextProvenance } from "./provenance"
+import { isCommandCompletionEvent } from "../../../shared/runtime-messages"
 
 // An OpenAI-compatible chat message, the shape Portkey expects. The agent feeds
 // the array this builder returns straight into the chat completion request.
@@ -165,6 +166,12 @@ export class ContextBuilder {
 // Map a stored message to the OpenAI-compatible shape (inverse of how runChat
 // persists turns).
 function toChatMessage(m: Message): ChatMessage {
+  // Runtime events are stored distinctly from human speech, then adapted to a
+  // user-compatible transport role because chat protocols have no runtime role.
+  // The provenance envelope keeps this data explicitly untrusted.
+  if (m.role === "system" && isCommandCompletionEvent(m.content)) {
+    return { role: "user", content: m.content }
+  }
   if (m.role === "assistant" && m.toolCalls?.length) {
     return {
       role: "assistant",

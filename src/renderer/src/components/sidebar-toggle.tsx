@@ -1,5 +1,10 @@
 import { PanelLeft } from "lucide-react"
 import { useSidebar } from "@/components/ui/sidebar"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
 
 // Sidebar collapse/expand button. Rendered as a no-drag child of the top drag
@@ -18,20 +23,25 @@ export function SidebarToggle({
   isMac: boolean
 }) {
   const { toggleSidebar, state } = useSidebar()
+  const label = state === "expanded" ? "Collapse sidebar" : "Expand sidebar"
   return (
-    <button
-      type="button"
-      onClick={toggleSidebar}
-      aria-label={state === "expanded" ? "Collapse sidebar" : "Expand sidebar"}
-      title={state === "expanded" ? "Collapse sidebar" : "Expand sidebar"}
-      className={cn(
-        "pointer-events-auto absolute top-2.5 z-10 [-webkit-app-region:no-drag]",
-        "flex size-7 items-center justify-center rounded-md",
-        "text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
-        !isMac || fullscreen ? "left-4" : "left-20"
-      )}
-    >
-      <PanelLeft className="size-4.5" />
-    </button>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          onClick={toggleSidebar}
+          aria-label={label}
+          className={cn(
+            "pointer-events-auto absolute top-2.5 z-10 [-webkit-app-region:no-drag]",
+            "flex size-7 items-center justify-center rounded-md",
+            "text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
+            !isMac || fullscreen ? "left-4" : "left-20"
+          )}
+        >
+          <PanelLeft className="size-4.5" />
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="bottom">{label}</TooltipContent>
+    </Tooltip>
   )
 }
