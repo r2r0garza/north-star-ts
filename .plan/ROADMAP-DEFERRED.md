@@ -1,5 +1,25 @@
 # Roadmap — Deferred
 
+- **`097` — Transcript render boundaries and measured virtualization.** After `095` and overlapping `093`
+  transcript work settle, profile a reproducible long conversation. First extract memoized settled-transcript
+  and live-turn boundaries so token deltas do not reconcile unchanged rows; add variable-height virtualization
+  only if measured cost remains, with explicit scroll-anchor, selection, browser-find, expansion, and accessibility
+  behavior.
+- **`098` — Browser network request lifecycle and idle semantics.** Activate after capturing a stale-request
+  failure or when network tracking next changes. Define CDP behavior across navigation, redirects, abandonment,
+  SSE, and WebSockets before choosing generations, stale sweeping, or resource exclusions; do not blindly clear
+  the active map at `did-navigate` and risk false idle.
+- **`099` — Hardened host attachment reads.** In a focused filesystem-hardening pass, distinguish user
+  attachments from trusted skill resources and share a no-follow, handle-validated attachment opener across text
+  and document tools. Coordinate with `055` if active, but preserve workspace/container and packaged skill-resource
+  behavior rather than applying one host-path rule indiscriminately.
+- **`100` — Measured index import lookup optimization.** Activate only when representative large-workspace
+  query plans and latency show `findImportsOf()`'s JSON expression scan is material. Compare an SQLite expression
+  index with a stored module column, then adopt the smallest measured design without changing lookup semantics.
+- **`101` — Browser chrome sandbox hardening.** During an Electron security/browser-window pass, test enabling
+  sandboxing for the trusted browser-chrome renderer, whose preload currently appears IPC-only. Verify development
+  and packaged behavior before changing it; retain the main window's documented file-drop tradeoff unless
+  `webUtils.getPathForFile` receives a tested replacement.
 - **`010` — Container runtime profiles — RE-ANALYSIS REQUIRED.** The original plan predates substantial
   improvements to execution environments, runtime selection, Process runtime overrides, provider routing,
   and settings. Its `node` / `python` / `fullstack` profile model, per-conversation scope, image migration,
