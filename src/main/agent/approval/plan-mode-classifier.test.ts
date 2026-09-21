@@ -25,9 +25,10 @@ describe("PlanModeClassifier", () => {
     }
   })
 
-  it("ignores browser actions even in plan mode (returns null → next classifier)", () => {
+  it("ignores browser and web reads even in plan mode", () => {
     const c = new PlanModeClassifier(() => true)
     expect(c.classify(action("browser"))).toBeNull()
+    expect(c.classify(action("web"))).toBeNull()
   })
 
   it("passes everything through when plan mode is off", () => {
@@ -38,6 +39,7 @@ describe("PlanModeClassifier", () => {
       "shell",
       "delegate",
       "browser",
+      "web",
     ] as const) {
       expect(c.classify(action(kind))).toBeNull()
     }

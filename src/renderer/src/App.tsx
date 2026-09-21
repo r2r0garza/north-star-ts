@@ -124,6 +124,14 @@ import {
   setConversationAgentMode,
   type AgentMode,
 } from "@/lib/agent-mode"
+import {
+  INITIAL_TRANSCRIPT_SCROLL_POLICY,
+  isTranscriptAtEnd,
+  recordTranscriptScroll,
+  resetTranscriptScroll,
+  settleTranscriptTurn,
+  transcriptRestorePosition,
+} from "@/lib/transcript-scroll"
 import type {
   Question,
   QuestionAnswer,
@@ -543,6 +551,11 @@ function App(
   const [confirmedFiles, setConfirmedFiles] = useState<Set<string>>(new Set())
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const overlayRef = useRef<HTMLDivElement>(null)
+  const transcriptViewportRef = useRef<HTMLDivElement>(null)
+  const pendingTranscriptRestoreRef = useRef<{
+    conversationId: string
+    scrollTop: number
+  } | null>(null)
   const composerShellRef = useRef<HTMLDivElement>(null)
   const composerSurfaceRef = useRef<HTMLDivElement>(null)
   const composerTransitionRef = useRef<{
@@ -556,6 +569,24 @@ function App(
   // The persisted transcript, rebuilt from stored rows (text bubbles + tool
   // groups, interleaved in order). Live in-flight state is held separately.
   const [timeline, setTimeline] = useState<TimelineItem[]>([])
+  // Per-conversation scroll intent for the live-to-persisted handoff. The
+  // message-scroller stops following when the user scrolls up, but treats the
+  // settled response as a brand-new anchor unless we suppress that one
+  // replacement anchor for readers who are still away from the bottom.
+  const [transcriptScroll, setTranscriptScroll] = useState(
+    INITIAL_TRANSCRIPT_SCROLL_POLICY
+  )
+  const previousTranscriptConversationRef = useRef(conversationId)
+  useEffect(() => {
+    const previous = previousTranscriptConversationRef.current
+    previousTranscriptConversationRef.current = conversationId
+    if (previous && previous !== conversationId) {
+      if (pendingTranscriptRestoreRef.current?.conversationId === previous) {
+        pendingTranscriptRestoreRef.current = null
+      }
+      setTranscriptScroll((policy) => resetTranscriptScroll(policy, previous))
+    }
+  }, [conversationId])
   // Conversations with a turn currently streaming in the main process. A single
   // App instance is shared across all conversations (only the `conversationId`
   // prop changes when you switch), so "loading" is derived per-conversation from
@@ -1352,6 +1383,9 @@ function App(
     setMenuActive(null)
     setAttachments([])
     setPickedElements([])
+    // A new turn resumes normal following for this conversation, even if its
+    // previous settled response intentionally omitted the replacement anchor.
+    setTranscriptScroll((prev) => resetTranscriptScroll(prev, turnConvoId))
     // Start this conversation's live turn from a clean slate (its buffers are
     // keyed by conversation, so this never touches another conversation's turn).
     setLiveTurns((prev) => {
@@ -1576,25 +1610,45 @@ function App(
       )
       void notify(turnConvoId, "turnError", snippet(msg))
     } finally {
-      // Clear this conversation's running flag (drops its spinner/Stop button).
+      // Load the settled rows before removing the live response. Removing
+      // `loading` first briefly collapsed the transcript to the pre-turn
+      // timeline, which could clamp the viewport to the bottom before the
+      // persisted response mounted.
+      let settledTimeline: TimelineItem[] | null = null
+      try {
+        const rows = await window.cowork.db.messages.list(turnConvoId)
+        settledTimeline = buildTimeline(rows)
+      } catch {
+        // Keep the optimistic view if the reconcile read fails.
+      }
+
+      const visible = viewingRef.current === turnConvoId
+      const viewport = visible ? transcriptViewportRef.current : null
+      const restorePosition = viewport
+        ? transcriptRestorePosition(viewport)
+        : null
+      const atEnd = restorePosition === null
+      if (restorePosition !== null) {
+        pendingTranscriptRestoreRef.current = {
+          conversationId: turnConvoId,
+          scrollTop: restorePosition,
+        }
+      }
+      setTranscriptScroll((prev) =>
+        settleTranscriptTurn(
+          recordTranscriptScroll(prev, turnConvoId, atEnd),
+          turnConvoId,
+          visible
+        )
+      )
+      if (visible && settledTimeline) setTimeline(settledTimeline)
+      clearLive(turnConvoId)
       setRunningConvos((prev) => {
         if (!prev.has(turnConvoId)) return prev
         const next = new Set(prev)
         next.delete(turnConvoId)
         return next
       })
-      // Reconcile the settled turn into the persisted transcript so the rendered
-      // content matches storage exactly, then drop its live buffer. If this turn's
-      // conversation is on screen, refresh the timeline in place; either way the
-      // live entry is dropped (its content is now persisted and rebuilt by
-      // buildTimeline whenever the conversation is next viewed).
-      try {
-        const rows = await window.cowork.db.messages.list(turnConvoId)
-        if (viewingRef.current === turnConvoId) setTimeline(buildTimeline(rows))
-      } catch {
-        // Keep the optimistic view if the reconcile read fails.
-      }
-      clearLive(turnConvoId)
       // Refresh the sidebar ordering/title. (A freshly created conversation was
       // already promoted to active up front, before the turn started streaming.)
       onConversationChanged()
@@ -1735,6 +1789,22 @@ function App(
     }
     return lastUser === -1 ? timeline : timeline.slice(0, lastUser + 1)
   })()
+  const suppressSettledAnchor = conversationId
+    ? transcriptScroll.suppressSettledAnchor.has(conversationId)
+    : false
+
+  // Restore the exact reading position in the same commit that swaps the live
+  // response for its persisted timeline items. A layout effect runs before
+  // paint, so the user never sees the intermediate position chosen by browser
+  // scroll anchoring or the message-scroller primitive.
+  useLayoutEffect(() => {
+    const pending = pendingTranscriptRestoreRef.current
+    if (!pending || pending.conversationId !== conversationId || loading) return
+    const viewport = transcriptViewportRef.current
+    if (!viewport) return
+    viewport.scrollTop = pending.scrollTop
+    pendingTranscriptRestoreRef.current = null
+  }, [conversationId, loading, timeline])
 
   // Before the first message is sent, an empty session shows the composer
   // centered (an inviting "start typing" state). Once there are messages it
@@ -2794,10 +2864,22 @@ function App(
           The window drag bar lives in Shell, above this column. */}
       <MessageScrollerProvider autoScroll defaultScrollPosition="last-anchor">
         <MessageScroller className="min-h-0 flex-1">
-          <MessageScrollerViewport>
+          <MessageScrollerViewport
+            ref={transcriptViewportRef}
+            onScroll={(event) => {
+              if (!conversationId || !loading) return
+              const atEnd = isTranscriptAtEnd(event.currentTarget)
+              setTranscriptScroll((prev) =>
+                recordTranscriptScroll(prev, conversationId, atEnd)
+              )
+            }}
+          >
             <MessageScrollerContent className="mx-auto w-full max-w-[min(90%,72rem)] gap-4 px-4 py-6">
               {displayTimeline.map((item, i) => {
-                const isLast = i === displayTimeline.length - 1 && !loading
+                const isLast =
+                  i === displayTimeline.length - 1 &&
+                  !loading &&
+                  !suppressSettledAnchor
                 if (item.kind === "tools") {
                   return (
                     <MessageScrollerItem key={item.key} scrollAnchor={isLast}>
@@ -2826,7 +2908,9 @@ function App(
                         >
                           <BubbleContent
                             className={cn(
-                              item.role === "user" && "whitespace-pre-wrap"
+                              item.role === "user"
+                                ? "whitespace-pre-wrap"
+                                : "overflow-visible"
                             )}
                           >
                             {item.role === "assistant" ? (
@@ -2863,7 +2947,7 @@ function App(
                           </div>
                         ) : seg.text ? (
                           <Bubble key={`s${si}`} align="start" variant="muted">
-                            <BubbleContent>
+                            <BubbleContent className="overflow-visible">
                               <Markdown content={seg.text} />
                             </BubbleContent>
                           </Bubble>

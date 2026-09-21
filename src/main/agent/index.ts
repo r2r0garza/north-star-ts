@@ -1156,8 +1156,8 @@ export async function runAgentLoop(
   // an MCP-restricted agent still keeps its full built-in toolset and vice-versa.
   // Resilient: a server that fails to connect is skipped (logged), never aborting
   // the turn. Fetched ONCE here (a network round-trip can't run inside the sync
-  // buildTools); inclusion is gated on !planMode there, like web_fetch — so a plan
-  // approved mid-turn regains MCP tools without a re-fetch.
+  // buildTools); inclusion is gated on !planMode there, so a plan approved
+  // mid-turn regains MCP tools without a re-fetch.
   const mcpWorkspace = hasWorkspace ? workspace : undefined
   let mcpTools: McpToolDefinition[] = []
   {
@@ -1241,11 +1241,10 @@ export async function runAgentLoop(
       ...(useIndex ? [indexQueryTool.definition] : []),
       ...(browser ? browserToolDefinitions : []),
       // Web tools are offered in every mode, independent of workspace/browser.
-      // web_search is read-only (like file reads) so it stays available even in
-      // plan mode; web_fetch is a gated network side effect (kind "web"), withheld
-      // in plan mode like the other mutating/side-effecting tools.
+      // In plan mode, web_fetch remains behind its ordinary per-origin approval
+      // gate; it researches external sources without mutating the workspace.
       webSearchDefinition,
-      ...(planMode ? [] : [webFetchDefinition]),
+      webFetchDefinition,
       // spawn_subagent: offered only when the agent+children gates pass and there
       // are children to spawn (offerSpawn). Withheld in plan mode like other
       // side-effecting tools. Not intersected away by the allowlist — offerSpawn
@@ -1281,8 +1280,8 @@ export async function runAgentLoop(
     ]).concat(
       // MCP tools bypass the built-in-category allowlist (applyAgentTools): MCP
       // access is governed by the agent's separate `mcpServers` field, already
-      // resolved into `mcpTools`. Withheld in plan mode like web_fetch/spawn (a
-      // remote call is a side effect); regained the moment a plan is approved.
+      // resolved into `mcpTools`. Withheld in plan mode like spawn (a remote call
+      // is a side effect); regained the moment a plan is approved.
       planMode ? [] : mcpTools
     )
   // The non-droppable base prompt (mode prompt). Everything else is a droppable
@@ -2232,7 +2231,10 @@ export async function runAgentLoop(
               return Promise.resolve("blocked")
             }
             const explicit = decision.level === "require_explicit_approval"
-            if (autoMode) return Promise.resolve("approved")
+            // Plan mode retains explicit research approvals even if a stale or
+            // mid-turn mode flag also says Auto. present_plan disables plan mode
+            // before enabling Auto for implementation.
+            if (autoMode && !planMode) return Promise.resolve("approved")
             const releaseApproval = opts.beforeApproval
               ? await opts.beforeApproval(callSignal)
               : undefined

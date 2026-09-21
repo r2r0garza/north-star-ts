@@ -178,8 +178,8 @@ export const browserToolDefinitions = browserTools.map((t) => t.definition)
 // "web"). Dispatchable via runTool; runChat adds their definitions from
 // `webToolDefinitions`.
 const webTools: Tool[] = [webSearchTool, webFetchTool]
-// Split so runChat can offer web_search in plan mode (read-only, like file
-// reads) while withholding web_fetch (a gated network side effect).
+// Exported separately so runChat can offer both web tools independent of the
+// workspace toolset; web_fetch retains its approval gate in plan mode.
 export const webSearchDefinition = webSearchTool.definition
 export const webFetchDefinition = webFetchTool.definition
 

@@ -1122,6 +1122,7 @@ describe.skipIf(!sqliteLoads)("agent loop tool-error feedback", () => {
 
     scriptedCompletions.push((request) => {
       expect(request.tools).not.toContain("write_file_tool")
+      expect(request.tools).toContain("web_fetch")
       return streamToolCalls([
         {
           id: "call_write",

@@ -5,6 +5,7 @@ import {
   isPrivateOrLocalAddress,
   readResponseText,
   SafeFetchBodyTooLargeError,
+  SafeFetchCrossOriginRedirectError,
   SafeFetchTimeoutError,
   safeFetch,
   safeFetchText,
@@ -157,46 +158,33 @@ describe("safeFetch", () => {
     )
   })
 
-  it("pins redirect hop connections to their validated DNS address sets", async () => {
-    const lookup: SafeFetchLookup = vi
-      .fn()
-      .mockResolvedValueOnce([{ address: "93.184.216.34", family: 4 }])
-      .mockResolvedValueOnce([{ address: "93.184.216.35", family: 4 }])
-    const privateEndpoint = vi.fn()
-    const transport: SafeFetchTransport = vi
-      .fn()
-      .mockResolvedValueOnce(
+  it("stops before requesting a cross-origin redirect destination", async () => {
+    const lookup: SafeFetchLookup = vi.fn(async () => [
+      { address: "93.184.216.34", family: 4 },
+    ])
+    const transport: SafeFetchTransport = vi.fn(async () =>
+      Promise.resolve(
         new Response("", {
           status: 302,
           headers: { location: "https://cdn.example/final" },
         })
       )
-      .mockImplementationOnce(async (_url, _opts, approvedAddresses) => {
-        if (
-          approvedAddresses.some(
-            (result: { address: string }) => result.address === "127.0.0.1"
-          )
-        ) {
-          privateEndpoint()
-        }
-        return new Response("ok", { status: 200 })
-      })
-
-    const res = await safeFetch("https://public.example/start", {
-      lookup,
-      transport,
-    })
-
-    expect(await res.text()).toBe("ok")
-    expect(lookup).toHaveBeenNthCalledWith(2, "cdn.example")
-    expect(transport).toHaveBeenNthCalledWith(
-      2,
-      new URL("https://cdn.example/final"),
-      expect.objectContaining({ redirect: "manual" }),
-      [{ address: "93.184.216.35", family: 4 }],
-      expect.any(AbortSignal)
     )
-    expect(privateEndpoint).not.toHaveBeenCalled()
+
+    await expect(
+      safeFetch("https://public.example/start", {
+        lookup,
+        transport,
+        stopAtCrossOriginRedirect: true,
+      })
+    ).rejects.toMatchObject({
+      name: "SafeFetchCrossOriginRedirectError",
+      url: new URL("https://cdn.example/final"),
+    } satisfies Partial<SafeFetchCrossOriginRedirectError>)
+
+    expect(lookup).toHaveBeenCalledTimes(2)
+    expect(lookup).toHaveBeenNthCalledWith(2, "cdn.example")
+    expect(transport).toHaveBeenCalledTimes(1)
   })
 
   it("follows public redirects and returns the final response", async () => {

@@ -402,6 +402,10 @@ export function ApprovalCard({
   // per workspace.
   const isWeb = approval.kind === "web"
   const isBrowser = approval.kind === "browser"
+  const webOrigin =
+    isWeb && typeof approval.detail?.origin === "string"
+      ? approval.detail.origin
+      : null
   const diff = approvalDiff(approval.detail)
   const shellDetails = shellApprovalDetails(approval.detail)
   const browserDetails = browserApprovalDetails(approval.detail)
@@ -462,7 +466,9 @@ export function ApprovalCard({
               variant="outline"
               onClick={() => onApproval(requestId, "approved", "conversation")}
             >
-              Approve for this session
+              {webOrigin
+                ? `Allow reads from ${webOrigin} for this conversation`
+                : "Approve for this session"}
               <Kbd className="ml-1.5">S</Kbd>
             </Button>
           ) : (

@@ -98,7 +98,7 @@ available end-user agent capability.
 | Tool | What it does | Important gating / notes |
 | --- | --- | --- |
 | `web_search` | Searches the web through the configured search provider and returns ranked results. | Offered in every mode, including plan mode. Read-only from the user's machine and not approval-gated. |
-| `web_fetch` | Fetches an HTTP(S) page and extracts readable text/Markdown. | Offered in every mode except plan mode. Arbitrary-origin access routes through the approval gate and SSRF-oriented safe-fetch checks. |
+| `web_fetch` | Fetches an HTTP(S) page and extracts readable text/Markdown. | Offered in every mode, including plan mode. Arbitrary-origin access routes through the approval gate and SSRF-oriented safe-fetch checks; conversation approvals cover one normalized origin, and cross-origin redirects require separate approval. |
 
 ## Browser use — implemented
 
