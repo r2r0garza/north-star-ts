@@ -57,6 +57,9 @@ interface TestSession {
   cleanupError?: CommandCleanupError
   timeout: NodeJS.Timeout
   cleanup?: NodeJS.Timeout
+  settled: Promise<void>
+  resolveSettled: () => void
+  didSettle: boolean
 }
 
 const DEFAULT_TIMEOUT_MS = 120_000
@@ -221,7 +224,7 @@ export const runTestsTool: Tool = {
       const onAbort = () => void terminateTestSession(session)
       if (ctx.signal.aborted) await terminateTestSession(session)
       else ctx.signal.addEventListener("abort", onAbort, { once: true })
-      session.handle.onExit(() =>
+      void session.settled.then(() =>
         ctx.signal?.removeEventListener("abort", onAbort)
       )
     }
@@ -552,6 +555,10 @@ function createTestSession(input: {
   command: ProviderCommand
   timeoutMs: number
 }): TestSession {
+  let resolveSettled: () => void = () => {}
+  const settled = new Promise<void>((resolve) => {
+    resolveSettled = resolve
+  })
   const session: TestSession = {
     id: cryptoRandomId(),
     workspace: input.workspace,
@@ -566,6 +573,9 @@ function createTestSession(input: {
     exitCode: null,
     signal: null,
     timedOut: false,
+    settled,
+    resolveSettled,
+    didSettle: false,
     timeout: setTimeout(() => {
       session.timedOut = true
       session.status = "timed_out"
@@ -584,11 +594,14 @@ function createTestSession(input: {
 }
 
 function settleTestSession(session: TestSession, exit: CommandExit): void {
+  if (session.didSettle) return
+  session.didSettle = true
   clearTimeout(session.timeout)
   session.exitCode = exit.exitCode
   session.signal = exit.signal
   session.cleanupError = exit.cleanupError
   if (session.status === "running") session.status = "completed"
+  session.resolveSettled()
   session.cleanup = setTimeout(() => {
     testSessions.delete(session.id)
   }, COMPLETED_SESSION_TTL_MS)
@@ -598,10 +611,10 @@ async function terminateTestSession(session: TestSession): Promise<void> {
   if (session.status !== "running") return
   session.status = "terminated"
   session.handle.interrupt()
-  await waitForExitOrDelay(session, TERMINATE_GRACE_MS)
-  if ((session.status as TestSessionStatus) === "terminated") {
+  await waitForSettlementOrDelay(session, TERMINATE_GRACE_MS)
+  if (!session.didSettle && session.status === "terminated") {
     session.handle.kill()
-    await waitForExitOrDelay(session, 500)
+    await waitForSettlementOrDelay(session, 500)
   }
 }
 
@@ -674,20 +687,28 @@ function renderTestSession(
 
 async function waitForSettle(session: TestSession, ms: number): Promise<void> {
   if (session.status !== "running") return
-  await waitForExitOrDelay(session, ms)
+  await waitForSettlementOrDelay(session, ms)
 }
 
-function waitForExitOrDelay(session: TestSession, ms: number): Promise<void> {
-  if (session.status !== "running" && session.status !== "terminated") {
-    return Promise.resolve()
+async function waitForSettlementOrDelay(
+  session: TestSession,
+  ms: number
+): Promise<void> {
+  if (
+    session.didSettle ||
+    (session.status !== "running" && session.status !== "terminated")
+  ) {
+    return
   }
-  return new Promise((resolve) => {
-    const timer = setTimeout(resolve, ms)
-    session.handle.onExit(() => {
-      clearTimeout(timer)
-      resolve()
-    })
+  let timer: NodeJS.Timeout | undefined
+  const delay = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, ms)
   })
+  try {
+    await Promise.race([session.settled, delay])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
 }
 
 function trimOutput(text: string, maxBytes: number): string {

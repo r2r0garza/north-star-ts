@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import { tmpdir } from "os"
 import { access, mkdtemp, readFile, rm, symlink } from "fs/promises"
 import { isAbsolute, join, relative, resolve } from "path"
@@ -95,6 +95,60 @@ async function collectRecoverableOutput(
   }
 
   return output
+}
+
+class ControllableCommandHandle implements CommandSessionHandle {
+  private dataCallbacks: Array<(chunk: CommandChunk) => void> = []
+  private exitCallbacks: Array<(exit: CommandExit) => void> = []
+  interruptCalls = 0
+  killCalls = 0
+
+  get exitListenerCount(): number {
+    return this.exitCallbacks.length
+  }
+
+  onData(cb: (chunk: CommandChunk) => void): void {
+    this.dataCallbacks.push(cb)
+  }
+
+  onExit(cb: (exit: CommandExit) => void): void {
+    this.exitCallbacks.push(cb)
+  }
+
+  write(): void {}
+
+  closeStdin(): void {}
+
+  interrupt(): void {
+    this.interruptCalls += 1
+  }
+
+  kill(): void {
+    this.killCalls += 1
+  }
+
+  emitData(data: string): void {
+    const chunk = { stream: "stdout", data: Buffer.from(data) } as const
+    for (const cb of this.dataCallbacks) cb(chunk)
+  }
+
+  emitExit(exit: CommandExit): void {
+    for (const cb of this.exitCallbacks) cb(exit)
+  }
+}
+
+function controllableEnv(handle: ControllableCommandHandle): Environment {
+  return {
+    async resolve(path: string): Promise<string> {
+      return resolve("/workspace", path || ".")
+    },
+    resolveLexical(path: string): string {
+      return resolve("/workspace", path || ".")
+    },
+    async spawnCommand(): Promise<CommandSessionHandle> {
+      return handle
+    },
+  } as unknown as Environment
 }
 
 class FakeCommandHandle implements CommandSessionHandle {
@@ -218,6 +272,8 @@ function fakeWindowsPythonSpawn(seen: {
 
 afterEach(() => {
   testCommandSessions.clear()
+  vi.useRealTimers()
+  vi.restoreAllMocks()
 })
 
 describe("command session tools", () => {
@@ -1087,6 +1143,160 @@ describe("command session tools", () => {
     )
 
     expect(result).toContain("ERROR[forbidden]")
+  })
+
+  it("keeps one exit listener across repeated bounded writes and settles later", async () => {
+    const handle = new ControllableCommandHandle()
+    const env = controllableEnv(handle)
+    const started = parseResult(
+      await execCommandTool.execute(
+        { command: "interactive", background: true },
+        ctx({ workspace: "/workspace", env })
+      )
+    )
+
+    for (let i = 0; i < 15; i += 1) {
+      const result = parseResult(
+        await writeStdinTool.execute(
+          { session_id: started.sessionId, yield_ms: 0 },
+          ctx({ workspace: "/workspace", env })
+        )
+      )
+      expect(result.status).toBe("running")
+    }
+    expect(handle.exitListenerCount).toBe(1)
+
+    handle.emitData("done\n")
+    handle.emitExit({ exitCode: 0, signal: null })
+    const completed = parseResult(
+      await pollCommandTool.execute(
+        { session_id: started.sessionId },
+        ctx({ workspace: "/workspace", env })
+      )
+    )
+    expect(completed).toMatchObject({
+      status: "completed",
+      exitCode: 0,
+      output: "done\n",
+    })
+  })
+
+  it("cancels an exit-first write delay without adding an exit listener", async () => {
+    vi.useFakeTimers()
+    const clearTimeoutSpy = vi.spyOn(globalThis, "clearTimeout")
+    const handle = new ControllableCommandHandle()
+    const env = controllableEnv(handle)
+    const started = parseResult(
+      await execCommandTool.execute(
+        { command: "interactive", background: true },
+        ctx({ workspace: "/workspace", env })
+      )
+    )
+    const pending = writeStdinTool.execute(
+      { session_id: started.sessionId, yield_ms: 5_000 },
+      ctx({ workspace: "/workspace", env })
+    )
+
+    await Promise.resolve()
+    handle.emitExit({ exitCode: 0, signal: null })
+    const completed = parseResult(await pending)
+
+    expect(completed.status).toBe("completed")
+    expect(handle.exitListenerCount).toBe(1)
+    expect(clearTimeoutSpy).toHaveBeenCalled()
+  })
+
+  it("does not kill a command that settles during interrupt grace", async () => {
+    const handle = new ControllableCommandHandle()
+    const env = controllableEnv(handle)
+    const started = parseResult(
+      await execCommandTool.execute(
+        { command: "long-running", background: true },
+        ctx({ workspace: "/workspace", env })
+      )
+    )
+    const terminating = terminateCommandTool.execute(
+      { session_id: started.sessionId },
+      ctx({ workspace: "/workspace", env })
+    )
+
+    await Promise.resolve()
+    expect(handle.interruptCalls).toBe(1)
+    expect(handle.exitListenerCount).toBe(1)
+    handle.emitExit({ exitCode: null, signal: "SIGINT" })
+    const result = parseResult(await terminating)
+
+    expect(result.status).toBe("terminated")
+    expect(handle.killCalls).toBe(0)
+  })
+
+  it("escalates once when interrupt grace and post-kill waits expire", async () => {
+    vi.useFakeTimers()
+    const handle = new ControllableCommandHandle()
+    const env = controllableEnv(handle)
+    const started = parseResult(
+      await execCommandTool.execute(
+        { command: "stuck", background: true },
+        ctx({ workspace: "/workspace", env })
+      )
+    )
+    const terminating = terminateCommandTool.execute(
+      { session_id: started.sessionId },
+      ctx({ workspace: "/workspace", env })
+    )
+
+    await vi.advanceTimersByTimeAsync(1_500)
+    expect(handle.killCalls).toBe(1)
+    expect(handle.exitListenerCount).toBe(1)
+    await vi.advanceTimersByTimeAsync(500)
+    const result = parseResult(await terminating)
+
+    expect(result.status).toBe("terminated")
+    expect(handle.killCalls).toBe(1)
+  })
+
+  it("preserves the first exit and queues one completion for duplicate exits", async () => {
+    vi.useFakeTimers()
+    const handle = new ControllableCommandHandle()
+    const env = controllableEnv(handle)
+    const inbox = new CommandCompletionInbox()
+    const owner = {
+      conversationId: "c1",
+      workspace: "/workspace",
+      runId: "run-duplicate-exit",
+    }
+    const cleanupTimersBefore = vi.getTimerCount()
+    const started = parseResult(
+      await execCommandTool.execute(
+        { command: "duplicate", background: true },
+        ctx({
+          workspace: owner.workspace,
+          env,
+          commandCompletions: inbox,
+          commandCompletionOwner: owner,
+        })
+      )
+    )
+    inbox.markInitialResultPersisted(owner, String(started.sessionId))
+
+    handle.emitExit({ exitCode: 7, signal: null })
+    handle.emitExit({
+      exitCode: null,
+      signal: "SIGKILL",
+      cleanupError: { path: "/second", error: "ignored" },
+    })
+    const result = parseResult(
+      await pollCommandTool.execute(
+        { session_id: started.sessionId },
+        ctx({ workspace: owner.workspace, env })
+      )
+    )
+    const events = inbox.drain(owner)
+
+    expect(result).toMatchObject({ exitCode: 7, signal: null })
+    expect(result.cleanupError).toBeUndefined()
+    expect(events).toHaveLength(1)
+    expect(vi.getTimerCount() - cleanupTimersBefore).toBe(1)
   })
 
   it("terminates a running command", async () => {

@@ -1,5 +1,14 @@
 # Roadmap — Completed
 
+- **`096` — Leak-free command-session settlement waits.** Completed in this branch. Command and diagnostic
+  sessions now own one idempotent, first-exit-wins settlement promise; bounded write, compatibility,
+  initial-yield, and termination waits race that shared signal without adding backend listeners and always
+  clear their delay timers. Abort cleanup also follows settlement, and graceful interrupt exits no longer
+  receive a redundant kill while no-exit and timeout races retain their prior bounds and statuses. Added
+  controllable-handle coverage for listener baselines, timer-first and exit-first waits, graceful and
+  escalated termination, duplicate exits, completion deduplication, and abort cleanup. The 35-test command
+  suite, 9-test diagnostics suite, formatting checks, and `pnpm typecheck` pass; the ordinary suite remains
+  blocked only by the four pre-existing CLI parser tests whose ignored `cli_probes` fixtures are absent.
 - **`095` — Lightweight Markdown rendering while streaming.** Completed in this branch. Added an explicit
   settled-by-default Markdown mode and opted only active live transcript segments into a lightweight streaming
   configuration. Live Markdown retains GFM, language classes, horizontally scrollable code-block chrome, and
