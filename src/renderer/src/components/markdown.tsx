@@ -74,78 +74,104 @@ function CodeBlock({ children, ...props }: React.ComponentProps<"pre">) {
   )
 }
 
-const components: Components = {
-  // `code` covers both inline code and fenced blocks. We detect mermaid fences
-  // by their `language-mermaid` class and hand them to the diagram renderer.
-  code({ className, children, ...props }) {
-    // Block code carries a `language-*` class, or (for language-less fences)
-    // spans multiple lines. Everything else is inline.
-    const hasLang = /language-(\w+)/.test(className ?? "")
-    const isBlock = hasLang || nodeText(children).includes("\n")
-    if (!isBlock) {
+function createComponents({
+  highlightCode,
+  renderMermaid,
+}: {
+  highlightCode: boolean
+  renderMermaid: boolean
+}): Components {
+  return {
+    // `code` covers both inline code and fenced blocks. Settled Mermaid fences
+    // are handed to the diagram renderer; streaming fences remain plain code.
+    code({ className, children, ...props }) {
+      // Block code carries a `language-*` class, or (for language-less fences)
+      // spans multiple lines. Everything else is inline.
+      const hasLang = /language-(\w+)/.test(className ?? "")
+      const isBlock = hasLang || nodeText(children).includes("\n")
+      if (!isBlock) {
+        return (
+          <code
+            className="rounded bg-muted px-1.5 py-0.5 font-mono text-[0.85em] break-words"
+            {...props}
+          >
+            {children}
+          </code>
+        )
+      }
+      if (renderMermaid && /language-mermaid/.test(className ?? "")) {
+        return <Mermaid chart={nodeText(children)} />
+      }
       return (
         <code
-          className="rounded bg-muted px-1.5 py-0.5 font-mono text-[0.85em] break-words"
+          className={cn(
+            highlightCode && "hljs",
+            "font-mono text-[0.85em]",
+            className
+          )}
           {...props}
         >
           {children}
         </code>
       )
-    }
-    if (/language-mermaid/.test(className ?? "")) {
-      return <Mermaid chart={nodeText(children)} />
-    }
-    // Highlighted block code: rehype-highlight has added hljs token classes.
-    return (
-      <code
-        className={cn("hljs font-mono text-[0.85em]", className)}
-        {...props}
-      >
-        {children}
-      </code>
-    )
-  },
-  // Style the <pre> wrapper around code blocks. Mermaid renders its own
-  // container, so when the fenced block is a diagram we drop the <pre> chrome
-  // and render the child (the Mermaid element) directly.
-  pre({ children, ...props }) {
-    const child: any = Array.isArray(children) ? children[0] : children
-    const lang: string = child?.props?.className ?? ""
-    if (/language-mermaid/.test(lang)) return <>{children}</>
-    return <CodeBlock {...props}>{children}</CodeBlock>
-  },
-  a({ children, ...props }) {
-    // External links open in the OS browser via the main process handler.
-    return (
-      <a
-        className="text-primary underline underline-offset-2"
-        target="_blank"
-        rel="noreferrer"
-        {...props}
-      >
-        {children}
-      </a>
-    )
-  },
-  table({ children, ...props }) {
-    return (
-      <div className="my-3 max-w-full overflow-x-auto">
-        <table className="w-full border-collapse text-sm" {...props}>
+    },
+    // Settled Mermaid diagrams render their own container. Streaming Mermaid
+    // source uses the same copyable code-block chrome as every other fence.
+    pre({ children, ...props }) {
+      const child: any = Array.isArray(children) ? children[0] : children
+      const lang: string = child?.props?.className ?? ""
+      if (renderMermaid && /language-mermaid/.test(lang)) {
+        return <>{children}</>
+      }
+      return <CodeBlock {...props}>{children}</CodeBlock>
+    },
+    a({ children, ...props }) {
+      // External links open in the OS browser via the main process handler.
+      return (
+        <a
+          className="text-primary underline underline-offset-2"
+          target="_blank"
+          rel="noreferrer"
+          {...props}
+        >
           {children}
-        </table>
-      </div>
-    )
-  },
+        </a>
+      )
+    },
+    table({ children, ...props }) {
+      return (
+        <div className="my-3 max-w-full overflow-x-auto">
+          <table className="w-full border-collapse text-sm" {...props}>
+            {children}
+          </table>
+        </div>
+      )
+    },
+  }
 }
 
-// Renders assistant markdown: GFM (tables, task lists, strikethrough) via
-// remark-gfm, syntax highlighting via rehype-highlight, and mermaid diagrams
-// through the custom code handler. Memoized so streaming re-renders are cheap.
+const remarkPlugins = [remarkGfm]
+const settledRehypePlugins = [rehypeHighlight]
+const settledComponents = createComponents({
+  highlightCode: true,
+  renderMermaid: true,
+})
+const streamingComponents = createComponents({
+  highlightCode: false,
+  renderMermaid: false,
+})
+
+type MarkdownProps = {
+  content: string
+  mode?: "settled" | "streaming"
+}
+
+// Renders assistant Markdown with GFM in both modes. Settled content adds syntax
+// highlighting and Mermaid diagrams; streaming content defers both enrichments.
 export const Markdown = memo(function Markdown({
   content,
-}: {
-  content: string
-}) {
+  mode = "settled",
+}: MarkdownProps) {
   return (
     <div
       className={cn(
@@ -156,9 +182,11 @@ export const Markdown = memo(function Markdown({
       )}
     >
       <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        rehypePlugins={[rehypeHighlight]}
-        components={components}
+        remarkPlugins={remarkPlugins}
+        rehypePlugins={mode === "settled" ? settledRehypePlugins : undefined}
+        components={
+          mode === "settled" ? settledComponents : streamingComponents
+        }
       >
         {content}
       </ReactMarkdown>

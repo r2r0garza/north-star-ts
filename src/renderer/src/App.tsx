@@ -126,11 +126,12 @@ import {
 } from "@/lib/agent-mode"
 import {
   INITIAL_TRANSCRIPT_SCROLL_POLICY,
-  isTranscriptAtEnd,
   recordTranscriptScroll,
+  recordTranscriptScrollIntent,
   resetTranscriptScroll,
   settleTranscriptTurn,
   transcriptRestorePosition,
+  transcriptShouldFollow,
 } from "@/lib/transcript-scroll"
 import type {
   Question,
@@ -552,6 +553,13 @@ function App(
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const overlayRef = useRef<HTMLDivElement>(null)
   const transcriptViewportRef = useRef<HTMLDivElement>(null)
+  const transcriptContentRef = useRef<HTMLDivElement>(null)
+  const previousTranscriptScrollTopRef = useRef<number | null>(null)
+  const transcriptUserScrollRef = useRef(false)
+  const transcriptFollowingRef = useRef<{
+    conversationId: string | null
+    following: boolean
+  }>({ conversationId: null, following: true })
   const pendingTranscriptRestoreRef = useRef<{
     conversationId: string
     scrollTop: number
@@ -1792,6 +1800,44 @@ function App(
   const suppressSettledAnchor = conversationId
     ? transcriptScroll.suppressSettledAnchor.has(conversationId)
     : false
+  const followingTranscript = conversationId
+    ? !transcriptScroll.awayFromEnd.has(conversationId)
+    : true
+  transcriptFollowingRef.current = {
+    conversationId,
+    following: followingTranscript,
+  }
+
+  useLayoutEffect(() => {
+    previousTranscriptScrollTopRef.current =
+      transcriptViewportRef.current?.scrollTop ?? null
+  }, [conversationId])
+
+  useLayoutEffect(() => {
+    if (!conversationId || !loading || !followingTranscript) return
+    const viewport = transcriptViewportRef.current
+    const content = transcriptContentRef.current
+    if (!viewport || !content || typeof ResizeObserver === "undefined") return
+
+    let frame: number | null = null
+    const followEnd = () => {
+      frame = null
+      const intent = transcriptFollowingRef.current
+      if (intent.conversationId !== conversationId || !intent.following) return
+      viewport.scrollTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight)
+      previousTranscriptScrollTopRef.current = viewport.scrollTop
+    }
+    const scheduleFollowEnd = () => {
+      if (frame === null) frame = window.requestAnimationFrame(followEnd)
+    }
+    const observer = new ResizeObserver(scheduleFollowEnd)
+    observer.observe(content)
+    scheduleFollowEnd()
+    return () => {
+      observer.disconnect()
+      if (frame !== null) window.cancelAnimationFrame(frame)
+    }
+  }, [conversationId, followingTranscript, loading])
 
   // Restore the exact reading position in the same commit that swaps the live
   // response for its persisted timeline items. A layout effect runs before
@@ -1803,6 +1849,7 @@ function App(
     const viewport = transcriptViewportRef.current
     if (!viewport) return
     viewport.scrollTop = pending.scrollTop
+    previousTranscriptScrollTopRef.current = pending.scrollTop
     pendingTranscriptRestoreRef.current = null
   }, [conversationId, loading, timeline])
 
@@ -2866,15 +2913,58 @@ function App(
         <MessageScroller className="min-h-0 flex-1">
           <MessageScrollerViewport
             ref={transcriptViewportRef}
+            onKeyDown={(event) => {
+              if (
+                event.key === "ArrowDown" ||
+                event.key === "ArrowUp" ||
+                event.key === "End" ||
+                event.key === "Home" ||
+                event.key === "PageDown" ||
+                event.key === "PageUp" ||
+                event.key === " "
+              ) {
+                transcriptUserScrollRef.current = true
+              }
+            }}
+            onPointerDown={() => {
+              transcriptUserScrollRef.current = true
+            }}
+            onTouchMove={() => {
+              transcriptUserScrollRef.current = true
+            }}
+            onWheel={() => {
+              transcriptUserScrollRef.current = true
+            }}
             onScroll={(event) => {
+              const viewport = event.currentTarget
+              const previousScrollTop =
+                previousTranscriptScrollTopRef.current ?? viewport.scrollTop
+              previousTranscriptScrollTopRef.current = viewport.scrollTop
+              const userInitiated = transcriptUserScrollRef.current
+              transcriptUserScrollRef.current = false
               if (!conversationId || !loading) return
-              const atEnd = isTranscriptAtEnd(event.currentTarget)
+              const following = transcriptShouldFollow(
+                transcriptFollowingRef.current.following,
+                previousScrollTop,
+                viewport,
+                userInitiated
+              )
+              transcriptFollowingRef.current = { conversationId, following }
               setTranscriptScroll((prev) =>
-                recordTranscriptScroll(prev, conversationId, atEnd)
+                recordTranscriptScrollIntent(
+                  prev,
+                  conversationId,
+                  previousScrollTop,
+                  viewport,
+                  userInitiated
+                )
               )
             }}
           >
-            <MessageScrollerContent className="mx-auto w-full max-w-[min(90%,72rem)] gap-4 px-4 py-6">
+            <MessageScrollerContent
+              ref={transcriptContentRef}
+              className="mx-auto w-full max-w-[min(90%,72rem)] gap-4 px-4 py-6"
+            >
               {displayTimeline.map((item, i) => {
                 const isLast =
                   i === displayTimeline.length - 1 &&
@@ -2948,7 +3038,7 @@ function App(
                         ) : seg.text ? (
                           <Bubble key={`s${si}`} align="start" variant="muted">
                             <BubbleContent className="overflow-visible">
-                              <Markdown content={seg.text} />
+                              <Markdown content={seg.text} mode="streaming" />
                             </BubbleContent>
                           </Bubble>
                         ) : null
@@ -2984,7 +3074,27 @@ function App(
             </MessageScrollerContent>
           </MessageScrollerViewport>
           {/* Scroll-to-bottom button — self-manages its visibility. */}
-          <MessageScrollerButton direction="end" />
+          <MessageScrollerButton
+            direction="end"
+            onClick={() => {
+              if (!conversationId) return
+              transcriptFollowingRef.current = {
+                conversationId,
+                following: true,
+              }
+              setTranscriptScroll((prev) =>
+                recordTranscriptScroll(prev, conversationId, true)
+              )
+              const viewport = transcriptViewportRef.current
+              if (viewport) {
+                viewport.scrollTop = Math.max(
+                  0,
+                  viewport.scrollHeight - viewport.clientHeight
+                )
+                previousTranscriptScrollTopRef.current = viewport.scrollTop
+              }
+            }}
+          />
         </MessageScroller>
       </MessageScrollerProvider>
 

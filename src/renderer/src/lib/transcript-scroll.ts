@@ -1,4 +1,5 @@
 export const TRANSCRIPT_END_THRESHOLD = 8
+const TRANSCRIPT_SCROLL_DIRECTION_TOLERANCE = 0.5
 
 export interface TranscriptScrollPolicy {
   awayFromEnd: Set<string>
@@ -42,6 +43,39 @@ export function recordTranscriptScroll(
   if (atEnd) awayFromEnd.delete(conversationId)
   else awayFromEnd.add(conversationId)
   return { ...policy, awayFromEnd }
+}
+
+export function transcriptShouldFollow(
+  following: boolean,
+  previousScrollTop: number,
+  metrics: TranscriptScrollMetrics,
+  userInitiated = true
+): boolean {
+  if (isTranscriptAtEnd(metrics)) return true
+  if (
+    userInitiated &&
+    metrics.scrollTop <
+      previousScrollTop - TRANSCRIPT_SCROLL_DIRECTION_TOLERANCE
+  ) {
+    return false
+  }
+  return following
+}
+
+export function recordTranscriptScrollIntent(
+  policy: TranscriptScrollPolicy,
+  conversationId: string,
+  previousScrollTop: number,
+  metrics: TranscriptScrollMetrics,
+  userInitiated = true
+): TranscriptScrollPolicy {
+  const following = transcriptShouldFollow(
+    !policy.awayFromEnd.has(conversationId),
+    previousScrollTop,
+    metrics,
+    userInitiated
+  )
+  return recordTranscriptScroll(policy, conversationId, following)
 }
 
 export function resetTranscriptScroll(

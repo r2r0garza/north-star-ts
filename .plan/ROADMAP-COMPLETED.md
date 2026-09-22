@@ -1,5 +1,13 @@
 # Roadmap — Completed
 
+- **`095` — Lightweight Markdown rendering while streaming.** Completed in this branch. Added an explicit
+  settled-by-default Markdown mode and opted only active live transcript segments into a lightweight streaming
+  configuration. Live Markdown retains GFM, language classes, horizontally scrollable code-block chrome, and
+  exact-source copy while skipping syntax highlighting and Mermaid mounts; persisted and secondary consumers
+  retain highlighted code and rendered diagrams. Added focused coverage for both modes, Mermaid suppression and
+  settlement, exact copying, GFM parity, and the settled default. The focused 10-test suite, `pnpm typecheck`,
+  formatting checks, and `pnpm build` pass; the ordinary suite is otherwise green but remains blocked by four
+  pre-existing CLI parser tests whose ignored `cli_probes` fixtures are absent from this checkout.
 - **`094` — Context history tail query.** Completed in this branch. Added a strict, indexed
   `conversation_id = ? AND seq > ?` repository query and routed summarized ContextBuilder history
   through it, avoiding loads and JSON parsing for messages already replaced by the rolling summary.
