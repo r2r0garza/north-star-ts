@@ -1,12 +1,11 @@
 import { describe, it, expect, beforeEach, vi } from "vitest"
 import type { Message } from "../../db/types"
 
-// Mock the messages repo so the builder is testable without SQLite. `history` is
-// swapped per test to control the walk-back input.
-let history: Message[] = []
-vi.mock("../../db/repositories/messages", () => ({
-  listMessages: () => history,
+const messageRepo = vi.hoisted(() => ({
+  listMessages: vi.fn<() => Message[]>(),
+  listMessagesAfterSeq: vi.fn<() => Message[]>(),
 }))
+vi.mock("../../db/repositories/messages", () => messageRepo)
 
 import {
   ContextBuilder,
@@ -30,20 +29,29 @@ function msg(seq: number, role: Message["role"], content: string): Message {
 }
 
 beforeEach(() => {
-  history = []
+  messageRepo.listMessages.mockReset().mockReturnValue([])
+  messageRepo.listMessagesAfterSeq.mockReset().mockReturnValue([])
 })
 
 describe("ContextBuilder — base behavior (pre-014 parity)", () => {
-  it("returns system + walk-back with no sections", () => {
-    history = [msg(1, "user", "hi"), msg(2, "assistant", "hello")]
+  it("returns system + full history when no boundary exists", () => {
+    messageRepo.listMessages.mockReturnValue([
+      msg(1, "user", "hi"),
+      msg(2, "assistant", "hello"),
+    ])
     const b = new ContextBuilder()
     const out = b.build("c1", { baseSystemPrompt: "SYS" })
     expect(out[0]).toEqual({ role: "system", content: "SYS" })
     expect(out.map((m) => m.content)).toEqual(["SYS", "hi", "hello"])
+    expect(messageRepo.listMessages).toHaveBeenCalledWith("c1")
+    expect(messageRepo.listMessagesAfterSeq).not.toHaveBeenCalled()
   })
 
   it("keeps all history even when it exceeds the section budget", () => {
-    history = [msg(1, "user", "x".repeat(400)), msg(2, "user", "y".repeat(4))]
+    messageRepo.listMessages.mockReturnValue([
+      msg(1, "user", "x".repeat(400)),
+      msg(2, "user", "y".repeat(4)),
+    ])
     const b = new ContextBuilder({ tokenBudget: 20 })
     const out = b.build("c1", { baseSystemPrompt: "S" })
     const contents = out.slice(1).map((m) => m.content)
@@ -51,13 +59,27 @@ describe("ContextBuilder — base behavior (pre-014 parity)", () => {
     expect(contents).toContain("x".repeat(400))
   })
 
-  it("replays only the complete tail after a summary boundary", () => {
-    history = [
-      msg(1, "user", "already summarized"),
-      msg(2, "assistant", "also summarized"),
+  it("uses the bounded path for a zero boundary", () => {
+    messageRepo.listMessagesAfterSeq.mockReturnValue([
+      msg(1, "user", "hi"),
+      msg(2, "assistant", "hello"),
+    ])
+
+    const out = new ContextBuilder().build("c1", {
+      baseSystemPrompt: "SYS",
+      historyAfterSeq: 0,
+    })
+
+    expect(out.map((m) => m.content)).toEqual(["SYS", "hi", "hello"])
+    expect(messageRepo.listMessagesAfterSeq).toHaveBeenCalledWith("c1", 0)
+    expect(messageRepo.listMessages).not.toHaveBeenCalled()
+  })
+
+  it("replays the repository-provided tail after a summary boundary", () => {
+    messageRepo.listMessagesAfterSeq.mockReturnValue([
       msg(3, "user", "new question"),
       msg(4, "assistant", "new answer"),
-    ]
+    ])
     const b = new ContextBuilder()
     const out = b.build("c1", {
       baseSystemPrompt: "SYS",
@@ -68,6 +90,8 @@ describe("ContextBuilder — base behavior (pre-014 parity)", () => {
       "new question",
       "new answer",
     ])
+    expect(messageRepo.listMessagesAfterSeq).toHaveBeenCalledWith("c1", 2)
+    expect(messageRepo.listMessages).not.toHaveBeenCalled()
   })
 })
 
@@ -79,13 +103,13 @@ describe("ContextBuilder — sections (plan 014)", () => {
   ]
 
   it("maps persisted command completion runtime context to untrusted transport input", () => {
-    history = [
+    messageRepo.listMessages.mockReturnValue([
       msg(
         1,
         "system",
         'Runtime event: background command completion(s).\n\n[context provenance: trust=untrusted_data channel=command source="background_command_completion"]\nDATA: done'
       ),
-    ]
+    ])
 
     const out = new ContextBuilder().build("c1", {
       baseSystemPrompt: "SYS",
@@ -178,7 +202,9 @@ describe("ContextBuilder — sections (plan 014)", () => {
   })
 
   it("section budget never starves the walk-back (core is non-droppable)", () => {
-    history = [msg(1, "user", "important recent message")]
+    messageRepo.listMessages.mockReturnValue([
+      msg(1, "user", "important recent message"),
+    ])
     // Sections huge, but the walk-back budget is the total minus system-block cost;
     // the recent message still appears.
     const b = new ContextBuilder({ tokenBudget: 200 })

@@ -1,4 +1,7 @@
-import { listMessages } from "../../db/repositories/messages"
+import {
+  listMessages,
+  listMessagesAfterSeq,
+} from "../../db/repositories/messages"
 import { defaultTokenCounter, type TokenCounter } from "./token-counter"
 import type { Message } from "../../db/types"
 import { renderContextEnvelope, type ContextProvenance } from "./provenance"
@@ -107,9 +110,10 @@ export class ContextBuilder {
     // A summary explicitly replaces messages through historyAfterSeq. Without a
     // summary, replay the entire stored transcript; never silently discard old
     // messages behind a second, unrelated context limit.
-    const history = listMessages(conversationId).filter(
-      (message) => message.seq > (opts.historyAfterSeq ?? 0)
-    )
+    const history =
+      opts.historyAfterSeq === undefined
+        ? listMessages(conversationId)
+        : listMessagesAfterSeq(conversationId, opts.historyAfterSeq)
     return [
       { role: "system", content: systemContent },
       ...history.map(toChatMessage),

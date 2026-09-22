@@ -1,5 +1,13 @@
 # Roadmap — Completed
 
+- **`094` — Context history tail query.** Completed in this branch. Added a strict, indexed
+  `conversation_id = ? AND seq > ?` repository query and routed summarized ContextBuilder history
+  through it, avoiding loads and JSON parsing for messages already replaced by the rolling summary.
+  Missing boundaries still replay complete history, while zero boundaries use the bounded path.
+  Added independently observable builder-path regressions and SQLite-backed strict-boundary,
+  conversation-isolation, ordering, empty-tail, and tool-call mapping coverage. Focused builder tests
+  and typecheck pass; SQLite execution remains blocked locally by the pre-existing Electron/Node
+  `better-sqlite3` ABI mismatch.
 - **`086` — Experimental Codex subscription backend.** Completed in `41b38be` with subsequent model,
   retry, and UI updates. Added the opt-in `codex_subscription` provider and `codex_responses` transport,
   main-process credential/auth handling, fixed model catalog and provider settings, runtime/provider

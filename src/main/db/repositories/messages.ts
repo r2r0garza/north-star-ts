@@ -119,6 +119,18 @@ export function listMessages(conversationId: string): Message[] {
   return rows.map(toMessage)
 }
 
+export function listMessagesAfterSeq(
+  conversationId: string,
+  afterSeq: number
+): Message[] {
+  const rows = getDb()
+    .prepare(
+      "SELECT * FROM messages WHERE conversation_id = ? AND seq > ? ORDER BY seq ASC"
+    )
+    .all(conversationId, afterSeq) as MessageRow[]
+  return rows.map(toMessage)
+}
+
 export function getMaxMessageSeq(conversationId: string): number {
   const row = getDb()
     .prepare(

@@ -1,5 +1,9 @@
 # Roadmap — Deferred
 
+- **`102` — Atomic summary-boundary admission.** Revisit the low-budget edge where section admission
+  can drop a rolling summary while its coverage boundary still excludes the transcript rows it replaces.
+  Choose between reserving the summary as a non-droppable replacement unit or using an admission-aware,
+  gap-free history fallback; preserve `094`'s SQLite tail query whenever the summary is admitted.
 - **`097` — Transcript render boundaries and measured virtualization.** After `095` and overlapping `093`
   transcript work settle, profile a reproducible long conversation. First extract memoized settled-transcript
   and live-turn boundaries so token deltas do not reconcile unchanged rows; add variable-height virtualization
