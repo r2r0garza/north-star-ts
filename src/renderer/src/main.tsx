@@ -245,6 +245,8 @@ function Shell() {
   const handleBrowserPoppedOutChange = (poppedOut: boolean) => {
     setActivity(!poppedOut)
   }
+  const overlayViewOpen =
+    agentsOpen || skillsOpen || processOpen || mcpOpen || dashboardsOpen
   // Keep the theme control immediately to the left of Terminal when the right
   // panel is closed. When it opens, it moves left by the panel's width so it
   // remains in the main content area.
@@ -252,14 +254,19 @@ function Shell() {
   const terminalRightOffset = rightControlOffset + 32
   // Once the panel is open, the Git and theme controls sit just outside its left
   // edge. Git is immediately to the visual right of the theme control.
+  const activityControlsVisible = !overlayViewOpen
+  const terminalControlsVisible = terminalAvailable && !overlayViewOpen
   const gitAvailable = view !== "Chat" && workspacePath.trim() !== ""
+  const gitControlsVisible = gitAvailable && !overlayViewOpen
   const [gitActionsWidth, setGitActionsWidth] = useState(28)
   const gitRightOffset = activityPanelWidth
     ? activityPanelWidth + 8
-    : terminalAvailable
+    : terminalControlsVisible
       ? terminalRightOffset + 30
-      : rightControlOffset + 32
-  const themeRightOffset = gitAvailable
+      : activityControlsVisible
+        ? rightControlOffset + 32
+        : rightControlOffset
+  const themeRightOffset = gitControlsVisible
     ? gitRightOffset + gitActionsWidth + 4
     : gitRightOffset
 
@@ -495,34 +502,21 @@ function Shell() {
           />
           <SidebarToggle fullscreen={fullscreen} isMac={isMac} />
           <HeaderThemeToggle rightOffset={themeRightOffset} />
-          {gitAvailable && (
+          {gitControlsVisible && (
             <GitActions
               workspace={workspacePath}
               rightOffset={gitRightOffset}
               onWidthChange={setGitActionsWidth}
             />
           )}
-          {terminalAvailable &&
-            !(
-              agentsOpen ||
-              skillsOpen ||
-              processOpen ||
-              mcpOpen ||
-              dashboardsOpen
-            ) && (
-              <TerminalToggle
-                open={terminalOpen}
-                onToggle={toggleTerminal}
-                rightOffset={terminalRightOffset}
-              />
-            )}
-          {!(
-            agentsOpen ||
-            skillsOpen ||
-            processOpen ||
-            mcpOpen ||
-            dashboardsOpen
-          ) && (
+          {terminalControlsVisible && (
+            <TerminalToggle
+              open={terminalOpen}
+              onToggle={toggleTerminal}
+              rightOffset={terminalRightOffset}
+            />
+          )}
+          {activityControlsVisible && (
             <ActivityToggle
               open={activityOpen}
               onToggle={() => setActivity(!activityOpen)}
