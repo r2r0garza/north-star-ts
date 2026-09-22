@@ -87,8 +87,10 @@ export function buildIndexSummary(workspaceId: string): string | null {
 
   lines.push(
     "This is an advisory summary. Use index_query_tool to find symbols, list files, or see what " +
-      "imports a module; use the normal file tools for exact reads and full-text search. The index " +
-      "may be partial or stale — treat misses as 'not indexed yet', not 'does not exist'."
+      "imports a module. Follow useful hits with targeted reads rather than repeating discovery " +
+      "with a broad search. On a miss, refine the index query when appropriate, then use a narrowly " +
+      "scoped full-text search if needed. The index may be partial or stale — treat misses as " +
+      "'not indexed yet', not 'does not exist'."
   )
 
   return lines.join("\n")

@@ -16,6 +16,15 @@ describe("shipped mode prompt content", () => {
 
       expect(prompt).toContain("When `index_query_tool` is available")
       expect(prompt).toContain("before broad searches or manual walks")
+      expect(prompt).toContain(
+        "Follow a useful hit with targeted reads instead of repeating discovery"
+      )
+      expect(prompt).toContain(
+        "try a more precise symbol or path query when appropriate"
+      )
+      expect(prompt).toContain(
+        "use a narrowly scoped full-text search if needed"
+      )
       expect(prompt).toContain('a miss means "not indexed yet," not "absent."')
     }
   )

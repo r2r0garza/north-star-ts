@@ -52,6 +52,29 @@ const truncatingEnv = (): Environment =>
   }) as unknown as Environment
 
 describe("search_tool", () => {
+  it("documents directory paths and explicit regex mode", () => {
+    const definition = searchTool.definition.function
+    const properties = definition.parameters.properties as Record<
+      string,
+      { description: string }
+    >
+
+    expect(definition.description).toContain(
+      "`path` must be a directory, not a file"
+    )
+    expect(definition.description).toContain('set `mode: "regex"` explicitly')
+    expect(properties.query.description).toContain(
+      'unless `mode` is explicitly set to "regex"'
+    )
+    expect(properties.mode.description).toContain(
+      'set "regex" explicitly for syntax such as `foo|bar`'
+    )
+    expect(properties.path.description).toContain("file paths are invalid")
+    expect(properties.path.description).toContain(
+      "use its parent directory here and its filename in `globs`"
+    )
+  })
+
   it("searches activated skill resource directories", async () => {
     const skillRoot = await mkdtemp(join(tmpdir(), "search-skill-resource-"))
     try {
