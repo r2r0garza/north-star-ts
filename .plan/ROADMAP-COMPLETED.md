@@ -1,5 +1,16 @@
 # Roadmap — Completed
 
+- **`093` — Conversation message copy actions and timestamps.** Completed in this branch. Added a reserved
+  metadata/action row beneath every primary user and assistant text message, with always-visible local semantic
+  timestamps, hover/focus-revealed copy actions, exact source copying, non-shifting success feedback, and
+  recoverable clipboard failures. Copy actions have keyboard focus access and an always-exposed no-hover
+  fallback. Persisted rows retain database timestamps;
+  optimistic user and local error messages capture creation time once; and live responses capture their first
+  visible-text time while copying text coherently across interleaved tool activity. The final assistant text is
+  identified across newer tools and user messages, while active live text takes over that status. Added focused
+  timeline, live-message, formatting, visibility, clipboard success, and clipboard failure coverage. The
+  15-test focused suite, formatting checks, `pnpm typecheck`, and `pnpm build` pass; the ordinary suite remains
+  blocked only by the four pre-existing CLI parser tests whose ignored `cli_probes` fixtures are absent.
 - **`096` — Leak-free command-session settlement waits.** Completed in this branch. Command and diagnostic
   sessions now own one idempotent, first-exit-wins settlement promise; bounded write, compatibility,
   initial-yield, and termination waits race that shared signal without adding backend listeners and always

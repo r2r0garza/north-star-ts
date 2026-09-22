@@ -1,6 +1,6 @@
 # PR93: Conversation message copy actions and timestamps
 
-> Status: **PLANNED**. Add a compact metadata/action row beneath each user and assistant message in the primary conversation transcript. The latest assistant response keeps its copy action visible; other message actions and all timestamps reveal immediately when the message is pointed at or focused.
+> Status: **COMPLETED**. The primary conversation now renders a reserved metadata/action row beneath each user and assistant text message. Persisted, optimistic, and live timestamps remain stable and always visible; the latest assistant copy action stays visible; other copy actions reveal immediately on hover or focus with a no-hover fallback; and exact source-copy success/failure behavior is covered by focused tests.
 
 ## Goal
 
@@ -8,7 +8,7 @@ Make conversation messages easier to reuse and place in time without permanently
 
 - The latest assistant response always shows a copy button beneath it.
 - Every other user or assistant message shows its copy button as soon as the pointer is over that message.
-- Every user and assistant message shows its sent/received date and time as soon as the pointer is over that message.
+- Every user and assistant message always shows its sent/received date and time.
 
 The requested interaction is ordinary hover behavior, but it must use an immediate CSS state rather than a delayed tooltip, timer, or animated reveal. Keyboard and touch users need equivalent access.
 
@@ -28,7 +28,7 @@ The requested interaction is ordinary hover behavior, but it must use an immedia
 2. **Latest assistant response.** Find the final assistant text message in the rendered conversation, not merely the final timeline item. Its copy button remains visible even when a tool group or a newer user message follows it. During an active turn, the streamed assistant response becomes the latest assistant response as soon as it has text; the previous assistant message then uses normal reveal behavior.
 3. **Copy payload.** Copy the message's complete underlying plain source string exactly as represented by the text timeline item. For assistant messages, copy Markdown source rather than rendered DOM text so links, lists, and code fences are preserved. Do not include the timestamp, role label, tool results, or other message controls.
 4. **Immediate reveal.** Use CSS `:hover`/group-hover and `:focus-within` (or equivalent React state only if CSS cannot express the final layout). Do not use a tooltip as the visibility mechanism, add a hover delay, or add an opacity/transform transition that makes the controls lag behind pointer entry.
-5. **Footer contents.** Place a compact row directly beneath the bubble. Assistant rows align to the left and user rows align to the right. The row contains the localized date/time and an icon copy button with an accessible name. The latest assistant's copy button is visible at rest, while its timestamp still follows the reveal rule.
+5. **Footer contents.** Place a compact row directly beneath the bubble. Assistant rows align to the left and user rows align to the right. The row contains the always-visible localized date/time and an icon copy button with an accessible name. The latest assistant's copy button is visible at rest; other copy buttons follow the reveal rule.
 6. **Time semantics.** Persisted messages use their existing `createdAt`. An optimistic user message uses one captured `Date.now()` value that remains stable for that item until reconciliation. A streamed assistant response captures a stable received time when its first visible text arrives; the persisted timestamp replaces it after settlement. Do not recompute either timestamp during rerenders.
 7. **Date/time format.** Show both calendar date and local time using `Intl.DateTimeFormat`/`toLocaleString`, respecting the user's locale and OS time zone. Include the full machine-readable instant in a `<time dateTime={...}>` element. Seconds are not required.
 8. **Copy feedback and failure.** Use `navigator.clipboard.writeText()`. Give immediate, non-layout-shifting success feedback (for example, swapping the icon/accessible label briefly) and report a rejected clipboard write through the app's existing toast pattern. A failure must leave the message and controls usable for retry.
@@ -103,7 +103,7 @@ Add a compact component near the conversation/message UI that:
 - copies the supplied source string with `navigator.clipboard.writeText()`;
 - gives short success feedback and recoverable failure feedback;
 - supports start/end alignment;
-- independently controls timestamp visibility and copy-button visibility; and
+- keeps timestamps visible while independently controlling copy-button visibility; and
 - applies immediate pointer/focus reveal with no delay or reveal animation.
 
 Use existing button primitives and icon sizing where they fit. Avoid a new preload/main-process clipboard API unless Electron's current renderer permissions prove `navigator.clipboard` unusable in the packaged application.
@@ -133,8 +133,8 @@ Run focused renderer tests, then `pnpm typecheck`, `pnpm test`, and `pnpm build`
 - Every rendered user and assistant text message in the primary conversation has a date/time and copy action beneath its bubble.
 - The final assistant text response's copy button is visible without pointer hover or keyboard focus.
 - Copy buttons for all other messages become visible immediately when the pointer enters the corresponding message; no timer, tooltip delay, or reveal animation is involved.
-- Every message's date and time become visible immediately on pointer entry, including the latest assistant response.
-- Moving the pointer away hides metadata/actions that are not required to remain visible; focus within the message keeps the row available.
+- Every message's date and time remain visible without pointer hover or keyboard focus.
+- Moving the pointer away hides non-latest copy actions; focus within the message keeps its copy action available.
 - No-hover devices expose the controls without requiring hover emulation, and keyboard users can reach every copy button with a visible focus indicator.
 - Copying an assistant message preserves its Markdown source; copying a user message preserves its exact multiline text. Timestamps and tool activity are not included.
 - Copy success is announced or visibly confirmed without shifting the transcript. Clipboard rejection produces a bounded error and permits retry.

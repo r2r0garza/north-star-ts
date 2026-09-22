@@ -1,6 +1,6 @@
 # PR97: Transcript render boundaries and measured virtualization
 
-> Status: **DEFERRED**. First isolate settled transcript rendering from live-turn updates; add variable-height virtualization only if profiling still demonstrates a material long-conversation problem.
+> Status: **PLANNED — NEXT UP AFTER `099`**. First profile a reproducible long conversation and isolate settled transcript rendering from live-turn updates; add variable-height virtualization only if profiling still demonstrates a material problem.
 
 ## Goal
 
@@ -8,7 +8,7 @@ Prevent streamed deltas from needlessly reconciling the complete settled timelin
 
 ## Activation condition
 
-Activate after `095` and the overlapping message-composition work in `093` settle. Capture a reproducible long-transcript profile showing remaining renderer cost. Virtualization is required only if component boundaries and memoization are insufficient.
+`095` and the overlapping message-composition work in `093` are complete, so this plan is active. Capture a reproducible long-transcript profile showing remaining renderer cost before implementation. Virtualization is required only if component boundaries and memoization are insufficient.
 
 ## Required plan/analysis pass
 

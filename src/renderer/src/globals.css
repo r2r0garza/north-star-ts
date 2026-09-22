@@ -189,6 +189,28 @@
   }
 }
 
+.conversation-message-meta__reveal {
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+}
+
+[data-slot="message"]:hover .conversation-message-meta__reveal,
+[data-slot="message"]:focus-within .conversation-message-meta__reveal,
+.conversation-message-meta__always {
+  visibility: visible;
+  opacity: 1;
+  pointer-events: auto;
+}
+
+@media (hover: none) {
+  .conversation-message-meta__reveal {
+    visibility: visible;
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
 @layer base {
   * {
     @apply border-border outline-ring/50;

@@ -1,6 +1,6 @@
 # PR102: Atomic summary-boundary admission
 
-> Status: **DEFERRED**. Prevent context construction from excluding covered transcript rows unless the rolling summary that replaces them is actually present in the rendered request.
+> Status: **PLANNED — NEXT UP AFTER `093`**. Prevent context construction from excluding covered transcript rows unless the rolling summary that replaces them is actually present in the rendered request.
 
 ## Goal
 

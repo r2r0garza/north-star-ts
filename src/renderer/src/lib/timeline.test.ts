@@ -1,8 +1,13 @@
 import { describe, expect, it } from "vitest"
 import type { Message } from "@/types"
-import { buildTimeline } from "./timeline"
+import { buildTimeline, latestAssistantTextKey } from "./timeline"
 
-function message(id: string, role: Message["role"], content: string): Message {
+function message(
+  id: string,
+  role: Message["role"],
+  content: string,
+  createdAt = 1
+): Message {
   return {
     id,
     conversationId: "conversation-1",
@@ -13,7 +18,7 @@ function message(id: string, role: Message["role"], content: string): Message {
     toolCallId: null,
     toolName: null,
     tokenEstimate: null,
-    createdAt: 1,
+    createdAt,
   }
 }
 
@@ -46,7 +51,92 @@ describe("buildTimeline", () => {
         key: "human-message",
         role: "user",
         content,
+        createdAt: 1,
       },
     ])
+  })
+
+  it("preserves user and assistant timestamps and message ordering", () => {
+    expect(
+      buildTimeline([
+        message("user-1", "user", "First", 100),
+        message("assistant-1", "assistant", "Second", 200),
+        message("empty", "assistant", "   ", 300),
+      ])
+    ).toEqual([
+      {
+        kind: "text",
+        key: "user-1",
+        role: "user",
+        content: "First",
+        createdAt: 100,
+      },
+      {
+        kind: "text",
+        key: "assistant-1:text",
+        role: "assistant",
+        content: "Second",
+        createdAt: 200,
+      },
+    ])
+  })
+
+  it("timestamps only the text item when an assistant row also has tools", () => {
+    const row = message("assistant-1", "assistant", "Working", 400)
+    row.toolCalls = [
+      { id: "call-1", name: "read_file_tool", arguments: '{"path":"a.ts"}' },
+    ]
+
+    const items = buildTimeline([row])
+
+    expect(items[0]).toEqual({
+      kind: "text",
+      key: "assistant-1:text",
+      role: "assistant",
+      content: "Working",
+      createdAt: 400,
+    })
+    expect(items[1]).toMatchObject({
+      kind: "tools",
+      key: "assistant-1:tools",
+    })
+  })
+})
+
+describe("latestAssistantTextKey", () => {
+  it("finds the final assistant text across newer tools and user messages", () => {
+    expect(
+      latestAssistantTextKey([
+        {
+          kind: "text",
+          key: "assistant",
+          role: "assistant",
+          content: "Answer",
+          createdAt: 1,
+        },
+        { kind: "tools", key: "tools", calls: [] },
+        {
+          kind: "text",
+          key: "user",
+          role: "user",
+          content: "Follow-up",
+          createdAt: 2,
+        },
+      ])
+    ).toBe("assistant")
+  })
+
+  it("returns null when there is no assistant text", () => {
+    expect(
+      latestAssistantTextKey([
+        {
+          kind: "text",
+          key: "user",
+          role: "user",
+          content: "Hello",
+          createdAt: 1,
+        },
+      ])
+    ).toBeNull()
   })
 })

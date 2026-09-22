@@ -1,6 +1,6 @@
 # PR99: Hardened host attachment reads
 
-> Status: **DEFERRED**. Apply no-follow and handle-based validation consistently to user attachment reads in both text and document tools without breaking trusted skill-resource resolution.
+> Status: **PLANNED — NEXT UP AFTER `093` AND `102`**. Apply no-follow and handle-based validation consistently to user attachment reads in both text and document tools without breaking trusted skill-resource resolution.
 
 ## Goal
 

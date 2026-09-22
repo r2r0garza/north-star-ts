@@ -53,6 +53,7 @@ import {
   MessageScrollerButton,
 } from "@/components/ui/message-scroller"
 import { Message, MessageContent } from "@/components/ui/message"
+import { ConversationMessageMeta } from "@/components/conversation-message-meta"
 import { Bubble, BubbleContent } from "@/components/ui/bubble"
 import { Marker, MarkerIcon, MarkerContent } from "@/components/ui/marker"
 import { Spinner } from "@/components/ui/spinner"
@@ -102,6 +103,7 @@ import {
 } from "@/components/ui/combobox"
 import {
   buildTimeline,
+  latestAssistantTextKey,
   deriveLabel,
   toToolUse,
   isErrorResult,
@@ -111,6 +113,7 @@ import {
   type ToolUse,
 } from "@/lib/timeline"
 import { cn } from "@/lib/utils"
+import { firstTextTimestamp, liveMessageContent } from "@/lib/live-message"
 import { maybeNotify } from "@/lib/notify"
 import {
   EMPTY_CHAT_SUCCESS_ERROR,
@@ -160,6 +163,7 @@ type LiveSegment =
 // `approval`), so restoring a switched-away turn restores its approval card too.
 interface LiveTurn {
   segments: LiveSegment[]
+  firstTextAt: number | null
   streamCheckpoints: Record<string, LiveSegment[]>
   streamRetrying: boolean
   question: { requestId: string; questions: Question[] } | null
@@ -167,6 +171,7 @@ interface LiveTurn {
 }
 const EMPTY_LIVE: LiveTurn = {
   segments: [],
+  firstTextAt: null,
   streamCheckpoints: {},
   streamRetrying: false,
   question: null,
@@ -219,10 +224,12 @@ function agentSourceLabel(sourceKind: string, systemName: string): string {
 // last event was also text (so a token stream coalesces), otherwise starts a new
 // text segment after a tools group — which is what creates the interleaving.
 function appendLiveText(turn: LiveTurn, delta: string): LiveTurn {
+  const firstTextAt = firstTextTimestamp(turn.firstTextAt, delta)
   const last = turn.segments[turn.segments.length - 1]
   if (last?.kind === "text") {
     return {
       ...turn,
+      firstTextAt,
       segments: [
         ...turn.segments.slice(0, -1),
         { kind: "text", text: last.text + delta },
@@ -231,6 +238,7 @@ function appendLiveText(turn: LiveTurn, delta: string): LiveTurn {
   }
   return {
     ...turn,
+    firstTextAt,
     segments: [...turn.segments, { kind: "text", text: delta }],
   }
 }
@@ -1188,9 +1196,16 @@ function App(
   // Surface a picker failure as an assistant text item in the transcript.
   function pushError(error: unknown) {
     const content = error instanceof Error ? error.message : "Picker failed"
+    const createdAt = Date.now()
     setTimeline((prev) => [
       ...prev,
-      { kind: "text", key: `err-${prev.length}`, role: "assistant", content },
+      {
+        kind: "text",
+        key: `err-${prev.length}`,
+        role: "assistant",
+        content,
+        createdAt,
+      },
     ])
   }
 
@@ -1375,6 +1390,7 @@ function App(
 
     // Optimistically append the user message; the assistant turn renders from
     // the transient live state below until the turn settles and reconciles.
+    const createdAt = Date.now()
     setTimeline((prev) => [
       ...prev,
       {
@@ -1382,6 +1398,7 @@ function App(
         key: `local-${turnConvoId}-${prev.length}`,
         role: "user",
         content: text,
+        createdAt,
       },
     ])
     setMessage("")
@@ -1721,6 +1738,8 @@ function App(
   // than wiping a shared buffer.
   const liveTurn = conversationId ? liveTurns.get(conversationId) : undefined
   const liveSegments = liveTurn?.segments ?? []
+  const liveContent = liveMessageContent(liveSegments)
+  const liveHasText = liveContent.trim().length > 0
   // Flattened tool list — for the pending-approval lookup and the "any tools
   // yet?" checks. Ordering is preserved in `liveSegments` for rendering.
   const liveTools = liveToolsOf(liveTurn)
@@ -1797,6 +1816,9 @@ function App(
     }
     return lastUser === -1 ? timeline : timeline.slice(0, lastUser + 1)
   })()
+  const latestSettledAssistantKey = liveHasText
+    ? null
+    : latestAssistantTextKey(displayTimeline)
   const suppressSettledAnchor = conversationId
     ? transcriptScroll.suppressSettledAnchor.has(conversationId)
     : false
@@ -1824,7 +1846,10 @@ function App(
       frame = null
       const intent = transcriptFollowingRef.current
       if (intent.conversationId !== conversationId || !intent.following) return
-      viewport.scrollTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight)
+      viewport.scrollTop = Math.max(
+        0,
+        viewport.scrollHeight - viewport.clientHeight
+      )
       previousTranscriptScrollTopRef.current = viewport.scrollTop
     }
     const scheduleFollowEnd = () => {
@@ -2990,7 +3015,7 @@ function App(
                 const align = item.role === "user" ? "end" : "start"
                 return (
                   <MessageScrollerItem key={item.key} scrollAnchor={isLast}>
-                    <Message align={align}>
+                    <Message align={align} tabIndex={0}>
                       <MessageContent>
                         <Bubble
                           align={align}
@@ -3010,6 +3035,15 @@ function App(
                             )}
                           </BubbleContent>
                         </Bubble>
+                        <ConversationMessageMeta
+                          content={item.content}
+                          createdAt={item.createdAt}
+                          align={align}
+                          copyAlwaysVisible={
+                            item.role === "assistant" &&
+                            item.key === latestSettledAssistantKey
+                          }
+                        />
                       </MessageContent>
                     </Message>
                   </MessageScrollerItem>
@@ -3022,7 +3056,7 @@ function App(
                   before the first event. */}
               {loading && (
                 <MessageScrollerItem key="live" scrollAnchor>
-                  <Message align="start">
+                  <Message align="start" tabIndex={liveHasText ? 0 : undefined}>
                     <MessageContent>
                       {liveSegments.map((seg, si) =>
                         seg.kind === "tools" ? (
@@ -3057,6 +3091,16 @@ function App(
                           </MarkerContent>
                         </Marker>
                       )}
+                      {liveHasText &&
+                        liveTurn &&
+                        liveTurn.firstTextAt !== null && (
+                          <ConversationMessageMeta
+                            content={liveContent}
+                            createdAt={liveTurn.firstTextAt}
+                            align="start"
+                            copyAlwaysVisible
+                          />
+                        )}
                       {liveSegments.length > 0 && liveTurn?.commandWait && (
                         <Marker>
                           <MarkerIcon>
