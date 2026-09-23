@@ -35,11 +35,18 @@ const DEFAULT_SECTION_BUDGET_SHARE = 0.5
 // only budgets and composes. Sections fold into the system block rather than
 // faking user/assistant turns, keeping the transcript honest. Higher `priority`
 // is admitted first and dropped last. An empty/blank `content` is skipped.
+//
+// `replacesHistoryThrough` (plan 102) marks a section that stands in for stored
+// messages through that inclusive `seq` (the rolling summary). Such a section is
+// one semantic unit with its boundary, so it is never dropped by budgeting: it is
+// always admitted (its cost still counts against the section budget), and the
+// builder loads only the messages after the boundary. At most one per build.
 export interface ContextSection {
   name: string
   priority: number
   content: string
   provenance?: ContextProvenance
+  replacesHistoryThrough?: number
 }
 
 // Priorities for the built-in sections. Ascending = dropped first under budget
@@ -71,8 +78,10 @@ export interface ContextBuilderOptions {
 // Assembles the message array sent to the LLM for a turn: a system block (the
 // base prompt + budget-admitted context sections) followed by stored history
 // (which already ends with the just-persisted user message). Before a summary
-// exists the complete transcript is replayed; afterward the summary explicitly
-// replaces messages through its coverage boundary and the complete tail follows.
+// exists the complete transcript is replayed; afterward the admitted summary
+// section replaces messages through its coverage boundary and the complete tail
+// follows. Admission and history selection happen in one build, so a summary's
+// boundary can never exclude rows while its content is absent.
 // Sections are the extension point for summaries, memories, workspace/task state,
 // etc. — each rendered by the caller, budgeted and composed here.
 export class ContextBuilder {
@@ -97,23 +106,29 @@ export class ContextBuilder {
     opts: {
       baseSystemPrompt: string
       sections?: ContextSection[]
-      historyAfterSeq?: number
       tokenBudget?: number
     }
   ): ChatMessage[] {
     const budget = opts.tokenBudget ?? this.budget
-    const systemContent = this.composeSystemBlock(
-      opts.baseSystemPrompt,
-      opts.sections ?? [],
-      budget
-    )
-    // A summary explicitly replaces messages through historyAfterSeq. Without a
-    // summary, replay the entire stored transcript; never silently discard old
-    // messages behind a second, unrelated context limit.
+    const { content: systemContent, replacedThroughSeq } =
+      this.composeSystemBlock(
+        opts.baseSystemPrompt,
+        opts.sections ?? [],
+        budget
+      )
+    // An admitted replacement section (the summary) stands in for messages
+    // through replacedThroughSeq. Without one, replay the entire stored
+    // transcript; never silently discard old messages behind a second, unrelated
+    // context limit.
     const history =
-      opts.historyAfterSeq === undefined
+      replacedThroughSeq === undefined
         ? listMessages(conversationId)
-        : listMessagesAfterSeq(conversationId, opts.historyAfterSeq)
+        : listMessagesAfterSeq(conversationId, replacedThroughSeq)
+    this.log(
+      replacedThroughSeq === undefined
+        ? "[context] history: full transcript"
+        : `[context] history: messages after seq ${replacedThroughSeq} (replacement section admitted)`
+    )
     return [
       { role: "system", content: systemContent },
       ...history.map(toChatMessage),
@@ -121,15 +136,24 @@ export class ContextBuilder {
   }
 
   // Admit sections highest-priority-first while their cumulative cost fits the
-  // section budget (a share of the total); drop the rest. Preserves each admitted
-  // section's declared order in the final block for a stable, readable prompt.
-  // Logs exactly what was included and dropped (no silent truncation).
+  // section budget (a share of the total); drop the rest. A history-replacement
+  // section is the exception: it is admitted unconditionally (its cost still
+  // counts, so lower-priority sections yield to it) because dropping it would
+  // orphan the history it replaces. Preserves each admitted section's declared
+  // order in the final block for a stable, readable prompt. Logs exactly what was
+  // included and dropped (no silent truncation). Also reports the history
+  // boundary of the admitted replacement section, if any.
   private composeSystemBlock(
     baseSystemPrompt: string,
     sections: ContextSection[],
     budget: number
-  ): string {
+  ): { content: string; replacedThroughSeq: number | undefined } {
     const present = sections.filter((s) => s.content.trim().length > 0)
+    if (
+      present.filter((s) => s.replacesHistoryThrough !== undefined).length > 1
+    ) {
+      throw new Error("ContextBuilder: at most one history-replacement section")
+    }
     const sectionBudget = Math.floor(budget * this.sectionBudgetShare)
     const byPriority = [...present].sort((a, b) => b.priority - a.priority)
 
@@ -138,10 +162,15 @@ export class ContextBuilder {
     let spent = 0
     for (const section of byPriority) {
       const cost = this.counter.count(section.content)
-      if (spent + cost <= sectionBudget) {
+      const required = section.replacesHistoryThrough !== undefined
+      if (required || spent + cost <= sectionBudget) {
         admitted.add(section.name)
+        report.push(
+          required && spent + cost > sectionBudget
+            ? `+${section.name}(${cost}, required, over budget)`
+            : `+${section.name}(${cost})`
+        )
         spent += cost
-        report.push(`+${section.name}(${cost})`)
       } else {
         report.push(`-${section.name}(${cost}, over budget)`)
       }
@@ -155,8 +184,12 @@ export class ContextBuilder {
     // Keep declaration order for the admitted sections (not priority order) so the
     // assembled prompt reads consistently turn to turn.
     const blocks = [baseSystemPrompt]
+    let replacedThroughSeq: number | undefined
     for (const section of present) {
       if (admitted.has(section.name)) {
+        if (section.replacesHistoryThrough !== undefined) {
+          replacedThroughSeq = section.replacesHistoryThrough
+        }
         blocks.push(
           section.provenance
             ? renderContextEnvelope(section.provenance, section.content)
@@ -164,7 +197,7 @@ export class ContextBuilder {
         )
       }
     }
-    return blocks.join("\n\n")
+    return { content: blocks.join("\n\n"), replacedThroughSeq }
   }
 }
 // Map a stored message to the OpenAI-compatible shape (inverse of how runChat

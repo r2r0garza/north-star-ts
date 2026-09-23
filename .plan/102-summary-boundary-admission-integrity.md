@@ -1,6 +1,6 @@
 # PR102: Atomic summary-boundary admission
 
-> Status: **PLANNED — NEXT UP AFTER `093`**. Prevent context construction from excluding covered transcript rows unless the rolling summary that replaces them is actually present in the rendered request.
+> Status: **DONE** (2026-09-23). Context construction can no longer exclude covered transcript rows unless the rolling summary that replaces them is actually present in the rendered request.
 
 ## Goal
 
@@ -13,6 +13,16 @@ Preserve a gap-free conversation context under every section-budget outcome: eit
 - History selection currently depends only on whether `historyAfterSeq` is defined, not whether the summary was admitted. After plan `094`, a defined boundary causes SQLite to load only `seq > historyAfterSeq`.
 - Therefore, if a summary exists but is dropped by section budgeting, the rendered request can contain neither the summary nor messages at or below its coverage boundary.
 - Summary generation caps digest output at 1,024 tokens (`src/main/summaries/service.ts:37-44`), so this is most likely with a very low configured context threshold or an unusually costly rendered summary envelope, but correctness must not depend on typical settings.
+
+## Analysis completed and decision (2026-09-23)
+
+- **Call sites:** `ContextBuilder.build()` has one production caller (`runAgentLoop()`), and only the summary supplied `historyAfterSeq`. Only tests passed it otherwise.
+- **Measured edge:** the Settings UI floor for `summarizeTokenThreshold` is 6,000, so the section budget is at least 3,000 tokens (`0` falls back to 12,000 → 6,000). A summary costs at most ~1,024 digest tokens plus a ~100-token fixed header, so it fits alone at shipped settings. It is still droppable when a higher-priority section (`planMode`, 70) consumes the share or when the setting file is hand-edited below the UI floor. The gap is reachable, so correctness cannot rely on typical settings.
+- **Chosen policy: non-droppable replacement unit** (policy 1). Policy 2's full-history fallback would reintroduce the `094` latency/memory cost on exactly the very long conversations that have summaries, and no bounded gap-free alternative exists without truncating the summary or covered rows (out of scope).
+- **Invariant:** a section carrying `replacesHistoryThrough` is always admitted; its cost still counts against the section budget, so lower-priority sections yield to it. The builder derives the history boundary from the admitted section itself (`composeSystemBlock` returns `replacedThroughSeq`), so admission and history selection are one synchronous decision and `runAgentLoop()` no longer passes `historyAfterSeq`.
+- **Summary larger than the whole budget:** admitted anyway and logged as `+summary(cost, required, over budget)`. `tokenBudget` is a summarization threshold, not a hard window, and silently truncating the summary is out of scope.
+- **Blank or absent summary** (`0` boundary aside): full-history path. A `0` boundary still takes the bounded path. More than one replacement section is a programmer error and throws.
+- **Logging:** `[context] history: full transcript` / `messages after seq N (replacement section admitted)`; no summary or message contents.
 
 ## Required plan/analysis pass
 
@@ -56,7 +66,7 @@ Keep admission and history selection in one synchronous build decision so later 
 
 - `src/main/agent/context/context-builder.ts`
 - `src/main/agent/context/context-builder.test.ts`
-- `src/main/agent/index.ts` and focused tests if the input contract changes
+- `src/main/agent/index.ts` (drops the `historyAfterSeq` argument)
 - `src/main/agent/context/sections.ts` and tests if summary metadata moves into a typed replacement contract
 
 ## Out of scope
@@ -65,3 +75,9 @@ Keep admission and history selection in one synchronous build decision so later 
 - Adding a general transcript context-window truncation policy.
 - Changing the persisted summary schema or sequence-boundary meaning.
 - Optimizing unrelated optional-section admission.
+
+## Implementation notes
+
+- `ContextSection.replacesHistoryThrough` is the typed replacement contract; `summarySection()` sets it from `coversThrough`. Declaration-order rendering is unchanged.
+- Tests (`context-builder.test.ts`): fitting summary → tail path; summary exceeding the section budget still admitted with the tail path; highest-priority/`planMode` case; lower-priority sections yield to reserved cost; declaration order; other dropped sections leave history selection alone; boundary `0`; blank summary; empty tail; multiple-replacement rejection; log path excludes contents. Assertions cover both rendered content and which repository function was called.
+- Verification: `pnpm typecheck` and `pnpm build` pass; `pnpm test` shows 1,255 passing and the same 4 pre-existing CLI adapter failures (missing `cli_probes` fixtures) that occur without this change.

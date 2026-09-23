@@ -277,6 +277,7 @@ describe("summarySection", () => {
     expect(section!.priority).toBeGreaterThan(SECTION_PRIORITY.skills)
     expect(section!.content).toContain("use sqlite")
     expect(section!.content).toContain("Conversation summary so far")
+    expect(section!.replacesHistoryThrough).toBe(summary!.coversThrough)
     expect(section!.provenance).toEqual({
       trust: "untrusted_data",
       channel: "memory",

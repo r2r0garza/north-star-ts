@@ -1499,8 +1499,9 @@ export async function runAgentLoop(
   }
 
   // Rolling conversation summary (plan 019): a compact digest of earlier turns.
-  // Generated out of band by the `summarize` task; its exact coverage boundary
-  // below determines where verbatim history resumes.
+  // Generated out of band by the `summarize` task; its coverage boundary rides on
+  // the section (`replacesHistoryThrough`) so the builder, which never drops it,
+  // decides where verbatim history resumes.
   // Highest-priority section (last dropped). Conversation memory applies to
   // every mode, including Chat, independently of the available toolset.
   const summary = summarySection(conversationId)
@@ -1603,7 +1604,6 @@ export async function runAgentLoop(
   const messages: any[] = contextBuilder.build(conversationId, {
     baseSystemPrompt,
     sections,
-    historyAfterSeq: summary?.coversThrough,
     tokenBudget:
       settingsService.getIndexing().summarizeTokenThreshold || undefined,
   })
