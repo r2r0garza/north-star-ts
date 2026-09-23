@@ -1,6 +1,6 @@
 # PR97: Transcript render boundaries and measured virtualization
 
-> Status: **PLANNED — NEXT UP AFTER `099`**. First profile a reproducible long conversation and isolate settled transcript rendering from live-turn updates; add variable-height virtualization only if profiling still demonstrates a material problem.
+> Status: **PLANNED — NEXT UP**. First profile a reproducible long conversation and isolate settled transcript rendering from live-turn updates; add variable-height virtualization only if profiling still demonstrates a material problem.
 
 ## Goal
 
