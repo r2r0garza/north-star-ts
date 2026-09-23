@@ -1,10 +1,19 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react"
 import {
   ArrowLeft,
   Bot,
   ChevronRight,
   Circle,
   CheckCircle2,
+  Cpu,
   Download,
   FileText,
   XCircle,
@@ -117,6 +126,7 @@ import {
 import { toast } from "sonner"
 import { cn, formatRelativeTime } from "@/lib/utils"
 import { agentDisplay, agentRunTitle } from "@/lib/agent-display"
+import { runtimeBadgeDisplay } from "@/lib/runtime-display"
 import type {
   AgentSummary,
   AccountWithModels,
@@ -534,6 +544,31 @@ function AgentIdentityBadge({
   )
 }
 
+// The provider catalog the run monitor resolves snapshot account ids against.
+// Context rather than props: phase rows nest through sub-process runs several
+// levels deep, and each level would otherwise have to forward it.
+export const RuntimeProvidersContext = createContext<AccountWithModels[]>([])
+
+// The provider/model a phase run's worker actually ran with, from its persisted
+// runtime snapshot (not the agent's own source badge). Renders nothing for
+// historical runs without a snapshot, so those keep their legacy row.
+export function RuntimeBadge({ phaseRun }: { phaseRun: ProcessPhaseRun }) {
+  const providers = useContext(RuntimeProvidersContext)
+  const display = runtimeBadgeDisplay(phaseRun.runtimeSnapshot, providers)
+  if (!display) return null
+
+  return (
+    <Badge
+      variant="outline"
+      className="h-5 max-w-48 min-w-0 gap-1 pl-1.5 text-[10px]"
+      title={display.title}
+    >
+      <Cpu className="size-3 shrink-0 text-muted-foreground" />
+      <span className="min-w-0 truncate">{display.label}</span>
+    </Badge>
+  )
+}
+
 export function ProcessScreen({ onClose }: { onClose: () => void }) {
   const [definitions, setDefinitions] = useState<ProcessDefinition[] | null>(
     null
@@ -761,13 +796,15 @@ export function ProcessScreen({ onClose }: { onClose: () => void }) {
               onDefinitionChanged={loadDefinitions}
             />
           ) : (
-            <RunMonitor
-              key={selected.id}
-              definition={selected}
-              activeRunId={activeRunId}
-              providerModels={providerModels}
-              onSelectRun={setActiveRunId}
-            />
+            <RuntimeProvidersContext.Provider value={providerModels}>
+              <RunMonitor
+                key={selected.id}
+                definition={selected}
+                activeRunId={activeRunId}
+                providerModels={providerModels}
+                onSelectRun={setActiveRunId}
+              />
+            </RuntimeProvidersContext.Provider>
           )}
         </div>
       ) : (
@@ -3017,6 +3054,7 @@ function PhaseRunItem({
         {phaseRun.agentName && (
           <AgentIdentityBadge value={phaseRun.agentName} />
         )}
+        <RuntimeBadge phaseRun={phaseRun} />
         <PhaseStatusLabel status={displayStatus} />
       </div>
 
@@ -3120,6 +3158,7 @@ function PhaseRunItem({
                   <StatusIcon status={c.status} />
                   <span className="min-w-0 flex-1 truncate">{childName}</span>
                   {c.agentName && <AgentIdentityBadge value={c.agentName} />}
+                  <RuntimeBadge phaseRun={c} />
                   <PhaseStatusLabel status={c.status} />
                 </div>
                 {/* This sub-task's produced files (plan 030b). */}
@@ -4285,6 +4324,7 @@ function SubProcessNestedRun({
                   <StatusIcon status={displayStatus} />
                   <span className="min-w-0 flex-1 truncate">{runName}</span>
                   {pr.agentName && <AgentIdentityBadge value={pr.agentName} />}
+                  <RuntimeBadge phaseRun={pr} />
                   <PhaseStatusLabel status={displayStatus} />
                 </div>
                 {/* An approve gate raised inside this nested run (plan 038.2). */}
@@ -4345,6 +4385,7 @@ function SubProcessNestedRun({
                       {c.agentName && (
                         <AgentIdentityBadge value={c.agentName} />
                       )}
+                      <RuntimeBadge phaseRun={c} />
                       <PhaseStatusLabel status={c.status} />
                     </div>
                     {/* A per-child rework flag a nested on_each_subtask instance

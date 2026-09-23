@@ -1,9 +1,5 @@
 # Roadmap — Next up
 
-1. **`104` — Deterministic command phases.** Let a Process phase execute a persisted, user-reviewed
-   workspace command directly through the existing Environment and command-policy boundary, without an LLM
-   worker call. Persist bounded structured results for downstream phases and the monitor, and do not blindly
-   replay a command whose side effects are ambiguous after interruption.
 2. **`105` — Required skills for individual Process phases.** Let an agent phase explicitly activate one
    required skill for every worker invocation, distinct from the phase-agent skill allowlist. Validate pool
    compatibility, fail before the LLM call when the skill is unavailable, snapshot resolved identity, and
@@ -31,10 +27,6 @@
    it, 4/4 with); `045`'s out-of-scope line is amended to permit exactly that narrow steer.
    **`045.1` remains**: extract the shared `index_query` service, add its adapter, widen the grant, add
    the CLI-provider UI copy, and close the Codex steering gap (no per-run append flag exists).
-5. **`082` — Runtime-aware Process run-monitor badges.** Render each phase's actual persisted runtime
-   provider/model from `process_phase_runs.runtime_snapshot` instead of the stale/default agent badge path.
-   Preserve a sensible fallback for historical runs without snapshots and add focused display regressions;
-   execution and runtime selection remain unchanged.
 6. **`083` — Per-agent runtime override UI.** Expose the existing
    `process_phase_agents.runtime_config` capability in the Process builder so each phase-pool agent may
    select a worker provider/model or inherit phase/run defaults. Reuse the existing runtime picker and

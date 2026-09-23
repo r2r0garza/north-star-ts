@@ -1,5 +1,9 @@
 # Roadmap — Deferred
 
+- **`104` — Deterministic command phases.** Let a Process phase execute a persisted, user-reviewed
+  workspace command directly through the existing Environment and command-policy boundary, without an LLM
+  worker call. Persist bounded structured results for downstream phases and the monitor, and do not blindly
+  replay a command whose side effects are ambiguous after interruption.
 - **`098` — Browser network request lifecycle and idle semantics.** Activate after capturing a stale-request
   failure or when network tracking next changes. Define CDP behavior across navigation, redirects, abandonment,
   SSE, and WebSockets before choosing generations, stale sweeping, or resource exclusions; do not blindly clear

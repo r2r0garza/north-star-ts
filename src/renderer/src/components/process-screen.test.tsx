@@ -8,10 +8,14 @@ import {
   PhaseCompletionEvidence,
   RunCompletionSummary,
   PhaseAttemptHistory,
+  RuntimeBadge,
+  RuntimeProvidersContext,
   recoverProcessMonitorGates,
 } from "./process-screen"
 import type {
+  AccountWithModels,
   Approval,
+  ProcessPhaseRun,
   ProcessRun,
   ProcessPhaseAttempt,
   TaskEventPayload,
@@ -568,5 +572,66 @@ describe("completion policy rollout", () => {
     expect(container.textContent).toContain(
       "Legacy (ended turn counts as success)"
     )
+  })
+})
+
+describe("RuntimeBadge", () => {
+  const providers = [
+    {
+      account: { id: "acct-or", displayName: "OpenRouter" },
+      models: [
+        { modelId: "openai/gpt-4o", modelName: "GPT-4o" },
+        { modelId: `vendor/${"x".repeat(200)}`, modelName: null },
+      ],
+    },
+  ] as unknown as AccountWithModels[]
+
+  function phaseRun(
+    runtimeSnapshot: ProcessPhaseRun["runtimeSnapshot"]
+  ): ProcessPhaseRun {
+    return { id: "pr-1", runtimeSnapshot } as ProcessPhaseRun
+  }
+
+  function renderBadge(run: ProcessPhaseRun) {
+    act(() => {
+      root.render(
+        <RuntimeProvidersContext.Provider value={providers}>
+          <RuntimeBadge phaseRun={run} />
+        </RuntimeProvidersContext.Provider>
+      )
+    })
+  }
+
+  it("shows the snapshot's provider and model, with the source in the title", () => {
+    renderBadge(
+      phaseRun({
+        worker: {
+          accountId: "acct-or",
+          modelId: "openai/gpt-4o",
+          source: "phase",
+        },
+      })
+    )
+    expect(container.textContent).toBe("OpenRouter / GPT-4o")
+    expect(container.querySelector("[title]")?.getAttribute("title")).toContain(
+      "Runtime source: Phase override"
+    )
+  })
+
+  it("renders nothing for historical runs without a snapshot", () => {
+    renderBadge(phaseRun(null))
+    expect(container.textContent).toBe("")
+    renderBadge(phaseRun(undefined))
+    expect(container.textContent).toBe("")
+  })
+
+  it("renders long model ids without crashing", () => {
+    const modelId = `vendor/${"x".repeat(200)}`
+    renderBadge(
+      phaseRun({
+        worker: { accountId: "acct-or", modelId, source: "run" },
+      })
+    )
+    expect(container.textContent).toContain(modelId)
   })
 })
