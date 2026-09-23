@@ -56,10 +56,12 @@ export const CATEGORY_TOOLS: Record<string, string[]> = {
   ],
   browser_advanced: ["browser_evaluate"],
   todo: ["todo_write", "run_todos_in_background"],
-  // `dashboard` → the live-dashboard authoring tool (plan 033.2). Offered in
-  // interactive modes (buildTools gates it on showTodos); this mapping lets a
-  // tool-restricted agent opt into authoring dashboards.
-  dashboard: ["dashboard_write"],
+  // `dashboard` → author AND read live dashboards (plans 033.2 / 033.4);
+  // `dashboard_read` → read only. Offered in interactive modes (buildTools gates
+  // both on showTodos; only the write is withheld in plan mode); these mappings
+  // let a tool-restricted agent opt in.
+  dashboard: ["dashboard_write", "dashboard_read"],
+  dashboard_read: ["dashboard_read"],
   // `agent` → the subagent-spawn tool. Its OFFERING has an extra gate (children
   // must also be present) applied in buildTools; this mapping just records the
   // name so an agent-scoped allowlist admits it.

@@ -86,6 +86,7 @@ import {
 import { containerNameForConversation } from "./env/container"
 import { flagForReworkTool } from "./tools/flag_for_rework"
 import { dashboardWriteTool } from "./tools/dashboard_write"
+import { dashboardReadTool } from "./tools/dashboard_read"
 import { loadSystemPrompt } from "./system-prompt"
 import { logSystemPrompt } from "./prompt-log"
 import { buildIndexSummary } from "../index/summary"
@@ -1260,6 +1261,10 @@ export async function runAgentLoop(
       // todo_write), withheld in plan mode as a side-effecting save. Subject to
       // the agent tool allowlist via its `dashboard` category.
       ...(showTodos && !planMode ? [dashboardWriteTool.definition] : []),
+      // dashboard_read (plan 033.4): same modes as dashboard_write but kept in
+      // plan mode — it only reads cached widget data. Subject to the allowlist
+      // via the `dashboard` or `dashboard_read` category.
+      ...(showTodos ? [dashboardReadTool.definition] : []),
       // Plan-mode tools: the only write (write_plan) + the approval handoff.
       ...(planMode
         ? [writePlanTool.definition, presentPlanTool.definition]

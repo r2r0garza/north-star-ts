@@ -80,7 +80,8 @@ rather than simply the presence of a workspace.
 | `spawn_subagent` | Runs one permitted named child agent synchronously. | Outside plan mode when the selected custom agent's child/tool policy allows it. Kept as the compatibility single-child surface. |
 | `spawn_subagents` | Runs 1–4 named or ephemeral subagents concurrently. | Outside plan mode when delegation is enabled and depth/policy checks pass. Write-capable children require isolated writer worktrees. |
 | `flag_for_rework` | Sends a defect back to an upstream Process phase. | Process phase workers only. |
-| `dashboard_write` | Creates or replaces saved live dashboards from already-fetched data and refresh recipes. | Interactive and North Star modes outside plan mode, subject to agent policy. |
+| `dashboard_write` | Creates or replaces saved live dashboards from already-fetched data and refresh recipes. | Interactive and North Star modes outside plan mode, subject to agent policy (`dashboard` category). |
+| `dashboard_read` | Lists saved dashboards, or reads one dashboard's widgets joined to their latest cached data with `status`/`error`/`fetchedAt`. Never refreshes. Omits recipes, captured paths, and layout. Output is bounded to a 32,000-byte widget budget, 50 rows per widget, and 4,000 bytes per item, with explicit `omittedWidgets`/`nextRowOffset` and paging through `widgetIds`/`rowOffset`. | Interactive and North Star modes, **including plan mode**. Not offered in Chat. Subject to agent policy (`dashboard` or read-only `dashboard_read` category). |
 | `read_skill` | Loads the full instructions for one of the skills advertised in the prompt. | Every mode when skills are loaded; built per chat from the available skill set. |
 
 ### Conversation recall: implemented but not currently offered

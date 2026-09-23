@@ -1,5 +1,21 @@
 # Roadmap — Completed
 
+- **`033.4` — Agent-readable live dashboards.** Completed in this branch, after the required discussion
+  (decisions are recorded in the plan). Added the read-only `dashboard_read` tool
+  (`TOOL_EFFECTS.readOnlyParallel`). With no ID it lists dashboards (at most 100, pinned first, with
+  widget counts from a new `countWidgetsByDashboard` query and explicit truncation). With a `dashboardId`
+  it joins each widget's render config to its latest cache row, including `status`/`error`/`fetchedAt`,
+  a `no_data` state and `readAt`. It never refreshes. Recipes, captured paths and layout are omitted.
+  Output is deterministically bounded: a 32,000-byte widget budget filled in position order, 50 rows per
+  widget, 4,000-byte `_omitted` markers per item, a contiguous `omittedWidgets` tail,
+  `nextRowOffset`, and `widgetIds`/single-widget `rowOffset` paging. It is offered in every non-Chat mode
+  including plan mode. The `dashboard` category now grants read and write, and a new read-only
+  `dashboard_read` category is exposed in the agent editor. Focused SQLite tests cover discovery, the
+  joins, freshness, omission, the exact budget boundary, markers, argument validation and
+  non-mutation. Integration tests cover the offering policy across Chat, interactive, plan mode and
+  agent categories. `pnpm typecheck`, the roadmap verifier and all 37 SQLite suites (under Electron's
+  Node) pass. The ordinary suite still fails only the four pre-existing CLI parser tests whose
+  `cli_probes` fixtures are missing.
 - **`097` — Transcript render boundaries and measured virtualization.** Completed in this branch. Extracted
   memoized settled-transcript, settled-row, live-turn, and live-segment components from `App.tsx`; memoized the
   displayed timeline on live-turn presence, routed changed-file callbacks through stable ref-backed wrappers, and
