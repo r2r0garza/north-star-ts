@@ -1,5 +1,3 @@
-import { readFileSync } from "fs"
-import { resolve } from "path"
 import { describe, expect, it, vi } from "vitest"
 import {
   buildCodexArgs,
@@ -60,17 +58,53 @@ describe("Codex CLI adapter", () => {
     ])
   })
 
-  it("parses thread id, command output, assistant text, and usage from JSONL", () => {
-    const lines = readFileSync(
-      resolve(process.cwd(), "cli_probes/codex/01-json-tool.stdout"),
-      "utf8"
-    )
-      .trim()
-      .split(/\r?\n/)
+  it("parses thread id, command output, assistant text, and usage from stream events", () => {
     const events: CliTurnEvent[] = []
     const state: CodexParseState = {}
-    for (const line of lines) {
-      parseCodexEvent(JSON.parse(line), (event) => events.push(event), state)
+    const stream = [
+      { type: "thread.started", thread_id: "01a03b92-67e5-7823-b246-a5180f091f46" },
+      {
+        type: "item.started",
+        item: {
+          id: "command-1",
+          type: "command_execution",
+          command: "printf CODEX_TOOL_OK",
+          aggregated_output: "",
+          status: "in_progress",
+        },
+      },
+      {
+        type: "item.completed",
+        item: {
+          id: "command-1",
+          type: "command_execution",
+          command: "printf CODEX_TOOL_OK",
+          aggregated_output: "CODEX_TOOL_OK",
+          exit_code: 0,
+          status: "completed",
+        },
+      },
+      {
+        type: "item.completed",
+        item: {
+          id: "message-1",
+          type: "agent_message",
+          text: "CODEX_STREAM_PROBE_OK",
+        },
+      },
+      {
+        type: "turn.completed",
+        usage: {
+          input_tokens: 10,
+          cached_input_tokens: 0,
+          cache_write_input_tokens: 0,
+          output_tokens: 68,
+          reasoning_output_tokens: 0,
+        },
+      },
+    ]
+    for (const event of stream) {
+      parseCodexEvent(event, (event) => events.push(event), state)
     }
     expect(state.threadId).toBe("01a03b92-67e5-7823-b246-a5180f091f46")
     expect(state.finalText).toBe("CODEX_STREAM_PROBE_OK")
@@ -90,16 +124,20 @@ describe("Codex CLI adapter", () => {
     )
   })
 
-  it("parses resumed assistant text from JSONL", () => {
-    const lines = readFileSync(
-      resolve(process.cwd(), "cli_probes/codex/02-json-resume.stdout"),
-      "utf8"
-    )
-      .trim()
-      .split(/\r?\n/)
+  it("parses resumed assistant text from stream events", () => {
     const state: CodexParseState = {}
-    for (const line of lines) {
-      parseCodexEvent(JSON.parse(line), vi.fn(), state)
+    for (const event of [
+      { type: "thread.started", thread_id: "01a03b92-67e5-7823-b246-a5180f091f46" },
+      {
+        type: "item.completed",
+        item: {
+          id: "message-1",
+          type: "agent_message",
+          text: "CODEX_RESUME_OK",
+        },
+      },
+    ]) {
+      parseCodexEvent(event, vi.fn(), state)
     }
     expect(state.threadId).toBe("01a03b92-67e5-7823-b246-a5180f091f46")
     expect(state.finalText).toBe("CODEX_RESUME_OK")
