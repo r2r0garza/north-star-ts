@@ -12,6 +12,7 @@ import {
   RuntimeProvidersContext,
   recoverProcessMonitorGates,
 } from "./process-screen"
+import { TooltipProvider } from "@/components/ui/tooltip"
 import type {
   AccountWithModels,
   Approval,
@@ -46,6 +47,10 @@ async function flushPromises() {
   await act(async () => {
     await Promise.resolve()
   })
+}
+
+function renderWithTooltip(children: React.ReactNode) {
+  return <TooltipProvider>{children}</TooltipProvider>
 }
 
 function approval(input: {
@@ -459,12 +464,14 @@ describe("completion policy rollout", () => {
     }
     act(() => {
       root.render(
-        <ProcessBuilder
-          definition={definition}
-          agents={[]}
-          definitions={[definition]}
-          onDefinitionChanged={() => {}}
-        />
+        renderWithTooltip(
+          <ProcessBuilder
+            definition={definition}
+            agents={[]}
+            definitions={[definition]}
+            onDefinitionChanged={() => {}}
+          />
+        )
       )
     })
     await flushPromises()
@@ -497,12 +504,14 @@ describe("completion policy rollout", () => {
     }
     act(() => {
       root.render(
-        <ProcessBuilder
-          definition={definition}
-          agents={[]}
-          definitions={[definition]}
-          onDefinitionChanged={() => {}}
-        />
+        renderWithTooltip(
+          <ProcessBuilder
+            definition={definition}
+            agents={[]}
+            definitions={[definition]}
+            onDefinitionChanged={() => {}}
+          />
+        )
       )
     })
     await flushPromises()
@@ -652,13 +661,15 @@ describe("per-agent runtime override", () => {
     }
     act(() => {
       root.render(
-        <ProcessBuilder
-          definition={definition}
-          agents={[]}
-          providerModels={input.providers ?? providers}
-          definitions={[definition]}
-          onDefinitionChanged={() => {}}
-        />
+        renderWithTooltip(
+          <ProcessBuilder
+            definition={definition}
+            agents={[]}
+            providerModels={input.providers ?? providers}
+            definitions={[definition]}
+            onDefinitionChanged={() => {}}
+          />
+        )
       )
     })
     await flushPromises()
@@ -797,14 +808,16 @@ describe("RuntimeBadge", () => {
   function renderBadge(run: ProcessPhaseRun) {
     act(() => {
       root.render(
-        <RuntimeProvidersContext.Provider value={providers}>
-          <RuntimeBadge phaseRun={run} />
-        </RuntimeProvidersContext.Provider>
+        renderWithTooltip(
+          <RuntimeProvidersContext.Provider value={providers}>
+            <RuntimeBadge phaseRun={run} />
+          </RuntimeProvidersContext.Provider>
+        )
       )
     })
   }
 
-  it("shows the snapshot's provider and model, with the source in the title", () => {
+  it("shows the snapshot's provider and model with the shared tooltip", () => {
     renderBadge(
       phaseRun({
         worker: {
@@ -815,9 +828,10 @@ describe("RuntimeBadge", () => {
       })
     )
     expect(container.textContent).toBe("OpenRouter / GPT-4o")
-    expect(container.querySelector("[title]")?.getAttribute("title")).toContain(
-      "Runtime source: Phase override"
-    )
+    expect(
+      container.querySelector('[data-slot="tooltip-trigger"]')
+    ).toBeTruthy()
+    expect(container.querySelector("[title]")).toBeNull()
   })
 
   it("renders nothing for historical runs without a snapshot", () => {

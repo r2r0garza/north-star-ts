@@ -109,6 +109,12 @@ import { Checkbox } from "@/components/ui/checkbox"
 import { Switch } from "@/components/ui/switch"
 import { Badge } from "@/components/ui/badge"
 import { Kbd } from "@/components/ui/kbd"
+import {
+  Tooltip,
+  TooltipButton,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import {
   Combobox,
@@ -515,32 +521,36 @@ function AgentIdentityBadge({
   const details = [display.source, display.scope].filter(Boolean).join(" · ")
 
   return (
-    <Badge
-      variant={onRemove ? "secondary" : "outline"}
-      className={cn(
-        "max-w-full gap-1.5 pr-1 pl-2",
-        onRemove ? "py-1" : "h-5 text-[10px]"
-      )}
-      title={details ? `${display.name} · ${details}` : display.name}
-    >
-      <Bot className="size-3 shrink-0 text-muted-foreground" />
-      <span className="min-w-0 truncate font-medium">{display.name}</span>
-      {display.source && (
-        <span className="shrink-0 border-l border-foreground/10 pl-1.5 text-[10px] font-normal text-muted-foreground">
-          {display.source}
-        </span>
-      )}
-      {onRemove && (
-        <button
-          type="button"
-          onClick={onRemove}
-          className="shrink-0 rounded-sm p-0.5 transition-colors hover:bg-background/60 hover:text-foreground"
-          aria-label={`Remove ${display.name}`}
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Badge
+          variant={onRemove ? "secondary" : "outline"}
+          className={cn(
+            "max-w-full gap-1.5 pr-1 pl-2",
+            onRemove ? "py-1" : "h-5 text-[10px]"
+          )}
         >
-          <XIcon className="size-3" />
-        </button>
-      )}
-    </Badge>
+          <Bot className="size-3 shrink-0 text-muted-foreground" />
+          <span className="min-w-0 truncate font-medium">{display.name}</span>
+          {display.source && (
+            <span className="shrink-0 border-l border-foreground/10 pl-1.5 text-[10px] font-normal text-muted-foreground">
+              {display.source}
+            </span>
+          )}
+          {onRemove && (
+            <button
+              type="button"
+              onClick={onRemove}
+              className="shrink-0 rounded-sm p-0.5 transition-colors hover:bg-background/60 hover:text-foreground"
+              aria-label={`Remove ${display.name}`}
+            >
+              <XIcon className="size-3" />
+            </button>
+          )}
+        </Badge>
+      </TooltipTrigger>
+      <TooltipContent>{details ? `${display.name} · ${details}` : display.name}</TooltipContent>
+    </Tooltip>
   )
 }
 
@@ -558,14 +568,18 @@ export function RuntimeBadge({ phaseRun }: { phaseRun: ProcessPhaseRun }) {
   if (!display) return null
 
   return (
-    <Badge
-      variant="outline"
-      className="h-5 max-w-48 min-w-0 gap-1 pl-1.5 text-[10px]"
-      title={display.title}
-    >
-      <Cpu className="size-3 shrink-0 text-muted-foreground" />
-      <span className="min-w-0 truncate">{display.label}</span>
-    </Badge>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Badge
+          variant="outline"
+          className="h-5 max-w-48 min-w-0 gap-1 pl-1.5 text-[10px]"
+        >
+          <Cpu className="size-3 shrink-0 text-muted-foreground" />
+          <span className="min-w-0 truncate">{display.label}</span>
+        </Badge>
+      </TooltipTrigger>
+      <TooltipContent>{display.title}</TooltipContent>
+    </Tooltip>
   )
 }
 
@@ -1206,20 +1220,25 @@ export function ProcessBuilder({
               requireFlagApproval true), a phase's flag_for_rework raises a
               confirmation card before the send-back; when ON, the engine routes
               flags autonomously. */}
-          <label
-            className="mt-1 flex items-center gap-2 text-xs"
-            title="When on, a phase that flags an earlier phase for rework is routed automatically, with no confirmation card"
-          >
-            <Switch
-              checked={!definition.requireFlagApproval}
-              onCheckedChange={(v) =>
-                saveDefinition({ requireFlagApproval: !v })
-              }
-            />
-            <span className="text-muted-foreground">
-              Autonomous rework routing (skip flag confirmation)
-            </span>
-          </label>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <label className="mt-1 flex items-center gap-2 text-xs">
+                <Switch
+                  checked={!definition.requireFlagApproval}
+                  onCheckedChange={(v) =>
+                    saveDefinition({ requireFlagApproval: !v })
+                  }
+                />
+                <span className="text-muted-foreground">
+                  Autonomous rework routing (skip flag confirmation)
+                </span>
+              </label>
+            </TooltipTrigger>
+            <TooltipContent>
+              When on, a phase that flags an earlier phase for rework is routed
+              automatically, with no confirmation card
+            </TooltipContent>
+          </Tooltip>
         </div>
 
         {/* Phases. */}
@@ -1535,16 +1554,16 @@ function PhaseCard({
       {/* Summary row (always visible): grip + chevron + name + at-a-glance badges
           + delete. Click toggles expand; the delete button stops propagation. */}
       <div className="flex items-center gap-2 px-3 py-2">
-        <button
+        <TooltipButton
+          tooltip="Drag to reorder"
           type="button"
           className="-ml-1 shrink-0 cursor-grab touch-none text-muted-foreground hover:text-foreground active:cursor-grabbing"
-          title="Drag to reorder"
           aria-label="Drag to reorder phase"
           {...attributes}
           {...listeners}
         >
           <GripVertical className="size-4" />
-        </button>
+        </TooltipButton>
         <CollapsibleTrigger asChild>
           <button
             type="button"
@@ -1567,31 +1586,40 @@ function PhaseCard({
                 </Badge>
               )}
               {subprocessName && (
-                <Badge
-                  variant="outline"
-                  className="text-[10px]"
-                  title={`Runs the "${subprocessName}" sub-process (plan 038.1)`}
-                >
-                  ⤷ {subprocessName}
-                </Badge>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Badge variant="outline" className="text-[10px]">
+                      ⤷ {subprocessName}
+                    </Badge>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    {`Runs the "${subprocessName}" sub-process (plan 038.1)`}
+                  </TooltipContent>
+                </Tooltip>
               )}
               {phase.dotFolder && (
-                <Badge
-                  variant="outline"
-                  className="font-mono text-[10px]"
-                  title="Artifacts written under this dot-folder"
-                >
-                  .{phase.key}/
-                </Badge>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Badge variant="outline" className="font-mono text-[10px]">
+                      .{phase.key}/
+                    </Badge>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    Artifacts written under this dot-folder
+                  </TooltipContent>
+                </Tooltip>
               )}
               {phase.validator && (
-                <Badge
-                  variant="outline"
-                  className="text-[10px]"
-                  title="A second agent reviews this phase's output (plan 031.1)"
-                >
-                  validator
-                </Badge>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Badge variant="outline" className="text-[10px]">
+                      validator
+                    </Badge>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    A second agent reviews this phase&apos;s output (plan 031.1)
+                  </TooltipContent>
+                </Tooltip>
               )}
               <Badge variant="secondary" className="text-[10px]">
                 {pool.length} {pool.length === 1 ? "agent" : "agents"}
@@ -1604,16 +1632,21 @@ function PhaseCard({
             </div>
           </button>
         </CollapsibleTrigger>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon-sm"
-          onClick={deletePhase}
-          title="Delete phase"
-          className="shrink-0 text-muted-foreground hover:text-destructive"
-        >
-          <Trash2 className="size-3.5" />
-        </Button>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              onClick={deletePhase}
+              className="shrink-0 text-muted-foreground hover:text-destructive"
+            >
+              <Trash2 className="size-3.5" />
+              <span className="sr-only">Delete phase</span>
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>Delete phase</TooltipContent>
+        </Tooltip>
       </div>
 
       <CollapsibleContent>
@@ -1638,12 +1671,17 @@ function PhaseCard({
                 }}
               />
             </div>
-            <span
-              className="shrink-0 self-center font-mono text-xs text-muted-foreground"
-              title="Phase key (auto-derived from the name; used in run events and the dot-folder path)"
-            >
-              {phase.key}
-            </span>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span className="shrink-0 self-center font-mono text-xs text-muted-foreground">
+                  {phase.key}
+                </span>
+              </TooltipTrigger>
+              <TooltipContent>
+                Phase key (auto-derived from the name; used in run events and the
+                dot-folder path)
+              </TooltipContent>
+            </Tooltip>
           </div>
 
           {!phase.subprocessId && (
@@ -1728,129 +1766,169 @@ function PhaseCard({
 
           {/* Row 2: routing / gate / fan-out. */}
           <div className="flex flex-wrap items-center gap-4">
-            <label className="flex items-center gap-2 text-xs">
-              <span className="text-muted-foreground">Routing</span>
-              <Select
-                value={phase.routing}
-                onValueChange={(v) =>
-                  patchPhase({ routing: v as PhaseRouting })
-                }
-              >
-                <SelectTrigger size="sm" className="text-xs">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="single">single</SelectItem>
-                  <SelectItem value="dispatch">dispatch</SelectItem>
-                </SelectContent>
-              </Select>
-            </label>
-            <label className="flex items-center gap-2 text-xs">
-              <span className="text-muted-foreground">Gate</span>
-              <Select
-                value={phase.gatePolicy}
-                onValueChange={(v) =>
-                  patchPhase({ gatePolicy: v as PhaseGatePolicy })
-                }
-              >
-                <SelectTrigger size="sm" className="text-xs">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="auto">auto</SelectItem>
-                  <SelectItem value="approve">approve</SelectItem>
-                </SelectContent>
-              </Select>
-            </label>
-            <label
-              className="flex items-center gap-2 text-xs"
-              title="Split this phase into independent sub-tasks. Combine with Sub-process to run the sub-process once per sub-task (plan 038.3)."
-            >
-              <span className="text-muted-foreground">Fan-out</span>
-              <Switch
-                checked={phase.fanOut}
-                onCheckedChange={(v) => patchPhase({ fanOut: v })}
-              />
-            </label>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <label className="flex items-center gap-2 text-xs">
+                  <span className="text-muted-foreground">Routing</span>
+                  <Select
+                    value={phase.routing}
+                    onValueChange={(v) =>
+                      patchPhase({ routing: v as PhaseRouting })
+                    }
+                  >
+                    <SelectTrigger size="sm" className="text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="single">single</SelectItem>
+                      <SelectItem value="dispatch">dispatch</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </label>
+              </TooltipTrigger>
+              <TooltipContent>
+                Single uses the first agent in the pool. Dispatch routes each task to
+                the best-matched agent in the pool.
+              </TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <label className="flex items-center gap-2 text-xs">
+                  <span className="text-muted-foreground">Gate</span>
+                  <Select
+                    value={phase.gatePolicy}
+                    onValueChange={(v) =>
+                      patchPhase({ gatePolicy: v as PhaseGatePolicy })
+                    }
+                  >
+                    <SelectTrigger size="sm" className="text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="auto">auto</SelectItem>
+                      <SelectItem value="approve">approve</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </label>
+              </TooltipTrigger>
+              <TooltipContent>
+                Auto releases downstream phases when this phase completes. Approve
+                waits for human approval before releasing them.
+              </TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <label className="flex items-center gap-2 text-xs">
+                  <span className="text-muted-foreground">Fan-out</span>
+                  <Switch
+                    checked={phase.fanOut}
+                    onCheckedChange={(v) => patchPhase({ fanOut: v })}
+                  />
+                </label>
+              </TooltipTrigger>
+              <TooltipContent>
+                Split this phase into independent sub-tasks. Combine with
+                Sub-process to run the sub-process once per sub-task.
+              </TooltipContent>
+            </Tooltip>
             {/* SUB-PROCESS phase (plan 038.1): run another definition as a nested
             run instead of an agent worker. Combinable with fan-out (plan 038.3): a
             phase with both decomposes into sub-tasks and runs the sub-process once
             per child. Only offered when there's a candidate definition to run. */}
             {subprocessCandidates.length > 0 && (
-              <label
-                className="flex items-center gap-2 text-xs"
-                title="Run another process definition as a nested run for this phase (once per fan-out child when fan-out is also on)"
-              >
-                <span className="text-muted-foreground">Sub-process</span>
-                <Switch
-                  checked={!!phase.subprocessId}
-                  onCheckedChange={(v) =>
-                    patchPhase({
-                      subprocessId: v ? subprocessCandidates[0].id : null,
-                    })
-                  }
-                />
-              </label>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <label className="flex items-center gap-2 text-xs">
+                    <span className="text-muted-foreground">Sub-process</span>
+                    <Switch
+                      checked={!!phase.subprocessId}
+                      onCheckedChange={(v) =>
+                        patchPhase({
+                          subprocessId: v ? subprocessCandidates[0].id : null,
+                        })
+                      }
+                    />
+                  </label>
+                </TooltipTrigger>
+                <TooltipContent>
+                  Run another process definition as a nested run for this phase
+                  (once per fan-out child when fan-out is also on)
+                </TooltipContent>
+              </Tooltip>
             )}
-            <label
-              className="flex items-center gap-2 text-xs"
-              title={`Steer this phase's agent to write artifacts under a .${phase.key}/ folder (plan 030)`}
-            >
-              <span className="text-muted-foreground">Dot-folder</span>
-              <Switch
-                checked={phase.dotFolder}
-                onCheckedChange={(v) => patchPhase({ dotFolder: v })}
-              />
-            </label>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <label className="flex items-center gap-2 text-xs">
+                  <span className="text-muted-foreground">Dot-folder</span>
+                  <Switch
+                    checked={phase.dotFolder}
+                    onCheckedChange={(v) => patchPhase({ dotFolder: v })}
+                  />
+                </label>
+              </TooltipTrigger>
+              <TooltipContent>
+                {`Steer this phase's agent to write artifacts under a .${phase.key}/ folder`}
+              </TooltipContent>
+            </Tooltip>
             {/* Per-phase VALIDATOR (plan 031.1): a second agent reviews this phase's
             output and sends it back with feedback until it passes, bounded. Not
             offered for a fan-out phase (sub-DAG review is plan 031.2) or a
             sub-process phase (its inner phases carry their own validators, 038.1). */}
             {!phase.fanOut && !phase.subprocessId && (
-              <label
-                className="flex items-center gap-2 text-xs"
-                title="After this phase completes, a second agent reviews its output and can send it back with feedback (bounded)"
-              >
-                <span className="text-muted-foreground">Validator</span>
-                <Switch
-                  checked={phase.validator}
-                  onCheckedChange={(v) =>
-                    // Seed a concrete default cap (3) when enabling, so the field never
-                    // sits at the 0 sentinel — the validator is bounded by construction.
-                    patchPhase({
-                      validator: v,
-                      ...(v && phase.validatorMaxIterations < 1
-                        ? { validatorMaxIterations: 3 }
-                        : {}),
-                    })
-                  }
-                />
-              </label>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <label className="flex items-center gap-2 text-xs">
+                    <span className="text-muted-foreground">Validator</span>
+                    <Switch
+                      checked={phase.validator}
+                      onCheckedChange={(v) =>
+                        // Seed a concrete default cap (3) when enabling, so the field never
+                        // sits at the 0 sentinel — the validator is bounded by construction.
+                        patchPhase({
+                          validator: v,
+                          ...(v && phase.validatorMaxIterations < 1
+                            ? { validatorMaxIterations: 3 }
+                            : {}),
+                        })
+                      }
+                    />
+                  </label>
+                </TooltipTrigger>
+                <TooltipContent>
+                  After this phase completes, a second agent reviews its output and
+                  can send it back with feedback (bounded)
+                </TooltipContent>
+              </Tooltip>
             )}
             {/* The "Request changes" rework cap (plan 029), only meaningful for an
             approve gate. 0 = unlimited. */}
             {phase.gatePolicy === "approve" &&
               !phase.fanOut &&
               !phase.subprocessId && (
-                <label
-                  className="flex items-center gap-2 text-xs"
-                  title="Max times a reviewer can send this phase back for changes (0 = unlimited)"
-                >
-                  <span className="text-muted-foreground">Max rework</span>
-                  <Input
-                    type="number"
-                    min={0}
-                    className="h-7 w-16 text-xs"
-                    value={phase.maxReworkRounds}
-                    onChange={(e) => {
-                      const n = Math.max(
-                        0,
-                        Math.floor(Number(e.target.value) || 0)
-                      )
-                      patchPhase({ maxReworkRounds: n })
-                    }}
-                  />
-                </label>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <label className="flex items-center gap-2 text-xs">
+                      <span className="text-muted-foreground">Max rework</span>
+                      <Input
+                        type="number"
+                        min={0}
+                        className="h-7 w-16 text-xs"
+                        value={phase.maxReworkRounds}
+                        onChange={(e) => {
+                          const n = Math.max(
+                            0,
+                            Math.floor(Number(e.target.value) || 0)
+                          )
+                          patchPhase({ maxReworkRounds: n })
+                        }}
+                      />
+                    </label>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    Max times a reviewer can send this phase back for changes (0 =
+                    unlimited)
+                  </TooltipContent>
+                </Tooltip>
               )}
           </div>
 
@@ -1858,11 +1936,10 @@ function PhaseCard({
           only when the validator toggle is on. */}
           {phase.validator && !phase.fanOut && !phase.subprocessId && (
             <div className="flex flex-wrap items-center gap-4">
-              <label
-                className="flex items-center gap-2 text-xs"
-                title="The agent that reviews this phase's output. Defaults to the phase's own first pool agent."
-              >
-                <span className="text-muted-foreground">Reviewer</span>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <label className="flex items-center gap-2 text-xs">
+                    <span className="text-muted-foreground">Reviewer</span>
                 <Combobox
                   items={filteredReviewerAgentItems}
                   value={selectedReviewerAgent}
@@ -1951,12 +2028,17 @@ function PhaseCard({
                     </ComboboxList>
                   </ComboboxContent>
                 </Combobox>
-              </label>
-              <label
-                className="flex items-center gap-2 text-xs"
-                title="Max validator review rounds before escalating to a human gate"
-              >
-                <span className="text-muted-foreground">Max iterations</span>
+                  </label>
+                </TooltipTrigger>
+                <TooltipContent>
+                  The agent that reviews this phase&apos;s output. Defaults to the
+                  phase&apos;s own first pool agent.
+                </TooltipContent>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <label className="flex items-center gap-2 text-xs">
+                    <span className="text-muted-foreground">Max iterations</span>
                 <Input
                   type="number"
                   min={1}
@@ -1976,7 +2058,12 @@ function PhaseCard({
                     patchPhase({ validatorMaxIterations: n })
                   }}
                 />
-              </label>
+                  </label>
+                </TooltipTrigger>
+                <TooltipContent>
+                  Max validator review rounds before escalating to a human gate
+                </TooltipContent>
+              </Tooltip>
             </div>
           )}
 
@@ -1985,11 +2072,10 @@ function PhaseCard({
           out; the repo hard-rejects a cyclic pick (surfaced via the patch toast). */}
           {phase.subprocessId && (
             <div className="flex flex-col gap-1.5">
-              <label
-                className="flex items-center gap-2 text-xs"
-                title="The process definition this phase runs as a nested run"
-              >
-                <span className="text-muted-foreground">Runs process</span>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <label className="flex items-center gap-2 text-xs">
+                    <span className="text-muted-foreground">Runs process</span>
                 <Select
                   value={phase.subprocessId}
                   onValueChange={(v) =>
@@ -2010,7 +2096,12 @@ function PhaseCard({
                     ))}
                   </SelectContent>
                 </Select>
-              </label>
+                  </label>
+                </TooltipTrigger>
+                <TooltipContent>
+                  The process definition this phase runs as a nested run
+                </TooltipContent>
+              </Tooltip>
               <span className="text-[10px] text-muted-foreground">
                 {phase.fanOut
                   ? "This phase fans out into sub-tasks and runs the nested process once per sub-task (plan 038.3); the pool decomposes. Each child's aggregated output feeds downstream phases."
