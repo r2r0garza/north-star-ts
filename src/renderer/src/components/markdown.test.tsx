@@ -19,9 +19,15 @@ let container: HTMLDivElement
 let root: Root
 let writeText: ReturnType<typeof vi.fn>
 
-function mount(content: string, mode?: "settled" | "streaming") {
+function mount(
+  content: string,
+  mode?: "settled" | "streaming",
+  findQuery?: string
+) {
   act(() => {
-    root.render(<Markdown content={content} mode={mode} />)
+    root.render(
+      <Markdown content={content} mode={mode} findQuery={findQuery} />
+    )
   })
 }
 
@@ -152,6 +158,27 @@ describe("Markdown fenced blocks", () => {
     expect(scrollSurface?.parentElement).toBe(block)
     expect(scrollSurface?.classList.contains("overflow-x-auto")).toBe(true)
     expect(rail?.contains(scrollSurface ?? null)).toBe(false)
+  })
+})
+
+describe("Markdown conversation find", () => {
+  it("marks matches across nested formatting and inline code", () => {
+    mount("Find **find** and `FIND`.", "settled", "find")
+
+    const matches = container.querySelectorAll("[data-conversation-find-match]")
+    expect(matches).toHaveLength(3)
+    expect(Array.from(matches, (match) => match.textContent)).toEqual([
+      "Find",
+      "find",
+      "FIND",
+    ])
+  })
+
+  it("does not alter rendered text when the query is absent", () => {
+    mount("Find **this** text.")
+
+    expect(container.textContent).toBe("Find this text.")
+    expect(container.querySelector("[data-conversation-find-match]")).toBeNull()
   })
 })
 

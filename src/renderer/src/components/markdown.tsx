@@ -1,4 +1,13 @@
-import { memo, useEffect, useRef, useState } from "react"
+import {
+  Children,
+  cloneElement,
+  isValidElement,
+  memo,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react"
 import ReactMarkdown from "react-markdown"
 import type { Components } from "react-markdown"
 import remarkGfm from "remark-gfm"
@@ -7,6 +16,7 @@ import { Check, Copy } from "lucide-react"
 import { Mermaid } from "./mermaid"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
+import { ConversationFindText } from "@/components/conversation-find-text"
 
 // Extract the plain-text content of a node's children — used to pull the raw
 // source out of a fenced code block (for mermaid and copy-friendly blocks).
@@ -77,11 +87,42 @@ function CodeBlock({ children, ...props }: React.ComponentProps<"pre">) {
 function createComponents({
   highlightCode,
   renderMermaid,
+  findQuery,
 }: {
   highlightCode: boolean
   renderMermaid: boolean
+  findQuery: string
 }): Components {
+  const find = (children: React.ReactNode): React.ReactNode =>
+    Children.map(children, (child) => {
+      if (typeof child === "string") {
+        return <ConversationFindText text={child} query={findQuery} />
+      }
+      if (isValidElement<{ children?: React.ReactNode }>(child)) {
+        return cloneElement(child, undefined, find(child.props.children))
+      }
+      return child
+    })
+
   return {
+    p: ({ children, ...props }) => <p {...props}>{find(children)}</p>,
+    h1: ({ children, ...props }) => <h1 {...props}>{find(children)}</h1>,
+    h2: ({ children, ...props }) => <h2 {...props}>{find(children)}</h2>,
+    h3: ({ children, ...props }) => <h3 {...props}>{find(children)}</h3>,
+    h4: ({ children, ...props }) => <h4 {...props}>{find(children)}</h4>,
+    h5: ({ children, ...props }) => <h5 {...props}>{find(children)}</h5>,
+    h6: ({ children, ...props }) => <h6 {...props}>{find(children)}</h6>,
+    li: ({ children, ...props }) => <li {...props}>{find(children)}</li>,
+    blockquote: ({ children, ...props }) => (
+      <blockquote {...props}>{find(children)}</blockquote>
+    ),
+    strong: ({ children, ...props }) => (
+      <strong {...props}>{find(children)}</strong>
+    ),
+    em: ({ children, ...props }) => <em {...props}>{find(children)}</em>,
+    del: ({ children, ...props }) => <del {...props}>{find(children)}</del>,
+    td: ({ children, ...props }) => <td {...props}>{find(children)}</td>,
+    th: ({ children, ...props }) => <th {...props}>{find(children)}</th>,
     // `code` covers both inline code and fenced blocks. Settled Mermaid fences
     // are handed to the diagram renderer; streaming fences remain plain code.
     code({ className, children, ...props }) {
@@ -95,7 +136,7 @@ function createComponents({
             className="rounded bg-muted px-1.5 py-0.5 font-mono text-[0.85em] break-words"
             {...props}
           >
-            {children}
+            {find(children)}
           </code>
         )
       }
@@ -134,7 +175,7 @@ function createComponents({
           rel="noreferrer"
           {...props}
         >
-          {children}
+          {find(children)}
         </a>
       )
     },
@@ -152,18 +193,11 @@ function createComponents({
 
 const remarkPlugins = [remarkGfm]
 const settledRehypePlugins = [rehypeHighlight]
-const settledComponents = createComponents({
-  highlightCode: true,
-  renderMermaid: true,
-})
-const streamingComponents = createComponents({
-  highlightCode: false,
-  renderMermaid: false,
-})
 
 type MarkdownProps = {
   content: string
   mode?: "settled" | "streaming"
+  findQuery?: string
 }
 
 // Renders assistant Markdown with GFM in both modes. Settled content adds syntax
@@ -171,7 +205,18 @@ type MarkdownProps = {
 export const Markdown = memo(function Markdown({
   content,
   mode = "settled",
+  findQuery = "",
 }: MarkdownProps) {
+  const components = useMemo(
+    () =>
+      createComponents({
+        highlightCode: mode === "settled",
+        renderMermaid: mode === "settled",
+        findQuery,
+      }),
+    [findQuery, mode]
+  )
+
   return (
     <div
       className={cn(
@@ -184,9 +229,7 @@ export const Markdown = memo(function Markdown({
       <ReactMarkdown
         remarkPlugins={remarkPlugins}
         rehypePlugins={mode === "settled" ? settledRehypePlugins : undefined}
-        components={
-          mode === "settled" ? settledComponents : streamingComponents
-        }
+        components={components}
       >
         {content}
       </ReactMarkdown>

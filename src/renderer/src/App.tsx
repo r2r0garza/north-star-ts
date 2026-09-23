@@ -16,12 +16,14 @@ import {
   Bot,
   BrainCircuit,
   ChevronDown,
+  ChevronUp,
   ClipboardList,
   FileText,
   FolderOpen,
   Hand,
   MousePointerClick,
   Plus,
+  Search,
   Shield,
   Square,
   Terminal,
@@ -54,6 +56,7 @@ import {
 } from "@/components/ui/message-scroller"
 import { Message, MessageContent } from "@/components/ui/message"
 import { ConversationMessageMeta } from "@/components/conversation-message-meta"
+import { ConversationFindText } from "@/components/conversation-find-text"
 import { Bubble, BubbleContent } from "@/components/ui/bubble"
 import { Marker, MarkerIcon, MarkerContent } from "@/components/ui/marker"
 import { Spinner } from "@/components/ui/spinner"
@@ -571,6 +574,11 @@ function App(
   const overlayRef = useRef<HTMLDivElement>(null)
   const transcriptViewportRef = useRef<HTMLDivElement>(null)
   const transcriptContentRef = useRef<HTMLDivElement>(null)
+  const conversationFindInputRef = useRef<HTMLInputElement>(null)
+  const [conversationFindOpen, setConversationFindOpen] = useState(false)
+  const [conversationFindQuery, setConversationFindQuery] = useState("")
+  const [conversationFindIndex, setConversationFindIndex] = useState(0)
+  const [conversationFindCount, setConversationFindCount] = useState(0)
   const previousTranscriptScrollTopRef = useRef<number | null>(null)
   const transcriptUserScrollRef = useRef(false)
   const transcriptFollowingRef = useRef<{
@@ -1834,6 +1842,90 @@ function App(
   const latestSettledAssistantKey = liveHasText
     ? null
     : latestAssistantTextKey(displayTimeline)
+  const activeConversationFindQuery = conversationFindOpen
+    ? conversationFindQuery
+    : ""
+
+  const moveConversationFind = useCallback((direction: 1 | -1) => {
+    setConversationFindIndex((current) => {
+      const matches =
+        transcriptContentRef.current?.querySelectorAll<HTMLElement>(
+          "[data-conversation-find-match]"
+        )
+      const count = matches?.length ?? 0
+      if (count === 0) return 0
+      return (current + direction + count) % count
+    })
+  }, [])
+
+  useEffect(() => {
+    function onKeyDown(event: globalThis.KeyboardEvent) {
+      if (
+        conversationId &&
+        event.key.toLowerCase() === "f" &&
+        (window.cowork.platform === "darwin" ? event.metaKey : event.ctrlKey)
+      ) {
+        event.preventDefault()
+        setConversationFindOpen(true)
+        requestAnimationFrame(() => {
+          conversationFindInputRef.current?.focus()
+          conversationFindInputRef.current?.select()
+        })
+      }
+    }
+
+    window.addEventListener("keydown", onKeyDown)
+    return () => window.removeEventListener("keydown", onKeyDown)
+  }, [conversationId])
+
+  useEffect(() => {
+    setConversationFindOpen(false)
+    setConversationFindQuery("")
+    setConversationFindIndex(0)
+    setConversationFindCount(0)
+  }, [conversationId])
+
+  useLayoutEffect(() => {
+    const matches = Array.from(
+      transcriptContentRef.current?.querySelectorAll<HTMLElement>(
+        "[data-conversation-find-match]"
+      ) ?? []
+    )
+    setConversationFindCount(matches.length)
+    setConversationFindIndex((current) =>
+      matches.length === 0 ? 0 : Math.min(current, matches.length - 1)
+    )
+  }, [activeConversationFindQuery, displayTimeline, liveContent])
+
+  useLayoutEffect(() => {
+    const matches = Array.from(
+      transcriptContentRef.current?.querySelectorAll<HTMLElement>(
+        "[data-conversation-find-match]"
+      ) ?? []
+    )
+    for (const match of matches) match.removeAttribute("data-active")
+    const active = matches[conversationFindIndex]
+    if (!active) return
+
+    active.setAttribute("data-active", "true")
+    active.scrollIntoView({ block: "center" })
+    const viewport = transcriptViewportRef.current
+    if (viewport) previousTranscriptScrollTopRef.current = viewport.scrollTop
+    if (conversationId) {
+      transcriptFollowingRef.current = {
+        conversationId,
+        following: false,
+      }
+      setTranscriptScroll((policy) =>
+        recordTranscriptScroll(policy, conversationId, false)
+      )
+    }
+  }, [
+    activeConversationFindQuery,
+    conversationFindCount,
+    conversationFindIndex,
+    conversationId,
+  ])
   const suppressSettledAnchor = conversationId
     ? transcriptScroll.suppressSettledAnchor.has(conversationId)
     : false
@@ -2949,6 +3041,68 @@ function App(
     // messages scrolling up are clipped at the bar's edge instead of passing
     // under it.
     <div className="relative flex h-full w-full flex-col overflow-hidden pt-11">
+      {conversationFindOpen && (
+        <div className="absolute top-12 right-4 z-30 flex h-9 items-center gap-1 rounded-lg border bg-background p-1 shadow-md">
+          <Search className="ml-1 size-3.5 text-muted-foreground" />
+          <input
+            ref={conversationFindInputRef}
+            value={conversationFindQuery}
+            onChange={(event) => {
+              setConversationFindQuery(event.target.value)
+              setConversationFindIndex(0)
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault()
+                moveConversationFind(event.shiftKey ? -1 : 1)
+              } else if (event.key === "Escape") {
+                event.preventDefault()
+                setConversationFindOpen(false)
+              }
+            }}
+            placeholder="Find in conversation"
+            aria-label="Find in conversation"
+            className="h-7 w-56 bg-transparent px-1 text-sm outline-none placeholder:text-muted-foreground"
+          />
+          <span
+            className="min-w-10 text-center text-xs text-muted-foreground tabular-nums"
+            role="status"
+          >
+            {conversationFindCount === 0
+              ? "0/0"
+              : `${conversationFindIndex + 1}/${conversationFindCount}`}
+          </span>
+          <Button
+            type="button"
+            size="icon-xs"
+            variant="ghost"
+            disabled={conversationFindCount === 0}
+            onClick={() => moveConversationFind(-1)}
+            aria-label="Previous match"
+          >
+            <ChevronUp />
+          </Button>
+          <Button
+            type="button"
+            size="icon-xs"
+            variant="ghost"
+            disabled={conversationFindCount === 0}
+            onClick={() => moveConversationFind(1)}
+            aria-label="Next match"
+          >
+            <ChevronDown />
+          </Button>
+          <Button
+            type="button"
+            size="icon-xs"
+            variant="ghost"
+            onClick={() => setConversationFindOpen(false)}
+            aria-label="Close find"
+          >
+            <X />
+          </Button>
+        </div>
+      )}
       {parentConversation && (
         <div className="border-b bg-muted/40 px-4 py-2">
           <button
@@ -3066,9 +3220,15 @@ function App(
                             )}
                           >
                             {item.role === "assistant" ? (
-                              <Markdown content={item.content} />
+                              <Markdown
+                                content={item.content}
+                                findQuery={activeConversationFindQuery}
+                              />
                             ) : (
-                              item.content
+                              <ConversationFindText
+                                text={item.content}
+                                query={activeConversationFindQuery}
+                              />
                             )}
                           </BubbleContent>
                         </Bubble>
@@ -3109,7 +3269,11 @@ function App(
                         ) : seg.text ? (
                           <Bubble key={`s${si}`} align="start" variant="muted">
                             <BubbleContent className="overflow-visible">
-                              <Markdown content={seg.text} mode="streaming" />
+                              <Markdown
+                                content={seg.text}
+                                mode="streaming"
+                                findQuery={activeConversationFindQuery}
+                              />
                             </BubbleContent>
                           </Bubble>
                         ) : null
