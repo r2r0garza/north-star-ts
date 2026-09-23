@@ -95,6 +95,7 @@ export interface ConversationSearchResult {
   updatedAt: number
   matchKind: "title" | "content" | "title_and_content"
   snippet: string | null
+  targetMessageId: string | null
   rank: number
 }
 

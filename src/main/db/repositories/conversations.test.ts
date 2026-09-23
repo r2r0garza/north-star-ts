@@ -120,6 +120,8 @@ describe.skipIf(!sqliteLoads)("searchConversations", () => {
     ])
     expect(results[0].matchKind).toBe("title")
     expect(results[1].snippet).toContain("\u0001Aur\u0002ora")
+    expect(results[1].targetMessageId).toBeDefined()
+    expect(results[0].targetMessageId).toBeNull()
   })
 
   it("combines query terms across title and visible transcript content", () => {

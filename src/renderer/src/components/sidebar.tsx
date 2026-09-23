@@ -179,6 +179,7 @@ function SessionRow({
   }
 
   function commit() {
+    suppressTooltipRef.current = false
     setEditing(false)
     const next = draft.trim()
     if (next && next !== conversation.title) onRename(next)
@@ -198,6 +199,7 @@ function SessionRow({
               commit()
             } else if (e.key === "Escape") {
               e.preventDefault()
+              suppressTooltipRef.current = false
               setEditing(false)
             }
           }}
@@ -509,7 +511,7 @@ export function AppSidebar({
   view: View
   onViewChange: (view: View) => void
   activeConversationId: string | null
-  onSelectConversation: (id: string, mode: Mode) => void
+  onSelectConversation: (id: string, mode: Mode, openAtBottom?: boolean) => void
   // Start a fresh conversation, optionally scoped to a project (its directory is
   // auto-adopted for workspace views). Null/omitted = the "No Project" bucket.
   onNewConversation: (projectId?: string | null) => void
@@ -860,6 +862,7 @@ export function AppSidebar({
       </div>
       <ConversationSearchDialog
         open={searchDialogOpen}
+        activeConversationId={activeConversationId}
         onOpenChange={setSearchDialogOpen}
         onSelectConversation={onSelectConversation}
       />

@@ -10,6 +10,7 @@ Let a user find an existing conversation without remembering its project, mode, 
 - Let the user search conversation titles and visible transcript text from one focused input.
 - Show ranked conversation results with enough context to identify the right conversation.
 - Open the selected conversation, including switching to its Chat, Interactive, or North Star view as needed.
+- Open the selected conversation at the bottom of its transcript.
 
 ## Current state
 
@@ -24,7 +25,7 @@ Let a user find an existing conversation without remembering its project, mode, 
 
 ## Product decisions
 
-1. **Global scope.** Search all user-facing conversations across Chat, Interactive, and North Star, not only the currently selected view or expanded projects. Choosing a result switches views through the existing selection callback.
+1. **Global scope.** Search all user-facing conversations across Chat, Interactive, and North Star, not only the currently selected view or expanded projects. Exclude the currently open conversation from results regardless of whether its title or transcript matched. Choosing another result switches views through the existing selection callback.
 2. **Visible-content scope.** Search conversation titles and persisted `user`/`assistant` message content. Exclude `system` and `tool` rows and do not match serialized `tool_calls`; those can contain internal or noisy text that the user does not see as ordinary conversation prose.
 3. **Worker exclusion.** Apply the same task-worker exclusion as `listConversations()`. A hidden task, subagent, summarization, or indexing transcript must not become reachable through search. A genuine conversation carrying an `inline_todos` history marker remains searchable.
 4. **Forgiving matching.** Treat “fuzzy” in this first version as case-insensitive matching across normalized query terms, partial-word/prefix matching, and title substring matching. Multi-term queries may match terms across the title and transcript, and ranking should not depend on exact capitalization or punctuation. Typo/edit-distance correction and semantic/vector similarity are out of scope; the UI should call the feature “Search conversations,” not promise typo correction.
@@ -112,7 +113,7 @@ The dialog should use the existing command primitives for keyboard behavior but 
 
 `AppSidebar` owns the open state and renders an icon-only `Search` button between the flexible new-conversation action and the existing new-project button. Use the Lucide `Search`/`SearchIcon`, `aria-label="Search conversations"`, and a tooltip. The button must remain available in every view.
 
-On selection, call the existing `onSelectConversation(result.conversationId, result.mode)` and then close/reset the dialog. This delegates all view switching and active-conversation cleanup to `Shell.handleSelectConversation()`.
+On selection, call the existing mode-aware selection path with a one-shot open-at-bottom request, then close/reset the dialog. This delegates view switching and active-conversation cleanup to `Shell.handleSelectConversation()` while ensuring the selected conversation opens at the transcript end, including when it is already active.
 
 ## Implementation plan
 
@@ -180,7 +181,7 @@ Run focused repository and component tests, then `pnpm typecheck`, `pnpm test`, 
 - Search covers titles and persisted visible user/assistant content across all user-facing conversations and all three modes.
 - Matching is case-insensitive and supports title substrings and partial/prefix words without accepting raw FTS syntax.
 - Hidden task/worker transcripts, system rows, tool rows, and tool-call-only text never appear as search results.
-- Results contain at most one row per conversation, show a useful title/snippet plus disambiguating metadata, and are ranked title-first with deterministic recency tie-breaking.
+- Results contain at most one row per conversation, exclude the currently open conversation, show a useful title/snippet plus disambiguating metadata, and are ranked title-first with deterministic recency tie-breaking.
 - Search work and result counts are bounded in the main process; the renderer never loads every transcript to search it.
 - Rapid typing cannot let an older response replace results for a newer query.
 - Arrow keys change the highlighted result, Enter and click open it, and Escape closes the dialog with sensible focus restoration.

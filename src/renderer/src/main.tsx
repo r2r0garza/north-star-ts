@@ -37,7 +37,7 @@ import type { Mode, Task } from "@/types"
 import { maybeNotify, refreshNotificationSettings } from "@/lib/notify"
 import { applyThemeCss } from "@/lib/theme"
 import { cn } from "@/lib/utils"
-import App, { type AppHandle } from "./App"
+import App, { type AppHandle, type ConversationSearchOpen } from "./App"
 
 const DEFAULT_MODE_TO_VIEW = {
   chat: "Chat",
@@ -64,6 +64,8 @@ function Shell() {
   const [activeConversationId, setActiveConversationId] = useState<
     string | null
   >(null)
+  const [conversationSearchOpen, setConversationSearchOpen] =
+    useState<ConversationSearchOpen | null>(null)
   // The project a fresh (uncreated) conversation will belong to — set when "+"
   // is clicked on a project section, null for an unassigned/"No Project" one.
   // Consumed by App to adopt the project's directory and stamp project_id on
@@ -440,11 +442,20 @@ function Shell() {
   // Reopen a stored conversation — switch the view to match its mode. The
   // pending project is only for uncreated conversations; clear it (App reads the
   // stored conversation's own project).
-  function handleSelectConversation(id: string, mode: Mode) {
+  function handleSelectConversation(
+    id: string,
+    mode: Mode,
+    openAtBottom = false
+  ) {
     if (!activeConversationId) {
       appRef.current?.prepareComposerTransition("populated")
       closeFreshTerminalSessions(freshTerminalConversationId)
     }
+    setConversationSearchOpen(
+      openAtBottom
+        ? { requestId: crypto.randomUUID(), conversationId: id }
+        : null
+    )
     setView(MODE_TO_VIEW[mode])
     setActiveConversationId(id)
     setPendingProjectId(null)
@@ -591,6 +602,8 @@ function Shell() {
               ref={appRef}
               view={view}
               conversationId={activeConversationId}
+              searchOpen={conversationSearchOpen}
+              onSearchOpenComplete={() => setConversationSearchOpen(null)}
               pendingProjectId={pendingProjectId}
               onConversationCreated={(id) => {
                 const pendingId = freshTerminalConversationId

@@ -147,6 +147,7 @@ interface SearchConversationRow {
 }
 
 interface ContentSearchRow {
+  message_id: string
   content: string
   relevance: number
 }
@@ -155,6 +156,7 @@ interface SearchCandidate extends SearchConversationRow {
   titleTerms: Set<number>
   contentTerms: Set<number>
   snippet: string | null
+  targetMessageId: string | null
   contentRelevance: number
 }
 
@@ -198,6 +200,7 @@ export function searchConversations(
         titleTerms: new Set(),
         contentTerms: new Set(),
         snippet: null,
+        targetMessageId: null,
         contentRelevance: Number.POSITIVE_INFINITY,
       }
       candidates.set(row.id, candidate)
@@ -215,7 +218,8 @@ export function searchConversations(
 
   const contentStatement = db.prepare(
     `SELECT c.id, c.mode, c.title, c.project_id, p.name AS project_name,
-            c.updated_at, m.content, bm25(message_fts) AS relevance
+            c.updated_at, m.id AS message_id, m.content,
+            bm25(message_fts) AS relevance
      FROM message_fts
      JOIN messages m ON m.id = message_fts.message_id
      JOIN conversations c ON c.id = message_fts.conversation_id
@@ -242,6 +246,7 @@ export function searchConversations(
       if (row.relevance < candidate.contentRelevance) {
         candidate.contentRelevance = row.relevance
         candidate.snippet = createSearchSnippet(row.content, terms)
+        candidate.targetMessageId = row.message_id
       }
     }
   })
@@ -283,6 +288,7 @@ export function searchConversations(
               ? ("title" as const)
               : ("content" as const),
         snippet: candidate.snippet,
+        targetMessageId: candidate.targetMessageId,
         rank,
       }
     })

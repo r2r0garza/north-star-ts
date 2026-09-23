@@ -390,9 +390,16 @@ export type AppHandle = {
   prepareComposerTransition: (destination: "empty" | "populated") => void
 }
 
+export type ConversationSearchOpen = {
+  requestId: string
+  conversationId: string
+}
+
 type AppProps = {
   view: View
   conversationId: string | null
+  searchOpen: ConversationSearchOpen | null
+  onSearchOpenComplete: () => void
   // The project a fresh (uncreated) conversation will belong to. Its directory
   // (if any) is auto-adopted and locked for workspace views; project_id is
   // stamped on the conversation at create time. Null = unassigned ("No Project").
@@ -434,6 +441,8 @@ function App(
   {
     view,
     conversationId,
+    searchOpen,
+    onSearchOpenComplete,
     pendingProjectId,
     onConversationCreated,
     onConversationChanged,
@@ -585,6 +594,9 @@ function App(
   // The persisted transcript, rebuilt from stored rows (text bubbles + tool
   // groups, interleaved in order). Live in-flight state is held separately.
   const [timeline, setTimeline] = useState<TimelineItem[]>([])
+  const [loadedConversationId, setLoadedConversationId] = useState<
+    string | null
+  >(null)
   // Per-conversation scroll intent for the live-to-persisted handoff. The
   // message-scroller stops following when the user scrolls up, but treats the
   // settled response as a brand-new anchor unless we suppress that one
@@ -801,6 +813,7 @@ function App(
     // restores its live buffers — including the pending approval card — instead of
     // stranding it as a perpetual "Thinking…" spinner with no way to respond.
     if (!conversationId) {
+      setLoadedConversationId(null)
       setTimeline([])
       setAttachments([])
       // A fresh conversation starts from the default selection (null = inherit).
@@ -830,12 +843,14 @@ function App(
       }
       return
     }
+    setLoadedConversationId(null)
     Promise.all([
       window.cowork.db.messages.list(conversationId),
       window.cowork.db.conversations.get(conversationId),
     ]).then(async ([rows, convo]) => {
       if (cancelled) return
       setTimeline(buildTimeline(rows))
+      setLoadedConversationId(conversationId)
       setAttachments([])
       // Restore the conversation's own model selection (null falls back to default).
       setSelAccountId(convo?.accountId ?? null)
@@ -1864,10 +1879,32 @@ function App(
     }
   }, [conversationId, followingTranscript, loading])
 
-  // Restore the exact reading position in the same commit that swaps the live
-  // response for its persisted timeline items. A layout effect runs before
-  // paint, so the user never sees the intermediate position chosen by browser
-  // scroll anchoring or the message-scroller primitive.
+  // Search results open at the transcript end. Keep this as a one-shot request so
+  // selecting the already-open conversation also moves it to the bottom.
+  useLayoutEffect(() => {
+    if (!searchOpen || searchOpen.conversationId !== conversationId) return
+    if (loadedConversationId !== conversationId) return
+
+    const viewport = transcriptViewportRef.current
+    if (!viewport) return
+    viewport.scrollTop = Math.max(
+      0,
+      viewport.scrollHeight - viewport.clientHeight
+    )
+    previousTranscriptScrollTopRef.current = viewport.scrollTop
+    transcriptFollowingRef.current = { conversationId, following: true }
+    setTranscriptScroll((policy) =>
+      resetTranscriptScroll(policy, conversationId)
+    )
+    onSearchOpenComplete()
+  }, [
+    conversationId,
+    loadedConversationId,
+    onSearchOpenComplete,
+    searchOpen,
+    timeline,
+  ])
+
   useLayoutEffect(() => {
     const pending = pendingTranscriptRestoreRef.current
     if (!pending || pending.conversationId !== conversationId || loading) return

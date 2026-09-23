@@ -24,12 +24,14 @@ type SearchState =
 
 export function ConversationSearchDialog({
   open,
+  activeConversationId,
   onOpenChange,
   onSelectConversation,
 }: {
   open: boolean
+  activeConversationId: string | null
   onOpenChange: (open: boolean) => void
-  onSelectConversation: (id: string, mode: Mode) => void
+  onSelectConversation: (id: string, mode: Mode, openAtBottom?: boolean) => void
 }) {
   const [query, setQuery] = useState("")
   const [state, setState] = useState<SearchState>({
@@ -73,8 +75,12 @@ export function ConversationSearchDialog({
     return () => window.clearTimeout(timer)
   }, [open, query])
 
+  const results = state.results.filter(
+    (result) => result.conversationId !== activeConversationId
+  )
+
   function select(result: ConversationSearchResult) {
-    onSelectConversation(result.conversationId, result.mode)
+    onSelectConversation(result.conversationId, result.mode, true)
     onOpenChange(false)
   }
 
@@ -104,11 +110,11 @@ export function ConversationSearchDialog({
           {state.status === "error" && (
             <SearchMessage>Search failed. Try again.</SearchMessage>
           )}
-          {state.status === "ready" && state.results.length === 0 && (
+          {state.status === "ready" && results.length === 0 && (
             <SearchMessage>No conversations found</SearchMessage>
           )}
           {state.status !== "idle" &&
-            state.results.map((result) => (
+            results.map((result) => (
               <CommandItem
                 key={result.conversationId}
                 value={result.conversationId}
