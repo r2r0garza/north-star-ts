@@ -249,6 +249,11 @@ function Shell() {
   }
   const overlayViewOpen =
     agentsOpen || skillsOpen || processOpen || mcpOpen || dashboardsOpen
+  // The activity panel and terminal only apply to the conversation, so an
+  // overlay view hides them without touching their saved open state — they
+  // reappear as they were when the user returns to the conversation.
+  const activityVisible = activityOpen && !overlayViewOpen
+  const terminalVisible = terminalAvailable && terminalOpen && !overlayViewOpen
   // Keep the theme control immediately to the left of Terminal when the right
   // panel is closed. When it opens, it moves left by the panel's width so it
   // remains in the main content area.
@@ -272,7 +277,7 @@ function Shell() {
     ? gitRightOffset + gitActionsWidth + 4
     : gitRightOffset
 
-  useTerminalShortcut(terminalAvailable, toggleTerminal)
+  useTerminalShortcut(terminalAvailable && !overlayViewOpen, toggleTerminal)
 
   useEffect(() => {
     window.cowork.isFullScreen().then(setFullscreen)
@@ -509,7 +514,7 @@ function Shell() {
         <div className="pointer-events-none absolute inset-x-0 top-0 z-20 h-11">
           <div
             className="pointer-events-auto absolute inset-y-0 left-0 [-webkit-app-region:drag]"
-            style={{ right: activityOpen ? activityPanelWidth : 0 }}
+            style={{ right: activityVisible ? activityPanelWidth : 0 }}
           />
           <SidebarToggle fullscreen={fullscreen} isMac={isMac} />
           <HeaderThemeToggle rightOffset={themeRightOffset} />
@@ -641,7 +646,7 @@ function Shell() {
             <DashboardsScreen onClose={() => setDashboardsOpen(false)} />
           )}
           <TerminalDrawer
-            open={terminalAvailable && terminalOpen}
+            open={terminalVisible}
             conversationId={terminalConversationId}
             workspace={workspacePath}
             replaceSessionsOnWorkspaceChange={activeConversationId === null}
@@ -655,7 +660,7 @@ function Shell() {
         </div>
         <ActivityPanel
           conversationId={activeConversationId}
-          open={activityOpen}
+          open={activityVisible}
           tabs={sidebarTabState.tabs}
           activeTabId={sidebarTabState.activeTabId}
           reserveWindowControls={reserveWindowControls}
@@ -666,7 +671,10 @@ function Shell() {
           onAddFileSelection={(selection) =>
             appRef.current?.appendFileSelection(selection)
           }
-          onOpenChange={setActivity}
+          // Ignore Cmd/Ctrl+K while an overlay view hides the panel.
+          onOpenChange={(open) => {
+            if (!overlayViewOpen) setActivity(open)
+          }}
           onActiveTabChange={(id) =>
             setSidebarTabState((state) => ({ ...state, activeTabId: id }))
           }
