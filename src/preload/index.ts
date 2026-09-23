@@ -1652,7 +1652,7 @@ const api = {
       ipcRenderer.invoke(
         "providers:debugCodexSubscriptionModels",
         id
-      ) as Promise<{ ok: boolean; error?: string }>,
+      ) as Promise<{ ok: boolean; paths?: string[]; error?: string }>,
     reorder: (orderedIds: string[]) =>
       ipcRenderer.invoke("providers:reorder", orderedIds) as Promise<
         AccountView[]

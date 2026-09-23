@@ -37,6 +37,15 @@ describe("isTransientError", () => {
     ).toBe(true)
   })
 
+  it("treats a bare fetch failure as transient", () => {
+    expect(isTransientError(new TypeError("fetch failed"))).toBe(true)
+    expect(
+      isTransientError(
+        new Error("Model request failed after 3 attempts: fetch failed")
+      )
+    ).toBe(true)
+  })
+
   it("treats unknown or non-object errors as deterministic", () => {
     expect(isTransientError({ code: "EACCES" })).toBe(false)
     expect(isTransientError({ name: "TypeError" })).toBe(false)

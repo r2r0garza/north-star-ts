@@ -16,6 +16,7 @@ import {
   deleteModel,
   deleteModelsForAccount,
   mergeGatewayModels,
+  syncGatewayModels,
 } from "./models"
 
 let accountId: string
@@ -113,6 +114,36 @@ describe.skipIf(!sqliteLoads)("models repo", () => {
     mergeGatewayModels(accountId, ["gw-1"])
     mergeGatewayModels(accountId, ["gw-1", "gw-2"])
     expect(listModels(accountId)).toHaveLength(2)
+  })
+
+  it("synchronizes an authoritative gateway catalog", () => {
+    const retained = addModel({
+      accountId,
+      modelId: "gpt-current",
+      modelName: "Current",
+      origin: "seeded",
+    })
+    updateModel(retained.id, { favorite: true })
+    addModel({ accountId, modelId: "gpt-removed", origin: "seeded" })
+    addModel({ accountId, modelId: "manual-removed", origin: "manual" })
+
+    const models = syncGatewayModels(accountId, ["gpt-current", "gpt-new"])
+
+    expect(models.map((model) => model.modelId)).toEqual([
+      "gpt-current",
+      "gpt-new",
+    ])
+    expect(models[0]).toMatchObject({
+      modelName: "Current",
+      favorite: true,
+      origin: "gateway",
+    })
+    expect(models[1].origin).toBe("gateway")
+  })
+
+  it("clears the catalog when the gateway advertises no models", () => {
+    addModel({ accountId, modelId: "gpt-old", origin: "gateway" })
+    expect(syncGatewayModels(accountId, [])).toEqual([])
   })
 })
 

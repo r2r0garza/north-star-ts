@@ -395,13 +395,13 @@ const TRANSIENT_NETWORK_CODES = new Set([
   "UND_ERR_SOCKET",
 ])
 
-// Transient failure MESSAGE patterns. A socket dying mid-stream surfaces from
-// undici's fetch as a bare `TypeError` whose `.message` is "terminated" (the real
-// code lives on `.cause` — see the cause walk below), with no status/code of its
-// own. These few patterns are kept deliberately tight so a deterministic 4xx
+// Transient failure MESSAGE patterns. Undici can surface transport failures as
+// a bare `TypeError` whose `.message` is "terminated" or "fetch failed" (the real
+// code may live on `.cause` — see the cause walk below), with no status/code of
+// its own. These few patterns are kept deliberately tight so a deterministic 4xx
 // body text can't trip them.
 const TRANSIENT_MESSAGE =
-  /\b(terminated|premature close|socket hang up)\b|servers are currently overloaded/i
+  /\b(terminated|fetch failed|premature close|socket hang up)\b|servers are currently overloaded/i
 
 // Classify a SINGLE error object (no cause walk) into a tri-state:
 //   "transient"     → a retryable infrastructure hiccup

@@ -1544,6 +1544,43 @@ describe.skipIf(!sqliteLoads)("agent loop tool-error feedback", () => {
     )
   })
 
+  it("exposes exhausted transport failures for an outer automatic retry", async () => {
+    vi.spyOn(Math, "random").mockReturnValue(0)
+    const workspace = await makeWorkspace()
+    const conversation = createConversation({ mode: "interactive" })
+
+    scriptedCompletions.push(() => {
+      throw transientError("fetch failed")
+    })
+    scriptedCompletions.push(() => {
+      throw transientError("fetch failed")
+    })
+    scriptedCompletions.push(() => {
+      throw transientError("fetch failed")
+    })
+
+    const result = await runAgentLoop({
+      conversationId: conversation.id,
+      workspace,
+      userMessage: "retry the transport failure",
+      abort: new AbortController(),
+      taskId: "task-1",
+      onEvent: () => {},
+    })
+
+    expect(result.error).toBe(
+      "Model request failed after 3 attempts: fetch failed"
+    )
+    expect(result.retryable).toBe(true)
+    expect(result.failure).toMatchObject({
+      code: "model_request_retry_exhausted",
+      stage: "model_request",
+      retryable: true,
+      taskId: "task-1",
+    })
+    expect(completionRequests).toHaveLength(3)
+  })
+
   it("discards partial text and tool fragments from a failed stream retry", async () => {
     vi.spyOn(Math, "random").mockReturnValue(0)
     const workspace = await makeWorkspace()

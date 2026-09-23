@@ -2536,19 +2536,27 @@ export async function runAgentLoop(
     }
     if (error instanceof ModelRequestRetryExhaustedError) {
       console.error("Model request retry budget exhausted:", error)
+      turnWillRetry = error.retryable
       const failure =
         taskId || opts.processRunId || opts.processPhaseRunId
           ? agentFailure({
               code: "model_request_retry_exhausted",
               stage: "model_request",
               message: error.message,
+              retryable: error.retryable,
               taskId,
               processRunId: opts.processRunId,
               processPhaseRunId: opts.processPhaseRunId,
               cause: error.name,
             })
           : undefined
-      return failTurn(conversationId, error.message, false, undefined, failure)
+      return failTurn(
+        conversationId,
+        error.message,
+        error.retryable,
+        undefined,
+        failure
+      )
     }
     console.error(
       "Agent loop failed:",

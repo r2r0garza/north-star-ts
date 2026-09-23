@@ -255,9 +255,7 @@ export function ProvidersTab({ state }: { state: LlmState }) {
                     ? "sonnet"
                     : provider?.provider === "codex_cli"
                       ? "gpt-5.5"
-                      : provider?.provider === "codex_subscription"
-                        ? "gpt-5.5"
-                        : null
+                      : null
                 const next = {
                   activeAccountId: id,
                   activeModelId: cliDefault,
@@ -444,7 +442,9 @@ function AccountCard({
       setError(result.error ?? "Codex models debug probe failed.")
       return
     }
-    toast.success("Codex models response logged to the dev terminal.")
+    toast.success(
+      `Codex models response saved to ${result.paths?.join(", ") ?? "codex-models-responses"}.`
+    )
   }
 
   async function startCodexSubscriptionAuth() {
@@ -1165,7 +1165,7 @@ function AccountModelsSection({
                 ? "Claude Code manages model availability. Choose a durable alias; Sonnet is used when no explicit alias is selected."
                 : account.provider === "codex_cli"
                   ? "Codex CLI manages model availability. Choose the model passed to codex exec with --model."
-                  : "Experimental Codex subscription models are user-maintained aliases. Add a custom model if your account exposes a different id."}
+                  : "Codex subscription model availability is synchronized from your account."}
             </p>
             <div className="flex flex-col gap-2">
               {(account.provider === "claude_code"
@@ -1179,7 +1179,7 @@ function AccountModelsSection({
                       "gpt-5.6-terra",
                       "gpt-5.6-luna",
                     ]
-                  : ["gpt-5.5", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]
+                  : []
               ).map((alias) => {
                 const model = models?.find((entry) => entry.modelId === alias)
                 const selected =
@@ -1210,8 +1210,6 @@ function AccountModelsSection({
                       {((account.provider === "claude_code" &&
                         alias === "sonnet") ||
                         (account.provider === "codex_cli" &&
-                          alias === "gpt-5.5") ||
-                        (account.provider === "codex_subscription" &&
                           alias === "gpt-5.5")) && (
                         <Badge variant="outline">fallback</Badge>
                       )}
@@ -1222,30 +1220,42 @@ function AccountModelsSection({
               })}
             </div>
             {isCodexSubscription(account.provider) && (
-              <div className="flex flex-col gap-2 rounded-lg border border-dashed border-border p-3">
-                <FieldLabel htmlFor={`new-model-${account.id}`}>
-                  Add a custom experimental model
-                </FieldLabel>
-                <Input
-                  id={`new-model-${account.id}`}
-                  value={newId}
-                  onChange={(e) => setNewId(e.target.value)}
-                  placeholder="Model id (e.g. gpt-5.5)"
-                />
-                <Input
-                  value={newName}
-                  onChange={(e) => setNewName(e.target.value)}
-                  placeholder="Custom display name (optional)"
-                />
-                <Button
-                  size="sm"
-                  className="self-end"
-                  onClick={addModel}
-                  disabled={!newId.trim()}
-                >
-                  <Plus className="size-4" /> Add
-                </Button>
-              </div>
+              <>
+                <div className="flex justify-end">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={runImport}
+                    disabled={importing}
+                  >
+                    {importing ? <Spinner /> : "Refresh models"}
+                  </Button>
+                </div>
+                {importError && (
+                  <p className="text-xs text-destructive">{importError}</p>
+                )}
+                {visibleModels && visibleModels.length > 0 ? (
+                  <div className="flex flex-col gap-2">
+                    {visibleModels.map((model) => (
+                      <ModelRow
+                        key={model.id}
+                        model={model}
+                        isActive={
+                          isActiveAccount &&
+                          active?.activeModelId === model.modelId
+                        }
+                        onSelect={() => onSelectActive(model.modelId)}
+                        onChange={loadModels}
+                        gatewayManaged
+                      />
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-sm text-muted-foreground">
+                    No models are currently advertised by this account.
+                  </p>
+                )}
+              </>
             )}
           </>
         ) : (
@@ -1344,11 +1354,13 @@ function ModelRow({
   isActive,
   onSelect,
   onChange,
+  gatewayManaged = false,
 }: {
   model: ModelEntry
   isActive: boolean
   onSelect: () => void
   onChange: () => Promise<void>
+  gatewayManaged?: boolean
 }) {
   const [editing, setEditing] = useState(false)
   const [name, setName] = useState(model.modelName ?? "")
@@ -1434,18 +1446,20 @@ function ModelRow({
         >
           <span className="text-xs">✎</span>
         </Button>
-        <Button
-          variant="ghost"
-          size="icon"
-          className="size-7 text-muted-foreground hover:text-destructive"
-          title="Remove model"
-          onClick={async () => {
-            await window.cowork.models.delete(model.id)
-            await onChange()
-          }}
-        >
-          <Trash2 className="size-4" />
-        </Button>
+        {!gatewayManaged && (
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-7 text-muted-foreground hover:text-destructive"
+            title="Remove model"
+            onClick={async () => {
+              await window.cowork.models.delete(model.id)
+              await onChange()
+            }}
+          >
+            <Trash2 className="size-4" />
+          </Button>
+        )}
       </div>
     </div>
   )
