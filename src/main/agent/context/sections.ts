@@ -174,12 +174,11 @@ export function approvalsSection(opts: {
 // constraints, open threads). Generated out of band by the `summarize` task and
 // read here each turn. Highest priority of the built-in sections — dropping it
 // under budget pressure loses context the conversation can't otherwise recover.
-// The summary replaces stored messages through `coversThrough`; the context
-// builder appends every later message verbatim, so there is no overlap or gap.
+// The summary replaces stored messages through `coversThrough`, declared via
+// `replacesHistoryThrough`: the context builder never drops such a section and
+// appends every later message verbatim, so there is no overlap or gap.
 // Returns null when no summary exists yet.
-export function summarySection(
-  conversationId: string
-): (ContextSection & { coversThrough: number }) | null {
+export function summarySection(conversationId: string): ContextSection | null {
   const record = getConversationSummary(conversationId)
   if (!record || record.summary.trim().length === 0) return null
   const content =
@@ -192,7 +191,7 @@ export function summarySection(
     name: "summary",
     priority: SECTION_PRIORITY.summary,
     content,
-    coversThrough: record.coversThrough,
+    replacesHistoryThrough: record.coversThrough,
     provenance: {
       trust: "untrusted_data",
       channel: "memory",

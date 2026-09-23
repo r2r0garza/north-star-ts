@@ -32,8 +32,10 @@ export const indexQueryTool: Tool = {
         "`what_imports` (which files import a module), " +
         "`list_files` (files whose path matches a substring/extension), " +
         "`metadata` (parsed package.json/tsconfig/framework/git-branch). " +
-        "The index is advisory and may be partial or stale: a miss means 'not indexed yet', " +
-        "not 'absent' — fall back to search_tool / read_file_tool for authoritative answers.",
+        "Use useful hits directly for targeted reads rather than repeating discovery with a broad " +
+        "search. The index is advisory and may be partial or stale: on a miss, refine the index " +
+        "query when appropriate, then use narrowly scoped search_tool / read_file_tool calls if " +
+        "needed; a miss means 'not indexed yet', not 'absent'.",
       parameters: {
         type: "object",
         properties: {
@@ -302,12 +304,12 @@ function capList(items: string[], max: number): string {
   return `${items.slice(0, max).join(", ")}, +${items.length - max} more`
 }
 
-// A miss is advisory, not authoritative — always steer to the real tools.
+// A miss is advisory, not authoritative — steer toward refinement before a scoped fallback.
 function notIndexed(message: string, partial = false): string {
   const staleness = partial
     ? " The index is still building or partial, so this may just be un-indexed."
     : ""
-  return `${message}${staleness} The index is advisory — use search_tool or read_file_tool to confirm.`
+  return `${message}${staleness} The index is advisory — refine the symbol or path query when appropriate, then use a narrowly scoped search_tool or read_file_tool call if needed.`
 }
 
 function withBanner(body: string, partial: boolean): string {

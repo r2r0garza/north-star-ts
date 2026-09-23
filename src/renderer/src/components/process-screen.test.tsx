@@ -8,10 +8,14 @@ import {
   PhaseCompletionEvidence,
   RunCompletionSummary,
   PhaseAttemptHistory,
+  RuntimeBadge,
+  RuntimeProvidersContext,
   recoverProcessMonitorGates,
 } from "./process-screen"
 import type {
+  AccountWithModels,
   Approval,
+  ProcessPhaseRun,
   ProcessRun,
   ProcessPhaseAttempt,
   TaskEventPayload,
@@ -476,7 +480,7 @@ describe("completion policy rollout", () => {
       })
     )
   })
-  it("shows legacy compatibility and allows explicit opt-in in the builder", async () => {
+  it("shows completion policies and allows explicit validation in the builder", async () => {
     const update = vi.fn().mockResolvedValue(phase)
     ;(window as unknown as { cowork: unknown }).cowork = {
       db: {
@@ -504,13 +508,25 @@ describe("completion policy rollout", () => {
     await flushPromises()
     clickByText("Work")
     await flushPromises()
-    expect(container.textContent).toContain("Legacy completion")
-    const toggle = container.querySelector(
-      '[aria-label="Validated completion"]'
-    )!
-    expect(toggle).toBeTruthy()
+    expect(container.textContent).toContain("Completion policy")
+    expect(container.textContent).toContain("End of turn")
+    expect(container.textContent).toContain("A phase succeeds when its turn ends.")
+    expect(container.textContent).not.toContain("Required workspace files")
+    const completionPolicy = container.querySelector(
+      '[aria-label="Completion policy"]'
+    ) as HTMLButtonElement
+    expect(completionPolicy).toBeTruthy()
     act(() => {
-      toggle.dispatchEvent(new MouseEvent("click", { bubbles: true }))
+      completionPolicy.dispatchEvent(new MouseEvent("click", { bubbles: true }))
+    })
+    const validateCompletion = Array.from(
+      document.querySelectorAll('[role="option"]')
+    ).find((el) => el.textContent === "Validate completion")
+    expect(validateCompletion).toBeTruthy()
+    act(() => {
+      validateCompletion!.dispatchEvent(
+        new MouseEvent("click", { bubbles: true })
+      )
     })
     await flushPromises()
     expect(update).toHaveBeenCalledWith("phase", {
@@ -568,5 +584,256 @@ describe("completion policy rollout", () => {
     expect(container.textContent).toContain(
       "Legacy (ended turn counts as success)"
     )
+  })
+})
+
+describe("per-agent runtime override", () => {
+  const definition = {
+    id: "process",
+    name: "Example",
+    description: null,
+    requireFlagApproval: true,
+    createdAt: 1,
+    updatedAt: 1,
+  }
+  const phase = {
+    id: "phase",
+    processId: "process",
+    key: "work",
+    name: "Work",
+    routing: "single",
+    gatePolicy: "auto",
+    fanOut: false,
+    maxReworkRounds: 0,
+    dotFolder: false,
+    validator: false,
+    validatorMaxIterations: 0,
+    validatorAgent: null,
+    subprocessId: null,
+    position: 0,
+  } as const
+  const agent = {
+    id: "agent-1",
+    phaseId: "phase",
+    agentName: "builder",
+    skills: null,
+    tools: null,
+    position: 0,
+  }
+  const providers = [
+    {
+      account: {
+        id: "acct-or",
+        displayName: "OpenRouter",
+        provider: "openrouter",
+      },
+      models: [{ modelId: "openai/gpt-4o", modelName: "GPT-4o" }],
+    },
+  ] as unknown as AccountWithModels[]
+
+  async function renderBuilder(input: {
+    phase?: Record<string, unknown>
+    agent?: Record<string, unknown>
+    providers?: AccountWithModels[]
+    update?: ReturnType<typeof vi.fn>
+  }) {
+    ;(window as unknown as { cowork: unknown }).cowork = {
+      db: {
+        processes: {
+          get: vi.fn().mockResolvedValue({
+            definition,
+            phases: [{ ...phase, ...input.phase }],
+            agents: [{ ...agent, ...input.agent }],
+            edges: [],
+          }),
+          agents: { update: input.update ?? vi.fn().mockResolvedValue(agent) },
+        },
+      },
+    }
+    act(() => {
+      root.render(
+        <ProcessBuilder
+          definition={definition}
+          agents={[]}
+          providerModels={input.providers ?? providers}
+          definitions={[definition]}
+          onDefinitionChanged={() => {}}
+        />
+      )
+    })
+    await flushPromises()
+    clickByText("Work")
+    await flushPromises()
+  }
+
+  it("defaults an agent to inherit", async () => {
+    await renderBuilder({})
+    expect(container.textContent).toContain("Agent worker runtime")
+    const trigger = Array.from(container.querySelectorAll("label")).find((el) =>
+      el.textContent?.includes("Agent worker runtime")
+    )!
+    expect(trigger.textContent).toContain("Inherit")
+  })
+
+  it("shows a stored agent override", async () => {
+    await renderBuilder({
+      agent: {
+        runtimeConfig: {
+          worker: {
+            accountId: "acct-or",
+            modelId: "openai/gpt-4o",
+            provider: "openrouter",
+          },
+        },
+      },
+    })
+    const picker = Array.from(container.querySelectorAll("label")).find((el) =>
+      el.textContent?.includes("Agent worker runtime")
+    )!
+    expect(picker.textContent).toContain("GPT-4o")
+  })
+
+  it("degrades to the raw ids when the stored account was deleted", async () => {
+    await renderBuilder({
+      agent: {
+        runtimeConfig: {
+          worker: { accountId: "gone-account", modelId: "gone/model" },
+        },
+      },
+    })
+    const picker = Array.from(container.querySelectorAll("label")).find((el) =>
+      el.textContent?.includes("Agent worker runtime")
+    )!
+    expect(picker.textContent).toContain("gone-account / gone/model")
+  })
+
+  it("hides the control for a sub-process phase and without providers", async () => {
+    await renderBuilder({ phase: { subprocessId: "child" } })
+    expect(container.textContent).not.toContain("Agent worker runtime")
+    act(() => root.unmount())
+    root = createRoot(container)
+    await renderBuilder({ providers: [] })
+    expect(container.textContent).not.toContain("Agent worker runtime")
+  })
+
+  it("saves a selection through agents.update", async () => {
+    const update = vi.fn().mockResolvedValue(agent)
+    await renderBuilder({ update })
+    const trigger = Array.from(container.querySelectorAll("label"))
+      .find((el) => el.textContent?.includes("Agent worker runtime"))!
+      .querySelector("button")!
+    act(() => {
+      trigger.dispatchEvent(new MouseEvent("click", { bubbles: true }))
+    })
+    await flushPromises()
+    const option = Array.from(
+      document.body.querySelectorAll('[role="option"]')
+    ).find((el) => el.textContent?.includes("GPT-4o"))!
+    expect(option).toBeTruthy()
+    act(() => {
+      option.dispatchEvent(new MouseEvent("click", { bubbles: true }))
+    })
+    await flushPromises()
+    expect(update).toHaveBeenCalledWith("agent-1", {
+      runtimeConfig: {
+        worker: {
+          accountId: "acct-or",
+          modelId: "openai/gpt-4o",
+          provider: "openrouter",
+        },
+      },
+    })
+  })
+
+  it("clears the override with null when set back to inherit", async () => {
+    const update = vi.fn().mockResolvedValue(agent)
+    await renderBuilder({
+      update,
+      agent: {
+        runtimeConfig: {
+          worker: {
+            accountId: "acct-or",
+            modelId: "openai/gpt-4o",
+            provider: "openrouter",
+          },
+        },
+      },
+    })
+    const trigger = Array.from(container.querySelectorAll("label"))
+      .find((el) => el.textContent?.includes("Agent worker runtime"))!
+      .querySelector("button")!
+    act(() => {
+      trigger.dispatchEvent(new MouseEvent("click", { bubbles: true }))
+    })
+    await flushPromises()
+    const inherit = Array.from(
+      document.body.querySelectorAll('[role="option"]')
+    ).find((el) => el.textContent?.includes("Inherit"))!
+    act(() => {
+      inherit.dispatchEvent(new MouseEvent("click", { bubbles: true }))
+    })
+    await flushPromises()
+    expect(update).toHaveBeenCalledWith("agent-1", { runtimeConfig: null })
+  })
+})
+
+describe("RuntimeBadge", () => {
+  const providers = [
+    {
+      account: { id: "acct-or", displayName: "OpenRouter" },
+      models: [
+        { modelId: "openai/gpt-4o", modelName: "GPT-4o" },
+        { modelId: `vendor/${"x".repeat(200)}`, modelName: null },
+      ],
+    },
+  ] as unknown as AccountWithModels[]
+
+  function phaseRun(
+    runtimeSnapshot: ProcessPhaseRun["runtimeSnapshot"]
+  ): ProcessPhaseRun {
+    return { id: "pr-1", runtimeSnapshot } as ProcessPhaseRun
+  }
+
+  function renderBadge(run: ProcessPhaseRun) {
+    act(() => {
+      root.render(
+        <RuntimeProvidersContext.Provider value={providers}>
+          <RuntimeBadge phaseRun={run} />
+        </RuntimeProvidersContext.Provider>
+      )
+    })
+  }
+
+  it("shows the snapshot's provider and model, with the source in the title", () => {
+    renderBadge(
+      phaseRun({
+        worker: {
+          accountId: "acct-or",
+          modelId: "openai/gpt-4o",
+          source: "phase",
+        },
+      })
+    )
+    expect(container.textContent).toBe("OpenRouter / GPT-4o")
+    expect(container.querySelector("[title]")?.getAttribute("title")).toContain(
+      "Runtime source: Phase override"
+    )
+  })
+
+  it("renders nothing for historical runs without a snapshot", () => {
+    renderBadge(phaseRun(null))
+    expect(container.textContent).toBe("")
+    renderBadge(phaseRun(undefined))
+    expect(container.textContent).toBe("")
+  })
+
+  it("renders long model ids without crashing", () => {
+    const modelId = `vendor/${"x".repeat(200)}`
+    renderBadge(
+      phaseRun({
+        worker: { accountId: "acct-or", modelId, source: "run" },
+      })
+    )
+    expect(container.textContent).toContain(modelId)
   })
 })

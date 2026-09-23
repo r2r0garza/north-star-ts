@@ -4,6 +4,8 @@ import {
   completeCodexSubscriptionDeviceAuth,
   codexSubscriptionResponseToChat,
   buildCodexSubscriptionClient,
+  fetchLatestCodexVersion,
+  parseCodexReleaseVersion,
   parseCodexSubscriptionModels,
   probeCodexSubscriptionModelEndpointCandidates,
   probeCodexSubscriptionModelsEndpoint,
@@ -24,6 +26,27 @@ function jwtWithExp(
 }
 
 describe("codex subscription adapter", () => {
+  it("parses the Rust Codex version from the latest release channel", () => {
+    expect(parseCodexReleaseVersion({ tag_name: "rust-v0.156.1" })).toBe(
+      "0.156.1"
+    )
+    expect(() => parseCodexReleaseVersion({ tag_name: "v0.156.1" })).toThrow(
+      "missing a valid rust-v version"
+    )
+  })
+
+  it("fetches the latest Codex release version", async () => {
+    await expect(
+      fetchLatestCodexVersion(async (url, init) => {
+        expect(String(url)).toBe(
+          "https://releases.openai.com/codex/channels/latest"
+        )
+        expect(init?.headers).toEqual({ accept: "application/json" })
+        return Response.json({ tag_name: "rust-v0.156.1" })
+      })
+    ).resolves.toBe("0.156.1")
+  })
+
   it("builds a Responses-style request from chat messages and tools", () => {
     const request = buildCodexSubscriptionRequest({
       model: "gpt-5.5",
@@ -134,6 +157,7 @@ describe("codex subscription adapter", () => {
       "https://api.openai.com/auth.chatgpt_account_id": "account-1",
     })
     const client = buildCodexSubscriptionClient({
+      clientVersion: "0.151.0",
       bearerToken: token,
       fetchImpl: async (_url: RequestInfo | URL, init?: RequestInit) => {
         expect(init?.headers).toMatchObject({
@@ -178,6 +202,7 @@ describe("codex subscription adapter", () => {
       releaseTail = resolve
     })
     const client = buildCodexSubscriptionClient({
+      clientVersion: "0.151.0",
       bearerToken: "access-token",
       fetchImpl: async (_url: RequestInfo | URL, init?: RequestInit) => {
         expect(init?.headers).toMatchObject({ accept: "text/event-stream" })
@@ -224,6 +249,7 @@ describe("codex subscription adapter", () => {
 
   it("assembles SSE streams that use event lines and omit event type in data", async () => {
     const client = buildCodexSubscriptionClient({
+      clientVersion: "0.151.0",
       bearerToken: "access-token",
       fetchImpl: async (_url: RequestInfo | URL, init?: RequestInit) => {
         expect(JSON.parse(String(init?.body))).toMatchObject({ stream: true })
@@ -250,6 +276,7 @@ describe("codex subscription adapter", () => {
 
   it("reports plain-text upstream backend failures without leaking JSON parser errors", async () => {
     const client = buildCodexSubscriptionClient({
+      clientVersion: "0.151.0",
       bearerToken: "access-token",
       fetchImpl: async () =>
         new Response(
@@ -282,6 +309,7 @@ describe("codex subscription adapter", () => {
 
   it("keeps 4xx non-JSON backend failures non-retryable", async () => {
     const client = buildCodexSubscriptionClient({
+      clientVersion: "0.151.0",
       bearerToken: "access-token",
       fetchImpl: async () =>
         new Response("upstream auth rejected", {
@@ -349,6 +377,24 @@ describe("codex subscription adapter", () => {
             shell_type: "default",
           },
           {
+            slug: "gpt-6-astra",
+            visibility: "list",
+            priority: 1,
+            shell_type: "shell_command",
+          },
+          {
+            slug: "gpt-6-sol",
+            visibility: "list",
+            priority: 2,
+            shell_type: "shell_command",
+          },
+          {
+            slug: "gpt-6-luna",
+            visibility: "list",
+            priority: 3,
+            shell_type: "shell_command",
+          },
+          {
             slug: "gpt-6.0-ultra",
             visibility: "list",
             priority: 15,
@@ -380,7 +426,14 @@ describe("codex subscription adapter", () => {
           },
         ],
       })
-    ).toEqual(["gpt-5.6-sol", "gpt-6.0-ultra", "gpt-5.6-terra"])
+    ).toEqual([
+      "gpt-6-astra",
+      "gpt-6-sol",
+      "gpt-6-luna",
+      "gpt-5.6-sol",
+      "gpt-6.0-ultra",
+      "gpt-5.6-terra",
+    ])
   })
 
   it("fetches the Codex subscription model catalog", async () => {
@@ -392,10 +445,16 @@ describe("codex subscription adapter", () => {
       bearerToken: token,
       fetchImpl: async (url: RequestInfo | URL, init?: RequestInit) => {
         const requested = new URL(String(url))
+        if (
+          requested.href ===
+          "https://releases.openai.com/codex/channels/latest"
+        ) {
+          return Response.json({ tag_name: "rust-v0.156.1" })
+        }
         expect(requested.origin + requested.pathname).toBe(
           "https://chatgpt.com/backend-api/codex/models"
         )
-        expect(requested.searchParams.get("client_version")).toBe("0.151.0")
+        expect(requested.searchParams.get("client_version")).toBe("0.156.1")
         expect(init?.method).toBe("GET")
         expect(init?.headers).toMatchObject({
           accept: "application/json",
@@ -405,7 +464,7 @@ describe("codex subscription adapter", () => {
           "openai-beta": "responses=experimental",
         })
         expect((init?.headers as Record<string, string>)["user-agent"]).toMatch(
-          /^codex_cli_rs\/0\.151\.0 /
+          /^codex_cli_rs\/0\.156\.1 /
         )
         return Response.json({
           models: [
@@ -435,6 +494,7 @@ describe("codex subscription adapter", () => {
     const result = await probeCodexSubscriptionModelsEndpoint({
       baseUrl: "https://chatgpt.com/backend-api/codex",
       bearerToken: "access-token",
+      clientVersion: "0.151.0",
       fetchImpl: async (url: RequestInfo | URL, init?: RequestInit) => {
         const requested = new URL(String(url))
         expect(requested.origin + requested.pathname).toBe(
@@ -463,6 +523,7 @@ describe("codex subscription adapter", () => {
     const results = await probeCodexSubscriptionModelEndpointCandidates({
       baseUrl: "https://chatgpt.com/backend-api/codex",
       bearerToken: "access-token",
+      clientVersion: "0.151.0",
       fetchImpl: async (url: RequestInfo | URL) => {
         seen.push(String(url))
         return Response.json({ models: [] })
@@ -481,6 +542,7 @@ describe("codex subscription adapter", () => {
     const refreshedToken = jwtWithExp(Math.floor(Date.now() / 1000) + 7200)
     let catalogCalls = 0
     const client = buildCodexSubscriptionClient({
+      clientVersion: "0.151.0",
       bearerToken: JSON.stringify({
         access_token: initialToken,
         refresh_token: "refresh-me",
@@ -629,6 +691,7 @@ describe("codex subscription adapter", () => {
     const initialToken = jwtWithExp(Math.floor(Date.now() / 1000) + 3600)
     const refreshedToken = jwtWithExp(Math.floor(Date.now() / 1000) + 7200)
     const client = buildCodexSubscriptionClient({
+      clientVersion: "0.151.0",
       bearerToken: JSON.stringify({
         access_token: initialToken,
         refresh_token: "refresh-me",

@@ -1116,6 +1116,103 @@ describe.skipIf(!sqliteLoads)("agent loop tool-error feedback", () => {
     }
   )
 
+  // Plan 033.4 offering policy: dashboard_read rides with dashboard_write in
+  // non-Chat modes but stays offered in plan mode; custom agents opt in through
+  // `dashboard` (read + write) or the read-only `dashboard_read` category.
+  it.each([
+    {
+      label: "chat",
+      mode: "chat",
+      planMode: false,
+      tools: undefined,
+      read: false,
+      write: false,
+    },
+    {
+      label: "interactive",
+      mode: "interactive",
+      planMode: false,
+      tools: undefined,
+      read: true,
+      write: true,
+    },
+    {
+      label: "plan mode",
+      mode: "interactive",
+      planMode: true,
+      tools: undefined,
+      read: true,
+      write: false,
+    },
+    {
+      label: "agent [dashboard]",
+      mode: "interactive",
+      planMode: false,
+      tools: "[dashboard]",
+      read: true,
+      write: true,
+    },
+    {
+      label: "agent [dashboard_read]",
+      mode: "interactive",
+      planMode: false,
+      tools: "[dashboard_read]",
+      read: true,
+      write: false,
+    },
+    {
+      label: "agent [read]",
+      mode: "interactive",
+      planMode: false,
+      tools: "[read]",
+      read: false,
+      write: false,
+    },
+  ] as const)(
+    "offers dashboard tools per policy: $label",
+    async ({ mode, planMode, tools, read, write }) => {
+      const workspace = await makeWorkspace()
+      let agentName: string | undefined
+      if (tools) {
+        const agentsDir = join(workspace, ".cowork", "agents")
+        await mkdir(agentsDir, { recursive: true })
+        await writeFile(
+          join(agentsDir, "dash.agent.md"),
+          [
+            "---",
+            "name: dash",
+            "description: Reads dashboards.",
+            `tools: ${tools}`,
+            "user-invocable: true",
+            "---",
+            "Answer from dashboards.",
+          ].join("\n"),
+          "utf-8"
+        )
+        agentName = "dash"
+      }
+      const conversation = createConversation({ mode, agentName })
+
+      scriptedCompletions.push((request) => {
+        expect(request.tools.includes("dashboard_read")).toBe(read)
+        expect(request.tools.includes("dashboard_write")).toBe(write)
+        return streamText("Done.")
+      })
+
+      expect(
+        await runAgentLoop({
+          conversationId: conversation.id,
+          workspace,
+          agentDir: workspace,
+          userMessage: "What does the dashboard say?",
+          abort: new AbortController(),
+          planMode,
+          onEvent: () => {},
+        })
+      ).toEqual({ content: "Done." })
+    }
+  )
+
   it("does not execute a known tool body when plan mode makes it unavailable", async () => {
     const workspace = await makeWorkspace()
     const conversation = createConversation({ mode: "interactive" })
@@ -1542,6 +1639,43 @@ describe.skipIf(!sqliteLoads)("agent loop tool-error feedback", () => {
     expect(contentsByCallId(conversation.id).get("side_effect_once")).toBe(
       "executed 1"
     )
+  })
+
+  it("exposes exhausted transport failures for an outer automatic retry", async () => {
+    vi.spyOn(Math, "random").mockReturnValue(0)
+    const workspace = await makeWorkspace()
+    const conversation = createConversation({ mode: "interactive" })
+
+    scriptedCompletions.push(() => {
+      throw transientError("fetch failed")
+    })
+    scriptedCompletions.push(() => {
+      throw transientError("fetch failed")
+    })
+    scriptedCompletions.push(() => {
+      throw transientError("fetch failed")
+    })
+
+    const result = await runAgentLoop({
+      conversationId: conversation.id,
+      workspace,
+      userMessage: "retry the transport failure",
+      abort: new AbortController(),
+      taskId: "task-1",
+      onEvent: () => {},
+    })
+
+    expect(result.error).toBe(
+      "Model request failed after 3 attempts: fetch failed"
+    )
+    expect(result.retryable).toBe(true)
+    expect(result.failure).toMatchObject({
+      code: "model_request_retry_exhausted",
+      stage: "model_request",
+      retryable: true,
+      taskId: "task-1",
+    })
+    expect(completionRequests).toHaveLength(3)
   })
 
   it("discards partial text and tool fragments from a failed stream retry", async () => {

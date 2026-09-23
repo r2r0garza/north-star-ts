@@ -290,26 +290,29 @@ describe.skipIf(!sqliteLoads)("model request retry coordinator", () => {
     const clock = makeClock()
     let attempts = 0
 
-    await expect(
-      createCompletionRoundWithRetry({
-        conversationId,
-        logicalRoundId: "after-seq:6",
-        signal: new AbortController().signal,
-        clock,
-        random: () => 0,
-        config: {
-          maxAttempts: 2,
-          baseDelayMs: 1000,
-          maxDelayMs: 30_000,
-          maxElapsedMs: 120_000,
-        },
-        isTransientError: () => true,
-        request: async () => {
-          attempts += 1
-          throw transientError(`outage ${attempts}`)
-        },
-      })
-    ).rejects.toThrow("Model request failed after 2 attempts: outage 2")
+    const failure = createCompletionRoundWithRetry({
+      conversationId,
+      logicalRoundId: "after-seq:6",
+      signal: new AbortController().signal,
+      clock,
+      random: () => 0,
+      config: {
+        maxAttempts: 2,
+        baseDelayMs: 1000,
+        maxDelayMs: 30_000,
+        maxElapsedMs: 120_000,
+      },
+      isTransientError: () => true,
+      request: async () => {
+        attempts += 1
+        throw transientError(`outage ${attempts}`)
+      },
+    })
+
+    await expect(failure).rejects.toMatchObject({
+      message: "Model request failed after 2 attempts: outage 2",
+      retryable: true,
+    })
 
     expect(attempts).toBe(2)
     expect(clock.sleeps).toEqual([0])

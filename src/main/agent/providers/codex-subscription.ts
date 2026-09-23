@@ -3,19 +3,11 @@ import type { LlmClient } from "./index"
 export const CODEX_SUBSCRIPTION_BASE_URL =
   "https://chatgpt.com/backend-api/codex"
 
-export const CODEX_SUBSCRIPTION_MODELS = [
-  { id: "gpt-5.5", name: "GPT-5.5", favorite: true },
-  { id: "gpt-5.6-sol", name: "GPT-5.6 Sol", favorite: false },
-  { id: "gpt-5.6-terra", name: "GPT-5.6 Terra", favorite: false },
-  { id: "gpt-5.6-luna", name: "GPT-5.6 Luna", favorite: false },
-] as const
-
-export const DEFAULT_CODEX_SUBSCRIPTION_MODEL = "gpt-5.5"
-
 const CODEX_AUTH_ISSUER = "https://auth.openai.com"
 const CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 const CODEX_OAUTH_TOKEN_URL = "https://auth.openai.com/oauth/token"
-const CODEX_SUBSCRIPTION_CLIENT_VERSION = "0.151.0"
+const CODEX_RELEASE_CHANNEL_URL =
+  "https://releases.openai.com/codex/channels/latest"
 const CHATGPT_ACCOUNT_ID_CLAIM =
   "https://api.openai.com/auth.chatgpt_account_id"
 
@@ -614,7 +606,37 @@ function endpointFor(baseUrl: string | null | undefined): string {
   return base.endsWith("/responses") ? base : `${base}/responses`
 }
 
-function modelsEndpointFor(baseUrl: string | null | undefined): string {
+export function parseCodexReleaseVersion(json: unknown): string {
+  const tagName =
+    json && typeof json === "object" && !Array.isArray(json)
+      ? (json as Record<string, unknown>).tag_name
+      : undefined
+  const match =
+    typeof tagName === "string"
+      ? /^rust-v(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)$/.exec(tagName.trim())
+      : null
+  if (!match) {
+    throw new Error(
+      "Codex release channel response was missing a valid rust-v version."
+    )
+  }
+  return match[1]
+}
+
+export async function fetchLatestCodexVersion(
+  fetchImpl: typeof fetch = fetch
+): Promise<string> {
+  const res = await fetchImpl(CODEX_RELEASE_CHANNEL_URL, {
+    headers: { accept: "application/json" },
+  })
+  const json = await parseJsonResponse(res, "Codex release channel")
+  return parseCodexReleaseVersion(json)
+}
+
+function modelsEndpointFor(
+  baseUrl: string | null | undefined,
+  clientVersion: string
+): string {
   const base = (baseUrl || CODEX_SUBSCRIPTION_BASE_URL).replace(/\/+$/, "")
   const endpoint = base.endsWith("/models")
     ? base
@@ -622,43 +644,52 @@ function modelsEndpointFor(baseUrl: string | null | undefined): string {
       ? `${base.slice(0, -10)}/models`
       : `${base}/models`
   const url = new URL(endpoint)
-  url.searchParams.set("client_version", CODEX_SUBSCRIPTION_CLIENT_VERSION)
+  url.searchParams.set("client_version", clientVersion)
   return url.toString()
 }
 
-function modelProbeEndpointsFor(baseUrl: string | null | undefined): string[] {
-  return [modelsEndpointFor(baseUrl)]
+function modelProbeEndpointsFor(
+  baseUrl: string | null | undefined,
+  clientVersion: string
+): string[] {
+  return [modelsEndpointFor(baseUrl, clientVersion)]
 }
 
-function codexUserAgent(): string {
+function codexUserAgent(clientVersion: string): string {
   const os =
     process.platform === "darwin"
       ? "Mac OS"
       : process.platform === "win32"
         ? "Windows"
         : "Linux"
-  return `codex_cli_rs/${CODEX_SUBSCRIPTION_CLIENT_VERSION} (${os}; ${process.arch}) unknown`
+  return `codex_cli_rs/${clientVersion} (${os}; ${process.arch}) unknown`
 }
 
-function codexDiscoveryHeaders(accessToken: string): Record<string, string> {
+function codexDiscoveryHeaders(
+  accessToken: string,
+  clientVersion: string
+): Record<string, string> {
   const headers: Record<string, string> = {
     accept: "application/json",
     authorization: `Bearer ${accessToken}`,
     originator: "codex_cli_rs",
     "openai-beta": "responses=experimental",
-    "user-agent": codexUserAgent(),
+    "user-agent": codexUserAgent(clientVersion),
   }
   const accountId = codexSubscriptionAccountId(accessToken)
   if (accountId) headers["chatgpt-account-id"] = accountId
   return headers
 }
 
-function codexResponsesHeaders(accessToken: string): Record<string, string> {
+function codexResponsesHeaders(
+  accessToken: string,
+  clientVersion: string
+): Record<string, string> {
   return {
-    ...codexDiscoveryHeaders(accessToken),
+    ...codexDiscoveryHeaders(accessToken, clientVersion),
     accept: "text/event-stream",
     "content-type": "application/json",
-    version: CODEX_SUBSCRIPTION_CLIENT_VERSION,
+    version: clientVersion,
   }
 }
 
@@ -688,9 +719,9 @@ function parsePriority(value: unknown): number {
 }
 
 function isCodexModelSlug(slug: string): boolean {
-  if (!/^gpt-\d+\.\d+(?:$|-[a-z0-9-]+$)/.test(slug)) return false
-  const suffix = slug.match(/^gpt-\d+\.\d+-(.+)$/)?.[1] ?? ""
-  return !new Set(["wm"]).has(suffix)
+  const match = slug.match(/^gpt-\d+(?:\.\d+)?(?:-([a-z0-9-]+))?$/)
+  if (!match) return false
+  return !new Set(["wm"]).has(match[1] ?? "")
 }
 
 export function parseCodexSubscriptionModels(json: unknown): string[] {
@@ -898,6 +929,7 @@ export async function resolveCodexSubscriptionAuth(
 async function probeCodexSubscriptionModelsEndpointUrl(input: {
   endpoint: string
   bearerToken: string
+  clientVersion: string
   fetchImpl?: typeof fetch
   persistSecret?: (secret: string) => void | Promise<void>
 }): Promise<{
@@ -915,7 +947,7 @@ async function probeCodexSubscriptionModelsEndpointUrl(input: {
   const send = (accessToken: string) =>
     fetchImpl(input.endpoint, {
       method: "GET",
-      headers: codexDiscoveryHeaders(accessToken),
+      headers: codexDiscoveryHeaders(accessToken, input.clientVersion),
     })
   let res = await send(auth.accessToken)
   if ((res.status === 401 || res.status === 403) && !auth.refreshed) {
@@ -938,6 +970,7 @@ async function probeCodexSubscriptionModelsEndpointUrl(input: {
 export async function probeCodexSubscriptionModelsEndpoint(input: {
   baseUrl?: string | null
   bearerToken: string
+  clientVersion?: string
   fetchImpl?: typeof fetch
   persistSecret?: (secret: string) => void | Promise<void>
 }): Promise<{
@@ -946,15 +979,20 @@ export async function probeCodexSubscriptionModelsEndpoint(input: {
   ok: boolean
   body: string
 }> {
+  const fetchImpl = input.fetchImpl ?? fetch
+  const clientVersion =
+    input.clientVersion ?? (await fetchLatestCodexVersion(fetchImpl))
   return probeCodexSubscriptionModelsEndpointUrl({
     ...input,
-    endpoint: modelsEndpointFor(input.baseUrl),
+    clientVersion,
+    endpoint: modelsEndpointFor(input.baseUrl, clientVersion),
   })
 }
 
 export async function probeCodexSubscriptionModelEndpointCandidates(input: {
   baseUrl?: string | null
   bearerToken: string
+  clientVersion?: string
   fetchImpl?: typeof fetch
   persistSecret?: (secret: string) => void | Promise<void>
 }): Promise<
@@ -965,7 +1003,10 @@ export async function probeCodexSubscriptionModelEndpointCandidates(input: {
     body: string
   }>
 > {
-  const endpoints = modelProbeEndpointsFor(input.baseUrl)
+  const fetchImpl = input.fetchImpl ?? fetch
+  const clientVersion =
+    input.clientVersion ?? (await fetchLatestCodexVersion(fetchImpl))
+  const endpoints = modelProbeEndpointsFor(input.baseUrl, clientVersion)
   const results: Array<{
     endpoint: string
     status: number
@@ -975,6 +1016,7 @@ export async function probeCodexSubscriptionModelEndpointCandidates(input: {
   for (const endpoint of endpoints) {
     const result = await probeCodexSubscriptionModelsEndpointUrl({
       ...input,
+      clientVersion,
       endpoint,
     })
     results.push(result)
@@ -1079,14 +1121,26 @@ export async function completeCodexSubscriptionDeviceAuth(input: {
 export function buildCodexSubscriptionClient(input: {
   baseUrl?: string | null
   bearerToken: string
+  clientVersion?: string
   fetchImpl?: typeof fetch
   persistSecret?: (secret: string) => void | Promise<void>
 }): LlmClient {
   const fetchImpl = input.fetchImpl ?? fetch
+  let discoveredVersion: Promise<string> | undefined
+  const resolveClientVersion = () => {
+    if (input.clientVersion) return Promise.resolve(input.clientVersion)
+    discoveredVersion ??= fetchLatestCodexVersion(fetchImpl).catch((error) => {
+      discoveredVersion = undefined
+      throw error
+    })
+    return discoveredVersion
+  }
   const listModels = async () => {
+    const clientVersion = await resolveClientVersion()
     const probe = await probeCodexSubscriptionModelsEndpoint({
       baseUrl: input.baseUrl,
       bearerToken: input.bearerToken,
+      clientVersion,
       fetchImpl,
       persistSecret: input.persistSecret,
     })
@@ -1127,11 +1181,12 @@ export function buildCodexSubscriptionClient(input: {
       maxOutputTokens,
       body,
     })
+    const clientVersion = await resolveClientVersion()
     const send = async (accessToken: string) => {
       return fetchImpl(endpointFor(input.baseUrl), {
         method: "POST",
         signal: opts?.signal,
-        headers: codexResponsesHeaders(accessToken),
+        headers: codexResponsesHeaders(accessToken, clientVersion),
         body: JSON.stringify(request),
       })
     }

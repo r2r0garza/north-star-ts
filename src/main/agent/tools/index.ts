@@ -74,6 +74,7 @@ import { spawnSubagentTool } from "./spawn_subagent"
 import { spawnSubagentsTool } from "./spawn_subagents"
 import { flagForReworkTool } from "./flag_for_rework"
 import { dashboardWriteTool } from "./dashboard_write"
+import { dashboardReadTool } from "./dashboard_read"
 
 // Workspace-gated tools — offered only when the agent has a workspace (they
 // touch the filesystem). Add a new filesystem tool by importing it and listing
@@ -145,6 +146,9 @@ const otherTools: Tool[] = [
   // dashboard_write: offered by runChat in interactive modes (plan 033.2 —
   // gated on showTodos like todo_write). Writes only its own tables; not gated.
   dashboardWriteTool,
+  // dashboard_read: offered by runChat in interactive modes, INCLUDING plan mode
+  // (plan 033.4 — read-only over cached widget data; never refreshes).
+  dashboardReadTool,
 ]
 
 // Browser tools — offered when the conversation has an agent browser available,
@@ -247,6 +251,7 @@ export { presentPlanTool } from "./present_plan_tool"
 export { spawnSubagentsTool } from "./spawn_subagents"
 export { flagForReworkTool } from "./flag_for_rework"
 export { dashboardWriteTool } from "./dashboard_write"
+export { dashboardReadTool } from "./dashboard_read"
 export {
   conversationReadTool,
   conversationSearchTool,

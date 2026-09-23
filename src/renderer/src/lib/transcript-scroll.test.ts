@@ -3,6 +3,7 @@ import {
   INITIAL_TRANSCRIPT_SCROLL_POLICY,
   isTranscriptAtEnd,
   recordTranscriptScroll,
+  recordTranscriptScrollIntent,
   resetTranscriptScroll,
   settleTranscriptTurn,
   transcriptRestorePosition,
@@ -24,6 +25,72 @@ describe("transcript scroll policy", () => {
         clientHeight: 500,
       })
     ).toBe(false)
+  })
+
+  it("pauses following when the viewport moves upward", () => {
+    const scrolled = recordTranscriptScrollIntent(
+      INITIAL_TRANSCRIPT_SCROLL_POLICY,
+      "conversation-a",
+      500,
+      { scrollHeight: 1200, scrollTop: 450, clientHeight: 500 }
+    )
+
+    expect(scrolled.awayFromEnd.has("conversation-a")).toBe(true)
+  })
+
+  it("ignores upward movement not caused by user input", () => {
+    const adjusted = recordTranscriptScrollIntent(
+      INITIAL_TRANSCRIPT_SCROLL_POLICY,
+      "conversation-a",
+      500,
+      { scrollHeight: 1200, scrollTop: 450, clientHeight: 500 },
+      false
+    )
+
+    expect(adjusted.awayFromEnd.has("conversation-a")).toBe(false)
+  })
+
+  it("keeps following when content grows around a stationary viewport", () => {
+    const grown = recordTranscriptScrollIntent(
+      INITIAL_TRANSCRIPT_SCROLL_POLICY,
+      "conversation-a",
+      500,
+      { scrollHeight: 1100, scrollTop: 500, clientHeight: 500 }
+    )
+
+    expect(grown.awayFromEnd.has("conversation-a")).toBe(false)
+  })
+
+  it("preserves paused intent while scrolling down toward a moving end", () => {
+    const paused = recordTranscriptScroll(
+      INITIAL_TRANSCRIPT_SCROLL_POLICY,
+      "conversation-a",
+      false
+    )
+    const scrollingDown = recordTranscriptScrollIntent(
+      paused,
+      "conversation-a",
+      400,
+      { scrollHeight: 1200, scrollTop: 450, clientHeight: 500 }
+    )
+
+    expect(scrollingDown.awayFromEnd.has("conversation-a")).toBe(true)
+  })
+
+  it("resumes following when the viewport reaches the end", () => {
+    const paused = recordTranscriptScroll(
+      INITIAL_TRANSCRIPT_SCROLL_POLICY,
+      "conversation-a",
+      false
+    )
+    const atEnd = recordTranscriptScrollIntent(
+      paused,
+      "conversation-a",
+      450,
+      { scrollHeight: 1000, scrollTop: 492, clientHeight: 500 }
+    )
+
+    expect(atEnd.awayFromEnd.has("conversation-a")).toBe(false)
   })
 
   it("captures an exact restore position only when away from the end", () => {

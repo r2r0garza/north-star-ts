@@ -37,7 +37,7 @@ import type { Mode, Task } from "@/types"
 import { maybeNotify, refreshNotificationSettings } from "@/lib/notify"
 import { applyThemeCss } from "@/lib/theme"
 import { cn } from "@/lib/utils"
-import App, { type AppHandle } from "./App"
+import App, { type AppHandle, type ConversationSearchOpen } from "./App"
 
 const DEFAULT_MODE_TO_VIEW = {
   chat: "Chat",
@@ -64,6 +64,8 @@ function Shell() {
   const [activeConversationId, setActiveConversationId] = useState<
     string | null
   >(null)
+  const [conversationSearchOpen, setConversationSearchOpen] =
+    useState<ConversationSearchOpen | null>(null)
   // The project a fresh (uncreated) conversation will belong to — set when "+"
   // is clicked on a project section, null for an unassigned/"No Project" one.
   // Consumed by App to adopt the project's directory and stamp project_id on
@@ -245,6 +247,13 @@ function Shell() {
   const handleBrowserPoppedOutChange = (poppedOut: boolean) => {
     setActivity(!poppedOut)
   }
+  const overlayViewOpen =
+    agentsOpen || skillsOpen || processOpen || mcpOpen || dashboardsOpen
+  // The activity panel and terminal only apply to the conversation, so an
+  // overlay view hides them without touching their saved open state — they
+  // reappear as they were when the user returns to the conversation.
+  const activityVisible = activityOpen && !overlayViewOpen
+  const terminalVisible = terminalAvailable && terminalOpen && !overlayViewOpen
   // Keep the theme control immediately to the left of Terminal when the right
   // panel is closed. When it opens, it moves left by the panel's width so it
   // remains in the main content area.
@@ -252,18 +261,23 @@ function Shell() {
   const terminalRightOffset = rightControlOffset + 32
   // Once the panel is open, the Git and theme controls sit just outside its left
   // edge. Git is immediately to the visual right of the theme control.
+  const activityControlsVisible = !overlayViewOpen
+  const terminalControlsVisible = terminalAvailable && !overlayViewOpen
   const gitAvailable = view !== "Chat" && workspacePath.trim() !== ""
+  const gitControlsVisible = gitAvailable && !overlayViewOpen
   const [gitActionsWidth, setGitActionsWidth] = useState(28)
   const gitRightOffset = activityPanelWidth
     ? activityPanelWidth + 8
-    : terminalAvailable
+    : terminalControlsVisible
       ? terminalRightOffset + 30
-      : rightControlOffset + 32
-  const themeRightOffset = gitAvailable
+      : activityControlsVisible
+        ? rightControlOffset + 32
+        : rightControlOffset
+  const themeRightOffset = gitControlsVisible
     ? gitRightOffset + gitActionsWidth + 4
     : gitRightOffset
 
-  useTerminalShortcut(terminalAvailable, toggleTerminal)
+  useTerminalShortcut(terminalAvailable && !overlayViewOpen, toggleTerminal)
 
   useEffect(() => {
     window.cowork.isFullScreen().then(setFullscreen)
@@ -433,11 +447,20 @@ function Shell() {
   // Reopen a stored conversation — switch the view to match its mode. The
   // pending project is only for uncreated conversations; clear it (App reads the
   // stored conversation's own project).
-  function handleSelectConversation(id: string, mode: Mode) {
+  function handleSelectConversation(
+    id: string,
+    mode: Mode,
+    openAtBottom = false
+  ) {
     if (!activeConversationId) {
       appRef.current?.prepareComposerTransition("populated")
       closeFreshTerminalSessions(freshTerminalConversationId)
     }
+    setConversationSearchOpen(
+      openAtBottom
+        ? { requestId: crypto.randomUUID(), conversationId: id }
+        : null
+    )
     setView(MODE_TO_VIEW[mode])
     setActiveConversationId(id)
     setPendingProjectId(null)
@@ -491,38 +514,25 @@ function Shell() {
         <div className="pointer-events-none absolute inset-x-0 top-0 z-20 h-11">
           <div
             className="pointer-events-auto absolute inset-y-0 left-0 [-webkit-app-region:drag]"
-            style={{ right: activityOpen ? activityPanelWidth : 0 }}
+            style={{ right: activityVisible ? activityPanelWidth : 0 }}
           />
           <SidebarToggle fullscreen={fullscreen} isMac={isMac} />
           <HeaderThemeToggle rightOffset={themeRightOffset} />
-          {gitAvailable && (
+          {gitControlsVisible && (
             <GitActions
               workspace={workspacePath}
               rightOffset={gitRightOffset}
               onWidthChange={setGitActionsWidth}
             />
           )}
-          {terminalAvailable &&
-            !(
-              agentsOpen ||
-              skillsOpen ||
-              processOpen ||
-              mcpOpen ||
-              dashboardsOpen
-            ) && (
-              <TerminalToggle
-                open={terminalOpen}
-                onToggle={toggleTerminal}
-                rightOffset={terminalRightOffset}
-              />
-            )}
-          {!(
-            agentsOpen ||
-            skillsOpen ||
-            processOpen ||
-            mcpOpen ||
-            dashboardsOpen
-          ) && (
+          {terminalControlsVisible && (
+            <TerminalToggle
+              open={terminalOpen}
+              onToggle={toggleTerminal}
+              rightOffset={terminalRightOffset}
+            />
+          )}
+          {activityControlsVisible && (
             <ActivityToggle
               open={activityOpen}
               onToggle={() => setActivity(!activityOpen)}
@@ -597,6 +607,8 @@ function Shell() {
               ref={appRef}
               view={view}
               conversationId={activeConversationId}
+              searchOpen={conversationSearchOpen}
+              onSearchOpenComplete={() => setConversationSearchOpen(null)}
               pendingProjectId={pendingProjectId}
               onConversationCreated={(id) => {
                 const pendingId = freshTerminalConversationId
@@ -634,7 +646,7 @@ function Shell() {
             <DashboardsScreen onClose={() => setDashboardsOpen(false)} />
           )}
           <TerminalDrawer
-            open={terminalAvailable && terminalOpen}
+            open={terminalVisible}
             conversationId={terminalConversationId}
             workspace={workspacePath}
             replaceSessionsOnWorkspaceChange={activeConversationId === null}
@@ -648,7 +660,7 @@ function Shell() {
         </div>
         <ActivityPanel
           conversationId={activeConversationId}
-          open={activityOpen}
+          open={activityVisible}
           tabs={sidebarTabState.tabs}
           activeTabId={sidebarTabState.activeTabId}
           reserveWindowControls={reserveWindowControls}
@@ -659,7 +671,10 @@ function Shell() {
           onAddFileSelection={(selection) =>
             appRef.current?.appendFileSelection(selection)
           }
-          onOpenChange={setActivity}
+          // Ignore Cmd/Ctrl+K while an overlay view hides the panel.
+          onOpenChange={(open) => {
+            if (!overlayViewOpen) setActivity(open)
+          }}
           onActiveTabChange={(id) =>
             setSidebarTabState((state) => ({ ...state, activeTabId: id }))
           }

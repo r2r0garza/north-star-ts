@@ -1,6 +1,8 @@
 # PR83: Per-agent runtime override UI
 
-> Status: **PLANNED**. Adds UI for per-phase-agent provider/model overrides using the existing `process_phase_agents.runtime_config` persistence.
+> Status: **COMPLETED**. Adds UI for per-phase-agent provider/model overrides using the existing `process_phase_agents.runtime_config` persistence.
+>
+> Implementation notes: Task 1 found the save path was NOT already complete — there was no phase-agent update at any layer (only create/delete), so `updatePhaseAgent` (repository), `db:processes:agents:update` (IPC) and `agents.update` (preload) were added; it patches only `runtime_config`, leaving skills/tools/identity untouched, and `null` clears the override. Each pool agent now renders an inline "Agent worker runtime" `RuntimePicker` (no Advanced disclosure, no separate inherit/override badge — the picker reads "Inherit" or the model name); it is hidden when no providers exist and on sub-process phases, whose pool never runs as workers. A deleted account degrades to the raw `account / model` ids. **Unplanned fix:** `resolveRuntime` let non-worker slots fall back to `config.worker`, and the decomposer/validator call sites passed the phase agent, so an agent worker override would have leaked into the decomposer and reviewer. The agent override now applies to the `worker` slot only and those call sites no longer pass the agent. Tests: service precedence (agent > phase > run, snapshot source `phase_agent`) plus a validator no-leak regression, repository update/clear, and builder UI (default, stored, deleted account, hidden cases, save, clear). `pnpm typecheck`, the full `pnpm test` suite and `pnpm build` pass. Manual `pnpm dev` validation (Task 6) was not run.
 
 > **For Hermes:** Implement with the `north-star-project` and `test-driven-development` skills. Do not commit unless the user explicitly asks.
 
@@ -155,7 +157,7 @@ pnpm run build
 - Per-agent overrides should be limited to worker runtime initially; orchestration slots belong at phase/run levels.
 - Deleted provider accounts must degrade gracefully by displaying stored raw provider/model metadata.
 
-## Open Questions
+## Open Questions (resolved)
 
-- Should per-agent overrides appear inline by default, or behind an `Advanced` disclosure?
-- Should an agent card show an explicit badge when it inherits vs overrides?
+- Inline by default, not behind an `Advanced` disclosure.
+- No separate inherit/override badge; the picker value itself shows which.

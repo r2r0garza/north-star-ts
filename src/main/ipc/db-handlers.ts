@@ -21,6 +21,7 @@ import type {
   PhaseGatePolicy,
   PhaseRouting,
   ProcessRunStatus,
+  ProcessRuntimeConfig,
 } from "../db/types"
 import type { IndexService } from "../index/service"
 import type { TaskRunner } from "../tasks/runner"
@@ -96,6 +97,13 @@ export function registerDbHandlers(
   )
   ipcMain.handle("db:conversations:list", (_e, opts?: { mode?: Mode }) =>
     conversations.listConversations(opts)
+  )
+  ipcMain.handle(
+    "db:conversations:search",
+    (_e, query: unknown, opts?: { limit?: unknown }) =>
+      conversations.searchConversations(String(query ?? ""), {
+        limit: typeof opts?.limit === "number" ? opts.limit : undefined,
+      })
   )
   ipcMain.handle(
     "db:conversations:get",
@@ -416,9 +424,15 @@ export function registerDbHandlers(
         agentName: string
         skills?: string[] | null
         tools?: string[] | null
+        runtimeConfig?: ProcessRuntimeConfig | null
         position: number
       }
     ) => processes.createPhaseAgent(input)
+  )
+  ipcMain.handle(
+    "db:processes:agents:update",
+    (_e, id: string, patch: { runtimeConfig?: ProcessRuntimeConfig | null }) =>
+      processes.updatePhaseAgent(id, patch)
   )
   ipcMain.handle("db:processes:agents:list", (_e, phaseId: string) =>
     processes.listPhaseAgents(phaseId)

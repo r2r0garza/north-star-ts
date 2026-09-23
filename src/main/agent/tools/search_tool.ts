@@ -29,14 +29,17 @@ export const searchTool: Tool = {
     function: {
       name: "search_tool",
       description:
-        "Search file contents under the workspace or an activated read-only skill resource root. Supports fixed or regex " +
-        "queries, smart case, real include/exclude globs, context, files, and counts.",
+        "Search file contents under a workspace directory or an activated read-only skill resource directory. " +
+        "`path` must be a directory, not a file; to search one file, use its parent directory plus `globs`. " +
+        'Queries are fixed text by default, so set `mode: "regex"` explicitly for alternation or other regex syntax. ' +
+        "Supports smart case, real include/exclude globs, context, files, and counts.",
       parameters: {
         type: "object",
         properties: {
           query: {
             type: "string",
-            description: "Text or regex to search for.",
+            description:
+              'Text to search for. Treated literally unless `mode` is explicitly set to "regex".',
           },
           pattern: {
             type: "string",
@@ -45,7 +48,8 @@ export const searchTool: Tool = {
           mode: {
             type: "string",
             enum: ["fixed", "regex"],
-            description: "Search mode. Defaults to fixed.",
+            description:
+              'Search mode. Defaults to "fixed"; set "regex" explicitly for syntax such as `foo|bar`.',
           },
           case: {
             type: "string",
@@ -55,8 +59,9 @@ export const searchTool: Tool = {
           path: {
             type: "string",
             description:
-              "Subdirectory to search within, relative to the workspace root. " +
-              "Use an activated skill resource URI like skill://name/path to search bundled skill files. " +
+              "Directory to search within, relative to the workspace root; file paths are invalid. " +
+              'To search one file, use its parent directory here and its filename in `globs` (for example, path `src` with globs ["main.ts"]). ' +
+              "Use an activated skill resource directory URI like skill://name/path to search bundled skill files. " +
               "Defaults to the whole workspace.",
           },
           globs: {

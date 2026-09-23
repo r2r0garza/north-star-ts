@@ -1,6 +1,4 @@
-import { readFileSync } from "fs"
-import { resolve } from "path"
-import { describe, expect, it, vi } from "vitest"
+import { describe, expect, it } from "vitest"
 import {
   buildClaudeArgs,
   normalizeClaudeModel,
@@ -87,29 +85,59 @@ describe("Claude Code CLI adapter", () => {
     ])
   })
 
-  it("parses the captured JSON result", () => {
-    const fixture = readFileSync(
-      resolve(process.cwd(), "cli_probes/claude/01-json.stdout"),
-      "utf8"
-    )
+  it("parses a final result", () => {
     const state: ClaudeParseState = {}
-    parseClaudeEvent(JSON.parse(fixture), vi.fn(), state)
+    parseClaudeEvent(
+      {
+        type: "result",
+        session_id: "11111111-1111-4111-8111-111111111111",
+        result: "CLAUDE_PROBE_OK",
+        is_error: false,
+      },
+      () => {},
+      state
+    )
     expect(state.sessionId).toBe("11111111-1111-4111-8111-111111111111")
     expect(state.finalText).toBe("CLAUDE_PROBE_OK")
     expect(state.error).toBeUndefined()
   })
 
-  it("parses text, tool activity, output, and final result from JSONL", () => {
-    const lines = readFileSync(
-      resolve(process.cwd(), "cli_probes/claude/02-stream-tool.stdout"),
-      "utf8"
-    )
-      .trim()
-      .split(/\r?\n/)
+  it("parses text, tool activity, output, and final result from stream events", () => {
     const events: CliTurnEvent[] = []
     const state: ClaudeParseState = {}
-    for (const line of lines) {
-      parseClaudeEvent(JSON.parse(line), (event) => events.push(event), state)
+    const stream = [
+      {
+        type: "assistant",
+        message: {
+          content: [
+            {
+              type: "tool_use",
+              id: "tool-1",
+              name: "Bash",
+              input: { command: "printf CLAUDE_TOOL_OK" },
+            },
+          ],
+        },
+      },
+      {
+        type: "user",
+        message: {
+          content: [
+            { type: "tool_result", tool_use_id: "tool-1", content: "unused" },
+          ],
+        },
+        tool_use_result: { stdout: "CLAUDE_TOOL_OK" },
+      },
+      {
+        type: "assistant",
+        message: {
+          content: [{ type: "text", text: "CLAUDE_STREAM_PROBE_OK" }],
+        },
+      },
+      { type: "result", result: "CLAUDE_STREAM_PROBE_OK", is_error: false },
+    ]
+    for (const event of stream) {
+      parseClaudeEvent(event, (event) => events.push(event), state)
     }
     expect(events).toEqual(
       expect.arrayContaining([

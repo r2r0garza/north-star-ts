@@ -86,6 +86,7 @@ import {
 import { containerNameForConversation } from "./env/container"
 import { flagForReworkTool } from "./tools/flag_for_rework"
 import { dashboardWriteTool } from "./tools/dashboard_write"
+import { dashboardReadTool } from "./tools/dashboard_read"
 import { loadSystemPrompt } from "./system-prompt"
 import { logSystemPrompt } from "./prompt-log"
 import { buildIndexSummary } from "../index/summary"
@@ -1260,6 +1261,10 @@ export async function runAgentLoop(
       // todo_write), withheld in plan mode as a side-effecting save. Subject to
       // the agent tool allowlist via its `dashboard` category.
       ...(showTodos && !planMode ? [dashboardWriteTool.definition] : []),
+      // dashboard_read (plan 033.4): same modes as dashboard_write but kept in
+      // plan mode — it only reads cached widget data. Subject to the allowlist
+      // via the `dashboard` or `dashboard_read` category.
+      ...(showTodos ? [dashboardReadTool.definition] : []),
       // Plan-mode tools: the only write (write_plan) + the approval handoff.
       ...(planMode
         ? [writePlanTool.definition, presentPlanTool.definition]
@@ -1499,8 +1504,9 @@ export async function runAgentLoop(
   }
 
   // Rolling conversation summary (plan 019): a compact digest of earlier turns.
-  // Generated out of band by the `summarize` task; its exact coverage boundary
-  // below determines where verbatim history resumes.
+  // Generated out of band by the `summarize` task; its coverage boundary rides on
+  // the section (`replacesHistoryThrough`) so the builder, which never drops it,
+  // decides where verbatim history resumes.
   // Highest-priority section (last dropped). Conversation memory applies to
   // every mode, including Chat, independently of the available toolset.
   const summary = summarySection(conversationId)
@@ -1603,7 +1609,6 @@ export async function runAgentLoop(
   const messages: any[] = contextBuilder.build(conversationId, {
     baseSystemPrompt,
     sections,
-    historyAfterSeq: summary?.coversThrough,
     tokenBudget:
       settingsService.getIndexing().summarizeTokenThreshold || undefined,
   })
@@ -2536,19 +2541,27 @@ export async function runAgentLoop(
     }
     if (error instanceof ModelRequestRetryExhaustedError) {
       console.error("Model request retry budget exhausted:", error)
+      turnWillRetry = error.retryable
       const failure =
         taskId || opts.processRunId || opts.processPhaseRunId
           ? agentFailure({
               code: "model_request_retry_exhausted",
               stage: "model_request",
               message: error.message,
+              retryable: error.retryable,
               taskId,
               processRunId: opts.processRunId,
               processPhaseRunId: opts.processPhaseRunId,
               cause: error.name,
             })
           : undefined
-      return failTurn(conversationId, error.message, false, undefined, failure)
+      return failTurn(
+        conversationId,
+        error.message,
+        error.retryable,
+        undefined,
+        failure
+      )
     }
     console.error(
       "Agent loop failed:",

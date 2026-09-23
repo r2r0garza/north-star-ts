@@ -28,9 +28,12 @@ export type CompletionAttemptEvent =
   | { type: "rollback"; attemptId: string; retrying: boolean }
 
 export class ModelRequestRetryExhaustedError extends Error {
-  constructor(message: string) {
+  readonly retryable: boolean
+
+  constructor(message: string, options?: { retryable?: boolean }) {
     super(message)
     this.name = "ModelRequestRetryExhaustedError"
+    this.retryable = options?.retryable === true
   }
 }
 
@@ -519,6 +522,11 @@ export async function createCompletionRoundWithRetry(input: {
   const message =
     lastError instanceof Error ? lastError.message : String(lastError)
   throw new ModelRequestRetryExhaustedError(
-    `Model request failed after ${attemptsUsed} attempts: ${message}`
+    `Model request failed after ${attemptsUsed} attempts: ${message}`,
+    {
+      retryable:
+        !(lastError instanceof ModelResponseValidationError) &&
+        isTransientError(lastError),
+    }
   )
 }

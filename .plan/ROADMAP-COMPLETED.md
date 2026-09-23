@@ -1,5 +1,91 @@
 # Roadmap — Completed
 
+- **`083` — Per-agent runtime override UI.** Completed in this branch. Each phase-pool agent in the Process
+  builder now has an inline "Agent worker runtime" picker (reusing `RuntimePicker`) that writes
+  `runtimeConfig.worker` on `process_phase_agents`; Inherit clears it to `null`, a deleted provider account
+  degrades to its raw ids, and the control is hidden on sub-process phases and when no providers exist. The
+  save path did not exist, so a narrow `updatePhaseAgent` / `db:processes:agents:update` / `agents.update`
+  route was added (runtime only; skills/tools/identity untouched). Also fixed a leak the plan did not
+  anticipate: `resolveRuntime`'s worker fallback plus the decomposer/validator passing the phase agent would
+  have applied an agent's worker override to those orchestration slots, so the agent override is now
+  worker-slot only. Precedence (agent → phase → run → source/global) is covered by a service test with
+  `phase_agent` snapshot source and a validator no-leak regression, plus repository and builder UI tests.
+  `pnpm typecheck`, the full `pnpm test` suite and `pnpm build` pass; manual `pnpm dev` validation was not
+  run.
+- **`033.4` — Agent-readable live dashboards.** Completed in this branch, after the required discussion
+  (decisions are recorded in the plan). Added the read-only `dashboard_read` tool
+  (`TOOL_EFFECTS.readOnlyParallel`). With no ID it lists dashboards (at most 100, pinned first, with
+  widget counts from a new `countWidgetsByDashboard` query and explicit truncation). With a `dashboardId`
+  it joins each widget's render config to its latest cache row, including `status`/`error`/`fetchedAt`,
+  a `no_data` state and `readAt`. It never refreshes. Recipes, captured paths and layout are omitted.
+  Output is deterministically bounded: a 32,000-byte widget budget filled in position order, 50 rows per
+  widget, 4,000-byte `_omitted` markers per item, a contiguous `omittedWidgets` tail,
+  `nextRowOffset`, and `widgetIds`/single-widget `rowOffset` paging. It is offered in every non-Chat mode
+  including plan mode. The `dashboard` category now grants read and write, and a new read-only
+  `dashboard_read` category is exposed in the agent editor. Focused SQLite tests cover discovery, the
+  joins, freshness, omission, the exact budget boundary, markers, argument validation and
+  non-mutation. Integration tests cover the offering policy across Chat, interactive, plan mode and
+  agent categories. `pnpm typecheck`, the roadmap verifier and all 37 SQLite suites (under Electron's
+  Node) pass. The ordinary suite still fails only the four pre-existing CLI parser tests whose
+  `cli_probes` fixtures are missing.
+- **`097` — Transcript render boundaries and measured virtualization.** Completed in this branch. Extracted
+  memoized settled-transcript, settled-row, live-turn, and live-segment components from `App.tsx`; memoized the
+  displayed timeline on live-turn presence, routed changed-file callbacks through stable ref-backed wrappers, and
+  kept untouched live tool segments referentially stable. A temporary profiling probe showed per-delta renderer
+  work falling from ~24 ms to ~0.9 ms at 300 settled rows and from ~88 ms to ~1 ms at 1,000 rows, flat in
+  conversation length, so virtualization was deliberately not pursued: `content-visibility: auto` already bounds
+  off-screen paint while preserving browser find, in-conversation find, selection, and scroll anchoring. Added
+  focused render-count coverage for settled rows, live segments, anchors, find propagation, and markers. The
+  7-test focused suite, `pnpm typecheck`, formatting checks, and `pnpm build` pass; the ordinary suite remains
+  blocked only by the four pre-existing CLI parser tests whose ignored `cli_probes` fixtures are absent.
+- **`103` — Search conversations by title and transcript content.** Completed in this branch. Added a
+  tooltip-backed search action between new-conversation and new-project, plus a focused accessible command
+  dialog with debounced bounded requests, stale-response suppression, server-order keyboard selection,
+  loading/empty/error states, safe snippet highlighting, exclusion of the currently open conversation, and
+  mode-aware navigation through the existing selection callback. Selecting a result opens the conversation at the bottom of its transcript, including
+  when the conversation is already active. Main-process search Unicode-normalizes and bounds terms/results, ranks title matches
+  before FTS transcript matches, collapses hits by conversation, shares the sidebar's worker-transcript
+  exclusion, restricts transcript rows to user/assistant roles, and verifies hits against visible message
+  content so serialized tool-call arguments cannot leak into results. Added repository and preload bridge
+  regressions. Formatting, preload tests, `pnpm typecheck`, `pnpm build`, and roadmap verification pass;
+  SQLite-backed execution is blocked locally by the existing Electron/Node `better-sqlite3` ABI mismatch,
+  and the ordinary suite remains blocked by four pre-existing CLI fixture tests.
+- **`093` — Conversation message copy actions and timestamps.** Completed in this branch. Added a reserved
+  metadata/action row beneath every primary user and assistant text message, with always-visible local semantic
+  timestamps, hover/focus-revealed copy actions, exact source copying, non-shifting success feedback, and
+  recoverable clipboard failures. Copy actions have keyboard focus access and an always-exposed no-hover
+  fallback. Persisted rows retain database timestamps;
+  optimistic user and local error messages capture creation time once; and live responses capture their first
+  visible-text time while copying text coherently across interleaved tool activity. The final assistant text is
+  identified across newer tools and user messages, while active live text takes over that status. Added focused
+  timeline, live-message, formatting, visibility, clipboard success, and clipboard failure coverage. The
+  15-test focused suite, formatting checks, `pnpm typecheck`, and `pnpm build` pass; the ordinary suite remains
+  blocked only by the four pre-existing CLI parser tests whose ignored `cli_probes` fixtures are absent.
+- **`096` — Leak-free command-session settlement waits.** Completed in this branch. Command and diagnostic
+  sessions now own one idempotent, first-exit-wins settlement promise; bounded write, compatibility,
+  initial-yield, and termination waits race that shared signal without adding backend listeners and always
+  clear their delay timers. Abort cleanup also follows settlement, and graceful interrupt exits no longer
+  receive a redundant kill while no-exit and timeout races retain their prior bounds and statuses. Added
+  controllable-handle coverage for listener baselines, timer-first and exit-first waits, graceful and
+  escalated termination, duplicate exits, completion deduplication, and abort cleanup. The 35-test command
+  suite, 9-test diagnostics suite, formatting checks, and `pnpm typecheck` pass; the ordinary suite remains
+  blocked only by the four pre-existing CLI parser tests whose ignored `cli_probes` fixtures are absent.
+- **`095` — Lightweight Markdown rendering while streaming.** Completed in this branch. Added an explicit
+  settled-by-default Markdown mode and opted only active live transcript segments into a lightweight streaming
+  configuration. Live Markdown retains GFM, language classes, horizontally scrollable code-block chrome, and
+  exact-source copy while skipping syntax highlighting and Mermaid mounts; persisted and secondary consumers
+  retain highlighted code and rendered diagrams. Added focused coverage for both modes, Mermaid suppression and
+  settlement, exact copying, GFM parity, and the settled default. The focused 10-test suite, `pnpm typecheck`,
+  formatting checks, and `pnpm build` pass; the ordinary suite is otherwise green but remains blocked by four
+  pre-existing CLI parser tests whose ignored `cli_probes` fixtures are absent from this checkout.
+- **`094` — Context history tail query.** Completed in this branch. Added a strict, indexed
+  `conversation_id = ? AND seq > ?` repository query and routed summarized ContextBuilder history
+  through it, avoiding loads and JSON parsing for messages already replaced by the rolling summary.
+  Missing boundaries still replay complete history, while zero boundaries use the bounded path.
+  Added independently observable builder-path regressions and SQLite-backed strict-boundary,
+  conversation-isolation, ordering, empty-tail, and tool-call mapping coverage. Focused builder tests
+  and typecheck pass; SQLite execution remains blocked locally by the pre-existing Electron/Node
+  `better-sqlite3` ABI mismatch.
 - **`086` — Experimental Codex subscription backend.** Completed in `41b38be` with subsequent model,
   retry, and UI updates. Added the opt-in `codex_subscription` provider and `codex_responses` transport,
   main-process credential/auth handling, fixed model catalog and provider settings, runtime/provider

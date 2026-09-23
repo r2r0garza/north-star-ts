@@ -1,10 +1,19 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react"
 import {
   ArrowLeft,
   Bot,
   ChevronRight,
   Circle,
   CheckCircle2,
+  Cpu,
   Download,
   FileText,
   XCircle,
@@ -117,6 +126,7 @@ import {
 import { toast } from "sonner"
 import { cn, formatRelativeTime } from "@/lib/utils"
 import { agentDisplay, agentRunTitle } from "@/lib/agent-display"
+import { runtimeBadgeDisplay } from "@/lib/runtime-display"
 import type {
   AgentSummary,
   AccountWithModels,
@@ -534,6 +544,31 @@ function AgentIdentityBadge({
   )
 }
 
+// The provider catalog the run monitor resolves snapshot account ids against.
+// Context rather than props: phase rows nest through sub-process runs several
+// levels deep, and each level would otherwise have to forward it.
+export const RuntimeProvidersContext = createContext<AccountWithModels[]>([])
+
+// The provider/model a phase run's worker actually ran with, from its persisted
+// runtime snapshot (not the agent's own source badge). Renders nothing for
+// historical runs without a snapshot, so those keep their legacy row.
+export function RuntimeBadge({ phaseRun }: { phaseRun: ProcessPhaseRun }) {
+  const providers = useContext(RuntimeProvidersContext)
+  const display = runtimeBadgeDisplay(phaseRun.runtimeSnapshot, providers)
+  if (!display) return null
+
+  return (
+    <Badge
+      variant="outline"
+      className="h-5 max-w-48 min-w-0 gap-1 pl-1.5 text-[10px]"
+      title={display.title}
+    >
+      <Cpu className="size-3 shrink-0 text-muted-foreground" />
+      <span className="min-w-0 truncate">{display.label}</span>
+    </Badge>
+  )
+}
+
 export function ProcessScreen({ onClose }: { onClose: () => void }) {
   const [definitions, setDefinitions] = useState<ProcessDefinition[] | null>(
     null
@@ -761,13 +796,15 @@ export function ProcessScreen({ onClose }: { onClose: () => void }) {
               onDefinitionChanged={loadDefinitions}
             />
           ) : (
-            <RunMonitor
-              key={selected.id}
-              definition={selected}
-              activeRunId={activeRunId}
-              providerModels={providerModels}
-              onSelectRun={setActiveRunId}
-            />
+            <RuntimeProvidersContext.Provider value={providerModels}>
+              <RunMonitor
+                key={selected.id}
+                definition={selected}
+                activeRunId={activeRunId}
+                providerModels={providerModels}
+                onSelectRun={setActiveRunId}
+              />
+            </RuntimeProvidersContext.Provider>
           )}
         </div>
       ) : (
@@ -1424,6 +1461,22 @@ function PhaseCard({
     }
   }
 
+  // A sub-process phase never runs its pool as workers (a fan-out one only uses
+  // the pool to decompose), so there is no worker runtime to override.
+  const showAgentRuntime = providerModels.length > 0 && !phase.subprocessId
+
+  async function updatePoolAgentRuntime(
+    id: string,
+    runtimeConfig: ProcessRuntimeConfig | null
+  ) {
+    try {
+      await window.cowork.db.processes.agents.update(id, { runtimeConfig })
+      onChanged()
+    } catch (err) {
+      toast.error(`Could not update agent runtime: ${err}`)
+    }
+  }
+
   async function removePoolAgent(id: string) {
     try {
       await window.cowork.db.processes.agents.delete(id)
@@ -1596,70 +1649,41 @@ function PhaseCard({
           {!phase.subprocessId && (
             <div className="space-y-2 text-xs">
               <label className="flex items-center gap-2">
-                <Switch
-                  aria-label="Validated completion"
-                  checked={phase.completionContract?.policy === "validated"}
-                  onCheckedChange={(checked) =>
+                <span className="text-muted-foreground">Completion policy</span>
+                <Select
+                  value={phase.completionContract?.policy ?? "legacy"}
+                  onValueChange={(policy) =>
                     patchPhase({
-                      completionContract: checked
-                        ? {
-                            policy: "validated",
-                            version: 1,
-                            requiredArtifacts: [],
-                          }
-                        : { policy: "legacy" },
+                      completionContract:
+                        policy === "validated"
+                          ? {
+                              policy: "validated",
+                              version: 1,
+                              requiredArtifacts: [],
+                            }
+                          : { policy: "legacy" },
                     })
                   }
-                />
-                {phase.completionContract?.policy === "validated"
-                  ? "Validated completion v1"
-                  : "Legacy completion: an ended turn counts as success"}
+                >
+                  <SelectTrigger
+                    size="sm"
+                    className="text-xs"
+                    aria-label="Completion policy"
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="legacy">End of turn</SelectItem>
+                    <SelectItem value="validated">Validate completion</SelectItem>
+                  </SelectContent>
+                </Select>
               </label>
               <p className="text-muted-foreground">
-                Changes apply to new runs. Existing runs retain their recorded
-                policy.
+                {phase.completionContract?.policy === "validated"
+                  ? "Requires a completed, blocked, or failed outcome with evidence."
+                  : "A phase succeeds when its turn ends."} Changes apply to new
+                runs. Existing runs retain their recorded policy.
               </p>
-              {phase.completionContract?.policy === "validated" && (
-                <label className="block space-y-1">
-                  <span>
-                    Required workspace files (one relative path per line)
-                  </span>
-                  <Textarea
-                    key={JSON.stringify(
-                      phase.completionContract.requiredArtifacts
-                    )}
-                    aria-label="Required workspace files"
-                    defaultValue={phase.completionContract.requiredArtifacts.join(
-                      "\n"
-                    )}
-                    onBlur={(e) => {
-                      const requiredArtifacts = e.target.value
-                        .split("\n")
-                        .map((s) => s.trim())
-                        .filter(Boolean)
-                      if (
-                        JSON.stringify(requiredArtifacts) !==
-                        JSON.stringify(
-                          phase.completionContract?.policy === "validated"
-                            ? phase.completionContract.requiredArtifacts
-                            : []
-                        )
-                      )
-                        patchPhase({
-                          completionContract: {
-                            policy: "validated",
-                            version: 1,
-                            requiredArtifacts,
-                          },
-                        })
-                    }}
-                  />
-                  <span className="text-muted-foreground">
-                    Checks file presence. Use a validator for semantic review.
-                    Fan-out checks apply to every child.
-                  </span>
-                </label>
-              )}
             </div>
           )}
 
@@ -2008,16 +2032,46 @@ function PhaseCard({
                   </span>
                 )}
               </span>
-              <div className="flex flex-wrap items-center gap-1.5">
+              <div
+                className={cn(
+                  showAgentRuntime
+                    ? "flex flex-col gap-2"
+                    : "flex flex-wrap items-center gap-1.5"
+                )}
+              >
                 {pool.map((a) => {
                   const catalogAgent = agentsByValue.get(a.agentName)
-                  return (
+                  const badge = (
                     <AgentIdentityBadge
                       key={a.id}
                       value={a.agentName}
                       metadata={catalogAgent}
                       onRemove={() => removePoolAgent(a.id)}
                     />
+                  )
+                  if (!showAgentRuntime) return badge
+                  return (
+                    <div
+                      key={a.id}
+                      className="flex flex-wrap items-end gap-x-3 gap-y-1"
+                    >
+                      {badge}
+                      <RuntimePicker
+                        label="Agent worker runtime"
+                        providers={providerModels}
+                        value={a.runtimeConfig?.worker}
+                        onChange={(selection) =>
+                          updatePoolAgentRuntime(
+                            a.id,
+                            nextRuntimeConfig(
+                              a.runtimeConfig,
+                              "worker",
+                              selection
+                            )
+                          )
+                        }
+                      />
+                    </div>
                   )
                 })}
                 {pool.length === 0 && (
@@ -2026,6 +2080,12 @@ function PhaseCard({
                   </span>
                 )}
               </div>
+              {showAgentRuntime && pool.length > 0 && (
+                <p className="text-[10px] text-muted-foreground">
+                  An agent runtime overrides the phase and run defaults for that
+                  agent only. Inherit falls back to the phase, then the run.
+                </p>
+              )}
               {addable.length > 0 ? (
                 // Type-to-filter agent picker (mirrors App.tsx's agent combobox).
                 // It's an action picker — selecting adds to the pool and the value
@@ -3017,6 +3077,7 @@ function PhaseRunItem({
         {phaseRun.agentName && (
           <AgentIdentityBadge value={phaseRun.agentName} />
         )}
+        <RuntimeBadge phaseRun={phaseRun} />
         <PhaseStatusLabel status={displayStatus} />
       </div>
 
@@ -3120,6 +3181,7 @@ function PhaseRunItem({
                   <StatusIcon status={c.status} />
                   <span className="min-w-0 flex-1 truncate">{childName}</span>
                   {c.agentName && <AgentIdentityBadge value={c.agentName} />}
+                  <RuntimeBadge phaseRun={c} />
                   <PhaseStatusLabel status={c.status} />
                 </div>
                 {/* This sub-task's produced files (plan 030b). */}
@@ -4285,6 +4347,7 @@ function SubProcessNestedRun({
                   <StatusIcon status={displayStatus} />
                   <span className="min-w-0 flex-1 truncate">{runName}</span>
                   {pr.agentName && <AgentIdentityBadge value={pr.agentName} />}
+                  <RuntimeBadge phaseRun={pr} />
                   <PhaseStatusLabel status={displayStatus} />
                 </div>
                 {/* An approve gate raised inside this nested run (plan 038.2). */}
@@ -4345,6 +4408,7 @@ function SubProcessNestedRun({
                       {c.agentName && (
                         <AgentIdentityBadge value={c.agentName} />
                       )}
+                      <RuntimeBadge phaseRun={c} />
                       <PhaseStatusLabel status={c.status} />
                     </div>
                     {/* A per-child rework flag a nested on_each_subtask instance

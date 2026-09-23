@@ -34,6 +34,18 @@ beforeEach(() => {
   electron.removeListener.mockClear()
 })
 
+describe("preload database bridge", () => {
+  it("forwards bounded conversation search arguments", async () => {
+    await electron.api.db.conversations.search("release notes", { limit: 12 })
+
+    expect(electron.invoke).toHaveBeenCalledWith(
+      "db:conversations:search",
+      "release notes",
+      { limit: 12 }
+    )
+  })
+})
+
 describe("preload shared subscriptions", () => {
   it("keeps one task subscription until the last renderer consumer leaves", () => {
     const stopA = electron.api.tasks.onEvent(vi.fn())

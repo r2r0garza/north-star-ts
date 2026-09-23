@@ -277,11 +277,15 @@ function BrowserSlot({ active }: { active: boolean }) {
 // IPC the separate window's chrome uses.
 function BrowserPanel({
   embedded,
+  tabPickerOpen,
   onPoppedOutChange,
 }: {
   // Whether the native view should be embedded here (panel open + not obscured +
   // surface is "sidebar"). Gates BrowserSlot's bounds reporting.
   embedded: boolean
+  // Native WebContentsViews always paint above DOM portals. Reserve only the
+  // vertical area used by the open tab picker instead of hiding the whole page.
+  tabPickerOpen: boolean
   // Reports pop-out toggles up so the Shell can collapse the panel when the
   // browser detaches into its own window (and re-open when it docks back).
   onPoppedOutChange: (poppedOut: boolean) => void
@@ -400,7 +404,10 @@ function BrowserPanel({
           </button>
         </div>
       ) : (
-        <BrowserSlot active={embedded} />
+        <>
+          {tabPickerOpen && <div className="h-16 shrink-0" />}
+          <BrowserSlot active={embedded} />
+        </>
       )}
     </div>
   )
@@ -468,6 +475,7 @@ export function ActivityPanel({
   onWidthChange?: (width: number) => void
 }) {
   const [browserWidth, setBrowserWidth] = React.useState(readBrowserWidth)
+  const [tabPickerOpen, setTabPickerOpen] = React.useState(false)
   const [selectedFileByWorkspace, setSelectedFileByWorkspace] = React.useState<
     Record<string, string | null>
   >({})
@@ -513,7 +521,7 @@ export function ActivityPanel({
   const activeKind = activeTab?.kind ?? null
   const filesTabOpen = tabs.some((tab) => tab.kind === "files")
   // The native view is embedded here only when its tab is genuinely visible and
-  // nothing is drawing over it.
+  // nothing outside the panel is drawing over it.
   const embedded = open && activeKind === "browser" && !browserObscured
   const titleBelowChrome = reserveWindowControls && activeKind === "info"
 
@@ -524,7 +532,7 @@ export function ActivityPanel({
   const width = `${browserWidth}px`
   const tabLabel = (kind: SidebarTabKind) => SIDEBAR_TAB_LABELS[kind]
   const tabPicker = (className?: string) => (
-    <DropdownMenu>
+    <DropdownMenu open={tabPickerOpen} onOpenChange={setTabPickerOpen}>
       <DropdownMenuTrigger asChild>
         <button
           type="button"
@@ -640,6 +648,7 @@ export function ActivityPanel({
             <div className="min-h-0 flex-1">
               <BrowserPanel
                 embedded={embedded}
+                tabPickerOpen={tabPickerOpen}
                 onPoppedOutChange={(poppedOut) =>
                   onBrowserPoppedOutChange?.(poppedOut)
                 }

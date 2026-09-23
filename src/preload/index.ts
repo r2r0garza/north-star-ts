@@ -6,6 +6,7 @@ import type {
   Approval,
   ApprovalStatus,
   Conversation,
+  ConversationSearchResult,
   FailureContext,
   Message,
   Mode,
@@ -943,6 +944,10 @@ const api = {
         ipcRenderer.invoke("db:conversations:list", opts) as Promise<
           Conversation[]
         >,
+      search: (query: string, opts?: { limit?: number }) =>
+        ipcRenderer.invoke("db:conversations:search", query, opts) as Promise<
+          ConversationSearchResult[]
+        >,
       get: (id: string) =>
         ipcRenderer.invoke(
           "db:conversations:get",
@@ -1213,6 +1218,15 @@ const api = {
             "db:processes:agents:create",
             input
           ) as Promise<ProcessPhaseAgent>,
+        update: (
+          id: string,
+          patch: { runtimeConfig?: ProcessRuntimeConfig | null }
+        ) =>
+          ipcRenderer.invoke(
+            "db:processes:agents:update",
+            id,
+            patch
+          ) as Promise<ProcessPhaseAgent | undefined>,
         list: (phaseId: string) =>
           ipcRenderer.invoke("db:processes:agents:list", phaseId) as Promise<
             ProcessPhaseAgent[]
@@ -1647,7 +1661,7 @@ const api = {
       ipcRenderer.invoke(
         "providers:debugCodexSubscriptionModels",
         id
-      ) as Promise<{ ok: boolean; error?: string }>,
+      ) as Promise<{ ok: boolean; paths?: string[]; error?: string }>,
     reorder: (orderedIds: string[]) =>
       ipcRenderer.invoke("providers:reorder", orderedIds) as Promise<
         AccountView[]
@@ -1794,6 +1808,7 @@ export type {
   Approval,
   ApprovalStatus,
   Conversation,
+  ConversationSearchResult,
   FailureContext,
   Message,
   Mode,

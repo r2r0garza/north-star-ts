@@ -56,6 +56,7 @@ interface AgentCommandSession {
   cleanup?: NodeJS.Timeout
   settled: Promise<void>
   resolveSettled: () => void
+  didSettle: boolean
   completionInbox?: CommandCompletionInbox
   completionOwner?: CommandCompletionOwner
 }
@@ -322,7 +323,7 @@ export async function runShellCompatibility(
   if ("error" in result) return result.error
 
   while (result.session.status === "running") {
-    await waitForExitOrDelay(result.session, 100)
+    await waitForSettlementOrDelay(result.session, 100)
   }
   const output = renderSince(result.session, 0, MAX_OUTPUT_BYTES)
   const status = result.session.timedOut
@@ -471,7 +472,7 @@ async function startCommand(
   if (ctx.signal) {
     if (ctx.signal.aborted) await terminateSession(session)
     else ctx.signal.addEventListener("abort", onAbort, { once: true })
-    session.handle.onExit(() =>
+    void session.settled.then(() =>
       ctx.signal?.removeEventListener("abort", onAbort)
     )
   }
@@ -522,6 +523,7 @@ function createSession(input: {
     cleanupError: undefined,
     settled,
     resolveSettled,
+    didSettle: false,
     completionInbox: input.completion?.inbox,
     completionOwner: input.completion?.owner,
     timeout: setTimeout(() => {
@@ -578,6 +580,8 @@ function appendOutput(
 }
 
 function settleSession(session: AgentCommandSession, exit: CommandExit): void {
+  if (session.didSettle) return
+  session.didSettle = true
   clearTimeout(session.timeout)
   session.exitCode = exit.exitCode
   session.signal = exit.signal
@@ -670,10 +674,10 @@ async function terminateSession(session: AgentCommandSession): Promise<void> {
   if (session.status !== "running") return
   session.status = "terminated"
   session.handle.interrupt()
-  await waitForExitOrDelay(session, TERMINATE_GRACE_MS)
-  if ((session.status as CommandStatus) === "terminated") {
+  await waitForSettlementOrDelay(session, TERMINATE_GRACE_MS)
+  if (!session.didSettle && session.status === "terminated") {
     session.handle.kill()
-    await waitForExitOrDelay(session, 500)
+    await waitForSettlementOrDelay(session, 500)
   }
 }
 
@@ -874,7 +878,7 @@ async function waitForSettle(
   ms: number
 ): Promise<void> {
   if (session.status !== "running") return
-  await waitForExitOrDelay(session, ms)
+  await waitForSettlementOrDelay(session, ms)
 }
 
 async function waitForSettled(session: AgentCommandSession): Promise<void> {
@@ -882,20 +886,25 @@ async function waitForSettled(session: AgentCommandSession): Promise<void> {
   await session.settled
 }
 
-function waitForExitOrDelay(
+async function waitForSettlementOrDelay(
   session: AgentCommandSession,
   ms: number
 ): Promise<void> {
-  if (session.status !== "running" && session.status !== "terminated") {
-    return Promise.resolve()
+  if (
+    session.didSettle ||
+    (session.status !== "running" && session.status !== "terminated")
+  ) {
+    return
   }
-  return new Promise((resolve) => {
-    const timer = setTimeout(resolve, ms)
-    session.handle.onExit(() => {
-      clearTimeout(timer)
-      resolve()
-    })
+  let timer: NodeJS.Timeout | undefined
+  const delay = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, ms)
   })
+  try {
+    await Promise.race([session.settled, delay])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
 }
 
 function timeoutArg(value: unknown): number {

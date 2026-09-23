@@ -15,8 +15,11 @@ import {
   setConversationTitleIfUntitled,
   subscribeConversationChanges,
   listConversations,
+  searchConversations,
+  deleteConversation,
 } from "./conversations"
 import { createTask } from "./tasks"
+import { appendMessage, deleteMessage } from "./messages"
 
 beforeEach(() => {
   if (!sqliteLoads) return
@@ -95,6 +98,131 @@ describe.skipIf(!sqliteLoads)(
     })
   }
 )
+
+describe.skipIf(!sqliteLoads)("searchConversations", () => {
+  it("searches titles case-insensitively and ranks title matches before content", () => {
+    const content = createConversation({ mode: "chat", title: "Notes" })
+    appendMessage({
+      conversationId: content.id,
+      role: "user",
+      content: "We should discuss Project Aurora tomorrow.",
+    })
+    const title = createConversation({
+      mode: "interactive",
+      title: "Project Aurora",
+    })
+
+    const results = searchConversations("PROJECT AUR")
+
+    expect(results.map((result) => result.conversationId)).toEqual([
+      title.id,
+      content.id,
+    ])
+    expect(results[0].matchKind).toBe("title")
+    expect(results[1].snippet).toContain("\u0001Aur\u0002ora")
+    expect(results[1].targetMessageId).toBeDefined()
+    expect(results[0].targetMessageId).toBeNull()
+  })
+
+  it("combines query terms across title and visible transcript content", () => {
+    const conversation = createConversation({
+      mode: "north_star",
+      title: "Release planning",
+    })
+    appendMessage({
+      conversationId: conversation.id,
+      role: "assistant",
+      content: "The deployment checklist is ready.",
+    })
+
+    const [result] = searchConversations("release deploy")
+
+    expect(result.conversationId).toBe(conversation.id)
+    expect(result.matchKind).toBe("title_and_content")
+  })
+
+  it("returns one result per conversation and excludes internal text", () => {
+    const visible = createConversation({ mode: "chat", title: "Visible" })
+    appendMessage({
+      conversationId: visible.id,
+      role: "user",
+      content: "needle one",
+    })
+    appendMessage({
+      conversationId: visible.id,
+      role: "assistant",
+      content: "needle two",
+    })
+    const hidden = createConversation({ mode: "chat", title: "Hidden" })
+    appendMessage({
+      conversationId: hidden.id,
+      role: "system",
+      content: "needle",
+    })
+    appendMessage({
+      conversationId: hidden.id,
+      role: "tool",
+      content: "needle",
+    })
+    appendMessage({
+      conversationId: hidden.id,
+      role: "assistant",
+      content: "Ordinary reply",
+      toolCalls: [{ id: "call", name: "tool", arguments: "needle" }],
+    })
+
+    expect(
+      searchConversations("needle").map((result) => result.conversationId)
+    ).toEqual([visible.id])
+  })
+
+  it("shares sidebar worker visibility while retaining inline todo conversations", () => {
+    const worker = createConversation({
+      mode: "interactive",
+      title: "Secret worker",
+    })
+    createTask({
+      conversationId: worker.id,
+      status: "completed",
+      input: { kind: "summarize" },
+    })
+    const inline = createConversation({
+      mode: "north_star",
+      title: "Visible marker",
+    })
+    createTask({
+      conversationId: inline.id,
+      status: "completed",
+      input: { kind: "inline_todos", todos: [] },
+    })
+
+    expect(searchConversations("worker")).toEqual([])
+    expect(searchConversations("marker")[0].conversationId).toBe(inline.id)
+  })
+
+  it("handles invalid input, clamps limits, and removes deleted rows", () => {
+    expect(searchConversations("***")).toEqual([])
+    const conversations = Array.from({ length: 55 }, (_, index) =>
+      createConversation({ mode: "chat", title: `Bounded result ${index}` })
+    )
+    expect(searchConversations("bounded", { limit: 999 })).toHaveLength(50)
+
+    const message = appendMessage({
+      conversationId: conversations[0].id,
+      role: "user",
+      content: "ephemeral transcript",
+    })
+    expect(searchConversations("ephemeral")).toHaveLength(1)
+    deleteMessage(message.id)
+    expect(searchConversations("ephemeral")).toEqual([])
+    deleteConversation(conversations[1].id)
+    expect(
+      searchConversations("result 1").some(
+        (r) => r.conversationId === conversations[1].id
+      )
+    ).toBe(false)
+  })
+})
 
 describe.skipIf(!sqliteLoads)("listConversations — sidebar visibility", () => {
   const has = (id: string) => listConversations().some((c) => c.id === id)

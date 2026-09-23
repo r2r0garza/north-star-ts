@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import { resolve } from "path"
 import { EventEmitter } from "events"
 import {
@@ -21,16 +21,23 @@ import type {
 
 class FakeCommandHandle implements CommandSessionHandle {
   private readonly events = new EventEmitter()
+  interruptCalls = 0
+  killCalls = 0
 
-  constructor(private readonly chunks: CommandChunk[]) {}
+  constructor(
+    private readonly chunks: CommandChunk[],
+    private readonly settleOnInterrupt = true,
+    private readonly settleOnKill = true
+  ) {}
+
+  get exitListenerCount(): number {
+    return this.events.listenerCount("exit")
+  }
 
   start(): void {
     setTimeout(() => {
       for (const chunk of this.chunks) this.events.emit("data", chunk)
-      this.events.emit("exit", {
-        exitCode: 0,
-        signal: null,
-      } satisfies CommandExit)
+      this.emitExit({ exitCode: 0, signal: null })
     }, 0)
   }
 
@@ -47,11 +54,21 @@ class FakeCommandHandle implements CommandSessionHandle {
   closeStdin(): void {}
 
   interrupt(): void {
-    this.events.emit("exit", { exitCode: null, signal: "SIGINT" })
+    this.interruptCalls += 1
+    if (this.settleOnInterrupt) {
+      this.emitExit({ exitCode: null, signal: "SIGINT" })
+    }
   }
 
   kill(): void {
-    this.events.emit("exit", { exitCode: null, signal: "SIGKILL" })
+    this.killCalls += 1
+    if (this.settleOnKill) {
+      this.emitExit({ exitCode: null, signal: "SIGKILL" })
+    }
+  }
+
+  emitExit(exit: CommandExit): void {
+    this.events.emit("exit", exit)
   }
 }
 
@@ -61,15 +78,20 @@ function fakeEnv(opts: {
   execOutput?: string
   spawnOutput?: string
   neverExit?: boolean
+  settleOnInterrupt?: boolean
+  settleOnKill?: boolean
 }): Environment & {
   execCommands: string[]
   spawnCommands: string[]
+  handles: FakeCommandHandle[]
 } {
   const execCommands: string[] = []
   const spawnCommands: string[] = []
+  const handles: FakeCommandHandle[] = []
   return {
     execCommands,
     spawnCommands,
+    handles,
     async resolve(path: string): Promise<string> {
       return resolve("/workspace", path || ".")
     },
@@ -108,12 +130,17 @@ function fakeEnv(opts: {
       _opts: SpawnCommandOptions
     ): Promise<CommandSessionHandle> {
       spawnCommands.push(command)
-      const handle = new FakeCommandHandle([
-        {
-          stream: "stdout",
-          data: Buffer.from(opts.spawnOutput ?? "", "utf8"),
-        },
-      ])
+      const handle = new FakeCommandHandle(
+        [
+          {
+            stream: "stdout",
+            data: Buffer.from(opts.spawnOutput ?? "", "utf8"),
+          },
+        ],
+        opts.settleOnInterrupt,
+        opts.settleOnKill
+      )
+      handles.push(handle)
       if (!opts.neverExit) handle.start()
       return handle
     },
@@ -132,7 +159,11 @@ function fakeEnv(opts: {
       throw new Error("unused")
     },
     async dispose(): Promise<void> {},
-  } as Environment & { execCommands: string[]; spawnCommands: string[] }
+  } as Environment & {
+    execCommands: string[]
+    spawnCommands: string[]
+    handles: FakeCommandHandle[]
+  }
 }
 
 function ctx(
@@ -154,6 +185,8 @@ function parsed(text: string): Record<string, unknown> {
 
 afterEach(() => {
   testDiagnosticsSessions.clear()
+  vi.useRealTimers()
+  vi.restoreAllMocks()
 })
 
 describe("workspace diagnostics and test tools", () => {
@@ -255,6 +288,120 @@ describe("workspace diagnostics and test tools", () => {
         ctx(env, { conversationId: "other" })
       )
     ).resolves.toContain("ERROR[forbidden]")
+  })
+
+  it("keeps one exit listener after an initial timer-first yield", async () => {
+    vi.useFakeTimers()
+    const env = fakeEnv({
+      packageJson: { scripts: { test: "vitest run" } },
+      neverExit: true,
+    })
+    const pending = runTestsTool.execute({ yield_ms: 100 }, ctx(env))
+
+    await vi.advanceTimersByTimeAsync(100)
+    const started = parsed(await pending)
+
+    expect(started.status).toBe("running")
+    expect(env.handles[0].exitListenerCount).toBe(1)
+    env.handles[0].emitExit({ exitCode: 0, signal: null })
+    const completed = parsed(
+      await getTestResultsTool.execute(
+        { session_id: started.sessionId, include_raw_evidence: true },
+        ctx(env)
+      )
+    )
+    expect(completed.status).toBe("completed")
+  })
+
+  it("uses settlement for abort cleanup and avoids kill after interrupt exit", async () => {
+    vi.useFakeTimers()
+    const controller = new AbortController()
+    const addSpy = vi.spyOn(controller.signal, "addEventListener")
+    const removeSpy = vi.spyOn(controller.signal, "removeEventListener")
+    const env = fakeEnv({
+      packageJson: { scripts: { test: "vitest run" } },
+      neverExit: true,
+    })
+    const pending = runTestsTool.execute(
+      { yield_ms: 100 },
+      ctx(env, { signal: controller.signal })
+    )
+
+    await vi.advanceTimersByTimeAsync(100)
+    const started = parsed(await pending)
+    expect(env.handles[0].exitListenerCount).toBe(1)
+
+    controller.abort()
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(env.handles[0].interruptCalls).toBe(1)
+    expect(env.handles[0].killCalls).toBe(0)
+    expect(env.handles[0].exitListenerCount).toBe(1)
+    expect(addSpy).toHaveBeenCalledWith("abort", expect.any(Function), {
+      once: true,
+    })
+    expect(removeSpy).toHaveBeenCalledWith("abort", expect.any(Function))
+    const completed = parsed(
+      await getTestResultsTool.execute(
+        { session_id: started.sessionId },
+        ctx(env)
+      )
+    )
+    expect(completed.status).toBe("terminated")
+  })
+
+  it("escalates an aborted test once after bounded grace periods", async () => {
+    vi.useFakeTimers()
+    const controller = new AbortController()
+    const env = fakeEnv({
+      packageJson: { scripts: { test: "vitest run" } },
+      neverExit: true,
+      settleOnInterrupt: false,
+      settleOnKill: false,
+    })
+    const pending = runTestsTool.execute(
+      { yield_ms: 100 },
+      ctx(env, { signal: controller.signal })
+    )
+
+    await vi.advanceTimersByTimeAsync(100)
+    await pending
+    controller.abort()
+    await vi.advanceTimersByTimeAsync(1_500)
+    expect(env.handles[0].killCalls).toBe(1)
+    expect(env.handles[0].exitListenerCount).toBe(1)
+    await vi.advanceTimersByTimeAsync(500)
+    expect(env.handles[0].killCalls).toBe(1)
+  })
+
+  it("preserves the first diagnostic exit and schedules cleanup once", async () => {
+    vi.useFakeTimers()
+    const env = fakeEnv({
+      packageJson: { scripts: { test: "vitest run" } },
+      neverExit: true,
+    })
+    const pending = runTestsTool.execute({ yield_ms: 100 }, ctx(env))
+    await vi.advanceTimersByTimeAsync(100)
+    const started = parsed(await pending)
+    const timersBeforeExit = vi.getTimerCount()
+
+    env.handles[0].emitExit({ exitCode: 3, signal: null })
+    env.handles[0].emitExit({
+      exitCode: null,
+      signal: "SIGKILL",
+      cleanupError: { path: "/second", error: "ignored" },
+    })
+    const completed = parsed(
+      await getTestResultsTool.execute(
+        { session_id: started.sessionId },
+        ctx(env)
+      )
+    )
+
+    expect(completed).toMatchObject({ exitCode: 3, signal: null })
+    expect(completed.cleanupError).toBeUndefined()
+    expect(vi.getTimerCount() - timersBeforeExit).toBe(0)
   })
 
   it("does not expose arbitrary shell when only the test category is allowed", async () => {

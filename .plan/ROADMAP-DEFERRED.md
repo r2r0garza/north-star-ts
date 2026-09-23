@@ -1,18 +1,13 @@
 # Roadmap — Deferred
 
-- **`097` — Transcript render boundaries and measured virtualization.** After `095` and overlapping `093`
-  transcript work settle, profile a reproducible long conversation. First extract memoized settled-transcript
-  and live-turn boundaries so token deltas do not reconcile unchanged rows; add variable-height virtualization
-  only if measured cost remains, with explicit scroll-anchor, selection, browser-find, expansion, and accessibility
-  behavior.
+- **`104` — Deterministic command phases.** Let a Process phase execute a persisted, user-reviewed
+  workspace command directly through the existing Environment and command-policy boundary, without an LLM
+  worker call. Persist bounded structured results for downstream phases and the monitor, and do not blindly
+  replay a command whose side effects are ambiguous after interruption.
 - **`098` — Browser network request lifecycle and idle semantics.** Activate after capturing a stale-request
   failure or when network tracking next changes. Define CDP behavior across navigation, redirects, abandonment,
   SSE, and WebSockets before choosing generations, stale sweeping, or resource exclusions; do not blindly clear
   the active map at `did-navigate` and risk false idle.
-- **`099` — Hardened host attachment reads.** In a focused filesystem-hardening pass, distinguish user
-  attachments from trusted skill resources and share a no-follow, handle-validated attachment opener across text
-  and document tools. Coordinate with `055` if active, but preserve workspace/container and packaged skill-resource
-  behavior rather than applying one host-path rule indiscriminately.
 - **`100` — Measured index import lookup optimization.** Activate only when representative large-workspace
   query plans and latency show `findImportsOf()`'s JSON expression scan is material. Compare an SQLite expression
   index with a stored module column, then adopt the smallest measured design without changing lookup semantics.

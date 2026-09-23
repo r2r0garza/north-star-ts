@@ -1,11 +1,15 @@
-import { open as hostOpen, stat as hostStat } from "fs/promises"
 import { basename, extname } from "path"
 import AdmZip from "adm-zip"
 import { LocalEnvironment } from "../env/local"
 import type { Environment, StatInfo } from "../env/types"
 import { renderMetadata, toolError, truncateUtf8Text } from "./output"
 import { TOOL_EFFECTS, type Tool, type ToolContext } from "./types"
-import { isSkillResourceUri, resolveSkillResourcePath } from "./skill_resources"
+import {
+  HostFileError,
+  openHostFile,
+  resolveReadable,
+  type Readable,
+} from "./host_files"
 
 const MAX_DOCUMENT_BYTES = 16 * 1024 * 1024
 const MAX_ZIP_ENTRIES = 512
@@ -57,10 +61,6 @@ interface ExtractedDocument {
   dispose?: () => Promise<void>
 }
 
-type Readable =
-  | { source: "env"; path: string }
-  | { source: "host"; path: string }
-
 interface ReadFilter {
   page?: number
   sheet?: string
@@ -80,45 +80,46 @@ export function supportedDocumentKind(path: string): DocumentKind | null {
   return null
 }
 
-async function resolveReadable(
-  ctx: ToolContext,
-  env: Environment,
-  path: string
-): Promise<Readable> {
-  if (isSkillResourceUri(path)) {
-    return { source: "host", path: await resolveSkillResourcePath(ctx, path) }
-  }
-  if (ctx.workspace) {
-    return { source: "env", path: await env.resolve(path) }
-  }
-  const attachments = ctx.attachments ?? []
-  const match = attachments.find((a) => a === path || basename(a) === path)
-  if (!match) {
-    throw new Error(
-      `"${path}" is not an attached file. Readable files: ${
-        attachments.map((a) => basename(a)).join(", ") || "(none)"
-      }.`
-    )
-  }
-  return { source: "host", path: match }
-}
+const oversized = (size: number) =>
+  new Error(`Document is ${size} bytes; maximum is ${MAX_DOCUMENT_BYTES}.`)
 
-async function readAllBytes(
+// Reads a whole document. Host files (attachments, skill resources) are opened
+// through the hardened opener, and the size limit is applied to the opened handle.
+async function readDocumentBytes(
   readable: Readable,
   env: Environment,
-  statInfo: StatInfo
-): Promise<Buffer> {
-  if (statInfo.size > MAX_DOCUMENT_BYTES) {
-    throw new Error(
-      `Document is ${statInfo.size} bytes; maximum is ${MAX_DOCUMENT_BYTES}.`
-    )
+  path: string
+): Promise<{ data: Buffer; size: number }> {
+  if (readable.source === "env") {
+    let info: StatInfo
+    try {
+      info = await env.stat(readable.path)
+    } catch {
+      throw new HostFileError("not_found", `No such file: ${path}`)
+    }
+    if (!info.isFile()) {
+      throw new HostFileError("not_a_file", `Not a regular file: ${path}`)
+    }
+    if (info.size > MAX_DOCUMENT_BYTES) throw oversized(info.size)
+    return { data: await env.readFile(readable.path), size: info.size }
   }
-  if (readable.source === "env") return env.readFile(readable.path)
-  const handle = await hostOpen(readable.path, "r")
+  let opened
   try {
-    return await handle.readFile()
+    opened = await openHostFile(readable.path, readable.origin)
+  } catch (error) {
+    if (error instanceof HostFileError && error.code === "not_found") {
+      throw new HostFileError("not_found", `No such file: ${path}`)
+    }
+    if (error instanceof HostFileError && error.code === "not_a_file") {
+      throw new HostFileError("not_a_file", `Not a regular file: ${path}`)
+    }
+    throw error
+  }
+  try {
+    if (opened.size > MAX_DOCUMENT_BYTES) throw oversized(opened.size)
+    return { data: await opened.handle.readFile(), size: opened.size }
   } finally {
-    await handle.close()
+    await opened.handle.close()
   }
 }
 
@@ -834,22 +835,18 @@ export const readDocumentTool: Tool = {
       return toolError("not_allowed", (error as Error).message)
     }
 
-    const statAt = (p: string): Promise<StatInfo> =>
-      readable.source === "env" ? env.stat(p) : hostStat(p)
-    let info: StatInfo
-    try {
-      info = await statAt(readable.path)
-    } catch {
-      return toolError("not_found", `No such file: ${path}`)
-    }
-    if (!info.isFile()) {
-      return toolError("not_a_file", `Not a regular file: ${path}`)
-    }
-
     let data: Buffer
+    let fileBytes: number
     try {
-      data = await readAllBytes(readable, env, info)
+      ;({ data, size: fileBytes } = await readDocumentBytes(
+        readable,
+        env,
+        path
+      ))
     } catch (error) {
+      if (error instanceof HostFileError && error.code !== "read_failed") {
+        return toolError(error.code, error.message)
+      }
       return toolError(
         "read_failed",
         `Could not read ${path}: ${(error as Error).message}`
@@ -929,7 +926,7 @@ export const readDocumentTool: Tool = {
 
     return `${finalText}\n${renderMetadata({
       type: doc.type,
-      fileBytes: info.size,
+      fileBytes,
       blockStart: filter.index,
       blocksReturned: pageBlocks.length,
       totalMatchingBlocks: matched.length,

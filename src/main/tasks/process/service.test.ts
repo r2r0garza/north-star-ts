@@ -290,6 +290,109 @@ describe.skipIf(!sqliteLoads)("ProcessService dispatch routing", () => {
     })
   })
 
+  it("phase agent runtime override beats the phase and run defaults", async () => {
+    const def = processes.createProcessDefinition({ name: "T" })
+    const phase = processes.createPhase({
+      processId: def.id,
+      key: "implement",
+      name: "Implement",
+      position: 0,
+      runtimeConfig: {
+        worker: { accountId: "phase-account", modelId: "phase-model" },
+      },
+    })
+    processes.createPhaseAgent({
+      phaseId: phase.id,
+      agentName: "builder",
+      runtimeConfig: {
+        worker: { accountId: "agent-account", modelId: "agent-model" },
+      },
+      position: 0,
+    })
+
+    const { taskId } = seedTaskRow()
+    const run = processes.createProcessRun({
+      processId: def.id,
+      sourceConversationId: null,
+      taskId,
+      objective: "build it",
+      status: "running",
+      runtimeConfig: {
+        worker: { accountId: "run-account", modelId: "run-model" },
+      },
+    })
+
+    const svc = new ProcessService(fakeRunner)
+    await svc.execute({
+      task: { id: taskId, input: { processRunId: run.id } } as never,
+      signal: new AbortController().signal,
+      emit: () => {},
+      workspace: undefined,
+    })
+
+    expect(loopCalls[0]).toMatchObject({
+      accountId: "agent-account",
+      modelId: "agent-model",
+    })
+    const phaseRun = processes
+      .listPhaseRuns({ runId: run.id, parentId: null })
+      .find((pr) => pr.phaseId === phase.id)!
+    expect(phaseRun.runtimeSnapshot).toMatchObject({
+      worker: {
+        accountId: "agent-account",
+        modelId: "agent-model",
+        source: "phase_agent",
+      },
+    })
+  })
+
+  it("keeps a phase agent's worker override out of the validator slot", async () => {
+    const def = processes.createProcessDefinition({ name: "T" })
+    const phase = processes.createPhase({
+      processId: def.id,
+      key: "build",
+      name: "Build",
+      validator: true,
+      validatorMaxIterations: 1,
+      position: 0,
+      runtimeConfig: {
+        worker: { accountId: "phase-account", modelId: "phase-model" },
+      },
+    })
+    processes.createPhaseAgent({
+      phaseId: phase.id,
+      agentName: "builder",
+      runtimeConfig: {
+        worker: { accountId: "agent-account", modelId: "agent-model" },
+      },
+      position: 0,
+    })
+    reviewReplies.push('{"approved": true}')
+
+    const { taskId } = seedTaskRow()
+    const run = processes.createProcessRun({
+      processId: def.id,
+      sourceConversationId: null,
+      taskId,
+      objective: "build it",
+      status: "running",
+    })
+    const svc = new ProcessService(fakeRunner)
+    await svc.execute({
+      task: { id: taskId, input: { processRunId: run.id } } as never,
+      signal: new AbortController().signal,
+      emit: () => {},
+      workspace: undefined,
+    })
+
+    // Worker fork first, reviewer fork second: the reviewer stays at phase scope.
+    expect(loopCalls[0]).toMatchObject({ modelId: "agent-model" })
+    expect(loopCalls[1]).toMatchObject({
+      accountId: "phase-account",
+      modelId: "phase-model",
+    })
+  })
+
   it("records the routed agent_name on a dispatch phase's run", async () => {
     // One dispatch phase with a two-agent pool (frontend, backend).
     const def = processes.createProcessDefinition({ name: "T" })

@@ -70,6 +70,7 @@ const TOOL_CATEGORIES = [
   "browser",
   "browser_advanced",
   "dashboard",
+  "dashboard_read",
   "delete",
   "diagnostics",
   "document_read",
@@ -112,7 +113,8 @@ const TOOL_CATEGORY_DESCRIPTIONS: Record<
   browser: "Navigate and interact with browser pages.",
   browser_advanced: "Evaluate JavaScript in the browser.",
   todo: "Manage todos and send todo work to the background.",
-  dashboard: "Create or update live dashboards.",
+  dashboard: "Create, update, and read live dashboards.",
+  dashboard_read: "Read saved live dashboards and their cached data.",
   agent: "Spawn permitted child agents.",
 }
 

@@ -1,6 +1,8 @@
 # PR82: Runtime-aware run monitor badges
 
-> Status: **PLANNED**. Fixes the misleading provider/model badge in the Process run monitor by rendering from `runtime_snapshot` when available.
+> Status: **COMPLETED**. Fixes the misleading provider/model badge in the Process run monitor by rendering from `runtime_snapshot` when available.
+>
+> Implementation notes: the "Claude" badge was the agent's *source* (`agentref` `sourceKind`), not a runtime, so the fix adds a separate runtime chip rather than replacing it. `runtimeBadgeDisplay` (`src/renderer/src/lib/runtime-display.ts`) resolves the worker slot's `accountId`/`modelId` against the provider catalog (account/model names, falling back to the raw model id if the account is gone) and puts the resolved source in the hover title. `RuntimeBadge` renders it on all four monitor row types (top-level, fan-out child, nested sub-process phase and child); the catalog reaches them through `RuntimeProvidersContext` instead of props threaded through the recursive nested run. Rows with no snapshot, or a default-only snapshot with no model, render no chip — the legacy row is unchanged. Manual `pnpm dev` validation (Task 5) was not run.
 
 > **For Hermes:** Implement with the `north-star-project` and `test-driven-development` skills. Do not commit unless the user explicitly asks.
 

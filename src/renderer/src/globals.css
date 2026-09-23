@@ -9,6 +9,18 @@
 
 @custom-variant dark (&:is(.dark *));
 
+mark[data-conversation-find-match][data-active="true"] {
+    background: oklch(0.75 0.18 70);
+    color: oklch(0.15 0 0);
+    outline: 2px solid oklch(0.55 0.16 65);
+}
+
+.dark mark[data-conversation-find-match][data-active="true"] {
+    background: oklch(0.68 0.16 70);
+    color: oklch(0.98 0 0);
+    outline-color: oklch(0.82 0.14 75);
+}
+
 @theme inline {
     --font-heading: var(--font-sans);
     --font-sans: var(--font-sans);
@@ -186,6 +198,28 @@
   .conversation-welcome,
   .conversation-composer {
     transition: none;
+  }
+}
+
+.conversation-message-meta__reveal {
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+}
+
+[data-slot="message"]:hover .conversation-message-meta__reveal,
+[data-slot="message"]:focus-within .conversation-message-meta__reveal,
+.conversation-message-meta__always {
+  visibility: visible;
+  opacity: 1;
+  pointer-events: auto;
+}
+
+@media (hover: none) {
+  .conversation-message-meta__reveal {
+    visibility: visible;
+    opacity: 1;
+    pointer-events: auto;
   }
 }
 

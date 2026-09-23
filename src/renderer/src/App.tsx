@@ -16,12 +16,14 @@ import {
   Bot,
   BrainCircuit,
   ChevronDown,
+  ChevronUp,
   ClipboardList,
   FileText,
   FolderOpen,
   Hand,
   MousePointerClick,
   Plus,
+  Search,
   Shield,
   Square,
   Terminal,
@@ -36,7 +38,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { Markdown } from "@/components/markdown"
 import { VIEW_TO_MODE, type View } from "@/components/sidebar"
 import {
   DropdownMenu,
@@ -49,13 +50,8 @@ import {
   MessageScroller,
   MessageScrollerViewport,
   MessageScrollerContent,
-  MessageScrollerItem,
   MessageScrollerButton,
 } from "@/components/ui/message-scroller"
-import { Message, MessageContent } from "@/components/ui/message"
-import { Bubble, BubbleContent } from "@/components/ui/bubble"
-import { Marker, MarkerIcon, MarkerContent } from "@/components/ui/marker"
-import { Spinner } from "@/components/ui/spinner"
 import {
   Tooltip,
   TooltipButton,
@@ -71,8 +67,12 @@ import {
   AttachmentActions,
   AttachmentAction,
 } from "@/components/ui/attachment"
-import { ToolGroup, ApprovalCard } from "@/components/tool-group"
-import { ChangedFilesBar } from "@/components/changed-files-bar"
+import { ApprovalCard } from "@/components/tool-group"
+import {
+  LiveTranscriptTurn,
+  SettledTranscript,
+  type LiveSegment,
+} from "@/components/transcript"
 import { QuestionPanel } from "@/components/question-panel"
 import { applyStreamAttempt } from "@/lib/live-stream"
 import {
@@ -102,6 +102,7 @@ import {
 } from "@/components/ui/combobox"
 import {
   buildTimeline,
+  latestAssistantTextKey,
   deriveLabel,
   toToolUse,
   isErrorResult,
@@ -111,6 +112,7 @@ import {
   type ToolUse,
 } from "@/lib/timeline"
 import { cn } from "@/lib/utils"
+import { firstTextTimestamp, liveMessageContent } from "@/lib/live-message"
 import { maybeNotify } from "@/lib/notify"
 import {
   EMPTY_CHAT_SUCCESS_ERROR,
@@ -126,11 +128,12 @@ import {
 } from "@/lib/agent-mode"
 import {
   INITIAL_TRANSCRIPT_SCROLL_POLICY,
-  isTranscriptAtEnd,
   recordTranscriptScroll,
+  recordTranscriptScrollIntent,
   resetTranscriptScroll,
   settleTranscriptTurn,
   transcriptRestorePosition,
+  transcriptShouldFollow,
 } from "@/lib/transcript-scroll"
 import type {
   Question,
@@ -143,22 +146,13 @@ import type {
   PickedElement,
 } from "@/types"
 
-// One ordered piece of an in-flight turn: a run of streamed assistant text, or a
-// group of tool calls. Segments are appended in the order events arrive, so the
-// live turn interleaves text and tools exactly as it happened (a preamble, its
-// tools, the next preamble, its tools, …) — matching how buildTimeline lays out
-// the settled transcript. This replaces the old flat {text, tools}, which
-// rendered every tool first and all text after, regardless of real order.
-type LiveSegment =
-  | { kind: "text"; text: string }
-  | { kind: "tools"; calls: ToolUse[] }
-
 // The live, in-flight state of one streaming turn, held per-conversation in
 // `liveTurns` until the turn settles and reconciles into the persisted timeline.
 // A pending approval lives inside a tools segment (on the matching call's
 // `approval`), so restoring a switched-away turn restores its approval card too.
 interface LiveTurn {
   segments: LiveSegment[]
+  firstTextAt: number | null
   streamCheckpoints: Record<string, LiveSegment[]>
   streamRetrying: boolean
   question: { requestId: string; questions: Question[] } | null
@@ -166,6 +160,7 @@ interface LiveTurn {
 }
 const EMPTY_LIVE: LiveTurn = {
   segments: [],
+  firstTextAt: null,
   streamCheckpoints: {},
   streamRetrying: false,
   question: null,
@@ -218,10 +213,12 @@ function agentSourceLabel(sourceKind: string, systemName: string): string {
 // last event was also text (so a token stream coalesces), otherwise starts a new
 // text segment after a tools group — which is what creates the interleaving.
 function appendLiveText(turn: LiveTurn, delta: string): LiveTurn {
+  const firstTextAt = firstTextTimestamp(turn.firstTextAt, delta)
   const last = turn.segments[turn.segments.length - 1]
   if (last?.kind === "text") {
     return {
       ...turn,
+      firstTextAt,
       segments: [
         ...turn.segments.slice(0, -1),
         { kind: "text", text: last.text + delta },
@@ -230,6 +227,7 @@ function appendLiveText(turn: LiveTurn, delta: string): LiveTurn {
   }
   return {
     ...turn,
+    firstTextAt,
     segments: [...turn.segments, { kind: "text", text: delta }],
   }
 }
@@ -287,7 +285,8 @@ function addLiveToolStart(turn: LiveTurn, call: ToolUse): LiveTurn {
 }
 
 // Update a tool call by id wherever it lives (result/status/approval), leaving
-// all other segments untouched.
+// all other segments untouched — by reference, so their memoized live renderers
+// skip the update.
 function updateLiveTool(
   turn: LiveTurn,
   id: string,
@@ -296,7 +295,7 @@ function updateLiveTool(
   return {
     ...turn,
     segments: turn.segments.map((seg) =>
-      seg.kind === "tools"
+      seg.kind === "tools" && seg.calls.some((c) => c.id === id)
         ? {
             ...seg,
             calls: seg.calls.map((c) => (c.id === id ? fn(c) : c)),
@@ -381,9 +380,16 @@ export type AppHandle = {
   prepareComposerTransition: (destination: "empty" | "populated") => void
 }
 
+export type ConversationSearchOpen = {
+  requestId: string
+  conversationId: string
+}
+
 type AppProps = {
   view: View
   conversationId: string | null
+  searchOpen: ConversationSearchOpen | null
+  onSearchOpenComplete: () => void
   // The project a fresh (uncreated) conversation will belong to. Its directory
   // (if any) is auto-adopted and locked for workspace views; project_id is
   // stamped on the conversation at create time. Null = unassigned ("No Project").
@@ -425,6 +431,8 @@ function App(
   {
     view,
     conversationId,
+    searchOpen,
+    onSearchOpenComplete,
     pendingProjectId,
     onConversationCreated,
     onConversationChanged,
@@ -552,6 +560,18 @@ function App(
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const overlayRef = useRef<HTMLDivElement>(null)
   const transcriptViewportRef = useRef<HTMLDivElement>(null)
+  const transcriptContentRef = useRef<HTMLDivElement>(null)
+  const conversationFindInputRef = useRef<HTMLInputElement>(null)
+  const [conversationFindOpen, setConversationFindOpen] = useState(false)
+  const [conversationFindQuery, setConversationFindQuery] = useState("")
+  const [conversationFindIndex, setConversationFindIndex] = useState(0)
+  const [conversationFindCount, setConversationFindCount] = useState(0)
+  const previousTranscriptScrollTopRef = useRef<number | null>(null)
+  const transcriptUserScrollRef = useRef(false)
+  const transcriptFollowingRef = useRef<{
+    conversationId: string | null
+    following: boolean
+  }>({ conversationId: null, following: true })
   const pendingTranscriptRestoreRef = useRef<{
     conversationId: string
     scrollTop: number
@@ -569,6 +589,9 @@ function App(
   // The persisted transcript, rebuilt from stored rows (text bubbles + tool
   // groups, interleaved in order). Live in-flight state is held separately.
   const [timeline, setTimeline] = useState<TimelineItem[]>([])
+  const [loadedConversationId, setLoadedConversationId] = useState<
+    string | null
+  >(null)
   // Per-conversation scroll intent for the live-to-persisted handoff. The
   // message-scroller stops following when the user scrolls up, but treats the
   // settled response as a brand-new anchor unless we suppress that one
@@ -785,6 +808,7 @@ function App(
     // restores its live buffers — including the pending approval card — instead of
     // stranding it as a perpetual "Thinking…" spinner with no way to respond.
     if (!conversationId) {
+      setLoadedConversationId(null)
       setTimeline([])
       setAttachments([])
       // A fresh conversation starts from the default selection (null = inherit).
@@ -814,12 +838,14 @@ function App(
       }
       return
     }
+    setLoadedConversationId(null)
     Promise.all([
       window.cowork.db.messages.list(conversationId),
       window.cowork.db.conversations.get(conversationId),
     ]).then(async ([rows, convo]) => {
       if (cancelled) return
       setTimeline(buildTimeline(rows))
+      setLoadedConversationId(conversationId)
       setAttachments([])
       // Restore the conversation's own model selection (null falls back to default).
       setSelAccountId(convo?.accountId ?? null)
@@ -1180,9 +1206,16 @@ function App(
   // Surface a picker failure as an assistant text item in the transcript.
   function pushError(error: unknown) {
     const content = error instanceof Error ? error.message : "Picker failed"
+    const createdAt = Date.now()
     setTimeline((prev) => [
       ...prev,
-      { kind: "text", key: `err-${prev.length}`, role: "assistant", content },
+      {
+        kind: "text",
+        key: `err-${prev.length}`,
+        role: "assistant",
+        content,
+        createdAt,
+      },
     ])
   }
 
@@ -1367,6 +1400,7 @@ function App(
 
     // Optimistically append the user message; the assistant turn renders from
     // the transient live state below until the turn settles and reconciles.
+    const createdAt = Date.now()
     setTimeline((prev) => [
       ...prev,
       {
@@ -1374,6 +1408,7 @@ function App(
         key: `local-${turnConvoId}-${prev.length}`,
         role: "user",
         content: text,
+        createdAt,
       },
     ])
     setMessage("")
@@ -1713,6 +1748,8 @@ function App(
   // than wiping a shared buffer.
   const liveTurn = conversationId ? liveTurns.get(conversationId) : undefined
   const liveSegments = liveTurn?.segments ?? []
+  const liveContent = liveMessageContent(liveSegments)
+  const liveHasText = liveContent.trim().length > 0
   // Flattened tool list — for the pending-approval lookup and the "any tools
   // yet?" checks. Ordering is preserved in `liveSegments` for rendering.
   const liveTools = liveToolsOf(liveTurn)
@@ -1777,8 +1814,11 @@ function App(
   // group alongside the live one. So while a live turn exists, drop everything
   // after the last user message: the live buffer is the single source of truth
   // for the in-flight response. (No live turn → render the full timeline.)
-  const displayTimeline = (() => {
-    if (!liveTurn) return timeline
+  // Memoized on whether a live turn exists — not on the turn itself — so token
+  // deltas keep the same array and the settled transcript boundary skips them.
+  const hasLiveTurn = liveTurn !== undefined
+  const displayTimeline = useMemo(() => {
+    if (!hasLiveTurn) return timeline
     let lastUser = -1
     for (let i = timeline.length - 1; i >= 0; i--) {
       const item = timeline[i]
@@ -1788,21 +1828,190 @@ function App(
       }
     }
     return lastUser === -1 ? timeline : timeline.slice(0, lastUser + 1)
-  })()
+  }, [hasLiveTurn, timeline])
+  const latestSettledAssistantKey = liveHasText
+    ? null
+    : latestAssistantTextKey(displayTimeline)
+  // Transcript props must stay referentially stable across stream updates (see
+  // components/transcript.tsx). The parent's callbacks are recreated on every
+  // Shell render, so route them through refs behind stable wrappers.
+  const transcriptWorkspace = workspace.trim()
+  const onOpenHtmlRef = useRef(onOpenHtml)
+  const onReviewFilesRef = useRef(onReviewFiles)
+  useLayoutEffect(() => {
+    onOpenHtmlRef.current = onOpenHtml
+    onReviewFilesRef.current = onReviewFiles
+  })
+  const openTranscriptHtml = useCallback(
+    (relPath: string) => onOpenHtmlRef.current?.(relPath),
+    []
+  )
+  const reviewTranscriptFiles = useCallback(
+    () => onReviewFilesRef.current?.(),
+    []
+  )
+  const activeConversationFindQuery = conversationFindOpen
+    ? conversationFindQuery
+    : ""
+
+  const moveConversationFind = useCallback((direction: 1 | -1) => {
+    setConversationFindIndex((current) => {
+      const matches =
+        transcriptContentRef.current?.querySelectorAll<HTMLElement>(
+          "[data-conversation-find-match]"
+        )
+      const count = matches?.length ?? 0
+      if (count === 0) return 0
+      return (current + direction + count) % count
+    })
+  }, [])
+
+  useEffect(() => {
+    function onKeyDown(event: globalThis.KeyboardEvent) {
+      if (
+        conversationId &&
+        event.key.toLowerCase() === "f" &&
+        (window.cowork.platform === "darwin" ? event.metaKey : event.ctrlKey)
+      ) {
+        event.preventDefault()
+        setConversationFindOpen(true)
+        requestAnimationFrame(() => {
+          conversationFindInputRef.current?.focus()
+          conversationFindInputRef.current?.select()
+        })
+      }
+    }
+
+    window.addEventListener("keydown", onKeyDown)
+    return () => window.removeEventListener("keydown", onKeyDown)
+  }, [conversationId])
+
+  useEffect(() => {
+    setConversationFindOpen(false)
+    setConversationFindQuery("")
+    setConversationFindIndex(0)
+    setConversationFindCount(0)
+  }, [conversationId])
+
+  useLayoutEffect(() => {
+    const matches = Array.from(
+      transcriptContentRef.current?.querySelectorAll<HTMLElement>(
+        "[data-conversation-find-match]"
+      ) ?? []
+    )
+    setConversationFindCount(matches.length)
+    setConversationFindIndex((current) =>
+      matches.length === 0 ? 0 : Math.min(current, matches.length - 1)
+    )
+  }, [activeConversationFindQuery, displayTimeline, liveContent])
+
+  useLayoutEffect(() => {
+    const matches = Array.from(
+      transcriptContentRef.current?.querySelectorAll<HTMLElement>(
+        "[data-conversation-find-match]"
+      ) ?? []
+    )
+    for (const match of matches) match.removeAttribute("data-active")
+    const active = matches[conversationFindIndex]
+    if (!active) return
+
+    active.setAttribute("data-active", "true")
+    active.scrollIntoView({ block: "center" })
+    const viewport = transcriptViewportRef.current
+    if (viewport) previousTranscriptScrollTopRef.current = viewport.scrollTop
+    if (conversationId) {
+      transcriptFollowingRef.current = {
+        conversationId,
+        following: false,
+      }
+      setTranscriptScroll((policy) =>
+        recordTranscriptScroll(policy, conversationId, false)
+      )
+    }
+  }, [
+    activeConversationFindQuery,
+    conversationFindCount,
+    conversationFindIndex,
+    conversationId,
+  ])
   const suppressSettledAnchor = conversationId
     ? transcriptScroll.suppressSettledAnchor.has(conversationId)
     : false
+  const followingTranscript = conversationId
+    ? !transcriptScroll.awayFromEnd.has(conversationId)
+    : true
+  transcriptFollowingRef.current = {
+    conversationId,
+    following: followingTranscript,
+  }
 
-  // Restore the exact reading position in the same commit that swaps the live
-  // response for its persisted timeline items. A layout effect runs before
-  // paint, so the user never sees the intermediate position chosen by browser
-  // scroll anchoring or the message-scroller primitive.
+  useLayoutEffect(() => {
+    previousTranscriptScrollTopRef.current =
+      transcriptViewportRef.current?.scrollTop ?? null
+  }, [conversationId])
+
+  useLayoutEffect(() => {
+    if (!conversationId || !loading || !followingTranscript) return
+    const viewport = transcriptViewportRef.current
+    const content = transcriptContentRef.current
+    if (!viewport || !content || typeof ResizeObserver === "undefined") return
+
+    let frame: number | null = null
+    const followEnd = () => {
+      frame = null
+      const intent = transcriptFollowingRef.current
+      if (intent.conversationId !== conversationId || !intent.following) return
+      viewport.scrollTop = Math.max(
+        0,
+        viewport.scrollHeight - viewport.clientHeight
+      )
+      previousTranscriptScrollTopRef.current = viewport.scrollTop
+    }
+    const scheduleFollowEnd = () => {
+      if (frame === null) frame = window.requestAnimationFrame(followEnd)
+    }
+    const observer = new ResizeObserver(scheduleFollowEnd)
+    observer.observe(content)
+    scheduleFollowEnd()
+    return () => {
+      observer.disconnect()
+      if (frame !== null) window.cancelAnimationFrame(frame)
+    }
+  }, [conversationId, followingTranscript, loading])
+
+  // Search results open at the transcript end. Keep this as a one-shot request so
+  // selecting the already-open conversation also moves it to the bottom.
+  useLayoutEffect(() => {
+    if (!searchOpen || searchOpen.conversationId !== conversationId) return
+    if (loadedConversationId !== conversationId) return
+
+    const viewport = transcriptViewportRef.current
+    if (!viewport) return
+    viewport.scrollTop = Math.max(
+      0,
+      viewport.scrollHeight - viewport.clientHeight
+    )
+    previousTranscriptScrollTopRef.current = viewport.scrollTop
+    transcriptFollowingRef.current = { conversationId, following: true }
+    setTranscriptScroll((policy) =>
+      resetTranscriptScroll(policy, conversationId)
+    )
+    onSearchOpenComplete()
+  }, [
+    conversationId,
+    loadedConversationId,
+    onSearchOpenComplete,
+    searchOpen,
+    timeline,
+  ])
+
   useLayoutEffect(() => {
     const pending = pendingTranscriptRestoreRef.current
     if (!pending || pending.conversationId !== conversationId || loading) return
     const viewport = transcriptViewportRef.current
     if (!viewport) return
     viewport.scrollTop = pending.scrollTop
+    previousTranscriptScrollTopRef.current = pending.scrollTop
     pendingTranscriptRestoreRef.current = null
   }, [conversationId, loading, timeline])
 
@@ -2840,6 +3049,68 @@ function App(
     // messages scrolling up are clipped at the bar's edge instead of passing
     // under it.
     <div className="relative flex h-full w-full flex-col overflow-hidden pt-11">
+      {conversationFindOpen && (
+        <div className="absolute top-12 right-4 z-30 flex h-9 items-center gap-1 rounded-lg border bg-background p-1 shadow-md">
+          <Search className="ml-1 size-3.5 text-muted-foreground" />
+          <input
+            ref={conversationFindInputRef}
+            value={conversationFindQuery}
+            onChange={(event) => {
+              setConversationFindQuery(event.target.value)
+              setConversationFindIndex(0)
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault()
+                moveConversationFind(event.shiftKey ? -1 : 1)
+              } else if (event.key === "Escape") {
+                event.preventDefault()
+                setConversationFindOpen(false)
+              }
+            }}
+            placeholder="Find in conversation"
+            aria-label="Find in conversation"
+            className="h-7 w-56 bg-transparent px-1 text-sm outline-none placeholder:text-muted-foreground"
+          />
+          <span
+            className="min-w-10 text-center text-xs text-muted-foreground tabular-nums"
+            role="status"
+          >
+            {conversationFindCount === 0
+              ? "0/0"
+              : `${conversationFindIndex + 1}/${conversationFindCount}`}
+          </span>
+          <Button
+            type="button"
+            size="icon-xs"
+            variant="ghost"
+            disabled={conversationFindCount === 0}
+            onClick={() => moveConversationFind(-1)}
+            aria-label="Previous match"
+          >
+            <ChevronUp />
+          </Button>
+          <Button
+            type="button"
+            size="icon-xs"
+            variant="ghost"
+            disabled={conversationFindCount === 0}
+            onClick={() => moveConversationFind(1)}
+            aria-label="Next match"
+          >
+            <ChevronDown />
+          </Button>
+          <Button
+            type="button"
+            size="icon-xs"
+            variant="ghost"
+            onClick={() => setConversationFindOpen(false)}
+            aria-label="Close find"
+          >
+            <X />
+          </Button>
+        </div>
+      )}
       {parentConversation && (
         <div className="border-b bg-muted/40 px-4 py-2">
           <button
@@ -2866,125 +3137,105 @@ function App(
         <MessageScroller className="min-h-0 flex-1">
           <MessageScrollerViewport
             ref={transcriptViewportRef}
+            onKeyDown={(event) => {
+              if (
+                event.key === "ArrowDown" ||
+                event.key === "ArrowUp" ||
+                event.key === "End" ||
+                event.key === "Home" ||
+                event.key === "PageDown" ||
+                event.key === "PageUp" ||
+                event.key === " "
+              ) {
+                transcriptUserScrollRef.current = true
+              }
+            }}
+            onPointerDown={() => {
+              transcriptUserScrollRef.current = true
+            }}
+            onTouchMove={() => {
+              transcriptUserScrollRef.current = true
+            }}
+            onWheel={() => {
+              transcriptUserScrollRef.current = true
+            }}
             onScroll={(event) => {
+              const viewport = event.currentTarget
+              const previousScrollTop =
+                previousTranscriptScrollTopRef.current ?? viewport.scrollTop
+              previousTranscriptScrollTopRef.current = viewport.scrollTop
+              const userInitiated = transcriptUserScrollRef.current
+              transcriptUserScrollRef.current = false
               if (!conversationId || !loading) return
-              const atEnd = isTranscriptAtEnd(event.currentTarget)
+              const following = transcriptShouldFollow(
+                transcriptFollowingRef.current.following,
+                previousScrollTop,
+                viewport,
+                userInitiated
+              )
+              transcriptFollowingRef.current = { conversationId, following }
               setTranscriptScroll((prev) =>
-                recordTranscriptScroll(prev, conversationId, atEnd)
+                recordTranscriptScrollIntent(
+                  prev,
+                  conversationId,
+                  previousScrollTop,
+                  viewport,
+                  userInitiated
+                )
               )
             }}
           >
-            <MessageScrollerContent className="mx-auto w-full max-w-[min(90%,72rem)] gap-4 px-4 py-6">
-              {displayTimeline.map((item, i) => {
-                const isLast =
-                  i === displayTimeline.length - 1 &&
-                  !loading &&
-                  !suppressSettledAnchor
-                if (item.kind === "tools") {
-                  return (
-                    <MessageScrollerItem key={item.key} scrollAnchor={isLast}>
-                      <Message align="start">
-                        <MessageContent>
-                          <ToolGroup calls={item.calls} />
-                          <ChangedFilesBar
-                            calls={item.calls}
-                            workspace={workspace.trim()}
-                            onOpenHtml={(p) => onOpenHtml?.(p)}
-                            onReviewAll={() => onReviewFiles?.()}
-                          />
-                        </MessageContent>
-                      </Message>
-                    </MessageScrollerItem>
-                  )
-                }
-                const align = item.role === "user" ? "end" : "start"
-                return (
-                  <MessageScrollerItem key={item.key} scrollAnchor={isLast}>
-                    <Message align={align}>
-                      <MessageContent>
-                        <Bubble
-                          align={align}
-                          variant={item.role === "user" ? "default" : "muted"}
-                        >
-                          <BubbleContent
-                            className={cn(
-                              item.role === "user"
-                                ? "whitespace-pre-wrap"
-                                : "overflow-visible"
-                            )}
-                          >
-                            {item.role === "assistant" ? (
-                              <Markdown content={item.content} />
-                            ) : (
-                              item.content
-                            )}
-                          </BubbleContent>
-                        </Bubble>
-                      </MessageContent>
-                    </Message>
-                  </MessageScrollerItem>
-                )
-              })}
-
-              {/* The in-flight assistant turn: text and tool activity rendered in
-                  the order they streamed (interleaved via segments), so it reads
-                  the same live as it does once settled. "Thinking…" fills the gap
-                  before the first event. */}
+            <MessageScrollerContent
+              ref={transcriptContentRef}
+              className="mx-auto w-full max-w-[min(90%,72rem)] gap-4 px-4 py-6"
+            >
+              <SettledTranscript
+                items={displayTimeline}
+                anchorLast={!loading && !suppressSettledAnchor}
+                findQuery={activeConversationFindQuery}
+                latestAssistantKey={latestSettledAssistantKey}
+                workspace={transcriptWorkspace}
+                onOpenHtml={openTranscriptHtml}
+                onReviewFiles={reviewTranscriptFiles}
+              />
               {loading && (
-                <MessageScrollerItem key="live" scrollAnchor>
-                  <Message align="start">
-                    <MessageContent>
-                      {liveSegments.map((seg, si) =>
-                        seg.kind === "tools" ? (
-                          <div key={`s${si}`}>
-                            <ToolGroup calls={seg.calls} />
-                            <ChangedFilesBar
-                              calls={seg.calls}
-                              workspace={workspace.trim()}
-                              onOpenHtml={(p) => onOpenHtml?.(p)}
-                              onReviewAll={() => onReviewFiles?.()}
-                            />
-                          </div>
-                        ) : seg.text ? (
-                          <Bubble key={`s${si}`} align="start" variant="muted">
-                            <BubbleContent className="overflow-visible">
-                              <Markdown content={seg.text} />
-                            </BubbleContent>
-                          </Bubble>
-                        ) : null
-                      )}
-                      {liveSegments.length === 0 && (
-                        <Marker>
-                          <MarkerIcon>
-                            <Spinner />
-                          </MarkerIcon>
-                          <MarkerContent>
-                            {liveTurn?.commandWait
-                              ? "Waiting for background command…"
-                              : liveTurn?.streamRetrying
-                                ? "Connection interrupted — retrying…"
-                                : "Thinking…"}
-                          </MarkerContent>
-                        </Marker>
-                      )}
-                      {liveSegments.length > 0 && liveTurn?.commandWait && (
-                        <Marker>
-                          <MarkerIcon>
-                            <Spinner />
-                          </MarkerIcon>
-                          <MarkerContent>
-                            Waiting for background command…
-                          </MarkerContent>
-                        </Marker>
-                      )}
-                    </MessageContent>
-                  </Message>
-                </MessageScrollerItem>
+                <LiveTranscriptTurn
+                  key="live"
+                  segments={liveSegments}
+                  content={liveContent}
+                  firstTextAt={liveTurn?.firstTextAt ?? null}
+                  commandWait={liveTurn?.commandWait ?? false}
+                  streamRetrying={liveTurn?.streamRetrying ?? false}
+                  findQuery={activeConversationFindQuery}
+                  workspace={transcriptWorkspace}
+                  onOpenHtml={openTranscriptHtml}
+                  onReviewFiles={reviewTranscriptFiles}
+                />
               )}
             </MessageScrollerContent>
           </MessageScrollerViewport>
           {/* Scroll-to-bottom button — self-manages its visibility. */}
-          <MessageScrollerButton direction="end" />
+          <MessageScrollerButton
+            direction="end"
+            onClick={() => {
+              if (!conversationId) return
+              transcriptFollowingRef.current = {
+                conversationId,
+                following: true,
+              }
+              setTranscriptScroll((prev) =>
+                recordTranscriptScroll(prev, conversationId, true)
+              )
+              const viewport = transcriptViewportRef.current
+              if (viewport) {
+                viewport.scrollTop = Math.max(
+                  0,
+                  viewport.scrollHeight - viewport.clientHeight
+                )
+                previousTranscriptScrollTopRef.current = viewport.scrollTop
+              }
+            }}
+          />
         </MessageScroller>
       </MessageScrollerProvider>
 

@@ -1,4 +1,6 @@
 import { app, ipcMain, shell } from "electron"
+import { mkdir, writeFile } from "fs/promises"
+import path from "path"
 import * as providerAccountsRepo from "../db/repositories/provider-accounts"
 import * as modelsRepo from "../db/repositories/models"
 import * as externalModelMappingsRepo from "../db/repositories/external-agent-model-mappings"
@@ -22,7 +24,6 @@ import { CODEX_CLI_MODELS, detectCodexCli } from "../agent/cli/codex"
 import {
   completeCodexSubscriptionDeviceAuth,
   CODEX_SUBSCRIPTION_BASE_URL,
-  CODEX_SUBSCRIPTION_MODELS,
   preflightCodexSubscriptionBackend,
   probeCodexSubscriptionModelEndpointCandidates,
   requestCodexSubscriptionDeviceCode,
@@ -85,6 +86,33 @@ export interface AccountWithModels {
   models: ModelEntry[]
 }
 
+function applyCodexSubscriptionCatalog(
+  accountId: string,
+  ids: string[]
+): void {
+  const previousIds = new Set(
+    modelsRepo.listModels(accountId).map((model) => model.modelId)
+  )
+  const models = modelsRepo.syncGatewayModels(accountId, ids)
+  const currentIds = new Set(models.map((model) => model.modelId))
+  const removedIds = [...previousIds].filter((id) => !currentIds.has(id))
+  for (const modelId of removedIds) {
+    clearMemoryForModel(accountId, modelId)
+    clearTitleGenerationForModel(accountId, modelId)
+  }
+
+  const llm = settingsService.getLlm()
+  if (
+    llm.activeAccountId === accountId &&
+    llm.activeModelId &&
+    removedIds.includes(llm.activeModelId)
+  ) {
+    settingsService.setLlm({ activeAccountId: accountId, activeModelId: null })
+  } else if (removedIds.length > 0) {
+    invalidateProviderClient()
+  }
+}
+
 export async function refreshCodexSubscriptionModelsOnStartup(
   onRefreshed?: () => void
 ): Promise<void> {
@@ -101,10 +129,8 @@ export async function refreshCodexSubscriptionModelsOnStartup(
     accounts.map(async (account) => {
       try {
         const ids = await fetchGatewayModelIds(account.id)
-        if (ids.length > 0) {
-          modelsRepo.mergeGatewayModels(account.id, ids)
-          onRefreshed?.()
-        }
+        applyCodexSubscriptionCatalog(account.id, ids)
+        onRefreshed?.()
       } catch (err) {
         console.warn(
           `[providers] Codex model refresh failed for ${account.displayName}:`,
@@ -139,16 +165,6 @@ export function registerProviderHandlers(): void {
       }
     } else if (account.provider === "codex_cli") {
       for (const model of CODEX_CLI_MODELS) {
-        const added = modelsRepo.addModel({
-          accountId: account.id,
-          modelId: model.id,
-          modelName: model.name,
-          origin: "seeded",
-        })
-        if (model.favorite) modelsRepo.updateModel(added.id, { favorite: true })
-      }
-    } else if (account.provider === "codex_subscription") {
-      for (const model of CODEX_SUBSCRIPTION_MODELS) {
         const added = modelsRepo.addModel({
           accountId: account.id,
           modelId: model.id,
@@ -198,7 +214,10 @@ export function registerProviderHandlers(): void {
   )
   ipcMain.handle(
     "providers:debugCodexSubscriptionModels",
-    async (_e, id: string): Promise<{ ok: boolean; error?: string }> => {
+    async (
+      _e,
+      id: string
+    ): Promise<{ ok: boolean; paths?: string[]; error?: string }> => {
       if (app.isPackaged) {
         return { ok: false, error: "Debug probe is available in development." }
       }
@@ -221,14 +240,18 @@ export function registerProviderHandlers(): void {
             invalidateProviderClient()
           },
         })
-        console.info("[providers] Codex models debug probe candidates")
-        for (const result of results) {
-          console.info("[providers] endpoint:", result.endpoint)
-          console.info("[providers] status:", result.status)
-          console.info("[providers] body:")
-          console.info(result.body)
-        }
-        return { ok: results.some((result) => result.ok) }
+        const logDir = path.join(app.getAppPath(), "codex-models-responses")
+        await mkdir(logDir, { recursive: true })
+        const timestamp = new Date().toISOString().replace(/[:.]/g, "-")
+        const paths = await Promise.all(
+          results.map(async (result, index) => {
+            const file = path.join(logDir, `${timestamp}-${index + 1}.json`)
+            await writeFile(file, result.body, "utf-8")
+            return file
+          })
+        )
+        console.info("[providers] Codex models responses saved:", paths)
+        return { ok: results.some((result) => result.ok), paths }
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err)
         console.warn("[providers] Codex models debug probe failed:", message)
@@ -335,6 +358,8 @@ export function registerProviderHandlers(): void {
         const secret = await completeCodexSubscriptionDeviceAuth(input)
         secrets.setApiKey(input.id, secret)
         invalidateProviderClient()
+        const ids = await fetchGatewayModelIds(input.id)
+        applyCodexSubscriptionCatalog(input.id, ids)
         return { ok: true }
       } catch (err) {
         return {
@@ -352,9 +377,13 @@ export function registerProviderHandlers(): void {
   ipcMain.handle("models:list", (_e, accountId: string) =>
     modelsRepo.listModels(accountId)
   )
-  ipcMain.handle("models:add", (_e, input: AddModelInput) =>
-    modelsRepo.addModel(input)
-  )
+  ipcMain.handle("models:add", (_e, input: AddModelInput) => {
+    const account = providerAccountsRepo.getAccount(input.accountId)
+    if (account?.provider === "codex_subscription") {
+      throw new Error("Codex subscription models are managed by the gateway.")
+    }
+    return modelsRepo.addModel(input)
+  })
   ipcMain.handle(
     "models:update",
     (
@@ -363,6 +392,12 @@ export function registerProviderHandlers(): void {
       patch: { modelId?: string; modelName?: string | null; favorite?: boolean }
     ) => {
       const before = modelsRepo.getModel(id)
+      const account = before
+        ? providerAccountsRepo.getAccount(before.accountId)
+        : undefined
+      if (account?.provider === "codex_subscription" && patch.modelId !== undefined) {
+        throw new Error("Codex subscription model IDs are managed by the gateway.")
+      }
       const updated = modelsRepo.updateModel(id, patch)
       if (before && before.modelId !== updated.modelId) {
         clearMemoryForModel(before.accountId, before.modelId)
@@ -373,12 +408,22 @@ export function registerProviderHandlers(): void {
   )
   ipcMain.handle("models:delete", (_e, id: string) => {
     const model = modelsRepo.getModel(id)
+    const account = model
+      ? providerAccountsRepo.getAccount(model.accountId)
+      : undefined
+    if (account?.provider === "codex_subscription") {
+      throw new Error("Codex subscription models are managed by the gateway.")
+    }
     modelsRepo.deleteModel(id)
     if (model) clearMemoryForModel(model.accountId, model.modelId)
     if (model) clearTitleGenerationForModel(model.accountId, model.modelId)
     invalidateProviderClient() // the active model may have been removed
   })
   ipcMain.handle("models:deleteForAccount", (_e, accountId: string) => {
+    const account = providerAccountsRepo.getAccount(accountId)
+    if (account?.provider === "codex_subscription") {
+      throw new Error("Codex subscription models are managed by the gateway.")
+    }
     externalModelMappingsRepo.deleteMappingsForAccount(accountId)
     modelsRepo.deleteModelsForAccount(accountId)
     const llm = settingsService.getLlm()
@@ -394,14 +439,20 @@ export function registerProviderHandlers(): void {
     clearTitleGenerationForAccount(accountId)
   })
 
-  // Import the gateway catalog and merge it into the local list. On failure
-  // returns { ok:false, error } and leaves the local list untouched.
+  // Import the gateway catalog. Codex subscription catalogs are authoritative;
+  // other providers retain additive import behavior. On failure, the local list
+  // is left untouched.
   ipcMain.handle(
     "models:importFromGateway",
     async (_e, accountId: string): Promise<{ ok: boolean; error?: string }> => {
       try {
         const ids = await fetchGatewayModelIds(accountId)
-        modelsRepo.mergeGatewayModels(accountId, ids)
+        const account = providerAccountsRepo.getAccount(accountId)
+        if (account?.provider === "codex_subscription") {
+          applyCodexSubscriptionCatalog(accountId, ids)
+        } else {
+          modelsRepo.mergeGatewayModels(accountId, ids)
+        }
         return { ok: true }
       } catch (err) {
         return {

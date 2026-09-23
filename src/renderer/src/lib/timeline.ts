@@ -53,8 +53,22 @@ export function approvePendingToolCalls(calls: ToolUse[]): ToolUse[] {
 }
 
 export type TimelineItem =
-  | { kind: "text"; key: string; role: "user" | "assistant"; content: string }
+  | {
+      kind: "text"
+      key: string
+      role: "user" | "assistant"
+      content: string
+      createdAt: number
+    }
   | { kind: "tools"; key: string; calls: ToolUse[] }
+
+export function latestAssistantTextKey(items: TimelineItem[]): string | null {
+  for (let i = items.length - 1; i >= 0; i--) {
+    const item = items[i]
+    if (item.kind === "text" && item.role === "assistant") return item.key
+  }
+  return null
+}
 
 // Last path segment, e.g. "/Users/me/app/README.md" -> "README.md".
 export function baseName(path: string): string {
@@ -274,6 +288,7 @@ export function buildTimeline(rows: DbMessage[]): TimelineItem[] {
           key: m.id,
           role: "user",
           content: m.content,
+          createdAt: m.createdAt,
         })
       }
       continue
@@ -285,6 +300,7 @@ export function buildTimeline(rows: DbMessage[]): TimelineItem[] {
           key: `${m.id}:text`,
           role: "assistant",
           content: m.content,
+          createdAt: m.createdAt,
         })
       }
       if (m.toolCalls && m.toolCalls.length > 0) {

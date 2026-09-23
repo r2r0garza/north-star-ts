@@ -145,3 +145,38 @@ export function mergeGatewayModels(
   tx()
   return listModels(accountId)
 }
+
+// Replace an account's model catalog with the ids currently advertised by its
+// gateway. Existing rows for retained ids keep their names and favorite state;
+// rows absent from the fetched catalog are removed.
+export function syncGatewayModels(
+  accountId: string,
+  modelIds: string[]
+): ModelEntry[] {
+  const db = getDb()
+  const ids = [...new Set(modelIds.map((id) => id.trim()).filter(Boolean))]
+  const now = Date.now()
+  const tx = db.transaction(() => {
+    const insert = db.prepare(
+      `INSERT INTO models (id, account_id, model_id, model_name, origin, created_at, updated_at)
+       VALUES (?, ?, ?, NULL, 'gateway', ?, ?)
+       ON CONFLICT(account_id, model_id) DO UPDATE SET
+         origin = 'gateway',
+         updated_at = excluded.updated_at`
+    )
+    for (const modelId of ids) {
+      insert.run(randomUUID(), accountId, modelId, now, now)
+    }
+
+    if (ids.length === 0) {
+      db.prepare("DELETE FROM models WHERE account_id = ?").run(accountId)
+    } else {
+      const placeholders = ids.map(() => "?").join(", ")
+      db.prepare(
+        `DELETE FROM models WHERE account_id = ? AND model_id NOT IN (${placeholders})`
+      ).run(accountId, ...ids)
+    }
+  })
+  tx()
+  return listModels(accountId)
+}

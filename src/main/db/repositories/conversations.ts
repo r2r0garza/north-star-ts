@@ -1,6 +1,17 @@
 import { randomUUID } from "crypto"
 import { getDb } from "../connection"
-import type { Conversation, Mode } from "../types"
+import type { Conversation, ConversationSearchResult, Mode } from "../types"
+
+const SEARCH_LIMIT_DEFAULT = 30
+const SEARCH_LIMIT_MAX = 50
+const MAX_QUERY_LENGTH = 500
+const MAX_QUERY_TERMS = 12
+const MAX_CONTENT_HITS_PER_TERM = 200
+const SNIPPET_START = "\u0001"
+const SNIPPET_END = "\u0002"
+
+export const USER_FACING_CONVERSATION_PREDICATE =
+  "c.id NOT IN (SELECT conversation_id FROM tasks WHERE conversation_id IS NOT NULL AND COALESCE(json_extract(input, '$.kind'), 'agent_chat') <> 'inline_todos')"
 
 interface ConversationRow {
   id: string
@@ -111,20 +122,217 @@ export function getConversation(id: string): Conversation | undefined {
 // default-kind handling in schema.ts (a missing kind is treated as agent_chat, a
 // fork, so it stays hidden).
 export function listConversations(opts?: { mode?: Mode }): Conversation[] {
-  const notTaskTranscript =
-    "id NOT IN (SELECT conversation_id FROM tasks WHERE conversation_id IS NOT NULL AND COALESCE(json_extract(input, '$.kind'), 'agent_chat') <> 'inline_todos')"
+  const predicate = USER_FACING_CONVERSATION_PREDICATE.replaceAll("c.", "")
   const rows = opts?.mode
     ? (getDb()
         .prepare(
-          `SELECT * FROM conversations WHERE mode = ? AND ${notTaskTranscript} ORDER BY updated_at DESC`
+          `SELECT * FROM conversations WHERE mode = ? AND ${predicate} ORDER BY updated_at DESC`
         )
         .all(opts.mode) as ConversationRow[])
     : (getDb()
         .prepare(
-          `SELECT * FROM conversations WHERE ${notTaskTranscript} ORDER BY updated_at DESC`
+          `SELECT * FROM conversations WHERE ${predicate} ORDER BY updated_at DESC`
         )
         .all() as ConversationRow[])
   return rows.map(toConversation)
+}
+
+interface SearchConversationRow {
+  id: string
+  mode: Mode
+  title: string | null
+  project_id: string | null
+  project_name: string | null
+  updated_at: number
+}
+
+interface ContentSearchRow {
+  message_id: string
+  content: string
+  relevance: number
+}
+
+interface SearchCandidate extends SearchConversationRow {
+  titleTerms: Set<number>
+  contentTerms: Set<number>
+  snippet: string | null
+  targetMessageId: string | null
+  contentRelevance: number
+}
+
+export function searchConversations(
+  query: string,
+  opts: { limit?: number } = {}
+): ConversationSearchResult[] {
+  const normalizedQuery = String(query ?? "")
+    .normalize("NFKC")
+    .slice(0, MAX_QUERY_LENGTH)
+    .trim()
+  const terms = normalizedQuery
+    .match(/[\p{L}\p{N}]+/gu)
+    ?.slice(0, MAX_QUERY_TERMS)
+    .map((term) => term.toLocaleLowerCase())
+  if (!terms?.length) return []
+
+  const limit = normalizeSearchLimit(opts.limit)
+  const db = getDb()
+  const titleClauses = terms.map(
+    () => "LOWER(COALESCE(c.title, '')) LIKE ? ESCAPE '\\'"
+  )
+  const titleRows = db
+    .prepare(
+      `SELECT c.id, c.mode, c.title, c.project_id, p.name AS project_name, c.updated_at
+       FROM conversations c
+       LEFT JOIN projects p ON p.id = c.project_id
+       WHERE ${USER_FACING_CONVERSATION_PREDICATE}
+         AND (${titleClauses.join(" OR ")})`
+    )
+    .all(
+      ...terms.map((term) => `%${escapeLike(term)}%`)
+    ) as SearchConversationRow[]
+
+  const candidates = new Map<string, SearchCandidate>()
+  const ensureCandidate = (row: SearchConversationRow): SearchCandidate => {
+    let candidate = candidates.get(row.id)
+    if (!candidate) {
+      candidate = {
+        ...row,
+        titleTerms: new Set(),
+        contentTerms: new Set(),
+        snippet: null,
+        targetMessageId: null,
+        contentRelevance: Number.POSITIVE_INFINITY,
+      }
+      candidates.set(row.id, candidate)
+    }
+    return candidate
+  }
+
+  for (const row of titleRows) {
+    const candidate = ensureCandidate(row)
+    const title = (row.title ?? "").normalize("NFKC").toLocaleLowerCase()
+    terms.forEach((term, index) => {
+      if (title.includes(term)) candidate.titleTerms.add(index)
+    })
+  }
+
+  const contentStatement = db.prepare(
+    `SELECT c.id, c.mode, c.title, c.project_id, p.name AS project_name,
+            c.updated_at, m.id AS message_id, m.content,
+            bm25(message_fts) AS relevance
+     FROM message_fts
+     JOIN messages m ON m.id = message_fts.message_id
+     JOIN conversations c ON c.id = message_fts.conversation_id
+     LEFT JOIN projects p ON p.id = c.project_id
+     WHERE message_fts MATCH ?
+       AND m.role IN ('user', 'assistant')
+       AND m.content IS NOT NULL
+       AND ${USER_FACING_CONVERSATION_PREDICATE}
+     ORDER BY relevance, m.created_at DESC
+     LIMIT ?`
+  )
+
+  terms.forEach((term, termIndex) => {
+    const rows = contentStatement.all(
+      `"${term.replaceAll('"', '""')}"*`,
+      MAX_CONTENT_HITS_PER_TERM
+    ) as Array<SearchConversationRow & ContentSearchRow>
+    for (const row of rows) {
+      if (!row.content.normalize("NFKC").toLocaleLowerCase().includes(term)) {
+        continue
+      }
+      const candidate = ensureCandidate(row)
+      candidate.contentTerms.add(termIndex)
+      if (row.relevance < candidate.contentRelevance) {
+        candidate.contentRelevance = row.relevance
+        candidate.snippet = createSearchSnippet(row.content, terms)
+        candidate.targetMessageId = row.message_id
+      }
+    }
+  })
+
+  const normalizedLower = normalizedQuery.toLocaleLowerCase()
+  return [...candidates.values()]
+    .filter((candidate) => {
+      const covered = new Set([
+        ...candidate.titleTerms,
+        ...candidate.contentTerms,
+      ])
+      return covered.size === terms.length
+    })
+    .map((candidate) => {
+      const title = (candidate.title ?? "")
+        .normalize("NFKC")
+        .toLocaleLowerCase()
+      const hasTitle = candidate.titleTerms.size > 0
+      const hasContent = candidate.contentTerms.size > 0
+      let rank = 400
+      if (title === normalizedLower) rank = 0
+      else if (title.startsWith(normalizedLower)) rank = 100
+      else if (title.includes(normalizedLower)) rank = 200
+      else if (hasTitle) rank = 300
+      if (!hasTitle && Number.isFinite(candidate.contentRelevance)) {
+        rank += candidate.contentRelevance
+      }
+      return {
+        conversationId: candidate.id,
+        mode: candidate.mode,
+        title: candidate.title,
+        projectId: candidate.project_id,
+        projectName: candidate.project_name,
+        updatedAt: candidate.updated_at,
+        matchKind:
+          hasTitle && hasContent
+            ? ("title_and_content" as const)
+            : hasTitle
+              ? ("title" as const)
+              : ("content" as const),
+        snippet: candidate.snippet,
+        targetMessageId: candidate.targetMessageId,
+        rank,
+      }
+    })
+    .sort((a, b) => a.rank - b.rank || b.updatedAt - a.updatedAt)
+    .slice(0, limit)
+}
+
+function normalizeSearchLimit(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? Math.min(Math.floor(value), SEARCH_LIMIT_MAX)
+    : SEARCH_LIMIT_DEFAULT
+}
+
+function escapeLike(value: string): string {
+  return value.replace(/[\\%_]/g, (match) => `\\${match}`)
+}
+
+function createSearchSnippet(content: string, terms: string[]): string {
+  const normalized = content.replace(/\s+/g, " ").trim()
+  const lower = normalized.toLocaleLowerCase()
+  let matchStart = normalized.length
+  let matchLength = 0
+  for (const term of terms) {
+    const index = lower.indexOf(term)
+    if (index >= 0 && index < matchStart) {
+      matchStart = index
+      matchLength = term.length
+    }
+  }
+  const start = Math.max(0, matchStart - 55)
+  const end = Math.min(
+    normalized.length,
+    matchStart + Math.max(matchLength, 1) + 95
+  )
+  let snippet = normalized.slice(start, end)
+  const snippetLower = snippet.toLocaleLowerCase()
+  const ranges = terms
+    .map((term) => ({ start: snippetLower.indexOf(term), length: term.length }))
+    .filter((range) => range.start >= 0)
+    .sort((a, b) => b.start - a.start)
+  for (const range of ranges) {
+    snippet = `${snippet.slice(0, range.start)}${SNIPPET_START}${snippet.slice(range.start, range.start + range.length)}${SNIPPET_END}${snippet.slice(range.start + range.length)}`
+  }
+  return `${start > 0 ? "…" : ""}${snippet}${end < normalized.length ? "…" : ""}`
 }
 
 export function updateConversation(

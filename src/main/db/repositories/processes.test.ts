@@ -25,6 +25,7 @@ import {
   updatePhase,
   wouldCloseSubprocessCycle,
   createPhaseAgent,
+  updatePhaseAgent,
   listPhaseAgents,
   createEdge,
   listEdges,
@@ -168,6 +169,33 @@ describe.skipIf(!sqliteLoads)("phases + agents", () => {
     expect(phases[0].routing).toBe("dispatch")
     expect(phases[0].gatePolicy).toBe("approve")
     expect(phases[0].fanOut).toBe(true)
+  })
+
+  it("updatePhaseAgent sets and clears the runtime override without touching other fields", () => {
+    const def = createProcessDefinition({ name: "P" })
+    const p = createPhase({
+      processId: def.id,
+      key: "a",
+      name: "A",
+      position: 0,
+    })
+    const agent = createPhaseAgent({
+      phaseId: p.id,
+      agentName: "coder",
+      skills: ["x"],
+      tools: ["read"],
+      position: 0,
+    })
+    const worker = { accountId: "acct", modelId: "model", provider: null }
+    const set = updatePhaseAgent(agent.id, { runtimeConfig: { worker } })!
+    expect(set.runtimeConfig).toEqual({ worker })
+    expect(set.skills).toEqual(["x"])
+    expect(set.tools).toEqual(["read"])
+    // An empty patch leaves the override alone; null clears it.
+    expect(updatePhaseAgent(agent.id, {})!.runtimeConfig).toEqual({ worker })
+    expect(
+      updatePhaseAgent(agent.id, { runtimeConfig: null })!.runtimeConfig
+    ).toBeNull()
   })
 
   it("agent skills/tools are tri-state: null vs [] vs [list]", () => {

@@ -256,6 +256,18 @@ export function listWidgets(dashboardId: string): DashboardWidget[] {
   return rows.map(toWidget)
 }
 
+// Widget count per dashboard in one query (dashboards with no widgets are
+// absent). Used by dashboard_read discovery (plan 033.4) so listing doesn't
+// parse every widget's JSON blobs just to count them.
+export function countWidgetsByDashboard(): Map<string, number> {
+  const rows = getDb()
+    .prepare(
+      "SELECT dashboard_id, COUNT(*) AS n FROM dashboard_widgets GROUP BY dashboard_id"
+    )
+    .all() as { dashboard_id: string; n: number }[]
+  return new Map(rows.map((r) => [r.dashboard_id, r.n]))
+}
+
 export function getWidget(id: string): DashboardWidget | null {
   const row = getDb()
     .prepare("SELECT * FROM dashboard_widgets WHERE id = ?")

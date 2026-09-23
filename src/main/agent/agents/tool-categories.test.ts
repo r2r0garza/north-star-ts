@@ -118,6 +118,18 @@ describe("agentToolAllowlist", () => {
     expect(allow.has("browser_navigate")).toBe(false)
   })
 
+  it("grants dashboard read+write via `dashboard` and read only via `dashboard_read`", () => {
+    const both = agentToolAllowlist(agent(["dashboard"]))!
+    expect(both.has("dashboard_write")).toBe(true)
+    expect(both.has("dashboard_read")).toBe(true)
+    const readOnly = agentToolAllowlist(agent(["dashboard_read"]))!
+    expect(readOnly.has("dashboard_read")).toBe(true)
+    expect(readOnly.has("dashboard_write")).toBe(false)
+    // Not part of the read-only floor or universal set.
+    expect(agentToolAllowlist(agent([]))!.has("dashboard_read")).toBe(false)
+    expect(isUniversalTool("dashboard_read")).toBe(false)
+  })
+
   it("ignores unknown categories", () => {
     const allow = agentToolAllowlist(agent(["bogus"]))!
     // only the floor survives

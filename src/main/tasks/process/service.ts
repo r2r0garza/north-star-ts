@@ -139,9 +139,13 @@ function resolveRuntime(input: {
   phaseAgent?: ProcessPhaseAgent | null
 }): RuntimeResolution {
   const { run, source, phase, slot, phaseAgent } = input
-  const agentSelection = phaseAgent
-    ? runtimeSelection(phaseAgent.runtimeConfig, slot)
-    : undefined
+  // A phase-agent override is a worker-slot concept only. Orchestration slots
+  // (router/decomposer/validator) stay at phase/run scope — and must not inherit
+  // the agent's worker selection through runtimeSelection's worker fallback.
+  const agentSelection =
+    phaseAgent && slot === "worker"
+      ? runtimeSelection(phaseAgent.runtimeConfig, slot)
+      : undefined
   if (agentSelection) {
     return {
       selection: {
@@ -1181,15 +1185,11 @@ export class ProcessService {
       // The decomposition (planning) pass runs on pool[0]; each resulting CHILD
       // routes independently over the pool in makeRunPhase (plan 025.3).
       const agentName = await this.resolveAgent(phase)
-      const phaseAgent = processes
-        .listPhaseAgents(phase.id)
-        .find((agent) => agent.agentName === agentName)
       const decomposerRuntime = resolveRuntime({
         run,
         source,
         phase,
         slot: "decomposer",
-        phaseAgent,
       })
 
       // Prefer the run's own picked workspace (plan 026), falling back to the
@@ -1377,13 +1377,11 @@ export class ProcessService {
       // agent (pool[0]) when none is configured.
       const pool = processes.listPhaseAgents(phase.id)
       const agentName = phase.validatorAgent ?? pool[0]?.agentName ?? null
-      const phaseAgent = pool.find((agent) => agent.agentName === agentName)
       const validatorRuntime = resolveRuntime({
         run,
         source,
         phase,
         slot: "validator",
-        phaseAgent,
       })
 
       const workspaceId = run.workspaceId ?? source?.workspaceId ?? null

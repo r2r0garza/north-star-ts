@@ -236,12 +236,13 @@ describe.skipIf(!sqliteLoads)("index_query_tool", () => {
     expect(out).toContain("more")
   })
 
-  it("a miss steers back to the real tools (advisory)", async () => {
+  it("a miss suggests refinement before a scoped fallback", async () => {
     await writeFile(join(root, "a.ts"), "export const a = 1")
     await buildIndex()
     const out = await run({ op: "find_symbol", query: "NoSuchThing" })
     expect(out).toContain("advisory")
-    expect(out.toLowerCase()).toContain("search_tool")
+    expect(out).toContain("refine the symbol or path query")
+    expect(out).toContain("narrowly scoped search_tool")
   })
 
   it("reports not-indexed when the workspace has no run", async () => {

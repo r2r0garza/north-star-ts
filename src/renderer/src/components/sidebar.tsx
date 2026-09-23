@@ -19,6 +19,7 @@ import {
   PinOff,
   Plug,
   Plus,
+  Search,
   Settings,
   Workflow,
 } from "lucide-react"
@@ -74,6 +75,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import { ProjectDialog } from "@/components/project-dialog"
+import { ConversationSearchDialog } from "@/components/conversation-search-dialog"
 import {
   DndContext,
   KeyboardSensor,
@@ -177,6 +179,7 @@ function SessionRow({
   }
 
   function commit() {
+    suppressTooltipRef.current = false
     setEditing(false)
     const next = draft.trim()
     if (next && next !== conversation.title) onRename(next)
@@ -196,6 +199,7 @@ function SessionRow({
               commit()
             } else if (e.key === "Escape") {
               e.preventDefault()
+              suppressTooltipRef.current = false
               setEditing(false)
             }
           }}
@@ -507,7 +511,7 @@ export function AppSidebar({
   view: View
   onViewChange: (view: View) => void
   activeConversationId: string | null
-  onSelectConversation: (id: string, mode: Mode) => void
+  onSelectConversation: (id: string, mode: Mode, openAtBottom?: boolean) => void
   // Start a fresh conversation, optionally scoped to a project (its directory is
   // auto-adopted for workspace views). Null/omitted = the "No Project" bucket.
   onNewConversation: (projectId?: string | null) => void
@@ -547,6 +551,7 @@ export function AppSidebar({
   } | null>(null)
   // Project create/edit dialog. `editingProject` null = create mode.
   const [projectDialogOpen, setProjectDialogOpen] = useState(false)
+  const [searchDialogOpen, setSearchDialogOpen] = useState(false)
   const [editingProject, setEditingProject] = useState<Project | null>(null)
   const [sortingProjectId, setSortingProjectId] = useState<string | null>(null)
   const sensors = useSensors(
@@ -832,6 +837,20 @@ export function AppSidebar({
               type="button"
               size="sm"
               variant="outline"
+              onClick={() => setSearchDialogOpen(true)}
+              aria-label="Search conversations"
+            >
+              <Search className="size-4" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>Search conversations</TooltipContent>
+        </Tooltip>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
               onClick={openCreateProject}
               aria-label="New project"
             >
@@ -841,6 +860,12 @@ export function AppSidebar({
           <TooltipContent>New project</TooltipContent>
         </Tooltip>
       </div>
+      <ConversationSearchDialog
+        open={searchDialogOpen}
+        activeConversationId={activeConversationId}
+        onOpenChange={setSearchDialogOpen}
+        onSelectConversation={onSelectConversation}
+      />
       <SidebarContent>
         <DndContext
           sensors={sensors}
