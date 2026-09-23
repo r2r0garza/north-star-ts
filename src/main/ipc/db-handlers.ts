@@ -98,6 +98,13 @@ export function registerDbHandlers(
     conversations.listConversations(opts)
   )
   ipcMain.handle(
+    "db:conversations:search",
+    (_e, query: unknown, opts?: { limit?: unknown }) =>
+      conversations.searchConversations(String(query ?? ""), {
+        limit: typeof opts?.limit === "number" ? opts.limit : undefined,
+      })
+  )
+  ipcMain.handle(
     "db:conversations:get",
     (_e, id: string) => conversations.getConversation(id) ?? null
   )

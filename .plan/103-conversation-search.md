@@ -1,6 +1,6 @@
 # PR103: Search conversations by title and transcript content
 
-> Status: **PLANNED**. Add a global conversation-search dialog from the sidebar, backed by the existing SQLite message full-text index, and reopen a selected result through the normal mode-aware conversation-selection path.
+> Status: **COMPLETED in this branch**. Added a global conversation-search dialog from the sidebar, backed by bounded title queries and the existing SQLite message full-text index, with visible-content verification and normal mode-aware conversation selection.
 
 ## Goal
 

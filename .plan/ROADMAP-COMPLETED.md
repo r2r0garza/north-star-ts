@@ -1,5 +1,16 @@
 # Roadmap — Completed
 
+- **`103` — Search conversations by title and transcript content.** Completed in this branch. Added a
+  tooltip-backed search action between new-conversation and new-project, plus a focused accessible command
+  dialog with debounced bounded requests, stale-response suppression, server-order keyboard selection,
+  loading/empty/error states, safe snippet highlighting, and mode-aware navigation through the existing
+  selection callback. Main-process search Unicode-normalizes and bounds terms/results, ranks title matches
+  before FTS transcript matches, collapses hits by conversation, shares the sidebar's worker-transcript
+  exclusion, restricts transcript rows to user/assistant roles, and verifies hits against visible message
+  content so serialized tool-call arguments cannot leak into results. Added repository and preload bridge
+  regressions. Formatting, preload tests, `pnpm typecheck`, `pnpm build`, and roadmap verification pass;
+  SQLite-backed execution is blocked locally by the existing Electron/Node `better-sqlite3` ABI mismatch,
+  and the ordinary suite remains blocked by four pre-existing CLI fixture tests.
 - **`093` — Conversation message copy actions and timestamps.** Completed in this branch. Added a reserved
   metadata/action row beneath every primary user and assistant text message, with always-visible local semantic
   timestamps, hover/focus-revealed copy actions, exact source copying, non-shifting success feedback, and

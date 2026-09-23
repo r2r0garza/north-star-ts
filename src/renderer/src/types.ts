@@ -4,6 +4,7 @@ export type {
   Approval,
   ApprovalStatus,
   Conversation,
+  ConversationSearchResult,
   FailureContext,
   Message,
   Mode,

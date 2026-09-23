@@ -86,6 +86,18 @@ export interface Conversation {
   updatedAt: number
 }
 
+export interface ConversationSearchResult {
+  conversationId: string
+  mode: Mode
+  title: string | null
+  projectId: string | null
+  projectName: string | null
+  updatedAt: number
+  matchKind: "title" | "content" | "title_and_content"
+  snippet: string | null
+  rank: number
+}
+
 export interface Message {
   id: string
   conversationId: string

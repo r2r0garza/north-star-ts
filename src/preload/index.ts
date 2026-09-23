@@ -6,6 +6,7 @@ import type {
   Approval,
   ApprovalStatus,
   Conversation,
+  ConversationSearchResult,
   FailureContext,
   Message,
   Mode,
@@ -943,6 +944,10 @@ const api = {
         ipcRenderer.invoke("db:conversations:list", opts) as Promise<
           Conversation[]
         >,
+      search: (query: string, opts?: { limit?: number }) =>
+        ipcRenderer.invoke("db:conversations:search", query, opts) as Promise<
+          ConversationSearchResult[]
+        >,
       get: (id: string) =>
         ipcRenderer.invoke(
           "db:conversations:get",
@@ -1794,6 +1799,7 @@ export type {
   Approval,
   ApprovalStatus,
   Conversation,
+  ConversationSearchResult,
   FailureContext,
   Message,
   Mode,
