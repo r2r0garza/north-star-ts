@@ -1,6 +1,9 @@
 # PR70: Pods — autonomous agent teams with mutable work graphs
 
-> Status: **DEFERRED SEED**. Pods are a promising product concept, not an approved implementation.
+> Status: **SUPERSEDED by `106` Mission Control** (Seat → Pod → Rig over Initiative → Mission → Slice).
+> Kept as a design record; its risks and thesis carry into `106`.
+>
+> Original status: DEFERRED SEED. Pods are a promising product concept, not an approved implementation.
 > Preserve the distinction from Processes while `069` (intake authority) and `039` (observable
 > consultation) are built and validated. Activate this plan only when real objectives demonstrate that
 > authored Process graphs are the limiting constraint.

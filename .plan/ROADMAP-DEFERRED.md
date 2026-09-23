@@ -41,14 +41,6 @@
   versioned review and exact-revision installation through `077`/`028`; a separate user setting disables
   both hidden detection and recommendations without affecting explicit skill authoring. Do not require
   three global repetitions or classify every conversational utterance.
-- **`070` — Pods: autonomous agent teams with mutable work graphs. DEFERRED SEED.** A Pod is not a
-  saved roster or a loose Process: it owns an objective and may create, split, assign, cancel,
-  reprioritize, and revisit work within a charter, budget, and externally defined completion contract.
-  Reuse the task/agent runtime, `069` intake/assumptions, and `039` result/exchange foundations; net-new
-  concepts are the durable mutable work board, bounded coordinator replan loop, independent completion
-  evaluator, and charter enforcement. Activate only after `069`/`039` land, three concrete objectives
-  demonstrate runtime topology change beyond Process fan-out/rework, and a bounded prototype materially
-  outperforms the equivalent Process without unacceptable cost, thrash, or user confusion.
 - **`066` — Notebook editing and cell execution.** Depends on `063`'s safe reader and a reviewed
   Environment-backed kernel contract. Adds revision-safe structured cell edits and separately
   execution-gated cell runs with Stop/timeouts/output caps; never installs kernels or treats notebook

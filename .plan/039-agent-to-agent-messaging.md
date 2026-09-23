@@ -1,6 +1,9 @@
 # PR39: Inspectable Process consultations — observable agent exchanges
 
-> Status: **NOT STARTED**. Design direction resolved; implementation details remain.
+> Status: **SUPERSEDED by `106` Mission Control.** `039.1` (explicit phase results) is folded into
+> `106.3`; consultation is replaced by `106.4` seat messaging and Comms. Kept as a design record.
+>
+> Original status: NOT STARTED. Design direction resolved; implementation details remain.
 > A running phase-agent may consult a **completed phase-agent in the same Process run** and receive an
 > answer grounded in that agent's settled context. The user can inspect the exchange but does not join
 > or reply inside it. This is a bounded Process coordination primitive, not an agent chat room.
