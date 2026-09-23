@@ -1218,6 +1218,15 @@ const api = {
             "db:processes:agents:create",
             input
           ) as Promise<ProcessPhaseAgent>,
+        update: (
+          id: string,
+          patch: { runtimeConfig?: ProcessRuntimeConfig | null }
+        ) =>
+          ipcRenderer.invoke(
+            "db:processes:agents:update",
+            id,
+            patch
+          ) as Promise<ProcessPhaseAgent | undefined>,
         list: (phaseId: string) =>
           ipcRenderer.invoke("db:processes:agents:list", phaseId) as Promise<
             ProcessPhaseAgent[]

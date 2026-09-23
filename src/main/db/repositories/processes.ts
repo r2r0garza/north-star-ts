@@ -639,6 +639,22 @@ export function listPhaseAgents(phaseId: string): ProcessPhaseAgent[] {
   return rows.map(toPhaseAgent)
 }
 
+// Only the runtime override is editable in place; the agent identity, skills,
+// and tools are set at create time (remove + re-add to change them).
+export function updatePhaseAgent(
+  id: string,
+  patch: { runtimeConfig?: ProcessRuntimeConfig | null }
+): ProcessPhaseAgent | undefined {
+  if (patch.runtimeConfig !== undefined) {
+    getDb()
+      .prepare(
+        "UPDATE process_phase_agents SET runtime_config = ? WHERE id = ?"
+      )
+      .run(stringifyRuntimeConfig(patch.runtimeConfig), id)
+  }
+  return getPhaseAgent(id)
+}
+
 export function deletePhaseAgent(id: string): void {
   getDb().prepare("DELETE FROM process_phase_agents WHERE id = ?").run(id)
 }
