@@ -38,7 +38,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { Markdown } from "@/components/markdown"
 import { VIEW_TO_MODE, type View } from "@/components/sidebar"
 import {
   DropdownMenu,
@@ -51,15 +50,8 @@ import {
   MessageScroller,
   MessageScrollerViewport,
   MessageScrollerContent,
-  MessageScrollerItem,
   MessageScrollerButton,
 } from "@/components/ui/message-scroller"
-import { Message, MessageContent } from "@/components/ui/message"
-import { ConversationMessageMeta } from "@/components/conversation-message-meta"
-import { ConversationFindText } from "@/components/conversation-find-text"
-import { Bubble, BubbleContent } from "@/components/ui/bubble"
-import { Marker, MarkerIcon, MarkerContent } from "@/components/ui/marker"
-import { Spinner } from "@/components/ui/spinner"
 import {
   Tooltip,
   TooltipButton,
@@ -75,8 +67,12 @@ import {
   AttachmentActions,
   AttachmentAction,
 } from "@/components/ui/attachment"
-import { ToolGroup, ApprovalCard } from "@/components/tool-group"
-import { ChangedFilesBar } from "@/components/changed-files-bar"
+import { ApprovalCard } from "@/components/tool-group"
+import {
+  LiveTranscriptTurn,
+  SettledTranscript,
+  type LiveSegment,
+} from "@/components/transcript"
 import { QuestionPanel } from "@/components/question-panel"
 import { applyStreamAttempt } from "@/lib/live-stream"
 import {
@@ -149,16 +145,6 @@ import type {
   AgentSummary,
   PickedElement,
 } from "@/types"
-
-// One ordered piece of an in-flight turn: a run of streamed assistant text, or a
-// group of tool calls. Segments are appended in the order events arrive, so the
-// live turn interleaves text and tools exactly as it happened (a preamble, its
-// tools, the next preamble, its tools, …) — matching how buildTimeline lays out
-// the settled transcript. This replaces the old flat {text, tools}, which
-// rendered every tool first and all text after, regardless of real order.
-type LiveSegment =
-  | { kind: "text"; text: string }
-  | { kind: "tools"; calls: ToolUse[] }
 
 // The live, in-flight state of one streaming turn, held per-conversation in
 // `liveTurns` until the turn settles and reconciles into the persisted timeline.
@@ -299,7 +285,8 @@ function addLiveToolStart(turn: LiveTurn, call: ToolUse): LiveTurn {
 }
 
 // Update a tool call by id wherever it lives (result/status/approval), leaving
-// all other segments untouched.
+// all other segments untouched — by reference, so their memoized live renderers
+// skip the update.
 function updateLiveTool(
   turn: LiveTurn,
   id: string,
@@ -308,7 +295,7 @@ function updateLiveTool(
   return {
     ...turn,
     segments: turn.segments.map((seg) =>
-      seg.kind === "tools"
+      seg.kind === "tools" && seg.calls.some((c) => c.id === id)
         ? {
             ...seg,
             calls: seg.calls.map((c) => (c.id === id ? fn(c) : c)),
@@ -1827,8 +1814,11 @@ function App(
   // group alongside the live one. So while a live turn exists, drop everything
   // after the last user message: the live buffer is the single source of truth
   // for the in-flight response. (No live turn → render the full timeline.)
-  const displayTimeline = (() => {
-    if (!liveTurn) return timeline
+  // Memoized on whether a live turn exists — not on the turn itself — so token
+  // deltas keep the same array and the settled transcript boundary skips them.
+  const hasLiveTurn = liveTurn !== undefined
+  const displayTimeline = useMemo(() => {
+    if (!hasLiveTurn) return timeline
     let lastUser = -1
     for (let i = timeline.length - 1; i >= 0; i--) {
       const item = timeline[i]
@@ -1838,10 +1828,28 @@ function App(
       }
     }
     return lastUser === -1 ? timeline : timeline.slice(0, lastUser + 1)
-  })()
+  }, [hasLiveTurn, timeline])
   const latestSettledAssistantKey = liveHasText
     ? null
     : latestAssistantTextKey(displayTimeline)
+  // Transcript props must stay referentially stable across stream updates (see
+  // components/transcript.tsx). The parent's callbacks are recreated on every
+  // Shell render, so route them through refs behind stable wrappers.
+  const transcriptWorkspace = workspace.trim()
+  const onOpenHtmlRef = useRef(onOpenHtml)
+  const onReviewFilesRef = useRef(onReviewFiles)
+  useLayoutEffect(() => {
+    onOpenHtmlRef.current = onOpenHtml
+    onReviewFilesRef.current = onReviewFiles
+  })
+  const openTranscriptHtml = useCallback(
+    (relPath: string) => onOpenHtmlRef.current?.(relPath),
+    []
+  )
+  const reviewTranscriptFiles = useCallback(
+    () => onReviewFilesRef.current?.(),
+    []
+  )
   const activeConversationFindQuery = conversationFindOpen
     ? conversationFindQuery
     : ""
@@ -3181,140 +3189,28 @@ function App(
               ref={transcriptContentRef}
               className="mx-auto w-full max-w-[min(90%,72rem)] gap-4 px-4 py-6"
             >
-              {displayTimeline.map((item, i) => {
-                const isLast =
-                  i === displayTimeline.length - 1 &&
-                  !loading &&
-                  !suppressSettledAnchor
-                if (item.kind === "tools") {
-                  return (
-                    <MessageScrollerItem key={item.key} scrollAnchor={isLast}>
-                      <Message align="start">
-                        <MessageContent>
-                          <ToolGroup calls={item.calls} />
-                          <ChangedFilesBar
-                            calls={item.calls}
-                            workspace={workspace.trim()}
-                            onOpenHtml={(p) => onOpenHtml?.(p)}
-                            onReviewAll={() => onReviewFiles?.()}
-                          />
-                        </MessageContent>
-                      </Message>
-                    </MessageScrollerItem>
-                  )
-                }
-                const align = item.role === "user" ? "end" : "start"
-                return (
-                  <MessageScrollerItem key={item.key} scrollAnchor={isLast}>
-                    <Message align={align} tabIndex={0}>
-                      <MessageContent>
-                        <Bubble
-                          align={align}
-                          variant={item.role === "user" ? "default" : "muted"}
-                        >
-                          <BubbleContent
-                            className={cn(
-                              item.role === "user"
-                                ? "whitespace-pre-wrap"
-                                : "overflow-visible"
-                            )}
-                          >
-                            {item.role === "assistant" ? (
-                              <Markdown
-                                content={item.content}
-                                findQuery={activeConversationFindQuery}
-                              />
-                            ) : (
-                              <ConversationFindText
-                                text={item.content}
-                                query={activeConversationFindQuery}
-                              />
-                            )}
-                          </BubbleContent>
-                        </Bubble>
-                        <ConversationMessageMeta
-                          content={item.content}
-                          createdAt={item.createdAt}
-                          align={align}
-                          copyAlwaysVisible={
-                            item.role === "assistant" &&
-                            item.key === latestSettledAssistantKey
-                          }
-                        />
-                      </MessageContent>
-                    </Message>
-                  </MessageScrollerItem>
-                )
-              })}
-
-              {/* The in-flight assistant turn: text and tool activity rendered in
-                  the order they streamed (interleaved via segments), so it reads
-                  the same live as it does once settled. "Thinking…" fills the gap
-                  before the first event. */}
+              <SettledTranscript
+                items={displayTimeline}
+                anchorLast={!loading && !suppressSettledAnchor}
+                findQuery={activeConversationFindQuery}
+                latestAssistantKey={latestSettledAssistantKey}
+                workspace={transcriptWorkspace}
+                onOpenHtml={openTranscriptHtml}
+                onReviewFiles={reviewTranscriptFiles}
+              />
               {loading && (
-                <MessageScrollerItem key="live" scrollAnchor>
-                  <Message align="start" tabIndex={liveHasText ? 0 : undefined}>
-                    <MessageContent>
-                      {liveSegments.map((seg, si) =>
-                        seg.kind === "tools" ? (
-                          <div key={`s${si}`}>
-                            <ToolGroup calls={seg.calls} />
-                            <ChangedFilesBar
-                              calls={seg.calls}
-                              workspace={workspace.trim()}
-                              onOpenHtml={(p) => onOpenHtml?.(p)}
-                              onReviewAll={() => onReviewFiles?.()}
-                            />
-                          </div>
-                        ) : seg.text ? (
-                          <Bubble key={`s${si}`} align="start" variant="muted">
-                            <BubbleContent className="overflow-visible">
-                              <Markdown
-                                content={seg.text}
-                                mode="streaming"
-                                findQuery={activeConversationFindQuery}
-                              />
-                            </BubbleContent>
-                          </Bubble>
-                        ) : null
-                      )}
-                      {liveSegments.length === 0 && (
-                        <Marker>
-                          <MarkerIcon>
-                            <Spinner />
-                          </MarkerIcon>
-                          <MarkerContent>
-                            {liveTurn?.commandWait
-                              ? "Waiting for background command…"
-                              : liveTurn?.streamRetrying
-                                ? "Connection interrupted — retrying…"
-                                : "Thinking…"}
-                          </MarkerContent>
-                        </Marker>
-                      )}
-                      {liveHasText &&
-                        liveTurn &&
-                        liveTurn.firstTextAt !== null && (
-                          <ConversationMessageMeta
-                            content={liveContent}
-                            createdAt={liveTurn.firstTextAt}
-                            align="start"
-                            copyAlwaysVisible
-                          />
-                        )}
-                      {liveSegments.length > 0 && liveTurn?.commandWait && (
-                        <Marker>
-                          <MarkerIcon>
-                            <Spinner />
-                          </MarkerIcon>
-                          <MarkerContent>
-                            Waiting for background command…
-                          </MarkerContent>
-                        </Marker>
-                      )}
-                    </MessageContent>
-                  </Message>
-                </MessageScrollerItem>
+                <LiveTranscriptTurn
+                  key="live"
+                  segments={liveSegments}
+                  content={liveContent}
+                  firstTextAt={liveTurn?.firstTextAt ?? null}
+                  commandWait={liveTurn?.commandWait ?? false}
+                  streamRetrying={liveTurn?.streamRetrying ?? false}
+                  findQuery={activeConversationFindQuery}
+                  workspace={transcriptWorkspace}
+                  onOpenHtml={openTranscriptHtml}
+                  onReviewFiles={reviewTranscriptFiles}
+                />
               )}
             </MessageScrollerContent>
           </MessageScrollerViewport>

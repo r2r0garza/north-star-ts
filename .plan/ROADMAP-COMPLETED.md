@@ -1,5 +1,15 @@
 # Roadmap — Completed
 
+- **`097` — Transcript render boundaries and measured virtualization.** Completed in this branch. Extracted
+  memoized settled-transcript, settled-row, live-turn, and live-segment components from `App.tsx`; memoized the
+  displayed timeline on live-turn presence, routed changed-file callbacks through stable ref-backed wrappers, and
+  kept untouched live tool segments referentially stable. A temporary profiling probe showed per-delta renderer
+  work falling from ~24 ms to ~0.9 ms at 300 settled rows and from ~88 ms to ~1 ms at 1,000 rows, flat in
+  conversation length, so virtualization was deliberately not pursued: `content-visibility: auto` already bounds
+  off-screen paint while preserving browser find, in-conversation find, selection, and scroll anchoring. Added
+  focused render-count coverage for settled rows, live segments, anchors, find propagation, and markers. The
+  7-test focused suite, `pnpm typecheck`, formatting checks, and `pnpm build` pass; the ordinary suite remains
+  blocked only by the four pre-existing CLI parser tests whose ignored `cli_probes` fixtures are absent.
 - **`103` — Search conversations by title and transcript content.** Completed in this branch. Added a
   tooltip-backed search action between new-conversation and new-project, plus a focused accessible command
   dialog with debounced bounded requests, stale-response suppression, server-order keyboard selection,
