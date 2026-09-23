@@ -27,17 +27,12 @@
    it, 4/4 with); `045`'s out-of-scope line is amended to permit exactly that narrow steer.
    **`045.1` remains**: extract the shared `index_query` service, add its adapter, widen the grant, add
    the CLI-provider UI copy, and close the Codex steering gap (no per-run append flag exists).
-4. **`083` — Per-agent runtime override UI.** Expose the existing
-   `process_phase_agents.runtime_config` capability in the Process builder so each phase-pool agent may
-   select a worker provider/model or inherit phase/run defaults. Reuse the existing runtime picker and
-   persistence/import-export paths, keep orchestration slots at phase/run scope, and preserve precedence:
-   phase-agent override → phase override → run default → source/global fallback.
-5. **`067` — Conversation-scoped workspace checkpoints.** Add a reversible safety layer for autonomous
+4. **`067` — Conversation-scoped workspace checkpoints.** Add a reversible safety layer for autonomous
    edits using conversation+workspace-scoped, content-addressed app-data manifests and blobs. Provide
    bounded create/list/diff/restore operations with conflict-aware previews, explicit approval, quotas,
    retention, and crash-safe lifecycle handling. Preserve unrelated user changes and never wrap destructive
    `git reset`/`checkout`/`clean` operations.
-6. **`069` — Process intake policies and inspectable assumptions.** Give each Process an explicit run-
+5. **`069` — Process intake policies and inspectable assumptions.** Give each Process an explicit run-
    entry contract instead of injecting a mandatory Planning phase: **Proceed with assumptions**
    (default, no preflight gate), **Approve initial plan** (side-effect-free execution brief + one durable
    approval/revision loop), or **Strict input contract** (definition-authored required fields validated
@@ -46,7 +41,7 @@
    assumptions log with origin/confidence/impact/status and monitor UI. Human clarification pauses and
    resumes the correct worker; it remains distinct from internal Agent exchanges (`039`). Split strict
    deterministic intake first, then assumptions/questions, then approve-plan preflight.
-7. **`039` — Inspectable Process consultations / Agent exchanges.** A running phase may consult a
+6. **`039` — Inspectable Process consultations / Agent exchanges.** A running phase may consult a
     **completed phase in the same run** and receive a context-grounded answer. The user observes the
     durable exchange but cannot reply; intervention stays in existing Process controls. Before adding
     consultation, persist an explicit phase result and move downstream aggregation away from "latest
@@ -55,11 +50,11 @@
     consultation. v1 is synchronous, same-run, completed-target, capped, and read-only in the monitor;
     discovered defects recommend rework through the existing flag policy rather than silently changing
     completed artifacts. Split `039.1` result integrity, then `039.2` consultation/storage/monitor.
-8. **`084` — Process import account-remapping UX.** Analyze imported Process runtime selections before
+7. **`084` — Process import account-remapping UX.** Analyze imported Process runtime selections before
     writing, distinguish locally resolved, matchable, ambiguous, and unresolved provider/model references,
     and let the user map each unresolved reference to a local account/model or choose inheritance. Keep
     account IDs machine-local, preserve portable import/export intent, and avoid raw account-ID failures.
-9. **`085` — Process template library.** Add a small, polished built-in catalog of portable starter
+8. **`085` — Process template library.** Add a small, polished built-in catalog of portable starter
     Processes backed by the existing import/create validation path. Let users preview and instantiate
     useful workflows without starting from a blank graph; templates inherit runtime by default and never
     hard-code local provider-account IDs.

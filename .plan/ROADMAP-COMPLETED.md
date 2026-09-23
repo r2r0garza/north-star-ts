@@ -1,5 +1,17 @@
 # Roadmap — Completed
 
+- **`083` — Per-agent runtime override UI.** Completed in this branch. Each phase-pool agent in the Process
+  builder now has an inline "Agent worker runtime" picker (reusing `RuntimePicker`) that writes
+  `runtimeConfig.worker` on `process_phase_agents`; Inherit clears it to `null`, a deleted provider account
+  degrades to its raw ids, and the control is hidden on sub-process phases and when no providers exist. The
+  save path did not exist, so a narrow `updatePhaseAgent` / `db:processes:agents:update` / `agents.update`
+  route was added (runtime only; skills/tools/identity untouched). Also fixed a leak the plan did not
+  anticipate: `resolveRuntime`'s worker fallback plus the decomposer/validator passing the phase agent would
+  have applied an agent's worker override to those orchestration slots, so the agent override is now
+  worker-slot only. Precedence (agent → phase → run → source/global) is covered by a service test with
+  `phase_agent` snapshot source and a validator no-leak regression, plus repository and builder UI tests.
+  `pnpm typecheck`, the full `pnpm test` suite and `pnpm build` pass; manual `pnpm dev` validation was not
+  run.
 - **`033.4` — Agent-readable live dashboards.** Completed in this branch, after the required discussion
   (decisions are recorded in the plan). Added the read-only `dashboard_read` tool
   (`TOOL_EFFECTS.readOnlyParallel`). With no ID it lists dashboards (at most 100, pinned first, with
