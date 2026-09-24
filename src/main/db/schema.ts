@@ -1384,3 +1384,10 @@ CREATE TABLE IF NOT EXISTS work_revisions (
 );
 CREATE INDEX IF NOT EXISTS idx_work_revisions_initiative_created ON work_revisions(initiative_id, created_at DESC);
 `
+
+// v48: freeze each successful Process phase's explicit output at completion.
+// Downstream phases consume this snapshot instead of re-reading a mutable worker
+// transcript, which may receive later messages from validation or Comms.
+export const SCHEMA_V48 = `
+ALTER TABLE process_phase_runs ADD COLUMN result_content TEXT;
+`

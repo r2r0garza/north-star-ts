@@ -66,7 +66,7 @@ describe.skipIf(!sqliteLoads)("v15 migration", () => {
   })
 
   it("reaches the latest user_version", () => {
-    expect(db.pragma("user_version", { simple: true })).toBe(47)
+    expect(db.pragma("user_version", { simple: true })).toBe(48)
   })
 
   it("adds the v24 subprocess_id column to process_phases", () => {
@@ -349,10 +349,15 @@ describe.skipIf(!sqliteLoads)("runs + phase runs", () => {
     updatePhaseRun(parent.id, {
       status: "completed",
       agentName: "coder",
+      resultContent: "frozen result",
       finishedAt: 5,
     })
     expect(getPhaseRun(parent.id)!.status).toBe("completed")
     expect(getPhaseRun(parent.id)!.agentName).toBe("coder")
+    expect(getPhaseRun(parent.id)!.resultContent).toBe("frozen result")
+
+    updatePhaseRun(parent.id, { outputIdentity: null })
+    expect(getPhaseRun(parent.id)!.resultContent).toBeNull()
 
     const topLevel = listPhaseRuns({ runId: run.id, parentId: null })
     expect(topLevel.map((r) => r.id)).toEqual([parent.id])

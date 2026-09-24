@@ -536,6 +536,77 @@ describe.skipIf(!sqliteLoads)("ProcessService dispatch routing", () => {
     // suppressed user questions.
     expect(loopCalls.length).toBeGreaterThanOrEqual(2)
     expect(loopCalls.every((c) => c.suppressUserQuestions === true)).toBe(true)
+    const phaseRun = processes.listPhaseRuns({ runId: run.id })[0]
+    expect(phaseRun.resultContent).toBe("done")
+  })
+
+  it("keeps downstream input fixed when a completed worker transcript changes", async () => {
+    const def = processes.createProcessDefinition({ name: "T" })
+    const first = processes.createPhase({
+      processId: def.id,
+      key: "first",
+      name: "First",
+      position: 0,
+    })
+    const second = processes.createPhase({
+      processId: def.id,
+      key: "second",
+      name: "Second",
+      position: 1,
+    })
+    processes.createEdge({
+      processId: def.id,
+      fromPhaseId: first.id,
+      toPhaseId: second.id,
+    })
+    const { taskId } = seedTaskRow()
+    const run = processes.createProcessRun({
+      processId: def.id,
+      sourceConversationId: null,
+      taskId,
+      objective: "build it",
+      status: "running",
+    })
+    const svc = new ProcessService(fakeRunner)
+    await svc.execute({
+      task: { id: taskId, input: { processRunId: run.id } } as never,
+      signal: new AbortController().signal,
+      emit: () => {},
+      workspace: undefined,
+    })
+
+    const firstRun = processes
+      .listPhaseRuns({ runId: run.id })
+      .find((phaseRun) => phaseRun.phaseId === first.id)!
+    const workerTask = db
+      .prepare("SELECT conversation_id FROM tasks WHERE id = ?")
+      .get(firstRun.taskId) as { conversation_id: string }
+    appendMessage({
+      conversationId: workerTask.conversation_id,
+      role: "assistant",
+      content: "later message that is not the phase result",
+    })
+
+    const secondRun = processes
+      .listPhaseRuns({ runId: run.id })
+      .find((phaseRun) => phaseRun.phaseId === second.id)!
+    processes.updatePhaseRun(secondRun.id, {
+      status: "pending",
+      taskId: null,
+      outputIdentity: null,
+    })
+    processes.updateProcessRun(run.id, { status: "running", finishedAt: null })
+    loopCalls.length = 0
+    await svc.execute({
+      task: { id: taskId, input: { processRunId: run.id } } as never,
+      signal: new AbortController().signal,
+      emit: () => {},
+      workspace: undefined,
+    })
+
+    const kickoff = loopCalls.map((call) => call.userMessage ?? "").join("\n")
+    expect(kickoff).toContain("done")
+    expect(kickoff).not.toContain("later message that is not the phase result")
   })
 })
 

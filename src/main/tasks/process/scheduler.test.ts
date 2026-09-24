@@ -2918,6 +2918,32 @@ describe.skipIf(!sqliteLoads)("recorded phase completion contracts", () => {
     }
   )
 
+  it("captures freeform and validated phase results explicitly", async () => {
+    const freeformId = buildProcess({ phases: [{ key: "freeform" }] })
+    const freeform = makeCtx(freeformId, async () => ({
+      content: "final answer",
+    }))
+    await runScheduler(freeform.ctx)
+    expect(
+      processes.listPhaseRuns({ runId: freeform.runId })[0].resultContent
+    ).toBe("final answer")
+
+    const { id } = validatedProcess()
+    const validated = makeCtx(id, async ({ attemptId }) => ({
+      content: JSON.stringify({
+        version: 1,
+        attemptId,
+        status: "completed",
+        output: "semantic result",
+        evidence: "checked",
+      }),
+    }))
+    await runScheduler(validated.ctx)
+    expect(
+      processes.listPhaseRuns({ runId: validated.runId })[0].resultContent
+    ).toBe("semantic result")
+  })
+
   it("requires the configured file, then accepts a recovered worker on restart", async () => {
     const { id } = validatedProcess(["report.txt"])
     const workspace = mkdtempSync(join(tmpdir(), "phase-completion-"))

@@ -961,11 +961,10 @@ export class ProcessService {
     }
   }
 
-  // The aggregated output of a sub-process phase (plan 038.1): concatenate the final
-  // content of the nested run's completed TOP-LEVEL phases, so a downstream phase's
-  // upstream digest is real. Reuses the same per-phase rule collectUpstream uses (a
-  // container phase → its children's aggregate; a plain phase → its worker's last
-  // assistant message). Null if the nested run is missing / not completed.
+  // The aggregated output of a sub-process phase (plan 038.1): concatenate the
+  // frozen results of the nested run's completed TOP-LEVEL phases, so a downstream
+  // phase's upstream digest is stable even if a worker transcript later changes.
+  // A container phase still aggregates its children's frozen results.
   private aggregateSubProcessContent(parentPhaseRunId: string): string | null {
     const childRun = processes.getProcessRunByParentPhaseRunId(parentPhaseRunId)
     if (!childRun || childRun.status !== "completed") return null
@@ -985,9 +984,7 @@ export class ProcessService {
           .length > 0
       const content = hasChildren
         ? this.aggregateChildContent(childRun.id, pr.id)
-        : pr.taskId
-          ? this.lastAssistantContent(pr)
-          : null
+        : pr.resultContent
       if (content) {
         const label = phasesById.get(pr.phaseId)?.name ?? "Phase"
         parts.push(`#### ${label}\n${content.trim()}`)
@@ -1148,7 +1145,10 @@ export class ProcessService {
         )
         const outputIdentity = output?.identity ?? null
         processes.updatePhaseRun(phaseRun.id, { outputIdentity })
-        return { content: result.content, outputIdentity } satisfies PhaseResult
+        return {
+          content: output?.content ?? result.content,
+          outputIdentity,
+        } satisfies PhaseResult
       } catch (err) {
         return {
           error: err instanceof Error ? err.message : String(err),
@@ -1349,7 +1349,7 @@ export class ProcessService {
         sourcePhaseKey: sourceChildRun.phaseId
           ? this.phaseKey(run, sourceChildRun.phaseId)
           : undefined,
-        subtaskContent: this.lastAssistantContent(sourceChildRun),
+        subtaskContent: sourceChildRun.resultContent,
       })
     }
   }
@@ -1594,23 +1594,21 @@ export class ProcessService {
       // aggregateChildContent detects and unwraps each sub-process child. A pure
       // SUB-PROCESS source (038.1, no children) produced its work in the NESTED run
       // linked by parent_phase_run_id → aggregate that run's terminal phases. A
-      // plain phase has no children → use its own worker's last assistant message.
+      // plain phase has no children → use its frozen completion result.
       const hasChildren =
         processes.listPhaseRuns({ runId: run.id, parentId: pr.id }).length > 0
       const content = hasChildren
         ? this.aggregateChildContent(run.id, pr.id)
         : src.subprocessId
           ? this.aggregateSubProcessContent(pr.id)
-          : pr.taskId
-            ? this.lastAssistantContent(pr)
-            : null
+          : pr.resultContent
       results.push({ phaseName: src.name, phaseKey: src.key, content })
     }
     return results
   }
 
-  // Concatenate the final assistant content of every child of a fan-out parent
-  // phase-run, labeled by index, for a downstream phase's upstream digest (025.1).
+  // Concatenate the frozen result of every child of a fan-out parent phase-run,
+  // labeled by index, for a downstream phase's upstream digest (025.1).
   // A per-fan-out-child SUB-PROCESS child (plan 038.3) has no worker message of its
   // own — its output lives in its nested run — so pull the nested run's aggregate
   // (mirroring collectUpstream's src.subprocessId branch).
@@ -1628,9 +1626,7 @@ export class ProcessService {
         processes.getProcessRunByParentPhaseRunId(child.id) !== undefined
       const content = isSubProcessChild
         ? this.aggregateSubProcessContent(child.id)
-        : child.taskId
-          ? this.lastAssistantContent(child)
-          : null
+        : child.resultContent
       if (content) parts.push(`#### Sub-task ${i + 1}\n${content.trim()}`)
     })
     return parts.length > 0 ? parts.join("\n\n") : null

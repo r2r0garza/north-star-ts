@@ -99,6 +99,7 @@ const MIGRATIONS: Array<(db: Database.Database) => void> = [
   (db) => db.exec(SCHEMA_V45),
   (db) => db.exec(SCHEMA_V46),
   (db) => db.exec(SCHEMA_V47),
+  ensureProcessResultContentColumn,
 ]
 
 function tableExists(db: Database.Database, table: string): boolean {
@@ -130,6 +131,10 @@ function addColumnIfMissing(
 ): void {
   if (!tableExists(db, table) || columnExists(db, table, column)) return
   db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition};`)
+}
+
+function ensureProcessResultContentColumn(db: Database.Database): void {
+  addColumnIfMissing(db, "process_phase_runs", "result_content", "TEXT")
 }
 
 function ensureProcessRuntimeProfileColumns(db: Database.Database): void {
@@ -209,6 +214,7 @@ export function runMigrations(db: Database.Database): void {
     // SQLite by hand.
     db.transaction(() => {
       ensureProcessRuntimeProfileColumns(db)
+      ensureProcessResultContentColumn(db)
       ensureCodexSubscriptionProviderConstraints(db)
       ensureProjectPositionColumn(db)
       ensureSubagentArtifactsTable(db)

@@ -92,7 +92,7 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
     const db = new Database(":memory:")
     db.pragma("foreign_keys = ON")
     runMigrations(db)
-    expect(db.pragma("user_version", { simple: true })).toBe(47)
+    expect(db.pragma("user_version", { simple: true })).toBe(48)
     expect(db.pragma("foreign_key_check")).toHaveLength(0)
     db.close()
   })
@@ -650,7 +650,7 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
 
     runMigrations(db)
 
-    expect(db.pragma("user_version", { simple: true })).toBe(47)
+    expect(db.pragma("user_version", { simple: true })).toBe(48)
     expect(
       (db.pragma("table_info(process_phases)") as Array<{ name: string }>).map(
         (c) => c.name
@@ -868,7 +868,7 @@ describe.skipIf(!sqliteLoads)("SCHEMA_V9 — orphan reap (plan 022)", () => {
     // Apply V9 (the reaper) and any later migrations, up to the latest version.
     runMigrations(db)
 
-    expect(db.pragma("user_version", { simple: true })).toBe(47)
+    expect(db.pragma("user_version", { simple: true })).toBe(48)
 
     // Reaped: orphan + its nested descendant, and all their state.
     const taskIds = (
@@ -890,6 +890,18 @@ describe.skipIf(!sqliteLoads)("SCHEMA_V9 — orphan reap (plan 022)", () => {
 
     // No dangling references after FKs are re-enabled.
     expect(db.pragma("foreign_key_check")).toHaveLength(0)
+    db.close()
+  })
+})
+
+describe.skipIf(!sqliteLoads)("result content migration", () => {
+  it("adds a nullable result_content snapshot to phase runs", () => {
+    const db = new Database(":memory:")
+    runMigrations(db)
+    const columns = (
+      db.pragma("table_info(process_phase_runs)") as Array<{ name: string }>
+    ).map((column) => column.name)
+    expect(columns).toContain("result_content")
     db.close()
   })
 })
