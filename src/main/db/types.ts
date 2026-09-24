@@ -668,6 +668,124 @@ export interface RigDiagnostic {
   entityId?: string
 }
 
+export type InitiativeStatus =
+  | "draft"
+  | "active"
+  | "paused"
+  | "completed"
+  | "cancelled"
+  | "failed"
+export type MissionStatus =
+  | "planned"
+  | "active"
+  | "integrating"
+  | "review"
+  | "completed"
+  | "cancelled"
+  | "failed"
+export type SliceStatus =
+  | "draft"
+  | "ready"
+  | "blocked"
+  | "running"
+  | "proving"
+  | "integrating"
+  | "done"
+  | "failed"
+  | "cancelled"
+
+export interface SliceSpec {
+  goal: string
+  acceptance: string[]
+  outOfScope: string[]
+  touchHints: string[]
+  notes: string
+}
+
+export interface Initiative {
+  id: string
+  key: string
+  name: string
+  intent: string
+  definitionOfDone: string
+  rigId: string | null
+  rigSnapshot: RigGraph | null
+  workspaceId: string | null
+  projectId: string | null
+  defaultPodKey: string | null
+  playbookId: string | null
+  driveMode: "manual" | "copilot" | "autopilot"
+  budgets: Record<string, unknown>
+  status: InitiativeStatus
+  taskId: string | null
+  createdAt: number
+  updatedAt: number
+  startedAt: number | null
+  finishedAt: number | null
+}
+
+export interface Mission {
+  id: string
+  initiativeId: string
+  key: string
+  name: string
+  outcome: string
+  definitionOfDone: string
+  playbookId: string | null
+  mergePolicy: { mode: string }
+  integrationBranch: string | null
+  status: MissionStatus
+  position: number
+  startedAt: number | null
+  finishedAt: number | null
+}
+
+export interface WorkSlice {
+  id: string
+  missionId: string
+  key: string
+  title: string
+  spec: SliceSpec
+  proof: unknown | null
+  podKey: string | null
+  playbookId: string | null
+  status: SliceStatus
+  processRunId: string | null
+  branch: string | null
+  attempts: number
+  origin: "user" | "agent"
+  position: number
+  startedAt: number | null
+  finishedAt: number | null
+}
+
+export interface SliceEdge {
+  id: string
+  missionId: string
+  fromSliceId: string
+  toSliceId: string
+}
+
+export interface WorkRevision {
+  id: string
+  initiativeId: string
+  targetKind: "initiative" | "mission" | "slice" | "edge"
+  targetId: string
+  actor: string
+  change: { op: string; before?: unknown; after?: unknown }
+  reason: string | null
+  createdAt: number
+}
+
+export interface InitiativeGraph {
+  initiative: Initiative
+  missions: Mission[]
+  slices: WorkSlice[]
+  edges: SliceEdge[]
+  revisions: WorkRevision[]
+  rigDrifted: boolean
+}
+
 export interface ProcessRuntimeSnapshotSelection {
   accountId: string | null
   modelId: string | null

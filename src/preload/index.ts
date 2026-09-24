@@ -46,6 +46,13 @@ import type {
   RigOversight,
   RigDiagnostic,
   RigDecisionRight,
+  Initiative,
+  InitiativeGraph,
+  Mission,
+  WorkSlice,
+  SliceEdge,
+  SliceSpec,
+  WorkRevision,
 } from "../main/db/types"
 import type { ActionKind } from "../main/agent/approval/types"
 import type { PickedElement } from "../main/browser/types"
@@ -584,21 +591,203 @@ const api = {
   // List the user-invocable custom agents (name + description) for the composer's
   // agent picker. Pass the active workspace so workspace-level agents are included.
   missionControl: {
+    initiatives: {
+      list: () =>
+        ipcRenderer.invoke("missionControl:initiatives:list") as Promise<
+          Initiative[]
+        >,
+      get: (id: string) =>
+        ipcRenderer.invoke(
+          "missionControl:initiatives:get",
+          id
+        ) as Promise<InitiativeGraph | null>,
+      create: (input: {
+        key: string
+        name: string
+        intent: string
+        definitionOfDone: string
+        rigId?: string | null
+        workspaceId?: string | null
+        projectId?: string | null
+        defaultPodKey?: string | null
+      }) =>
+        ipcRenderer.invoke(
+          "missionControl:initiatives:create",
+          input
+        ) as Promise<InitiativeGraph>,
+      update: (
+        id: string,
+        patch: Partial<
+          Pick<
+            Initiative,
+            | "key"
+            | "name"
+            | "intent"
+            | "definitionOfDone"
+            | "rigId"
+            | "workspaceId"
+            | "projectId"
+            | "defaultPodKey"
+          >
+        >,
+        reason?: string
+      ) =>
+        ipcRenderer.invoke(
+          "missionControl:initiatives:update",
+          id,
+          patch,
+          "user",
+          reason
+        ) as Promise<InitiativeGraph>,
+      delete: (id: string) =>
+        ipcRenderer.invoke(
+          "missionControl:initiatives:delete",
+          id
+        ) as Promise<void>,
+      start: (id: string) =>
+        ipcRenderer.invoke(
+          "missionControl:initiatives:start",
+          id
+        ) as Promise<InitiativeGraph>,
+      reseat: (id: string, reason?: string) =>
+        ipcRenderer.invoke(
+          "missionControl:initiatives:reseat",
+          id,
+          reason
+        ) as Promise<InitiativeGraph>,
+    },
+    missions: {
+      create: (input: {
+        initiativeId: string
+        key: string
+        name: string
+        outcome: string
+        definitionOfDone?: string
+      }) =>
+        ipcRenderer.invoke(
+          "missionControl:missions:create",
+          input
+        ) as Promise<InitiativeGraph>,
+      update: (
+        id: string,
+        patch: Partial<
+          Pick<
+            Mission,
+            "key" | "name" | "outcome" | "definitionOfDone" | "position"
+          >
+        >,
+        reason?: string
+      ) =>
+        ipcRenderer.invoke(
+          "missionControl:missions:update",
+          id,
+          patch,
+          "user",
+          reason
+        ) as Promise<InitiativeGraph>,
+      delete: (id: string, reason?: string) =>
+        ipcRenderer.invoke(
+          "missionControl:missions:delete",
+          id,
+          "user",
+          reason
+        ) as Promise<InitiativeGraph>,
+    },
+    slices: {
+      create: (input: {
+        missionId: string
+        key: string
+        title: string
+        spec?: Partial<SliceSpec>
+        podKey?: string | null
+      }) =>
+        ipcRenderer.invoke(
+          "missionControl:slices:create",
+          input
+        ) as Promise<InitiativeGraph>,
+      update: (
+        id: string,
+        patch: Partial<
+          Pick<WorkSlice, "key" | "title" | "spec" | "podKey" | "position">
+        >,
+        reason?: string
+      ) =>
+        ipcRenderer.invoke(
+          "missionControl:slices:update",
+          id,
+          patch,
+          "user",
+          reason
+        ) as Promise<InitiativeGraph>,
+      delete: (id: string, reason?: string) =>
+        ipcRenderer.invoke(
+          "missionControl:slices:delete",
+          id,
+          "user",
+          reason
+        ) as Promise<InitiativeGraph>,
+    },
+    sliceEdges: {
+      set: (
+        missionId: string,
+        edges: Array<{ fromSliceId: string; toSliceId: string }>,
+        reason?: string
+      ) =>
+        ipcRenderer.invoke(
+          "missionControl:sliceEdges:set",
+          missionId,
+          edges,
+          "user",
+          reason
+        ) as Promise<InitiativeGraph>,
+    },
+    revisions: {
+      list: (initiativeId: string) =>
+        ipcRenderer.invoke(
+          "missionControl:revisions:list",
+          initiativeId
+        ) as Promise<WorkRevision[]>,
+    },
     rigs: {
-      list: () => ipcRenderer.invoke("missionControl:rigs:list") as Promise<Rig[]>,
+      list: () =>
+        ipcRenderer.invoke("missionControl:rigs:list") as Promise<Rig[]>,
       get: (id: string) =>
         ipcRenderer.invoke("missionControl:rigs:get", id) as Promise<
           (RigGraph & { diagnostics: RigDiagnostic[] }) | null
         >,
-      create: (input: { name: string; description?: string | null; cultureMd?: string }) =>
+      create: (input: {
+        name: string
+        description?: string | null
+        cultureMd?: string
+      }) =>
         ipcRenderer.invoke("missionControl:rigs:create", input) as Promise<Rig>,
-      update: (id: string, patch: { name?: string; description?: string | null; cultureMd?: string }) =>
-        ipcRenderer.invoke("missionControl:rigs:update", id, patch) as Promise<Rig>,
-      delete: (id: string) => ipcRenderer.invoke("missionControl:rigs:delete", id) as Promise<void>,
+      update: (
+        id: string,
+        patch: {
+          name?: string
+          description?: string | null
+          cultureMd?: string
+        }
+      ) =>
+        ipcRenderer.invoke(
+          "missionControl:rigs:update",
+          id,
+          patch
+        ) as Promise<Rig>,
+      delete: (id: string) =>
+        ipcRenderer.invoke("missionControl:rigs:delete", id) as Promise<void>,
       duplicate: (id: string, name?: string) =>
-        ipcRenderer.invoke("missionControl:rigs:duplicate", id, name) as Promise<RigGraph>,
+        ipcRenderer.invoke(
+          "missionControl:rigs:duplicate",
+          id,
+          name
+        ) as Promise<RigGraph>,
       export: (id: string, workspace?: string) =>
-        ipcRenderer.invoke("missionControl:rigs:export", id, workspace) as Promise<{ canceled: boolean; path?: string }>,
+        ipcRenderer.invoke(
+          "missionControl:rigs:export",
+          id,
+          workspace
+        ) as Promise<{ canceled: boolean; path?: string }>,
       import: (workspace?: string) =>
         ipcRenderer.invoke("missionControl:rigs:import", workspace) as Promise<{
           canceled: boolean
@@ -607,24 +796,90 @@ const api = {
         }>,
     },
     pods: {
-      create: (input: { rigId: string; key: string; name: string; missionStatement?: string; cultureMd?: string; position?: number }) =>
-        ipcRenderer.invoke("missionControl:pods:create", input) as Promise<RigPod>,
-      update: (id: string, patch: Partial<Pick<RigPod, "key" | "name" | "missionStatement" | "cultureMd" | "leadSeatId" | "position">>) =>
-        ipcRenderer.invoke("missionControl:pods:update", id, patch) as Promise<RigPod>,
-      delete: (id: string) => ipcRenderer.invoke("missionControl:pods:delete", id) as Promise<void>,
-      reorder: (rigId: string, ids: string[]) => ipcRenderer.invoke("missionControl:pods:reorder", rigId, ids) as Promise<RigPod[]>,
+      create: (input: {
+        rigId: string
+        key: string
+        name: string
+        missionStatement?: string
+        cultureMd?: string
+        position?: number
+      }) =>
+        ipcRenderer.invoke(
+          "missionControl:pods:create",
+          input
+        ) as Promise<RigPod>,
+      update: (
+        id: string,
+        patch: Partial<
+          Pick<
+            RigPod,
+            | "key"
+            | "name"
+            | "missionStatement"
+            | "cultureMd"
+            | "leadSeatId"
+            | "position"
+          >
+        >
+      ) =>
+        ipcRenderer.invoke(
+          "missionControl:pods:update",
+          id,
+          patch
+        ) as Promise<RigPod>,
+      delete: (id: string) =>
+        ipcRenderer.invoke("missionControl:pods:delete", id) as Promise<void>,
+      reorder: (rigId: string, ids: string[]) =>
+        ipcRenderer.invoke(
+          "missionControl:pods:reorder",
+          rigId,
+          ids
+        ) as Promise<RigPod[]>,
     },
     seats: {
-      create: (input: { podId: string; key: string; role: string; charter?: string; agentRefId?: string | null; agentLabel?: string | null; skills?: string[] | null; tools?: string[] | null; mcpServers?: string[] | null; decisionRights?: RigDecisionRight[]; runtimeConfig?: ProcessRuntimeConfig | null; position?: number }) =>
-        ipcRenderer.invoke("missionControl:seats:create", input) as Promise<RigSeat>,
+      create: (input: {
+        podId: string
+        key: string
+        role: string
+        charter?: string
+        agentRefId?: string | null
+        agentLabel?: string | null
+        skills?: string[] | null
+        tools?: string[] | null
+        mcpServers?: string[] | null
+        decisionRights?: RigDecisionRight[]
+        runtimeConfig?: ProcessRuntimeConfig | null
+        position?: number
+      }) =>
+        ipcRenderer.invoke(
+          "missionControl:seats:create",
+          input
+        ) as Promise<RigSeat>,
       update: (id: string, patch: Partial<Omit<RigSeat, "id" | "podId">>) =>
-        ipcRenderer.invoke("missionControl:seats:update", id, patch) as Promise<RigSeat>,
-      delete: (id: string) => ipcRenderer.invoke("missionControl:seats:delete", id) as Promise<void>,
-      reorder: (podId: string, ids: string[]) => ipcRenderer.invoke("missionControl:seats:reorder", podId, ids) as Promise<RigSeat[]>,
+        ipcRenderer.invoke(
+          "missionControl:seats:update",
+          id,
+          patch
+        ) as Promise<RigSeat>,
+      delete: (id: string) =>
+        ipcRenderer.invoke("missionControl:seats:delete", id) as Promise<void>,
+      reorder: (podId: string, ids: string[]) =>
+        ipcRenderer.invoke(
+          "missionControl:seats:reorder",
+          podId,
+          ids
+        ) as Promise<RigSeat[]>,
     },
     oversight: {
-      set: (rigId: string, edges: Array<{ overseerPodId: string; overseenPodId: string }>) =>
-        ipcRenderer.invoke("missionControl:oversight:set", rigId, edges) as Promise<RigOversight[]>,
+      set: (
+        rigId: string,
+        edges: Array<{ overseerPodId: string; overseenPodId: string }>
+      ) =>
+        ipcRenderer.invoke(
+          "missionControl:oversight:set",
+          rigId,
+          edges
+        ) as Promise<RigOversight[]>,
     },
   },
   agents: {
@@ -1903,6 +2158,13 @@ export type {
   RigOversight,
   RigDiagnostic,
   RigDecisionRight,
+  Initiative,
+  InitiativeGraph,
+  Mission,
+  WorkSlice,
+  SliceEdge,
+  SliceSpec,
+  WorkRevision,
 } from "../main/db/types"
 export type {
   ProcessImportResult,

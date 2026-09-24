@@ -1330,3 +1330,57 @@ CREATE TABLE IF NOT EXISTS rig_oversight (
 );
 CREATE INDEX IF NOT EXISTS idx_rig_oversight_rig ON rig_oversight(rig_id);
 `
+
+// v47: Mission Control work hierarchy (plan 106.2).
+export const SCHEMA_V47 = `
+CREATE TABLE IF NOT EXISTS initiatives (
+  id TEXT PRIMARY KEY, key TEXT NOT NULL UNIQUE, name TEXT NOT NULL,
+  intent TEXT NOT NULL, definition_of_done TEXT NOT NULL,
+  rig_id TEXT REFERENCES rigs(id) ON DELETE SET NULL, rig_snapshot TEXT,
+  workspace_id TEXT REFERENCES workspaces(id) ON DELETE SET NULL,
+  project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
+  default_pod_key TEXT, playbook_id TEXT,
+  drive_mode TEXT NOT NULL DEFAULT 'manual', budgets TEXT NOT NULL DEFAULT '{}',
+  status TEXT NOT NULL, task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+  started_at INTEGER, finished_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_initiatives_updated ON initiatives(updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_initiatives_project ON initiatives(project_id);
+
+CREATE TABLE IF NOT EXISTS missions (
+  id TEXT PRIMARY KEY, initiative_id TEXT NOT NULL REFERENCES initiatives(id) ON DELETE CASCADE,
+  key TEXT NOT NULL, name TEXT NOT NULL, outcome TEXT NOT NULL,
+  definition_of_done TEXT NOT NULL DEFAULT '', playbook_id TEXT,
+  merge_policy TEXT NOT NULL DEFAULT '{"mode":"manual"}', integration_branch TEXT,
+  status TEXT NOT NULL, position INTEGER NOT NULL, started_at INTEGER, finished_at INTEGER,
+  UNIQUE (initiative_id, key)
+);
+CREATE INDEX IF NOT EXISTS idx_missions_initiative_position ON missions(initiative_id, position);
+
+CREATE TABLE IF NOT EXISTS slices (
+  id TEXT PRIMARY KEY, mission_id TEXT NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+  key TEXT NOT NULL, title TEXT NOT NULL, spec TEXT NOT NULL, proof TEXT,
+  pod_key TEXT, playbook_id TEXT, status TEXT NOT NULL,
+  process_run_id TEXT REFERENCES process_runs(id) ON DELETE SET NULL,
+  branch TEXT, attempts INTEGER NOT NULL DEFAULT 0, origin TEXT NOT NULL DEFAULT 'user',
+  position INTEGER NOT NULL, started_at INTEGER, finished_at INTEGER,
+  UNIQUE (mission_id, key)
+);
+CREATE INDEX IF NOT EXISTS idx_slices_mission_position ON slices(mission_id, position);
+
+CREATE TABLE IF NOT EXISTS slice_edges (
+  id TEXT PRIMARY KEY, mission_id TEXT NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+  from_slice_id TEXT NOT NULL REFERENCES slices(id) ON DELETE CASCADE,
+  to_slice_id TEXT NOT NULL REFERENCES slices(id) ON DELETE CASCADE,
+  UNIQUE (from_slice_id, to_slice_id)
+);
+CREATE INDEX IF NOT EXISTS idx_slice_edges_mission ON slice_edges(mission_id);
+
+CREATE TABLE IF NOT EXISTS work_revisions (
+  id TEXT PRIMARY KEY, initiative_id TEXT NOT NULL REFERENCES initiatives(id) ON DELETE CASCADE,
+  target_kind TEXT NOT NULL, target_id TEXT NOT NULL, actor TEXT NOT NULL,
+  change TEXT NOT NULL, reason TEXT, created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_work_revisions_initiative_created ON work_revisions(initiative_id, created_at DESC);
+`

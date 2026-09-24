@@ -174,6 +174,13 @@ export type {
   RigOversight,
   RigDiagnostic,
   RigDecisionRight,
+  Initiative,
+  InitiativeGraph,
+  Mission,
+  WorkSlice,
+  SliceEdge,
+  SliceSpec,
+  WorkRevision,
 } from "../../preload/index"
 
 // Live dashboard types (plan 033), surfaced for the Dashboards screen.
