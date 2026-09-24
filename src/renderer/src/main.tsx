@@ -23,6 +23,7 @@ import { AgentsScreen } from "@/components/agents-screen"
 import { McpScreen } from "@/components/mcp-screen"
 import { ProcessScreen } from "@/components/process-screen"
 import { DashboardsScreen } from "@/components/dashboards-screen"
+import { MissionControlScreen } from "@/components/mission-control-screen"
 import { StartupGuideDialog } from "@/components/startup-guide-dialog"
 import { GitActions } from "@/components/git-actions"
 import { TaskTranscriptSheet } from "@/components/task-transcript-sheet"
@@ -117,6 +118,7 @@ function Shell() {
   // Whether the Process view is open (opened from the sidebar footer). An in-panel
   // destination in the center region; authors process DAGs + monitors live runs.
   const [processOpen, setProcessOpen] = useState(false)
+  const [missionControlOpen, setMissionControlOpen] = useState(false)
   // Whether the MCP view is open (opened from the sidebar footer). An in-panel
   // destination in the center region; browses/edits mcp.json server configs.
   const [mcpOpen, setMcpOpen] = useState(false)
@@ -248,7 +250,12 @@ function Shell() {
     setActivity(!poppedOut)
   }
   const overlayViewOpen =
-    agentsOpen || skillsOpen || processOpen || mcpOpen || dashboardsOpen
+    agentsOpen ||
+    skillsOpen ||
+    processOpen ||
+    missionControlOpen ||
+    mcpOpen ||
+    dashboardsOpen
   // The activity panel and terminal only apply to the conversation, so an
   // overlay view hides them without touching their saved open state — they
   // reappear as they were when the user returns to the conversation.
@@ -405,6 +412,7 @@ function Shell() {
     setAgentsOpen(false)
     setSkillsOpen(false)
     setProcessOpen(false)
+    setMissionControlOpen(false)
     setMcpOpen(false)
     setDashboardsOpen(false)
   }
@@ -440,6 +448,7 @@ function Shell() {
     setAgentsOpen(false)
     setSkillsOpen(false)
     setProcessOpen(false)
+    setMissionControlOpen(false)
     setMcpOpen(false)
     setDashboardsOpen(false)
   }
@@ -467,6 +476,7 @@ function Shell() {
     setAgentsOpen(false)
     setSkillsOpen(false)
     setProcessOpen(false)
+    setMissionControlOpen(false)
     setMcpOpen(false)
     setDashboardsOpen(false)
   }
@@ -485,6 +495,7 @@ function Shell() {
     setAgentsOpen(false)
     setSkillsOpen(false)
     setProcessOpen(false)
+    setMissionControlOpen(false)
     setMcpOpen(false)
     setDashboardsOpen(false)
   }
@@ -552,6 +563,7 @@ function Shell() {
             setSkillsOpen(true)
             setAgentsOpen(false)
             setProcessOpen(false)
+            setMissionControlOpen(false)
             setMcpOpen(false)
             setDashboardsOpen(false)
           }}
@@ -559,11 +571,21 @@ function Shell() {
             setAgentsOpen(true)
             setSkillsOpen(false)
             setProcessOpen(false)
+            setMissionControlOpen(false)
+            setMcpOpen(false)
+            setDashboardsOpen(false)
+          }}
+          onMissionControlClick={() => {
+            setMissionControlOpen(true)
+            setProcessOpen(false)
+            setAgentsOpen(false)
+            setSkillsOpen(false)
             setMcpOpen(false)
             setDashboardsOpen(false)
           }}
           onProcessClick={() => {
             setProcessOpen(true)
+            setMissionControlOpen(false)
             setAgentsOpen(false)
             setSkillsOpen(false)
             setMcpOpen(false)
@@ -572,6 +594,7 @@ function Shell() {
           onMcpClick={() => {
             setMcpOpen(true)
             setProcessOpen(false)
+            setMissionControlOpen(false)
             setAgentsOpen(false)
             setSkillsOpen(false)
             setDashboardsOpen(false)
@@ -580,6 +603,7 @@ function Shell() {
             setDashboardsOpen(true)
             setMcpOpen(false)
             setProcessOpen(false)
+            setMissionControlOpen(false)
             setAgentsOpen(false)
             setSkillsOpen(false)
           }}
@@ -598,6 +622,7 @@ function Shell() {
               (agentsOpen ||
                 skillsOpen ||
                 processOpen ||
+                missionControlOpen ||
                 mcpOpen ||
                 dashboardsOpen) &&
                 "hidden"
@@ -640,6 +665,9 @@ function Shell() {
           {skillsOpen && <SkillsScreen onClose={() => setSkillsOpen(false)} />}
           {processOpen && (
             <ProcessScreen onClose={() => setProcessOpen(false)} />
+          )}
+          {missionControlOpen && (
+            <MissionControlScreen onClose={() => setMissionControlOpen(false)} />
           )}
           {mcpOpen && <McpScreen onClose={() => setMcpOpen(false)} />}
           {dashboardsOpen && (

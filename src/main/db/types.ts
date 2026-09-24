@@ -600,6 +600,74 @@ export type ProcessRuntimeConfig = Partial<
   Record<ProcessRuntimeSlot, ProcessRuntimeSelection>
 >
 
+export const RIG_DECISION_RIGHTS = [
+  "assign_slice",
+  "revise_plan",
+  "accept_proof",
+  "merge",
+  "escalate_to_user",
+  "approve_followup",
+] as const
+
+export type RigDecisionRight = (typeof RIG_DECISION_RIGHTS)[number]
+
+export interface Rig {
+  id: string
+  name: string
+  description: string | null
+  cultureMd: string
+  createdAt: number
+  updatedAt: number
+}
+
+export interface RigPod {
+  id: string
+  rigId: string
+  key: string
+  name: string
+  missionStatement: string
+  cultureMd: string
+  leadSeatId: string | null
+  position: number
+}
+
+export interface RigSeat {
+  id: string
+  podId: string
+  key: string
+  role: string
+  charter: string
+  agentRefId: string | null
+  agentLabel: string | null
+  skills: string[] | null
+  tools: string[] | null
+  mcpServers: string[] | null
+  decisionRights: RigDecisionRight[]
+  runtimeConfig: ProcessRuntimeConfig | null
+  position: number
+}
+
+export interface RigOversight {
+  id: string
+  rigId: string
+  overseerPodId: string
+  overseenPodId: string
+}
+
+export interface RigGraph {
+  rig: Rig
+  pods: RigPod[]
+  seats: RigSeat[]
+  oversight: RigOversight[]
+}
+
+export interface RigDiagnostic {
+  severity: "warning" | "error"
+  code: string
+  message: string
+  entityId?: string
+}
+
 export interface ProcessRuntimeSnapshotSelection {
   accountId: string | null
   modelId: string | null

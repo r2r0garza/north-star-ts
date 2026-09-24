@@ -14,6 +14,7 @@ import {
   FolderPlus,
   GripVertical,
   LayoutDashboard,
+  Network,
   MoreHorizontal,
   Pin,
   PinOff,
@@ -502,6 +503,7 @@ export function AppSidebar({
   onSkillsClick,
   onAgentsClick,
   onProcessClick,
+  onMissionControlClick,
   onMcpClick,
   onDashboardsClick,
   refreshKey,
@@ -520,6 +522,7 @@ export function AppSidebar({
   onSkillsClick: () => void
   onAgentsClick: () => void
   onProcessClick: () => void
+  onMissionControlClick: () => void
   onMcpClick: () => void
   onDashboardsClick: () => void
   // Bumped by the app whenever conversations change, so the list refetches.
@@ -932,6 +935,16 @@ export function AppSidebar({
         >
           <LayoutDashboard className="size-4" />
           Dashboards
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant="ghost"
+          onClick={onMissionControlClick}
+          className="w-full justify-start"
+        >
+          <Network className="size-4" />
+          Mission Control
         </Button>
         <Button
           type="button"

@@ -198,6 +198,7 @@ type MarkdownProps = {
   content: string
   mode?: "settled" | "streaming"
   findQuery?: string
+  preserveSoftBreaks?: boolean
 }
 
 // Renders assistant Markdown with GFM in both modes. Settled content adds syntax
@@ -206,6 +207,7 @@ export const Markdown = memo(function Markdown({
   content,
   mode = "settled",
   findQuery = "",
+  preserveSoftBreaks = false,
 }: MarkdownProps) {
   const components = useMemo(
     () =>
@@ -222,6 +224,7 @@ export const Markdown = memo(function Markdown({
       className={cn(
         "prose prose-sm max-w-none dark:prose-invert",
         "max-w-full min-w-0 [overflow-wrap:anywhere]",
+        preserveSoftBreaks && "[&_li]:whitespace-pre-line [&_p]:whitespace-pre-line",
         "prose-pre:bg-transparent prose-pre:p-0", // <pre> styling handled above
         "prose-headings:font-semibold prose-p:leading-relaxed"
       )}

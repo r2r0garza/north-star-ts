@@ -116,6 +116,7 @@ import { ProcessService, PROCESS_RUN_KIND } from "./tasks/process/service"
 import { registerProcessHandlers } from "./ipc/process-handlers"
 import { DashboardService, DASHBOARD_REFRESH_KIND } from "./dashboards/service"
 import { registerDashboardHandlers } from "./ipc/dashboard-handlers"
+import { registerMissionControlHandlers } from "./ipc/mission-control-handlers"
 import { BrowserManager } from "./browser/manager"
 import { registerTerminalHandlers } from "./ipc/terminal-handlers"
 import { registerFileWatchHandlers } from "./ipc/file-handlers"
@@ -1342,6 +1343,7 @@ app.whenReady().then(async () => {
   registerProcessHandlers(taskRunner, processService)
   registerIndexHandlers(taskRunner, indexService, indexWatcher)
   registerDashboardHandlers(taskRunner, dashboardService)
+  registerMissionControlHandlers()
   registerTerminalHandlers(terminalService)
   registerFileWatchHandlers()
   await indexWatcher.setEnabled(settingsService.getIndexing().watchWorkspaces)

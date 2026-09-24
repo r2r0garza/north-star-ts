@@ -39,6 +39,13 @@ import type {
   ExternalAgentModelMapping,
   ExternalAgentModelSourceKind,
   SubagentArtifact,
+  Rig,
+  RigGraph,
+  RigPod,
+  RigSeat,
+  RigOversight,
+  RigDiagnostic,
+  RigDecisionRight,
 } from "../main/db/types"
 import type { ActionKind } from "../main/agent/approval/types"
 import type { PickedElement } from "../main/browser/types"
@@ -576,6 +583,50 @@ const api = {
   },
   // List the user-invocable custom agents (name + description) for the composer's
   // agent picker. Pass the active workspace so workspace-level agents are included.
+  missionControl: {
+    rigs: {
+      list: () => ipcRenderer.invoke("missionControl:rigs:list") as Promise<Rig[]>,
+      get: (id: string) =>
+        ipcRenderer.invoke("missionControl:rigs:get", id) as Promise<
+          (RigGraph & { diagnostics: RigDiagnostic[] }) | null
+        >,
+      create: (input: { name: string; description?: string | null; cultureMd?: string }) =>
+        ipcRenderer.invoke("missionControl:rigs:create", input) as Promise<Rig>,
+      update: (id: string, patch: { name?: string; description?: string | null; cultureMd?: string }) =>
+        ipcRenderer.invoke("missionControl:rigs:update", id, patch) as Promise<Rig>,
+      delete: (id: string) => ipcRenderer.invoke("missionControl:rigs:delete", id) as Promise<void>,
+      duplicate: (id: string, name?: string) =>
+        ipcRenderer.invoke("missionControl:rigs:duplicate", id, name) as Promise<RigGraph>,
+      export: (id: string, workspace?: string) =>
+        ipcRenderer.invoke("missionControl:rigs:export", id, workspace) as Promise<{ canceled: boolean; path?: string }>,
+      import: (workspace?: string) =>
+        ipcRenderer.invoke("missionControl:rigs:import", workspace) as Promise<{
+          canceled: boolean
+          rigId?: string
+          warnings?: string[]
+        }>,
+    },
+    pods: {
+      create: (input: { rigId: string; key: string; name: string; missionStatement?: string; cultureMd?: string; position?: number }) =>
+        ipcRenderer.invoke("missionControl:pods:create", input) as Promise<RigPod>,
+      update: (id: string, patch: Partial<Pick<RigPod, "key" | "name" | "missionStatement" | "cultureMd" | "leadSeatId" | "position">>) =>
+        ipcRenderer.invoke("missionControl:pods:update", id, patch) as Promise<RigPod>,
+      delete: (id: string) => ipcRenderer.invoke("missionControl:pods:delete", id) as Promise<void>,
+      reorder: (rigId: string, ids: string[]) => ipcRenderer.invoke("missionControl:pods:reorder", rigId, ids) as Promise<RigPod[]>,
+    },
+    seats: {
+      create: (input: { podId: string; key: string; role: string; charter?: string; agentRefId?: string | null; agentLabel?: string | null; skills?: string[] | null; tools?: string[] | null; mcpServers?: string[] | null; decisionRights?: RigDecisionRight[]; runtimeConfig?: ProcessRuntimeConfig | null; position?: number }) =>
+        ipcRenderer.invoke("missionControl:seats:create", input) as Promise<RigSeat>,
+      update: (id: string, patch: Partial<Omit<RigSeat, "id" | "podId">>) =>
+        ipcRenderer.invoke("missionControl:seats:update", id, patch) as Promise<RigSeat>,
+      delete: (id: string) => ipcRenderer.invoke("missionControl:seats:delete", id) as Promise<void>,
+      reorder: (podId: string, ids: string[]) => ipcRenderer.invoke("missionControl:seats:reorder", podId, ids) as Promise<RigSeat[]>,
+    },
+    oversight: {
+      set: (rigId: string, edges: Array<{ overseerPodId: string; overseenPodId: string }>) =>
+        ipcRenderer.invoke("missionControl:oversight:set", rigId, edges) as Promise<RigOversight[]>,
+    },
+  },
   agents: {
     list: (workspace?: string) =>
       ipcRenderer.invoke("agents:list", workspace) as Promise<AgentSummary[]>,
@@ -1845,6 +1896,13 @@ export type {
   DashboardWidgetData,
   DashboardWidgetType,
   DashboardWidgetDataStatus,
+  Rig,
+  RigGraph,
+  RigPod,
+  RigSeat,
+  RigOversight,
+  RigDiagnostic,
+  RigDecisionRight,
 } from "../main/db/types"
 export type {
   ProcessImportResult,

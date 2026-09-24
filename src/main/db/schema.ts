@@ -1277,3 +1277,56 @@ CREATE TABLE IF NOT EXISTS subagent_artifacts (
 CREATE INDEX IF NOT EXISTS idx_subagent_artifacts_repository_status
   ON subagent_artifacts(repository_id, status, created_at);
 `
+
+// v46: Mission Control rig definitions (plan 106.1). Enum-like values remain
+// bare TEXT and are validated by the repository, matching the Process schema.
+export const SCHEMA_V46 = `
+CREATE TABLE IF NOT EXISTS rigs (
+  id          TEXT PRIMARY KEY,
+  name        TEXT NOT NULL,
+  description TEXT,
+  culture_md  TEXT NOT NULL DEFAULT '',
+  created_at  INTEGER NOT NULL,
+  updated_at  INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS rig_pods (
+  id                TEXT PRIMARY KEY,
+  rig_id            TEXT NOT NULL REFERENCES rigs(id) ON DELETE CASCADE,
+  key               TEXT NOT NULL,
+  name              TEXT NOT NULL,
+  mission_statement TEXT NOT NULL DEFAULT '',
+  culture_md        TEXT NOT NULL DEFAULT '',
+  lead_seat_id      TEXT,
+  position          INTEGER NOT NULL,
+  UNIQUE (rig_id, key)
+);
+CREATE INDEX IF NOT EXISTS idx_rig_pods_rig_position ON rig_pods(rig_id, position);
+
+CREATE TABLE IF NOT EXISTS rig_seats (
+  id              TEXT PRIMARY KEY,
+  pod_id          TEXT NOT NULL REFERENCES rig_pods(id) ON DELETE CASCADE,
+  key             TEXT NOT NULL,
+  role            TEXT NOT NULL,
+  charter         TEXT NOT NULL DEFAULT '',
+  agent_ref_id    TEXT,
+  agent_label     TEXT,
+  skills          TEXT,
+  tools           TEXT,
+  mcp_servers     TEXT,
+  decision_rights TEXT NOT NULL DEFAULT '[]',
+  runtime_config  TEXT,
+  position        INTEGER NOT NULL,
+  UNIQUE (pod_id, key)
+);
+CREATE INDEX IF NOT EXISTS idx_rig_seats_pod_position ON rig_seats(pod_id, position);
+
+CREATE TABLE IF NOT EXISTS rig_oversight (
+  id              TEXT PRIMARY KEY,
+  rig_id          TEXT NOT NULL REFERENCES rigs(id) ON DELETE CASCADE,
+  overseer_pod_id TEXT NOT NULL REFERENCES rig_pods(id) ON DELETE CASCADE,
+  overseen_pod_id TEXT NOT NULL REFERENCES rig_pods(id) ON DELETE CASCADE,
+  UNIQUE (overseer_pod_id, overseen_pod_id)
+);
+CREATE INDEX IF NOT EXISTS idx_rig_oversight_rig ON rig_oversight(rig_id);
+`

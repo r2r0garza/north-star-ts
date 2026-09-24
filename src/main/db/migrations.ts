@@ -44,6 +44,7 @@ import {
   SCHEMA_V43,
   SCHEMA_V44,
   SCHEMA_V45,
+  SCHEMA_V46,
 } from "./schema"
 
 // Ordered migrations. Index 0 runs to reach user_version 1, index 1 to reach 2,
@@ -95,6 +96,7 @@ const MIGRATIONS: Array<(db: Database.Database) => void> = [
   (db) => db.exec(SCHEMA_V43),
   (db) => db.exec(SCHEMA_V44),
   (db) => db.exec(SCHEMA_V45),
+  (db) => db.exec(SCHEMA_V46),
 ]
 
 function tableExists(db: Database.Database, table: string): boolean {

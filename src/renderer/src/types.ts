@@ -165,6 +165,17 @@ export type {
   ProcessImportResult,
 } from "../../preload/index"
 
+// Mission Control rig definition types (plan 106.1).
+export type {
+  Rig,
+  RigGraph,
+  RigPod,
+  RigSeat,
+  RigOversight,
+  RigDiagnostic,
+  RigDecisionRight,
+} from "../../preload/index"
+
 // Live dashboard types (plan 033), surfaced for the Dashboards screen.
 export type {
   Dashboard,
