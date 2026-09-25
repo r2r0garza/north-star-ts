@@ -20,6 +20,7 @@ import type {
   EdgeTrigger,
   PhaseGatePolicy,
   PhaseRouting,
+  PhaseContextScope,
   ProcessRunStatus,
   ProcessRuntimeConfig,
 } from "../db/types"
@@ -384,6 +385,7 @@ export function registerDbHandlers(
         validatorAgent?: string | null
         subprocessId?: string | null
         proofStep?: boolean
+        contextScope?: PhaseContextScope
         position: number
       }
     ) => processes.createPhase(input)
@@ -409,6 +411,7 @@ export function registerDbHandlers(
         validatorAgent?: string | null
         subprocessId?: string | null
         proofStep?: boolean
+        contextScope?: PhaseContextScope
         position?: number
       }
     ) => processes.updatePhase(id, patch)

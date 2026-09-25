@@ -496,6 +496,7 @@ describe.skipIf(!sqliteLoads)("seat roles and proof steps (format v2)", () => {
       key: "test",
       name: "Test",
       proofStep: true,
+      contextScope: "slice",
       position: 0,
     })
     createPhaseAgent({ phaseId: phase.id, seatRole: "qa", position: 0 })
@@ -504,6 +505,7 @@ describe.skipIf(!sqliteLoads)("seat roles and proof steps (format v2)", () => {
     expect(exported.formatVersion).toBe(2)
     expect(exported.phases[0]).toMatchObject({
       proofStep: true,
+      contextScope: "slice",
       agents: [{ agent: { seatRole: "qa" } }],
     })
 
@@ -512,8 +514,23 @@ describe.skipIf(!sqliteLoads)("seat roles and proof steps (format v2)", () => {
     )
     const graph = getProcessGraph(imported.processId)!
     expect(graph.phases[0].proofStep).toBe(true)
+    expect(graph.phases[0].contextScope).toBe("slice")
     expect(graph.agents[0]).toMatchObject({ agentName: null, seatRole: "qa" })
     expect(imported.warnings).toEqual([])
+  })
+
+  it("reads the pre-v51 contextMode values from older exports", () => {
+    const def = createProcessDefinition({ name: "Legacy scopes" })
+    createPhase({ processId: def.id, key: "lead", name: "Lead", position: 0 })
+    const exported = buildProcessExport(getProcessGraph(def.id)!) as unknown as {
+      phases: Array<Record<string, unknown>>
+    }
+    delete exported.phases[0].contextScope
+    exported.phases[0].contextMode = "seat_session"
+    const imported = importProcessExport(JSON.parse(JSON.stringify(exported)))
+    expect(getProcessGraph(imported.processId)!.phases[0].contextScope).toBe(
+      "initiative"
+    )
   })
 
   it("still imports a v1 file without the new fields", () => {
@@ -549,6 +566,7 @@ describe.skipIf(!sqliteLoads)("seat roles and proof steps (format v2)", () => {
     })
     const graph = getProcessGraph(imported.processId)!
     expect(graph.phases[0].proofStep).toBe(false)
+    expect(graph.phases[0].contextScope).toBe("step")
     expect(graph.agents[0]).toMatchObject({ agentName: "coder", seatRole: null })
   })
 })

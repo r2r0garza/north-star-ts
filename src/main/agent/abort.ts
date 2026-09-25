@@ -15,3 +15,11 @@ export const SHUTDOWN_ABORT_REASON = Symbol("agent:shutdown")
 // than `cancelled` (terminal), and the process scheduler leaves in-flight phase-runs
 // recoverable (plan 038.3). Re-exported from tasks/runner for back-compat.
 export const PAUSE_ABORT_REASON = Symbol("task:pause")
+
+// The note a stopped turn leaves in its transcript. An app quit is not the
+// user's choice, and a resumed turn must not read it as one.
+export function stopNote(signal?: AbortSignal): string {
+  return signal?.reason === SHUTDOWN_ABORT_REASON
+    ? "⏹ Stopped: the app quit."
+    : "⏹ Stopped by user."
+}

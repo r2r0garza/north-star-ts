@@ -26,6 +26,7 @@ interface LoopCall {
   sectionContent: string
   proofStep: boolean
   proofResult?: RecordProofResult
+  seat?: { address: string; profile: string; anchor: unknown }
 }
 const loopCalls: LoopCall[] = []
 // What a proof-step worker submits through record_proof, per call (FIFO).
@@ -42,6 +43,7 @@ vi.mock("../agent", () => ({
     processProofStep?: boolean
     processRunId?: string
     processPhaseRunId?: string
+    missionControlSeat?: { address: string; profile: string; anchor: unknown }
   }) => {
     const call: LoopCall = {
       conversationId: input.conversationId,
@@ -55,6 +57,7 @@ vi.mock("../agent", () => ({
         .map((s) => s.content)
         .join("\n"),
       proofStep: !!input.processProofStep,
+      seat: input.missionControlSeat,
     }
     loopCalls.push(call)
     const msg = input.userMessage ?? ""
@@ -68,9 +71,14 @@ vi.mock("../agent", () => ({
       })
       content = "verified"
     }
+    const seq =
+      (db
+        .prepare("SELECT MAX(seq) FROM messages WHERE conversation_id = ?")
+        .pluck()
+        .get(input.conversationId) as number | null) ?? 0
     db.prepare(
       "INSERT INTO messages (id, conversation_id, seq, role, content, created_at) VALUES (?, ?, ?, 'assistant', ?, ?)"
-    ).run(randomUUID(), input.conversationId, 1, content, Date.now())
+    ).run(randomUUID(), input.conversationId, seq + 1, content, Date.now())
     return { content }
   },
 }))
@@ -113,6 +121,8 @@ import {
   type RecordProofResult,
 } from "./slice-runner"
 import { startHookRun } from "./hook-runner"
+import { installSeatSessions, SeatSessionService } from "./sessions"
+import * as seatSessionsRepo from "../db/repositories/seat-sessions"
 import type { AgentDefinition } from "../agent/agents/types"
 
 const enqueued: string[] = []
@@ -627,5 +637,109 @@ describe.skipIf(!sqliteLoads)("slice execution", () => {
         hook: "after_each_slice",
       })
     ).rejects.toThrow(/hook is empty/)
+  })
+
+  describe("context scopes", () => {
+    async function runTwoSlices(qaScope?: "initiative") {
+      const rig = orchestratedRig()
+      const { initiative, mission, slice } = billingInitiative(rig.id)
+      const second = initiatives
+        .createSlice({
+          missionId: mission.id,
+          key: "invoice-api",
+          title: "Invoice API",
+          spec: { goal: "Expose invoices.", acceptance: ["GET works", "POST works"] },
+        })
+        .slices.find((s) => s.key === "invoice-api")!
+      const playbook = createDefaultPlaybook("slice")
+      initiatives.updateSlice(slice.id, { playbookId: playbook.id })
+      initiatives.updateSlice(second.id, { playbookId: playbook.id })
+      if (qaScope) {
+        const graph = processes.getProcessGraph(
+          playbook.hooks.find((h) => h.hook === "run")!.processId
+        )!
+        const test = graph.phases.find((p) => p.key === "test")!
+        processes.updatePhase(test.id, { contextScope: qaScope })
+      }
+      const runIds: string[] = []
+      for (const id of [slice.id, second.id]) {
+        proofSubmissions.push(acceptedProof)
+        const playbookRun = await runner.startSlice(id)
+        runIds.push(playbookRun.id)
+        await drive(playbookRun.processRunId!)
+        expect(initiatives.getSlice(id)!.status).toBe("done")
+      }
+      const workers = loopCalls.filter((c) => !c.userMessage?.startsWith("# Review the"))
+      return {
+        initiative,
+        second,
+        runIds,
+        workers,
+        builder: workers.filter((c) => c.seat?.address === "builder@implementation"),
+        qa: workers.filter((c) => c.seat?.address === "qa@implementation"),
+      }
+    }
+
+    beforeEach(() => {
+      installSeatSessions(
+        new SeatSessionService({
+          runTurn: async () => ({ content: "" }),
+          loadAgents: async () => AGENTS as unknown as AgentDefinition[],
+          enqueueWake: () => ({ id: randomUUID() }),
+          cancelTask: () => {},
+        })
+      )
+      return () => installSeatSessions(null)
+    })
+
+    it("gives builder and QA one session per slice by default", async () => {
+      const { initiative, second, runIds, workers, builder, qa } = await runTwoSlices()
+      const sessionFor = (address: string, runId: string) =>
+        seatSessionsRepo.listSeatSessions({
+          initiativeId: initiative.id,
+          seatAddress: address,
+          playbookRunId: runId,
+        })[0]
+      // Spec and build share the builder's slice session; each slice gets its own.
+      for (const [index, runId] of runIds.entries()) {
+        const builderSession = sessionFor("builder@implementation", runId)
+        expect(builder.slice(index * 2, index * 2 + 2).map((c) => c.conversationId)).toEqual([
+          builderSession.conversationId,
+          builderSession.conversationId,
+        ])
+        expect(qa[index].conversationId).toBe(
+          sessionFor("qa@implementation", runId).conversationId
+        )
+      }
+      expect(builder[0].conversationId).not.toBe(builder[2].conversationId)
+      expect(qa[0].conversationId).not.toBe(qa[1].conversationId)
+      // No long-lived session was needed.
+      expect(
+        seatSessionsRepo.listSeatSessions({ initiativeId: initiative.id, playbookRunId: null })
+      ).toHaveLength(0)
+      // Every role-bound worker is a seat turn, anchored to its slice.
+      expect(workers.every((c) => c.seat?.profile === "work")).toBe(true)
+      expect(qa[1].seat?.anchor).toEqual({ kind: "slice", id: second.id })
+      expect(qa[1].sectionContent).toContain("## Mission Control Comms")
+      // Each step's frozen result is its own turn's output.
+      const secondRun = playbooks.listPlaybookRuns({ sliceId: second.id })[0]
+      const testRun = processes
+        .listPhaseRuns({ runId: secondRun.processRunId! })
+        .find((pr) => pr.seatAddress === "qa@implementation")!
+      expect(testRun.resultContent).toBe("verified")
+    })
+
+    it("keeps a long-lived QA session across slices when the step asks for it", async () => {
+      const { initiative, qa } = await runTwoSlices("initiative")
+      const session = seatSessionsRepo.getLiveSeatSession(
+        initiative.id,
+        "qa@implementation"
+      )!
+      expect(session.scope).toBe("initiative")
+      expect(qa.map((c) => c.conversationId)).toEqual([
+        session.conversationId,
+        session.conversationId,
+      ])
+    })
   })
 })

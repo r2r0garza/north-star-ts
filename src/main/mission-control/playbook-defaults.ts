@@ -2,6 +2,7 @@ import { getDb } from "../db/connection"
 import * as playbooks from "../db/repositories/playbooks"
 import * as processes from "../db/repositories/processes"
 import type {
+  PhaseContextScope,
   PlaybookAltitude,
   PlaybookHookName,
   PlaybookWithHooks,
@@ -19,6 +20,11 @@ interface DefaultStep {
   role: string
   validator?: boolean
   proofStep?: boolean
+  // How long the step's conversation lives (plan 106.4). Builder and QA steps
+  // share one session per slice run, so a slice's spec, build, and mail stay in
+  // one context without piling up across slices; the lead keeps a long-lived
+  // session because it holds the plan.
+  contextScope: PhaseContextScope
 }
 
 interface DefaultPlaybook {
@@ -38,11 +44,13 @@ export const DEFAULT_PLAYBOOKS: Record<PlaybookAltitude, DefaultPlaybook> = {
           key: "spec",
           name: "Refine the slice spec against the codebase (read and plan; do not edit files)",
           role: "builder",
+          contextScope: "slice",
         },
         {
           key: "build",
           name: "Build the slice to its acceptance criteria",
           role: "builder",
+          contextScope: "slice",
         },
         {
           key: "test",
@@ -50,6 +58,7 @@ export const DEFAULT_PLAYBOOKS: Record<PlaybookAltitude, DefaultPlaybook> = {
           role: "qa",
           validator: true,
           proofStep: true,
+          contextScope: "slice",
         },
       ],
     },
@@ -64,6 +73,7 @@ export const DEFAULT_PLAYBOOKS: Record<PlaybookAltitude, DefaultPlaybook> = {
           key: "review-plan",
           name: "Review the mission's slices against its outcome and report gaps as proposals (do not edit the plan)",
           role: "lead",
+          contextScope: "initiative",
         },
       ],
       after_all_slices: [
@@ -71,6 +81,7 @@ export const DEFAULT_PLAYBOOKS: Record<PlaybookAltitude, DefaultPlaybook> = {
           key: "summary",
           name: "Write the mission summary from the slice proofs as your final message",
           role: "lead",
+          contextScope: "initiative",
         },
       ],
     },
@@ -85,6 +96,7 @@ export const DEFAULT_PLAYBOOKS: Record<PlaybookAltitude, DefaultPlaybook> = {
           key: "plan",
           name: "Draft the initiative's missions and slices as a proposal document (do not edit the plan)",
           role: "lead",
+          contextScope: "initiative",
         },
       ],
       between_missions: [
@@ -92,6 +104,7 @@ export const DEFAULT_PLAYBOOKS: Record<PlaybookAltitude, DefaultPlaybook> = {
           key: "release",
           name: "Write release notes for the finished mission and check the next mission is still right, as your final message",
           role: "lead",
+          contextScope: "initiative",
         },
       ],
     },
@@ -116,6 +129,7 @@ function buildHookProcess(
       validator: step.validator ?? false,
       validatorMaxIterations: step.validator ? 2 : 0,
       proofStep: step.proofStep ?? false,
+      contextScope: step.contextScope,
       position,
     })
     processes.createPhaseAgent({

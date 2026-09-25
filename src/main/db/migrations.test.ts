@@ -92,7 +92,7 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
     const db = new Database(":memory:")
     db.pragma("foreign_keys = ON")
     runMigrations(db)
-    expect(db.pragma("user_version", { simple: true })).toBe(49)
+    expect(db.pragma("user_version", { simple: true })).toBe(51)
     expect(db.pragma("foreign_key_check")).toHaveLength(0)
     db.close()
   })
@@ -650,7 +650,7 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
 
     runMigrations(db)
 
-    expect(db.pragma("user_version", { simple: true })).toBe(49)
+    expect(db.pragma("user_version", { simple: true })).toBe(51)
     expect(
       (db.pragma("table_info(process_phases)") as Array<{ name: string }>).map(
         (c) => c.name
@@ -868,7 +868,7 @@ describe.skipIf(!sqliteLoads)("SCHEMA_V9 — orphan reap (plan 022)", () => {
     // Apply V9 (the reaper) and any later migrations, up to the latest version.
     runMigrations(db)
 
-    expect(db.pragma("user_version", { simple: true })).toBe(49)
+    expect(db.pragma("user_version", { simple: true })).toBe(51)
 
     // Reaped: orphan + its nested descendant, and all their state.
     const taskIds = (
@@ -960,7 +960,7 @@ describe.skipIf(!sqliteLoads)("mission control playbooks migration (v49)", () =>
 
     runMigrations(db)
 
-    expect(db.pragma("user_version", { simple: true })).toBe(49)
+    expect(db.pragma("user_version", { simple: true })).toBe(51)
     const columns = db.pragma("table_info(process_phase_agents)") as Array<{
       name: string
       notnull: number
@@ -989,6 +989,78 @@ describe.skipIf(!sqliteLoads)("mission control playbooks migration (v49)", () =>
           .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?")
           .get(table)
       ).toBeTruthy()
+    expect(db.pragma("foreign_key_check")).toHaveLength(0)
+    db.close()
+  })
+})
+
+describe.skipIf(!sqliteLoads)("mission control comms migration (v50)", () => {
+  it("adds seat sessions, threads, messages, and the phase context mode", () => {
+    const db = new Database(":memory:")
+    db.pragma("foreign_keys = ON")
+    runMigrations(db)
+    for (const table of ["seat_sessions", "seat_threads", "seat_messages"])
+      expect(
+        db
+          .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?")
+          .get(table)
+      ).toBeTruthy()
+    db.exec(
+      "INSERT INTO process_definitions (id, name, created_at, updated_at) VALUES ('d', 'D', 0, 0); INSERT INTO process_phases (id, process_id, key, name, position) VALUES ('p', 'd', 'k', 'K', 0);"
+    )
+    expect(
+      db.prepare("SELECT context_mode FROM process_phases WHERE id = 'p'").pluck().get()
+    ).toBe("step")
+    db.close()
+  })
+
+  it("self-heals a database stamped at v50 without the comms tables", () => {
+    const db = new Database(":memory:")
+    runMigrations(db)
+    db.exec(
+      "DROP TABLE seat_messages; DROP TABLE seat_threads; DROP TABLE seat_sessions;"
+    )
+    runMigrations(db)
+    expect(
+      db
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='seat_messages'")
+        .get()
+    ).toBeTruthy()
+    db.close()
+  })
+})
+
+describe.skipIf(!sqliteLoads)("context scopes migration (v51)", () => {
+  it("remaps step scopes and gives existing seat sessions the initiative scope", () => {
+    const db = new Database(":memory:")
+    runMigrations(db)
+    // Rewind to a v50 database shaped like the first 106.4 build.
+    db.exec(`
+      DROP TABLE seat_sessions;
+      CREATE TABLE seat_sessions (
+        id TEXT PRIMARY KEY, initiative_id TEXT NOT NULL, seat_address TEXT NOT NULL,
+        generation INTEGER NOT NULL, conversation_id TEXT, status TEXT NOT NULL,
+        handoff_summary TEXT, rotation_reason TEXT, failure_count INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL, last_activity_at INTEGER, rotated_at INTEGER,
+        UNIQUE (initiative_id, seat_address, generation)
+      );
+      INSERT INTO initiatives (id, key, name, intent, definition_of_done, status, budgets, created_at, updated_at)
+        VALUES ('i', 'k', 'I', '', '', 'active', '{}', 0, 0);
+      INSERT INTO seat_sessions (id, initiative_id, seat_address, generation, status, created_at)
+        VALUES ('s', 'i', 'qa@implementation', 1, 'idle', 0);
+      INSERT INTO process_definitions (id, name, created_at, updated_at) VALUES ('d', 'D', 0, 0);
+      INSERT INTO process_phases (id, process_id, key, name, position, context_mode) VALUES
+        ('a', 'd', 'a', 'A', 0, 'fresh'), ('b', 'd', 'b', 'B', 1, 'seat_session');
+      PRAGMA user_version = 50;
+    `)
+    runMigrations(db)
+    expect(db.pragma("user_version", { simple: true })).toBe(51)
+    expect(
+      db.prepare("SELECT context_mode FROM process_phases ORDER BY position").pluck().all()
+    ).toEqual(["step", "initiative"])
+    expect(
+      db.prepare("SELECT scope, scope_key, playbook_run_id FROM seat_sessions").get()
+    ).toEqual({ scope: "initiative", scope_key: "initiative", playbook_run_id: null })
     expect(db.pragma("foreign_key_check")).toHaveLength(0)
     db.close()
   })

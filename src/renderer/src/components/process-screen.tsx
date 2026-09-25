@@ -50,6 +50,10 @@ import {
 } from "@dnd-kit/sortable"
 import { CSS } from "@dnd-kit/utilities"
 import {
+  CONTEXT_SCOPES,
+  ContextScopeHelpButton,
+} from "@/components/mission-control/context-scope-help"
+import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -139,6 +143,7 @@ import type {
   AccountWithModels,
   EdgeTrigger,
   PhaseGatePolicy,
+  PhaseContextScope,
   PhaseRouting,
   PhaseRunStatus,
   ProcessDefinition,
@@ -1402,6 +1407,10 @@ function PhaseCard({
   const poolNames = new Set(pool.map((a) => a.agentName))
   const poolRoles = new Set(pool.map((a) => a.seatRole).filter(Boolean))
   const [seatRoleDraft, setSeatRoleDraft] = useState("")
+  // The Context dropdown's own tooltip shows only while the list is closed;
+  // once open, each option carries its own tooltip instead.
+  const [scopeListOpen, setScopeListOpen] = useState(false)
+  const [scopeHintOpen, setScopeHintOpen] = useState(false)
   const addable = agents.filter((a) => !poolNames.has(agentValue(a)))
   const agentsByValue = useMemo(
     () => new Map(agents.map((agent) => [agentValue(agent), agent])),
@@ -1518,6 +1527,7 @@ function PhaseCard({
     validatorAgent?: string | null
     subprocessId?: string | null
     proofStep?: boolean
+    contextScope?: PhaseContextScope
     runtimeConfig?: ProcessRuntimeConfig | null
   }) {
     try {
@@ -1697,6 +1707,20 @@ function PhaseCard({
                   </TooltipContent>
                 </Tooltip>
               )}
+              {phase.contextScope &&
+                phase.contextScope !== "step" &&
+                poolRoles.size > 0 && (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Badge variant="outline" className="text-[10px]">
+                        {CONTEXT_SCOPES[phase.contextScope].badge}
+                      </Badge>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      {CONTEXT_SCOPES[phase.contextScope].help}
+                    </TooltipContent>
+                  </Tooltip>
+                )}
               {phase.dotFolder && (
                 <Tooltip>
                   <TooltipTrigger asChild>
@@ -1986,6 +2010,59 @@ function PhaseCard({
                   verified proof. Ignored by ordinary Process runs.
                 </TooltipContent>
               </Tooltip>
+            )}
+            {/* Mission Control context scope (plan 106.4): only meaningful for
+            a seat-role step; fan-out children always start fresh. Each option
+            explains itself in a tooltip to its right, so nothing covers the
+            open list. */}
+            {poolRoles.size > 0 && !phase.fanOut && !phase.subprocessId && (
+              <div className="flex items-center gap-2 text-xs">
+                <ContextScopeHelpButton />
+                <span className="-ml-1 text-muted-foreground">Context</span>
+                <Select
+                  value={phase.contextScope ?? "step"}
+                  onValueChange={(v) =>
+                    patchPhase({ contextScope: v as PhaseContextScope })
+                  }
+                  open={scopeListOpen}
+                  onOpenChange={(open) => {
+                    setScopeListOpen(open)
+                    if (open) setScopeHintOpen(false)
+                  }}
+                >
+                  <Tooltip
+                    open={scopeHintOpen && !scopeListOpen}
+                    onOpenChange={(open) =>
+                      setScopeHintOpen(open && !scopeListOpen)
+                    }
+                  >
+                    <TooltipTrigger asChild>
+                      <SelectTrigger size="sm" className="text-xs">
+                        <SelectValue />
+                      </SelectTrigger>
+                    </TooltipTrigger>
+                    <TooltipContent side="right" sideOffset={8}>
+                      {CONTEXT_SCOPES[phase.contextScope ?? "step"].help}
+                    </TooltipContent>
+                  </Tooltip>
+                  <SelectContent>
+                    {(Object.keys(CONTEXT_SCOPES) as PhaseContextScope[]).map(
+                      (scope) => (
+                        <Tooltip key={scope}>
+                          <TooltipTrigger asChild>
+                            <SelectItem value={scope}>
+                              {CONTEXT_SCOPES[scope].label}
+                            </SelectItem>
+                          </TooltipTrigger>
+                          <TooltipContent side="right" sideOffset={8}>
+                            {CONTEXT_SCOPES[scope].help}
+                          </TooltipContent>
+                        </Tooltip>
+                      )
+                    )}
+                  </SelectContent>
+                </Select>
+              </div>
             )}
             {/* Per-phase VALIDATOR (plan 031.1): a second agent reviews this phase's
             output and sends it back with feedback until it passes, bounded. Not

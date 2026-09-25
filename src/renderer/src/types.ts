@@ -193,6 +193,15 @@ export type {
   SliceProof,
   ProofCriterionStatus,
   MissionControlRunLink,
+  PhaseContextScope,
+  SeatSession,
+  SeatSessionStatus,
+  SeatThread,
+  SeatThreadAnchorKind,
+  SeatMessage,
+  SeatMessageKind,
+  SeatMessageStatus,
+  SeatOverview,
 } from "../../preload/index"
 
 // Live dashboard types (plan 033), surfaced for the Dashboards screen.

@@ -47,6 +47,9 @@ import {
   SCHEMA_V46,
   SCHEMA_V47,
   SCHEMA_V49_PHASE_AGENTS,
+  SCHEMA_V50_TABLES,
+  SCHEMA_V51_SEAT_SESSIONS,
+  SCHEMA_V51_CONTEXT_SCOPES,
   SCHEMA_V49_TABLES,
 } from "./schema"
 
@@ -103,6 +106,8 @@ const MIGRATIONS: Array<(db: Database.Database) => void> = [
   (db) => db.exec(SCHEMA_V47),
   ensureProcessResultContentColumn,
   ensureMissionControlPlaybooks,
+  ensureMissionControlComms,
+  ensureContextScopes,
 ]
 
 function tableExists(db: Database.Database, table: string): boolean {
@@ -165,6 +170,25 @@ function ensureMissionControlPlaybooks(db: Database.Database): void {
   addColumnIfMissing(db, "process_runs", "seat_bindings", "TEXT")
   addColumnIfMissing(db, "process_runs", "mission_control", "TEXT")
   addColumnIfMissing(db, "process_phase_runs", "seat_address", "TEXT")
+}
+
+// v50 (plan 106.4). Idempotent so the prerelease self-heal pass can re-run it.
+function ensureMissionControlComms(db: Database.Database): void {
+  if (tableExists(db, "initiatives")) db.exec(SCHEMA_V50_TABLES)
+  addColumnIfMissing(
+    db,
+    "process_phases",
+    "context_mode",
+    "TEXT NOT NULL DEFAULT 'step'"
+  )
+}
+
+// v51 (plan 106.4 context scopes). Idempotent for the self-heal pass.
+function ensureContextScopes(db: Database.Database): void {
+  if (tableExists(db, "seat_sessions") && !columnExists(db, "seat_sessions", "scope_key"))
+    db.exec(SCHEMA_V51_SEAT_SESSIONS)
+  if (columnExists(db, "process_phases", "context_mode"))
+    db.exec(SCHEMA_V51_CONTEXT_SCOPES)
 }
 
 function ensureProcessRuntimeProfileColumns(db: Database.Database): void {
@@ -246,6 +270,8 @@ export function runMigrations(db: Database.Database): void {
       ensureProcessRuntimeProfileColumns(db)
       ensureProcessResultContentColumn(db)
       ensureMissionControlPlaybooks(db)
+      ensureMissionControlComms(db)
+      ensureContextScopes(db)
       ensureCodexSubscriptionProviderConstraints(db)
       ensureProjectPositionColumn(db)
       ensureSubagentArtifactsTable(db)

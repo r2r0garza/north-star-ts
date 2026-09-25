@@ -1456,3 +1456,100 @@ DROP TABLE process_phase_agents;
 ALTER TABLE process_phase_agents_v49 RENAME TO process_phase_agents;
 CREATE INDEX IF NOT EXISTS idx_process_phase_agents_phase ON process_phase_agents(phase_id);
 `
+
+// v50: Mission Control seat sessions and Comms (plan 106.4). A seat session is
+// one long-lived conversation per (initiative, seat), rotated into numbered
+// generations. seat_messages is the durable, addressable bus: every message is
+// attributable, bounded, and visible in the Comms feed, including refusals.
+// process_phases.context_mode picks whether a playbook step runs in a fresh
+// worker or as a turn in its seat's session.
+export const SCHEMA_V50_TABLES = `
+CREATE TABLE IF NOT EXISTS seat_sessions (
+  id               TEXT PRIMARY KEY,
+  initiative_id    TEXT NOT NULL REFERENCES initiatives(id) ON DELETE CASCADE,
+  seat_address     TEXT NOT NULL,
+  generation       INTEGER NOT NULL,
+  conversation_id  TEXT REFERENCES conversations(id) ON DELETE SET NULL,
+  status           TEXT NOT NULL,
+  handoff_summary  TEXT,
+  rotation_reason  TEXT,
+  failure_count    INTEGER NOT NULL DEFAULT 0,
+  created_at       INTEGER NOT NULL,
+  last_activity_at INTEGER,
+  rotated_at       INTEGER,
+  UNIQUE (initiative_id, seat_address, generation)
+);
+CREATE INDEX IF NOT EXISTS idx_seat_sessions_conversation ON seat_sessions(conversation_id);
+CREATE TABLE IF NOT EXISTS seat_threads (
+  id            TEXT PRIMARY KEY,
+  initiative_id TEXT NOT NULL REFERENCES initiatives(id) ON DELETE CASCADE,
+  anchor_kind   TEXT,
+  anchor_id     TEXT,
+  subject       TEXT NOT NULL,
+  created_at    INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_seat_threads_initiative ON seat_threads(initiative_id, created_at);
+CREATE TABLE IF NOT EXISTS seat_messages (
+  id                        TEXT PRIMARY KEY,
+  thread_id                 TEXT NOT NULL REFERENCES seat_threads(id) ON DELETE CASCADE,
+  initiative_id             TEXT NOT NULL REFERENCES initiatives(id) ON DELETE CASCADE,
+  from_address              TEXT NOT NULL,
+  to_address                TEXT NOT NULL,
+  in_reply_to               TEXT REFERENCES seat_messages(id) ON DELETE SET NULL,
+  hop                       INTEGER NOT NULL DEFAULT 0,
+  body                      TEXT NOT NULL,
+  kind                      TEXT NOT NULL DEFAULT 'message',
+  status                    TEXT NOT NULL,
+  expects_reply             INTEGER NOT NULL DEFAULT 0,
+  needs_decision            TEXT,
+  refusal_reason            TEXT,
+  answer_only               INTEGER NOT NULL DEFAULT 0,
+  wake_task_id              TEXT,
+  delivered_conversation_id TEXT,
+  delivered_message_id      TEXT,
+  created_at                INTEGER NOT NULL,
+  delivered_at              INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_seat_messages_to ON seat_messages(initiative_id, to_address, status);
+CREATE INDEX IF NOT EXISTS idx_seat_messages_thread ON seat_messages(thread_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_seat_messages_wake ON seat_messages(wake_task_id);
+`
+
+// v51: context scopes (plan 106.4). A playbook step's conversation lives for
+// one step, one slice run, or the whole initiative; the stored values move from
+// fresh/seat_session to step/initiative. Seat sessions gain a scope: a slice
+// session belongs to one playbook run (scope_key = its id) and generations are
+// numbered per scope. process_phases.context_mode keeps its column name.
+export const SCHEMA_V51_SEAT_SESSIONS = `
+CREATE TABLE seat_sessions_v51 (
+  id               TEXT PRIMARY KEY,
+  initiative_id    TEXT NOT NULL REFERENCES initiatives(id) ON DELETE CASCADE,
+  seat_address     TEXT NOT NULL,
+  scope            TEXT NOT NULL DEFAULT 'initiative',
+  scope_key        TEXT NOT NULL DEFAULT 'initiative',
+  playbook_run_id  TEXT REFERENCES playbook_runs(id) ON DELETE SET NULL,
+  generation       INTEGER NOT NULL,
+  conversation_id  TEXT REFERENCES conversations(id) ON DELETE SET NULL,
+  status           TEXT NOT NULL,
+  handoff_summary  TEXT,
+  rotation_reason  TEXT,
+  failure_count    INTEGER NOT NULL DEFAULT 0,
+  created_at       INTEGER NOT NULL,
+  last_activity_at INTEGER,
+  rotated_at       INTEGER,
+  UNIQUE (initiative_id, seat_address, scope_key, generation)
+);
+INSERT INTO seat_sessions_v51
+  (id, initiative_id, seat_address, scope, scope_key, playbook_run_id, generation, conversation_id, status, handoff_summary, rotation_reason, failure_count, created_at, last_activity_at, rotated_at)
+SELECT id, initiative_id, seat_address, 'initiative', 'initiative', NULL, generation, conversation_id, status, handoff_summary, rotation_reason, failure_count, created_at, last_activity_at, rotated_at
+FROM seat_sessions;
+DROP TABLE seat_sessions;
+ALTER TABLE seat_sessions_v51 RENAME TO seat_sessions;
+CREATE INDEX IF NOT EXISTS idx_seat_sessions_conversation ON seat_sessions(conversation_id);
+CREATE INDEX IF NOT EXISTS idx_seat_sessions_run ON seat_sessions(playbook_run_id);
+`
+
+export const SCHEMA_V51_CONTEXT_SCOPES = `
+UPDATE process_phases SET context_mode = 'step' WHERE context_mode = 'fresh';
+UPDATE process_phases SET context_mode = 'initiative' WHERE context_mode = 'seat_session';
+`

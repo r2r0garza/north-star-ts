@@ -16,6 +16,7 @@ import type {
   ProcessFlag,
   ProcessFlagStatus,
   ProcessGraph,
+  PhaseContextScope,
   ProcessPhase,
   ProcessPhaseAgent,
   ProcessPhaseRun,
@@ -70,7 +71,19 @@ interface ProcessPhaseRow {
   validator_agent: string | null
   subprocess_id: string | null
   proof_step: number
+  context_mode: string | null
   position: number
+}
+
+// Unknown values fall back to `step` (a fresh worker), the 106.3 behavior.
+// The pre-v51 values `fresh` and `seat_session` are still read correctly.
+function contextScopeValue(mode: PhaseContextScope | undefined): string {
+  return mode === "slice" || mode === "initiative" ? mode : "step"
+}
+
+function parseContextScope(value: string | null): PhaseContextScope {
+  if (value === "slice" || value === "initiative") return value
+  return value === "seat_session" ? "initiative" : "step"
 }
 
 function toPhase(row: ProcessPhaseRow): ProcessPhase {
@@ -92,6 +105,7 @@ function toPhase(row: ProcessPhaseRow): ProcessPhase {
     validatorAgent: row.validator_agent,
     subprocessId: row.subprocess_id,
     proofStep: row.proof_step === 1,
+    contextScope: parseContextScope(row.context_mode),
     runtimeConfig: parseRuntimeConfig(row.runtime_config),
     position: row.position,
   }
@@ -467,6 +481,7 @@ export function createPhase(input: {
   validatorAgent?: string | null
   subprocessId?: string | null
   proofStep?: boolean
+  contextScope?: PhaseContextScope
   position: number
 }): ProcessPhase {
   const contract = parseCompletionContract(input.completionContract)
@@ -474,7 +489,7 @@ export function createPhase(input: {
   const id = randomUUID()
   getDb()
     .prepare(
-      "INSERT INTO process_phases (id, process_id, key, name, routing, gate_policy, fan_out, max_rework_rounds, dot_folder, validator, validator_max_iterations, validator_agent, subprocess_id, position, completion_contract, runtime_config, proof_step) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+      "INSERT INTO process_phases (id, process_id, key, name, routing, gate_policy, fan_out, max_rework_rounds, dot_folder, validator, validator_max_iterations, validator_agent, subprocess_id, position, completion_contract, runtime_config, proof_step, context_mode) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )
     .run(
       id,
@@ -493,7 +508,8 @@ export function createPhase(input: {
       input.position,
       JSON.stringify(contract),
       stringifyRuntimeConfig(input.runtimeConfig),
-      input.proofStep ? 1 : 0
+      input.proofStep ? 1 : 0,
+      contextScopeValue(input.contextScope)
     )
   return getPhase(id)!
 }
@@ -530,6 +546,7 @@ export function updatePhase(
     validatorAgent?: string | null
     subprocessId?: string | null
     proofStep?: boolean
+    contextScope?: PhaseContextScope
     runtimeConfig?: ProcessRuntimeConfig | null
     position?: number
   }
@@ -604,6 +621,10 @@ export function updatePhase(
   if (patch.proofStep !== undefined) {
     sets.push("proof_step = ?")
     values.push(patch.proofStep ? 1 : 0)
+  }
+  if (patch.contextScope !== undefined) {
+    sets.push("context_mode = ?")
+    values.push(contextScopeValue(patch.contextScope))
   }
   if (patch.runtimeConfig !== undefined) {
     sets.push("runtime_config = ?")

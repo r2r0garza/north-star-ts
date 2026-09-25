@@ -56,6 +56,9 @@ export interface SliceRunnerDeps {
   // global default). Autonomous CLI providers run their own agent loop without
   // North Star's tools, so they cannot call record_proof.
   workerProvider?(accountId: string | null): string | null
+  // A cancelled run stops its initiative's Comms (plan 106.4): queued mail
+  // expires and pending wakes are cancelled.
+  onCancelled?(initiativeId: string): void
 }
 
 const CLI_PROVIDERS: Record<string, string> = {
@@ -330,6 +333,7 @@ export class SliceRunner {
   cancelPlaybookRun(playbookRunId: string): void {
     const playbookRun = playbooks.getPlaybookRun(playbookRunId)
     if (!playbookRun || playbookRun.status !== "running") return
+    this.deps.onCancelled?.(playbookRun.initiativeId)
     const processRun = this.processRunFor(playbookRun)
     if (!processRun) {
       this.applyOutcome(playbookRun.id, "cancelled", "Cancelled before it started")

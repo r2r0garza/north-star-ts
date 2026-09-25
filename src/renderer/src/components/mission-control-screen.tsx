@@ -822,6 +822,35 @@ export function MissionControlScreen({ onClose }: { onClose: () => void }) {
     setAgents(nextAgents)
     setProviders(nextProviders)
   }, [])
+  const deleteRig = async (rig: Rig) => {
+    const using = (
+      await window.cowork.missionControl.initiatives.list()
+    ).filter((initiative) => initiative.rigId === rig.id)
+    const quoted = (items: typeof using) =>
+      items.map((item) => `“${item.name}”`).join(", ")
+    // The repository refuses this too; checking first skips a pointless
+    // confirmation.
+    const running = using.filter((item) =>
+      ["active", "paused"].includes(item.status)
+    )
+    if (running.length) {
+      toast.error(
+        `“${rig.name}” is in use by ${quoted(running)}. Finish or cancel ${running.length === 1 ? "that initiative" : "those initiatives"} before deleting the rig.`
+      )
+      return
+    }
+    const drafts = using.filter((item) => item.status === "draft")
+    const lines = [
+      `Delete rig “${rig.name}” with all its pods and seats? This cannot be undone.`,
+    ]
+    if (drafts.length)
+      lines.push(
+        `${quoted(drafts)} will no longer have a rig and will need a new one before starting.`
+      )
+    if (!window.confirm(lines.join("\n\n"))) return
+    await window.cowork.missionControl.rigs.delete(rig.id)
+    await load()
+  }
   const refreshGraph = useCallback(async () => {
     if (!selectedId) return
     const next = await window.cowork.missionControl.rigs.get(selectedId)
@@ -1113,9 +1142,9 @@ export function MissionControlScreen({ onClose }: { onClose: () => void }) {
                           size="icon-sm"
                           onClick={(event) => {
                             event.stopPropagation()
-                            void window.cowork.missionControl.rigs
-                              .delete(rig.id)
-                              .then(load)
+                            void deleteRig(rig).catch((error) =>
+                              toast.error(errorMessage(error))
+                            )
                           }}
                         >
                           <Trash2 className="size-4" />

@@ -34,6 +34,13 @@ import {
   narrowedSeatAgent,
   seatContextSection,
 } from "../../mission-control/seat-context"
+import { commsContextSection } from "../../mission-control/comms"
+import { getSeatSessions } from "../../mission-control/sessions"
+import {
+  seatTurns,
+  type SeatTurnIdentity,
+} from "../../mission-control/seat-turns"
+import * as initiatives from "../../db/repositories/initiatives"
 import type { ContextSection } from "../../agent/context/context-builder"
 import type {
   Conversation,
@@ -1187,8 +1194,54 @@ export class ProcessService {
         phaseAgent,
         seat,
       })
+      // Mission Control (plan 106.4): a role-bound worker is a seat turn. It
+      // is busy on the rig while it runs (mail waits for its tool-round
+      // boundaries). Its context scope picks the conversation: `step` forks a
+      // fresh worker, `slice` joins the seat's session for this playbook run,
+      // `initiative` joins its long-lived session. Fan-out children always run
+      // fresh.
+      const missionControl = this.missionControlRoot(run)?.missionControl
+      const seatTurn: SeatTurnIdentity | null =
+        seat && missionControl
+          ? {
+              initiativeId: missionControl.initiativeId,
+              address: seat.address,
+              profile: "work",
+              anchor: missionControl.sliceId
+                ? { kind: "slice", id: missionControl.sliceId }
+                : missionControl.missionId
+                  ? { kind: "mission", id: missionControl.missionId }
+                  : null,
+              wakeHop: null,
+            }
+          : null
+      const seatSessions = getSeatSessions()
+      const scope = phase.contextScope ?? "step"
+      const inSession =
+        !!seatTurn && !!seatSessions && scope !== "step" && !subtaskPrompt
+      let sessionConversation: Conversation | undefined
+      if (inSession && !existingWorker) {
+        try {
+          sessionConversation = getConversation(
+            seatSessions!.sessionConversationForStep(
+              seatTurn!.initiativeId,
+              seatTurn!.address,
+              scope === "slice" ? missionControl!.playbookRunId : null
+            )
+          )
+        } catch (err) {
+          return {
+            error: `Could not open ${seatTurn!.address}'s seat session: ${err instanceof Error ? err.message : String(err)}`,
+            retryable: false,
+          }
+        }
+      }
+      const initiative = seatTurn
+        ? initiatives.getInitiative(seatTurn.initiativeId)
+        : null
       const worker =
         existingWorker ??
+        sessionConversation ??
         createConversation({
           mode: source?.mode ?? "interactive",
           workspaceId,
@@ -1232,7 +1285,17 @@ export class ProcessService {
           { once: true }
         )
 
+      let releaseSeat: (() => void) | null = null
       try {
+        // One turn at a time per transcript: a seat-session step waits for a
+        // wake turn already running in the same session.
+        if (seatTurn)
+          releaseSeat = await seatTurns.acquire(
+            worker.id,
+            seatTurn,
+            childAbort.signal
+          )
+        if (inSession) seatSessions!.markSessionActivity(worker.id, true)
         const result = await runAgentLoop({
           conversationId: worker.id,
           workspace,
@@ -1255,7 +1318,13 @@ export class ProcessService {
           ...(resolved.agentOverride
             ? { agentOverride: resolved.agentOverride }
             : {}),
-          extraContextSections: resolved.contextSections,
+          extraContextSections: [
+            ...(resolved.contextSections ?? []),
+            ...(seatTurn && initiative
+              ? [commsContextSection(initiative, seatTurn)]
+              : []),
+          ],
+          missionControlSeat: seatTurn ?? undefined,
           processProofStep:
             !!phase.proofStep && !!this.missionControlRoot(run)?.missionControl,
           // Headless worker: no user to answer a clarifying question (it would only
@@ -1281,6 +1350,8 @@ export class ProcessService {
           outputIdentity,
         } satisfies PhaseResult
       } catch (err) {
+        // Cancelled while waiting for the seat's session to free up.
+        if (childAbort.signal.aborted) return { stopped: true }
         return {
           error: err instanceof Error ? err.message : String(err),
           failure: {
@@ -1300,6 +1371,9 @@ export class ProcessService {
             occurredAt: Date.now(),
           },
         }
+      } finally {
+        if (inSession) seatSessions!.markSessionActivity(worker.id, false)
+        releaseSeat?.()
       }
     }
   }

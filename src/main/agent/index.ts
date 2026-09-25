@@ -1,7 +1,7 @@
 import { randomUUID } from "crypto"
 import { readFile, stat } from "fs/promises"
 import { basename, dirname, isAbsolute } from "path"
-import { SHUTDOWN_ABORT_REASON } from "./abort"
+import { SHUTDOWN_ABORT_REASON, stopNote } from "./abort"
 import { askUser } from "./questions/broker"
 import {
   toolDefinitions,
@@ -86,6 +86,10 @@ import {
 import { containerNameForConversation } from "./env/container"
 import { flagForReworkTool } from "./tools/flag_for_rework"
 import { recordProofTool } from "./tools/record_proof"
+import { seatCommsTools } from "./tools/seat_comms_tools"
+import { allowedForSeatProfile } from "./seat-tool-profile"
+import { deliverQueued } from "../mission-control/inbox"
+import type { SeatTurnIdentity } from "../mission-control/seat-turns"
 import { dashboardWriteTool } from "./tools/dashboard_write"
 import { dashboardReadTool } from "./tools/dashboard_read"
 import { loadSystemPrompt } from "./system-prompt"
@@ -373,7 +377,7 @@ export interface ChatResult {
   // human-readable error text.
   errorCode?: "execution_backend_unavailable"
   // True when the turn was cancelled by the user's Stop button (a clean stop,
-  // not an error). The "⏹ Stopped by user." note is already persisted.
+  // not an error). The stop note (see stopNote) is already persisted.
   stopped?: boolean
   // Only meaningful alongside `error`: true when the failure was a transient
   // infrastructure hiccup (gateway 5xx, network/timeout) worth a backoff retry.
@@ -799,6 +803,12 @@ export interface RunAgentLoopOptions {
   // it is offered record_proof. The tool re-derives the slice, criteria, and
   // seats from the run itself; this flag only controls the offer.
   processProofStep?: boolean
+  // Mission Control seat turn (plan 106.4): who is speaking on the rig and
+  // what the turn may do. Offers the Comms tools (except answer-only), delivers
+  // the seat's queued mail at each tool-round boundary, and — for a turn woken
+  // by mail (consult / answer_only) — narrows the toolset to read/search tools
+  // so a message can never cause a side effect.
+  missionControlSeat?: SeatTurnIdentity
   // Extra system-block context sections supplied by the caller — e.g. the
   // Mission Control seat context (charter, cultures, intent chain). Budgeted
   // by the ContextBuilder like every other section.
@@ -1228,7 +1238,29 @@ export async function runAgentLoop(
       ? agentFiltered.filter((d) => opts.allowedToolNames!.has(d.function.name))
       : agentFiltered
   }
-  const buildTools = () =>
+  // A seat turn woken by mail may read and search but never mutate, execute,
+  // delegate, or reach out (plan 106.4 decision 4): keep only local read-only
+  // tools. MCP tools have no declared effects, so they are dropped too.
+  const seatProfile = opts.missionControlSeat?.profile
+  const readOnlyExtras = new Set([readSkillTool.definition.function.name])
+  const buildTools = () => {
+    const offered = buildBaseTools()
+    return (
+      seatProfile
+        ? offered.filter((d) =>
+            allowedForSeatProfile(d.function.name, seatProfile, readOnlyExtras)
+          )
+        : offered
+    ).concat(
+      // Comms (plan 106.4): process-structural like record_proof, so no agent
+      // or seat narrowing removes it. An answer-only wake answers in its final
+      // message instead.
+      seatProfile && seatProfile !== "answer_only" && !planMode
+        ? seatCommsTools.map((tool) => tool.definition)
+        : []
+    )
+  }
+  const buildBaseTools = () =>
     applyAgentTools([
       ...(hasWorkspace
         ? planMode
@@ -1640,6 +1672,17 @@ export async function runAgentLoop(
     }
   }
 
+  // Seat mail held for this seat while its next playbook step was pending
+  // (plan 106.4) lands at the start of that step, after its kickoff.
+  if (seatProfile && seatProfile !== "answer_only") {
+    const mail = deliverQueued({
+      identity: opts.missionControlSeat!,
+      conversationId,
+      wakeTaskId: null,
+    })
+    if (mail) messages.push({ role: "user", content: mail.content })
+  }
+
   for (const name of forcedSkills.names) {
     const id = randomUUID()
     const args = JSON.stringify({ name })
@@ -1811,7 +1854,7 @@ export async function runAgentLoop(
         appendMessage({
           conversationId,
           role: "assistant",
-          content: "⏹ Stopped by user.",
+          content: stopNote(abort.signal),
         })
         return { stopped: true }
       }
@@ -1968,8 +2011,8 @@ export async function runAgentLoop(
           conversationId,
           role: "assistant",
           content: text
-            ? `${text}\n\n⏹ Stopped by user.`
-            : "⏹ Stopped by user.",
+            ? `${text}\n\n${stopNote(abort.signal)}`
+            : stopNote(abort.signal),
         })
         return { stopped: true }
       }
@@ -2020,7 +2063,7 @@ export async function runAgentLoop(
             appendMessage({
               conversationId,
               role: "assistant",
-              content: "⏹ Stopped by user.",
+              content: stopNote(abort.signal),
             })
             return { stopped: true }
           }
@@ -2458,6 +2501,7 @@ export async function runAgentLoop(
             commandCompletionOwner,
             processRunId: opts.processRunId,
             processPhaseRunId: opts.processPhaseRunId,
+            missionControlSeat: opts.missionControlSeat,
           }
           // MCP tool calls (mcp__<server>__<tool>) route to the connection pool via
           // the manager, not the static tool registry. Gate first: calling a
@@ -2519,6 +2563,17 @@ export async function runAgentLoop(
         owner: commandCompletionOwner,
         events: commandCompletionInbox.drain(commandCompletionOwner),
       })
+      // Seat mail that arrived while this seat was busy (plan 106.4) lands
+      // here, at the tool-round boundary, as one tagged turn. The claim and the
+      // transcript row commit together, so it is delivered exactly once.
+      if (seatProfile && seatProfile !== "answer_only") {
+        const mail = deliverQueued({
+          identity: opts.missionControlSeat!,
+          conversationId,
+          wakeTaskId: null,
+        })
+        if (mail) messages.push({ role: "user", content: mail.content })
+      }
 
       // If any tool produced an image this round (browser_screenshot), inject it
       // as a user message with image content parts so the vision model sees it on
@@ -2551,7 +2606,7 @@ export async function runAgentLoop(
       appendMessage({
         conversationId,
         role: "assistant",
-        content: "⏹ Stopped by user.",
+        content: stopNote(abort.signal),
       })
       return { stopped: true }
     }

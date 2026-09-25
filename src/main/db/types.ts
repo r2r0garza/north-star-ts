@@ -951,9 +951,18 @@ export interface ProcessPhase {
   // Mission Control proof step (plan 106.3): only this phase's worker is offered
   // record_proof, and only inside a slice run. Ignored by legacy Processes.
   proofStep?: boolean
+  // Mission Control (plan 106.4): how long a seat-role step's conversation
+  // lives. `step`: a new worker for this step (106.3). `slice`: one session per
+  // seat for this slice (or hook) run, shared by the seat's steps and mail,
+  // closed when the run ends. `initiative`: the seat's long-lived session,
+  // carried across slices. Ignored for agent-name phases and legacy Processes.
+  // Stored in process_phases.context_mode.
+  contextScope?: PhaseContextScope
   runtimeConfig?: ProcessRuntimeConfig | null
   position: number
 }
+
+export type PhaseContextScope = "step" | "slice" | "initiative"
 
 // tools/skills are tri-state JSON overrides: null = use the agent's own
 // definition; [] = none; [list] = exactly these (matches .agent.md frontmatter).
@@ -1172,4 +1181,80 @@ export interface DashboardGraph {
   dashboard: Dashboard
   widgets: DashboardWidget[]
   data: DashboardWidgetData[]
+}
+
+// ── Mission Control seat sessions and Comms (plan 106.4) ────────────────────
+
+export type SeatSessionStatus = "idle" | "busy" | "rotated" | "closed"
+
+// initiative: the seat's long-lived session. slice: one session for one
+// playbook run (a slice attempt or a hook run), closed when the run ends.
+export type SeatSessionScope = "initiative" | "slice"
+
+export interface SeatSession {
+  id: string
+  initiativeId: string
+  seatAddress: string
+  scope: SeatSessionScope
+  // The playbook run a slice session belongs to (null for initiative scope).
+  playbookRunId: string | null
+  generation: number
+  conversationId: string | null
+  status: SeatSessionStatus
+  handoffSummary: string | null
+  rotationReason: string | null
+  failureCount: number
+  createdAt: number
+  lastActivityAt: number | null
+  rotatedAt: number | null
+}
+
+export type SeatThreadAnchorKind = "slice" | "mission" | "proposal"
+
+export interface SeatThread {
+  id: string
+  initiativeId: string
+  anchorKind: SeatThreadAnchorKind | null
+  anchorId: string | null
+  subject: string
+  createdAt: number
+}
+
+export type SeatMessageKind =
+  | "message"
+  | "direction"
+  | "steer"
+  | "escalation"
+  | "alert"
+
+export type SeatMessageStatus =
+  | "queued"
+  | "delivered"
+  | "replied"
+  | "acknowledged"
+  | "expired"
+  | "refused"
+
+export interface SeatMessage {
+  id: string
+  threadId: string
+  initiativeId: string
+  fromAddress: string
+  toAddress: string
+  inReplyTo: string | null
+  hop: number
+  body: string
+  kind: SeatMessageKind
+  status: SeatMessageStatus
+  expectsReply: boolean
+  needsDecision: RigDecisionRight | null
+  refusalReason: string | null
+  // Delivered as an answer-only wake of a finished fresh worker.
+  answerOnly: boolean
+  wakeTaskId: string | null
+  // Where the tagged turn landed, for "open in seat transcript".
+  deliveredConversationId: string | null
+  deliveredMessageId: string | null
+  createdAt: number
+  deliveredAt: number | null
 }

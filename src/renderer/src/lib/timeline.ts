@@ -1,5 +1,9 @@
 import type { Message as DbMessage } from "@/types"
-import { isCommandCompletionEvent } from "../../../shared/runtime-messages"
+import {
+  formatSeatMessageEvent,
+  isCommandCompletionEvent,
+  isSeatMessageEvent,
+} from "../../../shared/runtime-messages"
 
 // The transcript is rendered from a timeline of items rather than a flat list of
 // messages, so tool activity can be interleaved with text in the order it
@@ -287,7 +291,11 @@ export function buildTimeline(rows: DbMessage[]): TimelineItem[] {
           kind: "text",
           key: m.id,
           role: "user",
-          content: m.content,
+          // Seat mail (plan 106.4) is runtime input, not the user's speech:
+          // show it attributed to its sender rather than as raw envelope text.
+          content: isSeatMessageEvent(m.content)
+            ? formatSeatMessageEvent(m.content)
+            : m.content,
           createdAt: m.createdAt,
         })
       }

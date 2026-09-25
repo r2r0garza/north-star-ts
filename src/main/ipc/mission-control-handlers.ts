@@ -17,6 +17,11 @@ import {
 } from "../mission-control/io"
 import { createDefaultPlaybook } from "../mission-control/playbook-defaults"
 import type { SliceRunner } from "../mission-control/slice-runner"
+import type { SeatComms } from "../mission-control/comms"
+import type { SeatSessionService } from "../mission-control/sessions"
+import * as seatCommsRepo from "../db/repositories/seat-comms"
+import * as seatSessionsRepo from "../db/repositories/seat-sessions"
+import { deleteConversationsWithArtifacts } from "../conversations/lifecycle"
 import { startHookRun } from "../mission-control/hook-runner"
 import type {
   PlaybookAltitude,
@@ -28,7 +33,37 @@ async function agents(workspace?: string) {
   return loadAgents(agentSources(workspace))
 }
 
-export function registerMissionControlHandlers(sliceRunner: SliceRunner): void {
+export function registerMissionControlHandlers(
+  sliceRunner: SliceRunner,
+  seatComms: SeatComms,
+  seatSessions: SeatSessionService
+): void {
+  // Comms and seat sessions (plan 106.4). Agent threads are read-only here: the
+  // user's only write is an explicit Steer, sent from user@rig.
+  ipcMain.handle("missionControl:comms:list", (_event, initiativeId: string) => ({
+    threads: seatCommsRepo.listThreads(initiativeId),
+    messages: seatCommsRepo.listMessages({ initiativeId, limit: 2000 }),
+  }))
+  ipcMain.handle("missionControl:comms:seats", (_event, initiativeId: string) =>
+    seatSessions.overview(initiativeId)
+  )
+  ipcMain.handle(
+    "missionControl:comms:steer",
+    (
+      _event,
+      input: { initiativeId: string; to: string; body: string; direct?: boolean }
+    ) => {
+      const result = seatComms.steer(input)
+      if (!result.ok) throw new Error(result.message)
+      return result.message
+    }
+  )
+  ipcMain.handle(
+    "missionControl:comms:rotate",
+    (_event, sessionId: string, reason?: string) =>
+      seatSessions.rotate(sessionId, reason?.trim() || "Rotated by the user")
+  )
+
   // Playbooks and execution (plan 106.3).
   ipcMain.handle("missionControl:playbooks:list", () =>
     playbooks.listPlaybooks()
@@ -112,16 +147,28 @@ export function registerMissionControlHandlers(sliceRunner: SliceRunner): void {
     (_event, id: string, patch, actor?: string, reason?: string) =>
       initiatives.updateInitiative(id, patch, actor, reason)
   )
-  ipcMain.handle("missionControl:initiatives:delete", (_event, id: string) =>
+  ipcMain.handle("missionControl:initiatives:delete", async (_event, id: string) => {
+    // Seat sessions are hidden conversations the cascade does not reach.
+    const conversations = seatSessionsRepo
+      .listSeatSessions({ initiativeId: id })
+      .map((session) => session.conversationId)
+      .filter((cid): cid is string => !!cid)
     initiatives.deleteInitiative(id)
-  )
+    seatSessions.cancelInitiative(id)
+    await deleteConversationsWithArtifacts(conversations)
+  })
   ipcMain.handle("missionControl:initiatives:start", (_event, id: string) =>
     initiatives.startInitiative(id)
   )
   ipcMain.handle(
     "missionControl:initiatives:reseat",
-    (_event, id: string, reason?: string) =>
-      initiatives.reseatInitiative(id, reason)
+    (_event, id: string, reason?: string) => {
+      const graph = initiatives.reseatInitiative(id, reason)
+      // A re-seat starts every live seat session's next generation against
+      // the new snapshot (plan 106.4 decision 2).
+      seatSessions.rotateInitiative(id, "The rig was re-seated")
+      return graph
+    }
   )
   ipcMain.handle("missionControl:missions:create", (_event, input) =>
     initiatives.createMission(input)

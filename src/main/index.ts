@@ -18,6 +18,7 @@ import { config as loadEnv } from "dotenv"
 loadEnv({ path: join(app.getAppPath(), ".env.local") })
 
 import {
+  runAgentLoop,
   runChat,
   resolveApproval,
   resolveQuestion,
@@ -115,6 +116,13 @@ import { SummaryService, SUMMARIZE_KIND } from "./summaries/service"
 import { ProcessService, PROCESS_RUN_KIND } from "./tasks/process/service"
 import { registerProcessHandlers } from "./ipc/process-handlers"
 import { SliceRunner } from "./mission-control/slice-runner"
+import { installSeatComms, SeatComms } from "./mission-control/comms"
+import { onCommsChanged } from "./mission-control/comms-events"
+import {
+  installSeatSessions,
+  SEAT_WAKE_KIND,
+  SeatSessionService,
+} from "./mission-control/sessions"
 import { getAccount as getProviderAccount } from "./db/repositories/provider-accounts"
 import { DashboardService, DASHBOARD_REFRESH_KIND } from "./dashboards/service"
 import { registerDashboardHandlers } from "./ipc/dashboard-handlers"
@@ -156,18 +164,95 @@ const summaryService = new SummaryService(taskRunner)
 const processService = new ProcessService(taskRunner)
 // Mission Control slice execution (plan 106.3): launches playbooks as Process
 // runs and applies each run's terminal outcome to its slice exactly once.
+// The provider a Mission Control worker runs on for an account selection (null
+// = the global default).
+function workerProvider(accountId: string | null): string | null {
+  const id = accountId ?? settingsService.getLlm().activeAccountId
+  return id ? (getProviderAccount(id)?.provider ?? null) : null
+}
+// Mission Control seat sessions and Comms (plan 106.4). Wake turns run as the
+// durable `seat_wake` task kind; each is one headless agent turn in the seat's
+// home conversation, with the read/search-only profile the service picks.
+const seatSessions = new SeatSessionService({
+  runTurn: async (input) => {
+    const abort = new AbortController()
+    if (input.signal.aborted) abort.abort(input.signal.reason)
+    else
+      input.signal.addEventListener(
+        "abort",
+        () => abort.abort(input.signal.reason),
+        { once: true }
+      )
+    return runAgentLoop({
+      conversationId: input.conversationId,
+      workspace: input.workspace,
+      agentDir: input.workspace,
+      abort,
+      agentOverride: input.agentOverride,
+      extraContextSections: input.contextSections,
+      missionControlSeat: input.seat,
+      // Headless: nobody is there to answer a clarifying question.
+      suppressUserQuestions: true,
+      onEvent: () => {},
+    })
+  },
+  loadAgents: (workspace) => loadAgents(agentSources(workspace)),
+  enqueueWake: (input) =>
+    taskRunner.enqueueKind({
+      kind: SEAT_WAKE_KIND,
+      title: input.title,
+      input: {
+        initiativeId: input.initiativeId,
+        address: input.address,
+        ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),
+      },
+    }),
+  cancelTask: (taskId) => taskRunner.cancel(taskId),
+})
+const seatComms = new SeatComms({
+  dispatch: (initiativeId, address) =>
+    seatSessions.dispatch(initiativeId, address),
+  notifyUser: (title, body) => {
+    if (!Notification.isSupported()) return
+    new Notification({ title, body, silent: false }).show()
+  },
+  mailRefusal: (initiative, address) => {
+    const rig = initiative.rigSnapshot
+    const seat = rig?.seats.find(
+      (candidate) =>
+        `${candidate.key}@${rig.pods.find((pod) => pod.id === candidate.podId)?.key}` ===
+        address
+    )
+    const provider = workerProvider(
+      seat?.runtimeConfig?.worker?.accountId ?? null
+    )
+    return provider === "claude_code" || provider === "codex_cli"
+      ? `${address} runs on the ${provider === "claude_code" ? "Claude Code" : "Codex"} CLI, which runs its own loop and cannot receive Comms messages yet.`
+      : null
+  },
+})
+installSeatSessions(seatSessions)
+installSeatComms(seatComms)
 const sliceRunner = new SliceRunner({
   startProcessRun: (input) => processService.startRun(input),
   cancelTask: (taskId) => taskRunner.cancel(taskId),
   loadAgents: (workspace) => loadAgents(agentSources(workspace)),
-  workerProvider: (accountId) => {
-    const id = accountId ?? settingsService.getLlm().activeAccountId
-    return id ? (getProviderAccount(id)?.provider ?? null) : null
-  },
+  workerProvider,
+  onCancelled: (initiativeId) => seatSessions.cancelInitiative(initiativeId),
 })
-processService.onRunSettled((processRunId) =>
+processService.onRunSettled((processRunId) => {
   sliceRunner.settle(processRunId)
-)
+  // Mail held while the run still had steps for its seats can now wake them.
+  seatSessions.onProcessRunActivity(processRunId)
+})
+// A seat whose last playbook step just settled may have held mail waiting.
+taskRunner.subscribe((_taskId, event) => {
+  if (
+    event.type === "process_phase" &&
+    ["completed", "failed", "cancelled", "skipped"].includes(event.status)
+  )
+    seatSessions.onProcessRunActivity(event.runId)
+})
 // Deterministic dashboard refresh (plan 033.3): re-runs each widget's stored
 // recipe headless. Holds the runner reference so ensureRefresh can enqueue.
 const dashboardService = new DashboardService(taskRunner)
@@ -1349,6 +1434,15 @@ app.whenReady().then(async () => {
   // resume across a restart. hasIndependentSurface: born source-less (driven from
   // the Dashboards view, not a conversation) and observable there, so it's exempt
   // from the plan 022 orphan reaper.
+  // seat_wake (plan 106.4): one headless turn delivering a seat's mail.
+  // autoResume so a quit mid-delivery resumes the same turn (the delivery is
+  // already in the transcript, never re-claimed); hasIndependentSurface: born
+  // source-less and observable in Comms, so exempt from the 022 reaper.
+  taskRunner.registerKind(SEAT_WAKE_KIND, {
+    autoResume: true,
+    hasIndependentSurface: true,
+    run: seatSessions.execute,
+  })
   taskRunner.registerKind(DASHBOARD_REFRESH_KIND, {
     autoResume: false,
     hasIndependentSurface: true,
@@ -1359,10 +1453,17 @@ app.whenReady().then(async () => {
   registerProcessHandlers(taskRunner, processService)
   registerIndexHandlers(taskRunner, indexService, indexWatcher)
   registerDashboardHandlers(taskRunner, dashboardService)
-  registerMissionControlHandlers(sliceRunner)
+  registerMissionControlHandlers(sliceRunner, seatComms, seatSessions)
   // Apply outcomes for playbook runs whose Process run settled while the app
   // was down (idempotent; in-flight runs resume through the task runner).
   sliceRunner.reconcile()
+  // Mail that was queued when the app stopped gets moving again (plan 106.4).
+  seatSessions.dispatchAll()
+  onCommsChanged((initiativeId) => {
+    const wc = mainWindow?.webContents
+    if (wc && !wc.isDestroyed())
+      wc.send("missionControl:comms:changed", initiativeId)
+  })
   registerTerminalHandlers(terminalService)
   registerFileWatchHandlers()
   await indexWatcher.setEnabled(settingsService.getIndexing().watchWorkspaces)

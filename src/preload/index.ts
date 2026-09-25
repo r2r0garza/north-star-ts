@@ -29,6 +29,7 @@ import type {
   ProcessRunStatus,
   PhaseRunStatus,
   PhaseRouting,
+  PhaseContextScope,
   PhaseCompletionContract,
   PhaseGatePolicy,
   EdgeTrigger,
@@ -58,6 +59,9 @@ import type {
   PlaybookHook,
   PlaybookHookName,
   PlaybookRun,
+  SeatMessage,
+  SeatSession,
+  SeatThread,
   PlaybookRunStatus,
   PlaybookWithHooks,
   SeatBinding,
@@ -69,6 +73,7 @@ import type {
 import type { ActionKind } from "../main/agent/approval/types"
 import type { PickedElement } from "../main/browser/types"
 import type { GitDiffResult } from "../main/git/diff"
+import type { SeatOverview } from "../main/mission-control/sessions"
 import type {
   GitActionResult,
   GitBranchActionResult,
@@ -980,6 +985,44 @@ const api = {
           PlaybookRun
         >,
     },
+    // Comms and seat sessions (plan 106.4). Read-only for agent threads; the
+    // one write is Steer, an explicit message from user@rig.
+    comms: {
+      list: (initiativeId: string) =>
+        ipcRenderer.invoke("missionControl:comms:list", initiativeId) as Promise<{
+          threads: SeatThread[]
+          messages: SeatMessage[]
+        }>,
+      seats: (initiativeId: string) =>
+        ipcRenderer.invoke(
+          "missionControl:comms:seats",
+          initiativeId
+        ) as Promise<SeatOverview[]>,
+      steer: (input: {
+        initiativeId: string
+        to: string
+        body: string
+        direct?: boolean
+      }) =>
+        ipcRenderer.invoke(
+          "missionControl:comms:steer",
+          input
+        ) as Promise<SeatMessage>,
+      rotate: (sessionId: string, reason?: string) =>
+        ipcRenderer.invoke(
+          "missionControl:comms:rotate",
+          sessionId,
+          reason
+        ) as Promise<SeatSession | null>,
+      // Fires with the initiative id whenever its mail or seat sessions change.
+      onChanged: (cb: (initiativeId: string) => void) => {
+        const listener = (_event: IpcRendererEvent, initiativeId: string) =>
+          cb(initiativeId)
+        ipcRenderer.on("missionControl:comms:changed", listener)
+        return () =>
+          ipcRenderer.removeListener("missionControl:comms:changed", listener)
+      },
+    },
   },
   agents: {
     list: (workspace?: string) =>
@@ -1599,6 +1642,7 @@ const api = {
             validatorAgent?: string | null
             subprocessId?: string | null
             proofStep?: boolean
+            contextScope?: PhaseContextScope
             runtimeConfig?: ProcessRuntimeConfig | null
             position?: number
           }
@@ -2278,6 +2322,14 @@ export type {
   SliceProof,
   ProofCriterionStatus,
   MissionControlRunLink,
+  PhaseContextScope,
+  SeatSession,
+  SeatSessionStatus,
+  SeatThread,
+  SeatThreadAnchorKind,
+  SeatMessage,
+  SeatMessageKind,
+  SeatMessageStatus,
 } from "../main/db/types"
 export type {
   ProcessImportResult,
@@ -2362,6 +2414,7 @@ export type { IndexStatus } from "../main/ipc/index-handlers"
 export type { ApproveResult } from "../main/dashboards/service"
 export type { PickedElement } from "../main/browser/types"
 export type { GitDiffResult } from "../main/git/diff"
+export type { SeatOverview } from "../main/mission-control/sessions"
 export type {
   GitAction,
   GitActionResult,

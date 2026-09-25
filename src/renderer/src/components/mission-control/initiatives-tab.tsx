@@ -36,6 +36,7 @@ import { TooltipButton } from "@/components/ui/tooltip"
 import { SliceRunPanel } from "./slice-run-panel"
 import { HookControls } from "./hook-controls"
 import { PlaybookPicker } from "./playbook-picker"
+import { AnchoredComms, CommsTab } from "./comms-tab"
 import type {
   Initiative,
   InitiativeGraph,
@@ -56,9 +57,16 @@ function slug(value: string) {
     .slice(0, 32)
 }
 function errorMessage(error: unknown) {
-  return (error instanceof Error ? error.message : String(error))
+  const message = (error instanceof Error ? error.message : String(error))
     .replace(/^Error invoking remote method '[^']+':\s*/, "")
-    .replace(/^Error:\s*/, "")
+    .replace(/^(?:SqliteError|Error):\s*/, "")
+  // Raw database constraint text is meaningless to users; the repository
+  // throws readable errors for the cases it anticipates.
+  if (/UNIQUE constraint failed/.test(message))
+    return "Something with that name already exists. Try a different name."
+  if (/constraint failed/.test(message))
+    return "That change conflicts with existing data and wasn't saved."
+  return message
 }
 // Structural edits after start are audited and need a reason (plan 106.2).
 function reasonFor(graph: InitiativeGraph, reason: string) {
@@ -336,6 +344,7 @@ function SliceEditor({
         workspacePath={workspacePath}
         onRefresh={onRefresh}
       />
+      <AnchoredComms graph={graph} anchor={{ kind: "slice", id: slice.id }} />
       <div className="flex gap-2">
         <Button
           onClick={() =>
@@ -470,6 +479,10 @@ function MissionView({
                 : "Every slice must be done before the mission review."),
           },
         ]}
+      />
+      <AnchoredComms
+        graph={graph}
+        anchor={{ kind: "mission", id: mission.id }}
       />
       <div className="grid gap-3 rounded-lg border p-4 lg:grid-cols-2">
         <div className="space-y-3">
@@ -722,16 +735,21 @@ function InitiativeView({
   workspaces,
   projects,
   onGraph,
+  onPickWorkspace,
   onMission,
+  onOpenAnchor,
 }: {
   graph: InitiativeGraph
   rigs: Rig[]
   workspaces: Workspace[]
   projects: Project[]
   onGraph: (graph: InitiativeGraph) => void
+  onPickWorkspace: () => Promise<Workspace | null>
   onMission: (id: string) => void
+  onOpenAnchor: (anchor: { kind: "slice" | "mission"; id: string }) => void
 }) {
   const initiative = graph.initiative
+  const [view, setView] = useState<"overview" | "comms">("overview")
   const [name, setName] = useState(initiative.name)
   const [intent, setIntent] = useState(initiative.intent)
   const [done, setDone] = useState(initiative.definitionOfDone)
@@ -753,6 +771,25 @@ function InitiativeView({
         reasonFor(graph, "Update initiative definition")
       )
     )
+  // Rig, project, and workspace are bound for good at start (the repository
+  // enforces this too).
+  const editableBinding = initiative.status === "draft"
+  const finished = ["completed", "cancelled", "failed"].includes(
+    initiative.status
+  )
+  const bind = (
+    patch: Partial<Pick<Initiative, "rigId" | "projectId" | "workspaceId">>
+  ) =>
+    window.cowork.missionControl.initiatives
+      .update(initiative.id, patch)
+      .then(onGraph)
+      .catch((error) => toast.error(errorMessage(error)))
+  const workspaceName =
+    workspaces.find((workspace) => workspace.id === initiative.workspaceId)
+      ?.name ?? "None"
+  const projectName =
+    projects.find((project) => project.id === initiative.projectId)?.name ??
+    "None"
   const addMission = async () => {
     const next = await window.cowork.missionControl.missions.create({
       initiativeId: initiative.id,
@@ -763,14 +800,36 @@ function InitiativeView({
     setMissionName("")
     onGraph(next)
   }
+  const viewTabs = (
+    <div className="flex gap-4 border-b">
+      {(["overview", "comms"] as const).map((item) => (
+        <button
+          key={item}
+          className={`-mb-px py-2 text-sm font-medium ${view === item ? "border-b-2 border-primary" : "text-muted-foreground"}`}
+          onClick={() => setView(item)}
+        >
+          {item === "overview" ? "Overview" : "Comms"}
+        </button>
+      ))}
+    </div>
+  )
+  if (view === "comms")
+    return (
+      <div className="space-y-5">
+        {viewTabs}
+        <CommsTab graph={graph} onOpenAnchor={onOpenAnchor} />
+      </div>
+    )
   return (
     <div className="space-y-5">
+      {viewTabs}
       <div className="flex items-center gap-3">
         <code className="text-xs text-muted-foreground">{initiative.key}</code>
         <Badge className="ml-auto">{initiative.status}</Badge>
         {initiative.status === "draft" && (
           <Button
             disabled={!initiative.rigId}
+            title={initiative.rigId ? undefined : "Choose a rig first"}
             onClick={() =>
               void window.cowork.missionControl.initiatives
                 .start(initiative.id)
@@ -782,7 +841,7 @@ function InitiativeView({
           </Button>
         )}
       </div>
-      {graph.rigDrifted && (
+      {graph.rigDrifted && !finished && (
         <div className="flex items-center rounded-md border border-amber-500/40 bg-amber-500/5 p-3 text-sm">
           <span>The selected rig changed since this initiative started.</span>
           <Button
@@ -793,6 +852,7 @@ function InitiativeView({
               void window.cowork.missionControl.initiatives
                 .reseat(initiative.id, "Apply latest rig definition")
                 .then(onGraph)
+                .catch((error) => toast.error(errorMessage(error)))
             }
           >
             Re-seat
@@ -833,27 +893,110 @@ function InitiativeView({
         </div>
       </div>
       <div className="grid gap-3 rounded-lg border p-4 sm:grid-cols-3">
-        <div>
-          <div className="text-xs text-muted-foreground">Rig</div>
-          <div className="text-sm">
-            {rigs.find((rig) => rig.id === initiative.rigId)?.name ?? "None"}
-          </div>
+        <div className="min-w-0">
+          <div className="mb-1 text-xs text-muted-foreground">Rig</div>
+          {editableBinding ? (
+            <Select
+              value={initiative.rigId ?? ""}
+              onValueChange={(rigId) => void bind({ rigId })}
+            >
+              <SelectTrigger className="h-8 w-full text-foreground [&>svg]:text-foreground">
+                <SelectValue placeholder="Choose a rig" />
+              </SelectTrigger>
+              <SelectContent>
+                {rigs.map((rig) => (
+                  <SelectItem key={rig.id} value={rig.id}>
+                    {rig.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          ) : (
+            <div className="truncate text-sm">
+              {rigs.find((rig) => rig.id === initiative.rigId)?.name ??
+                (initiative.rigSnapshot
+                  ? `${initiative.rigSnapshot.rig.name} (deleted — ran on saved copy)`
+                  : "None")}
+            </div>
+          )}
         </div>
-        <div>
-          <div className="text-xs text-muted-foreground">Workspace</div>
-          <div className="truncate text-sm">
-            {workspaces.find(
-              (workspace) => workspace.id === initiative.workspaceId
-            )?.name ?? "None"}
-          </div>
+        <div className="min-w-0">
+          <div className="mb-1 text-xs text-muted-foreground">Project</div>
+          {editableBinding ? (
+            <Select
+              value={initiative.projectId ?? "none"}
+              onValueChange={(value) => {
+                const project = projects.find((item) => item.id === value)
+                // A linked project brings its workspace, as on create.
+                void bind(
+                  project
+                    ? {
+                        projectId: project.id,
+                        workspaceId: project.workspaceId,
+                      }
+                    : { projectId: null }
+                )
+              }}
+            >
+              <SelectTrigger className="h-8 w-full text-foreground [&>svg]:text-foreground">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="none">No project</SelectItem>
+                {projects.map((project) => (
+                  <SelectItem key={project.id} value={project.id}>
+                    {project.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          ) : (
+            <div className="truncate text-sm">{projectName}</div>
+          )}
         </div>
-        <div>
-          <div className="text-xs text-muted-foreground">Project</div>
-          <div className="text-sm">
-            {projects.find((project) => project.id === initiative.projectId)
-              ?.name ?? "None"}
-          </div>
+        <div className="min-w-0">
+          <div className="mb-1 text-xs text-muted-foreground">Workspace</div>
+          {editableBinding && !initiative.projectId ? (
+            <div className="flex gap-2">
+              <Select
+                value={initiative.workspaceId ?? ""}
+                onValueChange={(workspaceId) => void bind({ workspaceId })}
+              >
+                <SelectTrigger className="h-8 min-w-0 flex-1 text-foreground [&>svg]:text-foreground">
+                  <SelectValue placeholder="Choose a workspace" />
+                </SelectTrigger>
+                <SelectContent>
+                  {workspaces.map((workspace) => (
+                    <SelectItem key={workspace.id} value={workspace.id}>
+                      {workspace.name || workspace.path}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Button
+                size="icon-sm"
+                variant="outline"
+                title="Choose folder"
+                onClick={() =>
+                  void onPickWorkspace()
+                    .then((workspace) =>
+                      workspace ? bind({ workspaceId: workspace.id }) : null
+                    )
+                    .catch((error) => toast.error(errorMessage(error)))
+                }
+              >
+                <FolderOpen className="size-4" />
+              </Button>
+            </div>
+          ) : (
+            <div className="truncate text-sm">{workspaceName}</div>
+          )}
         </div>
+        {editableBinding ? (
+          <p className="text-xs text-muted-foreground sm:col-span-3">
+            The rig, project, and workspace lock when the initiative starts.
+          </p>
+        ) : null}
       </div>
       <div className="w-72">
         <PlaybookPicker
@@ -1042,15 +1185,19 @@ export function InitiativesTab({
     setProjectId("none")
     applyGraph(next)
   }
-  const pickWorkspace = async () => {
+  const saveWorkspace = async () => {
     const picked = await window.cowork.pickWorkspace()
-    if (!picked.path) return
+    if (!picked.path) return null
     const workspace = await window.cowork.db.workspaces.upsert(picked.path)
     setWorkspaces((current) => [
       workspace,
       ...current.filter((item) => item.id !== workspace.id),
     ])
-    setWorkspaceId(workspace.id)
+    return workspace
+  }
+  const pickWorkspace = async () => {
+    const workspace = await saveWorkspace()
+    if (workspace) setWorkspaceId(workspace.id)
   }
   const initiativeId = graph?.initiative.id ?? null
   const refreshGraph = useCallback(async () => {
@@ -1104,7 +1251,18 @@ export function InitiativesTab({
         workspaces={workspaces}
         projects={projects}
         onGraph={applyGraph}
+        onPickWorkspace={saveWorkspace}
         onMission={onMissionChange}
+        onOpenAnchor={(anchor) => {
+          if (anchor.kind === "mission") {
+            onMissionChange(anchor.id)
+            return
+          }
+          const target = graph.slices.find((item) => item.id === anchor.id)
+          if (!target) return
+          onMissionChange(target.missionId)
+          onSliceChange(target.id)
+        }}
       />
     )
   return (

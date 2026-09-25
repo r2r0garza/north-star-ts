@@ -118,6 +118,27 @@ function workKey(value: string, label: string): string {
     )
   return normalized
 }
+// Keys are derived from names in the UI, so creation takes the next free
+// suffix (`name`, `name-2`, …) rather than failing on a duplicate.
+function freeKey(base: string, taken: (key: string) => boolean): string {
+  if (!taken(base)) return base
+  for (let n = 2; ; n++) {
+    const suffix = `-${n}`
+    const key = `${base.slice(0, 32 - suffix.length).replace(/-$/, "")}${suffix}`
+    if (!taken(key)) return key
+  }
+}
+function exists(sql: string, ...params: unknown[]): boolean {
+  return (
+    getDb()
+      .prepare(sql)
+      .get(...params) !== undefined
+  )
+}
+function assertKeyFree(taken: boolean, label: string, key: string): void {
+  if (taken)
+    throw new Error(`${label} “${key}” is already in use. Choose another.`)
+}
 function spec(value?: Partial<SliceSpec>): SliceSpec {
   return {
     goal: value?.goal ?? "",
@@ -362,16 +383,20 @@ export function getInitiativeGraph(id: string): InitiativeGraph | null {
   const missions = listMissions(id)
   const slices = missions.flatMap((mission) => listSlices(mission.id))
   const edges = missions.flatMap((mission) => listEdges(mission.id))
+  const current = currentRigSnapshot(initiative)
   return {
     initiative,
     missions,
     slices,
     edges,
     revisions: listRevisions(id),
-    rigDrifted:
-      Boolean(initiative.rigSnapshot) &&
-      snapshotComparable(initiative.rigSnapshot) !==
-        snapshotComparable(currentRigSnapshot(initiative)),
+    // A deleted rig isn't drift: there is nothing to re-seat from, and the
+    // initiative keeps running on its snapshot.
+    rigDrifted: Boolean(
+      initiative.rigSnapshot &&
+      current &&
+      snapshotComparable(initiative.rigSnapshot) !== snapshotComparable(current)
+    ),
   }
 }
 
@@ -394,7 +419,9 @@ export function createInitiative(input: {
       )
       .run(
         id,
-        workKey(input.key, "Initiative key"),
+        freeKey(workKey(input.key, "Initiative key"), (key) =>
+          exists("SELECT 1 FROM initiatives WHERE key = ?", key)
+        ),
         text(input.name, "Initiative name"),
         input.intent,
         input.definitionOfDone,
@@ -435,13 +462,33 @@ export function updateInitiative(
 ): InitiativeGraph {
   const before = getInitiative(id)
   if (!before) throw new Error(`Initiative not found: ${id}`)
+  // Running work resolves the workspace live and seats come from the rig
+  // snapshot taken at start, so the binding is frozen once started.
+  if (
+    before.status !== "draft" &&
+    ((patch.rigId !== undefined && patch.rigId !== before.rigId) ||
+      (patch.workspaceId !== undefined &&
+        patch.workspaceId !== before.workspaceId) ||
+      (patch.projectId !== undefined && patch.projectId !== before.projectId))
+  )
+    throw new Error(
+      "The rig, workspace, and project can't be changed after an initiative has started."
+    )
   const sets: string[] = []
   const values: unknown[] = []
   const add = (column: string, value: unknown) => {
     sets.push(`${column} = ?`)
     values.push(value)
   }
-  if (patch.key !== undefined) add("key", workKey(patch.key, "Initiative key"))
+  if (patch.key !== undefined) {
+    const key = workKey(patch.key, "Initiative key")
+    assertKeyFree(
+      exists("SELECT 1 FROM initiatives WHERE key = ? AND id != ?", key, id),
+      "Initiative key",
+      key
+    )
+    add("key", key)
+  }
   if (patch.name !== undefined) add("name", text(patch.name, "Initiative name"))
   if (patch.intent !== undefined) add("intent", patch.intent)
   if (patch.definitionOfDone !== undefined)
@@ -529,7 +576,13 @@ export function createMission(input: {
     .run(
       id,
       input.initiativeId,
-      workKey(input.key, "Mission key"),
+      freeKey(workKey(input.key, "Mission key"), (key) =>
+        exists(
+          "SELECT 1 FROM missions WHERE initiative_id = ? AND key = ?",
+          input.initiativeId,
+          key
+        )
+      ),
       text(input.name, "Mission name"),
       input.outcome,
       input.definitionOfDone ?? "",
@@ -558,7 +611,20 @@ export function updateMission(
     sets.push(`${c} = ?`)
     values.push(v)
   }
-  if (patch.key !== undefined) add("key", workKey(patch.key, "Mission key"))
+  if (patch.key !== undefined) {
+    const key = workKey(patch.key, "Mission key")
+    assertKeyFree(
+      exists(
+        "SELECT 1 FROM missions WHERE initiative_id = ? AND key = ? AND id != ?",
+        before.initiativeId,
+        key,
+        id
+      ),
+      "Mission key",
+      key
+    )
+    add("key", key)
+  }
   if (patch.name !== undefined) add("name", text(patch.name, "Mission name"))
   if (patch.outcome !== undefined) add("outcome", patch.outcome)
   if (patch.definitionOfDone !== undefined)
@@ -636,7 +702,13 @@ export function createSlice(input: {
     .run(
       id,
       input.missionId,
-      workKey(input.key, "Slice key"),
+      freeKey(workKey(input.key, "Slice key"), (key) =>
+        exists(
+          "SELECT 1 FROM slices WHERE mission_id = ? AND key = ?",
+          input.missionId,
+          key
+        )
+      ),
       text(input.title, "Slice title"),
       JSON.stringify(spec(input.spec)),
       input.podKey ?? null,
@@ -669,7 +741,20 @@ export function updateSlice(
     sets.push(`${c} = ?`)
     values.push(v)
   }
-  if (patch.key !== undefined) add("key", workKey(patch.key, "Slice key"))
+  if (patch.key !== undefined) {
+    const key = workKey(patch.key, "Slice key")
+    assertKeyFree(
+      exists(
+        "SELECT 1 FROM slices WHERE mission_id = ? AND key = ? AND id != ?",
+        before.missionId,
+        key,
+        id
+      ),
+      "Slice key",
+      key
+    )
+    add("key", key)
+  }
   if (patch.title !== undefined) add("title", text(patch.title, "Slice title"))
   if (patch.spec !== undefined) add("spec", JSON.stringify(spec(patch.spec)))
   if (patch.podKey !== undefined) add("pod_key", patch.podKey)

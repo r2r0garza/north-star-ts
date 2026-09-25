@@ -293,6 +293,22 @@ export function updateRig(
 }
 
 export function deleteRig(id: string): void {
+  // A started initiative's rig is locked in and is the only way to re-seat
+  // its team, so it can't be deleted from under a running initiative.
+  // Drafts just lose the assignment (ON DELETE SET NULL); finished
+  // initiatives keep their rig snapshot.
+  const running = getDb()
+    .prepare(
+      "SELECT name FROM initiatives WHERE rig_id = ? AND status IN ('active', 'paused') ORDER BY name"
+    )
+    .all(id) as { name: string }[]
+  if (running.length) {
+    const names = running.map((row) => `“${row.name}”`).join(", ")
+    const which = running.length === 1 ? "that initiative" : "those initiatives"
+    throw new Error(
+      `This rig is in use by ${names}. Finish or cancel ${which} before deleting the rig.`
+    )
+  }
   getDb().prepare("DELETE FROM rigs WHERE id = ?").run(id)
 }
 

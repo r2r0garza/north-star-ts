@@ -6,7 +6,7 @@ import type {
   SeatBinding,
   SeatBindingsSnapshot,
 } from "../db/types"
-import { resolveSeat } from "./seats"
+import { resolveSeat, type ResolvedSeat } from "./seats"
 
 // Run-start seat resolution (plan 106.3, decision 2). Every seat role a
 // playbook uses is resolved against the initiative's rig SNAPSHOT, in the
@@ -73,6 +73,68 @@ function podSearchOrder(rig: RigGraph, pod: RigPod): RigPod[] {
   return order
 }
 
+// One resolved seat as the frozen binding workers read.
+export function toSeatBinding(
+  resolved: ResolvedSeat & { agent: AgentDefinition },
+  pod: RigPod
+): SeatBinding {
+  const { seat } = resolved
+  return {
+    address: resolved.address,
+    role: seat.role,
+    seatId: seat.id,
+    podKey: pod.key,
+    podName: pod.name,
+    agentName: resolved.agent.refId,
+    agentLabel: resolved.label,
+    charter: seat.charter,
+    podMission: pod.missionStatement,
+    podCulture: pod.cultureMd,
+    decisionRights: seat.decisionRights,
+    skills: seat.skills,
+    tools: seat.tools,
+    mcpServers: seat.mcpServers,
+    runtime: resolved.runtime,
+  }
+}
+
+// A single seat bound outside a playbook run (a seat session, plan 106.4): the
+// same binding and snapshot shape run-start resolution produces, so seat context
+// renders identically in both places. Throws when the seat is vacant or its
+// agent is unavailable.
+export function resolveSingleSeat(input: {
+  rig: RigGraph
+  address: string
+  agents: AgentDefinition[]
+  intentChain: string
+}): { snapshot: SeatBindingsSnapshot; seat: SeatBinding } {
+  const { rig } = input
+  for (const pod of rig.pods) {
+    for (const seat of rig.seats.filter((s) => s.podId === pod.id)) {
+      const resolved = resolveSeat(seat, pod, input.agents)
+      if (resolved.address !== input.address) continue
+      if (resolved.status !== "resolved" || !resolved.agent)
+        throw new SeatResolutionError([
+          `${resolved.address} is ${resolved.status === "vacant" ? "vacant" : "bound to an unavailable agent"}.`,
+        ])
+      const binding = toSeatBinding({ ...resolved, agent: resolved.agent }, pod)
+      return {
+        seat: binding,
+        snapshot: {
+          version: 1,
+          rigName: rig.rig.name,
+          rigCulture: rig.rig.cultureMd,
+          podKey: pod.key,
+          roles: { [seat.role]: [binding.address] },
+          seats: { [binding.address]: binding },
+          intentChain: input.intentChain,
+        },
+      }
+    }
+  }
+  throw new SeatResolutionError([`No seat ${input.address} in the rig.`])
+}
+
 export function resolveSeatBindings(input: {
   rig: RigGraph
   podKey: string | null | undefined
@@ -115,24 +177,12 @@ export function resolveSeatBindings(input: {
           )
           continue
         }
-        const seatPod = podById.get(seat.podId) ?? searchPod
-        candidates.push({
-          address: resolved.address,
-          role,
-          seatId: seat.id,
-          podKey: seatPod.key,
-          podName: seatPod.name,
-          agentName: resolved.agent.refId,
-          agentLabel: resolved.label,
-          charter: seat.charter,
-          podMission: seatPod.missionStatement,
-          podCulture: seatPod.cultureMd,
-          decisionRights: seat.decisionRights,
-          skills: seat.skills,
-          tools: seat.tools,
-          mcpServers: seat.mcpServers,
-          runtime: resolved.runtime,
-        })
+        candidates.push(
+          toSeatBinding(
+            { ...resolved, agent: resolved.agent },
+            podById.get(seat.podId) ?? searchPod
+          )
+        )
       }
       // The nearest pod that has a usable seat wins; overseers are only a
       // fallback when the pod itself cannot fill the role.

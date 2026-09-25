@@ -20,6 +20,7 @@ import type {
   FailureContext,
   PhaseGatePolicy,
   PhaseRouting,
+  PhaseContextScope,
   Provider,
   ProcessRuntimeConfig,
   ProcessRuntimeSelection,
@@ -101,6 +102,7 @@ export interface ProcessExportPhase {
   validatorAgent: PortableAgentDescriptor | { legacyName: string } | null
   subprocess: PortableSubprocessDescriptor | null
   proofStep?: boolean
+  contextScope?: PhaseContextScope
   runtimeConfig?: ProcessRuntimeConfig | null
   position: number
   agents: ProcessExportPhaseAgent[]
@@ -313,6 +315,7 @@ export function buildProcessExport(graph: ProcessGraph): ProcessExport {
             : null,
           subprocess: subprocess ? { name: subprocess.name } : null,
           proofStep: phase.proofStep ?? false,
+          contextScope: phase.contextScope ?? "step",
           runtimeConfig: phase.runtimeConfig ?? null,
           position: phase.position,
           agents: (agentsByPhaseId.get(phase.id) ?? []).sort(
@@ -418,6 +421,7 @@ export function importProcessExport(input: unknown): ProcessImportResult {
           : null,
         subprocessId,
         proofStep: phase.proofStep ?? false,
+        contextScope: phase.contextScope ?? "step",
         runtimeConfig: phase.runtimeConfig,
         position: phase.position,
       })
@@ -668,6 +672,10 @@ function validateProcessExport(input: unknown): ProcessExport {
         phase.proofStep === undefined
           ? false
           : booleanValue(phase.proofStep, `phases[${index}].proofStep`),
+      contextScope: contextScopeValue(
+        phase.contextScope ?? (phase as { contextMode?: unknown }).contextMode,
+        `phases[${index}].contextScope`
+      ),
       runtimeConfig: validateRuntimeConfig(
         phase.runtimeConfig,
         `phases[${index}].runtimeConfig`
@@ -843,6 +851,16 @@ function nonEmptyString(input: unknown, path: string): string {
 
 function booleanValue(input: unknown, path: string): boolean {
   if (typeof input !== "boolean") throw new Error(`${path} must be a boolean`)
+  return input
+}
+
+function contextScopeValue(input: unknown, path: string): PhaseContextScope {
+  if (input === undefined || input === null) return "step"
+  // Exports written before v51 used fresh / seat_session.
+  if (input === "fresh") return "step"
+  if (input === "seat_session") return "initiative"
+  if (input !== "step" && input !== "slice" && input !== "initiative")
+    throw new Error(`${path} must be "step", "slice", or "initiative"`)
   return input
 }
 
