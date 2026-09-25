@@ -25,6 +25,119 @@ async function git(cwd: string, args: string[], timeout = 30_000): Promise<strin
   return stdout.trim()
 }
 
+// The bounded git wrapper shared with Mission Control integration (plan 106.5):
+// no prompts, no pager, a timeout, and capped output. `env` adds variables
+// (e.g. a fallback committer identity) on top of the fixed ones.
+export async function runGit(
+  cwd: string,
+  args: string[],
+  options: { timeout?: number; env?: Record<string, string> } = {}
+): Promise<string> {
+  const { stdout } = await execFileAsync("git", args, {
+    cwd,
+    encoding: "utf8",
+    timeout: options.timeout ?? 30_000,
+    env: options.env ? { ...GIT_ENV, ...options.env } : GIT_ENV,
+    maxBuffer: 4 * 1024 * 1024,
+  })
+  return stdout.trim()
+}
+
+// True when the git command exits 0 (e.g. `merge-base --is-ancestor`).
+export async function gitSucceeds(cwd: string, args: string[]): Promise<boolean> {
+  return runGit(cwd, args, { timeout: 15_000 }).then(
+    () => true,
+    () => false
+  )
+}
+
+// The operation a checkout is in the middle of, if any. Per worktree: each
+// linked worktree has its own MERGE_HEAD.
+export async function inProgressOperation(
+  checkout: string
+): Promise<string | null> {
+  for (const name of ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REBASE_HEAD"]) {
+    if (await gitSucceeds(checkout, ["rev-parse", "-q", "--verify", name]))
+      return name
+  }
+  return null
+}
+
+// ── named worktrees (N concurrent writers per repository) ──────────────────
+
+export interface WorktreeEntry {
+  path: string
+  head: string | null
+  // Full ref (refs/heads/…) or null when detached.
+  branch: string | null
+}
+
+export async function listWorktrees(root: string): Promise<WorktreeEntry[]> {
+  const text = await runGit(root, ["worktree", "list", "--porcelain"])
+  const entries: WorktreeEntry[] = []
+  let current: WorktreeEntry | null = null
+  for (const line of text.split("\n")) {
+    if (line.startsWith("worktree ")) {
+      current = { path: line.slice(9), head: null, branch: null }
+      entries.push(current)
+    } else if (current && line.startsWith("HEAD ")) current.head = line.slice(5)
+    else if (current && line.startsWith("branch ")) current.branch = line.slice(7)
+  }
+  return entries
+}
+
+// Where a local branch is checked out, if anywhere.
+export async function branchCheckout(
+  root: string,
+  branch: string
+): Promise<string | null> {
+  const ref = `refs/heads/${branch}`
+  return (await listWorktrees(root)).find((e) => e.branch === ref)?.path ?? null
+}
+
+// Add a worktree at `directory`: on a new branch created at `startPoint`, or
+// detached at `startPoint`. The directory must not exist yet.
+export async function addWorktree(input: {
+  root: string
+  directory: string
+  startPoint: string
+  newBranch?: string
+}): Promise<void> {
+  await rm(input.directory, { recursive: true, force: true })
+  await runGit(
+    input.root,
+    input.newBranch
+      ? ["worktree", "add", "-b", input.newBranch, input.directory, input.startPoint]
+      : ["worktree", "add", "--detach", input.directory, input.startPoint],
+    { timeout: 120_000 }
+  )
+}
+
+// Remove a worktree and its directory. Never touches branches.
+export async function removeWorktree(root: string, directory: string): Promise<void> {
+  await runGit(root, ["worktree", "remove", "--force", directory]).catch(() => {})
+  await rm(directory, { recursive: true, force: true }).catch(() => {})
+  await runGit(root, ["worktree", "prune"]).catch(() => {})
+}
+
+// Mission Control only creates and deletes branches in its own namespace.
+export const MISSION_CONTROL_BRANCH_PREFIX = "mc/"
+
+export function isMissionControlBranch(branch: string): boolean {
+  return branch.startsWith(MISSION_CONTROL_BRANCH_PREFIX) && !branch.includes("..")
+}
+
+export async function deleteMissionControlBranch(
+  root: string,
+  branch: string
+): Promise<boolean> {
+  if (!isMissionControlBranch(branch)) return false
+  return runGit(root, ["branch", "-D", branch]).then(
+    () => true,
+    () => false
+  )
+}
+
 export interface WriterWorktree {
   path: string
   branch: string
@@ -48,14 +161,8 @@ export async function preflightWriterRepository(workspace: string): Promise<{
   const baseOid = await git(root, ["rev-parse", "HEAD"])
   const status = await git(root, ["status", "--porcelain=v2", "--untracked-files=all"])
   if (status) throw new Error("writer preflight requires a clean repository")
-  for (const name of ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REBASE_HEAD"]) {
-    try {
-      await git(root, ["rev-parse", "--verify", name])
-      throw new Error(`writer preflight blocked by ${name}`)
-    } catch (error) {
-      if (error instanceof Error && error.message.includes("blocked by")) throw error
-    }
-  }
+  const operation = await inProgressOperation(root)
+  if (operation) throw new Error(`writer preflight blocked by ${operation}`)
   return { root, baseOid, status }
 }
 

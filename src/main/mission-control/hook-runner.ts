@@ -6,7 +6,12 @@ import {
   playbookFor,
   type SliceRunner,
 } from "./slice-runner"
-import { renderHookObjective, renderIntentChain } from "./slice-objective"
+import {
+  renderConflictObjective,
+  renderHookObjective,
+  renderIntentChain,
+} from "./slice-objective"
+import type { ResolutionLaunchInput } from "./integration"
 
 // Mission and initiative hooks (plan 106.3, decision 4). Each hook is its own
 // small Process run whose objective is composed from its container. They are
@@ -26,6 +31,10 @@ export async function startHookRun(
   const missions = initiatives.listMissions(initiative.id)
   const slices = missions.flatMap((m) => initiatives.listSlices(m.id))
 
+  if (input.hook === "after_each_slice")
+    throw new Error(
+      "The after each slice hook runs by itself when a slice's merge conflicts; it can't be started by hand."
+    )
   const missionHook = PLAYBOOK_HOOKS.mission.includes(input.hook)
   if (!missionHook && !PLAYBOOK_HOOKS.initiative.includes(input.hook))
     throw new Error(`'${input.hook}' is not a mission or initiative hook.`)
@@ -67,5 +76,48 @@ export async function startHookRun(
     title: mission
       ? `Mission ${mission.key}: ${label}`
       : `Initiative ${initiative.key}: ${label}`,
+  })
+}
+
+// A slice's merge conflicted (plan 106.5, decision 6): run the mission
+// playbook's after_each_slice hook in the prepared resolution worktree. The
+// integrator role falls back to the lead; the hook's proof step re-verifies
+// the slice's own acceptance criteria before anything is committed. Throws
+// when there is nothing to run, and the integration service escalates.
+export async function startConflictResolution(
+  runner: SliceRunner,
+  input: ResolutionLaunchInput
+): Promise<PlaybookRun> {
+  const { initiative, mission, slice } = input
+  if (initiative.status !== "active")
+    throw new Error("The initiative isn't active, so no seat can resolve the conflict.")
+  const playbook = playbookFor("mission", mission.playbookId)
+  if (!playbook.hooks.some((hook) => hook.hook === "after_each_slice"))
+    throw new Error(
+      `The "${playbook.name}" mission playbook has no after each slice hook to resolve conflicts. Add one in Playbooks, or resolve the conflict yourself.`
+    )
+  return runner.launch({
+    initiative,
+    missionId: mission.id,
+    slice,
+    playbook,
+    hook: "after_each_slice",
+    podKey: slice.podKey ?? initiative.defaultPodKey,
+    objective: renderConflictObjective({
+      initiative,
+      mission,
+      slice,
+      integrationBranch: mission.integrationBranch ?? "",
+      sliceBranch: slice.branch ?? "",
+      files: input.files,
+    }),
+    intentChain: renderIntentChain({ initiative, mission, slice }),
+    title: `Slice ${slice.key}: resolve merge conflict`,
+    roleFallbacks: { integrator: "lead" },
+    isolated: {
+      workspacePath: input.workspacePath,
+      worktreePath: input.worktreePath,
+    },
+    onLaunch: (run) => input.onLaunch(run),
   })
 }

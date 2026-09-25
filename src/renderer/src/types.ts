@@ -193,6 +193,10 @@ export type {
   SliceProof,
   ProofCriterionStatus,
   MissionControlRunLink,
+  MergePolicyMode,
+  MergeQueueEntry,
+  MergeQueueStatus,
+  MissionLanding,
   PhaseContextScope,
   SeatSession,
   SeatSessionStatus,
@@ -202,6 +206,10 @@ export type {
   SeatMessageKind,
   SeatMessageStatus,
   SeatOverview,
+  MissionIntegrationStatus,
+  PolicyOption,
+  SliceWorkspaceInfo,
+  LandingSummary,
 } from "../../preload/index"
 
 // Live dashboard types (plan 033), surfaced for the Dashboards screen.

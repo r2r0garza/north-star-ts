@@ -5,7 +5,9 @@ import { getDb } from "../connection"
 import type {
   Initiative,
   InitiativeGraph,
+  MergePolicyMode,
   Mission,
+  MissionLanding,
   RigGraph,
   SliceEdge,
   SliceSpec,
@@ -14,6 +16,7 @@ import type {
 } from "../types"
 import { getRigGraph } from "./rigs"
 import {
+  missionStatusPath,
   sliceStatusPath,
   transitionMissionStatus,
 } from "../../mission-control/work-state"
@@ -49,6 +52,10 @@ interface MissionRow {
   playbook_id: string | null
   merge_policy: string
   integration_branch: string | null
+  base_ref: string | null
+  base_oid: string | null
+  repo_root: string | null
+  landing: string | null
   status: Mission["status"]
   position: number
   started_at: number | null
@@ -66,6 +73,8 @@ interface SliceRow {
   status: WorkSlice["status"]
   process_run_id: string | null
   branch: string | null
+  worktree_path: string | null
+  base_oid: string | null
   attempts: number
   origin: WorkSlice["origin"]
   position: number
@@ -174,6 +183,19 @@ function toInitiative(row: InitiativeRow): Initiative {
     finishedAt: row.finished_at,
   }
 }
+const MERGE_POLICY_MODES: readonly MergePolicyMode[] = [
+  "manual",
+  "local_merge",
+  "open_pr",
+]
+function mergePolicy(value: string): Mission["mergePolicy"] {
+  const mode = parse<{ mode?: string }>(value, {}).mode
+  return {
+    mode: MERGE_POLICY_MODES.includes(mode as MergePolicyMode)
+      ? (mode as MergePolicyMode)
+      : "manual",
+  }
+}
 function toMission(row: MissionRow): Mission {
   return {
     id: row.id,
@@ -183,8 +205,12 @@ function toMission(row: MissionRow): Mission {
     outcome: row.outcome,
     definitionOfDone: row.definition_of_done,
     playbookId: row.playbook_id,
-    mergePolicy: parse(row.merge_policy, { mode: "manual" }),
+    mergePolicy: mergePolicy(row.merge_policy),
     integrationBranch: row.integration_branch,
+    baseRef: row.base_ref,
+    baseOid: row.base_oid,
+    repoRoot: row.repo_root,
+    landing: parse<MissionLanding | null>(row.landing, null),
     status: row.status,
     position: row.position,
     startedAt: row.started_at,
@@ -204,6 +230,8 @@ function toSlice(row: SliceRow): WorkSlice {
     status: row.status,
     processRunId: row.process_run_id,
     branch: row.branch,
+    worktreePath: row.worktree_path,
+    baseOid: row.base_oid,
     attempts: row.attempts,
     origin: row.origin,
     position: row.position,
@@ -848,6 +876,9 @@ export function setSliceExecution(
   patch: {
     status?: WorkSlice["status"]
     processRunId?: string | null
+    branch?: string | null
+    worktreePath?: string | null
+    baseOid?: string | null
     attempts?: number
     proof?: unknown | null
     startedAt?: number | null
@@ -874,6 +905,9 @@ export function setSliceExecution(
   if (patch.status !== undefined) add("status", patch.status)
   if (patch.processRunId !== undefined)
     add("process_run_id", patch.processRunId)
+  if (patch.branch !== undefined) add("branch", patch.branch)
+  if (patch.worktreePath !== undefined) add("worktree_path", patch.worktreePath)
+  if (patch.baseOid !== undefined) add("base_oid", patch.baseOid)
   if (patch.attempts !== undefined) add("attempts", patch.attempts)
   if (patch.proof !== undefined)
     add("proof", patch.proof === null ? null : JSON.stringify(patch.proof))
@@ -917,4 +951,102 @@ export function setMissionExecutionStatus(
   audit(before.initiativeId, "mission", id, "execute", before, after, actor, reason)
   touch(before.initiativeId)
   return after
+}
+
+// ── mission integration (plan 106.5) ────────────────────────────────────────
+
+// The merge policy is chosen before the mission starts. Once it has an
+// integration branch the only change allowed is back to manual, so an approval
+// the user expects can never be skipped by a policy switch mid-mission.
+export function setMissionMergePolicy(
+  id: string,
+  mode: MergePolicyMode,
+  actor = "user"
+): InitiativeGraph {
+  const before = getMission(id)
+  if (!before) throw new Error(`Mission not found: ${id}`)
+  if (!MERGE_POLICY_MODES.includes(mode))
+    throw new Error(`Unknown merge policy: ${mode}`)
+  if (before.mergePolicy.mode === mode) return getInitiativeGraph(before.initiativeId)!
+  if (["completed", "cancelled"].includes(before.status))
+    throw new Error("A finished mission's merge policy can't change.")
+  if ((before.integrationBranch || before.status !== "planned") && mode !== "manual")
+    throw new Error(
+      "The merge policy is locked once the mission starts. It can only change to manual."
+    )
+  getDb()
+    .prepare("UPDATE missions SET merge_policy = ? WHERE id = ?")
+    .run(JSON.stringify({ mode }), id)
+  audit(
+    before.initiativeId,
+    "mission",
+    id,
+    "merge_policy",
+    before.mergePolicy,
+    { mode },
+    actor,
+    `Merge policy set to ${mode.replace(/_/g, " ")}`
+  )
+  touch(before.initiativeId)
+  return getInitiativeGraph(before.initiativeId)!
+}
+
+// Record the integration branch a mission's slices merge into (execution-owned).
+export function setMissionIntegration(
+  id: string,
+  input: {
+    integrationBranch: string
+    baseRef: string
+    baseOid: string
+    repoRoot: string
+  },
+  actor = "mission-control"
+): Mission {
+  const before = getMission(id)
+  if (!before) throw new Error(`Mission not found: ${id}`)
+  getDb()
+    .prepare(
+      "UPDATE missions SET integration_branch = ?, base_ref = ?, base_oid = ?, repo_root = ? WHERE id = ?"
+    )
+    .run(input.integrationBranch, input.baseRef, input.baseOid, input.repoRoot, id)
+  const after = getMission(id)!
+  audit(
+    before.initiativeId,
+    "mission",
+    id,
+    "integration",
+    null,
+    input,
+    actor,
+    `Integration branch ${input.integrationBranch} created from ${input.baseRef}`
+  )
+  touch(before.initiativeId)
+  return after
+}
+
+export function setMissionLanding(id: string, landing: MissionLanding): Mission {
+  const before = getMission(id)
+  if (!before) throw new Error(`Mission not found: ${id}`)
+  getDb()
+    .prepare("UPDATE missions SET landing = ? WHERE id = ?")
+    .run(JSON.stringify(landing), id)
+  return getMission(id)!
+}
+
+// Walk a mission to a status one legal hop at a time (execution-owned).
+export function advanceMissionStatus(
+  id: string,
+  target: Mission["status"],
+  reason: string,
+  actor = "mission-control"
+): Mission {
+  const mission = getMission(id)
+  if (!mission) throw new Error(`Mission not found: ${id}`)
+  const path = missionStatusPath(mission.status, target)
+  if (!path)
+    throw new Error(`Invalid status transition: ${mission.status} → ${target}`)
+  let current = mission
+  for (const status of path)
+    current = setMissionExecutionStatus(id, status, reason, actor)
+  return current
 }

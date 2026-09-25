@@ -63,11 +63,24 @@ export function upsertWorkspace(path: string, name?: string): Workspace {
   return getWorkspace(id)!
 }
 
+// Hidden workspaces (Mission Control slice worktrees, plan 106.5) back runs
+// but stay out of the user's workspace lists.
 export function listWorkspaces(): Workspace[] {
   const rows = getDb()
-    .prepare("SELECT * FROM workspaces ORDER BY updated_at DESC")
+    .prepare(
+      "SELECT * FROM workspaces WHERE hidden = 0 ORDER BY updated_at DESC"
+    )
     .all() as WorkspaceRow[]
   return rows.map(toWorkspace)
+}
+
+// Register an app-managed folder as a hidden workspace.
+export function upsertHiddenWorkspace(path: string, name?: string): Workspace {
+  const workspace = upsertWorkspace(path, name)
+  getDb()
+    .prepare("UPDATE workspaces SET hidden = 1 WHERE id = ?")
+    .run(workspace.id)
+  return workspace
 }
 
 export function updateWorkspace(

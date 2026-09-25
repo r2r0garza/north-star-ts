@@ -118,6 +118,10 @@ export function deriveWaves<T extends WaveNode>(
   return { waves, levels, criticalPath }
 }
 
+// Ready slices whose predecessors are all done. With an integration branch
+// (plan 106.5) a slice is done only once its merge landed, so "done" here
+// already means "merged": a dependent slice starts from a head that contains
+// its predecessors' code.
 export function readySet<T extends WaveNode>(
   nodes: T[],
   edges: WaveEdge[]
@@ -131,4 +135,31 @@ export function readySet<T extends WaveNode>(
         (id) => byId.get(id)?.status === "done"
       )
   )
+}
+
+// ── touch hints (plan 106.5, decision 7) ────────────────────────────────────
+
+// The literal directory (or file) a touch hint is anchored at: everything
+// before its first glob character, cut back to a path boundary. "" means the
+// hint can match anywhere in the repository.
+export function touchHintRoot(hint: string): string {
+  let root = hint.trim().replace(/^\.?\/+/, "")
+  const glob = root.search(/[*?[{]/)
+  if (glob >= 0) root = root.slice(0, root.lastIndexOf("/", glob) + 1)
+  return root
+}
+
+// Whether two slices' touch hints may name the same files. Conservative: two
+// hints overlap when one's anchor contains the other's. Slices without hints
+// declare nothing, so they never overlap.
+export function touchHintsOverlap(a: string[], b: string[]): boolean {
+  const within = (path: string, dir: string) =>
+    path === dir ||
+    path.startsWith(dir.endsWith("/") ? dir : `${dir}/`)
+  for (const left of a.map(touchHintRoot))
+    for (const right of b.map(touchHintRoot)) {
+      if (left === "" || right === "") return true
+      if (within(left, right) || within(right, left)) return true
+    }
+  return false
 }

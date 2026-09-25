@@ -16,10 +16,13 @@ import type {
   WorkSlice,
 } from "@/types"
 import { isSliceProof, ProofPanel } from "./proof-panel"
+import { SliceWorktreePanel } from "./slice-worktree-panel"
 
 // Slice execution (plan 106.3): Run / Retry / Cancel, the live embedded Process
-// run monitor, and the recorded proof. v1 runs one playbook at a time per
-// workspace, and the controls explain why they are unavailable.
+// run monitor, and the recorded proof. In a git workspace each attempt builds
+// in its own worktree and slices run in parallel (106.5); otherwise one
+// playbook runs at a time per workspace. The controls explain why they are
+// unavailable.
 
 const DEFAULT_MAX_ATTEMPTS = 3
 
@@ -51,14 +54,28 @@ export function SliceRunPanel({
   const [definition, setDefinition] = useState<ProcessDefinition | null>(null)
   const [providers, setProviders] = useState<AccountWithModels[]>([])
   const [pending, setPending] = useState(false)
+  const [isolated, setIsolated] = useState(false)
+  // A refused start because another building slice's touch hints overlap.
+  const [overlap, setOverlap] = useState<string | null>(null)
 
   const load = useCallback(async () => {
-    const [sliceRuns, active] = await Promise.all([
+    const [sliceRuns, active, integration] = await Promise.all([
       window.cowork.missionControl.playbookRuns.list({ sliceId: slice.id }),
       window.cowork.missionControl.playbookRuns.list({ status: "running" }),
+      window.cowork.missionControl.integration
+        .status(slice.missionId)
+        .catch(() => null),
     ])
     setRuns(sliceRuns)
-    setBusyRun(active.find((run) => run.sliceId !== slice.id) ?? null)
+    const git = integration?.workspace.mode === "git"
+    setIsolated(git)
+    // Only runs in the workspace itself occupy it; slices in a git workspace
+    // build in their own worktrees.
+    setBusyRun(
+      git
+        ? null
+        : (active.find((run) => run.sliceId !== slice.id && !run.worktreePath) ?? null)
+    )
     const runId = slice.processRunId ?? sliceRuns[0]?.processRunId ?? null
     const run = runId ? await window.cowork.db.processes.runs.get(runId) : null
     setProcessRun(run ?? null)
@@ -66,7 +83,7 @@ export function SliceRunPanel({
       const processGraph = await window.cowork.db.processes.get(run.processId)
       setDefinition(processGraph?.definition ?? null)
     } else setDefinition(null)
-  }, [slice.id, slice.processRunId])
+  }, [slice.id, slice.missionId, slice.processRunId])
 
   useEffect(() => {
     void load()
@@ -106,9 +123,9 @@ export function SliceRunPanel({
       : !graph.initiative.workspaceId
         ? "Choose a workspace for this initiative first."
         : busyRun
-          ? `Another playbook run is using this workspace (${busyRun.sliceId ? `slice ${graph.slices.find((s) => s.id === busyRun.sliceId)?.key ?? ""}` : `the ${busyRun.hook.replace(/_/g, " ")} hook`}). One run at a time until worktrees arrive.`
+          ? `Another playbook run is using this workspace (${busyRun.sliceId ? `slice ${graph.slices.find((s) => s.id === busyRun.sliceId)?.key ?? ""}` : `the ${busyRun.hook.replace(/_/g, " ")} hook`}). Slices run in parallel only in a git workspace.`
           : blockers.length
-            ? `Waiting on unfinished slices: ${blockers.map((b) => b.key).join(", ")}.`
+            ? `Waiting on ${isolated ? "unmerged" : "unfinished"} slices: ${blockers.map((b) => b.key).join(", ")}.`
             : slice.attempts >= cap
               ? `All ${cap} attempts are used.`
               : !slice.spec.acceptance.length
@@ -119,14 +136,26 @@ export function SliceRunPanel({
     setPending(true)
     try {
       await action()
+      setOverlap(null)
       toast.success(success)
       await Promise.all([onRefresh(), load()])
     } catch (error) {
-      toast.error(errorMessage(error))
+      const message = errorMessage(error)
+      if (message.startsWith("touch_overlap:"))
+        setOverlap(message.replace(/^touch_overlap:\s*/, ""))
+      else toast.error(message)
     } finally {
       setPending(false)
     }
   }
+  const run = (allowTouchOverlap = false) =>
+    act(
+      () =>
+        window.cowork.missionControl.execution.runSlice(slice.id, {
+          allowTouchOverlap,
+        }),
+      slice.status === "failed" ? "Retry started" : "Slice run started"
+    )
 
   const proof = isSliceProof(slice.proof) ? slice.proof : latest?.proof ?? null
 
@@ -159,12 +188,7 @@ export function SliceRunPanel({
                 size="sm"
                 disabled={pending || disabledReason !== null}
                 title={disabledReason ?? undefined}
-                onClick={() =>
-                  void act(
-                    () => window.cowork.missionControl.execution.runSlice(slice.id),
-                    slice.status === "failed" ? "Retry started" : "Slice run started"
-                  )
-                }
+                onClick={() => void run()}
               >
                 {pending ? (
                   <Loader2 className="size-3.5 animate-spin" />
@@ -182,6 +206,21 @@ export function SliceRunPanel({
       {!running && canStart && disabledReason && (
         <p className="text-xs text-muted-foreground">{disabledReason}</p>
       )}
+      {overlap && !running && canStart && (
+        <div className="flex flex-wrap items-center gap-2 rounded-md border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-xs">
+          <span className="flex-1">{overlap}</span>
+          <Button size="sm" variant="outline" disabled={pending} onClick={() => void run(true)}>
+            Run anyway
+          </Button>
+        </div>
+      )}
+      {slice.status === "integrating" && (
+        <p className="text-xs text-muted-foreground">
+          Proof accepted. The slice is in the mission's merge queue and is done once
+          it merges into the integration branch.
+        </p>
+      )}
+      <SliceWorktreePanel slice={slice} />
       {latest && latest.status !== "running" && latest.outcomeReason && (
         <p
           className={`text-xs ${latest.status === "completed" ? "text-muted-foreground" : "text-destructive"}`}

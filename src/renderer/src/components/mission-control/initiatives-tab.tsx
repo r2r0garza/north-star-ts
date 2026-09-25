@@ -37,6 +37,7 @@ import { SliceRunPanel } from "./slice-run-panel"
 import { HookControls } from "./hook-controls"
 import { PlaybookPicker } from "./playbook-picker"
 import { AnchoredComms, CommsTab } from "./comms-tab"
+import { MissionIntegrationPanel } from "./mission-integration-panel"
 import type {
   Initiative,
   InitiativeGraph,
@@ -390,12 +391,14 @@ function MissionView({
   onGraph,
   onOpenSlice,
   onDeleted,
+  onRefresh,
 }: {
   graph: InitiativeGraph
   mission: Mission
   onGraph: (graph: InitiativeGraph) => void
   onOpenSlice: (id: string) => void
   onDeleted: (graph: InitiativeGraph) => void
+  onRefresh: () => Promise<void>
 }) {
   const slices = graph.slices.filter((slice) => slice.missionId === mission.id)
   const edges = graph.edges.filter((edge) => edge.missionId === mission.id)
@@ -474,11 +477,18 @@ function MissionView({
             missionId: mission.id,
             disabledReason:
               notActive ??
-              (slices.length && slices.every((s) => s.status === "done")
+              (slices.some((s) => s.status === "done") &&
+              slices.every((s) => s.status === "done" || s.status === "cancelled")
                 ? null
                 : "Every slice must be done before the mission review."),
           },
         ]}
+      />
+      <MissionIntegrationPanel
+        graph={graph}
+        mission={mission}
+        onGraph={onGraph}
+        onRefresh={onRefresh}
       />
       <AnchoredComms
         graph={graph}
@@ -1206,6 +1216,14 @@ export function InitiativesTab({
       await window.cowork.missionControl.initiatives.get(initiativeId)
     if (next) onGraphChange(next)
   }, [initiativeId, onGraphChange])
+  // Merges land in the background (plan 106.5): keep slice and mission
+  // statuses current while the initiative is open.
+  useEffect(() => {
+    if (!initiativeId) return
+    return window.cowork.missionControl.integration.onChanged((changed) => {
+      if (changed === initiativeId) void refreshGraph()
+    })
+  }, [initiativeId, refreshGraph])
   const mission = graph?.missions.find((item) => item.id === missionId) ?? null
   const slice = graph?.slices.find((item) => item.id === sliceId) ?? null
   if (graph && slice)
@@ -1241,6 +1259,7 @@ export function InitiativesTab({
           applyGraph(next)
           onMissionChange(null)
         }}
+        onRefresh={refreshGraph}
       />
     )
   if (graph)
@@ -1321,7 +1340,14 @@ export function InitiativesTab({
                         return
                       void window.cowork.missionControl.initiatives
                         .delete(item.id)
-                        .then(reload)
+                        .then((result) => {
+                          // Unmerged integration work is never deleted silently.
+                          if (result?.keptBranches.length)
+                            toast.info(
+                              `Kept ${result.keptBranches.join(", ")}: it has merged work that never reached its base branch. Delete it yourself when you no longer need it.`
+                            )
+                          return reload()
+                        })
                         .catch((error) => toast.error(errorMessage(error)))
                     }}
                   >

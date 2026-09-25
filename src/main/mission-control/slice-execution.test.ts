@@ -636,7 +636,7 @@ describe.skipIf(!sqliteLoads)("slice execution", () => {
         missionId: mission.id,
         hook: "after_each_slice",
       })
-    ).rejects.toThrow(/hook is empty/)
+    ).rejects.toThrow(/runs by itself when a slice's merge conflicts/)
   })
 
   describe("context scopes", () => {

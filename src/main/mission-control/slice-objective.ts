@@ -47,10 +47,28 @@ export function renderIntentChain(input: {
   return lines.join("\n")
 }
 
+// Where an isolated slice builds (plan 106.5): its own worktree and branch.
+export interface SliceWorkspaceNote {
+  branch: string
+  integrationBranch: string
+}
+
+function renderWorkspaceNote(note: SliceWorkspaceNote): string[] {
+  return [
+    "",
+    "## Your workspace",
+    `You are working in an isolated git worktree on branch \`${note.branch}\`, created from the mission's integration branch \`${note.integrationBranch}\`. ` +
+      "Other slices build in their own worktrees at the same time, so stay inside this slice's scope. " +
+      "Committing is optional: when the proof is accepted, Mission Control commits anything left uncommitted and merges this branch through the mission's merge queue. " +
+      "Do not switch branches, rebase, merge other branches, or push.",
+  ]
+}
+
 export function renderSliceObjective(input: {
   initiative: Initiative
   mission: Mission
   slice: WorkSlice
+  workspace?: SliceWorkspaceNote | null
 }): string {
   const { initiative, mission, slice } = input
   const criteria = sliceCriteria(slice)
@@ -72,6 +90,7 @@ export function renderSliceObjective(input: {
     "## Touch hints",
     list(slice.spec.touchHints),
     ...(slice.spec.notes.trim() ? ["", "## Notes", slice.spec.notes.trim()] : []),
+    ...(input.workspace ? renderWorkspaceNote(input.workspace) : []),
     "",
     "## Why this slice exists",
     renderIntentChain({ initiative, mission, slice }),
@@ -132,4 +151,50 @@ export function renderHookObjective(input: {
       "Recommend plan changes as proposals in that message; do not edit the initiative's plan or the workspace yourself."
   )
   return lines.join("\n")
+}
+
+// The objective for the mission's after_each_slice hook when a slice's merge
+// conflicts (plan 106.5, decision 6). The worktree already holds the merge in
+// progress; the integrator resolves it and the proof step re-verifies the
+// slice against its original acceptance criteria before anything commits.
+export function renderConflictObjective(input: {
+  initiative: Initiative
+  mission: Mission
+  slice: WorkSlice
+  integrationBranch: string
+  sliceBranch: string
+  files: string[]
+}): string {
+  const { initiative, mission, slice } = input
+  const criteria = sliceCriteria(slice)
+  return [
+    `<!-- mission-control conflict objective v${SLICE_OBJECTIVE_VERSION} -->`,
+    `# Resolve the merge of slice ${slice.key}: ${slice.title}`,
+    "",
+    `Merging \`${input.sliceBranch}\` into the mission's integration branch \`${input.integrationBranch}\` conflicted. ` +
+      "This worktree is at the integration head with that merge in progress and the conflict markers in place.",
+    "",
+    "## Conflicted files",
+    list(input.files),
+    "",
+    "## What to do",
+    "- Resolve every conflict so both sides keep their intent: the work already on the integration branch (other slices) and this slice's goal.",
+    "- Remove every conflict marker. Run the project's checks if it has them.",
+    "- Do not commit, abort the merge, switch branches, rebase, or push. Mission Control commits the merge after the proof is accepted.",
+    "- The proof step then re-verifies this slice against its acceptance criteria on the merged result.",
+    "",
+    "## Slice goal",
+    slice.spec.goal.trim() || slice.title,
+    "",
+    "## Acceptance criteria",
+    criteria.length
+      ? criteria.map((c) => `- **${c.id}**: ${c.text}`).join("\n")
+      : "(none)",
+    "",
+    "## Out of scope",
+    list(slice.spec.outOfScope),
+    "",
+    "## Why this slice exists",
+    renderIntentChain({ initiative, mission, slice }),
+  ].join("\n")
 }

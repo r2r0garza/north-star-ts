@@ -23,7 +23,9 @@ import * as seatCommsRepo from "../db/repositories/seat-comms"
 import * as seatSessionsRepo from "../db/repositories/seat-sessions"
 import { deleteConversationsWithArtifacts } from "../conversations/lifecycle"
 import { startHookRun } from "../mission-control/hook-runner"
+import type { MissionIntegration } from "../mission-control/integration"
 import type {
+  MergePolicyMode,
   PlaybookAltitude,
   PlaybookHookName,
   PlaybookRunStatus,
@@ -36,8 +38,57 @@ async function agents(workspace?: string) {
 export function registerMissionControlHandlers(
   sliceRunner: SliceRunner,
   seatComms: SeatComms,
-  seatSessions: SeatSessionService
+  seatSessions: SeatSessionService,
+  integration: MissionIntegration,
+  // Open a folder in the user's IDE (settings), for slice worktrees.
+  openFolder: (folder: string) => Promise<string>
 ): void {
+  // Mission integration (plan 106.5). Landing is the one call that may change
+  // the user's branch, and only with the base/head the user reviewed.
+  ipcMain.handle("missionControl:integration:status", (_event, missionId: string) =>
+    integration.status(missionId)
+  )
+  ipcMain.handle(
+    "missionControl:integration:setPolicy",
+    (_event, missionId: string, mode: MergePolicyMode) =>
+      initiatives.setMissionMergePolicy(missionId, mode)
+  )
+  ipcMain.handle(
+    "missionControl:integration:land",
+    (_event, missionId: string, approval: { baseOid: string; headOid: string }) => {
+      if (typeof approval?.baseOid !== "string" || typeof approval?.headOid !== "string")
+        throw new Error("Review the merge before approving it.")
+      return integration.land(missionId, approval)
+    }
+  )
+  ipcMain.handle("missionControl:integration:markMerged", (_event, missionId: string) =>
+    integration.markMerged(missionId)
+  )
+  ipcMain.handle("missionControl:integration:retry", (_event, entryId: string) =>
+    integration.retry(entryId)
+  )
+  ipcMain.handle("missionControl:integration:resolve", (_event, entryId: string) =>
+    integration.resolve(entryId)
+  )
+  ipcMain.handle("missionControl:integration:abandon", (_event, entryId: string) =>
+    integration.abandon(entryId)
+  )
+  ipcMain.handle("missionControl:integration:sliceInfo", (_event, sliceId: string) =>
+    integration.info(sliceId)
+  )
+  ipcMain.handle("missionControl:integration:sliceDiff", (_event, sliceId: string) =>
+    integration.sliceDiff(sliceId)
+  )
+  ipcMain.handle(
+    "missionControl:integration:openWorktree",
+    async (_event, sliceId: string) => {
+      const info = integration.info(sliceId)
+      if (!info.exists || !info.workspacePath)
+        return "This slice has no worktree right now."
+      return openFolder(info.workspacePath)
+    }
+  )
+
   // Comms and seat sessions (plan 106.4). Agent threads are read-only here: the
   // user's only write is an explicit Steer, sent from user@rig.
   ipcMain.handle("missionControl:comms:list", (_event, initiativeId: string) => ({
@@ -115,8 +166,12 @@ export function registerMissionControlHandlers(
     "missionControl:playbookRuns:cancel",
     (_event, id: string) => sliceRunner.cancelPlaybookRun(id)
   )
-  ipcMain.handle("missionControl:slices:run", (_event, sliceId: string) =>
-    sliceRunner.startSlice(sliceId)
+  ipcMain.handle(
+    "missionControl:slices:run",
+    (_event, sliceId: string, options?: { allowTouchOverlap?: boolean }) =>
+      sliceRunner.startSlice(sliceId, {
+        allowTouchOverlap: options?.allowTouchOverlap === true,
+      })
   )
   ipcMain.handle("missionControl:slices:cancel", (_event, sliceId: string) =>
     sliceRunner.cancelSlice(sliceId)
@@ -153,9 +208,14 @@ export function registerMissionControlHandlers(
       .listSeatSessions({ initiativeId: id })
       .map((session) => session.conversationId)
       .filter((cid): cid is string => !!cid)
+    if (playbooks.listPlaybookRuns({ initiativeId: id, status: "running" }).length)
+      throw new Error("A playbook run is in progress here. Cancel it first.")
+    // Worktrees and mc/ branches go first, while the rows naming them exist.
+    const { keptBranches } = await integration.cleanupInitiative(id)
     initiatives.deleteInitiative(id)
     seatSessions.cancelInitiative(id)
     await deleteConversationsWithArtifacts(conversations)
+    return { keptBranches }
   })
   ipcMain.handle("missionControl:initiatives:start", (_event, id: string) =>
     initiatives.startInitiative(id)
@@ -193,8 +253,14 @@ export function registerMissionControlHandlers(
   )
   ipcMain.handle(
     "missionControl:slices:delete",
-    (_event, id: string, actor?: string, reason?: string) =>
-      initiatives.deleteSlice(id, actor, reason)
+    (_event, id: string, actor?: string, reason?: string) => {
+      const missionId = initiatives.getSlice(id)?.missionId
+      const graph = initiatives.deleteSlice(id, actor, reason)
+      if (!missionId) return graph
+      // Removing the last unfinished slice can complete the mission's work.
+      integration.advanceMission(missionId)
+      return initiatives.getInitiativeGraph(graph.initiative.id) ?? graph
+    }
   )
   ipcMain.handle(
     "missionControl:sliceEdges:set",

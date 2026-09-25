@@ -732,10 +732,71 @@ export interface Mission {
   outcome: string
   definitionOfDone: string
   playbookId: string | null
-  mergePolicy: { mode: string }
+  mergePolicy: MissionMergePolicy
   integrationBranch: string | null
+  // Integration (plan 106.5): the user's branch and commit at mission start,
+  // and the repository the integration branch lives in.
+  baseRef: string | null
+  baseOid: string | null
+  repoRoot: string | null
+  landing: MissionLanding | null
   status: MissionStatus
   position: number
+  startedAt: number | null
+  finishedAt: number | null
+}
+
+export type MergePolicyMode = "manual" | "local_merge" | "open_pr"
+
+export interface MissionMergePolicy {
+  mode: MergePolicyMode
+}
+
+// How a mission's integration branch reached the base branch (plan 106.5).
+export interface MissionLanding {
+  mode: MergePolicyMode
+  // "user" = an explicit approval or "mark merged"; "detected" = Mission
+  // Control saw the integration head become reachable from the base branch.
+  completedBy: "user" | "detected"
+  at: number
+  base: string
+  baseOid: string | null
+  head: string
+  mergeCommit?: string
+  fastForward?: boolean
+  prUrl?: string
+}
+
+export type MergeQueueStatus =
+  | "queued"
+  | "merging"
+  | "merged"
+  | "conflict"
+  | "resolving"
+  | "cancelled"
+
+export interface MergeQueueEntry {
+  id: string
+  missionId: string
+  sliceId: string
+  playbookRunId: string | null
+  status: MergeQueueStatus
+  attempt: number
+  sliceHead: string | null
+  conflictFiles: string[]
+  mergeCommit: string | null
+  touchedFiles: string[]
+  // Touched files no touch hint covers: the drift signal for 106.8.
+  outsideHints: string[]
+  note: string | null
+  escalated: boolean
+  resolutionRunId: string | null
+  resolutionWorktree: string | null
+  resolutionStartOid: string | null
+  resolutionAttempts: number
+  proofAcceptedAt: number
+  createdAt: number
+  updatedAt: number
   startedAt: number | null
   finishedAt: number | null
 }
@@ -752,6 +813,9 @@ export interface WorkSlice {
   status: SliceStatus
   processRunId: string | null
   branch: string | null
+  // The current attempt's worktree and the integration commit it started from.
+  worktreePath: string | null
+  baseOid: string | null
   attempts: number
   origin: "user" | "agent"
   position: number
@@ -834,6 +898,8 @@ export interface PlaybookRun {
   proof: SliceProof | null
   proofRevisions: number
   outcomeReason: string | null
+  // Set when the run works in its own worktree rather than the workspace.
+  worktreePath: string | null
   createdAt: number
   finishedAt: number | null
 }

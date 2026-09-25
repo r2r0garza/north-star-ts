@@ -50,6 +50,7 @@ import {
   SCHEMA_V50_TABLES,
   SCHEMA_V51_SEAT_SESSIONS,
   SCHEMA_V51_CONTEXT_SCOPES,
+  SCHEMA_V52_MERGE_QUEUE,
   SCHEMA_V49_TABLES,
 } from "./schema"
 
@@ -108,6 +109,7 @@ const MIGRATIONS: Array<(db: Database.Database) => void> = [
   ensureMissionControlPlaybooks,
   ensureMissionControlComms,
   ensureContextScopes,
+  ensureMissionIntegration,
 ]
 
 function tableExists(db: Database.Database, table: string): boolean {
@@ -191,6 +193,19 @@ function ensureContextScopes(db: Database.Database): void {
     db.exec(SCHEMA_V51_CONTEXT_SCOPES)
 }
 
+// v52 (plan 106.5). Idempotent for the self-heal pass.
+function ensureMissionIntegration(db: Database.Database): void {
+  addColumnIfMissing(db, "missions", "base_ref", "TEXT")
+  addColumnIfMissing(db, "missions", "base_oid", "TEXT")
+  addColumnIfMissing(db, "missions", "repo_root", "TEXT")
+  addColumnIfMissing(db, "missions", "landing", "TEXT")
+  addColumnIfMissing(db, "slices", "worktree_path", "TEXT")
+  addColumnIfMissing(db, "slices", "base_oid", "TEXT")
+  addColumnIfMissing(db, "playbook_runs", "worktree_path", "TEXT")
+  addColumnIfMissing(db, "workspaces", "hidden", "INTEGER NOT NULL DEFAULT 0")
+  if (tableExists(db, "missions")) db.exec(SCHEMA_V52_MERGE_QUEUE)
+}
+
 function ensureProcessRuntimeProfileColumns(db: Database.Database): void {
   addColumnIfMissing(db, "process_phases", "runtime_config", "TEXT")
   addColumnIfMissing(db, "process_phase_agents", "runtime_config", "TEXT")
@@ -272,6 +287,7 @@ export function runMigrations(db: Database.Database): void {
       ensureMissionControlPlaybooks(db)
       ensureMissionControlComms(db)
       ensureContextScopes(db)
+      ensureMissionIntegration(db)
       ensureCodexSubscriptionProviderConstraints(db)
       ensureProjectPositionColumn(db)
       ensureSubagentArtifactsTable(db)

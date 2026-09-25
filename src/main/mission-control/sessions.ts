@@ -1,3 +1,4 @@
+import { existsSync } from "fs"
 import type { AgentDefinition } from "../agent/agents/types"
 import type { ContextSection } from "../agent/context/context-builder"
 import { getDb } from "../db/connection"
@@ -546,7 +547,7 @@ export class SeatSessionService {
         if (home.session) this.markSessionActivity(home.conversationId, true)
         const result = await this.deps.runTurn({
           conversationId: home.conversationId,
-          workspace,
+          workspace: homeWorkspace(home, workspace),
           signal: ctx.signal,
           agentOverride: home.agentOverride,
           contextSections: home.contextSections,
@@ -738,6 +739,31 @@ export class SeatSessionService {
 }
 
 // ── lookups ─────────────────────────────────────────────────────────────────
+
+// Where a wake turn looks at files: the folder the seat's work happened in.
+// A slice built in its own worktree (plan 106.5) is read there while the
+// worktree exists; otherwise the initiative workspace.
+function homeWorkspace(home: Home, fallback: string): string {
+  const row = (
+    home.session?.playbookRunId
+      ? getDb()
+          .prepare(
+            `SELECT w.path AS path FROM playbook_runs pb
+             JOIN process_runs r ON r.id = pb.process_run_id
+             JOIN workspaces w ON w.id = r.workspace_id
+             WHERE pb.id = ?`
+          )
+          .get(home.session.playbookRunId)
+      : getDb()
+          .prepare(
+            `SELECT w.path AS path FROM conversations c
+             JOIN workspaces w ON w.id = c.workspace_id
+             WHERE c.id = ?`
+          )
+          .get(home.conversationId)
+  ) as { path: string } | undefined
+  return row?.path && existsSync(row.path) ? row.path : fallback
+}
 
 interface FinishedWorker {
   conversationId: string

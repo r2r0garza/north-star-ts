@@ -3,7 +3,8 @@ import type { MissionStatus, SliceStatus } from "../db/types"
 const MISSION_TRANSITIONS: Record<MissionStatus, readonly MissionStatus[]> = {
   planned: ["active", "cancelled"],
   active: ["integrating", "failed", "cancelled"],
-  integrating: ["review", "failed", "cancelled"],
+  // Back to active when a slice leaves the merge queue unmerged (106.5).
+  integrating: ["review", "active", "failed", "cancelled"],
   review: ["completed", "active", "failed", "cancelled"],
   completed: [],
   cancelled: [],
@@ -49,24 +50,39 @@ export function transitionSliceStatus(
 
 // The shortest legal status path from current to target (excluding current),
 // or null when target is unreachable. Execution outcomes walk this path so every
-// hop is a legal transition — e.g. running → proving → integrating → done while
-// integration is a pass-through until 106.5.
+// hop is a legal transition — e.g. running → proving → integrating, and
+// straight on to done when the workspace has no integration branch.
 export function sliceStatusPath(
   current: SliceStatus,
   target: SliceStatus
 ): SliceStatus[] | null {
+  return statusPath(current, target, SLICE_TRANSITIONS)
+}
+
+export function missionStatusPath(
+  current: MissionStatus,
+  target: MissionStatus
+): MissionStatus[] | null {
+  return statusPath(current, target, MISSION_TRANSITIONS)
+}
+
+function statusPath<T extends string>(
+  current: T,
+  target: T,
+  table: Record<T, readonly T[]>
+): T[] | null {
   if (current === target) return []
-  const previous = new Map<SliceStatus, SliceStatus>()
-  const queue: SliceStatus[] = [current]
-  const seen = new Set<SliceStatus>([current])
+  const previous = new Map<T, T>()
+  const queue: T[] = [current]
+  const seen = new Set<T>([current])
   while (queue.length) {
     const status = queue.shift()!
-    for (const next of SLICE_TRANSITIONS[status]) {
+    for (const next of table[status]) {
       if (seen.has(next)) continue
       seen.add(next)
       previous.set(next, status)
       if (next === target) {
-        const path: SliceStatus[] = [target]
+        const path: T[] = [target]
         let cursor = status
         while (cursor !== current) {
           path.unshift(cursor)

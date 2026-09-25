@@ -1553,3 +1553,41 @@ export const SCHEMA_V51_CONTEXT_SCOPES = `
 UPDATE process_phases SET context_mode = 'step' WHERE context_mode = 'fresh';
 UPDATE process_phases SET context_mode = 'initiative' WHERE context_mode = 'seat_session';
 `
+
+// v52: Mission Control integration (plan 106.5). A mission records the base
+// branch and commit it started from, its repository, and how it landed. A slice
+// records the worktree and integration commit its current attempt started
+// from. merge_queue makes the serialized, dependency-ordered merge of finished
+// slices into the integration branch restart-safe. playbook_runs.worktree_path
+// marks runs isolated in their own worktree (they don't take the workspace's
+// single-flight slot). workspaces.hidden keeps Mission Control's worktree
+// folders out of the user's workspace lists.
+export const SCHEMA_V52_MERGE_QUEUE = `
+CREATE TABLE IF NOT EXISTS merge_queue (
+  id                   TEXT PRIMARY KEY,
+  mission_id           TEXT NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+  slice_id             TEXT NOT NULL REFERENCES slices(id) ON DELETE CASCADE,
+  playbook_run_id      TEXT REFERENCES playbook_runs(id) ON DELETE SET NULL,
+  status               TEXT NOT NULL,
+  attempt              INTEGER NOT NULL DEFAULT 0,
+  slice_head           TEXT,
+  conflict_files       TEXT NOT NULL DEFAULT '[]',
+  merge_commit         TEXT,
+  touched_files        TEXT NOT NULL DEFAULT '[]',
+  outside_hints        TEXT NOT NULL DEFAULT '[]',
+  note                 TEXT,
+  escalated            INTEGER NOT NULL DEFAULT 0,
+  resolution_run_id    TEXT REFERENCES playbook_runs(id) ON DELETE SET NULL,
+  resolution_worktree  TEXT,
+  resolution_start_oid TEXT,
+  resolution_attempts  INTEGER NOT NULL DEFAULT 0,
+  proof_accepted_at    INTEGER NOT NULL,
+  created_at           INTEGER NOT NULL,
+  updated_at           INTEGER NOT NULL,
+  started_at           INTEGER,
+  finished_at          INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_merge_queue_mission ON merge_queue(mission_id, status);
+CREATE INDEX IF NOT EXISTS idx_merge_queue_slice ON merge_queue(slice_id);
+CREATE INDEX IF NOT EXISTS idx_merge_queue_resolution ON merge_queue(resolution_run_id);
+`

@@ -29,11 +29,23 @@ import {
   renderSliceObjective,
   sliceCriteria,
 } from "./slice-objective"
+import { touchHintsOverlap } from "../../shared/mission-control/waves"
+import {
+  DEFAULT_MAX_CONCURRENT_SLICES,
+  type IsolatedSliceWorkspace,
+  type MissionIntegration,
+} from "./integration"
 
 // Slice execution (plan 106.3). Starts a slice's playbook as a Process run with
 // frozen seat bindings, then maps the run's terminal state onto the slice
 // exactly once. Mission/initiative hooks (hook-runner.ts) launch through the
-// same path. v1 is single-flight: one playbook run at a time per workspace.
+// same path.
+//
+// Isolation (plan 106.5): in a git workspace each slice attempt runs in its
+// own worktree, so slices run in parallel up to the initiative's
+// maxConcurrentSlices budget, and a finished slice waits in the mission's
+// merge queue. Runs in the workspace itself (hooks, and every run in a
+// non-git workspace) stay single-flight.
 
 export const DEFAULT_MAX_SLICE_ATTEMPTS = 3
 
@@ -59,6 +71,9 @@ export interface SliceRunnerDeps {
   // A cancelled run stops its initiative's Comms (plan 106.4): queued mail
   // expires and pending wakes are cancelled.
   onCancelled?(initiativeId: string): void
+  // Worktrees and the merge queue (plan 106.5). Without it every run is
+  // single-flight in the workspace, as in 106.3.
+  integration?: MissionIntegration
 }
 
 const CLI_PROVIDERS: Record<string, string> = {
@@ -73,11 +88,28 @@ export interface LaunchRequest {
   playbook: PlaybookWithHooks
   hook: PlaybookHookName
   podKey: string | null
-  objective: string
+  objective: string | ((isolated: IsolatedWorkspace | null) => string)
   intentChain: string
   title: string
+  // Roles a rig may fill with another role's seats (integrator → lead).
+  roleFallbacks?: Record<string, string>
+  // Give the run its own worktree (slice runs). Called after every check
+  // passes; null means the workspace can't isolate and the run is
+  // single-flight in place.
+  isolate?: () => Promise<IsolatedSliceWorkspace | null>
+  // A worktree prepared by the caller (conflict resolution).
+  isolated?: IsolatedWorkspace
   // Runs inside the launch transaction, after the playbook run exists.
-  onLaunch?: (playbookRun: PlaybookRun) => void
+  onLaunch?: (playbookRun: PlaybookRun, isolated: IsolatedWorkspace | null) => void
+}
+
+export interface IsolatedWorkspace {
+  workspacePath: string
+  worktreePath: string
+  branch?: string
+  baseOid?: string
+  integrationBranch?: string
+  discard?: () => Promise<void>
 }
 
 function budget(initiative: Initiative, key: string, fallback: number): number {
@@ -93,6 +125,13 @@ export function maxSliceAttempts(initiative: Initiative): number {
 
 export function maxProofRevisions(initiative: Initiative): number {
   return budget(initiative, "maxProofRevisions", DEFAULT_MAX_PROOF_REVISIONS)
+}
+
+export function maxConcurrentSlices(initiative: Initiative): number {
+  return Math.max(
+    1,
+    budget(initiative, "maxConcurrentSlices", DEFAULT_MAX_CONCURRENT_SLICES)
+  )
 }
 
 export function initiativeWorkspacePath(initiative: Initiative): string {
@@ -128,11 +167,13 @@ export function playbookFor(
 }
 
 // The playbook run occupying this initiative's workspace, if any. Two
-// initiatives sharing one folder share the single-flight slot too.
+// initiatives sharing one folder share the single-flight slot too. Runs in
+// their own worktree (106.5) don't occupy it.
 export function activePlaybookRunForWorkspace(
   initiative: Initiative
 ): PlaybookRun | null {
   for (const run of playbooks.listPlaybookRuns({ status: "running" })) {
+    if (run.worktreePath) continue
     if (run.initiativeId === initiative.id) return run
     const other = initiatives.getInitiative(run.initiativeId)
     if (
@@ -142,6 +183,13 @@ export function activePlaybookRunForWorkspace(
       return run
   }
   return null
+}
+
+// Slice runs building in their own worktrees for this initiative.
+function isolatedSliceRuns(initiative: Initiative): PlaybookRun[] {
+  return playbooks
+    .listPlaybookRuns({ initiativeId: initiative.id, status: "running" })
+    .filter((run) => run.worktreePath && run.hook === "run")
 }
 
 function describeRun(run: PlaybookRun): string {
@@ -160,11 +208,25 @@ export class SliceRunner {
   async launch(request: LaunchRequest): Promise<PlaybookRun> {
     const { initiative, playbook, hook } = request
     const workspacePath = initiativeWorkspacePath(initiative)
-    const busy = activePlaybookRunForWorkspace(initiative)
-    if (busy)
-      throw new Error(
-        `Only one playbook run can use this workspace at a time, and ${describeRun(busy)} is still running. Wait for it or cancel it.`
-      )
+    const wantsIsolation = !!request.isolate || !!request.isolated
+    const assertSlot = (isolated: boolean) => {
+      if (isolated) {
+        if (!request.slice || hook !== "run") return
+        const cap = maxConcurrentSlices(initiative)
+        if (isolatedSliceRuns(initiative).length >= cap)
+          throw new Error(
+            `The initiative's budget allows ${cap} slice(s) running at once. Wait for one to finish or raise maxConcurrentSlices.`
+          )
+        return
+      }
+      const busy = activePlaybookRunForWorkspace(initiative)
+      if (busy)
+        throw new Error(
+          `Only one playbook run can use this workspace at a time, and ${describeRun(busy)} is still running. Wait for it or cancel it.${request.slice ? " (Slices run in parallel only in a git workspace.)" : ""}`
+        )
+    }
+    if (!wantsIsolation) assertSlot(false)
+    else if (request.slice && hook === "run") assertSlot(true)
     const hookRow = playbook.hooks.find((h) => h.hook === hook)
     if (!hookRow)
       throw new Error(
@@ -184,34 +246,47 @@ export class SliceRunner {
       roles: collectSeatRoles(graph, processes.getProcessGraph),
       agents: await this.deps.loadAgents(workspacePath),
       intentChain: request.intentChain,
+      roleFallbacks: request.roleFallbacks,
     })
 
     if (request.slice) this.assertProofStepCanRecord(graph, seatBindings)
 
-    const playbookRun = getDb().transaction(() => {
-      // Re-check under the write lock: another launch may have raced us
-      // across the await above.
-      if (activePlaybookRunForWorkspace(initiative))
-        throw new Error(
-          "Another playbook run started in this workspace. Wait for it or cancel it."
-        )
-      const created = playbooks.createPlaybookRun({
-        playbookId: playbook.id,
-        hook,
-        initiativeId: initiative.id,
-        missionId: request.missionId,
-        sliceId: request.slice?.id ?? null,
-      })
-      request.onLaunch?.(created)
-      return created
-    })()
+    // The worktree is created last, once nothing else can refuse the launch.
+    const isolated: IsolatedWorkspace | null =
+      request.isolated ?? (request.isolate ? await request.isolate() : null)
+    if (request.isolate && !isolated) assertSlot(false)
+
+    let playbookRun: PlaybookRun
+    try {
+      playbookRun = getDb().transaction(() => {
+        // Re-check under the write lock: another launch may have raced us
+        // across the awaits above.
+        assertSlot(!!isolated)
+        const created = playbooks.createPlaybookRun({
+          playbookId: playbook.id,
+          hook,
+          initiativeId: initiative.id,
+          missionId: request.missionId,
+          sliceId: request.slice?.id ?? null,
+          worktreePath: isolated?.worktreePath ?? null,
+        })
+        request.onLaunch?.(created, isolated)
+        return created
+      })()
+    } catch (err) {
+      if (!request.isolated) await isolated?.discard?.().catch(() => {})
+      throw err
+    }
 
     try {
       const processRun = await this.deps.startProcessRun({
         processId: hookRow.processId,
         sourceConversationId: null,
-        objective: request.objective,
-        workspacePath,
+        objective:
+          typeof request.objective === "function"
+            ? request.objective(isolated)
+            : request.objective,
+        workspacePath: isolated?.workspacePath ?? workspacePath,
         seatBindings,
         missionControl: {
           initiativeId: initiative.id,
@@ -266,8 +341,12 @@ export class SliceRunner {
     }
   }
 
-  // Run (or retry) a slice with its playbook.
-  async startSlice(sliceId: string): Promise<PlaybookRun> {
+  // Run (or retry) a slice with its playbook. `allowTouchOverlap` runs it
+  // even though a slice with overlapping touch hints is still building.
+  async startSlice(
+    sliceId: string,
+    options: { allowTouchOverlap?: boolean } = {}
+  ): Promise<PlaybookRun> {
     const slice = initiatives.getSlice(sliceId)
     if (!slice) throw new Error(`Slice not found: ${sliceId}`)
     const mission = initiatives.getMission(slice.missionId)
@@ -292,10 +371,28 @@ export class SliceRunner {
       .filter((dep): dep is WorkSlice => !!dep && dep.status !== "done")
     if (blockers.length)
       throw new Error(
-        `Slice ${slice.key} depends on unfinished slices: ${blockers.map((b) => b.key).join(", ")}.`
+        `Slice ${slice.key} depends on unmerged slices: ${blockers.map((b) => b.key).join(", ")}. A slice starts once its predecessors are done${mission.integrationBranch ? " and merged into the integration branch" : ""}.`
       )
+    // Overlapping touch hints serialize by default (decision 7): two slices
+    // editing the same area in parallel is how merge conflicts are made.
+    if (!options.allowTouchOverlap) {
+      const overlapping = initiatives
+        .listSlices(mission.id)
+        .filter(
+          (other) =>
+            other.id !== slice.id &&
+            ["running", "proving"].includes(other.status) &&
+            touchHintsOverlap(slice.spec.touchHints, other.spec.touchHints)
+        )
+      if (overlapping.length)
+        throw new Error(
+          `touch_overlap: Slice ${slice.key}'s touch hints overlap ${overlapping.map((o) => o.key).join(", ")}, which is still building. Running both at once risks a merge conflict.`
+        )
+    }
 
     const playbook = playbookFor("slice", slice.playbookId)
+    const attempt = slice.attempts + 1
+    const integration = this.deps.integration
     return this.launch({
       initiative,
       missionId: mission.id,
@@ -303,20 +400,39 @@ export class SliceRunner {
       playbook,
       hook: "run",
       podKey: slice.podKey ?? initiative.defaultPodKey,
-      objective: renderSliceObjective({ initiative, mission, slice }),
+      objective: (isolated) =>
+        renderSliceObjective({
+          initiative,
+          mission,
+          slice,
+          workspace:
+            isolated?.branch && isolated.integrationBranch
+              ? { branch: isolated.branch, integrationBranch: isolated.integrationBranch }
+              : null,
+        }),
       intentChain: renderIntentChain({ initiative, mission, slice }),
       title: `Slice ${slice.key}: ${slice.title}`,
-      onLaunch: () => {
+      isolate: integration
+        ? () => integration.prepareSliceRun({ initiative, mission, slice, attempt })
+        : undefined,
+      onLaunch: (_run, isolated) => {
         initiatives.setSliceExecution(
           slice.id,
           {
             status: "running",
-            attempts: slice.attempts + 1,
+            attempts: attempt,
             proof: null,
             startedAt: Date.now(),
             finishedAt: null,
+            ...(isolated
+              ? {
+                  branch: isolated.branch ?? null,
+                  worktreePath: isolated.worktreePath,
+                  baseOid: isolated.baseOid ?? null,
+                }
+              : {}),
           },
-          `Attempt ${slice.attempts + 1} started with the "${playbook.name}" playbook`
+          `Attempt ${attempt} started with the "${playbook.name}" playbook${isolated?.branch ? ` on ${isolated.branch}` : ""}`
         )
         if (mission.status === "planned")
           initiatives.setMissionExecutionStatus(
@@ -389,6 +505,24 @@ export class SliceRunner {
     }
 
     const proof = playbookRun.proof
+    // A conflict resolution (106.5): finish the run, then let the integration
+    // service commit the merge (accepted re-verification) or escalate.
+    if (playbookRun.hook === "after_each_slice") {
+      const status = run.status as "completed" | "failed" | "cancelled"
+      this.applyOutcome(
+        playbookRun.id,
+        status === "completed" && proof?.verdict !== "accepted" ? "failed" : status,
+        status !== "completed"
+          ? `The resolution run ${status}.`
+          : proof?.verdict === "accepted"
+            ? null
+            : proof
+              ? "The re-verification proof was rejected."
+              : "The resolution finished without re-verifying the slice."
+      )
+      this.deps.integration?.onResolutionSettled(playbookRun.id)
+      return
+    }
     if (run.status === "completed") {
       if (proof?.verdict === "accepted")
         this.applyOutcome(playbookRun.id, "completed", null)
@@ -416,12 +550,21 @@ export class SliceRunner {
     status: "completed" | "failed" | "cancelled",
     reason: string | null
   ): void {
-    getDb().transaction(() => {
-      if (!playbooks.finishPlaybookRun(playbookRunId, status, reason)) return
+    const settled = getDb().transaction(() => {
+      if (!playbooks.finishPlaybookRun(playbookRunId, status, reason)) return null
       const playbookRun = playbooks.getPlaybookRun(playbookRunId)!
-      if (!playbookRun.sliceId) return
+      if (!playbookRun.sliceId || playbookRun.hook !== "run") return null
       const slice = initiatives.getSlice(playbookRun.sliceId)
-      if (!slice || !["running", "proving"].includes(slice.status)) return
+      if (!slice || !["running", "proving"].includes(slice.status)) return null
+      // Built in its own worktree: the slice is done only once it merges.
+      if (
+        status === "completed" &&
+        playbookRun.worktreePath &&
+        this.deps.integration
+      ) {
+        this.deps.integration.enqueueAcceptedSlice(slice, playbookRun)
+        return { slice, merge: true }
+      }
       // A cancelled run leaves the slice failed (and retryable) rather than
       // cancelled, which the work model treats as abandoned for good.
       initiatives.setSliceExecution(
@@ -433,7 +576,18 @@ export class SliceRunner {
         },
         reason ?? "Proof accepted; slice done"
       )
+      return { slice, merge: false }
     })()
+    const integration = this.deps.integration
+    if (!settled || !integration) return
+    if (settled.merge) void integration.kick(settled.slice.missionId)
+    else {
+      if (status !== "completed")
+        void integration
+          .releaseSliceWorktree(settled.slice.id)
+          .catch((err) => console.warn("[integration] release worktree:", err))
+      integration.advanceMission(settled.slice.missionId)
+    }
   }
 
   // Boot-time recovery: settle playbook runs whose Process run finished while

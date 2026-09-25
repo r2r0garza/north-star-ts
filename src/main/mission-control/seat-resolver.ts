@@ -141,6 +141,9 @@ export function resolveSeatBindings(input: {
   roles: string[]
   agents: AgentDefinition[]
   intentChain: string
+  // A role the rig has no seat for at all may borrow another role's seats
+  // (e.g. conflict resolution: integrator → lead, plan 106.5).
+  roleFallbacks?: Record<string, string>
 }): SeatBindingsSnapshot {
   const { rig, roles, agents } = input
   const pod = executionPod(rig, input.podKey)
@@ -162,12 +165,17 @@ export function resolveSeatBindings(input: {
     intentChain: input.intentChain,
   }
   const problems: string[] = []
+  const fallback = (role: string) => {
+    const other = input.roleFallbacks?.[role]
+    return other && !rig.seats.some((seat) => seat.role === role) ? other : role
+  }
   for (const role of roles) {
+    const seatRole = fallback(role)
     const candidates: SeatBinding[] = []
     const unusable: string[] = []
     for (const searchPod of searchOrder) {
       const seats = rig.seats
-        .filter((seat) => seat.podId === searchPod.id && seat.role === role)
+        .filter((seat) => seat.podId === searchPod.id && seat.role === seatRole)
         .sort((a, b) => a.position - b.position)
       for (const seat of seats) {
         const resolved = resolveSeat(seat, searchPod, agents)
@@ -192,7 +200,7 @@ export function resolveSeatBindings(input: {
       problems.push(
         unusable.length
           ? `Role "${role}" has no usable seat for pod "${pod.key}": ${unusable.join("; ")}.`
-          : `No seat has role "${role}" in pod "${pod.key}" or the pods overseeing it.`
+          : `No seat has role "${seatRole}"${seatRole === role ? "" : ` (standing in for "${role}")`} in pod "${pod.key}" or the pods overseeing it.`
       )
       continue
     }

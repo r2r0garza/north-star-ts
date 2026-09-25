@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest"
-import { deriveWaves, findCycle, readySet } from "./waves"
+import {
+  deriveWaves,
+  findCycle,
+  readySet,
+  touchHintRoot,
+  touchHintsOverlap,
+} from "./waves"
 
 const nodes = (ids: string[]) =>
   ids.map((id, position) => ({ id, position, status: "ready" }))
@@ -59,5 +65,24 @@ describe("Mission Control waves", () => {
     expect(() =>
       deriveWaves(nodes(["a", "b"]), [edge("a", "b"), edge("b", "a")])
     ).toThrow(/a → b → a/)
+  })
+})
+
+describe("touch hints", () => {
+  it("anchors a hint at its literal prefix", () => {
+    expect(touchHintRoot("src/billing/**")).toBe("src/billing/")
+    expect(touchHintRoot("./src/*.ts")).toBe("src/")
+    expect(touchHintRoot("docs/api.md")).toBe("docs/api.md")
+    expect(touchHintRoot("*.md")).toBe("")
+  })
+
+  it("overlaps on shared directories only", () => {
+    expect(touchHintsOverlap(["src/billing/**"], ["src/billing/invoice.ts"])).toBe(true)
+    expect(touchHintsOverlap(["src/billing"], ["src/billing/pdf/**"])).toBe(true)
+    expect(touchHintsOverlap(["src/billing/**"], ["src/billing-old/x.ts"])).toBe(false)
+    expect(touchHintsOverlap(["src/api/**"], ["src/pdf/**"])).toBe(false)
+    expect(touchHintsOverlap(["**/*.ts"], ["docs/x.md"])).toBe(true)
+    // No hints declare nothing.
+    expect(touchHintsOverlap([], ["src/**"])).toBe(false)
   })
 })

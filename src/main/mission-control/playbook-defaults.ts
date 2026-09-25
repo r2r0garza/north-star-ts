@@ -66,7 +66,7 @@ export const DEFAULT_PLAYBOOKS: Record<PlaybookAltitude, DefaultPlaybook> = {
   mission: {
     name: "Plan → Review",
     description:
-      "Before slices run, the lead reviews the slice set against the mission outcome. After all slices, the lead writes the mission summary.",
+      "Before slices run, the lead reviews the slice set against the mission outcome. When a slice's merge conflicts, the integrator (or the lead) resolves it and QA re-verifies the slice. After all slices, the lead writes the mission summary.",
     hooks: {
       before_slices: [
         {
@@ -74,6 +74,24 @@ export const DEFAULT_PLAYBOOKS: Record<PlaybookAltitude, DefaultPlaybook> = {
           name: "Review the mission's slices against its outcome and report gaps as proposals (do not edit the plan)",
           role: "lead",
           contextScope: "initiative",
+        },
+      ],
+      // Runs only when a slice's merge into the integration branch conflicts
+      // (plan 106.5). A rig without an integrator seat falls back to its lead.
+      after_each_slice: [
+        {
+          key: "resolve",
+          name: "Resolve the merge conflict in this worktree so both sides keep their intent (do not commit, abort, or switch branches)",
+          role: "integrator",
+          contextScope: "slice",
+        },
+        {
+          key: "reverify",
+          name: "Re-verify the merged result against each acceptance criterion and record the proof",
+          role: "qa",
+          validator: true,
+          proofStep: true,
+          contextScope: "slice",
         },
       ],
       after_all_slices: [

@@ -208,7 +208,9 @@ export function HookControls({
     })
   }, [load])
 
-  const busy = runs.find((run) => run.status === "running")
+  // Hooks run in the workspace itself; slices building in their own
+  // worktrees (plan 106.5) don't hold it.
+  const busy = runs.find((run) => run.status === "running" && !run.worktreePath)
   return (
     <div className="space-y-2">
       <h3 className="text-sm font-medium">{title}</h3>
@@ -221,7 +223,7 @@ export function HookControls({
           ) ?? null
         const blockedByOther =
           busy && busy.id !== lastRun?.id
-            ? "Another playbook run is using this workspace. One run at a time until worktrees arrive."
+            ? "Another playbook run is using this workspace. Hooks and non-git slices run one at a time."
             : null
         return (
           <HookRow

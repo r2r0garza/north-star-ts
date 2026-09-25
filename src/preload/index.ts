@@ -69,11 +69,17 @@ import type {
   SliceProof,
   ProofCriterionStatus,
   MissionControlRunLink,
+  MergePolicyMode,
+  MissionLanding,
 } from "../main/db/types"
 import type { ActionKind } from "../main/agent/approval/types"
 import type { PickedElement } from "../main/browser/types"
 import type { GitDiffResult } from "../main/git/diff"
 import type { SeatOverview } from "../main/mission-control/sessions"
+import type {
+  MissionIntegrationStatus,
+  SliceWorkspaceInfo,
+} from "../main/mission-control/integration"
 import type {
   GitActionResult,
   GitBranchActionResult,
@@ -661,7 +667,7 @@ const api = {
         ipcRenderer.invoke(
           "missionControl:initiatives:delete",
           id
-        ) as Promise<void>,
+        ) as Promise<{ keptBranches: string[] }>,
       start: (id: string) =>
         ipcRenderer.invoke(
           "missionControl:initiatives:start",
@@ -968,8 +974,10 @@ const api = {
         ) as Promise<void>,
     },
     execution: {
-      runSlice: (sliceId: string) =>
-        ipcRenderer.invoke("missionControl:slices:run", sliceId) as Promise<
+      // allowTouchOverlap: run even though a slice with overlapping touch
+      // hints is still building (plan 106.5).
+      runSlice: (sliceId: string, options?: { allowTouchOverlap?: boolean }) =>
+        ipcRenderer.invoke("missionControl:slices:run", sliceId, options) as Promise<
           PlaybookRun
         >,
       cancelSlice: (sliceId: string) =>
@@ -984,6 +992,64 @@ const api = {
         ipcRenderer.invoke("missionControl:hooks:run", input) as Promise<
           PlaybookRun
         >,
+    },
+    // Mission integration (plan 106.5): worktrees, the merge queue, and the
+    // mission's merge policy.
+    integration: {
+      status: (missionId: string) =>
+        ipcRenderer.invoke(
+          "missionControl:integration:status",
+          missionId
+        ) as Promise<MissionIntegrationStatus>,
+      setPolicy: (missionId: string, mode: MergePolicyMode) =>
+        ipcRenderer.invoke(
+          "missionControl:integration:setPolicy",
+          missionId,
+          mode
+        ) as Promise<InitiativeGraph>,
+      // The explicit approval: bound to the base and head the user reviewed.
+      land: (missionId: string, approval: { baseOid: string; headOid: string }) =>
+        ipcRenderer.invoke(
+          "missionControl:integration:land",
+          missionId,
+          approval
+        ) as Promise<MissionLanding>,
+      markMerged: (missionId: string) =>
+        ipcRenderer.invoke(
+          "missionControl:integration:markMerged",
+          missionId
+        ) as Promise<MissionLanding>,
+      retry: (entryId: string) =>
+        ipcRenderer.invoke("missionControl:integration:retry", entryId) as Promise<void>,
+      resolve: (entryId: string) =>
+        ipcRenderer.invoke("missionControl:integration:resolve", entryId) as Promise<void>,
+      abandon: (entryId: string) =>
+        ipcRenderer.invoke("missionControl:integration:abandon", entryId) as Promise<void>,
+      sliceInfo: (sliceId: string) =>
+        ipcRenderer.invoke(
+          "missionControl:integration:sliceInfo",
+          sliceId
+        ) as Promise<SliceWorkspaceInfo>,
+      sliceDiff: (sliceId: string) =>
+        ipcRenderer.invoke(
+          "missionControl:integration:sliceDiff",
+          sliceId
+        ) as Promise<{ diff: string; truncated: boolean }>,
+      openWorktree: (sliceId: string) =>
+        ipcRenderer.invoke(
+          "missionControl:integration:openWorktree",
+          sliceId
+        ) as Promise<string>,
+      // Fires with the initiative id whenever a merge queue, slice worktree,
+      // or mission landing changes.
+      onChanged: (cb: (initiativeId: string) => void) => {
+        const listener = (_event: IpcRendererEvent, initiativeId: string) =>
+          cb(initiativeId)
+        ipcRenderer.on("missionControl:integration:changed", listener)
+        return () => {
+          ipcRenderer.removeListener("missionControl:integration:changed", listener)
+        }
+      },
     },
     // Comms and seat sessions (plan 106.4). Read-only for agent threads; the
     // one write is Steer, an explicit message from user@rig.
@@ -2322,6 +2388,10 @@ export type {
   SliceProof,
   ProofCriterionStatus,
   MissionControlRunLink,
+  MergePolicyMode,
+  MergeQueueEntry,
+  MergeQueueStatus,
+  MissionLanding,
   PhaseContextScope,
   SeatSession,
   SeatSessionStatus,
@@ -2415,6 +2485,12 @@ export type { ApproveResult } from "../main/dashboards/service"
 export type { PickedElement } from "../main/browser/types"
 export type { GitDiffResult } from "../main/git/diff"
 export type { SeatOverview } from "../main/mission-control/sessions"
+export type {
+  MissionIntegrationStatus,
+  PolicyOption,
+  SliceWorkspaceInfo,
+} from "../main/mission-control/integration"
+export type { LandingSummary } from "../main/mission-control/mission-git"
 export type {
   GitAction,
   GitActionResult,

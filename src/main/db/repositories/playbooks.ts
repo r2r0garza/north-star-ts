@@ -62,6 +62,7 @@ interface PlaybookRunRow {
   proof: string | null
   proof_revisions: number
   outcome_reason: string | null
+  worktree_path: string | null
   created_at: number
   finished_at: number | null
 }
@@ -105,6 +106,7 @@ function toRun(row: PlaybookRunRow): PlaybookRun {
     proof,
     proofRevisions: row.proof_revisions,
     outcomeReason: row.outcome_reason,
+    worktreePath: row.worktree_path,
     createdAt: row.created_at,
     finishedAt: row.finished_at,
   }
@@ -319,11 +321,12 @@ export function createPlaybookRun(input: {
   initiativeId: string
   missionId?: string | null
   sliceId?: string | null
+  worktreePath?: string | null
 }): PlaybookRun {
   const id = randomUUID()
   getDb()
     .prepare(
-      "INSERT INTO playbook_runs (id, playbook_id, hook, initiative_id, mission_id, slice_id, status, created_at) VALUES (?, ?, ?, ?, ?, ?, 'running', ?)"
+      "INSERT INTO playbook_runs (id, playbook_id, hook, initiative_id, mission_id, slice_id, worktree_path, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?)"
     )
     .run(
       id,
@@ -332,6 +335,7 @@ export function createPlaybookRun(input: {
       input.initiativeId,
       input.missionId ?? null,
       input.sliceId ?? null,
+      input.worktreePath ?? null,
       Date.now()
     )
   return getPlaybookRun(id)!

@@ -116,6 +116,8 @@ import { SummaryService, SUMMARIZE_KIND } from "./summaries/service"
 import { ProcessService, PROCESS_RUN_KIND } from "./tasks/process/service"
 import { registerProcessHandlers } from "./ipc/process-handlers"
 import { SliceRunner } from "./mission-control/slice-runner"
+import { MissionIntegration } from "./mission-control/integration"
+import { startConflictResolution } from "./mission-control/hook-runner"
 import { installSeatComms, SeatComms } from "./mission-control/comms"
 import { onCommsChanged } from "./mission-control/comms-events"
 import {
@@ -233,12 +235,30 @@ const seatComms = new SeatComms({
 })
 installSeatSessions(seatSessions)
 installSeatComms(seatComms)
-const sliceRunner = new SliceRunner({
+// Mission integration (plan 106.5): a worktree per slice attempt under app
+// data, the per-mission merge queue, and merge-policy landing. Conflicts run
+// the mission playbook's after_each_slice hook through the slice runner.
+const missionIntegration: MissionIntegration = new MissionIntegration({
+  worktreeRoot: () =>
+    join(app.getPath("userData"), "mission-control", "worktrees"),
+  startResolution: (input) => startConflictResolution(sliceRunner, input),
+  notifyUser: (title, body) => {
+    if (!Notification.isSupported()) return
+    new Notification({ title, body, silent: false }).show()
+  },
+  onChanged: (initiativeId) => {
+    const wc = mainWindow?.webContents
+    if (wc && !wc.isDestroyed())
+      wc.send("missionControl:integration:changed", initiativeId)
+  },
+})
+const sliceRunner: SliceRunner = new SliceRunner({
   startProcessRun: (input) => processService.startRun(input),
   cancelTask: (taskId) => taskRunner.cancel(taskId),
   loadAgents: (workspace) => loadAgents(agentSources(workspace)),
   workerProvider,
   onCancelled: (initiativeId) => seatSessions.cancelInitiative(initiativeId),
+  integration: missionIntegration,
 })
 processService.onRunSettled((processRunId) => {
   sliceRunner.settle(processRunId)
@@ -1453,7 +1473,18 @@ app.whenReady().then(async () => {
   registerProcessHandlers(taskRunner, processService)
   registerIndexHandlers(taskRunner, indexService, indexWatcher)
   registerDashboardHandlers(taskRunner, dashboardService)
-  registerMissionControlHandlers(sliceRunner, seatComms, seatSessions)
+  registerMissionControlHandlers(
+    sliceRunner,
+    seatComms,
+    seatSessions,
+    missionIntegration,
+    (folder) => openInIde(folder, folder, settingsService.getIde().ide)
+  )
+  // Sweep orphaned Mission Control worktrees and resume merge queues. Queue
+  // work (including merges the reconcile below enqueues) waits for the sweep.
+  void missionIntegration
+    .reconcile()
+    .catch((err) => console.warn("[integration] reconcile failed:", err))
   // Apply outcomes for playbook runs whose Process run settled while the app
   // was down (idempotent; in-flight runs resume through the task runner).
   sliceRunner.reconcile()
@@ -1532,6 +1563,9 @@ app.on("will-quit", () => {
   stopPlanMaintenance()
   void indexWatcher.stopAll()
   void taskRunner.stop()
+  // No new merge starts; one in flight either finishes its compare-and-swap
+  // or leaves the branch untouched, and the next boot's reconcile resumes.
+  missionIntegration.stop()
   browserManager.dispose()
   terminalService.dispose()
   // Disconnect every pooled MCP client (stops spawned stdio processes / closes
