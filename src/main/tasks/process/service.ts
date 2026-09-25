@@ -28,7 +28,13 @@ import {
 } from "./checkpoints"
 import type { TaskRunner, TaskExecutor } from "../runner"
 import type { LlmSelection } from "../../agent/providers"
-import { route } from "./router"
+import { route, routeCandidates } from "./router"
+import { loadAgent } from "../../agent/agents/loader"
+import {
+  narrowedSeatAgent,
+  seatContextSection,
+} from "../../mission-control/seat-context"
+import type { ContextSection } from "../../agent/context/context-builder"
 import type {
   Conversation,
   ProcessGraph,
@@ -39,6 +45,9 @@ import type {
   ProcessRuntimeSlot,
   ProcessRuntimeSnapshotSelection,
   ProcessRun,
+  MissionControlRunLink,
+  SeatBinding,
+  SeatBindingsSnapshot,
 } from "../../db/types"
 import {
   decompositionRetryNote,
@@ -47,6 +56,7 @@ import {
   kickoffPrompt,
   parseDecomposition,
   parseVerdict,
+  UNATTENDED_WORK_NOTE,
   validatorPrompt,
   type UpstreamResult,
 } from "./prompts"
@@ -74,6 +84,18 @@ import { unknownSideEffectingToolCalls } from "../../agent/repair"
 // is deterministic (the scheduling logic) — the phases it drives are the LLM work,
 // run inline via runAgentLoop in forked worker conversations.
 export const PROCESS_RUN_KIND = "process_run"
+
+// Appended to a Mission Control proof step's kickoff (plan 106.3). The slice
+// objective above it already lists each criterion with its stable id.
+const PROOF_STEP_INSTRUCTION =
+  "## Recording the proof\n" +
+  "You are this slice's verifier. Check every acceptance criterion yourself — " +
+  "run the tests or commands, read the code — and then call `record_proof` exactly " +
+  "once with one entry per criterion id (AC-1, AC-2, …) listed in the objective. " +
+  "Each entry needs a status (met, not_met, or not_verifiable) and concrete evidence: " +
+  "what you ran or inspected and what you observed. Use verdict \"accepted\" only when " +
+  "every criterion is met; otherwise record \"rejected\". Artifacts are workspace-relative " +
+  "file paths. The tool validates your proof and explains anything it rejects."
 
 // The process_run task's input blob (015 producer contract): the run id, so the
 // executor finds its run on first run AND on autoResume after a crash.
@@ -137,8 +159,25 @@ function resolveRuntime(input: {
   phase: ProcessPhase
   slot: ProcessRuntimeSlot
   phaseAgent?: ProcessPhaseAgent | null
+  // A bound Mission Control seat's runtime (plan 106.3). Like a phase-agent
+  // override it is a worker-slot concept, and it takes precedence: the seat
+  // is who does the work.
+  seat?: SeatBinding | null
 }): RuntimeResolution {
-  const { run, source, phase, slot, phaseAgent } = input
+  const { run, source, phase, slot, phaseAgent, seat } = input
+  if (seat?.runtime && (slot === "worker" || slot === "validator")) {
+    return {
+      selection: {
+        accountId: seat.runtime.accountId ?? null,
+        modelId: seat.runtime.modelId ?? null,
+      },
+      snapshot: {
+        accountId: seat.runtime.accountId ?? null,
+        modelId: seat.runtime.modelId ?? null,
+        source: "seat",
+      },
+    }
+  }
   // A phase-agent override is a worker-slot concept only. Orchestration slots
   // (router/decomposer/validator) stay at phase/run scope — and must not inherit
   // the agent's worker selection through runtimeSelection's worker fallback.
@@ -229,8 +268,49 @@ function abortedResult(
   return isResumableAbort(signal) ? { paused: true } : { stopped: true }
 }
 
+// Who runs a phase (or one of its sub-tasks): a named agent, or a bound Mission
+// Control seat (plan 106.3) with its runtime-only narrowed agent and context.
+interface ResolvedWorker {
+  agentName: string | null
+  phaseAgent?: ProcessPhaseAgent
+  seat: SeatBinding | null
+  agentOverride?: AgentDefinition
+  contextSections?: ContextSection[]
+}
+
+type AgentDefinition = NonNullable<Awaited<ReturnType<typeof loadAgent>>>
+
+// Settled-run observers (plan 106.3): Mission Control applies a slice or hook
+// outcome when its top-level Process run reaches a terminal status.
+export type RunSettledListener = (processRunId: string) => void
+
 export class ProcessService {
   constructor(private readonly runner: TaskRunner) {}
+
+  private readonly settledListeners = new Set<RunSettledListener>()
+
+  onRunSettled(listener: RunSettledListener): () => void {
+    this.settledListeners.add(listener)
+    return () => {
+      this.settledListeners.delete(listener)
+    }
+  }
+
+  private notifySettled(processRunId: string): void {
+    const run = processes.getProcessRun(processRunId)
+    if (
+      !run ||
+      !["completed", "failed", "cancelled"].includes(run.status)
+    )
+      return
+    for (const listener of this.settledListeners) {
+      try {
+        listener(processRunId)
+      } catch (err) {
+        console.error("[process] run-settled listener failed", err)
+      }
+    }
+  }
 
   // Start a new run of a definition: create the run row, enqueue the backing
   // process_run task (sourced to the originating conversation so it's user-facing
@@ -244,6 +324,11 @@ export class ProcessService {
     // picked folder is deduped into the workspaces table and stamped on the run.
     workspacePath?: string | null
     runtimeConfig?: ProcessRuntimeConfig | null
+    // Mission Control runs (plan 106.3): the frozen seat bindings and the
+    // container link, plus a fixed display title instead of a generated one.
+    seatBindings?: SeatBindingsSnapshot | null
+    missionControl?: MissionControlRunLink | null
+    title?: string | null
   }): Promise<ProcessRun> {
     const definition = processes.getProcessDefinition(input.processId)
     if (!definition) throw new Error(`unknown process '${input.processId}'`)
@@ -258,6 +343,8 @@ export class ProcessService {
       workspaceId,
       objective: input.objective,
       runtimeConfig: input.runtimeConfig,
+      seatBindings: input.seatBindings ?? null,
+      missionControl: input.missionControl ?? null,
       status: "queued",
     })
 
@@ -280,9 +367,11 @@ export class ProcessService {
       accountId: source?.accountId ?? null,
       modelId: source?.modelId ?? null,
     }
-    const title = input.objective.trim()
-      ? await generateTitle(input.objective, selection)
-      : null
+    const title =
+      input.title?.trim() ||
+      (input.objective.trim()
+        ? await generateTitle(input.objective, selection)
+        : null)
 
     return processes.updateProcessRun(run.id, { taskId: task.id, title })
   }
@@ -302,6 +391,12 @@ export class ProcessService {
     const run = processes.getProcessRun(runId)
     if (!run || run.status !== "failed" || !run.taskId || !run.processId)
       return run
+    // A Mission Control run's outcome was already applied to its slice or hook;
+    // a retry there is a NEW attempt (plan 106.3), never a resumed old run.
+    if (run.missionControl)
+      throw new Error(
+        "This run belongs to Mission Control. Retry it from the slice or hook there."
+      )
     const graph = processes.getProcessGraph(run.processId)
     if (!graph) return run
     this.assertNoUnknownProcessWorkerOutcomes(run)
@@ -728,6 +823,10 @@ export class ProcessService {
       // already set the run failed.
       const message = err instanceof Error ? err.message : String(err)
       return { error: message, retryable: false }
+    } finally {
+      // driveRun has already stamped the run's terminal status (or left it
+      // resumable), so observers read a settled row. Non-terminal is a no-op.
+      this.notifySettled(runId)
     }
   }
 
@@ -1015,8 +1114,14 @@ export class ProcessService {
 
       // A fan-out CHILD runs its decomposed sub-task briefing verbatim; a normal
       // phase gets the generic self-contained kickoff (plan 025.1).
-      const prompt =
-        subtaskPrompt ??
+      // A fan-out child runs its decomposed briefing verbatim, which says
+      // nothing about running headless; add the note unless it is present.
+      const briefing =
+        subtaskPrompt && !subtaskPrompt.includes(UNATTENDED_WORK_NOTE)
+          ? `${subtaskPrompt}\n\n${UNATTENDED_WORK_NOTE}`
+          : subtaskPrompt
+      const basePrompt =
+        briefing ??
         kickoffPrompt({
           phase,
           objective: run.objective ?? "",
@@ -1029,6 +1134,10 @@ export class ProcessService {
           // first run.
           reworkNote,
         })
+      const prompt =
+        phase.proofStep && this.missionControlRoot(run)?.missionControl?.sliceId
+          ? `${basePrompt}\n\n${PROOF_STEP_INSTRUCTION}`
+          : basePrompt
 
       // Resolve the phase's agent BEFORE forking the worker: for a `dispatch`
       // phase this routes over the pool per (sub-)task, using `prompt` as the
@@ -1039,32 +1148,45 @@ export class ProcessService {
         phase,
         slot: "router",
       })
-      const agentName = await this.resolveAgent(phase, {
-        taskPrompt: prompt,
-        selection: routerRuntime.selection,
-        workspace,
-        signal,
-      })
-      if (phase.routing === "dispatch") {
-        snapshotRuntime(phaseRun, "router", routerRuntime)
-      }
-      const phaseAgent = processes
-        .listPhaseAgents(phase.id)
-        .find((agent) => agent.agentName === agentName)
-      const workerRuntime = resolveRuntime({
-        run,
-        source,
-        phase,
-        slot: "worker",
-        phaseAgent,
-      })
-
       const existingWorkerTask =
         !reworkNote && phaseRun.taskId ? getTask(phaseRun.taskId) : undefined
       const existingWorker = existingWorkerTask
         ? getConversation(existingWorkerTask.conversationId)
         : undefined
       const resumingWorker = !!existingWorkerTask && !!existingWorker
+
+      let resolved: ResolvedWorker
+      try {
+        resolved = await this.resolveWorker(run, phase, {
+          routing: {
+            taskPrompt: prompt,
+            selection: routerRuntime.selection,
+            workspace,
+            signal,
+          },
+          // A resumed worker keeps the seat it started with rather than
+          // re-routing mid-conversation.
+          preferSeat: resumingWorker ? phaseRun.seatAddress : null,
+          workspace,
+        })
+      } catch (err) {
+        return {
+          error: err instanceof Error ? err.message : String(err),
+          retryable: false,
+        }
+      }
+      const { agentName, phaseAgent, seat } = resolved
+      if (phase.routing === "dispatch") {
+        snapshotRuntime(phaseRun, "router", routerRuntime)
+      }
+      const workerRuntime = resolveRuntime({
+        run,
+        source,
+        phase,
+        slot: "worker",
+        phaseAgent,
+        seat,
+      })
       const worker =
         existingWorker ??
         createConversation({
@@ -1073,7 +1195,7 @@ export class ProcessService {
           accountId: workerRuntime.selection.accountId,
           modelId: workerRuntime.selection.modelId,
           agentName,
-          title: `${phase.name}${agentName ? `: ${agentName}` : ""}`,
+          title: `${phase.name}${seat ? `: ${seat.address}` : agentName ? `: ${agentName}` : ""}`,
         })
       let workerTaskId = existingWorkerTask?.id ?? null
       if (!resumingWorker) {
@@ -1095,6 +1217,7 @@ export class ProcessService {
         processes.updatePhaseRun(phaseRun.id, {
           taskId: workerTask.id,
           agentName,
+          seatAddress: seat?.address ?? null,
         })
       }
       snapshotRuntime(phaseRun, "worker", workerRuntime)
@@ -1127,6 +1250,14 @@ export class ProcessService {
             phase.completionContract ?? { policy: "legacy" },
             attemptId
           ),
+          // Mission Control seat-bound worker (plan 106.3): the seat's narrowed
+          // agent and its layered context. Absent for ordinary Processes.
+          ...(resolved.agentOverride
+            ? { agentOverride: resolved.agentOverride }
+            : {}),
+          extraContextSections: resolved.contextSections,
+          processProofStep:
+            !!phase.proofStep && !!this.missionControlRoot(run)?.missionControl,
           // Headless worker: no user to answer a clarifying question (it would only
           // stall until interrupted). The kickoff frames the work as self-contained.
           suppressUserQuestions: true,
@@ -1184,7 +1315,23 @@ export class ProcessService {
         : undefined
       // The decomposition (planning) pass runs on pool[0]; each resulting CHILD
       // routes independently over the pool in makeRunPhase (plan 025.3).
-      const agentName = await this.resolveAgent(phase)
+      let resolved: ResolvedWorker
+      try {
+        resolved = await this.resolveWorker(run, phase, {
+          preferSeat: phaseRun.seatAddress,
+          workspace:
+            (() => {
+              const id = run.workspaceId ?? source?.workspaceId ?? null
+              return id ? getWorkspace(id)?.path : undefined
+            })(),
+        })
+      } catch (err) {
+        return {
+          error: err instanceof Error ? err.message : String(err),
+          retryable: false,
+        }
+      }
+      const { agentName } = resolved
       const decomposerRuntime = resolveRuntime({
         run,
         source,
@@ -1215,7 +1362,7 @@ export class ProcessService {
           accountId: decomposerRuntime.selection.accountId,
           modelId: decomposerRuntime.selection.modelId,
           agentName,
-          title: `${phase.name} (decompose)${agentName ? `: ${agentName}` : ""}`,
+          title: `${phase.name} (decompose)${resolved.seat ? `: ${resolved.seat.address}` : agentName ? `: ${agentName}` : ""}`,
         })
       let workerTaskId = existingWorkerTask?.id ?? null
       if (!resumingWorker) {
@@ -1235,6 +1382,7 @@ export class ProcessService {
         processes.updatePhaseRun(phaseRun.id, {
           taskId: workerTask.id,
           agentName,
+          seatAddress: resolved.seat?.address ?? null,
         })
       }
       snapshotRuntime(phaseRun, "decomposer", decomposerRuntime)
@@ -1270,6 +1418,10 @@ export class ProcessService {
           abort: childAbort,
           taskId: workerTaskId ?? undefined,
           autoMode: true,
+          ...(resolved.agentOverride
+            ? { agentOverride: resolved.agentOverride }
+            : {}),
+          extraContextSections: resolved.contextSections,
           // Headless worker — no user to answer a clarifying question.
           suppressUserQuestions: true,
           onEvent: () => {},
@@ -1375,19 +1527,30 @@ export class ProcessService {
 
       // The dedicated reviewer agent, falling back to the phase's own resolved
       // agent (pool[0]) when none is configured.
-      const pool = processes.listPhaseAgents(phase.id)
-      const agentName = phase.validatorAgent ?? pool[0]?.agentName ?? null
+      const workspaceId = run.workspaceId ?? source?.workspaceId ?? null
+      const workspace = workspaceId
+        ? getWorkspace(workspaceId)?.path
+        : undefined
+      let reviewer: ResolvedWorker
+      try {
+        reviewer = phase.validatorAgent
+          ? { agentName: phase.validatorAgent, seat: null }
+          : await this.resolveWorker(run, phase, { workspace })
+      } catch (err) {
+        return {
+          approved: false,
+          error: err instanceof Error ? err.message : String(err),
+          retryable: false,
+        }
+      }
+      const agentName = reviewer.agentName
       const validatorRuntime = resolveRuntime({
         run,
         source,
         phase,
         slot: "validator",
+        seat: reviewer.seat,
       })
-
-      const workspaceId = run.workspaceId ?? source?.workspaceId ?? null
-      const workspace = workspaceId
-        ? getWorkspace(workspaceId)?.path
-        : undefined
 
       const validatorRound =
         processes.getPhaseRun(phaseRun.id)?.validatorRound ??
@@ -1410,7 +1573,7 @@ export class ProcessService {
           accountId: validatorRuntime.selection.accountId,
           modelId: validatorRuntime.selection.modelId,
           agentName,
-          title: `${phase.name} (review)${agentName ? `: ${agentName}` : ""}`,
+          title: `${phase.name} (review)${reviewer.seat ? `: ${reviewer.seat.address}` : agentName ? `: ${agentName}` : ""}`,
         })
       let workerTaskId = existingWorkerTask?.id ?? null
       if (!resumingWorker) {
@@ -1457,6 +1620,10 @@ export class ProcessService {
           abort: childAbort,
           taskId: workerTaskId ?? undefined,
           autoMode: true,
+          ...(reviewer.agentOverride
+            ? { agentOverride: reviewer.agentOverride }
+            : {}),
+          extraContextSections: reviewer.contextSections,
           // Headless reviewer — no user to answer a clarifying question.
           suppressUserQuestions: true,
           onEvent: () => {},
@@ -1539,14 +1706,118 @@ export class ProcessService {
     return graph?.phases.find((p) => p.id === phaseId)?.key ?? ""
   }
 
-  // Resolve which agent runs a phase (or one of its sub-tasks). `single` phases
-  // use the pool's first agent (position 0). `dispatch` phases (plan 025.3) route
-  // over the pool per (sub-)task via an LLM classifier when routing context is
-  // supplied; the classifier falls back to pool[0] internally so a dispatch phase
-  // never wedges. Without routing context (e.g. a fan-out phase's decomposition
-  // pass), or an empty pool, this is the plain pool[0] path.
+  // Resolve who runs a phase (or one of its sub-tasks). `single` phases use the
+  // pool's first entry (position 0). `dispatch` phases (plan 025.3) route over
+  // the pool per (sub-)task via an LLM classifier when routing context is
+  // supplied; the classifier falls back to the first candidate internally so a
+  // dispatch phase never wedges. Without routing context (e.g. a fan-out phase's
+  // decomposition pass), or an empty pool, this is the plain first-entry path.
+  //
+  // Seat-role rows (plan 106.3) expand to the seats frozen on the run's
+  // Mission Control snapshot — never the live rig — and each bound seat brings
+  // its narrowed agent and layered context. A seat-role phase outside a Mission
+  // Control run fails rather than silently falling back to a default agent.
+  private async resolveWorker(
+    run: ProcessRun,
+    phase: ProcessPhase,
+    options: {
+      routing?: {
+        taskPrompt: string
+        selection: LlmSelection
+        workspace?: string
+        signal: AbortSignal
+      }
+      preferSeat?: string | null
+      workspace?: string
+    }
+  ): Promise<ResolvedWorker> {
+    const pool = processes.listPhaseAgents(phase.id)
+    if (pool.length === 0) return { agentName: null, seat: null }
+    if (!pool.some((agent) => agent.seatRole)) {
+      const agentName = await this.resolveAgent(phase, pool, options.routing)
+      return {
+        agentName,
+        phaseAgent: pool.find((agent) => agent.agentName === agentName),
+        seat: null,
+      }
+    }
+
+    const bindings = this.missionControlRoot(run)?.seatBindings
+    type Candidate =
+      | { kind: "seat"; name: string; seat: SeatBinding; row: ProcessPhaseAgent }
+      | { kind: "agent"; name: string; row: ProcessPhaseAgent }
+    const candidates: Candidate[] = []
+    for (const row of pool) {
+      if (row.agentName) {
+        candidates.push({ kind: "agent", name: row.agentName, row })
+        continue
+      }
+      const role = row.seatRole!
+      if (!bindings)
+        throw new Error(
+          `Phase "${phase.name}" is bound to seat role "${role}", which only resolves inside a Mission Control run.`
+        )
+      const addresses = bindings.roles[role]
+      if (!addresses?.length)
+        throw new Error(
+          `Phase "${phase.name}" needs seat role "${role}", which this run's seat bindings do not include.`
+        )
+      for (const address of addresses) {
+        const seat = bindings.seats[address]
+        if (seat) candidates.push({ kind: "seat", name: address, seat, row })
+      }
+    }
+    if (!candidates.length) return { agentName: null, seat: null }
+
+    let chosen =
+      (options.preferSeat &&
+        candidates.find((c) => c.kind === "seat" && c.name === options.preferSeat)) ||
+      candidates[0]
+    if (
+      !options.preferSeat &&
+      phase.routing === "dispatch" &&
+      options.routing &&
+      candidates.length > 1
+    ) {
+      const descriptions = await Promise.all(
+        candidates.map(async (c) =>
+          c.kind === "seat"
+            ? [c.seat.charter, c.seat.agentLabel].filter(Boolean).join(" — ")
+            : ((await loadAgent(c.name, options.routing!.workspace).catch(
+                () => null
+              ))?.description ?? "")
+        )
+      )
+      const picked = await routeCandidates({
+        candidates: candidates.map((c, i) => ({
+          name: c.name,
+          description: descriptions[i],
+        })),
+        taskPrompt: options.routing.taskPrompt,
+        selection: options.routing.selection,
+        signal: options.routing.signal,
+      })
+      chosen = candidates.find((c) => c.name === picked) ?? candidates[0]
+    }
+
+    if (chosen.kind === "agent")
+      return { agentName: chosen.name, phaseAgent: chosen.row, seat: null }
+    const agent = await loadAgent(chosen.seat.agentName, options.workspace)
+    if (!agent)
+      throw new Error(
+        `Seat ${chosen.seat.address}'s agent (${chosen.seat.agentLabel}) is no longer available.`
+      )
+    return {
+      agentName: chosen.seat.agentName,
+      seat: chosen.seat,
+      agentOverride: narrowedSeatAgent(agent, chosen.seat),
+      contextSections: [seatContextSection(bindings!, chosen.seat)],
+    }
+  }
+
   private async resolveAgent(
     phase: ProcessPhase,
+    pool: ProcessPhaseAgent[],
     routing?: {
       taskPrompt: string
       selection: LlmSelection
@@ -1554,9 +1825,8 @@ export class ProcessService {
       signal: AbortSignal
     }
   ): Promise<string | null> {
-    const pool = processes.listPhaseAgents(phase.id)
-    if (pool.length === 0) return null
-    if (phase.routing !== "dispatch" || !routing) return pool[0].agentName
+    const first = pool[0]?.agentName ?? null
+    if (phase.routing !== "dispatch" || !routing || !first) return first
     return route({
       pool,
       taskPrompt: routing.taskPrompt,
@@ -1564,6 +1834,26 @@ export class ProcessService {
       workspace: routing.workspace,
       signal: routing.signal,
     })
+  }
+
+  // The top-level run carrying Mission Control state. A nested sub-process run
+  // (plan 038.1) inherits its root's seat bindings and container link.
+  private missionControlRoot(
+    run: ProcessRun
+  ): { seatBindings: SeatBindingsSnapshot | null; missionControl: MissionControlRunLink | null } | null {
+    let current: ProcessRun | undefined = run
+    for (let depth = 0; current && depth <= MAX_PROCESS_DEPTH + 1; depth++) {
+      if (!current.parentPhaseRunId)
+        return {
+          seatBindings: current.seatBindings ?? null,
+          missionControl: current.missionControl ?? null,
+        }
+      const parentPhaseRun = processes.getPhaseRun(current.parentPhaseRunId)
+      current = parentPhaseRun
+        ? processes.getProcessRun(parentPhaseRun.runId)
+        : undefined
+    }
+    return null
   }
 
   // A digest of the completed upstream phases' final output, for the kickoff.

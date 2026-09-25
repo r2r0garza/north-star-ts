@@ -36,7 +36,10 @@ import type {
 } from "../agent/agents/types"
 import { sanitizeFailureContext } from "../tasks/process/failure-sanitizer"
 
-const FORMAT_VERSION = 1
+// v2 (plan 106.3) adds seat-role phase agents and proof steps; v1 files remain
+// importable and export unchanged in meaning.
+const FORMAT_VERSION = 2
+const SUPPORTED_FORMAT_VERSIONS = [1, 2]
 const INCIDENT_FORMAT_VERSION = 1
 const AGENT_REF_PREFIX = "agentref:v1:"
 
@@ -77,7 +80,7 @@ export interface PortableSubprocessDescriptor {
 }
 
 export interface ProcessExportPhaseAgent {
-  agent: PortableAgentDescriptor | { legacyName: string }
+  agent: PortableAgentDescriptor | { legacyName: string } | { seatRole: string }
   skills: string[] | null
   tools: string[] | null
   runtimeConfig?: ProcessRuntimeConfig | null
@@ -97,6 +100,7 @@ export interface ProcessExportPhase {
   validatorMaxIterations: number
   validatorAgent: PortableAgentDescriptor | { legacyName: string } | null
   subprocess: PortableSubprocessDescriptor | null
+  proofStep?: boolean
   runtimeConfig?: ProcessRuntimeConfig | null
   position: number
   agents: ProcessExportPhaseAgent[]
@@ -109,7 +113,7 @@ export interface ProcessExportEdge {
 }
 
 export interface ProcessExport {
-  formatVersion: 1
+  formatVersion: 1 | 2
   exportedAt: string
   definition: {
     name: string
@@ -269,7 +273,9 @@ export function buildProcessExport(graph: ProcessGraph): ProcessExport {
   for (const agent of graph.agents) {
     const list = agentsByPhaseId.get(agent.phaseId) ?? []
     list.push({
-      agent: agentToExport(agent.agentName),
+      agent: agent.seatRole
+        ? { seatRole: agent.seatRole }
+        : agentToExport(agent.agentName ?? ""),
       skills: agent.skills,
       tools: agent.tools,
       runtimeConfig: agent.runtimeConfig ?? null,
@@ -306,6 +312,7 @@ export function buildProcessExport(graph: ProcessGraph): ProcessExport {
             ? agentToExport(phase.validatorAgent)
             : null,
           subprocess: subprocess ? { name: subprocess.name } : null,
+          proofStep: phase.proofStep ?? false,
           runtimeConfig: phase.runtimeConfig ?? null,
           position: phase.position,
           agents: (agentsByPhaseId.get(phase.id) ?? []).sort(
@@ -410,6 +417,7 @@ export function importProcessExport(input: unknown): ProcessImportResult {
             )
           : null,
         subprocessId,
+        proofStep: phase.proofStep ?? false,
         runtimeConfig: phase.runtimeConfig,
         position: phase.position,
       })
@@ -418,11 +426,15 @@ export function importProcessExport(input: unknown): ProcessImportResult {
       for (const agent of phase.agents) {
         createPhaseAgent({
           phaseId: created.id,
-          agentName: agentFromExport(
-            agent.agent,
-            warnings,
-            `phase '${phase.key}' agent`
-          ),
+          ...("seatRole" in agent.agent
+            ? { seatRole: agent.agent.seatRole }
+            : {
+                agentName: agentFromExport(
+                  agent.agent,
+                  warnings,
+                  `phase '${phase.key}' agent`
+                ),
+              }),
           skills: agent.skills,
           tools: agent.tools,
           runtimeConfig: agent.runtimeConfig,
@@ -581,7 +593,10 @@ function resolveSubprocess(
 function validateProcessExport(input: unknown): ProcessExport {
   if (!isRecord(input))
     throw new Error("Import file must contain a JSON object")
-  if (input.formatVersion !== FORMAT_VERSION) {
+  if (
+    typeof input.formatVersion !== "number" ||
+    !SUPPORTED_FORMAT_VERSIONS.includes(input.formatVersion)
+  ) {
     throw new Error(
       `Unsupported process export formatVersion: ${String(input.formatVersion)}`
     )
@@ -649,6 +664,10 @@ function validateProcessExport(input: unknown): ProcessExport {
               phase.subprocess,
               `phases[${index}].subprocess`
             ),
+      proofStep:
+        phase.proofStep === undefined
+          ? false
+          : booleanValue(phase.proofStep, `phases[${index}].proofStep`),
       runtimeConfig: validateRuntimeConfig(
         phase.runtimeConfig,
         `phases[${index}].runtimeConfig`
@@ -660,11 +679,18 @@ function validateProcessExport(input: unknown): ProcessExport {
             rawAgent,
             `phases[${index}].agents[${agentIndex}]`
           )
+          const agentPath = `phases[${index}].agents[${agentIndex}].agent`
+          const rawDescriptor = requireRecord(agent.agent, agentPath)
           return {
-            agent: validateAgentDescriptor(
-              agent.agent,
-              `phases[${index}].agents[${agentIndex}].agent`
-            ),
+            agent:
+              "seatRole" in rawDescriptor
+                ? {
+                    seatRole: nonEmptyString(
+                      rawDescriptor.seatRole,
+                      `${agentPath}.seatRole`
+                    ),
+                  }
+                : validateAgentDescriptor(agent.agent, agentPath),
             skills: nullableStringArray(
               agent.skills,
               `phases[${index}].agents[${agentIndex}].skills`

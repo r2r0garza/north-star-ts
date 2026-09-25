@@ -53,6 +53,18 @@ import type {
   SliceEdge,
   SliceSpec,
   WorkRevision,
+  Playbook,
+  PlaybookAltitude,
+  PlaybookHook,
+  PlaybookHookName,
+  PlaybookRun,
+  PlaybookRunStatus,
+  PlaybookWithHooks,
+  SeatBinding,
+  SeatBindingsSnapshot,
+  SliceProof,
+  ProofCriterionStatus,
+  MissionControlRunLink,
 } from "../main/db/types"
 import type { ActionKind } from "../main/agent/approval/types"
 import type { PickedElement } from "../main/browser/types"
@@ -628,6 +640,7 @@ const api = {
             | "workspaceId"
             | "projectId"
             | "defaultPodKey"
+            | "playbookId"
           >
         >,
         reason?: string
@@ -673,7 +686,7 @@ const api = {
         patch: Partial<
           Pick<
             Mission,
-            "key" | "name" | "outcome" | "definitionOfDone" | "position"
+            "key" | "name" | "outcome" | "definitionOfDone" | "position" | "playbookId"
           >
         >,
         reason?: string
@@ -708,7 +721,10 @@ const api = {
       update: (
         id: string,
         patch: Partial<
-          Pick<WorkSlice, "key" | "title" | "spec" | "podKey" | "position">
+          Pick<
+            WorkSlice,
+            "key" | "title" | "spec" | "podKey" | "position" | "playbookId"
+          >
         >,
         reason?: string
       ) =>
@@ -880,6 +896,89 @@ const api = {
           rigId,
           edges
         ) as Promise<RigOversight[]>,
+    },
+    // Playbooks and execution (plan 106.3).
+    playbooks: {
+      list: () =>
+        ipcRenderer.invoke("missionControl:playbooks:list") as Promise<
+          PlaybookWithHooks[]
+        >,
+      processIds: () =>
+        ipcRenderer.invoke("missionControl:playbooks:processIds") as Promise<
+          string[]
+        >,
+      create: (input: {
+        name: string
+        altitude: PlaybookAltitude
+        description?: string
+      }) =>
+        ipcRenderer.invoke(
+          "missionControl:playbooks:create",
+          input
+        ) as Promise<PlaybookWithHooks>,
+      createDefault: (altitude: PlaybookAltitude) =>
+        ipcRenderer.invoke(
+          "missionControl:playbooks:createDefault",
+          altitude
+        ) as Promise<PlaybookWithHooks>,
+      update: (
+        id: string,
+        patch: { name?: string; description?: string | null }
+      ) =>
+        ipcRenderer.invoke(
+          "missionControl:playbooks:update",
+          id,
+          patch
+        ) as Promise<PlaybookWithHooks>,
+      delete: (id: string) =>
+        ipcRenderer.invoke("missionControl:playbooks:delete", id) as Promise<void>,
+      createHookProcess: (id: string, hook: PlaybookHookName) =>
+        ipcRenderer.invoke(
+          "missionControl:playbooks:createHookProcess",
+          id,
+          hook
+        ) as Promise<PlaybookWithHooks>,
+      removeHook: (id: string, hook: PlaybookHookName) =>
+        ipcRenderer.invoke(
+          "missionControl:playbooks:removeHook",
+          id,
+          hook
+        ) as Promise<PlaybookWithHooks>,
+    },
+    playbookRuns: {
+      list: (filter: {
+        initiativeId?: string
+        missionId?: string
+        sliceId?: string
+        status?: PlaybookRunStatus
+      }) =>
+        ipcRenderer.invoke(
+          "missionControl:playbookRuns:list",
+          filter
+        ) as Promise<PlaybookRun[]>,
+      cancel: (id: string) =>
+        ipcRenderer.invoke(
+          "missionControl:playbookRuns:cancel",
+          id
+        ) as Promise<void>,
+    },
+    execution: {
+      runSlice: (sliceId: string) =>
+        ipcRenderer.invoke("missionControl:slices:run", sliceId) as Promise<
+          PlaybookRun
+        >,
+      cancelSlice: (sliceId: string) =>
+        ipcRenderer.invoke("missionControl:slices:cancel", sliceId) as Promise<
+          void
+        >,
+      runHook: (input: {
+        initiativeId: string
+        missionId?: string | null
+        hook: PlaybookHookName
+      }) =>
+        ipcRenderer.invoke("missionControl:hooks:run", input) as Promise<
+          PlaybookRun
+        >,
     },
   },
   agents: {
@@ -1499,6 +1598,7 @@ const api = {
             validatorMaxIterations?: number
             validatorAgent?: string | null
             subprocessId?: string | null
+            proofStep?: boolean
             runtimeConfig?: ProcessRuntimeConfig | null
             position?: number
           }
@@ -1514,7 +1614,8 @@ const api = {
       agents: {
         create: (input: {
           phaseId: string
-          agentName: string
+          agentName?: string | null
+          seatRole?: string | null
           skills?: string[] | null
           tools?: string[] | null
           runtimeConfig?: ProcessRuntimeConfig | null
@@ -2165,6 +2266,18 @@ export type {
   SliceEdge,
   SliceSpec,
   WorkRevision,
+  Playbook,
+  PlaybookAltitude,
+  PlaybookHook,
+  PlaybookHookName,
+  PlaybookRun,
+  PlaybookRunStatus,
+  PlaybookWithHooks,
+  SeatBinding,
+  SeatBindingsSnapshot,
+  SliceProof,
+  ProofCriterionStatus,
+  MissionControlRunLink,
 } from "../main/db/types"
 export type {
   ProcessImportResult,

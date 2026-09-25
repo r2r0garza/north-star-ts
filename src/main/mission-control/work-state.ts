@@ -46,3 +46,36 @@ export function transitionSliceStatus(
 ): SliceStatus {
   return transition(current, next, SLICE_TRANSITIONS)
 }
+
+// The shortest legal status path from current to target (excluding current),
+// or null when target is unreachable. Execution outcomes walk this path so every
+// hop is a legal transition — e.g. running → proving → integrating → done while
+// integration is a pass-through until 106.5.
+export function sliceStatusPath(
+  current: SliceStatus,
+  target: SliceStatus
+): SliceStatus[] | null {
+  if (current === target) return []
+  const previous = new Map<SliceStatus, SliceStatus>()
+  const queue: SliceStatus[] = [current]
+  const seen = new Set<SliceStatus>([current])
+  while (queue.length) {
+    const status = queue.shift()!
+    for (const next of SLICE_TRANSITIONS[status]) {
+      if (seen.has(next)) continue
+      seen.add(next)
+      previous.set(next, status)
+      if (next === target) {
+        const path: SliceStatus[] = [target]
+        let cursor = status
+        while (cursor !== current) {
+          path.unshift(cursor)
+          cursor = previous.get(cursor)!
+        }
+        return path
+      }
+      queue.push(next)
+    }
+  }
+  return null
+}

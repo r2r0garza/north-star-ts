@@ -44,7 +44,7 @@ describe.skipIf(!sqliteLoads)("process import/export", () => {
     const exported = buildProcessExport(graph)
     const text = JSON.stringify(exported)
 
-    expect(exported.formatVersion).toBe(1)
+    expect(exported.formatVersion).toBe(2)
     expect(exported.phases[0].runtimeConfig).toMatchObject({
       worker: { provider: "openai", modelId: "gpt-5.5" },
       validator: { provider: "anthropic", modelId: "opus" },
@@ -485,5 +485,70 @@ describe.skipIf(!sqliteLoads)("completion policy portability", () => {
     } as never
     expect(() => importProcessExport(exported)).toThrow()
     expect(listProcessDefinitions()).toHaveLength(count)
+  })
+})
+
+describe.skipIf(!sqliteLoads)("seat roles and proof steps (format v2)", () => {
+  it("exports seat-role agents and proof steps, and re-imports them", () => {
+    const def = createProcessDefinition({ name: "Slice playbook" })
+    const phase = createPhase({
+      processId: def.id,
+      key: "test",
+      name: "Test",
+      proofStep: true,
+      position: 0,
+    })
+    createPhaseAgent({ phaseId: phase.id, seatRole: "qa", position: 0 })
+
+    const exported = buildProcessExport(getProcessGraph(def.id)!)
+    expect(exported.formatVersion).toBe(2)
+    expect(exported.phases[0]).toMatchObject({
+      proofStep: true,
+      agents: [{ agent: { seatRole: "qa" } }],
+    })
+
+    const imported = importProcessExport(
+      JSON.parse(JSON.stringify(exported)) as unknown
+    )
+    const graph = getProcessGraph(imported.processId)!
+    expect(graph.phases[0].proofStep).toBe(true)
+    expect(graph.agents[0]).toMatchObject({ agentName: null, seatRole: "qa" })
+    expect(imported.warnings).toEqual([])
+  })
+
+  it("still imports a v1 file without the new fields", () => {
+    const imported = importProcessExport({
+      formatVersion: 1,
+      exportedAt: "",
+      definition: { name: "Old", description: null, requireFlagApproval: true },
+      phases: [
+        {
+          key: "a",
+          name: "A",
+          routing: "single",
+          gatePolicy: "auto",
+          fanOut: false,
+          maxReworkRounds: 0,
+          dotFolder: false,
+          validator: false,
+          validatorMaxIterations: 0,
+          validatorAgent: null,
+          subprocess: null,
+          position: 0,
+          agents: [
+            {
+              agent: { legacyName: "coder" },
+              skills: null,
+              tools: null,
+              position: 0,
+            },
+          ],
+        },
+      ],
+      edges: [],
+    })
+    const graph = getProcessGraph(imported.processId)!
+    expect(graph.phases[0].proofStep).toBe(false)
+    expect(graph.agents[0]).toMatchObject({ agentName: "coder", seatRole: null })
   })
 })

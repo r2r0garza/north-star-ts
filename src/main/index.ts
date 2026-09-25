@@ -114,6 +114,8 @@ import { IndexWatcher } from "./index/watcher"
 import { SummaryService, SUMMARIZE_KIND } from "./summaries/service"
 import { ProcessService, PROCESS_RUN_KIND } from "./tasks/process/service"
 import { registerProcessHandlers } from "./ipc/process-handlers"
+import { SliceRunner } from "./mission-control/slice-runner"
+import { getAccount as getProviderAccount } from "./db/repositories/provider-accounts"
 import { DashboardService, DASHBOARD_REFRESH_KIND } from "./dashboards/service"
 import { registerDashboardHandlers } from "./ipc/dashboard-handlers"
 import { registerMissionControlHandlers } from "./ipc/mission-control-handlers"
@@ -152,6 +154,20 @@ const summaryService = new SummaryService(taskRunner)
 // The Process engine (plan 025), driven as the deterministic `process_run` task
 // kind. Holds the runner reference so startRun can enqueue the orchestrator task.
 const processService = new ProcessService(taskRunner)
+// Mission Control slice execution (plan 106.3): launches playbooks as Process
+// runs and applies each run's terminal outcome to its slice exactly once.
+const sliceRunner = new SliceRunner({
+  startProcessRun: (input) => processService.startRun(input),
+  cancelTask: (taskId) => taskRunner.cancel(taskId),
+  loadAgents: (workspace) => loadAgents(agentSources(workspace)),
+  workerProvider: (accountId) => {
+    const id = accountId ?? settingsService.getLlm().activeAccountId
+    return id ? (getProviderAccount(id)?.provider ?? null) : null
+  },
+})
+processService.onRunSettled((processRunId) =>
+  sliceRunner.settle(processRunId)
+)
 // Deterministic dashboard refresh (plan 033.3): re-runs each widget's stored
 // recipe headless. Holds the runner reference so ensureRefresh can enqueue.
 const dashboardService = new DashboardService(taskRunner)
@@ -1343,7 +1359,10 @@ app.whenReady().then(async () => {
   registerProcessHandlers(taskRunner, processService)
   registerIndexHandlers(taskRunner, indexService, indexWatcher)
   registerDashboardHandlers(taskRunner, dashboardService)
-  registerMissionControlHandlers()
+  registerMissionControlHandlers(sliceRunner)
+  // Apply outcomes for playbook runs whose Process run settled while the app
+  // was down (idempotent; in-flight runs resume through the task runner).
+  sliceRunner.reconcile()
   registerTerminalHandlers(terminalService)
   registerFileWatchHandlers()
   await indexWatcher.setEnabled(settingsService.getIndexing().watchWorkspaces)

@@ -9,13 +9,23 @@ vi.mock("../connection", () => ({ getDb: () => db }))
 
 import { createPod, createRig } from "./rigs"
 import {
+  createPlaybook,
+  createPlaybookRun,
+  deletePlaybook,
+  finishPlaybookRun,
+} from "./playbooks"
+import {
   createInitiative,
   createMission,
   createSlice,
+  deleteInitiative,
   deleteMission,
+  deleteSlice,
   getInitiativeGraph,
   setSliceEdges,
   startInitiative,
+  updateInitiative,
+  updateMission,
   updateSlice,
 } from "./initiatives"
 
@@ -148,5 +158,84 @@ describe.skipIf(!sqliteLoads)("initiative repository", () => {
       rigId: null,
       projectId: null,
     })
+  })
+
+  it("assigns playbooks per altitude and clears them when a playbook is deleted", () => {
+    const graph = createInitiative({
+      key: "pick",
+      name: "Pick",
+      intent: "",
+      definitionOfDone: "",
+    })
+    const mission = graph.missions[0]
+    const slice = createSlice({ missionId: mission.id, key: "a", title: "A" })
+      .slices[0]
+    const slicePlaybook = createPlaybook({ name: "Hotfix", altitude: "slice" })
+    const missionPlaybook = createPlaybook({
+      name: "Review only",
+      altitude: "mission",
+    })
+    const initiativePlaybook = createPlaybook({
+      name: "Release train",
+      altitude: "initiative",
+    })
+
+    expect(
+      updateSlice(slice.id, { playbookId: slicePlaybook.id }).slices[0]
+        .playbookId
+    ).toBe(slicePlaybook.id)
+    expect(
+      updateMission(mission.id, { playbookId: missionPlaybook.id }).missions[0]
+        .playbookId
+    ).toBe(missionPlaybook.id)
+    expect(
+      updateInitiative(graph.initiative.id, {
+        playbookId: initiativePlaybook.id,
+      }).initiative.playbookId
+    ).toBe(initiativePlaybook.id)
+    expect(() =>
+      updateSlice(slice.id, { playbookId: missionPlaybook.id })
+    ).toThrow("A mission playbook can't be used for a slice.")
+    expect(() => updateMission(mission.id, { playbookId: "missing" })).toThrow(
+      "Playbook not found"
+    )
+
+    deletePlaybook(slicePlaybook.id)
+    const after = getInitiativeGraph(graph.initiative.id)!
+    expect(after.slices[0].playbookId).toBeNull()
+    expect(after.missions[0].playbookId).toBe(missionPlaybook.id)
+    expect(
+      updateMission(mission.id, { playbookId: null }).missions[0].playbookId
+    ).toBeNull()
+  })
+
+  it("refuses to delete work while a playbook run is in progress", () => {
+    const graph = createInitiative({
+      key: "busy",
+      name: "Busy",
+      intent: "",
+      definitionOfDone: "",
+    })
+    const mission = graph.missions[0]
+    const slice = createSlice({ missionId: mission.id, key: "a", title: "A" })
+      .slices[0]
+    const run = createPlaybookRun({
+      playbookId: null,
+      hook: "run",
+      initiativeId: graph.initiative.id,
+      sliceId: slice.id,
+    })
+
+    expect(() => deleteSlice(slice.id)).toThrow("Cancel it first")
+    expect(() => deleteMission(mission.id)).toThrow("Cancel it first")
+    expect(() => deleteInitiative(graph.initiative.id)).toThrow(
+      "Cancel it first"
+    )
+
+    finishPlaybookRun(run.id, "cancelled", null)
+    expect(deleteSlice(slice.id).slices).toHaveLength(0)
+    deleteMission(mission.id)
+    deleteInitiative(graph.initiative.id)
+    expect(getInitiativeGraph(graph.initiative.id)).toBeNull()
   })
 })

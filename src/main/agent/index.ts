@@ -85,6 +85,7 @@ import {
 } from "./subagents/worktrees"
 import { containerNameForConversation } from "./env/container"
 import { flagForReworkTool } from "./tools/flag_for_rework"
+import { recordProofTool } from "./tools/record_proof"
 import { dashboardWriteTool } from "./tools/dashboard_write"
 import { dashboardReadTool } from "./tools/dashboard_read"
 import { loadSystemPrompt } from "./system-prompt"
@@ -794,6 +795,14 @@ export interface RunAgentLoopOptions {
   processPhaseRunId?: string
   // Process-only format instruction, refreshed even when resuming a transcript.
   processCompletionInstruction?: string
+  // Mission Control (plan 106.3): this worker runs a playbook's proof step, so
+  // it is offered record_proof. The tool re-derives the slice, criteria, and
+  // seats from the run itself; this flag only controls the offer.
+  processProofStep?: boolean
+  // Extra system-block context sections supplied by the caller — e.g. the
+  // Mission Control seat context (charter, cultures, intent chain). Budgeted
+  // by the ContextBuilder like every other section.
+  extraContextSections?: ContextSection[]
   // Withhold the ask_user_question tool: this turn has NO interactive user to
   // answer a clarifying question, so offering the tool only lets the worker stall
   // until it's interrupted. Set by every Process worker fork (phase / decompose /
@@ -1288,6 +1297,13 @@ export async function runAgentLoop(
       // resolved into `mcpTools`. Withheld in plan mode like spawn (a remote call
       // is a side effect); regained the moment a plan is approved.
       planMode ? [] : mcpTools
+    ).concat(
+      // record_proof (plan 106.3): process-structural like flag_for_rework, and
+      // offered only to a Mission Control proof step, so no agent or seat tool
+      // narrowing may remove it.
+      opts.processProofStep && opts.processRunId && !planMode
+        ? [recordProofTool.definition]
+        : []
     )
   // The non-droppable base prompt (mode prompt). Everything else is a droppable
   // context SECTION handed to the ContextBuilder, which budgets + composes them
@@ -1325,7 +1341,7 @@ export async function runAgentLoop(
     opts.processCompletionInstruction
       ? `\n\n${opts.processCompletionInstruction}`
       : "")
-  const sections: ContextSection[] = []
+  const sections: ContextSection[] = [...(opts.extraContextSections ?? [])]
 
   // Environment orientation: date + model always, and (when a workspace exists)
   // platform + workspace path + a git block for a real repo. Assembled fresh each

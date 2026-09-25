@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import {
   CircleDot,
   CircleHelp,
@@ -33,6 +33,9 @@ import {
 } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
 import { TooltipButton } from "@/components/ui/tooltip"
+import { SliceRunPanel } from "./slice-run-panel"
+import { HookControls } from "./hook-controls"
+import { PlaybookPicker } from "./playbook-picker"
 import type {
   Initiative,
   InitiativeGraph,
@@ -57,6 +60,39 @@ function errorMessage(error: unknown) {
     .replace(/^Error invoking remote method '[^']+':\s*/, "")
     .replace(/^Error:\s*/, "")
 }
+// Structural edits after start are audited and need a reason (plan 106.2).
+function reasonFor(graph: InitiativeGraph, reason: string) {
+  return graph.initiative.status === "draft" ? undefined : reason
+}
+// Shared by the detail views and the list rows. Resolves null when the user
+// backs out of the confirmation.
+async function deleteMissionConfirmed(
+  graph: InitiativeGraph,
+  mission: Mission
+): Promise<InitiativeGraph | null> {
+  const count = graph.slices.filter((s) => s.missionId === mission.id).length
+  if (
+    !window.confirm(
+      `Delete mission “${mission.name}”${count ? ` and its ${count} slice${count === 1 ? "" : "s"}` : ""}? This cannot be undone.`
+    )
+  )
+    return null
+  return window.cowork.missionControl.missions.delete(
+    mission.id,
+    reasonFor(graph, "Remove mission")
+  )
+}
+async function deleteSliceConfirmed(
+  graph: InitiativeGraph,
+  slice: WorkSlice
+): Promise<InitiativeGraph | null> {
+  if (!window.confirm(`Delete slice “${slice.title}”? This cannot be undone.`))
+    return null
+  return window.cowork.missionControl.slices.delete(
+    slice.id,
+    reasonFor(graph, "Remove slice")
+  )
+}
 function lines(value: string) {
   return value
     .split("\n")
@@ -67,12 +103,23 @@ function lines(value: string) {
 function SliceEditor({
   graph,
   slice,
+  workspacePath,
   onSaved,
+  onGraph,
+  onDeleted,
+  onRefresh,
 }: {
   graph: InitiativeGraph
   slice: WorkSlice
+  workspacePath: string
   onSaved: (graph: InitiativeGraph) => void
+  onGraph: (graph: InitiativeGraph) => void
+  onDeleted: (graph: InitiativeGraph) => void
+  onRefresh: () => Promise<void>
 }) {
+  // Once a slice has run, its spec is the proof's contract and only the
+  // execution workflow may revise it (plan 106.2); other fields stay editable.
+  const specFrozen = slice.startedAt !== null
   const [title, setTitle] = useState(slice.title)
   const [key, setKey] = useState(slice.key)
   const [goal, setGoal] = useState(slice.spec.goal)
@@ -100,12 +147,16 @@ function SliceEditor({
         {
           title: title.trim(),
           key: slug(key),
-          spec,
+          ...(specFrozen ? {} : { spec }),
           podKey: podKey === "default" ? null : podKey,
         },
-        graph.initiative.status === "draft" ? undefined : "Refine slice spec"
+        reasonFor(graph, "Refine slice spec")
       )
     )
+  }
+  const remove = async () => {
+    const next = await deleteSliceConfirmed(graph, slice)
+    if (next) onDeleted(next)
   }
   return (
     <div className="space-y-5">
@@ -242,36 +293,67 @@ function SliceEditor({
           />
         </div>
       </div>
-      <div className="space-y-1">
-        <Label>Assigned pod</Label>
-        <Select value={podKey} onValueChange={setPodKey}>
-          <SelectTrigger>
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="default">Initiative default</SelectItem>
-            {pods.map((pod) => (
-              <SelectItem key={pod.key} value={pod.key}>
-                {pod.name}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="space-y-1">
+          <Label>Assigned pod</Label>
+          <Select value={podKey} onValueChange={setPodKey}>
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="default">Initiative default</SelectItem>
+              {pods.map((pod) => (
+                <SelectItem key={pod.key} value={pod.key}>
+                  {pod.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <PlaybookPicker
+          altitude="slice"
+          value={slice.playbookId}
+          onChange={async (playbookId) =>
+            onGraph(
+              await window.cowork.missionControl.slices.update(
+                slice.id,
+                { playbookId },
+                reasonFor(graph, "Change slice playbook")
+              )
+            )
+          }
+        />
       </div>
-      <div className="rounded-md border bg-muted/30 p-4">
-        <h3 className="text-sm font-medium">Proof</h3>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Proof is collected when slice execution lands in the next Mission
-          Control milestone.
+      {specFrozen && (
+        <p className="text-xs text-muted-foreground">
+          This slice has run, so its spec is frozen as the proof's contract.
+          Title, key, pod, and playbook can still change.
         </p>
+      )}
+      <SliceRunPanel
+        graph={graph}
+        slice={slice}
+        workspacePath={workspacePath}
+        onRefresh={onRefresh}
+      />
+      <div className="flex gap-2">
+        <Button
+          onClick={() =>
+            void save().catch((error) => toast.error(errorMessage(error)))
+          }
+        >
+          Save slice
+        </Button>
+        <Button
+          variant="ghost"
+          className="ml-auto text-muted-foreground hover:text-destructive"
+          onClick={() =>
+            void remove().catch((error) => toast.error(errorMessage(error)))
+          }
+        >
+          <Trash2 className="size-4" /> Delete slice
+        </Button>
       </div>
-      <Button
-        onClick={() =>
-          void save().catch((error) => toast.error(errorMessage(error)))
-        }
-      >
-        Save slice
-      </Button>
       {graph.revisions.filter((revision) => revision.targetId === slice.id)
         .length > 0 && (
         <div>
@@ -298,11 +380,13 @@ function MissionView({
   mission,
   onGraph,
   onOpenSlice,
+  onDeleted,
 }: {
   graph: InitiativeGraph
   mission: Mission
   onGraph: (graph: InitiativeGraph) => void
   onOpenSlice: (id: string) => void
+  onDeleted: (graph: InitiativeGraph) => void
 }) {
   const slices = graph.slices.filter((slice) => slice.missionId === mission.id)
   const edges = graph.edges.filter((edge) => edge.missionId === mission.id)
@@ -320,11 +404,17 @@ function MissionView({
       await window.cowork.missionControl.missions.update(
         mission.id,
         { name: missionName, outcome, definitionOfDone },
-        graph.initiative.status === "draft"
-          ? undefined
-          : "Refine mission outcome"
+        reasonFor(graph, "Refine mission outcome")
       )
     )
+  const removeMission = async () => {
+    const next = await deleteMissionConfirmed(graph, mission)
+    if (next) onDeleted(next)
+  }
+  const removeSlice = async (slice: WorkSlice) => {
+    const next = await deleteSliceConfirmed(graph, slice)
+    if (next) onGraph(next)
+  }
   const addSlice = async () => {
     const next = await window.cowork.missionControl.slices.create({
       missionId: mission.id,
@@ -351,8 +441,36 @@ function MissionView({
     setDependencyTarget("")
     onGraph(next)
   }
+  const notActive =
+    graph.initiative.status === "active"
+      ? null
+      : "Start the initiative before running its playbooks."
   return (
     <div className="space-y-5">
+      <HookControls
+        graph={graph}
+        title="Mission playbook"
+        actions={[
+          {
+            hook: "before_slices",
+            label: "Run planning",
+            missionId: mission.id,
+            disabledReason:
+              notActive ??
+              (slices.length ? null : "Add slices to review first."),
+          },
+          {
+            hook: "after_all_slices",
+            label: "Run review",
+            missionId: mission.id,
+            disabledReason:
+              notActive ??
+              (slices.length && slices.every((s) => s.status === "done")
+                ? null
+                : "Every slice must be done before the mission review."),
+          },
+        ]}
+      />
       <div className="grid gap-3 rounded-lg border p-4 lg:grid-cols-2">
         <div className="space-y-3">
           <div className="space-y-1">
@@ -392,6 +510,34 @@ function MissionView({
           </Button>
         </div>
       </div>
+      <div className="flex items-end gap-3">
+        <div className="w-72">
+          <PlaybookPicker
+            altitude="mission"
+            value={mission.playbookId}
+            onChange={async (playbookId) =>
+              onGraph(
+                await window.cowork.missionControl.missions.update(
+                  mission.id,
+                  { playbookId },
+                  reasonFor(graph, "Change mission playbook")
+                )
+              )
+            }
+          />
+        </div>
+        <Button
+          variant="ghost"
+          className="ml-auto text-muted-foreground hover:text-destructive"
+          onClick={() =>
+            void removeMission().catch((error) =>
+              toast.error(errorMessage(error))
+            )
+          }
+        >
+          <Trash2 className="size-4" /> Delete mission
+        </Button>
+      </div>
       <div className="flex gap-2">
         <Input
           value={newTitle}
@@ -421,36 +567,53 @@ function MissionView({
                 </div>
                 <div className="grid grid-cols-[repeat(auto-fit,minmax(14rem,1fr))] gap-3">
                   {wave.map((slice) => (
-                    <button
+                    <div
                       key={slice.id}
-                      className={`block w-full rounded-lg border p-3 text-left hover:bg-muted/50 ${result.criticalPath.includes(slice.id) ? "border-primary/60" : ""}`}
-                      onClick={() => onOpenSlice(slice.id)}
+                      className={`relative rounded-lg border hover:bg-muted/50 ${result.criticalPath.includes(slice.id) ? "border-primary/60" : ""}`}
                     >
-                      <div className="flex items-center gap-2">
-                        <span className="font-medium">{slice.title}</span>
-                        <Badge className="ml-auto" variant="outline">
-                          {slice.status}
-                        </Badge>
-                      </div>
-                      <code className="text-xs text-muted-foreground">
-                        {slice.key}
-                      </code>
-                      {edges.filter((edge) => edge.toSliceId === slice.id)
-                        .length > 0 && (
-                        <div className="mt-2 text-xs text-muted-foreground">
-                          Depends on{" "}
-                          {edges
-                            .filter((edge) => edge.toSliceId === slice.id)
-                            .map(
-                              (edge) =>
-                                slices.find(
-                                  (item) => item.id === edge.fromSliceId
-                                )?.key
-                            )
-                            .join(", ")}
+                      <button
+                        className="block w-full p-3 text-left"
+                        onClick={() => onOpenSlice(slice.id)}
+                      >
+                        <div className="flex items-center gap-2">
+                          <span className="font-medium">{slice.title}</span>
+                          <Badge className="ml-auto" variant="outline">
+                            {slice.status}
+                          </Badge>
                         </div>
-                      )}
-                    </button>
+                        <code className="block truncate pr-8 text-xs text-muted-foreground">
+                          {slice.key}
+                        </code>
+                        {edges.filter((edge) => edge.toSliceId === slice.id)
+                          .length > 0 && (
+                          <div className="mt-2 pr-8 text-xs text-muted-foreground">
+                            Depends on{" "}
+                            {edges
+                              .filter((edge) => edge.toSliceId === slice.id)
+                              .map(
+                                (edge) =>
+                                  slices.find(
+                                    (item) => item.id === edge.fromSliceId
+                                  )?.key
+                              )
+                              .join(", ")}
+                          </div>
+                        )}
+                      </button>
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        className="absolute right-2 bottom-2 text-muted-foreground hover:text-destructive"
+                        aria-label={`Delete slice ${slice.title}`}
+                        onClick={() =>
+                          void removeSlice(slice).catch((error) =>
+                            toast.error(errorMessage(error))
+                          )
+                        }
+                      >
+                        <Trash2 className="size-4" />
+                      </Button>
+                    </div>
                   ))}
                 </div>
               </div>
@@ -520,16 +683,33 @@ function MissionView({
           <List className="size-4" /> Accessible list
         </div>
         {slices.map((slice) => (
-          <button
+          <div
             key={slice.id}
-            className="flex w-full items-center rounded-md border px-3 py-2 text-left text-sm"
-            onClick={() => onOpenSlice(slice.id)}
+            className="flex items-center rounded-md border text-sm"
           >
-            <span>{slice.title}</span>
-            <span className="ml-auto text-muted-foreground">
-              Wave {(result.levels.get(slice.id) ?? 0) + 1}
-            </span>
-          </button>
+            <button
+              className="flex min-w-0 flex-1 items-center px-3 py-2 text-left"
+              onClick={() => onOpenSlice(slice.id)}
+            >
+              <span className="truncate">{slice.title}</span>
+              <span className="ml-auto shrink-0 pl-3 text-muted-foreground">
+                Wave {(result.levels.get(slice.id) ?? 0) + 1}
+              </span>
+            </button>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              className="mr-1 shrink-0 text-muted-foreground hover:text-destructive"
+              aria-label={`Delete slice ${slice.title}`}
+              onClick={() =>
+                void removeSlice(slice).catch((error) =>
+                  toast.error(errorMessage(error))
+                )
+              }
+            >
+              <Trash2 className="size-4" />
+            </Button>
+          </div>
         ))}
       </div>
     </div>
@@ -556,14 +736,21 @@ function InitiativeView({
   const [intent, setIntent] = useState(initiative.intent)
   const [done, setDone] = useState(initiative.definitionOfDone)
   const [missionName, setMissionName] = useState("")
+  // The latest mission whose slices are all done: the one a release covers.
+  const finishedMission =
+    [...graph.missions].reverse().find((mission) => {
+      const slices = graph.slices.filter((s) => s.missionId === mission.id)
+      return (
+        mission.status === "completed" ||
+        (slices.length > 0 && slices.every((s) => s.status === "done"))
+      )
+    }) ?? null
   const save = async () =>
     onGraph(
       await window.cowork.missionControl.initiatives.update(
         initiative.id,
         { name, intent, definitionOfDone: done },
-        initiative.status === "draft"
-          ? undefined
-          : "Update initiative definition"
+        reasonFor(graph, "Update initiative definition")
       )
     )
   const addMission = async () => {
@@ -668,6 +855,48 @@ function InitiativeView({
           </div>
         </div>
       </div>
+      <div className="w-72">
+        <PlaybookPicker
+          altitude="initiative"
+          value={initiative.playbookId}
+          onChange={async (playbookId) =>
+            onGraph(
+              await window.cowork.missionControl.initiatives.update(
+                initiative.id,
+                { playbookId },
+                reasonFor(graph, "Change initiative playbook")
+              )
+            )
+          }
+        />
+      </div>
+      {initiative.status !== "draft" && (
+        <HookControls
+          graph={graph}
+          title="Initiative playbook"
+          actions={[
+            {
+              hook: "plan",
+              label: "Run planning",
+              disabledReason:
+                initiative.status === "active"
+                  ? null
+                  : "Resume the initiative to run its playbooks.",
+            },
+            {
+              hook: "between_missions",
+              label: "Run release",
+              missionId: finishedMission?.id ?? null,
+              disabledReason:
+                initiative.status !== "active"
+                  ? "Resume the initiative to run its playbooks."
+                  : finishedMission
+                    ? null
+                    : "A release runs after a mission's slices are all done.",
+            },
+          ]}
+        />
+      )}
       <div>
         <div className="mb-3 flex items-center justify-between">
           <div>
@@ -700,27 +929,44 @@ function InitiativeView({
               (slice) => slice.missionId === mission.id
             )
             return (
-              <button
+              <div
                 key={mission.id}
-                className="flex w-full items-center gap-3 rounded-lg border p-4 text-left hover:bg-muted/50"
-                onClick={() => onMission(mission.id)}
+                className="flex items-center rounded-lg border hover:bg-muted/50"
               >
-                <CircleDot
-                  className={`size-4 ${mission.status === "completed" ? "text-emerald-500" : mission.status === "active" ? "text-primary" : "text-muted-foreground"}`}
-                />
-                <div>
-                  <div className="font-medium">
-                    {index + 1}. {mission.name}
+                <button
+                  className="flex min-w-0 flex-1 items-center gap-3 p-4 text-left"
+                  onClick={() => onMission(mission.id)}
+                >
+                  <CircleDot
+                    className={`size-4 ${mission.status === "completed" ? "text-emerald-500" : mission.status === "active" ? "text-primary" : "text-muted-foreground"}`}
+                  />
+                  <div>
+                    <div className="font-medium">
+                      {index + 1}. {mission.name}
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      {mission.outcome || "Add an outcome"}
+                    </div>
                   </div>
-                  <div className="text-xs text-muted-foreground">
-                    {mission.outcome || "Add an outcome"}
-                  </div>
-                </div>
-                <span className="ml-auto text-xs text-muted-foreground">
-                  {slices.filter((slice) => slice.status === "done").length}/
-                  {slices.length} slices
-                </span>
-              </button>
+                  <span className="ml-auto text-xs text-muted-foreground">
+                    {slices.filter((slice) => slice.status === "done").length}/
+                    {slices.length} slices
+                  </span>
+                </button>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  className="mr-3 shrink-0 text-muted-foreground hover:text-destructive"
+                  aria-label={`Delete mission ${mission.name}`}
+                  onClick={() =>
+                    void deleteMissionConfirmed(graph, mission)
+                      .then((next) => next && onGraph(next))
+                      .catch((error) => toast.error(errorMessage(error)))
+                  }
+                >
+                  <Trash2 className="size-4" />
+                </Button>
+              </div>
             )
           })}
         </div>
@@ -806,17 +1052,35 @@ export function InitiativesTab({
     ])
     setWorkspaceId(workspace.id)
   }
+  const initiativeId = graph?.initiative.id ?? null
+  const refreshGraph = useCallback(async () => {
+    if (!initiativeId) return
+    const next =
+      await window.cowork.missionControl.initiatives.get(initiativeId)
+    if (next) onGraphChange(next)
+  }, [initiativeId, onGraphChange])
   const mission = graph?.missions.find((item) => item.id === missionId) ?? null
   const slice = graph?.slices.find((item) => item.id === sliceId) ?? null
   if (graph && slice)
     return (
       <SliceEditor
+        key={slice.id}
         graph={graph}
         slice={slice}
+        workspacePath={
+          workspaces.find((w) => w.id === graph.initiative.workspaceId)?.path ??
+          ""
+        }
         onSaved={(next) => {
           applyGraph(next)
           onSliceChange(null)
         }}
+        onGraph={applyGraph}
+        onDeleted={(next) => {
+          applyGraph(next)
+          onSliceChange(null)
+        }}
+        onRefresh={refreshGraph}
       />
     )
   if (graph && mission)
@@ -826,6 +1090,10 @@ export function InitiativesTab({
         mission={mission}
         onGraph={applyGraph}
         onOpenSlice={onSliceChange}
+        onDeleted={(next) => {
+          applyGraph(next)
+          onMissionChange(null)
+        }}
       />
     )
   if (graph)
@@ -887,9 +1155,16 @@ export function InitiativesTab({
                     size="icon-sm"
                     onClick={(e) => {
                       e.stopPropagation()
+                      if (
+                        !window.confirm(
+                          `Delete initiative “${item.name}” with all its missions and slices? This cannot be undone.`
+                        )
+                      )
+                        return
                       void window.cowork.missionControl.initiatives
                         .delete(item.id)
                         .then(reload)
+                        .catch((error) => toast.error(errorMessage(error)))
                     }}
                   >
                     <Trash2 className="size-4" />

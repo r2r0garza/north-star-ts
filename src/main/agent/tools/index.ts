@@ -73,6 +73,7 @@ import { webFetchTool } from "./web/fetch"
 import { spawnSubagentTool } from "./spawn_subagent"
 import { spawnSubagentsTool } from "./spawn_subagents"
 import { flagForReworkTool } from "./flag_for_rework"
+import { recordProofTool } from "./record_proof"
 import { dashboardWriteTool } from "./dashboard_write"
 import { dashboardReadTool } from "./dashboard_read"
 
@@ -143,6 +144,9 @@ const otherTools: Tool[] = [
   // flag_for_rework: offered by runChat only to a Process phase worker (plan
   // 031.2 — when opts.processRunId is set). Not in toolDefinitions.
   flagForReworkTool,
+  // record_proof: offered by runChat only to a Mission Control playbook's proof
+  // step (plan 106.3 — opts.processProofStep). Not in toolDefinitions.
+  recordProofTool,
   // dashboard_write: offered by runChat in interactive modes (plan 033.2 —
   // gated on showTodos like todo_write). Writes only its own tables; not gated.
   dashboardWriteTool,
@@ -250,6 +254,7 @@ export { readPlanTool } from "./read_plan_tool"
 export { presentPlanTool } from "./present_plan_tool"
 export { spawnSubagentsTool } from "./spawn_subagents"
 export { flagForReworkTool } from "./flag_for_rework"
+export { recordProofTool } from "./record_proof"
 export { dashboardWriteTool } from "./dashboard_write"
 export { dashboardReadTool } from "./dashboard_read"
 export {

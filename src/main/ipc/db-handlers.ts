@@ -383,6 +383,7 @@ export function registerDbHandlers(
         validatorMaxIterations?: number
         validatorAgent?: string | null
         subprocessId?: string | null
+        proofStep?: boolean
         position: number
       }
     ) => processes.createPhase(input)
@@ -407,6 +408,7 @@ export function registerDbHandlers(
         validatorMaxIterations?: number
         validatorAgent?: string | null
         subprocessId?: string | null
+        proofStep?: boolean
         position?: number
       }
     ) => processes.updatePhase(id, patch)
@@ -421,7 +423,8 @@ export function registerDbHandlers(
       _e,
       input: {
         phaseId: string
-        agentName: string
+        agentName?: string | null
+        seatRole?: string | null
         skills?: string[] | null
         tools?: string[] | null
         runtimeConfig?: ProcessRuntimeConfig | null

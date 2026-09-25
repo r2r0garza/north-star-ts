@@ -32,6 +32,11 @@ import {
 import { Textarea } from "@/components/ui/textarea"
 import { Markdown } from "@/components/markdown"
 import { InitiativesTab } from "@/components/mission-control/initiatives-tab"
+import {
+  PlaybooksTab,
+  playbookEditingHeader,
+  type PlaybookEditing,
+} from "@/components/mission-control/playbooks-tab"
 import type {
   AccountWithModels,
   AgentSummary,
@@ -783,10 +788,14 @@ function RigDetail({
 }
 
 export function MissionControlScreen({ onClose }: { onClose: () => void }) {
-  const [tab, setTab] = useState<"initiatives" | "rigs">("initiatives")
+  const [tab, setTab] = useState<"initiatives" | "rigs" | "playbooks">(
+    "initiatives"
+  )
   const [rigs, setRigs] = useState<Rig[]>([])
   const [initiativeGraph, setInitiativeGraph] =
     useState<InitiativeGraph | null>(null)
+  const [playbookEditing, setPlaybookEditing] =
+    useState<PlaybookEditing | null>(null)
   const [missionId, setMissionId] = useState<string | null>(null)
   const [sliceId, setSliceId] = useState<string | null>(null)
   const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -835,13 +844,36 @@ export function MissionControlScreen({ onClose }: { onClose: () => void }) {
     initiativeGraph?.missions.find((item) => item.id === missionId) ?? null
   const slice =
     initiativeGraph?.slices.find((item) => item.id === sliceId) ?? null
-  const initiativeTitle =
-    slice?.title ?? mission?.name ?? initiativeGraph?.initiative.name
-  const initiativeDescription = slice
-    ? slice.spec.goal || slice.key
+  const sliceMission = slice
+    ? (initiativeGraph?.missions.find((item) => item.id === slice.missionId) ??
+      null)
+    : null
+  const initiativeName = initiativeGraph?.initiative.name
+  const initiativeTitle = slice
+    ? `Slice: ${slice.title}`
     : mission
-      ? mission.outcome || "No outcome written yet."
+      ? `Mission: ${mission.name}`
+      : initiativeGraph
+        ? `Initiative: ${initiativeName}`
+        : null
+  const initiativeDescription = slice
+    ? `Initiative: ${initiativeName}${sliceMission ? ` - Mission: ${sliceMission.name}` : ""}`
+    : mission
+      ? `Initiative: ${initiativeName}`
       : initiativeGraph?.initiative.intent
+
+  const playbookHeader =
+    tab === "playbooks" && playbookEditing
+      ? playbookEditingHeader(playbookEditing)
+      : null
+  const headerTitle =
+    playbookHeader?.title ?? (tab === "initiatives" ? initiativeTitle : null)
+  const headerDescription =
+    playbookHeader?.description ??
+    (tab === "initiatives" ? initiativeDescription : null)
+  const inDetail = playbookHeader
+    ? true
+    : tab === "initiatives" && !!initiativeGraph
 
   const backFromInitiativeDetail = () => {
     if (sliceId) {
@@ -935,22 +967,26 @@ export function MissionControlScreen({ onClose }: { onClose: () => void }) {
           variant="ghost"
           size="icon"
           onClick={() =>
-            initiativeGraph ? backFromInitiativeDetail() : onClose()
+            playbookHeader
+              ? setPlaybookEditing(null)
+              : inDetail
+                ? backFromInitiativeDetail()
+                : onClose()
           }
         >
           <ArrowLeft className="size-4" />
         </Button>
         <div className="min-w-0">
           <h1 className="truncate text-xl font-semibold">
-            {initiativeTitle ?? "Mission Control"}
+            {headerTitle || "Mission Control"}
           </h1>
           <p className="truncate text-sm text-muted-foreground">
-            {initiativeDescription ||
+            {headerDescription ||
               "Map durable work and define the teams that will drive it."}
           </p>
         </div>
       </header>
-      {!initiativeGraph && (
+      {!inDetail && (
         <div className="flex gap-5 border-b px-6">
           <button
             className={`py-3 text-sm font-medium ${tab === "initiatives" ? "border-b-2 border-primary" : "text-muted-foreground"}`}
@@ -964,6 +1000,12 @@ export function MissionControlScreen({ onClose }: { onClose: () => void }) {
           >
             Rigs
           </button>
+          <button
+            className={`py-3 text-sm font-medium ${tab === "playbooks" ? "border-b-2 border-primary" : "text-muted-foreground"}`}
+            onClick={() => setTab("playbooks")}
+          >
+            Playbooks
+          </button>
         </div>
       )}
       <div className="flex-1 overflow-y-auto p-6">
@@ -976,6 +1018,11 @@ export function MissionControlScreen({ onClose }: { onClose: () => void }) {
             onGraphChange={setInitiativeGraph}
             onMissionChange={setMissionId}
             onSliceChange={setSliceId}
+          />
+        ) : tab === "playbooks" ? (
+          <PlaybooksTab
+            editing={playbookEditing}
+            onEditingChange={setPlaybookEditing}
           />
         ) : (
           <>

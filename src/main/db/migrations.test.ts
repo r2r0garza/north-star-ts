@@ -92,7 +92,7 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
     const db = new Database(":memory:")
     db.pragma("foreign_keys = ON")
     runMigrations(db)
-    expect(db.pragma("user_version", { simple: true })).toBe(48)
+    expect(db.pragma("user_version", { simple: true })).toBe(49)
     expect(db.pragma("foreign_key_check")).toHaveLength(0)
     db.close()
   })
@@ -650,7 +650,7 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
 
     runMigrations(db)
 
-    expect(db.pragma("user_version", { simple: true })).toBe(48)
+    expect(db.pragma("user_version", { simple: true })).toBe(49)
     expect(
       (db.pragma("table_info(process_phases)") as Array<{ name: string }>).map(
         (c) => c.name
@@ -868,7 +868,7 @@ describe.skipIf(!sqliteLoads)("SCHEMA_V9 — orphan reap (plan 022)", () => {
     // Apply V9 (the reaper) and any later migrations, up to the latest version.
     runMigrations(db)
 
-    expect(db.pragma("user_version", { simple: true })).toBe(48)
+    expect(db.pragma("user_version", { simple: true })).toBe(49)
 
     // Reaped: orphan + its nested descendant, and all their state.
     const taskIds = (
@@ -930,6 +930,66 @@ describe.skipIf(!sqliteLoads)("completion policy migration", () => {
         .prepare("SELECT status, completion_receipt FROM process_phase_runs")
         .get()
     ).toEqual({ status: "running", completion_receipt: null })
+    db.close()
+  })
+})
+
+describe.skipIf(!sqliteLoads)("mission control playbooks migration (v49)", () => {
+  it("rebuilds phase agents with a nullable agent name and keeps their rows", () => {
+    const db = new Database(":memory:")
+    db.pragma("foreign_keys = ON")
+    runMigrations(db)
+    db.pragma("foreign_keys = OFF")
+    db.exec(`
+      DROP TABLE process_phase_agents;
+      CREATE TABLE process_phase_agents (
+        id TEXT PRIMARY KEY,
+        phase_id TEXT NOT NULL REFERENCES process_phases(id) ON DELETE CASCADE,
+        agent_name TEXT NOT NULL,
+        skills TEXT,
+        tools TEXT,
+        position INTEGER NOT NULL
+      );
+      INSERT INTO process_definitions (id, name, created_at, updated_at) VALUES ('d', 'D', 0, 0);
+      INSERT INTO process_phases (id, process_id, key, name, position) VALUES ('p', 'd', 'k', 'K', 0);
+      INSERT INTO process_phase_agents (id, phase_id, agent_name, skills, tools, position)
+        VALUES ('a', 'p', 'coder', '["x"]', NULL, 0);
+      PRAGMA user_version = 48;
+    `)
+    db.pragma("foreign_keys = ON")
+
+    runMigrations(db)
+
+    expect(db.pragma("user_version", { simple: true })).toBe(49)
+    const columns = db.pragma("table_info(process_phase_agents)") as Array<{
+      name: string
+      notnull: number
+    }>
+    expect(columns.find((c) => c.name === "agent_name")?.notnull).toBe(0)
+    expect(columns.map((c) => c.name)).toEqual(
+      expect.arrayContaining(["seat_role", "runtime_config"])
+    )
+    expect(
+      db.prepare("SELECT agent_name, skills FROM process_phase_agents").get()
+    ).toEqual({ agent_name: "coder", skills: '["x"]' })
+    for (const [table, column] of [
+      ["process_phases", "proof_step"],
+      ["process_runs", "seat_bindings"],
+      ["process_runs", "mission_control"],
+      ["process_phase_runs", "seat_address"],
+    ])
+      expect(
+        (db.pragma(`table_info(${table})`) as Array<{ name: string }>).map(
+          (c) => c.name
+        )
+      ).toContain(column)
+    for (const table of ["playbooks", "playbook_hooks", "playbook_runs"])
+      expect(
+        db
+          .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?")
+          .get(table)
+      ).toBeTruthy()
+    expect(db.pragma("foreign_key_check")).toHaveLength(0)
     db.close()
   })
 })

@@ -786,10 +786,129 @@ export interface InitiativeGraph {
   rigDrifted: boolean
 }
 
+export type PlaybookAltitude = "slice" | "mission" | "initiative"
+export type PlaybookHookName =
+  | "run"
+  | "before_slices"
+  | "after_each_slice"
+  | "after_all_slices"
+  | "plan"
+  | "between_missions"
+  | "on_complete"
+
+export interface Playbook {
+  id: string
+  name: string
+  altitude: PlaybookAltitude
+  description: string | null
+  createdAt: number
+  updatedAt: number
+}
+
+export interface PlaybookHook {
+  id: string
+  playbookId: string
+  hook: PlaybookHookName
+  processId: string
+}
+
+export interface PlaybookWithHooks extends Playbook {
+  hooks: PlaybookHook[]
+}
+
+export type PlaybookRunStatus =
+  | "running"
+  | "completed"
+  | "failed"
+  | "cancelled"
+
+export interface PlaybookRun {
+  id: string
+  playbookId: string | null
+  hook: PlaybookHookName
+  initiativeId: string
+  missionId: string | null
+  sliceId: string | null
+  processRunId: string | null
+  status: PlaybookRunStatus
+  proof: SliceProof | null
+  proofRevisions: number
+  outcomeReason: string | null
+  createdAt: number
+  finishedAt: number | null
+}
+
+export interface MissionControlRunLink {
+  initiativeId: string
+  missionId: string | null
+  sliceId: string | null
+  playbookRunId: string
+  hook: PlaybookHookName
+}
+
+// One resolved seat, frozen at run start. Workers read only this snapshot, never
+// the live rig, so rig edits mid-run cannot change who does the work.
+export interface SeatBinding {
+  address: string
+  role: string
+  seatId: string
+  podKey: string
+  podName: string
+  agentName: string
+  agentLabel: string
+  charter: string
+  podMission: string
+  podCulture: string
+  decisionRights: RigDecisionRight[]
+  skills: string[] | null
+  tools: string[] | null
+  mcpServers: string[] | null
+  runtime: ProcessRuntimeSelection | null
+}
+
+export interface SeatBindingsSnapshot {
+  version: 1
+  rigName: string
+  rigCulture: string
+  podKey: string
+  // Role → candidate seat addresses, in routing order.
+  roles: Record<string, string[]>
+  seats: Record<string, SeatBinding>
+  // Static Refocus intent chain (initiative → mission → slice).
+  intentChain: string
+}
+
+export type ProofCriterionStatus = "met" | "not_met" | "not_verifiable"
+
+export interface SliceProof {
+  version: 1
+  criteria: Array<{
+    id: string
+    status: ProofCriterionStatus
+    evidence: string
+    artifacts?: string[]
+    reason?: string
+  }>
+  verdict: "accepted" | "rejected"
+  verifiedBy:
+    | { kind: "seat"; address: string }
+    | { kind: "command"; phaseKey: string }
+  builderAddresses: string[]
+  processRunId: string
+  acceptedAt: number | null
+  warnings?: string[]
+}
+
 export interface ProcessRuntimeSnapshotSelection {
   accountId: string | null
   modelId: string | null
-  source: "phase_agent" | "phase" | "run" | "source_conversation" | "default"
+  source:
+    | "phase_agent"
+    | "seat"
+    | "phase"
+    | "run"
+    | "source_conversation"
+    | "default"
 }
 
 export type ProcessRuntimeSnapshot = Partial<
@@ -829,16 +948,22 @@ export interface ProcessPhase {
   // exclusive with fan_out (and the agent pool is unused) — validated in the repo.
   // Null = an ordinary agent phase.
   subprocessId: string | null
+  // Mission Control proof step (plan 106.3): only this phase's worker is offered
+  // record_proof, and only inside a slice run. Ignored by legacy Processes.
+  proofStep?: boolean
   runtimeConfig?: ProcessRuntimeConfig | null
   position: number
 }
 
 // tools/skills are tri-state JSON overrides: null = use the agent's own
 // definition; [] = none; [list] = exactly these (matches .agent.md frontmatter).
+// Exactly one of agentName / seatRole is set (repo-validated). A seat-role row
+// (plan 106.3) binds at run start against the initiative's rig snapshot.
 export interface ProcessPhaseAgent {
   id: string
   phaseId: string
-  agentName: string
+  agentName: string | null
+  seatRole?: string | null
   skills: string[] | null
   tools: string[] | null
   runtimeConfig?: ProcessRuntimeConfig | null
@@ -877,6 +1002,10 @@ export interface ProcessRun {
   // the phase and crash-resume re-attach (find-by-parent) instead of restarting.
   parentPhaseRunId: string | null
   runtimeConfig?: ProcessRuntimeConfig | null
+  // Mission Control runs only (plan 106.3): the immutable seat bindings resolved
+  // at run start, and the container this run executes for. Null for Processes.
+  seatBindings?: SeatBindingsSnapshot | null
+  missionControl?: MissionControlRunLink | null
   status: ProcessRunStatus
   startedAt: number | null
   finishedAt: number | null
@@ -923,6 +1052,9 @@ export interface ProcessPhaseRun {
   // set for on_each_subtask consumer instances. Lets flag-back reset only the
   // instance tied to a reworked source sub-task (per-child, not the whole batch).
   sourceChildRunId: string | null
+  // The seat that ran this phase-run's worker (plan 106.3). Null outside
+  // Mission Control and for agent-name-bound phases.
+  seatAddress?: string | null
   runtimeSnapshot?: ProcessRuntimeSnapshot | null
 }
 

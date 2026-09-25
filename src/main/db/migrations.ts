@@ -46,6 +46,8 @@ import {
   SCHEMA_V45,
   SCHEMA_V46,
   SCHEMA_V47,
+  SCHEMA_V49_PHASE_AGENTS,
+  SCHEMA_V49_TABLES,
 } from "./schema"
 
 // Ordered migrations. Index 0 runs to reach user_version 1, index 1 to reach 2,
@@ -100,6 +102,7 @@ const MIGRATIONS: Array<(db: Database.Database) => void> = [
   (db) => db.exec(SCHEMA_V46),
   (db) => db.exec(SCHEMA_V47),
   ensureProcessResultContentColumn,
+  ensureMissionControlPlaybooks,
 ]
 
 function tableExists(db: Database.Database, table: string): boolean {
@@ -135,6 +138,33 @@ function addColumnIfMissing(
 
 function ensureProcessResultContentColumn(db: Database.Database): void {
   addColumnIfMissing(db, "process_phase_runs", "result_content", "TEXT")
+}
+
+// v49 (plan 106.3). Idempotent so the prerelease self-heal pass can re-run it.
+function ensureMissionControlPlaybooks(db: Database.Database): void {
+  if (tableExists(db, "initiatives")) db.exec(SCHEMA_V49_TABLES)
+  if (tableExists(db, "process_phase_agents")) {
+    const agentName = (
+      db.pragma("table_info(process_phase_agents)") as Array<{
+        name: string
+        notnull: number
+      }>
+    ).find((column) => column.name === "agent_name")
+    if (agentName?.notnull === 1) {
+      addColumnIfMissing(db, "process_phase_agents", "runtime_config", "TEXT")
+      db.exec(SCHEMA_V49_PHASE_AGENTS)
+    }
+  }
+  addColumnIfMissing(db, "process_phase_agents", "seat_role", "TEXT")
+  addColumnIfMissing(
+    db,
+    "process_phases",
+    "proof_step",
+    "INTEGER NOT NULL DEFAULT 0"
+  )
+  addColumnIfMissing(db, "process_runs", "seat_bindings", "TEXT")
+  addColumnIfMissing(db, "process_runs", "mission_control", "TEXT")
+  addColumnIfMissing(db, "process_phase_runs", "seat_address", "TEXT")
 }
 
 function ensureProcessRuntimeProfileColumns(db: Database.Database): void {
@@ -215,6 +245,7 @@ export function runMigrations(db: Database.Database): void {
     db.transaction(() => {
       ensureProcessRuntimeProfileColumns(db)
       ensureProcessResultContentColumn(db)
+      ensureMissionControlPlaybooks(db)
       ensureCodexSubscriptionProviderConstraints(db)
       ensureProjectPositionColumn(db)
       ensureSubagentArtifactsTable(db)

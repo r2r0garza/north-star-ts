@@ -13,6 +13,10 @@ import type {
   WorkSlice,
 } from "../types"
 import { getRigGraph } from "./rigs"
+import {
+  sliceStatusPath,
+  transitionMissionStatus,
+} from "../../mission-control/work-state"
 
 interface InitiativeRow {
   id: string
@@ -276,6 +280,36 @@ function touch(initiativeId: string): void {
     .prepare("UPDATE initiatives SET updated_at = ? WHERE id = ?")
     .run(Date.now(), initiativeId)
 }
+// A container's playbook must exist and match its altitude; null clears the
+// choice so the run falls back to the default playbook for that altitude.
+function playbookRef(
+  value: string | null,
+  altitude: "initiative" | "mission" | "slice"
+): string | null {
+  if (value === null) return null
+  const row = getDb()
+    .prepare("SELECT altitude FROM playbooks WHERE id = ?")
+    .get(value) as { altitude: string } | undefined
+  if (!row) throw new Error(`Playbook not found: ${value}`)
+  if (row.altitude !== altitude)
+    throw new Error(
+      `A ${row.altitude} playbook can't be used for a ${altitude}.`
+    )
+  return value
+}
+
+// Deleting work cascades its playbook_runs rows, which would orphan a live
+// Process run and lose the slice outcome, so running work must be cancelled first.
+function assertNoRunningPlaybook(where: string, ...values: unknown[]): void {
+  const running = getDb()
+    .prepare(
+      `SELECT 1 FROM playbook_runs WHERE status = 'running' AND (${where}) LIMIT 1`
+    )
+    .get(...values)
+  if (running)
+    throw new Error("A playbook run is in progress here. Cancel it first.")
+}
+
 function audit(
   initiativeId: string,
   targetKind: WorkRevision["targetKind"],
@@ -393,6 +427,7 @@ export function updateInitiative(
       | "workspaceId"
       | "projectId"
       | "defaultPodKey"
+      | "playbookId"
     >
   >,
   actor = "user",
@@ -416,6 +451,8 @@ export function updateInitiative(
   if (patch.projectId !== undefined) add("project_id", patch.projectId)
   if (patch.defaultPodKey !== undefined)
     add("default_pod_key", patch.defaultPodKey)
+  if (patch.playbookId !== undefined)
+    add("playbook_id", playbookRef(patch.playbookId, "initiative"))
   if (sets.length) {
     add("updated_at", Date.now())
     values.push(id)
@@ -428,6 +465,7 @@ export function updateInitiative(
   return getInitiativeGraph(id)!
 }
 export function deleteInitiative(id: string): void {
+  assertNoRunningPlaybook("initiative_id = ?", id)
   getDb().prepare("DELETE FROM initiatives WHERE id = ?").run(id)
 }
 export function startInitiative(id: string): InitiativeGraph {
@@ -504,7 +542,10 @@ export function createMission(input: {
 export function updateMission(
   id: string,
   patch: Partial<
-    Pick<Mission, "key" | "name" | "outcome" | "definitionOfDone" | "position">
+    Pick<
+      Mission,
+      "key" | "name" | "outcome" | "definitionOfDone" | "position" | "playbookId"
+    >
   >,
   actor = "user",
   reason?: string
@@ -523,6 +564,8 @@ export function updateMission(
   if (patch.definitionOfDone !== undefined)
     add("definition_of_done", patch.definitionOfDone)
   if (patch.position !== undefined) add("position", patch.position)
+  if (patch.playbookId !== undefined)
+    add("playbook_id", playbookRef(patch.playbookId, "mission"))
   if (sets.length) {
     values.push(id)
     getDb()
@@ -550,6 +593,11 @@ export function deleteMission(
 ): InitiativeGraph {
   const before = getMission(id)
   if (!before) throw new Error(`Mission not found: ${id}`)
+  assertNoRunningPlaybook(
+    "mission_id = ? OR slice_id IN (SELECT id FROM slices WHERE mission_id = ?)",
+    id,
+    id
+  )
   getDb().prepare("DELETE FROM missions WHERE id = ?").run(id)
   audit(
     before.initiativeId,
@@ -601,7 +649,10 @@ export function createSlice(input: {
 export function updateSlice(
   id: string,
   patch: Partial<
-    Pick<WorkSlice, "key" | "title" | "spec" | "podKey" | "position">
+    Pick<
+      WorkSlice,
+      "key" | "title" | "spec" | "podKey" | "position" | "playbookId"
+    >
   >,
   actor = "user",
   reason?: string
@@ -623,6 +674,8 @@ export function updateSlice(
   if (patch.spec !== undefined) add("spec", JSON.stringify(spec(patch.spec)))
   if (patch.podKey !== undefined) add("pod_key", patch.podKey)
   if (patch.position !== undefined) add("position", patch.position)
+  if (patch.playbookId !== undefined)
+    add("playbook_id", playbookRef(patch.playbookId, "slice"))
   if (sets.length) {
     values.push(id)
     getDb()
@@ -642,6 +695,7 @@ export function deleteSlice(
 ): InitiativeGraph {
   const before = getSlice(id)
   if (!before) throw new Error(`Slice not found: ${id}`)
+  assertNoRunningPlaybook("slice_id = ?", id)
   const initiativeId = initiativeIdForMission(before.missionId)
   getDb().prepare("DELETE FROM slices WHERE id = ?").run(id)
   audit(initiativeId, "slice", id, "delete", before, null, actor, reason)
@@ -699,4 +753,83 @@ export function setSliceEdges(
   )
   touch(initiativeId)
   return getInitiativeGraph(initiativeId)!
+}
+
+// Execution-owned slice state (plan 106.3). Only the slice runner writes these
+// fields; the status moves along a legal transition path and every change is
+// audited as a system actor so the revision log explains what the run did.
+export function setSliceExecution(
+  id: string,
+  patch: {
+    status?: WorkSlice["status"]
+    processRunId?: string | null
+    attempts?: number
+    proof?: unknown | null
+    startedAt?: number | null
+    finishedAt?: number | null
+  },
+  reason: string,
+  actor = "mission-control"
+): WorkSlice {
+  const before = getSlice(id)
+  if (!before) throw new Error(`Slice not found: ${id}`)
+  if (patch.status !== undefined && patch.status !== before.status) {
+    const path = sliceStatusPath(before.status, patch.status)
+    if (!path)
+      throw new Error(
+        `Invalid status transition: ${before.status} → ${patch.status}`
+      )
+  }
+  const sets: string[] = []
+  const values: unknown[] = []
+  const add = (c: string, v: unknown) => {
+    sets.push(`${c} = ?`)
+    values.push(v)
+  }
+  if (patch.status !== undefined) add("status", patch.status)
+  if (patch.processRunId !== undefined)
+    add("process_run_id", patch.processRunId)
+  if (patch.attempts !== undefined) add("attempts", patch.attempts)
+  if (patch.proof !== undefined)
+    add("proof", patch.proof === null ? null : JSON.stringify(patch.proof))
+  if (patch.startedAt !== undefined) add("started_at", patch.startedAt)
+  if (patch.finishedAt !== undefined) add("finished_at", patch.finishedAt)
+  if (!sets.length) return before
+  values.push(id)
+  getDb()
+    .prepare(`UPDATE slices SET ${sets.join(", ")} WHERE id = ?`)
+    .run(...values)
+  const after = getSlice(id)!
+  const initiativeId = initiativeIdForMission(before.missionId)
+  audit(initiativeId, "slice", id, "execute", before, after, actor, reason)
+  touch(initiativeId)
+  return after
+}
+
+// Move a mission to a status along a legal path (execution-owned, audited).
+export function setMissionExecutionStatus(
+  id: string,
+  status: Mission["status"],
+  reason: string,
+  actor = "mission-control"
+): Mission {
+  const before = getMission(id)
+  if (!before) throw new Error(`Mission not found: ${id}`)
+  if (before.status === status) return before
+  transitionMissionStatus(before.status, status)
+  const now = Date.now()
+  getDb()
+    .prepare(
+      "UPDATE missions SET status = ?, started_at = COALESCE(started_at, ?), finished_at = ? WHERE id = ?"
+    )
+    .run(
+      status,
+      status === "active" ? now : null,
+      ["completed", "cancelled", "failed"].includes(status) ? now : null,
+      id
+    )
+  const after = getMission(id)!
+  audit(before.initiativeId, "mission", id, "execute", before, after, actor, reason)
+  touch(before.initiativeId)
+  return after
 }

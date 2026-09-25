@@ -1391,3 +1391,68 @@ CREATE INDEX IF NOT EXISTS idx_work_revisions_initiative_created ON work_revisio
 export const SCHEMA_V48 = `
 ALTER TABLE process_phase_runs ADD COLUMN result_content TEXT;
 `
+
+// v49: Mission Control playbooks (plan 106.3). A playbook is a Process
+// definition with an altitude; each hook points at the definition it runs.
+// playbook_runs links one hook execution to its container and Process run, and
+// is the idempotency key for applying a slice outcome exactly once.
+export const SCHEMA_V49_TABLES = `
+CREATE TABLE IF NOT EXISTS playbooks (
+  id          TEXT PRIMARY KEY,
+  name        TEXT NOT NULL,
+  altitude    TEXT NOT NULL,
+  description TEXT,
+  created_at  INTEGER NOT NULL,
+  updated_at  INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS playbook_hooks (
+  id          TEXT PRIMARY KEY,
+  playbook_id TEXT NOT NULL REFERENCES playbooks(id) ON DELETE CASCADE,
+  hook        TEXT NOT NULL,
+  process_id  TEXT NOT NULL REFERENCES process_definitions(id) ON DELETE RESTRICT,
+  UNIQUE (playbook_id, hook)
+);
+CREATE INDEX IF NOT EXISTS idx_playbook_hooks_process ON playbook_hooks(process_id);
+CREATE TABLE IF NOT EXISTS playbook_runs (
+  id              TEXT PRIMARY KEY,
+  playbook_id     TEXT REFERENCES playbooks(id) ON DELETE SET NULL,
+  hook            TEXT NOT NULL,
+  initiative_id   TEXT NOT NULL REFERENCES initiatives(id) ON DELETE CASCADE,
+  mission_id      TEXT REFERENCES missions(id) ON DELETE CASCADE,
+  slice_id        TEXT REFERENCES slices(id) ON DELETE CASCADE,
+  process_run_id  TEXT REFERENCES process_runs(id) ON DELETE SET NULL,
+  status          TEXT NOT NULL,
+  proof           TEXT,
+  proof_revisions INTEGER NOT NULL DEFAULT 0,
+  outcome_reason  TEXT,
+  created_at      INTEGER NOT NULL,
+  finished_at     INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_playbook_runs_initiative ON playbook_runs(initiative_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_playbook_runs_slice ON playbook_runs(slice_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_playbook_runs_process_run ON playbook_runs(process_run_id);
+`
+
+// process_phase_agents.agent_name was NOT NULL; a seat-role-bound row has no
+// agent name, so rebuild the table (the provider_accounts_v43 pattern) with a
+// nullable agent_name and a seat_role column. Exactly one of the two is set,
+// enforced by the repository.
+export const SCHEMA_V49_PHASE_AGENTS = `
+CREATE TABLE process_phase_agents_v49 (
+  id             TEXT PRIMARY KEY,
+  phase_id       TEXT NOT NULL REFERENCES process_phases(id) ON DELETE CASCADE,
+  agent_name     TEXT,
+  seat_role      TEXT,
+  skills         TEXT,
+  tools          TEXT,
+  runtime_config TEXT,
+  position       INTEGER NOT NULL
+);
+INSERT INTO process_phase_agents_v49
+  (id, phase_id, agent_name, seat_role, skills, tools, runtime_config, position)
+SELECT id, phase_id, agent_name, NULL, skills, tools, runtime_config, position
+FROM process_phase_agents;
+DROP TABLE process_phase_agents;
+ALTER TABLE process_phase_agents_v49 RENAME TO process_phase_agents;
+CREATE INDEX IF NOT EXISTS idx_process_phase_agents_phase ON process_phase_agents(phase_id);
+`

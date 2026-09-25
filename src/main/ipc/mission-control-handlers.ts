@@ -9,17 +9,95 @@ import { agentSources } from "../agent/agents/sources"
 import { loadAgents } from "../agent/agents/loader"
 import * as rigs from "../db/repositories/rigs"
 import * as initiatives from "../db/repositories/initiatives"
+import * as playbooks from "../db/repositories/playbooks"
 import {
   buildRigExport,
   importRigExport,
   type RigExport,
 } from "../mission-control/io"
+import { createDefaultPlaybook } from "../mission-control/playbook-defaults"
+import type { SliceRunner } from "../mission-control/slice-runner"
+import { startHookRun } from "../mission-control/hook-runner"
+import type {
+  PlaybookAltitude,
+  PlaybookHookName,
+  PlaybookRunStatus,
+} from "../db/types"
 
 async function agents(workspace?: string) {
   return loadAgents(agentSources(workspace))
 }
 
-export function registerMissionControlHandlers(): void {
+export function registerMissionControlHandlers(sliceRunner: SliceRunner): void {
+  // Playbooks and execution (plan 106.3).
+  ipcMain.handle("missionControl:playbooks:list", () =>
+    playbooks.listPlaybooks()
+  )
+  ipcMain.handle("missionControl:playbooks:processIds", () =>
+    playbooks.listPlaybookProcessIds()
+  )
+  ipcMain.handle(
+    "missionControl:playbooks:create",
+    (
+      _event,
+      input: { name: string; altitude: PlaybookAltitude; description?: string }
+    ) => playbooks.createPlaybook(input)
+  )
+  ipcMain.handle(
+    "missionControl:playbooks:createDefault",
+    (_event, altitude: PlaybookAltitude) => createDefaultPlaybook(altitude)
+  )
+  ipcMain.handle(
+    "missionControl:playbooks:update",
+    (_event, id: string, patch: { name?: string; description?: string | null }) =>
+      playbooks.updatePlaybook(id, patch)
+  )
+  ipcMain.handle("missionControl:playbooks:delete", (_event, id: string) =>
+    playbooks.deletePlaybook(id)
+  )
+  ipcMain.handle(
+    "missionControl:playbooks:createHookProcess",
+    (_event, id: string, hook: string) => playbooks.createHookProcess(id, hook)
+  )
+  ipcMain.handle(
+    "missionControl:playbooks:removeHook",
+    (_event, id: string, hook: PlaybookHookName) =>
+      playbooks.removeHook(id, hook)
+  )
+  ipcMain.handle(
+    "missionControl:playbookRuns:list",
+    (
+      _event,
+      filter: {
+        initiativeId?: string
+        missionId?: string
+        sliceId?: string
+        status?: PlaybookRunStatus
+      }
+    ) => playbooks.listPlaybookRuns(filter)
+  )
+  ipcMain.handle(
+    "missionControl:playbookRuns:cancel",
+    (_event, id: string) => sliceRunner.cancelPlaybookRun(id)
+  )
+  ipcMain.handle("missionControl:slices:run", (_event, sliceId: string) =>
+    sliceRunner.startSlice(sliceId)
+  )
+  ipcMain.handle("missionControl:slices:cancel", (_event, sliceId: string) =>
+    sliceRunner.cancelSlice(sliceId)
+  )
+  ipcMain.handle(
+    "missionControl:hooks:run",
+    (
+      _event,
+      input: {
+        initiativeId: string
+        missionId?: string | null
+        hook: PlaybookHookName
+      }
+    ) => startHookRun(sliceRunner, input)
+  )
+
   ipcMain.handle("missionControl:initiatives:list", () =>
     initiatives.listInitiatives()
   )

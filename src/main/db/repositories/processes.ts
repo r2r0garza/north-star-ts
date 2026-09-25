@@ -23,6 +23,8 @@ import type {
   ProcessRuntimeSnapshot,
   ProcessRun,
   ProcessRunStatus,
+  MissionControlRunLink,
+  SeatBindingsSnapshot,
 } from "../types"
 
 // Repository for the Process engine (plan 025). Flat module of functions,
@@ -67,6 +69,7 @@ interface ProcessPhaseRow {
   validator_max_iterations: number
   validator_agent: string | null
   subprocess_id: string | null
+  proof_step: number
   position: number
 }
 
@@ -88,6 +91,7 @@ function toPhase(row: ProcessPhaseRow): ProcessPhase {
     validatorMaxIterations: row.validator_max_iterations,
     validatorAgent: row.validator_agent,
     subprocessId: row.subprocess_id,
+    proofStep: row.proof_step === 1,
     runtimeConfig: parseRuntimeConfig(row.runtime_config),
     position: row.position,
   }
@@ -96,7 +100,8 @@ function toPhase(row: ProcessPhaseRow): ProcessPhase {
 interface ProcessPhaseAgentRow {
   id: string
   phase_id: string
-  agent_name: string
+  agent_name: string | null
+  seat_role: string | null
   skills: string | null
   tools: string | null
   runtime_config: string | null
@@ -108,6 +113,7 @@ function toPhaseAgent(row: ProcessPhaseAgentRow): ProcessPhaseAgent {
     id: row.id,
     phaseId: row.phase_id,
     agentName: row.agent_name,
+    seatRole: row.seat_role,
     // Tri-state: SQL NULL → null (agent's own); a JSON array → [] or [list].
     skills: row.skills === null ? null : (JSON.parse(row.skills) as string[]),
     tools: row.tools === null ? null : (JSON.parse(row.tools) as string[]),
@@ -145,6 +151,8 @@ interface ProcessRunRow {
   objective: string | null
   title: string | null
   parent_phase_run_id: string | null
+  seat_bindings: string | null
+  mission_control: string | null
   status: ProcessRunStatus
   started_at: number | null
   finished_at: number | null
@@ -166,6 +174,8 @@ function toRun(row: ProcessRunRow): ProcessRun {
     title: row.title,
     parentPhaseRunId: row.parent_phase_run_id,
     runtimeConfig: parseRuntimeConfig(row.runtime_config),
+    seatBindings: parseJson<SeatBindingsSnapshot>(row.seat_bindings),
+    missionControl: parseJson<MissionControlRunLink>(row.mission_control),
     status: row.status,
     startedAt: row.started_at,
     finishedAt: row.finished_at,
@@ -195,6 +205,7 @@ interface ProcessPhaseRunRow {
   result_content: string | null
   output_identity: string | null
   source_child_run_id: string | null
+  seat_address: string | null
 }
 
 function toPhaseRun(row: ProcessPhaseRunRow): ProcessPhaseRun {
@@ -223,6 +234,7 @@ function toPhaseRun(row: ProcessPhaseRunRow): ProcessPhaseRun {
     resultContent: row.result_content,
     outputIdentity: row.output_identity,
     sourceChildRunId: row.source_child_run_id,
+    seatAddress: row.seat_address,
     runtimeSnapshot: parseRuntimeSnapshot(row.runtime_snapshot),
   }
 }
@@ -234,6 +246,15 @@ function parseRuntimeConfig(value: string | null): ProcessRuntimeConfig | null {
     return parsed && typeof parsed === "object"
       ? (parsed as ProcessRuntimeConfig)
       : null
+  } catch {
+    return null
+  }
+}
+
+function parseJson<T>(value: string | null): T | null {
+  if (value === null) return null
+  try {
+    return JSON.parse(value) as T
   } catch {
     return null
   }
@@ -445,6 +466,7 @@ export function createPhase(input: {
   validatorMaxIterations?: number
   validatorAgent?: string | null
   subprocessId?: string | null
+  proofStep?: boolean
   position: number
 }): ProcessPhase {
   const contract = parseCompletionContract(input.completionContract)
@@ -452,7 +474,7 @@ export function createPhase(input: {
   const id = randomUUID()
   getDb()
     .prepare(
-      "INSERT INTO process_phases (id, process_id, key, name, routing, gate_policy, fan_out, max_rework_rounds, dot_folder, validator, validator_max_iterations, validator_agent, subprocess_id, position, completion_contract, runtime_config) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+      "INSERT INTO process_phases (id, process_id, key, name, routing, gate_policy, fan_out, max_rework_rounds, dot_folder, validator, validator_max_iterations, validator_agent, subprocess_id, position, completion_contract, runtime_config, proof_step) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )
     .run(
       id,
@@ -470,7 +492,8 @@ export function createPhase(input: {
       input.subprocessId ?? null,
       input.position,
       JSON.stringify(contract),
-      stringifyRuntimeConfig(input.runtimeConfig)
+      stringifyRuntimeConfig(input.runtimeConfig),
+      input.proofStep ? 1 : 0
     )
   return getPhase(id)!
 }
@@ -506,6 +529,7 @@ export function updatePhase(
     validatorMaxIterations?: number
     validatorAgent?: string | null
     subprocessId?: string | null
+    proofStep?: boolean
     runtimeConfig?: ProcessRuntimeConfig | null
     position?: number
   }
@@ -577,6 +601,10 @@ export function updatePhase(
     sets.push("subprocess_id = ?")
     values.push(patch.subprocessId)
   }
+  if (patch.proofStep !== undefined) {
+    sets.push("proof_step = ?")
+    values.push(patch.proofStep ? 1 : 0)
+  }
   if (patch.runtimeConfig !== undefined) {
     sets.push("runtime_config = ?")
     values.push(stringifyRuntimeConfig(patch.runtimeConfig))
@@ -600,23 +628,42 @@ export function deletePhase(id: string): void {
 
 // ── phase agents (the pool) ──────────────────────────────────────────────────
 
+// A phase-agent row names EITHER a concrete agent OR a Mission Control seat role
+// (plan 106.3), never both. The column is nullable since v49, so this is the
+// single chokepoint that keeps every row resolvable.
+function phaseAgentIdentity(input: {
+  agentName?: string | null
+  seatRole?: string | null
+}): { agentName: string | null; seatRole: string | null } {
+  const agentName = input.agentName?.trim() || null
+  const seatRole = input.seatRole?.trim().toLowerCase() || null
+  if ((agentName === null) === (seatRole === null))
+    throw new Error(
+      "A phase agent must name exactly one of an agent or a seat role."
+    )
+  return { agentName, seatRole }
+}
+
 export function createPhaseAgent(input: {
   phaseId: string
-  agentName: string
+  agentName?: string | null
+  seatRole?: string | null
   skills?: string[] | null
   tools?: string[] | null
   runtimeConfig?: ProcessRuntimeConfig | null
   position: number
 }): ProcessPhaseAgent {
+  const identity = phaseAgentIdentity(input)
   const id = randomUUID()
   getDb()
     .prepare(
-      "INSERT INTO process_phase_agents (id, phase_id, agent_name, skills, tools, runtime_config, position) VALUES (?, ?, ?, ?, ?, ?, ?)"
+      "INSERT INTO process_phase_agents (id, phase_id, agent_name, seat_role, skills, tools, runtime_config, position) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
     )
     .run(
       id,
       input.phaseId,
-      input.agentName,
+      identity.agentName,
+      identity.seatRole,
       input.skills == null ? null : JSON.stringify(input.skills),
       input.tools == null ? null : JSON.stringify(input.tools),
       stringifyRuntimeConfig(input.runtimeConfig),
@@ -719,13 +766,15 @@ export function createProcessRun(input: {
   // A nested run's caller (plan 038.1): the sub-process phase-run that started it.
   parentPhaseRunId?: string | null
   runtimeConfig?: ProcessRuntimeConfig | null
+  seatBindings?: SeatBindingsSnapshot | null
+  missionControl?: MissionControlRunLink | null
   status?: ProcessRunStatus
 }): ProcessRun {
   const id = randomUUID()
   const now = Date.now()
   getDb()
     .prepare(
-      "INSERT INTO process_runs (id, process_id, source_conversation_id, workspace_id, task_id, objective, parent_phase_run_id, status, started_at, finished_at, created_at, completion_contracts, runtime_config) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+      "INSERT INTO process_runs (id, process_id, source_conversation_id, workspace_id, task_id, objective, parent_phase_run_id, status, started_at, finished_at, created_at, completion_contracts, runtime_config, seat_bindings, mission_control) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )
     .run(
       id,
@@ -747,7 +796,9 @@ export function createProcessRun(input: {
           ])
         )
       ),
-      stringifyRuntimeConfig(input.runtimeConfig)
+      stringifyRuntimeConfig(input.runtimeConfig),
+      input.seatBindings ? JSON.stringify(input.seatBindings) : null,
+      input.missionControl ? JSON.stringify(input.missionControl) : null
     )
   return getProcessRun(id)!
 }
@@ -933,6 +984,7 @@ export function updatePhaseRun(
     outputIdentity?: string | null
     completionReceipt?: PhaseCompletionReceipt | null
     runtimeSnapshot?: ProcessRuntimeSnapshot | null
+    seatAddress?: string | null
   }
 ): ProcessPhaseRun {
   const sets: string[] = []
@@ -1000,6 +1052,10 @@ export function updatePhaseRun(
   if (patch.runtimeSnapshot !== undefined) {
     sets.push("runtime_snapshot = ?")
     values.push(stringifyRuntimeSnapshot(patch.runtimeSnapshot))
+  }
+  if (patch.seatAddress !== undefined) {
+    sets.push("seat_address = ?")
+    values.push(patch.seatAddress)
   }
   if (sets.length > 0) {
     values.push(id)
@@ -1164,4 +1220,18 @@ export function updateFlagStatus(id: string, status: ProcessFlagStatus): void {
   getDb()
     .prepare("UPDATE process_flags SET status = ? WHERE id = ?")
     .run(status, id)
+}
+
+// The Process run launched for a Mission Control playbook run (plan 106.3),
+// found through the run's own link — the recovery path when a crash landed
+// between creating the Process run and stamping it on the playbook run.
+export function getProcessRunByPlaybookRunId(
+  playbookRunId: string
+): ProcessRun | undefined {
+  const row = getDb()
+    .prepare(
+      "SELECT * FROM process_runs WHERE mission_control IS NOT NULL AND json_extract(mission_control, '$.playbookRunId') = ? LIMIT 1"
+    )
+    .get(playbookRunId) as ProcessRunRow | undefined
+  return row ? toRun(row) : undefined
 }

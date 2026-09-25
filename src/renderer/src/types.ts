@@ -181,6 +181,18 @@ export type {
   SliceEdge,
   SliceSpec,
   WorkRevision,
+  Playbook,
+  PlaybookAltitude,
+  PlaybookHook,
+  PlaybookHookName,
+  PlaybookRun,
+  PlaybookRunStatus,
+  PlaybookWithHooks,
+  SeatBinding,
+  SeatBindingsSnapshot,
+  SliceProof,
+  ProofCriterionStatus,
+  MissionControlRunLink,
 } from "../../preload/index"
 
 // Live dashboard types (plan 033), surfaced for the Dashboards screen.
