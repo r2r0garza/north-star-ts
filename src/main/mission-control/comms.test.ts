@@ -26,7 +26,10 @@ import {
   commsContextSection,
   DEFAULT_COMMS_BOUNDS,
   installSeatComms,
+  NAVIGATOR_ADDRESS,
   SeatComms,
+  USER_ADDRESS,
+  wakeHopFor,
   type CommsResult,
 } from "./comms"
 import { deliverQueued } from "./inbox"
@@ -66,7 +69,11 @@ let sessions: SeatSessionService
 let bus: SeatComms
 
 function answer(input: SeatTurnRunInput, content: string): SeatTurnRunResult {
-  appendMessage({ conversationId: input.conversationId, role: "assistant", content })
+  appendMessage({
+    conversationId: input.conversationId,
+    role: "assistant",
+    content,
+  })
   return { content }
 }
 
@@ -233,123 +240,137 @@ beforeEach(() => {
   setup()
 })
 
-describe.skipIf(!sqliteLoads)("seat comms: the builder asks QA mid-user-story", () => {
-  it("wakes QA's idle session, and QA's reply reaches the busy builder at its next turn boundary", async () => {
-    const { feature, userStory } = orchestrated()
-    // The builder is mid-step in a fresh worker: a busy seat turn.
-    const builderConversation = createConversation({ mode: "interactive" }).id
-    const builder = seat(feature, "builder@implementation", {
-      anchor: { kind: "user_story", id: userStory.id },
-    })
-    const releaseBuilder = await registry.acquire(builderConversation, builder)
-
-    const sentRaw = await sendMessageTool.execute(
-      {
-        to: "qa@implementation",
-        body: "Should totals include tax?",
-        expects_reply: true,
-      },
-      { workspace: tmpdir(), missionControlSeat: builder }
-    )
-    const sent = JSON.parse(sentRaw)
-    expect(sent.status).toBe("queued")
-    // Non-blocking: the sender got an id back, and exactly one wake is queued.
-    expect(wakeTasks).toHaveLength(1)
-    const thread = seatComms.getThread(sent.thread_id)!
-    expect(thread).toMatchObject({ anchorKind: "user_story", anchorId: userStory.id })
-
-    // QA answers with the reply tool during its wake turn.
-    turnScript = async (input) => {
-      const incoming = listMessages(input.conversationId).at(-1)!
-      expect(incoming.role).toBe("user")
-      expect(isSeatMessageEvent(incoming.content)).toBe(true)
-      expect(incoming.content).toContain('from="builder@implementation"')
-      expect(input.seat).toMatchObject({ profile: "consult", wakeHop: 0 })
-      await replyTool.execute(
-        { message_id: sent.message_id, body: "Yes, totals include tax." },
-        { workspace: tmpdir(), missionControlSeat: input.seat }
+describe.skipIf(!sqliteLoads)(
+  "seat comms: the builder asks QA mid-user-story",
+  () => {
+    it("wakes QA's idle session, and QA's reply reaches the busy builder at its next turn boundary", async () => {
+      const { feature, userStory } = orchestrated()
+      // The builder is mid-step in a fresh worker: a busy seat turn.
+      const builderConversation = createConversation({ mode: "interactive" }).id
+      const builder = seat(feature, "builder@implementation", {
+        anchor: { kind: "user_story", id: userStory.id },
+      })
+      const releaseBuilder = await registry.acquire(
+        builderConversation,
+        builder
       )
-      return answer(input, "Answered the builder.")
-    }
-    await drainWakes()
 
-    // QA's session is generation 1 and holds the tagged turn.
-    const qaSession = seatSessions.getLiveSeatSession(
-      feature.id,
-      "qa@implementation"
-    )!
-    expect(qaSession).toMatchObject({ generation: 1, status: "idle" })
-    expect(turns).toHaveLength(1)
-    expect(turns[0].conversationId).toBe(qaSession.conversationId)
-
-    // The builder is busy, so its reply waits; no wake for the builder.
-    const [question, reply] = allMessages(feature)
-    expect(question).toMatchObject({ status: "replied", toAddress: "qa@implementation" })
-    expect(reply).toMatchObject({
-      status: "queued",
-      toAddress: "builder@implementation",
-      inReplyTo: question.id,
-      hop: 1,
-      threadId: question.threadId,
-    })
-    expect(wakeTasks).toHaveLength(1)
-
-    // The builder's next tool-round boundary delivers it into its transcript.
-    const delivered = deliverQueued({
-      identity: builder,
-      conversationId: builderConversation,
-      wakeTaskId: null,
-    })!
-    expect(delivered.messages.map((m) => m.id)).toEqual([reply.id])
-    expect(listMessages(builderConversation).at(-1)?.content).toContain(
-      "Yes, totals include tax."
-    )
-    expect(seatComms.getMessage(reply.id)).toMatchObject({
-      status: "delivered",
-      deliveredConversationId: builderConversation,
-      deliveredMessageId: delivered.messageId,
-    })
-    releaseBuilder()
-    expect(wakeTasks).toHaveLength(1)
-  })
-
-  it("replies automatically with the wake turn's answer when the recipient never calls reply", async () => {
-    const { feature } = orchestrated()
-    const question = ok(
-      bus.send(seat(feature, "builder@implementation"), {
-        to: "qa@implementation",
-        body: "Which fixture covers refunds?",
-        expectsReply: true,
+      const sentRaw = await sendMessageTool.execute(
+        {
+          to: "qa@implementation",
+          body: "Should totals include tax?",
+          expects_reply: true,
+        },
+        { workspace: tmpdir(), missionControlSeat: builder }
+      )
+      const sent = JSON.parse(sentRaw)
+      expect(sent.status).toBe("queued")
+      // Non-blocking: the sender got an id back, and exactly one wake is queued.
+      expect(wakeTasks).toHaveLength(1)
+      const thread = seatComms.getThread(sent.thread_id)!
+      expect(thread).toMatchObject({
+        anchorKind: "user_story",
+        anchorId: userStory.id,
       })
-    )
-    turnScript = async (input) => answer(input, "tests/fixtures/refunds.json")
-    await drainWakes()
-    const [, reply] = allMessages(feature)
-    expect(seatComms.getMessage(question.id)?.status).toBe("replied")
-    expect(reply).toMatchObject({
-      fromAddress: "qa@implementation",
-      body: "tests/fixtures/refunds.json",
-    })
-  })
 
-  it("acknowledges a message that expects no reply", async () => {
-    const { feature } = orchestrated()
-    const note = ok(
-      bus.send(seat(feature, "builder@implementation"), {
-        to: "qa@implementation",
-        body: "FYI: I renamed Invoice.total to Invoice.amount.",
+      // QA answers with the reply tool during its wake turn.
+      turnScript = async (input) => {
+        const incoming = listMessages(input.conversationId).at(-1)!
+        expect(incoming.role).toBe("user")
+        expect(isSeatMessageEvent(incoming.content)).toBe(true)
+        expect(incoming.content).toContain('from="builder@implementation"')
+        expect(input.seat).toMatchObject({ profile: "consult", wakeHop: 0 })
+        await replyTool.execute(
+          { message_id: sent.message_id, body: "Yes, totals include tax." },
+          { workspace: tmpdir(), missionControlSeat: input.seat }
+        )
+        return answer(input, "Answered the builder.")
+      }
+      await drainWakes()
+
+      // QA's session is generation 1 and holds the tagged turn.
+      const qaSession = seatSessions.getLiveSeatSession(
+        feature.id,
+        "qa@implementation"
+      )!
+      expect(qaSession).toMatchObject({ generation: 1, status: "idle" })
+      expect(turns).toHaveLength(1)
+      expect(turns[0].conversationId).toBe(qaSession.conversationId)
+
+      // The builder is busy, so its reply waits; no wake for the builder.
+      const [question, reply] = allMessages(feature)
+      expect(question).toMatchObject({
+        status: "replied",
+        toAddress: "qa@implementation",
       })
-    )
-    await drainWakes()
-    expect(seatComms.getMessage(note.id)?.status).toBe("acknowledged")
-    expect(allMessages(feature)).toHaveLength(1)
-  })
-})
+      expect(reply).toMatchObject({
+        status: "queued",
+        toAddress: "builder@implementation",
+        inReplyTo: question.id,
+        hop: 1,
+        threadId: question.threadId,
+      })
+      expect(wakeTasks).toHaveLength(1)
+
+      // The builder's next tool-round boundary delivers it into its transcript.
+      const delivered = deliverQueued({
+        identity: builder,
+        conversationId: builderConversation,
+        wakeTaskId: null,
+      })!
+      expect(delivered.messages.map((m) => m.id)).toEqual([reply.id])
+      expect(listMessages(builderConversation).at(-1)?.content).toContain(
+        "Yes, totals include tax."
+      )
+      expect(seatComms.getMessage(reply.id)).toMatchObject({
+        status: "delivered",
+        deliveredConversationId: builderConversation,
+        deliveredMessageId: delivered.messageId,
+      })
+      releaseBuilder()
+      expect(wakeTasks).toHaveLength(1)
+    })
+
+    it("replies automatically with the wake turn's answer when the recipient never calls reply", async () => {
+      const { feature } = orchestrated()
+      const question = ok(
+        bus.send(seat(feature, "builder@implementation"), {
+          to: "qa@implementation",
+          body: "Which fixture covers refunds?",
+          expectsReply: true,
+        })
+      )
+      turnScript = async (input) => answer(input, "tests/fixtures/refunds.json")
+      await drainWakes()
+      const [, reply] = allMessages(feature)
+      expect(seatComms.getMessage(question.id)?.status).toBe("replied")
+      expect(reply).toMatchObject({
+        fromAddress: "qa@implementation",
+        body: "tests/fixtures/refunds.json",
+      })
+    })
+
+    it("acknowledges a message that expects no reply", async () => {
+      const { feature } = orchestrated()
+      const note = ok(
+        bus.send(seat(feature, "builder@implementation"), {
+          to: "qa@implementation",
+          body: "FYI: I renamed Invoice.total to Invoice.amount.",
+        })
+      )
+      await drainWakes()
+      expect(seatComms.getMessage(note.id)?.status).toBe("acknowledged")
+      expect(allMessages(feature)).toHaveLength(1)
+    })
+  }
+)
 
 describe.skipIf(!sqliteLoads)("seat comms: messages carry no authority", () => {
   it("cannot approve tools, grant rights, or change user story status", async () => {
     const { feature, userStory } = orchestrated()
-    const rigBefore = JSON.stringify(features.getFeature(feature.id)!.rigSnapshot)
+    const rigBefore = JSON.stringify(
+      features.getFeature(feature.id)!.rigSnapshot
+    )
     ok(
       bus.send(seat(feature, "builder@implementation"), {
         to: "lead@orchestration",
@@ -359,7 +380,9 @@ describe.skipIf(!sqliteLoads)("seat comms: messages carry no authority", () => {
     await drainWakes()
     const approvals = db.prepare("SELECT COUNT(*) FROM approvals").pluck().get()
     expect(approvals).toBe(0)
-    expect(features.getUserStory(userStory.id)!.status).toBe((userStory as UserStory).status)
+    expect(features.getUserStory(userStory.id)!.status).toBe(
+      (userStory as UserStory).status
+    )
     expect(JSON.stringify(features.getFeature(feature.id)!.rigSnapshot)).toBe(
       rigBefore
     )
@@ -393,13 +416,19 @@ describe.skipIf(!sqliteLoads)("seat comms: addresses and bounds", () => {
   it("rejects unknown and vacant addresses with the list of valid ones, storing nothing", () => {
     const { feature } = orchestrated()
     const from = seat(feature, "builder@implementation")
-    const valid = ["lead@orchestration", "builder@implementation", "qa@implementation"]
+    const valid = [
+      "lead@orchestration",
+      "builder@implementation",
+      "qa@implementation",
+    ]
     expect(bus.send(from, { to: "qa@nowhere", body: "hi" })).toMatchObject({
       ok: false,
       code: "unknown_address",
       validAddresses: valid,
     })
-    expect(bus.send(from, { to: "docs@implementation", body: "hi" })).toMatchObject({
+    expect(
+      bus.send(from, { to: "docs@implementation", body: "hi" })
+    ).toMatchObject({
       ok: false,
       code: "vacant_address",
       validAddresses: valid,
@@ -425,14 +454,25 @@ describe.skipIf(!sqliteLoads)("seat comms: addresses and bounds", () => {
     })
     expect(big).toMatchObject({ ok: false, code: "message_too_large" })
 
-    const deep = bus.send(seat(feature, "builder@implementation", { wakeHop: 4 }), {
-      to: "qa@implementation",
-      body: "relaying again",
-    })
+    const deep = bus.send(
+      seat(feature, "builder@implementation", { wakeHop: 4 }),
+      {
+        to: "qa@implementation",
+        body: "relaying again",
+      }
+    )
     expect(deep).toMatchObject({ ok: false, code: "hop_limit" })
 
-    const first = ok(bus.send(builder, { to: "qa@implementation", body: "one" }))
-    ok(bus.send(builder, { to: "qa@implementation", body: "two", threadId: first.threadId }))
+    const first = ok(
+      bus.send(builder, { to: "qa@implementation", body: "one" })
+    )
+    ok(
+      bus.send(builder, {
+        to: "qa@implementation",
+        body: "two",
+        threadId: first.threadId,
+      })
+    )
     const full = bus.send(builder, {
       to: "qa@implementation",
       body: "three",
@@ -482,7 +522,10 @@ describe.skipIf(!sqliteLoads)("seat comms: steer and escalate", () => {
       "Steer → lead@orchestration"
     )
     await drainWakes()
-    const lead = seatSessions.getLiveSeatSession(feature.id, "lead@orchestration")!
+    const lead = seatSessions.getLiveSeatSession(
+      feature.id,
+      "lead@orchestration"
+    )!
     const tagged = listMessages(lead.conversationId!).find((m) =>
       isSeatMessageEvent(m.content)
     )!
@@ -521,7 +564,10 @@ describe.skipIf(!sqliteLoads)("seat comms: steer and escalate", () => {
         reason: "The spec contradicts the schema.",
       })
     )
-    expect(up).toMatchObject({ toAddress: "lead@orchestration", kind: "escalation" })
+    expect(up).toMatchObject({
+      toAddress: "lead@orchestration",
+      kind: "escalation",
+    })
     const top = ok(
       bus.escalate(seat(feature, "lead@orchestration"), {
         reason: "Need a product decision.",
@@ -543,14 +589,21 @@ describe.skipIf(!sqliteLoads)("seat sessions: generations", () => {
     )
     turnScript = async (input) => answer(input, "Refunds are pro-rated.")
     await drainWakes()
-    const first = seatSessions.getLiveSeatSession(feature.id, "qa@implementation")!
+    const first = seatSessions.getLiveSeatSession(
+      feature.id,
+      "qa@implementation"
+    )!
 
     const second = sessions.rotate(first.id, "Rotated by the user")!
     expect(second).toMatchObject({ generation: 2, status: "idle" })
     expect(second.conversationId).not.toBe(first.conversationId)
-    expect(second.handoffSummary).toContain("Generation 1 was rotated (Rotated by the user)")
+    expect(second.handoffSummary).toContain(
+      "Generation 1 was rotated (Rotated by the user)"
+    )
     expect(second.handoffSummary).toContain("Refunds are pro-rated.")
-    expect(seatSessions.getSeatSession(first.id)).toMatchObject({ status: "rotated" })
+    expect(seatSessions.getSeatSession(first.id)).toMatchObject({
+      status: "rotated",
+    })
     expect(listMessages(first.conversationId!).length).toBeGreaterThan(0)
 
     // The next wake lands in generation 2, with the handoff in context.
@@ -599,8 +652,18 @@ describe.skipIf(!sqliteLoads)("seat comms: crash safety", () => {
     const { feature } = orchestrated()
     // The crash happened between the insert and the dispatch.
     const lost = new SeatComms({ dispatch: () => {}, notifyUser: () => {} })
-    ok(lost.send(seat(feature, "builder@implementation"), { to: "qa@implementation", body: "a" }))
-    ok(lost.send(seat(feature, "builder@implementation"), { to: "qa@implementation", body: "b" }))
+    ok(
+      lost.send(seat(feature, "builder@implementation"), {
+        to: "qa@implementation",
+        body: "a",
+      })
+    )
+    ok(
+      lost.send(seat(feature, "builder@implementation"), {
+        to: "qa@implementation",
+        body: "b",
+      })
+    )
     expect(wakeTasks).toHaveLength(0)
     sessions.dispatchAll()
     sessions.dispatchAll()
@@ -692,79 +755,92 @@ describe.skipIf(!sqliteLoads)("seat comms: crash safety", () => {
   })
 })
 
-describe.skipIf(!sqliteLoads)("seat comms: asking a finished fresh worker", () => {
-  it("wakes the worker answer-only in its own transcript, and its final answer is the reply", async () => {
-    const { feature } = orchestrated()
-    // A completed fresh-context test step that ran in qa@implementation.
-    const worker = createConversation({ mode: "interactive" })
-    const task = createTask({ conversationId: worker.id, status: "completed" })
-    const now = Date.now()
-    db.prepare(
-      "INSERT INTO process_definitions (id, name, created_at, updated_at) VALUES ('def', 'User_Story', ?, ?)"
-    ).run(now, now)
-    db.prepare(
-      "INSERT INTO process_phases (id, process_id, key, name, position) VALUES ('test', 'def', 'test', 'Test', 0)"
-    ).run()
-    const bindings = {
-      version: 1,
-      rigName: "Orchestrated",
-      rigCulture: "",
-      podKey: "implementation",
-      roles: { qa: ["qa@implementation"] },
-      seats: {
-        "qa@implementation": {
-          address: "qa@implementation",
-          role: "qa",
-          seatId: "s",
-          podKey: "implementation",
-          podName: "Implementation",
-          agentName: "agentref:v1:qa",
-          agentLabel: "Agent qa",
-          charter: "",
-          podMission: "",
-          podCulture: "",
-          decisionRights: [],
-          skills: null,
-          tools: null,
-          mcpServers: null,
-          runtime: null,
-        },
-      },
-      intentChain: "",
-    }
-    db.prepare(
-      "INSERT INTO process_runs (id, process_id, status, objective, seat_bindings, mission_control, created_at) VALUES ('run', 'def', 'completed', 'x', ?, ?, ?)"
-    ).run(JSON.stringify(bindings), JSON.stringify({ featureId: feature.id }), now)
-    db.prepare(
-      "INSERT INTO process_phase_runs (id, run_id, phase_id, status, task_id, seat_address, finished_at) VALUES (?, 'run', 'test', 'completed', ?, 'qa@implementation', ?)"
-    ).run(randomUUID(), task.id, now)
-
-    const question = ok(
-      bus.send(seat(feature, "builder@implementation"), {
-        to: "qa@implementation",
-        body: "Which command did you run for AC-1?",
-        expectsReply: true,
+describe.skipIf(!sqliteLoads)(
+  "seat comms: asking a finished fresh worker",
+  () => {
+    it("wakes the worker answer-only in its own transcript, and its final answer is the reply", async () => {
+      const { feature } = orchestrated()
+      // A completed fresh-context test step that ran in qa@implementation.
+      const worker = createConversation({ mode: "interactive" })
+      const task = createTask({
+        conversationId: worker.id,
+        status: "completed",
       })
-    )
-    turnScript = async (input) => answer(input, "pnpm test invoice")
-    await drainWakes()
+      const now = Date.now()
+      db.prepare(
+        "INSERT INTO process_definitions (id, name, created_at, updated_at) VALUES ('def', 'User_Story', ?, ?)"
+      ).run(now, now)
+      db.prepare(
+        "INSERT INTO process_phases (id, process_id, key, name, position) VALUES ('test', 'def', 'test', 'Test', 0)"
+      ).run()
+      const bindings = {
+        version: 1,
+        rigName: "Orchestrated",
+        rigCulture: "",
+        podKey: "implementation",
+        roles: { qa: ["qa@implementation"] },
+        seats: {
+          "qa@implementation": {
+            address: "qa@implementation",
+            role: "qa",
+            seatId: "s",
+            podKey: "implementation",
+            podName: "Implementation",
+            agentName: "agentref:v1:qa",
+            agentLabel: "Agent qa",
+            charter: "",
+            podMission: "",
+            podCulture: "",
+            decisionRights: [],
+            skills: null,
+            tools: null,
+            mcpServers: null,
+            runtime: null,
+          },
+        },
+        intentChain: "",
+      }
+      db.prepare(
+        "INSERT INTO process_runs (id, process_id, status, objective, seat_bindings, mission_control, created_at) VALUES ('run', 'def', 'completed', 'x', ?, ?, ?)"
+      ).run(
+        JSON.stringify(bindings),
+        JSON.stringify({ featureId: feature.id }),
+        now
+      )
+      db.prepare(
+        "INSERT INTO process_phase_runs (id, run_id, phase_id, status, task_id, seat_address, finished_at) VALUES (?, 'run', 'test', 'completed', ?, 'qa@implementation', ?)"
+      ).run(randomUUID(), task.id, now)
 
-    expect(turns[0]).toMatchObject({ conversationId: worker.id })
-    expect(turns[0].seat.profile).toBe("answer_only")
-    expect(seatComms.getMessage(question.id)).toMatchObject({
-      status: "replied",
-      answerOnly: true,
+      const question = ok(
+        bus.send(seat(feature, "builder@implementation"), {
+          to: "qa@implementation",
+          body: "Which command did you run for AC-1?",
+          expectsReply: true,
+        })
+      )
+      turnScript = async (input) => answer(input, "pnpm test invoice")
+      await drainWakes()
+
+      expect(turns[0]).toMatchObject({ conversationId: worker.id })
+      expect(turns[0].seat.profile).toBe("answer_only")
+      expect(seatComms.getMessage(question.id)).toMatchObject({
+        status: "replied",
+        answerOnly: true,
+      })
+      expect(allMessages(feature).at(-1)).toMatchObject({
+        fromAddress: "qa@implementation",
+        body: "pnpm test invoice",
+      })
+      // No seat session was created for the answer.
+      expect(
+        seatSessions.listSeatSessions({
+          featureId: feature.id,
+          seatAddress: "qa@implementation",
+        })
+      ).toHaveLength(0)
     })
-    expect(allMessages(feature).at(-1)).toMatchObject({
-      fromAddress: "qa@implementation",
-      body: "pnpm test invoice",
-    })
-    // No seat session was created for the answer.
-    expect(
-      seatSessions.listSeatSessions({ featureId: feature.id, seatAddress: "qa@implementation" })
-    ).toHaveLength(0)
-  })
-})
+  }
+)
 
 // ── one seat, one mind (regression: the 2026-09-24 manual run) ──────────────
 
@@ -811,7 +887,11 @@ function activeUserStoryRun(
         contextScope,
         position,
       })
-      processes.createPhaseAgent({ phaseId: phase.id, seatRole: role, position: 0 })
+      processes.createPhaseAgent({
+        phaseId: phase.id,
+        seatRole: role,
+        position: 0,
+      })
       return [key, phase]
     })
   )
@@ -850,8 +930,14 @@ function activeUserStoryRun(
   // Run a step to completion in its own fresh worker conversation.
   const finish = (key: "spec" | "build" | "test", address: string) => {
     const conversation = createConversation({ mode: "interactive" })
-    const task = createTask({ conversationId: conversation.id, status: "completed" })
-    const phaseRun = processes.createPhaseRun({ runId: run.id, phaseId: phases[key].id })
+    const task = createTask({
+      conversationId: conversation.id,
+      status: "completed",
+    })
+    const phaseRun = processes.createPhaseRun({
+      runId: run.id,
+      phaseId: phases[key].id,
+    })
     processes.updatePhaseRun(phaseRun.id, {
       status: "completed",
       taskId: task.id,
@@ -906,7 +992,8 @@ describe.skipIf(!sqliteLoads)("seat comms: one seat, one mind", () => {
         expectsReply: true,
       })
     )
-    turnScript = async (input) => answer(input, "No: non-strings throw TypeError.")
+    turnScript = async (input) =>
+      answer(input, "No: non-strings throw TypeError.")
     await drainWakes()
     expect(turns[0]).toMatchObject({ conversationId: buildConversation })
     expect(turns[0].seat.profile).toBe("answer_only")
@@ -974,7 +1061,10 @@ describe.skipIf(!sqliteLoads)("seat comms: one seat, one mind", () => {
     const test = processes
       .getProcessGraph(run.processId!)!
       .phases.find((p) => p.key === "test")!
-    const phaseRun = processes.createPhaseRun({ runId: run.id, phaseId: test.id })
+    const phaseRun = processes.createPhaseRun({
+      runId: run.id,
+      phaseId: test.id,
+    })
     processes.updatePhaseRun(phaseRun.id, {
       status: "completed",
       taskId: task.id,
@@ -986,7 +1076,10 @@ describe.skipIf(!sqliteLoads)("seat comms: one seat, one mind", () => {
     expect(
       seatSessions.listSeatSessions({ featureId: feature.id, playbookRunId })
     ).toEqual([
-      expect.objectContaining({ status: "closed", rotationReason: "The user story run finished" }),
+      expect.objectContaining({
+        status: "closed",
+        rotationReason: "The user story run finished",
+      }),
     ])
 
     ok(
@@ -1012,7 +1105,10 @@ describe.skipIf(!sqliteLoads)("seat comms: one seat, one mind", () => {
       })
     )
     await drainWakes()
-    const session = seatSessions.getLiveSeatSession(feature.id, "qa@implementation")!
+    const session = seatSessions.getLiveSeatSession(
+      feature.id,
+      "qa@implementation"
+    )!
     expect(session.scope).toBe("feature")
     expect(turns[0]).toMatchObject({ conversationId: session.conversationId })
   })
@@ -1028,12 +1124,17 @@ describe.skipIf(!sqliteLoads)("seat comms: wake visibility", () => {
       })
     )
     const qa = () =>
-      sessions.overview(feature.id).find((s) => s.address === "qa@implementation")!
+      sessions
+        .overview(feature.id)
+        .find((s) => s.address === "qa@implementation")!
     expect(qa()).toMatchObject({ wake: "queued", inboxDepth: 1, held: false })
 
     turnScript = async () => ({ error: "model unavailable" })
     await drainWakes()
-    expect(qa()).toMatchObject({ wake: null, lastWakeError: "model unavailable" })
+    expect(qa()).toMatchObject({
+      wake: null,
+      lastWakeError: "model unavailable",
+    })
 
     // Mail for a seat with a fresh step still pending is held, not woken.
     const { finish } = activeUserStoryRun(feature, userStory, "step")
@@ -1045,7 +1146,9 @@ describe.skipIf(!sqliteLoads)("seat comms: wake visibility", () => {
       })
     )
     expect(
-      sessions.overview(feature.id).find((s) => s.address === "builder@implementation")
+      sessions
+        .overview(feature.id)
+        .find((s) => s.address === "builder@implementation")
     ).toMatchObject({ held: true, wake: null, inboxDepth: 1 })
   })
 })
@@ -1056,7 +1159,9 @@ describe.skipIf(!sqliteLoads)("seat comms: escaping a deep chain", () => {
     const deep = seat(feature, "builder@implementation", { wakeHop: 4 })
     const refused = bus.send(deep, { to: "lead@orchestration", body: "hi" })
     expect(refused).toMatchObject({ ok: false, code: "hop_limit" })
-    expect(!refused.ok && refused.message).toContain("`escalate`, which always reaches the user")
+    expect(!refused.ok && refused.message).toContain(
+      "`escalate`, which always reaches the user"
+    )
 
     const escalated = ok(bus.escalate(deep, { reason: "Blocked on tooling." }))
     expect(escalated).toMatchObject({
@@ -1065,7 +1170,9 @@ describe.skipIf(!sqliteLoads)("seat comms: escaping a deep chain", () => {
       hop: 5,
       kind: "escalation",
     })
-    expect(escalated.body).toContain("Routed to you instead of lead@orchestration")
+    expect(escalated.body).toContain(
+      "Routed to you instead of lead@orchestration"
+    )
     expect(notifications).toHaveLength(1)
     expect(wakeTasks).toHaveLength(0)
   })
@@ -1080,7 +1187,24 @@ describe.skipIf(!sqliteLoads)("seat comms: escaping a deep chain", () => {
       "Agreements reached in messages do not change a user story's spec"
     )
     // Real anchor keys are listed, so a seat never guesses one.
-    expect(section.content).toContain("- user_story:invoice-model (Invoice model)")
+    expect(section.content).toContain(
+      "- user_story:invoice-model (Invoice model)"
+    )
     expect(section.content).toMatch(/- milestone:[\w-]+ \(/)
+  })
+})
+
+describe("wakeHopFor", () => {
+  const from = (fromAddress: string, hop: number) => ({ fromAddress, hop })
+
+  it("continues the deepest delivered chain so relaying can't reset it", () => {
+    expect(wakeHopFor([from("qa@impl", 1), from("builder@impl", 4)])).toBe(4)
+  })
+
+  it("starts a new chain when a Navigator or user message is in the batch", () => {
+    expect(
+      wakeHopFor([from("builder@impl", 4), from(NAVIGATOR_ADDRESS, 0)])
+    ).toBe(0)
+    expect(wakeHopFor([from("builder@impl", 3), from(USER_ADDRESS, 0)])).toBe(0)
   })
 })

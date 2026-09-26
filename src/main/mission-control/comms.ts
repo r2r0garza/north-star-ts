@@ -31,6 +31,25 @@ import type { SeatTurnIdentity } from "./seat-turns"
 export const USER_ADDRESS = "user@rig"
 export const NAVIGATOR_ADDRESS = "navigator@rig"
 
+// The hop a wake turn's new exchanges continue from. Normally the deepest
+// delivered message, so relaying mail to a third seat can't reset the chain.
+// A Navigator position or a user message in the batch is a fresh prompt the
+// seat is answering, not a relay, so its new exchanges start a new chain.
+// Replies still take their parent's hop, and the per-thread rate limit bounds
+// any loop.
+export function wakeHopFor(
+  delivered: ReadonlyArray<{ fromAddress: string; hop: number }>
+): number {
+  if (
+    delivered.some(
+      (m) =>
+        m.fromAddress === NAVIGATOR_ADDRESS || m.fromAddress === USER_ADDRESS
+    )
+  )
+    return 0
+  return Math.max(0, ...delivered.map((m) => m.hop))
+}
+
 export interface CommsBounds {
   maxMessagesPerThreadPerHour: number
   maxHopDepth: number
@@ -104,7 +123,9 @@ export function escalationTarget(rig: RigGraph, fromAddress: string): string {
   if (!from) return USER_ADDRESS
   const podByKey = new Map(rig.pods.map((pod) => [pod.key, pod]))
   const leadOf = (podKey: string) =>
-    directory.find((seat) => seat.podKey === podKey && seat.isLead && !seat.vacant)
+    directory.find(
+      (seat) => seat.podKey === podKey && seat.isLead && !seat.vacant
+    )
   const ownLead = leadOf(from.podKey)
   if (ownLead && ownLead.address !== fromAddress) return ownLead.address
   const seen = new Set([from.podKey])
@@ -113,7 +134,9 @@ export function escalationTarget(rig: RigGraph, fromAddress: string): string {
     const overseers = rig.oversight
       .filter((edge) => frontier.includes(edge.overseenPodId))
       .map((edge) => rig.pods.find((pod) => pod.id === edge.overseerPodId))
-      .filter((pod): pod is NonNullable<typeof pod> => !!pod && !seen.has(pod.key))
+      .filter(
+        (pod): pod is NonNullable<typeof pod> => !!pod && !seen.has(pod.key)
+      )
       .sort((a, b) => a.position - b.position)
     for (const pod of overseers) {
       const lead = leadOf(pod.key)
@@ -174,7 +197,9 @@ interface PostInput {
 
 function subjectFrom(body: string): string {
   const line = body.trim().split("\n")[0] ?? ""
-  return line.length > SUBJECT_MAX ? `${line.slice(0, SUBJECT_MAX - 1)}…` : line || "(no subject)"
+  return line.length > SUBJECT_MAX
+    ? `${line.slice(0, SUBJECT_MAX - 1)}…`
+    : line || "(no subject)"
 }
 
 function truncateBytes(text: string, max: number): string {
@@ -210,7 +235,9 @@ export class SeatComms {
       )
     let needsDecision: RigDecisionRight | null = null
     if (args.needsDecision) {
-      if (!(RIG_DECISION_RIGHTS as readonly string[]).includes(args.needsDecision))
+      if (
+        !(RIG_DECISION_RIGHTS as readonly string[]).includes(args.needsDecision)
+      )
         return fail(
           "bad_args",
           `needs_decision must be one of: ${RIG_DECISION_RIGHTS.join(", ")}.`
@@ -263,7 +290,10 @@ export class SeatComms {
         "No message with that id was addressed to you. Use list_inbox to see your messages."
       )
     if (parent.status === "refused" || parent.status === "queued")
-      return fail("not_delivered", "That message has not been delivered to you.")
+      return fail(
+        "not_delivered",
+        "That message has not been delivered to you."
+      )
     return this.post({
       feature,
       from: turn.address,
@@ -379,11 +409,7 @@ export class SeatComms {
   // A Navigator direction (plan 106.6): a structured position report to the
   // lead, never free-form. A newer direction supersedes one still queued, and
   // directions are not throttled by the seat chatter bounds.
-  direct(input: {
-    featureId: string
-    to: string
-    body: string
-  }): CommsResult {
+  direct(input: { featureId: string; to: string; body: string }): CommsResult {
     const feature = features.getFeature(input.featureId)
     if (!feature?.rigSnapshot)
       return fail("unavailable", "The feature has no rig snapshot.")
@@ -453,7 +479,9 @@ export class SeatComms {
   acknowledge(messageId: string): boolean {
     const message = comms.getMessage(messageId)
     if (!message || message.toAddress !== USER_ADDRESS) return false
-    const done = comms.transitionMessage(messageId, "acknowledged", ["delivered"])
+    const done = comms.transitionMessage(messageId, "acknowledged", [
+      "delivered",
+    ])
     if (done) emitCommsChanged(message.featureId)
     return done
   }
@@ -483,12 +511,21 @@ export class SeatComms {
           { validAddresses: valid }
         )
       if (input.to === input.from)
-        return fail("self_address", "You cannot send a message to your own seat.")
+        return fail(
+          "self_address",
+          "You cannot send a message to your own seat."
+        )
       const refusal = this.runtime.mailRefusal?.(feature, input.to)
       if (refusal) return fail("cannot_receive", refusal)
-      if (input.needsDecision && !target.decisionRights.includes(input.needsDecision)) {
+      if (
+        input.needsDecision &&
+        !target.decisionRights.includes(input.needsDecision)
+      ) {
         const holders = directory
-          .filter((seat) => !seat.vacant && seat.decisionRights.includes(input.needsDecision!))
+          .filter(
+            (seat) =>
+              !seat.vacant && seat.decisionRights.includes(input.needsDecision!)
+          )
           .map((seat) => seat.address)
         return fail(
           "lacks_decision_right",
@@ -500,7 +537,8 @@ export class SeatComms {
         )
       }
     }
-    if (!input.body.trim()) return fail("bad_args", "The message body is empty.")
+    if (!input.body.trim())
+      return fail("bad_args", "The message body is empty.")
     if (input.threadId) {
       const thread = comms.getThread(input.threadId)
       if (!thread || thread.featureId !== feature.id)
@@ -602,7 +640,8 @@ export class SeatComms {
     if (
       input.enforceRate &&
       input.kind !== "escalation" &&
-      comms.countSeatMessagesSince(input.feature.id, Date.now() - HOUR_MS) >= perHour
+      comms.countSeatMessagesSince(input.feature.id, Date.now() - HOUR_MS) >=
+        perHour
     )
       return {
         code: "feature_rate_limit",
@@ -714,7 +753,9 @@ function resolveAnchor(
       : `No milestone "${key}" in this feature.`
   }
   for (const milestone of milestones) {
-    const userStory = features.listUserStories(milestone.id).find((s) => s.key === key)
+    const userStory = features
+      .listUserStories(milestone.id)
+      .find((s) => s.key === key)
     if (userStory) return { kind: "user_story", id: userStory.id }
   }
   return `No user story "${key}" in this feature.`

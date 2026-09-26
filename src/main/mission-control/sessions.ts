@@ -25,6 +25,7 @@ import {
   getSeatComms,
   seatDirectory,
   USER_ADDRESS,
+  wakeHopFor,
 } from "./comms"
 import { emitCommsChanged } from "./comms-events"
 import { deliverQueued } from "./inbox"
@@ -149,7 +150,10 @@ export function buildHandoffSummary(previous: SeatSession): string | null {
     const rows = listMessages(previous.conversationId)
     for (let i = rows.length - 1; i >= 0 && size < HANDOFF_MAX_CHARS; i--) {
       const row = rows[i]
-      if ((row.role !== "assistant" && row.role !== "user") || !row.content?.trim())
+      if (
+        (row.role !== "assistant" && row.role !== "user") ||
+        !row.content?.trim()
+      )
         continue
       const line = `[${row.role === "assistant" ? "you" : "incoming"}] ${row.content.trim()}`
       tail.unshift(line)
@@ -236,7 +240,12 @@ export class SeatSessionService {
     if (!found) throw new Error(`No seat ${address} in this feature's rig.`)
     if (!found.seat.agentRefId) throw new Error(`${address} is vacant.`)
     const created = getDb().transaction(() => {
-      if (live) sessions.retireSeatSession(live.id, "closed", "Its conversation was deleted")
+      if (live)
+        sessions.retireSeatSession(
+          live.id,
+          "closed",
+          "Its conversation was deleted"
+        )
       const previous = sessions.listSeatSessions({
         featureId: feature.id,
         seatAddress: address,
@@ -282,7 +291,10 @@ export class SeatSessionService {
   rotate(sessionId: string, reason: string): SeatSession | null {
     const session = sessions.getSeatSession(sessionId)
     if (!session || !["idle", "busy"].includes(session.status)) return null
-    if (session.conversationId && this.registry.conversationBusy(session.conversationId))
+    if (
+      session.conversationId &&
+      this.registry.conversationBusy(session.conversationId)
+    )
       throw new Error(
         `${session.seatAddress} is mid-turn. Rotate it after the turn ends.`
       )
@@ -294,8 +306,13 @@ export class SeatSessionService {
     // A seat that left the rig (or went vacant) has no successor, and neither
     // does a user story session whose run already ended.
     if (!found?.seat.agentRefId) return null
-    if (session.playbookRunId && !runStillRunning(session.playbookRunId)) return null
-    return this.ensureSession(feature, session.seatAddress, session.playbookRunId)
+    if (session.playbookRunId && !runStillRunning(session.playbookRunId))
+      return null
+    return this.ensureSession(
+      feature,
+      session.seatAddress,
+      session.playbookRunId
+    )
   }
 
   // A rig Re-seat: every live feature session starts a new generation
@@ -312,7 +329,11 @@ export class SeatSessionService {
         ? snapshotSeat(feature, session.seatAddress)?.seat.agentRefId
         : null
       if (!stillSeated) {
-        sessions.retireSeatSession(session.id, "closed", "The seat left the rig")
+        sessions.retireSeatSession(
+          session.id,
+          "closed",
+          "The seat left the rig"
+        )
         continue
       }
       try {
@@ -390,7 +411,9 @@ export class SeatSessionService {
               : null,
         held: inboxDepth > 0 && pendingRunWork(featureId, seat.address),
         lastWakeError:
-          lastWake?.status === "failed" ? (lastWake.error ?? "The wake failed.") : null,
+          lastWake?.status === "failed"
+            ? (lastWake.error ?? "The wake failed.")
+            : null,
         session:
           live.find((s) => s.scope === "user_story") ??
           live.find((s) => s.scope === "feature") ??
@@ -508,7 +531,9 @@ export class SeatSessionService {
     let delivered = comms.listByWakeTask(ctx.task.id)
     const resuming = delivered.length > 0
     if (!resuming && this.registry.seatBusy(featureId, address))
-      return { content: `${address} is busy; its mail waits for the next turn boundary.` }
+      return {
+        content: `${address} is busy; its mail waits for the next turn boundary.`,
+      }
     if (!resuming && pendingRunWork(featureId, address))
       return {
         content: `${address} has playbook steps still to run; its mail waits for its next step.`,
@@ -536,7 +561,7 @@ export class SeatSessionService {
       }
       const identity: SeatTurnIdentity = {
         ...home.identity,
-        wakeHop: Math.max(...delivered.map((m) => m.hop)),
+        wakeHop: wakeHopFor(delivered),
         anchor: home.identity.anchor ?? threadAnchor(delivered[0]),
       }
 
@@ -555,7 +580,10 @@ export class SeatSessionService {
         })
         if (home.session) {
           this.markSessionActivity(home.conversationId, false)
-          const after = sessions.recordSeatSessionTurn(home.session.id, !!result.error)
+          const after = sessions.recordSeatSessionTurn(
+            home.session.id,
+            !!result.error
+          )
           if (result.error && after.failureCount >= MAX_SESSION_FAILURES)
             this.rotateAfterTurn(after, "repeated failures")
         }
@@ -625,7 +653,11 @@ export class SeatSessionService {
     // A Navigator direction (plan 106.6) is acted on with map tools, which an
     // answer-only wake doesn't have: it goes to the seat's live session.
     const directed = comms
-      .listMessages({ featureId: feature.id, toAddress: address, statuses: ["queued"] })
+      .listMessages({
+        featureId: feature.id,
+        toAddress: address,
+        statuses: ["queued"],
+      })
       .some((message) => message.kind === "direction")
     // Done with its steps: where it last did playbook work holds its freshest
     // context, woken answer-only unless that was its feature session.
@@ -635,8 +667,7 @@ export class SeatSessionService {
       if (home) return home
     }
     const live = sessions.getLiveSeatSession(feature.id, address)
-    if (live?.conversationId)
-      return this.sessionHome(feature, workspace, live)
+    if (live?.conversationId) return this.sessionHome(feature, workspace, live)
     const found = snapshotSeat(feature, address)
     if (!found?.seat.agentRefId) return null
     return this.sessionHome(
@@ -658,9 +689,7 @@ export class SeatSessionService {
     if (session && (session.status === "idle" || session.status === "busy"))
       return this.sessionHome(feature, workspace, session)
     const worker = workerByConversation(conversationId)
-    return worker
-      ? this.workerHome(feature, workspace, address, worker)
-      : null
+    return worker ? this.workerHome(feature, workspace, address, worker) : null
   }
 
   private async sessionHome(
@@ -810,7 +839,10 @@ function lastFinishedWork(
     | undefined
   // context_mode may still hold the pre-v51 values fresh / seat_session.
   return row && row.scope !== "feature" && row.scope !== "seat_session"
-    ? { conversationId: row.conversationId, bindings: parseBindings(row.bindings) }
+    ? {
+        conversationId: row.conversationId,
+        bindings: parseBindings(row.bindings),
+      }
     : null
 }
 
@@ -862,7 +894,8 @@ export function pendingSteps(
       if (!bound || settled.has(phase.id)) continue
       const scope = phase.contextScope ?? "step"
       if (scope === "step") pending.step = true
-      else if (scope === "user_story") pending.userStoryRun ??= run.missionControl.playbookRunId
+      else if (scope === "user_story")
+        pending.userStoryRun ??= run.missionControl.playbookRunId
     }
   }
   return pending
@@ -907,7 +940,8 @@ function scopeLabel(playbookRunId: string): string {
 }
 
 function sessionLabel(session: SeatSession): string {
-  if (session.scope === "feature") return `long-lived · gen ${session.generation}`
+  if (session.scope === "feature")
+    return `long-lived · gen ${session.generation}`
   const label = scopeLabel(session.playbookRunId!)
   return session.generation > 1 ? `${label} · gen ${session.generation}` : label
 }
@@ -952,7 +986,8 @@ function workerByConversation(conversationId: string): FinishedWorker | null {
 
 function threadAnchor(message: SeatMessage): SeatTurnIdentity["anchor"] {
   const thread = comms.getThread(message.threadId)
-  return thread?.anchorKind === "user_story" || thread?.anchorKind === "milestone"
+  return thread?.anchorKind === "user_story" ||
+    thread?.anchorKind === "milestone"
     ? { kind: thread.anchorKind, id: thread.anchorId! }
     : null
 }
