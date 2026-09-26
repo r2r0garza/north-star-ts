@@ -87,6 +87,8 @@ import { containerNameForConversation } from "./env/container"
 import { flagForReworkTool } from "./tools/flag_for_rework"
 import { recordProofTool } from "./tools/record_proof"
 import { seatCommsTools } from "./tools/seat_comms_tools"
+import { mapTools } from "./tools/map_tools"
+import { isLeadSeat } from "../mission-control/map-tools"
 import { allowedForSeatProfile } from "./seat-tool-profile"
 import { deliverQueued } from "../mission-control/inbox"
 import type { SeatTurnIdentity } from "../mission-control/seat-turns"
@@ -1257,6 +1259,14 @@ export async function runAgentLoop(
       // message instead.
       seatProfile && seatProfile !== "answer_only" && !planMode
         ? seatCommsTools.map((tool) => tool.definition)
+        : [],
+      // Map tools (plan 106.6): pod leads only. Rights are enforced when the
+      // tool runs, so a lead without a right still sees why it was refused.
+      seatProfile &&
+        seatProfile !== "answer_only" &&
+        !planMode &&
+        isLeadSeat(opts.missionControlSeat!)
+        ? mapTools.map((tool) => tool.definition)
         : []
     )
   }

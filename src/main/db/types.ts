@@ -3,6 +3,12 @@
 // Preload imports these with `import type` so the renderer gets exact types
 // without pulling better-sqlite3 into the preload bundle.
 
+import type {
+  PlanChange,
+  ProposalKind,
+  ProposalStatus,
+} from "../../shared/mission-control/plan-changes"
+
 // A conversation's view/mode. One per view: Chat / Interactive / North Star.
 export type Mode = "chat" | "interactive" | "north_star"
 
@@ -702,6 +708,23 @@ export interface SliceSpec {
   notes: string
 }
 
+// How the Navigator drives an initiative (plan 106.6): manual shows "next up"
+// only; copilot directs the lead seat, which acts through map tools; autopilot
+// dispatches mechanical steps itself and hands judgment to the lead.
+export type DriveMode = "manual" | "copilot" | "autopilot"
+
+export interface InitiativeDrive {
+  // Apply the initiative planning proposal without waiting for the user.
+  autoApplyPlan: boolean
+  // Wall-clock time spent driving (copilot/autopilot while active). Accrued in
+  // small increments, so time the app was closed or asleep is never counted.
+  activeMs: number
+  accountedAt: number | null
+  // Why the initiative is paused, when it is.
+  pauseReason: string | null
+  pausedBy: "user" | "budget" | null
+}
+
 export interface Initiative {
   id: string
   key: string
@@ -714,8 +737,10 @@ export interface Initiative {
   projectId: string | null
   defaultPodKey: string | null
   playbookId: string | null
-  driveMode: "manual" | "copilot" | "autopilot"
+  driveMode: DriveMode
   budgets: Record<string, unknown>
+  // Navigator drive bookkeeping (plan 106.6).
+  drive: InitiativeDrive
   status: InitiativeStatus
   taskId: string | null
   createdAt: number
@@ -740,6 +765,8 @@ export interface Mission {
   baseOid: string | null
   repoRoot: string | null
   landing: MissionLanding | null
+  // The lead's judgment that the mission meets its definition of done (106.6).
+  dodReview: MissionDodReview | null
   status: MissionStatus
   position: number
   startedAt: number | null
@@ -747,6 +774,12 @@ export interface Mission {
 }
 
 export type MergePolicyMode = "manual" | "local_merge" | "open_pr"
+
+export interface MissionDodReview {
+  by: string
+  summary: string
+  at: number
+}
 
 export interface MissionMergePolicy {
   mode: MergePolicyMode
@@ -757,7 +790,9 @@ export interface MissionLanding {
   mode: MergePolicyMode
   // "user" = an explicit approval or "mark merged"; "detected" = Mission
   // Control saw the integration head become reachable from the base branch.
-  completedBy: "user" | "detected"
+  // "navigator": the Navigator completed a mission with nothing to land after
+  // the lead's definition-of-done review (plan 106.6).
+  completedBy: "user" | "detected" | "navigator"
   at: number
   base: string
   baseOid: string | null
@@ -1323,4 +1358,64 @@ export interface SeatMessage {
   deliveredMessageId: string | null
   createdAt: number
   deliveredAt: number | null
+}
+
+// ── Mission Control Navigator (plan 106.6) ─────────────────────────────────
+
+export interface PlanProposal {
+  id: string
+  initiativeId: string
+  // The mission the change set was made against (the active one), if any.
+  missionId: string | null
+  kind: ProposalKind
+  changes: PlanChange[]
+  // Seat address (or "navigator@rig") that proposed it.
+  proposer: string
+  reason: string
+  status: ProposalStatus
+  resolvedBy: string | null
+  resolutionNote: string | null
+  createdAt: number
+  resolvedAt: number | null
+  // Pending proposals only, computed on read: changes that no longer apply to
+  // the plan as it is now, by index.
+  problems?: Array<{ index: number; error: string }>
+}
+
+export interface NavigatorTickAction {
+  kind:
+    | "start_slice"
+    | "retry_slice"
+    | "run_hook"
+    | "apply_plan"
+    | "advance_mission"
+    | "complete_mission"
+    | "complete_initiative"
+    | "kick_merges"
+    | "auto_pause"
+    | "direction"
+    | "notify"
+  target: string | null
+  ok: boolean
+  detail: string
+}
+
+export interface NavigatorTick {
+  id: string
+  initiativeId: string
+  positionHash: string
+  // One line: where the initiative is and what is next.
+  summary: string
+  actions: NavigatorTickAction[]
+  decisionKeys: string[]
+  // Compact state for "what changed" in the next direction.
+  state: NavigatorTickState
+  createdAt: number
+}
+
+export interface NavigatorTickState {
+  missionId?: string | null
+  missionStatus?: string | null
+  // slice key → status, for the active mission.
+  slices?: Record<string, string>
 }

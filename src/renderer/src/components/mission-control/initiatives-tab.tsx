@@ -6,7 +6,6 @@ import {
   GitBranch,
   List,
   Plus,
-  Rocket,
   Trash2,
   XIcon,
 } from "lucide-react"
@@ -38,6 +37,9 @@ import { HookControls } from "./hook-controls"
 import { PlaybookPicker } from "./playbook-picker"
 import { AnchoredComms, CommsTab } from "./comms-tab"
 import { MissionIntegrationPanel } from "./mission-integration-panel"
+import { NavigatorStrip, useNavigator } from "./navigator-strip"
+import { DriveControls } from "./drive-controls"
+import { PlanHistory, WaitingOnYou } from "./proposals-inbox"
 import type {
   Initiative,
   InitiativeGraph,
@@ -82,24 +84,24 @@ async function deleteMissionConfirmed(
   const count = graph.slices.filter((s) => s.missionId === mission.id).length
   if (
     !window.confirm(
-      `Delete mission “${mission.name}”${count ? ` and its ${count} slice${count === 1 ? "" : "s"}` : ""}? This cannot be undone.`
+      `Delete milestone “${mission.name}”${count ? ` and its ${count} ${count === 1 ? "user story" : "user stories"}` : ""}? This cannot be undone.`
     )
   )
     return null
   return window.cowork.missionControl.missions.delete(
     mission.id,
-    reasonFor(graph, "Remove mission")
+    reasonFor(graph, "Remove milestone")
   )
 }
 async function deleteSliceConfirmed(
   graph: InitiativeGraph,
   slice: WorkSlice
 ): Promise<InitiativeGraph | null> {
-  if (!window.confirm(`Delete slice “${slice.title}”? This cannot be undone.`))
+  if (!window.confirm(`Delete user story “${slice.title}”? This cannot be undone.`))
     return null
   return window.cowork.missionControl.slices.delete(
     slice.id,
-    reasonFor(graph, "Remove slice")
+    reasonFor(graph, "Remove user story")
   )
 }
 function lines(value: string) {
@@ -159,7 +161,7 @@ function SliceEditor({
           ...(specFrozen ? {} : { spec }),
           podKey: podKey === "default" ? null : podKey,
         },
-        reasonFor(graph, "Refine slice spec")
+        reasonFor(graph, "Refine user story spec")
       )
     )
   }
@@ -310,7 +312,7 @@ function SliceEditor({
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="default">Initiative default</SelectItem>
+              <SelectItem value="default">Feature default</SelectItem>
               {pods.map((pod) => (
                 <SelectItem key={pod.key} value={pod.key}>
                   {pod.name}
@@ -327,7 +329,7 @@ function SliceEditor({
               await window.cowork.missionControl.slices.update(
                 slice.id,
                 { playbookId },
-                reasonFor(graph, "Change slice playbook")
+                reasonFor(graph, "Change user story playbook")
               )
             )
           }
@@ -335,7 +337,7 @@ function SliceEditor({
       </div>
       {specFrozen && (
         <p className="text-xs text-muted-foreground">
-          This slice has run, so its spec is frozen as the proof's contract.
+          This user story has run, so its spec is frozen as the proof's contract.
           Title, key, pod, and playbook can still change.
         </p>
       )}
@@ -352,7 +354,7 @@ function SliceEditor({
             void save().catch((error) => toast.error(errorMessage(error)))
           }
         >
-          Save slice
+          Save user story
         </Button>
         <Button
           variant="ghost"
@@ -361,7 +363,7 @@ function SliceEditor({
             void remove().catch((error) => toast.error(errorMessage(error)))
           }
         >
-          <Trash2 className="size-4" /> Delete slice
+          <Trash2 className="size-4" /> Delete user story
         </Button>
       </div>
       {graph.revisions.filter((revision) => revision.targetId === slice.id)
@@ -416,7 +418,7 @@ function MissionView({
       await window.cowork.missionControl.missions.update(
         mission.id,
         { name: missionName, outcome, definitionOfDone },
-        reasonFor(graph, "Refine mission outcome")
+        reasonFor(graph, "Refine milestone outcome")
       )
     )
   const removeMission = async () => {
@@ -456,12 +458,16 @@ function MissionView({
   const notActive =
     graph.initiative.status === "active"
       ? null
-      : "Start the initiative before running its playbooks."
+      : "Start the feature before running its playbooks."
+  const navigator = useNavigator(graph.initiative.id)
   return (
     <div className="space-y-5">
+      {graph.initiative.status !== "draft" && (
+        <NavigatorStrip state={navigator} missionId={mission.id} />
+      )}
       <HookControls
         graph={graph}
-        title="Mission playbook"
+        title="Milestone playbook"
         actions={[
           {
             hook: "before_slices",
@@ -469,7 +475,7 @@ function MissionView({
             missionId: mission.id,
             disabledReason:
               notActive ??
-              (slices.length ? null : "Add slices to review first."),
+              (slices.length ? null : "Add user stories to review first."),
           },
           {
             hook: "after_all_slices",
@@ -480,10 +486,18 @@ function MissionView({
               (slices.some((s) => s.status === "done") &&
               slices.every((s) => s.status === "done" || s.status === "cancelled")
                 ? null
-                : "Every slice must be done before the mission review."),
+                : "Every user story must be done before the milestone review."),
           },
         ]}
       />
+      {mission.dodReview && (
+        <div className="rounded-md border p-3 text-sm">
+          <span className="text-muted-foreground">
+            Definition of done judged met by <code>{mission.dodReview.by}</code>:
+          </span>{" "}
+          {mission.dodReview.summary}
+        </div>
+      )}
       <MissionIntegrationPanel
         graph={graph}
         mission={mission}
@@ -497,7 +511,7 @@ function MissionView({
       <div className="grid gap-3 rounded-lg border p-4 lg:grid-cols-2">
         <div className="space-y-3">
           <div className="space-y-1">
-            <Label>Mission name</Label>
+            <Label>Milestone name</Label>
             <Input
               value={missionName}
               onChange={(e) => setMissionName(e.target.value)}
@@ -529,7 +543,7 @@ function MissionView({
               )
             }
           >
-            Save mission
+            Save milestone
           </Button>
         </div>
       </div>
@@ -543,7 +557,7 @@ function MissionView({
                 await window.cowork.missionControl.missions.update(
                   mission.id,
                   { playbookId },
-                  reasonFor(graph, "Change mission playbook")
+                  reasonFor(graph, "Change milestone playbook")
                 )
               )
             }
@@ -558,27 +572,35 @@ function MissionView({
             )
           }
         >
-          <Trash2 className="size-4" /> Delete mission
+          <Trash2 className="size-4" /> Delete milestone
         </Button>
       </div>
       <div className="flex gap-2">
         <Input
           value={newTitle}
           onChange={(e) => setNewTitle(e.target.value)}
-          placeholder="New slice title"
+          placeholder="New user story title"
         />
         <Button
-          disabled={!slug(newTitle)}
+          disabled={
+            !slug(newTitle) ||
+            ["completed", "cancelled"].includes(graph.initiative.status)
+          }
+          title={
+            graph.initiative.status === "completed"
+              ? "Reopen the feature to add work."
+              : undefined
+          }
           onClick={() =>
             void addSlice().catch((error) => toast.error(errorMessage(error)))
           }
         >
-          <Plus className="size-4" /> Add slice
+          <Plus className="size-4" /> Add user story
         </Button>
       </div>
       {slices.length === 0 ? (
         <div className="rounded-lg border border-dashed py-12 text-center text-sm text-muted-foreground">
-          Add slices to build this mission's work map.
+          Add user stories to build this milestone's work map.
         </div>
       ) : (
         <div className="overflow-x-auto rounded-lg border p-4">
@@ -600,6 +622,14 @@ function MissionView({
                       >
                         <div className="flex items-center gap-2">
                           <span className="font-medium">{slice.title}</span>
+                          {slice.origin === "agent" && (
+                            <Badge
+                              variant="secondary"
+                              title="Added by a seat through the plan tools"
+                            >
+                              agent
+                            </Badge>
+                          )}
                           <Badge className="ml-auto" variant="outline">
                             {slice.status}
                           </Badge>
@@ -627,7 +657,7 @@ function MissionView({
                         variant="ghost"
                         size="icon-sm"
                         className="absolute right-2 bottom-2 text-muted-foreground hover:text-destructive"
-                        aria-label={`Delete slice ${slice.title}`}
+                        aria-label={`Delete user story ${slice.title}`}
                         onClick={() =>
                           void removeSlice(slice).catch((error) =>
                             toast.error(errorMessage(error))
@@ -654,7 +684,7 @@ function MissionView({
             }}
           >
             <SelectTrigger>
-              <SelectValue placeholder="Slice" />
+              <SelectValue placeholder="User story" />
             </SelectTrigger>
             <SelectContent>
               {slices.map((slice) => (
@@ -715,6 +745,11 @@ function MissionView({
               onClick={() => onOpenSlice(slice.id)}
             >
               <span className="truncate">{slice.title}</span>
+              {slice.origin === "agent" && (
+                <Badge variant="secondary" className="ml-2 shrink-0">
+                  agent
+                </Badge>
+              )}
               <span className="ml-auto shrink-0 pl-3 text-muted-foreground">
                 Wave {(result.levels.get(slice.id) ?? 0) + 1}
               </span>
@@ -723,7 +758,7 @@ function MissionView({
               variant="ghost"
               size="icon-sm"
               className="mr-1 shrink-0 text-muted-foreground hover:text-destructive"
-              aria-label={`Delete slice ${slice.title}`}
+              aria-label={`Delete user story ${slice.title}`}
               onClick={() =>
                 void removeSlice(slice).catch((error) =>
                   toast.error(errorMessage(error))
@@ -759,7 +794,10 @@ function InitiativeView({
   onOpenAnchor: (anchor: { kind: "slice" | "mission"; id: string }) => void
 }) {
   const initiative = graph.initiative
+  const navigator = useNavigator(initiative.id)
   const [view, setView] = useState<"overview" | "comms">("overview")
+  // Bumped to open the budget editor from the inbox.
+  const [budgetRequest, setBudgetRequest] = useState(0)
   const [name, setName] = useState(initiative.name)
   const [intent, setIntent] = useState(initiative.intent)
   const [done, setDone] = useState(initiative.definitionOfDone)
@@ -778,11 +816,11 @@ function InitiativeView({
       await window.cowork.missionControl.initiatives.update(
         initiative.id,
         { name, intent, definitionOfDone: done },
-        reasonFor(graph, "Update initiative definition")
+        reasonFor(graph, "Update feature definition")
       )
     )
-  // Rig, project, and workspace are bound for good at start (the repository
-  // enforces this too).
+  // Rig and workspace are bound for good at start (the repository enforces
+  // this too). The project is just a label, so it's editable in any status.
   const editableBinding = initiative.status === "draft"
   const finished = ["completed", "cancelled", "failed"].includes(
     initiative.status
@@ -797,9 +835,6 @@ function InitiativeView({
   const workspaceName =
     workspaces.find((workspace) => workspace.id === initiative.workspaceId)
       ?.name ?? "None"
-  const projectName =
-    projects.find((project) => project.id === initiative.projectId)?.name ??
-    "None"
   const addMission = async () => {
     const next = await window.cowork.missionControl.missions.create({
       initiativeId: initiative.id,
@@ -833,27 +868,35 @@ function InitiativeView({
   return (
     <div className="space-y-5">
       {viewTabs}
-      <div className="flex items-center gap-3">
-        <code className="text-xs text-muted-foreground">{initiative.key}</code>
-        <Badge className="ml-auto">{initiative.status}</Badge>
-        {initiative.status === "draft" && (
-          <Button
-            disabled={!initiative.rigId}
-            title={initiative.rigId ? undefined : "Choose a rig first"}
-            onClick={() =>
-              void window.cowork.missionControl.initiatives
-                .start(initiative.id)
-                .then(onGraph)
-                .catch((error) => toast.error(errorMessage(error)))
-            }
-          >
-            <Rocket className="size-4" /> Start
-          </Button>
-        )}
-      </div>
+      <DriveControls
+        key={`${initiative.id}:${initiative.status}`}
+        graph={graph}
+        position={navigator.position}
+        onGraph={onGraph}
+        budgetRequest={budgetRequest}
+        onShowWaiting={() =>
+          document
+            .getElementById("mission-control-waiting")
+            ?.scrollIntoView({ behavior: "smooth", block: "start" })
+        }
+      />
+      {initiative.status !== "draft" && <NavigatorStrip state={navigator} />}
+      {initiative.status !== "draft" && (
+        <WaitingOnYou
+          graph={graph}
+          position={navigator.position}
+          onGraph={onGraph}
+          navigation={{
+            openMission: onMission,
+            openSlice: (id) => onOpenAnchor({ kind: "slice", id }),
+            openComms: () => setView("comms"),
+            editBudgets: () => setBudgetRequest((n) => n + 1),
+          }}
+        />
+      )}
       {graph.rigDrifted && !finished && (
         <div className="flex items-center rounded-md border border-amber-500/40 bg-amber-500/5 p-3 text-sm">
-          <span>The selected rig changed since this initiative started.</span>
+          <span>The selected rig changed since this feature started.</span>
           <Button
             className="ml-auto"
             size="sm"
@@ -932,37 +975,36 @@ function InitiativeView({
         </div>
         <div className="min-w-0">
           <div className="mb-1 text-xs text-muted-foreground">Project</div>
-          {editableBinding ? (
-            <Select
-              value={initiative.projectId ?? "none"}
-              onValueChange={(value) => {
-                const project = projects.find((item) => item.id === value)
-                // A linked project brings its workspace, as on create.
-                void bind(
-                  project
+          <Select
+            value={initiative.projectId ?? "none"}
+            onValueChange={(value) => {
+              const project = projects.find((item) => item.id === value)
+              // While draft, a linked project brings its workspace, as on
+              // create; once started the workspace is locked, so only relabel.
+              void bind(
+                project
+                  ? editableBinding
                     ? {
                         projectId: project.id,
                         workspaceId: project.workspaceId,
                       }
-                    : { projectId: null }
-                )
-              }}
-            >
-              <SelectTrigger className="h-8 w-full text-foreground [&>svg]:text-foreground">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="none">No project</SelectItem>
-                {projects.map((project) => (
-                  <SelectItem key={project.id} value={project.id}>
-                    {project.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          ) : (
-            <div className="truncate text-sm">{projectName}</div>
-          )}
+                    : { projectId: project.id }
+                  : { projectId: null }
+              )
+            }}
+          >
+            <SelectTrigger className="h-8 w-full text-foreground [&>svg]:text-foreground">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="none">No project</SelectItem>
+              {projects.map((project) => (
+                <SelectItem key={project.id} value={project.id}>
+                  {project.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
         <div className="min-w-0">
           <div className="mb-1 text-xs text-muted-foreground">Workspace</div>
@@ -1004,7 +1046,7 @@ function InitiativeView({
         </div>
         {editableBinding ? (
           <p className="text-xs text-muted-foreground sm:col-span-3">
-            The rig, project, and workspace lock when the initiative starts.
+            The rig and workspace lock when the feature starts.
           </p>
         ) : null}
       </div>
@@ -1017,7 +1059,7 @@ function InitiativeView({
               await window.cowork.missionControl.initiatives.update(
                 initiative.id,
                 { playbookId },
-                reasonFor(graph, "Change initiative playbook")
+                reasonFor(graph, "Change feature playbook")
               )
             )
           }
@@ -1026,7 +1068,7 @@ function InitiativeView({
       {initiative.status !== "draft" && (
         <HookControls
           graph={graph}
-          title="Initiative playbook"
+          title="Feature playbook"
           actions={[
             {
               hook: "plan",
@@ -1034,7 +1076,7 @@ function InitiativeView({
               disabledReason:
                 initiative.status === "active"
                   ? null
-                  : "Resume the initiative to run its playbooks.",
+                  : "Resume the feature to run its playbooks.",
             },
             {
               hook: "between_missions",
@@ -1042,10 +1084,10 @@ function InitiativeView({
               missionId: finishedMission?.id ?? null,
               disabledReason:
                 initiative.status !== "active"
-                  ? "Resume the initiative to run its playbooks."
+                  ? "Resume the feature to run its playbooks."
                   : finishedMission
                     ? null
-                    : "A release runs after a mission's slices are all done.",
+                    : "A release runs after a milestone's user stories are all done.",
             },
           ]}
         />
@@ -1053,28 +1095,36 @@ function InitiativeView({
       <div>
         <div className="mb-3 flex items-center justify-between">
           <div>
-            <h3 className="font-medium">Missions</h3>
+            <h3 className="font-medium">Milestones</h3>
             <p className="text-sm text-muted-foreground">
-              Missions run in this order.
+              Milestones run in this order.
             </p>
           </div>
-          <div className="flex gap-2">
-            <Input
-              value={missionName}
-              onChange={(e) => setMissionName(e.target.value)}
-              placeholder="Mission name"
-            />
-            <Button
-              disabled={!slug(missionName)}
-              onClick={() =>
-                void addMission().catch((error) =>
-                  toast.error(errorMessage(error))
-                )
-              }
-            >
-              <Plus className="size-4" />
-            </Button>
-          </div>
+          {finished ? (
+            <span className="text-xs text-muted-foreground">
+              {initiative.status === "completed"
+                ? "Reopen the feature to add milestones."
+                : "This feature is closed."}
+            </span>
+          ) : (
+            <div className="flex gap-2">
+              <Input
+                value={missionName}
+                onChange={(e) => setMissionName(e.target.value)}
+                placeholder="Milestone name"
+              />
+              <Button
+                disabled={!slug(missionName)}
+                onClick={() =>
+                  void addMission().catch((error) =>
+                    toast.error(errorMessage(error))
+                  )
+                }
+              >
+                <Plus className="size-4" />
+              </Button>
+            </div>
+          )}
         </div>
         <div className="space-y-2">
           {graph.missions.map((mission, index) => {
@@ -1110,7 +1160,7 @@ function InitiativeView({
                   variant="ghost"
                   size="icon-sm"
                   className="mr-3 shrink-0 text-muted-foreground hover:text-destructive"
-                  aria-label={`Delete mission ${mission.name}`}
+                  aria-label={`Delete milestone ${mission.name}`}
                   onClick={() =>
                     void deleteMissionConfirmed(graph, mission)
                       .then((next) => next && onGraph(next))
@@ -1124,6 +1174,7 @@ function InitiativeView({
           })}
         </div>
       </div>
+      <PlanHistory graph={graph} />
     </div>
   )
 }
@@ -1216,13 +1267,20 @@ export function InitiativesTab({
       await window.cowork.missionControl.initiatives.get(initiativeId)
     if (next) onGraphChange(next)
   }, [initiativeId, onGraphChange])
-  // Merges land in the background (plan 106.5): keep slice and mission
-  // statuses current while the initiative is open.
+  // Merges land in the background (plan 106.5) and the Navigator drives
+  // work on its own (106.6): keep slice and mission statuses current while
+  // the initiative is open.
   useEffect(() => {
     if (!initiativeId) return
-    return window.cowork.missionControl.integration.onChanged((changed) => {
+    const refresh = (changed: string) => {
       if (changed === initiativeId) void refreshGraph()
-    })
+    }
+    const offIntegration = window.cowork.missionControl.integration.onChanged(refresh)
+    const offNavigator = window.cowork.missionControl.navigator.onChanged(refresh)
+    return () => {
+      offIntegration()
+      offNavigator()
+    }
   }, [initiativeId, refreshGraph])
   const mission = graph?.missions.find((item) => item.id === missionId) ?? null
   const slice = graph?.slices.find((item) => item.id === sliceId) ?? null
@@ -1288,21 +1346,21 @@ export function InitiativesTab({
     <div>
       <div className="mb-5 flex items-center justify-between">
         <div>
-          <h2 className="font-semibold">Initiatives</h2>
+          <h2 className="font-semibold">Features</h2>
           <p className="text-sm text-muted-foreground">
             Write the work map your rig will drive.
           </p>
         </div>
         <Button onClick={() => setCreateOpen(true)}>
-          <Plus className="size-4" /> New initiative
+          <Plus className="size-4" /> New feature
         </Button>
       </div>
       {items.length === 0 ? (
         <div className="grid place-items-center rounded-xl border border-dashed py-16 text-center">
           <GitBranch className="mb-3 size-9 text-muted-foreground" />
-          <h3 className="font-medium">Map your first initiative</h3>
+          <h3 className="font-medium">Map your first feature</h3>
           <p className="mt-1 text-sm text-muted-foreground">
-            Define intent, missions, slices, and their dependency waves.
+            Define intent, milestones, user stories, and their dependency waves.
           </p>
         </div>
       ) : (
@@ -1334,7 +1392,7 @@ export function InitiativesTab({
                       e.stopPropagation()
                       if (
                         !window.confirm(
-                          `Delete initiative “${item.name}” with all its missions and slices? This cannot be undone.`
+                          `Delete feature “${item.name}” with all its milestones and user stories? This cannot be undone.`
                         )
                       )
                         return
@@ -1366,7 +1424,7 @@ export function InitiativesTab({
           onInteractOutside={(event) => event.preventDefault()}
         >
           <DialogHeader>
-            <DialogTitle>New initiative</DialogTitle>
+            <DialogTitle>New feature</DialogTitle>
           </DialogHeader>
           <div className="grid gap-3">
             <div className="space-y-1">
@@ -1476,7 +1534,7 @@ export function InitiativesTab({
                 void create().catch((error) => toast.error(errorMessage(error)))
               }
             >
-              Create initiative
+              Create feature
             </Button>
           </DialogFooter>
         </DialogContent>

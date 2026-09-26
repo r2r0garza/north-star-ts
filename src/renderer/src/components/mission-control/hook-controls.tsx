@@ -15,9 +15,9 @@ import type {
   ProcessDefinition,
 } from "@/types"
 
-// Manually triggered mission / initiative hooks (plan 106.3). Each button runs
-// one hook's small Process run; its last status and live monitor sit beside it.
-// 106.6 fires these automatically.
+// Mission / initiative hooks (plan 106.3). Each button runs one hook's small
+// Process run; its last status and live monitor sit beside it. In Autopilot
+// the Navigator (106.6) fires them itself when they fall due.
 
 function errorMessage(error: unknown) {
   return (error instanceof Error ? error.message : String(error))
@@ -223,7 +223,7 @@ export function HookControls({
           ) ?? null
         const blockedByOther =
           busy && busy.id !== lastRun?.id
-            ? "Another playbook run is using this workspace. Hooks and non-git slices run one at a time."
+            ? "Another playbook run is using this workspace. Hooks and non-git user stories run one at a time."
             : null
         return (
           <HookRow

@@ -119,17 +119,17 @@ export function SliceRunPanel({
   const canStart = ["draft", "ready", "failed"].includes(slice.status)
   const disabledReason =
     graph.initiative.status !== "active"
-      ? "Start the initiative before running slices."
+      ? "Start the feature before running user stories."
       : !graph.initiative.workspaceId
-        ? "Choose a workspace for this initiative first."
+        ? "Choose a workspace for this feature first."
         : busyRun
-          ? `Another playbook run is using this workspace (${busyRun.sliceId ? `slice ${graph.slices.find((s) => s.id === busyRun.sliceId)?.key ?? ""}` : `the ${busyRun.hook.replace(/_/g, " ")} hook`}). Slices run in parallel only in a git workspace.`
+          ? `Another playbook run is using this workspace (${busyRun.sliceId ? `user story ${graph.slices.find((s) => s.id === busyRun.sliceId)?.key ?? ""}` : `the ${busyRun.hook.replace(/_/g, " ")} hook`}). User stories run in parallel only in a git workspace.`
           : blockers.length
-            ? `Waiting on ${isolated ? "unmerged" : "unfinished"} slices: ${blockers.map((b) => b.key).join(", ")}.`
+            ? `Waiting on ${isolated ? "unmerged" : "unfinished"} user stories: ${blockers.map((b) => b.key).join(", ")}.`
             : slice.attempts >= cap
               ? `All ${cap} attempts are used.`
               : !slice.spec.acceptance.length
-                ? "Add acceptance criteria so the slice can be proven."
+                ? "Add acceptance criteria so the user story can be proven."
                 : null
 
   const act = async (action: () => Promise<unknown>, success: string) => {
@@ -154,7 +154,7 @@ export function SliceRunPanel({
         window.cowork.missionControl.execution.runSlice(slice.id, {
           allowTouchOverlap,
         }),
-      slice.status === "failed" ? "Retry started" : "Slice run started"
+      slice.status === "failed" ? "Retry started" : "User story run started"
     )
 
   const proof = isSliceProof(slice.proof) ? slice.proof : latest?.proof ?? null
@@ -176,7 +176,7 @@ export function SliceRunPanel({
               onClick={() =>
                 void act(
                   () => window.cowork.missionControl.execution.cancelSlice(slice.id),
-                  "Slice run cancelled"
+                  "User story run cancelled"
                 )
               }
             >
@@ -216,7 +216,7 @@ export function SliceRunPanel({
       )}
       {slice.status === "integrating" && (
         <p className="text-xs text-muted-foreground">
-          Proof accepted. The slice is in the mission's merge queue and is done once
+          Proof accepted. The user story is in the milestone's merge queue and is done once
           it merges into the integration branch.
         </p>
       )}
@@ -233,8 +233,8 @@ export function SliceRunPanel({
       ) : (
         <p className="text-sm text-muted-foreground">
           {running
-            ? "The playbook's proof step records the proof when it verifies the slice."
-            : "No proof yet. Running the slice's playbook ends with a verified proof."}
+            ? "The playbook's proof step records the proof when it verifies the user story."
+            : "No proof yet. Running the user story's playbook ends with a verified proof."}
         </p>
       )}
       {processRun && definition && (

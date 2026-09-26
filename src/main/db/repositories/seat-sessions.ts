@@ -206,7 +206,7 @@ export function closeRunSessions(playbookRunId: string): SeatSession[] {
     )
     .all(playbookRunId) as SeatSessionRow[]
   for (const row of live)
-    retireSeatSession(row.id, "closed", "The slice run finished")
+    retireSeatSession(row.id, "closed", "The user story run finished")
   return live.map(toSession)
 }
 

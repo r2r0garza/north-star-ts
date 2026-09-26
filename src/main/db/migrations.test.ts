@@ -92,7 +92,7 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
     const db = new Database(":memory:")
     db.pragma("foreign_keys = ON")
     runMigrations(db)
-    expect(db.pragma("user_version", { simple: true })).toBe(52)
+    expect(db.pragma("user_version", { simple: true })).toBe(53)
     expect(db.pragma("foreign_key_check")).toHaveLength(0)
     db.close()
   })
@@ -650,7 +650,7 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
 
     runMigrations(db)
 
-    expect(db.pragma("user_version", { simple: true })).toBe(52)
+    expect(db.pragma("user_version", { simple: true })).toBe(53)
     expect(
       (db.pragma("table_info(process_phases)") as Array<{ name: string }>).map(
         (c) => c.name
@@ -868,7 +868,7 @@ describe.skipIf(!sqliteLoads)("SCHEMA_V9 — orphan reap (plan 022)", () => {
     // Apply V9 (the reaper) and any later migrations, up to the latest version.
     runMigrations(db)
 
-    expect(db.pragma("user_version", { simple: true })).toBe(52)
+    expect(db.pragma("user_version", { simple: true })).toBe(53)
 
     // Reaped: orphan + its nested descendant, and all their state.
     const taskIds = (
@@ -960,7 +960,7 @@ describe.skipIf(!sqliteLoads)("mission control playbooks migration (v49)", () =>
 
     runMigrations(db)
 
-    expect(db.pragma("user_version", { simple: true })).toBe(52)
+    expect(db.pragma("user_version", { simple: true })).toBe(53)
     const columns = db.pragma("table_info(process_phase_agents)") as Array<{
       name: string
       notnull: number
@@ -1054,7 +1054,7 @@ describe.skipIf(!sqliteLoads)("context scopes migration (v51)", () => {
       PRAGMA user_version = 50;
     `)
     runMigrations(db)
-    expect(db.pragma("user_version", { simple: true })).toBe(52)
+    expect(db.pragma("user_version", { simple: true })).toBe(53)
     expect(
       db.prepare("SELECT context_mode FROM process_phases ORDER BY position").pluck().all()
     ).toEqual(["step", "initiative"])
@@ -1062,6 +1062,44 @@ describe.skipIf(!sqliteLoads)("context scopes migration (v51)", () => {
       db.prepare("SELECT scope, scope_key, playbook_run_id FROM seat_sessions").get()
     ).toEqual({ scope: "initiative", scope_key: "initiative", playbook_run_id: null })
     expect(db.pragma("foreign_key_check")).toHaveLength(0)
+    db.close()
+  })
+})
+
+describe.skipIf(!sqliteLoads)("navigator migration (v53)", () => {
+  it("adds drive state, DoD reviews, proposals, and ticks to a v52 database", () => {
+    const db = new Database(":memory:")
+    runMigrations(db)
+    // Rewind to a v52 database shaped like the 106.5 build.
+    db.exec(`
+      DROP TABLE plan_proposals;
+      DROP TABLE navigator_ticks;
+      ALTER TABLE initiatives DROP COLUMN drive;
+      ALTER TABLE missions DROP COLUMN dod_review;
+      INSERT INTO initiatives (id, key, name, intent, definition_of_done, status, budgets, created_at, updated_at)
+        VALUES ('i', 'k', 'I', '', '', 'active', '{"maxConcurrentSlices":2}', 0, 0);
+      INSERT INTO missions (id, initiative_id, key, name, outcome, status, position)
+        VALUES ('m', 'i', 'm', 'M', '', 'planned', 0);
+      PRAGMA user_version = 52;
+    `)
+    runMigrations(db)
+    expect(db.pragma("user_version", { simple: true })).toBe(53)
+    expect(db.prepare("SELECT drive, budgets FROM initiatives").get()).toEqual({
+      drive: "{}",
+      budgets: '{"maxConcurrentSlices":2}',
+    })
+    expect(db.prepare("SELECT dod_review FROM missions").pluck().get()).toBeNull()
+    db.prepare(
+      "INSERT INTO plan_proposals (id, initiative_id, mission_id, kind, changes, proposer, created_at) VALUES ('p', 'i', 'm', 'slice', '[]', 'lead@orch', 0)"
+    ).run()
+    db.prepare(
+      "INSERT INTO navigator_ticks (id, initiative_id, position_hash, summary, created_at) VALUES ('t', 'i', 'h', 's', 0)"
+    ).run()
+    // Both belong to the initiative and go with it.
+    db.pragma("foreign_keys = ON")
+    db.prepare("DELETE FROM initiatives").run()
+    expect(db.prepare("SELECT COUNT(*) FROM plan_proposals").pluck().get()).toBe(0)
+    expect(db.prepare("SELECT COUNT(*) FROM navigator_ticks").pluck().get()).toBe(0)
     db.close()
   })
 })

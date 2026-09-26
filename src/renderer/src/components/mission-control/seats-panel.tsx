@@ -69,7 +69,7 @@ export function SeatsPanel({
       <h3 className="text-sm font-medium">Seats</h3>
       {seats.length === 0 && (
         <p className="text-xs text-muted-foreground">
-          Start the initiative to seat its rig.
+          Start the feature to seat its rig.
         </p>
       )}
       {seats.map((seat) => {

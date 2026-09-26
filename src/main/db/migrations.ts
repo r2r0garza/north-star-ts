@@ -51,6 +51,7 @@ import {
   SCHEMA_V51_SEAT_SESSIONS,
   SCHEMA_V51_CONTEXT_SCOPES,
   SCHEMA_V52_MERGE_QUEUE,
+  SCHEMA_V53_NAVIGATOR,
   SCHEMA_V49_TABLES,
 } from "./schema"
 
@@ -110,6 +111,7 @@ const MIGRATIONS: Array<(db: Database.Database) => void> = [
   ensureMissionControlComms,
   ensureContextScopes,
   ensureMissionIntegration,
+  ensureNavigator,
 ]
 
 function tableExists(db: Database.Database, table: string): boolean {
@@ -206,6 +208,14 @@ function ensureMissionIntegration(db: Database.Database): void {
   if (tableExists(db, "missions")) db.exec(SCHEMA_V52_MERGE_QUEUE)
 }
 
+// v53 (plan 106.6). Idempotent for the self-heal pass.
+function ensureNavigator(db: Database.Database): void {
+  if (!tableExists(db, "initiatives")) return
+  addColumnIfMissing(db, "initiatives", "drive", "TEXT NOT NULL DEFAULT '{}'")
+  addColumnIfMissing(db, "missions", "dod_review", "TEXT")
+  db.exec(SCHEMA_V53_NAVIGATOR)
+}
+
 function ensureProcessRuntimeProfileColumns(db: Database.Database): void {
   addColumnIfMissing(db, "process_phases", "runtime_config", "TEXT")
   addColumnIfMissing(db, "process_phase_agents", "runtime_config", "TEXT")
@@ -288,6 +298,7 @@ export function runMigrations(db: Database.Database): void {
       ensureMissionControlComms(db)
       ensureContextScopes(db)
       ensureMissionIntegration(db)
+      ensureNavigator(db)
       ensureCodexSubscriptionProviderConstraints(db)
       ensureProjectPositionColumn(db)
       ensureSubagentArtifactsTable(db)

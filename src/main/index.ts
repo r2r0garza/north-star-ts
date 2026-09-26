@@ -117,7 +117,13 @@ import { ProcessService, PROCESS_RUN_KIND } from "./tasks/process/service"
 import { registerProcessHandlers } from "./ipc/process-handlers"
 import { SliceRunner } from "./mission-control/slice-runner"
 import { MissionIntegration } from "./mission-control/integration"
-import { startConflictResolution } from "./mission-control/hook-runner"
+import {
+  startConflictResolution,
+  startHookRun,
+} from "./mission-control/hook-runner"
+import { installNavigator, Navigator } from "./mission-control/navigator"
+import { installMapTools, MapToolService } from "./mission-control/map-tools"
+import { onWorkChanged } from "./mission-control/work-events"
 import { installSeatComms, SeatComms } from "./mission-control/comms"
 import { onCommsChanged } from "./mission-control/comms-events"
 import {
@@ -250,6 +256,7 @@ const missionIntegration: MissionIntegration = new MissionIntegration({
     const wc = mainWindow?.webContents
     if (wc && !wc.isDestroyed())
       wc.send("missionControl:integration:changed", initiativeId)
+    missionNavigator.poke(initiativeId)
   },
 })
 const sliceRunner: SliceRunner = new SliceRunner({
@@ -260,6 +267,49 @@ const sliceRunner: SliceRunner = new SliceRunner({
   onCancelled: (initiativeId) => seatSessions.cancelInitiative(initiativeId),
   integration: missionIntegration,
 })
+// The Navigator (plan 106.6): deterministic GPS for each initiative. It ticks
+// on durable work events (debounced), drives Autopilot's mechanical steps, and
+// directs the lead seat; its state is all SQLite, so it resumes on boot.
+function notifyUser(title: string, body: string): void {
+  if (!Notification.isSupported()) return
+  new Notification({ title, body, silent: false }).show()
+}
+const missionNavigator: Navigator = new Navigator({
+  startSlice: (sliceId, options) => sliceRunner.startSlice(sliceId, options),
+  startHook: (input) => startHookRun(sliceRunner, input),
+  cancelPlaybookRun: (id) => sliceRunner.cancelPlaybookRun(id),
+  workspaceMode: (initiative) => missionIntegration.workspaceMode(initiative),
+  advanceMission: (missionId) => missionIntegration.advanceMission(missionId),
+  kickMerges: (missionId) => void missionIntegration.kick(missionId),
+  completeMission: async (missionId) => {
+    await missionIntegration.markMerged(missionId, "navigator")
+  },
+  direct: (input) => {
+    const result = seatComms.direct(input)
+    if (!result.ok) throw new Error(result.message)
+  },
+  notifyUser,
+  onResumed: (initiativeId) => seatSessions.dispatchInitiative(initiativeId),
+  onCancelled: (initiativeId) => seatSessions.cancelInitiative(initiativeId),
+  onChanged: (initiativeId) => {
+    const wc = mainWindow?.webContents
+    if (wc && !wc.isDestroyed())
+      wc.send("missionControl:navigator:changed", initiativeId)
+  },
+})
+installNavigator(missionNavigator)
+// Lead seats' map tools (plan 106.6), decision-rights gated server-side.
+installMapTools(
+  new MapToolService({
+    position: (initiativeId) => missionNavigator.position(initiativeId),
+    startSlice: (sliceId, options) => sliceRunner.startSlice(sliceId, options),
+    cancelSlice: (sliceId) => sliceRunner.cancelSlice(sliceId),
+    completeMission: async (missionId) => {
+      await missionIntegration.markMerged(missionId, "navigator")
+    },
+  })
+)
+onWorkChanged((initiativeId) => missionNavigator.poke(initiativeId))
 processService.onRunSettled((processRunId) => {
   sliceRunner.settle(processRunId)
   // Mail held while the run still had steps for its seats can now wake them.
@@ -1478,6 +1528,7 @@ app.whenReady().then(async () => {
     seatComms,
     seatSessions,
     missionIntegration,
+    missionNavigator,
     (folder) => openInIde(folder, folder, settingsService.getIde().ide)
   )
   // Sweep orphaned Mission Control worktrees and resume merge queues. Queue
@@ -1494,7 +1545,11 @@ app.whenReady().then(async () => {
     const wc = mainWindow?.webContents
     if (wc && !wc.isDestroyed())
       wc.send("missionControl:comms:changed", initiativeId)
+    // Escalations and acknowledgements change what waits on the user.
+    missionNavigator.poke(initiativeId)
   })
+  // Every active initiative resumes from its durable position.
+  missionNavigator.start()
   registerTerminalHandlers(terminalService)
   registerFileWatchHandlers()
   await indexWatcher.setEnabled(settingsService.getIndexing().watchWorkspaces)
@@ -1566,6 +1621,7 @@ app.on("will-quit", () => {
   // No new merge starts; one in flight either finishes its compare-and-swap
   // or leaves the branch untouched, and the next boot's reconcile resumes.
   missionIntegration.stop()
+  missionNavigator.stop()
   browserManager.dispose()
   terminalService.dispose()
   // Disconnect every pooled MCP client (stops spawned stdio processes / closes

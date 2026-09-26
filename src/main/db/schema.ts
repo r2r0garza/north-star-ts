@@ -1591,3 +1591,38 @@ CREATE INDEX IF NOT EXISTS idx_merge_queue_mission ON merge_queue(mission_id, st
 CREATE INDEX IF NOT EXISTS idx_merge_queue_slice ON merge_queue(slice_id);
 CREATE INDEX IF NOT EXISTS idx_merge_queue_resolution ON merge_queue(resolution_run_id);
 `
+
+// v53: the Navigator (plan 106.6). initiatives.drive holds drive bookkeeping
+// (auto-apply planning, accrued active time, pause reason). missions.dod_review
+// records the lead's judgment that a mission meets its definition of done.
+// plan_proposals is the channel for every plan change outside a seat's rights;
+// navigator_ticks is the audit log of what the Navigator saw and did.
+export const SCHEMA_V53_NAVIGATOR = `
+CREATE TABLE IF NOT EXISTS plan_proposals (
+  id              TEXT PRIMARY KEY,
+  initiative_id   TEXT NOT NULL REFERENCES initiatives(id) ON DELETE CASCADE,
+  mission_id      TEXT REFERENCES missions(id) ON DELETE SET NULL,
+  kind            TEXT NOT NULL,
+  changes         TEXT NOT NULL,
+  proposer        TEXT NOT NULL,
+  reason          TEXT NOT NULL DEFAULT '',
+  status          TEXT NOT NULL DEFAULT 'pending',
+  resolved_by     TEXT,
+  resolution_note TEXT,
+  created_at      INTEGER NOT NULL,
+  resolved_at     INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_plan_proposals_initiative ON plan_proposals(initiative_id, status, created_at);
+
+CREATE TABLE IF NOT EXISTS navigator_ticks (
+  id            TEXT PRIMARY KEY,
+  initiative_id TEXT NOT NULL REFERENCES initiatives(id) ON DELETE CASCADE,
+  position_hash TEXT NOT NULL,
+  summary       TEXT NOT NULL,
+  actions       TEXT NOT NULL DEFAULT '[]',
+  decision_keys TEXT NOT NULL DEFAULT '[]',
+  state         TEXT NOT NULL DEFAULT '{}',
+  created_at    INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_navigator_ticks_initiative ON navigator_ticks(initiative_id, created_at DESC);
+`

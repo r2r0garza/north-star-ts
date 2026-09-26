@@ -528,7 +528,7 @@ describe.skipIf(!sqliteLoads)("slice execution", () => {
       .find((s) => s.key === "invoice-api")!
     await runner.startSlice(slice.id)
     await expect(runner.startSlice(second.id)).rejects.toThrow(
-      /slice invoice-model is still running/
+      /user story invoice-model is still running/
     )
   })
 
@@ -636,7 +636,7 @@ describe.skipIf(!sqliteLoads)("slice execution", () => {
         missionId: mission.id,
         hook: "after_each_slice",
       })
-    ).rejects.toThrow(/runs by itself when a slice's merge conflicts/)
+    ).rejects.toThrow(/runs by itself when a user story's merge conflicts/)
   })
 
   describe("context scopes", () => {

@@ -4,8 +4,8 @@ export const MISSION_CONTROL_GLOSSARY = {
   seat: "A stable role and address occupied by an agent definition.",
   oversight: "A directed responsibility relationship between two pods.",
   initiative:
-    "A durable intent and definition of done, organized into missions.",
-  mission: "An ordered outcome made of dependent slices.",
+    "A durable intent and definition of done, organized into milestones.",
+  mission: "An ordered outcome made of dependent user stories.",
   slice: "A focused unit of work with a structured spec and proof.",
-  wave: "A derived group of slices that can begin at the same dependency depth.",
+  wave: "A derived group of user stories that can begin at the same dependency depth.",
 } as const

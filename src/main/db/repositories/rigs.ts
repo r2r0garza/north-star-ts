@@ -304,7 +304,7 @@ export function deleteRig(id: string): void {
     .all(id) as { name: string }[]
   if (running.length) {
     const names = running.map((row) => `“${row.name}”`).join(", ")
-    const which = running.length === 1 ? "that initiative" : "those initiatives"
+    const which = running.length === 1 ? "that feature" : "those features"
     throw new Error(
       `This rig is in use by ${names}. Finish or cancel ${which} before deleting the rig.`
     )

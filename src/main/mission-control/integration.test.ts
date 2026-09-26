@@ -285,7 +285,7 @@ describe.skipIf(!sqliteLoads)("mission integration", () => {
       baseOid: userHead,
     })
     // The dependent slice waits for merges, not just proofs.
-    await expect(runner.startSlice(slice("invoice-ui").id)).rejects.toThrow(/unmerged slices/)
+    await expect(runner.startSlice(slice("invoice-ui").id)).rejects.toThrow(/unmerged user stories/)
     // Worktrees stay out of the user's workspace lists.
     expect(listWorkspaces().map((w) => w.path)).toEqual([root])
 
@@ -302,7 +302,7 @@ describe.skipIf(!sqliteLoads)("mission integration", () => {
     const subjects = git(root, "log", "--first-parent", "--format=%s", started.integrationBranch!)
       .split("\n")
       .slice(0, 2)
-    expect(subjects).toEqual(["slice invoice-api: invoice-api", "slice invoice-pdf: invoice-pdf"])
+    expect(subjects).toEqual(["user story invoice-api: invoice-api", "user story invoice-pdf: invoice-pdf"])
     // Merged worktrees are removed.
     expect(existsSync(api.worktreePath!)).toBe(false)
     expect(existsSync(pdf.worktreePath!)).toBe(false)
@@ -377,7 +377,7 @@ describe.skipIf(!sqliteLoads)("mission integration", () => {
 
     const entry = mergeQueue.listMergeEntries({ sliceId: slice("b").id })[0]
     expect(entry).toMatchObject({ status: "conflict", escalated: true })
-    expect(notices.join("\n")).toMatch(/slice b needs you/)
+    expect(notices.join("\n")).toMatch(/user story b needs you/)
     expect(git(root, "status", "--porcelain")).toBe("")
     expect(initiatives.getMission(mission.id)!.status).toBe("integrating")
 
@@ -409,7 +409,7 @@ describe.skipIf(!sqliteLoads)("mission integration", () => {
     await integration.idle()
     const entry = mergeQueue.listMergeEntries({ sliceId: slice("b").id })[0]
     expect(entry).toMatchObject({ status: "conflict", escalated: true })
-    expect(entry.note).toMatch(/no after each slice hook/)
+    expect(entry.note).toMatch(/no after each user story hook/)
     expect((await listWorktrees(root)).length).toBe(2)
   })
 
@@ -557,7 +557,7 @@ describe.skipIf(!sqliteLoads)("mission integration", () => {
       initiative.id
     )
     await runner.startSlice(slice("a").id)
-    await expect(runner.startSlice(slice("b").id)).rejects.toThrow(/1 slice\(s\) running at once/)
+    await expect(runner.startSlice(slice("b").id)).rejects.toThrow(/1 running user stories at once/)
     // The refused attempt left no worktree behind.
     expect((await listWorktrees(root)).length).toBe(2)
   })

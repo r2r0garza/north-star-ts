@@ -986,7 +986,7 @@ describe.skipIf(!sqliteLoads)("seat comms: one seat, one mind", () => {
     expect(
       seatSessions.listSeatSessions({ initiativeId: initiative.id, playbookRunId })
     ).toEqual([
-      expect.objectContaining({ status: "closed", rotationReason: "The slice run finished" }),
+      expect.objectContaining({ status: "closed", rotationReason: "The user story run finished" }),
     ])
 
     ok(

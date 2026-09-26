@@ -22,14 +22,14 @@ export const CONTEXT_SCOPES: Record<
     help: "A new worker; nothing carries over.",
   },
   slice: {
-    label: "One per slice",
-    badge: "per slice",
-    help: "The seat's steps in one slice share a conversation; it closes when the slice ends.",
+    label: "One per user story",
+    badge: "per user story",
+    help: "The seat's steps in one user story share a conversation; it closes when the user story ends.",
   },
   initiative: {
     label: "Long-lived",
     badge: "long-lived",
-    help: "One conversation across the initiative. Keeps context, and grows.",
+    help: "One conversation across the feature. Keeps context, and grows.",
   },
 }
 
@@ -41,12 +41,12 @@ const RECOMMENDED: Array<{
   {
     seat: "Builder",
     scope: "slice",
-    why: "Spec and build share one mind, and replies to its questions land in the same conversation. Each new slice starts clean from its spec. A mistake stays in its slice, a retry doesn't repeat the failed approach, and slices can safely run side by side.",
+    why: "Spec and build share one mind, and replies to its questions land in the same conversation. Each new user story starts clean from its spec. A mistake stays in its user story, a retry doesn't repeat the failed approach, and user stories can safely run side by side.",
   },
   {
     seat: "QA",
     scope: "slice",
-    why: "Each verification is independent: QA judges this slice against its spec, not against what it remembers the builder saying last time. It still sees the whole slice, including the builder's questions. Context stays small no matter how many slices there are.",
+    why: "Each verification is independent: QA judges this user story against its spec, not against what it remembers the builder saying last time. It still sees the whole user story, including the builder's questions. Context stays small no matter how many user stories there are.",
   },
   {
     seat: "Lead",
@@ -131,7 +131,7 @@ export function ContextScopeHelpButton() {
                 <li>
                   <span className="text-foreground">Long-lived QA</span> only
                   when QA keeps rediscovering the same project conventions.
-                  Expect its context to grow with every slice.
+                  Expect its context to grow with every user story.
                 </li>
               </ul>
             </div>
@@ -140,7 +140,7 @@ export function ContextScopeHelpButton() {
               <span className="font-medium text-foreground">
                 Long-lived conversations keep growing.
               </span>{" "}
-              On a long initiative, use <em>Rotate</em> in the Comms tab&apos;s
+              On a long feature, use <em>Rotate</em> in the Comms tab&apos;s
               Seats panel now and then (for example, between missions). The new
               conversation starts with a short handoff instead of the full
               history.

@@ -104,7 +104,7 @@ function QueueRow({
         ) : (
           <GitMerge className="size-3.5 text-muted-foreground" />
         )}
-        <span className="font-medium">{slice?.title ?? "Deleted slice"}</span>
+        <span className="font-medium">{slice?.title ?? "Deleted user story"}</span>
         <code className="text-xs text-muted-foreground">{slice?.key}</code>
         <Badge variant={statusVariant(entry)} className="ml-auto">
           {STATUS_LABELS[entry.status]}
@@ -146,7 +146,7 @@ function QueueRow({
             size="sm"
             variant="outline"
             disabled={pending}
-            title="Merge again, e.g. after you fixed the slice branch yourself"
+            title="Merge again, e.g. after you fixed the user story branch yourself"
             onClick={() => void act(() => api.retry(entry.id), "Merge queued again")}
           >
             <RotateCcw className="size-3.5" /> Retry merge
@@ -155,7 +155,7 @@ function QueueRow({
             size="sm"
             variant="outline"
             disabled={pending}
-            title="Run the mission playbook's after-each-slice hook to resolve and re-verify"
+            title="Run the milestone playbook's after-each-user-story hook to resolve and re-verify"
             onClick={() => void act(() => api.resolve(entry.id), "Integrator started")}
           >
             <Wrench className="size-3.5" /> Run integrator
@@ -168,11 +168,11 @@ function QueueRow({
             onClick={() => {
               if (
                 !window.confirm(
-                  `Abandon merging ${slice?.key ?? "this slice"}? The slice fails and can be retried from the current integration branch; its branch is kept.`
+                  `Abandon merging ${slice?.key ?? "this user story"}? The user story fails and can be retried from the current integration branch; its branch is kept.`
                 )
               )
                 return
-              void act(() => api.abandon(entry.id), "Slice merge abandoned")
+              void act(() => api.abandon(entry.id), "User story merge abandoned")
             }}
           >
             <XIcon className="size-3.5" /> Abandon
@@ -203,10 +203,12 @@ function LandDialog({
     if (!summary?.baseOid || !summary.headOid) return
     setPending(true)
     try {
-      const landing = await window.cowork.missionControl.integration.land(mission.id, {
-        baseOid: summary.baseOid,
-        headOid: summary.headOid,
-      })
+      const landing = await window.cowork.missionControl.integration.land(
+        mission.id,
+        { baseOid: summary.baseOid, headOid: summary.headOid },
+        // A manual mission merged here: the same review and approval.
+        { localMerge: status.policy === "manual" }
+      )
       toast.success(landing.prUrl ? "Pull request opened" : `Merged into ${landing.base}`)
       onClose()
     } catch (error) {
@@ -348,7 +350,7 @@ export function MissionIntegrationPanel({
     setPending(true)
     try {
       await window.cowork.missionControl.integration.markMerged(mission.id)
-      toast.success("Mission completed")
+      toast.success("Milestone completed")
     } catch (error) {
       toast.error(errorMessage(error))
     } finally {
@@ -376,7 +378,7 @@ export function MissionIntegrationPanel({
         ) : workspace.mode === "git" ? (
           <span className="text-xs text-muted-foreground">
             The integration branch is created from your current branch when the first
-            slice runs. Your working tree must be clean then.
+            user story runs. Your working tree must be clean then.
           </span>
         ) : null}
         <div className="ml-auto w-72">
@@ -435,8 +437,8 @@ export function MissionIntegrationPanel({
         <div className="space-y-3 rounded-md border border-primary/40 bg-primary/5 p-3">
           <div className="text-sm font-medium">
             {status.integrationBranch
-              ? "Every slice is merged into the integration branch."
-              : "Every slice is done."}
+              ? "Every user story is merged into the integration branch."
+              : "Every user story is done."}
           </div>
           {summary && (
             <p className="text-xs text-muted-foreground">
@@ -446,10 +448,16 @@ export function MissionIntegrationPanel({
               {summary.files.length === 1 ? "" : "s"} changed against{" "}
               <code>{summary.base}</code>.
               {status.policy === "manual" &&
-                " Merge the integration branch however you like; Mission Control notices when it's in your base branch."}
+                ` Merge it into ${summary.base} here, or merge it your own way and mark it merged; Mission Control also notices once it's in ${summary.base}.`}
             </p>
           )}
           <div className="flex gap-2">
+            {status.policy === "manual" && status.integrationBranch && workspace.mode === "git" && (
+              <Button size="sm" onClick={() => setLandOpen(true)} disabled={!summary?.headOid}>
+                <GitMerge className="size-3.5" />
+                Merge into {status.baseRef}…
+              </Button>
+            )}
             {status.policy !== "manual" && status.integrationBranch ? (
               <Button size="sm" onClick={() => setLandOpen(true)} disabled={!summary?.headOid}>
                 <GitMerge className="size-3.5" />
@@ -458,12 +466,13 @@ export function MissionIntegrationPanel({
             ) : (
               <Button
                 size="sm"
+                variant={status.integrationBranch ? "outline" : "default"}
                 disabled={pending}
                 onClick={() => {
                   if (
                     status.integrationBranch &&
                     !window.confirm(
-                      `Mark mission ${mission.key} as merged? Do this once ${status.integrationBranch} is in ${status.baseRef}.`
+                      `Mark milestone ${mission.key} as merged? Do this once ${status.integrationBranch} is in ${status.baseRef}.`
                     )
                   )
                     return
@@ -503,6 +512,8 @@ export function MissionIntegrationPanel({
             <>
               Found the integration branch in <code>{landing.base}</code>
             </>
+          ) : landing.completedBy === "navigator" ? (
+            <>Completed by the Navigator after the lead's definition-of-done review</>
           ) : (
             <>Marked {landing.base ? "merged" : "complete"} by you</>
           )}

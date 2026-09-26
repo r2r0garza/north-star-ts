@@ -7,6 +7,7 @@ const sqliteLoads = sqliteLoadsForTests()
 let db: Database.Database
 vi.mock("../connection", () => ({ getDb: () => db }))
 
+import { createProject } from "./projects"
 import { createPod, createRig, deleteRig } from "./rigs"
 import {
   createPlaybook,
@@ -102,7 +103,7 @@ describe.skipIf(!sqliteLoads)("initiative repository", () => {
     }).slices.find((slice) => slice.key === "c")!
     expect(() =>
       setSliceEdges(first.id, [{ fromSliceId: a.id, toSliceId: c.id }])
-    ).toThrow(/one mission/)
+    ).toThrow(/one milestone/)
   })
 
   it("snapshots the rig, detects drift, and audits later structural edits", () => {
@@ -284,13 +285,13 @@ describe.skipIf(!sqliteLoads)("initiative repository", () => {
     const beta = createInitiative({ ...base, key: "beta" })
     expect(() =>
       updateInitiative(beta.initiative.id, { key: "alpha" })
-    ).toThrow("Initiative key “alpha” is already in use.")
+    ).toThrow("Feature key “alpha” is already in use.")
     expect(
       updateInitiative(beta.initiative.id, { key: "beta" }).initiative.key
     ).toBe("beta")
   })
 
-  it("binds rig, workspace, and project while draft and locks them at start", () => {
+  it("binds rig and workspace while draft and locks them at start", () => {
     const factory = createRig({ name: "Factory" })
     const other = createRig({ name: "Other" })
     const graph = createInitiative({
@@ -305,15 +306,34 @@ describe.skipIf(!sqliteLoads)("initiative repository", () => {
     )
     startInitiative(id)
     expect(() => updateInitiative(id, { rigId: other.id })).toThrow(
-      /can't be changed after an initiative has started/
+      /can't be changed after a feature has started/
     )
     expect(() => updateInitiative(id, { workspaceId: null })).not.toThrow()
-    expect(() => updateInitiative(id, { projectId: null })).not.toThrow()
     // Resending the current binding alongside other edits is harmless.
     expect(
       updateInitiative(id, { rigId: factory.id, name: "Renamed" }, "user", "r")
         .initiative.name
     ).toBe("Renamed")
+  })
+
+  it("keeps the project editable after an initiative has started", () => {
+    const project = createProject({ name: "Project A" })
+    const rig = createRig({ name: "Factory" })
+    const graph = createInitiative({
+      key: "relabel",
+      name: "Relabel",
+      intent: "",
+      definitionOfDone: "",
+      rigId: rig.id,
+    })
+    const id = graph.initiative.id
+    startInitiative(id)
+    expect(
+      updateInitiative(id, { projectId: project.id }).initiative.projectId
+    ).toBe(project.id)
+    expect(updateInitiative(id, { projectId: null }).initiative.projectId).toBe(
+      null
+    )
   })
 
   it("refuses to delete a rig used by a running initiative", () => {

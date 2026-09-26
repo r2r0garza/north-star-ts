@@ -24,7 +24,18 @@ import * as seatSessionsRepo from "../db/repositories/seat-sessions"
 import { deleteConversationsWithArtifacts } from "../conversations/lifecycle"
 import { startHookRun } from "../mission-control/hook-runner"
 import type { MissionIntegration } from "../mission-control/integration"
+import type { Navigator } from "../mission-control/navigator"
+import {
+  applyProposal,
+  checkProposal,
+  judgeMissionDone,
+  rejectProposal,
+} from "../mission-control/map-tools"
+import * as proposalsRepo from "../db/repositories/proposals"
+import * as navigatorTicks from "../db/repositories/navigator-ticks"
+import { parseSeatAddress } from "../../shared/mission-control/address"
 import type {
+  DriveMode,
   MergePolicyMode,
   PlaybookAltitude,
   PlaybookHookName,
@@ -40,9 +51,136 @@ export function registerMissionControlHandlers(
   seatComms: SeatComms,
   seatSessions: SeatSessionService,
   integration: MissionIntegration,
+  navigator: Navigator,
   // Open a folder in the user's IDE (settings), for slice worktrees.
   openFolder: (folder: string) => Promise<string>
 ): void {
+  const graphOf = (id: string) => {
+    const graph = initiatives.getInitiativeGraph(id)
+    if (!graph) throw new Error(`Feature not found: ${id}`)
+    return graph
+  }
+
+  // The Navigator and drive controls (plan 106.6). Budgets and the drive
+  // mode are the user's alone: no tool reaches these handlers.
+  ipcMain.handle(
+    "missionControl:drive:start",
+    async (_event, id: string, options: { mode: DriveMode; autoApplyPlan?: boolean }) => {
+      const started = await navigator.startDrive(id, {
+        mode: options?.mode ?? "manual",
+        autoApplyPlan: options?.autoApplyPlan === true,
+      })
+      return { graph: graphOf(id), planningError: started.planningError }
+    }
+  )
+  ipcMain.handle("missionControl:drive:pause", (_event, id: string, reason?: string) => {
+    navigator.pause(id, reason?.trim() || "Paused by the user", "user")
+    return graphOf(id)
+  })
+  ipcMain.handle("missionControl:drive:resume", (_event, id: string) => {
+    navigator.resume(id)
+    return graphOf(id)
+  })
+  ipcMain.handle("missionControl:drive:reopen", (_event, id: string) => {
+    navigator.reopen(id)
+    return graphOf(id)
+  })
+  ipcMain.handle("missionControl:drive:cancel", (_event, id: string) => {
+    navigator.cancel(id)
+    return graphOf(id)
+  })
+  ipcMain.handle("missionControl:drive:setMode", (_event, id: string, mode: DriveMode) => {
+    navigator.setMode(id, mode)
+    return graphOf(id)
+  })
+  ipcMain.handle(
+    "missionControl:drive:setAutoApplyPlan",
+    (_event, id: string, value: boolean) => {
+      navigator.setAutoApplyPlan(id, value === true)
+      return graphOf(id)
+    }
+  )
+  ipcMain.handle(
+    "missionControl:budgets:set",
+    (_event, id: string, patch: Record<string, number | null>) => {
+      initiatives.setInitiativeBudgets(id, patch ?? {}, "user")
+      return graphOf(id)
+    }
+  )
+  ipcMain.handle("missionControl:navigator:position", (_event, id: string) =>
+    navigator.position(id)
+  )
+  ipcMain.handle(
+    "missionControl:navigator:ticks",
+    (_event, id: string, limit?: number) => navigatorTicks.listTicks(id, limit ?? 50)
+  )
+  // Rejections and partial applications go back to the seat that proposed,
+  // in the user's words.
+  const deliverToProposer = (
+    resolved: { initiativeId: string; proposer: string },
+    body: string,
+    subject: string
+  ) => {
+    if (!parseSeatAddress(resolved.proposer)) return
+    const result = seatComms.userNote({
+      initiativeId: resolved.initiativeId,
+      to: resolved.proposer,
+      body,
+      subject,
+    })
+    if (!result.ok) console.warn("[proposals] note not delivered:", result.message)
+  }
+  // Pending proposals carry which of their changes no longer apply.
+  ipcMain.handle("missionControl:proposals:list", (_event, initiativeId: string) =>
+    proposalsRepo
+      .listProposals(initiativeId)
+      .map((proposal) =>
+        proposal.status === "pending"
+          ? { ...proposal, problems: checkProposal(proposal) }
+          : proposal
+      )
+  )
+  ipcMain.handle(
+    "missionControl:proposals:apply",
+    (_event, id: string, options?: { partial?: boolean }) => {
+      const proposal = applyProposal(id, "user", {
+        partial: options?.partial === true,
+        deliver: (resolved, body) => deliverToProposer(resolved, body, "Proposal partly applied"),
+      })
+      return graphOf(proposal.initiativeId)
+    }
+  )
+  // The user's definition-of-done judgment for a mission.
+  ipcMain.handle(
+    "missionControl:missions:judgeDone",
+    async (_event, missionId: string, summary: string) => {
+      await judgeMissionDone(missionId, summary ?? "", async (id) => {
+        await integration.markMerged(id)
+      })
+      const mission = initiatives.getMission(missionId)
+      return graphOf(mission!.initiativeId)
+    }
+  )
+  ipcMain.handle(
+    "missionControl:proposals:reject",
+    (_event, id: string, note?: string) => {
+      const proposal = rejectProposal(id, note ?? "", (resolved, body) =>
+        deliverToProposer(resolved, body, "Proposal rejected")
+      )
+      return graphOf(proposal.initiativeId)
+    }
+  )
+  ipcMain.handle("missionControl:comms:acknowledge", (_event, messageId: string) =>
+    seatComms.acknowledge(messageId)
+  )
+  ipcMain.handle(
+    "missionControl:comms:reply",
+    (_event, messageId: string, body: string) => {
+      const result = seatComms.userReply(messageId, body ?? "")
+      if (!result.ok) throw new Error(result.message)
+      return result.message
+    }
+  )
   // Mission integration (plan 106.5). Landing is the one call that may change
   // the user's branch, and only with the base/head the user reviewed.
   ipcMain.handle("missionControl:integration:status", (_event, missionId: string) =>
@@ -55,10 +193,17 @@ export function registerMissionControlHandlers(
   )
   ipcMain.handle(
     "missionControl:integration:land",
-    (_event, missionId: string, approval: { baseOid: string; headOid: string }) => {
+    (
+      _event,
+      missionId: string,
+      approval: { baseOid: string; headOid: string },
+      options?: { localMerge?: boolean }
+    ) => {
       if (typeof approval?.baseOid !== "string" || typeof approval?.headOid !== "string")
         throw new Error("Review the merge before approving it.")
-      return integration.land(missionId, approval)
+      return integration.land(missionId, approval, {
+        localMerge: options?.localMerge === true,
+      })
     }
   )
   ipcMain.handle("missionControl:integration:markMerged", (_event, missionId: string) =>
@@ -84,7 +229,7 @@ export function registerMissionControlHandlers(
     async (_event, sliceId: string) => {
       const info = integration.info(sliceId)
       if (!info.exists || !info.workspacePath)
-        return "This slice has no worktree right now."
+        return "This user story has no worktree right now."
       return openFolder(info.workspacePath)
     }
   )
@@ -171,6 +316,7 @@ export function registerMissionControlHandlers(
     (_event, sliceId: string, options?: { allowTouchOverlap?: boolean }) =>
       sliceRunner.startSlice(sliceId, {
         allowTouchOverlap: options?.allowTouchOverlap === true,
+        actor: "user",
       })
   )
   ipcMain.handle("missionControl:slices:cancel", (_event, sliceId: string) =>
@@ -217,9 +363,16 @@ export function registerMissionControlHandlers(
     await deleteConversationsWithArtifacts(conversations)
     return { keptBranches }
   })
-  ipcMain.handle("missionControl:initiatives:start", (_event, id: string) =>
-    initiatives.startInitiative(id)
-  )
+  // Starting through the Navigator in the initiative's chosen drive mode.
+  ipcMain.handle("missionControl:initiatives:start", async (_event, id: string) => {
+    const initiative = initiatives.getInitiative(id)
+    if (!initiative) throw new Error(`Feature not found: ${id}`)
+    await navigator.startDrive(id, {
+      mode: initiative.driveMode,
+      autoApplyPlan: initiative.drive.autoApplyPlan,
+    })
+    return graphOf(id)
+  })
   ipcMain.handle(
     "missionControl:initiatives:reseat",
     (_event, id: string, reason?: string) => {
@@ -243,8 +396,26 @@ export function registerMissionControlHandlers(
     (_event, id: string, actor?: string, reason?: string) =>
       initiatives.deleteMission(id, actor, reason)
   )
-  ipcMain.handle("missionControl:slices:create", (_event, input) =>
-    initiatives.createSlice(input)
+  // The renderer creates user slices only: origin and actor are not its to set.
+  ipcMain.handle(
+    "missionControl:slices:create",
+    (
+      _event,
+      input: {
+        missionId: string
+        key: string
+        title: string
+        spec?: Parameters<typeof initiatives.createSlice>[0]["spec"]
+        podKey?: string | null
+      }
+    ) =>
+      initiatives.createSlice({
+        missionId: input.missionId,
+        key: input.key,
+        title: input.title,
+        spec: input.spec,
+        podKey: input.podKey,
+      })
   )
   ipcMain.handle(
     "missionControl:slices:update",

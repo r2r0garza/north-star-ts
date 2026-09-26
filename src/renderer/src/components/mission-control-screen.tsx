@@ -50,7 +50,7 @@ import type {
 } from "@/types"
 
 const RIGHTS: Array<{ value: RigDecisionRight; label: string }> = [
-  { value: "assign_slice", label: "Assign slice" },
+  { value: "assign_slice", label: "Assign user story" },
   { value: "revise_plan", label: "Revise plan" },
   { value: "accept_proof", label: "Accept proof" },
   { value: "merge", label: "Merge" },
@@ -835,7 +835,7 @@ export function MissionControlScreen({ onClose }: { onClose: () => void }) {
     )
     if (running.length) {
       toast.error(
-        `“${rig.name}” is in use by ${quoted(running)}. Finish or cancel ${running.length === 1 ? "that initiative" : "those initiatives"} before deleting the rig.`
+        `“${rig.name}” is in use by ${quoted(running)}. Finish or cancel ${running.length === 1 ? "that feature" : "those features"} before deleting the rig.`
       )
       return
     }
@@ -879,16 +879,16 @@ export function MissionControlScreen({ onClose }: { onClose: () => void }) {
     : null
   const initiativeName = initiativeGraph?.initiative.name
   const initiativeTitle = slice
-    ? `Slice: ${slice.title}`
+    ? `User story: ${slice.title}`
     : mission
-      ? `Mission: ${mission.name}`
+      ? `Milestone: ${mission.name}`
       : initiativeGraph
-        ? `Initiative: ${initiativeName}`
+        ? `Feature: ${initiativeName}`
         : null
   const initiativeDescription = slice
-    ? `Initiative: ${initiativeName}${sliceMission ? ` - Mission: ${sliceMission.name}` : ""}`
+    ? `Feature: ${initiativeName}${sliceMission ? ` - Milestone: ${sliceMission.name}` : ""}`
     : mission
-      ? `Initiative: ${initiativeName}`
+      ? `Feature: ${initiativeName}`
       : initiativeGraph?.initiative.intent
 
   const playbookHeader =
@@ -956,7 +956,14 @@ export function MissionControlScreen({ onClose }: { onClose: () => void }) {
         podId: leadPod.id,
         key: "lead",
         role: "lead",
-        decisionRights: ["assign_slice", "escalate_to_user"],
+        // The lead drives the plan (plan 106.6): it starts and replans
+        // slices, and judges when a mission meets its definition of done.
+        decisionRights: [
+          "assign_slice",
+          "revise_plan",
+          "accept_proof",
+          "escalate_to_user",
+        ],
       })
       await window.cowork.missionControl.pods.update(leadPod.id, {
         leadSeatId: lead.id,
@@ -1021,7 +1028,7 @@ export function MissionControlScreen({ onClose }: { onClose: () => void }) {
             className={`py-3 text-sm font-medium ${tab === "initiatives" ? "border-b-2 border-primary" : "text-muted-foreground"}`}
             onClick={() => setTab("initiatives")}
           >
-            Initiatives
+            Features
           </button>
           <button
             className={`py-3 text-sm font-medium ${tab === "rigs" ? "border-b-2 border-primary" : "text-muted-foreground"}`}

@@ -12,7 +12,8 @@ const MISSION_TRANSITIONS: Record<MissionStatus, readonly MissionStatus[]> = {
 }
 
 const SLICE_TRANSITIONS: Record<SliceStatus, readonly SliceStatus[]> = {
-  draft: ["ready", "cancelled"],
+  // A draft waits (blocked) when a slice it depends on is cancelled (106.6).
+  draft: ["ready", "blocked", "cancelled"],
   ready: ["blocked", "running", "cancelled"],
   blocked: ["ready", "cancelled", "failed"],
   running: ["proving", "blocked", "failed", "cancelled"],

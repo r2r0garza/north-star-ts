@@ -1,5 +1,6 @@
 import { randomUUID } from "crypto"
 import { getDb } from "../connection"
+import { emitWorkChanged } from "../../mission-control/work-events"
 import type {
   Playbook,
   PlaybookAltitude,
@@ -338,6 +339,8 @@ export function createPlaybookRun(input: {
       input.worktreePath ?? null,
       Date.now()
     )
+  // A run starting or finishing moves the Navigator's position (plan 106.6).
+  emitWorkChanged(input.initiativeId)
   return getPlaybookRun(id)!
 }
 
@@ -436,5 +439,9 @@ export function finishPlaybookRun(
       "UPDATE playbook_runs SET status = ?, outcome_reason = ?, finished_at = ? WHERE id = ? AND status = 'running'"
     )
     .run(status, outcomeReason, Date.now(), id)
+  if (result.changes === 1) {
+    const run = getPlaybookRun(id)
+    if (run) emitWorkChanged(run.initiativeId)
+  }
   return result.changes === 1
 }

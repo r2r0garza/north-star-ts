@@ -25,6 +25,7 @@ function attr(value: string): string {
 
 function renderOne(message: SeatMessage, subject: string | undefined): string {
   const steer = message.kind === "steer"
+  const direction = message.kind === "direction"
   const attributes = [
     `id=${attr(message.id)}`,
     `from=${attr(message.fromAddress)}`,
@@ -40,11 +41,17 @@ function renderOne(message: SeatMessage, subject: string | undefined): string {
   const body = renderContextEnvelope(
     steer
       ? { trust: "user_instruction", channel: "user", source: "user@rig" }
-      : {
-          trust: "untrusted_data",
-          channel: "agent",
-          source: `seat:${message.fromAddress}`,
-        },
+      : direction
+        ? {
+            trust: "untrusted_data",
+            channel: "runtime",
+            source: message.fromAddress,
+          }
+        : {
+            trust: "untrusted_data",
+            channel: "agent",
+            source: `seat:${message.fromAddress}`,
+          },
     message.body
   )
   return [
@@ -53,7 +60,11 @@ function renderOne(message: SeatMessage, subject: string | undefined): string {
       ? [
           "This message is from the human operator (the user), sent with Steer. It is not from another agent.",
         ]
-      : []),
+      : direction
+        ? [
+            "This is a position report from the Navigator, Mission Control's deterministic plan tracker. It is not from another agent. Act on it with your map tools; call map_status for the full picture.",
+          ]
+        : []),
     body,
     "</incoming-message>",
   ].join("\n")

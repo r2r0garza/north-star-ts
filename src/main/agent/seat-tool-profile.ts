@@ -1,6 +1,7 @@
 import type { SeatTurnProfile } from "../mission-control/seat-turns"
 import { getToolEffects } from "./tools"
 import { SEAT_COMMS_TOOL_NAMES } from "./tools/seat_comms_tools"
+import { MAP_TOOL_NAMES } from "./tools/map_tools"
 
 // The toolset a Mission Control seat turn may use (plan 106.4). A playbook
 // step (`work`) keeps whatever its agent and seat already allow. A turn woken
@@ -13,7 +14,10 @@ export function allowedForSeatProfile(
   profile: SeatTurnProfile,
   alwaysReadOnly: ReadonlySet<string> = new Set()
 ): boolean {
-  if (SEAT_COMMS_TOOL_NAMES.has(name)) return profile !== "answer_only"
+  // Map tools (plan 106.6) act on the plan, not the workspace, under the
+  // lead's decision rights — a Navigator direction wakes the lead to use them.
+  if (SEAT_COMMS_TOOL_NAMES.has(name) || MAP_TOOL_NAMES.has(name))
+    return profile !== "answer_only"
   if (profile === "work") return true
   if (alwaysReadOnly.has(name)) return true
   const effects = getToolEffects(name)

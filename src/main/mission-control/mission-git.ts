@@ -157,11 +157,11 @@ export async function startIntegrationBranch(input: {
     const message = error instanceof Error ? error.message : String(error)
     if (message.includes("clean repository"))
       throw new Error(
-        "Mission Control needs a clean working tree to start a mission. Commit or stash your changes, then run the slice again."
+        "Mission Control needs a clean working tree to start a milestone. Commit or stash your changes, then run the user story again."
       )
     if (message.includes("blocked by"))
       throw new Error(
-        `Finish the ${message.split("blocked by ")[1]?.replace("_HEAD", "").toLowerCase() ?? "git operation"} in progress before starting a mission.`
+        `Finish the ${message.split("blocked by ")[1]?.replace("_HEAD", "").toLowerCase() ?? "git operation"} in progress before starting a milestone.`
       )
     throw error
   }
@@ -170,7 +170,7 @@ export async function startIntegrationBranch(input: {
   )
   if (!baseRef)
     throw new Error(
-      "The workspace is on a detached HEAD. Check out the branch the mission should land on, then run the slice again."
+      "The workspace is on a detached HEAD. Check out the branch the milestone should land on, then run the user story again."
     )
   if (!isMissionControlBranch(input.branch))
     throw new Error(`Refusing to create ${input.branch}`)
@@ -178,7 +178,7 @@ export async function startIntegrationBranch(input: {
   const existing = await branchOid(root, input.branch)
   if (existing && existing !== baseOid)
     throw new Error(
-      `The branch ${input.branch} already exists with other commits. Delete or rename it, then run the slice again.`
+      `The branch ${input.branch} already exists with other commits. Delete or rename it, then run the user story again.`
     )
   // A crash after creating the branch but before recording it leaves the
   // branch at the base commit; adopt it.
@@ -233,7 +233,7 @@ export async function commitWorktreeChanges(
   const operation = await inProgressOperation(worktree)
   if (operation)
     throw new Error(
-      `The slice worktree has a ${operation.replace("_HEAD", "").toLowerCase()} in progress; finish or abort it first.`
+      `The user story worktree has a ${operation.replace("_HEAD", "").toLowerCase()} in progress; finish or abort it first.`
     )
   await runGit(worktree, ["add", "-A"])
   const staged = await gitSucceeds(worktree, ["diff", "--cached", "--quiet"])
@@ -319,7 +319,7 @@ export async function mergeSlice(input: {
       integrationBranch,
       mergeCommit,
       head,
-      "mission-control: merge slice"
+      "mission-control: merge user story"
     )
     return moved ? { status: "merged", mergeCommit } : { status: "moved" }
   } finally {
@@ -427,7 +427,7 @@ export async function finalizeResolution(input: {
       return {
         status: "invalid",
         reason:
-          "The resolution worktree no longer holds the slice merge (it was aborted or left uncommitted changes).",
+          "The resolution worktree no longer holds the user story merge (it was aborted or left uncommitted changes).",
       }
   }
   const guard = await checkedOutGuard(input.root, input.integrationBranch)
@@ -437,7 +437,7 @@ export async function finalizeResolution(input: {
     input.integrationBranch,
     mergeCommit,
     input.startOid,
-    "mission-control: merge resolved slice"
+    "mission-control: merge resolved user story"
   )
   return moved ? { status: "merged", mergeCommit } : { status: "moved" }
 }
@@ -603,7 +603,7 @@ export async function landLocally(input: {
   await runGit(root, [
     "update-ref",
     "-m",
-    "mission-control: land mission",
+    "mission-control: land milestone",
     `refs/heads/${base}`,
     next,
     baseOid,

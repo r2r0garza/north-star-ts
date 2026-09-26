@@ -69,6 +69,8 @@ export function renderSliceObjective(input: {
   mission: Mission
   slice: WorkSlice
   workspace?: SliceWorkspaceNote | null
+  // Why this attempt was started, from the seat that retried it (106.6).
+  attemptNote?: { attempt: number; by: string; text: string } | null
 }): string {
   const { initiative, mission, slice } = input
   const criteria = sliceCriteria(slice)
@@ -90,6 +92,13 @@ export function renderSliceObjective(input: {
     "## Touch hints",
     list(slice.spec.touchHints),
     ...(slice.spec.notes.trim() ? ["", "## Notes", slice.spec.notes.trim()] : []),
+    ...(input.attemptNote
+      ? [
+          "",
+          `## Note for attempt ${input.attemptNote.attempt} (from ${input.attemptNote.by})`,
+          input.attemptNote.text.trim(),
+        ]
+      : []),
     ...(input.workspace ? renderWorkspaceNote(input.workspace) : []),
     "",
     "## Why this slice exists",
@@ -148,8 +157,23 @@ export function renderHookObjective(input: {
     "## Your output",
     "Your final message is the deliverable: Mission Control keeps it as this hook's result for the user to read later. " +
       "Put the complete write-up there. Do not write it to files, and do not ask whether to save or expand it — nobody can answer during the run. " +
-      "Recommend plan changes as proposals in that message; do not edit the initiative's plan or the workspace yourself."
+      "Do not edit the initiative's plan or the workspace yourself."
   )
+  // Plan changes travel as structured proposals the user applies (106.6);
+  // seats without map tools fall back to describing them in the message.
+  if (hook === "plan")
+    lines.push(
+      "",
+      "## Submit the plan",
+      "If you have the `propose_plan` tool, submit the whole plan with ONE call: every mission in order, each with its outcome, definition of done, and slices. " +
+        "Give every slice a short key, a goal, concrete acceptance criteria (each one checkable), touch hints for the files it will change, and `depends_on` keys for slices it must wait for. " +
+        "Keep slices small enough to build and prove in one sitting, and keep independent slices independent so they run in parallel. " +
+        "The user reviews and applies the proposal. Without the tool, write the plan in your final message."
+    )
+  else
+    lines.push(
+      "If you have map tools, submit each recommended change with `propose_slice` or `revise_plan` rather than only describing it; otherwise list them in your final message."
+    )
   return lines.join("\n")
 }
 

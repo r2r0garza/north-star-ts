@@ -1,18 +1,18 @@
 # Roadmap — Next up
 
-1. **`106.6` — Mission Control: Navigator and autonomous drive.** Deterministic, restart-safe Navigator
-    computing position and next maneuver; Manual / Co-pilot / Autopilot modes; decision-rights-gated
-    map tools for bounded replans; proposals inbox for everything outside a seat's rights; hard budgets
-    with auto-pause.
-2. **`106.7` — Mission Control: Refocus, follow-ups, seat memory.** Intent-chain reminders at kickoff,
+1. **`106.7` — Mission Control: Refocus, follow-ups, seat memory.** Intent-chain reminders at kickoff,
     after compaction, on interval, and on drift; `propose_followup` backlog against scope creep; seat
     memory with provenance, review, explicit sharing lineage, and retraction with contact tracing.
-3. **`106.8` — Mission Control: health monitoring.** Progress vs ceremony event classification,
+2. **`106.8` — Mission Control: health monitoring.** Progress vs ceremony event classification,
     explainable pathology detectors (bureaucracy, stalls, proof polishing, ping-pong, scope drift,
     approval-by-proxy), context-bearing alert routing, and auto-pause; Health tab.
-4. **`106.9` — Mission Control: Processes sunset.** Parity checklist, import Processes as playbooks,
+3. **`106.9` — Mission Control: Processes sunset.** Parity checklist, import Processes as playbooks,
     Quick run, run history in Mission Control, and a reversible setting that hides the Processes sidebar
     button. The Process engine remains as the playbook runtime.
+4. **`106.10` — Mission Control: Initiatives project rail.** An internal left rail on the Initiatives tab
+    only (styled like Dashboards) listing "All initiatives (N)", each project with its initiative count
+    (zero included), and a "No project" bucket. Selecting a project filters the list; "All" clears it.
+    Renderer-only, built on the existing `initiatives.project_id`. Rigs and Playbooks are unchanged.
 5. **`105` — Required skills for individual Process phases.** Let an agent phase explicitly activate one
    required skill for every worker invocation, distinct from the phase-agent skill allowlist. Validate pool
    compatibility, fail before the LLM call when the skill is unavailable, snapshot resolved identity, and

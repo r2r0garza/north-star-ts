@@ -1,0 +1,369 @@
+import { useEffect, useState } from "react"
+import { Bell, Pause, Play, RotateCcw, Rocket, Square } from "lucide-react"
+import { toast } from "sonner"
+import { BUDGET_SPECS } from "../../../../shared/mission-control/budgets"
+import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+import { Switch } from "@/components/ui/switch"
+import type { BudgetMeter, DriveMode, InitiativeGraph, Position } from "@/types"
+
+// Initiative drive controls (plan 106.6): the drive mode, Start / Pause /
+// Resume / Cancel, auto-applying the planning proposal, budget meters, and
+// the "Waiting on you" count. Mode and budgets are the user's alone.
+
+function errorMessage(error: unknown) {
+  return (error instanceof Error ? error.message : String(error))
+    .replace(/^Error invoking remote method '[^']+':\s*/, "")
+    .replace(/^\w*Error:\s*/, "")
+}
+
+const MODES: Array<{ value: DriveMode; label: string; help: string }> = [
+  {
+    value: "manual",
+    label: "Manual",
+    help: "You run user stories and hooks. The Navigator shows what's next.",
+  },
+  {
+    value: "copilot",
+    label: "Co-pilot",
+    help: "The Navigator directs the lead seat after every change; the lead starts and replans work with its map tools.",
+  },
+  {
+    value: "autopilot",
+    label: "Autopilot",
+    help: "The Navigator starts ready user stories and due hooks itself and hands judgment calls to the lead.",
+  },
+]
+
+export function DriveControls({
+  graph,
+  position,
+  onGraph,
+  onShowWaiting,
+  budgetRequest = 0,
+}: {
+  graph: InitiativeGraph
+  position: Position | null
+  onGraph: (graph: InitiativeGraph) => void
+  onShowWaiting: () => void
+  // Changes when something else (the inbox) asks to edit budgets.
+  budgetRequest?: number
+}) {
+  const initiative = graph.initiative
+  const [pending, setPending] = useState(false)
+  const [mode, setMode] = useState<DriveMode>(initiative.driveMode)
+  const [autoApply, setAutoApply] = useState(initiative.drive.autoApplyPlan)
+  const draft = initiative.status === "draft"
+  const paused = initiative.status === "paused"
+  const active = initiative.status === "active"
+  const finished = ["completed", "cancelled", "failed"].includes(initiative.status)
+  const editable = draft || paused
+  const shownMode = editable ? mode : initiative.driveMode
+  const waiting = (position?.pendingDecisions ?? []).filter((d) => d.owner === "user").length
+
+  const act = async (work: () => Promise<InitiativeGraph>) => {
+    setPending(true)
+    try {
+      onGraph(await work())
+    } catch (error) {
+      toast.error(errorMessage(error))
+    } finally {
+      setPending(false)
+    }
+  }
+  const drive = window.cowork.missionControl.drive
+  const start = () =>
+    act(async () => {
+      const result = await drive.start(initiative.id, { mode, autoApplyPlan: autoApply })
+      if (result.planningError)
+        toast.warning(`Started, but planning couldn't run: ${result.planningError}`)
+      return result.graph
+    })
+  const changeMode = (value: DriveMode) => {
+    setMode(value)
+    if (paused) void act(() => drive.setMode(initiative.id, value))
+  }
+  const changeAutoApply = (value: boolean) => {
+    setAutoApply(value)
+    if (paused) void act(() => drive.setAutoApplyPlan(initiative.id, value))
+  }
+
+  return (
+    <div className="space-y-3 rounded-lg border p-4">
+      <div className="flex flex-wrap items-center gap-3">
+        <code className="text-xs text-muted-foreground">{initiative.key}</code>
+        <Badge>{initiative.status}</Badge>
+        <div className="flex items-center gap-2">
+          <Label className="text-xs text-muted-foreground">Drive</Label>
+          <Select
+            value={shownMode}
+            disabled={!editable || pending}
+            onValueChange={(value) => changeMode(value as DriveMode)}
+          >
+            <SelectTrigger className="h-8 w-36" aria-label="Drive mode">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {MODES.map((item) => (
+                <SelectItem key={item.value} value={item.value}>
+                  {item.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        {shownMode === "autopilot" && (
+          <label className="flex items-center gap-2 text-xs text-muted-foreground">
+            <Switch
+              size="sm"
+              checked={editable ? autoApply : initiative.drive.autoApplyPlan}
+              disabled={!editable || pending}
+              onCheckedChange={changeAutoApply}
+            />
+            Auto-apply planning proposal
+          </label>
+        )}
+        <div className="ml-auto flex items-center gap-2">
+          {waiting > 0 && (
+            <Button size="sm" variant="outline" onClick={onShowWaiting}>
+              <Bell className="size-4 text-amber-500" /> Waiting on you ({waiting})
+            </Button>
+          )}
+          {draft && (
+            <Button
+              size="sm"
+              disabled={pending || !initiative.rigId}
+              title={initiative.rigId ? undefined : "Choose a rig first"}
+              onClick={() => void start()}
+            >
+              <Rocket className="size-4" /> Start
+            </Button>
+          )}
+          {active && (
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={pending}
+              onClick={() => void act(() => drive.pause(initiative.id))}
+            >
+              <Pause className="size-4" /> Pause
+            </Button>
+          )}
+          {paused && (
+            <Button
+              size="sm"
+              disabled={pending}
+              onClick={() => void act(() => drive.resume(initiative.id))}
+            >
+              <Play className="size-4" /> Resume
+            </Button>
+          )}
+          {initiative.status === "completed" && (
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={pending}
+              title="Add more milestones to this feature"
+              onClick={() => void act(() => drive.reopen(initiative.id))}
+            >
+              <RotateCcw className="size-4" /> Reopen
+            </Button>
+          )}
+          {!draft && !finished && (
+            <Button
+              size="sm"
+              variant="ghost"
+              className="text-muted-foreground hover:text-destructive"
+              disabled={pending}
+              onClick={() => {
+                if (
+                  window.confirm(
+                    `Cancel “${initiative.name}”? Running user stories and hooks stop, and it can't be resumed. Branches and worktrees stay until you delete it.`
+                  )
+                )
+                  void act(() => drive.cancel(initiative.id))
+              }}
+            >
+              <Square className="size-4" /> Cancel
+            </Button>
+          )}
+        </div>
+      </div>
+      <p className="text-xs text-muted-foreground">
+        {MODES.find((item) => item.value === shownMode)?.help}
+        {initiative.status === "completed"
+          ? " Every milestone is complete. Reopen to add more milestones; it reopens paused so you can check the mode and budgets before resuming."
+          : editable || finished
+            ? ""
+            : " Pause to change the mode."}
+      </p>
+      {paused && initiative.drive.pauseReason && (
+        <div className="rounded-md border border-amber-500/40 bg-amber-500/5 p-2 text-sm">
+          Paused: {initiative.drive.pauseReason}
+        </div>
+      )}
+      {!draft && position && (
+        <BudgetMeters
+          graph={graph}
+          meters={position.budgets}
+          onGraph={onGraph}
+          editRequest={budgetRequest}
+        />
+      )}
+    </div>
+  )
+}
+
+function amount(value: number) {
+  return Number.isInteger(value) ? String(value) : value.toFixed(1)
+}
+
+export function BudgetMeters({
+  graph,
+  meters,
+  onGraph,
+  editRequest = 0,
+}: {
+  graph: InitiativeGraph
+  meters: BudgetMeter[]
+  onGraph: (graph: InitiativeGraph) => void
+  editRequest?: number
+}) {
+  const [open, setOpen] = useState(false)
+  const [values, setValues] = useState<Record<string, string>>({})
+  const [saving, setSaving] = useState(false)
+  useEffect(() => {
+    if (editRequest) openEditor()
+    // Only a new request opens the editor.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editRequest])
+  function openEditor() {
+    const next: Record<string, string> = {}
+    for (const spec of BUDGET_SPECS) {
+      const value = graph.initiative.budgets[spec.key]
+      next[spec.key] = typeof value === "number" ? String(value) : ""
+    }
+    setValues(next)
+    setOpen(true)
+  }
+  const save = async () => {
+    const patch: Record<string, number | null> = {}
+    for (const spec of BUDGET_SPECS) {
+      const raw = values[spec.key]?.trim() ?? ""
+      if (!raw) patch[spec.key] = null
+      else {
+        const value = Number(raw)
+        if (!Number.isInteger(value) || value < 0) {
+          toast.error(`${spec.label} must be a whole number of 0 or more.`)
+          return
+        }
+        patch[spec.key] = value
+      }
+    }
+    setSaving(true)
+    try {
+      onGraph(await window.cowork.missionControl.drive.setBudgets(graph.initiative.id, patch))
+      setOpen(false)
+    } catch (error) {
+      toast.error(errorMessage(error))
+    } finally {
+      setSaving(false)
+    }
+  }
+  return (
+    <div>
+      <div className="mb-2 flex items-center">
+        <span className="text-xs font-medium text-muted-foreground">Budgets</span>
+        <Button size="sm" variant="ghost" className="ml-auto h-6 text-xs" onClick={openEditor}>
+          Edit budgets
+        </Button>
+      </div>
+      <div className="grid gap-x-4 gap-y-2 sm:grid-cols-2 lg:grid-cols-3">
+        {meters.map((meter) => {
+          const ratio = meter.limit > 0 ? Math.min(1, meter.used / meter.limit) : 1
+          // A full concurrency slot count is normal operation, not a warning.
+          const level =
+            meter.key === "maxConcurrentSlices" || meter.final ? "ok" : meter.level
+          return (
+            <div key={meter.key} className="text-xs">
+              <div className="flex gap-2">
+                <span className="truncate text-muted-foreground">
+                  {meter.label}
+                  {meter.scope && <span className="opacity-70"> · {meter.scope}</span>}
+                </span>
+                <span className="ml-auto shrink-0 tabular-nums">
+                  {amount(meter.used)} / {meter.limit}
+                  {meter.unit === "hours" ? " h" : ""}
+                </span>
+              </div>
+              <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-muted">
+                <div
+                  className={`h-full rounded-full ${level === "hard" ? "bg-destructive" : level === "soft" ? "bg-amber-500" : "bg-primary"}`}
+                  style={{ width: `${Math.round(ratio * 100)}%` }}
+                />
+              </div>
+            </div>
+          )
+        })}
+        <div className="text-xs text-muted-foreground">
+          Tokens / cost: not tracked (no provider accounting yet)
+        </div>
+      </div>
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Budgets</DialogTitle>
+            <DialogDescription>
+              Hard limits for this initiative. Only you can change them; leave a field empty
+              for its default.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            {BUDGET_SPECS.map((spec) => (
+              <div key={spec.key} className="grid grid-cols-[1fr_7rem] items-center gap-3">
+                <div>
+                  <Label htmlFor={`budget-${spec.key}`}>{spec.label}</Label>
+                  <p className="text-xs text-muted-foreground">At the limit: {spec.onHard}</p>
+                </div>
+                <Input
+                  id={`budget-${spec.key}`}
+                  inputMode="numeric"
+                  placeholder={String(spec.default)}
+                  value={values[spec.key] ?? ""}
+                  onChange={(e) =>
+                    setValues((current) => ({ ...current, [spec.key]: e.target.value }))
+                  }
+                />
+              </div>
+            ))}
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setOpen(false)}>
+              Cancel
+            </Button>
+            <Button disabled={saving} onClick={() => void save()}>
+              Save budgets
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  )
+}

@@ -233,7 +233,7 @@ export class SeatSessionService {
     const live = sessions.getLiveSeatSession(initiative.id, address, playbookRunId)
     if (live?.conversationId) return live
     const found = snapshotSeat(initiative, address)
-    if (!found) throw new Error(`No seat ${address} in this initiative's rig.`)
+    if (!found) throw new Error(`No seat ${address} in this feature's rig.`)
     if (!found.seat.agentRefId) throw new Error(`${address} is vacant.`)
     const created = getDb().transaction(() => {
       if (live) sessions.retireSeatSession(live.id, "closed", "Its conversation was deleted")
@@ -332,7 +332,7 @@ export class SeatSessionService {
     playbookRunId: string | null
   ): string {
     const initiative = initiatives.getInitiative(initiativeId)
-    if (!initiative) throw new Error("The initiative is no longer available.")
+    if (!initiative) throw new Error("The feature is no longer available.")
     return this.ensureSession(initiative, address, playbookRunId).conversationId!
   }
 
@@ -479,7 +479,7 @@ export class SeatSessionService {
   execute = async (ctx: TaskExecContext): Promise<TaskExecResult> => {
     const input = (ctx.task.input ?? {}) as WakeInput
     if (!input.initiativeId || !input.address)
-      return { error: "A seat wake needs an initiative and an address." }
+      return { error: "A seat wake needs a feature and an address." }
     const key = wakeKey(input.initiativeId, input.address)
     this.inFlight.add(key)
     emitCommsChanged(input.initiativeId)
@@ -501,7 +501,7 @@ export class SeatSessionService {
     const initiative = initiatives.getInitiative(initiativeId)
     const workspace = initiative ? workspacePathOf(initiative) : null
     if (!initiative?.rigSnapshot || !workspace)
-      return { content: "The initiative is no longer runnable; nothing woke." }
+      return { content: "The feature is no longer runnable; nothing woke." }
 
     // A crash after the claim left this task's delivery in a transcript already;
     // resume that turn instead of claiming (or appending) anything again.
@@ -622,9 +622,14 @@ export class SeatSessionService {
         workspace,
         this.ensureSession(initiative, address, sliceRun)
       )
+    // A Navigator direction (plan 106.6) is acted on with map tools, which an
+    // answer-only wake doesn't have: it goes to the seat's live session.
+    const directed = comms
+      .listMessages({ initiativeId: initiative.id, toAddress: address, statuses: ["queued"] })
+      .some((message) => message.kind === "direction")
     // Done with its steps: where it last did playbook work holds its freshest
     // context, woken answer-only unless that was its initiative session.
-    const worker = lastFinishedWork(initiative.id, address)
+    const worker = directed ? null : lastFinishedWork(initiative.id, address)
     if (worker) {
       const home = await this.workerHome(initiative, workspace, address, worker)
       if (home) return home
@@ -896,7 +901,7 @@ function scopeLabel(playbookRunId: string): string {
   if (!run) return "a finished run"
   if (run.sliceId) {
     const slice = initiatives.getSlice(run.sliceId)
-    return slice ? `slice ${slice.key}` : "a slice"
+    return slice ? `user story ${slice.key}` : "a user story"
   }
   return `${run.hook.replace(/_/g, " ")} hook`
 }

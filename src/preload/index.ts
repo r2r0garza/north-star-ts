@@ -71,7 +71,11 @@ import type {
   MissionControlRunLink,
   MergePolicyMode,
   MissionLanding,
+  DriveMode,
+  NavigatorTick,
+  PlanProposal,
 } from "../main/db/types"
+import type { Position } from "../shared/mission-control/position"
 import type { ActionKind } from "../main/agent/approval/types"
 import type { PickedElement } from "../main/browser/types"
 import type { GitDiffResult } from "../main/git/diff"
@@ -1008,11 +1012,17 @@ const api = {
           mode
         ) as Promise<InitiativeGraph>,
       // The explicit approval: bound to the base and head the user reviewed.
-      land: (missionId: string, approval: { baseOid: string; headOid: string }) =>
+      // `localMerge` merges a manual-policy mission here, with the same approval.
+      land: (
+        missionId: string,
+        approval: { baseOid: string; headOid: string },
+        options?: { localMerge?: boolean }
+      ) =>
         ipcRenderer.invoke(
           "missionControl:integration:land",
           missionId,
-          approval
+          approval,
+          options
         ) as Promise<MissionLanding>,
       markMerged: (missionId: string) =>
         ipcRenderer.invoke(
@@ -1080,6 +1090,19 @@ const api = {
           sessionId,
           reason
         ) as Promise<SeatSession | null>,
+      // The user read an escalation (or other mail to user@rig).
+      acknowledge: (messageId: string) =>
+        ipcRenderer.invoke(
+          "missionControl:comms:acknowledge",
+          messageId
+        ) as Promise<boolean>,
+      // Answer mail sent to user@rig in its own thread.
+      reply: (messageId: string, body: string) =>
+        ipcRenderer.invoke(
+          "missionControl:comms:reply",
+          messageId,
+          body
+        ) as Promise<SeatMessage>,
       // Fires with the initiative id whenever its mail or seat sessions change.
       onChanged: (cb: (initiativeId: string) => void) => {
         const listener = (_event: IpcRendererEvent, initiativeId: string) =>
@@ -1088,6 +1111,94 @@ const api = {
         return () =>
           ipcRenderer.removeListener("missionControl:comms:changed", listener)
       },
+    },
+    // The Navigator and drive controls (plan 106.6).
+    drive: {
+      start: (id: string, options: { mode: DriveMode; autoApplyPlan?: boolean }) =>
+        ipcRenderer.invoke("missionControl:drive:start", id, options) as Promise<{
+          graph: InitiativeGraph
+          planningError: string | null
+        }>,
+      pause: (id: string, reason?: string) =>
+        ipcRenderer.invoke(
+          "missionControl:drive:pause",
+          id,
+          reason
+        ) as Promise<InitiativeGraph>,
+      resume: (id: string) =>
+        ipcRenderer.invoke("missionControl:drive:resume", id) as Promise<InitiativeGraph>,
+      cancel: (id: string) =>
+        ipcRenderer.invoke("missionControl:drive:cancel", id) as Promise<InitiativeGraph>,
+      // A completed initiative takes more missions: it reopens paused.
+      reopen: (id: string) =>
+        ipcRenderer.invoke("missionControl:drive:reopen", id) as Promise<InitiativeGraph>,
+      setMode: (id: string, mode: DriveMode) =>
+        ipcRenderer.invoke(
+          "missionControl:drive:setMode",
+          id,
+          mode
+        ) as Promise<InitiativeGraph>,
+      setAutoApplyPlan: (id: string, value: boolean) =>
+        ipcRenderer.invoke(
+          "missionControl:drive:setAutoApplyPlan",
+          id,
+          value
+        ) as Promise<InitiativeGraph>,
+      // null removes a budget (back to its default).
+      setBudgets: (id: string, patch: Record<string, number | null>) =>
+        ipcRenderer.invoke(
+          "missionControl:budgets:set",
+          id,
+          patch
+        ) as Promise<InitiativeGraph>,
+    },
+    navigator: {
+      position: (initiativeId: string) =>
+        ipcRenderer.invoke(
+          "missionControl:navigator:position",
+          initiativeId
+        ) as Promise<Position>,
+      ticks: (initiativeId: string, limit?: number) =>
+        ipcRenderer.invoke(
+          "missionControl:navigator:ticks",
+          initiativeId,
+          limit
+        ) as Promise<NavigatorTick[]>,
+      // Fires with the initiative id after every recorded Navigator tick.
+      onChanged: (cb: (initiativeId: string) => void) => {
+        const listener = (_event: IpcRendererEvent, initiativeId: string) =>
+          cb(initiativeId)
+        ipcRenderer.on("missionControl:navigator:changed", listener)
+        return () =>
+          ipcRenderer.removeListener("missionControl:navigator:changed", listener)
+      },
+    },
+    proposals: {
+      list: (initiativeId: string) =>
+        ipcRenderer.invoke(
+          "missionControl:proposals:list",
+          initiativeId
+        ) as Promise<PlanProposal[]>,
+      // `partial` applies the changes that still apply and skips the rest.
+      apply: (id: string, options?: { partial?: boolean }) =>
+        ipcRenderer.invoke(
+          "missionControl:proposals:apply",
+          id,
+          options
+        ) as Promise<InitiativeGraph>,
+      // The user's definition-of-done judgment for a mission.
+      judgeMission: (missionId: string, summary: string) =>
+        ipcRenderer.invoke(
+          "missionControl:missions:judgeDone",
+          missionId,
+          summary
+        ) as Promise<InitiativeGraph>,
+      reject: (id: string, note: string) =>
+        ipcRenderer.invoke(
+          "missionControl:proposals:reject",
+          id,
+          note
+        ) as Promise<InitiativeGraph>,
     },
   },
   agents: {
@@ -2400,7 +2511,22 @@ export type {
   SeatMessage,
   SeatMessageKind,
   SeatMessageStatus,
+  DriveMode,
+  InitiativeDrive,
+  MissionDodReview,
+  NavigatorTick,
+  NavigatorTickAction,
+  PlanProposal,
 } from "../main/db/types"
+export type {
+  Position,
+  Decision,
+  DecisionAction,
+  DecisionKind,
+  Maneuver,
+} from "../shared/mission-control/position"
+export type { BudgetMeter, BudgetKey } from "../shared/mission-control/budgets"
+export type { PlanChange } from "../shared/mission-control/plan-changes"
 export type {
   ProcessImportResult,
   ProcessRunIncidentExport,

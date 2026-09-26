@@ -24,28 +24,28 @@ const ALTITUDES: Array<{
 }> = [
   {
     altitude: "slice",
-    label: "Slice",
+    label: "User story",
     hooks: [{ hook: "run", label: "Run" }],
   },
   {
     altitude: "mission",
-    label: "Mission",
+    label: "Milestone",
     hooks: [
-      { hook: "before_slices", label: "Before slices" },
+      { hook: "before_slices", label: "Before user stories" },
       {
         hook: "after_each_slice",
-        label: "After each slice",
+        label: "After each user story",
         note: "Reserved for merges once worktrees land.",
       },
-      { hook: "after_all_slices", label: "After all slices" },
+      { hook: "after_all_slices", label: "After all user stories" },
     ],
   },
   {
     altitude: "initiative",
-    label: "Initiative",
+    label: "Feature",
     hooks: [
       { hook: "plan", label: "Plan" },
-      { hook: "between_missions", label: "Between missions" },
+      { hook: "between_missions", label: "Between milestones" },
       { hook: "on_complete", label: "On complete" },
     ],
   },
@@ -141,7 +141,7 @@ export function PlaybooksTab({
       <div className="flex h-full min-h-[36rem] flex-col">
         <p className="mb-3 text-xs text-muted-foreground">
           Bind each step to a seat role (builder, qa, lead…) so it runs in the
-          rig's seats. On slice playbooks, mark the verifying step as the proof
+          rig's seats. On user story playbooks, mark the verifying step as the proof
           step.
         </p>
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border">
@@ -169,7 +169,7 @@ export function PlaybooksTab({
       <div>
         <h2 className="font-semibold">Playbooks</h2>
         <p className="text-sm text-muted-foreground">
-          The steps a slice, mission, or initiative runs, bound to the rig's
+          The steps a user story, milestone, or feature runs, bound to the rig's
           seats by role.
         </p>
       </div>

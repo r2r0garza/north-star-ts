@@ -194,6 +194,7 @@ The slices are ordered so that each one ships something usable:
 | `106.7` | Refocus intent chain, proposal backlog, seat memory with provenance and retraction | Long runs stay on-mission |
 | `106.8` | Health: ceremony vs progress, loop and stall detectors, alerts, auto-pause | Know when to step in |
 | `106.9` | Import Processes as playbooks, hide Processes button, parity checklist | Processes retired from the sidebar |
+| `106.10` | Project rail on the Initiatives tab with per-project counts and filtering | Find a project's initiatives fast |
 
 `106.3` is the first point where Mission Control does real work. Stop and evaluate there: if running a
 slice through a seat-bound playbook isn't clearly better than running the same Process directly, fix

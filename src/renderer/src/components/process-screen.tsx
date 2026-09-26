@@ -597,7 +597,7 @@ function SeatRoleBadge({
         </Badge>
       </TooltipTrigger>
       <TooltipContent>
-        {`Bound at run start to the seat with role "${role}" in the slice's pod`}
+        {`Bound at run start to the seat with role "${role}" in the user story's pod`}
       </TooltipContent>
     </Tooltip>
   )
@@ -1702,7 +1702,7 @@ function PhaseCard({
                     </Badge>
                   </TooltipTrigger>
                   <TooltipContent>
-                    Records the slice proof when run as a Mission Control
+                    Records the user story proof when run as a Mission Control
                     playbook
                   </TooltipContent>
                 </Tooltip>
@@ -2006,7 +2006,7 @@ function PhaseCard({
                   </label>
                 </TooltipTrigger>
                 <TooltipContent>
-                  In a Mission Control slice run, this phase records the
+                  In a Mission Control user story run, this phase records the
                   verified proof. Ignored by ordinary Process runs.
                 </TooltipContent>
               </Tooltip>

@@ -317,3 +317,29 @@ export function expireQueued(initiativeId: string): number {
     )
     .run(initiativeId).changes
 }
+
+// Supersede a sender's undelivered mail to one seat (plan 106.6): a newer
+// Navigator direction replaces the one still waiting, so a lead reads the
+// current position rather than a backlog of stale ones.
+export function expireQueuedFrom(
+  initiativeId: string,
+  fromAddress: string,
+  toAddress: string
+): number {
+  return getDb()
+    .prepare(
+      "UPDATE seat_messages SET status = 'expired' WHERE initiative_id = ? AND from_address = ? AND to_address = ? AND status = 'queued'"
+    )
+    .run(initiativeId, fromAddress, toAddress).changes
+}
+
+// Seat-sent messages in an initiative since a time, for the hourly message
+// budget. The user and the Navigator don't count; refusals don't either.
+export function countSeatMessagesSince(initiativeId: string, since: number): number {
+  return getDb()
+    .prepare(
+      "SELECT COUNT(*) FROM seat_messages WHERE initiative_id = ? AND created_at >= ? AND status <> 'refused' AND from_address NOT IN ('user@rig', 'navigator@rig')"
+    )
+    .pluck()
+    .get(initiativeId, since) as number
+}

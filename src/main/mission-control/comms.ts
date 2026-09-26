@@ -12,6 +12,7 @@ import {
   type SeatThreadAnchorKind,
 } from "../db/types"
 import { formatSeatAddress } from "../../shared/mission-control/address"
+import { budgetLimit } from "../../shared/mission-control/budgets"
 import { emitCommsChanged } from "./comms-events"
 import { SEAT_CONTEXT_PRIORITY } from "./seat-context"
 import type { SeatTurnIdentity } from "./seat-turns"
@@ -28,6 +29,7 @@ import type { SeatTurnIdentity } from "./seat-turns"
 // and is only accepted when the recipient actually holds it.
 
 export const USER_ADDRESS = "user@rig"
+export const NAVIGATOR_ADDRESS = "navigator@rig"
 
 export interface CommsBounds {
   maxMessagesPerThreadPerHour: number
@@ -200,7 +202,7 @@ export class SeatComms {
   ): CommsResult {
     const initiative = initiatives.getInitiative(turn.initiativeId)
     if (!initiative?.rigSnapshot)
-      return fail("unavailable", "This initiative is no longer available.")
+      return fail("unavailable", "This feature is no longer available.")
     if (args.to === USER_ADDRESS)
       return fail(
         "use_escalate",
@@ -249,7 +251,7 @@ export class SeatComms {
   ): CommsResult {
     const initiative = initiatives.getInitiative(turn.initiativeId)
     if (!initiative?.rigSnapshot)
-      return fail("unavailable", "This initiative is no longer available.")
+      return fail("unavailable", "This feature is no longer available.")
     const parent = comms.getMessage(messageId)
     if (
       !parent ||
@@ -283,7 +285,7 @@ export class SeatComms {
   ): CommsResult {
     const initiative = initiatives.getInitiative(turn.initiativeId)
     if (!initiative?.rigSnapshot)
-      return fail("unavailable", "This initiative is no longer available.")
+      return fail("unavailable", "This feature is no longer available.")
     let anchor: PostInput["anchor"] = turn.anchor
     if (args.anchor) {
       const resolved = resolveAnchor(initiative, args.anchor)
@@ -349,7 +351,7 @@ export class SeatComms {
   }): CommsResult {
     const initiative = initiatives.getInitiative(input.initiativeId)
     if (!initiative?.rigSnapshot)
-      return fail("unavailable", "Start the initiative before steering its seats.")
+      return fail("unavailable", "Start the feature before steering its seats.")
     if (!input.body.trim()) return fail("bad_args", "Write a message first.")
     const target = seatDirectory(initiative.rigSnapshot).find(
       (seat) => seat.address === input.to
@@ -374,6 +376,88 @@ export class SeatComms {
     })
   }
 
+  // A Navigator direction (plan 106.6): a structured position report to the
+  // lead, never free-form. A newer direction supersedes one still queued, and
+  // directions are not throttled by the seat chatter bounds.
+  direct(input: {
+    initiativeId: string
+    to: string
+    body: string
+  }): CommsResult {
+    const initiative = initiatives.getInitiative(input.initiativeId)
+    if (!initiative?.rigSnapshot)
+      return fail("unavailable", "The feature has no rig snapshot.")
+    comms.expireQueuedFrom(initiative.id, NAVIGATOR_ADDRESS, input.to)
+    const subject = `Navigator → ${input.to}`
+    const thread = comms.findThreadBySubject(initiative.id, subject)
+    return this.post({
+      initiative,
+      from: NAVIGATOR_ADDRESS,
+      to: input.to,
+      body: input.body,
+      kind: "direction",
+      threadId: thread?.id ?? null,
+      subject,
+      hop: 0,
+      enforceRate: false,
+    })
+  }
+
+  // The user's own words to a seat outside Steer's lead-only default — e.g.
+  // why a proposal was rejected, delivered back to the seat that proposed it.
+  userNote(input: {
+    initiativeId: string
+    to: string
+    body: string
+    subject: string
+  }): CommsResult {
+    const initiative = initiatives.getInitiative(input.initiativeId)
+    if (!initiative?.rigSnapshot)
+      return fail("unavailable", "The feature has no rig snapshot.")
+    return this.post({
+      initiative,
+      from: USER_ADDRESS,
+      to: input.to,
+      body: input.body,
+      kind: "steer",
+      subject: input.subject,
+      hop: 0,
+      enforceRate: false,
+    })
+  }
+
+  // The user answers mail sent to user@rig (an escalation) in its own thread.
+  // It's the user's words, rendered as such, and marks the message replied.
+  userReply(messageId: string, body: string): CommsResult {
+    const parent = comms.getMessage(messageId)
+    if (!parent || parent.toAddress !== USER_ADDRESS)
+      return fail("unknown_message", "That message wasn't addressed to you.")
+    const initiative = initiatives.getInitiative(parent.initiativeId)
+    if (!initiative?.rigSnapshot)
+      return fail("unavailable", "The feature has no rig snapshot.")
+    if (!body.trim()) return fail("bad_args", "Write a reply first.")
+    return this.post({
+      initiative,
+      from: USER_ADDRESS,
+      to: parent.fromAddress,
+      body,
+      kind: "steer",
+      threadId: parent.threadId,
+      inReplyTo: parent,
+      hop: 0,
+      enforceRate: false,
+    })
+  }
+
+  // The user read an escalation (or other mail to user@rig) and dealt with it.
+  acknowledge(messageId: string): boolean {
+    const message = comms.getMessage(messageId)
+    if (!message || message.toAddress !== USER_ADDRESS) return false
+    const done = comms.transitionMessage(messageId, "acknowledged", ["delivered"])
+    if (done) emitCommsChanged(message.initiativeId)
+    return done
+  }
+
   // A run cancellation expires everything still queued for the initiative.
   expireQueued(initiativeId: string): number {
     const expired = comms.expireQueued(initiativeId)
@@ -395,7 +479,7 @@ export class SeatComms {
           target ? "vacant_address" : "unknown_address",
           target
             ? `${input.to} is vacant: no agent sits in it. Valid addresses: ${valid.join(", ")}.`
-            : `There is no seat "${input.to}" in this initiative's rig. Valid addresses: ${valid.join(", ")}.`,
+            : `There is no seat "${input.to}" in this feature's rig. Valid addresses: ${valid.join(", ")}.`,
           { validAddresses: valid }
         )
       if (input.to === input.from)
@@ -422,7 +506,7 @@ export class SeatComms {
       if (!thread || thread.initiativeId !== initiative.id)
         return fail(
           "unknown_thread",
-          "No thread with that id exists in this initiative. Omit thread_id to start a new one."
+          "No thread with that id exists in this feature. Omit thread_id to start a new one."
         )
     }
 
@@ -511,6 +595,18 @@ export class SeatComms {
       return {
         code: "thread_rate_limit",
         reason: `This thread already has ${bounds.maxMessagesPerThreadPerHour} messages in the last hour. Stop the back-and-forth and act on what you have, or escalate.`,
+      }
+    // The initiative-wide hourly budget (plan 106.6): user-owned, so seats
+    // can't talk their way past it. Escalations still reach the user.
+    const perHour = budgetLimit(input.initiative.budgets, "maxMessagesPerHour")
+    if (
+      input.enforceRate &&
+      input.kind !== "escalation" &&
+      comms.countSeatMessagesSince(input.initiative.id, Date.now() - HOUR_MS) >= perHour
+    )
+      return {
+        code: "initiative_rate_limit",
+        reason: `This feature's seats have sent ${perHour} messages in the last hour, its budget. Work with what you have; only the user can raise the budget.`,
       }
     if (
       input.to !== USER_ADDRESS &&
@@ -615,13 +711,13 @@ function resolveAnchor(
     const mission = missions.find((m) => m.key === key)
     return mission
       ? { kind: "mission", id: mission.id }
-      : `No mission "${key}" in this initiative.`
+      : `No milestone "${key}" in this feature.`
   }
   for (const mission of missions) {
     const slice = initiatives.listSlices(mission.id).find((s) => s.key === key)
     if (slice) return { kind: "slice", id: slice.id }
   }
-  return `No slice "${key}" in this initiative.`
+  return `No user story "${key}" in this feature.`
 }
 
 // The installed bus. Tools reach it through here, so the agent layer does not

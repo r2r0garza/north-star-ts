@@ -210,6 +210,20 @@ export type {
   PolicyOption,
   SliceWorkspaceInfo,
   LandingSummary,
+  DriveMode,
+  InitiativeDrive,
+  MissionDodReview,
+  NavigatorTick,
+  NavigatorTickAction,
+  PlanProposal,
+  Position,
+  Decision,
+  DecisionAction,
+  DecisionKind,
+  Maneuver,
+  BudgetMeter,
+  BudgetKey,
+  PlanChange,
 } from "../../preload/index"
 
 // Live dashboard types (plan 033), surfaced for the Dashboards screen.

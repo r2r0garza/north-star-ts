@@ -3,10 +3,13 @@ import { isRigKey } from "../../../shared/mission-control/address"
 import { findCycle } from "../../../shared/mission-control/waves"
 import { getDb } from "../connection"
 import type {
+  DriveMode,
   Initiative,
+  InitiativeDrive,
   InitiativeGraph,
   MergePolicyMode,
   Mission,
+  MissionDodReview,
   MissionLanding,
   RigGraph,
   SliceEdge,
@@ -20,6 +23,7 @@ import {
   sliceStatusPath,
   transitionMissionStatus,
 } from "../../mission-control/work-state"
+import { emitWorkChanged } from "../../mission-control/work-events"
 
 interface InitiativeRow {
   id: string
@@ -35,6 +39,7 @@ interface InitiativeRow {
   playbook_id: string | null
   drive_mode: Initiative["driveMode"]
   budgets: string
+  drive: string | null
   status: Initiative["status"]
   task_id: string | null
   created_at: number
@@ -56,6 +61,7 @@ interface MissionRow {
   base_oid: string | null
   repo_root: string | null
   landing: string | null
+  dod_review: string | null
   status: Mission["status"]
   position: number
   started_at: number | null
@@ -160,6 +166,31 @@ function spec(value?: Partial<SliceSpec>): SliceSpec {
     notes: value?.notes ?? "",
   }
 }
+export const DEFAULT_DRIVE: InitiativeDrive = {
+  autoApplyPlan: false,
+  activeMs: 0,
+  accountedAt: null,
+  pauseReason: null,
+  pausedBy: null,
+}
+function drive(value: string | null): InitiativeDrive {
+  const parsed = parse<Partial<InitiativeDrive>>(value, {})
+  return {
+    autoApplyPlan: parsed.autoApplyPlan === true,
+    activeMs:
+      typeof parsed.activeMs === "number" && parsed.activeMs >= 0
+        ? parsed.activeMs
+        : 0,
+    accountedAt:
+      typeof parsed.accountedAt === "number" ? parsed.accountedAt : null,
+    pauseReason:
+      typeof parsed.pauseReason === "string" ? parsed.pauseReason : null,
+    pausedBy:
+      parsed.pausedBy === "user" || parsed.pausedBy === "budget"
+        ? parsed.pausedBy
+        : null,
+  }
+}
 function toInitiative(row: InitiativeRow): Initiative {
   return {
     id: row.id,
@@ -175,6 +206,7 @@ function toInitiative(row: InitiativeRow): Initiative {
     playbookId: row.playbook_id,
     driveMode: row.drive_mode,
     budgets: parse(row.budgets, {}),
+    drive: drive(row.drive),
     status: row.status,
     taskId: row.task_id,
     createdAt: row.created_at,
@@ -211,6 +243,7 @@ function toMission(row: MissionRow): Mission {
     baseOid: row.base_oid,
     repoRoot: row.repo_root,
     landing: parse<MissionLanding | null>(row.landing, null),
+    dodReview: parse<MissionDodReview | null>(row.dod_review, null),
     status: row.status,
     position: row.position,
     startedAt: row.started_at,
@@ -321,13 +354,14 @@ export function listRevisions(initiativeId: string): WorkRevision[] {
 }
 function initiativeIdForMission(missionId: string): string {
   const mission = getMission(missionId)
-  if (!mission) throw new Error(`Mission not found: ${missionId}`)
+  if (!mission) throw new Error(`Milestone not found: ${missionId}`)
   return mission.initiativeId
 }
 function touch(initiativeId: string): void {
   getDb()
     .prepare("UPDATE initiatives SET updated_at = ? WHERE id = ?")
     .run(Date.now(), initiativeId)
+  emitWorkChanged(initiativeId)
 }
 // A container's playbook must exist and match its altitude; null clears the
 // choice so the run falls back to the default playbook for that altitude.
@@ -447,10 +481,10 @@ export function createInitiative(input: {
       )
       .run(
         id,
-        freeKey(workKey(input.key, "Initiative key"), (key) =>
+        freeKey(workKey(input.key, "Feature key"), (key) =>
           exists("SELECT 1 FROM initiatives WHERE key = ?", key)
         ),
-        text(input.name, "Initiative name"),
+        text(input.name, "Feature name"),
         input.intent,
         input.definitionOfDone,
         input.rigId ?? null,
@@ -463,7 +497,7 @@ export function createInitiative(input: {
     createMission({
       initiativeId: id,
       key: "mission-1",
-      name: "First mission",
+      name: "First milestone",
       outcome: "",
     })
   })()
@@ -489,18 +523,18 @@ export function updateInitiative(
   reason?: string
 ): InitiativeGraph {
   const before = getInitiative(id)
-  if (!before) throw new Error(`Initiative not found: ${id}`)
+  if (!before) throw new Error(`Feature not found: ${id}`)
   // Running work resolves the workspace live and seats come from the rig
-  // snapshot taken at start, so the binding is frozen once started.
+  // snapshot taken at start, so the binding is frozen once started. The
+  // project is only an organizing label, so it stays editable in any status.
   if (
     before.status !== "draft" &&
     ((patch.rigId !== undefined && patch.rigId !== before.rigId) ||
       (patch.workspaceId !== undefined &&
-        patch.workspaceId !== before.workspaceId) ||
-      (patch.projectId !== undefined && patch.projectId !== before.projectId))
+        patch.workspaceId !== before.workspaceId))
   )
     throw new Error(
-      "The rig, workspace, and project can't be changed after an initiative has started."
+      "The rig and workspace can't be changed after a feature has started."
     )
   const sets: string[] = []
   const values: unknown[] = []
@@ -509,15 +543,15 @@ export function updateInitiative(
     values.push(value)
   }
   if (patch.key !== undefined) {
-    const key = workKey(patch.key, "Initiative key")
+    const key = workKey(patch.key, "Feature key")
     assertKeyFree(
       exists("SELECT 1 FROM initiatives WHERE key = ? AND id != ?", key, id),
-      "Initiative key",
+      "Feature key",
       key
     )
     add("key", key)
   }
-  if (patch.name !== undefined) add("name", text(patch.name, "Initiative name"))
+  if (patch.name !== undefined) add("name", text(patch.name, "Feature name"))
   if (patch.intent !== undefined) add("intent", patch.intent)
   if (patch.definitionOfDone !== undefined)
     add("definition_of_done", patch.definitionOfDone)
@@ -545,25 +579,26 @@ export function deleteInitiative(id: string): void {
 }
 export function startInitiative(id: string): InitiativeGraph {
   const initiative = getInitiative(id)
-  if (!initiative) throw new Error(`Initiative not found: ${id}`)
+  if (!initiative) throw new Error(`Feature not found: ${id}`)
   if (initiative.status !== "draft")
-    throw new Error("Only a draft initiative can be started.")
+    throw new Error("Only a draft feature can be started.")
   const snapshot = currentRigSnapshot(initiative)
   if (!snapshot)
-    throw new Error("Choose an available rig before starting the initiative.")
+    throw new Error("Choose an available rig before starting the feature.")
   const now = Date.now()
   getDb()
     .prepare(
       "UPDATE initiatives SET rig_snapshot = ?, status = 'active', started_at = ?, updated_at = ? WHERE id = ?"
     )
     .run(JSON.stringify(snapshot), now, now, id)
+  emitWorkChanged(id)
   return getInitiativeGraph(id)!
 }
 export function reseatInitiative(id: string, reason?: string): InitiativeGraph {
   const before = getInitiative(id)
-  if (!before) throw new Error(`Initiative not found: ${id}`)
+  if (!before) throw new Error(`Feature not found: ${id}`)
   const snapshot = currentRigSnapshot(before)
-  if (!snapshot) throw new Error("The initiative's rig is no longer available.")
+  if (!snapshot) throw new Error("The feature's rig is no longer available.")
   getDb()
     .prepare(
       "UPDATE initiatives SET rig_snapshot = ?, updated_at = ? WHERE id = ?"
@@ -597,23 +632,34 @@ export function createMission(input: {
       )
       .get(input.initiativeId) as { position: number }
   ).position
+  const initiative = getInitiative(input.initiativeId)
+  if (initiative && ["completed", "cancelled"].includes(initiative.status))
+    throw new Error(
+      initiative.status === "completed"
+        ? "This feature is completed. Reopen it to add milestones."
+        : "This feature was cancelled, so its plan can't change."
+    )
+  // Autopilot missions land by an approved local merge by default (106.6);
+  // the user can still switch any mission back to manual.
+  const autopilot = initiative?.driveMode === "autopilot"
   getDb()
     .prepare(
-      "INSERT INTO missions (id, initiative_id, key, name, outcome, definition_of_done, status, position) VALUES (?, ?, ?, ?, ?, ?, 'planned', ?)"
+      "INSERT INTO missions (id, initiative_id, key, name, outcome, definition_of_done, merge_policy, status, position) VALUES (?, ?, ?, ?, ?, ?, ?, 'planned', ?)"
     )
     .run(
       id,
       input.initiativeId,
-      freeKey(workKey(input.key, "Mission key"), (key) =>
+      freeKey(workKey(input.key, "Milestone key"), (key) =>
         exists(
           "SELECT 1 FROM missions WHERE initiative_id = ? AND key = ?",
           input.initiativeId,
           key
         )
       ),
-      text(input.name, "Mission name"),
+      text(input.name, "Milestone name"),
       input.outcome,
       input.definitionOfDone ?? "",
+      JSON.stringify({ mode: autopilot ? "local_merge" : "manual" }),
       position
     )
   audit(input.initiativeId, "mission", id, "create", null, getMission(id))
@@ -632,7 +678,7 @@ export function updateMission(
   reason?: string
 ): InitiativeGraph {
   const before = getMission(id)
-  if (!before) throw new Error(`Mission not found: ${id}`)
+  if (!before) throw new Error(`Milestone not found: ${id}`)
   const sets: string[] = []
   const values: unknown[] = []
   const add = (c: string, v: unknown) => {
@@ -640,7 +686,7 @@ export function updateMission(
     values.push(v)
   }
   if (patch.key !== undefined) {
-    const key = workKey(patch.key, "Mission key")
+    const key = workKey(patch.key, "Milestone key")
     assertKeyFree(
       exists(
         "SELECT 1 FROM missions WHERE initiative_id = ? AND key = ? AND id != ?",
@@ -648,12 +694,12 @@ export function updateMission(
         key,
         id
       ),
-      "Mission key",
+      "Milestone key",
       key
     )
     add("key", key)
   }
-  if (patch.name !== undefined) add("name", text(patch.name, "Mission name"))
+  if (patch.name !== undefined) add("name", text(patch.name, "Milestone name"))
   if (patch.outcome !== undefined) add("outcome", patch.outcome)
   if (patch.definitionOfDone !== undefined)
     add("definition_of_done", patch.definitionOfDone)
@@ -686,7 +732,7 @@ export function deleteMission(
   reason?: string
 ): InitiativeGraph {
   const before = getMission(id)
-  if (!before) throw new Error(`Mission not found: ${id}`)
+  if (!before) throw new Error(`Milestone not found: ${id}`)
   assertNoRunningPlaybook(
     "mission_id = ? OR slice_id IN (SELECT id FROM slices WHERE mission_id = ?)",
     id,
@@ -707,15 +753,33 @@ export function deleteMission(
   return getInitiativeGraph(before.initiativeId)!
 }
 
-export function createSlice(input: {
+export function createSlice(
+  input: Parameters<typeof addSlice>[0]
+): InitiativeGraph {
+  const slice = addSlice(input)
+  return getInitiativeGraph(initiativeIdForMission(slice.missionId))!
+}
+// Insert one slice and return it (plan edits need the new id).
+export function addSlice(input: {
   missionId: string
   key: string
   title: string
   spec?: Partial<SliceSpec>
   podKey?: string | null
-}): InitiativeGraph {
+  // Slices a seat added (plan 106.6) carry origin 'agent' and its address.
+  origin?: WorkSlice["origin"]
+  actor?: string
+  reason?: string
+}): WorkSlice {
   const id = randomUUID()
   const initiativeId = initiativeIdForMission(input.missionId)
+  const status = getInitiative(initiativeId)?.status
+  if (status === "completed" || status === "cancelled")
+    throw new Error(
+      status === "completed"
+        ? "This feature is completed. Reopen it to add work."
+        : "This feature was cancelled, so its plan can't change."
+    )
   const position = (
     getDb()
       .prepare(
@@ -725,26 +789,36 @@ export function createSlice(input: {
   ).position
   getDb()
     .prepare(
-      "INSERT INTO slices (id, mission_id, key, title, spec, pod_key, status, position) VALUES (?, ?, ?, ?, ?, ?, 'draft', ?)"
+      "INSERT INTO slices (id, mission_id, key, title, spec, pod_key, status, origin, position) VALUES (?, ?, ?, ?, ?, ?, 'draft', ?, ?)"
     )
     .run(
       id,
       input.missionId,
-      freeKey(workKey(input.key, "Slice key"), (key) =>
+      freeKey(workKey(input.key, "User story key"), (key) =>
         exists(
           "SELECT 1 FROM slices WHERE mission_id = ? AND key = ?",
           input.missionId,
           key
         )
       ),
-      text(input.title, "Slice title"),
+      text(input.title, "User story title"),
       JSON.stringify(spec(input.spec)),
       input.podKey ?? null,
+      input.origin ?? "user",
       position
     )
-  audit(initiativeId, "slice", id, "create", null, getSlice(id))
+  audit(
+    initiativeId,
+    "slice",
+    id,
+    "create",
+    null,
+    getSlice(id),
+    input.actor,
+    input.reason
+  )
   touch(initiativeId)
-  return getInitiativeGraph(initiativeId)!
+  return getSlice(id)!
 }
 export function updateSlice(
   id: string,
@@ -758,10 +832,10 @@ export function updateSlice(
   reason?: string
 ): InitiativeGraph {
   const before = getSlice(id)
-  if (!before) throw new Error(`Slice not found: ${id}`)
+  if (!before) throw new Error(`User story not found: ${id}`)
   if (before.startedAt && patch.spec)
     throw new Error(
-      "A started slice spec can only be revised by the execution workflow."
+      "A started user story spec can only be revised by the execution workflow."
     )
   const sets: string[] = []
   const values: unknown[] = []
@@ -770,7 +844,7 @@ export function updateSlice(
     values.push(v)
   }
   if (patch.key !== undefined) {
-    const key = workKey(patch.key, "Slice key")
+    const key = workKey(patch.key, "User story key")
     assertKeyFree(
       exists(
         "SELECT 1 FROM slices WHERE mission_id = ? AND key = ? AND id != ?",
@@ -778,12 +852,12 @@ export function updateSlice(
         key,
         id
       ),
-      "Slice key",
+      "User story key",
       key
     )
     add("key", key)
   }
-  if (patch.title !== undefined) add("title", text(patch.title, "Slice title"))
+  if (patch.title !== undefined) add("title", text(patch.title, "User story title"))
   if (patch.spec !== undefined) add("spec", JSON.stringify(spec(patch.spec)))
   if (patch.podKey !== undefined) add("pod_key", patch.podKey)
   if (patch.position !== undefined) add("position", patch.position)
@@ -807,7 +881,7 @@ export function deleteSlice(
   reason?: string
 ): InitiativeGraph {
   const before = getSlice(id)
-  if (!before) throw new Error(`Slice not found: ${id}`)
+  if (!before) throw new Error(`User story not found: ${id}`)
   assertNoRunningPlaybook("slice_id = ?", id)
   const initiativeId = initiativeIdForMission(before.missionId)
   getDb().prepare("DELETE FROM slices WHERE id = ?").run(id)
@@ -826,19 +900,19 @@ export function setSliceEdges(
   const unique = new Set<string>()
   for (const edge of edges) {
     if (edge.fromSliceId === edge.toSliceId)
-      throw new Error("A slice cannot depend on itself.")
+      throw new Error("A user story cannot depend on itself.")
     if (!ids.has(edge.fromSliceId) || !ids.has(edge.toSliceId))
-      throw new Error("Slice dependencies must stay within one mission.")
+      throw new Error("User story dependencies must stay within one milestone.")
     const key = `${edge.fromSliceId}:${edge.toSliceId}`
     if (unique.has(key))
-      throw new Error("Duplicate slice dependencies are not allowed.")
+      throw new Error("Duplicate user story dependencies are not allowed.")
     unique.add(key)
   }
   const cycle = findCycle(slices, edges)
   if (cycle) {
     const labels = new Map(slices.map((slice) => [slice.id, slice.key]))
     throw new Error(
-      `Slice dependencies must be acyclic: ${cycle.map((id) => labels.get(id) ?? id).join(" → ")}`
+      `User story dependencies must be acyclic: ${cycle.map((id) => labels.get(id) ?? id).join(" → ")}`
     )
   }
   const before = listEdges(missionId)
@@ -888,7 +962,7 @@ export function setSliceExecution(
   actor = "mission-control"
 ): WorkSlice {
   const before = getSlice(id)
-  if (!before) throw new Error(`Slice not found: ${id}`)
+  if (!before) throw new Error(`User story not found: ${id}`)
   if (patch.status !== undefined && patch.status !== before.status) {
     const path = sliceStatusPath(before.status, patch.status)
     if (!path)
@@ -933,7 +1007,7 @@ export function setMissionExecutionStatus(
   actor = "mission-control"
 ): Mission {
   const before = getMission(id)
-  if (!before) throw new Error(`Mission not found: ${id}`)
+  if (!before) throw new Error(`Milestone not found: ${id}`)
   if (before.status === status) return before
   transitionMissionStatus(before.status, status)
   const now = Date.now()
@@ -964,15 +1038,15 @@ export function setMissionMergePolicy(
   actor = "user"
 ): InitiativeGraph {
   const before = getMission(id)
-  if (!before) throw new Error(`Mission not found: ${id}`)
+  if (!before) throw new Error(`Milestone not found: ${id}`)
   if (!MERGE_POLICY_MODES.includes(mode))
     throw new Error(`Unknown merge policy: ${mode}`)
   if (before.mergePolicy.mode === mode) return getInitiativeGraph(before.initiativeId)!
   if (["completed", "cancelled"].includes(before.status))
-    throw new Error("A finished mission's merge policy can't change.")
+    throw new Error("A finished milestone's merge policy can't change.")
   if ((before.integrationBranch || before.status !== "planned") && mode !== "manual")
     throw new Error(
-      "The merge policy is locked once the mission starts. It can only change to manual."
+      "The merge policy is locked once the milestone starts. It can only change to manual."
     )
   getDb()
     .prepare("UPDATE missions SET merge_policy = ? WHERE id = ?")
@@ -1003,7 +1077,7 @@ export function setMissionIntegration(
   actor = "mission-control"
 ): Mission {
   const before = getMission(id)
-  if (!before) throw new Error(`Mission not found: ${id}`)
+  if (!before) throw new Error(`Milestone not found: ${id}`)
   getDb()
     .prepare(
       "UPDATE missions SET integration_branch = ?, base_ref = ?, base_oid = ?, repo_root = ? WHERE id = ?"
@@ -1026,10 +1100,11 @@ export function setMissionIntegration(
 
 export function setMissionLanding(id: string, landing: MissionLanding): Mission {
   const before = getMission(id)
-  if (!before) throw new Error(`Mission not found: ${id}`)
+  if (!before) throw new Error(`Milestone not found: ${id}`)
   getDb()
     .prepare("UPDATE missions SET landing = ? WHERE id = ?")
     .run(JSON.stringify(landing), id)
+  emitWorkChanged(before.initiativeId)
   return getMission(id)!
 }
 
@@ -1041,7 +1116,7 @@ export function advanceMissionStatus(
   actor = "mission-control"
 ): Mission {
   const mission = getMission(id)
-  if (!mission) throw new Error(`Mission not found: ${id}`)
+  if (!mission) throw new Error(`Milestone not found: ${id}`)
   const path = missionStatusPath(mission.status, target)
   if (!path)
     throw new Error(`Invalid status transition: ${mission.status} → ${target}`)
@@ -1049,4 +1124,180 @@ export function advanceMissionStatus(
   for (const status of path)
     current = setMissionExecutionStatus(id, status, reason, actor)
   return current
+}
+
+// ── drive (plan 106.6) ──────────────────────────────────────────────────────
+
+const DRIVE_MODES: readonly DriveMode[] = ["manual", "copilot", "autopilot"]
+
+export function setInitiativeDrive(
+  id: string,
+  patch: Partial<InitiativeDrive>
+): Initiative {
+  const before = getInitiative(id)
+  if (!before) throw new Error(`Feature not found: ${id}`)
+  getDb()
+    .prepare("UPDATE initiatives SET drive = ? WHERE id = ?")
+    .run(JSON.stringify({ ...before.drive, ...patch }), id)
+  return getInitiative(id)!
+}
+
+// The mode changes only before start or while paused, so a running drive never
+// switches policy under in-flight work.
+export function setDriveMode(
+  id: string,
+  mode: DriveMode,
+  actor = "user"
+): Initiative {
+  const before = getInitiative(id)
+  if (!before) throw new Error(`Feature not found: ${id}`)
+  if (!DRIVE_MODES.includes(mode)) throw new Error(`Unknown drive mode: ${mode}`)
+  if (before.driveMode === mode) return before
+  if (!["draft", "paused"].includes(before.status))
+    throw new Error("Pause the feature before changing its drive mode.")
+  getDb()
+    .prepare("UPDATE initiatives SET drive_mode = ?, updated_at = ? WHERE id = ?")
+    .run(mode, Date.now(), id)
+  audit(
+    id,
+    "initiative",
+    id,
+    "drive_mode",
+    before.driveMode,
+    mode,
+    actor,
+    `Drive mode set to ${mode}`
+  )
+  emitWorkChanged(id)
+  return getInitiative(id)!
+}
+
+// Budgets are the user's alone (tools never call this). Only whole,
+// non-negative numbers are stored; null removes a key (back to its default).
+export function setInitiativeBudgets(
+  id: string,
+  patch: Record<string, number | null>,
+  actor = "user"
+): Initiative {
+  const before = getInitiative(id)
+  if (!before) throw new Error(`Feature not found: ${id}`)
+  const next: Record<string, unknown> = { ...before.budgets }
+  for (const [key, value] of Object.entries(patch)) {
+    if (!/^[a-zA-Z]+$/.test(key)) throw new Error(`Unknown budget: ${key}`)
+    if (value === null) delete next[key]
+    else if (!Number.isInteger(value) || value < 0)
+      throw new Error(`Budget ${key} must be a whole number of 0 or more.`)
+    else next[key] = value
+  }
+  getDb()
+    .prepare("UPDATE initiatives SET budgets = ?, updated_at = ? WHERE id = ?")
+    .run(JSON.stringify(next), Date.now(), id)
+  audit(id, "initiative", id, "budgets", before.budgets, next, actor, "Budgets updated")
+  emitWorkChanged(id)
+  return getInitiative(id)!
+}
+
+const INITIATIVE_TRANSITIONS: Record<Initiative["status"], Initiative["status"][]> = {
+  draft: ["active", "cancelled"],
+  active: ["paused", "completed", "cancelled", "failed"],
+  paused: ["active", "cancelled"],
+  // Reopened for more missions (the next sprint): it waits paused so the
+  // user can add work, check the mode and budgets, then resume.
+  completed: ["paused"],
+  cancelled: [],
+  failed: ["cancelled"],
+}
+
+export function setInitiativeStatus(
+  id: string,
+  status: Initiative["status"],
+  reason: string,
+  actor = "user"
+): Initiative {
+  const before = getInitiative(id)
+  if (!before) throw new Error(`Feature not found: ${id}`)
+  if (before.status === status) return before
+  if (!INITIATIVE_TRANSITIONS[before.status].includes(status))
+    throw new Error(`A feature can't go from ${before.status} to ${status}.`)
+  const now = Date.now()
+  getDb()
+    .prepare(
+      "UPDATE initiatives SET status = ?, finished_at = ?, updated_at = ? WHERE id = ?"
+    )
+    .run(
+      status,
+      ["completed", "cancelled", "failed"].includes(status) ? now : null,
+      now,
+      id
+    )
+  audit(id, "initiative", id, "status", before.status, status, actor, reason)
+  emitWorkChanged(id)
+  return getInitiative(id)!
+}
+
+export function setMissionDodReview(
+  id: string,
+  review: MissionDodReview | null,
+  actor = "user"
+): Mission {
+  const before = getMission(id)
+  if (!before) throw new Error(`Milestone not found: ${id}`)
+  getDb()
+    .prepare("UPDATE missions SET dod_review = ? WHERE id = ?")
+    .run(review ? JSON.stringify(review) : null, id)
+  audit(
+    before.initiativeId,
+    "mission",
+    id,
+    "dod_review",
+    before.dodReview,
+    review,
+    actor,
+    review ? `Definition of done judged met: ${review.summary}` : "DoD review cleared"
+  )
+  touch(before.initiativeId)
+  return getMission(id)!
+}
+
+// An audited revision written by a Mission Control service rather than a
+// repository mutation (e.g. one summary row per applied revise_plan call).
+export function recordRevision(
+  initiativeId: string,
+  targetKind: WorkRevision["targetKind"],
+  targetId: string,
+  op: string,
+  after: unknown,
+  actor: string,
+  reason: string
+): void {
+  audit(initiativeId, targetKind, targetId, op, null, after, actor, reason)
+}
+
+export function countRevisions(
+  initiativeId: string,
+  targetId: string,
+  op: string
+): number {
+  return (
+    getDb()
+      .prepare(
+        "SELECT COUNT(*) FROM work_revisions WHERE initiative_id = ? AND target_id = ? AND json_extract(change, '$.op') = ?"
+      )
+      .pluck()
+      .get(initiativeId, targetId, op) as number
+  )
+}
+
+// Slices a seat added to a mission on its own authority (revise_plan). Slices
+// the user applied from a proposal — even a seat's planning proposal — were
+// approved by the user and don't count against the agent-slice budget.
+export function countSeatCreatedSlices(missionId: string): number {
+  return getDb()
+    .prepare(
+      `SELECT COUNT(*) FROM slices s
+       JOIN work_revisions r ON r.target_id = s.id AND json_extract(r.change, '$.op') = 'create'
+       WHERE s.mission_id = ? AND r.actor LIKE '%@%' AND r.actor NOT LIKE '%@rig'`
+    )
+    .pluck()
+    .get(missionId) as number
 }

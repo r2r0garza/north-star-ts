@@ -64,11 +64,11 @@ type Anchor = { kind: "slice" | "mission"; id: string }
 function anchorLabel(graph: InitiativeGraph, thread: SeatThread): string | null {
   if (thread.anchorKind === "slice") {
     const slice = graph.slices.find((s) => s.id === thread.anchorId)
-    return slice ? `slice ${slice.key}` : "slice (deleted)"
+    return slice ? `user story ${slice.key}` : "user story (deleted)"
   }
   if (thread.anchorKind === "mission") {
     const mission = graph.missions.find((m) => m.id === thread.anchorId)
-    return mission ? `mission ${mission.key}` : "mission (deleted)"
+    return mission ? `milestone ${mission.key}` : "milestone (deleted)"
   }
   return null
 }
@@ -330,8 +330,8 @@ export function CommsTab({
       const [kindKey, id] = key.split(":")
       const label =
         kindKey === "slice"
-          ? `slice ${graph.slices.find((s) => s.id === id)?.key ?? "(deleted)"}`
-          : `mission ${graph.missions.find((m) => m.id === id)?.key ?? "(deleted)"}`
+          ? `user story ${graph.slices.find((s) => s.id === id)?.key ?? "(deleted)"}`
+          : `milestone ${graph.missions.find((m) => m.id === id)?.key ?? "(deleted)"}`
       return { key, label }
     })
   }, [threads, graph])
@@ -405,7 +405,7 @@ export function CommsTab({
             size="sm"
             className="ml-auto"
             disabled={!active}
-            title={active ? undefined : "Start the initiative to steer its seats."}
+            title={active ? undefined : "Start the feature to steer its seats."}
             onClick={() => openSteer(null)}
           >
             <Send className="size-3.5" /> Steer

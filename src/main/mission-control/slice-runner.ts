@@ -140,16 +140,16 @@ export function initiativeWorkspacePath(initiative: Initiative): string {
     : undefined
   if (!path)
     throw new Error(
-      "Choose a workspace for this initiative before running its playbooks."
+      "Choose a workspace for this feature before running its playbooks."
     )
   return path
 }
 
 export function assertInitiativeRunnable(initiative: Initiative): void {
   if (initiative.status !== "active")
-    throw new Error("Start the initiative before running its playbooks.")
+    throw new Error("Start the feature before running its playbooks.")
   if (!initiative.rigSnapshot)
-    throw new Error("This initiative has no rig snapshot; reseat it first.")
+    throw new Error("This feature has no rig snapshot; reseat it first.")
 }
 
 // The playbook for an altitude: the container's own choice when it names one at
@@ -195,7 +195,7 @@ function isolatedSliceRuns(initiative: Initiative): PlaybookRun[] {
 function describeRun(run: PlaybookRun): string {
   if (run.sliceId) {
     const slice = initiatives.getSlice(run.sliceId)
-    return slice ? `slice ${slice.key}` : "a slice"
+    return slice ? `user story ${slice.key}` : "a user story"
   }
   return `the ${run.hook.replace(/_/g, " ")} hook`
 }
@@ -215,7 +215,7 @@ export class SliceRunner {
         const cap = maxConcurrentSlices(initiative)
         if (isolatedSliceRuns(initiative).length >= cap)
           throw new Error(
-            `The initiative's budget allows ${cap} slice(s) running at once. Wait for one to finish or raise maxConcurrentSlices.`
+            `The feature's budget allows ${cap} running user stories at once. Wait for one to finish or raise maxConcurrentSlices.`
           )
         return
       }
@@ -304,7 +304,7 @@ export class SliceRunner {
         initiatives.setSliceExecution(
           request.slice.id,
           { processRunId: processRun.id },
-          "Linked the slice's Process run"
+          "Linked the user story's Process run"
         )
       return linked
     } catch (err) {
@@ -343,26 +343,28 @@ export class SliceRunner {
 
   // Run (or retry) a slice with its playbook. `allowTouchOverlap` runs it
   // even though a slice with overlapping touch hints is still building.
+  // `note` travels to this attempt's workers (a lead's retry note, 106.6), and
+  // `actor` attributes the start in the revision log.
   async startSlice(
     sliceId: string,
-    options: { allowTouchOverlap?: boolean } = {}
+    options: { allowTouchOverlap?: boolean; note?: string; actor?: string } = {}
   ): Promise<PlaybookRun> {
     const slice = initiatives.getSlice(sliceId)
-    if (!slice) throw new Error(`Slice not found: ${sliceId}`)
+    if (!slice) throw new Error(`User story not found: ${sliceId}`)
     const mission = initiatives.getMission(slice.missionId)
-    if (!mission) throw new Error(`Mission not found: ${slice.missionId}`)
+    if (!mission) throw new Error(`Milestone not found: ${slice.missionId}`)
     const initiative = initiatives.getInitiative(mission.initiativeId)
     if (!initiative)
-      throw new Error(`Initiative not found: ${mission.initiativeId}`)
+      throw new Error(`Feature not found: ${mission.initiativeId}`)
     assertInitiativeRunnable(initiative)
     if (!["draft", "ready", "failed"].includes(slice.status))
       throw new Error(
-        `A ${slice.status} slice cannot be run. Only draft, ready, or failed slices can start.`
+        `A ${slice.status} user story cannot be run. Only draft, ready, or failed user stories can start.`
       )
     const cap = maxSliceAttempts(initiative)
     if (slice.attempts >= cap)
       throw new Error(
-        `Slice ${slice.key} has used all ${cap} attempts allowed by the initiative's budget.`
+        `User story ${slice.key} has used all ${cap} attempts allowed by the feature's budget.`
       )
     const blockers = initiatives
       .listEdges(mission.id)
@@ -371,7 +373,7 @@ export class SliceRunner {
       .filter((dep): dep is WorkSlice => !!dep && dep.status !== "done")
     if (blockers.length)
       throw new Error(
-        `Slice ${slice.key} depends on unmerged slices: ${blockers.map((b) => b.key).join(", ")}. A slice starts once its predecessors are done${mission.integrationBranch ? " and merged into the integration branch" : ""}.`
+        `User story ${slice.key} depends on unmerged user stories: ${blockers.map((b) => b.key).join(", ")}. A user story starts once its predecessors are done${mission.integrationBranch ? " and merged into the integration branch" : ""}.`
       )
     // Overlapping touch hints serialize by default (decision 7): two slices
     // editing the same area in parallel is how merge conflicts are made.
@@ -386,7 +388,7 @@ export class SliceRunner {
         )
       if (overlapping.length)
         throw new Error(
-          `touch_overlap: Slice ${slice.key}'s touch hints overlap ${overlapping.map((o) => o.key).join(", ")}, which is still building. Running both at once risks a merge conflict.`
+          `touch_overlap: User story ${slice.key}'s touch hints overlap ${overlapping.map((o) => o.key).join(", ")}, which is still building. Running both at once risks a merge conflict.`
         )
     }
 
@@ -405,13 +407,16 @@ export class SliceRunner {
           initiative,
           mission,
           slice,
+          attemptNote: options.note
+            ? { attempt, by: options.actor ?? "user", text: options.note }
+            : null,
           workspace:
             isolated?.branch && isolated.integrationBranch
               ? { branch: isolated.branch, integrationBranch: isolated.integrationBranch }
               : null,
         }),
       intentChain: renderIntentChain({ initiative, mission, slice }),
-      title: `Slice ${slice.key}: ${slice.title}`,
+      title: `User story ${slice.key}: ${slice.title}`,
       isolate: integration
         ? () => integration.prepareSliceRun({ initiative, mission, slice, attempt })
         : undefined,
@@ -432,13 +437,14 @@ export class SliceRunner {
                 }
               : {}),
           },
-          `Attempt ${attempt} started with the "${playbook.name}" playbook${isolated?.branch ? ` on ${isolated.branch}` : ""}`
+          `Attempt ${attempt} started with the "${playbook.name}" playbook${isolated?.branch ? ` on ${isolated.branch}` : ""}${options.note ? ` — note: ${options.note}` : ""}`,
+          options.actor ?? "mission-control"
         )
         if (mission.status === "planned")
           initiatives.setMissionExecutionStatus(
             mission.id,
             "active",
-            `Slice ${slice.key} started`
+            `User story ${slice.key} started`
           )
       },
     })
@@ -518,7 +524,7 @@ export class SliceRunner {
             ? null
             : proof
               ? "The re-verification proof was rejected."
-              : "The resolution finished without re-verifying the slice."
+              : "The resolution finished without re-verifying the user story."
       )
       this.deps.integration?.onResolutionSettled(playbookRun.id)
       return
@@ -540,8 +546,8 @@ export class SliceRunner {
       playbookRun.id,
       run.status as "failed" | "cancelled",
       run.status === "cancelled"
-        ? "The slice run was cancelled."
-        : "The slice's Process run failed."
+        ? "The user story run was cancelled."
+        : "The user story's Process run failed."
     )
   }
 
@@ -574,7 +580,7 @@ export class SliceRunner {
           proof: playbookRun.proof ?? slice.proof,
           finishedAt: Date.now(),
         },
-        reason ?? "Proof accepted; slice done"
+        reason ?? "Proof accepted; user story done"
       )
       return { slice, merge: false }
     })()
