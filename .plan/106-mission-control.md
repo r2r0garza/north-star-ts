@@ -1,5 +1,15 @@
 # PR106: Mission Control — seated agent teams driving a project → mission → slice map
 
+> **Naming change (2026-09-26) — read old terms as new.** After this plan was written, Mission
+> Control's work hierarchy was renamed everywhere (UI, code, database migration v54, agent tools):
+> **Initiative → Feature**, **Mission → Milestone**, **Slice → User story**. The text below still uses
+> the old terms; map them when reading, e.g. `initiatives` table → `features`, `slice_id` →
+> `user_story_id`, `WorkSlice` → `UserStory`, `assign_slice` → `assign_user_story`, `before_slices` →
+> `before_user_stories`, anchor `slice:<key>` → `user_story:<key>`, `initiatives-tab.tsx` →
+> `features-tab.tsx`. Unchanged: the name "Mission Control" and a pod's mission statement
+> (`missionStatement` / `podMission`). User stories also gained an optional Story ("As a …, I want …,
+> so that …") in their spec, next to Goal and Notes.
+
 > Status: **PLANNED (umbrella)**. This file sets the vocabulary, architecture, and delivery split for the
 > Processes revamp. Implementation happens in the `106.x` slice plans. Mission Control is built **next to**
 > Processes; the Processes sidebar button is hidden only in `106.9`, after parity. The Process engine

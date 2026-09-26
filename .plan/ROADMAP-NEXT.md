@@ -1,5 +1,8 @@
 # Roadmap — Next up
 
+> **Note (2026-09-26):** the `106.x` plans predate a rename — Initiatives are now **Features**,
+> Missions are **Milestones**, and Slices are **User stories**. Each pending `106.x` plan has a mapping note at the top.
+
 1. **`106.7` — Mission Control: Refocus, follow-ups, seat memory.** Intent-chain reminders at kickoff,
     after compaction, on interval, and on drift; `propose_followup` backlog against scope creep; seat
     memory with provenance, review, explicit sharing lineage, and retraction with contact tracing.
