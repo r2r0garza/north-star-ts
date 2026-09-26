@@ -22,7 +22,7 @@ import type {
   MilestoneLanding,
   PlaybookRun,
   UserStoryProof,
-  WorkUserStory,
+  UserStory,
 } from "../db/types"
 import { deriveWaves } from "../../shared/mission-control/waves"
 import {
@@ -88,7 +88,7 @@ export interface IsolatedUserStoryWorkspace {
 export interface ResolutionLaunchInput {
   feature: Feature
   milestone: Milestone
-  userStory: WorkUserStory
+  userStory: UserStory
   workspacePath: string
   worktreePath: string
   files: string[]
@@ -169,7 +169,7 @@ function proofSummary(proof: UserStoryProof | null): string {
 }
 
 export function userStoryMergeMessage(input: {
-  userStory: WorkUserStory
+  userStory: UserStory
   proof: UserStoryProof | null
   playbookRunId: string | null
   resolvedBy?: string | null
@@ -255,7 +255,7 @@ export class MilestoneIntegration {
   async prepareUserStoryRun(input: {
     feature: Feature
     milestone: Milestone
-    userStory: WorkUserStory
+    userStory: UserStory
     attempt: number
   }): Promise<IsolatedUserStoryWorkspace | null> {
     const workspace = workspacePathOf(input.feature)
@@ -380,7 +380,7 @@ export class MilestoneIntegration {
 
   // Inside the user story runner's settle transaction: an accepted user story in its
   // own worktree waits in the merge queue instead of being done.
-  enqueueAcceptedUserStory(userStory: WorkUserStory, playbookRun: PlaybookRun): MergeQueueEntry {
+  enqueueAcceptedUserStory(userStory: UserStory, playbookRun: PlaybookRun): MergeQueueEntry {
     features.setUserStoryExecution(
       userStory.id,
       { status: "integrating", proof: playbookRun.proof ?? userStory.proof },

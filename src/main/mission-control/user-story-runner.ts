@@ -15,7 +15,7 @@ import type {
   ProcessRun,
   SeatBindingsSnapshot,
   UserStoryProof,
-  WorkUserStory,
+  UserStory,
 } from "../db/types"
 import { ensureDefaultPlaybook } from "./playbook-defaults"
 import {
@@ -84,7 +84,7 @@ const CLI_PROVIDERS: Record<string, string> = {
 export interface LaunchRequest {
   feature: Feature
   milestoneId: string | null
-  userStory: WorkUserStory | null
+  userStory: UserStory | null
   playbook: PlaybookWithHooks
   hook: PlaybookHookName
   podKey: string | null
@@ -370,7 +370,7 @@ export class UserStoryRunner {
       .listEdges(milestone.id)
       .filter((edge) => edge.toUserStoryId === userStory.id)
       .map((edge) => features.getUserStory(edge.fromUserStoryId))
-      .filter((dep): dep is WorkUserStory => !!dep && dep.status !== "done")
+      .filter((dep): dep is UserStory => !!dep && dep.status !== "done")
     if (blockers.length)
       throw new Error(
         `User story ${userStory.key} depends on unmerged user stories: ${blockers.map((b) => b.key).join(", ")}. A user story starts once its predecessors are done${milestone.integrationBranch ? " and merged into the integration branch" : ""}.`

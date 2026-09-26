@@ -1,6 +1,6 @@
 import { getDb } from "../db/connection"
 import * as features from "../db/repositories/features"
-import type { Feature, Milestone, UserStorySpec, WorkUserStory } from "../db/types"
+import type { Feature, Milestone, UserStorySpec, UserStory } from "../db/types"
 import {
   describePlanChange,
   SEAT_APPLICABLE_OPS,
@@ -24,7 +24,7 @@ export interface ApplyInput {
   actor: string
   reason: string
   // User stories a seat creates are marked as agent work.
-  origin: WorkUserStory["origin"]
+  origin: UserStory["origin"]
 }
 
 export interface ApplyResult {
@@ -55,12 +55,13 @@ function slug(value: string): string {
       .replace(/[^a-z0-9]+/g, "-")
       .replace(/^-|-$/g, "")
       .slice(0, 32)
-      .replace(/-$/, "") || "user_story"
+      .replace(/-$/, "") || "user-story"
   )
 }
 
 function specOf(draft: UserStoryDraft): Partial<UserStorySpec> {
   return {
+    story: draft.story ?? null,
     goal: draft.goal ?? draft.title,
     acceptance: draft.acceptance ?? [],
     outOfScope: draft.outOfScope ?? [],
@@ -103,7 +104,7 @@ function milestoneByKey(scope: Scope, key: string): Milestone {
   return milestone
 }
 
-function userStoryByKey(milestoneId: string, key: string): WorkUserStory {
+function userStoryByKey(milestoneId: string, key: string): UserStory {
   const userStory = features.listUserStories(milestoneId).find((s) => s.key === key)
   if (!userStory) {
     const milestone = features.getMilestone(milestoneId)
@@ -145,7 +146,7 @@ function createUserStory(
   milestoneId: string,
   draft: UserStoryDraft,
   input: ApplyInput
-): WorkUserStory {
+): UserStory {
   assertPod(scope, draft.pod)
   const milestone = features.getMilestone(milestoneId)!
   if (["completed", "cancelled"].includes(milestone.status))
@@ -359,7 +360,7 @@ function applyOne(
     case "add_milestone": {
       const milestone = fillOrCreateMilestone(scope, change.milestone, firstMilestone.value, input)
       firstMilestone.value = false
-      const created: WorkUserStory[] = []
+      const created: UserStory[] = []
       for (const draft of change.milestone.userStories ?? []) {
         const userStory = createUserStory(scope, milestone.id, draft, input)
         created.push(userStory)

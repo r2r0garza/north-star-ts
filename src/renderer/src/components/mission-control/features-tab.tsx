@@ -11,6 +11,10 @@ import {
 } from "lucide-react"
 import { toast } from "sonner"
 import { deriveWaves } from "../../../../shared/mission-control/waves"
+import {
+  normalizeStory,
+  type UserStoryNarrative,
+} from "../../../../shared/mission-control/story"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -47,7 +51,7 @@ import type {
   Project,
   Rig,
   UserStorySpec,
-  WorkUserStory,
+  UserStory,
   Workspace,
 } from "@/types"
 
@@ -95,7 +99,7 @@ async function deleteMilestoneConfirmed(
 }
 async function deleteUserStoryConfirmed(
   graph: FeatureGraph,
-  userStory: WorkUserStory
+  userStory: UserStory
 ): Promise<FeatureGraph | null> {
   if (!window.confirm(`Delete user story “${userStory.title}”? This cannot be undone.`))
     return null
@@ -121,7 +125,7 @@ function UserStoryEditor({
   onRefresh,
 }: {
   graph: FeatureGraph
-  userStory: WorkUserStory
+  userStory: UserStory
   workspacePath: string
   onSaved: (graph: FeatureGraph) => void
   onGraph: (graph: FeatureGraph) => void
@@ -133,6 +137,9 @@ function UserStoryEditor({
   const specFrozen = userStory.startedAt !== null
   const [title, setTitle] = useState(userStory.title)
   const [key, setKey] = useState(userStory.key)
+  const [story, setStory] = useState<UserStoryNarrative>(
+    userStory.spec.story ?? { asA: "", iWant: "", soThat: "" }
+  )
   const [goal, setGoal] = useState(userStory.spec.goal)
   const [acceptance, setAcceptance] = useState(
     userStory.spec.acceptance.length > 0 ? userStory.spec.acceptance : [""]
@@ -146,6 +153,7 @@ function UserStoryEditor({
   const pods = graph.feature.rigSnapshot?.pods ?? []
   const save = async () => {
     const spec: UserStorySpec = {
+      story: normalizeStory(story),
       goal,
       acceptance: acceptance.map((item) => item.trim()).filter(Boolean),
       outOfScope: lines(outOfScope),
@@ -181,6 +189,38 @@ function UserStoryEditor({
           <Input value={key} onChange={(e) => setKey(e.target.value)} />
         </div>
       </div>
+      <div className="space-y-2">
+        <div className="flex items-center gap-1.5">
+          <Label>Story (optional)</Label>
+          <TooltipButton
+            tooltip="Who benefits and why. Leave it empty for technical work such as a migration or refactor."
+            type="button"
+            className="text-muted-foreground hover:text-foreground"
+            aria-label="About the story"
+          >
+            <CircleHelp className="size-3.5" />
+          </TooltipButton>
+        </div>
+        <div className="grid gap-2 sm:grid-cols-3">
+          {(
+            [
+              ["asA", "As a", "billing admin"],
+              ["iWant", "I want", "to export invoices as PDF"],
+              ["soThat", "so that", "I can send them to clients"],
+            ] as const
+          ).map(([field, label, example]) => (
+            <div key={field} className="space-y-1">
+              <span className="text-xs text-muted-foreground">{label}</span>
+              <Input
+                value={story[field]}
+                onChange={(e) => setStory({ ...story, [field]: e.target.value })}
+                placeholder={example}
+                aria-label={`Story: ${label}`}
+              />
+            </div>
+          ))}
+        </div>
+      </div>
       <div className="space-y-1">
         <Label>Goal</Label>
         <Textarea
@@ -205,7 +245,7 @@ function UserStoryEditor({
                     next[index] = event.target.value
                     setAcceptance(next)
                   }}
-                  placeholder="A checkable result"
+                  placeholder="Given …, when …, then … (or any checkable result)"
                 />
                 <Button
                   type="button"
@@ -425,7 +465,7 @@ function MilestoneView({
     const next = await deleteMilestoneConfirmed(graph, milestone)
     if (next) onDeleted(next)
   }
-  const removeUserStory = async (userStory: WorkUserStory) => {
+  const removeUserStory = async (userStory: UserStory) => {
     const next = await deleteUserStoryConfirmed(graph, userStory)
     if (next) onGraph(next)
   }

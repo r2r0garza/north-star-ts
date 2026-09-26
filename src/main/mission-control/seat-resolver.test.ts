@@ -20,7 +20,7 @@ function pod(id: string, key: string, position: number): RigPod {
     rigId: "rig",
     key,
     name: key,
-    missionStatement: `${key} milestone`,
+    missionStatement: `${key} mission`,
     cultureMd: `${key} culture`,
     leadSeatId: null,
     position,
@@ -146,6 +146,9 @@ describe("resolveSeatBindings", () => {
     )
     expect(order.every((index) => index >= 0)).toBe(true)
     expect([...order].sort((x, y) => x - y)).toEqual(order)
+    // Every seat learns what the work terms mean in Mission Control.
+    expect(text).toContain("### Mission Control terms")
+    expect(text).toContain("not GitHub milestones")
   })
 })
 

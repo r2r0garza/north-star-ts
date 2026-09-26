@@ -177,7 +177,7 @@ export type {
   Feature,
   FeatureGraph,
   Milestone,
-  WorkUserStory,
+  UserStory,
   UserStoryEdge,
   UserStorySpec,
   WorkRevision,

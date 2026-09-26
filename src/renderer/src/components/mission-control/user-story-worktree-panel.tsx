@@ -3,7 +3,7 @@ import { Copy, FileDiff, FolderOpen, GitBranch, Loader2 } from "lucide-react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { DiffView } from "@/components/diff-view"
-import type { UserStoryWorkspaceInfo, WorkUserStory } from "@/types"
+import type { UserStoryWorkspaceInfo, UserStory } from "@/types"
 
 // A user story attempt's branch and worktree (plan 106.5): where it builds, a way
 // to open it, and its changes against the integration commit it started from.
@@ -14,7 +14,7 @@ function errorMessage(error: unknown) {
     .replace(/^\w*Error:\s*/, "")
 }
 
-export function UserStoryWorktreePanel({ userStory }: { userStory: WorkUserStory }) {
+export function UserStoryWorktreePanel({ userStory }: { userStory: UserStory }) {
   const [info, setInfo] = useState<UserStoryWorkspaceInfo | null>(null)
   const [diff, setDiff] = useState<{ diff: string; truncated: boolean } | null>(null)
   const [diffOpen, setDiffOpen] = useState(false)

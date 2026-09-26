@@ -15,7 +15,8 @@ const WORDS: Record<string, { one: string[]; many: string[] }> = {
   slice: { one: ["user", "story"], many: ["user", "stories"] },
 }
 
-// "mission" stays when it is part of Mission Control or a pod's mission statement.
+// "mission" stays when it is part of Mission Control or a pod's mission
+// statement (missionStatement, and podMission in frozen seat bindings).
 const KEEP_AFTER_MISSION = new Set(["control", "statement"])
 
 // Old words become their lowercase replacements; other words pass through.
@@ -24,7 +25,11 @@ function renameWords(words: string[]): string[] {
   words.forEach((word, i) => {
     const lower = word.toLowerCase()
     const next = words[i + 1]?.toLowerCase()
-    if (lower.startsWith("mission") && next && KEEP_AFTER_MISSION.has(next)) {
+    const previous = words[i - 1]?.toLowerCase()
+    if (
+      lower.startsWith("mission") &&
+      ((next && KEEP_AFTER_MISSION.has(next)) || previous === "pod")
+    ) {
       out.push(word)
       return
     }

@@ -50,7 +50,7 @@ import type {
   Feature,
   FeatureGraph,
   Milestone,
-  WorkUserStory,
+  UserStory,
   UserStoryEdge,
   UserStorySpec,
   WorkRevision,
@@ -737,7 +737,7 @@ const api = {
         id: string,
         patch: Partial<
           Pick<
-            WorkUserStory,
+            UserStory,
             "key" | "title" | "spec" | "podKey" | "position" | "playbookId"
           >
         >,
@@ -2483,7 +2483,7 @@ export type {
   Feature,
   FeatureGraph,
   Milestone,
-  WorkUserStory,
+  UserStory,
   UserStoryEdge,
   UserStorySpec,
   WorkRevision,

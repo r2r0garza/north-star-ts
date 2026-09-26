@@ -21,7 +21,7 @@ import { createConversation } from "../db/repositories/conversations"
 import { createTask, getTask, updateTask } from "../db/repositories/tasks"
 import { upsertWorkspace } from "../db/repositories/workspaces"
 import type { AgentDefinition } from "../agent/agents/types"
-import type { Feature, WorkUserStory } from "../db/types"
+import type { Feature, UserStory } from "../db/types"
 import {
   commsContextSection,
   DEFAULT_COMMS_BOUNDS,
@@ -359,7 +359,7 @@ describe.skipIf(!sqliteLoads)("seat comms: messages carry no authority", () => {
     await drainWakes()
     const approvals = db.prepare("SELECT COUNT(*) FROM approvals").pluck().get()
     expect(approvals).toBe(0)
-    expect(features.getUserStory(userStory.id)!.status).toBe((userStory as WorkUserStory).status)
+    expect(features.getUserStory(userStory.id)!.status).toBe((userStory as UserStory).status)
     expect(JSON.stringify(features.getFeature(feature.id)!.rigSnapshot)).toBe(
       rigBefore
     )
@@ -721,7 +721,7 @@ describe.skipIf(!sqliteLoads)("seat comms: asking a finished fresh worker", () =
           agentName: "agentref:v1:qa",
           agentLabel: "Agent qa",
           charter: "",
-          podMilestone: "",
+          podMission: "",
           podCulture: "",
           decisionRights: [],
           skills: null,
@@ -779,7 +779,7 @@ function binding(address: string, role: string) {
     agentName: `agentref:v1:${key}`,
     agentLabel: `Agent ${key}`,
     charter: "",
-    podMilestone: "",
+    podMission: "",
     podCulture: "",
     decisionRights: [],
     skills: null,
@@ -792,7 +792,7 @@ function binding(address: string, role: string) {
 // A running user story playbook: spec (builder) → build (builder) → test (qa).
 function activeUserStoryRun(
   feature: Feature,
-  userStory: WorkUserStory,
+  userStory: UserStory,
   qaContext: "step" | "user_story" | "feature"
 ) {
   const def = processes.createProcessDefinition({ name: "User story" })

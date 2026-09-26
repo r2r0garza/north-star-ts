@@ -88,7 +88,7 @@ export function toSeatBinding(
     agentName: resolved.agent.refId,
     agentLabel: resolved.label,
     charter: seat.charter,
-    podMilestone: pod.missionStatement,
+    podMission: pod.missionStatement,
     podCulture: pod.cultureMd,
     decisionRights: seat.decisionRights,
     skills: seat.skills,

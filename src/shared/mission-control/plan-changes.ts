@@ -7,9 +7,12 @@
 // User stories and milestones are referenced by key, never by id: keys are what seats
 // see in map_status and Comms anchors.
 
+import { normalizeStory, type UserStoryNarrative } from "./story"
+
 export interface UserStoryDraft {
   key?: string
   title: string
+  story?: UserStoryNarrative | null
   goal?: string
   acceptance?: string[]
   outOfScope?: string[]
@@ -22,6 +25,7 @@ export interface UserStoryDraft {
 
 export interface UserStoryEdit {
   title?: string
+  story?: UserStoryNarrative | null
   goal?: string
   acceptance?: string[]
   outOfScope?: string[]
@@ -137,6 +141,7 @@ export function parseUserStoryDraft(value: unknown): UserStoryDraft | string {
   return {
     ...(str(v.key) ? { key: str(v.key) } : {}),
     title,
+    ...(normalizeStory(v.story) ? { story: normalizeStory(v.story) } : {}),
     ...(typeof v.goal === "string" ? { goal: v.goal } : {}),
     ...(strings(v.acceptance) ? { acceptance: strings(v.acceptance) } : {}),
     ...(strings(v.out_of_scope ?? v.outOfScope)
@@ -158,6 +163,7 @@ function parseUserStoryEdit(value: unknown): UserStoryEdit | string {
   const v = value as Record<string, unknown>
   const patch: UserStoryEdit = {}
   if (str(v.title)) patch.title = str(v.title)
+  if (v.story !== undefined) patch.story = normalizeStory(v.story)
   if (typeof v.goal === "string") patch.goal = v.goal
   if (strings(v.acceptance)) patch.acceptance = strings(v.acceptance)
   if (strings(v.out_of_scope ?? v.outOfScope))

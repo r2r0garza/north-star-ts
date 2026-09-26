@@ -10,6 +10,16 @@ import type { SeatBinding, SeatBindingsSnapshot } from "../db/types"
 
 export const SEAT_CONTEXT_PRIORITY = 65
 
+// Mission Control's work terms are ordinary words, so seats are told exactly
+// what they mean here — a "milestone" is not a GitHub milestone.
+export const WORK_TERMS =
+  "In Mission Control, a Feature is the durable intent you are building toward, with its " +
+  "definition of done; it is organized into Milestones. A Milestone is an ordered outcome, " +
+  "delivered by merging its User stories. A User story is one focused unit of work with a " +
+  "spec (an optional \"As a …, I want …, so that …\" story, a goal, and acceptance criteria) " +
+  "and a proof. These are Mission Control's own units: not GitHub milestones, issues, or " +
+  "features of the product in general."
+
 function block(title: string, body: string): string[] {
   const text = body.trim()
   return text ? [`### ${title}`, text, ""] : []
@@ -26,11 +36,12 @@ export function renderSeatContext(
         ? ` Your decision rights: ${seat.decisionRights.join(", ")}.`
         : " You hold no decision rights beyond your own work."),
     "",
+    ...block("Mission Control terms", WORK_TERMS),
     ...block("Seat charter", seat.charter),
     ...block("Rig culture", snapshot.rigCulture),
     ...block(
-      "Pod milestone and culture",
-      [seat.podMilestone.trim(), seat.podCulture.trim()].filter(Boolean).join("\n\n")
+      "Pod mission and culture",
+      [seat.podMission.trim(), seat.podCulture.trim()].filter(Boolean).join("\n\n")
     ),
     ...block("Intent chain (why this work exists)", snapshot.intentChain),
   ]

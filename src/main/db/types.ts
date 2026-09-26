@@ -8,6 +8,7 @@ import type {
   ProposalKind,
   ProposalStatus,
 } from "../../shared/mission-control/plan-changes"
+import type { UserStoryNarrative } from "../../shared/mission-control/story"
 
 // A conversation's view/mode. One per view: Chat / Interactive / North Star.
 export type Mode = "chat" | "interactive" | "north_star"
@@ -701,6 +702,8 @@ export type UserStoryStatus =
   | "cancelled"
 
 export interface UserStorySpec {
+  // "As a …, I want …, so that …" — optional; null for technical work.
+  story: UserStoryNarrative | null
   goal: string
   acceptance: string[]
   outOfScope: string[]
@@ -836,7 +839,7 @@ export interface MergeQueueEntry {
   finishedAt: number | null
 }
 
-export interface WorkUserStory {
+export interface UserStory {
   id: string
   milestoneId: string
   key: string
@@ -879,7 +882,7 @@ export interface WorkRevision {
 export interface FeatureGraph {
   feature: Feature
   milestones: Milestone[]
-  userStories: WorkUserStory[]
+  userStories: UserStory[]
   edges: UserStoryEdge[]
   revisions: WorkRevision[]
   rigDrifted: boolean
@@ -958,7 +961,7 @@ export interface SeatBinding {
   agentName: string
   agentLabel: string
   charter: string
-  podMilestone: string
+  podMission: string
   podCulture: string
   decisionRights: RigDecisionRight[]
   skills: string[] | null

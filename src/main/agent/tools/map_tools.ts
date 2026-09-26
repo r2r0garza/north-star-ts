@@ -36,11 +36,24 @@ const USER_STORY_SCHEMA = {
   properties: {
     key: { type: "string", description: "Short kebab-case key, e.g. invoice-api." },
     title: { type: "string" },
-    goal: { type: "string", description: "What the user story achieves." },
+    story: {
+      type: "object",
+      description:
+        "Who benefits and why: As a <as_a>, I want <i_want>, so that <so_that>. " +
+        "Omit it for purely technical work (a migration, a refactor).",
+      properties: {
+        as_a: { type: "string", description: "The user or role, e.g. billing admin." },
+        i_want: { type: "string", description: "What they want to do." },
+        so_that: { type: "string", description: "The benefit to them." },
+      },
+    },
+    goal: { type: "string", description: "What the user story achieves, as the engineering objective." },
     acceptance: {
       type: "array",
       items: { type: "string" },
-      description: "Checkable acceptance criteria; the proof verifies each one.",
+      description:
+        "Checkable acceptance criteria; the proof verifies each one. Write behavior as " +
+        "Given <context>, when <action>, then <outcome>; other checks (e.g. tests pass) plainly.",
     },
     out_of_scope: { type: "array", items: { type: "string" } },
     touch_hints: {

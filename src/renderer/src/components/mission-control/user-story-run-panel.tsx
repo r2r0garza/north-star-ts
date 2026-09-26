@@ -13,7 +13,7 @@ import type {
   PlaybookRun,
   ProcessDefinition,
   ProcessRun,
-  WorkUserStory,
+  UserStory,
 } from "@/types"
 import { isUserStoryProof, ProofPanel } from "./proof-panel"
 import { UserStoryWorktreePanel } from "./user-story-worktree-panel"
@@ -44,7 +44,7 @@ export function UserStoryRunPanel({
   onRefresh,
 }: {
   graph: FeatureGraph
-  userStory: WorkUserStory
+  userStory: UserStory
   workspacePath: string
   onRefresh: () => Promise<void>
 }) {
@@ -115,7 +115,7 @@ export function UserStoryRunPanel({
   const blockers = graph.edges
     .filter((edge) => edge.toUserStoryId === userStory.id)
     .map((edge) => graph.userStories.find((s) => s.id === edge.fromUserStoryId))
-    .filter((dep): dep is WorkUserStory => !!dep && dep.status !== "done")
+    .filter((dep): dep is UserStory => !!dep && dep.status !== "done")
   const canStart = ["draft", "ready", "failed"].includes(userStory.status)
   const disabledReason =
     graph.feature.status !== "active"

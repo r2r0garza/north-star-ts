@@ -7,7 +7,7 @@ import type {
   PlanProposal,
   PlaybookRun,
   RigDecisionRight,
-  WorkUserStory,
+  UserStory,
 } from "../db/types"
 import { budgetLimit } from "../../shared/mission-control/budgets"
 import {
@@ -118,7 +118,7 @@ export class MapToolService {
   }
 
   // A user story by key: in the active milestone, or a clear error naming where it is.
-  private activeUserStory(ctx: SeatContext, key: string): WorkUserStory | MapResult {
+  private activeUserStory(ctx: SeatContext, key: string): UserStory | MapResult {
     if (!ctx.activeMilestone)
       return fail("no_active_milestone", "There is no active milestone.")
     const userStory = features
@@ -556,7 +556,7 @@ function proposalInput(proposal: PlanProposal, by: string) {
     reason: `Applied ${proposal.kind === "plan" ? "the planning proposal" : "a proposal"} from ${proposal.proposer}${proposal.reason ? `: ${proposal.reason}` : ""}`,
     origin: (proposal.proposer.includes("@") && !proposal.proposer.endsWith("@rig")
       ? "agent"
-      : "user") as WorkUserStory["origin"],
+      : "user") as UserStory["origin"],
   }
 }
 

@@ -1,17 +1,19 @@
-import type { Feature, Milestone, WorkUserStory } from "../db/types"
+import type { Feature, Milestone, UserStory } from "../db/types"
+import { formatStory } from "../../shared/mission-control/story"
 
 // The user story objective IS the spec (plan 106.3, decision 5): a rendered,
 // versioned block rather than a paraphrase. Acceptance criteria get stable ids
 // (AC-1, AC-2, ...) derived from their order, which record_proof validates
-// against. The id scheme is part of the versioned format.
-export const USER_STORY_OBJECTIVE_VERSION = 1
+// against. The id scheme is part of the versioned format. v2 adds the optional
+// Story section.
+export const USER_STORY_OBJECTIVE_VERSION = 2
 
 export interface UserStoryCriterion {
   id: string
   text: string
 }
 
-export function userStoryCriteria(userStory: WorkUserStory): UserStoryCriterion[] {
+export function userStoryCriteria(userStory: UserStory): UserStoryCriterion[] {
   return userStory.spec.acceptance.map((text, index) => ({
     id: `AC-${index + 1}`,
     text,
@@ -27,7 +29,7 @@ function list(items: string[]): string {
 export function renderIntentChain(input: {
   feature: Feature
   milestone?: Milestone | null
-  userStory?: WorkUserStory | null
+  userStory?: UserStory | null
 }): string {
   const { feature, milestone, userStory } = input
   const lines = [
@@ -42,8 +44,10 @@ export function renderIntentChain(input: {
     if (milestone.definitionOfDone.trim())
       lines.push(`  Done when: ${milestone.definitionOfDone.trim()}`)
   }
-  if (userStory)
+  if (userStory) {
     lines.push(`User story "${userStory.title}": ${userStory.spec.goal.trim() || userStory.title}`)
+    if (userStory.spec.story) lines.push(`  Story: ${formatStory(userStory.spec.story)}`)
+  }
   return lines.join("\n")
 }
 
@@ -67,7 +71,7 @@ function renderWorkspaceNote(note: UserStoryWorkspaceNote): string[] {
 export function renderUserStoryObjective(input: {
   feature: Feature
   milestone: Milestone
-  userStory: WorkUserStory
+  userStory: UserStory
   workspace?: UserStoryWorkspaceNote | null
   // Why this attempt was started, from the seat that retried it (106.6).
   attemptNote?: { attempt: number; by: string; text: string } | null
@@ -77,6 +81,7 @@ export function renderUserStoryObjective(input: {
   return [
     `<!-- mission-control user story objective v${USER_STORY_OBJECTIVE_VERSION} -->`,
     `# User story ${userStory.key}: ${userStory.title}`,
+    ...(userStory.spec.story ? ["", "## Story", formatStory(userStory.spec.story)] : []),
     "",
     "## Goal",
     userStory.spec.goal.trim() || userStory.title,
@@ -112,7 +117,7 @@ export function renderHookObjective(input: {
   hook: string
   feature: Feature
   milestones: Milestone[]
-  userStories: WorkUserStory[]
+  userStories: UserStory[]
   milestone?: Milestone | null
   nextMilestone?: Milestone | null
 }): string {
@@ -184,7 +189,7 @@ export function renderHookObjective(input: {
 export function renderConflictObjective(input: {
   feature: Feature
   milestone: Milestone
-  userStory: WorkUserStory
+  userStory: UserStory
   integrationBranch: string
   userStoryBranch: string
   files: string[]

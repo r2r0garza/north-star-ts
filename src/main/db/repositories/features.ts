@@ -15,7 +15,7 @@ import type {
   UserStoryEdge,
   UserStorySpec,
   WorkRevision,
-  WorkUserStory,
+  UserStory,
 } from "../types"
 import { getRigGraph } from "./rigs"
 import {
@@ -24,6 +24,7 @@ import {
   transitionMilestoneStatus,
 } from "../../mission-control/work-state"
 import { emitWorkChanged } from "../../mission-control/work-events"
+import { normalizeStory } from "../../../shared/mission-control/story"
 
 interface FeatureRow {
   id: string
@@ -76,13 +77,13 @@ interface UserStoryRow {
   proof: string | null
   pod_key: string | null
   playbook_id: string | null
-  status: WorkUserStory["status"]
+  status: UserStory["status"]
   process_run_id: string | null
   branch: string | null
   worktree_path: string | null
   base_oid: string | null
   attempts: number
-  origin: WorkUserStory["origin"]
+  origin: UserStory["origin"]
   position: number
   started_at: number | null
   finished_at: number | null
@@ -105,6 +106,7 @@ interface RevisionRow {
 }
 
 const EMPTY_SPEC: UserStorySpec = {
+  story: null,
   goal: "",
   acceptance: [],
   outOfScope: [],
@@ -156,6 +158,7 @@ function assertKeyFree(taken: boolean, label: string, key: string): void {
 }
 function spec(value?: Partial<UserStorySpec>): UserStorySpec {
   return {
+    story: normalizeStory(value?.story),
     goal: value?.goal ?? "",
     acceptance:
       value?.acceptance?.map((item) => item.trim()).filter(Boolean) ?? [],
@@ -250,7 +253,7 @@ function toMilestone(row: MilestoneRow): Milestone {
     finishedAt: row.finished_at,
   }
 }
-function toUserStory(row: UserStoryRow): WorkUserStory {
+function toUserStory(row: UserStoryRow): UserStory {
   return {
     id: row.id,
     milestoneId: row.milestone_id,
@@ -321,7 +324,7 @@ export function getMilestone(id: string): Milestone | null {
     | undefined
   return row ? toMilestone(row) : null
 }
-export function listUserStories(milestoneId: string): WorkUserStory[] {
+export function listUserStories(milestoneId: string): UserStory[] {
   return (
     getDb()
       .prepare(
@@ -330,7 +333,7 @@ export function listUserStories(milestoneId: string): WorkUserStory[] {
       .all(milestoneId) as UserStoryRow[]
   ).map(toUserStory)
 }
-export function getUserStory(id: string): WorkUserStory | null {
+export function getUserStory(id: string): UserStory | null {
   const row = getDb().prepare("SELECT * FROM user_stories WHERE id = ?").get(id) as
     | UserStoryRow
     | undefined
@@ -767,10 +770,10 @@ export function addUserStory(input: {
   spec?: Partial<UserStorySpec>
   podKey?: string | null
   // User stories a seat added (plan 106.6) carry origin 'agent' and its address.
-  origin?: WorkUserStory["origin"]
+  origin?: UserStory["origin"]
   actor?: string
   reason?: string
-}): WorkUserStory {
+}): UserStory {
   const id = randomUUID()
   const featureId = featureIdForMilestone(input.milestoneId)
   const status = getFeature(featureId)?.status
@@ -824,7 +827,7 @@ export function updateUserStory(
   id: string,
   patch: Partial<
     Pick<
-      WorkUserStory,
+      UserStory,
       "key" | "title" | "spec" | "podKey" | "position" | "playbookId"
     >
   >,
@@ -948,7 +951,7 @@ export function setUserStoryEdges(
 export function setUserStoryExecution(
   id: string,
   patch: {
-    status?: WorkUserStory["status"]
+    status?: UserStory["status"]
     processRunId?: string | null
     branch?: string | null
     worktreePath?: string | null
@@ -960,7 +963,7 @@ export function setUserStoryExecution(
   },
   reason: string,
   actor = "mission-control"
-): WorkUserStory {
+): UserStory {
   const before = getUserStory(id)
   if (!before) throw new Error(`User story not found: ${id}`)
   if (patch.status !== undefined && patch.status !== before.status) {
