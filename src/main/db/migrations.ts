@@ -118,6 +118,7 @@ const MIGRATIONS: Array<(db: Database.Database) => void> = [
   ensureMissionIntegration,
   ensureNavigator,
   healAndRenameWorkTerms,
+  ensurePhaseReviewColumn,
 ]
 
 function tableExists(db: Database.Database, table: string): boolean {
@@ -153,6 +154,13 @@ function addColumnIfMissing(
 
 function ensureProcessResultContentColumn(db: Database.Database): void {
   addColumnIfMissing(db, "process_phase_runs", "result_content", "TEXT")
+}
+
+// v55: when a phase run's validator review started (null when none is in
+// flight), so the UI can show "Reviewing" instead of "Running" after the worker
+// has finished.
+function ensurePhaseReviewColumn(db: Database.Database): void {
+  addColumnIfMissing(db, "process_phase_runs", "review_started_at", "INTEGER")
 }
 
 // v49 (plan 106.3). Idempotent so the prerelease self-heal pass can re-run it.
@@ -195,7 +203,10 @@ function ensureMissionControlComms(db: Database.Database): void {
 
 // v51 (plan 106.4 context scopes). Idempotent for the self-heal pass.
 function ensureContextScopes(db: Database.Database): void {
-  if (tableExists(db, "seat_sessions") && !columnExists(db, "seat_sessions", "scope_key"))
+  if (
+    tableExists(db, "seat_sessions") &&
+    !columnExists(db, "seat_sessions", "scope_key")
+  )
     db.exec(SCHEMA_V51_SEAT_SESSIONS)
   if (columnExists(db, "process_phases", "context_mode"))
     db.exec(SCHEMA_V51_CONTEXT_SCOPES)
@@ -299,7 +310,10 @@ export function runMigrations(
   const fkWasOn = db.pragma("foreign_keys", { simple: true }) === 1
   if (fkWasOn) db.pragma("foreign_keys = OFF")
   try {
-    const target = Math.min(options.through ?? MIGRATIONS.length, MIGRATIONS.length)
+    const target = Math.min(
+      options.through ?? MIGRATIONS.length,
+      MIGRATIONS.length
+    )
     const startVersion = Math.min(current, target)
     for (let version = startVersion; version < target; version++) {
       const migrate = MIGRATIONS[version]
@@ -320,6 +334,7 @@ export function runMigrations(
     db.transaction(() => {
       ensureProcessRuntimeProfileColumns(db)
       ensureProcessResultContentColumn(db)
+      ensurePhaseReviewColumn(db)
       ensureMissionControlPlaybooks(db)
       ensureMissionControlComms(db)
       ensureContextScopes(db)

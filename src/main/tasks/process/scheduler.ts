@@ -1797,12 +1797,18 @@ export async function runScheduler(ctx: SchedulerCtx): Promise<void> {
       if (runsValidator) {
         const outputIdentity =
           processes.getPhaseRun(phaseRun.id)?.outputIdentity ?? null
-        const verdict = await ctx.validate!({
-          phase,
-          phaseRun,
-          outputIdentity,
-          signal: ctx.signal,
-        })
+        processes.updatePhaseRun(phaseRun.id, { reviewStartedAt: Date.now() })
+        let verdict: Awaited<ReturnType<NonNullable<typeof ctx.validate>>>
+        try {
+          verdict = await ctx.validate!({
+            phase,
+            phaseRun,
+            outputIdentity,
+            signal: ctx.signal,
+          })
+        } finally {
+          processes.updatePhaseRun(phaseRun.id, { reviewStartedAt: null })
+        }
         if (verdict.stopped || ctx.signal.aborted) {
           settleStoppedPhaseRun(phase, phaseRun.id)
           return

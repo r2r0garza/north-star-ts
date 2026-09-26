@@ -1232,6 +1232,28 @@ describe.skipIf(!sqliteLoads)("scheduler — failed phase", () => {
     })
   })
 
+  it("marks a phase run as reviewing only while its validator runs", async () => {
+    const pid = buildProcess({
+      phases: [{ key: "a", validator: true }],
+    })
+    const runPhase: RunPhase = async () => ({ content: "needs review" })
+    let duringReview: number | null | undefined
+    const validate: Validate = async ({ phaseRun }) => {
+      duringReview = processes.getPhaseRun(phaseRun.id)?.reviewStartedAt
+      return { approved: true }
+    }
+    const { ctx, runId } = makeCtx(pid, runPhase, { validate })
+
+    await runScheduler(ctx)
+
+    expect(duringReview).toEqual(expect.any(Number))
+    const [phaseRun] = processes.listPhaseRuns({ runId })
+    expect(phaseRun).toMatchObject({
+      status: "completed",
+      reviewStartedAt: null,
+    })
+  })
+
   it("preserves injected reviewer failure context at the validator boundary", async () => {
     const pid = buildProcess({
       phases: [{ key: "a", validator: true }],

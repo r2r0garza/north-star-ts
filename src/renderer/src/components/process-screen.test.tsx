@@ -11,6 +11,7 @@ import {
   RuntimeBadge,
   RuntimeProvidersContext,
   recoverProcessMonitorGates,
+  phaseStatusText,
 } from "./process-screen"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import type {
@@ -519,7 +520,9 @@ describe("completion policy rollout", () => {
     await flushPromises()
     expect(container.textContent).toContain("Completion policy")
     expect(container.textContent).toContain("End of turn")
-    expect(container.textContent).toContain("A phase succeeds when its turn ends.")
+    expect(container.textContent).toContain(
+      "A phase succeeds when its turn ends."
+    )
     expect(container.textContent).not.toContain("Required workspace files")
     const completionPolicy = container.querySelector(
       '[aria-label="Completion policy"]'
@@ -849,5 +852,13 @@ describe("RuntimeBadge", () => {
       })
     )
     expect(container.textContent).toContain(modelId)
+  })
+})
+
+describe("phaseStatusText", () => {
+  it("reads Reviewing while a running phase's validator reviews its output", () => {
+    expect(phaseStatusText("running", 1_700_000_000_000)).toBe("Reviewing")
+    expect(phaseStatusText("running", null)).toBe("Running")
+    expect(phaseStatusText("completed", 1_700_000_000_000)).toBe("Done")
   })
 })

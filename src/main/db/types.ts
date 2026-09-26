@@ -918,11 +918,7 @@ export interface PlaybookWithHooks extends Playbook {
   hooks: PlaybookHook[]
 }
 
-export type PlaybookRunStatus =
-  | "running"
-  | "completed"
-  | "failed"
-  | "cancelled"
+export type PlaybookRunStatus = "running" | "completed" | "failed" | "cancelled"
 
 export interface PlaybookRun {
   id: string
@@ -1156,6 +1152,9 @@ export interface ProcessPhaseRun {
   // Frozen output captured when this phase-run successfully completes. Downstream
   // phases consume this rather than the mutable worker conversation transcript.
   resultContent: string | null
+  // When the validator review of the worker's output started; null when no
+  // review is in flight. The phase stays `running` meanwhile.
+  reviewStartedAt: number | null
   // Stable identity of the current completed worker output reviewed by a
   // validator. Cleared on reset/rework and stamped after each successful worker
   // completion so stale reviewer results cannot settle a replacement output.

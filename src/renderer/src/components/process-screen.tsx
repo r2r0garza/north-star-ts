@@ -555,7 +555,9 @@ function AgentIdentityBadge({
           )}
         </Badge>
       </TooltipTrigger>
-      <TooltipContent>{details ? `${display.name} · ${details}` : display.name}</TooltipContent>
+      <TooltipContent>
+        {details ? `${display.name} · ${details}` : display.name}
+      </TooltipContent>
     </Tooltip>
   )
 }
@@ -1802,8 +1804,8 @@ function PhaseCard({
                 </span>
               </TooltipTrigger>
               <TooltipContent>
-                Phase key (auto-derived from the name; used in run events and the
-                dot-folder path)
+                Phase key (auto-derived from the name; used in run events and
+                the dot-folder path)
               </TooltipContent>
             </Tooltip>
           </div>
@@ -1836,15 +1838,18 @@ function PhaseCard({
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="legacy">End of turn</SelectItem>
-                    <SelectItem value="validated">Validate completion</SelectItem>
+                    <SelectItem value="validated">
+                      Validate completion
+                    </SelectItem>
                   </SelectContent>
                 </Select>
               </label>
               <p className="text-muted-foreground">
                 {phase.completionContract?.policy === "validated"
                   ? "Requires a completed, blocked, or failed outcome with evidence."
-                  : "A phase succeeds when its turn ends."} Changes apply to new
-                runs. Existing runs retain their recorded policy.
+                  : "A phase succeeds when its turn ends."}{" "}
+                Changes apply to new runs. Existing runs retain their recorded
+                policy.
               </p>
             </div>
           )}
@@ -1911,8 +1916,8 @@ function PhaseCard({
                 </label>
               </TooltipTrigger>
               <TooltipContent>
-                Single uses the first agent in the pool. Dispatch routes each task to
-                the best-matched agent in the pool.
+                Single uses the first agent in the pool. Dispatch routes each
+                task to the best-matched agent in the pool.
               </TooltipContent>
             </Tooltip>
             <Tooltip>
@@ -1936,8 +1941,8 @@ function PhaseCard({
                 </label>
               </TooltipTrigger>
               <TooltipContent>
-                Auto releases downstream phases when this phase completes. Approve
-                waits for human approval before releasing them.
+                Auto releases downstream phases when this phase completes.
+                Approve waits for human approval before releasing them.
               </TooltipContent>
             </Tooltip>
             <Tooltip>
@@ -2089,8 +2094,8 @@ function PhaseCard({
                   </label>
                 </TooltipTrigger>
                 <TooltipContent>
-                  After this phase completes, a second agent reviews its output and
-                  can send it back with feedback (bounded)
+                  After this phase completes, a second agent reviews its output
+                  and can send it back with feedback (bounded)
                 </TooltipContent>
               </Tooltip>
             )}
@@ -2119,8 +2124,8 @@ function PhaseCard({
                     </label>
                   </TooltipTrigger>
                   <TooltipContent>
-                    Max times a reviewer can send this phase back for changes (0 =
-                    unlimited)
+                    Max times a reviewer can send this phase back for changes (0
+                    = unlimited)
                   </TooltipContent>
                 </Tooltip>
               )}
@@ -2134,124 +2139,134 @@ function PhaseCard({
                 <TooltipTrigger asChild>
                   <label className="flex items-center gap-2 text-xs">
                     <span className="text-muted-foreground">Reviewer</span>
-                <Combobox
-                  items={filteredReviewerAgentItems}
-                  value={selectedReviewerAgent}
-                  inputValue={reviewerAgentSearchQuery}
-                  isItemEqualToValue={(a, b) => a?.value === b?.value}
-                  onInputValueChange={(next) =>
-                    setReviewerAgentSearchQuery(next)
-                  }
-                  onOpenChange={(open) => {
-                    if (!open) setReviewerAgentSearchQuery("")
-                  }}
-                  onValueChange={(item: { value: string } | null) => {
-                    setReviewerAgentSearchQuery("")
-                    if (!item) return
-                    void patchPhase({
-                      validatorAgent:
-                        item.value === OWN_AGENT ? null : item.value,
-                    })
-                  }}
-                >
-                  <ComboboxTrigger className="flex h-7 max-w-64 min-w-44 items-center justify-between gap-1 rounded-[min(var(--radius-md),10px)] border border-input bg-transparent px-2.5 text-xs transition-colors hover:bg-accent/50 dark:bg-input/30">
-                    <ComboboxValue>
-                      {(item: (typeof reviewerAgentItems)[number] | null) => (
-                        <span className="truncate">
-                          {item?.label ?? "Phase's own agent"}
-                        </span>
-                      )}
-                    </ComboboxValue>
-                  </ComboboxTrigger>
-                  <ComboboxContent className="w-80 min-w-80">
-                    <ComboboxInput
-                      placeholder="Search reviewer agents…"
-                      showTrigger={false}
-                    />
-                    {reviewerAgentSourceFilters.length > 1 && (
-                      <div className="flex flex-wrap gap-1 border-b border-border/60 p-1">
-                        <Button
-                          type="button"
-                          variant={
-                            !reviewerAgentSourceFilter ? "secondary" : "ghost"
-                          }
-                          size="xs"
-                          onClick={() => setReviewerAgentSourceFilter(null)}
-                        >
-                          All
-                        </Button>
-                        {reviewerAgentSourceFilters.map((source) => (
-                          <Button
-                            key={source.id}
-                            type="button"
-                            variant={
-                              reviewerAgentSourceFilter === source.id
-                                ? "secondary"
-                                : "ghost"
-                            }
-                            size="xs"
-                            onClick={() =>
-                              setReviewerAgentSourceFilter(source.id)
-                            }
-                          >
-                            {source.label}
-                          </Button>
-                        ))}
-                      </div>
-                    )}
-                    <ComboboxEmpty>No agents found.</ComboboxEmpty>
-                    <ComboboxList>
-                      {(item: (typeof filteredReviewerAgentItems)[number]) => (
-                        <ComboboxItem key={item.value} value={item}>
-                          <span className="flex min-w-0 flex-col gap-0.5">
-                            <span className="truncate">{item.label}</span>
-                            {(item.description ||
-                              ("source" in item && item.source)) && (
-                              <span className="line-clamp-2 text-[10px] text-muted-foreground">
-                                {[
-                                  item.description,
-                                  "source" in item ? item.source : undefined,
-                                ]
-                                  .filter(Boolean)
-                                  .join(" · ")}
+                    <Combobox
+                      items={filteredReviewerAgentItems}
+                      value={selectedReviewerAgent}
+                      inputValue={reviewerAgentSearchQuery}
+                      isItemEqualToValue={(a, b) => a?.value === b?.value}
+                      onInputValueChange={(next) =>
+                        setReviewerAgentSearchQuery(next)
+                      }
+                      onOpenChange={(open) => {
+                        if (!open) setReviewerAgentSearchQuery("")
+                      }}
+                      onValueChange={(item: { value: string } | null) => {
+                        setReviewerAgentSearchQuery("")
+                        if (!item) return
+                        void patchPhase({
+                          validatorAgent:
+                            item.value === OWN_AGENT ? null : item.value,
+                        })
+                      }}
+                    >
+                      <ComboboxTrigger className="flex h-7 max-w-64 min-w-44 items-center justify-between gap-1 rounded-[min(var(--radius-md),10px)] border border-input bg-transparent px-2.5 text-xs transition-colors hover:bg-accent/50 dark:bg-input/30">
+                        <ComboboxValue>
+                          {(
+                            item: (typeof reviewerAgentItems)[number] | null
+                          ) => (
+                            <span className="truncate">
+                              {item?.label ?? "Phase's own agent"}
+                            </span>
+                          )}
+                        </ComboboxValue>
+                      </ComboboxTrigger>
+                      <ComboboxContent className="w-80 min-w-80">
+                        <ComboboxInput
+                          placeholder="Search reviewer agents…"
+                          showTrigger={false}
+                        />
+                        {reviewerAgentSourceFilters.length > 1 && (
+                          <div className="flex flex-wrap gap-1 border-b border-border/60 p-1">
+                            <Button
+                              type="button"
+                              variant={
+                                !reviewerAgentSourceFilter
+                                  ? "secondary"
+                                  : "ghost"
+                              }
+                              size="xs"
+                              onClick={() => setReviewerAgentSourceFilter(null)}
+                            >
+                              All
+                            </Button>
+                            {reviewerAgentSourceFilters.map((source) => (
+                              <Button
+                                key={source.id}
+                                type="button"
+                                variant={
+                                  reviewerAgentSourceFilter === source.id
+                                    ? "secondary"
+                                    : "ghost"
+                                }
+                                size="xs"
+                                onClick={() =>
+                                  setReviewerAgentSourceFilter(source.id)
+                                }
+                              >
+                                {source.label}
+                              </Button>
+                            ))}
+                          </div>
+                        )}
+                        <ComboboxEmpty>No agents found.</ComboboxEmpty>
+                        <ComboboxList>
+                          {(
+                            item: (typeof filteredReviewerAgentItems)[number]
+                          ) => (
+                            <ComboboxItem key={item.value} value={item}>
+                              <span className="flex min-w-0 flex-col gap-0.5">
+                                <span className="truncate">{item.label}</span>
+                                {(item.description ||
+                                  ("source" in item && item.source)) && (
+                                  <span className="line-clamp-2 text-[10px] text-muted-foreground">
+                                    {[
+                                      item.description,
+                                      "source" in item
+                                        ? item.source
+                                        : undefined,
+                                    ]
+                                      .filter(Boolean)
+                                      .join(" · ")}
+                                  </span>
+                                )}
                               </span>
-                            )}
-                          </span>
-                        </ComboboxItem>
-                      )}
-                    </ComboboxList>
-                  </ComboboxContent>
-                </Combobox>
+                            </ComboboxItem>
+                          )}
+                        </ComboboxList>
+                      </ComboboxContent>
+                    </Combobox>
                   </label>
                 </TooltipTrigger>
                 <TooltipContent>
-                  The agent that reviews this phase&apos;s output. Defaults to the
-                  phase&apos;s own first pool agent.
+                  The agent that reviews this phase&apos;s output. Defaults to
+                  the phase&apos;s own first pool agent.
                 </TooltipContent>
               </Tooltip>
               <Tooltip>
                 <TooltipTrigger asChild>
                   <label className="flex items-center gap-2 text-xs">
-                    <span className="text-muted-foreground">Max iterations</span>
-                <Input
-                  type="number"
-                  min={1}
-                  className="h-7 w-16 text-xs"
-                  // A legacy 0 (the engine's "use default" sentinel) reads as 3 here so
-                  // the control never shows 0; the floor is 1 (never zero reviews).
-                  value={
-                    phase.validatorMaxIterations < 1
-                      ? 3
-                      : phase.validatorMaxIterations
-                  }
-                  onChange={(e) => {
-                    const n = Math.max(
-                      1,
-                      Math.floor(Number(e.target.value) || 1)
-                    )
-                    patchPhase({ validatorMaxIterations: n })
-                  }}
-                />
+                    <span className="text-muted-foreground">
+                      Max iterations
+                    </span>
+                    <Input
+                      type="number"
+                      min={1}
+                      className="h-7 w-16 text-xs"
+                      // A legacy 0 (the engine's "use default" sentinel) reads as 3 here so
+                      // the control never shows 0; the floor is 1 (never zero reviews).
+                      value={
+                        phase.validatorMaxIterations < 1
+                          ? 3
+                          : phase.validatorMaxIterations
+                      }
+                      onChange={(e) => {
+                        const n = Math.max(
+                          1,
+                          Math.floor(Number(e.target.value) || 1)
+                        )
+                        patchPhase({ validatorMaxIterations: n })
+                      }}
+                    />
                   </label>
                 </TooltipTrigger>
                 <TooltipContent>
@@ -2270,26 +2285,26 @@ function PhaseCard({
                 <TooltipTrigger asChild>
                   <label className="flex items-center gap-2 text-xs">
                     <span className="text-muted-foreground">Runs process</span>
-                <Select
-                  value={phase.subprocessId}
-                  onValueChange={(v) =>
-                    patchPhase({
-                      subprocessId: v === NO_SUBPROCESS ? null : v,
-                    })
-                  }
-                >
-                  <SelectTrigger size="sm" className="text-xs">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value={NO_SUBPROCESS}>None</SelectItem>
-                    {subprocessCandidates.map((d) => (
-                      <SelectItem key={d.id} value={d.id}>
-                        {d.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                    <Select
+                      value={phase.subprocessId}
+                      onValueChange={(v) =>
+                        patchPhase({
+                          subprocessId: v === NO_SUBPROCESS ? null : v,
+                        })
+                      }
+                    >
+                      <SelectTrigger size="sm" className="text-xs">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value={NO_SUBPROCESS}>None</SelectItem>
+                        {subprocessCandidates.map((d) => (
+                          <SelectItem key={d.id} value={d.id}>
+                            {d.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
                   </label>
                 </TooltipTrigger>
                 <TooltipContent>
@@ -3426,10 +3441,15 @@ function PhaseRunItem({
             </TooltipContent>
           </Tooltip>
         ) : (
-          phaseRun.agentName && <AgentIdentityBadge value={phaseRun.agentName} />
+          phaseRun.agentName && (
+            <AgentIdentityBadge value={phaseRun.agentName} />
+          )
         )}
         <RuntimeBadge phaseRun={phaseRun} />
-        <PhaseStatusLabel status={displayStatus} />
+        <PhaseStatusLabel
+          status={displayStatus}
+          reviewStartedAt={phaseRun.reviewStartedAt}
+        />
       </div>
 
       <PhaseCompletionEvidence receipt={phaseRun.completionReceipt} />
@@ -4699,7 +4719,10 @@ function SubProcessNestedRun({
                   <span className="min-w-0 flex-1 truncate">{runName}</span>
                   {pr.agentName && <AgentIdentityBadge value={pr.agentName} />}
                   <RuntimeBadge phaseRun={pr} />
-                  <PhaseStatusLabel status={displayStatus} />
+                  <PhaseStatusLabel
+                    status={displayStatus}
+                    reviewStartedAt={pr.reviewStartedAt}
+                  />
                 </div>
                 {/* An approve gate raised inside this nested run (plan 038.2). */}
                 {gateInfo && (
@@ -5172,10 +5195,28 @@ const PHASE_STATUS_LABEL: Record<PhaseRunStatus, string> = {
   skipped: "Skipped",
 }
 
-function PhaseStatusLabel({ status }: { status: PhaseRunStatus }) {
+// A running phase whose worker has finished and whose validator is reviewing
+// the output reads "Reviewing", so a finished-looking transcript isn't taken
+// for a stuck phase.
+export function phaseStatusText(
+  status: PhaseRunStatus,
+  reviewStartedAt?: number | null
+): string {
+  return status === "running" && reviewStartedAt
+    ? "Reviewing"
+    : PHASE_STATUS_LABEL[status]
+}
+
+function PhaseStatusLabel({
+  status,
+  reviewStartedAt,
+}: {
+  status: PhaseRunStatus
+  reviewStartedAt?: number | null
+}) {
   return (
     <span className="shrink-0 text-xs text-muted-foreground">
-      {PHASE_STATUS_LABEL[status]}
+      {phaseStatusText(status, reviewStartedAt)}
     </span>
   )
 }

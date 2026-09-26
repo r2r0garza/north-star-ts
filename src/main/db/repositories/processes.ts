@@ -217,6 +217,7 @@ interface ProcessPhaseRunRow {
   rework_round: number
   validator_round: number
   result_content: string | null
+  review_started_at: number | null
   output_identity: string | null
   source_child_run_id: string | null
   seat_address: string | null
@@ -246,6 +247,7 @@ function toPhaseRun(row: ProcessPhaseRunRow): ProcessPhaseRun {
     reworkRound: row.rework_round,
     validatorRound: row.validator_round,
     resultContent: row.result_content,
+    reviewStartedAt: row.review_started_at ?? null,
     outputIdentity: row.output_identity,
     sourceChildRunId: row.source_child_run_id,
     seatAddress: row.seat_address,
@@ -1002,6 +1004,7 @@ export function updatePhaseRun(
     reworkRound?: number
     validatorRound?: number
     resultContent?: string | null
+    reviewStartedAt?: number | null
     outputIdentity?: string | null
     completionReceipt?: PhaseCompletionReceipt | null
     runtimeSnapshot?: ProcessRuntimeSnapshot | null
@@ -1065,6 +1068,10 @@ export function updatePhaseRun(
   if (patch.resultContent !== undefined || patch.outputIdentity === null) {
     sets.push("result_content = ?")
     values.push(patch.resultContent !== undefined ? patch.resultContent : null)
+  }
+  if (patch.reviewStartedAt !== undefined) {
+    sets.push("review_started_at = ?")
+    values.push(patch.reviewStartedAt)
   }
   if (patch.outputIdentity !== undefined) {
     sets.push("output_identity = ?")
