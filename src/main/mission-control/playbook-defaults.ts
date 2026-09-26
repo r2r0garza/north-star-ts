@@ -56,7 +56,9 @@ export const DEFAULT_PLAYBOOKS: Record<PlaybookAltitude, DefaultPlaybook> = {
           key: "test",
           name: "Test the build against each acceptance criterion and record the proof",
           role: "qa",
-          validator: true,
+          // No validator: this step already verifies every criterion and the
+          // proof tool gates it (independent verifier, frozen proof). A
+          // validator re-ran the same verification in the same qa seat.
           proofStep: true,
           contextScope: "user_story",
         },
@@ -89,7 +91,7 @@ export const DEFAULT_PLAYBOOKS: Record<PlaybookAltitude, DefaultPlaybook> = {
           key: "reverify",
           name: "Re-verify the merged result against each acceptance criterion and record the proof",
           role: "qa",
-          validator: true,
+          // No validator, for the same reason as the user story test step.
           proofStep: true,
           contextScope: "user_story",
         },
