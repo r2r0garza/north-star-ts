@@ -17,11 +17,11 @@
 export type SeatTurnProfile = "work" | "consult" | "answer_only"
 
 export interface SeatTurnIdentity {
-  initiativeId: string
+  featureId: string
   address: string
   profile: SeatTurnProfile
   // The work this turn belongs to, for anchoring new threads by default.
-  anchor: { kind: "slice" | "mission"; id: string } | null
+  anchor: { kind: "user_story" | "milestone"; id: string } | null
   // Hop depth of the mail that woke this turn (null for playbook steps). New
   // messages sent from a wake turn continue that chain's depth.
   wakeHop: number | null
@@ -74,10 +74,9 @@ export class SeatTurnRegistry {
     }
   }
 
-  seatBusy(initiativeId: string, address: string): boolean {
+  seatBusy(featureId: string, address: string): boolean {
     for (const turn of this.active.values())
-      if (turn.initiativeId === initiativeId && turn.address === address)
-        return true
+      if (turn.featureId === featureId && turn.address === address) return true
     return false
   }
 

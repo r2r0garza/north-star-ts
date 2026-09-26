@@ -802,7 +802,7 @@ export interface RunAgentLoopOptions {
   // Process-only format instruction, refreshed even when resuming a transcript.
   processCompletionInstruction?: string
   // Mission Control (plan 106.3): this worker runs a playbook's proof step, so
-  // it is offered record_proof. The tool re-derives the slice, criteria, and
+  // it is offered record_proof. The tool re-derives the user story, criteria, and
   // seats from the run itself; this flag only controls the offer.
   processProofStep?: boolean
   // Mission Control seat turn (plan 106.4): who is speaking on the rig and

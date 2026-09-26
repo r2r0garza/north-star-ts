@@ -9,7 +9,7 @@ import type {
   PlaybookRun,
   PlaybookRunStatus,
   PlaybookWithHooks,
-  SliceProof,
+  UserStoryProof,
 } from "../types"
 import {
   createProcessDefinition,
@@ -23,18 +23,18 @@ import {
 // validated here, matching the Process and rig repositories.
 
 export const PLAYBOOK_ALTITUDES: readonly PlaybookAltitude[] = [
-  "slice",
-  "mission",
-  "initiative",
+  "user_story",
+  "milestone",
+  "feature",
 ]
 
 export const PLAYBOOK_HOOKS: Record<
   PlaybookAltitude,
   readonly PlaybookHookName[]
 > = {
-  slice: ["run"],
-  mission: ["before_slices", "after_each_slice", "after_all_slices"],
-  initiative: ["plan", "between_missions", "on_complete"],
+  user_story: ["run"],
+  milestone: ["before_user_stories", "after_each_user_story", "after_all_user_stories"],
+  feature: ["plan", "between_milestones", "on_complete"],
 }
 
 interface PlaybookRow {
@@ -55,9 +55,9 @@ interface PlaybookRunRow {
   id: string
   playbook_id: string | null
   hook: PlaybookHookName
-  initiative_id: string
-  mission_id: string | null
-  slice_id: string | null
+  feature_id: string
+  milestone_id: string | null
+  user_story_id: string | null
   process_run_id: string | null
   status: PlaybookRunStatus
   proof: string | null
@@ -87,10 +87,10 @@ function toHook(row: PlaybookHookRow): PlaybookHook {
   }
 }
 function toRun(row: PlaybookRunRow): PlaybookRun {
-  let proof: SliceProof | null = null
+  let proof: UserStoryProof | null = null
   if (row.proof !== null) {
     try {
-      proof = JSON.parse(row.proof) as SliceProof
+      proof = JSON.parse(row.proof) as UserStoryProof
     } catch {
       proof = null
     }
@@ -99,9 +99,9 @@ function toRun(row: PlaybookRunRow): PlaybookRun {
     id: row.id,
     playbookId: row.playbook_id,
     hook: row.hook,
-    initiativeId: row.initiative_id,
-    missionId: row.mission_id,
-    sliceId: row.slice_id,
+    featureId: row.feature_id,
+    milestoneId: row.milestone_id,
+    userStoryId: row.user_story_id,
     processRunId: row.process_run_id,
     status: row.status,
     proof,
@@ -208,7 +208,7 @@ export function deletePlaybook(id: string): void {
   getDb().transaction(() => {
     getDb().prepare("DELETE FROM playbooks WHERE id = ?").run(id)
     // playbook_id on work rows has no FK; clear it so they show the default.
-    for (const table of ["initiatives", "missions", "slices"])
+    for (const table of ["features", "milestones", "user_stories"])
       getDb()
         .prepare(`UPDATE ${table} SET playbook_id = NULL WHERE playbook_id = ?`)
         .run(id)
@@ -319,28 +319,28 @@ export function listPlaybookProcessIds(): string[] {
 export function createPlaybookRun(input: {
   playbookId: string | null
   hook: PlaybookHookName
-  initiativeId: string
-  missionId?: string | null
-  sliceId?: string | null
+  featureId: string
+  milestoneId?: string | null
+  userStoryId?: string | null
   worktreePath?: string | null
 }): PlaybookRun {
   const id = randomUUID()
   getDb()
     .prepare(
-      "INSERT INTO playbook_runs (id, playbook_id, hook, initiative_id, mission_id, slice_id, worktree_path, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?)"
+      "INSERT INTO playbook_runs (id, playbook_id, hook, feature_id, milestone_id, user_story_id, worktree_path, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?)"
     )
     .run(
       id,
       input.playbookId,
       input.hook,
-      input.initiativeId,
-      input.missionId ?? null,
-      input.sliceId ?? null,
+      input.featureId,
+      input.milestoneId ?? null,
+      input.userStoryId ?? null,
       input.worktreePath ?? null,
       Date.now()
     )
   // A run starting or finishing moves the Navigator's position (plan 106.6).
-  emitWorkChanged(input.initiativeId)
+  emitWorkChanged(input.featureId)
   return getPlaybookRun(id)!
 }
 
@@ -361,24 +361,24 @@ export function getPlaybookRunByProcessRunId(
 }
 
 export function listPlaybookRuns(filter: {
-  initiativeId?: string
-  missionId?: string
-  sliceId?: string
+  featureId?: string
+  milestoneId?: string
+  userStoryId?: string
   status?: PlaybookRunStatus
 }): PlaybookRun[] {
   const clauses: string[] = []
   const values: unknown[] = []
-  if (filter.initiativeId) {
-    clauses.push("initiative_id = ?")
-    values.push(filter.initiativeId)
+  if (filter.featureId) {
+    clauses.push("feature_id = ?")
+    values.push(filter.featureId)
   }
-  if (filter.missionId) {
-    clauses.push("mission_id = ?")
-    values.push(filter.missionId)
+  if (filter.milestoneId) {
+    clauses.push("milestone_id = ?")
+    values.push(filter.milestoneId)
   }
-  if (filter.sliceId) {
-    clauses.push("slice_id = ?")
-    values.push(filter.sliceId)
+  if (filter.userStoryId) {
+    clauses.push("user_story_id = ?")
+    values.push(filter.userStoryId)
   }
   if (filter.status) {
     clauses.push("status = ?")
@@ -398,7 +398,7 @@ export function updatePlaybookRun(
   id: string,
   patch: {
     processRunId?: string | null
-    proof?: SliceProof | null
+    proof?: UserStoryProof | null
     proofRevisions?: number
   }
 ): PlaybookRun {
@@ -441,7 +441,7 @@ export function finishPlaybookRun(
     .run(status, outcomeReason, Date.now(), id)
   if (result.changes === 1) {
     const run = getPlaybookRun(id)
-    if (run) emitWorkChanged(run.initiativeId)
+    if (run) emitWorkChanged(run.featureId)
   }
   return result.changes === 1
 }

@@ -1,20 +1,20 @@
 import { getDb } from "../db/connection"
-import * as initiatives from "../db/repositories/initiatives"
+import * as features from "../db/repositories/features"
 import * as proposalsRepo from "../db/repositories/proposals"
 import type {
-  Initiative,
-  Mission,
+  Feature,
+  Milestone,
   PlanProposal,
   PlaybookRun,
   RigDecisionRight,
-  WorkSlice,
+  WorkUserStory,
 } from "../db/types"
 import { budgetLimit } from "../../shared/mission-control/budgets"
 import {
   describePlanChange,
-  parseMissionDraft,
+  parseMilestoneDraft,
   parsePlanChange,
-  parseSliceDraft,
+  parseUserStoryDraft,
   type PlanChange,
   type ProposalKind,
 } from "../../shared/mission-control/plan-changes"
@@ -28,20 +28,20 @@ import {
 import type { SeatTurnIdentity } from "./seat-turns"
 
 // The lead seat's map tools (plan 106.6). Every tool re-derives the seat, its
-// decision rights, and the active mission from durable state: the model names
-// slices and missions by key, never by id, and its arguments grant nothing.
+// decision rights, and the active milestone from durable state: the model names
+// user stories and milestones by key, never by id, and its arguments grant nothing.
 // Rights are enforced HERE, server-side. Anything outside a seat's rights or
-// the active mission becomes a proposal for the user instead of an edit.
+// the active milestone becomes a proposal for the user instead of an edit.
 
 export interface MapToolRuntime {
-  position(initiativeId: string): Promise<Position>
-  startSlice(
-    sliceId: string,
+  position(featureId: string): Promise<Position>
+  startUserStory(
+    userStoryId: string,
     options: { note?: string; actor: string }
   ): Promise<PlaybookRun>
-  cancelSlice(sliceId: string): void
-  // Complete a mission with nothing to land (no integration branch).
-  completeMission(missionId: string): Promise<void>
+  cancelUserStory(userStoryId: string): void
+  // Complete a milestone with nothing to land (no integration branch).
+  completeMilestone(milestoneId: string): Promise<void>
 }
 
 export type MapResult =
@@ -60,24 +60,24 @@ function message(error: unknown): string {
 }
 
 interface SeatContext {
-  initiative: Initiative
+  feature: Feature
   seat: SeatDirectoryEntry
-  activeMission: Mission | null
+  activeMilestone: Milestone | null
 }
 
-export function activeMissionOf(initiativeId: string): Mission | null {
+export function activeMilestoneOf(featureId: string): Milestone | null {
   return (
-    initiatives
-      .listMissions(initiativeId)
+    features
+      .listMilestones(featureId)
       .find((m) => !["completed", "cancelled"].includes(m.status)) ?? null
   )
 }
 
 // Whether a seat turn is offered map tools at all: pod leads only.
 export function isLeadSeat(turn: SeatTurnIdentity): boolean {
-  const initiative = initiatives.getInitiative(turn.initiativeId)
-  if (!initiative?.rigSnapshot) return false
-  return seatDirectory(initiative.rigSnapshot).some(
+  const feature = features.getFeature(turn.featureId)
+  if (!feature?.rigSnapshot) return false
+  return seatDirectory(feature.rigSnapshot).some(
     (seat) => seat.address === turn.address && seat.isLead && !seat.vacant
   )
 }
@@ -86,10 +86,10 @@ export class MapToolService {
   constructor(private readonly runtime: MapToolRuntime) {}
 
   private context(turn: SeatTurnIdentity): SeatContext | MapResult {
-    const initiative = initiatives.getInitiative(turn.initiativeId)
-    if (!initiative?.rigSnapshot)
-      return fail("unavailable", "This initiative is no longer available.")
-    const seat = seatDirectory(initiative.rigSnapshot).find(
+    const feature = features.getFeature(turn.featureId)
+    if (!feature?.rigSnapshot)
+      return fail("unavailable", "This feature is no longer available.")
+    const seat = seatDirectory(feature.rigSnapshot).find(
       (s) => s.address === turn.address
     )
     if (!seat?.isLead)
@@ -97,43 +97,43 @@ export class MapToolService {
         "not_a_lead",
         "Map tools are for pod leads. Use `escalate` to raise plan changes with your lead."
       )
-    return { initiative, seat, activeMission: activeMissionOf(initiative.id) }
+    return { feature, seat, activeMilestone: activeMilestoneOf(feature.id) }
   }
 
   private requireRight(ctx: SeatContext, right: RigDecisionRight): MapResult | null {
     if (ctx.seat.decisionRights.includes(right)) return null
     return fail(
       "lacks_decision_right",
-      `${ctx.seat.address} does not hold the "${right}" decision right. Use propose_slice or revise_plan (which becomes a proposal), or escalate.`
+      `${ctx.seat.address} does not hold the "${right}" decision right. Use propose_user_story or revise_plan (which becomes a proposal), or escalate.`
     )
   }
 
   private requireActive(ctx: SeatContext): MapResult | null {
-    return ctx.initiative.status === "active"
+    return ctx.feature.status === "active"
       ? null
       : fail(
           "not_active",
-          `The initiative is ${ctx.initiative.status}; nothing can start until the user resumes it.`
+          `The feature is ${ctx.feature.status}; nothing can start until the user resumes it.`
         )
   }
 
-  // A slice by key: in the active mission, or a clear error naming where it is.
-  private activeSlice(ctx: SeatContext, key: string): WorkSlice | MapResult {
-    if (!ctx.activeMission)
-      return fail("no_active_mission", "There is no active mission.")
-    const slice = initiatives
-      .listSlices(ctx.activeMission.id)
+  // A user story by key: in the active milestone, or a clear error naming where it is.
+  private activeUserStory(ctx: SeatContext, key: string): WorkUserStory | MapResult {
+    if (!ctx.activeMilestone)
+      return fail("no_active_milestone", "There is no active milestone.")
+    const userStory = features
+      .listUserStories(ctx.activeMilestone.id)
       .find((s) => s.key === key.trim())
-    if (slice) return slice
-    for (const mission of initiatives.listMissions(ctx.initiative.id))
-      if (initiatives.listSlices(mission.id).some((s) => s.key === key.trim()))
+    if (userStory) return userStory
+    for (const milestone of features.listMilestones(ctx.feature.id))
+      if (features.listUserStories(milestone.id).some((s) => s.key === key.trim()))
         return fail(
-          "not_active_mission",
-          `Slice ${key} belongs to mission ${mission.key}, not the active mission ${ctx.activeMission.key}. Only the active mission's slices can be changed; propose changes to others.`
+          "not_active_milestone",
+          `User story ${key} belongs to milestone ${milestone.key}, not the active milestone ${ctx.activeMilestone.key}. Only the active milestone's user stories can be changed; propose changes to others.`
         )
     return fail(
-      "unknown_slice",
-      `No slice "${key}" in the active mission ${ctx.activeMission.key}. Call map_status for the slice keys.`
+      "unknown_user_story",
+      `No user story "${key}" in the active milestone ${ctx.activeMilestone.key}. Call map_status for the user story keys.`
     )
   }
 
@@ -142,7 +142,7 @@ export class MapToolService {
   async status(turn: SeatTurnIdentity): Promise<MapResult> {
     const ctx = this.context(turn)
     if ("ok" in ctx) return ctx
-    const position = await this.runtime.position(ctx.initiative.id)
+    const position = await this.runtime.position(ctx.feature.id)
     return {
       ok: true,
       message: [
@@ -153,46 +153,46 @@ export class MapToolService {
     }
   }
 
-  // ── assign_slice / retry_slice ───────────────────────────────────────────
+  // ── assign_user_story / retry_user_story ───────────────────────────────────────────
 
-  async assignSlice(
+  async assignUserStory(
     turn: SeatTurnIdentity,
-    args: { slice: string; pod?: string | null }
+    args: { userStory: string; pod?: string | null }
   ): Promise<MapResult> {
     const ctx = this.context(turn)
     if ("ok" in ctx) return ctx
-    const refused = this.requireRight(ctx, "assign_slice") ?? this.requireActive(ctx)
+    const refused = this.requireRight(ctx, "assign_user_story") ?? this.requireActive(ctx)
     if (refused) return refused
-    const slice = this.activeSlice(ctx, args.slice)
-    if ("ok" in slice) return slice
+    const userStory = this.activeUserStory(ctx, args.userStory)
+    if ("ok" in userStory) return userStory
     if (args.pod) {
-      const pods = ctx.initiative.rigSnapshot!.pods
+      const pods = ctx.feature.rigSnapshot!.pods
       if (!pods.some((p) => p.key === args.pod))
         return fail(
           "unknown_pod",
           `No pod "${args.pod}". Pods: ${pods.map((p) => p.key).join(", ")}.`
         )
-      if (!["draft", "ready", "blocked", "failed"].includes(slice.status))
-        return fail("started", `Slice ${slice.key} is ${slice.status}; its pod can't change now.`)
-      if (slice.podKey !== args.pod)
-        initiatives.updateSlice(
-          slice.id,
+      if (!["draft", "ready", "blocked", "failed"].includes(userStory.status))
+        return fail("started", `User story ${userStory.key} is ${userStory.status}; its pod can't change now.`)
+      if (userStory.podKey !== args.pod)
+        features.updateUserStory(
+          userStory.id,
           { podKey: args.pod },
           turn.address,
           `Assigned to pod ${args.pod}`
         )
     }
-    if (slice.status === "failed")
-      return fail("use_retry", `Slice ${slice.key} failed; use retry_slice with a note on what to do differently.`)
-    if (!["draft", "ready"].includes(slice.status))
+    if (userStory.status === "failed")
+      return fail("use_retry", `User story ${userStory.key} failed; use retry_user_story with a note on what to do differently.`)
+    if (!["draft", "ready"].includes(userStory.status))
       return args.pod
-        ? { ok: true, message: `Slice ${slice.key} will run in pod ${args.pod}.` }
-        : fail("not_ready", `Slice ${slice.key} is ${slice.status} and can't be started.`)
+        ? { ok: true, message: `User story ${userStory.key} will run in pod ${args.pod}.` }
+        : fail("not_ready", `User story ${userStory.key} is ${userStory.status} and can't be started.`)
     try {
-      const run = await this.runtime.startSlice(slice.id, { actor: turn.address })
+      const run = await this.runtime.startUserStory(userStory.id, { actor: turn.address })
       return {
         ok: true,
-        message: `Started slice ${slice.key}${args.pod ? ` in pod ${args.pod}` : ""}.`,
+        message: `Started user story ${userStory.key}${args.pod ? ` in pod ${args.pod}` : ""}.`,
         data: { playbook_run_id: run.id },
       }
     } catch (error) {
@@ -200,32 +200,32 @@ export class MapToolService {
     }
   }
 
-  async retrySlice(
+  async retryUserStory(
     turn: SeatTurnIdentity,
-    args: { slice: string; note: string }
+    args: { userStory: string; note: string }
   ): Promise<MapResult> {
     const ctx = this.context(turn)
     if ("ok" in ctx) return ctx
-    const refused = this.requireRight(ctx, "assign_slice") ?? this.requireActive(ctx)
+    const refused = this.requireRight(ctx, "assign_user_story") ?? this.requireActive(ctx)
     if (refused) return refused
-    const slice = this.activeSlice(ctx, args.slice)
-    if ("ok" in slice) return slice
-    if (slice.status !== "failed")
-      return fail("not_failed", `Slice ${slice.key} is ${slice.status}; only a failed slice can be retried.`)
-    const cap = budgetLimit(ctx.initiative.budgets, "maxSliceAttempts")
-    if (slice.attempts >= cap)
+    const userStory = this.activeUserStory(ctx, args.userStory)
+    if ("ok" in userStory) return userStory
+    if (userStory.status !== "failed")
+      return fail("not_failed", `User story ${userStory.key} is ${userStory.status}; only a failed user story can be retried.`)
+    const cap = budgetLimit(ctx.feature.budgets, "maxUserStoryAttempts")
+    if (userStory.attempts >= cap)
       return fail(
         "attempts_exhausted",
-        `Slice ${slice.key} has used all ${cap} attempts. Split it, cancel it, or escalate to ask the user for more attempts.`
+        `User story ${userStory.key} has used all ${cap} attempts. Split it, cancel it, or escalate to ask the user for more attempts.`
       )
     try {
-      const run = await this.runtime.startSlice(slice.id, {
+      const run = await this.runtime.startUserStory(userStory.id, {
         note: args.note,
         actor: turn.address,
       })
       return {
         ok: true,
-        message: `Retrying slice ${slice.key} (attempt ${slice.attempts + 1} of ${cap}) with your note.`,
+        message: `Retrying user story ${userStory.key} (attempt ${userStory.attempts + 1} of ${cap}) with your note.`,
         data: { playbook_run_id: run.id },
       }
     } catch (error) {
@@ -233,105 +233,105 @@ export class MapToolService {
     }
   }
 
-  // ── cancel_slice ─────────────────────────────────────────────────────────
+  // ── cancel_user_story ─────────────────────────────────────────────────────────
 
-  cancelSlice(turn: SeatTurnIdentity, args: { slice: string; reason: string }): MapResult {
+  cancelUserStory(turn: SeatTurnIdentity, args: { userStory: string; reason: string }): MapResult {
     const ctx = this.context(turn)
     if ("ok" in ctx) return ctx
     const refused = this.requireRight(ctx, "revise_plan")
     if (refused) return refused
-    const slice = this.activeSlice(ctx, args.slice)
-    if ("ok" in slice) return slice
-    if (!NOT_FINISHED.has(slice.status))
+    const userStory = this.activeUserStory(ctx, args.userStory)
+    if ("ok" in userStory) return userStory
+    if (!NOT_FINISHED.has(userStory.status))
       return fail(
         "cannot_cancel",
-        slice.status === "integrating"
-          ? `Slice ${slice.key} is merging; only the user can abandon a merge.`
-          : `Slice ${slice.key} is ${slice.status}.`
+        userStory.status === "integrating"
+          ? `User story ${userStory.key} is merging; only the user can abandon a merge.`
+          : `User story ${userStory.key} is ${userStory.status}.`
       )
     const budget = this.revisionBudget(ctx)
     if (budget.exhausted)
       return fail(
         "revision_budget",
-        `This mission has used its ${budget.limit} plan revisions. Escalate to the user to cancel ${slice.key}.`
+        `This milestone has used its ${budget.limit} plan revisions. Escalate to the user to cancel ${userStory.key}.`
       )
-    const mission = ctx.activeMission!
+    const milestone = ctx.activeMilestone!
     const dependents = getDb().transaction(() => {
-      initiatives.setSliceExecution(
-        slice.id,
+      features.setUserStoryExecution(
+        userStory.id,
         { status: "cancelled", finishedAt: Date.now() },
         args.reason,
         turn.address
       )
-      refreshBlocked(mission.id, turn.address)
-      initiatives.recordRevision(
-        ctx.initiative.id,
-        "mission",
-        mission.id,
+      refreshBlocked(milestone.id, turn.address)
+      features.recordRevision(
+        ctx.feature.id,
+        "milestone",
+        milestone.id,
         REVISE_OP,
-        { changes: [`✕ cancel ${slice.key}`] },
+        { changes: [`✕ cancel ${userStory.key}`] },
         turn.address,
         args.reason
       )
-      return initiatives
-        .listEdges(mission.id)
-        .filter((e) => e.fromSliceId === slice.id)
-        .map((e) => initiatives.getSlice(e.toSliceId)?.key)
+      return features
+        .listEdges(milestone.id)
+        .filter((e) => e.fromUserStoryId === userStory.id)
+        .map((e) => features.getUserStory(e.toUserStoryId)?.key)
         .filter(Boolean)
     })()
-    // The slice is already cancelled, so the run settling won't touch it.
-    if (["running", "proving"].includes(slice.status)) this.runtime.cancelSlice(slice.id)
+    // The user story is already cancelled, so the run settling won't touch it.
+    if (["running", "proving"].includes(userStory.status)) this.runtime.cancelUserStory(userStory.id)
     return {
       ok: true,
-      message: `Cancelled slice ${slice.key}.${dependents.length ? ` Blocked until you replan: ${dependents.join(", ")}.` : ""}`,
+      message: `Cancelled user story ${userStory.key}.${dependents.length ? ` Blocked until you replan: ${dependents.join(", ")}.` : ""}`,
     }
   }
 
-  // ── complete_mission ─────────────────────────────────────────────────────
+  // ── complete_milestone ─────────────────────────────────────────────────────
 
-  async completeMission(
+  async completeMilestone(
     turn: SeatTurnIdentity,
-    args: { mission: string; summary: string }
+    args: { milestone: string; summary: string }
   ): Promise<MapResult> {
     const ctx = this.context(turn)
     if ("ok" in ctx) return ctx
     const refused = this.requireRight(ctx, "accept_proof")
     if (refused) return refused
-    const mission = ctx.activeMission
-    if (!mission || mission.key !== args.mission.trim())
+    const milestone = ctx.activeMilestone
+    if (!milestone || milestone.key !== args.milestone.trim())
       return fail(
-        "not_active_mission",
-        `Only the active mission${mission ? ` (${mission.key})` : ""} can be completed.`
+        "not_active_milestone",
+        `Only the active milestone${milestone ? ` (${milestone.key})` : ""} can be completed.`
       )
-    const notDone = missionJudgeRefusal(mission)
+    const notDone = milestoneJudgeRefusal(milestone)
     if (notDone) return fail("not_done", notDone)
     if (!args.summary.trim())
-      return fail("bad_args", "complete_mission needs a summary of how the mission meets its definition of done.")
-    initiatives.setMissionDodReview(
-      mission.id,
+      return fail("bad_args", "complete_milestone needs a summary of how the milestone meets its definition of done.")
+    features.setMilestoneDodReview(
+      milestone.id,
       { by: turn.address, summary: args.summary.trim(), at: Date.now() },
       turn.address
     )
-    if (!mission.integrationBranch) {
+    if (!milestone.integrationBranch) {
       try {
-        await this.runtime.completeMission(mission.id)
+        await this.runtime.completeMilestone(milestone.id)
       } catch (error) {
         return fail("complete_failed", message(error))
       }
-      return { ok: true, message: `Mission ${mission.key} is complete.` }
+      return { ok: true, message: `Milestone ${milestone.key} is complete.` }
     }
     return {
       ok: true,
-      message: `Recorded your definition-of-done judgment. The user lands ${mission.integrationBranch} with the mission's ${mission.mergePolicy.mode.replace(/_/g, " ")} policy; the Navigator moves on once it lands.`,
+      message: `Recorded your definition-of-done judgment. The user lands ${milestone.integrationBranch} with the milestone's ${milestone.mergePolicy.mode.replace(/_/g, " ")} policy; the Navigator moves on once it lands.`,
     }
   }
 
   // ── plan changes ─────────────────────────────────────────────────────────
 
   private revisionBudget(ctx: SeatContext) {
-    const limit = budgetLimit(ctx.initiative.budgets, "maxPlanRevisionsPerMission")
-    const used = ctx.activeMission
-      ? initiatives.countRevisions(ctx.initiative.id, ctx.activeMission.id, REVISE_OP)
+    const limit = budgetLimit(ctx.feature.budgets, "maxPlanRevisionsPerMilestone")
+    const used = ctx.activeMilestone
+      ? features.countRevisions(ctx.feature.id, ctx.activeMilestone.id, REVISE_OP)
       : 0
     return { limit, used, exhausted: used >= limit }
   }
@@ -345,8 +345,8 @@ export class MapToolService {
     why: string | null
   ): MapResult {
     const proposal = proposalsRepo.createProposal({
-      initiativeId: ctx.initiative.id,
-      missionId: ctx.activeMission?.id ?? null,
+      featureId: ctx.feature.id,
+      milestoneId: ctx.activeMilestone?.id ?? null,
       kind,
       changes,
       proposer: turn.address,
@@ -371,7 +371,7 @@ export class MapToolService {
     if (typeof parsed === "string") return fail("bad_args", parsed)
     const reason = args.reason.trim()
 
-    const scope = seatScopeRefusal(parsed, ctx.activeMission)
+    const scope = seatScopeRefusal(parsed, ctx.activeMilestone)
     if (scope) return this.propose(ctx, turn, "revise_plan", parsed, reason, scope)
     if (!ctx.seat.decisionRights.includes("revise_plan"))
       return this.propose(
@@ -390,37 +390,37 @@ export class MapToolService {
         "revise_plan",
         parsed,
         reason,
-        `This mission has used its ${budget.limit} plan revisions.`
+        `This milestone has used its ${budget.limit} plan revisions.`
       )
-    const mission = ctx.activeMission!
+    const milestone = ctx.activeMilestone!
     const adds = parsed.reduce(
-      (n, c) => n + (c.op === "add_slice" ? 1 : c.op === "split_slice" ? c.into.length : 0),
+      (n, c) => n + (c.op === "add_user_story" ? 1 : c.op === "split_user_story" ? c.into.length : 0),
       0
     )
-    const agentLimit = budgetLimit(ctx.initiative.budgets, "maxAgentSlicesPerMission")
-    const agentSlices = initiatives.countSeatCreatedSlices(mission.id)
-    if (adds && agentSlices + adds > agentLimit)
+    const agentLimit = budgetLimit(ctx.feature.budgets, "maxAgentUserStoriesPerMilestone")
+    const agentUserStories = features.countSeatCreatedUserStories(milestone.id)
+    if (adds && agentUserStories + adds > agentLimit)
       return this.propose(
         ctx,
         turn,
         "revise_plan",
         parsed,
         reason,
-        `Seats may add ${agentLimit} slices to a mission on their own and ${agentSlices} were added already.`
+        `Seats may add ${agentLimit} user stories to a milestone on their own and ${agentUserStories} were added already.`
       )
     try {
       const result = applyPlanChanges({
-        initiativeId: ctx.initiative.id,
-        missionId: mission.id,
+        featureId: ctx.feature.id,
+        milestoneId: milestone.id,
         changes: parsed,
         actor: turn.address,
         reason,
         origin: "agent",
       })
-      initiatives.recordRevision(
-        ctx.initiative.id,
-        "mission",
-        mission.id,
+      features.recordRevision(
+        ctx.feature.id,
+        "milestone",
+        milestone.id,
         REVISE_OP,
         { changes: result.applied },
         turn.address,
@@ -430,7 +430,7 @@ export class MapToolService {
       return {
         ok: true,
         message: [
-          `Applied to ${mission.key}:`,
+          `Applied to ${milestone.key}:`,
           ...result.applied.map((line) => `- ${line}`),
           `Plan revisions used: ${used} of ${budget.limit}.`,
         ].join("\n"),
@@ -441,24 +441,24 @@ export class MapToolService {
     }
   }
 
-  proposeSlice(
+  proposeUserStory(
     turn: SeatTurnIdentity,
-    args: { mission?: string | null; slice: unknown; reason: string }
+    args: { milestone?: string | null; userStory: unknown; reason: string }
   ): MapResult {
     const ctx = this.context(turn)
     if ("ok" in ctx) return ctx
-    const draft = parseSliceDraft(args.slice)
+    const draft = parseUserStoryDraft(args.userStory)
     if (typeof draft === "string") return fail("bad_args", draft)
-    const missionKey = args.mission?.trim() || ctx.activeMission?.key
-    if (!missionKey) return fail("bad_args", "Name the mission the slice belongs to.")
-    if (!initiatives.listMissions(ctx.initiative.id).some((m) => m.key === missionKey))
-      return fail("unknown_mission", `No mission "${missionKey}" in this initiative.`)
-    if (!args.reason?.trim()) return fail("bad_args", "propose_slice needs a `reason`.")
+    const milestoneKey = args.milestone?.trim() || ctx.activeMilestone?.key
+    if (!milestoneKey) return fail("bad_args", "Name the milestone the user story belongs to.")
+    if (!features.listMilestones(ctx.feature.id).some((m) => m.key === milestoneKey))
+      return fail("unknown_milestone", `No milestone "${milestoneKey}" in this feature.`)
+    if (!args.reason?.trim()) return fail("bad_args", "propose_user_story needs a `reason`.")
     return this.propose(
       ctx,
       turn,
-      "slice",
-      [{ op: "add_slice", mission: missionKey, slice: draft }],
+      "user_story",
+      [{ op: "add_user_story", milestone: milestoneKey, userStory: draft }],
       args.reason.trim(),
       null
     )
@@ -466,24 +466,24 @@ export class MapToolService {
 
   proposePlan(
     turn: SeatTurnIdentity,
-    args: { missions: unknown; reason?: string }
+    args: { milestones: unknown; reason?: string }
   ): MapResult {
     const ctx = this.context(turn)
     if ("ok" in ctx) return ctx
-    if (!Array.isArray(args.missions) || !args.missions.length)
-      return fail("bad_args", "propose_plan needs `missions`: at least one mission with its slices.")
+    if (!Array.isArray(args.milestones) || !args.milestones.length)
+      return fail("bad_args", "propose_plan needs `milestones`: at least one milestone with its user stories.")
     const changes: PlanChange[] = []
-    for (const [index, value] of args.missions.entries()) {
-      const draft = parseMissionDraft(value)
-      if (typeof draft === "string") return fail("bad_args", `Mission ${index + 1}: ${draft}`)
-      changes.push({ op: "add_mission", mission: draft })
+    for (const [index, value] of args.milestones.entries()) {
+      const draft = parseMilestoneDraft(value)
+      if (typeof draft === "string") return fail("bad_args", `Milestone ${index + 1}: ${draft}`)
+      changes.push({ op: "add_milestone", milestone: draft })
     }
     return this.propose(
       ctx,
       turn,
       "plan",
       changes,
-      args.reason?.trim() || "Initiative plan",
+      args.reason?.trim() || "Feature plan",
       null
     )
   }
@@ -501,67 +501,67 @@ function parseChanges(value: unknown): PlanChange[] | string {
   return changes
 }
 
-// Why a mission can't be judged done yet, or null: every slice must be
-// merged (or cancelled) and the mission in review.
-export function missionJudgeRefusal(mission: Mission): string | null {
-  const open = initiatives
-    .listSlices(mission.id)
+// Why a milestone can't be judged done yet, or null: every user story must be
+// merged (or cancelled) and the milestone in review.
+export function milestoneJudgeRefusal(milestone: Milestone): string | null {
+  const open = features
+    .listUserStories(milestone.id)
     .filter((s) => s.status !== "done" && s.status !== "cancelled")
   if (open.length)
-    return `Mission ${mission.key} still has unfinished slices: ${open.map((s) => `${s.key} (${s.status})`).join(", ")}.`
-  if (mission.status !== "review")
-    return `Mission ${mission.key} is ${mission.status}; it can be completed once every slice has merged.`
+    return `Milestone ${milestone.key} still has unfinished user stories: ${open.map((s) => `${s.key} (${s.status})`).join(", ")}.`
+  if (milestone.status !== "review")
+    return `Milestone ${milestone.key} is ${milestone.status}; it can be completed once every user story has merged.`
   return null
 }
 
 // The user's definition-of-done judgment (when the lead doesn't hold
-// accept_proof, or the user decides first). A mission with nothing to land is
+// accept_proof, or the user decides first). A milestone with nothing to land is
 // completed; one with an integration branch then waits for its landing.
-export async function judgeMissionDone(
-  missionId: string,
+export async function judgeMilestoneDone(
+  milestoneId: string,
   summary: string,
-  complete: (missionId: string) => Promise<void>
+  complete: (milestoneId: string) => Promise<void>
 ): Promise<void> {
-  const mission = initiatives.getMission(missionId)
-  if (!mission) throw new Error("That mission no longer exists.")
-  const refusal = missionJudgeRefusal(mission)
+  const milestone = features.getMilestone(milestoneId)
+  if (!milestone) throw new Error("That milestone no longer exists.")
+  const refusal = milestoneJudgeRefusal(milestone)
   if (refusal) throw new Error(refusal)
-  initiatives.setMissionDodReview(
-    mission.id,
+  features.setMilestoneDodReview(
+    milestone.id,
     { by: "user", summary: summary.trim() || "Judged done by the user.", at: Date.now() },
     "user"
   )
-  if (!mission.integrationBranch) await complete(mission.id)
+  if (!milestone.integrationBranch) await complete(milestone.id)
 }
 
 // ── the user's side of proposals ────────────────────────────────────────────
 
 function proposalInput(proposal: PlanProposal, by: string) {
-  const initiative = initiatives.getInitiative(proposal.initiativeId)
-  if (!initiative) throw new Error("The initiative no longer exists.")
-  if (["completed", "cancelled"].includes(initiative.status))
-    throw new Error(`The initiative is ${initiative.status}; its plan can't change.`)
-  // The proposal's mission may have finished since; slice ops then target the
-  // current active mission only if the change named no mission.
-  const missionId =
-    proposal.missionId &&
-    !["completed", "cancelled"].includes(initiatives.getMission(proposal.missionId)?.status ?? "cancelled")
-      ? proposal.missionId
-      : (activeMissionOf(initiative.id)?.id ?? null)
+  const feature = features.getFeature(proposal.featureId)
+  if (!feature) throw new Error("The feature no longer exists.")
+  if (["completed", "cancelled"].includes(feature.status))
+    throw new Error(`The feature is ${feature.status}; its plan can't change.`)
+  // The proposal's milestone may have finished since; user story ops then target the
+  // current active milestone only if the change named no milestone.
+  const milestoneId =
+    proposal.milestoneId &&
+    !["completed", "cancelled"].includes(features.getMilestone(proposal.milestoneId)?.status ?? "cancelled")
+      ? proposal.milestoneId
+      : (activeMilestoneOf(feature.id)?.id ?? null)
   return {
-    initiativeId: initiative.id,
-    missionId,
+    featureId: feature.id,
+    milestoneId,
     changes: proposal.changes,
     actor: by,
     reason: `Applied ${proposal.kind === "plan" ? "the planning proposal" : "a proposal"} from ${proposal.proposer}${proposal.reason ? `: ${proposal.reason}` : ""}`,
     origin: (proposal.proposer.includes("@") && !proposal.proposer.endsWith("@rig")
       ? "agent"
-      : "user") as WorkSlice["origin"],
+      : "user") as WorkUserStory["origin"],
   }
 }
 
 // Which of a pending proposal's changes no longer apply to the plan as it is
-// now (e.g. an edit to a slice that has started since), without changing
+// now (e.g. an edit to a user story that has started since), without changing
 // anything.
 export function checkProposal(proposal: PlanProposal): PlanProposal["problems"] {
   if (proposal.status !== "pending") return []

@@ -3,9 +3,9 @@ import { Copy, FileDiff, FolderOpen, GitBranch, Loader2 } from "lucide-react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { DiffView } from "@/components/diff-view"
-import type { SliceWorkspaceInfo, WorkSlice } from "@/types"
+import type { UserStoryWorkspaceInfo, WorkUserStory } from "@/types"
 
-// A slice attempt's branch and worktree (plan 106.5): where it builds, a way
+// A user story attempt's branch and worktree (plan 106.5): where it builds, a way
 // to open it, and its changes against the integration commit it started from.
 
 function errorMessage(error: unknown) {
@@ -14,8 +14,8 @@ function errorMessage(error: unknown) {
     .replace(/^\w*Error:\s*/, "")
 }
 
-export function SliceWorktreePanel({ slice }: { slice: WorkSlice }) {
-  const [info, setInfo] = useState<SliceWorkspaceInfo | null>(null)
+export function UserStoryWorktreePanel({ userStory }: { userStory: WorkUserStory }) {
+  const [info, setInfo] = useState<UserStoryWorkspaceInfo | null>(null)
   const [diff, setDiff] = useState<{ diff: string; truncated: boolean } | null>(null)
   const [diffOpen, setDiffOpen] = useState(false)
   const [loadingDiff, setLoadingDiff] = useState(false)
@@ -23,25 +23,25 @@ export function SliceWorktreePanel({ slice }: { slice: WorkSlice }) {
 
   useEffect(() => {
     api
-      .sliceInfo(slice.id)
+      .userStoryInfo(userStory.id)
       .then(setInfo)
       .catch(() => setInfo(null))
-  }, [api, slice.id, slice.status, slice.worktreePath, slice.branch])
+  }, [api, userStory.id, userStory.status, userStory.worktreePath, userStory.branch])
 
   const loadDiff = useCallback(async () => {
     setLoadingDiff(true)
     try {
-      setDiff(await api.sliceDiff(slice.id))
+      setDiff(await api.userStoryDiff(userStory.id))
     } catch (error) {
       toast.error(errorMessage(error))
     } finally {
       setLoadingDiff(false)
     }
-  }, [api, slice.id])
+  }, [api, userStory.id])
 
   useEffect(() => {
     if (diffOpen) void loadDiff()
-  }, [diffOpen, loadDiff, slice.status])
+  }, [diffOpen, loadDiff, userStory.status])
 
   if (!info?.branch) return null
   const path = info.exists ? info.workspacePath : null
@@ -62,7 +62,7 @@ export function SliceWorktreePanel({ slice }: { slice: WorkSlice }) {
                 size="sm"
                 variant="outline"
                 onClick={() =>
-                  void api.openWorktree(slice.id).then((error) => {
+                  void api.openWorktree(userStory.id).then((error) => {
                     if (error) toast.error(error)
                   })
                 }
@@ -98,7 +98,7 @@ export function SliceWorktreePanel({ slice }: { slice: WorkSlice }) {
         </p>
       ) : (
         <p className="text-xs text-muted-foreground">
-          {slice.status === "done"
+          {userStory.status === "done"
             ? "Merged; its worktree was removed."
             : "The worktree was removed; the branch is kept for inspection."}
         </p>

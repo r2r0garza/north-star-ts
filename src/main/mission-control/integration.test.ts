@@ -8,9 +8,9 @@ import path from "path"
 import { runMigrations } from "../db/migrations"
 import { sqliteLoadsForTests } from "../test/sqlite"
 
-// Mission integration end to end (plan 106.5): real SQLite, real temporary git
+// Milestone integration end to end (plan 106.5): real SQLite, real temporary git
 // repositories, and a fake agent loop whose builders write files into the
-// workspace the Process engine hands them (a slice worktree).
+// workspace the Process engine hands them (a user story worktree).
 
 const sqliteLoads = sqliteLoadsForTests()
 
@@ -31,7 +31,7 @@ interface LoopCall {
   agentName: string | null
 }
 const loopCalls: LoopCall[] = []
-// What each slice's build step writes, by slice key: file → content.
+// What each user story's build step writes, by user story key: file → content.
 const builds = new Map<string, Record<string, string>>()
 // What the integrator writes into the conflicted files.
 let resolution: Record<string, string> | null = null
@@ -58,8 +58,8 @@ vi.mock("../agent", () => ({
     })
     let content = "done"
     if (msg.startsWith("# Review the")) content = '{"approved": true}'
-    else if (msg.includes("Build the slice")) {
-      const key = /# Slice ([a-z0-9-]+):/.exec(msg)?.[1] ?? ""
+    else if (msg.includes("Build the user story")) {
+      const key = /# User story ([a-z0-9-]+):/.exec(msg)?.[1] ?? ""
       for (const [file, text] of Object.entries(builds.get(key) ?? {}))
         writeFileSync(path.join(input.workspace, file), text)
     } else if (msg.includes("Resolve the merge conflict") && resolution) {
@@ -67,7 +67,7 @@ vi.mock("../agent", () => ({
         writeFileSync(path.join(input.workspace, file), text)
     }
     if (input.processProofStep) {
-      recordSliceProof({
+      recordUserStoryProof({
         processRunId: input.processRunId!,
         processPhaseRunId: input.processPhaseRunId!,
         args: {
@@ -112,14 +112,14 @@ vi.mock("../agent/agents/loader", () => ({
 
 import * as processes from "../db/repositories/processes"
 import * as rigs from "../db/repositories/rigs"
-import * as initiatives from "../db/repositories/initiatives"
+import * as features from "../db/repositories/features"
 import * as mergeQueue from "../db/repositories/merge-queue"
 import * as playbooks from "../db/repositories/playbooks"
 import { listWorkspaces, upsertWorkspace } from "../db/repositories/workspaces"
 import { ProcessService } from "../tasks/process/service"
-import { SliceRunner, recordSliceProof } from "./slice-runner"
+import { UserStoryRunner, recordUserStoryProof } from "./user-story-runner"
 import { startConflictResolution } from "./hook-runner"
-import { MissionIntegration } from "./integration"
+import { MilestoneIntegration } from "./integration"
 import { createDefaultPlaybook } from "./playbook-defaults"
 import type { AgentDefinition } from "../agent/agents/types"
 import { listWorktrees } from "../agent/subagents/worktrees"
@@ -157,8 +157,8 @@ function repo(): string {
 }
 
 let service: ProcessService
-let runner: SliceRunner
-let integration: MissionIntegration
+let runner: UserStoryRunner
+let integration: MilestoneIntegration
 let worktreeRoot: string
 const notices: string[] = []
 
@@ -166,7 +166,7 @@ function setup(options: { resolve?: boolean } = {}) {
   worktreeRoot = mkdtempSync(path.join(tmpdir(), "mc-worktrees-"))
   dirs.push(worktreeRoot)
   service = new ProcessService(fakeRunner)
-  integration = new MissionIntegration({
+  integration = new MilestoneIntegration({
     worktreeRoot: () => worktreeRoot,
     startResolution:
       options.resolve === false
@@ -175,7 +175,7 @@ function setup(options: { resolve?: boolean } = {}) {
     notifyUser: (title, body) => notices.push(`${title}: ${body}`),
     leaseRetryMs: 10,
   })
-  runner = new SliceRunner({
+  runner = new UserStoryRunner({
     startProcessRun: (input) => service.startRun(input),
     cancelTask: () => {},
     loadAgents: async () => AGENTS as unknown as AgentDefinition[],
@@ -195,8 +195,8 @@ function rig() {
   return created
 }
 
-function initiativeIn(workspace: string, keys: string[]) {
-  const graph = initiatives.createInitiative({
+function featureIn(workspace: string, keys: string[]) {
+  const graph = features.createFeature({
     key: "billing",
     name: "Billing",
     intent: "Invoices.",
@@ -204,20 +204,20 @@ function initiativeIn(workspace: string, keys: string[]) {
     rigId: rig().id,
     workspaceId: upsertWorkspace(workspace).id,
   })
-  const mission = graph.missions[0]
+  const milestone = graph.milestones[0]
   for (const key of keys)
-    initiatives.createSlice({
-      missionId: mission.id,
+    features.createUserStory({
+      milestoneId: milestone.id,
       key,
       title: key,
       spec: { goal: key, acceptance: ["The file exists"] },
     })
-  initiatives.startInitiative(graph.initiative.id)
-  const slices = initiatives.listSlices(mission.id)
+  features.startFeature(graph.feature.id)
+  const userStories = features.listUserStories(milestone.id)
   return {
-    initiative: initiatives.getInitiative(graph.initiative.id)!,
-    mission,
-    slice: (key: string) => slices.find((s) => s.key === key)!,
+    feature: features.getFeature(graph.feature.id)!,
+    milestone,
+    userStory: (key: string) => userStories.find((s) => s.key === key)!,
   }
 }
 
@@ -260,32 +260,32 @@ afterEach(() => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true })
 })
 
-describe.skipIf(!sqliteLoads)("mission integration", () => {
-  it("runs independent slices in parallel worktrees, merges them in order, and starts the dependent slice on both", async () => {
+describe.skipIf(!sqliteLoads)("milestone integration", () => {
+  it("runs independent user stories in parallel worktrees, merges them in order, and starts the dependent user story on both", async () => {
     setup()
     const root = repo()
     const userHead = git(root, "rev-parse", "HEAD")
-    const { mission, slice } = initiativeIn(root, ["invoice-api", "invoice-pdf", "invoice-ui"])
-    initiatives.setSliceEdges(mission.id, [
-      { fromSliceId: slice("invoice-api").id, toSliceId: slice("invoice-ui").id },
-      { fromSliceId: slice("invoice-pdf").id, toSliceId: slice("invoice-ui").id },
+    const { milestone, userStory } = featureIn(root, ["invoice-api", "invoice-pdf", "invoice-ui"])
+    features.setUserStoryEdges(milestone.id, [
+      { fromUserStoryId: userStory("invoice-api").id, toUserStoryId: userStory("invoice-ui").id },
+      { fromUserStoryId: userStory("invoice-pdf").id, toUserStoryId: userStory("invoice-ui").id },
     ])
     builds.set("invoice-api", { "api.txt": "api\n" })
     builds.set("invoice-pdf", { "pdf.txt": "pdf\n" })
     builds.set("invoice-ui", { "ui.txt": "ui\n" })
 
     // Both start before either runs: two isolated runs at once.
-    const api = await runner.startSlice(slice("invoice-api").id)
-    const pdf = await runner.startSlice(slice("invoice-pdf").id)
+    const api = await runner.startUserStory(userStory("invoice-api").id)
+    const pdf = await runner.startUserStory(userStory("invoice-pdf").id)
     expect(api.worktreePath).not.toBe(pdf.worktreePath)
-    const started = initiatives.getMission(mission.id)!
+    const started = features.getMilestone(milestone.id)!
     expect(started).toMatchObject({
-      integrationBranch: "mc/billing/mission-1/integration",
+      integrationBranch: "mc/billing/milestone-1/integration",
       baseRef: "main",
       baseOid: userHead,
     })
-    // The dependent slice waits for merges, not just proofs.
-    await expect(runner.startSlice(slice("invoice-ui").id)).rejects.toThrow(/unmerged user stories/)
+    // The dependent user story waits for merges, not just proofs.
+    await expect(runner.startUserStory(userStory("invoice-ui").id)).rejects.toThrow(/unmerged user stories/)
     // Worktrees stay out of the user's workspace lists.
     expect(listWorkspaces().map((w) => w.path)).toEqual([root])
 
@@ -294,11 +294,11 @@ describe.skipIf(!sqliteLoads)("mission integration", () => {
     await drive(pdf.processRunId!)
     await drive(api.processRunId!)
     await integration.idle()
-    // Every worker of each slice ran in that slice's own worktree.
+    // Every worker of each user story ran in that user story's own worktree.
     const workspaces = new Set(loopCalls.map((c) => c.workspace))
     expect([...workspaces].sort()).toEqual([api.worktreePath, pdf.worktreePath].sort())
-    expect(initiatives.getSlice(slice("invoice-api").id)!.status).toBe("done")
-    expect(initiatives.getSlice(slice("invoice-pdf").id)!.status).toBe("done")
+    expect(features.getUserStory(userStory("invoice-api").id)!.status).toBe("done")
+    expect(features.getUserStory(userStory("invoice-pdf").id)!.status).toBe("done")
     const subjects = git(root, "log", "--first-parent", "--format=%s", started.integrationBranch!)
       .split("\n")
       .slice(0, 2)
@@ -307,18 +307,18 @@ describe.skipIf(!sqliteLoads)("mission integration", () => {
     expect(existsSync(api.worktreePath!)).toBe(false)
     expect(existsSync(pdf.worktreePath!)).toBe(false)
 
-    const ui = await runner.startSlice(slice("invoice-ui").id)
-    const uiSlice = initiatives.getSlice(slice("invoice-ui").id)!
+    const ui = await runner.startUserStory(userStory("invoice-ui").id)
+    const uiUserStory = features.getUserStory(userStory("invoice-ui").id)!
     expect(existsSync(path.join(ui.worktreePath!, "api.txt"))).toBe(true)
     expect(existsSync(path.join(ui.worktreePath!, "pdf.txt"))).toBe(true)
-    expect(uiSlice.baseOid).toBe(git(root, "rev-parse", started.integrationBranch!))
+    expect(uiUserStory.baseOid).toBe(git(root, "rev-parse", started.integrationBranch!))
     await drive(ui.processRunId!)
     await integration.idle()
-    expect(initiatives.getMission(mission.id)!.status).toBe("review")
+    expect(features.getMilestone(milestone.id)!.status).toBe("review")
 
     // The merge commit carries the proof and the trailers.
     const body = git(root, "log", "-1", "--format=%B", started.integrationBranch!)
-    expect(body).toContain(`Mission-Control-Slice: ${uiSlice.id}`)
+    expect(body).toContain(`Mission-Control-User-Story: ${uiUserStory.id}`)
     expect(body).toContain(`Mission-Control-Proof: ${ui.id}`)
     expect(body).toContain("AC-1 met")
 
@@ -331,21 +331,21 @@ describe.skipIf(!sqliteLoads)("mission integration", () => {
   it("hands a conflict to the integrator (falling back to the lead), re-verifies, and merges", async () => {
     setup()
     const root = repo()
-    const { mission, slice } = initiativeIn(root, ["a", "b"])
+    const { milestone, userStory } = featureIn(root, ["a", "b"])
     builds.set("a", { "shared.txt": "one\nTWO from a\nthree\n" })
     builds.set("b", { "shared.txt": "one\nTWO from b\nthree\n" })
     resolution = { "shared.txt": "one\nTWO from a and b\nthree\n" }
-    const a = await runner.startSlice(slice("a").id)
-    const b = await runner.startSlice(slice("b").id)
+    const a = await runner.startUserStory(userStory("a").id)
+    const b = await runner.startUserStory(userStory("b").id)
     await drive(a.processRunId!)
     await drive(b.processRunId!)
     await integration.idle()
 
-    const entry = mergeQueue.listMergeEntries({ sliceId: slice("b").id })[0]
+    const entry = mergeQueue.listMergeEntries({ userStoryId: userStory("b").id })[0]
     expect(entry).toMatchObject({ status: "resolving", conflictFiles: ["shared.txt"] })
-    expect(initiatives.getSlice(slice("b").id)!.status).toBe("integrating")
+    expect(features.getUserStory(userStory("b").id)!.status).toBe("integrating")
     const resolutionRun = playbooks.getPlaybookRun(entry.resolutionRunId!)!
-    expect(resolutionRun).toMatchObject({ hook: "after_each_slice", sliceId: slice("b").id })
+    expect(resolutionRun).toMatchObject({ hook: "after_each_user_story", userStoryId: userStory("b").id })
 
     await settleAll()
     const integrator = loopCalls.find((c) => c.userMessage.includes("Resolve the merge conflict"))!
@@ -353,8 +353,8 @@ describe.skipIf(!sqliteLoads)("mission integration", () => {
     expect(integrator.agentName).toBe("agentref:v1:lead")
     expect(integrator.userMessage).toContain("shared.txt")
     expect(mergeQueue.getMergeEntry(entry.id)!.status).toBe("merged")
-    expect(initiatives.getSlice(slice("b").id)!.status).toBe("done")
-    const integrationBranch = initiatives.getMission(mission.id)!.integrationBranch!
+    expect(features.getUserStory(userStory("b").id)!.status).toBe("done")
+    const integrationBranch = features.getMilestone(milestone.id)!.integrationBranch!
     expect(git(root, "show", `${integrationBranch}:shared.txt`)).toContain("a and b")
     expect(git(root, "log", "-1", "--format=%B", integrationBranch)).toContain(
       "Mission-Control-Resolved-By:"
@@ -366,48 +366,48 @@ describe.skipIf(!sqliteLoads)("mission integration", () => {
   it("escalates a conflict with no way to resolve it and leaves the repository clean", async () => {
     setup({ resolve: false })
     const root = repo()
-    const { mission, slice } = initiativeIn(root, ["a", "b"])
+    const { milestone, userStory } = featureIn(root, ["a", "b"])
     builds.set("a", { "shared.txt": "a\n" })
     builds.set("b", { "shared.txt": "b\n" })
-    const a = await runner.startSlice(slice("a").id)
-    const b = await runner.startSlice(slice("b").id)
+    const a = await runner.startUserStory(userStory("a").id)
+    const b = await runner.startUserStory(userStory("b").id)
     await drive(a.processRunId!)
     await drive(b.processRunId!)
     await integration.idle()
 
-    const entry = mergeQueue.listMergeEntries({ sliceId: slice("b").id })[0]
+    const entry = mergeQueue.listMergeEntries({ userStoryId: userStory("b").id })[0]
     expect(entry).toMatchObject({ status: "conflict", escalated: true })
     expect(notices.join("\n")).toMatch(/user story b needs you/)
     expect(git(root, "status", "--porcelain")).toBe("")
-    expect(initiatives.getMission(mission.id)!.status).toBe("integrating")
+    expect(features.getMilestone(milestone.id)!.status).toBe("integrating")
 
-    // Abandoning fails the slice (its branch kept) and reopens the mission.
+    // Abandoning fails the user story (its branch kept) and reopens the milestone.
     await integration.abandon(entry.id)
-    const failed = initiatives.getSlice(slice("b").id)!
+    const failed = features.getUserStory(userStory("b").id)!
     expect(failed.status).toBe("failed")
     expect(git(root, "branch", "--list", failed.branch!)).toContain(failed.branch!)
-    expect(initiatives.getMission(mission.id)!.status).toBe("active")
-    // A retry starts from the integration head, which now has slice a.
+    expect(features.getMilestone(milestone.id)!.status).toBe("active")
+    // A retry starts from the integration head, which now has user story a.
     builds.set("b", { "b.txt": "b\n" })
-    const retry = await runner.startSlice(slice("b").id)
+    const retry = await runner.startUserStory(userStory("b").id)
     expect(readFileSync(path.join(retry.worktreePath!, "shared.txt"), "utf8")).toBe("a\n")
   })
 
-  it("escalates when the mission playbook has no after-each-slice hook", async () => {
+  it("escalates when the milestone playbook has no after-each-user-story hook", async () => {
     setup()
     const root = repo()
-    const { mission, slice } = initiativeIn(root, ["a", "b"])
-    const playbook = createDefaultPlaybook("mission")
-    playbooks.removeHook(playbook.id, "after_each_slice")
-    initiatives.updateMission(mission.id, { playbookId: playbook.id })
+    const { milestone, userStory } = featureIn(root, ["a", "b"])
+    const playbook = createDefaultPlaybook("milestone")
+    playbooks.removeHook(playbook.id, "after_each_user_story")
+    features.updateMilestone(milestone.id, { playbookId: playbook.id })
     builds.set("a", { "shared.txt": "a\n" })
     builds.set("b", { "shared.txt": "b\n" })
-    const a = await runner.startSlice(slice("a").id)
-    const b = await runner.startSlice(slice("b").id)
+    const a = await runner.startUserStory(userStory("a").id)
+    const b = await runner.startUserStory(userStory("b").id)
     await drive(a.processRunId!)
     await drive(b.processRunId!)
     await integration.idle()
-    const entry = mergeQueue.listMergeEntries({ sliceId: slice("b").id })[0]
+    const entry = mergeQueue.listMergeEntries({ userStoryId: userStory("b").id })[0]
     expect(entry).toMatchObject({ status: "conflict", escalated: true })
     expect(entry.note).toMatch(/no after each user story hook/)
     expect((await listWorktrees(root)).length).toBe(2)
@@ -416,32 +416,32 @@ describe.skipIf(!sqliteLoads)("mission integration", () => {
   it("finishes the bookkeeping for a merge interrupted after the branch moved", async () => {
     setup()
     const root = repo()
-    const { mission, slice } = initiativeIn(root, ["a", "b"])
+    const { milestone, userStory } = featureIn(root, ["a", "b"])
     builds.set("a", { "a.txt": "a\n" })
     builds.set("b", { "b.txt": "b\n" })
-    const a = await runner.startSlice(slice("a").id)
-    const b = await runner.startSlice(slice("b").id)
+    const a = await runner.startUserStory(userStory("a").id)
+    const b = await runner.startUserStory(userStory("b").id)
     // Settle both runs without letting the queue drain yet.
     integration.stop()
     await drive(a.processRunId!)
     await drive(b.processRunId!)
-    const entryA = mergeQueue.listMergeEntries({ sliceId: slice("a").id })[0]
-    const entryB = mergeQueue.listMergeEntries({ sliceId: slice("b").id })[0]
+    const entryA = mergeQueue.listMergeEntries({ userStoryId: userStory("a").id })[0]
+    const entryB = mergeQueue.listMergeEntries({ userStoryId: userStory("b").id })[0]
     expect([entryA.status, entryB.status]).toEqual(["queued", "queued"])
 
     // Simulate a crash mid-merge for a: its merge landed on the integration
     // branch, but the row still says merging. b crashed before merging.
-    const mc = initiatives.getMission(mission.id)!
-    const sliceA = initiatives.getSlice(slice("a").id)!
-    git(sliceA.worktreePath!, "add", "-A")
-    git(sliceA.worktreePath!, "commit", "-m", "a work")
-    const headA = git(root, "rev-parse", sliceA.branch!)
+    const mc = features.getMilestone(milestone.id)!
+    const userStoryA = features.getUserStory(userStory("a").id)!
+    git(userStoryA.worktreePath!, "add", "-A")
+    git(userStoryA.worktreePath!, "commit", "-m", "a work")
+    const headA = git(root, "rev-parse", userStoryA.branch!)
     const scratch = path.join(worktreeRoot, "crash-merge")
     git(root, "worktree", "add", "--detach", scratch, mc.integrationBranch!)
-    git(scratch, "merge", "--no-ff", "-m", `slice a\n\nMission-Control-Slice: ${sliceA.id}`, headA)
+    git(scratch, "merge", "--no-ff", "-m", `user story a\n\nMission-Control-User-Story: ${userStoryA.id}`, headA)
     git(root, "update-ref", `refs/heads/${mc.integrationBranch}`, git(scratch, "rev-parse", "HEAD"))
-    mergeQueue.updateMergeEntry(entryA.id, { status: "merging", sliceHead: headA })
-    mergeQueue.updateMergeEntry(entryB.id, { status: "merging", sliceHead: null })
+    mergeQueue.updateMergeEntry(entryA.id, { status: "merging", userStoryHead: headA })
+    mergeQueue.updateMergeEntry(entryB.id, { status: "merging", userStoryHead: null })
 
     // Restart: a fresh service sweeps the stray worktree and resumes.
     setupRestart()
@@ -450,29 +450,29 @@ describe.skipIf(!sqliteLoads)("mission integration", () => {
     expect(existsSync(scratch)).toBe(false)
     expect(mergeQueue.getMergeEntry(entryA.id)).toMatchObject({
       status: "merged",
-      mergeCommit: git(root, "log", "-1", "--format=%H", "--grep", sliceA.id, mc.integrationBranch!),
+      mergeCommit: git(root, "log", "-1", "--format=%H", "--grep", userStoryA.id, mc.integrationBranch!),
     })
     expect(mergeQueue.getMergeEntry(entryB.id)!.status).toBe("merged")
-    expect(initiatives.getMission(mission.id)!.status).toBe("review")
-    // Each slice merged exactly once.
+    expect(features.getMilestone(milestone.id)!.status).toBe("review")
+    // Each user story merged exactly once.
     expect(
       git(root, "log", "--merges", "--format=%s", mc.integrationBranch!).split("\n")
     ).toHaveLength(2)
   })
 
-  it("lands a local-merge mission only with an approval for what the user reviewed", async () => {
+  it("lands a local-merge milestone only with an approval for what the user reviewed", async () => {
     setup()
     const root = repo()
-    const { mission, slice } = initiativeIn(root, ["a"])
-    initiatives.setMissionMergePolicy(mission.id, "local_merge")
+    const { milestone, userStory } = featureIn(root, ["a"])
+    features.setMilestoneMergePolicy(milestone.id, "local_merge")
     builds.set("a", { "a.txt": "a\n" })
-    const a = await runner.startSlice(slice("a").id)
+    const a = await runner.startUserStory(userStory("a").id)
     // Locked once started, except back to manual.
-    expect(() => initiatives.setMissionMergePolicy(mission.id, "open_pr")).toThrow(/locked/)
+    expect(() => features.setMilestoneMergePolicy(milestone.id, "open_pr")).toThrow(/locked/)
     await drive(a.processRunId!)
     await integration.idle()
 
-    const status = await integration.status(mission.id)
+    const status = await integration.status(milestone.id)
     expect(status).toMatchObject({
       policy: "local_merge",
       workspace: { mode: "git" },
@@ -481,83 +481,83 @@ describe.skipIf(!sqliteLoads)("mission integration", () => {
     expect(status.queue.map((e) => e.status)).toEqual(["merged"])
     expect(git(root, "rev-parse", "main")).toBe(status.baseOid)
     await expect(
-      integration.land(mission.id, { baseOid: status.summary!.baseOid!, headOid: "stale" })
+      integration.land(milestone.id, { baseOid: status.summary!.baseOid!, headOid: "stale" })
     ).rejects.toThrow(/moved since you reviewed/)
-    const landing = await integration.land(mission.id, {
+    const landing = await integration.land(milestone.id, {
       baseOid: status.summary!.baseOid!,
       headOid: status.summary!.headOid!,
     })
     expect(landing).toMatchObject({ mode: "local_merge", fastForward: true, completedBy: "user" })
     expect(readFileSync(path.join(root, "a.txt"), "utf8")).toBe("a\n")
-    const done = initiatives.getMission(mission.id)!
+    const done = features.getMilestone(milestone.id)!
     expect(done.status).toBe("completed")
-    // Slice and integration branches are cleaned up once reachable from main.
+    // User story and integration branches are cleaned up once reachable from main.
     expect(git(root, "branch", "--list", "mc/*")).toBe("")
   })
 
-  it("reaches review when the last unfinished slice is deleted", async () => {
+  it("reaches review when the last unfinished user story is deleted", async () => {
     setup()
     const root = repo()
-    const { mission, slice } = initiativeIn(root, ["a", "b"])
+    const { milestone, userStory } = featureIn(root, ["a", "b"])
     builds.set("a", { "a.txt": "a\n" })
-    const a = await runner.startSlice(slice("a").id)
+    const a = await runner.startUserStory(userStory("a").id)
     await drive(a.processRunId!)
     await integration.idle()
-    expect(initiatives.getMission(mission.id)!.status).toBe("active")
-    initiatives.deleteSlice(slice("b").id)
+    expect(features.getMilestone(milestone.id)!.status).toBe("active")
+    features.deleteUserStory(userStory("b").id)
     // Nothing merged since; the status read catches up, and stays quiet after.
     const changes: string[] = []
-    const quiet = new MissionIntegration({
+    const quiet = new MilestoneIntegration({
       worktreeRoot: () => worktreeRoot,
       onChanged: (id) => changes.push(id),
     })
-    await quiet.status(mission.id)
-    expect(initiatives.getMission(mission.id)!.status).toBe("review")
-    await quiet.status(mission.id)
+    await quiet.status(milestone.id)
+    expect(features.getMilestone(milestone.id)!.status).toBe("review")
+    await quiet.status(milestone.id)
     expect(changes).toHaveLength(1)
   })
 
-  it("detects a manual merge and completes the mission", async () => {
+  it("detects a manual merge and completes the milestone", async () => {
     setup()
     const root = repo()
-    const { mission, slice } = initiativeIn(root, ["a"])
+    const { milestone, userStory } = featureIn(root, ["a"])
     builds.set("a", { "a.txt": "a\n" })
-    const a = await runner.startSlice(slice("a").id)
+    const a = await runner.startUserStory(userStory("a").id)
     await drive(a.processRunId!)
     await integration.idle()
-    git(root, "merge", "--no-ff", "-m", "my merge", "mc/billing/mission-1/integration")
-    const status = await integration.status(mission.id)
+    git(root, "merge", "--no-ff", "-m", "my merge", "mc/billing/milestone-1/integration")
+    const status = await integration.status(milestone.id)
     expect(status.landing).toMatchObject({ completedBy: "detected", mode: "manual" })
-    expect(initiatives.getMission(mission.id)!.status).toBe("completed")
+    expect(features.getMilestone(milestone.id)!.status).toBe("completed")
   })
 
-  it("serializes slices with overlapping touch hints unless told otherwise", async () => {
+  it("serializes user stories with overlapping touch hints unless told otherwise", async () => {
     setup()
     const root = repo()
-    const { slice } = initiativeIn(root, ["a", "b"])
-    initiatives.updateSlice(slice("a").id, {
-      spec: { ...slice("a").spec, touchHints: ["src/billing/**"] },
+    const { userStory } = featureIn(root, ["a", "b"])
+    features.updateUserStory(userStory("a").id, {
+      spec: { ...userStory("a").spec, touchHints: ["src/billing/**"] },
     })
-    initiatives.updateSlice(slice("b").id, {
-      spec: { ...slice("b").spec, touchHints: ["src/billing/invoice.ts"] },
+    features.updateUserStory(userStory("b").id, {
+      spec: { ...userStory("b").spec, touchHints: ["src/billing/invoice.ts"] },
     })
-    await runner.startSlice(slice("a").id)
-    await expect(runner.startSlice(slice("b").id)).rejects.toThrow(/touch_overlap/)
+    await runner.startUserStory(userStory("a").id)
+    await expect(runner.startUserStory(userStory("b").id)).rejects.toThrow(/touch_overlap/)
     await expect(
-      runner.startSlice(slice("b").id, { allowTouchOverlap: true })
+      runner.startUserStory(userStory("b").id, { allowTouchOverlap: true })
     ).resolves.toMatchObject({ status: "running" })
   })
 
-  it("caps concurrent slices at the initiative budget", async () => {
+  it("caps concurrent user stories at the feature budget", async () => {
     setup()
     const root = repo()
-    const { initiative, slice } = initiativeIn(root, ["a", "b"])
-    db.prepare("UPDATE initiatives SET budgets = ? WHERE id = ?").run(
-      JSON.stringify({ maxConcurrentSlices: 1 }),
-      initiative.id
+    const { feature, userStory } = featureIn(root, ["a", "b"])
+    db.prepare("UPDATE features SET budgets = ? WHERE id = ?").run(
+      JSON.stringify({ maxConcurrentUserStories: 1 }),
+      feature.id
     )
-    await runner.startSlice(slice("a").id)
-    await expect(runner.startSlice(slice("b").id)).rejects.toThrow(/1 running user stories at once/)
+    await runner.startUserStory(userStory("a").id)
+    await expect(runner.startUserStory(userStory("b").id)).rejects.toThrow(/1 running user stories at once/)
     // The refused attempt left no worktree behind.
     expect((await listWorktrees(root)).length).toBe(2)
   })
@@ -566,38 +566,38 @@ describe.skipIf(!sqliteLoads)("mission integration", () => {
     setup()
     const folder = mkdtempSync(path.join(tmpdir(), "mc-plain-"))
     dirs.push(folder)
-    const { mission, slice } = initiativeIn(folder, ["a", "b"])
-    const a = await runner.startSlice(slice("a").id)
+    const { milestone, userStory } = featureIn(folder, ["a", "b"])
+    const a = await runner.startUserStory(userStory("a").id)
     expect(a.worktreePath).toBeNull()
-    await expect(runner.startSlice(slice("b").id)).rejects.toThrow(
+    await expect(runner.startUserStory(userStory("b").id)).rejects.toThrow(
       /one playbook run can use this workspace at a time.*git workspace/
     )
-    const status = await integration.status(mission.id)
+    const status = await integration.status(milestone.id)
     expect(status.workspace).toMatchObject({
       mode: "single_flight",
       reason: expect.stringContaining("isn't a git repository"),
     })
     expect(status.policies.local_merge.available).toBe(false)
     await drive(a.processRunId!)
-    expect(initiatives.getSlice(slice("a").id)!.status).toBe("done")
+    expect(features.getUserStory(userStory("a").id)!.status).toBe("done")
   })
 
-  it("removes worktrees and merged mc branches when the initiative is deleted", async () => {
+  it("removes worktrees and merged mc branches when the feature is deleted", async () => {
     setup()
     const root = repo()
-    const { initiative, slice } = initiativeIn(root, ["a", "b"])
+    const { feature, userStory } = featureIn(root, ["a", "b"])
     builds.set("a", { "a.txt": "a\n" })
-    const a = await runner.startSlice(slice("a").id)
+    const a = await runner.startUserStory(userStory("a").id)
     await drive(a.processRunId!)
     await integration.idle()
-    const b = await runner.startSlice(slice("b").id)
+    const b = await runner.startUserStory(userStory("b").id)
     runner.cancelPlaybookRun(b.id)
-    const { keptBranches } = await integration.cleanupInitiative(initiative.id)
+    const { keptBranches } = await integration.cleanupFeature(feature.id)
     // The integration branch holds merged work that never reached main.
-    expect(keptBranches).toEqual(["mc/billing/mission-1/integration"])
-    expect(git(root, "branch", "--list", "mc/billing/mission-1/slices/*")).toBe("")
+    expect(keptBranches).toEqual(["mc/billing/milestone-1/integration"])
+    expect(git(root, "branch", "--list", "mc/billing/milestone-1/userStories/*")).toBe("")
     expect((await listWorktrees(root)).length).toBe(1)
-    expect(existsSync(path.join(worktreeRoot, initiative.id))).toBe(false)
+    expect(existsSync(path.join(worktreeRoot, feature.id))).toBe(false)
   })
 })
 
@@ -606,13 +606,13 @@ describe.skipIf(!sqliteLoads)("mission integration", () => {
 function setupRestart() {
   const root = worktreeRoot
   integration.stop()
-  integration = new MissionIntegration({
+  integration = new MilestoneIntegration({
     worktreeRoot: () => root,
     startResolution: (input) => startConflictResolution(runner, input),
     notifyUser: (title, body) => notices.push(`${title}: ${body}`),
     leaseRetryMs: 10,
   })
-  runner = new SliceRunner({
+  runner = new UserStoryRunner({
     startProcessRun: (input) => service.startRun(input),
     cancelTask: () => {},
     loadAgents: async () => AGENTS as unknown as AgentDefinition[],

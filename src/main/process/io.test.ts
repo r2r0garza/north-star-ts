@@ -334,7 +334,7 @@ function seedGraph() {
   })
   const definition = createProcessDefinition({
     name: "Ship Feature",
-    description: "Build and verify a slice",
+    description: "Build and verify a user story",
   })
   updateProcessDefinition(definition.id, { requireFlagApproval: false })
   const plan = createPhase({
@@ -490,13 +490,13 @@ describe.skipIf(!sqliteLoads)("completion policy portability", () => {
 
 describe.skipIf(!sqliteLoads)("seat roles and proof steps (format v2)", () => {
   it("exports seat-role agents and proof steps, and re-imports them", () => {
-    const def = createProcessDefinition({ name: "Slice playbook" })
+    const def = createProcessDefinition({ name: "User story playbook" })
     const phase = createPhase({
       processId: def.id,
       key: "test",
       name: "Test",
       proofStep: true,
-      contextScope: "slice",
+      contextScope: "user_story",
       position: 0,
     })
     createPhaseAgent({ phaseId: phase.id, seatRole: "qa", position: 0 })
@@ -505,7 +505,7 @@ describe.skipIf(!sqliteLoads)("seat roles and proof steps (format v2)", () => {
     expect(exported.formatVersion).toBe(2)
     expect(exported.phases[0]).toMatchObject({
       proofStep: true,
-      contextScope: "slice",
+      contextScope: "user_story",
       agents: [{ agent: { seatRole: "qa" } }],
     })
 
@@ -514,7 +514,7 @@ describe.skipIf(!sqliteLoads)("seat roles and proof steps (format v2)", () => {
     )
     const graph = getProcessGraph(imported.processId)!
     expect(graph.phases[0].proofStep).toBe(true)
-    expect(graph.phases[0].contextScope).toBe("slice")
+    expect(graph.phases[0].contextScope).toBe("user_story")
     expect(graph.agents[0]).toMatchObject({ agentName: null, seatRole: "qa" })
     expect(imported.warnings).toEqual([])
   })
@@ -529,7 +529,7 @@ describe.skipIf(!sqliteLoads)("seat roles and proof steps (format v2)", () => {
     exported.phases[0].contextMode = "seat_session"
     const imported = importProcessExport(JSON.parse(JSON.stringify(exported)))
     expect(getProcessGraph(imported.processId)!.phases[0].contextScope).toBe(
-      "initiative"
+      "feature"
     )
   })
 

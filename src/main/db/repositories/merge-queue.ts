@@ -2,7 +2,7 @@ import { randomUUID } from "crypto"
 import { getDb } from "../connection"
 import type { MergeQueueEntry, MergeQueueStatus } from "../types"
 
-// The Mission Control merge queue (plan 106.5). One row per slice attempt whose
+// The Mission Control merge queue (plan 106.5). One row per user story attempt whose
 // proof was accepted; the integration service moves it through
 // queued → merging → merged, or parks it at conflict / resolving. Every
 // transition is conditional on the current status, so a replay after a crash
@@ -10,12 +10,12 @@ import type { MergeQueueEntry, MergeQueueStatus } from "../types"
 
 interface MergeQueueRow {
   id: string
-  mission_id: string
-  slice_id: string
+  milestone_id: string
+  user_story_id: string
   playbook_run_id: string | null
   status: MergeQueueStatus
   attempt: number
-  slice_head: string | null
+  user_story_head: string | null
   conflict_files: string
   merge_commit: string | null
   touched_files: string
@@ -52,12 +52,12 @@ function list(value: string): string[] {
 function toEntry(row: MergeQueueRow): MergeQueueEntry {
   return {
     id: row.id,
-    missionId: row.mission_id,
-    sliceId: row.slice_id,
+    milestoneId: row.milestone_id,
+    userStoryId: row.user_story_id,
     playbookRunId: row.playbook_run_id,
     status: row.status,
     attempt: row.attempt,
-    sliceHead: row.slice_head,
+    userStoryHead: row.user_story_head,
     conflictFiles: list(row.conflict_files),
     mergeCommit: row.merge_commit,
     touchedFiles: list(row.touched_files),
@@ -84,26 +84,26 @@ export function getMergeEntry(id: string): MergeQueueEntry | null {
 }
 
 export function listMergeEntries(filter: {
-  missionId?: string
-  sliceId?: string
-  initiativeId?: string
+  milestoneId?: string
+  userStoryId?: string
+  featureId?: string
   statuses?: readonly MergeQueueStatus[]
 }): MergeQueueEntry[] {
   const clauses: string[] = []
   const values: unknown[] = []
-  if (filter.missionId) {
-    clauses.push("mission_id = ?")
-    values.push(filter.missionId)
+  if (filter.milestoneId) {
+    clauses.push("milestone_id = ?")
+    values.push(filter.milestoneId)
   }
-  if (filter.sliceId) {
-    clauses.push("slice_id = ?")
-    values.push(filter.sliceId)
+  if (filter.userStoryId) {
+    clauses.push("user_story_id = ?")
+    values.push(filter.userStoryId)
   }
-  if (filter.initiativeId) {
+  if (filter.featureId) {
     clauses.push(
-      "mission_id IN (SELECT id FROM missions WHERE initiative_id = ?)"
+      "milestone_id IN (SELECT id FROM milestones WHERE feature_id = ?)"
     )
-    values.push(filter.initiativeId)
+    values.push(filter.featureId)
   }
   if (filter.statuses?.length) {
     clauses.push(`status IN (${filter.statuses.map(() => "?").join(", ")})`)
@@ -118,8 +118,8 @@ export function listMergeEntries(filter: {
   ).map(toEntry)
 }
 
-export function openMergeEntryForSlice(sliceId: string): MergeQueueEntry | null {
-  return listMergeEntries({ sliceId, statuses: OPEN_MERGE_STATUSES }).at(0) ?? null
+export function openMergeEntryForUserStory(userStoryId: string): MergeQueueEntry | null {
+  return listMergeEntries({ userStoryId, statuses: OPEN_MERGE_STATUSES }).at(0) ?? null
 }
 
 export function getMergeEntryByResolutionRun(
@@ -132,23 +132,23 @@ export function getMergeEntryByResolutionRun(
 }
 
 export function enqueueMerge(input: {
-  missionId: string
-  sliceId: string
+  milestoneId: string
+  userStoryId: string
   playbookRunId: string | null
   proofAcceptedAt: number
 }): MergeQueueEntry {
-  const existing = openMergeEntryForSlice(input.sliceId)
+  const existing = openMergeEntryForUserStory(input.userStoryId)
   if (existing) return existing
   const id = randomUUID()
   const now = Date.now()
   getDb()
     .prepare(
-      "INSERT INTO merge_queue (id, mission_id, slice_id, playbook_run_id, status, proof_accepted_at, created_at, updated_at) VALUES (?, ?, ?, ?, 'queued', ?, ?, ?)"
+      "INSERT INTO merge_queue (id, milestone_id, user_story_id, playbook_run_id, status, proof_accepted_at, created_at, updated_at) VALUES (?, ?, ?, ?, 'queued', ?, ?, ?)"
     )
     .run(
       id,
-      input.missionId,
-      input.sliceId,
+      input.milestoneId,
+      input.userStoryId,
       input.playbookRunId,
       input.proofAcceptedAt,
       now,
@@ -160,7 +160,7 @@ export function enqueueMerge(input: {
 export interface MergeEntryPatch {
   status?: MergeQueueStatus
   attempt?: number
-  sliceHead?: string | null
+  userStoryHead?: string | null
   conflictFiles?: string[]
   mergeCommit?: string | null
   touchedFiles?: string[]
@@ -190,7 +190,7 @@ export function updateMergeEntry(
   }
   if (patch.status !== undefined) add("status", patch.status)
   if (patch.attempt !== undefined) add("attempt", patch.attempt)
-  if (patch.sliceHead !== undefined) add("slice_head", patch.sliceHead)
+  if (patch.userStoryHead !== undefined) add("user_story_head", patch.userStoryHead)
   if (patch.conflictFiles !== undefined)
     add("conflict_files", JSON.stringify(patch.conflictFiles))
   if (patch.mergeCommit !== undefined) add("merge_commit", patch.mergeCommit)

@@ -91,7 +91,7 @@ export const sendMessageTool: Tool = {
           anchor: {
             type: "string",
             description:
-              'Anchor a new thread to work: "slice:<key>" or "mission:<key>". Defaults to the work you are on.',
+              'Anchor a new thread to work: "user_story:<key>" or "milestone:<key>". Defaults to the work you are on.',
           },
           expects_reply: {
             type: "boolean",
@@ -209,7 +209,7 @@ export const escalateTool: Tool = {
           },
           anchor: {
             type: "string",
-            description: '"slice:<key>" or "mission:<key>". Defaults to the work you are on.',
+            description: '"user_story:<key>" or "milestone:<key>". Defaults to the work you are on.',
           },
         },
         required: ["reason"],

@@ -9,18 +9,18 @@ import {
 } from "@/components/process-screen"
 import type {
   AccountWithModels,
-  InitiativeGraph,
+  FeatureGraph,
   PlaybookRun,
   ProcessDefinition,
   ProcessRun,
-  WorkSlice,
+  WorkUserStory,
 } from "@/types"
-import { isSliceProof, ProofPanel } from "./proof-panel"
-import { SliceWorktreePanel } from "./slice-worktree-panel"
+import { isUserStoryProof, ProofPanel } from "./proof-panel"
+import { UserStoryWorktreePanel } from "./user-story-worktree-panel"
 
-// Slice execution (plan 106.3): Run / Retry / Cancel, the live embedded Process
+// User story execution (plan 106.3): Run / Retry / Cancel, the live embedded Process
 // run monitor, and the recorded proof. In a git workspace each attempt builds
-// in its own worktree and slices run in parallel (106.5); otherwise one
+// in its own worktree and user stories run in parallel (106.5); otherwise one
 // playbook runs at a time per workspace. The controls explain why they are
 // unavailable.
 
@@ -32,19 +32,19 @@ function errorMessage(error: unknown) {
     .replace(/^\w*Error:\s*/, "")
 }
 
-function maxAttempts(graph: InitiativeGraph): number {
-  const value = graph.initiative.budgets?.maxSliceAttempts
+function maxAttempts(graph: FeatureGraph): number {
+  const value = graph.feature.budgets?.maxUserStoryAttempts
   return typeof value === "number" ? value : DEFAULT_MAX_ATTEMPTS
 }
 
-export function SliceRunPanel({
+export function UserStoryRunPanel({
   graph,
-  slice,
+  userStory,
   workspacePath,
   onRefresh,
 }: {
-  graph: InitiativeGraph
-  slice: WorkSlice
+  graph: FeatureGraph
+  userStory: WorkUserStory
   workspacePath: string
   onRefresh: () => Promise<void>
 }) {
@@ -55,35 +55,35 @@ export function SliceRunPanel({
   const [providers, setProviders] = useState<AccountWithModels[]>([])
   const [pending, setPending] = useState(false)
   const [isolated, setIsolated] = useState(false)
-  // A refused start because another building slice's touch hints overlap.
+  // A refused start because another building user story's touch hints overlap.
   const [overlap, setOverlap] = useState<string | null>(null)
 
   const load = useCallback(async () => {
-    const [sliceRuns, active, integration] = await Promise.all([
-      window.cowork.missionControl.playbookRuns.list({ sliceId: slice.id }),
+    const [userStoryRuns, active, integration] = await Promise.all([
+      window.cowork.missionControl.playbookRuns.list({ userStoryId: userStory.id }),
       window.cowork.missionControl.playbookRuns.list({ status: "running" }),
       window.cowork.missionControl.integration
-        .status(slice.missionId)
+        .status(userStory.milestoneId)
         .catch(() => null),
     ])
-    setRuns(sliceRuns)
+    setRuns(userStoryRuns)
     const git = integration?.workspace.mode === "git"
     setIsolated(git)
-    // Only runs in the workspace itself occupy it; slices in a git workspace
+    // Only runs in the workspace itself occupy it; user stories in a git workspace
     // build in their own worktrees.
     setBusyRun(
       git
         ? null
-        : (active.find((run) => run.sliceId !== slice.id && !run.worktreePath) ?? null)
+        : (active.find((run) => run.userStoryId !== userStory.id && !run.worktreePath) ?? null)
     )
-    const runId = slice.processRunId ?? sliceRuns[0]?.processRunId ?? null
+    const runId = userStory.processRunId ?? userStoryRuns[0]?.processRunId ?? null
     const run = runId ? await window.cowork.db.processes.runs.get(runId) : null
     setProcessRun(run ?? null)
     if (run?.processId) {
       const processGraph = await window.cowork.db.processes.get(run.processId)
       setDefinition(processGraph?.definition ?? null)
     } else setDefinition(null)
-  }, [slice.id, slice.missionId, slice.processRunId])
+  }, [userStory.id, userStory.milestoneId, userStory.processRunId])
 
   useEffect(() => {
     void load()
@@ -94,7 +94,7 @@ export function SliceRunPanel({
   }, [load])
 
   // The run's backing task drives live updates: its terminal status is when
-  // the slice outcome lands, so refresh the graph and the run list then.
+  // the user story outcome lands, so refresh the graph and the run list then.
   useEffect(() => {
     const taskId = processRun?.taskId
     if (!taskId) return
@@ -113,22 +113,22 @@ export function SliceRunPanel({
   const running = latest?.status === "running"
   const cap = maxAttempts(graph)
   const blockers = graph.edges
-    .filter((edge) => edge.toSliceId === slice.id)
-    .map((edge) => graph.slices.find((s) => s.id === edge.fromSliceId))
-    .filter((dep): dep is WorkSlice => !!dep && dep.status !== "done")
-  const canStart = ["draft", "ready", "failed"].includes(slice.status)
+    .filter((edge) => edge.toUserStoryId === userStory.id)
+    .map((edge) => graph.userStories.find((s) => s.id === edge.fromUserStoryId))
+    .filter((dep): dep is WorkUserStory => !!dep && dep.status !== "done")
+  const canStart = ["draft", "ready", "failed"].includes(userStory.status)
   const disabledReason =
-    graph.initiative.status !== "active"
+    graph.feature.status !== "active"
       ? "Start the feature before running user stories."
-      : !graph.initiative.workspaceId
+      : !graph.feature.workspaceId
         ? "Choose a workspace for this feature first."
         : busyRun
-          ? `Another playbook run is using this workspace (${busyRun.sliceId ? `user story ${graph.slices.find((s) => s.id === busyRun.sliceId)?.key ?? ""}` : `the ${busyRun.hook.replace(/_/g, " ")} hook`}). User stories run in parallel only in a git workspace.`
+          ? `Another playbook run is using this workspace (${busyRun.userStoryId ? `user story ${graph.userStories.find((s) => s.id === busyRun.userStoryId)?.key ?? ""}` : `the ${busyRun.hook.replace(/_/g, " ")} hook`}). User stories run in parallel only in a git workspace.`
           : blockers.length
             ? `Waiting on ${isolated ? "unmerged" : "unfinished"} user stories: ${blockers.map((b) => b.key).join(", ")}.`
-            : slice.attempts >= cap
+            : userStory.attempts >= cap
               ? `All ${cap} attempts are used.`
-              : !slice.spec.acceptance.length
+              : !userStory.spec.acceptance.length
                 ? "Add acceptance criteria so the user story can be proven."
                 : null
 
@@ -151,21 +151,21 @@ export function SliceRunPanel({
   const run = (allowTouchOverlap = false) =>
     act(
       () =>
-        window.cowork.missionControl.execution.runSlice(slice.id, {
+        window.cowork.missionControl.execution.runUserStory(userStory.id, {
           allowTouchOverlap,
         }),
-      slice.status === "failed" ? "Retry started" : "User story run started"
+      userStory.status === "failed" ? "Retry started" : "User story run started"
     )
 
-  const proof = isSliceProof(slice.proof) ? slice.proof : latest?.proof ?? null
+  const proof = isUserStoryProof(userStory.proof) ? userStory.proof : latest?.proof ?? null
 
   return (
     <div className="space-y-4 rounded-md border p-4">
       <div className="flex flex-wrap items-center gap-2">
         <h3 className="text-sm font-medium">Execution</h3>
-        <Badge variant="outline">{slice.status}</Badge>
+        <Badge variant="outline">{userStory.status}</Badge>
         <span className="text-xs text-muted-foreground">
-          Attempt {slice.attempts} of {cap}
+          Attempt {userStory.attempts} of {cap}
         </span>
         <div className="ml-auto flex gap-2">
           {running ? (
@@ -175,7 +175,7 @@ export function SliceRunPanel({
               disabled={pending}
               onClick={() =>
                 void act(
-                  () => window.cowork.missionControl.execution.cancelSlice(slice.id),
+                  () => window.cowork.missionControl.execution.cancelUserStory(userStory.id),
                   "User story run cancelled"
                 )
               }
@@ -192,12 +192,12 @@ export function SliceRunPanel({
               >
                 {pending ? (
                   <Loader2 className="size-3.5 animate-spin" />
-                ) : slice.status === "failed" ? (
+                ) : userStory.status === "failed" ? (
                   <RotateCcw className="size-3.5" />
                 ) : (
                   <Play className="size-3.5" />
                 )}
-                {slice.status === "failed" ? "Retry" : "Run"}
+                {userStory.status === "failed" ? "Retry" : "Run"}
               </Button>
             )
           )}
@@ -214,13 +214,13 @@ export function SliceRunPanel({
           </Button>
         </div>
       )}
-      {slice.status === "integrating" && (
+      {userStory.status === "integrating" && (
         <p className="text-xs text-muted-foreground">
           Proof accepted. The user story is in the milestone's merge queue and is done once
           it merges into the integration branch.
         </p>
       )}
-      <SliceWorktreePanel slice={slice} />
+      <UserStoryWorktreePanel userStory={userStory} />
       {latest && latest.status !== "running" && latest.outcomeReason && (
         <p
           className={`text-xs ${latest.status === "completed" ? "text-muted-foreground" : "text-destructive"}`}
@@ -229,7 +229,7 @@ export function SliceRunPanel({
         </p>
       )}
       {proof ? (
-        <ProofPanel proof={proof} spec={slice.spec} workspacePath={workspacePath} />
+        <ProofPanel proof={proof} spec={userStory.spec} workspacePath={workspacePath} />
       ) : (
         <p className="text-sm text-muted-foreground">
           {running

@@ -12,7 +12,7 @@ import type { PlaybookAltitude, PlaybookWithHooks } from "@/types"
 
 const DEFAULT = "default"
 
-// Chooses the playbook an initiative, mission, or slice runs. Unset means the
+// Chooses the playbook a feature, milestone, or user story runs. Unset means the
 // runner's default for that altitude: the first playbook by name, created from
 // the shipped template when none exists (see ensureDefaultPlaybook).
 export function PlaybookPicker({

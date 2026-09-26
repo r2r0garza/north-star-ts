@@ -17,7 +17,7 @@ import type {
 
 interface SeatThreadRow {
   id: string
-  initiative_id: string
+  feature_id: string
   anchor_kind: SeatThreadAnchorKind | null
   anchor_id: string | null
   subject: string
@@ -27,7 +27,7 @@ interface SeatThreadRow {
 interface SeatMessageRow {
   id: string
   thread_id: string
-  initiative_id: string
+  feature_id: string
   from_address: string
   to_address: string
   in_reply_to: string | null
@@ -49,7 +49,7 @@ interface SeatMessageRow {
 function toThread(row: SeatThreadRow): SeatThread {
   return {
     id: row.id,
-    initiativeId: row.initiative_id,
+    featureId: row.feature_id,
     anchorKind: row.anchor_kind,
     anchorId: row.anchor_id,
     subject: row.subject,
@@ -61,7 +61,7 @@ function toMessage(row: SeatMessageRow): SeatMessage {
   return {
     id: row.id,
     threadId: row.thread_id,
-    initiativeId: row.initiative_id,
+    featureId: row.feature_id,
     fromAddress: row.from_address,
     toAddress: row.to_address,
     inReplyTo: row.in_reply_to,
@@ -84,7 +84,7 @@ function toMessage(row: SeatMessageRow): SeatMessage {
 // ── threads ─────────────────────────────────────────────────────────────────
 
 export function createThread(input: {
-  initiativeId: string
+  featureId: string
   anchorKind: SeatThreadAnchorKind | null
   anchorId: string | null
   subject: string
@@ -92,11 +92,11 @@ export function createThread(input: {
   const id = randomUUID()
   getDb()
     .prepare(
-      "INSERT INTO seat_threads (id, initiative_id, anchor_kind, anchor_id, subject, created_at) VALUES (?, ?, ?, ?, ?, ?)"
+      "INSERT INTO seat_threads (id, feature_id, anchor_kind, anchor_id, subject, created_at) VALUES (?, ?, ?, ?, ?, ?)"
     )
     .run(
       id,
-      input.initiativeId,
+      input.featureId,
       input.anchorKind,
       input.anchorId,
       input.subject,
@@ -113,23 +113,23 @@ export function getThread(id: string): SeatThread | undefined {
 }
 
 export function findThreadBySubject(
-  initiativeId: string,
+  featureId: string,
   subject: string
 ): SeatThread | undefined {
   const row = getDb()
     .prepare(
-      "SELECT * FROM seat_threads WHERE initiative_id = ? AND subject = ? ORDER BY created_at ASC LIMIT 1"
+      "SELECT * FROM seat_threads WHERE feature_id = ? AND subject = ? ORDER BY created_at ASC LIMIT 1"
     )
-    .get(initiativeId, subject) as SeatThreadRow | undefined
+    .get(featureId, subject) as SeatThreadRow | undefined
   return row ? toThread(row) : undefined
 }
 
-export function listThreads(initiativeId: string): SeatThread[] {
+export function listThreads(featureId: string): SeatThread[] {
   const rows = getDb()
     .prepare(
-      "SELECT * FROM seat_threads WHERE initiative_id = ? ORDER BY created_at ASC"
+      "SELECT * FROM seat_threads WHERE feature_id = ? ORDER BY created_at ASC"
     )
-    .all(initiativeId) as SeatThreadRow[]
+    .all(featureId) as SeatThreadRow[]
   return rows.map(toThread)
 }
 
@@ -137,7 +137,7 @@ export function listThreads(initiativeId: string): SeatThread[] {
 
 export function insertMessage(input: {
   threadId: string
-  initiativeId: string
+  featureId: string
   fromAddress: string
   toAddress: string
   inReplyTo?: string | null
@@ -153,12 +153,12 @@ export function insertMessage(input: {
   const now = Date.now()
   getDb()
     .prepare(
-      "INSERT INTO seat_messages (id, thread_id, initiative_id, from_address, to_address, in_reply_to, hop, body, kind, status, expects_reply, needs_decision, refusal_reason, created_at, delivered_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+      "INSERT INTO seat_messages (id, thread_id, feature_id, from_address, to_address, in_reply_to, hop, body, kind, status, expects_reply, needs_decision, refusal_reason, created_at, delivered_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )
     .run(
       id,
       input.threadId,
-      input.initiativeId,
+      input.featureId,
       input.fromAddress,
       input.toAddress,
       input.inReplyTo ?? null,
@@ -183,14 +183,14 @@ export function getMessage(id: string): SeatMessage | undefined {
 }
 
 export function listMessages(filter: {
-  initiativeId: string
+  featureId: string
   threadId?: string
   toAddress?: string
   statuses?: SeatMessageStatus[]
   limit?: number
 }): SeatMessage[] {
-  const where = ["initiative_id = ?"]
-  const values: unknown[] = [filter.initiativeId]
+  const where = ["feature_id = ?"]
+  const values: unknown[] = [filter.featureId]
   if (filter.threadId) {
     where.push("thread_id = ?")
     values.push(filter.threadId)
@@ -213,13 +213,13 @@ export function listMessages(filter: {
   return rows.map(toMessage)
 }
 
-export function countQueued(initiativeId: string, toAddress: string): number {
+export function countQueued(featureId: string, toAddress: string): number {
   return getDb()
     .prepare(
-      "SELECT COUNT(*) FROM seat_messages WHERE initiative_id = ? AND to_address = ? AND status = 'queued'"
+      "SELECT COUNT(*) FROM seat_messages WHERE feature_id = ? AND to_address = ? AND status = 'queued'"
     )
     .pluck()
-    .get(initiativeId, toAddress) as number
+    .get(featureId, toAddress) as number
 }
 
 // Refusals count against the thread rate too: a sender hammering a bound is
@@ -233,16 +233,16 @@ export function countThreadMessagesSince(threadId: string, since: number): numbe
     .get(threadId, since) as number
 }
 
-// Seat addresses in an initiative that have queued mail, for dispatch.
+// Seat addresses in a feature that have queued mail, for dispatch.
 export function listQueuedRecipients(): Array<{
-  initiativeId: string
+  featureId: string
   toAddress: string
 }> {
   return getDb()
     .prepare(
-      "SELECT DISTINCT initiative_id AS initiativeId, to_address AS toAddress FROM seat_messages WHERE status = 'queued'"
+      "SELECT DISTINCT feature_id AS featureId, to_address AS toAddress FROM seat_messages WHERE status = 'queued'"
     )
-    .all() as Array<{ initiativeId: string; toAddress: string }>
+    .all() as Array<{ featureId: string; toAddress: string }>
 }
 
 // Claim queued messages for one delivery. Only rows still `queued` flip, so a
@@ -310,36 +310,36 @@ export function hasReplyFrom(messageId: string, fromAddress: string): boolean {
     .get(messageId, fromAddress)
 }
 
-export function expireQueued(initiativeId: string): number {
+export function expireQueued(featureId: string): number {
   return getDb()
     .prepare(
-      "UPDATE seat_messages SET status = 'expired' WHERE initiative_id = ? AND status = 'queued'"
+      "UPDATE seat_messages SET status = 'expired' WHERE feature_id = ? AND status = 'queued'"
     )
-    .run(initiativeId).changes
+    .run(featureId).changes
 }
 
 // Supersede a sender's undelivered mail to one seat (plan 106.6): a newer
 // Navigator direction replaces the one still waiting, so a lead reads the
 // current position rather than a backlog of stale ones.
 export function expireQueuedFrom(
-  initiativeId: string,
+  featureId: string,
   fromAddress: string,
   toAddress: string
 ): number {
   return getDb()
     .prepare(
-      "UPDATE seat_messages SET status = 'expired' WHERE initiative_id = ? AND from_address = ? AND to_address = ? AND status = 'queued'"
+      "UPDATE seat_messages SET status = 'expired' WHERE feature_id = ? AND from_address = ? AND to_address = ? AND status = 'queued'"
     )
-    .run(initiativeId, fromAddress, toAddress).changes
+    .run(featureId, fromAddress, toAddress).changes
 }
 
-// Seat-sent messages in an initiative since a time, for the hourly message
+// Seat-sent messages in a feature since a time, for the hourly message
 // budget. The user and the Navigator don't count; refusals don't either.
-export function countSeatMessagesSince(initiativeId: string, since: number): number {
+export function countSeatMessagesSince(featureId: string, since: number): number {
   return getDb()
     .prepare(
-      "SELECT COUNT(*) FROM seat_messages WHERE initiative_id = ? AND created_at >= ? AND status <> 'refused' AND from_address NOT IN ('user@rig', 'navigator@rig')"
+      "SELECT COUNT(*) FROM seat_messages WHERE feature_id = ? AND created_at >= ? AND status <> 'refused' AND from_address NOT IN ('user@rig', 'navigator@rig')"
     )
     .pluck()
-    .get(initiativeId, since) as number
+    .get(featureId, since) as number
 }

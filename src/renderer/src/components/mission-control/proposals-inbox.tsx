@@ -12,13 +12,13 @@ import {
 } from "lucide-react"
 import { toast } from "sonner"
 import { describePlanChange } from "../../../../shared/mission-control/plan-changes"
-import type { SliceDraft } from "../../../../shared/mission-control/plan-changes"
+import type { UserStoryDraft } from "../../../../shared/mission-control/plan-changes"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
 import type {
   Decision,
-  InitiativeGraph,
+  FeatureGraph,
   PlanChange,
   PlanProposal,
   Position,
@@ -27,7 +27,7 @@ import type {
 
 // Everything waiting on the user (plan 106.6): plan proposals from seats (with
 // the exact changes applying them makes), escalations, and the Navigator's
-// other user-owned decisions — landing a mission, a stuck merge, a failed hook.
+// other user-owned decisions — landing a milestone, a stuck merge, a failed hook.
 
 function errorMessage(error: unknown) {
   return (error instanceof Error ? error.message : String(error))
@@ -35,21 +35,21 @@ function errorMessage(error: unknown) {
     .replace(/^\w*Error:\s*/, "")
 }
 
-function SliceLines({ slice }: { slice: SliceDraft }) {
+function UserStoryLines({ userStory }: { userStory: UserStoryDraft }) {
   return (
     <div className="pl-4 text-xs text-muted-foreground">
-      {slice.goal && <div>Goal: {slice.goal}</div>}
-      {slice.acceptance?.length ? (
+      {userStory.goal && <div>Goal: {userStory.goal}</div>}
+      {userStory.acceptance?.length ? (
         <ul className="list-disc pl-4">
-          {slice.acceptance.map((item, index) => (
+          {userStory.acceptance.map((item, index) => (
             <li key={index}>{item}</li>
           ))}
         </ul>
       ) : (
         <div className="text-amber-600">No acceptance criteria</div>
       )}
-      {slice.dependsOn?.length ? <div>After: {slice.dependsOn.join(", ")}</div> : null}
-      {slice.touchHints?.length ? <div>Touches: {slice.touchHints.join(", ")}</div> : null}
+      {userStory.dependsOn?.length ? <div>After: {userStory.dependsOn.join(", ")}</div> : null}
+      {userStory.touchHints?.length ? <div>Touches: {userStory.touchHints.join(", ")}</div> : null}
     </div>
   )
 }
@@ -60,45 +60,45 @@ function ChangeView({ change }: { change: PlanChange }) {
     : describePlanChange(change).startsWith("−")
       ? "text-destructive"
       : ""
-  if (change.op === "add_mission")
+  if (change.op === "add_milestone")
     return (
       <div className="space-y-1">
         <div className={`font-medium ${tone}`}>
-          + Mission {change.mission.name}
-          {change.mission.key ? <code className="ml-1 text-xs">{change.mission.key}</code> : null}
+          + Milestone {change.milestone.name}
+          {change.milestone.key ? <code className="ml-1 text-xs">{change.milestone.key}</code> : null}
         </div>
-        <div className="pl-4 text-xs text-muted-foreground">{change.mission.outcome}</div>
-        {change.mission.definitionOfDone && (
+        <div className="pl-4 text-xs text-muted-foreground">{change.milestone.outcome}</div>
+        {change.milestone.definitionOfDone && (
           <div className="pl-4 text-xs text-muted-foreground">
-            Done when: {change.mission.definitionOfDone}
+            Done when: {change.milestone.definitionOfDone}
           </div>
         )}
-        {(change.mission.slices ?? []).map((slice, index) => (
+        {(change.milestone.userStories ?? []).map((userStory, index) => (
           <div key={index} className="pl-4">
             <div className="text-sm">
-              + {slice.title}
-              {slice.key ? <code className="ml-1 text-xs">{slice.key}</code> : null}
+              + {userStory.title}
+              {userStory.key ? <code className="ml-1 text-xs">{userStory.key}</code> : null}
             </div>
-            <SliceLines slice={slice} />
+            <UserStoryLines userStory={userStory} />
           </div>
         ))}
       </div>
     )
-  if (change.op === "add_slice")
+  if (change.op === "add_user_story")
     return (
       <div>
         <div className={tone}>{describePlanChange(change)}</div>
-        <SliceLines slice={change.slice} />
+        <UserStoryLines userStory={change.userStory} />
       </div>
     )
-  if (change.op === "split_slice")
+  if (change.op === "split_user_story")
     return (
       <div>
         <div>{describePlanChange(change)}</div>
-        {change.into.map((slice, index) => (
+        {change.into.map((userStory, index) => (
           <div key={index} className="pl-4">
-            <div>+ {slice.title}</div>
-            <SliceLines slice={slice} />
+            <div>+ {userStory.title}</div>
+            <UserStoryLines userStory={userStory} />
           </div>
         ))}
       </div>
@@ -125,13 +125,13 @@ function ProposalCard({
   onResolved,
 }: {
   proposal: PlanProposal
-  onGraph: (graph: InitiativeGraph) => void
+  onGraph: (graph: FeatureGraph) => void
   onResolved: () => Promise<void>
 }) {
   const [rejecting, setRejecting] = useState(false)
   const [note, setNote] = useState("")
   const [pending, setPending] = useState(false)
-  const act = async (work: () => Promise<InitiativeGraph>, done: string) => {
+  const act = async (work: () => Promise<FeatureGraph>, done: string) => {
     setPending(true)
     try {
       onGraph(await work())
@@ -151,7 +151,7 @@ function ProposalCard({
     <div className="space-y-2 rounded-md border p-3">
       <div className="flex flex-wrap items-center gap-2 text-sm">
         <Badge variant="secondary">
-          {proposal.kind === "plan" ? "Planning proposal" : proposal.kind === "slice" ? "New user story" : "Plan change"}
+          {proposal.kind === "plan" ? "Planning proposal" : proposal.kind === "user_story" ? "New user story" : "Plan change"}
         </Badge>
         {problems.size > 0 && (
           <Badge variant="outline" className="border-amber-500/60 text-amber-700 dark:text-amber-400">
@@ -239,15 +239,15 @@ function ProposalCard({
 
 const HOOK_LABELS: Record<string, string> = {
   plan: "planning",
-  before_slices: "the planning review",
-  after_all_slices: "the milestone review",
-  between_missions: "the release",
+  before_user_stories: "the planning review",
+  after_all_user_stories: "the milestone review",
+  between_milestones: "the release",
   on_complete: "completion",
 }
 
 export interface InboxNavigation {
-  openMission: (missionId: string) => void
-  openSlice: (sliceId: string) => void
+  openMilestone: (milestoneId: string) => void
+  openUserStory: (userStoryId: string) => void
   openComms: () => void
   editBudgets: () => void
 }
@@ -258,10 +258,10 @@ function DecisionCard({
   navigation,
   onGraph,
 }: {
-  graph: InitiativeGraph
+  graph: FeatureGraph
   decision: Decision
   navigation: InboxNavigation
-  onGraph: (graph: InitiativeGraph) => void
+  onGraph: (graph: FeatureGraph) => void
 }) {
   const [judging, setJudging] = useState(false)
   const [summary, setSummary] = useState("")
@@ -271,8 +271,8 @@ function DecisionCard({
     setPending(true)
     try {
       const result = await work()
-      if (result && typeof result === "object" && "initiative" in result)
-        onGraph(result as InitiativeGraph)
+      if (result && typeof result === "object" && "feature" in result)
+        onGraph(result as FeatureGraph)
       toast.success(done)
     } catch (error) {
       toast.error(errorMessage(error))
@@ -280,11 +280,11 @@ function DecisionCard({
       setPending(false)
     }
   }
-  const missionKey = (id: string) => graph.missions.find((m) => m.id === id)?.key ?? "mission"
+  const milestoneKey = (id: string) => graph.milestones.find((m) => m.id === id)?.key ?? "milestone"
   return (
     <div className="space-y-2 rounded-md border border-amber-500/40 bg-amber-500/5 p-3 text-sm">
       <div>{decision.summary}</div>
-      {action?.kind === "judge_mission" && judging && (
+      {action?.kind === "judge_milestone" && judging && (
         <Textarea
           rows={2}
           value={summary}
@@ -302,8 +302,8 @@ function DecisionCard({
                 void run(
                   () =>
                     window.cowork.missionControl.execution.runHook({
-                      initiativeId: graph.initiative.id,
-                      missionId: action.missionId,
+                      featureId: graph.feature.id,
+                      milestoneId: action.milestoneId,
                       hook: action.hook,
                     }),
                   `Started ${HOOK_LABELS[action.hook] ?? action.hook}`
@@ -313,7 +313,7 @@ function DecisionCard({
               <Play className="size-4" /> Run {HOOK_LABELS[action.hook] ?? action.hook}
             </Button>
           )}
-          {action.kind === "judge_mission" &&
+          {action.kind === "judge_milestone" &&
             (judging ? (
               <>
                 <Button
@@ -321,8 +321,8 @@ function DecisionCard({
                   disabled={pending}
                   onClick={() =>
                     void run(
-                      () => window.cowork.missionControl.proposals.judgeMission(action.missionId, summary),
-                      `Milestone ${missionKey(action.missionId)} judged done`
+                      () => window.cowork.missionControl.proposals.judgeMilestone(action.milestoneId, summary),
+                      `Milestone ${milestoneKey(action.milestoneId)} judged done`
                     )
                   }
                 >
@@ -337,14 +337,14 @@ function DecisionCard({
                 <Check className="size-4" /> Complete milestone…
               </Button>
             ))}
-          {(action.kind === "judge_mission" || action.kind === "open_mission") && (
-            <Button size="sm" variant="outline" onClick={() => navigation.openMission(action.missionId)}>
-              Open milestone {missionKey(action.missionId)}
+          {(action.kind === "judge_milestone" || action.kind === "open_milestone") && (
+            <Button size="sm" variant="outline" onClick={() => navigation.openMilestone(action.milestoneId)}>
+              Open milestone {milestoneKey(action.milestoneId)}
             </Button>
           )}
-          {action.kind === "open_slice" && (
-            <Button size="sm" variant="outline" onClick={() => navigation.openSlice(action.sliceId)}>
-              Open user story {graph.slices.find((s) => s.id === action.sliceId)?.key ?? ""}
+          {action.kind === "open_user_story" && (
+            <Button size="sm" variant="outline" onClick={() => navigation.openUserStory(action.userStoryId)}>
+              Open user story {graph.userStories.find((s) => s.id === action.userStoryId)?.key ?? ""}
             </Button>
           )}
           {action.kind === "edit_budgets" && (
@@ -445,19 +445,19 @@ export function WaitingOnYou({
   onGraph,
   navigation,
 }: {
-  graph: InitiativeGraph
+  graph: FeatureGraph
   position: Position | null
-  onGraph: (graph: InitiativeGraph) => void
+  onGraph: (graph: FeatureGraph) => void
   navigation: InboxNavigation
 }) {
-  const initiativeId = graph.initiative.id
+  const featureId = graph.feature.id
   const [proposals, setProposals] = useState<PlanProposal[]>([])
   const [escalations, setEscalations] = useState<SeatMessage[]>([])
   const [history, setHistory] = useState(false)
   const reload = useCallback(async () => {
     const [nextProposals, mail] = await Promise.all([
-      window.cowork.missionControl.proposals.list(initiativeId),
-      window.cowork.missionControl.comms.list(initiativeId),
+      window.cowork.missionControl.proposals.list(featureId),
+      window.cowork.missionControl.comms.list(featureId),
     ])
     setProposals(nextProposals)
     setEscalations(
@@ -465,11 +465,11 @@ export function WaitingOnYou({
         (m) => m.toAddress === "user@rig" && m.kind === "escalation" && m.status === "delivered"
       )
     )
-  }, [initiativeId])
+  }, [featureId])
   useEffect(() => {
     void reload().catch(() => {})
     const refresh = (changed: string) => {
-      if (changed === initiativeId) void reload().catch(() => {})
+      if (changed === featureId) void reload().catch(() => {})
     }
     const offNavigator = window.cowork.missionControl.navigator.onChanged(refresh)
     const offComms = window.cowork.missionControl.comms.onChanged(refresh)
@@ -477,7 +477,7 @@ export function WaitingOnYou({
       offNavigator()
       offComms()
     }
-  }, [initiativeId, reload, graph])
+  }, [featureId, reload, graph])
 
   const pending = proposals.filter((p) => p.status === "pending")
   const resolved = proposals.filter((p) => p.status !== "pending")
@@ -542,14 +542,14 @@ export function WaitingOnYou({
   )
 }
 
-// The initiative's revision log with seat actors (plan 106.6): every
+// The feature's revision log with seat actors (plan 106.6): every
 // structural change, who made it (user, seat, or Navigator), and why.
-export function PlanHistory({ graph }: { graph: InitiativeGraph }) {
+export function PlanHistory({ graph }: { graph: FeatureGraph }) {
   const [open, setOpen] = useState(false)
   const label = (kind: string, id: string) => {
-    if (kind === "slice") return graph.slices.find((s) => s.id === id)?.key ?? "user story"
-    if (kind === "mission" || kind === "edge")
-      return graph.missions.find((m) => m.id === id)?.key ?? kind
+    if (kind === "user_story") return graph.userStories.find((s) => s.id === id)?.key ?? "user story"
+    if (kind === "milestone" || kind === "edge")
+      return graph.milestones.find((m) => m.id === id)?.key ?? kind
     return "feature"
   }
   const revisions = graph.revisions.filter((r) => r.change.op !== "execute")

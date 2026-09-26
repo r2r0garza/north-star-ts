@@ -5134,7 +5134,7 @@ export function recoverProcessMonitorGates(input: {
 
 function runLabel(run: ProcessRun): string {
   const when = run.startedAt ?? run.createdAt
-  // Prefer the generated title; fall back to an objective slice for pre-existing
+  // Prefer the generated title; fall back to an objective user story for pre-existing
   // (title-less) runs.
   const obj = run.objective?.trim()
   const label = run.title?.trim() || (obj ? obj.slice(0, 40) : "")

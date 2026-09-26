@@ -8,13 +8,13 @@ import type {
 
 // The Navigator's tick log (plan 106.6). A row is written only when the
 // position changed, so the log reads as "what the Navigator saw and did". It
-// is bounded per initiative.
+// is bounded per feature.
 
-export const MAX_TICKS_PER_INITIATIVE = 200
+export const MAX_TICKS_PER_FEATURE = 200
 
 interface TickRow {
   id: string
-  initiative_id: string
+  feature_id: string
   position_hash: string
   summary: string
   actions: string
@@ -44,7 +44,7 @@ function object<T>(value: string): T {
 function toTick(row: TickRow): NavigatorTick {
   return {
     id: row.id,
-    initiativeId: row.initiative_id,
+    featureId: row.feature_id,
     positionHash: row.position_hash,
     summary: row.summary,
     actions: list<NavigatorTickAction>(row.actions),
@@ -54,27 +54,27 @@ function toTick(row: TickRow): NavigatorTick {
   }
 }
 
-export function lastTick(initiativeId: string): NavigatorTick | null {
+export function lastTick(featureId: string): NavigatorTick | null {
   const row = getDb()
     .prepare(
-      "SELECT * FROM navigator_ticks WHERE initiative_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1"
+      "SELECT * FROM navigator_ticks WHERE feature_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1"
     )
-    .get(initiativeId) as TickRow | undefined
+    .get(featureId) as TickRow | undefined
   return row ? toTick(row) : null
 }
 
-export function listTicks(initiativeId: string, limit = 50): NavigatorTick[] {
+export function listTicks(featureId: string, limit = 50): NavigatorTick[] {
   return (
     getDb()
       .prepare(
-        "SELECT * FROM navigator_ticks WHERE initiative_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?"
+        "SELECT * FROM navigator_ticks WHERE feature_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?"
       )
-      .all(initiativeId, Math.max(1, Math.min(MAX_TICKS_PER_INITIATIVE, limit))) as TickRow[]
+      .all(featureId, Math.max(1, Math.min(MAX_TICKS_PER_FEATURE, limit))) as TickRow[]
   ).map(toTick)
 }
 
 export function recordTick(input: {
-  initiativeId: string
+  featureId: string
   positionHash: string
   summary: string
   actions: NavigatorTickAction[]
@@ -86,11 +86,11 @@ export function recordTick(input: {
   getDb().transaction(() => {
     getDb()
       .prepare(
-        "INSERT INTO navigator_ticks (id, initiative_id, position_hash, summary, actions, decision_keys, state, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+        "INSERT INTO navigator_ticks (id, feature_id, position_hash, summary, actions, decision_keys, state, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
       )
       .run(
         id,
-        input.initiativeId,
+        input.featureId,
         input.positionHash,
         input.summary,
         JSON.stringify(input.actions),
@@ -100,11 +100,11 @@ export function recordTick(input: {
       )
     getDb()
       .prepare(
-        `DELETE FROM navigator_ticks WHERE initiative_id = ? AND id NOT IN (
-           SELECT id FROM navigator_ticks WHERE initiative_id = ?
+        `DELETE FROM navigator_ticks WHERE feature_id = ? AND id NOT IN (
+           SELECT id FROM navigator_ticks WHERE feature_id = ?
            ORDER BY created_at DESC, rowid DESC LIMIT ?)`
       )
-      .run(input.initiativeId, input.initiativeId, MAX_TICKS_PER_INITIATIVE)
+      .run(input.featureId, input.featureId, MAX_TICKS_PER_FEATURE)
   })()
-  return lastTick(input.initiativeId)!
+  return lastTick(input.featureId)!
 }

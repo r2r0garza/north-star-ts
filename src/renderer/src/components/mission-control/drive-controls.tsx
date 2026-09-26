@@ -22,9 +22,9 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
-import type { BudgetMeter, DriveMode, InitiativeGraph, Position } from "@/types"
+import type { BudgetMeter, DriveMode, FeatureGraph, Position } from "@/types"
 
-// Initiative drive controls (plan 106.6): the drive mode, Start / Pause /
+// Feature drive controls (plan 106.6): the drive mode, Start / Pause /
 // Resume / Cancel, auto-applying the planning proposal, budget meters, and
 // the "Waiting on you" count. Mode and budgets are the user's alone.
 
@@ -59,26 +59,26 @@ export function DriveControls({
   onShowWaiting,
   budgetRequest = 0,
 }: {
-  graph: InitiativeGraph
+  graph: FeatureGraph
   position: Position | null
-  onGraph: (graph: InitiativeGraph) => void
+  onGraph: (graph: FeatureGraph) => void
   onShowWaiting: () => void
   // Changes when something else (the inbox) asks to edit budgets.
   budgetRequest?: number
 }) {
-  const initiative = graph.initiative
+  const feature = graph.feature
   const [pending, setPending] = useState(false)
-  const [mode, setMode] = useState<DriveMode>(initiative.driveMode)
-  const [autoApply, setAutoApply] = useState(initiative.drive.autoApplyPlan)
-  const draft = initiative.status === "draft"
-  const paused = initiative.status === "paused"
-  const active = initiative.status === "active"
-  const finished = ["completed", "cancelled", "failed"].includes(initiative.status)
+  const [mode, setMode] = useState<DriveMode>(feature.driveMode)
+  const [autoApply, setAutoApply] = useState(feature.drive.autoApplyPlan)
+  const draft = feature.status === "draft"
+  const paused = feature.status === "paused"
+  const active = feature.status === "active"
+  const finished = ["completed", "cancelled", "failed"].includes(feature.status)
   const editable = draft || paused
-  const shownMode = editable ? mode : initiative.driveMode
+  const shownMode = editable ? mode : feature.driveMode
   const waiting = (position?.pendingDecisions ?? []).filter((d) => d.owner === "user").length
 
-  const act = async (work: () => Promise<InitiativeGraph>) => {
+  const act = async (work: () => Promise<FeatureGraph>) => {
     setPending(true)
     try {
       onGraph(await work())
@@ -91,25 +91,25 @@ export function DriveControls({
   const drive = window.cowork.missionControl.drive
   const start = () =>
     act(async () => {
-      const result = await drive.start(initiative.id, { mode, autoApplyPlan: autoApply })
+      const result = await drive.start(feature.id, { mode, autoApplyPlan: autoApply })
       if (result.planningError)
         toast.warning(`Started, but planning couldn't run: ${result.planningError}`)
       return result.graph
     })
   const changeMode = (value: DriveMode) => {
     setMode(value)
-    if (paused) void act(() => drive.setMode(initiative.id, value))
+    if (paused) void act(() => drive.setMode(feature.id, value))
   }
   const changeAutoApply = (value: boolean) => {
     setAutoApply(value)
-    if (paused) void act(() => drive.setAutoApplyPlan(initiative.id, value))
+    if (paused) void act(() => drive.setAutoApplyPlan(feature.id, value))
   }
 
   return (
     <div className="space-y-3 rounded-lg border p-4">
       <div className="flex flex-wrap items-center gap-3">
-        <code className="text-xs text-muted-foreground">{initiative.key}</code>
-        <Badge>{initiative.status}</Badge>
+        <code className="text-xs text-muted-foreground">{feature.key}</code>
+        <Badge>{feature.status}</Badge>
         <div className="flex items-center gap-2">
           <Label className="text-xs text-muted-foreground">Drive</Label>
           <Select
@@ -133,7 +133,7 @@ export function DriveControls({
           <label className="flex items-center gap-2 text-xs text-muted-foreground">
             <Switch
               size="sm"
-              checked={editable ? autoApply : initiative.drive.autoApplyPlan}
+              checked={editable ? autoApply : feature.drive.autoApplyPlan}
               disabled={!editable || pending}
               onCheckedChange={changeAutoApply}
             />
@@ -149,8 +149,8 @@ export function DriveControls({
           {draft && (
             <Button
               size="sm"
-              disabled={pending || !initiative.rigId}
-              title={initiative.rigId ? undefined : "Choose a rig first"}
+              disabled={pending || !feature.rigId}
+              title={feature.rigId ? undefined : "Choose a rig first"}
               onClick={() => void start()}
             >
               <Rocket className="size-4" /> Start
@@ -161,7 +161,7 @@ export function DriveControls({
               size="sm"
               variant="outline"
               disabled={pending}
-              onClick={() => void act(() => drive.pause(initiative.id))}
+              onClick={() => void act(() => drive.pause(feature.id))}
             >
               <Pause className="size-4" /> Pause
             </Button>
@@ -170,18 +170,18 @@ export function DriveControls({
             <Button
               size="sm"
               disabled={pending}
-              onClick={() => void act(() => drive.resume(initiative.id))}
+              onClick={() => void act(() => drive.resume(feature.id))}
             >
               <Play className="size-4" /> Resume
             </Button>
           )}
-          {initiative.status === "completed" && (
+          {feature.status === "completed" && (
             <Button
               size="sm"
               variant="outline"
               disabled={pending}
               title="Add more milestones to this feature"
-              onClick={() => void act(() => drive.reopen(initiative.id))}
+              onClick={() => void act(() => drive.reopen(feature.id))}
             >
               <RotateCcw className="size-4" /> Reopen
             </Button>
@@ -195,10 +195,10 @@ export function DriveControls({
               onClick={() => {
                 if (
                   window.confirm(
-                    `Cancel “${initiative.name}”? Running user stories and hooks stop, and it can't be resumed. Branches and worktrees stay until you delete it.`
+                    `Cancel “${feature.name}”? Running user stories and hooks stop, and it can't be resumed. Branches and worktrees stay until you delete it.`
                   )
                 )
-                  void act(() => drive.cancel(initiative.id))
+                  void act(() => drive.cancel(feature.id))
               }}
             >
               <Square className="size-4" /> Cancel
@@ -208,15 +208,15 @@ export function DriveControls({
       </div>
       <p className="text-xs text-muted-foreground">
         {MODES.find((item) => item.value === shownMode)?.help}
-        {initiative.status === "completed"
+        {feature.status === "completed"
           ? " Every milestone is complete. Reopen to add more milestones; it reopens paused so you can check the mode and budgets before resuming."
           : editable || finished
             ? ""
             : " Pause to change the mode."}
       </p>
-      {paused && initiative.drive.pauseReason && (
+      {paused && feature.drive.pauseReason && (
         <div className="rounded-md border border-amber-500/40 bg-amber-500/5 p-2 text-sm">
-          Paused: {initiative.drive.pauseReason}
+          Paused: {feature.drive.pauseReason}
         </div>
       )}
       {!draft && position && (
@@ -241,9 +241,9 @@ export function BudgetMeters({
   onGraph,
   editRequest = 0,
 }: {
-  graph: InitiativeGraph
+  graph: FeatureGraph
   meters: BudgetMeter[]
-  onGraph: (graph: InitiativeGraph) => void
+  onGraph: (graph: FeatureGraph) => void
   editRequest?: number
 }) {
   const [open, setOpen] = useState(false)
@@ -257,7 +257,7 @@ export function BudgetMeters({
   function openEditor() {
     const next: Record<string, string> = {}
     for (const spec of BUDGET_SPECS) {
-      const value = graph.initiative.budgets[spec.key]
+      const value = graph.feature.budgets[spec.key]
       next[spec.key] = typeof value === "number" ? String(value) : ""
     }
     setValues(next)
@@ -279,7 +279,7 @@ export function BudgetMeters({
     }
     setSaving(true)
     try {
-      onGraph(await window.cowork.missionControl.drive.setBudgets(graph.initiative.id, patch))
+      onGraph(await window.cowork.missionControl.drive.setBudgets(graph.feature.id, patch))
       setOpen(false)
     } catch (error) {
       toast.error(errorMessage(error))
@@ -300,7 +300,7 @@ export function BudgetMeters({
           const ratio = meter.limit > 0 ? Math.min(1, meter.used / meter.limit) : 1
           // A full concurrency slot count is normal operation, not a warning.
           const level =
-            meter.key === "maxConcurrentSlices" || meter.final ? "ok" : meter.level
+            meter.key === "maxConcurrentUserStories" || meter.final ? "ok" : meter.level
           return (
             <div key={meter.key} className="text-xs">
               <div className="flex gap-2">
@@ -331,7 +331,7 @@ export function BudgetMeters({
           <DialogHeader>
             <DialogTitle>Budgets</DialogTitle>
             <DialogDescription>
-              Hard limits for this initiative. Only you can change them; leave a field empty
+              Hard limits for this feature. Only you can change them; leave a field empty
               for its default.
             </DialogDescription>
           </DialogHeader>

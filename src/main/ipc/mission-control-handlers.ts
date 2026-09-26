@@ -8,7 +8,7 @@ import {
 import { agentSources } from "../agent/agents/sources"
 import { loadAgents } from "../agent/agents/loader"
 import * as rigs from "../db/repositories/rigs"
-import * as initiatives from "../db/repositories/initiatives"
+import * as features from "../db/repositories/features"
 import * as playbooks from "../db/repositories/playbooks"
 import {
   buildRigExport,
@@ -16,19 +16,19 @@ import {
   type RigExport,
 } from "../mission-control/io"
 import { createDefaultPlaybook } from "../mission-control/playbook-defaults"
-import type { SliceRunner } from "../mission-control/slice-runner"
+import type { UserStoryRunner } from "../mission-control/user-story-runner"
 import type { SeatComms } from "../mission-control/comms"
 import type { SeatSessionService } from "../mission-control/sessions"
 import * as seatCommsRepo from "../db/repositories/seat-comms"
 import * as seatSessionsRepo from "../db/repositories/seat-sessions"
 import { deleteConversationsWithArtifacts } from "../conversations/lifecycle"
 import { startHookRun } from "../mission-control/hook-runner"
-import type { MissionIntegration } from "../mission-control/integration"
+import type { MilestoneIntegration } from "../mission-control/integration"
 import type { Navigator } from "../mission-control/navigator"
 import {
   applyProposal,
   checkProposal,
-  judgeMissionDone,
+  judgeMilestoneDone,
   rejectProposal,
 } from "../mission-control/map-tools"
 import * as proposalsRepo from "../db/repositories/proposals"
@@ -47,16 +47,16 @@ async function agents(workspace?: string) {
 }
 
 export function registerMissionControlHandlers(
-  sliceRunner: SliceRunner,
+  userStoryRunner: UserStoryRunner,
   seatComms: SeatComms,
   seatSessions: SeatSessionService,
-  integration: MissionIntegration,
+  integration: MilestoneIntegration,
   navigator: Navigator,
-  // Open a folder in the user's IDE (settings), for slice worktrees.
+  // Open a folder in the user's IDE (settings), for user story worktrees.
   openFolder: (folder: string) => Promise<string>
 ): void {
   const graphOf = (id: string) => {
-    const graph = initiatives.getInitiativeGraph(id)
+    const graph = features.getFeatureGraph(id)
     if (!graph) throw new Error(`Feature not found: ${id}`)
     return graph
   }
@@ -103,7 +103,7 @@ export function registerMissionControlHandlers(
   ipcMain.handle(
     "missionControl:budgets:set",
     (_event, id: string, patch: Record<string, number | null>) => {
-      initiatives.setInitiativeBudgets(id, patch ?? {}, "user")
+      features.setFeatureBudgets(id, patch ?? {}, "user")
       return graphOf(id)
     }
   )
@@ -117,13 +117,13 @@ export function registerMissionControlHandlers(
   // Rejections and partial applications go back to the seat that proposed,
   // in the user's words.
   const deliverToProposer = (
-    resolved: { initiativeId: string; proposer: string },
+    resolved: { featureId: string; proposer: string },
     body: string,
     subject: string
   ) => {
     if (!parseSeatAddress(resolved.proposer)) return
     const result = seatComms.userNote({
-      initiativeId: resolved.initiativeId,
+      featureId: resolved.featureId,
       to: resolved.proposer,
       body,
       subject,
@@ -131,9 +131,9 @@ export function registerMissionControlHandlers(
     if (!result.ok) console.warn("[proposals] note not delivered:", result.message)
   }
   // Pending proposals carry which of their changes no longer apply.
-  ipcMain.handle("missionControl:proposals:list", (_event, initiativeId: string) =>
+  ipcMain.handle("missionControl:proposals:list", (_event, featureId: string) =>
     proposalsRepo
-      .listProposals(initiativeId)
+      .listProposals(featureId)
       .map((proposal) =>
         proposal.status === "pending"
           ? { ...proposal, problems: checkProposal(proposal) }
@@ -147,18 +147,18 @@ export function registerMissionControlHandlers(
         partial: options?.partial === true,
         deliver: (resolved, body) => deliverToProposer(resolved, body, "Proposal partly applied"),
       })
-      return graphOf(proposal.initiativeId)
+      return graphOf(proposal.featureId)
     }
   )
-  // The user's definition-of-done judgment for a mission.
+  // The user's definition-of-done judgment for a milestone.
   ipcMain.handle(
-    "missionControl:missions:judgeDone",
-    async (_event, missionId: string, summary: string) => {
-      await judgeMissionDone(missionId, summary ?? "", async (id) => {
+    "missionControl:milestones:judgeDone",
+    async (_event, milestoneId: string, summary: string) => {
+      await judgeMilestoneDone(milestoneId, summary ?? "", async (id) => {
         await integration.markMerged(id)
       })
-      const mission = initiatives.getMission(missionId)
-      return graphOf(mission!.initiativeId)
+      const milestone = features.getMilestone(milestoneId)
+      return graphOf(milestone!.featureId)
     }
   )
   ipcMain.handle(
@@ -167,7 +167,7 @@ export function registerMissionControlHandlers(
       const proposal = rejectProposal(id, note ?? "", (resolved, body) =>
         deliverToProposer(resolved, body, "Proposal rejected")
       )
-      return graphOf(proposal.initiativeId)
+      return graphOf(proposal.featureId)
     }
   )
   ipcMain.handle("missionControl:comms:acknowledge", (_event, messageId: string) =>
@@ -181,33 +181,33 @@ export function registerMissionControlHandlers(
       return result.message
     }
   )
-  // Mission integration (plan 106.5). Landing is the one call that may change
+  // Milestone integration (plan 106.5). Landing is the one call that may change
   // the user's branch, and only with the base/head the user reviewed.
-  ipcMain.handle("missionControl:integration:status", (_event, missionId: string) =>
-    integration.status(missionId)
+  ipcMain.handle("missionControl:integration:status", (_event, milestoneId: string) =>
+    integration.status(milestoneId)
   )
   ipcMain.handle(
     "missionControl:integration:setPolicy",
-    (_event, missionId: string, mode: MergePolicyMode) =>
-      initiatives.setMissionMergePolicy(missionId, mode)
+    (_event, milestoneId: string, mode: MergePolicyMode) =>
+      features.setMilestoneMergePolicy(milestoneId, mode)
   )
   ipcMain.handle(
     "missionControl:integration:land",
     (
       _event,
-      missionId: string,
+      milestoneId: string,
       approval: { baseOid: string; headOid: string },
       options?: { localMerge?: boolean }
     ) => {
       if (typeof approval?.baseOid !== "string" || typeof approval?.headOid !== "string")
         throw new Error("Review the merge before approving it.")
-      return integration.land(missionId, approval, {
+      return integration.land(milestoneId, approval, {
         localMerge: options?.localMerge === true,
       })
     }
   )
-  ipcMain.handle("missionControl:integration:markMerged", (_event, missionId: string) =>
-    integration.markMerged(missionId)
+  ipcMain.handle("missionControl:integration:markMerged", (_event, milestoneId: string) =>
+    integration.markMerged(milestoneId)
   )
   ipcMain.handle("missionControl:integration:retry", (_event, entryId: string) =>
     integration.retry(entryId)
@@ -218,16 +218,16 @@ export function registerMissionControlHandlers(
   ipcMain.handle("missionControl:integration:abandon", (_event, entryId: string) =>
     integration.abandon(entryId)
   )
-  ipcMain.handle("missionControl:integration:sliceInfo", (_event, sliceId: string) =>
-    integration.info(sliceId)
+  ipcMain.handle("missionControl:integration:userStoryInfo", (_event, userStoryId: string) =>
+    integration.info(userStoryId)
   )
-  ipcMain.handle("missionControl:integration:sliceDiff", (_event, sliceId: string) =>
-    integration.sliceDiff(sliceId)
+  ipcMain.handle("missionControl:integration:userStoryDiff", (_event, userStoryId: string) =>
+    integration.userStoryDiff(userStoryId)
   )
   ipcMain.handle(
     "missionControl:integration:openWorktree",
-    async (_event, sliceId: string) => {
-      const info = integration.info(sliceId)
+    async (_event, userStoryId: string) => {
+      const info = integration.info(userStoryId)
       if (!info.exists || !info.workspacePath)
         return "This user story has no worktree right now."
       return openFolder(info.workspacePath)
@@ -236,18 +236,18 @@ export function registerMissionControlHandlers(
 
   // Comms and seat sessions (plan 106.4). Agent threads are read-only here: the
   // user's only write is an explicit Steer, sent from user@rig.
-  ipcMain.handle("missionControl:comms:list", (_event, initiativeId: string) => ({
-    threads: seatCommsRepo.listThreads(initiativeId),
-    messages: seatCommsRepo.listMessages({ initiativeId, limit: 2000 }),
+  ipcMain.handle("missionControl:comms:list", (_event, featureId: string) => ({
+    threads: seatCommsRepo.listThreads(featureId),
+    messages: seatCommsRepo.listMessages({ featureId, limit: 2000 }),
   }))
-  ipcMain.handle("missionControl:comms:seats", (_event, initiativeId: string) =>
-    seatSessions.overview(initiativeId)
+  ipcMain.handle("missionControl:comms:seats", (_event, featureId: string) =>
+    seatSessions.overview(featureId)
   )
   ipcMain.handle(
     "missionControl:comms:steer",
     (
       _event,
-      input: { initiativeId: string; to: string; body: string; direct?: boolean }
+      input: { featureId: string; to: string; body: string; direct?: boolean }
     ) => {
       const result = seatComms.steer(input)
       if (!result.ok) throw new Error(result.message)
@@ -300,117 +300,117 @@ export function registerMissionControlHandlers(
     (
       _event,
       filter: {
-        initiativeId?: string
-        missionId?: string
-        sliceId?: string
+        featureId?: string
+        milestoneId?: string
+        userStoryId?: string
         status?: PlaybookRunStatus
       }
     ) => playbooks.listPlaybookRuns(filter)
   )
   ipcMain.handle(
     "missionControl:playbookRuns:cancel",
-    (_event, id: string) => sliceRunner.cancelPlaybookRun(id)
+    (_event, id: string) => userStoryRunner.cancelPlaybookRun(id)
   )
   ipcMain.handle(
-    "missionControl:slices:run",
-    (_event, sliceId: string, options?: { allowTouchOverlap?: boolean }) =>
-      sliceRunner.startSlice(sliceId, {
+    "missionControl:userStories:run",
+    (_event, userStoryId: string, options?: { allowTouchOverlap?: boolean }) =>
+      userStoryRunner.startUserStory(userStoryId, {
         allowTouchOverlap: options?.allowTouchOverlap === true,
         actor: "user",
       })
   )
-  ipcMain.handle("missionControl:slices:cancel", (_event, sliceId: string) =>
-    sliceRunner.cancelSlice(sliceId)
+  ipcMain.handle("missionControl:userStories:cancel", (_event, userStoryId: string) =>
+    userStoryRunner.cancelUserStory(userStoryId)
   )
   ipcMain.handle(
     "missionControl:hooks:run",
     (
       _event,
       input: {
-        initiativeId: string
-        missionId?: string | null
+        featureId: string
+        milestoneId?: string | null
         hook: PlaybookHookName
       }
-    ) => startHookRun(sliceRunner, input)
+    ) => startHookRun(userStoryRunner, input)
   )
 
-  ipcMain.handle("missionControl:initiatives:list", () =>
-    initiatives.listInitiatives()
+  ipcMain.handle("missionControl:features:list", () =>
+    features.listFeatures()
   )
-  ipcMain.handle("missionControl:initiatives:get", (_event, id: string) =>
-    initiatives.getInitiativeGraph(id)
+  ipcMain.handle("missionControl:features:get", (_event, id: string) =>
+    features.getFeatureGraph(id)
   )
-  ipcMain.handle("missionControl:initiatives:create", (_event, input) =>
-    initiatives.createInitiative(input)
+  ipcMain.handle("missionControl:features:create", (_event, input) =>
+    features.createFeature(input)
   )
   ipcMain.handle(
-    "missionControl:initiatives:update",
+    "missionControl:features:update",
     (_event, id: string, patch, actor?: string, reason?: string) =>
-      initiatives.updateInitiative(id, patch, actor, reason)
+      features.updateFeature(id, patch, actor, reason)
   )
-  ipcMain.handle("missionControl:initiatives:delete", async (_event, id: string) => {
+  ipcMain.handle("missionControl:features:delete", async (_event, id: string) => {
     // Seat sessions are hidden conversations the cascade does not reach.
     const conversations = seatSessionsRepo
-      .listSeatSessions({ initiativeId: id })
+      .listSeatSessions({ featureId: id })
       .map((session) => session.conversationId)
       .filter((cid): cid is string => !!cid)
-    if (playbooks.listPlaybookRuns({ initiativeId: id, status: "running" }).length)
+    if (playbooks.listPlaybookRuns({ featureId: id, status: "running" }).length)
       throw new Error("A playbook run is in progress here. Cancel it first.")
     // Worktrees and mc/ branches go first, while the rows naming them exist.
-    const { keptBranches } = await integration.cleanupInitiative(id)
-    initiatives.deleteInitiative(id)
-    seatSessions.cancelInitiative(id)
+    const { keptBranches } = await integration.cleanupFeature(id)
+    features.deleteFeature(id)
+    seatSessions.cancelFeature(id)
     await deleteConversationsWithArtifacts(conversations)
     return { keptBranches }
   })
-  // Starting through the Navigator in the initiative's chosen drive mode.
-  ipcMain.handle("missionControl:initiatives:start", async (_event, id: string) => {
-    const initiative = initiatives.getInitiative(id)
-    if (!initiative) throw new Error(`Feature not found: ${id}`)
+  // Starting through the Navigator in the feature's chosen drive mode.
+  ipcMain.handle("missionControl:features:start", async (_event, id: string) => {
+    const feature = features.getFeature(id)
+    if (!feature) throw new Error(`Feature not found: ${id}`)
     await navigator.startDrive(id, {
-      mode: initiative.driveMode,
-      autoApplyPlan: initiative.drive.autoApplyPlan,
+      mode: feature.driveMode,
+      autoApplyPlan: feature.drive.autoApplyPlan,
     })
     return graphOf(id)
   })
   ipcMain.handle(
-    "missionControl:initiatives:reseat",
+    "missionControl:features:reseat",
     (_event, id: string, reason?: string) => {
-      const graph = initiatives.reseatInitiative(id, reason)
+      const graph = features.reseatFeature(id, reason)
       // A re-seat starts every live seat session's next generation against
       // the new snapshot (plan 106.4 decision 2).
-      seatSessions.rotateInitiative(id, "The rig was re-seated")
+      seatSessions.rotateFeature(id, "The rig was re-seated")
       return graph
     }
   )
-  ipcMain.handle("missionControl:missions:create", (_event, input) =>
-    initiatives.createMission(input)
+  ipcMain.handle("missionControl:milestones:create", (_event, input) =>
+    features.createMilestone(input)
   )
   ipcMain.handle(
-    "missionControl:missions:update",
+    "missionControl:milestones:update",
     (_event, id: string, patch, actor?: string, reason?: string) =>
-      initiatives.updateMission(id, patch, actor, reason)
+      features.updateMilestone(id, patch, actor, reason)
   )
   ipcMain.handle(
-    "missionControl:missions:delete",
+    "missionControl:milestones:delete",
     (_event, id: string, actor?: string, reason?: string) =>
-      initiatives.deleteMission(id, actor, reason)
+      features.deleteMilestone(id, actor, reason)
   )
-  // The renderer creates user slices only: origin and actor are not its to set.
+  // The renderer creates user user stories only: origin and actor are not its to set.
   ipcMain.handle(
-    "missionControl:slices:create",
+    "missionControl:userStories:create",
     (
       _event,
       input: {
-        missionId: string
+        milestoneId: string
         key: string
         title: string
-        spec?: Parameters<typeof initiatives.createSlice>[0]["spec"]
+        spec?: Parameters<typeof features.createUserStory>[0]["spec"]
         podKey?: string | null
       }
     ) =>
-      initiatives.createSlice({
-        missionId: input.missionId,
+      features.createUserStory({
+        milestoneId: input.milestoneId,
         key: input.key,
         title: input.title,
         spec: input.spec,
@@ -418,29 +418,29 @@ export function registerMissionControlHandlers(
       })
   )
   ipcMain.handle(
-    "missionControl:slices:update",
+    "missionControl:userStories:update",
     (_event, id: string, patch, actor?: string, reason?: string) =>
-      initiatives.updateSlice(id, patch, actor, reason)
+      features.updateUserStory(id, patch, actor, reason)
   )
   ipcMain.handle(
-    "missionControl:slices:delete",
+    "missionControl:userStories:delete",
     (_event, id: string, actor?: string, reason?: string) => {
-      const missionId = initiatives.getSlice(id)?.missionId
-      const graph = initiatives.deleteSlice(id, actor, reason)
-      if (!missionId) return graph
-      // Removing the last unfinished slice can complete the mission's work.
-      integration.advanceMission(missionId)
-      return initiatives.getInitiativeGraph(graph.initiative.id) ?? graph
+      const milestoneId = features.getUserStory(id)?.milestoneId
+      const graph = features.deleteUserStory(id, actor, reason)
+      if (!milestoneId) return graph
+      // Removing the last unfinished user story can complete the milestone's work.
+      integration.advanceMilestone(milestoneId)
+      return features.getFeatureGraph(graph.feature.id) ?? graph
     }
   )
   ipcMain.handle(
-    "missionControl:sliceEdges:set",
-    (_event, missionId: string, edges, actor?: string, reason?: string) =>
-      initiatives.setSliceEdges(missionId, edges, actor, reason)
+    "missionControl:userStoryEdges:set",
+    (_event, milestoneId: string, edges, actor?: string, reason?: string) =>
+      features.setUserStoryEdges(milestoneId, edges, actor, reason)
   )
   ipcMain.handle(
     "missionControl:revisions:list",
-    (_event, initiativeId: string) => initiatives.listRevisions(initiativeId)
+    (_event, featureId: string) => features.listRevisions(featureId)
   )
 
   ipcMain.handle("missionControl:rigs:list", () => rigs.listRigs())

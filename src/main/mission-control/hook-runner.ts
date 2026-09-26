@@ -1,118 +1,118 @@
-import * as initiatives from "../db/repositories/initiatives"
+import * as features from "../db/repositories/features"
 import { PLAYBOOK_HOOKS } from "../db/repositories/playbooks"
 import type { PlaybookHookName, PlaybookRun } from "../db/types"
 import {
-  assertInitiativeRunnable,
+  assertFeatureRunnable,
   playbookFor,
-  type SliceRunner,
-} from "./slice-runner"
+  type UserStoryRunner,
+} from "./user-story-runner"
 import {
   renderConflictObjective,
   renderHookObjective,
   renderIntentChain,
-} from "./slice-objective"
+} from "./user-story-objective"
 import type { ResolutionLaunchInput } from "./integration"
 
-// Mission and initiative hooks (plan 106.3, decision 4). Each hook is its own
+// Milestone and feature hooks (plan 106.3, decision 4). Each hook is its own
 // small Process run whose objective is composed from its container. They are
 // manually triggered here; 106.6 automates them.
 
 export async function startHookRun(
-  runner: SliceRunner,
+  runner: UserStoryRunner,
   input: {
-    initiativeId: string
-    missionId?: string | null
+    featureId: string
+    milestoneId?: string | null
     hook: PlaybookHookName
   }
 ): Promise<PlaybookRun> {
-  const initiative = initiatives.getInitiative(input.initiativeId)
-  if (!initiative) throw new Error(`Feature not found: ${input.initiativeId}`)
-  assertInitiativeRunnable(initiative)
-  const missions = initiatives.listMissions(initiative.id)
-  const slices = missions.flatMap((m) => initiatives.listSlices(m.id))
+  const feature = features.getFeature(input.featureId)
+  if (!feature) throw new Error(`Feature not found: ${input.featureId}`)
+  assertFeatureRunnable(feature)
+  const milestones = features.listMilestones(feature.id)
+  const userStories = milestones.flatMap((m) => features.listUserStories(m.id))
 
-  if (input.hook === "after_each_slice")
+  if (input.hook === "after_each_user_story")
     throw new Error(
       "The after each user story hook runs by itself when a user story's merge conflicts; it can't be started by hand."
     )
-  const missionHook = PLAYBOOK_HOOKS.mission.includes(input.hook)
-  if (!missionHook && !PLAYBOOK_HOOKS.initiative.includes(input.hook))
+  const milestoneHook = PLAYBOOK_HOOKS.milestone.includes(input.hook)
+  if (!milestoneHook && !PLAYBOOK_HOOKS.feature.includes(input.hook))
     throw new Error(`'${input.hook}' is not a milestone or feature hook.`)
-  const mission = input.missionId
-    ? (missions.find((m) => m.id === input.missionId) ?? null)
+  const milestone = input.milestoneId
+    ? (milestones.find((m) => m.id === input.milestoneId) ?? null)
     : null
-  if (input.missionId && !mission)
-    throw new Error(`Milestone not found in this feature: ${input.missionId}`)
-  if (missionHook && !mission)
+  if (input.milestoneId && !milestone)
+    throw new Error(`Milestone not found in this feature: ${input.milestoneId}`)
+  if (milestoneHook && !milestone)
     throw new Error(`The ${input.hook.replace(/_/g, " ")} hook runs on a milestone.`)
-  if (input.hook === "between_missions" && !mission)
+  if (input.hook === "between_milestones" && !milestone)
     throw new Error("Choose the finished milestone to run the between-milestones hook on.")
 
-  const playbook = missionHook
-    ? playbookFor("mission", mission!.playbookId)
-    : playbookFor("initiative", initiative.playbookId)
-  const nextMission =
-    input.hook === "between_missions" && mission
-      ? (missions.find((m) => m.position > mission.position) ?? null)
+  const playbook = milestoneHook
+    ? playbookFor("milestone", milestone!.playbookId)
+    : playbookFor("feature", feature.playbookId)
+  const nextMilestone =
+    input.hook === "between_milestones" && milestone
+      ? (milestones.find((m) => m.position > milestone.position) ?? null)
       : null
   const label = input.hook.replace(/_/g, " ")
 
   return runner.launch({
-    initiative,
-    missionId: mission?.id ?? null,
-    slice: null,
+    feature,
+    milestoneId: milestone?.id ?? null,
+    userStory: null,
     playbook,
     hook: input.hook,
-    podKey: initiative.defaultPodKey,
+    podKey: feature.defaultPodKey,
     objective: renderHookObjective({
       hook: input.hook,
-      initiative,
-      missions,
-      slices,
-      mission: missionHook ? mission : null,
-      nextMission,
+      feature,
+      milestones,
+      userStories,
+      milestone: milestoneHook ? milestone : null,
+      nextMilestone,
     }),
-    intentChain: renderIntentChain({ initiative, mission }),
-    title: mission
-      ? `Milestone ${mission.key}: ${label}`
-      : `Feature ${initiative.key}: ${label}`,
+    intentChain: renderIntentChain({ feature, milestone }),
+    title: milestone
+      ? `Milestone ${milestone.key}: ${label}`
+      : `Feature ${feature.key}: ${label}`,
   })
 }
 
-// A slice's merge conflicted (plan 106.5, decision 6): run the mission
-// playbook's after_each_slice hook in the prepared resolution worktree. The
+// A user story's merge conflicted (plan 106.5, decision 6): run the milestone
+// playbook's after_each_user_story hook in the prepared resolution worktree. The
 // integrator role falls back to the lead; the hook's proof step re-verifies
-// the slice's own acceptance criteria before anything is committed. Throws
+// the user story's own acceptance criteria before anything is committed. Throws
 // when there is nothing to run, and the integration service escalates.
 export async function startConflictResolution(
-  runner: SliceRunner,
+  runner: UserStoryRunner,
   input: ResolutionLaunchInput
 ): Promise<PlaybookRun> {
-  const { initiative, mission, slice } = input
-  if (initiative.status !== "active")
+  const { feature, milestone, userStory } = input
+  if (feature.status !== "active")
     throw new Error("The feature isn't active, so no seat can resolve the conflict.")
-  const playbook = playbookFor("mission", mission.playbookId)
-  if (!playbook.hooks.some((hook) => hook.hook === "after_each_slice"))
+  const playbook = playbookFor("milestone", milestone.playbookId)
+  if (!playbook.hooks.some((hook) => hook.hook === "after_each_user_story"))
     throw new Error(
       `The "${playbook.name}" milestone playbook has no after each user story hook to resolve conflicts. Add one in Playbooks, or resolve the conflict yourself.`
     )
   return runner.launch({
-    initiative,
-    missionId: mission.id,
-    slice,
+    feature,
+    milestoneId: milestone.id,
+    userStory,
     playbook,
-    hook: "after_each_slice",
-    podKey: slice.podKey ?? initiative.defaultPodKey,
+    hook: "after_each_user_story",
+    podKey: userStory.podKey ?? feature.defaultPodKey,
     objective: renderConflictObjective({
-      initiative,
-      mission,
-      slice,
-      integrationBranch: mission.integrationBranch ?? "",
-      sliceBranch: slice.branch ?? "",
+      feature,
+      milestone,
+      userStory,
+      integrationBranch: milestone.integrationBranch ?? "",
+      userStoryBranch: userStory.branch ?? "",
       files: input.files,
     }),
-    intentChain: renderIntentChain({ initiative, mission, slice }),
-    title: `User story ${slice.key}: resolve merge conflict`,
+    intentChain: renderIntentChain({ feature, milestone, userStory }),
+    title: `User story ${userStory.key}: resolve merge conflict`,
     roleFallbacks: { integrator: "lead" },
     isolated: {
       workspacePath: input.workspacePath,

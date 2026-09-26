@@ -115,8 +115,8 @@ import { IndexWatcher } from "./index/watcher"
 import { SummaryService, SUMMARIZE_KIND } from "./summaries/service"
 import { ProcessService, PROCESS_RUN_KIND } from "./tasks/process/service"
 import { registerProcessHandlers } from "./ipc/process-handlers"
-import { SliceRunner } from "./mission-control/slice-runner"
-import { MissionIntegration } from "./mission-control/integration"
+import { UserStoryRunner } from "./mission-control/user-story-runner"
+import { MilestoneIntegration } from "./mission-control/integration"
 import {
   startConflictResolution,
   startHookRun,
@@ -170,8 +170,8 @@ const summaryService = new SummaryService(taskRunner)
 // The Process engine (plan 025), driven as the deterministic `process_run` task
 // kind. Holds the runner reference so startRun can enqueue the orchestrator task.
 const processService = new ProcessService(taskRunner)
-// Mission Control slice execution (plan 106.3): launches playbooks as Process
-// runs and applies each run's terminal outcome to its slice exactly once.
+// Mission Control user story execution (plan 106.3): launches playbooks as Process
+// runs and applies each run's terminal outcome to its user story exactly once.
 // The provider a Mission Control worker runs on for an account selection (null
 // = the global default).
 function workerProvider(accountId: string | null): string | null {
@@ -210,7 +210,7 @@ const seatSessions = new SeatSessionService({
       kind: SEAT_WAKE_KIND,
       title: input.title,
       input: {
-        initiativeId: input.initiativeId,
+        featureId: input.featureId,
         address: input.address,
         ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),
       },
@@ -218,14 +218,14 @@ const seatSessions = new SeatSessionService({
   cancelTask: (taskId) => taskRunner.cancel(taskId),
 })
 const seatComms = new SeatComms({
-  dispatch: (initiativeId, address) =>
-    seatSessions.dispatch(initiativeId, address),
+  dispatch: (featureId, address) =>
+    seatSessions.dispatch(featureId, address),
   notifyUser: (title, body) => {
     if (!Notification.isSupported()) return
     new Notification({ title, body, silent: false }).show()
   },
-  mailRefusal: (initiative, address) => {
-    const rig = initiative.rigSnapshot
+  mailRefusal: (feature, address) => {
+    const rig = feature.rigSnapshot
     const seat = rig?.seats.find(
       (candidate) =>
         `${candidate.key}@${rig.pods.find((pod) => pod.id === candidate.podId)?.key}` ===
@@ -241,77 +241,77 @@ const seatComms = new SeatComms({
 })
 installSeatSessions(seatSessions)
 installSeatComms(seatComms)
-// Mission integration (plan 106.5): a worktree per slice attempt under app
-// data, the per-mission merge queue, and merge-policy landing. Conflicts run
-// the mission playbook's after_each_slice hook through the slice runner.
-const missionIntegration: MissionIntegration = new MissionIntegration({
+// Milestone integration (plan 106.5): a worktree per user story attempt under app
+// data, the per-milestone merge queue, and merge-policy landing. Conflicts run
+// the milestone playbook's after_each_user_story hook through the user story runner.
+const milestoneIntegration: MilestoneIntegration = new MilestoneIntegration({
   worktreeRoot: () =>
     join(app.getPath("userData"), "mission-control", "worktrees"),
-  startResolution: (input) => startConflictResolution(sliceRunner, input),
+  startResolution: (input) => startConflictResolution(userStoryRunner, input),
   notifyUser: (title, body) => {
     if (!Notification.isSupported()) return
     new Notification({ title, body, silent: false }).show()
   },
-  onChanged: (initiativeId) => {
+  onChanged: (featureId) => {
     const wc = mainWindow?.webContents
     if (wc && !wc.isDestroyed())
-      wc.send("missionControl:integration:changed", initiativeId)
-    missionNavigator.poke(initiativeId)
+      wc.send("missionControl:integration:changed", featureId)
+    milestoneNavigator.poke(featureId)
   },
 })
-const sliceRunner: SliceRunner = new SliceRunner({
+const userStoryRunner: UserStoryRunner = new UserStoryRunner({
   startProcessRun: (input) => processService.startRun(input),
   cancelTask: (taskId) => taskRunner.cancel(taskId),
   loadAgents: (workspace) => loadAgents(agentSources(workspace)),
   workerProvider,
-  onCancelled: (initiativeId) => seatSessions.cancelInitiative(initiativeId),
-  integration: missionIntegration,
+  onCancelled: (featureId) => seatSessions.cancelFeature(featureId),
+  integration: milestoneIntegration,
 })
-// The Navigator (plan 106.6): deterministic GPS for each initiative. It ticks
+// The Navigator (plan 106.6): deterministic GPS for each feature. It ticks
 // on durable work events (debounced), drives Autopilot's mechanical steps, and
 // directs the lead seat; its state is all SQLite, so it resumes on boot.
 function notifyUser(title: string, body: string): void {
   if (!Notification.isSupported()) return
   new Notification({ title, body, silent: false }).show()
 }
-const missionNavigator: Navigator = new Navigator({
-  startSlice: (sliceId, options) => sliceRunner.startSlice(sliceId, options),
-  startHook: (input) => startHookRun(sliceRunner, input),
-  cancelPlaybookRun: (id) => sliceRunner.cancelPlaybookRun(id),
-  workspaceMode: (initiative) => missionIntegration.workspaceMode(initiative),
-  advanceMission: (missionId) => missionIntegration.advanceMission(missionId),
-  kickMerges: (missionId) => void missionIntegration.kick(missionId),
-  completeMission: async (missionId) => {
-    await missionIntegration.markMerged(missionId, "navigator")
+const milestoneNavigator: Navigator = new Navigator({
+  startUserStory: (userStoryId, options) => userStoryRunner.startUserStory(userStoryId, options),
+  startHook: (input) => startHookRun(userStoryRunner, input),
+  cancelPlaybookRun: (id) => userStoryRunner.cancelPlaybookRun(id),
+  workspaceMode: (feature) => milestoneIntegration.workspaceMode(feature),
+  advanceMilestone: (milestoneId) => milestoneIntegration.advanceMilestone(milestoneId),
+  kickMerges: (milestoneId) => void milestoneIntegration.kick(milestoneId),
+  completeMilestone: async (milestoneId) => {
+    await milestoneIntegration.markMerged(milestoneId, "navigator")
   },
   direct: (input) => {
     const result = seatComms.direct(input)
     if (!result.ok) throw new Error(result.message)
   },
   notifyUser,
-  onResumed: (initiativeId) => seatSessions.dispatchInitiative(initiativeId),
-  onCancelled: (initiativeId) => seatSessions.cancelInitiative(initiativeId),
-  onChanged: (initiativeId) => {
+  onResumed: (featureId) => seatSessions.dispatchFeature(featureId),
+  onCancelled: (featureId) => seatSessions.cancelFeature(featureId),
+  onChanged: (featureId) => {
     const wc = mainWindow?.webContents
     if (wc && !wc.isDestroyed())
-      wc.send("missionControl:navigator:changed", initiativeId)
+      wc.send("missionControl:navigator:changed", featureId)
   },
 })
-installNavigator(missionNavigator)
+installNavigator(milestoneNavigator)
 // Lead seats' map tools (plan 106.6), decision-rights gated server-side.
 installMapTools(
   new MapToolService({
-    position: (initiativeId) => missionNavigator.position(initiativeId),
-    startSlice: (sliceId, options) => sliceRunner.startSlice(sliceId, options),
-    cancelSlice: (sliceId) => sliceRunner.cancelSlice(sliceId),
-    completeMission: async (missionId) => {
-      await missionIntegration.markMerged(missionId, "navigator")
+    position: (featureId) => milestoneNavigator.position(featureId),
+    startUserStory: (userStoryId, options) => userStoryRunner.startUserStory(userStoryId, options),
+    cancelUserStory: (userStoryId) => userStoryRunner.cancelUserStory(userStoryId),
+    completeMilestone: async (milestoneId) => {
+      await milestoneIntegration.markMerged(milestoneId, "navigator")
     },
   })
 )
-onWorkChanged((initiativeId) => missionNavigator.poke(initiativeId))
+onWorkChanged((featureId) => milestoneNavigator.poke(featureId))
 processService.onRunSettled((processRunId) => {
-  sliceRunner.settle(processRunId)
+  userStoryRunner.settle(processRunId)
   // Mail held while the run still had steps for its seats can now wake them.
   seatSessions.onProcessRunActivity(processRunId)
 })
@@ -1204,12 +1204,12 @@ ipcMain.handle(
     try {
       const bytes = await readFile(abs)
       const truncated = bytes.byteLength > FILE_READ_TEXT_LIMIT
-      const slice = truncated ? bytes.subarray(0, FILE_READ_TEXT_LIMIT) : bytes
-      if (isBinaryBuffer(slice)) {
+      const userStory = truncated ? bytes.subarray(0, FILE_READ_TEXT_LIMIT) : bytes
+      if (isBinaryBuffer(userStory)) {
         return { content: null, truncated, error: null, kind: "binary" }
       }
       return {
-        content: slice.toString("utf8"),
+        content: userStory.toString("utf8"),
         truncated,
         error: null,
         kind: "text",
@@ -1524,32 +1524,32 @@ app.whenReady().then(async () => {
   registerIndexHandlers(taskRunner, indexService, indexWatcher)
   registerDashboardHandlers(taskRunner, dashboardService)
   registerMissionControlHandlers(
-    sliceRunner,
+    userStoryRunner,
     seatComms,
     seatSessions,
-    missionIntegration,
-    missionNavigator,
+    milestoneIntegration,
+    milestoneNavigator,
     (folder) => openInIde(folder, folder, settingsService.getIde().ide)
   )
   // Sweep orphaned Mission Control worktrees and resume merge queues. Queue
   // work (including merges the reconcile below enqueues) waits for the sweep.
-  void missionIntegration
+  void milestoneIntegration
     .reconcile()
     .catch((err) => console.warn("[integration] reconcile failed:", err))
   // Apply outcomes for playbook runs whose Process run settled while the app
   // was down (idempotent; in-flight runs resume through the task runner).
-  sliceRunner.reconcile()
+  userStoryRunner.reconcile()
   // Mail that was queued when the app stopped gets moving again (plan 106.4).
   seatSessions.dispatchAll()
-  onCommsChanged((initiativeId) => {
+  onCommsChanged((featureId) => {
     const wc = mainWindow?.webContents
     if (wc && !wc.isDestroyed())
-      wc.send("missionControl:comms:changed", initiativeId)
+      wc.send("missionControl:comms:changed", featureId)
     // Escalations and acknowledgements change what waits on the user.
-    missionNavigator.poke(initiativeId)
+    milestoneNavigator.poke(featureId)
   })
-  // Every active initiative resumes from its durable position.
-  missionNavigator.start()
+  // Every active feature resumes from its durable position.
+  milestoneNavigator.start()
   registerTerminalHandlers(terminalService)
   registerFileWatchHandlers()
   await indexWatcher.setEnabled(settingsService.getIndexing().watchWorkspaces)
@@ -1620,8 +1620,8 @@ app.on("will-quit", () => {
   void taskRunner.stop()
   // No new merge starts; one in flight either finishes its compare-and-swap
   // or leaves the branch untouched, and the next boot's reconcile resumes.
-  missionIntegration.stop()
-  missionNavigator.stop()
+  milestoneIntegration.stop()
+  milestoneNavigator.stop()
   browserManager.dispose()
   terminalService.dispose()
   // Disconnect every pooled MCP client (stops spawned stdio processes / closes

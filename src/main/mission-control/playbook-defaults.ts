@@ -21,8 +21,8 @@ interface DefaultStep {
   validator?: boolean
   proofStep?: boolean
   // How long the step's conversation lives (plan 106.4). Builder and QA steps
-  // share one session per slice run, so a slice's spec, build, and mail stay in
-  // one context without piling up across slices; the lead keeps a long-lived
+  // share one session per user story run, so a user story's spec, build, and mail stay in
+  // one context without piling up across user stories; the lead keeps a long-lived
   // session because it holds the plan.
   contextScope: PhaseContextScope
 }
@@ -34,23 +34,23 @@ interface DefaultPlaybook {
 }
 
 export const DEFAULT_PLAYBOOKS: Record<PlaybookAltitude, DefaultPlaybook> = {
-  slice: {
+  user_story: {
     name: "Spec → Build → Test",
     description:
-      "Refine the slice spec against the codebase, build it, then verify every acceptance criterion and record the proof.",
+      "Refine the user story spec against the codebase, build it, then verify every acceptance criterion and record the proof.",
     hooks: {
       run: [
         {
           key: "spec",
-          name: "Refine the slice spec against the codebase (read and plan; do not edit files)",
+          name: "Refine the user story spec against the codebase (read and plan; do not edit files)",
           role: "builder",
-          contextScope: "slice",
+          contextScope: "user_story",
         },
         {
           key: "build",
-          name: "Build the slice to its acceptance criteria",
+          name: "Build the user story to its acceptance criteria",
           role: "builder",
-          contextScope: "slice",
+          contextScope: "user_story",
         },
         {
           key: "test",
@@ -58,32 +58,32 @@ export const DEFAULT_PLAYBOOKS: Record<PlaybookAltitude, DefaultPlaybook> = {
           role: "qa",
           validator: true,
           proofStep: true,
-          contextScope: "slice",
+          contextScope: "user_story",
         },
       ],
     },
   },
-  mission: {
+  milestone: {
     name: "Plan → Review",
     description:
-      "Before slices run, the lead reviews the slice set against the mission outcome. When a slice's merge conflicts, the integrator (or the lead) resolves it and QA re-verifies the slice. After all slices, the lead writes the mission summary.",
+      "Before user stories run, the lead reviews the user story set against the milestone outcome. When a user story's merge conflicts, the integrator (or the lead) resolves it and QA re-verifies the user story. After all user stories, the lead writes the milestone summary.",
     hooks: {
-      before_slices: [
+      before_user_stories: [
         {
           key: "review-plan",
-          name: "Review the mission's slices against its outcome and report gaps as proposals (do not edit the plan)",
+          name: "Review the milestone's user stories against its outcome and report gaps as proposals (do not edit the plan)",
           role: "lead",
-          contextScope: "initiative",
+          contextScope: "feature",
         },
       ],
-      // Runs only when a slice's merge into the integration branch conflicts
+      // Runs only when a user story's merge into the integration branch conflicts
       // (plan 106.5). A rig without an integrator seat falls back to its lead.
-      after_each_slice: [
+      after_each_user_story: [
         {
           key: "resolve",
           name: "Resolve the merge conflict in this worktree so both sides keep their intent (do not commit, abort, or switch branches)",
           role: "integrator",
-          contextScope: "slice",
+          contextScope: "user_story",
         },
         {
           key: "reverify",
@@ -91,38 +91,38 @@ export const DEFAULT_PLAYBOOKS: Record<PlaybookAltitude, DefaultPlaybook> = {
           role: "qa",
           validator: true,
           proofStep: true,
-          contextScope: "slice",
+          contextScope: "user_story",
         },
       ],
-      after_all_slices: [
+      after_all_user_stories: [
         {
           key: "summary",
-          name: "Write the mission summary from the slice proofs as your final message",
+          name: "Write the milestone summary from the user story proofs as your final message",
           role: "lead",
-          contextScope: "initiative",
+          contextScope: "feature",
         },
       ],
     },
   },
-  initiative: {
+  feature: {
     name: "Plan → Release",
     description:
-      "The lead drafts missions and slices as a proposal document, and between missions writes release notes and checks the next mission.",
+      "The lead drafts milestones and user stories as a proposal document, and between milestones writes release notes and checks the next milestone.",
     hooks: {
       plan: [
         {
           key: "plan",
-          name: "Draft the initiative's missions and slices as a proposal document (do not edit the plan)",
+          name: "Draft the feature's milestones and user stories as a proposal document (do not edit the plan)",
           role: "lead",
-          contextScope: "initiative",
+          contextScope: "feature",
         },
       ],
-      between_missions: [
+      between_milestones: [
         {
           key: "release",
-          name: "Write release notes for the finished mission and check the next mission is still right, as your final message",
+          name: "Write release notes for the finished milestone and check the next milestone is still right, as your final message",
           role: "lead",
-          contextScope: "initiative",
+          contextScope: "feature",
         },
       ],
     },

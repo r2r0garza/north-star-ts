@@ -28,15 +28,15 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import type {
-  InitiativeGraph,
+  FeatureGraph,
   MergePolicyMode,
   MergeQueueEntry,
-  Mission,
-  MissionIntegrationStatus,
+  Milestone,
+  MilestoneIntegrationStatus,
 } from "@/types"
 
-// Mission integration (plan 106.5): the integration branch, the merge policy,
-// the merge queue, and the landing step. Landing a mission is an explicit
+// Milestone integration (plan 106.5): the integration branch, the merge policy,
+// the merge queue, and the landing step. Landing a milestone is an explicit
 // approval of exactly the base and head shown in the review dialog.
 
 function errorMessage(error: unknown) {
@@ -73,12 +73,12 @@ function QueueRow({
   entry,
   onChanged,
 }: {
-  graph: InitiativeGraph
+  graph: FeatureGraph
   entry: MergeQueueEntry
   onChanged: () => Promise<void>
 }) {
   const [pending, setPending] = useState(false)
-  const slice = graph.slices.find((s) => s.id === entry.sliceId)
+  const userStory = graph.userStories.find((s) => s.id === entry.userStoryId)
   const act = async (action: () => Promise<unknown>, success: string) => {
     setPending(true)
     try {
@@ -104,8 +104,8 @@ function QueueRow({
         ) : (
           <GitMerge className="size-3.5 text-muted-foreground" />
         )}
-        <span className="font-medium">{slice?.title ?? "Deleted user story"}</span>
-        <code className="text-xs text-muted-foreground">{slice?.key}</code>
+        <span className="font-medium">{userStory?.title ?? "Deleted user story"}</span>
+        <code className="text-xs text-muted-foreground">{userStory?.key}</code>
         <Badge variant={statusVariant(entry)} className="ml-auto">
           {STATUS_LABELS[entry.status]}
           {entry.escalated ? " · needs you" : ""}
@@ -168,7 +168,7 @@ function QueueRow({
             onClick={() => {
               if (
                 !window.confirm(
-                  `Abandon merging ${slice?.key ?? "this user story"}? The user story fails and can be retried from the current integration branch; its branch is kept.`
+                  `Abandon merging ${userStory?.key ?? "this user story"}? The user story fails and can be retried from the current integration branch; its branch is kept.`
                 )
               )
                 return
@@ -186,13 +186,13 @@ function QueueRow({
 function LandDialog({
   open,
   status,
-  mission,
+  milestone,
   onClose,
   onLanded,
 }: {
   open: boolean
-  status: MissionIntegrationStatus
-  mission: Mission
+  status: MilestoneIntegrationStatus
+  milestone: Milestone
   onClose: () => void
   onLanded: () => Promise<void>
 }) {
@@ -204,9 +204,9 @@ function LandDialog({
     setPending(true)
     try {
       const landing = await window.cowork.missionControl.integration.land(
-        mission.id,
+        milestone.id,
         { baseOid: summary.baseOid, headOid: summary.headOid },
-        // A manual mission merged here: the same review and approval.
+        // A manual milestone merged here: the same review and approval.
         { localMerge: status.policy === "manual" }
       )
       toast.success(landing.prUrl ? "Pull request opened" : `Merged into ${landing.base}`)
@@ -294,41 +294,41 @@ function LandDialog({
   )
 }
 
-export function MissionIntegrationPanel({
+export function MilestoneIntegrationPanel({
   graph,
-  mission,
+  milestone,
   onGraph,
   onRefresh,
 }: {
-  graph: InitiativeGraph
-  mission: Mission
-  onGraph: (graph: InitiativeGraph) => void
+  graph: FeatureGraph
+  milestone: Milestone
+  onGraph: (graph: FeatureGraph) => void
   onRefresh: () => Promise<void>
 }) {
-  const [status, setStatus] = useState<MissionIntegrationStatus | null>(null)
+  const [status, setStatus] = useState<MilestoneIntegrationStatus | null>(null)
   const [landOpen, setLandOpen] = useState(false)
   const [pending, setPending] = useState(false)
-  const initiativeId = graph.initiative.id
+  const featureId = graph.feature.id
 
   const load = useCallback(async () => {
     try {
-      setStatus(await window.cowork.missionControl.integration.status(mission.id))
+      setStatus(await window.cowork.missionControl.integration.status(milestone.id))
     } catch (error) {
       console.warn("[integration] status:", error)
     }
-  }, [mission.id])
+  }, [milestone.id])
 
-  // Reload on any graph change for this mission (slices settle, merges land).
+  // Reload on any graph change for this milestone (user stories settle, merges land).
   useEffect(() => {
     void load()
-  }, [load, mission.status, mission.integrationBranch, graph.slices])
+  }, [load, milestone.status, milestone.integrationBranch, graph.userStories])
 
   useEffect(
     () =>
       window.cowork.missionControl.integration.onChanged((changed) => {
-        if (changed === initiativeId) void Promise.all([load(), onRefresh()])
+        if (changed === featureId) void Promise.all([load(), onRefresh()])
       }),
-    [initiativeId, load, onRefresh]
+    [featureId, load, onRefresh]
   )
 
   const reload = async () => {
@@ -340,7 +340,7 @@ export function MissionIntegrationPanel({
   const summary = status.summary
   const setPolicy = async (mode: MergePolicyMode) => {
     try {
-      onGraph(await window.cowork.missionControl.integration.setPolicy(mission.id, mode))
+      onGraph(await window.cowork.missionControl.integration.setPolicy(milestone.id, mode))
       await load()
     } catch (error) {
       toast.error(errorMessage(error))
@@ -349,7 +349,7 @@ export function MissionIntegrationPanel({
   const markMerged = async () => {
     setPending(true)
     try {
-      await window.cowork.missionControl.integration.markMerged(mission.id)
+      await window.cowork.missionControl.integration.markMerged(milestone.id)
       toast.success("Milestone completed")
     } catch (error) {
       toast.error(errorMessage(error))
@@ -385,7 +385,7 @@ export function MissionIntegrationPanel({
           <Select
             value={status.policy}
             onValueChange={(value) => void setPolicy(value as MergePolicyMode)}
-            disabled={["completed", "cancelled"].includes(mission.status)}
+            disabled={["completed", "cancelled"].includes(milestone.status)}
           >
             <SelectTrigger aria-label="Merge policy">
               <SelectValue />
@@ -433,7 +433,7 @@ export function MissionIntegrationPanel({
         </div>
       )}
 
-      {mission.status === "review" && (
+      {milestone.status === "review" && (
         <div className="space-y-3 rounded-md border border-primary/40 bg-primary/5 p-3">
           <div className="text-sm font-medium">
             {status.integrationBranch
@@ -472,7 +472,7 @@ export function MissionIntegrationPanel({
                   if (
                     status.integrationBranch &&
                     !window.confirm(
-                      `Mark milestone ${mission.key} as merged? Do this once ${status.integrationBranch} is in ${status.baseRef}.`
+                      `Mark milestone ${milestone.key} as merged? Do this once ${status.integrationBranch} is in ${status.baseRef}.`
                     )
                   )
                     return
@@ -487,7 +487,7 @@ export function MissionIntegrationPanel({
         </div>
       )}
 
-      {mission.status === "completed" && landing && (
+      {milestone.status === "completed" && landing && (
         <div className="flex flex-wrap items-center gap-2 rounded-md border p-3 text-sm">
           <CheckCircle2 className="size-4 text-emerald-600" />
           {landing.prUrl ? (
@@ -524,7 +524,7 @@ export function MissionIntegrationPanel({
         <LandDialog
           open={landOpen}
           status={status}
-          mission={mission}
+          milestone={milestone}
           onClose={() => setLandOpen(false)}
           onLanded={reload}
         />

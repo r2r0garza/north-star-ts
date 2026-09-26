@@ -1,9 +1,9 @@
 // A change feed for the work map (plan 106.6). Every audited write to an
-// initiative's missions, slices, proposals, or drive state announces the
-// initiative it touched; the Navigator recomputes its position from SQLite on
+// feature's milestones, user stories, proposals, or drive state announces the
+// feature it touched; the Navigator recomputes its position from SQLite on
 // each announcement (debounced), so it never depends on in-memory state.
 
-type Listener = (initiativeId: string) => void
+type Listener = (featureId: string) => void
 
 const listeners = new Set<Listener>()
 
@@ -12,10 +12,10 @@ export function onWorkChanged(listener: Listener): () => void {
   return () => listeners.delete(listener)
 }
 
-export function emitWorkChanged(initiativeId: string): void {
+export function emitWorkChanged(featureId: string): void {
   for (const listener of listeners) {
     try {
-      listener(initiativeId)
+      listener(featureId)
     } catch (err) {
       console.error("Work change listener failed:", err)
     }

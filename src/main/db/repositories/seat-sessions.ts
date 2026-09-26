@@ -7,16 +7,16 @@ import type {
 } from "../types"
 
 // Mission Control seat sessions (plan 106.4). A seat's conversation for one
-// scope: the whole initiative (`scope_key` = 'initiative'), or one playbook run
+// scope: the whole feature (`scope_key` = 'feature'), or one playbook run
 // (`scope_key` = its id). Each scope rotates into numbered generations; at most
 // one generation per (seat, scope) is live (idle or busy) at a time, and older
 // ones are `rotated` or `closed` and stay readable.
 
-export const INITIATIVE_SCOPE_KEY = "initiative"
+export const FEATURE_SCOPE_KEY = "feature"
 
 interface SeatSessionRow {
   id: string
-  initiative_id: string
+  feature_id: string
   seat_address: string
   scope: SeatSessionScope
   scope_key: string
@@ -37,10 +37,10 @@ const LIVE_STATUSES = "('idle', 'busy')"
 function toSession(row: SeatSessionRow): SeatSession {
   return {
     id: row.id,
-    initiativeId: row.initiative_id,
+    featureId: row.feature_id,
     seatAddress: row.seat_address,
     scope: row.scope,
-    playbookRunId: row.scope === "slice" ? row.scope_key : null,
+    playbookRunId: row.scope === "user_story" ? row.scope_key : null,
     generation: row.generation,
     conversationId: row.conversation_id,
     status: row.status,
@@ -60,21 +60,21 @@ export function getSeatSession(id: string): SeatSession | undefined {
   return row ? toSession(row) : undefined
 }
 
-// The live session for one scope: the initiative's by default, or a playbook
-// run's slice session when `playbookRunId` is given.
+// The live session for one scope: the feature's by default, or a playbook
+// run's user story session when `playbookRunId` is given.
 export function getLiveSeatSession(
-  initiativeId: string,
+  featureId: string,
   seatAddress: string,
   playbookRunId: string | null = null
 ): SeatSession | undefined {
   const row = getDb()
     .prepare(
-      `SELECT * FROM seat_sessions WHERE initiative_id = ? AND seat_address = ? AND scope_key = ? AND status IN ${LIVE_STATUSES} ORDER BY generation DESC LIMIT 1`
+      `SELECT * FROM seat_sessions WHERE feature_id = ? AND seat_address = ? AND scope_key = ? AND status IN ${LIVE_STATUSES} ORDER BY generation DESC LIMIT 1`
     )
     .get(
-      initiativeId,
+      featureId,
       seatAddress,
-      playbookRunId ?? INITIATIVE_SCOPE_KEY
+      playbookRunId ?? FEATURE_SCOPE_KEY
     ) as SeatSessionRow | undefined
   return row ? toSession(row) : undefined
 }
@@ -91,21 +91,21 @@ export function getSeatSessionByConversation(
 }
 
 export function listSeatSessions(filter: {
-  initiativeId: string
+  featureId: string
   seatAddress?: string
   liveOnly?: boolean
-  // Only the initiative scope (null), or only one playbook run's sessions.
+  // Only the feature scope (null), or only one playbook run's sessions.
   playbookRunId?: string | null
 }): SeatSession[] {
-  const where = ["initiative_id = ?"]
-  const values: unknown[] = [filter.initiativeId]
+  const where = ["feature_id = ?"]
+  const values: unknown[] = [filter.featureId]
   if (filter.seatAddress) {
     where.push("seat_address = ?")
     values.push(filter.seatAddress)
   }
   if (filter.playbookRunId !== undefined) {
     where.push("scope_key = ?")
-    values.push(filter.playbookRunId ?? INITIATIVE_SCOPE_KEY)
+    values.push(filter.playbookRunId ?? FEATURE_SCOPE_KEY)
   }
   if (filter.liveOnly) where.push(`status IN ${LIVE_STATUSES}`)
   const rows = getDb()
@@ -117,42 +117,42 @@ export function listSeatSessions(filter: {
 }
 
 function nextGeneration(
-  initiativeId: string,
+  featureId: string,
   seatAddress: string,
   scopeKey: string
 ): number {
   const max = getDb()
     .prepare(
-      "SELECT MAX(generation) FROM seat_sessions WHERE initiative_id = ? AND seat_address = ? AND scope_key = ?"
+      "SELECT MAX(generation) FROM seat_sessions WHERE feature_id = ? AND seat_address = ? AND scope_key = ?"
     )
     .pluck()
-    .get(initiativeId, seatAddress, scopeKey) as number | null
+    .get(featureId, seatAddress, scopeKey) as number | null
   return (max ?? 0) + 1
 }
 
 export function createSeatSession(input: {
-  initiativeId: string
+  featureId: string
   seatAddress: string
   conversationId: string
   handoffSummary?: string | null
-  // Set for a slice session: the playbook run it belongs to.
+  // Set for a user story session: the playbook run it belongs to.
   playbookRunId?: string | null
 }): SeatSession {
   const id = randomUUID()
   const now = Date.now()
-  const scopeKey = input.playbookRunId ?? INITIATIVE_SCOPE_KEY
+  const scopeKey = input.playbookRunId ?? FEATURE_SCOPE_KEY
   getDb()
     .prepare(
-      "INSERT INTO seat_sessions (id, initiative_id, seat_address, scope, scope_key, playbook_run_id, generation, conversation_id, status, handoff_summary, created_at, last_activity_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'idle', ?, ?, ?)"
+      "INSERT INTO seat_sessions (id, feature_id, seat_address, scope, scope_key, playbook_run_id, generation, conversation_id, status, handoff_summary, created_at, last_activity_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'idle', ?, ?, ?)"
     )
     .run(
       id,
-      input.initiativeId,
+      input.featureId,
       input.seatAddress,
-      input.playbookRunId ? "slice" : "initiative",
+      input.playbookRunId ? "user_story" : "feature",
       scopeKey,
       input.playbookRunId ?? null,
-      nextGeneration(input.initiativeId, input.seatAddress, scopeKey),
+      nextGeneration(input.featureId, input.seatAddress, scopeKey),
       input.conversationId,
       input.handoffSummary ?? null,
       now,
@@ -198,7 +198,7 @@ export function retireSeatSession(
   return result.changes === 1
 }
 
-// A finished playbook run's slice sessions close; their transcripts stay.
+// A finished playbook run's user story sessions close; their transcripts stay.
 export function closeRunSessions(playbookRunId: string): SeatSession[] {
   const live = getDb()
     .prepare(

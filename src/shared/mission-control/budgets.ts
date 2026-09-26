@@ -1,12 +1,12 @@
-// Initiative budgets (plan 106.6). User-owned limits stored in
-// initiative.budgets; tools can never raise them. Consumption is computed from
+// Feature budgets (plan 106.6). User-owned limits stored in
+// feature.budgets; tools can never raise them. Consumption is computed from
 // durable state, and every budget has a soft level (80%) and a hard level.
 
 export type BudgetKey =
-  | "maxConcurrentSlices"
-  | "maxSliceAttempts"
-  | "maxPlanRevisionsPerMission"
-  | "maxAgentSlicesPerMission"
+  | "maxConcurrentUserStories"
+  | "maxUserStoryAttempts"
+  | "maxPlanRevisionsPerMilestone"
+  | "maxAgentUserStoriesPerMilestone"
   | "maxMessagesPerHour"
   | "maxActiveHours"
 
@@ -23,31 +23,31 @@ export interface BudgetSpec {
 
 export const BUDGET_SPECS: readonly BudgetSpec[] = [
   {
-    key: "maxConcurrentSlices",
+    key: "maxConcurrentUserStories",
     label: "Concurrent user story runs",
     default: 3,
     unit: "runs",
     onHard: "Ready user stories queue until one finishes.",
   },
   {
-    key: "maxSliceAttempts",
+    key: "maxUserStoryAttempts",
     label: "Attempts per user story",
     default: 3,
     unit: "attempts",
     onHard: "The user story fails and the lead decides what to do.",
   },
   {
-    key: "maxPlanRevisionsPerMission",
+    key: "maxPlanRevisionsPerMilestone",
     label: "Plan revisions per milestone",
     default: 10,
     unit: "revisions",
     onHard: "revise_plan is refused; changes become proposals.",
   },
   {
-    key: "maxAgentSlicesPerMission",
+    key: "maxAgentUserStoriesPerMilestone",
     label: "Agent-created user stories per milestone",
     default: 5,
-    unit: "slices",
+    unit: "user_stories",
     onHard: "New user stories can only be proposed.",
   },
   {
@@ -92,38 +92,38 @@ export interface BudgetMeter {
   limit: number
   unit: string
   level: BudgetLevel
-  // What the number is measured over, e.g. a mission key or "last hour".
+  // What the number is measured over, e.g. a milestone key or "last hour".
   scope?: string
-  // The mission it measures is finished: shown for the record, never acted on.
+  // The milestone it measures is finished: shown for the record, never acted on.
   final?: boolean
 }
 
 export type BudgetUsage = Record<BudgetKey, number>
 
-// Budgets measured per mission (the rest are live, hourly, or cumulative).
-export const MISSION_BUDGETS: ReadonlySet<BudgetKey> = new Set([
-  "maxSliceAttempts",
-  "maxPlanRevisionsPerMission",
-  "maxAgentSlicesPerMission",
+// Budgets measured per milestone (the rest are live, hourly, or cumulative).
+export const MILESTONE_BUDGETS: ReadonlySet<BudgetKey> = new Set([
+  "maxUserStoryAttempts",
+  "maxPlanRevisionsPerMilestone",
+  "maxAgentUserStoriesPerMilestone",
 ])
 
 export function budgetMeters(
   budgets: Record<string, unknown> | null | undefined,
   usage: BudgetUsage,
-  // The mission the per-mission budgets measure; final when it has finished.
-  mission?: { key: string; final: boolean } | null
+  // The milestone the per-milestone budgets measure; final when it has finished.
+  milestone?: { key: string; final: boolean } | null
 ): BudgetMeter[] {
   return BUDGET_SPECS.map((spec) => {
     const limit = budgetLimit(budgets, spec.key)
     const used = usage[spec.key] ?? 0
-    const perMission = MISSION_BUDGETS.has(spec.key)
-    const scope = perMission
-      ? mission
-        ? `${mission.key}${mission.final ? ", final" : ""}`
+    const perMilestone = MILESTONE_BUDGETS.has(spec.key)
+    const scope = perMilestone
+      ? milestone
+        ? `${milestone.key}${milestone.final ? ", final" : ""}`
         : undefined
       : spec.key === "maxMessagesPerHour"
         ? "last hour"
-        : spec.key === "maxConcurrentSlices"
+        : spec.key === "maxConcurrentUserStories"
           ? "now"
           : "total"
     return {
@@ -134,7 +134,7 @@ export function budgetMeters(
       unit: spec.unit,
       level: budgetLevel(used, limit),
       ...(scope ? { scope } : {}),
-      ...(perMission && mission?.final ? { final: true } : {}),
+      ...(perMilestone && milestone?.final ? { final: true } : {}),
     }
   })
 }

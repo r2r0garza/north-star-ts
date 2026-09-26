@@ -46,7 +46,7 @@ describe.skipIf(!sqliteLoads)("rig repository", () => {
       podId: orchestration.id,
       key: "lead",
       role: "lead",
-      decisionRights: ["assign_slice", "escalate_to_user"],
+      decisionRights: ["assign_user_story", "escalate_to_user"],
     })
     createSeat({ podId: implementation.id, key: "builder", role: "builder" })
     updatePod(orchestration.id, { leadSeatId: lead.id })

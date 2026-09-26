@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 import type { PlaybookRun, SeatBinding } from "../db/types"
 import { decideProof, parseProofSubmission } from "./proof"
-import { sliceStatusPath } from "./work-state"
+import { userStoryStatusPath } from "./work-state"
 
 const criteria = [
   { id: "AC-1", text: "one" },
@@ -68,7 +68,7 @@ describe("parseProofSubmission", () => {
         { verdict: "accepted", criteria: [{ id: "AC-9", status: "met", evidence: "x" }] },
         criteria
       )
-    ).toMatch(/not one of this slice's criteria/)
+    ).toMatch(/not one of this user story's criteria/)
     expect(
       parseProofSubmission(
         { verdict: "accepted", criteria: [{ id: "AC-1", status: "met", evidence: " " }] },
@@ -94,7 +94,7 @@ describe("decideProof", () => {
   it("refuses a builder as its own verifier", () => {
     expect(decide({ builderAddresses: ["qa@impl"] })).toMatchObject({
       kind: "invalid",
-      message: expect.stringMatching(/built this slice/),
+      message: expect.stringMatching(/built this user story/),
     })
   })
 
@@ -149,14 +149,14 @@ describe("decideProof", () => {
   })
 })
 
-describe("sliceStatusPath", () => {
+describe("userStoryStatusPath", () => {
   it("walks legal transitions only", () => {
-    expect(sliceStatusPath("running", "done")).toEqual([
+    expect(userStoryStatusPath("running", "done")).toEqual([
       "proving",
       "integrating",
       "done",
     ])
-    expect(sliceStatusPath("failed", "running")).toEqual(["ready", "running"])
-    expect(sliceStatusPath("done", "running")).toBeNull()
+    expect(userStoryStatusPath("failed", "running")).toEqual(["ready", "running"])
+    expect(userStoryStatusPath("done", "running")).toBeNull()
   })
 })

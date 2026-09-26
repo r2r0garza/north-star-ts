@@ -31,7 +31,7 @@ import {
 } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
 import { Markdown } from "@/components/markdown"
-import { InitiativesTab } from "@/components/mission-control/initiatives-tab"
+import { FeaturesTab } from "@/components/mission-control/features-tab"
 import {
   PlaybooksTab,
   playbookEditingHeader,
@@ -40,7 +40,7 @@ import {
 import type {
   AccountWithModels,
   AgentSummary,
-  InitiativeGraph,
+  FeatureGraph,
   ProcessRuntimeConfig,
   Rig,
   RigDecisionRight,
@@ -50,7 +50,7 @@ import type {
 } from "@/types"
 
 const RIGHTS: Array<{ value: RigDecisionRight; label: string }> = [
-  { value: "assign_slice", label: "Assign user story" },
+  { value: "assign_user_story", label: "Assign user story" },
   { value: "revise_plan", label: "Revise plan" },
   { value: "accept_proof", label: "Accept proof" },
   { value: "merge", label: "Merge" },
@@ -788,16 +788,13 @@ function RigDetail({
 }
 
 export function MissionControlScreen({ onClose }: { onClose: () => void }) {
-  const [tab, setTab] = useState<"initiatives" | "rigs" | "playbooks">(
-    "initiatives"
-  )
+  const [tab, setTab] = useState<"features" | "rigs" | "playbooks">("features")
   const [rigs, setRigs] = useState<Rig[]>([])
-  const [initiativeGraph, setInitiativeGraph] =
-    useState<InitiativeGraph | null>(null)
+  const [featureGraph, setFeatureGraph] = useState<FeatureGraph | null>(null)
   const [playbookEditing, setPlaybookEditing] =
     useState<PlaybookEditing | null>(null)
-  const [missionId, setMissionId] = useState<string | null>(null)
-  const [sliceId, setSliceId] = useState<string | null>(null)
+  const [milestoneId, setMilestoneId] = useState<string | null>(null)
+  const [userStoryId, setUserStoryId] = useState<string | null>(null)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [graph, setGraph] = useState<
     | (RigGraph & {
@@ -823,9 +820,9 @@ export function MissionControlScreen({ onClose }: { onClose: () => void }) {
     setProviders(nextProviders)
   }, [])
   const deleteRig = async (rig: Rig) => {
-    const using = (
-      await window.cowork.missionControl.initiatives.list()
-    ).filter((initiative) => initiative.rigId === rig.id)
+    const using = (await window.cowork.missionControl.features.list()).filter(
+      (feature) => feature.rigId === rig.id
+    )
     const quoted = (items: typeof using) =>
       items.map((item) => `“${item.name}”`).join(", ")
     // The repository refuses this too; checking first skips a pointless
@@ -865,56 +862,55 @@ export function MissionControlScreen({ onClose }: { onClose: () => void }) {
     else setGraph(null)
   }, [selectedId, refreshGraph])
   useEffect(() => {
-    setMissionId(null)
-    setSliceId(null)
-  }, [initiativeGraph?.initiative.id])
+    setMilestoneId(null)
+    setUserStoryId(null)
+  }, [featureGraph?.feature.id])
 
-  const mission =
-    initiativeGraph?.missions.find((item) => item.id === missionId) ?? null
-  const slice =
-    initiativeGraph?.slices.find((item) => item.id === sliceId) ?? null
-  const sliceMission = slice
-    ? (initiativeGraph?.missions.find((item) => item.id === slice.missionId) ??
-      null)
+  const milestone =
+    featureGraph?.milestones.find((item) => item.id === milestoneId) ?? null
+  const userStory =
+    featureGraph?.userStories.find((item) => item.id === userStoryId) ?? null
+  const userStoryMilestone = userStory
+    ? (featureGraph?.milestones.find(
+        (item) => item.id === userStory.milestoneId
+      ) ?? null)
     : null
-  const initiativeName = initiativeGraph?.initiative.name
-  const initiativeTitle = slice
-    ? `User story: ${slice.title}`
-    : mission
-      ? `Milestone: ${mission.name}`
-      : initiativeGraph
-        ? `Feature: ${initiativeName}`
+  const featureName = featureGraph?.feature.name
+  const featureTitle = userStory
+    ? `User story: ${userStory.title}`
+    : milestone
+      ? `Milestone: ${milestone.name}`
+      : featureGraph
+        ? `Feature: ${featureName}`
         : null
-  const initiativeDescription = slice
-    ? `Feature: ${initiativeName}${sliceMission ? ` - Milestone: ${sliceMission.name}` : ""}`
-    : mission
-      ? `Feature: ${initiativeName}`
-      : initiativeGraph?.initiative.intent
+  const featureDescription = userStory
+    ? `Feature: ${featureName}${userStoryMilestone ? ` - Milestone: ${userStoryMilestone.name}` : ""}`
+    : milestone
+      ? `Feature: ${featureName}`
+      : featureGraph?.feature.intent
 
   const playbookHeader =
     tab === "playbooks" && playbookEditing
       ? playbookEditingHeader(playbookEditing)
       : null
   const headerTitle =
-    playbookHeader?.title ?? (tab === "initiatives" ? initiativeTitle : null)
+    playbookHeader?.title ?? (tab === "features" ? featureTitle : null)
   const headerDescription =
     playbookHeader?.description ??
-    (tab === "initiatives" ? initiativeDescription : null)
-  const inDetail = playbookHeader
-    ? true
-    : tab === "initiatives" && !!initiativeGraph
+    (tab === "features" ? featureDescription : null)
+  const inDetail = playbookHeader ? true : tab === "features" && !!featureGraph
 
-  const backFromInitiativeDetail = () => {
-    if (sliceId) {
-      setMissionId(slice?.missionId ?? missionId)
-      setSliceId(null)
+  const backFromFeatureDetail = () => {
+    if (userStoryId) {
+      setMilestoneId(userStory?.milestoneId ?? milestoneId)
+      setUserStoryId(null)
       return
     }
-    if (missionId) {
-      setMissionId(null)
+    if (milestoneId) {
+      setMilestoneId(null)
       return
     }
-    setInitiativeGraph(null)
+    setFeatureGraph(null)
   }
 
   const createStarter = async (kind: "solo" | "orchestrated") => {
@@ -957,9 +953,9 @@ export function MissionControlScreen({ onClose }: { onClose: () => void }) {
         key: "lead",
         role: "lead",
         // The lead drives the plan (plan 106.6): it starts and replans
-        // slices, and judges when a mission meets its definition of done.
+        // user stories, and judges when a milestone meets its definition of done.
         decisionRights: [
-          "assign_slice",
+          "assign_user_story",
           "revise_plan",
           "accept_proof",
           "escalate_to_user",
@@ -1006,7 +1002,7 @@ export function MissionControlScreen({ onClose }: { onClose: () => void }) {
             playbookHeader
               ? setPlaybookEditing(null)
               : inDetail
-                ? backFromInitiativeDetail()
+                ? backFromFeatureDetail()
                 : onClose()
           }
         >
@@ -1025,8 +1021,8 @@ export function MissionControlScreen({ onClose }: { onClose: () => void }) {
       {!inDetail && (
         <div className="flex gap-5 border-b px-6">
           <button
-            className={`py-3 text-sm font-medium ${tab === "initiatives" ? "border-b-2 border-primary" : "text-muted-foreground"}`}
-            onClick={() => setTab("initiatives")}
+            className={`py-3 text-sm font-medium ${tab === "features" ? "border-b-2 border-primary" : "text-muted-foreground"}`}
+            onClick={() => setTab("features")}
           >
             Features
           </button>
@@ -1045,15 +1041,15 @@ export function MissionControlScreen({ onClose }: { onClose: () => void }) {
         </div>
       )}
       <div className="flex-1 overflow-y-auto p-6">
-        {tab === "initiatives" ? (
-          <InitiativesTab
+        {tab === "features" ? (
+          <FeaturesTab
             rigs={rigs}
-            graph={initiativeGraph}
-            missionId={missionId}
-            sliceId={sliceId}
-            onGraphChange={setInitiativeGraph}
-            onMissionChange={setMissionId}
-            onSliceChange={setSliceId}
+            graph={featureGraph}
+            milestoneId={milestoneId}
+            userStoryId={userStoryId}
+            onGraphChange={setFeatureGraph}
+            onMilestoneChange={setMilestoneId}
+            onUserStoryChange={setUserStoryId}
           />
         ) : tab === "playbooks" ? (
           <PlaybooksTab

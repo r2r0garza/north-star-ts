@@ -1,9 +1,12 @@
-import type { MissionStatus, SliceStatus } from "../db/types"
+import type { MilestoneStatus, UserStoryStatus } from "../db/types"
 
-const MISSION_TRANSITIONS: Record<MissionStatus, readonly MissionStatus[]> = {
+const MILESTONE_TRANSITIONS: Record<
+  MilestoneStatus,
+  readonly MilestoneStatus[]
+> = {
   planned: ["active", "cancelled"],
   active: ["integrating", "failed", "cancelled"],
-  // Back to active when a slice leaves the merge queue unmerged (106.5).
+  // Back to active when a user story leaves the merge queue unmerged (106.5).
   integrating: ["review", "active", "failed", "cancelled"],
   review: ["completed", "active", "failed", "cancelled"],
   completed: [],
@@ -11,8 +14,11 @@ const MISSION_TRANSITIONS: Record<MissionStatus, readonly MissionStatus[]> = {
   failed: ["active", "cancelled"],
 }
 
-const SLICE_TRANSITIONS: Record<SliceStatus, readonly SliceStatus[]> = {
-  // A draft waits (blocked) when a slice it depends on is cancelled (106.6).
+const USER_STORY_TRANSITIONS: Record<
+  UserStoryStatus,
+  readonly UserStoryStatus[]
+> = {
+  // A draft waits (blocked) when a user story it depends on is cancelled (106.6).
   draft: ["ready", "blocked", "cancelled"],
   ready: ["blocked", "running", "cancelled"],
   blocked: ["ready", "cancelled", "failed"],
@@ -35,36 +41,36 @@ function transition<T extends string>(
   return next
 }
 
-export function transitionMissionStatus(
-  current: MissionStatus,
-  next: MissionStatus
-): MissionStatus {
-  return transition(current, next, MISSION_TRANSITIONS)
+export function transitionMilestoneStatus(
+  current: MilestoneStatus,
+  next: MilestoneStatus
+): MilestoneStatus {
+  return transition(current, next, MILESTONE_TRANSITIONS)
 }
 
-export function transitionSliceStatus(
-  current: SliceStatus,
-  next: SliceStatus
-): SliceStatus {
-  return transition(current, next, SLICE_TRANSITIONS)
+export function transitionUserStoryStatus(
+  current: UserStoryStatus,
+  next: UserStoryStatus
+): UserStoryStatus {
+  return transition(current, next, USER_STORY_TRANSITIONS)
 }
 
 // The shortest legal status path from current to target (excluding current),
 // or null when target is unreachable. Execution outcomes walk this path so every
 // hop is a legal transition — e.g. running → proving → integrating, and
 // straight on to done when the workspace has no integration branch.
-export function sliceStatusPath(
-  current: SliceStatus,
-  target: SliceStatus
-): SliceStatus[] | null {
-  return statusPath(current, target, SLICE_TRANSITIONS)
+export function userStoryStatusPath(
+  current: UserStoryStatus,
+  target: UserStoryStatus
+): UserStoryStatus[] | null {
+  return statusPath(current, target, USER_STORY_TRANSITIONS)
 }
 
-export function missionStatusPath(
-  current: MissionStatus,
-  target: MissionStatus
-): MissionStatus[] | null {
-  return statusPath(current, target, MISSION_TRANSITIONS)
+export function milestoneStatusPath(
+  current: MilestoneStatus,
+  target: MilestoneStatus
+): MilestoneStatus[] | null {
+  return statusPath(current, target, MILESTONE_TRANSITIONS)
 }
 
 function statusPath<T extends string>(

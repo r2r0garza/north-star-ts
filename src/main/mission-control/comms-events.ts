@@ -1,8 +1,8 @@
 // A tiny change feed for Comms (plan 106.4): anything that writes seat mail or
-// seat-session state announces the initiative it touched, and the main process
+// seat-session state announces the feature it touched, and the main process
 // forwards that to the renderer so the Comms tab refreshes live.
 
-type Listener = (initiativeId: string) => void
+type Listener = (featureId: string) => void
 
 const listeners = new Set<Listener>()
 
@@ -11,10 +11,10 @@ export function onCommsChanged(listener: Listener): () => void {
   return () => listeners.delete(listener)
 }
 
-export function emitCommsChanged(initiativeId: string): void {
+export function emitCommsChanged(featureId: string): void {
   for (const listener of listeners) {
     try {
-      listener(initiativeId)
+      listener(featureId)
     } catch (err) {
       console.error("Comms change listener failed:", err)
     }

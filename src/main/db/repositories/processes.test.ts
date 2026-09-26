@@ -66,7 +66,7 @@ describe.skipIf(!sqliteLoads)("v15 migration", () => {
   })
 
   it("reaches the latest user_version", () => {
-    expect(db.pragma("user_version", { simple: true })).toBe(53)
+    expect(db.pragma("user_version", { simple: true })).toBe(54)
   })
 
   it("adds the v24 subprocess_id column to process_phases", () => {
@@ -577,9 +577,9 @@ describe.skipIf(!sqliteLoads)("mission control fields (plan 106.3)", () => {
         intentChain: "",
       },
       missionControl: {
-        initiativeId: "i",
-        missionId: "m",
-        sliceId: "s",
+        featureId: "i",
+        milestoneId: "m",
+        userStoryId: "s",
         playbookRunId: "pbr",
         hook: "run",
       },

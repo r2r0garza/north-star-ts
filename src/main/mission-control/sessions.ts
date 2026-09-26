@@ -4,7 +4,7 @@ import type { ContextSection } from "../agent/context/context-builder"
 import { getDb } from "../db/connection"
 import { createConversation } from "../db/repositories/conversations"
 import { getConversationSummary } from "../db/repositories/conversation-summaries"
-import * as initiatives from "../db/repositories/initiatives"
+import * as features from "../db/repositories/features"
 import { listMessages } from "../db/repositories/messages"
 import * as playbooks from "../db/repositories/playbooks"
 import * as processes from "../db/repositories/processes"
@@ -13,7 +13,7 @@ import * as sessions from "../db/repositories/seat-sessions"
 import { createTask } from "../db/repositories/tasks"
 import { getWorkspace } from "../db/repositories/workspaces"
 import type {
-  Initiative,
+  Feature,
   SeatBinding,
   SeatBindingsSnapshot,
   SeatMessage,
@@ -34,7 +34,7 @@ import {
   seatContextSection,
 } from "./seat-context"
 import { resolveSingleSeat } from "./seat-resolver"
-import { renderIntentChain } from "./slice-objective"
+import { renderIntentChain } from "./user-story-objective"
 import {
   seatTurns,
   type SeatTurnIdentity,
@@ -43,11 +43,11 @@ import {
 
 // Seat sessions and mail delivery (plan 106.4).
 //
-// A seat session is one hidden conversation for a seat in one scope: a slice
-// session lives for one playbook run (a slice attempt or a hook run) and is
-// closed when the run ends; an initiative session is long-lived and rotates
-// into generations. Each playbook step picks its scope (step / slice /
-// initiative). Mail for an idle seat wakes it through a durable `seat_wake`
+// A seat session is one hidden conversation for a seat in one scope: a user story
+// session lives for one playbook run (a user story attempt or a hook run) and is
+// closed when the run ends; a feature session is long-lived and rotates
+// into generations. Each playbook step picks its scope (step / user story /
+// feature). Mail for an idle seat wakes it through a durable `seat_wake`
 // task that runs ONE turn in the seat's home; mail for a busy seat waits for
 // the running turn's next tool-round boundary (inbox.ts).
 //
@@ -57,12 +57,12 @@ import {
 //     the seat, its mail is HELD and delivered into its next step (at turn
 //     start and at every tool-round boundary). Waking elsewhere would split the
 //     seat into two agents that cannot see each other.
-//   - While it still has slice-scoped steps, a wake lands in that run's slice
+//   - While it still has user-story-scoped steps, a wake lands in that run's user story
 //     session: the same conversation those steps use, serialized by the turn
 //     lock.
 //   - Otherwise a wake lands where the seat last worked: a step worker or a
-//     closed slice session is woken answer-only (the old 039 consultation);
-//     otherwise the live initiative session, else a new one.
+//     closed user story session is woken answer-only (the old 039 consultation);
+//     otherwise the live feature session, else a new one.
 //
 // Wake turns never mutate: the consult and answer-only profiles offer only
 // read/search tools, so a message cannot cause a side effect.
@@ -93,7 +93,7 @@ export interface SeatSessionDeps {
   runTurn(input: SeatTurnRunInput): Promise<SeatTurnRunResult>
   loadAgents(workspace: string): Promise<AgentDefinition[]>
   enqueueWake(input: {
-    initiativeId: string
+    featureId: string
     address: string
     workspaceId: string | null
     title: string
@@ -110,24 +110,24 @@ interface Home {
 }
 
 interface WakeInput {
-  initiativeId?: string
+  featureId?: string
   address?: string
 }
 
-function wakeKey(initiativeId: string, address: string): string {
-  return `${initiativeId}\u0000${address}`
+function wakeKey(featureId: string, address: string): string {
+  return `${featureId}\u0000${address}`
 }
 
-function workspacePathOf(initiative: Initiative): string | null {
-  return initiative.workspaceId
-    ? (getWorkspace(initiative.workspaceId)?.path ?? null)
+function workspacePathOf(feature: Feature): string | null {
+  return feature.workspaceId
+    ? (getWorkspace(feature.workspaceId)?.path ?? null)
     : null
 }
 
 // The seat as the rig snapshot defines it, without loading agent files: enough
 // to create a session conversation.
-function snapshotSeat(initiative: Initiative, address: string) {
-  const rig = initiative.rigSnapshot
+function snapshotSeat(feature: Feature, address: string) {
+  const rig = feature.rigSnapshot
   if (!rig) return null
   for (const pod of rig.pods)
     for (const seat of rig.seats.filter((s) => s.podId === pod.id))
@@ -197,10 +197,10 @@ export interface SeatOverview {
   held: boolean
   // The most recent wake's failure, when it failed.
   lastWakeError: string | null
-  // The live session a wake or step would use now: the running slice's session
-  // when there is one, else the initiative session.
+  // The live session a wake or step would use now: the running user story's session
+  // when there is one, else the feature session.
   session: LabeledSeatSession | null
-  // Every session this seat has had in the initiative, newest first.
+  // Every session this seat has had in the feature, newest first.
   generations: LabeledSeatSession[]
 }
 
@@ -217,28 +217,28 @@ export class SeatSessionService {
   ) {
     // A turn that ends may leave mail behind (it arrived after the last
     // boundary): deliver it with a wake.
-    registry.onRelease((turn) => this.dispatch(turn.initiativeId, turn.address))
+    registry.onRelease((turn) => this.dispatch(turn.featureId, turn.address))
   }
 
   // ── sessions ──────────────────────────────────────────────────────────────
 
-  // The seat's live session in a scope (the initiative, or one playbook run),
+  // The seat's live session in a scope (the feature, or one playbook run),
   // creating the next generation (with a handoff from the last retired one in
   // that scope) when none is live.
   ensureSession(
-    initiative: Initiative,
+    feature: Feature,
     address: string,
     playbookRunId: string | null = null
   ): SeatSession {
-    const live = sessions.getLiveSeatSession(initiative.id, address, playbookRunId)
+    const live = sessions.getLiveSeatSession(feature.id, address, playbookRunId)
     if (live?.conversationId) return live
-    const found = snapshotSeat(initiative, address)
+    const found = snapshotSeat(feature, address)
     if (!found) throw new Error(`No seat ${address} in this feature's rig.`)
     if (!found.seat.agentRefId) throw new Error(`${address} is vacant.`)
     const created = getDb().transaction(() => {
       if (live) sessions.retireSeatSession(live.id, "closed", "Its conversation was deleted")
       const previous = sessions.listSeatSessions({
-        initiativeId: initiative.id,
+        featureId: feature.id,
         seatAddress: address,
         playbookRunId,
       })[0]
@@ -246,11 +246,11 @@ export class SeatSessionService {
       const runtime = found.seat.runtimeConfig?.worker ?? null
       const conversation = createConversation({
         mode: "interactive",
-        workspaceId: initiative.workspaceId,
+        workspaceId: feature.workspaceId,
         accountId: runtime?.accountId ?? null,
         modelId: runtime?.modelId ?? null,
         agentName: found.seat.agentRefId,
-        title: `${address} · ${playbookRunId ? scopeLabel(playbookRunId) : initiative.key} · gen ${generation}`,
+        title: `${address} · ${playbookRunId ? scopeLabel(playbookRunId) : feature.key} · gen ${generation}`,
       })
       // A task row hides the session from the chat sidebar, like a Process
       // worker; it is self-sourced, so the orphan reaper leaves it alone.
@@ -261,19 +261,19 @@ export class SeatSessionService {
         title: `${address} seat session`,
         input: {
           kind: SEAT_SESSION_TASK_KIND,
-          initiativeId: initiative.id,
+          featureId: feature.id,
           address,
         },
       })
       return sessions.createSeatSession({
-        initiativeId: initiative.id,
+        featureId: feature.id,
         seatAddress: address,
         conversationId: conversation.id,
         handoffSummary: previous ? buildHandoffSummary(previous) : null,
         playbookRunId,
       })
     })()
-    emitCommsChanged(initiative.id)
+    emitCommsChanged(feature.id)
     return created
   }
 
@@ -287,29 +287,29 @@ export class SeatSessionService {
         `${session.seatAddress} is mid-turn. Rotate it after the turn ends.`
       )
     if (!sessions.retireSeatSession(session.id, "rotated", reason)) return null
-    const initiative = initiatives.getInitiative(session.initiativeId)
-    emitCommsChanged(session.initiativeId)
-    if (!initiative) return null
-    const found = snapshotSeat(initiative, session.seatAddress)
+    const feature = features.getFeature(session.featureId)
+    emitCommsChanged(session.featureId)
+    if (!feature) return null
+    const found = snapshotSeat(feature, session.seatAddress)
     // A seat that left the rig (or went vacant) has no successor, and neither
-    // does a slice session whose run already ended.
+    // does a user story session whose run already ended.
     if (!found?.seat.agentRefId) return null
     if (session.playbookRunId && !runStillRunning(session.playbookRunId)) return null
-    return this.ensureSession(initiative, session.seatAddress, session.playbookRunId)
+    return this.ensureSession(feature, session.seatAddress, session.playbookRunId)
   }
 
-  // A rig Re-seat: every live initiative session starts a new generation
-  // against the new snapshot, and seats that left the rig are closed. Slice
+  // A rig Re-seat: every live feature session starts a new generation
+  // against the new snapshot, and seats that left the rig are closed. User story
   // sessions follow their run's frozen bindings and are left alone.
-  rotateInitiative(initiativeId: string, reason: string): void {
-    const initiative = initiatives.getInitiative(initiativeId)
+  rotateFeature(featureId: string, reason: string): void {
+    const feature = features.getFeature(featureId)
     for (const session of sessions.listSeatSessions({
-      initiativeId,
+      featureId,
       liveOnly: true,
       playbookRunId: null,
     })) {
-      const stillSeated = initiative
-        ? snapshotSeat(initiative, session.seatAddress)?.seat.agentRefId
+      const stillSeated = feature
+        ? snapshotSeat(feature, session.seatAddress)?.seat.agentRefId
         : null
       if (!stillSeated) {
         sessions.retireSeatSession(session.id, "closed", "The seat left the rig")
@@ -321,39 +321,39 @@ export class SeatSessionService {
         console.warn(`[comms] could not rotate ${session.seatAddress}:`, err)
       }
     }
-    emitCommsChanged(initiativeId)
+    emitCommsChanged(featureId)
   }
 
-  // A slice- or initiative-scoped playbook step runs in this conversation.
-  // `playbookRunId` selects the slice scope; null is the initiative scope.
+  // A user story- or feature-scoped playbook step runs in this conversation.
+  // `playbookRunId` selects the user story scope; null is the feature scope.
   sessionConversationForStep(
-    initiativeId: string,
+    featureId: string,
     address: string,
     playbookRunId: string | null
   ): string {
-    const initiative = initiatives.getInitiative(initiativeId)
-    if (!initiative) throw new Error("The feature is no longer available.")
-    return this.ensureSession(initiative, address, playbookRunId).conversationId!
+    const feature = features.getFeature(featureId)
+    if (!feature) throw new Error("The feature is no longer available.")
+    return this.ensureSession(feature, address, playbookRunId).conversationId!
   }
 
-  // Close the slice sessions of every playbook run that is no longer running
+  // Close the user story sessions of every playbook run that is no longer running
   // (their transcripts stay readable and answerable).
-  closeFinishedRunSessions(initiativeId?: string): void {
+  closeFinishedRunSessions(featureId?: string): void {
     const rows = getDb()
       .prepare(
-        `SELECT DISTINCT s.scope_key AS runId, s.initiative_id AS initiativeId
+        `SELECT DISTINCT s.scope_key AS runId, s.feature_id AS featureId
          FROM seat_sessions s LEFT JOIN playbook_runs r ON r.id = s.scope_key
-         WHERE s.scope = 'slice' AND s.status IN ('idle', 'busy')
+         WHERE s.scope = 'user_story' AND s.status IN ('idle', 'busy')
            AND (r.id IS NULL OR r.status <> 'running')
-           ${initiativeId ? "AND s.initiative_id = ?" : ""}`
+           ${featureId ? "AND s.feature_id = ?" : ""}`
       )
-      .all(...(initiativeId ? [initiativeId] : [])) as Array<{
+      .all(...(featureId ? [featureId] : [])) as Array<{
       runId: string
-      initiativeId: string
+      featureId: string
     }>
     for (const row of rows) {
       sessions.closeRunSessions(row.runId)
-      emitCommsChanged(row.initiativeId)
+      emitCommsChanged(row.featureId)
     }
   }
 
@@ -361,39 +361,39 @@ export class SeatSessionService {
     const session = sessions.getSeatSessionByConversation(conversationId)
     if (!session) return
     sessions.setSeatSessionStatus(session.id, busy ? "busy" : "idle")
-    emitCommsChanged(session.initiativeId)
+    emitCommsChanged(session.featureId)
   }
 
-  overview(initiativeId: string): SeatOverview[] {
-    const initiative = initiatives.getInitiative(initiativeId)
-    if (!initiative?.rigSnapshot) return []
+  overview(featureId: string): SeatOverview[] {
+    const feature = features.getFeature(featureId)
+    if (!feature?.rigSnapshot) return []
     const all = sessions
-      .listSeatSessions({ initiativeId })
+      .listSeatSessions({ featureId })
       .map((session) => ({ ...session, label: sessionLabel(session) }))
-    return seatDirectory(initiative.rigSnapshot).map((seat) => {
+    return seatDirectory(feature.rigSnapshot).map((seat) => {
       const generations = all.filter((s) => s.seatAddress === seat.address)
       const live = generations.filter(
         (s) => s.status === "idle" || s.status === "busy"
       )
-      const inboxDepth = comms.countQueued(initiativeId, seat.address)
-      const lastWake = latestWakeTask(initiativeId, seat.address)
+      const inboxDepth = comms.countQueued(featureId, seat.address)
+      const lastWake = latestWakeTask(featureId, seat.address)
       return {
         ...seat,
-        busy: this.registry.seatBusy(initiativeId, seat.address),
+        busy: this.registry.seatBusy(featureId, seat.address),
         inboxDepth,
-        wake: this.inFlight.has(wakeKey(initiativeId, seat.address))
+        wake: this.inFlight.has(wakeKey(featureId, seat.address))
           ? "running"
           : lastWake?.status === "queued"
             ? "queued"
             : lastWake?.status === "running"
               ? "running"
               : null,
-        held: inboxDepth > 0 && pendingRunWork(initiativeId, seat.address),
+        held: inboxDepth > 0 && pendingRunWork(featureId, seat.address),
         lastWakeError:
           lastWake?.status === "failed" ? (lastWake.error ?? "The wake failed.") : null,
         session:
-          live.find((s) => s.scope === "slice") ??
-          live.find((s) => s.scope === "initiative") ??
+          live.find((s) => s.scope === "user_story") ??
+          live.find((s) => s.scope === "feature") ??
           null,
         generations,
       }
@@ -404,119 +404,119 @@ export class SeatSessionService {
 
   // Get a seat's queued mail moving: a busy seat picks it up at its next turn
   // boundary; an idle one gets exactly one wake task.
-  dispatch(initiativeId: string, address: string): void {
+  dispatch(featureId: string, address: string): void {
     if (address === USER_ADDRESS) return
-    if (this.registry.seatBusy(initiativeId, address)) return
-    if (pendingRunWork(initiativeId, address)) return
-    if (this.inFlight.has(wakeKey(initiativeId, address))) return
-    if (comms.countQueued(initiativeId, address) === 0) return
-    if (this.queuedWake(initiativeId, address)) return
-    const initiative = initiatives.getInitiative(initiativeId)
-    // Mail for a paused or finished initiative waits; nothing wakes.
-    if (!initiative || initiative.status !== "active") return
+    if (this.registry.seatBusy(featureId, address)) return
+    if (pendingRunWork(featureId, address)) return
+    if (this.inFlight.has(wakeKey(featureId, address))) return
+    if (comms.countQueued(featureId, address) === 0) return
+    if (this.queuedWake(featureId, address)) return
+    const feature = features.getFeature(featureId)
+    // Mail for a paused or finished feature waits; nothing wakes.
+    if (!feature || feature.status !== "active") return
     this.deps.enqueueWake({
-      initiativeId,
+      featureId,
       address,
-      workspaceId: initiative.workspaceId,
+      workspaceId: feature.workspaceId,
       title: `Wake ${address}`,
     })
-    emitCommsChanged(initiativeId)
+    emitCommsChanged(featureId)
   }
 
-  // Re-dispatch every seat in one initiative, e.g. when a playbook step or run
+  // Re-dispatch every seat in one feature, e.g. when a playbook step or run
   // settles and mail held for its seats may now wake them.
-  dispatchInitiative(initiativeId: string): void {
+  dispatchFeature(featureId: string): void {
     for (const recipient of comms.listQueuedRecipients())
-      if (recipient.initiativeId === initiativeId)
-        this.dispatch(initiativeId, recipient.toAddress)
+      if (recipient.featureId === featureId)
+        this.dispatch(featureId, recipient.toAddress)
   }
 
   // A Process run (or a phase inside it) settled: release mail held for its
-  // initiative's seats. Nested sub-process runs resolve to their root.
+  // feature's seats. Nested sub-process runs resolve to their root.
   onProcessRunActivity(processRunId: string): void {
-    const initiativeId = missionControlInitiative(processRunId)
-    if (!initiativeId) return
-    this.closeFinishedRunSessions(initiativeId)
-    this.dispatchInitiative(initiativeId)
+    const featureId = missionControlFeature(processRunId)
+    if (!featureId) return
+    this.closeFinishedRunSessions(featureId)
+    this.dispatchFeature(featureId)
   }
 
   // Boot: re-dispatch every seat with undelivered mail. Wakes interrupted
   // mid-turn resume through the task runner.
   dispatchAll(): void {
     sessions.resetBusySeatSessions()
-    // Runs that ended while the app was down leave their slice sessions open.
+    // Runs that ended while the app was down leave their user story sessions open.
     this.closeFinishedRunSessions()
-    for (const { initiativeId, toAddress } of comms.listQueuedRecipients())
-      this.dispatch(initiativeId, toAddress)
+    for (const { featureId, toAddress } of comms.listQueuedRecipients())
+      this.dispatch(featureId, toAddress)
   }
 
-  // A cancelled run stops its initiative's chatter: queued mail expires and
+  // A cancelled run stops its feature's chatter: queued mail expires and
   // pending wakes are cancelled.
-  cancelInitiative(initiativeId: string): void {
-    getSeatComms()?.expireQueued(initiativeId)
-    for (const taskId of this.wakeTasks(initiativeId)) this.deps.cancelTask(taskId)
+  cancelFeature(featureId: string): void {
+    getSeatComms()?.expireQueued(featureId)
+    for (const taskId of this.wakeTasks(featureId)) this.deps.cancelTask(taskId)
   }
 
-  private queuedWake(initiativeId: string, address: string): boolean {
+  private queuedWake(featureId: string, address: string): boolean {
     return !!getDb()
       .prepare(
-        "SELECT 1 FROM tasks WHERE status = 'queued' AND json_extract(input, '$.kind') = ? AND json_extract(input, '$.initiativeId') = ? AND json_extract(input, '$.address') = ? LIMIT 1"
+        "SELECT 1 FROM tasks WHERE status = 'queued' AND json_extract(input, '$.kind') = ? AND json_extract(input, '$.featureId') = ? AND json_extract(input, '$.address') = ? LIMIT 1"
       )
-      .get(SEAT_WAKE_KIND, initiativeId, address)
+      .get(SEAT_WAKE_KIND, featureId, address)
   }
 
-  private wakeTasks(initiativeId: string): string[] {
+  private wakeTasks(featureId: string): string[] {
     return getDb()
       .prepare(
-        "SELECT id FROM tasks WHERE status IN ('queued', 'running') AND json_extract(input, '$.kind') = ? AND json_extract(input, '$.initiativeId') = ?"
+        "SELECT id FROM tasks WHERE status IN ('queued', 'running') AND json_extract(input, '$.kind') = ? AND json_extract(input, '$.featureId') = ?"
       )
       .pluck()
-      .all(SEAT_WAKE_KIND, initiativeId) as string[]
+      .all(SEAT_WAKE_KIND, featureId) as string[]
   }
 
   // ── the wake executor (task kind seat_wake) ──────────────────────────────
 
   execute = async (ctx: TaskExecContext): Promise<TaskExecResult> => {
     const input = (ctx.task.input ?? {}) as WakeInput
-    if (!input.initiativeId || !input.address)
+    if (!input.featureId || !input.address)
       return { error: "A seat wake needs a feature and an address." }
-    const key = wakeKey(input.initiativeId, input.address)
+    const key = wakeKey(input.featureId, input.address)
     this.inFlight.add(key)
-    emitCommsChanged(input.initiativeId)
+    emitCommsChanged(input.featureId)
     try {
-      return await this.wake(ctx, input.initiativeId, input.address)
+      return await this.wake(ctx, input.featureId, input.address)
     } finally {
       this.inFlight.delete(key)
-      emitCommsChanged(input.initiativeId)
+      emitCommsChanged(input.featureId)
       // Mail that arrived during this wake (or while it waited) goes next.
-      this.dispatch(input.initiativeId, input.address)
+      this.dispatch(input.featureId, input.address)
     }
   }
 
   private async wake(
     ctx: TaskExecContext,
-    initiativeId: string,
+    featureId: string,
     address: string
   ): Promise<TaskExecResult> {
-    const initiative = initiatives.getInitiative(initiativeId)
-    const workspace = initiative ? workspacePathOf(initiative) : null
-    if (!initiative?.rigSnapshot || !workspace)
+    const feature = features.getFeature(featureId)
+    const workspace = feature ? workspacePathOf(feature) : null
+    if (!feature?.rigSnapshot || !workspace)
       return { content: "The feature is no longer runnable; nothing woke." }
 
     // A crash after the claim left this task's delivery in a transcript already;
     // resume that turn instead of claiming (or appending) anything again.
     let delivered = comms.listByWakeTask(ctx.task.id)
     const resuming = delivered.length > 0
-    if (!resuming && this.registry.seatBusy(initiativeId, address))
+    if (!resuming && this.registry.seatBusy(featureId, address))
       return { content: `${address} is busy; its mail waits for the next turn boundary.` }
-    if (!resuming && pendingRunWork(initiativeId, address))
+    if (!resuming && pendingRunWork(featureId, address))
       return {
         content: `${address} has playbook steps still to run; its mail waits for its next step.`,
       }
 
     const home = resuming
-      ? await this.resumeHome(initiative, workspace, address, delivered[0])
-      : await this.chooseHome(initiative, workspace, address)
+      ? await this.resumeHome(feature, workspace, address, delivered[0])
+      : await this.chooseHome(feature, workspace, address)
     if (!home) return { content: `${address} has no usable seat to wake.` }
 
     const release = await this.registry.acquire(
@@ -597,57 +597,57 @@ export class SeatSessionService {
       }
       comms.transitionMessage(message.id, "acknowledged", ["delivered"])
     }
-    emitCommsChanged(identity.initiativeId)
+    emitCommsChanged(identity.featureId)
   }
 
   private rotateAfterTurn(session: SeatSession, reason: string): void {
     // Our own turn still holds the conversation; retire without the busy check.
     if (!sessions.retireSeatSession(session.id, "rotated", reason)) return
-    emitCommsChanged(session.initiativeId)
+    emitCommsChanged(session.featureId)
   }
 
   // ── homes ─────────────────────────────────────────────────────────────────
 
   private async chooseHome(
-    initiative: Initiative,
+    feature: Feature,
     workspace: string,
     address: string
   ): Promise<Home | null> {
-    // Mid-run with slice-scoped steps still to come: the run's slice session,
+    // Mid-run with user-story-scoped steps still to come: the run's user story session,
     // the conversation those steps share.
-    const sliceRun = pendingSteps(initiative.id, address).sliceRun
-    if (sliceRun)
+    const userStoryRun = pendingSteps(feature.id, address).userStoryRun
+    if (userStoryRun)
       return this.sessionHome(
-        initiative,
+        feature,
         workspace,
-        this.ensureSession(initiative, address, sliceRun)
+        this.ensureSession(feature, address, userStoryRun)
       )
     // A Navigator direction (plan 106.6) is acted on with map tools, which an
     // answer-only wake doesn't have: it goes to the seat's live session.
     const directed = comms
-      .listMessages({ initiativeId: initiative.id, toAddress: address, statuses: ["queued"] })
+      .listMessages({ featureId: feature.id, toAddress: address, statuses: ["queued"] })
       .some((message) => message.kind === "direction")
     // Done with its steps: where it last did playbook work holds its freshest
-    // context, woken answer-only unless that was its initiative session.
-    const worker = directed ? null : lastFinishedWork(initiative.id, address)
+    // context, woken answer-only unless that was its feature session.
+    const worker = directed ? null : lastFinishedWork(feature.id, address)
     if (worker) {
-      const home = await this.workerHome(initiative, workspace, address, worker)
+      const home = await this.workerHome(feature, workspace, address, worker)
       if (home) return home
     }
-    const live = sessions.getLiveSeatSession(initiative.id, address)
+    const live = sessions.getLiveSeatSession(feature.id, address)
     if (live?.conversationId)
-      return this.sessionHome(initiative, workspace, live)
-    const found = snapshotSeat(initiative, address)
+      return this.sessionHome(feature, workspace, live)
+    const found = snapshotSeat(feature, address)
     if (!found?.seat.agentRefId) return null
     return this.sessionHome(
-      initiative,
+      feature,
       workspace,
-      this.ensureSession(initiative, address)
+      this.ensureSession(feature, address)
     )
   }
 
   private async resumeHome(
-    initiative: Initiative,
+    feature: Feature,
     workspace: string,
     address: string,
     first: SeatMessage
@@ -656,15 +656,15 @@ export class SeatSessionService {
     if (!conversationId) return null
     const session = sessions.getSeatSessionByConversation(conversationId)
     if (session && (session.status === "idle" || session.status === "busy"))
-      return this.sessionHome(initiative, workspace, session)
+      return this.sessionHome(feature, workspace, session)
     const worker = workerByConversation(conversationId)
     return worker
-      ? this.workerHome(initiative, workspace, address, worker)
+      ? this.workerHome(feature, workspace, address, worker)
       : null
   }
 
   private async sessionHome(
-    initiative: Initiative,
+    feature: Feature,
     workspace: string,
     session: SeatSession
   ): Promise<Home | null> {
@@ -672,7 +672,7 @@ export class SeatSessionService {
     let agents: AgentDefinition[]
     try {
       agents = await this.deps.loadAgents(workspace)
-      // A slice session reads its run's frozen bindings, like the run's steps.
+      // A user story session reads its run's frozen bindings, like the run's steps.
       const frozen = session.playbookRunId
         ? runBindings(session.playbookRunId)
         : null
@@ -681,10 +681,10 @@ export class SeatSessionService {
         frozen && seat
           ? { snapshot: frozen, seat }
           : resolveSingleSeat({
-              rig: initiative.rigSnapshot!,
+              rig: feature.rigSnapshot!,
               address: session.seatAddress,
               agents,
-              intentChain: renderIntentChain({ initiative }),
+              intentChain: renderIntentChain({ feature }),
             })
     } catch (err) {
       console.warn(`[comms] cannot wake ${session.seatAddress}:`, err)
@@ -693,7 +693,7 @@ export class SeatSessionService {
     const agent = agents.find((a) => a.refId === bound.seat.agentName)
     if (!agent) return null
     const identity: SeatTurnIdentity = {
-      initiativeId: initiative.id,
+      featureId: feature.id,
       address: session.seatAddress,
       profile: "consult",
       anchor: session.playbookRunId ? runAnchor(session.playbookRunId) : null,
@@ -707,13 +707,13 @@ export class SeatSessionService {
       contextSections: [
         seatContextSection(bound.snapshot, bound.seat),
         ...[handoffSection(session)].filter((s): s is ContextSection => !!s),
-        commsContextSection(initiative, identity),
+        commsContextSection(feature, identity),
       ],
     }
   }
 
   private async workerHome(
-    initiative: Initiative,
+    feature: Feature,
     workspace: string,
     address: string,
     worker: FinishedWorker
@@ -724,7 +724,7 @@ export class SeatSessionService {
     const agent = agents.find((a) => a.refId === seat.agentName)
     if (!agent) return null
     const identity: SeatTurnIdentity = {
-      initiativeId: initiative.id,
+      featureId: feature.id,
       address,
       profile: "answer_only",
       anchor: null,
@@ -737,7 +737,7 @@ export class SeatSessionService {
       agentOverride: narrowedSeatAgent(agent, seat),
       contextSections: [
         seatContextSection(worker.bindings, seat),
-        commsContextSection(initiative, identity),
+        commsContextSection(feature, identity),
       ],
     }
   }
@@ -746,8 +746,8 @@ export class SeatSessionService {
 // ── lookups ─────────────────────────────────────────────────────────────────
 
 // Where a wake turn looks at files: the folder the seat's work happened in.
-// A slice built in its own worktree (plan 106.5) is read there while the
-// worktree exists; otherwise the initiative workspace.
+// A user story built in its own worktree (plan 106.5) is read there while the
+// worktree exists; otherwise the feature workspace.
 function homeWorkspace(home: Home, fallback: string): string {
   const row = (
     home.session?.playbookRunId
@@ -784,13 +784,13 @@ function parseBindings(json: string | null): SeatBindingsSnapshot | null {
   }
 }
 
-// The seat's most recent completed playbook step in this initiative (top-level
-// Mission Control runs), when that step ran as a fresh worker or in a slice
+// The seat's most recent completed playbook step in this feature (top-level
+// Mission Control runs), when that step ran as a fresh worker or in a user story
 // session: that conversation holds the work, and the seat is woken there
 // answer-only. Null when the seat has not worked yet or last worked in its
-// initiative session (which a wake then uses directly).
+// feature session (which a wake then uses directly).
 function lastFinishedWork(
-  initiativeId: string,
+  featureId: string,
   address: string
 ): FinishedWorker | null {
   const row = getDb()
@@ -802,14 +802,14 @@ function lastFinishedWork(
        JOIN process_phases p ON p.id = pr.phase_id
        JOIN tasks t ON t.id = pr.task_id
        WHERE pr.seat_address = ? AND pr.status = 'completed'
-         AND json_extract(r.mission_control, '$.initiativeId') = ?
+         AND json_extract(r.mission_control, '$.featureId') = ?
        ORDER BY pr.finished_at DESC, pr.rowid DESC LIMIT 1`
     )
-    .get(address, initiativeId) as
+    .get(address, featureId) as
     | { conversationId: string; bindings: string | null; scope: string }
     | undefined
   // context_mode may still hold the pre-v51 values fresh / seat_session.
-  return row && row.scope !== "initiative" && row.scope !== "seat_session"
+  return row && row.scope !== "feature" && row.scope !== "seat_session"
     ? { conversationId: row.conversationId, bindings: parseBindings(row.bindings) }
     : null
 }
@@ -821,22 +821,22 @@ const SETTLED_PHASE_STATUSES = new Set([
   "skipped",
 ])
 
-// What a running playbook in this initiative still has for this seat: any
+// What a running playbook in this feature still has for this seat: any
 // unsettled STEP-scoped step (mail is held for it), and the playbook run whose
-// unsettled SLICE-scoped steps a wake should join. A step counts when its seat
+// unsettled USER_STORY-scoped steps a wake should join. A step counts when its seat
 // role resolved to this address; it is settled once any phase run for it
 // reached a terminal status.
 export function pendingSteps(
-  initiativeId: string,
+  featureId: string,
   address: string
-): { step: boolean; sliceRun: string | null } {
-  const pending = { step: false, sliceRun: null as string | null }
+): { step: boolean; userStoryRun: string | null } {
+  const pending = { step: false, userStoryRun: null as string | null }
   const runIds = getDb()
     .prepare(
-      "SELECT process_run_id FROM playbook_runs WHERE initiative_id = ? AND status = 'running' AND process_run_id IS NOT NULL"
+      "SELECT process_run_id FROM playbook_runs WHERE feature_id = ? AND status = 'running' AND process_run_id IS NOT NULL"
     )
     .pluck()
-    .all(initiativeId) as string[]
+    .all(featureId) as string[]
   for (const runId of runIds) {
     const run = processes.getProcessRun(runId)
     if (!run?.processId || !run.seatBindings || !run.missionControl) continue
@@ -862,15 +862,15 @@ export function pendingSteps(
       if (!bound || settled.has(phase.id)) continue
       const scope = phase.contextScope ?? "step"
       if (scope === "step") pending.step = true
-      else if (scope === "slice") pending.sliceRun ??= run.missionControl.playbookRunId
+      else if (scope === "user_story") pending.userStoryRun ??= run.missionControl.playbookRunId
     }
   }
   return pending
 }
 
 // Mail is held only for a pending fresh-worker step.
-export function pendingRunWork(initiativeId: string, address: string): boolean {
-  return pendingSteps(initiativeId, address).step
+export function pendingRunWork(featureId: string, address: string): boolean {
+  return pendingSteps(featureId, address).step
 }
 
 function runStillRunning(playbookRunId: string): boolean {
@@ -890,51 +890,51 @@ function runBindings(playbookRunId: string): SeatBindingsSnapshot | null {
 
 function runAnchor(playbookRunId: string): SeatTurnIdentity["anchor"] {
   const run = playbooks.getPlaybookRun(playbookRunId)
-  if (run?.sliceId) return { kind: "slice", id: run.sliceId }
-  if (run?.missionId) return { kind: "mission", id: run.missionId }
+  if (run?.userStoryId) return { kind: "user_story", id: run.userStoryId }
+  if (run?.milestoneId) return { kind: "milestone", id: run.milestoneId }
   return null
 }
 
-// "slice add-slugify" / "before slices hook" — which run a slice session is for.
+// "user story add-slugify" / "before user stories hook" — which run a user story session is for.
 function scopeLabel(playbookRunId: string): string {
   const run = playbooks.getPlaybookRun(playbookRunId)
   if (!run) return "a finished run"
-  if (run.sliceId) {
-    const slice = initiatives.getSlice(run.sliceId)
-    return slice ? `user story ${slice.key}` : "a user story"
+  if (run.userStoryId) {
+    const userStory = features.getUserStory(run.userStoryId)
+    return userStory ? `user story ${userStory.key}` : "a user story"
   }
   return `${run.hook.replace(/_/g, " ")} hook`
 }
 
 function sessionLabel(session: SeatSession): string {
-  if (session.scope === "initiative") return `long-lived · gen ${session.generation}`
+  if (session.scope === "feature") return `long-lived · gen ${session.generation}`
   const label = scopeLabel(session.playbookRunId!)
   return session.generation > 1 ? `${label} · gen ${session.generation}` : label
 }
 
 function latestWakeTask(
-  initiativeId: string,
+  featureId: string,
   address: string
 ): { status: string; error: string | null } | null {
   return (
     (getDb()
       .prepare(
-        "SELECT status, error FROM tasks WHERE json_extract(input, '$.kind') = ? AND json_extract(input, '$.initiativeId') = ? AND json_extract(input, '$.address') = ? ORDER BY created_at DESC, rowid DESC LIMIT 1"
+        "SELECT status, error FROM tasks WHERE json_extract(input, '$.kind') = ? AND json_extract(input, '$.featureId') = ? AND json_extract(input, '$.address') = ? ORDER BY created_at DESC, rowid DESC LIMIT 1"
       )
-      .get(SEAT_WAKE_KIND, initiativeId, address) as
+      .get(SEAT_WAKE_KIND, featureId, address) as
       | { status: string; error: string | null }
       | undefined) ?? null
   )
 }
 
-// The initiative a Process run belongs to, through its root run's link.
-function missionControlInitiative(processRunId: string): string | null {
+// The feature a Process run belongs to, through its root run's link.
+function missionControlFeature(processRunId: string): string | null {
   let run = processes.getProcessRun(processRunId)
   for (let depth = 0; run?.parentPhaseRunId && depth < 16; depth++) {
     const parent = processes.getPhaseRun(run.parentPhaseRunId)
     run = parent ? processes.getProcessRun(parent.runId) : undefined
   }
-  return run?.missionControl?.initiativeId ?? null
+  return run?.missionControl?.featureId ?? null
 }
 
 function workerByConversation(conversationId: string): FinishedWorker | null {
@@ -952,7 +952,7 @@ function workerByConversation(conversationId: string): FinishedWorker | null {
 
 function threadAnchor(message: SeatMessage): SeatTurnIdentity["anchor"] {
   const thread = comms.getThread(message.threadId)
-  return thread?.anchorKind === "slice" || thread?.anchorKind === "mission"
+  return thread?.anchorKind === "user_story" || thread?.anchorKind === "milestone"
     ? { kind: thread.anchorKind, id: thread.anchorId! }
     : null
 }

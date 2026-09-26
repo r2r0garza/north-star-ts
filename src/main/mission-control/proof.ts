@@ -2,12 +2,12 @@ import type {
   PlaybookRun,
   ProofCriterionStatus,
   SeatBinding,
-  SliceProof,
+  UserStoryProof,
 } from "../db/types"
-import type { SliceCriterion } from "./slice-objective"
+import type { UserStoryCriterion } from "./user-story-objective"
 
-// Structured slice proofs (plan 106.3, decision 7). Pure rules only: the
-// record_proof tool resolves the slice, criteria, seats, and playbook run from
+// Structured user story proofs (plan 106.3, decision 7). Pure rules only: the
+// record_proof tool resolves the user story, criteria, seats, and playbook run from
 // server-side context and hands them here, so nothing identity-bearing comes
 // from model arguments.
 
@@ -35,11 +35,11 @@ export interface ProofSubmission {
 
 export type ProofDecision =
   | { kind: "invalid"; message: string }
-  | { kind: "already_accepted"; proof: SliceProof }
-  | { kind: "revisions_exhausted"; proof: SliceProof | null; message: string }
+  | { kind: "already_accepted"; proof: UserStoryProof }
+  | { kind: "revisions_exhausted"; proof: UserStoryProof | null; message: string }
   | {
       kind: "recorded"
-      proof: SliceProof
+      proof: UserStoryProof
       proofRevisions: number
       // True when this rejected record used the last allowed revision.
       exhausted: boolean
@@ -49,11 +49,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
 }
 
-// Schema-validate raw tool arguments against the slice's criterion ids. Returns
+// Schema-validate raw tool arguments against the user story's criterion ids. Returns
 // an error string (for the model) or the parsed submission.
 export function parseProofSubmission(
   args: Record<string, unknown>,
-  criteria: SliceCriterion[]
+  criteria: UserStoryCriterion[]
 ): ProofSubmission | string {
   if (args.verdict !== "accepted" && args.verdict !== "rejected")
     return "`verdict` must be \"accepted\" or \"rejected\"."
@@ -66,7 +66,7 @@ export function parseProofSubmission(
     if (!isRecord(raw)) return `criteria[${index}] must be an object.`
     const id = typeof raw.id === "string" ? raw.id.trim().toUpperCase() : ""
     if (!expected.has(id))
-      return `criteria[${index}].id "${String(raw.id)}" is not one of this slice's criteria (${[...expected.keys()].join(", ") || "none"}).`
+      return `criteria[${index}].id "${String(raw.id)}" is not one of this user story's criteria (${[...expected.keys()].join(", ") || "none"}).`
     if (seen.has(id)) return `Criterion ${id} appears more than once.`
     seen.add(id)
     if (!STATUSES.includes(raw.status as ProofCriterionStatus))
@@ -103,7 +103,7 @@ export function parseProofSubmission(
 
 export function decideProof(input: {
   submission: ProofSubmission
-  criteria: SliceCriterion[]
+  criteria: UserStoryCriterion[]
   verifier: SeatBinding
   builderAddresses: string[]
   isCommandPhase: (phaseKey: string) => boolean
@@ -125,14 +125,14 @@ export function decideProof(input: {
     return {
       kind: "revisions_exhausted",
       proof: current,
-      message: `This slice's proof was already revised ${input.maxProofRevisions} times this attempt; the slice will fail with the last proof attached.`,
+      message: `This user story's proof was already revised ${input.maxProofRevisions} times this attempt; the user story will fail with the last proof attached.`,
     }
 
   if (submission.criteria.length === 0)
     return {
       kind: "invalid",
       message:
-        "This slice has no acceptance criteria, so it cannot be proven. Report that in your summary instead.",
+        "This user story has no acceptance criteria, so it cannot be proven. Report that in your summary instead.",
     }
 
   const warnings: string[] = []
@@ -160,7 +160,7 @@ export function decideProof(input: {
     }
   }
 
-  // Independence: the verifier must not be a builder of this slice, unless
+  // Independence: the verifier must not be a builder of this user story, unless
   // every met criterion rests on deterministic command evidence.
   const metCriteria = submission.criteria.filter((c) => c.status === "met")
   const commandBacked =
@@ -172,7 +172,7 @@ export function decideProof(input: {
   if (verifierBuilt && !commandBacked)
     return {
       kind: "invalid",
-      message: `${verifier.address} built this slice, so it cannot verify it. A proof needs an independent verifier, or every met criterion must cite a deterministic command phase's result.`,
+      message: `${verifier.address} built this user story, so it cannot verify it. A proof needs an independent verifier, or every met criterion must cite a deterministic command phase's result.`,
     }
 
   const unknownCommand = submission.criteria.find(
@@ -185,7 +185,7 @@ export function decideProof(input: {
     }
 
   const accepted = submission.verdict === "accepted"
-  const proof: SliceProof = {
+  const proof: UserStoryProof = {
     version: 1,
     criteria: submission.criteria.map(
       ({ commandPhaseKey: _commandPhaseKey, ...criterion }) => criterion

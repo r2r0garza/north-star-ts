@@ -78,12 +78,12 @@ interface ProcessPhaseRow {
 // Unknown values fall back to `step` (a fresh worker), the 106.3 behavior.
 // The pre-v51 values `fresh` and `seat_session` are still read correctly.
 function contextScopeValue(mode: PhaseContextScope | undefined): string {
-  return mode === "slice" || mode === "initiative" ? mode : "step"
+  return mode === "user_story" || mode === "feature" ? mode : "step"
 }
 
 function parseContextScope(value: string | null): PhaseContextScope {
-  if (value === "slice" || value === "initiative") return value
-  return value === "seat_session" ? "initiative" : "step"
+  if (value === "user_story" || value === "feature") return value
+  return value === "seat_session" ? "feature" : "step"
 }
 
 function toPhase(row: ProcessPhaseRow): ProcessPhase {

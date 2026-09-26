@@ -26,28 +26,28 @@ import {
 //
 // Branch layout. Git stores refs as paths, so `mc/i/m` can't be a branch and a
 // directory at once; the integration branch is therefore a leaf beside the
-// slices directory:
+// user stories directory:
 //
-//   mc/<initiative>/<mission>/integration
-//   mc/<initiative>/<mission>/slices/<slice>-<attempt>
+//   mc/<feature>/<milestone>/integration
+//   mc/<feature>/<milestone>/user stories/<user story>-<attempt>
 
 const NETWORK_TIMEOUT_MS = 120_000
 const MAX_LISTED_COMMITS = 100
 const MAX_LISTED_FILES = 500
 
 export function integrationBranchName(
-  initiativeKey: string,
-  missionKey: string
+  featureKey: string,
+  milestoneKey: string
 ): string {
-  return `mc/${initiativeKey}/${missionKey}/integration`
+  return `mc/${featureKey}/${milestoneKey}/integration`
 }
 
-export function sliceBranchPrefix(integrationBranch: string): string {
-  return integrationBranch.replace(/\/integration$/, "/slices/")
+export function userStoryBranchPrefix(integrationBranch: string): string {
+  return integrationBranch.replace(/\/integration$/, "/userStories/")
 }
 
 // The repository root for a workspace, or null when it is not in a git
-// repository (Mission Control then keeps slices single-flight).
+// repository (Mission Control then keeps user stories single-flight).
 export async function repositoryRoot(workspace: string): Promise<string | null> {
   return runGit(workspace, ["rev-parse", "--show-toplevel"], { timeout: 10_000 }).then(
     (root) => root || null,
@@ -135,9 +135,9 @@ async function moveBranch(
   )
 }
 
-// ── mission start ────────────────────────────────────────────────────────────
+// ── milestone start ────────────────────────────────────────────────────────────
 
-export interface MissionStart {
+export interface MilestoneStart {
   root: string
   baseRef: string
   baseOid: string
@@ -148,7 +148,7 @@ export interface MissionStart {
 export async function startIntegrationBranch(input: {
   workspace: string
   branch: string
-}): Promise<MissionStart> {
+}): Promise<MilestoneStart> {
   let root: string
   let baseOid: string
   try {
@@ -186,12 +186,12 @@ export async function startIntegrationBranch(input: {
   return { root, baseRef, baseOid }
 }
 
-// ── slice worktrees ─────────────────────────────────────────────────────────
+// ── user story worktrees ─────────────────────────────────────────────────────────
 
-// A branch name under the mission's slices prefix that doesn't exist yet. A
+// A branch name under the milestone's user stories prefix that doesn't exist yet. A
 // leftover from an interrupted launch keeps its work; the new attempt gets a
 // suffixed name instead.
-async function freeSliceBranch(root: string, base: string): Promise<string> {
+async function freeUserStoryBranch(root: string, base: string): Promise<string> {
   for (let n = 1; n < 100; n++) {
     const candidate = n === 1 ? base : `${base}-${n}`
     if (!(await branchOid(root, candidate))) return candidate
@@ -199,10 +199,10 @@ async function freeSliceBranch(root: string, base: string): Promise<string> {
   throw new Error(`No free branch name for ${base}`)
 }
 
-export async function createSliceWorktree(input: {
+export async function createUserStoryWorktree(input: {
   root: string
   integrationBranch: string
-  sliceKey: string
+  userStoryKey: string
   attempt: number
   directory: string
 }): Promise<{ branch: string; baseOid: string }> {
@@ -211,9 +211,9 @@ export async function createSliceWorktree(input: {
     throw new Error(
       `The integration branch ${input.integrationBranch} is missing. It may have been deleted outside Mission Control.`
     )
-  const branch = await freeSliceBranch(
+  const branch = await freeUserStoryBranch(
     input.root,
-    `${sliceBranchPrefix(input.integrationBranch)}${input.sliceKey}-${input.attempt}`
+    `${userStoryBranchPrefix(input.integrationBranch)}${input.userStoryKey}-${input.attempt}`
   )
   await addWorktree({
     root: input.root,
@@ -224,8 +224,8 @@ export async function createSliceWorktree(input: {
   return { branch, baseOid }
 }
 
-// Commit whatever the slice's workers left uncommitted in its worktree, so
-// the branch carries all of the slice's work. Returns the new commit, if any.
+// Commit whatever the user story's workers left uncommitted in its worktree, so
+// the branch carries all of the user story's work. Returns the new commit, if any.
 export async function commitWorktreeChanges(
   worktree: string,
   message: string
@@ -272,24 +272,24 @@ async function checkedOutGuard(
     : null
 }
 
-// Merge a slice head into the integration branch: --no-ff in a scratch
+// Merge a user story head into the integration branch: --no-ff in a scratch
 // detached worktree, then compare-and-swap the branch. A conflict is aborted
 // and the scratch worktree removed, so the repository is exactly as before.
-export async function mergeSlice(input: {
+export async function mergeUserStory(input: {
   root: string
   integrationBranch: string
-  sliceHead: string
+  userStoryHead: string
   message: string
   scratchDirectory: string
 }): Promise<MergeOutcome> {
-  const { root, integrationBranch, sliceHead } = input
+  const { root, integrationBranch, userStoryHead } = input
   const head = await branchOid(root, integrationBranch)
   if (!head)
     return {
       status: "blocked",
       reason: `The integration branch ${integrationBranch} is missing.`,
     }
-  if (await isAncestor(root, sliceHead, head)) return { status: "already_merged" }
+  if (await isAncestor(root, userStoryHead, head)) return { status: "already_merged" }
   const guard = await checkedOutGuard(root, integrationBranch)
   if (guard) return { status: "blocked", reason: guard }
 
@@ -302,7 +302,7 @@ export async function mergeSlice(input: {
         "--no-verify",
         "-m",
         input.message,
-        sliceHead,
+        userStoryHead,
       ])
     } catch (error) {
       const files = await unmergedPaths(input.scratchDirectory)
@@ -327,12 +327,14 @@ export async function mergeSlice(input: {
   }
 }
 
-// The merge commit that brought `sliceHead` into the integration branch, found
+// The merge commit that brought `userStoryHead` into the integration branch, found
 // by its trailer (crash recovery: the branch moved but the queue row didn't).
-export async function findSliceMerge(
+// Merges made before the v54 rename carry the Mission-Control-Slice trailer;
+// git ORs the two patterns.
+export async function findUserStoryMerge(
   root: string,
   integrationBranch: string,
-  sliceId: string
+  userStoryId: string
 ): Promise<string | null> {
   const text = await runGit(root, [
     "log",
@@ -341,7 +343,8 @@ export async function findSliceMerge(
     "1",
     "--format=%H",
     "--fixed-strings",
-    `--grep=Mission-Control-Slice: ${sliceId}`,
+    `--grep=Mission-Control-User-Story: ${userStoryId}`,
+    `--grep=Mission-Control-Slice: ${userStoryId}`,
     `refs/heads/${integrationBranch}`,
   ]).catch(() => "")
   return text || null
@@ -349,12 +352,12 @@ export async function findSliceMerge(
 
 // ── conflict resolution ─────────────────────────────────────────────────────
 
-// A worktree at the integration head with the slice merge started and its
+// A worktree at the integration head with the user story merge started and its
 // conflict markers in place, for the integrator seat to resolve.
 export async function prepareResolution(input: {
   root: string
   integrationBranch: string
-  sliceHead: string
+  userStoryHead: string
   directory: string
 }): Promise<{ startOid: string; files: string[] }> {
   const startOid = await branchOid(input.root, input.integrationBranch)
@@ -370,7 +373,7 @@ export async function prepareResolution(input: {
     "--no-ff",
     "--no-commit",
     "--no-verify",
-    input.sliceHead,
+    input.userStoryHead,
   ]).catch(() => {})
   return { startOid, files: await unmergedPaths(input.directory) }
 }
@@ -398,7 +401,7 @@ export async function finalizeResolution(input: {
   integrationBranch: string
   directory: string
   startOid: string
-  sliceHead: string
+  userStoryHead: string
   conflictFiles: string[]
   message: string
 }): Promise<ResolutionOutcome> {
@@ -415,14 +418,14 @@ export async function finalizeResolution(input: {
     mergeCommit = await runGit(directory, ["rev-parse", "HEAD"])
   } else {
     // The integrator committed the merge itself: accept it only if it is a
-    // real merge of this slice on top of the integration head.
+    // real merge of this user story on top of the integration head.
     mergeCommit = await runGit(directory, ["rev-parse", "HEAD"])
     const status = await runGit(directory, ["status", "--porcelain"])
     if (
       mergeCommit === input.startOid ||
       status ||
       !(await isAncestor(directory, input.startOid, mergeCommit)) ||
-      !(await isAncestor(directory, input.sliceHead, mergeCommit))
+      !(await isAncestor(directory, input.userStoryHead, mergeCommit))
     )
       return {
         status: "invalid",
@@ -455,7 +458,7 @@ export interface LandingSummary {
   filesTruncated: boolean
   // The base can move to head without a merge commit.
   fastForward: boolean
-  // head is already reachable from base (the mission landed).
+  // head is already reachable from base (the milestone landed).
   merged: boolean
   baseCheckout: string | null
 }

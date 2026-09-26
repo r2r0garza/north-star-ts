@@ -9,12 +9,12 @@ import type {
 import { emitWorkChanged } from "../../mission-control/work-events"
 
 // Plan proposals (plan 106.6): every plan change outside a seat's decision
-// rights or the active mission waits here for the user to apply or reject.
+// rights or the active milestone waits here for the user to apply or reject.
 
 interface ProposalRow {
   id: string
-  initiative_id: string
-  mission_id: string | null
+  feature_id: string
+  milestone_id: string | null
   kind: ProposalKind
   changes: string
   proposer: string
@@ -35,8 +35,8 @@ function toProposal(row: ProposalRow): PlanProposal {
   }
   return {
     id: row.id,
-    initiativeId: row.initiative_id,
-    missionId: row.mission_id,
+    featureId: row.feature_id,
+    milestoneId: row.milestone_id,
     kind: row.kind,
     changes,
     proposer: row.proposer,
@@ -50,8 +50,8 @@ function toProposal(row: ProposalRow): PlanProposal {
 }
 
 export function createProposal(input: {
-  initiativeId: string
-  missionId: string | null
+  featureId: string
+  milestoneId: string | null
   kind: ProposalKind
   changes: PlanChange[]
   proposer: string
@@ -60,19 +60,19 @@ export function createProposal(input: {
   const id = randomUUID()
   getDb()
     .prepare(
-      "INSERT INTO plan_proposals (id, initiative_id, mission_id, kind, changes, proposer, reason, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)"
+      "INSERT INTO plan_proposals (id, feature_id, milestone_id, kind, changes, proposer, reason, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)"
     )
     .run(
       id,
-      input.initiativeId,
-      input.missionId,
+      input.featureId,
+      input.milestoneId,
       input.kind,
       JSON.stringify(input.changes),
       input.proposer,
       input.reason.trim(),
       Date.now()
     )
-  emitWorkChanged(input.initiativeId)
+  emitWorkChanged(input.featureId)
   return getProposal(id)!
 }
 
@@ -84,21 +84,21 @@ export function getProposal(id: string): PlanProposal | null {
 }
 
 export function listProposals(
-  initiativeId: string,
+  featureId: string,
   status?: ProposalStatus
 ): PlanProposal[] {
   const rows = (
     status
       ? getDb()
           .prepare(
-            "SELECT * FROM plan_proposals WHERE initiative_id = ? AND status = ? ORDER BY created_at, id"
+            "SELECT * FROM plan_proposals WHERE feature_id = ? AND status = ? ORDER BY created_at, id"
           )
-          .all(initiativeId, status)
+          .all(featureId, status)
       : getDb()
           .prepare(
-            "SELECT * FROM plan_proposals WHERE initiative_id = ? ORDER BY created_at DESC, id DESC"
+            "SELECT * FROM plan_proposals WHERE feature_id = ? ORDER BY created_at DESC, id DESC"
           )
-          .all(initiativeId)
+          .all(featureId)
   ) as ProposalRow[]
   return rows.map(toProposal)
 }
@@ -118,6 +118,6 @@ export function resolveProposal(
     .run(status, by, note?.trim() || null, Date.now(), id)
   if (!result.changes) return null
   const proposal = getProposal(id)!
-  emitWorkChanged(proposal.initiativeId)
+  emitWorkChanged(proposal.featureId)
   return proposal
 }

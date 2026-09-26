@@ -1,12 +1,12 @@
 import type { AgentDefinition } from "../agent/agents/types"
 import { getDb } from "../db/connection"
-import * as initiatives from "../db/repositories/initiatives"
+import * as features from "../db/repositories/features"
 import * as playbooks from "../db/repositories/playbooks"
 import * as processes from "../db/repositories/processes"
 import { getTask, updateTask } from "../db/repositories/tasks"
 import { getWorkspace } from "../db/repositories/workspaces"
 import type {
-  Initiative,
+  Feature,
   MissionControlRunLink,
   PlaybookAltitude,
   PlaybookHookName,
@@ -14,8 +14,8 @@ import type {
   PlaybookWithHooks,
   ProcessRun,
   SeatBindingsSnapshot,
-  SliceProof,
-  WorkSlice,
+  UserStoryProof,
+  WorkUserStory,
 } from "../db/types"
 import { ensureDefaultPlaybook } from "./playbook-defaults"
 import {
@@ -26,32 +26,32 @@ import {
 import { collectSeatRoles, resolveSeatBindings } from "./seat-resolver"
 import {
   renderIntentChain,
-  renderSliceObjective,
-  sliceCriteria,
-} from "./slice-objective"
+  renderUserStoryObjective,
+  userStoryCriteria,
+} from "./user-story-objective"
 import { touchHintsOverlap } from "../../shared/mission-control/waves"
 import {
-  DEFAULT_MAX_CONCURRENT_SLICES,
-  type IsolatedSliceWorkspace,
-  type MissionIntegration,
+  DEFAULT_MAX_CONCURRENT_USER_STORIES,
+  type IsolatedUserStoryWorkspace,
+  type MilestoneIntegration,
 } from "./integration"
 
-// Slice execution (plan 106.3). Starts a slice's playbook as a Process run with
-// frozen seat bindings, then maps the run's terminal state onto the slice
-// exactly once. Mission/initiative hooks (hook-runner.ts) launch through the
+// User story execution (plan 106.3). Starts a user story's playbook as a Process run with
+// frozen seat bindings, then maps the run's terminal state onto the user story
+// exactly once. Milestone/feature hooks (hook-runner.ts) launch through the
 // same path.
 //
-// Isolation (plan 106.5): in a git workspace each slice attempt runs in its
-// own worktree, so slices run in parallel up to the initiative's
-// maxConcurrentSlices budget, and a finished slice waits in the mission's
+// Isolation (plan 106.5): in a git workspace each user story attempt runs in its
+// own worktree, so user stories run in parallel up to the feature's
+// maxConcurrentSlices budget, and a finished user story waits in the milestone's
 // merge queue. Runs in the workspace itself (hooks, and every run in a
 // non-git workspace) stay single-flight.
 
-export const DEFAULT_MAX_SLICE_ATTEMPTS = 3
+export const DEFAULT_MAX_USER_STORY_ATTEMPTS = 3
 
 const TERMINAL_RUN_STATUSES = new Set(["completed", "failed", "cancelled"])
 
-export interface SliceRunnerDeps {
+export interface UserStoryRunnerDeps {
   startProcessRun(input: {
     processId: string
     sourceConversationId: null
@@ -68,12 +68,12 @@ export interface SliceRunnerDeps {
   // global default). Autonomous CLI providers run their own agent loop without
   // North Star's tools, so they cannot call record_proof.
   workerProvider?(accountId: string | null): string | null
-  // A cancelled run stops its initiative's Comms (plan 106.4): queued mail
+  // A cancelled run stops its feature's Comms (plan 106.4): queued mail
   // expires and pending wakes are cancelled.
-  onCancelled?(initiativeId: string): void
+  onCancelled?(featureId: string): void
   // Worktrees and the merge queue (plan 106.5). Without it every run is
   // single-flight in the workspace, as in 106.3.
-  integration?: MissionIntegration
+  integration?: MilestoneIntegration
 }
 
 const CLI_PROVIDERS: Record<string, string> = {
@@ -82,9 +82,9 @@ const CLI_PROVIDERS: Record<string, string> = {
 }
 
 export interface LaunchRequest {
-  initiative: Initiative
-  missionId: string | null
-  slice: WorkSlice | null
+  feature: Feature
+  milestoneId: string | null
+  userStory: WorkUserStory | null
   playbook: PlaybookWithHooks
   hook: PlaybookHookName
   podKey: string | null
@@ -93,10 +93,10 @@ export interface LaunchRequest {
   title: string
   // Roles a rig may fill with another role's seats (integrator → lead).
   roleFallbacks?: Record<string, string>
-  // Give the run its own worktree (slice runs). Called after every check
+  // Give the run its own worktree (user story runs). Called after every check
   // passes; null means the workspace can't isolate and the run is
   // single-flight in place.
-  isolate?: () => Promise<IsolatedSliceWorkspace | null>
+  isolate?: () => Promise<IsolatedUserStoryWorkspace | null>
   // A worktree prepared by the caller (conflict resolution).
   isolated?: IsolatedWorkspace
   // Runs inside the launch transaction, after the playbook run exists.
@@ -112,31 +112,31 @@ export interface IsolatedWorkspace {
   discard?: () => Promise<void>
 }
 
-function budget(initiative: Initiative, key: string, fallback: number): number {
-  const value = initiative.budgets?.[key]
+function budget(feature: Feature, key: string, fallback: number): number {
+  const value = feature.budgets?.[key]
   return typeof value === "number" && Number.isInteger(value) && value >= 0
     ? value
     : fallback
 }
 
-export function maxSliceAttempts(initiative: Initiative): number {
-  return budget(initiative, "maxSliceAttempts", DEFAULT_MAX_SLICE_ATTEMPTS)
+export function maxUserStoryAttempts(feature: Feature): number {
+  return budget(feature, "maxUserStoryAttempts", DEFAULT_MAX_USER_STORY_ATTEMPTS)
 }
 
-export function maxProofRevisions(initiative: Initiative): number {
-  return budget(initiative, "maxProofRevisions", DEFAULT_MAX_PROOF_REVISIONS)
+export function maxProofRevisions(feature: Feature): number {
+  return budget(feature, "maxProofRevisions", DEFAULT_MAX_PROOF_REVISIONS)
 }
 
-export function maxConcurrentSlices(initiative: Initiative): number {
+export function maxConcurrentUserStories(feature: Feature): number {
   return Math.max(
     1,
-    budget(initiative, "maxConcurrentSlices", DEFAULT_MAX_CONCURRENT_SLICES)
+    budget(feature, "maxConcurrentUserStories", DEFAULT_MAX_CONCURRENT_USER_STORIES)
   )
 }
 
-export function initiativeWorkspacePath(initiative: Initiative): string {
-  const path = initiative.workspaceId
-    ? getWorkspace(initiative.workspaceId)?.path
+export function featureWorkspacePath(feature: Feature): string {
+  const path = feature.workspaceId
+    ? getWorkspace(feature.workspaceId)?.path
     : undefined
   if (!path)
     throw new Error(
@@ -145,10 +145,10 @@ export function initiativeWorkspacePath(initiative: Initiative): string {
   return path
 }
 
-export function assertInitiativeRunnable(initiative: Initiative): void {
-  if (initiative.status !== "active")
+export function assertFeatureRunnable(feature: Feature): void {
+  if (feature.status !== "active")
     throw new Error("Start the feature before running its playbooks.")
-  if (!initiative.rigSnapshot)
+  if (!feature.rigSnapshot)
     throw new Error("This feature has no rig snapshot; reseat it first.")
 }
 
@@ -166,67 +166,67 @@ export function playbookFor(
   return ensureDefaultPlaybook(altitude)
 }
 
-// The playbook run occupying this initiative's workspace, if any. Two
-// initiatives sharing one folder share the single-flight slot too. Runs in
+// The playbook run occupying this feature's workspace, if any. Two
+// features sharing one folder share the single-flight slot too. Runs in
 // their own worktree (106.5) don't occupy it.
 export function activePlaybookRunForWorkspace(
-  initiative: Initiative
+  feature: Feature
 ): PlaybookRun | null {
   for (const run of playbooks.listPlaybookRuns({ status: "running" })) {
     if (run.worktreePath) continue
-    if (run.initiativeId === initiative.id) return run
-    const other = initiatives.getInitiative(run.initiativeId)
+    if (run.featureId === feature.id) return run
+    const other = features.getFeature(run.featureId)
     if (
-      initiative.workspaceId &&
-      other?.workspaceId === initiative.workspaceId
+      feature.workspaceId &&
+      other?.workspaceId === feature.workspaceId
     )
       return run
   }
   return null
 }
 
-// Slice runs building in their own worktrees for this initiative.
-function isolatedSliceRuns(initiative: Initiative): PlaybookRun[] {
+// User story runs building in their own worktrees for this feature.
+function isolatedUserStoryRuns(feature: Feature): PlaybookRun[] {
   return playbooks
-    .listPlaybookRuns({ initiativeId: initiative.id, status: "running" })
+    .listPlaybookRuns({ featureId: feature.id, status: "running" })
     .filter((run) => run.worktreePath && run.hook === "run")
 }
 
 function describeRun(run: PlaybookRun): string {
-  if (run.sliceId) {
-    const slice = initiatives.getSlice(run.sliceId)
-    return slice ? `user story ${slice.key}` : "a user story"
+  if (run.userStoryId) {
+    const userStory = features.getUserStory(run.userStoryId)
+    return userStory ? `user story ${userStory.key}` : "a user story"
   }
   return `the ${run.hook.replace(/_/g, " ")} hook`
 }
 
-export class SliceRunner {
-  constructor(private readonly deps: SliceRunnerDeps) {}
+export class UserStoryRunner {
+  constructor(private readonly deps: UserStoryRunnerDeps) {}
 
   // ── launching ─────────────────────────────────────────────────────────────
 
   async launch(request: LaunchRequest): Promise<PlaybookRun> {
-    const { initiative, playbook, hook } = request
-    const workspacePath = initiativeWorkspacePath(initiative)
+    const { feature, playbook, hook } = request
+    const workspacePath = featureWorkspacePath(feature)
     const wantsIsolation = !!request.isolate || !!request.isolated
     const assertSlot = (isolated: boolean) => {
       if (isolated) {
-        if (!request.slice || hook !== "run") return
-        const cap = maxConcurrentSlices(initiative)
-        if (isolatedSliceRuns(initiative).length >= cap)
+        if (!request.userStory || hook !== "run") return
+        const cap = maxConcurrentUserStories(feature)
+        if (isolatedUserStoryRuns(feature).length >= cap)
           throw new Error(
             `The feature's budget allows ${cap} running user stories at once. Wait for one to finish or raise maxConcurrentSlices.`
           )
         return
       }
-      const busy = activePlaybookRunForWorkspace(initiative)
+      const busy = activePlaybookRunForWorkspace(feature)
       if (busy)
         throw new Error(
-          `Only one playbook run can use this workspace at a time, and ${describeRun(busy)} is still running. Wait for it or cancel it.${request.slice ? " (Slices run in parallel only in a git workspace.)" : ""}`
+          `Only one playbook run can use this workspace at a time, and ${describeRun(busy)} is still running. Wait for it or cancel it.${request.userStory ? " (User stories run in parallel only in a git workspace.)" : ""}`
         )
     }
     if (!wantsIsolation) assertSlot(false)
-    else if (request.slice && hook === "run") assertSlot(true)
+    else if (request.userStory && hook === "run") assertSlot(true)
     const hookRow = playbook.hooks.find((h) => h.hook === hook)
     if (!hookRow)
       throw new Error(
@@ -241,7 +241,7 @@ export class SliceRunner {
     // Resolve every seat role BEFORE anything starts: a missing role fails
     // here, naming it, with no run and no worker.
     const seatBindings = resolveSeatBindings({
-      rig: initiative.rigSnapshot!,
+      rig: feature.rigSnapshot!,
       podKey: request.podKey,
       roles: collectSeatRoles(graph, processes.getProcessGraph),
       agents: await this.deps.loadAgents(workspacePath),
@@ -249,7 +249,7 @@ export class SliceRunner {
       roleFallbacks: request.roleFallbacks,
     })
 
-    if (request.slice) this.assertProofStepCanRecord(graph, seatBindings)
+    if (request.userStory) this.assertProofStepCanRecord(graph, seatBindings)
 
     // The worktree is created last, once nothing else can refuse the launch.
     const isolated: IsolatedWorkspace | null =
@@ -265,9 +265,9 @@ export class SliceRunner {
         const created = playbooks.createPlaybookRun({
           playbookId: playbook.id,
           hook,
-          initiativeId: initiative.id,
-          missionId: request.missionId,
-          sliceId: request.slice?.id ?? null,
+          featureId: feature.id,
+          milestoneId: request.milestoneId,
+          userStoryId: request.userStory?.id ?? null,
           worktreePath: isolated?.worktreePath ?? null,
         })
         request.onLaunch?.(created, isolated)
@@ -289,9 +289,9 @@ export class SliceRunner {
         workspacePath: isolated?.workspacePath ?? workspacePath,
         seatBindings,
         missionControl: {
-          initiativeId: initiative.id,
-          missionId: request.missionId,
-          sliceId: request.slice?.id ?? null,
+          featureId: feature.id,
+          milestoneId: request.milestoneId,
+          userStoryId: request.userStory?.id ?? null,
           playbookRunId: playbookRun.id,
           hook,
         },
@@ -300,9 +300,9 @@ export class SliceRunner {
       const linked = playbooks.updatePlaybookRun(playbookRun.id, {
         processRunId: processRun.id,
       })
-      if (request.slice)
-        initiatives.setSliceExecution(
-          request.slice.id,
+      if (request.userStory)
+        features.setUserStoryExecution(
+          request.userStory.id,
           { processRunId: processRun.id },
           "Linked the user story's Process run"
         )
@@ -341,72 +341,72 @@ export class SliceRunner {
     }
   }
 
-  // Run (or retry) a slice with its playbook. `allowTouchOverlap` runs it
-  // even though a slice with overlapping touch hints is still building.
+  // Run (or retry) a user story with its playbook. `allowTouchOverlap` runs it
+  // even though a user story with overlapping touch hints is still building.
   // `note` travels to this attempt's workers (a lead's retry note, 106.6), and
   // `actor` attributes the start in the revision log.
-  async startSlice(
-    sliceId: string,
+  async startUserStory(
+    userStoryId: string,
     options: { allowTouchOverlap?: boolean; note?: string; actor?: string } = {}
   ): Promise<PlaybookRun> {
-    const slice = initiatives.getSlice(sliceId)
-    if (!slice) throw new Error(`User story not found: ${sliceId}`)
-    const mission = initiatives.getMission(slice.missionId)
-    if (!mission) throw new Error(`Milestone not found: ${slice.missionId}`)
-    const initiative = initiatives.getInitiative(mission.initiativeId)
-    if (!initiative)
-      throw new Error(`Feature not found: ${mission.initiativeId}`)
-    assertInitiativeRunnable(initiative)
-    if (!["draft", "ready", "failed"].includes(slice.status))
+    const userStory = features.getUserStory(userStoryId)
+    if (!userStory) throw new Error(`User story not found: ${userStoryId}`)
+    const milestone = features.getMilestone(userStory.milestoneId)
+    if (!milestone) throw new Error(`Milestone not found: ${userStory.milestoneId}`)
+    const feature = features.getFeature(milestone.featureId)
+    if (!feature)
+      throw new Error(`Feature not found: ${milestone.featureId}`)
+    assertFeatureRunnable(feature)
+    if (!["draft", "ready", "failed"].includes(userStory.status))
       throw new Error(
-        `A ${slice.status} user story cannot be run. Only draft, ready, or failed user stories can start.`
+        `A ${userStory.status} user story cannot be run. Only draft, ready, or failed user stories can start.`
       )
-    const cap = maxSliceAttempts(initiative)
-    if (slice.attempts >= cap)
+    const cap = maxUserStoryAttempts(feature)
+    if (userStory.attempts >= cap)
       throw new Error(
-        `User story ${slice.key} has used all ${cap} attempts allowed by the feature's budget.`
+        `User story ${userStory.key} has used all ${cap} attempts allowed by the feature's budget.`
       )
-    const blockers = initiatives
-      .listEdges(mission.id)
-      .filter((edge) => edge.toSliceId === slice.id)
-      .map((edge) => initiatives.getSlice(edge.fromSliceId))
-      .filter((dep): dep is WorkSlice => !!dep && dep.status !== "done")
+    const blockers = features
+      .listEdges(milestone.id)
+      .filter((edge) => edge.toUserStoryId === userStory.id)
+      .map((edge) => features.getUserStory(edge.fromUserStoryId))
+      .filter((dep): dep is WorkUserStory => !!dep && dep.status !== "done")
     if (blockers.length)
       throw new Error(
-        `User story ${slice.key} depends on unmerged user stories: ${blockers.map((b) => b.key).join(", ")}. A user story starts once its predecessors are done${mission.integrationBranch ? " and merged into the integration branch" : ""}.`
+        `User story ${userStory.key} depends on unmerged user stories: ${blockers.map((b) => b.key).join(", ")}. A user story starts once its predecessors are done${milestone.integrationBranch ? " and merged into the integration branch" : ""}.`
       )
-    // Overlapping touch hints serialize by default (decision 7): two slices
+    // Overlapping touch hints serialize by default (decision 7): two user stories
     // editing the same area in parallel is how merge conflicts are made.
     if (!options.allowTouchOverlap) {
-      const overlapping = initiatives
-        .listSlices(mission.id)
+      const overlapping = features
+        .listUserStories(milestone.id)
         .filter(
           (other) =>
-            other.id !== slice.id &&
+            other.id !== userStory.id &&
             ["running", "proving"].includes(other.status) &&
-            touchHintsOverlap(slice.spec.touchHints, other.spec.touchHints)
+            touchHintsOverlap(userStory.spec.touchHints, other.spec.touchHints)
         )
       if (overlapping.length)
         throw new Error(
-          `touch_overlap: User story ${slice.key}'s touch hints overlap ${overlapping.map((o) => o.key).join(", ")}, which is still building. Running both at once risks a merge conflict.`
+          `touch_overlap: User story ${userStory.key}'s touch hints overlap ${overlapping.map((o) => o.key).join(", ")}, which is still building. Running both at once risks a merge conflict.`
         )
     }
 
-    const playbook = playbookFor("slice", slice.playbookId)
-    const attempt = slice.attempts + 1
+    const playbook = playbookFor("user_story", userStory.playbookId)
+    const attempt = userStory.attempts + 1
     const integration = this.deps.integration
     return this.launch({
-      initiative,
-      missionId: mission.id,
-      slice,
+      feature,
+      milestoneId: milestone.id,
+      userStory,
       playbook,
       hook: "run",
-      podKey: slice.podKey ?? initiative.defaultPodKey,
+      podKey: userStory.podKey ?? feature.defaultPodKey,
       objective: (isolated) =>
-        renderSliceObjective({
-          initiative,
-          mission,
-          slice,
+        renderUserStoryObjective({
+          feature,
+          milestone,
+          userStory,
           attemptNote: options.note
             ? { attempt, by: options.actor ?? "user", text: options.note }
             : null,
@@ -415,14 +415,14 @@ export class SliceRunner {
               ? { branch: isolated.branch, integrationBranch: isolated.integrationBranch }
               : null,
         }),
-      intentChain: renderIntentChain({ initiative, mission, slice }),
-      title: `User story ${slice.key}: ${slice.title}`,
+      intentChain: renderIntentChain({ feature, milestone, userStory }),
+      title: `User story ${userStory.key}: ${userStory.title}`,
       isolate: integration
-        ? () => integration.prepareSliceRun({ initiative, mission, slice, attempt })
+        ? () => integration.prepareUserStoryRun({ feature, milestone, userStory, attempt })
         : undefined,
       onLaunch: (_run, isolated) => {
-        initiatives.setSliceExecution(
-          slice.id,
+        features.setUserStoryExecution(
+          userStory.id,
           {
             status: "running",
             attempts: attempt,
@@ -440,11 +440,11 @@ export class SliceRunner {
           `Attempt ${attempt} started with the "${playbook.name}" playbook${isolated?.branch ? ` on ${isolated.branch}` : ""}${options.note ? ` — note: ${options.note}` : ""}`,
           options.actor ?? "mission-control"
         )
-        if (mission.status === "planned")
-          initiatives.setMissionExecutionStatus(
-            mission.id,
+        if (milestone.status === "planned")
+          features.setMilestoneExecutionStatus(
+            milestone.id,
             "active",
-            `User story ${slice.key} started`
+            `User story ${userStory.key} started`
           )
       },
     })
@@ -455,7 +455,7 @@ export class SliceRunner {
   cancelPlaybookRun(playbookRunId: string): void {
     const playbookRun = playbooks.getPlaybookRun(playbookRunId)
     if (!playbookRun || playbookRun.status !== "running") return
-    this.deps.onCancelled?.(playbookRun.initiativeId)
+    this.deps.onCancelled?.(playbookRun.featureId)
     const processRun = this.processRunFor(playbookRun)
     if (!processRun) {
       this.applyOutcome(playbookRun.id, "cancelled", "Cancelled before it started")
@@ -481,16 +481,16 @@ export class SliceRunner {
     this.settle(processRun.id)
   }
 
-  cancelSlice(sliceId: string): void {
+  cancelUserStory(userStoryId: string): void {
     const running = playbooks
-      .listPlaybookRuns({ sliceId, status: "running" })
+      .listPlaybookRuns({ userStoryId, status: "running" })
       .at(0)
     if (running) this.cancelPlaybookRun(running.id)
   }
 
   // ── settling ──────────────────────────────────────────────────────────────
 
-  // Apply a terminal Process run's outcome to its playbook run (and slice).
+  // Apply a terminal Process run's outcome to its playbook run (and user story).
   // Idempotent: replaying it after a crash, or from both the live listener and
   // boot reconcile, applies the outcome exactly once.
   settle(processRunId: string): void {
@@ -500,7 +500,7 @@ export class SliceRunner {
     const playbookRun = playbooks.getPlaybookRun(link.playbookRunId)
     if (!playbookRun || playbookRun.status !== "running") return
 
-    if (!playbookRun.sliceId) {
+    if (!playbookRun.userStoryId) {
       const status = run.status as "completed" | "failed" | "cancelled"
       this.applyOutcome(
         playbookRun.id,
@@ -513,7 +513,7 @@ export class SliceRunner {
     const proof = playbookRun.proof
     // A conflict resolution (106.5): finish the run, then let the integration
     // service commit the merge (accepted re-verification) or escalate.
-    if (playbookRun.hook === "after_each_slice") {
+    if (playbookRun.hook === "after_each_user_story") {
       const status = run.status as "completed" | "failed" | "cancelled"
       this.applyOutcome(
         playbookRun.id,
@@ -559,40 +559,40 @@ export class SliceRunner {
     const settled = getDb().transaction(() => {
       if (!playbooks.finishPlaybookRun(playbookRunId, status, reason)) return null
       const playbookRun = playbooks.getPlaybookRun(playbookRunId)!
-      if (!playbookRun.sliceId || playbookRun.hook !== "run") return null
-      const slice = initiatives.getSlice(playbookRun.sliceId)
-      if (!slice || !["running", "proving"].includes(slice.status)) return null
-      // Built in its own worktree: the slice is done only once it merges.
+      if (!playbookRun.userStoryId || playbookRun.hook !== "run") return null
+      const userStory = features.getUserStory(playbookRun.userStoryId)
+      if (!userStory || !["running", "proving"].includes(userStory.status)) return null
+      // Built in its own worktree: the user story is done only once it merges.
       if (
         status === "completed" &&
         playbookRun.worktreePath &&
         this.deps.integration
       ) {
-        this.deps.integration.enqueueAcceptedSlice(slice, playbookRun)
-        return { slice, merge: true }
+        this.deps.integration.enqueueAcceptedUserStory(userStory, playbookRun)
+        return { userStory, merge: true }
       }
-      // A cancelled run leaves the slice failed (and retryable) rather than
+      // A cancelled run leaves the user story failed (and retryable) rather than
       // cancelled, which the work model treats as abandoned for good.
-      initiatives.setSliceExecution(
-        slice.id,
+      features.setUserStoryExecution(
+        userStory.id,
         {
           status: status === "completed" ? "done" : "failed",
-          proof: playbookRun.proof ?? slice.proof,
+          proof: playbookRun.proof ?? userStory.proof,
           finishedAt: Date.now(),
         },
         reason ?? "Proof accepted; user story done"
       )
-      return { slice, merge: false }
+      return { userStory, merge: false }
     })()
     const integration = this.deps.integration
     if (!settled || !integration) return
-    if (settled.merge) void integration.kick(settled.slice.missionId)
+    if (settled.merge) void integration.kick(settled.userStory.milestoneId)
     else {
       if (status !== "completed")
         void integration
-          .releaseSliceWorktree(settled.slice.id)
+          .releaseUserStoryWorktree(settled.userStory.id)
           .catch((err) => console.warn("[integration] release worktree:", err))
-      integration.advanceMission(settled.slice.missionId)
+      integration.advanceMilestone(settled.userStory.milestoneId)
     }
   }
 
@@ -666,16 +666,16 @@ function builderAddresses(root: ProcessRun): string[] {
 }
 
 // Deterministic command phases arrive with plan 104. Until then no phase
-// qualifies, so a builder can never verify its own slice.
+// qualifies, so a builder can never verify its own user story.
 function isCommandPhase(): boolean {
   return false
 }
 
 export type RecordProofResult =
-  | { ok: true; status: "accepted" | "rejected"; proof: SliceProof; message: string }
+  | { ok: true; status: "accepted" | "rejected"; proof: UserStoryProof; message: string }
   | { ok: false; code: string; message: string }
 
-export function recordSliceProof(input: {
+export function recordUserStoryProof(input: {
   processRunId: string
   processPhaseRunId: string
   args: Record<string, unknown>
@@ -686,18 +686,18 @@ export function recordSliceProof(input: {
     return { ok: false, code: "unavailable", message: "This run is no longer available." }
   const root = rootRun(run)
   const link = root.missionControl
-  if (!link?.sliceId)
+  if (!link?.userStoryId)
     return {
       ok: false,
       code: "unavailable",
-      message: "record_proof is only available inside a Mission Control slice run.",
+      message: "record_proof is only available inside a Mission Control user story run.",
     }
   const phase = processes.getPhase(phaseRun.phaseId)
   if (!phase?.proofStep)
     return {
       ok: false,
       code: "not_proof_step",
-      message: "Only the playbook's proof step may record the slice proof.",
+      message: "Only the playbook's proof step may record the user story proof.",
     }
   const verifier = phaseRun.seatAddress
     ? root.seatBindings?.seats[phaseRun.seatAddress]
@@ -708,15 +708,15 @@ export function recordSliceProof(input: {
       code: "no_verifier_seat",
       message: "The proof step must run in a Mission Control seat so the verifier is known.",
     }
-  const slice = initiatives.getSlice(link.sliceId)
-  const initiative = initiatives.getInitiative(link.initiativeId)
+  const userStory = features.getUserStory(link.userStoryId)
+  const feature = features.getFeature(link.featureId)
   const playbookRun = playbooks.getPlaybookRun(link.playbookRunId)
-  if (!slice || !initiative || !playbookRun)
-    return { ok: false, code: "unavailable", message: "The slice is no longer available." }
+  if (!userStory || !feature || !playbookRun)
+    return { ok: false, code: "unavailable", message: "The user story is no longer available." }
   if (playbookRun.status !== "running")
-    return { ok: false, code: "run_finished", message: "This slice run has already finished." }
+    return { ok: false, code: "run_finished", message: "This user story run has already finished." }
 
-  const criteria = sliceCriteria(slice)
+  const criteria = userStoryCriteria(userStory)
   const submission = parseProofSubmission(input.args, criteria)
   if (typeof submission === "string")
     return { ok: false, code: "bad_args", message: submission }
@@ -729,7 +729,7 @@ export function recordSliceProof(input: {
     isCommandPhase,
     playbookRun,
     processRunId: root.id,
-    maxProofRevisions: maxProofRevisions(initiative),
+    maxProofRevisions: maxProofRevisions(feature),
   })
   switch (decision.kind) {
     case "invalid":
@@ -738,7 +738,7 @@ export function recordSliceProof(input: {
       return {
         ok: false,
         code: "already_accepted",
-        message: "This slice's proof is already accepted and frozen. Do not record it again.",
+        message: "This user story's proof is already accepted and frozen. Do not record it again.",
       }
     case "revisions_exhausted":
       return { ok: false, code: "revisions_exhausted", message: decision.message }
@@ -749,9 +749,9 @@ export function recordSliceProof(input: {
       proof: decision.proof,
       proofRevisions: decision.proofRevisions,
     })
-    const current = initiatives.getSlice(slice.id)!
-    initiatives.setSliceExecution(
-      slice.id,
+    const current = features.getUserStory(userStory.id)!
+    features.setUserStoryExecution(
+      userStory.id,
       {
         proof: decision.proof,
         ...(current.status === "running" ? { status: "proving" as const } : {}),
@@ -769,7 +769,7 @@ export function recordSliceProof(input: {
     message: accepted
       ? "Proof accepted and frozen. Summarize your verification and finish."
       : decision.exhausted
-        ? "Proof recorded as rejected. No revisions remain this attempt, so the slice will fail with this proof attached."
-        : `Proof recorded as rejected. It may be revised ${maxProofRevisions(initiative) - decision.proofRevisions} more time(s) this attempt after the issues are fixed.`,
+        ? "Proof recorded as rejected. No revisions remain this attempt, so the user story will fail with this proof attached."
+        : `Proof recorded as rejected. It may be revised ${maxProofRevisions(feature) - decision.proofRevisions} more time(s) this attempt after the issues are fixed.`,
   }
 }

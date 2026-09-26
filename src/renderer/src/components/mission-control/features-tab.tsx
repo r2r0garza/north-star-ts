@@ -32,22 +32,22 @@ import {
 } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
 import { TooltipButton } from "@/components/ui/tooltip"
-import { SliceRunPanel } from "./slice-run-panel"
+import { UserStoryRunPanel } from "./user-story-run-panel"
 import { HookControls } from "./hook-controls"
 import { PlaybookPicker } from "./playbook-picker"
 import { AnchoredComms, CommsTab } from "./comms-tab"
-import { MissionIntegrationPanel } from "./mission-integration-panel"
+import { MilestoneIntegrationPanel } from "./milestone-integration-panel"
 import { NavigatorStrip, useNavigator } from "./navigator-strip"
 import { DriveControls } from "./drive-controls"
 import { PlanHistory, WaitingOnYou } from "./proposals-inbox"
 import type {
-  Initiative,
-  InitiativeGraph,
-  Mission,
+  Feature,
+  FeatureGraph,
+  Milestone,
   Project,
   Rig,
-  SliceSpec,
-  WorkSlice,
+  UserStorySpec,
+  WorkUserStory,
   Workspace,
 } from "@/types"
 
@@ -72,35 +72,35 @@ function errorMessage(error: unknown) {
   return message
 }
 // Structural edits after start are audited and need a reason (plan 106.2).
-function reasonFor(graph: InitiativeGraph, reason: string) {
-  return graph.initiative.status === "draft" ? undefined : reason
+function reasonFor(graph: FeatureGraph, reason: string) {
+  return graph.feature.status === "draft" ? undefined : reason
 }
 // Shared by the detail views and the list rows. Resolves null when the user
 // backs out of the confirmation.
-async function deleteMissionConfirmed(
-  graph: InitiativeGraph,
-  mission: Mission
-): Promise<InitiativeGraph | null> {
-  const count = graph.slices.filter((s) => s.missionId === mission.id).length
+async function deleteMilestoneConfirmed(
+  graph: FeatureGraph,
+  milestone: Milestone
+): Promise<FeatureGraph | null> {
+  const count = graph.userStories.filter((s) => s.milestoneId === milestone.id).length
   if (
     !window.confirm(
-      `Delete milestone “${mission.name}”${count ? ` and its ${count} ${count === 1 ? "user story" : "user stories"}` : ""}? This cannot be undone.`
+      `Delete milestone “${milestone.name}”${count ? ` and its ${count} ${count === 1 ? "user story" : "user stories"}` : ""}? This cannot be undone.`
     )
   )
     return null
-  return window.cowork.missionControl.missions.delete(
-    mission.id,
+  return window.cowork.missionControl.milestones.delete(
+    milestone.id,
     reasonFor(graph, "Remove milestone")
   )
 }
-async function deleteSliceConfirmed(
-  graph: InitiativeGraph,
-  slice: WorkSlice
-): Promise<InitiativeGraph | null> {
-  if (!window.confirm(`Delete user story “${slice.title}”? This cannot be undone.`))
+async function deleteUserStoryConfirmed(
+  graph: FeatureGraph,
+  userStory: WorkUserStory
+): Promise<FeatureGraph | null> {
+  if (!window.confirm(`Delete user story “${userStory.title}”? This cannot be undone.`))
     return null
-  return window.cowork.missionControl.slices.delete(
-    slice.id,
+  return window.cowork.missionControl.userStories.delete(
+    userStory.id,
     reasonFor(graph, "Remove user story")
   )
 }
@@ -111,41 +111,41 @@ function lines(value: string) {
     .filter(Boolean)
 }
 
-function SliceEditor({
+function UserStoryEditor({
   graph,
-  slice,
+  userStory,
   workspacePath,
   onSaved,
   onGraph,
   onDeleted,
   onRefresh,
 }: {
-  graph: InitiativeGraph
-  slice: WorkSlice
+  graph: FeatureGraph
+  userStory: WorkUserStory
   workspacePath: string
-  onSaved: (graph: InitiativeGraph) => void
-  onGraph: (graph: InitiativeGraph) => void
-  onDeleted: (graph: InitiativeGraph) => void
+  onSaved: (graph: FeatureGraph) => void
+  onGraph: (graph: FeatureGraph) => void
+  onDeleted: (graph: FeatureGraph) => void
   onRefresh: () => Promise<void>
 }) {
-  // Once a slice has run, its spec is the proof's contract and only the
+  // Once a user story has run, its spec is the proof's contract and only the
   // execution workflow may revise it (plan 106.2); other fields stay editable.
-  const specFrozen = slice.startedAt !== null
-  const [title, setTitle] = useState(slice.title)
-  const [key, setKey] = useState(slice.key)
-  const [goal, setGoal] = useState(slice.spec.goal)
+  const specFrozen = userStory.startedAt !== null
+  const [title, setTitle] = useState(userStory.title)
+  const [key, setKey] = useState(userStory.key)
+  const [goal, setGoal] = useState(userStory.spec.goal)
   const [acceptance, setAcceptance] = useState(
-    slice.spec.acceptance.length > 0 ? slice.spec.acceptance : [""]
+    userStory.spec.acceptance.length > 0 ? userStory.spec.acceptance : [""]
   )
-  const [outOfScope, setOutOfScope] = useState(slice.spec.outOfScope.join("\n"))
+  const [outOfScope, setOutOfScope] = useState(userStory.spec.outOfScope.join("\n"))
   const [touchHints, setTouchHints] = useState(
-    slice.spec.touchHints.length > 0 ? slice.spec.touchHints : [""]
+    userStory.spec.touchHints.length > 0 ? userStory.spec.touchHints : [""]
   )
-  const [notes, setNotes] = useState(slice.spec.notes)
-  const [podKey, setPodKey] = useState(slice.podKey ?? "default")
-  const pods = graph.initiative.rigSnapshot?.pods ?? []
+  const [notes, setNotes] = useState(userStory.spec.notes)
+  const [podKey, setPodKey] = useState(userStory.podKey ?? "default")
+  const pods = graph.feature.rigSnapshot?.pods ?? []
   const save = async () => {
-    const spec: SliceSpec = {
+    const spec: UserStorySpec = {
       goal,
       acceptance: acceptance.map((item) => item.trim()).filter(Boolean),
       outOfScope: lines(outOfScope),
@@ -153,8 +153,8 @@ function SliceEditor({
       notes,
     }
     onSaved(
-      await window.cowork.missionControl.slices.update(
-        slice.id,
+      await window.cowork.missionControl.userStories.update(
+        userStory.id,
         {
           title: title.trim(),
           key: slug(key),
@@ -166,7 +166,7 @@ function SliceEditor({
     )
   }
   const remove = async () => {
-    const next = await deleteSliceConfirmed(graph, slice)
+    const next = await deleteUserStoryConfirmed(graph, userStory)
     if (next) onDeleted(next)
   }
   return (
@@ -322,12 +322,12 @@ function SliceEditor({
           </Select>
         </div>
         <PlaybookPicker
-          altitude="slice"
-          value={slice.playbookId}
+          altitude="user_story"
+          value={userStory.playbookId}
           onChange={async (playbookId) =>
             onGraph(
-              await window.cowork.missionControl.slices.update(
-                slice.id,
+              await window.cowork.missionControl.userStories.update(
+                userStory.id,
                 { playbookId },
                 reasonFor(graph, "Change user story playbook")
               )
@@ -341,13 +341,13 @@ function SliceEditor({
           Title, key, pod, and playbook can still change.
         </p>
       )}
-      <SliceRunPanel
+      <UserStoryRunPanel
         graph={graph}
-        slice={slice}
+        userStory={userStory}
         workspacePath={workspacePath}
         onRefresh={onRefresh}
       />
-      <AnchoredComms graph={graph} anchor={{ kind: "slice", id: slice.id }} />
+      <AnchoredComms graph={graph} anchor={{ kind: "user_story", id: userStory.id }} />
       <div className="flex gap-2">
         <Button
           onClick={() =>
@@ -366,12 +366,12 @@ function SliceEditor({
           <Trash2 className="size-4" /> Delete user story
         </Button>
       </div>
-      {graph.revisions.filter((revision) => revision.targetId === slice.id)
+      {graph.revisions.filter((revision) => revision.targetId === userStory.id)
         .length > 0 && (
         <div>
           <h3 className="mb-2 text-sm font-medium">Revision history</h3>
           {graph.revisions
-            .filter((revision) => revision.targetId === slice.id)
+            .filter((revision) => revision.targetId === userStory.id)
             .map((revision) => (
               <div
                 key={revision.id}
@@ -387,51 +387,51 @@ function SliceEditor({
   )
 }
 
-function MissionView({
+function MilestoneView({
   graph,
-  mission,
+  milestone,
   onGraph,
-  onOpenSlice,
+  onOpenUserStory,
   onDeleted,
   onRefresh,
 }: {
-  graph: InitiativeGraph
-  mission: Mission
-  onGraph: (graph: InitiativeGraph) => void
-  onOpenSlice: (id: string) => void
-  onDeleted: (graph: InitiativeGraph) => void
+  graph: FeatureGraph
+  milestone: Milestone
+  onGraph: (graph: FeatureGraph) => void
+  onOpenUserStory: (id: string) => void
+  onDeleted: (graph: FeatureGraph) => void
   onRefresh: () => Promise<void>
 }) {
-  const slices = graph.slices.filter((slice) => slice.missionId === mission.id)
-  const edges = graph.edges.filter((edge) => edge.missionId === mission.id)
-  const result = deriveWaves(slices, edges)
-  const [missionName, setMissionName] = useState(mission.name)
-  const [outcome, setOutcome] = useState(mission.outcome)
+  const userStories = graph.userStories.filter((userStory) => userStory.milestoneId === milestone.id)
+  const edges = graph.edges.filter((edge) => edge.milestoneId === milestone.id)
+  const result = deriveWaves(userStories, edges)
+  const [milestoneName, setMilestoneName] = useState(milestone.name)
+  const [outcome, setOutcome] = useState(milestone.outcome)
   const [definitionOfDone, setDefinitionOfDone] = useState(
-    mission.definitionOfDone
+    milestone.definitionOfDone
   )
   const [newTitle, setNewTitle] = useState("")
   const [dependencyTarget, setDependencyTarget] = useState("")
   const [dependencySource, setDependencySource] = useState("")
-  const saveMission = async () =>
+  const saveMilestone = async () =>
     onGraph(
-      await window.cowork.missionControl.missions.update(
-        mission.id,
-        { name: missionName, outcome, definitionOfDone },
+      await window.cowork.missionControl.milestones.update(
+        milestone.id,
+        { name: milestoneName, outcome, definitionOfDone },
         reasonFor(graph, "Refine milestone outcome")
       )
     )
-  const removeMission = async () => {
-    const next = await deleteMissionConfirmed(graph, mission)
+  const removeMilestone = async () => {
+    const next = await deleteMilestoneConfirmed(graph, milestone)
     if (next) onDeleted(next)
   }
-  const removeSlice = async (slice: WorkSlice) => {
-    const next = await deleteSliceConfirmed(graph, slice)
+  const removeUserStory = async (userStory: WorkUserStory) => {
+    const next = await deleteUserStoryConfirmed(graph, userStory)
     if (next) onGraph(next)
   }
-  const addSlice = async () => {
-    const next = await window.cowork.missionControl.slices.create({
-      missionId: mission.id,
+  const addUserStory = async () => {
+    const next = await window.cowork.missionControl.userStories.create({
+      milestoneId: milestone.id,
       key: slug(newTitle),
       title: newTitle,
     })
@@ -440,81 +440,81 @@ function MissionView({
   }
   const addDependency = async () => {
     if (!dependencySource || !dependencyTarget) return
-    const next = await window.cowork.missionControl.sliceEdges.set(
-      mission.id,
+    const next = await window.cowork.missionControl.userStoryEdges.set(
+      milestone.id,
       [
         ...edges.map((edge) => ({
-          fromSliceId: edge.fromSliceId,
-          toSliceId: edge.toSliceId,
+          fromUserStoryId: edge.fromUserStoryId,
+          toUserStoryId: edge.toUserStoryId,
         })),
-        { fromSliceId: dependencySource, toSliceId: dependencyTarget },
+        { fromUserStoryId: dependencySource, toUserStoryId: dependencyTarget },
       ],
-      graph.initiative.status === "draft" ? undefined : "Update dependency plan"
+      graph.feature.status === "draft" ? undefined : "Update dependency plan"
     )
     setDependencySource("")
     setDependencyTarget("")
     onGraph(next)
   }
   const notActive =
-    graph.initiative.status === "active"
+    graph.feature.status === "active"
       ? null
       : "Start the feature before running its playbooks."
-  const navigator = useNavigator(graph.initiative.id)
+  const navigator = useNavigator(graph.feature.id)
   return (
     <div className="space-y-5">
-      {graph.initiative.status !== "draft" && (
-        <NavigatorStrip state={navigator} missionId={mission.id} />
+      {graph.feature.status !== "draft" && (
+        <NavigatorStrip state={navigator} milestoneId={milestone.id} />
       )}
       <HookControls
         graph={graph}
         title="Milestone playbook"
         actions={[
           {
-            hook: "before_slices",
+            hook: "before_user_stories",
             label: "Run planning",
-            missionId: mission.id,
+            milestoneId: milestone.id,
             disabledReason:
               notActive ??
-              (slices.length ? null : "Add user stories to review first."),
+              (userStories.length ? null : "Add user stories to review first."),
           },
           {
-            hook: "after_all_slices",
+            hook: "after_all_user_stories",
             label: "Run review",
-            missionId: mission.id,
+            milestoneId: milestone.id,
             disabledReason:
               notActive ??
-              (slices.some((s) => s.status === "done") &&
-              slices.every((s) => s.status === "done" || s.status === "cancelled")
+              (userStories.some((s) => s.status === "done") &&
+              userStories.every((s) => s.status === "done" || s.status === "cancelled")
                 ? null
                 : "Every user story must be done before the milestone review."),
           },
         ]}
       />
-      {mission.dodReview && (
+      {milestone.dodReview && (
         <div className="rounded-md border p-3 text-sm">
           <span className="text-muted-foreground">
-            Definition of done judged met by <code>{mission.dodReview.by}</code>:
+            Definition of done judged met by <code>{milestone.dodReview.by}</code>:
           </span>{" "}
-          {mission.dodReview.summary}
+          {milestone.dodReview.summary}
         </div>
       )}
-      <MissionIntegrationPanel
+      <MilestoneIntegrationPanel
         graph={graph}
-        mission={mission}
+        milestone={milestone}
         onGraph={onGraph}
         onRefresh={onRefresh}
       />
       <AnchoredComms
         graph={graph}
-        anchor={{ kind: "mission", id: mission.id }}
+        anchor={{ kind: "milestone", id: milestone.id }}
       />
       <div className="grid gap-3 rounded-lg border p-4 lg:grid-cols-2">
         <div className="space-y-3">
           <div className="space-y-1">
             <Label>Milestone name</Label>
             <Input
-              value={missionName}
-              onChange={(e) => setMissionName(e.target.value)}
+              value={milestoneName}
+              onChange={(e) => setMilestoneName(e.target.value)}
             />
           </div>
           <div className="space-y-1">
@@ -536,9 +536,9 @@ function MissionView({
             />
           </div>
           <Button
-            disabled={!missionName.trim()}
+            disabled={!milestoneName.trim()}
             onClick={() =>
-              void saveMission().catch((error) =>
+              void saveMilestone().catch((error) =>
                 toast.error(errorMessage(error))
               )
             }
@@ -550,12 +550,12 @@ function MissionView({
       <div className="flex items-end gap-3">
         <div className="w-72">
           <PlaybookPicker
-            altitude="mission"
-            value={mission.playbookId}
+            altitude="milestone"
+            value={milestone.playbookId}
             onChange={async (playbookId) =>
               onGraph(
-                await window.cowork.missionControl.missions.update(
-                  mission.id,
+                await window.cowork.missionControl.milestones.update(
+                  milestone.id,
                   { playbookId },
                   reasonFor(graph, "Change milestone playbook")
                 )
@@ -567,7 +567,7 @@ function MissionView({
           variant="ghost"
           className="ml-auto text-muted-foreground hover:text-destructive"
           onClick={() =>
-            void removeMission().catch((error) =>
+            void removeMilestone().catch((error) =>
               toast.error(errorMessage(error))
             )
           }
@@ -584,21 +584,21 @@ function MissionView({
         <Button
           disabled={
             !slug(newTitle) ||
-            ["completed", "cancelled"].includes(graph.initiative.status)
+            ["completed", "cancelled"].includes(graph.feature.status)
           }
           title={
-            graph.initiative.status === "completed"
+            graph.feature.status === "completed"
               ? "Reopen the feature to add work."
               : undefined
           }
           onClick={() =>
-            void addSlice().catch((error) => toast.error(errorMessage(error)))
+            void addUserStory().catch((error) => toast.error(errorMessage(error)))
           }
         >
           <Plus className="size-4" /> Add user story
         </Button>
       </div>
-      {slices.length === 0 ? (
+      {userStories.length === 0 ? (
         <div className="rounded-lg border border-dashed py-12 text-center text-sm text-muted-foreground">
           Add user stories to build this milestone's work map.
         </div>
@@ -611,18 +611,18 @@ function MissionView({
                   Wave {index + 1}
                 </div>
                 <div className="grid grid-cols-[repeat(auto-fit,minmax(14rem,1fr))] gap-3">
-                  {wave.map((slice) => (
+                  {wave.map((userStory) => (
                     <div
-                      key={slice.id}
-                      className={`relative rounded-lg border hover:bg-muted/50 ${result.criticalPath.includes(slice.id) ? "border-primary/60" : ""}`}
+                      key={userStory.id}
+                      className={`relative rounded-lg border hover:bg-muted/50 ${result.criticalPath.includes(userStory.id) ? "border-primary/60" : ""}`}
                     >
                       <button
                         className="block w-full p-3 text-left"
-                        onClick={() => onOpenSlice(slice.id)}
+                        onClick={() => onOpenUserStory(userStory.id)}
                       >
                         <div className="flex items-center gap-2">
-                          <span className="font-medium">{slice.title}</span>
-                          {slice.origin === "agent" && (
+                          <span className="font-medium">{userStory.title}</span>
+                          {userStory.origin === "agent" && (
                             <Badge
                               variant="secondary"
                               title="Added by a seat through the plan tools"
@@ -631,22 +631,22 @@ function MissionView({
                             </Badge>
                           )}
                           <Badge className="ml-auto" variant="outline">
-                            {slice.status}
+                            {userStory.status}
                           </Badge>
                         </div>
                         <code className="block truncate pr-8 text-xs text-muted-foreground">
-                          {slice.key}
+                          {userStory.key}
                         </code>
-                        {edges.filter((edge) => edge.toSliceId === slice.id)
+                        {edges.filter((edge) => edge.toUserStoryId === userStory.id)
                           .length > 0 && (
                           <div className="mt-2 pr-8 text-xs text-muted-foreground">
                             Depends on{" "}
                             {edges
-                              .filter((edge) => edge.toSliceId === slice.id)
+                              .filter((edge) => edge.toUserStoryId === userStory.id)
                               .map(
                                 (edge) =>
-                                  slices.find(
-                                    (item) => item.id === edge.fromSliceId
+                                  userStories.find(
+                                    (item) => item.id === edge.fromUserStoryId
                                   )?.key
                               )
                               .join(", ")}
@@ -657,9 +657,9 @@ function MissionView({
                         variant="ghost"
                         size="icon-sm"
                         className="absolute right-2 bottom-2 text-muted-foreground hover:text-destructive"
-                        aria-label={`Delete user story ${slice.title}`}
+                        aria-label={`Delete user story ${userStory.title}`}
                         onClick={() =>
-                          void removeSlice(slice).catch((error) =>
+                          void removeUserStory(userStory).catch((error) =>
                             toast.error(errorMessage(error))
                           )
                         }
@@ -674,7 +674,7 @@ function MissionView({
           </div>
         </div>
       )}
-      {slices.length > 1 && (
+      {userStories.length > 1 && (
         <div className="flex gap-2 rounded-lg border p-3">
           <Select
             value={dependencyTarget}
@@ -687,9 +687,9 @@ function MissionView({
               <SelectValue placeholder="User story" />
             </SelectTrigger>
             <SelectContent>
-              {slices.map((slice) => (
-                <SelectItem key={slice.id} value={slice.id}>
-                  {slice.title}
+              {userStories.map((userStory) => (
+                <SelectItem key={userStory.id} value={userStory.id}>
+                  {userStory.title}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -702,19 +702,19 @@ function MissionView({
               <SelectValue placeholder="Predecessor" />
             </SelectTrigger>
             <SelectContent>
-              {slices
+              {userStories
                 .filter(
-                  (slice) =>
-                    slice.id !== dependencyTarget &&
+                  (userStory) =>
+                    userStory.id !== dependencyTarget &&
                     !edges.some(
                       (edge) =>
-                        edge.toSliceId === dependencyTarget &&
-                        edge.fromSliceId === slice.id
+                        edge.toUserStoryId === dependencyTarget &&
+                        edge.fromUserStoryId === userStory.id
                     )
                 )
-                .map((slice) => (
-                  <SelectItem key={slice.id} value={slice.id}>
-                    {slice.title}
+                .map((userStory) => (
+                  <SelectItem key={userStory.id} value={userStory.id}>
+                    {userStory.title}
                   </SelectItem>
                 ))}
             </SelectContent>
@@ -735,32 +735,32 @@ function MissionView({
         <div className="flex items-center gap-2 text-sm font-medium">
           <List className="size-4" /> Accessible list
         </div>
-        {slices.map((slice) => (
+        {userStories.map((userStory) => (
           <div
-            key={slice.id}
+            key={userStory.id}
             className="flex items-center rounded-md border text-sm"
           >
             <button
               className="flex min-w-0 flex-1 items-center px-3 py-2 text-left"
-              onClick={() => onOpenSlice(slice.id)}
+              onClick={() => onOpenUserStory(userStory.id)}
             >
-              <span className="truncate">{slice.title}</span>
-              {slice.origin === "agent" && (
+              <span className="truncate">{userStory.title}</span>
+              {userStory.origin === "agent" && (
                 <Badge variant="secondary" className="ml-2 shrink-0">
                   agent
                 </Badge>
               )}
               <span className="ml-auto shrink-0 pl-3 text-muted-foreground">
-                Wave {(result.levels.get(slice.id) ?? 0) + 1}
+                Wave {(result.levels.get(userStory.id) ?? 0) + 1}
               </span>
             </button>
             <Button
               variant="ghost"
               size="icon-sm"
               className="mr-1 shrink-0 text-muted-foreground hover:text-destructive"
-              aria-label={`Delete user story ${slice.title}`}
+              aria-label={`Delete user story ${userStory.title}`}
               onClick={() =>
-                void removeSlice(slice).catch((error) =>
+                void removeUserStory(userStory).catch((error) =>
                   toast.error(errorMessage(error))
                 )
               }
@@ -774,75 +774,75 @@ function MissionView({
   )
 }
 
-function InitiativeView({
+function FeatureView({
   graph,
   rigs,
   workspaces,
   projects,
   onGraph,
   onPickWorkspace,
-  onMission,
+  onMilestone,
   onOpenAnchor,
 }: {
-  graph: InitiativeGraph
+  graph: FeatureGraph
   rigs: Rig[]
   workspaces: Workspace[]
   projects: Project[]
-  onGraph: (graph: InitiativeGraph) => void
+  onGraph: (graph: FeatureGraph) => void
   onPickWorkspace: () => Promise<Workspace | null>
-  onMission: (id: string) => void
-  onOpenAnchor: (anchor: { kind: "slice" | "mission"; id: string }) => void
+  onMilestone: (id: string) => void
+  onOpenAnchor: (anchor: { kind: "user_story" | "milestone"; id: string }) => void
 }) {
-  const initiative = graph.initiative
-  const navigator = useNavigator(initiative.id)
+  const feature = graph.feature
+  const navigator = useNavigator(feature.id)
   const [view, setView] = useState<"overview" | "comms">("overview")
   // Bumped to open the budget editor from the inbox.
   const [budgetRequest, setBudgetRequest] = useState(0)
-  const [name, setName] = useState(initiative.name)
-  const [intent, setIntent] = useState(initiative.intent)
-  const [done, setDone] = useState(initiative.definitionOfDone)
-  const [missionName, setMissionName] = useState("")
-  // The latest mission whose slices are all done: the one a release covers.
-  const finishedMission =
-    [...graph.missions].reverse().find((mission) => {
-      const slices = graph.slices.filter((s) => s.missionId === mission.id)
+  const [name, setName] = useState(feature.name)
+  const [intent, setIntent] = useState(feature.intent)
+  const [done, setDone] = useState(feature.definitionOfDone)
+  const [milestoneName, setMilestoneName] = useState("")
+  // The latest milestone whose user stories are all done: the one a release covers.
+  const finishedMilestone =
+    [...graph.milestones].reverse().find((milestone) => {
+      const userStories = graph.userStories.filter((s) => s.milestoneId === milestone.id)
       return (
-        mission.status === "completed" ||
-        (slices.length > 0 && slices.every((s) => s.status === "done"))
+        milestone.status === "completed" ||
+        (userStories.length > 0 && userStories.every((s) => s.status === "done"))
       )
     }) ?? null
   const save = async () =>
     onGraph(
-      await window.cowork.missionControl.initiatives.update(
-        initiative.id,
+      await window.cowork.missionControl.features.update(
+        feature.id,
         { name, intent, definitionOfDone: done },
         reasonFor(graph, "Update feature definition")
       )
     )
   // Rig and workspace are bound for good at start (the repository enforces
   // this too). The project is just a label, so it's editable in any status.
-  const editableBinding = initiative.status === "draft"
+  const editableBinding = feature.status === "draft"
   const finished = ["completed", "cancelled", "failed"].includes(
-    initiative.status
+    feature.status
   )
   const bind = (
-    patch: Partial<Pick<Initiative, "rigId" | "projectId" | "workspaceId">>
+    patch: Partial<Pick<Feature, "rigId" | "projectId" | "workspaceId">>
   ) =>
-    window.cowork.missionControl.initiatives
-      .update(initiative.id, patch)
+    window.cowork.missionControl.features
+      .update(feature.id, patch)
       .then(onGraph)
       .catch((error) => toast.error(errorMessage(error)))
   const workspaceName =
-    workspaces.find((workspace) => workspace.id === initiative.workspaceId)
+    workspaces.find((workspace) => workspace.id === feature.workspaceId)
       ?.name ?? "None"
-  const addMission = async () => {
-    const next = await window.cowork.missionControl.missions.create({
-      initiativeId: initiative.id,
-      key: slug(missionName),
-      name: missionName,
+  const addMilestone = async () => {
+    const next = await window.cowork.missionControl.milestones.create({
+      featureId: feature.id,
+      key: slug(milestoneName),
+      name: milestoneName,
       outcome: "",
     })
-    setMissionName("")
+    setMilestoneName("")
     onGraph(next)
   }
   const viewTabs = (
@@ -869,7 +869,7 @@ function InitiativeView({
     <div className="space-y-5">
       {viewTabs}
       <DriveControls
-        key={`${initiative.id}:${initiative.status}`}
+        key={`${feature.id}:${feature.status}`}
         graph={graph}
         position={navigator.position}
         onGraph={onGraph}
@@ -880,15 +880,15 @@ function InitiativeView({
             ?.scrollIntoView({ behavior: "smooth", block: "start" })
         }
       />
-      {initiative.status !== "draft" && <NavigatorStrip state={navigator} />}
-      {initiative.status !== "draft" && (
+      {feature.status !== "draft" && <NavigatorStrip state={navigator} />}
+      {feature.status !== "draft" && (
         <WaitingOnYou
           graph={graph}
           position={navigator.position}
           onGraph={onGraph}
           navigation={{
-            openMission: onMission,
-            openSlice: (id) => onOpenAnchor({ kind: "slice", id }),
+            openMilestone: onMilestone,
+            openUserStory: (id) => onOpenAnchor({ kind: "user_story", id }),
             openComms: () => setView("comms"),
             editBudgets: () => setBudgetRequest((n) => n + 1),
           }}
@@ -902,8 +902,8 @@ function InitiativeView({
             size="sm"
             variant="outline"
             onClick={() =>
-              void window.cowork.missionControl.initiatives
-                .reseat(initiative.id, "Apply latest rig definition")
+              void window.cowork.missionControl.features
+                .reseat(feature.id, "Apply latest rig definition")
                 .then(onGraph)
                 .catch((error) => toast.error(errorMessage(error)))
             }
@@ -950,7 +950,7 @@ function InitiativeView({
           <div className="mb-1 text-xs text-muted-foreground">Rig</div>
           {editableBinding ? (
             <Select
-              value={initiative.rigId ?? ""}
+              value={feature.rigId ?? ""}
               onValueChange={(rigId) => void bind({ rigId })}
             >
               <SelectTrigger className="h-8 w-full text-foreground [&>svg]:text-foreground">
@@ -966,9 +966,9 @@ function InitiativeView({
             </Select>
           ) : (
             <div className="truncate text-sm">
-              {rigs.find((rig) => rig.id === initiative.rigId)?.name ??
-                (initiative.rigSnapshot
-                  ? `${initiative.rigSnapshot.rig.name} (deleted — ran on saved copy)`
+              {rigs.find((rig) => rig.id === feature.rigId)?.name ??
+                (feature.rigSnapshot
+                  ? `${feature.rigSnapshot.rig.name} (deleted — ran on saved copy)`
                   : "None")}
             </div>
           )}
@@ -976,7 +976,7 @@ function InitiativeView({
         <div className="min-w-0">
           <div className="mb-1 text-xs text-muted-foreground">Project</div>
           <Select
-            value={initiative.projectId ?? "none"}
+            value={feature.projectId ?? "none"}
             onValueChange={(value) => {
               const project = projects.find((item) => item.id === value)
               // While draft, a linked project brings its workspace, as on
@@ -1008,10 +1008,10 @@ function InitiativeView({
         </div>
         <div className="min-w-0">
           <div className="mb-1 text-xs text-muted-foreground">Workspace</div>
-          {editableBinding && !initiative.projectId ? (
+          {editableBinding && !feature.projectId ? (
             <div className="flex gap-2">
               <Select
-                value={initiative.workspaceId ?? ""}
+                value={feature.workspaceId ?? ""}
                 onValueChange={(workspaceId) => void bind({ workspaceId })}
               >
                 <SelectTrigger className="h-8 min-w-0 flex-1 text-foreground [&>svg]:text-foreground">
@@ -1052,12 +1052,12 @@ function InitiativeView({
       </div>
       <div className="w-72">
         <PlaybookPicker
-          altitude="initiative"
-          value={initiative.playbookId}
+          altitude="feature"
+          value={feature.playbookId}
           onChange={async (playbookId) =>
             onGraph(
-              await window.cowork.missionControl.initiatives.update(
-                initiative.id,
+              await window.cowork.missionControl.features.update(
+                feature.id,
                 { playbookId },
                 reasonFor(graph, "Change feature playbook")
               )
@@ -1065,7 +1065,7 @@ function InitiativeView({
           }
         />
       </div>
-      {initiative.status !== "draft" && (
+      {feature.status !== "draft" && (
         <HookControls
           graph={graph}
           title="Feature playbook"
@@ -1074,18 +1074,18 @@ function InitiativeView({
               hook: "plan",
               label: "Run planning",
               disabledReason:
-                initiative.status === "active"
+                feature.status === "active"
                   ? null
                   : "Resume the feature to run its playbooks.",
             },
             {
-              hook: "between_missions",
+              hook: "between_milestones",
               label: "Run release",
-              missionId: finishedMission?.id ?? null,
+              milestoneId: finishedMilestone?.id ?? null,
               disabledReason:
-                initiative.status !== "active"
+                feature.status !== "active"
                   ? "Resume the feature to run its playbooks."
-                  : finishedMission
+                  : finishedMilestone
                     ? null
                     : "A release runs after a milestone's user stories are all done.",
             },
@@ -1102,21 +1102,21 @@ function InitiativeView({
           </div>
           {finished ? (
             <span className="text-xs text-muted-foreground">
-              {initiative.status === "completed"
+              {feature.status === "completed"
                 ? "Reopen the feature to add milestones."
                 : "This feature is closed."}
             </span>
           ) : (
             <div className="flex gap-2">
               <Input
-                value={missionName}
-                onChange={(e) => setMissionName(e.target.value)}
+                value={milestoneName}
+                onChange={(e) => setMilestoneName(e.target.value)}
                 placeholder="Milestone name"
               />
               <Button
-                disabled={!slug(missionName)}
+                disabled={!slug(milestoneName)}
                 onClick={() =>
-                  void addMission().catch((error) =>
+                  void addMilestone().catch((error) =>
                     toast.error(errorMessage(error))
                   )
                 }
@@ -1127,42 +1127,42 @@ function InitiativeView({
           )}
         </div>
         <div className="space-y-2">
-          {graph.missions.map((mission, index) => {
-            const slices = graph.slices.filter(
-              (slice) => slice.missionId === mission.id
+          {graph.milestones.map((milestone, index) => {
+            const userStories = graph.userStories.filter(
+              (userStory) => userStory.milestoneId === milestone.id
             )
             return (
               <div
-                key={mission.id}
+                key={milestone.id}
                 className="flex items-center rounded-lg border hover:bg-muted/50"
               >
                 <button
                   className="flex min-w-0 flex-1 items-center gap-3 p-4 text-left"
-                  onClick={() => onMission(mission.id)}
+                  onClick={() => onMilestone(milestone.id)}
                 >
                   <CircleDot
-                    className={`size-4 ${mission.status === "completed" ? "text-emerald-500" : mission.status === "active" ? "text-primary" : "text-muted-foreground"}`}
+                    className={`size-4 ${milestone.status === "completed" ? "text-emerald-500" : milestone.status === "active" ? "text-primary" : "text-muted-foreground"}`}
                   />
                   <div>
                     <div className="font-medium">
-                      {index + 1}. {mission.name}
+                      {index + 1}. {milestone.name}
                     </div>
                     <div className="text-xs text-muted-foreground">
-                      {mission.outcome || "Add an outcome"}
+                      {milestone.outcome || "Add an outcome"}
                     </div>
                   </div>
                   <span className="ml-auto text-xs text-muted-foreground">
-                    {slices.filter((slice) => slice.status === "done").length}/
-                    {slices.length} slices
+                    {userStories.filter((userStory) => userStory.status === "done").length}/
+                    {userStories.length} userStories
                   </span>
                 </button>
                 <Button
                   variant="ghost"
                   size="icon-sm"
                   className="mr-3 shrink-0 text-muted-foreground hover:text-destructive"
-                  aria-label={`Delete milestone ${mission.name}`}
+                  aria-label={`Delete milestone ${milestone.name}`}
                   onClick={() =>
-                    void deleteMissionConfirmed(graph, mission)
+                    void deleteMilestoneConfirmed(graph, milestone)
                       .then((next) => next && onGraph(next))
                       .catch((error) => toast.error(errorMessage(error)))
                   }
@@ -1179,24 +1179,24 @@ function InitiativeView({
   )
 }
 
-export function InitiativesTab({
+export function FeaturesTab({
   rigs,
   graph,
-  missionId,
-  sliceId,
+  milestoneId,
+  userStoryId,
   onGraphChange,
-  onMissionChange,
-  onSliceChange,
+  onMilestoneChange,
+  onUserStoryChange,
 }: {
   rigs: Rig[]
-  graph: InitiativeGraph | null
-  missionId: string | null
-  sliceId: string | null
-  onGraphChange: (graph: InitiativeGraph | null) => void
-  onMissionChange: (id: string | null) => void
-  onSliceChange: (id: string | null) => void
+  graph: FeatureGraph | null
+  milestoneId: string | null
+  userStoryId: string | null
+  onGraphChange: (graph: FeatureGraph | null) => void
+  onMilestoneChange: (id: string | null) => void
+  onUserStoryChange: (id: string | null) => void
 }) {
-  const [items, setItems] = useState<Initiative[]>([])
+  const [items, setItems] = useState<Feature[]>([])
   const [workspaces, setWorkspaces] = useState<Workspace[]>([])
   const [projects, setProjects] = useState<Project[]>([])
   const [createOpen, setCreateOpen] = useState(false)
@@ -1208,7 +1208,7 @@ export function InitiativesTab({
   const [projectId, setProjectId] = useState("none")
   const reload = async () => {
     const [nextItems, nextWorkspaces, nextProjects] = await Promise.all([
-      window.cowork.missionControl.initiatives.list(),
+      window.cowork.missionControl.features.list(),
       window.cowork.db.workspaces.list(),
       window.cowork.db.projects.list(),
     ])
@@ -1219,7 +1219,7 @@ export function InitiativesTab({
   useEffect(() => {
     void reload()
   }, [])
-  const applyGraph = (next: InitiativeGraph) => {
+  const applyGraph = (next: FeatureGraph) => {
     onGraphChange(next)
     void reload()
   }
@@ -1228,7 +1228,7 @@ export function InitiativesTab({
       projectId === "none"
         ? null
         : (projects.find((project) => project.id === projectId) ?? null)
-    const next = await window.cowork.missionControl.initiatives.create({
+    const next = await window.cowork.missionControl.features.create({
       key: slug(name),
       name,
       intent,
@@ -1260,20 +1260,20 @@ export function InitiativesTab({
     const workspace = await saveWorkspace()
     if (workspace) setWorkspaceId(workspace.id)
   }
-  const initiativeId = graph?.initiative.id ?? null
+  const featureId = graph?.feature.id ?? null
   const refreshGraph = useCallback(async () => {
-    if (!initiativeId) return
+    if (!featureId) return
     const next =
-      await window.cowork.missionControl.initiatives.get(initiativeId)
+      await window.cowork.missionControl.features.get(featureId)
     if (next) onGraphChange(next)
-  }, [initiativeId, onGraphChange])
+  }, [featureId, onGraphChange])
   // Merges land in the background (plan 106.5) and the Navigator drives
-  // work on its own (106.6): keep slice and mission statuses current while
-  // the initiative is open.
+  // work on its own (106.6): keep user story and milestone statuses current while
+  // the feature is open.
   useEffect(() => {
-    if (!initiativeId) return
+    if (!featureId) return
     const refresh = (changed: string) => {
-      if (changed === initiativeId) void refreshGraph()
+      if (changed === featureId) void refreshGraph()
     }
     const offIntegration = window.cowork.missionControl.integration.onChanged(refresh)
     const offNavigator = window.cowork.missionControl.navigator.onChanged(refresh)
@@ -1281,64 +1281,64 @@ export function InitiativesTab({
       offIntegration()
       offNavigator()
     }
-  }, [initiativeId, refreshGraph])
-  const mission = graph?.missions.find((item) => item.id === missionId) ?? null
-  const slice = graph?.slices.find((item) => item.id === sliceId) ?? null
-  if (graph && slice)
+  }, [featureId, refreshGraph])
+  const milestone = graph?.milestones.find((item) => item.id === milestoneId) ?? null
+  const userStory = graph?.userStories.find((item) => item.id === userStoryId) ?? null
+  if (graph && userStory)
     return (
-      <SliceEditor
-        key={slice.id}
+      <UserStoryEditor
+        key={userStory.id}
         graph={graph}
-        slice={slice}
+        userStory={userStory}
         workspacePath={
-          workspaces.find((w) => w.id === graph.initiative.workspaceId)?.path ??
+          workspaces.find((w) => w.id === graph.feature.workspaceId)?.path ??
           ""
         }
         onSaved={(next) => {
           applyGraph(next)
-          onSliceChange(null)
+          onUserStoryChange(null)
         }}
         onGraph={applyGraph}
         onDeleted={(next) => {
           applyGraph(next)
-          onSliceChange(null)
+          onUserStoryChange(null)
         }}
         onRefresh={refreshGraph}
       />
     )
-  if (graph && mission)
+  if (graph && milestone)
     return (
-      <MissionView
+      <MilestoneView
         graph={graph}
-        mission={mission}
+        milestone={milestone}
         onGraph={applyGraph}
-        onOpenSlice={onSliceChange}
+        onOpenUserStory={onUserStoryChange}
         onDeleted={(next) => {
           applyGraph(next)
-          onMissionChange(null)
+          onMilestoneChange(null)
         }}
         onRefresh={refreshGraph}
       />
     )
   if (graph)
     return (
-      <InitiativeView
+      <FeatureView
         graph={graph}
         rigs={rigs}
         workspaces={workspaces}
         projects={projects}
         onGraph={applyGraph}
         onPickWorkspace={saveWorkspace}
-        onMission={onMissionChange}
+        onMilestone={onMilestoneChange}
         onOpenAnchor={(anchor) => {
-          if (anchor.kind === "mission") {
-            onMissionChange(anchor.id)
+          if (anchor.kind === "milestone") {
+            onMilestoneChange(anchor.id)
             return
           }
-          const target = graph.slices.find((item) => item.id === anchor.id)
+          const target = graph.userStories.find((item) => item.id === anchor.id)
           if (!target) return
-          onMissionChange(target.missionId)
-          onSliceChange(target.id)
+          onMilestoneChange(target.milestoneId)
+          onUserStoryChange(target.id)
         }}
       />
     )
@@ -1370,7 +1370,7 @@ export function InitiativesTab({
               key={item.id}
               className="cursor-pointer hover:bg-muted/30"
               onClick={() =>
-                void window.cowork.missionControl.initiatives
+                void window.cowork.missionControl.features
                   .get(item.id)
                   .then((value) => value && onGraphChange(value))
               }
@@ -1396,7 +1396,7 @@ export function InitiativesTab({
                         )
                       )
                         return
-                      void window.cowork.missionControl.initiatives
+                      void window.cowork.missionControl.features
                         .delete(item.id)
                         .then((result) => {
                           // Unmerged integration work is never deleted silently.

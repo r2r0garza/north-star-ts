@@ -93,9 +93,9 @@ export function renderIncomingMessages(
 }
 
 // The oldest queued mail for a seat, within one delivery's bounds.
-function pickQueued(initiativeId: string, address: string): SeatMessage[] {
+function pickQueued(featureId: string, address: string): SeatMessage[] {
   const queued = comms
-    .listMessages({ initiativeId, toAddress: address, statuses: ["queued"] })
+    .listMessages({ featureId, toAddress: address, statuses: ["queued"] })
     .slice(0, MAX_DELIVERY_MESSAGES)
   const picked: SeatMessage[] = []
   let bytes = 0
@@ -117,7 +117,7 @@ export function deliverQueued(input: {
 }): { messages: SeatMessage[]; content: string; messageId: string } | null {
   const { identity } = input
   const delivered = getDb().transaction(() => {
-    const picked = pickQueued(identity.initiativeId, identity.address)
+    const picked = pickQueued(identity.featureId, identity.address)
     if (!picked.length) return null
     const claimed = comms.claimQueued({
       ids: picked.map((m) => m.id),
@@ -138,6 +138,6 @@ export function deliverQueued(input: {
     )
     return { messages: claimed, content, messageId: row.id }
   })()
-  if (delivered) emitCommsChanged(identity.initiativeId)
+  if (delivered) emitCommsChanged(identity.featureId)
   return delivered
 }

@@ -20,7 +20,7 @@ function pod(id: string, key: string, position: number): RigPod {
     rigId: "rig",
     key,
     name: key,
-    missionStatement: `${key} mission`,
+    missionStatement: `${key} milestone`,
     cultureMd: `${key} culture`,
     leadSeatId: null,
     position,
@@ -135,13 +135,13 @@ describe("resolveSeatBindings", () => {
       podKey: "implementation",
       roles: ["builder"],
       agents,
-      intentChain: "Initiative intent",
+      intentChain: "Feature intent",
     })
     const text = renderSeatContext(
       snapshot,
       snapshot.seats["builder-1@implementation"]
     )
-    const order = ["builder-1 charter", "rig culture", "implementation culture", "Initiative intent"].map(
+    const order = ["builder-1 charter", "rig culture", "implementation culture", "Feature intent"].map(
       (fragment) => text.indexOf(fragment)
     )
     expect(order.every((index) => index >= 0)).toBe(true)

@@ -858,9 +858,9 @@ function contextScopeValue(input: unknown, path: string): PhaseContextScope {
   if (input === undefined || input === null) return "step"
   // Exports written before v51 used fresh / seat_session.
   if (input === "fresh") return "step"
-  if (input === "seat_session") return "initiative"
-  if (input !== "step" && input !== "slice" && input !== "initiative")
-    throw new Error(`${path} must be "step", "slice", or "initiative"`)
+  if (input === "seat_session") return "feature"
+  if (input !== "step" && input !== "user_story" && input !== "feature")
+    throw new Error(`${path} must be "step", "user_story", or "feature"`)
   return input
 }
 

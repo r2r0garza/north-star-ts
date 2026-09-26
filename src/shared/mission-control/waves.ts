@@ -5,8 +5,8 @@ export interface WaveNode {
 }
 
 export interface WaveEdge {
-  fromSliceId: string
-  toSliceId: string
+  fromUserStoryId: string
+  toUserStoryId: string
 }
 
 export interface WaveResult<T extends WaveNode> {
@@ -20,9 +20,9 @@ function adjacency(nodes: WaveNode[], edges: WaveEdge[]) {
   const incoming = new Map(nodes.map((node) => [node.id, [] as string[]]))
   const outgoing = new Map(nodes.map((node) => [node.id, [] as string[]]))
   for (const edge of edges) {
-    if (!ids.has(edge.fromSliceId) || !ids.has(edge.toSliceId)) continue
-    outgoing.get(edge.fromSliceId)!.push(edge.toSliceId)
-    incoming.get(edge.toSliceId)!.push(edge.fromSliceId)
+    if (!ids.has(edge.fromUserStoryId) || !ids.has(edge.toUserStoryId)) continue
+    outgoing.get(edge.fromUserStoryId)!.push(edge.toUserStoryId)
+    incoming.get(edge.toUserStoryId)!.push(edge.fromUserStoryId)
   }
   return { incoming, outgoing }
 }
@@ -65,7 +65,7 @@ export function deriveWaves<T extends WaveNode>(
 ): WaveResult<T> {
   const cycle = findCycle(nodes, edges)
   if (cycle)
-    throw new Error(`Slice dependencies must be acyclic: ${cycle.join(" → ")}`)
+    throw new Error(`User story dependencies must be acyclic: ${cycle.join(" → ")}`)
   const { incoming, outgoing } = adjacency(nodes, edges)
   const levels = new Map<string, number>()
   const queue = nodes
@@ -118,9 +118,9 @@ export function deriveWaves<T extends WaveNode>(
   return { waves, levels, criticalPath }
 }
 
-// Ready slices whose predecessors are all done. With an integration branch
-// (plan 106.5) a slice is done only once its merge landed, so "done" here
-// already means "merged": a dependent slice starts from a head that contains
+// Ready user stories whose predecessors are all done. With an integration branch
+// (plan 106.5) a user story is done only once its merge landed, so "done" here
+// already means "merged": a dependent user story starts from a head that contains
 // its predecessors' code.
 export function readySet<T extends WaveNode>(
   nodes: T[],
@@ -149,8 +149,8 @@ export function touchHintRoot(hint: string): string {
   return root
 }
 
-// Whether two slices' touch hints may name the same files. Conservative: two
-// hints overlap when one's anchor contains the other's. Slices without hints
+// Whether two user stories' touch hints may name the same files. Conservative: two
+// hints overlap when one's anchor contains the other's. User stories without hints
 // declare nothing, so they never overlap.
 export function touchHintsOverlap(a: string[], b: string[]): boolean {
   const within = (path: string, dir: string) =>

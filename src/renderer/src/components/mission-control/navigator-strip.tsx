@@ -3,7 +3,7 @@ import { ChevronDown, ChevronRight, Navigation } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import type { NavigatorTick, Position } from "@/types"
 
-// The Navigator's view of an initiative (plan 106.6): its current position,
+// The Navigator's view of a feature (plan 106.6): its current position,
 // next maneuver, and tick log. Position and ticks are read from main; every
 // recorded tick (and every merge-queue change) refreshes them.
 
@@ -13,23 +13,23 @@ export interface NavigatorState {
   reload: () => Promise<void>
 }
 
-export function useNavigator(initiativeId: string): NavigatorState {
+export function useNavigator(featureId: string): NavigatorState {
   const [position, setPosition] = useState<Position | null>(null)
   const [ticks, setTicks] = useState<NavigatorTick[]>([])
   const reload = useCallback(async () => {
     const [nextPosition, nextTicks] = await Promise.all([
-      window.cowork.missionControl.navigator.position(initiativeId),
-      window.cowork.missionControl.navigator.ticks(initiativeId, 50),
+      window.cowork.missionControl.navigator.position(featureId),
+      window.cowork.missionControl.navigator.ticks(featureId, 50),
     ])
     setPosition(nextPosition)
     setTicks(nextTicks)
-  }, [initiativeId])
+  }, [featureId])
   useEffect(() => {
     setPosition(null)
     setTicks([])
     void reload().catch(() => {})
     const refresh = (changed: string) => {
-      if (changed === initiativeId) void reload().catch(() => {})
+      if (changed === featureId) void reload().catch(() => {})
     }
     const offNavigator = window.cowork.missionControl.navigator.onChanged(refresh)
     const offComms = window.cowork.missionControl.comms.onChanged(refresh)
@@ -37,7 +37,7 @@ export function useNavigator(initiativeId: string): NavigatorState {
       offNavigator()
       offComms()
     }
-  }, [initiativeId, reload])
+  }, [featureId, reload])
   return { position, ticks, reload }
 }
 
@@ -78,15 +78,15 @@ function TickRow({ tick }: { tick: NavigatorTick }) {
   )
 }
 
-// Every slice state, so a slice never disappears from the count (a slice
+// Every user story state, so a user story never disappears from the count (a user story
 // waiting on a merge or held back by overlapping files is still work).
-function summaryParts(position: Position, m: NonNullable<Position["mission"]>): string[] {
-  const live = m.waves.flat().filter((id) => position.slices[id]?.status !== "cancelled")
+function summaryParts(position: Position, m: NonNullable<Position["milestone"]>): string[] {
+  const live = m.waves.flat().filter((id) => position.userStories[id]?.status !== "cancelled")
   const failed = live.filter(
-    (id) => position.slices[id]?.status === "failed" && !m.retryable.includes(id)
+    (id) => position.userStories[id]?.status === "failed" && !m.retryable.includes(id)
   ).length
   // Held back: ready (or retryable) but waiting for capacity or files.
-  const held = new Set(position.deferred.map((d) => d.slice))
+  const held = new Set(position.deferred.map((d) => d.userStory))
   const parts: Array<[number, string]> = [
     [m.done.length, "done"],
     [m.running.length, "running"],
@@ -108,24 +108,24 @@ function summaryParts(position: Position, m: NonNullable<Position["mission"]>): 
 
 export function NavigatorStrip({
   state,
-  missionId,
+  milestoneId,
 }: {
   state: NavigatorState
-  // On a mission view: say so when another mission is the active one.
-  missionId?: string
+  // On a milestone view: say so when another milestone is the active one.
+  milestoneId?: string
 }) {
   const [open, setOpen] = useState(false)
   const { position, ticks } = state
   if (!position) return null
-  const m = position.mission
-  const key = (id: string) => position.slices[id]?.key ?? id
-  const elsewhere = missionId && m && m.id !== missionId
+  const m = position.milestone
+  const key = (id: string) => position.userStories[id]?.key ?? id
+  const elsewhere = milestoneId && m && m.id !== milestoneId
   return (
     <div className="rounded-lg border bg-muted/30 p-3 text-sm">
       <div className="flex flex-wrap items-center gap-2">
         <Navigation className="size-4 text-primary" />
         <span className="font-medium">Navigator</span>
-        <Badge variant="outline">{MODE_LABEL[position.initiative.driveMode]}</Badge>
+        <Badge variant="outline">{MODE_LABEL[position.feature.driveMode]}</Badge>
         {m ? (
           <span className="text-muted-foreground">
             Milestone <code>{m.key}</code> ({m.status}) ·{" "}
@@ -133,25 +133,25 @@ export function NavigatorStrip({
           </span>
         ) : (
           <span className="text-muted-foreground">
-            {position.initiative.complete ? "Every milestone is complete." : "No active milestone."}
+            {position.feature.complete ? "Every milestone is complete." : "No active milestone."}
           </span>
         )}
       </div>
       {elsewhere && (
         <p className="mt-2 text-xs text-muted-foreground">
-          This isn't the active mission; missions run in order.
+          This isn't the active milestone; milestones run in order.
         </p>
       )}
       <div className="mt-2">
         <span className="text-muted-foreground">Next: </span>
         {position.maneuver.text}
-        {((position.initiative.driveMode === "manual" &&
-          ["dispatch", "complete_mission"].includes(position.maneuver.kind)) ||
-          (position.initiative.driveMode !== "autopilot" &&
+        {((position.feature.driveMode === "manual" &&
+          ["dispatch", "complete_milestone"].includes(position.maneuver.kind)) ||
+          (position.feature.driveMode !== "autopilot" &&
             position.maneuver.kind === "run_hook")) && (
           <span className="text-muted-foreground"> (you run it)</span>
         )}
-        {position.initiative.driveMode === "copilot" &&
+        {position.feature.driveMode === "copilot" &&
           position.maneuver.kind === "dispatch" && (
             <span className="text-muted-foreground"> (the lead starts it)</span>
           )}
@@ -159,13 +159,13 @@ export function NavigatorStrip({
       {position.deferred.length > 0 && (
         <div className="mt-1 text-xs text-muted-foreground">
           Waiting:{" "}
-          {position.deferred.map((d) => `${key(d.slice)} (${d.reason})`).join("; ")}
+          {position.deferred.map((d) => `${key(d.userStory)} (${d.reason})`).join("; ")}
         </div>
       )}
       {m && m.waiting.length > 0 && (
         <div className="mt-1 text-xs text-muted-foreground">
           After merges:{" "}
-          {m.waiting.map((w) => `${key(w.slice)} after ${w.on.map(key).join(", ")}`).join("; ")}
+          {m.waiting.map((w) => `${key(w.userStory)} after ${w.on.map(key).join(", ")}`).join("; ")}
         </div>
       )}
       {ticks.length > 0 && (

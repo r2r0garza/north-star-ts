@@ -9,13 +9,13 @@ import {
 } from "@/components/process-screen"
 import type {
   AccountWithModels,
-  InitiativeGraph,
+  FeatureGraph,
   PlaybookHookName,
   PlaybookRun,
   ProcessDefinition,
 } from "@/types"
 
-// Mission / initiative hooks (plan 106.3). Each button runs one hook's small
+// Milestone / feature hooks (plan 106.3). Each button runs one hook's small
 // Process run; its last status and live monitor sit beside it. In Autopilot
 // the Navigator (106.6) fires them itself when they fall due.
 
@@ -30,8 +30,8 @@ export interface HookAction {
   label: string
   // Why the action cannot run right now, if it cannot.
   disabledReason?: string | null
-  // The mission the hook runs on (mission hooks, and between-missions).
-  missionId?: string | null
+  // The milestone the hook runs on (milestone hooks, and between-milestones).
+  milestoneId?: string | null
 }
 
 function HookRow({
@@ -41,7 +41,7 @@ function HookRow({
   providers,
   onChanged,
 }: {
-  graph: InitiativeGraph
+  graph: FeatureGraph
   action: HookAction
   lastRun: PlaybookRun | null
   providers: AccountWithModels[]
@@ -72,8 +72,8 @@ function HookRow({
     setPending(true)
     try {
       await window.cowork.missionControl.execution.runHook({
-        initiativeId: graph.initiative.id,
-        missionId: action.missionId ?? null,
+        featureId: graph.feature.id,
+        milestoneId: action.milestoneId ?? null,
         hook: action.hook,
       })
       toast.success(`${action.label} started`)
@@ -176,7 +176,7 @@ export function HookControls({
   actions,
   title,
 }: {
-  graph: InitiativeGraph
+  graph: FeatureGraph
   actions: HookAction[]
   title: string
 }) {
@@ -185,10 +185,10 @@ export function HookControls({
   const load = useCallback(async () => {
     setRuns(
       await window.cowork.missionControl.playbookRuns.list({
-        initiativeId: graph.initiative.id,
+        featureId: graph.feature.id,
       })
     )
-  }, [graph.initiative.id])
+  }, [graph.feature.id])
 
   useEffect(() => {
     void load()
@@ -208,7 +208,7 @@ export function HookControls({
     })
   }, [load])
 
-  // Hooks run in the workspace itself; slices building in their own
+  // Hooks run in the workspace itself; user stories building in their own
   // worktrees (plan 106.5) don't hold it.
   const busy = runs.find((run) => run.status === "running" && !run.worktreePath)
   return (
@@ -219,7 +219,9 @@ export function HookControls({
           runs.find(
             (run) =>
               run.hook === action.hook &&
-              (action.missionId ? run.missionId === action.missionId : true)
+              (action.milestoneId
+                ? run.milestoneId === action.milestoneId
+                : true)
           ) ?? null
         const blockedByOther =
           busy && busy.id !== lastRun?.id
@@ -227,7 +229,7 @@ export function HookControls({
             : null
         return (
           <HookRow
-            key={`${action.hook}:${action.missionId ?? ""}`}
+            key={`${action.hook}:${action.milestoneId ?? ""}`}
             graph={graph}
             action={{
               ...action,

@@ -47,12 +47,12 @@ import type {
   RigOversight,
   RigDiagnostic,
   RigDecisionRight,
-  Initiative,
-  InitiativeGraph,
-  Mission,
-  WorkSlice,
-  SliceEdge,
-  SliceSpec,
+  Feature,
+  FeatureGraph,
+  Milestone,
+  WorkUserStory,
+  UserStoryEdge,
+  UserStorySpec,
   WorkRevision,
   Playbook,
   PlaybookAltitude,
@@ -66,11 +66,11 @@ import type {
   PlaybookWithHooks,
   SeatBinding,
   SeatBindingsSnapshot,
-  SliceProof,
+  UserStoryProof,
   ProofCriterionStatus,
   MissionControlRunLink,
   MergePolicyMode,
-  MissionLanding,
+  MilestoneLanding,
   DriveMode,
   NavigatorTick,
   PlanProposal,
@@ -81,8 +81,8 @@ import type { PickedElement } from "../main/browser/types"
 import type { GitDiffResult } from "../main/git/diff"
 import type { SeatOverview } from "../main/mission-control/sessions"
 import type {
-  MissionIntegrationStatus,
-  SliceWorkspaceInfo,
+  MilestoneIntegrationStatus,
+  UserStoryWorkspaceInfo,
 } from "../main/mission-control/integration"
 import type {
   GitActionResult,
@@ -618,16 +618,16 @@ const api = {
   // List the user-invocable custom agents (name + description) for the composer's
   // agent picker. Pass the active workspace so workspace-level agents are included.
   missionControl: {
-    initiatives: {
+    features: {
       list: () =>
-        ipcRenderer.invoke("missionControl:initiatives:list") as Promise<
-          Initiative[]
+        ipcRenderer.invoke("missionControl:features:list") as Promise<
+          Feature[]
         >,
       get: (id: string) =>
         ipcRenderer.invoke(
-          "missionControl:initiatives:get",
+          "missionControl:features:get",
           id
-        ) as Promise<InitiativeGraph | null>,
+        ) as Promise<FeatureGraph | null>,
       create: (input: {
         key: string
         name: string
@@ -639,14 +639,14 @@ const api = {
         defaultPodKey?: string | null
       }) =>
         ipcRenderer.invoke(
-          "missionControl:initiatives:create",
+          "missionControl:features:create",
           input
-        ) as Promise<InitiativeGraph>,
+        ) as Promise<FeatureGraph>,
       update: (
         id: string,
         patch: Partial<
           Pick<
-            Initiative,
+            Feature,
             | "key"
             | "name"
             | "intent"
@@ -661,122 +661,122 @@ const api = {
         reason?: string
       ) =>
         ipcRenderer.invoke(
-          "missionControl:initiatives:update",
+          "missionControl:features:update",
           id,
           patch,
           "user",
           reason
-        ) as Promise<InitiativeGraph>,
+        ) as Promise<FeatureGraph>,
       delete: (id: string) =>
         ipcRenderer.invoke(
-          "missionControl:initiatives:delete",
+          "missionControl:features:delete",
           id
         ) as Promise<{ keptBranches: string[] }>,
       start: (id: string) =>
         ipcRenderer.invoke(
-          "missionControl:initiatives:start",
+          "missionControl:features:start",
           id
-        ) as Promise<InitiativeGraph>,
+        ) as Promise<FeatureGraph>,
       reseat: (id: string, reason?: string) =>
         ipcRenderer.invoke(
-          "missionControl:initiatives:reseat",
+          "missionControl:features:reseat",
           id,
           reason
-        ) as Promise<InitiativeGraph>,
+        ) as Promise<FeatureGraph>,
     },
-    missions: {
+    milestones: {
       create: (input: {
-        initiativeId: string
+        featureId: string
         key: string
         name: string
         outcome: string
         definitionOfDone?: string
       }) =>
         ipcRenderer.invoke(
-          "missionControl:missions:create",
+          "missionControl:milestones:create",
           input
-        ) as Promise<InitiativeGraph>,
+        ) as Promise<FeatureGraph>,
       update: (
         id: string,
         patch: Partial<
           Pick<
-            Mission,
+            Milestone,
             "key" | "name" | "outcome" | "definitionOfDone" | "position" | "playbookId"
           >
         >,
         reason?: string
       ) =>
         ipcRenderer.invoke(
-          "missionControl:missions:update",
+          "missionControl:milestones:update",
           id,
           patch,
           "user",
           reason
-        ) as Promise<InitiativeGraph>,
+        ) as Promise<FeatureGraph>,
       delete: (id: string, reason?: string) =>
         ipcRenderer.invoke(
-          "missionControl:missions:delete",
+          "missionControl:milestones:delete",
           id,
           "user",
           reason
-        ) as Promise<InitiativeGraph>,
+        ) as Promise<FeatureGraph>,
     },
-    slices: {
+    userStories: {
       create: (input: {
-        missionId: string
+        milestoneId: string
         key: string
         title: string
-        spec?: Partial<SliceSpec>
+        spec?: Partial<UserStorySpec>
         podKey?: string | null
       }) =>
         ipcRenderer.invoke(
-          "missionControl:slices:create",
+          "missionControl:userStories:create",
           input
-        ) as Promise<InitiativeGraph>,
+        ) as Promise<FeatureGraph>,
       update: (
         id: string,
         patch: Partial<
           Pick<
-            WorkSlice,
+            WorkUserStory,
             "key" | "title" | "spec" | "podKey" | "position" | "playbookId"
           >
         >,
         reason?: string
       ) =>
         ipcRenderer.invoke(
-          "missionControl:slices:update",
+          "missionControl:userStories:update",
           id,
           patch,
           "user",
           reason
-        ) as Promise<InitiativeGraph>,
+        ) as Promise<FeatureGraph>,
       delete: (id: string, reason?: string) =>
         ipcRenderer.invoke(
-          "missionControl:slices:delete",
+          "missionControl:userStories:delete",
           id,
           "user",
           reason
-        ) as Promise<InitiativeGraph>,
+        ) as Promise<FeatureGraph>,
     },
-    sliceEdges: {
+    userStoryEdges: {
       set: (
-        missionId: string,
-        edges: Array<{ fromSliceId: string; toSliceId: string }>,
+        milestoneId: string,
+        edges: Array<{ fromUserStoryId: string; toUserStoryId: string }>,
         reason?: string
       ) =>
         ipcRenderer.invoke(
-          "missionControl:sliceEdges:set",
-          missionId,
+          "missionControl:userStoryEdges:set",
+          milestoneId,
           edges,
           "user",
           reason
-        ) as Promise<InitiativeGraph>,
+        ) as Promise<FeatureGraph>,
     },
     revisions: {
-      list: (initiativeId: string) =>
+      list: (featureId: string) =>
         ipcRenderer.invoke(
           "missionControl:revisions:list",
-          initiativeId
+          featureId
         ) as Promise<WorkRevision[]>,
     },
     rigs: {
@@ -962,9 +962,9 @@ const api = {
     },
     playbookRuns: {
       list: (filter: {
-        initiativeId?: string
-        missionId?: string
-        sliceId?: string
+        featureId?: string
+        milestoneId?: string
+        userStoryId?: string
         status?: PlaybookRunStatus
       }) =>
         ipcRenderer.invoke(
@@ -978,83 +978,83 @@ const api = {
         ) as Promise<void>,
     },
     execution: {
-      // allowTouchOverlap: run even though a slice with overlapping touch
+      // allowTouchOverlap: run even though a user story with overlapping touch
       // hints is still building (plan 106.5).
-      runSlice: (sliceId: string, options?: { allowTouchOverlap?: boolean }) =>
-        ipcRenderer.invoke("missionControl:slices:run", sliceId, options) as Promise<
+      runUserStory: (userStoryId: string, options?: { allowTouchOverlap?: boolean }) =>
+        ipcRenderer.invoke("missionControl:userStories:run", userStoryId, options) as Promise<
           PlaybookRun
         >,
-      cancelSlice: (sliceId: string) =>
-        ipcRenderer.invoke("missionControl:slices:cancel", sliceId) as Promise<
+      cancelUserStory: (userStoryId: string) =>
+        ipcRenderer.invoke("missionControl:userStories:cancel", userStoryId) as Promise<
           void
         >,
       runHook: (input: {
-        initiativeId: string
-        missionId?: string | null
+        featureId: string
+        milestoneId?: string | null
         hook: PlaybookHookName
       }) =>
         ipcRenderer.invoke("missionControl:hooks:run", input) as Promise<
           PlaybookRun
         >,
     },
-    // Mission integration (plan 106.5): worktrees, the merge queue, and the
-    // mission's merge policy.
+    // Milestone integration (plan 106.5): worktrees, the merge queue, and the
+    // milestone's merge policy.
     integration: {
-      status: (missionId: string) =>
+      status: (milestoneId: string) =>
         ipcRenderer.invoke(
           "missionControl:integration:status",
-          missionId
-        ) as Promise<MissionIntegrationStatus>,
-      setPolicy: (missionId: string, mode: MergePolicyMode) =>
+          milestoneId
+        ) as Promise<MilestoneIntegrationStatus>,
+      setPolicy: (milestoneId: string, mode: MergePolicyMode) =>
         ipcRenderer.invoke(
           "missionControl:integration:setPolicy",
-          missionId,
+          milestoneId,
           mode
-        ) as Promise<InitiativeGraph>,
+        ) as Promise<FeatureGraph>,
       // The explicit approval: bound to the base and head the user reviewed.
-      // `localMerge` merges a manual-policy mission here, with the same approval.
+      // `localMerge` merges a manual-policy milestone here, with the same approval.
       land: (
-        missionId: string,
+        milestoneId: string,
         approval: { baseOid: string; headOid: string },
         options?: { localMerge?: boolean }
       ) =>
         ipcRenderer.invoke(
           "missionControl:integration:land",
-          missionId,
+          milestoneId,
           approval,
           options
-        ) as Promise<MissionLanding>,
-      markMerged: (missionId: string) =>
+        ) as Promise<MilestoneLanding>,
+      markMerged: (milestoneId: string) =>
         ipcRenderer.invoke(
           "missionControl:integration:markMerged",
-          missionId
-        ) as Promise<MissionLanding>,
+          milestoneId
+        ) as Promise<MilestoneLanding>,
       retry: (entryId: string) =>
         ipcRenderer.invoke("missionControl:integration:retry", entryId) as Promise<void>,
       resolve: (entryId: string) =>
         ipcRenderer.invoke("missionControl:integration:resolve", entryId) as Promise<void>,
       abandon: (entryId: string) =>
         ipcRenderer.invoke("missionControl:integration:abandon", entryId) as Promise<void>,
-      sliceInfo: (sliceId: string) =>
+      userStoryInfo: (userStoryId: string) =>
         ipcRenderer.invoke(
-          "missionControl:integration:sliceInfo",
-          sliceId
-        ) as Promise<SliceWorkspaceInfo>,
-      sliceDiff: (sliceId: string) =>
+          "missionControl:integration:userStoryInfo",
+          userStoryId
+        ) as Promise<UserStoryWorkspaceInfo>,
+      userStoryDiff: (userStoryId: string) =>
         ipcRenderer.invoke(
-          "missionControl:integration:sliceDiff",
-          sliceId
+          "missionControl:integration:userStoryDiff",
+          userStoryId
         ) as Promise<{ diff: string; truncated: boolean }>,
-      openWorktree: (sliceId: string) =>
+      openWorktree: (userStoryId: string) =>
         ipcRenderer.invoke(
           "missionControl:integration:openWorktree",
-          sliceId
+          userStoryId
         ) as Promise<string>,
-      // Fires with the initiative id whenever a merge queue, slice worktree,
-      // or mission landing changes.
-      onChanged: (cb: (initiativeId: string) => void) => {
-        const listener = (_event: IpcRendererEvent, initiativeId: string) =>
-          cb(initiativeId)
+      // Fires with the feature id whenever a merge queue, user story worktree,
+      // or milestone landing changes.
+      onChanged: (cb: (featureId: string) => void) => {
+        const listener = (_event: IpcRendererEvent, featureId: string) =>
+          cb(featureId)
         ipcRenderer.on("missionControl:integration:changed", listener)
         return () => {
           ipcRenderer.removeListener("missionControl:integration:changed", listener)
@@ -1064,18 +1064,18 @@ const api = {
     // Comms and seat sessions (plan 106.4). Read-only for agent threads; the
     // one write is Steer, an explicit message from user@rig.
     comms: {
-      list: (initiativeId: string) =>
-        ipcRenderer.invoke("missionControl:comms:list", initiativeId) as Promise<{
+      list: (featureId: string) =>
+        ipcRenderer.invoke("missionControl:comms:list", featureId) as Promise<{
           threads: SeatThread[]
           messages: SeatMessage[]
         }>,
-      seats: (initiativeId: string) =>
+      seats: (featureId: string) =>
         ipcRenderer.invoke(
           "missionControl:comms:seats",
-          initiativeId
+          featureId
         ) as Promise<SeatOverview[]>,
       steer: (input: {
-        initiativeId: string
+        featureId: string
         to: string
         body: string
         direct?: boolean
@@ -1103,10 +1103,10 @@ const api = {
           messageId,
           body
         ) as Promise<SeatMessage>,
-      // Fires with the initiative id whenever its mail or seat sessions change.
-      onChanged: (cb: (initiativeId: string) => void) => {
-        const listener = (_event: IpcRendererEvent, initiativeId: string) =>
-          cb(initiativeId)
+      // Fires with the feature id whenever its mail or seat sessions change.
+      onChanged: (cb: (featureId: string) => void) => {
+        const listener = (_event: IpcRendererEvent, featureId: string) =>
+          cb(featureId)
         ipcRenderer.on("missionControl:comms:changed", listener)
         return () =>
           ipcRenderer.removeListener("missionControl:comms:changed", listener)
@@ -1116,7 +1116,7 @@ const api = {
     drive: {
       start: (id: string, options: { mode: DriveMode; autoApplyPlan?: boolean }) =>
         ipcRenderer.invoke("missionControl:drive:start", id, options) as Promise<{
-          graph: InitiativeGraph
+          graph: FeatureGraph
           planningError: string | null
         }>,
       pause: (id: string, reason?: string) =>
@@ -1124,60 +1124,60 @@ const api = {
           "missionControl:drive:pause",
           id,
           reason
-        ) as Promise<InitiativeGraph>,
+        ) as Promise<FeatureGraph>,
       resume: (id: string) =>
-        ipcRenderer.invoke("missionControl:drive:resume", id) as Promise<InitiativeGraph>,
+        ipcRenderer.invoke("missionControl:drive:resume", id) as Promise<FeatureGraph>,
       cancel: (id: string) =>
-        ipcRenderer.invoke("missionControl:drive:cancel", id) as Promise<InitiativeGraph>,
-      // A completed initiative takes more missions: it reopens paused.
+        ipcRenderer.invoke("missionControl:drive:cancel", id) as Promise<FeatureGraph>,
+      // A completed feature takes more milestones: it reopens paused.
       reopen: (id: string) =>
-        ipcRenderer.invoke("missionControl:drive:reopen", id) as Promise<InitiativeGraph>,
+        ipcRenderer.invoke("missionControl:drive:reopen", id) as Promise<FeatureGraph>,
       setMode: (id: string, mode: DriveMode) =>
         ipcRenderer.invoke(
           "missionControl:drive:setMode",
           id,
           mode
-        ) as Promise<InitiativeGraph>,
+        ) as Promise<FeatureGraph>,
       setAutoApplyPlan: (id: string, value: boolean) =>
         ipcRenderer.invoke(
           "missionControl:drive:setAutoApplyPlan",
           id,
           value
-        ) as Promise<InitiativeGraph>,
+        ) as Promise<FeatureGraph>,
       // null removes a budget (back to its default).
       setBudgets: (id: string, patch: Record<string, number | null>) =>
         ipcRenderer.invoke(
           "missionControl:budgets:set",
           id,
           patch
-        ) as Promise<InitiativeGraph>,
+        ) as Promise<FeatureGraph>,
     },
     navigator: {
-      position: (initiativeId: string) =>
+      position: (featureId: string) =>
         ipcRenderer.invoke(
           "missionControl:navigator:position",
-          initiativeId
+          featureId
         ) as Promise<Position>,
-      ticks: (initiativeId: string, limit?: number) =>
+      ticks: (featureId: string, limit?: number) =>
         ipcRenderer.invoke(
           "missionControl:navigator:ticks",
-          initiativeId,
+          featureId,
           limit
         ) as Promise<NavigatorTick[]>,
-      // Fires with the initiative id after every recorded Navigator tick.
-      onChanged: (cb: (initiativeId: string) => void) => {
-        const listener = (_event: IpcRendererEvent, initiativeId: string) =>
-          cb(initiativeId)
+      // Fires with the feature id after every recorded Navigator tick.
+      onChanged: (cb: (featureId: string) => void) => {
+        const listener = (_event: IpcRendererEvent, featureId: string) =>
+          cb(featureId)
         ipcRenderer.on("missionControl:navigator:changed", listener)
         return () =>
           ipcRenderer.removeListener("missionControl:navigator:changed", listener)
       },
     },
     proposals: {
-      list: (initiativeId: string) =>
+      list: (featureId: string) =>
         ipcRenderer.invoke(
           "missionControl:proposals:list",
-          initiativeId
+          featureId
         ) as Promise<PlanProposal[]>,
       // `partial` applies the changes that still apply and skips the rest.
       apply: (id: string, options?: { partial?: boolean }) =>
@@ -1185,20 +1185,20 @@ const api = {
           "missionControl:proposals:apply",
           id,
           options
-        ) as Promise<InitiativeGraph>,
-      // The user's definition-of-done judgment for a mission.
-      judgeMission: (missionId: string, summary: string) =>
+        ) as Promise<FeatureGraph>,
+      // The user's definition-of-done judgment for a milestone.
+      judgeMilestone: (milestoneId: string, summary: string) =>
         ipcRenderer.invoke(
-          "missionControl:missions:judgeDone",
-          missionId,
+          "missionControl:milestones:judgeDone",
+          milestoneId,
           summary
-        ) as Promise<InitiativeGraph>,
+        ) as Promise<FeatureGraph>,
       reject: (id: string, note: string) =>
         ipcRenderer.invoke(
           "missionControl:proposals:reject",
           id,
           note
-        ) as Promise<InitiativeGraph>,
+        ) as Promise<FeatureGraph>,
     },
   },
   agents: {
@@ -2480,12 +2480,12 @@ export type {
   RigOversight,
   RigDiagnostic,
   RigDecisionRight,
-  Initiative,
-  InitiativeGraph,
-  Mission,
-  WorkSlice,
-  SliceEdge,
-  SliceSpec,
+  Feature,
+  FeatureGraph,
+  Milestone,
+  WorkUserStory,
+  UserStoryEdge,
+  UserStorySpec,
   WorkRevision,
   Playbook,
   PlaybookAltitude,
@@ -2496,13 +2496,13 @@ export type {
   PlaybookWithHooks,
   SeatBinding,
   SeatBindingsSnapshot,
-  SliceProof,
+  UserStoryProof,
   ProofCriterionStatus,
   MissionControlRunLink,
   MergePolicyMode,
   MergeQueueEntry,
   MergeQueueStatus,
-  MissionLanding,
+  MilestoneLanding,
   PhaseContextScope,
   SeatSession,
   SeatSessionStatus,
@@ -2512,8 +2512,8 @@ export type {
   SeatMessageKind,
   SeatMessageStatus,
   DriveMode,
-  InitiativeDrive,
-  MissionDodReview,
+  FeatureDrive,
+  MilestoneDodReview,
   NavigatorTick,
   NavigatorTickAction,
   PlanProposal,
@@ -2612,11 +2612,11 @@ export type { PickedElement } from "../main/browser/types"
 export type { GitDiffResult } from "../main/git/diff"
 export type { SeatOverview } from "../main/mission-control/sessions"
 export type {
-  MissionIntegrationStatus,
+  MilestoneIntegrationStatus,
   PolicyOption,
-  SliceWorkspaceInfo,
+  UserStoryWorkspaceInfo,
 } from "../main/mission-control/integration"
-export type { LandingSummary } from "../main/mission-control/mission-git"
+export type { LandingSummary } from "../main/mission-control/milestone-git"
 export type {
   GitAction,
   GitActionResult,

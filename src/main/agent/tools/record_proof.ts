@@ -1,10 +1,10 @@
 import { TOOL_EFFECTS, type Tool } from "./types"
 import { toolError } from "./output"
-import { recordSliceProof } from "../../mission-control/slice-runner"
+import { recordUserStoryProof } from "../../mission-control/user-story-runner"
 
-// record_proof (plan 106.3): the verifier seat of a Mission Control slice run
+// record_proof (plan 106.3): the verifier seat of a Mission Control user story run
 // records a structured proof with evidence per acceptance criterion. Offered
-// ONLY to a playbook's proof step. The slice, its criteria, the verifier seat,
+// ONLY to a playbook's proof step. The user story, its criteria, the verifier seat,
 // and the builders are all resolved server-side from ToolContext — the model
 // supplies findings, never identity. Independence, freeze-on-accept, and the
 // revision cap are enforced here, at the tool boundary.
@@ -15,7 +15,7 @@ export const recordProofTool: Tool = {
     function: {
       name: "record_proof",
       description:
-        "Record this slice's proof: one entry per acceptance criterion (ids AC-1, AC-2, … as " +
+        "Record this user story's proof: one entry per acceptance criterion (ids AC-1, AC-2, … as " +
         "listed in your objective), each with a status and concrete evidence, plus an overall " +
         'verdict. "accepted" requires every criterion met. An accepted proof is frozen; a ' +
         "rejected one may be revised a limited number of times. Call it once you have verified " +
@@ -67,9 +67,9 @@ export const recordProofTool: Tool = {
     if (!ctx.processRunId || !ctx.processPhaseRunId)
       return toolError(
         "unavailable",
-        "record_proof is only available inside a Mission Control slice run."
+        "record_proof is only available inside a Mission Control user story run."
       )
-    const result = recordSliceProof({
+    const result = recordUserStoryProof({
       processRunId: ctx.processRunId,
       processPhaseRunId: ctx.processPhaseRunId,
       args,

@@ -11,7 +11,7 @@ describe("filesOutsideHints", () => {
     ).toEqual(["src/api.ts"])
   })
 
-  it("reports nothing for a slice without hints", () => {
+  it("reports nothing for a user story without hints", () => {
     expect(filesOutsideHints(["anything.ts"], [])).toEqual([])
   })
 })

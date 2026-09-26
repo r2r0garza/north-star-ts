@@ -249,7 +249,7 @@ export interface FailureContext {
 // The workspace index (plan 008). Deterministic, incremental, resumable.
 
 // The stage a run has reached. Stages enrich cumulatively; `symbols`/`embeddings`
-// are schema-reserved (slice 1 builds file_map + metadata).
+// are schema-reserved (user story 1 builds file_map + metadata).
 export type IndexStage = "file_map" | "metadata" | "symbols" | "embeddings"
 
 // Indexing priority: North Star = high (prefer index before deep execution),
@@ -300,7 +300,7 @@ export interface IndexMetadata {
   updatedAt: number
 }
 
-// Stage 3: a symbol/import extracted from a file (unpopulated in slice 1).
+// Stage 3: a symbol/import extracted from a file (unpopulated in user story 1).
 export interface IndexSymbol {
   id: string
   workspaceId: string
@@ -607,7 +607,7 @@ export type ProcessRuntimeConfig = Partial<
 >
 
 export const RIG_DECISION_RIGHTS = [
-  "assign_slice",
+  "assign_user_story",
   "revise_plan",
   "accept_proof",
   "merge",
@@ -674,14 +674,14 @@ export interface RigDiagnostic {
   entityId?: string
 }
 
-export type InitiativeStatus =
+export type FeatureStatus =
   | "draft"
   | "active"
   | "paused"
   | "completed"
   | "cancelled"
   | "failed"
-export type MissionStatus =
+export type MilestoneStatus =
   | "planned"
   | "active"
   | "integrating"
@@ -689,7 +689,7 @@ export type MissionStatus =
   | "completed"
   | "cancelled"
   | "failed"
-export type SliceStatus =
+export type UserStoryStatus =
   | "draft"
   | "ready"
   | "blocked"
@@ -700,7 +700,7 @@ export type SliceStatus =
   | "failed"
   | "cancelled"
 
-export interface SliceSpec {
+export interface UserStorySpec {
   goal: string
   acceptance: string[]
   outOfScope: string[]
@@ -708,24 +708,24 @@ export interface SliceSpec {
   notes: string
 }
 
-// How the Navigator drives an initiative (plan 106.6): manual shows "next up"
+// How the Navigator drives a feature (plan 106.6): manual shows "next up"
 // only; copilot directs the lead seat, which acts through map tools; autopilot
 // dispatches mechanical steps itself and hands judgment to the lead.
 export type DriveMode = "manual" | "copilot" | "autopilot"
 
-export interface InitiativeDrive {
-  // Apply the initiative planning proposal without waiting for the user.
+export interface FeatureDrive {
+  // Apply the feature planning proposal without waiting for the user.
   autoApplyPlan: boolean
   // Wall-clock time spent driving (copilot/autopilot while active). Accrued in
   // small increments, so time the app was closed or asleep is never counted.
   activeMs: number
   accountedAt: number | null
-  // Why the initiative is paused, when it is.
+  // Why the feature is paused, when it is.
   pauseReason: string | null
   pausedBy: "user" | "budget" | null
 }
 
-export interface Initiative {
+export interface Feature {
   id: string
   key: string
   name: string
@@ -740,8 +740,8 @@ export interface Initiative {
   driveMode: DriveMode
   budgets: Record<string, unknown>
   // Navigator drive bookkeeping (plan 106.6).
-  drive: InitiativeDrive
-  status: InitiativeStatus
+  drive: FeatureDrive
+  status: FeatureStatus
   taskId: string | null
   createdAt: number
   updatedAt: number
@@ -749,25 +749,25 @@ export interface Initiative {
   finishedAt: number | null
 }
 
-export interface Mission {
+export interface Milestone {
   id: string
-  initiativeId: string
+  featureId: string
   key: string
   name: string
   outcome: string
   definitionOfDone: string
   playbookId: string | null
-  mergePolicy: MissionMergePolicy
+  mergePolicy: MilestoneMergePolicy
   integrationBranch: string | null
-  // Integration (plan 106.5): the user's branch and commit at mission start,
+  // Integration (plan 106.5): the user's branch and commit at milestone start,
   // and the repository the integration branch lives in.
   baseRef: string | null
   baseOid: string | null
   repoRoot: string | null
-  landing: MissionLanding | null
-  // The lead's judgment that the mission meets its definition of done (106.6).
-  dodReview: MissionDodReview | null
-  status: MissionStatus
+  landing: MilestoneLanding | null
+  // The lead's judgment that the milestone meets its definition of done (106.6).
+  dodReview: MilestoneDodReview | null
+  status: MilestoneStatus
   position: number
   startedAt: number | null
   finishedAt: number | null
@@ -775,22 +775,22 @@ export interface Mission {
 
 export type MergePolicyMode = "manual" | "local_merge" | "open_pr"
 
-export interface MissionDodReview {
+export interface MilestoneDodReview {
   by: string
   summary: string
   at: number
 }
 
-export interface MissionMergePolicy {
+export interface MilestoneMergePolicy {
   mode: MergePolicyMode
 }
 
-// How a mission's integration branch reached the base branch (plan 106.5).
-export interface MissionLanding {
+// How a milestone's integration branch reached the base branch (plan 106.5).
+export interface MilestoneLanding {
   mode: MergePolicyMode
-  // "user" = an explicit approval or "mark merged"; "detected" = Mission
+  // "user" = an explicit approval or "mark merged"; "detected" = Milestone
   // Control saw the integration head become reachable from the base branch.
-  // "navigator": the Navigator completed a mission with nothing to land after
+  // "navigator": the Navigator completed a milestone with nothing to land after
   // the lead's definition-of-done review (plan 106.6).
   completedBy: "user" | "detected" | "navigator"
   at: number
@@ -812,12 +812,12 @@ export type MergeQueueStatus =
 
 export interface MergeQueueEntry {
   id: string
-  missionId: string
-  sliceId: string
+  milestoneId: string
+  userStoryId: string
   playbookRunId: string | null
   status: MergeQueueStatus
   attempt: number
-  sliceHead: string | null
+  userStoryHead: string | null
   conflictFiles: string[]
   mergeCommit: string | null
   touchedFiles: string[]
@@ -836,16 +836,16 @@ export interface MergeQueueEntry {
   finishedAt: number | null
 }
 
-export interface WorkSlice {
+export interface WorkUserStory {
   id: string
-  missionId: string
+  milestoneId: string
   key: string
   title: string
-  spec: SliceSpec
+  spec: UserStorySpec
   proof: unknown | null
   podKey: string | null
   playbookId: string | null
-  status: SliceStatus
+  status: UserStoryStatus
   processRunId: string | null
   branch: string | null
   // The current attempt's worktree and the integration commit it started from.
@@ -858,17 +858,17 @@ export interface WorkSlice {
   finishedAt: number | null
 }
 
-export interface SliceEdge {
+export interface UserStoryEdge {
   id: string
-  missionId: string
-  fromSliceId: string
-  toSliceId: string
+  milestoneId: string
+  fromUserStoryId: string
+  toUserStoryId: string
 }
 
 export interface WorkRevision {
   id: string
-  initiativeId: string
-  targetKind: "initiative" | "mission" | "slice" | "edge"
+  featureId: string
+  targetKind: "feature" | "milestone" | "user_story" | "edge"
   targetId: string
   actor: string
   change: { op: string; before?: unknown; after?: unknown }
@@ -876,23 +876,23 @@ export interface WorkRevision {
   createdAt: number
 }
 
-export interface InitiativeGraph {
-  initiative: Initiative
-  missions: Mission[]
-  slices: WorkSlice[]
-  edges: SliceEdge[]
+export interface FeatureGraph {
+  feature: Feature
+  milestones: Milestone[]
+  userStories: WorkUserStory[]
+  edges: UserStoryEdge[]
   revisions: WorkRevision[]
   rigDrifted: boolean
 }
 
-export type PlaybookAltitude = "slice" | "mission" | "initiative"
+export type PlaybookAltitude = "user_story" | "milestone" | "feature"
 export type PlaybookHookName =
   | "run"
-  | "before_slices"
-  | "after_each_slice"
-  | "after_all_slices"
+  | "before_user_stories"
+  | "after_each_user_story"
+  | "after_all_user_stories"
   | "plan"
-  | "between_missions"
+  | "between_milestones"
   | "on_complete"
 
 export interface Playbook {
@@ -925,12 +925,12 @@ export interface PlaybookRun {
   id: string
   playbookId: string | null
   hook: PlaybookHookName
-  initiativeId: string
-  missionId: string | null
-  sliceId: string | null
+  featureId: string
+  milestoneId: string | null
+  userStoryId: string | null
   processRunId: string | null
   status: PlaybookRunStatus
-  proof: SliceProof | null
+  proof: UserStoryProof | null
   proofRevisions: number
   outcomeReason: string | null
   // Set when the run works in its own worktree rather than the workspace.
@@ -940,9 +940,9 @@ export interface PlaybookRun {
 }
 
 export interface MissionControlRunLink {
-  initiativeId: string
-  missionId: string | null
-  sliceId: string | null
+  featureId: string
+  milestoneId: string | null
+  userStoryId: string | null
   playbookRunId: string
   hook: PlaybookHookName
 }
@@ -958,7 +958,7 @@ export interface SeatBinding {
   agentName: string
   agentLabel: string
   charter: string
-  podMission: string
+  podMilestone: string
   podCulture: string
   decisionRights: RigDecisionRight[]
   skills: string[] | null
@@ -975,13 +975,13 @@ export interface SeatBindingsSnapshot {
   // Role → candidate seat addresses, in routing order.
   roles: Record<string, string[]>
   seats: Record<string, SeatBinding>
-  // Static Refocus intent chain (initiative → mission → slice).
+  // Static Refocus intent chain (feature → milestone → user story).
   intentChain: string
 }
 
 export type ProofCriterionStatus = "met" | "not_met" | "not_verifiable"
 
-export interface SliceProof {
+export interface UserStoryProof {
   version: 1
   criteria: Array<{
     id: string
@@ -1050,25 +1050,25 @@ export interface ProcessPhase {
   // Null = an ordinary agent phase.
   subprocessId: string | null
   // Mission Control proof step (plan 106.3): only this phase's worker is offered
-  // record_proof, and only inside a slice run. Ignored by legacy Processes.
+  // record_proof, and only inside a user story run. Ignored by legacy Processes.
   proofStep?: boolean
   // Mission Control (plan 106.4): how long a seat-role step's conversation
-  // lives. `step`: a new worker for this step (106.3). `slice`: one session per
-  // seat for this slice (or hook) run, shared by the seat's steps and mail,
-  // closed when the run ends. `initiative`: the seat's long-lived session,
-  // carried across slices. Ignored for agent-name phases and legacy Processes.
+  // lives. `step`: a new worker for this step (106.3). `user_story`: one session per
+  // seat for this user story (or hook) run, shared by the seat's steps and mail,
+  // closed when the run ends. `feature`: the seat's long-lived session,
+  // carried across user stories. Ignored for agent-name phases and legacy Processes.
   // Stored in process_phases.context_mode.
   contextScope?: PhaseContextScope
   runtimeConfig?: ProcessRuntimeConfig | null
   position: number
 }
 
-export type PhaseContextScope = "step" | "slice" | "initiative"
+export type PhaseContextScope = "step" | "user_story" | "feature"
 
 // tools/skills are tri-state JSON overrides: null = use the agent's own
 // definition; [] = none; [list] = exactly these (matches .agent.md frontmatter).
 // Exactly one of agentName / seatRole is set (repo-validated). A seat-role row
-// (plan 106.3) binds at run start against the initiative's rig snapshot.
+// (plan 106.3) binds at run start against the feature's rig snapshot.
 export interface ProcessPhaseAgent {
   id: string
   phaseId: string
@@ -1105,7 +1105,7 @@ export interface ProcessRun {
   objective: string | null
   // Short, LLM-generated display title summarizing the objective (like a
   // conversation's title). Null for pre-existing runs and until generation lands
-  // — the renderer falls back to an objective slice.
+  // — the renderer falls back to an objective user story.
   title: string | null
   // A NESTED run's caller (plan 038.1): the sub-process phase-run that started
   // this run. Null for a top-level run. Lets the monitor nest the child run under
@@ -1288,16 +1288,16 @@ export interface DashboardGraph {
 
 export type SeatSessionStatus = "idle" | "busy" | "rotated" | "closed"
 
-// initiative: the seat's long-lived session. slice: one session for one
-// playbook run (a slice attempt or a hook run), closed when the run ends.
-export type SeatSessionScope = "initiative" | "slice"
+// feature: the seat's long-lived session. user story: one session for one
+// playbook run (a user story attempt or a hook run), closed when the run ends.
+export type SeatSessionScope = "feature" | "user_story"
 
 export interface SeatSession {
   id: string
-  initiativeId: string
+  featureId: string
   seatAddress: string
   scope: SeatSessionScope
-  // The playbook run a slice session belongs to (null for initiative scope).
+  // The playbook run a user story session belongs to (null for feature scope).
   playbookRunId: string | null
   generation: number
   conversationId: string | null
@@ -1310,11 +1310,11 @@ export interface SeatSession {
   rotatedAt: number | null
 }
 
-export type SeatThreadAnchorKind = "slice" | "mission" | "proposal"
+export type SeatThreadAnchorKind = "user_story" | "milestone" | "proposal"
 
 export interface SeatThread {
   id: string
-  initiativeId: string
+  featureId: string
   anchorKind: SeatThreadAnchorKind | null
   anchorId: string | null
   subject: string
@@ -1339,7 +1339,7 @@ export type SeatMessageStatus =
 export interface SeatMessage {
   id: string
   threadId: string
-  initiativeId: string
+  featureId: string
   fromAddress: string
   toAddress: string
   inReplyTo: string | null
@@ -1364,9 +1364,9 @@ export interface SeatMessage {
 
 export interface PlanProposal {
   id: string
-  initiativeId: string
-  // The mission the change set was made against (the active one), if any.
-  missionId: string | null
+  featureId: string
+  // The milestone the change set was made against (the active one), if any.
+  milestoneId: string | null
   kind: ProposalKind
   changes: PlanChange[]
   // Seat address (or "navigator@rig") that proposed it.
@@ -1384,13 +1384,13 @@ export interface PlanProposal {
 
 export interface NavigatorTickAction {
   kind:
-    | "start_slice"
-    | "retry_slice"
+    | "start_user_story"
+    | "retry_user_story"
     | "run_hook"
     | "apply_plan"
-    | "advance_mission"
-    | "complete_mission"
-    | "complete_initiative"
+    | "advance_milestone"
+    | "complete_milestone"
+    | "complete_feature"
     | "kick_merges"
     | "auto_pause"
     | "direction"
@@ -1402,9 +1402,9 @@ export interface NavigatorTickAction {
 
 export interface NavigatorTick {
   id: string
-  initiativeId: string
+  featureId: string
   positionHash: string
-  // One line: where the initiative is and what is next.
+  // One line: where the feature is and what is next.
   summary: string
   actions: NavigatorTickAction[]
   decisionKeys: string[]
@@ -1414,8 +1414,8 @@ export interface NavigatorTick {
 }
 
 export interface NavigatorTickState {
-  missionId?: string | null
-  missionStatus?: string | null
-  // slice key → status, for the active mission.
-  slices?: Record<string, string>
+  milestoneId?: string | null
+  milestoneStatus?: string | null
+  // user story key → status, for the active milestone.
+  userStories?: Record<string, string>
 }

@@ -29,8 +29,8 @@ export function renderSeatContext(
     ...block("Seat charter", seat.charter),
     ...block("Rig culture", snapshot.rigCulture),
     ...block(
-      "Pod mission and culture",
-      [seat.podMission.trim(), seat.podCulture.trim()].filter(Boolean).join("\n\n")
+      "Pod milestone and culture",
+      [seat.podMilestone.trim(), seat.podCulture.trim()].filter(Boolean).join("\n\n")
     ),
     ...block("Intent chain (why this work exists)", snapshot.intentChain),
   ]

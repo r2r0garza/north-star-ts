@@ -21,12 +21,12 @@ export const CONTEXT_SCOPES: Record<
     badge: "fresh",
     help: "A new worker; nothing carries over.",
   },
-  slice: {
+  user_story: {
     label: "One per user story",
     badge: "per user story",
     help: "The seat's steps in one user story share a conversation; it closes when the user story ends.",
   },
-  initiative: {
+  feature: {
     label: "Long-lived",
     badge: "long-lived",
     help: "One conversation across the feature. Keeps context, and grows.",
@@ -40,17 +40,17 @@ const RECOMMENDED: Array<{
 }> = [
   {
     seat: "Builder",
-    scope: "slice",
+    scope: "user_story",
     why: "Spec and build share one mind, and replies to its questions land in the same conversation. Each new user story starts clean from its spec. A mistake stays in its user story, a retry doesn't repeat the failed approach, and user stories can safely run side by side.",
   },
   {
     seat: "QA",
-    scope: "slice",
+    scope: "user_story",
     why: "Each verification is independent: QA judges this user story against its spec, not against what it remembers the builder saying last time. It still sees the whole user story, including the builder's questions. Context stays small no matter how many user stories there are.",
   },
   {
     seat: "Lead",
-    scope: "initiative",
+    scope: "feature",
     why: "The lead's job is continuity: the plan, what it told whom, and earlier escalations. It also runs rarely (planning and review steps, escalations, your Steers), so its context grows slowly.",
   },
 ]
@@ -141,7 +141,7 @@ export function ContextScopeHelpButton() {
                 Long-lived conversations keep growing.
               </span>{" "}
               On a long feature, use <em>Rotate</em> in the Comms tab&apos;s
-              Seats panel now and then (for example, between missions). The new
+              Seats panel now and then (for example, between milestones). The new
               conversation starts with a short handoff instead of the full
               history.
             </p>

@@ -48,7 +48,7 @@ describe("allowedForSeatProfile", () => {
 
   // Plan 106.6: a Navigator direction wakes the lead to act on the plan.
   it("offers map tools to work and consult turns but not to answer-only ones", () => {
-    for (const name of ["map_status", "assign_slice", "revise_plan", "propose_plan"]) {
+    for (const name of ["map_status", "assign_user_story", "revise_plan", "propose_plan"]) {
       expect(allowedForSeatProfile(name, "work")).toBe(true)
       expect(allowedForSeatProfile(name, "consult")).toBe(true)
       expect(allowedForSeatProfile(name, "answer_only")).toBe(false)

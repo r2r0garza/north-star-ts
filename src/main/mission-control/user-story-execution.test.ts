@@ -64,7 +64,7 @@ vi.mock("../agent", () => ({
     let content = "done"
     if (msg.startsWith("# Review the")) content = '{"approved": true}'
     if (input.processProofStep && proofSubmissions.length) {
-      call.proofResult = recordSliceProof({
+      call.proofResult = recordUserStoryProof({
         processRunId: input.processRunId!,
         processPhaseRunId: input.processPhaseRunId!,
         args: proofSubmissions.shift()!,
@@ -110,16 +110,16 @@ vi.mock("../agent/agents/loader", () => ({
 
 import * as processes from "../db/repositories/processes"
 import * as rigs from "../db/repositories/rigs"
-import * as initiatives from "../db/repositories/initiatives"
+import * as features from "../db/repositories/features"
 import * as playbooks from "../db/repositories/playbooks"
 import { upsertWorkspace } from "../db/repositories/workspaces"
 import { ProcessService } from "../tasks/process/service"
 import { createDefaultPlaybook } from "./playbook-defaults"
 import {
-  SliceRunner,
-  recordSliceProof,
+  UserStoryRunner,
+  recordUserStoryProof,
   type RecordProofResult,
-} from "./slice-runner"
+} from "./user-story-runner"
 import { startHookRun } from "./hook-runner"
 import { installSeatSessions, SeatSessionService } from "./sessions"
 import * as seatSessionsRepo from "../db/repositories/seat-sessions"
@@ -143,12 +143,12 @@ const fakeRunner = {
 } as never
 
 let service: ProcessService
-let runner: SliceRunner
+let runner: UserStoryRunner
 const cancelledTasks: string[] = []
 
 function setup() {
   service = new ProcessService(fakeRunner)
-  runner = new SliceRunner({
+  runner = new UserStoryRunner({
     startProcessRun: (input) => service.startRun(input),
     cancelTask: (taskId) => cancelledTasks.push(taskId),
     loadAgents: async () => AGENTS as unknown as AgentDefinition[],
@@ -171,7 +171,7 @@ function orchestratedRig(options: { qaAgent?: string | null } = {}) {
     rigId: rig.id,
     key: "implementation",
     name: "Implementation",
-    missionStatement: "Ship working slices.",
+    missionStatement: "Ship working user stories.",
     cultureMd: "Pod culture: tests first.",
   })
   rigs.createSeat({
@@ -205,9 +205,9 @@ function orchestratedRig(options: { qaAgent?: string | null } = {}) {
   return rig
 }
 
-function billingInitiative(rigId: string) {
+function billingFeature(rigId: string) {
   const workspace = upsertWorkspace(tmpdir())
-  const graph = initiatives.createInitiative({
+  const graph = features.createFeature({
     key: "billing",
     name: "Billing",
     intent: "Customers can be invoiced.",
@@ -215,9 +215,9 @@ function billingInitiative(rigId: string) {
     rigId,
     workspaceId: workspace.id,
   })
-  const mission = graph.missions[0]
-  initiatives.createSlice({
-    missionId: mission.id,
+  const milestone = graph.milestones[0]
+  features.createUserStory({
+    milestoneId: milestone.id,
     key: "invoice-model",
     title: "Invoice model",
     spec: {
@@ -225,9 +225,9 @@ function billingInitiative(rigId: string) {
       acceptance: ["Invoice has line items", "Totals are computed"],
     },
   })
-  initiatives.startInitiative(graph.initiative.id)
-  const full = initiatives.getInitiativeGraph(graph.initiative.id)!
-  return { initiative: full.initiative, mission, slice: full.slices[0] }
+  features.startFeature(graph.feature.id)
+  const full = features.getFeatureGraph(graph.feature.id)!
+  return { feature: full.feature, milestone, userStory: full.userStories[0] }
 }
 
 async function drive(processRunId: string, signal = new AbortController().signal) {
@@ -260,14 +260,14 @@ beforeEach(() => {
   setup()
 })
 
-describe.skipIf(!sqliteLoads)("slice execution", () => {
-  it("runs spec → build → test with bound seats and marks the slice done on an accepted proof", async () => {
+describe.skipIf(!sqliteLoads)("user story execution", () => {
+  it("runs spec → build → test with bound seats and marks the user story done on an accepted proof", async () => {
     const rig = orchestratedRig()
-    const { slice } = billingInitiative(rig.id)
+    const { userStory } = billingFeature(rig.id)
     proofSubmissions.push(acceptedProof)
 
-    const playbookRun = await runner.startSlice(slice.id)
-    expect(initiatives.getSlice(slice.id)).toMatchObject({
+    const playbookRun = await runner.startUserStory(userStory.id)
+    expect(features.getUserStory(userStory.id)).toMatchObject({
       status: "running",
       attempts: 1,
     })
@@ -301,7 +301,7 @@ describe.skipIf(!sqliteLoads)("slice execution", () => {
       "qa@implementation",
     ])
 
-    const done = initiatives.getSlice(slice.id)!
+    const done = features.getUserStory(userStory.id)!
     expect(done.status).toBe("done")
     expect(done.proof).toMatchObject({
       verdict: "accepted",
@@ -313,8 +313,8 @@ describe.skipIf(!sqliteLoads)("slice execution", () => {
 
   it("fails before any worker starts when a playbook role is missing from the rig", async () => {
     const rig = orchestratedRig()
-    const { slice } = billingInitiative(rig.id)
-    const playbook = createDefaultPlaybook("slice")
+    const { userStory } = billingFeature(rig.id)
+    const playbook = createDefaultPlaybook("user_story")
     const graph = processes.getProcessGraph(
       playbook.hooks.find((h) => h.hook === "run")!.processId
     )!
@@ -324,13 +324,13 @@ describe.skipIf(!sqliteLoads)("slice execution", () => {
       position: 1,
     })
 
-    await expect(runner.startSlice(slice.id)).rejects.toThrow(
+    await expect(runner.startUserStory(userStory.id)).rejects.toThrow(
       /No seat has role "designer"/
     )
     expect(enqueued).toHaveLength(0)
     expect(loopCalls).toHaveLength(0)
-    expect(playbooks.listPlaybookRuns({ sliceId: slice.id })).toHaveLength(0)
-    expect(initiatives.getSlice(slice.id)).toMatchObject({
+    expect(playbooks.listPlaybookRuns({ userStoryId: userStory.id })).toHaveLength(0)
+    expect(features.getUserStory(userStory.id)).toMatchObject({
       status: "draft",
       attempts: 0,
     })
@@ -338,17 +338,17 @@ describe.skipIf(!sqliteLoads)("slice execution", () => {
 
   it("names a vacant seat instead of falling back to a default agent", async () => {
     const rig = orchestratedRig({ qaAgent: null })
-    const { slice } = billingInitiative(rig.id)
-    await expect(runner.startSlice(slice.id)).rejects.toThrow(
+    const { userStory } = billingFeature(rig.id)
+    await expect(runner.startUserStory(userStory.id)).rejects.toThrow(
       /qa@implementation is vacant/
     )
     expect(enqueued).toHaveLength(0)
   })
 
-  it("rejects a builder verifying its own slice and fails the slice without a proof", async () => {
+  it("rejects a builder verifying its own user story and fails the user story without a proof", async () => {
     const rig = orchestratedRig()
-    const { slice } = billingInitiative(rig.id)
-    const playbook = createDefaultPlaybook("slice")
+    const { userStory } = billingFeature(rig.id)
+    const playbook = createDefaultPlaybook("user_story")
     const graph = processes.getProcessGraph(
       playbook.hooks.find((h) => h.hook === "run")!.processId
     )!
@@ -358,7 +358,7 @@ describe.skipIf(!sqliteLoads)("slice execution", () => {
     processes.createPhaseAgent({ phaseId: test.id, seatRole: "builder", position: 0 })
     proofSubmissions.push(acceptedProof)
 
-    const playbookRun = await runner.startSlice(slice.id)
+    const playbookRun = await runner.startUserStory(userStory.id)
     await drive(playbookRun.processRunId!)
 
     const proofCall = loopCalls.find((c) => c.proofStep)!
@@ -368,8 +368,8 @@ describe.skipIf(!sqliteLoads)("slice execution", () => {
     })
     expect(
       (proofCall.proofResult as { message: string }).message
-    ).toMatch(/builder@implementation built this slice/)
-    expect(initiatives.getSlice(slice.id)!.status).toBe("failed")
+    ).toMatch(/builder@implementation built this user story/)
+    expect(features.getUserStory(userStory.id)!.status).toBe("failed")
     expect(playbooks.getPlaybookRun(playbookRun.id)).toMatchObject({
       status: "failed",
       outcomeReason: "The playbook finished without recording a proof.",
@@ -380,7 +380,7 @@ describe.skipIf(!sqliteLoads)("slice execution", () => {
   // after its Process run finishes, so a test can call record_proof directly.
   function unsettledRunner() {
     const detached = new ProcessService(fakeRunner)
-    const detachedRunner = new SliceRunner({
+    const detachedRunner = new UserStoryRunner({
       startProcessRun: (input) => detached.startRun(input),
       cancelTask: () => {},
       loadAgents: async () => AGENTS as unknown as AgentDefinition[],
@@ -405,13 +405,13 @@ describe.skipIf(!sqliteLoads)("slice execution", () => {
 
   it("freezes an accepted proof", async () => {
     const rig = orchestratedRig()
-    const { slice } = billingInitiative(rig.id)
+    const { userStory } = billingFeature(rig.id)
     proofSubmissions.push(acceptedProof)
     const { detachedRunner, driveDetached } = unsettledRunner()
-    const playbookRun = await detachedRunner.startSlice(slice.id)
+    const playbookRun = await detachedRunner.startUserStory(userStory.id)
     await driveDetached(playbookRun.processRunId!)
 
-    const again = recordSliceProof({
+    const again = recordUserStoryProof({
       processRunId: playbookRun.processRunId!,
       processPhaseRunId: qaPhaseRun(playbookRun.processRunId!).id,
       args: { ...acceptedProof, verdict: "rejected" },
@@ -422,9 +422,9 @@ describe.skipIf(!sqliteLoads)("slice execution", () => {
     })
   })
 
-  it("fails the slice with the last proof once rejected revisions are exhausted", async () => {
+  it("fails the user story with the last proof once rejected revisions are exhausted", async () => {
     const rig = orchestratedRig()
-    const { slice } = billingInitiative(rig.id)
+    const { userStory } = billingFeature(rig.id)
     const rejected = {
       verdict: "rejected",
       criteria: [
@@ -434,10 +434,10 @@ describe.skipIf(!sqliteLoads)("slice execution", () => {
     }
     proofSubmissions.push(rejected)
     const { detachedRunner, driveDetached } = unsettledRunner()
-    const playbookRun = await detachedRunner.startSlice(slice.id)
+    const playbookRun = await detachedRunner.startUserStory(userStory.id)
     await driveDetached(playbookRun.processRunId!)
     const record = () =>
-      recordSliceProof({
+      recordUserStoryProof({
         processRunId: playbookRun.processRunId!,
         processPhaseRunId: qaPhaseRun(playbookRun.processRunId!).id,
         args: rejected,
@@ -451,7 +451,7 @@ describe.skipIf(!sqliteLoads)("slice execution", () => {
     expect(playbooks.getPlaybookRun(playbookRun.id)!.proofRevisions).toBe(2)
 
     runner.reconcile()
-    expect(initiatives.getSlice(slice.id)).toMatchObject({
+    expect(features.getUserStory(userStory.id)).toMatchObject({
       status: "failed",
       proof: { verdict: "rejected" },
     })
@@ -459,7 +459,7 @@ describe.skipIf(!sqliteLoads)("slice execution", () => {
 
   it("rejects an accepted verdict while a criterion is not met", async () => {
     const rig = orchestratedRig()
-    const { slice } = billingInitiative(rig.id)
+    const { userStory } = billingFeature(rig.id)
     proofSubmissions.push({
       verdict: "accepted",
       criteria: [
@@ -467,7 +467,7 @@ describe.skipIf(!sqliteLoads)("slice execution", () => {
         { id: "AC-2", status: "not_met", evidence: "Totals ignore tax." },
       ],
     })
-    const playbookRun = await runner.startSlice(slice.id)
+    const playbookRun = await runner.startUserStory(userStory.id)
     await drive(playbookRun.processRunId!)
     expect(loopCalls.find((c) => c.proofStep)!.proofResult).toMatchObject({
       ok: false,
@@ -475,25 +475,25 @@ describe.skipIf(!sqliteLoads)("slice execution", () => {
     })
   })
 
-  it("applies the slice outcome exactly once across listener replays and boot reconcile", async () => {
+  it("applies the user story outcome exactly once across listener replays and boot reconcile", async () => {
     const rig = orchestratedRig()
-    const { slice } = billingInitiative(rig.id)
+    const { userStory } = billingFeature(rig.id)
     proofSubmissions.push(acceptedProof)
-    const playbookRun = await runner.startSlice(slice.id)
+    const playbookRun = await runner.startUserStory(userStory.id)
     await drive(playbookRun.processRunId!)
-    const revisionsBefore = initiatives.listRevisions(
-      initiatives.getMission(slice.missionId)!.initiativeId
+    const revisionsBefore = features.listRevisions(
+      features.getMilestone(userStory.milestoneId)!.featureId
     ).length
 
     runner.settle(playbookRun.processRunId!)
     runner.reconcile()
 
     expect(
-      initiatives.listRevisions(
-        initiatives.getMission(slice.missionId)!.initiativeId
+      features.listRevisions(
+        features.getMilestone(userStory.milestoneId)!.featureId
       )
     ).toHaveLength(revisionsBefore)
-    expect(initiatives.getSlice(slice.id)).toMatchObject({
+    expect(features.getUserStory(userStory.id)).toMatchObject({
       status: "done",
       attempts: 1,
     })
@@ -501,77 +501,77 @@ describe.skipIf(!sqliteLoads)("slice execution", () => {
 
   it("recovers an outcome at boot when the app stopped before settling", async () => {
     const rig = orchestratedRig()
-    const { slice } = billingInitiative(rig.id)
+    const { userStory } = billingFeature(rig.id)
     proofSubmissions.push(acceptedProof)
     // A runner the service never notifies models a crash between the run
     // finishing and its outcome being applied.
     const { detachedRunner, driveDetached } = unsettledRunner()
-    const playbookRun = await detachedRunner.startSlice(slice.id)
+    const playbookRun = await detachedRunner.startUserStory(userStory.id)
     await driveDetached(playbookRun.processRunId!)
-    expect(initiatives.getSlice(slice.id)!.status).toBe("proving")
+    expect(features.getUserStory(userStory.id)!.status).toBe("proving")
 
     runner.reconcile()
-    expect(initiatives.getSlice(slice.id)!.status).toBe("done")
+    expect(features.getUserStory(userStory.id)!.status).toBe("done")
   })
 
   it("allows one playbook run per workspace at a time", async () => {
     const rig = orchestratedRig()
-    const { slice, mission } = billingInitiative(rig.id)
-    initiatives.createSlice({
-      missionId: mission.id,
+    const { userStory, milestone } = billingFeature(rig.id)
+    features.createUserStory({
+      milestoneId: milestone.id,
       key: "invoice-api",
       title: "Invoice API",
       spec: { goal: "Expose invoices.", acceptance: ["GET /invoices works"] },
     })
-    const second = initiatives
-      .listSlices(mission.id)
+    const second = features
+      .listUserStories(milestone.id)
       .find((s) => s.key === "invoice-api")!
-    await runner.startSlice(slice.id)
-    await expect(runner.startSlice(second.id)).rejects.toThrow(
+    await runner.startUserStory(userStory.id)
+    await expect(runner.startUserStory(second.id)).rejects.toThrow(
       /user story invoice-model is still running/
     )
   })
 
-  it("cancels a parked run, keeps the slice retryable, and caps attempts", async () => {
+  it("cancels a parked run, keeps the user story retryable, and caps attempts", async () => {
     const rig = orchestratedRig()
-    const { slice, initiative } = billingInitiative(rig.id)
-    db.prepare("UPDATE initiatives SET budgets = ? WHERE id = ?").run(
-      JSON.stringify({ maxSliceAttempts: 2 }),
-      initiative.id
+    const { userStory, feature } = billingFeature(rig.id)
+    db.prepare("UPDATE features SET budgets = ? WHERE id = ?").run(
+      JSON.stringify({ maxUserStoryAttempts: 2 }),
+      feature.id
     )
-    const first = await runner.startSlice(slice.id)
-    runner.cancelSlice(slice.id)
+    const first = await runner.startUserStory(userStory.id)
+    runner.cancelUserStory(userStory.id)
     expect(cancelledTasks).toHaveLength(1)
     expect(playbooks.getPlaybookRun(first.id)!.status).toBe("cancelled")
     expect(processes.getProcessRun(first.processRunId!)!.status).toBe("cancelled")
-    expect(initiatives.getSlice(slice.id)!.status).toBe("failed")
+    expect(features.getUserStory(userStory.id)!.status).toBe("failed")
 
-    await runner.startSlice(slice.id)
-    runner.cancelSlice(slice.id)
-    expect(initiatives.getSlice(slice.id)!.attempts).toBe(2)
-    await expect(runner.startSlice(slice.id)).rejects.toThrow(/all 2 attempts/)
+    await runner.startUserStory(userStory.id)
+    runner.cancelUserStory(userStory.id)
+    expect(features.getUserStory(userStory.id)!.attempts).toBe(2)
+    await expect(runner.startUserStory(userStory.id)).rejects.toThrow(/all 2 attempts/)
   })
 
   it("refuses a proof step whose seat runs on a CLI provider before spending an attempt", async () => {
     const rig = orchestratedRig()
-    const { slice } = billingInitiative(rig.id)
-    const cliRunner = new SliceRunner({
+    const { userStory } = billingFeature(rig.id)
+    const cliRunner = new UserStoryRunner({
       startProcessRun: (input) => service.startRun(input),
       cancelTask: () => {},
       loadAgents: async () => AGENTS as unknown as AgentDefinition[],
       workerProvider: () => "claude_code",
     })
-    await expect(cliRunner.startSlice(slice.id)).rejects.toThrow(
+    await expect(cliRunner.startUserStory(userStory.id)).rejects.toThrow(
       /qa@implementation on Claude Code, which cannot record a proof/
     )
-    expect(initiatives.getSlice(slice.id)!.attempts).toBe(0)
+    expect(features.getUserStory(userStory.id)!.attempts).toBe(0)
     expect(enqueued).toHaveLength(0)
   })
 
   it("refuses to retry a Mission Control run from the Processes screen", async () => {
     const rig = orchestratedRig()
-    const { slice } = billingInitiative(rig.id)
-    const playbookRun = await runner.startSlice(slice.id)
+    const { userStory } = billingFeature(rig.id)
+    const playbookRun = await runner.startUserStory(userStory.id)
     processes.updateProcessRun(playbookRun.processRunId!, { status: "failed" })
     expect(() => service.restartRun(playbookRun.processRunId!)).toThrow(
       /Mission Control/
@@ -591,8 +591,8 @@ describe.skipIf(!sqliteLoads)("slice execution", () => {
       agentRefId: "agentref:v1:lead",
       agentLabel: "Agent lead",
     })
-    const { slice } = billingInitiative(rig.id)
-    const playbook = createDefaultPlaybook("slice")
+    const { userStory } = billingFeature(rig.id)
+    const playbook = createDefaultPlaybook("user_story")
     const graph = processes.getProcessGraph(
       playbook.hooks.find((h) => h.hook === "run")!.processId
     )!
@@ -601,7 +601,7 @@ describe.skipIf(!sqliteLoads)("slice execution", () => {
     routerReply = "builder-2@implementation"
     proofSubmissions.push(acceptedProof)
 
-    const playbookRun = await runner.startSlice(slice.id)
+    const playbookRun = await runner.startUserStory(userStory.id)
     await drive(playbookRun.processRunId!)
 
     const specRun = processes
@@ -611,18 +611,18 @@ describe.skipIf(!sqliteLoads)("slice execution", () => {
     expect(loopCalls[0].sectionContent).toContain("Second builder")
     // Both builders did build-type work only where they ran; the proof lists
     // exactly the seats that did.
-    expect(initiatives.getSlice(slice.id)!.proof).toMatchObject({
+    expect(features.getUserStory(userStory.id)!.proof).toMatchObject({
       builderAddresses: ["builder-2@implementation", "builder@implementation"],
     })
   })
 
-  it("runs a mission hook with the lead found through oversight", async () => {
+  it("runs a milestone hook with the lead found through oversight", async () => {
     const rig = orchestratedRig()
-    const { initiative, mission } = billingInitiative(rig.id)
+    const { feature, milestone } = billingFeature(rig.id)
     const playbookRun = await startHookRun(runner, {
-      initiativeId: initiative.id,
-      missionId: mission.id,
-      hook: "before_slices",
+      featureId: feature.id,
+      milestoneId: milestone.id,
+      hook: "before_user_stories",
     })
     await drive(playbookRun.processRunId!)
     expect(loopCalls.map((c) => c.agentName)).toEqual(["agentref:v1:lead"])
@@ -632,28 +632,28 @@ describe.skipIf(!sqliteLoads)("slice execution", () => {
 
     await expect(
       startHookRun(runner, {
-        initiativeId: initiative.id,
-        missionId: mission.id,
-        hook: "after_each_slice",
+        featureId: feature.id,
+        milestoneId: milestone.id,
+        hook: "after_each_user_story",
       })
     ).rejects.toThrow(/runs by itself when a user story's merge conflicts/)
   })
 
   describe("context scopes", () => {
-    async function runTwoSlices(qaScope?: "initiative") {
+    async function runTwoUserStories(qaScope?: "feature") {
       const rig = orchestratedRig()
-      const { initiative, mission, slice } = billingInitiative(rig.id)
-      const second = initiatives
-        .createSlice({
-          missionId: mission.id,
+      const { feature, milestone, userStory } = billingFeature(rig.id)
+      const second = features
+        .createUserStory({
+          milestoneId: milestone.id,
           key: "invoice-api",
           title: "Invoice API",
           spec: { goal: "Expose invoices.", acceptance: ["GET works", "POST works"] },
         })
-        .slices.find((s) => s.key === "invoice-api")!
-      const playbook = createDefaultPlaybook("slice")
-      initiatives.updateSlice(slice.id, { playbookId: playbook.id })
-      initiatives.updateSlice(second.id, { playbookId: playbook.id })
+        .userStories.find((s) => s.key === "invoice-api")!
+      const playbook = createDefaultPlaybook("user_story")
+      features.updateUserStory(userStory.id, { playbookId: playbook.id })
+      features.updateUserStory(second.id, { playbookId: playbook.id })
       if (qaScope) {
         const graph = processes.getProcessGraph(
           playbook.hooks.find((h) => h.hook === "run")!.processId
@@ -662,16 +662,16 @@ describe.skipIf(!sqliteLoads)("slice execution", () => {
         processes.updatePhase(test.id, { contextScope: qaScope })
       }
       const runIds: string[] = []
-      for (const id of [slice.id, second.id]) {
+      for (const id of [userStory.id, second.id]) {
         proofSubmissions.push(acceptedProof)
-        const playbookRun = await runner.startSlice(id)
+        const playbookRun = await runner.startUserStory(id)
         runIds.push(playbookRun.id)
         await drive(playbookRun.processRunId!)
-        expect(initiatives.getSlice(id)!.status).toBe("done")
+        expect(features.getUserStory(id)!.status).toBe("done")
       }
       const workers = loopCalls.filter((c) => !c.userMessage?.startsWith("# Review the"))
       return {
-        initiative,
+        feature,
         second,
         runIds,
         workers,
@@ -692,15 +692,15 @@ describe.skipIf(!sqliteLoads)("slice execution", () => {
       return () => installSeatSessions(null)
     })
 
-    it("gives builder and QA one session per slice by default", async () => {
-      const { initiative, second, runIds, workers, builder, qa } = await runTwoSlices()
+    it("gives builder and QA one session per user story by default", async () => {
+      const { feature, second, runIds, workers, builder, qa } = await runTwoUserStories()
       const sessionFor = (address: string, runId: string) =>
         seatSessionsRepo.listSeatSessions({
-          initiativeId: initiative.id,
+          featureId: feature.id,
           seatAddress: address,
           playbookRunId: runId,
         })[0]
-      // Spec and build share the builder's slice session; each slice gets its own.
+      // Spec and build share the builder's user story session; each user story gets its own.
       for (const [index, runId] of runIds.entries()) {
         const builderSession = sessionFor("builder@implementation", runId)
         expect(builder.slice(index * 2, index * 2 + 2).map((c) => c.conversationId)).toEqual([
@@ -715,27 +715,27 @@ describe.skipIf(!sqliteLoads)("slice execution", () => {
       expect(qa[0].conversationId).not.toBe(qa[1].conversationId)
       // No long-lived session was needed.
       expect(
-        seatSessionsRepo.listSeatSessions({ initiativeId: initiative.id, playbookRunId: null })
+        seatSessionsRepo.listSeatSessions({ featureId: feature.id, playbookRunId: null })
       ).toHaveLength(0)
-      // Every role-bound worker is a seat turn, anchored to its slice.
+      // Every role-bound worker is a seat turn, anchored to its user story.
       expect(workers.every((c) => c.seat?.profile === "work")).toBe(true)
-      expect(qa[1].seat?.anchor).toEqual({ kind: "slice", id: second.id })
+      expect(qa[1].seat?.anchor).toEqual({ kind: "user_story", id: second.id })
       expect(qa[1].sectionContent).toContain("## Mission Control Comms")
       // Each step's frozen result is its own turn's output.
-      const secondRun = playbooks.listPlaybookRuns({ sliceId: second.id })[0]
+      const secondRun = playbooks.listPlaybookRuns({ userStoryId: second.id })[0]
       const testRun = processes
         .listPhaseRuns({ runId: secondRun.processRunId! })
         .find((pr) => pr.seatAddress === "qa@implementation")!
       expect(testRun.resultContent).toBe("verified")
     })
 
-    it("keeps a long-lived QA session across slices when the step asks for it", async () => {
-      const { initiative, qa } = await runTwoSlices("initiative")
+    it("keeps a long-lived QA session across user stories when the step asks for it", async () => {
+      const { feature, qa } = await runTwoUserStories("feature")
       const session = seatSessionsRepo.getLiveSeatSession(
-        initiative.id,
+        feature.id,
         "qa@implementation"
       )!
-      expect(session.scope).toBe("initiative")
+      expect(session.scope).toBe("feature")
       expect(qa.map((c) => c.conversationId)).toEqual([
         session.conversationId,
         session.conversationId,

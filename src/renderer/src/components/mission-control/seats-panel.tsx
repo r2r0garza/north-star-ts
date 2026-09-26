@@ -7,7 +7,7 @@ import { formatRelativeTime } from "@/lib/utils"
 import type { SeatOverview, SeatSession } from "@/types"
 import type { TranscriptTarget } from "./seat-transcript-dialog"
 
-// The Seats side panel of Comms (plan 106.4): every seat on the initiative's
+// The Seats side panel of Comms (plan 106.4): every seat on the feature's
 // rig with its live session (idle/busy), generation, inbox depth, and last
 // activity. Rotate starts the next generation with a bounded handoff; older
 // generations stay readable.

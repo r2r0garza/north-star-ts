@@ -35,14 +35,14 @@ function errorMessage(error: unknown) {
 
 export function SteerDialog({
   open,
-  initiativeId,
+  featureId,
   seats,
   initialTarget,
   onOpenChange,
   onSent,
 }: {
   open: boolean
-  initiativeId: string
+  featureId: string
   seats: SeatOverview[]
   initialTarget?: string | null
   onOpenChange: (open: boolean) => void
@@ -75,7 +75,7 @@ export function SteerDialog({
     setSending(true)
     try {
       await window.cowork.missionControl.comms.steer({
-        initiativeId,
+        featureId,
         to,
         body,
         direct: direct || leads.length === 0,

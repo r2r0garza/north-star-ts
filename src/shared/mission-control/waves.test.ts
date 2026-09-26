@@ -9,9 +9,9 @@ import {
 
 const nodes = (ids: string[]) =>
   ids.map((id, position) => ({ id, position, status: "ready" }))
-const edge = (fromSliceId: string, toSliceId: string) => ({
-  fromSliceId,
-  toSliceId,
+const edge = (fromUserStoryId: string, toUserStoryId: string) => ({
+  fromUserStoryId,
+  toUserStoryId,
 })
 
 describe("Mission Control waves", () => {
@@ -49,7 +49,7 @@ describe("Mission Control waves", () => {
     expect(diamond.criticalPath.at(-1)).toBe("d")
   })
 
-  it("handles an empty mission and identifies ready slices", () => {
+  it("handles an empty milestone and identifies ready user stories", () => {
     expect(deriveWaves([], []).waves).toEqual([])
     const graph = nodes(["a", "b", "c"])
     graph[0].status = "done"

@@ -9,8 +9,8 @@ import type {
 import { resolveSeat, type ResolvedSeat } from "./seats"
 
 // Run-start seat resolution (plan 106.3, decision 2). Every seat role a
-// playbook uses is resolved against the initiative's rig SNAPSHOT, in the
-// slice's pod first, then up its oversight chain. The result is frozen onto the
+// playbook uses is resolved against the feature's rig SNAPSHOT, in the
+// user story's pod first, then up its oversight chain. The result is frozen onto the
 // run; workers never consult the live rig. A missing or unusable role fails the
 // run before any worker starts — there is no silent fallback to a default agent.
 
@@ -41,8 +41,8 @@ export function collectSeatRoles(
   return [...roles].sort()
 }
 
-// The pod a container executes in: the requested pod (the slice's own, else the
-// initiative default); with none requested, the first overseen pod (a working
+// The pod a container executes in: the requested pod (the user story's own, else the
+// feature default); with none requested, the first overseen pod (a working
 // pod rather than an orchestration pod), else the first pod.
 export function executionPod(
   rig: RigGraph,
@@ -88,7 +88,7 @@ export function toSeatBinding(
     agentName: resolved.agent.refId,
     agentLabel: resolved.label,
     charter: seat.charter,
-    podMission: pod.missionStatement,
+    podMilestone: pod.missionStatement,
     podCulture: pod.cultureMd,
     decisionRights: seat.decisionRights,
     skills: seat.skills,

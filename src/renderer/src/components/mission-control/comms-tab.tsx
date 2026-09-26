@@ -11,7 +11,7 @@ import {
 } from "@/components/ui/select"
 import { cn, formatRelativeTime } from "@/lib/utils"
 import type {
-  InitiativeGraph,
+  FeatureGraph,
   SeatMessage,
   SeatOverview,
   SeatThread,
@@ -24,30 +24,30 @@ import {
 import { SteerDialog } from "./steer-dialog"
 
 // Comms (plan 106.4): the observation deck for everything seats say to each
-// other on an initiative. Read-only for agent threads — no composer inside
+// other on a feature. Read-only for agent threads — no composer inside
 // them, no typing indicators, no reactions. The user's one write is Steer.
 
 const USER_ADDRESS = "user@rig"
 const PAGE = 200
 
-export function useComms(initiativeId: string) {
+export function useComms(featureId: string) {
   const [threads, setThreads] = useState<SeatThread[]>([])
   const [messages, setMessages] = useState<SeatMessage[]>([])
   const [seats, setSeats] = useState<SeatOverview[]>([])
   const reload = useCallback(async () => {
     const [feed, overview] = await Promise.all([
-      window.cowork.missionControl.comms.list(initiativeId),
-      window.cowork.missionControl.comms.seats(initiativeId),
+      window.cowork.missionControl.comms.list(featureId),
+      window.cowork.missionControl.comms.seats(featureId),
     ])
     setThreads(feed.threads)
     setMessages(feed.messages)
     setSeats(overview)
-  }, [initiativeId])
+  }, [featureId])
   useEffect(() => {
     void reload()
     let timer: ReturnType<typeof setTimeout> | undefined
     const off = window.cowork.missionControl.comms.onChanged((changed) => {
-      if (changed !== initiativeId) return
+      if (changed !== featureId) return
       clearTimeout(timer)
       timer = setTimeout(() => void reload(), 150)
     })
@@ -55,20 +55,20 @@ export function useComms(initiativeId: string) {
       off()
       clearTimeout(timer)
     }
-  }, [initiativeId, reload])
+  }, [featureId, reload])
   return { threads, messages, seats, reload }
 }
 
-type Anchor = { kind: "slice" | "mission"; id: string }
+type Anchor = { kind: "user_story" | "milestone"; id: string }
 
-function anchorLabel(graph: InitiativeGraph, thread: SeatThread): string | null {
-  if (thread.anchorKind === "slice") {
-    const slice = graph.slices.find((s) => s.id === thread.anchorId)
-    return slice ? `user story ${slice.key}` : "user story (deleted)"
+function anchorLabel(graph: FeatureGraph, thread: SeatThread): string | null {
+  if (thread.anchorKind === "user_story") {
+    const userStory = graph.userStories.find((s) => s.id === thread.anchorId)
+    return userStory ? `user story ${userStory.key}` : "user story (deleted)"
   }
-  if (thread.anchorKind === "mission") {
-    const mission = graph.missions.find((m) => m.id === thread.anchorId)
-    return mission ? `milestone ${mission.key}` : "milestone (deleted)"
+  if (thread.anchorKind === "milestone") {
+    const milestone = graph.milestones.find((m) => m.id === thread.anchorId)
+    return milestone ? `milestone ${milestone.key}` : "milestone (deleted)"
   }
   return null
 }
@@ -193,7 +193,7 @@ function ThreadGroup({
   onOpenAnchor,
   onOpenTranscript,
 }: {
-  graph: InitiativeGraph
+  graph: FeatureGraph
   thread: SeatThread
   messages: SeatMessage[]
   onOpenAnchor: (anchor: Anchor) => void
@@ -238,11 +238,11 @@ export function CommsTab({
   graph,
   onOpenAnchor,
 }: {
-  graph: InitiativeGraph
+  graph: FeatureGraph
   onOpenAnchor: (anchor: Anchor) => void
 }) {
-  const initiativeId = graph.initiative.id
-  const { threads, messages, seats, reload } = useComms(initiativeId)
+  const featureId = graph.feature.id
+  const { threads, messages, seats, reload } = useComms(featureId)
   const [pod, setPod] = useState("all")
   const [seat, setSeat] = useState("all")
   const [kind, setKind] = useState("all")
@@ -329,9 +329,9 @@ export function CommsTab({
     return [...keys].map((key) => {
       const [kindKey, id] = key.split(":")
       const label =
-        kindKey === "slice"
-          ? `user story ${graph.slices.find((s) => s.id === id)?.key ?? "(deleted)"}`
-          : `milestone ${graph.missions.find((m) => m.id === id)?.key ?? "(deleted)"}`
+        kindKey === "user_story"
+          ? `user story ${graph.userStories.find((s) => s.id === id)?.key ?? "(deleted)"}`
+          : `milestone ${graph.milestones.find((m) => m.id === id)?.key ?? "(deleted)"}`
       return { key, label }
     })
   }, [threads, graph])
@@ -341,7 +341,7 @@ export function CommsTab({
     setSteerOpen(true)
   }
 
-  const active = graph.initiative.status === "active"
+  const active = graph.feature.status === "active"
 
   return (
     <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_17rem]">
@@ -457,7 +457,7 @@ export function CommsTab({
       />
       <SteerDialog
         open={steerOpen}
-        initiativeId={initiativeId}
+        featureId={featureId}
         seats={seats}
         initialTarget={steerTarget}
         onOpenChange={setSteerOpen}
@@ -498,30 +498,30 @@ function FilterSelect({
   )
 }
 
-// A compact "Comms (n)" section for a slice or mission view: the threads
-// anchored to that work (a mission also includes its slices' threads).
+// A compact "Comms (n)" section for a user story or milestone view: the threads
+// anchored to that work (a milestone also includes its user stories' threads).
 export function AnchoredComms({
   graph,
   anchor,
 }: {
-  graph: InitiativeGraph
+  graph: FeatureGraph
   anchor: Anchor
 }) {
-  const { threads, messages } = useComms(graph.initiative.id)
+  const { threads, messages } = useComms(graph.feature.id)
   const [open, setOpen] = useState(false)
   const [transcript, setTranscript] = useState<TranscriptTarget | null>(null)
   const anchored = useMemo(() => {
     const ids = new Set([anchor.id])
-    if (anchor.kind === "mission")
-      for (const slice of graph.slices)
-        if (slice.missionId === anchor.id) ids.add(slice.id)
+    if (anchor.kind === "milestone")
+      for (const userStory of graph.userStories)
+        if (userStory.milestoneId === anchor.id) ids.add(userStory.id)
     const threadIds = new Set(
       threads
         .filter((thread) => thread.anchorId && ids.has(thread.anchorId))
         .map((thread) => thread.id)
     )
     return messages.filter((message) => threadIds.has(message.threadId))
-  }, [anchor, graph.slices, threads, messages])
+  }, [anchor, graph.userStories, threads, messages])
 
   return (
     <div className="rounded-md border">

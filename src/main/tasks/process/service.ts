@@ -40,7 +40,7 @@ import {
   seatTurns,
   type SeatTurnIdentity,
 } from "../../mission-control/seat-turns"
-import * as initiatives from "../../db/repositories/initiatives"
+import * as features from "../../db/repositories/features"
 import type { ContextSection } from "../../agent/context/context-builder"
 import type {
   Conversation,
@@ -96,7 +96,7 @@ export const PROCESS_RUN_KIND = "process_run"
 // objective above it already lists each criterion with its stable id.
 const PROOF_STEP_INSTRUCTION =
   "## Recording the proof\n" +
-  "You are this slice's verifier. Check every acceptance criterion yourself — " +
+  "You are this user story's verifier. Check every acceptance criterion yourself — " +
   "run the tests or commands, read the code — and then call `record_proof` exactly " +
   "once with one entry per criterion id (AC-1, AC-2, …) listed in the objective. " +
   "Each entry needs a status (met, not_met, or not_verifiable) and concrete evidence: " +
@@ -402,7 +402,7 @@ export class ProcessService {
     // a retry there is a NEW attempt (plan 106.3), never a resumed old run.
     if (run.missionControl)
       throw new Error(
-        "This run belongs to Mission Control. Retry it from the slice or hook there."
+        "This run belongs to Mission Control. Retry it from the user story or hook there."
       )
     const graph = processes.getProcessGraph(run.processId)
     if (!graph) return run
@@ -1142,7 +1142,7 @@ export class ProcessService {
           reworkNote,
         })
       const prompt =
-        phase.proofStep && this.missionControlRoot(run)?.missionControl?.sliceId
+        phase.proofStep && this.missionControlRoot(run)?.missionControl?.userStoryId
           ? `${basePrompt}\n\n${PROOF_STEP_INSTRUCTION}`
           : basePrompt
 
@@ -1197,20 +1197,20 @@ export class ProcessService {
       // Mission Control (plan 106.4): a role-bound worker is a seat turn. It
       // is busy on the rig while it runs (mail waits for its tool-round
       // boundaries). Its context scope picks the conversation: `step` forks a
-      // fresh worker, `slice` joins the seat's session for this playbook run,
-      // `initiative` joins its long-lived session. Fan-out children always run
+      // fresh worker, `user_story` joins the seat's session for this playbook run,
+      // `feature` joins its long-lived session. Fan-out children always run
       // fresh.
       const missionControl = this.missionControlRoot(run)?.missionControl
       const seatTurn: SeatTurnIdentity | null =
         seat && missionControl
           ? {
-              initiativeId: missionControl.initiativeId,
+              featureId: missionControl.featureId,
               address: seat.address,
               profile: "work",
-              anchor: missionControl.sliceId
-                ? { kind: "slice", id: missionControl.sliceId }
-                : missionControl.missionId
-                  ? { kind: "mission", id: missionControl.missionId }
+              anchor: missionControl.userStoryId
+                ? { kind: "user_story", id: missionControl.userStoryId }
+                : missionControl.milestoneId
+                  ? { kind: "milestone", id: missionControl.milestoneId }
                   : null,
               wakeHop: null,
             }
@@ -1224,9 +1224,9 @@ export class ProcessService {
         try {
           sessionConversation = getConversation(
             seatSessions!.sessionConversationForStep(
-              seatTurn!.initiativeId,
+              seatTurn!.featureId,
               seatTurn!.address,
-              scope === "slice" ? missionControl!.playbookRunId : null
+              scope === "user_story" ? missionControl!.playbookRunId : null
             )
           )
         } catch (err) {
@@ -1236,8 +1236,8 @@ export class ProcessService {
           }
         }
       }
-      const initiative = seatTurn
-        ? initiatives.getInitiative(seatTurn.initiativeId)
+      const feature = seatTurn
+        ? features.getFeature(seatTurn.featureId)
         : null
       const worker =
         existingWorker ??
@@ -1320,8 +1320,8 @@ export class ProcessService {
             : {}),
           extraContextSections: [
             ...(resolved.contextSections ?? []),
-            ...(seatTurn && initiative
-              ? [commsContextSection(initiative, seatTurn)]
+            ...(seatTurn && feature
+              ? [commsContextSection(feature, seatTurn)]
               : []),
           ],
           missionControlSeat: seatTurn ?? undefined,

@@ -5,22 +5,22 @@ import type { BudgetMeter } from "./budgets"
 // Given the same snapshot it always returns the same position, so the
 // Navigator can recompute it after any event or a restart and never needs
 // in-memory memory of where it was. It never calls a model: it says where the
-// initiative is, what the next mechanical step is, and which decisions only a
+// feature is, what the next mechanical step is, and which decisions only a
 // seat or the user can make.
 
 export type DriveMode = "manual" | "copilot" | "autopilot"
 export type HookName =
   | "plan"
-  | "between_missions"
+  | "between_milestones"
   | "on_complete"
-  | "before_slices"
-  | "after_each_slice"
-  | "after_all_slices"
+  | "before_user_stories"
+  | "after_each_user_story"
+  | "after_all_user_stories"
   | "run"
 
-export interface PositionSliceInput {
+export interface PositionUserStoryInput {
   id: string
-  missionId: string
+  milestoneId: string
   key: string
   title: string
   status: string
@@ -32,7 +32,7 @@ export interface PositionSliceInput {
   proofVerdict: "accepted" | "rejected" | null
 }
 
-export interface PositionMissionInput {
+export interface PositionMilestoneInput {
   id: string
   key: string
   name: string
@@ -42,38 +42,38 @@ export interface PositionMissionInput {
   mergePolicy: "manual" | "local_merge" | "open_pr"
   dodReviewed: boolean
   finishedAt?: number | null
-  // The hooks the mission's playbook defines.
+  // The hooks the milestone's playbook defines.
   hooks: HookName[]
 }
 
 export interface PositionRunInput {
   id: string
   hook: HookName
-  missionId: string | null
-  sliceId: string | null
+  milestoneId: string | null
+  userStoryId: string | null
   status: "running" | "completed" | "failed" | "cancelled"
-  // Runs in its own worktree (slice runs in a git workspace).
+  // Runs in its own worktree (user story runs in a git workspace).
   isolated: boolean
   createdAt: number
 }
 
 export interface PositionInput {
-  initiative: {
+  feature: {
     id: string
     status: string
     driveMode: DriveMode
-    // The hooks the initiative's playbook defines.
+    // The hooks the feature's playbook defines.
     hooks: HookName[]
     defaultPodKey: string | null
   }
-  missions: PositionMissionInput[]
-  slices: PositionSliceInput[]
-  edges: Array<{ missionId: string; fromSliceId: string; toSliceId: string }>
+  milestones: PositionMilestoneInput[]
+  userStories: PositionUserStoryInput[]
+  edges: Array<{ milestoneId: string; fromUserStoryId: string; toUserStoryId: string }>
   runs: PositionRunInput[]
   mergeQueue: Array<{
     id: string
-    sliceId: string
-    missionId: string
+    userStoryId: string
+    milestoneId: string
     status: string
     escalated: boolean
   }>
@@ -89,7 +89,7 @@ export interface PositionInput {
   pods: Array<{ key: string; builderSeats: number }>
   // The seat the Navigator directs: the driving pod's lead.
   lead: { address: string; rights: string[] } | null
-  limits: { maxConcurrentSlices: number; maxSliceAttempts: number }
+  limits: { maxConcurrentUserStories: number; maxUserStoryAttempts: number }
   budgets: BudgetMeter[]
 }
 
@@ -100,14 +100,14 @@ export type DecisionKind =
   | "escalation"
   | "hook_failed"
   | "hook_due"
-  | "mission_empty"
-  | "slice_unspecified"
-  | "slice_blocked"
-  | "slice_failed"
+  | "milestone_empty"
+  | "user_story_unspecified"
+  | "user_story_blocked"
+  | "user_story_failed"
   | "proof_rejected"
   | "merge_conflict"
-  | "mission_dod"
-  | "mission_landing"
+  | "milestone_dod"
+  | "milestone_landing"
   | "budget"
 
 export interface Decision {
@@ -123,19 +123,19 @@ export interface Decision {
 }
 
 export type DecisionAction =
-  | { kind: "run_hook"; hook: HookName; missionId: string | null }
-  | { kind: "judge_mission"; missionId: string }
-  | { kind: "open_mission"; missionId: string }
-  | { kind: "open_slice"; sliceId: string }
+  | { kind: "run_hook"; hook: HookName; milestoneId: string | null }
+  | { kind: "judge_milestone"; milestoneId: string }
+  | { kind: "open_milestone"; milestoneId: string }
+  | { kind: "open_user_story"; userStoryId: string }
   | { kind: "edit_budgets" }
 
 export interface HookRef {
   hook: HookName
-  missionId: string | null
+  milestoneId: string | null
   label: string
 }
 
-export interface SliceRef {
+export interface UserStoryRef {
   id: string
   key: string
   title: string
@@ -143,17 +143,17 @@ export interface SliceRef {
 }
 
 export interface Position {
-  initiative: {
+  feature: {
     id: string
     status: string
     driveMode: DriveMode
-    activeMissionId: string | null
+    activeMilestoneId: string | null
     nextHook: HookRef | null
     // A hook the Navigator is waiting on.
     runningHook: HookRef | null
     complete: boolean
   }
-  mission: {
+  milestone: {
     id: string
     key: string
     name: string
@@ -165,9 +165,9 @@ export interface Position {
     integrating: string[]
     done: string[]
     // Waiting on predecessors that are not merged yet.
-    waiting: Array<{ slice: string; on: string[] }>
-    blocked: Array<{ slice: string; reason: string }>
-    // Failed slices the Navigator may retry mechanically.
+    waiting: Array<{ userStory: string; on: string[] }>
+    blocked: Array<{ userStory: string; reason: string }>
+    // Failed user stories the Navigator may retry mechanically.
     retryable: string[]
     doneConditionMet: boolean
   } | null
@@ -178,41 +178,41 @@ export interface Position {
     reason: string | null
   }
   // What Autopilot would start now, in order, and why the rest wait.
-  dispatch: Array<{ slice: string; retry: boolean }>
-  deferred: Array<{ slice: string; reason: string }>
-  // Mechanical steps other than slices, in order.
+  dispatch: Array<{ userStory: string; retry: boolean }>
+  deferred: Array<{ userStory: string; reason: string }>
+  // Mechanical steps other than user stories, in order.
   maneuver: Maneuver
   budgets: BudgetMeter[]
   pendingDecisions: Decision[]
   lead: string | null
-  slices: Record<string, SliceRef>
+  userStories: Record<string, UserStoryRef>
 }
 
 export type Maneuver =
   | { kind: "run_hook"; hook: HookRef; text: string }
   | { kind: "dispatch"; text: string }
-  | { kind: "complete_mission"; missionId: string; text: string }
-  | { kind: "complete_initiative"; text: string }
+  | { kind: "complete_milestone"; milestoneId: string; text: string }
+  | { kind: "complete_feature"; text: string }
   | { kind: "wait"; text: string }
   | { kind: "decide"; text: string }
   | { kind: "idle"; text: string }
 
-const TERMINAL_MISSION = new Set(["completed", "cancelled"])
+const TERMINAL_MILESTONE = new Set(["completed", "cancelled"])
 const HOOK_LABEL: Record<string, string> = {
   plan: "planning",
-  between_missions: "release",
+  between_milestones: "release",
   on_complete: "completion",
-  before_slices: "milestone planning review",
-  after_all_slices: "milestone review",
-  after_each_slice: "conflict resolution",
+  before_user_stories: "milestone planning review",
+  after_all_user_stories: "milestone review",
+  after_each_user_story: "conflict resolution",
   run: "user story run",
 }
 
-function hookRef(hook: HookName, missionId: string | null, missionKey?: string): HookRef {
+function hookRef(hook: HookName, milestoneId: string | null, milestoneKey?: string): HookRef {
   return {
     hook,
-    missionId,
-    label: `${HOOK_LABEL[hook] ?? hook} hook${missionKey ? ` for ${missionKey}` : ""}`,
+    milestoneId,
+    label: `${HOOK_LABEL[hook] ?? hook} hook${milestoneKey ? ` for ${milestoneKey}` : ""}`,
   }
 }
 
@@ -220,17 +220,17 @@ function hookRef(hook: HookName, missionId: string | null, missionKey?: string):
 function hookState(
   runs: PositionRunInput[],
   hook: HookName,
-  missionId: string | null
+  milestoneId: string | null
 ): PositionRunInput["status"] | "none" {
   const latest = runs
-    .filter((run) => run.hook === hook && run.missionId === missionId && !run.sliceId)
+    .filter((run) => run.hook === hook && run.milestoneId === milestoneId && !run.userStoryId)
     .sort((a, b) => b.createdAt - a.createdAt)[0]
   return latest?.status ?? "none"
 }
 
 export function computePosition(input: PositionInput): Position {
-  const { initiative } = input
-  const manual = initiative.driveMode === "manual"
+  const { feature } = input
+  const manual = feature.driveMode === "manual"
   const leadRights = new Set(input.lead?.rights ?? [])
   // Who a judgment call goes to: the lead when it holds a right that lets it
   // act on the decision (and the drive isn't manual), else the user.
@@ -244,15 +244,15 @@ export function computePosition(input: PositionInput): Position {
     decisions.push({ ...d, action: d.action ?? defaultAction(d) })
   }
 
-  const sliceRefs: Record<string, SliceRef> = {}
-  for (const slice of input.slices)
-    sliceRefs[slice.id] = {
-      id: slice.id,
-      key: slice.key,
-      title: slice.title,
-      status: slice.status,
+  const userStoryRefs: Record<string, UserStoryRef> = {}
+  for (const userStory of input.userStories)
+    userStoryRefs[userStory.id] = {
+      id: userStory.id,
+      key: userStory.key,
+      title: userStory.title,
+      status: userStory.status,
     }
-  const keyOf = (id: string) => sliceRefs[id]?.key ?? id
+  const keyOf = (id: string) => userStoryRefs[id]?.key ?? id
 
   // ── waiting on the user regardless of where we are ──────────────────────
   for (const proposal of input.proposals)
@@ -272,11 +272,11 @@ export function computePosition(input: PositionInput): Position {
       summary: `Escalation from ${escalation.from}: ${escalation.subject}`,
     })
   for (const meter of input.budgets) {
-    if (meter.key === "maxConcurrentSlices" || meter.level === "ok" || meter.final) continue
-    if (meter.key === "maxSliceAttempts") continue // per slice, below
+    if (meter.key === "maxConcurrentUserStories" || meter.level === "ok" || meter.final) continue
+    if (meter.key === "maxUserStoryAttempts") continue // per user story, below
     const lead =
-      meter.key === "maxPlanRevisionsPerMission" ||
-      meter.key === "maxAgentSlicesPerMission"
+      meter.key === "maxPlanRevisionsPerMilestone" ||
+      meter.key === "maxAgentUserStoriesPerMilestone"
     decide({
       key: `budget:${meter.key}:${meter.level}`,
       kind: "budget",
@@ -286,66 +286,66 @@ export function computePosition(input: PositionInput): Position {
     })
   }
 
-  const missions = [...input.missions].sort((a, b) => a.position - b.position)
-  const liveSlices = (missionId: string) =>
-    input.slices.filter((s) => s.missionId === missionId && s.status !== "cancelled")
-  const anySlices = input.slices.some((s) => s.status !== "cancelled")
+  const milestones = [...input.milestones].sort((a, b) => a.position - b.position)
+  const liveUserStories = (milestoneId: string) =>
+    input.userStories.filter((s) => s.milestoneId === milestoneId && s.status !== "cancelled")
+  const anyUserStories = input.userStories.some((s) => s.status !== "cancelled")
   const running = input.runs.filter((run) => run.status === "running")
-  const runningHookRun = running.find((run) => !run.sliceId)
+  const runningHookRun = running.find((run) => !run.userStoryId)
   const runningHook = runningHookRun
     ? hookRef(
         runningHookRun.hook,
-        runningHookRun.missionId,
-        missions.find((m) => m.id === runningHookRun.missionId)?.key
+        runningHookRun.milestoneId,
+        milestones.find((m) => m.id === runningHookRun.milestoneId)?.key
       )
     : null
 
   const capacity = computeCapacity(input)
   const empty = {
-    initiative: {
-      id: initiative.id,
-      status: initiative.status,
-      driveMode: initiative.driveMode,
-      activeMissionId: null as string | null,
+    feature: {
+      id: feature.id,
+      status: feature.status,
+      driveMode: feature.driveMode,
+      activeMilestoneId: null as string | null,
       nextHook: null as HookRef | null,
       runningHook,
       complete: false,
     },
-    mission: null as Position["mission"],
+    milestone: null as Position["milestone"],
     capacity,
     dispatch: [] as Position["dispatch"],
     deferred: [] as Position["deferred"],
     budgets: input.budgets,
     pendingDecisions: decisions,
     lead: input.lead?.address ?? null,
-    slices: sliceRefs,
+    userStories: userStoryRefs,
   }
   const finish = (maneuver: Maneuver, extra: Partial<typeof empty> = {}): Position => {
     // Only Autopilot runs hooks itself; otherwise a due hook waits on the user.
-    if (maneuver.kind === "run_hook" && initiative.driveMode !== "autopilot")
+    if (maneuver.kind === "run_hook" && feature.driveMode !== "autopilot")
       decide({
-        key: `hook_due:${maneuver.hook.hook}:${maneuver.hook.missionId ?? ""}`,
+        key: `hook_due:${maneuver.hook.hook}:${maneuver.hook.milestoneId ?? ""}`,
         kind: "hook_due",
         owner: "user",
         target: { kind: "hook", id: maneuver.hook.hook },
         summary: `${maneuver.text}`,
-        action: { kind: "run_hook", hook: maneuver.hook.hook, missionId: maneuver.hook.missionId },
+        action: { kind: "run_hook", hook: maneuver.hook.hook, milestoneId: maneuver.hook.milestoneId },
       })
     const merged = { ...empty, ...extra }
     return { ...merged, maneuver, pendingDecisions: decisions }
   }
 
   // ── planning: nothing to work on yet ────────────────────────────────────
-  if (!anySlices) {
+  if (!anyUserStories) {
     const pendingPlan = input.proposals.some((p) => p.kind === "plan")
     if (pendingPlan)
       return finish({ kind: "decide", text: "Waiting for the planning proposal to be applied." })
-    if (!initiative.hooks.includes("plan")) {
+    if (!feature.hooks.includes("plan")) {
       decide({
         key: "no_plan",
         kind: "no_plan",
         owner: "user",
-        target: { kind: "initiative", id: initiative.id },
+        target: { kind: "feature", id: feature.id },
         summary: "There are no user stories to work on. Add user stories, or add a planning hook to the feature playbook.",
       })
       return finish({ kind: "decide", text: "Waiting for a plan: add milestones and user stories." })
@@ -360,7 +360,7 @@ export function computePosition(input: PositionInput): Position {
         owner: "user",
         target: { kind: "hook", id: "plan" },
         summary: "The planning hook failed. Run it again or write the plan by hand.",
-        action: { kind: "run_hook", hook: "plan", missionId: null },
+        action: { kind: "run_hook", hook: "plan", milestoneId: null },
       })
       return finish({ kind: "decide", text: "Planning failed." })
     }
@@ -369,29 +369,29 @@ export function computePosition(input: PositionInput): Position {
         key: "no_plan",
         kind: "no_plan",
         owner: "user",
-        target: { kind: "initiative", id: initiative.id },
+        target: { kind: "feature", id: feature.id },
         summary: "Planning finished without a proposal. Run it again or add user stories by hand.",
-        action: { kind: "run_hook", hook: "plan", missionId: null },
+        action: { kind: "run_hook", hook: "plan", milestoneId: null },
       })
       return finish({ kind: "decide", text: "Planning produced no plan." })
     }
     const hook = hookRef("plan", null)
     return finish(
       { kind: "run_hook", hook, text: "Run the planning hook." },
-      { initiative: { ...empty.initiative, nextHook: hook } }
+      { feature: { ...empty.feature, nextHook: hook } }
     )
   }
 
-  // ── the active mission: the first one not finished (missions run in order)
-  const activeIndex = missions.findIndex((m) => !TERMINAL_MISSION.has(m.status))
+  // ── the active milestone: the first one not finished (milestones run in order)
+  const activeIndex = milestones.findIndex((m) => !TERMINAL_MILESTONE.has(m.status))
   if (activeIndex < 0) {
-    // Everything finished: completion hook, then the initiative is done.
-    const last = missions.filter((m) => m.status === "completed").at(-1)
+    // Everything finished: completion hook, then the feature is done.
+    const last = milestones.filter((m) => m.status === "completed").at(-1)
     if (!last)
       return finish({ kind: "idle", text: "Every milestone was cancelled." })
-    if (initiative.hooks.includes("on_complete")) {
-      // A reopened initiative (more missions) earns its completion hook again:
-      // only a run after the last mission finished counts.
+    if (feature.hooks.includes("on_complete")) {
+      // A reopened feature (more milestones) earns its completion hook again:
+      // only a run after the last milestone finished counts.
       const since = last.finishedAt ?? 0
       const state = hookState(
         input.runs.filter((run) => run.hook !== "on_complete" || run.createdAt >= since),
@@ -407,7 +407,7 @@ export function computePosition(input: PositionInput): Position {
           owner: "user",
           target: { kind: "hook", id: "on_complete" },
           summary: "The completion hook failed. Run it again to finish the feature.",
-          action: { kind: "run_hook", hook: "on_complete", missionId: null },
+          action: { kind: "run_hook", hook: "on_complete", milestoneId: null },
         })
         return finish({ kind: "decide", text: "The completion hook failed." })
       }
@@ -415,96 +415,96 @@ export function computePosition(input: PositionInput): Position {
         const hook = hookRef("on_complete", null)
         return finish(
           { kind: "run_hook", hook, text: "Run the completion hook." },
-          { initiative: { ...empty.initiative, nextHook: hook } }
+          { feature: { ...empty.feature, nextHook: hook } }
         )
       }
     }
     return finish(
-      { kind: "complete_initiative", text: "Every milestone is complete." },
-      { initiative: { ...empty.initiative, complete: true } }
+      { kind: "complete_feature", text: "Every milestone is complete." },
+      { feature: { ...empty.feature, complete: true } }
     )
   }
-  const mission = missions[activeIndex]
-  const initiativeState = { ...empty.initiative, activeMissionId: mission.id }
+  const milestone = milestones[activeIndex]
+  const featureState = { ...empty.feature, activeMilestoneId: milestone.id }
 
-  // Release for the previous mission before the next one starts.
-  const previous = missions
+  // Release for the previous milestone before the next one starts.
+  const previous = milestones
     .slice(0, activeIndex)
     .filter((m) => m.status === "completed")
     .at(-1)
   if (
     previous &&
-    mission.status === "planned" &&
-    initiative.hooks.includes("between_missions")
+    milestone.status === "planned" &&
+    feature.hooks.includes("between_milestones")
   ) {
-    const state = hookState(input.runs, "between_missions", previous.id)
+    const state = hookState(input.runs, "between_milestones", previous.id)
     if (state === "running")
       return finish(
         { kind: "wait", text: `The release hook for ${previous.key} is running.` },
-        { initiative: initiativeState }
+        { feature: featureState }
       )
     if (state === "failed") {
       decide({
-        key: `hook_failed:between_missions:${previous.id}`,
+        key: `hook_failed:between_milestones:${previous.id}`,
         kind: "hook_failed",
         owner: "user",
-        target: { kind: "mission", id: previous.id },
-        summary: `The release hook for ${previous.key} failed. Run it again, or start ${mission.key} yourself.`,
-        action: { kind: "run_hook", hook: "between_missions", missionId: previous.id },
+        target: { kind: "milestone", id: previous.id },
+        summary: `The release hook for ${previous.key} failed. Run it again, or start ${milestone.key} yourself.`,
+        action: { kind: "run_hook", hook: "between_milestones", milestoneId: previous.id },
       })
       return finish(
         { kind: "decide", text: `The release for ${previous.key} failed.` },
-        { initiative: initiativeState }
+        { feature: featureState }
       )
     }
     if (state === "none") {
-      const hook = hookRef("between_missions", previous.id, previous.key)
+      const hook = hookRef("between_milestones", previous.id, previous.key)
       return finish(
         { kind: "run_hook", hook, text: `Run the release hook for ${previous.key}.` },
-        { initiative: { ...initiativeState, nextHook: hook } }
+        { feature: { ...featureState, nextHook: hook } }
       )
     }
   }
 
-  const slices = liveSlices(mission.id)
-  const allMissionSlices = input.slices.filter((s) => s.missionId === mission.id)
-  const edges = input.edges.filter((e) => e.missionId === mission.id)
+  const userStories = liveUserStories(milestone.id)
+  const allMilestoneUserStories = input.userStories.filter((s) => s.milestoneId === milestone.id)
+  const edges = input.edges.filter((e) => e.milestoneId === milestone.id)
   let waves: string[][] = []
   let criticalPath: string[] = []
   try {
-    const all = deriveWaves(allMissionSlices, edges)
+    const all = deriveWaves(allMilestoneUserStories, edges)
     waves = all.waves.map((wave) => wave.map((s) => s.id))
-    criticalPath = deriveWaves(slices, edges).criticalPath
+    criticalPath = deriveWaves(userStories, edges).criticalPath
   } catch {
     // A cyclic graph can't be stored, but stay total if one is read mid-edit.
   }
 
-  const byId = new Map(allMissionSlices.map((s) => [s.id, s]))
+  const byId = new Map(allMilestoneUserStories.map((s) => [s.id, s]))
   const predecessors = (id: string) =>
-    edges.filter((e) => e.toSliceId === id).map((e) => e.fromSliceId)
+    edges.filter((e) => e.toUserStoryId === id).map((e) => e.fromUserStoryId)
   const ready: string[] = []
-  const runningSlices: string[] = []
+  const runningUserStories: string[] = []
   const integrating: string[] = []
   const done: string[] = []
-  const waiting: Array<{ slice: string; on: string[] }> = []
-  const blocked: Array<{ slice: string; reason: string }> = []
+  const waiting: Array<{ userStory: string; on: string[] }> = []
+  const blocked: Array<{ userStory: string; reason: string }> = []
   const retryable: string[] = []
-  const soft = Math.max(1, Math.floor(input.limits.maxSliceAttempts * 0.8))
+  const soft = Math.max(1, Math.floor(input.limits.maxUserStoryAttempts * 0.8))
 
-  for (const slice of [...allMissionSlices].sort((a, b) => a.position - b.position)) {
-    const preds = predecessors(slice.id).map((id) => byId.get(id)).filter(Boolean) as PositionSliceInput[]
+  for (const userStory of [...allMilestoneUserStories].sort((a, b) => a.position - b.position)) {
+    const preds = predecessors(userStory.id).map((id) => byId.get(id)).filter(Boolean) as PositionUserStoryInput[]
     const cancelledPred = preds.find((p) => p.status === "cancelled")
     const unmet = preds.filter((p) => p.status !== "done")
-    switch (slice.status) {
+    switch (userStory.status) {
       case "running":
       case "proving":
-        runningSlices.push(slice.id)
+        runningUserStories.push(userStory.id)
         break
       case "integrating":
-        integrating.push(slice.id)
+        integrating.push(userStory.id)
         break
       case "done":
-        done.push(slice.id)
+        done.push(userStory.id)
         break
       case "cancelled":
         break
@@ -512,95 +512,95 @@ export function computePosition(input: PositionInput): Position {
         const reason = cancelledPred
           ? `depends on cancelled user story ${cancelledPred.key}`
           : "blocked"
-        blocked.push({ slice: slice.id, reason })
+        blocked.push({ userStory: userStory.id, reason })
         decide({
-          key: `slice_blocked:${slice.id}`,
-          kind: "slice_blocked",
+          key: `user_story_blocked:${userStory.id}`,
+          kind: "user_story_blocked",
           owner: ownerFor("revise_plan"),
-          target: { kind: "slice", id: slice.id },
-          summary: `User story ${slice.key} is blocked: ${reason}. Remove the dependency, cancel it, or replace the work.`,
+          target: { kind: "user_story", id: userStory.id },
+          summary: `User story ${userStory.key} is blocked: ${reason}. Remove the dependency, cancel it, or replace the work.`,
         })
         break
       }
       case "failed": {
-        if (slice.attempts >= input.limits.maxSliceAttempts) {
+        if (userStory.attempts >= input.limits.maxUserStoryAttempts) {
           decide({
-            key: `slice_failed:${slice.id}:${slice.attempts}`,
-            kind: "slice_failed",
-            owner: ownerFor("revise_plan", "assign_slice"),
-            target: { kind: "slice", id: slice.id },
-            summary: `User story ${slice.key} failed and used all ${input.limits.maxSliceAttempts} attempts. Split it, cancel it, or ask the user for more attempts.`,
+            key: `user_story_failed:${userStory.id}:${userStory.attempts}`,
+            kind: "user_story_failed",
+            owner: ownerFor("revise_plan", "assign_user_story"),
+            target: { kind: "user_story", id: userStory.id },
+            summary: `User story ${userStory.key} failed and used all ${input.limits.maxUserStoryAttempts} attempts. Split it, cancel it, or ask the user for more attempts.`,
           })
-        } else if (slice.proofVerdict === "rejected") {
+        } else if (userStory.proofVerdict === "rejected") {
           decide({
-            key: `proof_rejected:${slice.id}:${slice.attempts}`,
+            key: `proof_rejected:${userStory.id}:${userStory.attempts}`,
             kind: "proof_rejected",
-            owner: ownerFor("assign_slice", "revise_plan"),
-            target: { kind: "slice", id: slice.id },
-            summary: `User story ${slice.key}'s proof was rejected on attempt ${slice.attempts}. Retry it with a note, revise it, or cancel it.`,
+            owner: ownerFor("assign_user_story", "revise_plan"),
+            target: { kind: "user_story", id: userStory.id },
+            summary: `User story ${userStory.key}'s proof was rejected on attempt ${userStory.attempts}. Retry it with a note, revise it, or cancel it.`,
           })
-        } else if (slice.attempts >= soft) {
+        } else if (userStory.attempts >= soft) {
           decide({
-            key: `slice_failed:${slice.id}:${slice.attempts}`,
-            kind: "slice_failed",
-            owner: ownerFor("assign_slice", "revise_plan"),
-            target: { kind: "slice", id: slice.id },
-            summary: `User story ${slice.key} failed on attempt ${slice.attempts} of ${input.limits.maxSliceAttempts}. Retry it with a note, or revise the plan.`,
+            key: `user_story_failed:${userStory.id}:${userStory.attempts}`,
+            kind: "user_story_failed",
+            owner: ownerFor("assign_user_story", "revise_plan"),
+            target: { kind: "user_story", id: userStory.id },
+            summary: `User story ${userStory.key} failed on attempt ${userStory.attempts} of ${input.limits.maxUserStoryAttempts}. Retry it with a note, or revise the plan.`,
           })
-        } else if (!unmet.length) retryable.push(slice.id)
+        } else if (!unmet.length) retryable.push(userStory.id)
         break
       }
       default: {
         // draft / ready: runnable once every predecessor has merged.
         if (cancelledPred) {
           blocked.push({
-            slice: slice.id,
+            userStory: userStory.id,
             reason: `depends on cancelled user story ${cancelledPred.key}`,
           })
           decide({
-            key: `slice_blocked:${slice.id}`,
-            kind: "slice_blocked",
+            key: `user_story_blocked:${userStory.id}`,
+            kind: "user_story_blocked",
             owner: ownerFor("revise_plan"),
-            target: { kind: "slice", id: slice.id },
-            summary: `User story ${slice.key} depends on cancelled user story ${cancelledPred.key}.`,
+            target: { kind: "user_story", id: userStory.id },
+            summary: `User story ${userStory.key} depends on cancelled user story ${cancelledPred.key}.`,
           })
         } else if (unmet.length) {
-          waiting.push({ slice: slice.id, on: unmet.map((p) => p.id) })
-        } else if (slice.acceptanceCount === 0) {
-          blocked.push({ slice: slice.id, reason: "has no acceptance criteria" })
+          waiting.push({ userStory: userStory.id, on: unmet.map((p) => p.id) })
+        } else if (userStory.acceptanceCount === 0) {
+          blocked.push({ userStory: userStory.id, reason: "has no acceptance criteria" })
           decide({
-            key: `slice_unspecified:${slice.id}`,
-            kind: "slice_unspecified",
+            key: `user_story_unspecified:${userStory.id}`,
+            kind: "user_story_unspecified",
             owner: ownerFor("revise_plan"),
-            target: { kind: "slice", id: slice.id },
-            summary: `User story ${slice.key} has no acceptance criteria, so it can't be proven. Add criteria before it runs.`,
+            target: { kind: "user_story", id: userStory.id },
+            summary: `User story ${userStory.key} has no acceptance criteria, so it can't be proven. Add criteria before it runs.`,
           })
-        } else ready.push(slice.id)
+        } else ready.push(userStory.id)
       }
     }
   }
 
   for (const entry of input.mergeQueue)
-    if (entry.missionId === mission.id && entry.status === "conflict" && entry.escalated)
+    if (entry.milestoneId === milestone.id && entry.status === "conflict" && entry.escalated)
       decide({
         key: `merge_conflict:${entry.id}`,
         kind: "merge_conflict",
         owner: "user",
-        target: { kind: "slice", id: entry.sliceId },
-        summary: `User story ${keyOf(entry.sliceId)}'s merge conflict needs you: retry, run the integrator, or abandon it.`,
+        target: { kind: "user_story", id: entry.userStoryId },
+        summary: `User story ${keyOf(entry.userStoryId)}'s merge conflict needs you: retry, run the integrator, or abandon it.`,
       })
 
   const allSettled =
-    slices.length > 0 && slices.every((s) => s.status === "done")
-  const missionState: NonNullable<Position["mission"]> = {
-    id: mission.id,
-    key: mission.key,
-    name: mission.name,
-    status: mission.status,
+    userStories.length > 0 && userStories.every((s) => s.status === "done")
+  const milestoneState: NonNullable<Position["milestone"]> = {
+    id: milestone.id,
+    key: milestone.key,
+    name: milestone.name,
+    status: milestone.status,
     waves,
     criticalPath,
     ready,
-    running: runningSlices,
+    running: runningUserStories,
     integrating,
     done,
     waiting,
@@ -608,112 +608,112 @@ export function computePosition(input: PositionInput): Position {
     retryable,
     doneConditionMet: false,
   }
-  const withMission = (
+  const withMilestone = (
     maneuver: Maneuver,
     extra: { nextHook?: HookRef | null; dispatch?: Position["dispatch"]; deferred?: Position["deferred"] } = {}
   ) =>
     finish(maneuver, {
-      initiative: { ...initiativeState, nextHook: extra.nextHook ?? null },
-      mission: missionState,
+      feature: { ...featureState, nextHook: extra.nextHook ?? null },
+      milestone: milestoneState,
       dispatch: extra.dispatch ?? [],
       deferred: extra.deferred ?? [],
     })
 
-  if (!slices.length) {
+  if (!userStories.length) {
     decide({
-      key: `mission_empty:${mission.id}`,
-      kind: "mission_empty",
+      key: `milestone_empty:${milestone.id}`,
+      kind: "milestone_empty",
       owner: ownerFor("revise_plan"),
-      target: { kind: "mission", id: mission.id },
-      summary: `Milestone ${mission.key} has no user stories. Add or propose user stories for it.`,
+      target: { kind: "milestone", id: milestone.id },
+      summary: `Milestone ${milestone.key} has no user stories. Add or propose user stories for it.`,
     })
-    return withMission({ kind: "decide", text: `Milestone ${mission.key} has no user stories yet.` })
+    return withMilestone({ kind: "decide", text: `Milestone ${milestone.key} has no user stories yet.` })
   }
 
-  // Review the slice set before the first slice starts.
-  if (mission.status === "planned" && mission.hooks.includes("before_slices")) {
-    const state = hookState(input.runs, "before_slices", mission.id)
+  // Review the user story set before the first user story starts.
+  if (milestone.status === "planned" && milestone.hooks.includes("before_user_stories")) {
+    const state = hookState(input.runs, "before_user_stories", milestone.id)
     if (state === "running")
-      return withMission({ kind: "wait", text: `The planning review for ${mission.key} is running.` })
+      return withMilestone({ kind: "wait", text: `The planning review for ${milestone.key} is running.` })
     if (state === "failed") {
       decide({
-        key: `hook_failed:before_slices:${mission.id}`,
+        key: `hook_failed:before_user_stories:${milestone.id}`,
         kind: "hook_failed",
         owner: "user",
-        target: { kind: "mission", id: mission.id },
-        summary: `The planning review for ${mission.key} failed. Run it again, or start its user stories yourself.`,
-        action: { kind: "run_hook", hook: "before_slices", missionId: mission.id },
+        target: { kind: "milestone", id: milestone.id },
+        summary: `The planning review for ${milestone.key} failed. Run it again, or start its user stories yourself.`,
+        action: { kind: "run_hook", hook: "before_user_stories", milestoneId: milestone.id },
       })
-      return withMission({ kind: "decide", text: `The planning review for ${mission.key} failed.` })
+      return withMilestone({ kind: "decide", text: `The planning review for ${milestone.key} failed.` })
     }
     if (state === "none") {
-      const hook = hookRef("before_slices", mission.id, mission.key)
-      return withMission(
-        { kind: "run_hook", hook, text: `Run the planning review for ${mission.key}.` },
+      const hook = hookRef("before_user_stories", milestone.id, milestone.key)
+      return withMilestone(
+        { kind: "run_hook", hook, text: `Run the planning review for ${milestone.key}.` },
         { nextHook: hook }
       )
     }
   }
 
-  // ── the mission's work is merged: review, judgment, landing ─────────────
-  if (allSettled && ["review", "active", "integrating"].includes(mission.status)) {
-    if (mission.hooks.includes("after_all_slices")) {
-      const state = hookState(input.runs, "after_all_slices", mission.id)
+  // ── the milestone's work is merged: review, judgment, landing ─────────────
+  if (allSettled && ["review", "active", "integrating"].includes(milestone.status)) {
+    if (milestone.hooks.includes("after_all_user_stories")) {
+      const state = hookState(input.runs, "after_all_user_stories", milestone.id)
       if (state === "running")
-        return withMission({ kind: "wait", text: `The milestone review for ${mission.key} is running.` })
+        return withMilestone({ kind: "wait", text: `The milestone review for ${milestone.key} is running.` })
       if (state === "failed") {
         decide({
-          key: `hook_failed:after_all_slices:${mission.id}`,
+          key: `hook_failed:after_all_user_stories:${milestone.id}`,
           kind: "hook_failed",
           owner: "user",
-          target: { kind: "mission", id: mission.id },
-          summary: `The milestone review for ${mission.key} failed. Run it again.`,
-          action: { kind: "run_hook", hook: "after_all_slices", missionId: mission.id },
+          target: { kind: "milestone", id: milestone.id },
+          summary: `The milestone review for ${milestone.key} failed. Run it again.`,
+          action: { kind: "run_hook", hook: "after_all_user_stories", milestoneId: milestone.id },
         })
-        return withMission({ kind: "decide", text: `The milestone review for ${mission.key} failed.` })
+        return withMilestone({ kind: "decide", text: `The milestone review for ${milestone.key} failed.` })
       }
-      if (state === "none" && mission.status === "review") {
-        const hook = hookRef("after_all_slices", mission.id, mission.key)
-        return withMission(
-          { kind: "run_hook", hook, text: `Run the milestone review for ${mission.key}.` },
+      if (state === "none" && milestone.status === "review") {
+        const hook = hookRef("after_all_user_stories", milestone.id, milestone.key)
+        return withMilestone(
+          { kind: "run_hook", hook, text: `Run the milestone review for ${milestone.key}.` },
           { nextHook: hook }
         )
       }
     }
-    if (mission.status !== "review")
-      return withMission({ kind: "wait", text: `Every user story in ${mission.key} is done; the milestone is moving to review.` })
-    if (!mission.dodReviewed && !manual) {
+    if (milestone.status !== "review")
+      return withMilestone({ kind: "wait", text: `Every user story in ${milestone.key} is done; the milestone is moving to review.` })
+    if (!milestone.dodReviewed && !manual) {
       decide({
-        key: `mission_dod:${mission.id}`,
-        kind: "mission_dod",
+        key: `milestone_dod:${milestone.id}`,
+        kind: "milestone_dod",
         owner: ownerFor("accept_proof"),
-        target: { kind: "mission", id: mission.id },
-        summary: `Every user story in ${mission.key} is merged. Judge whether the milestone meets its definition of done, then complete it.`,
+        target: { kind: "milestone", id: milestone.id },
+        summary: `Every user story in ${milestone.key} is merged. Judge whether the milestone meets its definition of done, then complete it.`,
       })
-      return withMission({ kind: "decide", text: `Milestone ${mission.key} needs its definition-of-done judgment.` })
+      return withMilestone({ kind: "decide", text: `Milestone ${milestone.key} needs its definition-of-done judgment.` })
     }
-    missionState.doneConditionMet = true
-    if (!mission.integrationBranch && !manual)
-      return withMission({
-        kind: "complete_mission",
-        missionId: mission.id,
-        text: `Complete milestone ${mission.key}.`,
+    milestoneState.doneConditionMet = true
+    if (!milestone.integrationBranch && !manual)
+      return withMilestone({
+        kind: "complete_milestone",
+        milestoneId: milestone.id,
+        text: `Complete milestone ${milestone.key}.`,
       })
     decide({
-      key: `mission_landing:${mission.id}`,
-      kind: "mission_landing",
+      key: `milestone_landing:${milestone.id}`,
+      kind: "milestone_landing",
       owner: "user",
-      target: { kind: "mission", id: mission.id },
-      summary: !mission.integrationBranch
-        ? `Milestone ${mission.key} is done. Mark it complete.`
-        : mission.mergePolicy === "manual"
-          ? `Milestone ${mission.key} is ready to land: merge ${mission.integrationBranch} and mark it merged.`
-          : `Milestone ${mission.key} is ready to land: review and approve the ${mission.mergePolicy === "open_pr" ? "pull request" : "merge"}.`,
+      target: { kind: "milestone", id: milestone.id },
+      summary: !milestone.integrationBranch
+        ? `Milestone ${milestone.key} is done. Mark it complete.`
+        : milestone.mergePolicy === "manual"
+          ? `Milestone ${milestone.key} is ready to land: merge ${milestone.integrationBranch} and mark it merged.`
+          : `Milestone ${milestone.key} is ready to land: review and approve the ${milestone.mergePolicy === "open_pr" ? "pull request" : "merge"}.`,
     })
-    return withMission({ kind: "decide", text: `Milestone ${mission.key} is waiting to land.` })
+    return withMilestone({ kind: "decide", text: `Milestone ${milestone.key} is waiting to land.` })
   }
 
-  // ── dispatch: ready slices, critical path first, then position ──────────
+  // ── dispatch: ready user stories, critical path first, then position ──────────
   const critical = new Set(criticalPath)
   const order = (id: string) => byId.get(id)?.position ?? 0
   const candidates = [
@@ -727,59 +727,59 @@ export function computePosition(input: PositionInput): Position {
   const deferred: Position["deferred"] = []
   const podsFree = { ...capacity.podsFree }
   let free = capacity.concurrencyFree
-  const building = allMissionSlices.filter((s) => s.status === "running" || s.status === "proving")
+  const building = allMilestoneUserStories.filter((s) => s.status === "running" || s.status === "proving")
   for (const candidate of candidates) {
-    const slice = byId.get(candidate.id)!
-    const pod = slice.podKey ?? initiative.defaultPodKey
+    const userStory = byId.get(candidate.id)!
+    const pod = userStory.podKey ?? feature.defaultPodKey
     if (free <= 0) {
       deferred.push({
-        slice: slice.id,
+        userStory: userStory.id,
         reason:
           capacity.reason ??
           (capacity.mode === "git"
-            ? `the budget allows ${input.limits.maxConcurrentSlices} user stories at once`
+            ? `the budget allows ${input.limits.maxConcurrentUserStories} user stories at once`
             : "the workspace isn't a git repository, so one run at a time"),
       })
       continue
     }
     if (pod && (podsFree[pod] ?? 1) <= 0) {
-      deferred.push({ slice: slice.id, reason: `pod ${pod} is busy` })
+      deferred.push({ userStory: userStory.id, reason: `pod ${pod} is busy` })
       continue
     }
     const overlap = [
       ...building,
-      ...dispatch.map((d) => byId.get(d.slice)!),
-    ].find((other) => touchHintsOverlap(slice.touchHints, other.touchHints))
+      ...dispatch.map((d) => byId.get(d.userStory)!),
+    ].find((other) => touchHintsOverlap(userStory.touchHints, other.touchHints))
     if (overlap) {
       deferred.push({
-        slice: slice.id,
+        userStory: userStory.id,
         reason: `touch hints overlap ${overlap.key}`,
       })
       continue
     }
-    dispatch.push({ slice: slice.id, retry: candidate.retry })
+    dispatch.push({ userStory: userStory.id, retry: candidate.retry })
     free--
     if (pod) podsFree[pod] = (podsFree[pod] ?? 1) - 1
   }
 
   if (dispatch.length)
-    return withMission(
+    return withMilestone(
       {
         kind: "dispatch",
-        text: `Start ${dispatch.map((d) => keyOf(d.slice)).join(", ")}.`,
+        text: `Start ${dispatch.map((d) => keyOf(d.userStory)).join(", ")}.`,
       },
       { dispatch, deferred }
     )
   const waitingOn = [
-    runningSlices.length ? `${runningSlices.length} running` : "",
+    runningUserStories.length ? `${runningUserStories.length} running` : "",
     integrating.length ? `${integrating.length} merging` : "",
   ].filter(Boolean)
   if (waitingOn.length)
-    return withMission(
+    return withMilestone(
       { kind: "wait", text: `Waiting on user stories: ${waitingOn.join(", ")}.` },
       { deferred }
     )
-  return withMission(
+  return withMilestone(
     {
       kind: decisions.length ? "decide" : "idle",
       text: decisions.length
@@ -794,24 +794,24 @@ export function computePosition(input: PositionInput): Position {
 function defaultAction(d: Decision): DecisionAction | undefined {
   if (d.owner !== "user") return undefined
   if (d.kind === "budget") return { kind: "edit_budgets" }
-  if (d.target.kind === "slice") return { kind: "open_slice", sliceId: d.target.id }
-  if (d.target.kind === "mission")
-    return d.kind === "mission_dod"
-      ? { kind: "judge_mission", missionId: d.target.id }
-      : { kind: "open_mission", missionId: d.target.id }
+  if (d.target.kind === "user_story") return { kind: "open_user_story", userStoryId: d.target.id }
+  if (d.target.kind === "milestone")
+    return d.kind === "milestone_dod"
+      ? { kind: "judge_milestone", milestoneId: d.target.id }
+      : { kind: "open_milestone", milestoneId: d.target.id }
   return undefined
 }
 
 function computeCapacity(input: PositionInput): Position["capacity"] {
-  const runningSliceRuns = input.runs.filter(
-    (run) => run.status === "running" && run.sliceId && run.hook === "run"
+  const runningUserStoryRuns = input.runs.filter(
+    (run) => run.status === "running" && run.userStoryId && run.hook === "run"
   )
   const podsFree: Record<string, number> = {}
-  const sliceById = new Map(input.slices.map((s) => [s.id, s]))
+  const userStoryById = new Map(input.userStories.map((s) => [s.id, s]))
   for (const pod of input.pods) {
-    const busy = runningSliceRuns.filter((run) => {
-      const slice = sliceById.get(run.sliceId!)
-      return (slice?.podKey ?? input.initiative.defaultPodKey) === pod.key
+    const busy = runningUserStoryRuns.filter((run) => {
+      const userStory = userStoryById.get(run.userStoryId!)
+      return (userStory?.podKey ?? input.feature.defaultPodKey) === pod.key
     }).length
     podsFree[pod.key] = Math.max(1, pod.builderSeats) - busy
   }
@@ -835,13 +835,13 @@ function computeCapacity(input: PositionInput): Position["capacity"] {
         : null,
     }
   }
-  const isolated = runningSliceRuns.filter((run) => run.isolated).length
-  const free = Math.max(0, input.limits.maxConcurrentSlices - isolated)
+  const isolated = runningUserStoryRuns.filter((run) => run.isolated).length
+  const free = Math.max(0, input.limits.maxConcurrentUserStories - isolated)
   return {
     concurrencyFree: free,
     podsFree,
     mode: "git",
-    reason: free ? null : `the budget allows ${input.limits.maxConcurrentSlices} user stories at once`,
+    reason: free ? null : `the budget allows ${input.limits.maxConcurrentUserStories} user stories at once`,
   }
 }
 
@@ -857,32 +857,32 @@ function formatAmount(value: number): string {
 export function positionFingerprint(position: Position): string {
   const stable = {
     i: [
-      position.initiative.status,
-      position.initiative.driveMode,
-      position.initiative.activeMissionId,
-      position.initiative.nextHook?.hook ?? null,
-      position.initiative.nextHook?.missionId ?? null,
-      position.initiative.runningHook?.hook ?? null,
-      position.initiative.complete,
+      position.feature.status,
+      position.feature.driveMode,
+      position.feature.activeMilestoneId,
+      position.feature.nextHook?.hook ?? null,
+      position.feature.nextHook?.milestoneId ?? null,
+      position.feature.runningHook?.hook ?? null,
+      position.feature.complete,
     ],
-    m: position.mission
+    m: position.milestone
       ? [
-          position.mission.id,
-          position.mission.status,
-          position.mission.doneConditionMet,
-          position.mission.ready,
-          position.mission.running,
-          position.mission.integrating,
-          position.mission.done,
-          position.mission.blocked.map((b) => b.slice),
-          position.mission.retryable,
-          position.mission.waiting.map((w) => w.slice),
+          position.milestone.id,
+          position.milestone.status,
+          position.milestone.doneConditionMet,
+          position.milestone.ready,
+          position.milestone.running,
+          position.milestone.integrating,
+          position.milestone.done,
+          position.milestone.blocked.map((b) => b.userStory),
+          position.milestone.retryable,
+          position.milestone.waiting.map((w) => w.userStory),
         ]
       : null,
-    s: Object.values(position.slices)
+    s: Object.values(position.userStories)
       .map((s) => `${s.id}:${s.status}`)
       .sort(),
-    d: position.dispatch.map((d) => d.slice),
+    d: position.dispatch.map((d) => d.userStory),
     c: position.capacity.concurrencyFree,
     b: position.budgets.map((b) => `${b.key}:${b.level}`),
     p: position.pendingDecisions.map((d) => d.key).sort(),
@@ -903,12 +903,12 @@ function fnv1a(text: string): string {
 // ── rendering for a seat ────────────────────────────────────────────────────
 
 export function renderPosition(position: Position): string {
-  const key = (id: string) => position.slices[id]?.key ?? id
+  const key = (id: string) => position.userStories[id]?.key ?? id
   const keys = (ids: string[]) => (ids.length ? ids.map(key).join(", ") : "none")
   const lines = [
-    `Feature: ${position.initiative.status}, ${position.initiative.driveMode} drive.`,
+    `Feature: ${position.feature.status}, ${position.feature.driveMode} drive.`,
   ]
-  const m = position.mission
+  const m = position.milestone
   if (m) {
     lines.push(
       `Active milestone: ${m.key} "${m.name}" (${m.status}).`,
@@ -918,24 +918,24 @@ export function renderPosition(position: Position): string {
     )
     if (m.waiting.length)
       lines.push(
-        `Waiting: ${m.waiting.map((w) => `${key(w.slice)} (on ${keys(w.on)})`).join("; ")}`
+        `Waiting: ${m.waiting.map((w) => `${key(w.userStory)} (on ${keys(w.on)})`).join("; ")}`
       )
     if (m.blocked.length)
-      lines.push(`Blocked: ${m.blocked.map((b) => `${key(b.slice)} (${b.reason})`).join("; ")}`)
+      lines.push(`Blocked: ${m.blocked.map((b) => `${key(b.userStory)} (${b.reason})`).join("; ")}`)
     if (m.retryable.length) lines.push(`Retryable: ${keys(m.retryable)}`)
-  } else if (position.initiative.complete) lines.push("Every milestone is complete.")
+  } else if (position.feature.complete) lines.push("Every milestone is complete.")
   else lines.push("No active milestone.")
   lines.push(
     `Capacity: ${position.capacity.concurrencyFree} slot(s) free${position.capacity.reason ? ` (${position.capacity.reason})` : ""}.`
   )
-  if (position.initiative.runningHook)
-    lines.push(`Running: the ${position.initiative.runningHook.label}.`)
+  if (position.feature.runningHook)
+    lines.push(`Running: the ${position.feature.runningHook.label}.`)
   lines.push(`Next: ${position.maneuver.text}`)
   if (position.deferred.length)
     lines.push(
-      `Deferred: ${position.deferred.map((d) => `${key(d.slice)} (${d.reason})`).join("; ")}`
+      `Deferred: ${position.deferred.map((d) => `${key(d.userStory)} (${d.reason})`).join("; ")}`
     )
-  const budgets = position.budgets.filter((b) => b.level !== "ok" && b.key !== "maxConcurrentSlices")
+  const budgets = position.budgets.filter((b) => b.level !== "ok" && b.key !== "maxConcurrentUserStories")
   if (budgets.length)
     lines.push(
       `Budgets: ${budgets.map((b) => `${b.label} ${formatAmount(b.used)}/${b.limit} (${b.level})`).join("; ")}`

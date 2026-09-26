@@ -15,7 +15,7 @@ import type {
 
 // Playbooks (plan 106.3): Process definitions with an altitude, one per hook.
 // The existing Process builder edits each hook's steps in place; phases bind
-// to seats by role and one step can be marked as the slice's proof step.
+// to seats by role and one step can be marked as the user story's proof step.
 
 const ALTITUDES: Array<{
   altitude: PlaybookAltitude
@@ -23,29 +23,29 @@ const ALTITUDES: Array<{
   hooks: Array<{ hook: PlaybookHookName; label: string; note?: string }>
 }> = [
   {
-    altitude: "slice",
+    altitude: "user_story",
     label: "User story",
     hooks: [{ hook: "run", label: "Run" }],
   },
   {
-    altitude: "mission",
+    altitude: "milestone",
     label: "Milestone",
     hooks: [
-      { hook: "before_slices", label: "Before user stories" },
+      { hook: "before_user_stories", label: "Before user stories" },
       {
-        hook: "after_each_slice",
+        hook: "after_each_user_story",
         label: "After each user story",
         note: "Reserved for merges once worktrees land.",
       },
-      { hook: "after_all_slices", label: "After all user stories" },
+      { hook: "after_all_user_stories", label: "After all user stories" },
     ],
   },
   {
-    altitude: "initiative",
+    altitude: "feature",
     label: "Feature",
     hooks: [
       { hook: "plan", label: "Plan" },
-      { hook: "between_missions", label: "Between milestones" },
+      { hook: "between_milestones", label: "Between milestones" },
       { hook: "on_complete", label: "On complete" },
     ],
   },
@@ -64,7 +64,7 @@ export type PlaybookEditing = {
 }
 
 // Header copy for the hook editor; Mission Control renders it in its top
-// header (with the back arrow) the same way it does for initiative detail.
+// header (with the back arrow) the same way it does for feature detail.
 export function playbookEditingHeader(editing: PlaybookEditing) {
   const altitude = ALTITUDES.find(
     (a) => a.altitude === editing.playbook.altitude

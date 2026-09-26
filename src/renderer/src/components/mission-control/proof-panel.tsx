@@ -2,9 +2,9 @@ import { CheckCircle2, CircleSlash, ShieldCheck, XCircle } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { ChangedFilesBar } from "@/components/changed-files-bar"
 import type { ChangedFile } from "@/lib/timeline"
-import type { ProofCriterionStatus, SliceProof, SliceSpec } from "@/types"
+import type { ProofCriterionStatus, UserStoryProof, UserStorySpec } from "@/types"
 
-// The structured slice proof (plan 106.3): each acceptance criterion with its
+// The structured user story proof (plan 106.3): each acceptance criterion with its
 // status and evidence, the verifier, and whether verification was independent
 // of the builders.
 
@@ -30,7 +30,7 @@ function artifactFiles(paths: string[]): ChangedFile[] {
   }))
 }
 
-export function isSliceProof(value: unknown): value is SliceProof {
+export function isUserStoryProof(value: unknown): value is UserStoryProof {
   return (
     typeof value === "object" &&
     value !== null &&
@@ -44,8 +44,8 @@ export function ProofPanel({
   spec,
   workspacePath,
 }: {
-  proof: SliceProof
-  spec: SliceSpec
+  proof: UserStoryProof
+  spec: UserStorySpec
   workspacePath: string
 }) {
   const accepted = proof.verdict === "accepted"

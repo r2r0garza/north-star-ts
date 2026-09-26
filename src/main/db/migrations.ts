@@ -54,6 +54,7 @@ import {
   SCHEMA_V53_NAVIGATOR,
   SCHEMA_V49_TABLES,
 } from "./schema"
+import { renameWorkTerms } from "./work-terms-migration"
 
 // Ordered migrations. Index 0 runs to reach user_version 1, index 1 to reach 2,
 // and so on. Add a new entry to evolve the schema (e.g. future repo-indexing
@@ -105,13 +106,18 @@ const MIGRATIONS: Array<(db: Database.Database) => void> = [
   (db) => db.exec(SCHEMA_V44),
   (db) => db.exec(SCHEMA_V45),
   (db) => db.exec(SCHEMA_V46),
-  (db) => db.exec(SCHEMA_V47),
+  // Skipped once v54 has renamed its tables, so re-running history on a current
+  // database (a rewound user_version) doesn't recreate the old ones.
+  (db) => {
+    if (!tableExists(db, "features")) db.exec(SCHEMA_V47)
+  },
   ensureProcessResultContentColumn,
   ensureMissionControlPlaybooks,
   ensureMissionControlComms,
   ensureContextScopes,
   ensureMissionIntegration,
   ensureNavigator,
+  healAndRenameWorkTerms,
 ]
 
 function tableExists(db: Database.Database, table: string): boolean {
@@ -216,6 +222,19 @@ function ensureNavigator(db: Database.Database): void {
   db.exec(SCHEMA_V53_NAVIGATOR)
 }
 
+// v54. Heal the Mission Control schema under its old names first, so a drifted
+// prerelease database is complete before its tables and columns are renamed.
+function healAndRenameWorkTerms(db: Database.Database): void {
+  if (tableExists(db, "initiatives")) {
+    ensureMissionControlPlaybooks(db)
+    ensureMissionControlComms(db)
+    ensureContextScopes(db)
+    ensureMissionIntegration(db)
+    ensureNavigator(db)
+  }
+  renameWorkTerms(db)
+}
+
 function ensureProcessRuntimeProfileColumns(db: Database.Database): void {
   addColumnIfMissing(db, "process_phases", "runtime_config", "TEXT")
   addColumnIfMissing(db, "process_phase_agents", "runtime_config", "TEXT")
@@ -270,13 +289,19 @@ function ensureCodexSubscriptionProviderConstraints(
 // foreign_key_check after re-enabling verifies the rebuild left no dangling refs.
 // PRAGMA foreign_keys is a no-op inside a transaction, so it's toggled outside
 // the per-migration transactions.
-export function runMigrations(db: Database.Database): void {
+// `through` stops at that version and skips the self-heal pass, so tests can
+// build a database exactly as an older build left it.
+export function runMigrations(
+  db: Database.Database,
+  options: { through?: number } = {}
+): void {
   const current = db.pragma("user_version", { simple: true }) as number
   const fkWasOn = db.pragma("foreign_keys", { simple: true }) === 1
   if (fkWasOn) db.pragma("foreign_keys = OFF")
   try {
-    const startVersion = Math.min(current, MIGRATIONS.length)
-    for (let version = startVersion; version < MIGRATIONS.length; version++) {
+    const target = Math.min(options.through ?? MIGRATIONS.length, MIGRATIONS.length)
+    const startVersion = Math.min(current, target)
+    for (let version = startVersion; version < target; version++) {
       const migrate = MIGRATIONS[version]
       const apply = db.transaction(() => {
         migrate(db)
@@ -285,6 +310,7 @@ export function runMigrations(db: Database.Database): void {
       })
       apply()
     }
+    if (options.through !== undefined) return
 
     // Development and prerelease databases can have a user_version stamped ahead
     // of this source tree after migration history is rebased or a build is run
@@ -299,6 +325,7 @@ export function runMigrations(db: Database.Database): void {
       ensureContextScopes(db)
       ensureMissionIntegration(db)
       ensureNavigator(db)
+      healAndRenameWorkTerms(db)
       ensureCodexSubscriptionProviderConstraints(db)
       ensureProjectPositionColumn(db)
       ensureSubagentArtifactsTable(db)
