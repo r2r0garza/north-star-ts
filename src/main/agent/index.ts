@@ -236,6 +236,24 @@ export { SHUTDOWN_ABORT_REASON }
 // writes. A turn that still hits the ceiling is detected via finish_reason below
 // and surfaced as a clean, retryable error rather than a cryptic JSON parse throw.
 const MAX_OUTPUT_TOKENS = 8192
+// Reasoning models (e.g. DeepSeek via OpenRouter) count hidden reasoning against
+// the cap, so a long investigation can spend all 8192 tokens before emitting any
+// text or tool call. Such a round is re-issued at the next step up instead of
+// failing the turn; the base cap stays low so ordinary turns aren't affected.
+const OUTPUT_TOKEN_STEPS = [MAX_OUTPUT_TOKENS, 16_384, 32_768] as const
+
+export function nextOutputTokenCap(current: number): number | null {
+  return OUTPUT_TOKEN_STEPS.find((step) => step > current) ?? null
+}
+
+// A provider that rejects the raised cap (the model's own output ceiling is
+// lower) — keep the original output-limit failure rather than this error.
+function rejectsOutputCap(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+  return /max_(completion_)?tokens|max.{0,20}output.{0,20}tokens|maximum.{0,40}tokens/i.test(
+    message
+  )
+}
 const CHILD_APPROVAL_TIMEOUT_MS = 10 * 60_000
 
 // Operating rules injected as a high-priority context section when a turn is in
@@ -521,12 +539,27 @@ function appendCommandCompletionEvents(input: {
 function validateModelRoundForLoop(input: {
   round: CompletionRound
   commandCompletionPending: boolean
+  canRaiseOutputCap: boolean
 }): void {
   const structuredToolCalls = accumulateToolCalls(input.round.toolFragments)
   const recovered = extractTextToolCalls(input.round.text)
   const text = recovered.text.trim()
   const hasToolCalls =
     structuredToolCalls.length > 0 || recovered.toolCalls.length > 0
+  // Cut off at the cap with nothing usable, or mid tool call: ask the loop to
+  // re-issue the round with a higher cap. At the top step, fall through to the
+  // existing handling (empty → fail below; tool call → the post-round check).
+  if (
+    input.round.finishReason === "length" &&
+    input.canRaiseOutputCap &&
+    (hasToolCalls || !text) &&
+    !input.commandCompletionPending
+  ) {
+    throw new ModelResponseValidationError(
+      "The model hit the output limit before finishing its response.",
+      { retryable: false, outputLimit: true }
+    )
+  }
   if (text || hasToolCalls || input.commandCompletionPending) return
 
   if (input.round.finishReason === "length") {
@@ -1333,20 +1366,22 @@ export async function runAgentLoop(
       // phase/decompose/validate worker), where it can only stall until interrupted.
       ...(opts.suppressUserQuestions ? [] : [askUserQuestionTool.definition]),
       readSkillTool.definition,
-    ]).concat(
-      // MCP tools bypass the built-in-category allowlist (applyAgentTools): MCP
-      // access is governed by the agent's separate `mcpServers` field, already
-      // resolved into `mcpTools`. Withheld in plan mode like spawn (a remote call
-      // is a side effect); regained the moment a plan is approved.
-      planMode ? [] : mcpTools
-    ).concat(
-      // record_proof (plan 106.3): process-structural like flag_for_rework, and
-      // offered only to a Mission Control proof step, so no agent or seat tool
-      // narrowing may remove it.
-      opts.processProofStep && opts.processRunId && !planMode
-        ? [recordProofTool.definition]
-        : []
-    )
+    ])
+      .concat(
+        // MCP tools bypass the built-in-category allowlist (applyAgentTools): MCP
+        // access is governed by the agent's separate `mcpServers` field, already
+        // resolved into `mcpTools`. Withheld in plan mode like spawn (a remote call
+        // is a side effect); regained the moment a plan is approved.
+        planMode ? [] : mcpTools
+      )
+      .concat(
+        // record_proof (plan 106.3): process-structural like flag_for_rework, and
+        // offered only to a Mission Control proof step, so no agent or seat tool
+        // narrowing may remove it.
+        opts.processProofStep && opts.processRunId && !planMode
+          ? [recordProofTool.definition]
+          : []
+      )
   // The non-droppable base prompt (mode prompt). Everything else is a droppable
   // context SECTION handed to the ContextBuilder, which budgets + composes them
   // into the system block under one global budget with an explicit drop order
@@ -1874,123 +1909,148 @@ export async function runAgentLoop(
       // round-trip regains the full filesystem toolset.
       const tools = buildTools()
       const offeredNames = offeredToolNames(tools)
-      const logicalRoundId = `after-seq:${getMaxMessageSeq(conversationId)}`
-
-      const round = await createCompletionRoundWithRetry({
-        conversationId,
-        logicalRoundId,
-        signal: abort.signal,
-        isTransientError,
-        validateRound: (round) =>
-          validateModelRoundForLoop({
-            round,
-            commandCompletionPending: commandCompletionInbox.hasPending(
-              commandCompletionOwner
-            ),
-          }),
-        requestIdentity: {
-          accountId: llm.accountId,
-          modelId: llm.model,
-          apiMode: llm.apiMode,
-        },
-        recoverVisibleText: (rawText) => extractTextToolCalls(rawText).text,
-        onAttemptEvent: (() => {
-          let attemptText = ""
-          let withheldText = false
-          let visibleText = false
-          return (event) => {
-            if (event.type === "start") {
-              attemptText = ""
-              withheldText = false
-              visibleText = false
-              onEvent({
-                type: "stream_attempt",
-                phase: "start",
-                attemptId: event.attemptId,
-                attempt: event.attempt,
-              })
-              return
-            }
-            if (event.type === "text") {
-              attemptText += event.delta
-              const trimmed = attemptText.trimStart()
-              const mayBeTextToolCall =
-                !streamedText &&
-                ("[TOOL_CALL:".startsWith(trimmed) ||
-                  trimmed.startsWith("[TOOL_CALL:"))
-              if (mayBeTextToolCall) {
-                withheldText = true
-                return
-              }
-              const visiblePiece = withheldText ? attemptText : event.delta
-              withheldText = false
-              if (!visibleText && streamedText) {
-                onEvent({
-                  type: "token",
-                  delta: "\n\n",
-                  attemptId: event.attemptId,
-                })
-              }
-              visibleText = true
-              onEvent({
-                type: "token",
-                delta: visiblePiece,
-                attemptId: event.attemptId,
-              })
-              return
-            }
-            if (event.type === "commit") {
-              const recovered = extractTextToolCalls(attemptText)
-              if (
-                withheldText &&
-                recovered.toolCalls.length === 0 &&
-                recovered.text
-              ) {
-                if (streamedText) {
+      const baseRoundId = `after-seq:${getMaxMessageSeq(conversationId)}`
+      let logicalRoundId = baseRoundId
+      let outputCap: number = MAX_OUTPUT_TOKENS
+      let round: CompletionRound
+      for (;;) {
+        const nextCap = nextOutputTokenCap(outputCap)
+        try {
+          round = await createCompletionRoundWithRetry({
+            conversationId,
+            logicalRoundId,
+            signal: abort.signal,
+            isTransientError,
+            validateRound: (round) =>
+              validateModelRoundForLoop({
+                round,
+                commandCompletionPending: commandCompletionInbox.hasPending(
+                  commandCompletionOwner
+                ),
+                canRaiseOutputCap: nextCap !== null,
+              }),
+            requestIdentity: {
+              accountId: llm.accountId,
+              modelId: llm.model,
+              apiMode: llm.apiMode,
+            },
+            recoverVisibleText: (rawText) => extractTextToolCalls(rawText).text,
+            onAttemptEvent: (() => {
+              let attemptText = ""
+              let withheldText = false
+              let visibleText = false
+              return (event) => {
+                if (event.type === "start") {
+                  attemptText = ""
+                  withheldText = false
+                  visibleText = false
+                  onEvent({
+                    type: "stream_attempt",
+                    phase: "start",
+                    attemptId: event.attemptId,
+                    attempt: event.attempt,
+                  })
+                  return
+                }
+                if (event.type === "text") {
+                  attemptText += event.delta
+                  const trimmed = attemptText.trimStart()
+                  const mayBeTextToolCall =
+                    !streamedText &&
+                    ("[TOOL_CALL:".startsWith(trimmed) ||
+                      trimmed.startsWith("[TOOL_CALL:"))
+                  if (mayBeTextToolCall) {
+                    withheldText = true
+                    return
+                  }
+                  const visiblePiece = withheldText ? attemptText : event.delta
+                  withheldText = false
+                  if (!visibleText && streamedText) {
+                    onEvent({
+                      type: "token",
+                      delta: "\n\n",
+                      attemptId: event.attemptId,
+                    })
+                  }
+                  visibleText = true
                   onEvent({
                     type: "token",
-                    delta: "\n\n",
+                    delta: visiblePiece,
                     attemptId: event.attemptId,
                   })
+                  return
+                }
+                if (event.type === "commit") {
+                  const recovered = extractTextToolCalls(attemptText)
+                  if (
+                    withheldText &&
+                    recovered.toolCalls.length === 0 &&
+                    recovered.text
+                  ) {
+                    if (streamedText) {
+                      onEvent({
+                        type: "token",
+                        delta: "\n\n",
+                        attemptId: event.attemptId,
+                      })
+                    }
+                    onEvent({
+                      type: "token",
+                      delta: recovered.text,
+                      attemptId: event.attemptId,
+                    })
+                    visibleText = true
+                  }
+                  streamedText ||= visibleText
+                  onEvent({
+                    type: "stream_attempt",
+                    phase: "commit",
+                    attemptId: event.attemptId,
+                  })
+                  return
                 }
                 onEvent({
-                  type: "token",
-                  delta: recovered.text,
+                  type: "stream_attempt",
+                  phase: "rollback",
                   attemptId: event.attemptId,
+                  retrying: event.retrying,
                 })
-                visibleText = true
               }
-              streamedText ||= visibleText
-              onEvent({
-                type: "stream_attempt",
-                phase: "commit",
-                attemptId: event.attemptId,
-              })
-              return
-            }
-            onEvent({
-              type: "stream_attempt",
-              phase: "rollback",
-              attemptId: event.attemptId,
-              retrying: event.retrying,
-            })
+            })(),
+            request: () =>
+              createCompletion(
+                llm.client,
+                llm.model,
+                outputCap,
+                { messages, tools, stream: true },
+                [
+                  undefined,
+                  // The abort signal. On the OpenAI-backed path the SDK forwards it to
+                  // fetch. On the Portkey path, breaking the iterator cancels the body.
+                  { signal: abort.signal },
+                ],
+                llm.apiMode
+              ),
+          })
+          break
+        } catch (error) {
+          const truncated =
+            error instanceof ModelResponseValidationError && error.outputLimit
+          if (truncated && nextCap !== null && !abort.signal.aborted) {
+            // A fresh logical round id gives the re-issued round its own
+            // transient-retry budget; the truncated one's budget is spent.
+            outputCap = nextCap
+            logicalRoundId = `${baseRoundId}:cap-${outputCap}`
+            continue
           }
-        })(),
-        request: () =>
-          createCompletion(
-            llm.client,
-            llm.model,
-            MAX_OUTPUT_TOKENS,
-            { messages, tools, stream: true },
-            [
-              undefined,
-              // The abort signal. On the OpenAI-backed path the SDK forwards it to
-              // fetch. On the Portkey path, breaking the iterator cancels the body.
-              { signal: abort.signal },
-            ],
-            llm.apiMode
-          ),
-      })
+          if (outputCap > MAX_OUTPUT_TOKENS && rejectsOutputCap(error))
+            throw new ModelResponseValidationError(
+              "The model hit the output limit before returning a usable answer, and the provider rejected a higher output cap.",
+              { retryable: false }
+            )
+          throw error
+        }
+      }
 
       // Reassemble the streamed turn only after the request has completed. Each
       // failed transport/stream attempt buffers and discards its partial text and

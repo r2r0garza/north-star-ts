@@ -39,18 +39,23 @@ export class ModelRequestRetryExhaustedError extends Error {
 
 export class ModelResponseValidationError extends Error {
   readonly retryable: boolean
+  // The round was cut off at the output-token cap. Not retried here at the same
+  // cap; the agent loop re-issues the round with a higher one.
+  readonly outputLimit: boolean
   diagnostics?: ModelResponseAttemptDiagnostics
 
   constructor(
     message: string,
     options?: {
       retryable?: boolean
+      outputLimit?: boolean
       diagnostics?: ModelResponseAttemptDiagnostics
     }
   ) {
     super(message)
     this.name = "ModelResponseValidationError"
     this.retryable = options?.retryable === true
+    this.outputLimit = options?.outputLimit === true
     this.diagnostics = options?.diagnostics
   }
 }

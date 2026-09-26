@@ -27,6 +27,7 @@ vi.mock("./memory/service", () => ({ recordMemoryTurn: vi.fn(async () => {}) }))
 type CompletionRequest = {
   messages: any[]
   tools: string[]
+  maxTokens: number
 }
 
 const scriptedCompletions: Array<
@@ -46,12 +47,13 @@ vi.mock("./providers", () => {
     createCompletion: async (
       _client: unknown,
       _model: string,
-      _maxTokens: number,
+      maxTokens: number,
       base: { messages: any[]; tools: Array<{ function: { name: string } }> }
     ) => {
       const snapshot = structuredClone({
         messages: base.messages,
         tools: base.tools.map((tool) => tool.function.name),
+        maxTokens,
       })
       completionRequests.push(snapshot)
       const next = scriptedCompletions.shift()
@@ -977,11 +979,40 @@ describe.skipIf(!sqliteLoads)("agent loop tool-error feedback", () => {
     })
   })
 
-  it("fails empty length responses without an automatic retry", async () => {
+  it("re-issues an empty length response with a higher output cap", async () => {
     const workspace = await makeWorkspace()
     const conversation = createConversation({ mode: "interactive" })
 
-    scriptedCompletions.push(() => streamEmpty("length"))
+    scriptedCompletions.push(
+      () => streamEmpty("length"),
+      () => streamText("Done after raising the cap.")
+    )
+
+    const result = await runAgentLoop({
+      conversationId: conversation.id,
+      workspace,
+      userMessage: "finish the task",
+      abort: new AbortController(),
+      onEvent: () => {},
+    })
+
+    expect(result).toEqual({ content: "Done after raising the cap." })
+    expect(completionRequests.map((r) => r.maxTokens)).toEqual([8192, 16_384])
+    expect(getBudget(conversation.id, "after-seq:1")).toMatchObject({
+      status: "exhausted",
+      attemptsConsumed: 1,
+    })
+  })
+
+  it("fails empty length responses once the output cap can't go higher", async () => {
+    const workspace = await makeWorkspace()
+    const conversation = createConversation({ mode: "interactive" })
+
+    scriptedCompletions.push(
+      () => streamEmpty("length"),
+      () => streamEmpty("length"),
+      () => streamEmpty("length")
+    )
 
     const result = await runAgentLoop({
       conversationId: conversation.id,
@@ -993,11 +1024,37 @@ describe.skipIf(!sqliteLoads)("agent loop tool-error feedback", () => {
 
     expect(result.error).toContain("output limit")
     expect(result.retryable).toBe(false)
-    expect(completionRequests).toHaveLength(1)
-    expect(getBudget(conversation.id, "after-seq:1")).toMatchObject({
+    expect(completionRequests.map((r) => r.maxTokens)).toEqual([
+      8192, 16_384, 32_768,
+    ])
+    expect(getBudget(conversation.id, "after-seq:1:cap-32768")).toMatchObject({
       status: "exhausted",
       attemptsConsumed: 1,
     })
+  })
+
+  it("keeps the output-limit failure when the provider rejects a higher cap", async () => {
+    const workspace = await makeWorkspace()
+    const conversation = createConversation({ mode: "interactive" })
+
+    scriptedCompletions.push(
+      () => streamEmpty("length"),
+      () => {
+        throw new Error("max_tokens is too large: 16384")
+      }
+    )
+
+    const result = await runAgentLoop({
+      conversationId: conversation.id,
+      workspace,
+      userMessage: "finish the task",
+      abort: new AbortController(),
+      onEvent: () => {},
+    })
+
+    expect(result.error).toContain("rejected a higher output cap")
+    expect(result.retryable).toBe(false)
+    expect(completionRequests).toHaveLength(2)
   })
 
   it.each([
@@ -1810,11 +1867,15 @@ describe.skipIf(!sqliteLoads)("agent loop tool-error feedback", () => {
     })
   })
 
-  it("exhausts a durable budget without a transient retry for truncated tool calls", async () => {
+  it("raises the cap for truncated tool calls, then fails at the top step", async () => {
     const workspace = await makeWorkspace()
     const conversation = createConversation({ mode: "interactive" })
 
-    scriptedCompletions.push(() => streamLengthToolCall())
+    scriptedCompletions.push(
+      () => streamLengthToolCall(),
+      () => streamLengthToolCall(),
+      () => streamLengthToolCall()
+    )
 
     const result = await runAgentLoop({
       conversationId: conversation.id,
@@ -1828,8 +1889,11 @@ describe.skipIf(!sqliteLoads)("agent loop tool-error feedback", () => {
       "The model's response was truncated before the tool call completed"
     )
     expect(result.retryable).toBe(false)
-    expect(completionRequests).toHaveLength(1)
-    expect(getBudget(conversation.id, "after-seq:1")).toMatchObject({
+    // Re-issued at each higher cap before giving up at the top step.
+    expect(completionRequests.map((r) => r.maxTokens)).toEqual([
+      8192, 16_384, 32_768,
+    ])
+    expect(getBudget(conversation.id, "after-seq:1:cap-32768")).toMatchObject({
       status: "exhausted",
       attemptsConsumed: 1,
     })
