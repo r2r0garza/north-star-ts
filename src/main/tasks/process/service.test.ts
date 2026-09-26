@@ -173,7 +173,8 @@ import {
   markToolCallStarted,
   recordToolCallIntents,
 } from "../../db/repositories/tool-call-lifecycle"
-import { ProcessService } from "./service"
+import { ProcessService, withResolvedDefault } from "./service"
+import * as settingsService from "../../settings/service"
 import type { TaskEventPayload } from "../runner"
 
 // A minimal fake runner — the service only calls enqueueKind from startRun, which
@@ -2323,5 +2324,37 @@ describe.skipIf(!sqliteLoads)("ProcessService validated completion", () => {
     expect(
       loopCalls.filter((c) => c.processCompletionInstruction)
     ).toHaveLength(2)
+  })
+})
+
+describe("withResolvedDefault", () => {
+  it("records the app default a default-sourced phase actually runs on", () => {
+    settingsService.setLlm({
+      activeAccountId: "default-account",
+      activeModelId: "default-model",
+    })
+    expect(
+      withResolvedDefault({ accountId: null, modelId: null, source: "default" })
+    ).toEqual({
+      accountId: "default-account",
+      modelId: "default-model",
+      source: "default",
+    })
+    // A seat that pins only the account still runs the default model.
+    expect(
+      withResolvedDefault({
+        accountId: "seat-account",
+        modelId: null,
+        source: "seat",
+      })
+    ).toEqual({
+      accountId: "seat-account",
+      modelId: "default-model",
+      source: "seat",
+    })
+    // A full selection is left alone.
+    expect(
+      withResolvedDefault({ accountId: "a", modelId: "m", source: "phase" })
+    ).toEqual({ accountId: "a", modelId: "m", source: "phase" })
   })
 })

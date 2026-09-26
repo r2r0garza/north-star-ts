@@ -19,6 +19,7 @@ import {
 import { listMessages } from "../../db/repositories/messages"
 import { getWorkspace, upsertWorkspace } from "../../db/repositories/workspaces"
 import * as processes from "../../db/repositories/processes"
+import * as settingsService from "../../settings/service"
 import { listApprovals, resolveApproval } from "../../db/repositories/approvals"
 import { getDb } from "../../db/connection"
 import { createCheckpoint } from "../../db/repositories/task-checkpoints"
@@ -100,8 +101,8 @@ const PROOF_STEP_INSTRUCTION =
   "run the tests or commands, read the code — and then call `record_proof` exactly " +
   "once with one entry per criterion id (AC-1, AC-2, …) listed in the objective. " +
   "Each entry needs a status (met, not_met, or not_verifiable) and concrete evidence: " +
-  "what you ran or inspected and what you observed. Use verdict \"accepted\" only when " +
-  "every criterion is met; otherwise record \"rejected\". Artifacts are workspace-relative " +
+  'what you ran or inspected and what you observed. Use verdict "accepted" only when ' +
+  'every criterion is met; otherwise record "rejected". Artifacts are workspace-relative ' +
   "file paths. The tool validates your proof and explains anything it rejects."
 
 // The process_run task's input blob (015 producer contract): the run id, so the
@@ -261,9 +262,25 @@ function snapshotRuntime(
   processes.updatePhaseRun(phaseRun.id, {
     runtimeSnapshot: {
       ...(current.runtimeSnapshot ?? {}),
-      [slot]: resolution.snapshot,
+      [slot]: withResolvedDefault(resolution.snapshot),
     },
   })
+}
+
+// Record the account and model a phase actually runs on. A selection that
+// leaves either unset follows the app default at call time (resolveLlmTarget);
+// snapshot what that default is now, so a later default change can't hide
+// which model ran. `source` still says where the choice came from.
+export function withResolvedDefault(
+  snapshot: RuntimeResolution["snapshot"]
+): RuntimeResolution["snapshot"] {
+  if (snapshot.accountId && snapshot.modelId) return snapshot
+  const fallback = settingsService.getLlm()
+  return {
+    ...snapshot,
+    accountId: snapshot.accountId ?? fallback.activeAccountId ?? null,
+    modelId: snapshot.modelId ?? fallback.activeModelId ?? null,
+  }
 }
 
 // Map an aborted executor to a runner result by WHY it aborted (plan 038.3): a
@@ -305,10 +322,7 @@ export class ProcessService {
 
   private notifySettled(processRunId: string): void {
     const run = processes.getProcessRun(processRunId)
-    if (
-      !run ||
-      !["completed", "failed", "cancelled"].includes(run.status)
-    )
+    if (!run || !["completed", "failed", "cancelled"].includes(run.status))
       return
     for (const listener of this.settledListeners) {
       try {
@@ -1142,7 +1156,8 @@ export class ProcessService {
           reworkNote,
         })
       const prompt =
-        phase.proofStep && this.missionControlRoot(run)?.missionControl?.userStoryId
+        phase.proofStep &&
+        this.missionControlRoot(run)?.missionControl?.userStoryId
           ? `${basePrompt}\n\n${PROOF_STEP_INSTRUCTION}`
           : basePrompt
 
@@ -1236,9 +1251,7 @@ export class ProcessService {
           }
         }
       }
-      const feature = seatTurn
-        ? features.getFeature(seatTurn.featureId)
-        : null
+      const feature = seatTurn ? features.getFeature(seatTurn.featureId) : null
       const worker =
         existingWorker ??
         sessionConversation ??
@@ -1393,11 +1406,10 @@ export class ProcessService {
       try {
         resolved = await this.resolveWorker(run, phase, {
           preferSeat: phaseRun.seatAddress,
-          workspace:
-            (() => {
-              const id = run.workspaceId ?? source?.workspaceId ?? null
-              return id ? getWorkspace(id)?.path : undefined
-            })(),
+          workspace: (() => {
+            const id = run.workspaceId ?? source?.workspaceId ?? null
+            return id ? getWorkspace(id)?.path : undefined
+          })(),
         })
       } catch (err) {
         return {
@@ -1818,7 +1830,12 @@ export class ProcessService {
 
     const bindings = this.missionControlRoot(run)?.seatBindings
     type Candidate =
-      | { kind: "seat"; name: string; seat: SeatBinding; row: ProcessPhaseAgent }
+      | {
+          kind: "seat"
+          name: string
+          seat: SeatBinding
+          row: ProcessPhaseAgent
+        }
       | { kind: "agent"; name: string; row: ProcessPhaseAgent }
     const candidates: Candidate[] = []
     for (const row of pool) {
@@ -1845,7 +1862,9 @@ export class ProcessService {
 
     let chosen =
       (options.preferSeat &&
-        candidates.find((c) => c.kind === "seat" && c.name === options.preferSeat)) ||
+        candidates.find(
+          (c) => c.kind === "seat" && c.name === options.preferSeat
+        )) ||
       candidates[0]
     if (
       !options.preferSeat &&
@@ -1857,9 +1876,11 @@ export class ProcessService {
         candidates.map(async (c) =>
           c.kind === "seat"
             ? [c.seat.charter, c.seat.agentLabel].filter(Boolean).join(" — ")
-            : ((await loadAgent(c.name, options.routing!.workspace).catch(
-                () => null
-              ))?.description ?? "")
+            : ((
+                await loadAgent(c.name, options.routing!.workspace).catch(
+                  () => null
+                )
+              )?.description ?? "")
         )
       )
       const picked = await routeCandidates({
@@ -1914,7 +1935,10 @@ export class ProcessService {
   // (plan 038.1) inherits its root's seat bindings and container link.
   private missionControlRoot(
     run: ProcessRun
-  ): { seatBindings: SeatBindingsSnapshot | null; missionControl: MissionControlRunLink | null } | null {
+  ): {
+    seatBindings: SeatBindingsSnapshot | null
+    missionControl: MissionControlRunLink | null
+  } | null {
     let current: ProcessRun | undefined = run
     for (let depth = 0; current && depth <= MAX_PROCESS_DEPTH + 1; depth++) {
       if (!current.parentPhaseRunId)
