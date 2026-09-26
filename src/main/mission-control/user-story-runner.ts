@@ -100,7 +100,10 @@ export interface LaunchRequest {
   // A worktree prepared by the caller (conflict resolution).
   isolated?: IsolatedWorkspace
   // Runs inside the launch transaction, after the playbook run exists.
-  onLaunch?: (playbookRun: PlaybookRun, isolated: IsolatedWorkspace | null) => void
+  onLaunch?: (
+    playbookRun: PlaybookRun,
+    isolated: IsolatedWorkspace | null
+  ) => void
 }
 
 export interface IsolatedWorkspace {
@@ -120,7 +123,11 @@ function budget(feature: Feature, key: string, fallback: number): number {
 }
 
 export function maxUserStoryAttempts(feature: Feature): number {
-  return budget(feature, "maxUserStoryAttempts", DEFAULT_MAX_USER_STORY_ATTEMPTS)
+  return budget(
+    feature,
+    "maxUserStoryAttempts",
+    DEFAULT_MAX_USER_STORY_ATTEMPTS
+  )
 }
 
 export function maxProofRevisions(feature: Feature): number {
@@ -130,7 +137,11 @@ export function maxProofRevisions(feature: Feature): number {
 export function maxConcurrentUserStories(feature: Feature): number {
   return Math.max(
     1,
-    budget(feature, "maxConcurrentUserStories", DEFAULT_MAX_CONCURRENT_USER_STORIES)
+    budget(
+      feature,
+      "maxConcurrentUserStories",
+      DEFAULT_MAX_CONCURRENT_USER_STORIES
+    )
   )
 }
 
@@ -176,10 +187,7 @@ export function activePlaybookRunForWorkspace(
     if (run.worktreePath) continue
     if (run.featureId === feature.id) return run
     const other = features.getFeature(run.featureId)
-    if (
-      feature.workspaceId &&
-      other?.workspaceId === feature.workspaceId
-    )
+    if (feature.workspaceId && other?.workspaceId === feature.workspaceId)
       return run
   }
   return null
@@ -352,10 +360,10 @@ export class UserStoryRunner {
     const userStory = features.getUserStory(userStoryId)
     if (!userStory) throw new Error(`User story not found: ${userStoryId}`)
     const milestone = features.getMilestone(userStory.milestoneId)
-    if (!milestone) throw new Error(`Milestone not found: ${userStory.milestoneId}`)
+    if (!milestone)
+      throw new Error(`Milestone not found: ${userStory.milestoneId}`)
     const feature = features.getFeature(milestone.featureId)
-    if (!feature)
-      throw new Error(`Feature not found: ${milestone.featureId}`)
+    if (!feature) throw new Error(`Feature not found: ${milestone.featureId}`)
     assertFeatureRunnable(feature)
     if (!["draft", "ready", "failed"].includes(userStory.status))
       throw new Error(
@@ -412,13 +420,22 @@ export class UserStoryRunner {
             : null,
           workspace:
             isolated?.branch && isolated.integrationBranch
-              ? { branch: isolated.branch, integrationBranch: isolated.integrationBranch }
+              ? {
+                  branch: isolated.branch,
+                  integrationBranch: isolated.integrationBranch,
+                }
               : null,
         }),
       intentChain: renderIntentChain({ feature, milestone, userStory }),
       title: `User story ${userStory.key}: ${userStory.title}`,
       isolate: integration
-        ? () => integration.prepareUserStoryRun({ feature, milestone, userStory, attempt })
+        ? () =>
+            integration.prepareUserStoryRun({
+              feature,
+              milestone,
+              userStory,
+              attempt,
+            })
         : undefined,
       onLaunch: (_run, isolated) => {
         features.setUserStoryExecution(
@@ -458,7 +475,11 @@ export class UserStoryRunner {
     this.deps.onCancelled?.(playbookRun.featureId)
     const processRun = this.processRunFor(playbookRun)
     if (!processRun) {
-      this.applyOutcome(playbookRun.id, "cancelled", "Cancelled before it started")
+      this.applyOutcome(
+        playbookRun.id,
+        "cancelled",
+        "Cancelled before it started"
+      )
       return
     }
     if (TERMINAL_RUN_STATUSES.has(processRun.status)) {
@@ -517,7 +538,9 @@ export class UserStoryRunner {
       const status = run.status as "completed" | "failed" | "cancelled"
       this.applyOutcome(
         playbookRun.id,
-        status === "completed" && proof?.verdict !== "accepted" ? "failed" : status,
+        status === "completed" && proof?.verdict !== "accepted"
+          ? "failed"
+          : status,
         status !== "completed"
           ? `The resolution run ${status}.`
           : proof?.verdict === "accepted"
@@ -542,12 +565,15 @@ export class UserStoryRunner {
         )
       return
     }
+    const failure = run.status === "failed" ? processRunFailure(run.id) : null
     this.applyOutcome(
       playbookRun.id,
       run.status as "failed" | "cancelled",
       run.status === "cancelled"
         ? "The user story run was cancelled."
-        : "The user story's Process run failed."
+        : failure
+          ? `The user story's Process run failed. ${failure.reason}`
+          : "The user story's Process run failed."
     )
   }
 
@@ -557,11 +583,13 @@ export class UserStoryRunner {
     reason: string | null
   ): void {
     const settled = getDb().transaction(() => {
-      if (!playbooks.finishPlaybookRun(playbookRunId, status, reason)) return null
+      if (!playbooks.finishPlaybookRun(playbookRunId, status, reason))
+        return null
       const playbookRun = playbooks.getPlaybookRun(playbookRunId)!
       if (!playbookRun.userStoryId || playbookRun.hook !== "run") return null
       const userStory = features.getUserStory(playbookRun.userStoryId)
-      if (!userStory || !["running", "proving"].includes(userStory.status)) return null
+      if (!userStory || !["running", "proving"].includes(userStory.status))
+        return null
       // Built in its own worktree: the user story is done only once it merges.
       if (
         status === "completed" &&
@@ -600,7 +628,9 @@ export class UserStoryRunner {
   // the app was down, and fail launches a crash interrupted before a Process
   // run existed. In-flight Process runs resume through the task runner.
   reconcile(): void {
-    for (const playbookRun of playbooks.listPlaybookRuns({ status: "running" })) {
+    for (const playbookRun of playbooks.listPlaybookRuns({
+      status: "running",
+    })) {
       const processRun = this.processRunFor(playbookRun)
       if (!processRun) {
         this.applyOutcome(
@@ -622,6 +652,46 @@ export class UserStoryRunner {
     return playbookRun.processRunId
       ? processes.getProcessRun(playbookRun.processRunId)
       : processes.getProcessRunByPlaybookRunId(playbookRun.id)
+  }
+}
+
+// ── failure summary ─────────────────────────────────────────────────────────
+
+export interface ProcessRunFailure {
+  // One line naming the failed phase and its actual error, for the user
+  // story's outcome and the lead's decision.
+  reason: string
+  // The model request failed (output limit, provider errors), not the user
+  // story's own work: retrying is the fix, not a plan change.
+  infrastructure: boolean
+}
+
+const MAX_FAILURE_MESSAGE = 300
+
+// The most recently failed phase of a Process run, or null when no phase
+// recorded a failure.
+export function processRunFailure(
+  processRunId: string
+): ProcessRunFailure | null {
+  const failed = processes
+    .listPhaseRuns({ runId: processRunId })
+    .filter(
+      (phaseRun) =>
+        phaseRun.status === "failed" && (phaseRun.failure || phaseRun.error)
+    )
+    .sort((a, b) => (b.finishedAt ?? 0) - (a.finishedAt ?? 0))[0]
+  if (!failed) return null
+  const phaseName =
+    processes.getPhase(failed.phaseId)?.name ?? failed.title ?? "unknown"
+  const stage = failed.failure?.stage
+  let message = (failed.failure?.message ?? failed.error ?? "")
+    .trim()
+    .replace(/\s+/g, " ")
+  if (message.length > MAX_FAILURE_MESSAGE)
+    message = `${message.slice(0, MAX_FAILURE_MESSAGE - 1)}…`
+  return {
+    reason: `Phase "${phaseName}" failed${stage ? ` (${stage.replace(/_/g, " ")})` : ""}: ${message || "no error recorded"}`,
+    infrastructure: stage === "model_request",
   }
 }
 
@@ -672,7 +742,12 @@ function isCommandPhase(): boolean {
 }
 
 export type RecordProofResult =
-  | { ok: true; status: "accepted" | "rejected"; proof: UserStoryProof; message: string }
+  | {
+      ok: true
+      status: "accepted" | "rejected"
+      proof: UserStoryProof
+      message: string
+    }
   | { ok: false; code: string; message: string }
 
 export function recordUserStoryProof(input: {
@@ -683,21 +758,27 @@ export function recordUserStoryProof(input: {
   const run = processes.getProcessRun(input.processRunId)
   const phaseRun = processes.getPhaseRun(input.processPhaseRunId)
   if (!run || !phaseRun)
-    return { ok: false, code: "unavailable", message: "This run is no longer available." }
+    return {
+      ok: false,
+      code: "unavailable",
+      message: "This run is no longer available.",
+    }
   const root = rootRun(run)
   const link = root.missionControl
   if (!link?.userStoryId)
     return {
       ok: false,
       code: "unavailable",
-      message: "record_proof is only available inside a Mission Control user story run.",
+      message:
+        "record_proof is only available inside a Mission Control user story run.",
     }
   const phase = processes.getPhase(phaseRun.phaseId)
   if (!phase?.proofStep)
     return {
       ok: false,
       code: "not_proof_step",
-      message: "Only the playbook's proof step may record the user story proof.",
+      message:
+        "Only the playbook's proof step may record the user story proof.",
     }
   const verifier = phaseRun.seatAddress
     ? root.seatBindings?.seats[phaseRun.seatAddress]
@@ -706,15 +787,24 @@ export function recordUserStoryProof(input: {
     return {
       ok: false,
       code: "no_verifier_seat",
-      message: "The proof step must run in a Mission Control seat so the verifier is known.",
+      message:
+        "The proof step must run in a Mission Control seat so the verifier is known.",
     }
   const userStory = features.getUserStory(link.userStoryId)
   const feature = features.getFeature(link.featureId)
   const playbookRun = playbooks.getPlaybookRun(link.playbookRunId)
   if (!userStory || !feature || !playbookRun)
-    return { ok: false, code: "unavailable", message: "The user story is no longer available." }
+    return {
+      ok: false,
+      code: "unavailable",
+      message: "The user story is no longer available.",
+    }
   if (playbookRun.status !== "running")
-    return { ok: false, code: "run_finished", message: "This user story run has already finished." }
+    return {
+      ok: false,
+      code: "run_finished",
+      message: "This user story run has already finished.",
+    }
 
   const criteria = userStoryCriteria(userStory)
   const submission = parseProofSubmission(input.args, criteria)
@@ -733,15 +823,24 @@ export function recordUserStoryProof(input: {
   })
   switch (decision.kind) {
     case "invalid":
-      return { ok: false, code: "proof_rejected_by_rules", message: decision.message }
+      return {
+        ok: false,
+        code: "proof_rejected_by_rules",
+        message: decision.message,
+      }
     case "already_accepted":
       return {
         ok: false,
         code: "already_accepted",
-        message: "This user story's proof is already accepted and frozen. Do not record it again.",
+        message:
+          "This user story's proof is already accepted and frozen. Do not record it again.",
       }
     case "revisions_exhausted":
-      return { ok: false, code: "revisions_exhausted", message: decision.message }
+      return {
+        ok: false,
+        code: "revisions_exhausted",
+        message: decision.message,
+      }
   }
 
   getDb().transaction(() => {

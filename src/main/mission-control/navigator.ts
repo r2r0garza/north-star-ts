@@ -29,6 +29,7 @@ import {
   type HookName,
   type Position,
   type PositionInput,
+  type PositionUserStoryInput,
 } from "../../shared/mission-control/position"
 import { NAVIGATOR_ADDRESS, seatDirectory, USER_ADDRESS } from "./comms"
 import type { WorkspaceMode } from "./integration"
@@ -38,6 +39,7 @@ import {
   maxConcurrentUserStories,
   maxUserStoryAttempts,
   playbookFor,
+  processRunFailure,
 } from "./user-story-runner"
 
 // The Navigator (plan 106.6): GPS for a feature. Deterministic and
@@ -127,13 +129,18 @@ export function drivingLead(
   }
   const order = [...chain.reverse(), ...pods.filter((p) => !chain.includes(p))]
   for (const pod of order) {
-    const lead = directory.find((s) => s.podKey === pod.key && s.isLead && !s.vacant)
+    const lead = directory.find(
+      (s) => s.podKey === pod.key && s.isLead && !s.vacant
+    )
     if (lead) return { address: lead.address, rights: lead.decisionRights }
   }
   return null
 }
 
-function hookNames(playbookId: string | null, altitude: "feature" | "milestone"): HookName[] {
+function hookNames(
+  playbookId: string | null,
+  altitude: "feature" | "milestone"
+): HookName[] {
   return playbookFor(altitude, playbookId).hooks.map((h) => h.hook as HookName)
 }
 
@@ -145,17 +152,24 @@ export function budgetUsage(
   now: number,
   final = false
 ): BudgetUsage {
-  const runs = playbooks.listPlaybookRuns({ featureId: feature.id, status: "running" })
+  const runs = playbooks.listPlaybookRuns({
+    featureId: feature.id,
+    status: "running",
+  })
   const userStories = milestone ? features.listUserStories(milestone.id) : []
   return {
-    maxConcurrentUserStories: runs.filter((r) => r.userStoryId && r.hook === "run").length,
+    maxConcurrentUserStories: runs.filter(
+      (r) => r.userStoryId && r.hook === "run"
+    ).length,
     maxUserStoryAttempts: userStories
       .filter((s) => final || !["done", "cancelled"].includes(s.status))
       .reduce((max, s) => Math.max(max, s.attempts), 0),
     maxPlanRevisionsPerMilestone: milestone
       ? features.countRevisions(feature.id, milestone.id, "revise_plan")
       : 0,
-    maxAgentUserStoriesPerMilestone: milestone ? features.countSeatCreatedUserStories(milestone.id) : 0,
+    maxAgentUserStoriesPerMilestone: milestone
+      ? features.countSeatCreatedUserStories(milestone.id)
+      : 0,
     maxMessagesPerHour: comms.countSeatMessagesSince(feature.id, now - HOUR_MS),
     maxActiveHours: Math.round((feature.drive.activeMs / HOUR_MS) * 100) / 100,
   }
@@ -169,9 +183,35 @@ export function positionInput(
   const milestones = features.listMilestones(feature.id)
   const userStories = milestones.flatMap((m) => features.listUserStories(m.id))
   const rig = feature.rigSnapshot
-  const active = milestones.find((m) => !["completed", "cancelled"].includes(m.status)) ?? null
-  const measured = active ?? milestones.filter((m) => m.status === "completed").at(-1) ?? null
+  const active =
+    milestones.find((m) => !["completed", "cancelled"].includes(m.status)) ??
+    null
+  const measured =
+    active ?? milestones.filter((m) => m.status === "completed").at(-1) ?? null
   const final = !active && !!measured
+  const playbookRuns = playbooks.listPlaybookRuns({ featureId: feature.id })
+  // A failed user story's latest run: why it failed, and whether the model
+  // request (not the user story's work) is what failed.
+  const lastFailure = (
+    userStoryId: string
+  ): PositionUserStoryInput["lastFailure"] => {
+    const run = playbookRuns
+      .filter(
+        (r) =>
+          r.userStoryId === userStoryId &&
+          r.hook === "run" &&
+          r.status === "failed"
+      )
+      .sort((a, b) => b.createdAt - a.createdAt)[0]
+    if (!run) return null
+    const failure = run.processRunId
+      ? processRunFailure(run.processRunId)
+      : null
+    return {
+      reason: failure?.reason ?? run.outcomeReason ?? "The run failed.",
+      infrastructure: failure?.infrastructure ?? false,
+    }
+  }
   return {
     feature: {
       id: feature.id,
@@ -204,6 +244,7 @@ export function positionInput(
       touchHints: s.spec.touchHints,
       acceptanceCount: s.spec.acceptance.length,
       proofVerdict: (s.proof as UserStoryProof | null)?.verdict ?? null,
+      lastFailure: s.status === "failed" ? lastFailure(s.id) : null,
     })),
     edges: milestones.flatMap((m) =>
       features.listEdges(m.id).map((e) => ({
@@ -212,7 +253,7 @@ export function positionInput(
         toUserStoryId: e.toUserStoryId,
       }))
     ),
-    runs: playbooks.listPlaybookRuns({ featureId: feature.id }).map((r) => ({
+    runs: playbookRuns.map((r) => ({
       id: r.id,
       hook: r.hook as HookName,
       milestoneId: r.milestoneId,
@@ -240,7 +281,11 @@ export function positionInput(
         "(no changes)",
     })),
     escalations: comms
-      .listMessages({ featureId: feature.id, toAddress: USER_ADDRESS, statuses: ["delivered"] })
+      .listMessages({
+        featureId: feature.id,
+        toAddress: USER_ADDRESS,
+        statuses: ["delivered"],
+      })
       .filter((m) => m.kind === "escalation")
       .map((m) => ({
         id: m.id,
@@ -251,7 +296,8 @@ export function positionInput(
     pods: (rig?.pods ?? []).map((pod) => ({
       key: pod.key,
       builderSeats: rig!.seats.filter(
-        (seat) => seat.podId === pod.id && seat.role === "builder" && seat.agentRefId
+        (seat) =>
+          seat.podId === pod.id && seat.role === "builder" && seat.agentRefId
       ).length,
     })),
     lead: rig ? drivingLead(rig, feature.defaultPodKey) : null,
@@ -269,24 +315,32 @@ export function positionInput(
 
 function tickState(position: Position): NavigatorTickState {
   const milestone = position.milestone
-  if (!milestone) return { milestoneId: null, milestoneStatus: null, userStories: {} }
+  if (!milestone)
+    return { milestoneId: null, milestoneStatus: null, userStories: {} }
   const userStories: Record<string, string> = {}
   for (const ref of Object.values(position.userStories))
-    if (
-      [...milestone.waves.flat()].includes(ref.id)
-    )
+    if ([...milestone.waves.flat()].includes(ref.id))
       userStories[ref.key] = ref.status
-  return { milestoneId: milestone.id, milestoneStatus: milestone.status, userStories }
+  return {
+    milestoneId: milestone.id,
+    milestoneStatus: milestone.status,
+    userStories,
+  }
 }
 
 // What changed since the last recorded tick, as short phrases.
-function changesSince(previous: NavigatorTick | null, state: NavigatorTickState): string[] {
+function changesSince(
+  previous: NavigatorTick | null,
+  state: NavigatorTickState
+): string[] {
   const before = previous?.state
   if (!before || before.milestoneId !== state.milestoneId)
     return state.milestoneId ? ["The active milestone changed."] : []
   const changes: string[] = []
   if (before.milestoneStatus !== state.milestoneStatus)
-    changes.push(`milestone ${before.milestoneStatus} → ${state.milestoneStatus}`)
+    changes.push(
+      `milestone ${before.milestoneStatus} → ${state.milestoneStatus}`
+    )
   for (const [key, status] of Object.entries(state.userStories ?? {})) {
     const was = before.userStories?.[key]
     if (!was) changes.push(`user story ${key} added (${status})`)
@@ -319,10 +373,14 @@ export function renderDirection(input: {
         `Ready to start now (assign_user_story, critical path first): ${position.dispatch.map((d) => `${key(d.userStory)}${d.retry ? " (retry_user_story)" : ""}`).join(", ")}.`
       )
     if (position.feature.nextHook)
-      lines.push(`The user runs the ${position.feature.nextHook.label}; no action needed from you.`)
+      lines.push(
+        `The user runs the ${position.feature.nextHook.label}; no action needed from you.`
+      )
   }
   if (lead.length) {
-    lines.push(mode === "autopilot" ? "Decision needed from you:" : "Waiting on you:")
+    lines.push(
+      mode === "autopilot" ? "Decision needed from you:" : "Waiting on you:"
+    )
     for (const d of lead) lines.push(`- ${d.summary}`)
   }
   if (user.length) {
@@ -338,7 +396,10 @@ export function renderDirection(input: {
 export class Navigator {
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>()
   private readonly chains = new Map<string, Promise<unknown>>()
-  private readonly modes = new Map<string, { key: string; mode: WorkspaceMode }>()
+  private readonly modes = new Map<
+    string,
+    { key: string; mode: WorkspaceMode }
+  >()
   private heartbeat: ReturnType<typeof setInterval> | null = null
   private stopped = false
 
@@ -412,9 +473,15 @@ export class Navigator {
     return next
   }
 
-  private async workspace(feature: Feature): Promise<PositionInput["workspace"]> {
+  private async workspace(
+    feature: Feature
+  ): Promise<PositionInput["workspace"]> {
     if (!feature.workspaceId)
-      return { mode: "none", busy: false, reason: "the feature has no workspace" }
+      return {
+        mode: "none",
+        busy: false,
+        reason: "the feature has no workspace",
+      }
     const key = feature.workspaceId
     let cached = this.modes.get(feature.id)
     if (!cached || cached.key !== key) {
@@ -441,7 +508,8 @@ export class Navigator {
 
   // Fold elapsed driving time into the feature's active-time budget.
   private accrue(feature: Feature): Feature {
-    const driving = feature.status === "active" && feature.driveMode !== "manual"
+    const driving =
+      feature.status === "active" && feature.driveMode !== "manual"
     const now = this.now()
     const { accountedAt, activeMs } = feature.drive
     if (!driving) {
@@ -449,7 +517,10 @@ export class Navigator {
         ? feature
         : features.setFeatureDrive(feature.id, { accountedAt: null })
     }
-    const step = accountedAt === null ? 0 : Math.max(0, Math.min(now - accountedAt, MAX_ACCRUAL_STEP_MS))
+    const step =
+      accountedAt === null
+        ? 0
+        : Math.max(0, Math.min(now - accountedAt, MAX_ACCRUAL_STEP_MS))
     return features.setFeatureDrive(feature.id, {
       activeMs: activeMs + step,
       accountedAt: now,
@@ -464,7 +535,8 @@ export class Navigator {
     feature = this.accrue(feature)
     const active = activeMilestoneOf(feature.id)
     // Bookkeeping, in every mode: the milestone status follows its user stories.
-    if (active && feature.status === "active") this.deps.advanceMilestone(active.id)
+    if (active && feature.status === "active")
+      this.deps.advanceMilestone(active.id)
 
     const position = await this.position(featureId)
     const hash = positionFingerprint(position)
@@ -489,7 +561,12 @@ export class Navigator {
       if (hours?.level === "hard") {
         const reason = `The active-time budget of ${hours.limit} h is used up. Raise it to keep driving.`
         this.pause(featureId, reason, "budget")
-        actions.push({ kind: "auto_pause", target: null, ok: true, detail: reason })
+        actions.push({
+          kind: "auto_pause",
+          target: null,
+          ok: true,
+          detail: reason,
+        })
         this.deps.notifyUser(`Mission Control paused “${feature.name}”`, reason)
       } else if (mode === "autopilot") {
         await this.drive(feature, position, actions)
@@ -497,7 +574,10 @@ export class Navigator {
         if (retry === MAX_ACTION_RETRIES && failed.length)
           this.deps.notifyUser(
             `Mission Control is stuck on “${feature.name}”`,
-            `After ${MAX_ACTION_RETRIES} retries: ${failed.map((a) => a.detail).join("; ")}`.slice(0, 400)
+            `After ${MAX_ACTION_RETRIES} retries: ${failed.map((a) => a.detail).join("; ")}`.slice(
+              0,
+              400
+            )
           )
       }
       if (!actions.some((a) => a.kind === "auto_pause")) {
@@ -506,7 +586,10 @@ export class Navigator {
         if (forUser.length) {
           this.deps.notifyUser(
             `Mission Control: “${feature.name}” is waiting on you`,
-            forUser.map((d) => d.summary).join("\n").slice(0, 400)
+            forUser
+              .map((d) => d.summary)
+              .join("\n")
+              .slice(0, 400)
           )
           actions.push({
             kind: "notify",
@@ -534,7 +617,8 @@ export class Navigator {
 
   // Which retry this tick would be (1-based), or 0 when it shouldn't retry.
   private retryNumber(feature: Feature, previous: NavigatorTick): number {
-    if (feature.status !== "active" || feature.driveMode !== "autopilot") return 0
+    if (feature.status !== "active" || feature.driveMode !== "autopilot")
+      return 0
     if (!previous.actions.some((a) => MECHANICAL.has(a.kind) && !a.ok)) return 0
     if (this.now() - previous.createdAt < ACTION_RETRY_MS) return 0
     let streak = 0
@@ -555,7 +639,11 @@ export class Navigator {
         !milestone.integrationBranch &&
         milestone.mergePolicy.mode === "manual"
       )
-        features.setMilestoneMergePolicy(milestone.id, "local_merge", NAVIGATOR_ADDRESS)
+        features.setMilestoneMergePolicy(
+          milestone.id,
+          "local_merge",
+          NAVIGATOR_ADDRESS
+        )
   }
 
   // Autopilot's mechanical steps.
@@ -567,13 +655,26 @@ export class Navigator {
     const actor = NAVIGATOR_ADDRESS
     // The planning proposal, when the user opted into applying it unreviewed.
     if (feature.drive.autoApplyPlan) {
-      for (const proposal of proposalsRepo.listProposals(feature.id, "pending")) {
+      for (const proposal of proposalsRepo.listProposals(
+        feature.id,
+        "pending"
+      )) {
         if (proposal.kind !== "plan") continue
         try {
           applyProposal(proposal.id, actor)
-          actions.push({ kind: "apply_plan", target: proposal.id, ok: true, detail: "Applied the planning proposal (auto-apply is on)" })
+          actions.push({
+            kind: "apply_plan",
+            target: proposal.id,
+            ok: true,
+            detail: "Applied the planning proposal (auto-apply is on)",
+          })
         } catch (error) {
-          actions.push({ kind: "apply_plan", target: proposal.id, ok: false, detail: errorText(error) })
+          actions.push({
+            kind: "apply_plan",
+            target: proposal.id,
+            ok: false,
+            detail: errorText(error),
+          })
         }
         return
       }
@@ -586,9 +687,19 @@ export class Navigator {
           milestoneId: maneuver.hook.milestoneId,
           hook: maneuver.hook.hook as PlaybookHookName,
         })
-        actions.push({ kind: "run_hook", target: maneuver.hook.hook, ok: true, detail: `Started the ${maneuver.hook.label}` })
+        actions.push({
+          kind: "run_hook",
+          target: maneuver.hook.hook,
+          ok: true,
+          detail: `Started the ${maneuver.hook.label}`,
+        })
       } catch (error) {
-        actions.push({ kind: "run_hook", target: maneuver.hook.hook, ok: false, detail: errorText(error) })
+        actions.push({
+          kind: "run_hook",
+          target: maneuver.hook.hook,
+          ok: false,
+          detail: errorText(error),
+        })
       }
       return
     }
@@ -599,12 +710,24 @@ export class Navigator {
           await this.deps.startUserStory(item.userStory, {
             actor,
             ...(item.retry
-              ? { note: "Automatic retry by the Navigator: the previous attempt stopped without a rejected proof. Check what interrupted it before repeating the same approach." }
+              ? {
+                  note: "Automatic retry by the Navigator: the previous attempt stopped without a rejected proof. Check what interrupted it before repeating the same approach.",
+                }
               : {}),
           })
-          actions.push({ kind: item.retry ? "retry_user_story" : "start_user_story", target: key, ok: true, detail: `Started ${key}` })
+          actions.push({
+            kind: item.retry ? "retry_user_story" : "start_user_story",
+            target: key,
+            ok: true,
+            detail: `Started ${key}`,
+          })
         } catch (error) {
-          actions.push({ kind: item.retry ? "retry_user_story" : "start_user_story", target: key, ok: false, detail: errorText(error) })
+          actions.push({
+            kind: item.retry ? "retry_user_story" : "start_user_story",
+            target: key,
+            ok: false,
+            detail: errorText(error),
+          })
         }
       }
       return
@@ -612,21 +735,45 @@ export class Navigator {
     if (maneuver.kind === "complete_milestone") {
       try {
         await this.deps.completeMilestone(maneuver.milestoneId)
-        actions.push({ kind: "complete_milestone", target: maneuver.milestoneId, ok: true, detail: maneuver.text })
+        actions.push({
+          kind: "complete_milestone",
+          target: maneuver.milestoneId,
+          ok: true,
+          detail: maneuver.text,
+        })
       } catch (error) {
-        actions.push({ kind: "complete_milestone", target: maneuver.milestoneId, ok: false, detail: errorText(error) })
+        actions.push({
+          kind: "complete_milestone",
+          target: maneuver.milestoneId,
+          ok: false,
+          detail: errorText(error),
+        })
       }
       return
     }
     if (maneuver.kind === "complete_feature") {
-      features.setFeatureStatus(feature.id, "completed", "Every milestone is complete", actor)
-      actions.push({ kind: "complete_feature", target: feature.id, ok: true, detail: "Feature complete" })
-      this.deps.notifyUser(`Mission Control: “${feature.name}” is complete`, "Every milestone landed.")
+      features.setFeatureStatus(
+        feature.id,
+        "completed",
+        "Every milestone is complete",
+        actor
+      )
+      actions.push({
+        kind: "complete_feature",
+        target: feature.id,
+        ok: true,
+        detail: "Feature complete",
+      })
+      this.deps.notifyUser(
+        `Mission Control: “${feature.name}” is complete`,
+        "Every milestone landed."
+      )
       return
     }
     // Merges queued behind a restart or a busy repository.
     const milestoneId = position.milestone?.id
-    if (milestoneId && position.milestone!.integrating.length) this.deps.kickMerges(milestoneId)
+    if (milestoneId && position.milestone!.integrating.length)
+      this.deps.kickMerges(milestoneId)
   }
 
   // Directions to the lead: copilot after every change, autopilot only when a
@@ -641,20 +788,33 @@ export class Navigator {
     const lead = position.lead
     if (!lead) return
     const mode = feature.driveMode
-    const leadDecisions = position.pendingDecisions.filter((d) => d.owner === "lead")
+    const leadDecisions = position.pendingDecisions.filter(
+      (d) => d.owner === "lead"
+    )
     if (mode === "autopilot" && !fresh.some((d) => d.owner === "lead")) return
     if (mode === "copilot" && position.feature.complete) return
     const body = renderDirection({
       position,
       mode,
       changes: changesSince(previous, tickState(position)),
-      decisions: mode === "autopilot" ? leadDecisions : position.pendingDecisions,
+      decisions:
+        mode === "autopilot" ? leadDecisions : position.pendingDecisions,
     })
     try {
       this.deps.direct({ featureId: feature.id, to: lead, body })
-      actions.push({ kind: "direction", target: lead, ok: true, detail: body.split("\n")[0] })
+      actions.push({
+        kind: "direction",
+        target: lead,
+        ok: true,
+        detail: body.split("\n")[0],
+      })
     } catch (error) {
-      actions.push({ kind: "direction", target: lead, ok: false, detail: errorText(error) })
+      actions.push({
+        kind: "direction",
+        target: lead,
+        ok: false,
+        detail: errorText(error),
+      })
     }
   }
 
@@ -669,7 +829,8 @@ export class Navigator {
   ): Promise<{ planning: PlaybookRun | null; planningError: string | null }> {
     const feature = features.getFeature(featureId)
     if (!feature) throw new Error(`Feature not found: ${featureId}`)
-    if (feature.status !== "draft") throw new Error("Only a draft feature can be started.")
+    if (feature.status !== "draft")
+      throw new Error("Only a draft feature can be started.")
     features.setDriveMode(featureId, options.mode)
     if (options.mode === "autopilot") this.autopilotMergePolicy(featureId)
     features.setFeatureDrive(featureId, {
@@ -689,7 +850,11 @@ export class Navigator {
       .some((m) => features.listUserStories(m.id).length > 0)
     if (!planned && hookNames(feature.playbookId, "feature").includes("plan")) {
       try {
-        planning = await this.deps.startHook({ featureId, milestoneId: null, hook: "plan" })
+        planning = await this.deps.startHook({
+          featureId,
+          milestoneId: null,
+          hook: "plan",
+        })
       } catch (error) {
         planningError = errorText(error)
       }
@@ -701,10 +866,15 @@ export class Navigator {
   // In-flight worker turns finish (or pause through their own semantics);
   // nothing new starts — launches, wakes, and hooks all require an active
   // feature — until the user resumes.
-  pause(featureId: string, reason: string, by: "user" | "budget" = "user"): Feature {
+  pause(
+    featureId: string,
+    reason: string,
+    by: "user" | "budget" = "user"
+  ): Feature {
     const before = features.getFeature(featureId)
     if (!before) throw new Error(`Feature not found: ${featureId}`)
-    if (before.status !== "active") throw new Error("Only an active feature can be paused.")
+    if (before.status !== "active")
+      throw new Error("Only an active feature can be paused.")
     const accrued = this.accrue(before)
     features.setFeatureDrive(featureId, {
       accountedAt: null,
@@ -725,7 +895,8 @@ export class Navigator {
   resume(featureId: string): Feature {
     const before = features.getFeature(featureId)
     if (!before) throw new Error(`Feature not found: ${featureId}`)
-    if (before.status !== "paused") throw new Error("Only a paused feature can be resumed.")
+    if (before.status !== "paused")
+      throw new Error("Only a paused feature can be resumed.")
     // Resuming into an exhausted time budget would pause again at once.
     if (before.driveMode !== "manual") {
       const limit = budgetLimit(before.budgets, "maxActiveHours")
@@ -739,7 +910,11 @@ export class Navigator {
       pausedBy: null,
       accountedAt: before.driveMode === "manual" ? null : this.now(),
     })
-    const after = features.setFeatureStatus(featureId, "active", "Resumed by the user")
+    const after = features.setFeatureStatus(
+      featureId,
+      "active",
+      "Resumed by the user"
+    )
     this.deps.onResumed?.(featureId)
     this.poke(featureId)
     return after
@@ -751,7 +926,10 @@ export class Navigator {
     const before = features.getFeature(featureId)
     if (!before) throw new Error(`Feature not found: ${featureId}`)
     const after = features.setFeatureStatus(featureId, "cancelled", reason)
-    for (const run of playbooks.listPlaybookRuns({ featureId, status: "running" }))
+    for (const run of playbooks.listPlaybookRuns({
+      featureId,
+      status: "running",
+    }))
       this.deps.cancelPlaybookRun(run.id)
     features.setFeatureDrive(featureId, { accountedAt: null })
     this.deps.onCancelled?.(featureId)
@@ -793,7 +971,9 @@ export class Navigator {
     const feature = features.getFeature(featureId)
     if (!feature) throw new Error(`Feature not found: ${featureId}`)
     if (!["draft", "paused"].includes(feature.status))
-      throw new Error("Pause the feature before changing how planning is applied.")
+      throw new Error(
+        "Pause the feature before changing how planning is applied."
+      )
     const after = features.setFeatureDrive(featureId, { autoApplyPlan: value })
     this.poke(featureId)
     return after
@@ -801,7 +981,10 @@ export class Navigator {
 }
 
 function errorText(error: unknown): string {
-  return (error instanceof Error ? error.message : String(error)).replace(/^touch_overlap: /, "")
+  return (error instanceof Error ? error.message : String(error)).replace(
+    /^touch_overlap: /,
+    ""
+  )
 }
 
 // The installed Navigator; map tools reach position() through here.

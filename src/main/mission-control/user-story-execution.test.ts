@@ -117,6 +117,7 @@ import { ProcessService } from "../tasks/process/service"
 import { createDefaultPlaybook } from "./playbook-defaults"
 import {
   UserStoryRunner,
+  processRunFailure,
   recordUserStoryProof,
   type RecordProofResult,
 } from "./user-story-runner"
@@ -230,7 +231,10 @@ function billingFeature(rigId: string) {
   return { feature: full.feature, milestone, userStory: full.userStories[0] }
 }
 
-async function drive(processRunId: string, signal = new AbortController().signal) {
+async function drive(
+  processRunId: string,
+  signal = new AbortController().signal
+) {
   const run = processes.getProcessRun(processRunId)!
   await service.execute({
     task: { id: run.taskId!, input: { processRunId } } as never,
@@ -243,7 +247,11 @@ async function drive(processRunId: string, signal = new AbortController().signal
 const acceptedProof = {
   verdict: "accepted",
   criteria: [
-    { id: "AC-1", status: "met", evidence: "Ran the model tests: line items persist." },
+    {
+      id: "AC-1",
+      status: "met",
+      evidence: "Ran the model tests: line items persist.",
+    },
     { id: "AC-2", status: "met", evidence: "Totals test passes." },
   ],
 }
@@ -273,7 +281,9 @@ describe.skipIf(!sqliteLoads)("user story execution", () => {
     })
     await drive(playbookRun.processRunId!)
 
-    const workers = loopCalls.filter((c) => !c.userMessage?.startsWith("# Review the"))
+    const workers = loopCalls.filter(
+      (c) => !c.userMessage?.startsWith("# Review the")
+    )
     expect(workers.map((c) => c.agentName)).toEqual([
       "agentref:v1:builder",
       "agentref:v1:builder",
@@ -285,16 +295,23 @@ describe.skipIf(!sqliteLoads)("user story execution", () => {
     // Seat charter, rig culture, pod culture, and intent chain are in context.
     expect(workers[0].sectionContent).toContain("builder@implementation")
     expect(workers[0].sectionContent).toContain("Builder charter")
-    expect(workers[0].sectionContent).toContain("Rig culture: small reviewed steps.")
+    expect(workers[0].sectionContent).toContain(
+      "Rig culture: small reviewed steps."
+    )
     expect(workers[0].sectionContent).toContain("Pod culture: tests first.")
     expect(workers[0].sectionContent).toContain("Customers can be invoiced.")
     expect(workers[2].sectionContent).toContain("QA charter")
     // The objective is the rendered spec with stable criterion ids.
     expect(workers[0].userMessage).toContain("**AC-1**: Invoice has line items")
     expect(workers[2].userMessage).toContain("record_proof")
-    expect(workers[2].proofResult).toMatchObject({ ok: true, status: "accepted" })
+    expect(workers[2].proofResult).toMatchObject({
+      ok: true,
+      status: "accepted",
+    })
 
-    const phaseRuns = processes.listPhaseRuns({ runId: playbookRun.processRunId! })
+    const phaseRuns = processes.listPhaseRuns({
+      runId: playbookRun.processRunId!,
+    })
     expect(phaseRuns.map((pr) => pr.seatAddress).sort()).toEqual([
       "builder@implementation",
       "builder@implementation",
@@ -329,7 +346,9 @@ describe.skipIf(!sqliteLoads)("user story execution", () => {
     )
     expect(enqueued).toHaveLength(0)
     expect(loopCalls).toHaveLength(0)
-    expect(playbooks.listPlaybookRuns({ userStoryId: userStory.id })).toHaveLength(0)
+    expect(
+      playbooks.listPlaybookRuns({ userStoryId: userStory.id })
+    ).toHaveLength(0)
     expect(features.getUserStory(userStory.id)).toMatchObject({
       status: "draft",
       attempts: 0,
@@ -355,7 +374,11 @@ describe.skipIf(!sqliteLoads)("user story execution", () => {
     const test = graph.phases.find((p) => p.key === "test")!
     for (const agent of processes.listPhaseAgents(test.id))
       processes.deletePhaseAgent(agent.id)
-    processes.createPhaseAgent({ phaseId: test.id, seatRole: "builder", position: 0 })
+    processes.createPhaseAgent({
+      phaseId: test.id,
+      seatRole: "builder",
+      position: 0,
+    })
     proofSubmissions.push(acceptedProof)
 
     const playbookRun = await runner.startUserStory(userStory.id)
@@ -366,9 +389,9 @@ describe.skipIf(!sqliteLoads)("user story execution", () => {
       ok: false,
       code: "proof_rejected_by_rules",
     })
-    expect(
-      (proofCall.proofResult as { message: string }).message
-    ).toMatch(/builder@implementation built this user story/)
+    expect((proofCall.proofResult as { message: string }).message).toMatch(
+      /builder@implementation built this user story/
+    )
     expect(features.getUserStory(userStory.id)!.status).toBe("failed")
     expect(playbooks.getPlaybookRun(playbookRun.id)).toMatchObject({
       status: "failed",
@@ -543,13 +566,17 @@ describe.skipIf(!sqliteLoads)("user story execution", () => {
     runner.cancelUserStory(userStory.id)
     expect(cancelledTasks).toHaveLength(1)
     expect(playbooks.getPlaybookRun(first.id)!.status).toBe("cancelled")
-    expect(processes.getProcessRun(first.processRunId!)!.status).toBe("cancelled")
+    expect(processes.getProcessRun(first.processRunId!)!.status).toBe(
+      "cancelled"
+    )
     expect(features.getUserStory(userStory.id)!.status).toBe("failed")
 
     await runner.startUserStory(userStory.id)
     runner.cancelUserStory(userStory.id)
     expect(features.getUserStory(userStory.id)!.attempts).toBe(2)
-    await expect(runner.startUserStory(userStory.id)).rejects.toThrow(/all 2 attempts/)
+    await expect(runner.startUserStory(userStory.id)).rejects.toThrow(
+      /all 2 attempts/
+    )
   })
 
   it("refuses a proof step whose seat runs on a CLI provider before spending an attempt", async () => {
@@ -566,6 +593,58 @@ describe.skipIf(!sqliteLoads)("user story execution", () => {
     )
     expect(features.getUserStory(userStory.id)!.attempts).toBe(0)
     expect(enqueued).toHaveLength(0)
+  })
+
+  it("records the failed phase and its error as the user story's failure cause", async () => {
+    const rig = orchestratedRig()
+    const { userStory } = billingFeature(rig.id)
+    const playbookRun = await runner.startUserStory(userStory.id)
+    const runId = playbookRun.processRunId!
+    const [spec] = processes.listPhases(
+      processes.getProcessRun(runId)!.processId!
+    )
+    const phaseRun = processes.createPhaseRun({
+      runId,
+      phaseId: spec.id,
+      status: "running",
+    })
+    processes.updatePhaseRun(phaseRun.id, {
+      status: "failed",
+      finishedAt: Date.now(),
+      error: "The model hit the output limit before returning a usable answer.",
+      failure: {
+        code: "model_request_failed",
+        stage: "model_request",
+        message:
+          "The model hit the output limit before returning a usable answer.",
+        retryable: false,
+        attempt: 1,
+        maxAttempts: 3,
+        runId,
+        phaseRunId: phaseRun.id,
+        phaseId: phaseRun.phaseId,
+        taskId: null,
+        workerTaskId: null,
+        agentName: null,
+        occurredAt: Date.now(),
+      },
+    })
+    processes.updateProcessRun(runId, {
+      status: "failed",
+      finishedAt: Date.now(),
+    })
+
+    expect(processRunFailure(runId)).toEqual({
+      reason: expect.stringMatching(
+        /^Phase ".+" failed \(model request\): The model hit the output limit/
+      ),
+      infrastructure: true,
+    })
+    runner.settle(runId)
+    expect(playbooks.getPlaybookRun(playbookRun.id)!.outcomeReason).toMatch(
+      /^The user story's Process run failed\. Phase ".+" failed \(model request\)/
+    )
+    expect(features.getUserStory(userStory.id)!.status).toBe("failed")
   })
 
   it("refuses to retry a Mission Control run from the Processes screen", async () => {
@@ -648,7 +727,10 @@ describe.skipIf(!sqliteLoads)("user story execution", () => {
           milestoneId: milestone.id,
           key: "invoice-api",
           title: "Invoice API",
-          spec: { goal: "Expose invoices.", acceptance: ["GET works", "POST works"] },
+          spec: {
+            goal: "Expose invoices.",
+            acceptance: ["GET works", "POST works"],
+          },
         })
         .userStories.find((s) => s.key === "invoice-api")!
       const playbook = createDefaultPlaybook("user_story")
@@ -669,13 +751,17 @@ describe.skipIf(!sqliteLoads)("user story execution", () => {
         await drive(playbookRun.processRunId!)
         expect(features.getUserStory(id)!.status).toBe("done")
       }
-      const workers = loopCalls.filter((c) => !c.userMessage?.startsWith("# Review the"))
+      const workers = loopCalls.filter(
+        (c) => !c.userMessage?.startsWith("# Review the")
+      )
       return {
         feature,
         second,
         runIds,
         workers,
-        builder: workers.filter((c) => c.seat?.address === "builder@implementation"),
+        builder: workers.filter(
+          (c) => c.seat?.address === "builder@implementation"
+        ),
         qa: workers.filter((c) => c.seat?.address === "qa@implementation"),
       }
     }
@@ -693,7 +779,8 @@ describe.skipIf(!sqliteLoads)("user story execution", () => {
     })
 
     it("gives builder and QA one session per user story by default", async () => {
-      const { feature, second, runIds, workers, builder, qa } = await runTwoUserStories()
+      const { feature, second, runIds, workers, builder, qa } =
+        await runTwoUserStories()
       const sessionFor = (address: string, runId: string) =>
         seatSessionsRepo.listSeatSessions({
           featureId: feature.id,
@@ -703,7 +790,9 @@ describe.skipIf(!sqliteLoads)("user story execution", () => {
       // Spec and build share the builder's user story session; each user story gets its own.
       for (const [index, runId] of runIds.entries()) {
         const builderSession = sessionFor("builder@implementation", runId)
-        expect(builder.slice(index * 2, index * 2 + 2).map((c) => c.conversationId)).toEqual([
+        expect(
+          builder.slice(index * 2, index * 2 + 2).map((c) => c.conversationId)
+        ).toEqual([
           builderSession.conversationId,
           builderSession.conversationId,
         ])
@@ -715,14 +804,19 @@ describe.skipIf(!sqliteLoads)("user story execution", () => {
       expect(qa[0].conversationId).not.toBe(qa[1].conversationId)
       // No long-lived session was needed.
       expect(
-        seatSessionsRepo.listSeatSessions({ featureId: feature.id, playbookRunId: null })
+        seatSessionsRepo.listSeatSessions({
+          featureId: feature.id,
+          playbookRunId: null,
+        })
       ).toHaveLength(0)
       // Every role-bound worker is a seat turn, anchored to its user story.
       expect(workers.every((c) => c.seat?.profile === "work")).toBe(true)
       expect(qa[1].seat?.anchor).toEqual({ kind: "user_story", id: second.id })
       expect(qa[1].sectionContent).toContain("## Mission Control Comms")
       // Each step's frozen result is its own turn's output.
-      const secondRun = playbooks.listPlaybookRuns({ userStoryId: second.id })[0]
+      const secondRun = playbooks.listPlaybookRuns({
+        userStoryId: second.id,
+      })[0]
       const testRun = processes
         .listPhaseRuns({ runId: secondRun.processRunId! })
         .find((pr) => pr.seatAddress === "qa@implementation")!

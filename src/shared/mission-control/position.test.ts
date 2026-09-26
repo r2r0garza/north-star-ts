@@ -94,7 +94,10 @@ function input(over: Partial<PositionInput> = {}): PositionInput {
     escalations: [],
     workspace: { mode: "git", busy: false },
     pods: [{ key: "impl", builderSeats: 2 }],
-    lead: { address: "lead@orch", rights: ["assign_user_story", "revise_plan", "accept_proof"] },
+    lead: {
+      address: "lead@orch",
+      rights: ["assign_user_story", "revise_plan", "accept_proof"],
+    },
     limits: { maxConcurrentUserStories: 3, maxUserStoryAttempts: 3 },
     budgets: budgetMeters({}, NO_USAGE),
     ...over,
@@ -117,7 +120,11 @@ describe("computePosition — planning", () => {
     )
     expect(p.maneuver.kind).toBe("run_hook")
     expect(p.pendingDecisions).toEqual([
-      expect.objectContaining({ key: "hook_due:plan:", kind: "hook_due", owner: "user" }),
+      expect.objectContaining({
+        key: "hook_due:plan:",
+        kind: "hook_due",
+        owner: "user",
+      }),
     ])
   })
 
@@ -129,7 +136,10 @@ describe("computePosition — planning", () => {
       })
     )
     expect(p.maneuver.kind).toBe("run_hook")
-    expect(p.feature.nextHook).toMatchObject({ hook: "plan", milestoneId: null })
+    expect(p.feature.nextHook).toMatchObject({
+      hook: "plan",
+      milestoneId: null,
+    })
   })
 
   it("waits for the planning proposal, which only the user applies", () => {
@@ -138,12 +148,18 @@ describe("computePosition — planning", () => {
         feature: { ...input().feature, hooks: ["plan"] },
         milestones: [milestone("m1")],
         runs: [run("plan", "completed")],
-        proposals: [{ id: "p1", kind: "plan", proposer: "lead@orch", summary: "Plan" }],
+        proposals: [
+          { id: "p1", kind: "plan", proposer: "lead@orch", summary: "Plan" },
+        ],
       })
     )
     expect(p.maneuver.kind).toBe("decide")
     expect(p.pendingDecisions).toEqual([
-      expect.objectContaining({ key: "proposal:p1", kind: "plan_proposal", owner: "user" }),
+      expect.objectContaining({
+        key: "proposal:p1",
+        kind: "plan_proposal",
+        owner: "user",
+      }),
     ])
   })
 
@@ -194,7 +210,10 @@ describe("computePosition — waves and dispatch", () => {
   it("starts a dependent user story only once its predecessor merged", () => {
     const integrating = computePosition(
       input({
-        userStories: [userStory("a", "m1", { status: "integrating" }), userStory("c")],
+        userStories: [
+          userStory("a", "m1", { status: "integrating" }),
+          userStory("c"),
+        ],
         edges: [edge("a", "c")],
       })
     )
@@ -219,7 +238,10 @@ describe("computePosition — waves and dispatch", () => {
     )
     expect(capped.dispatch.map((d) => d.userStory)).toEqual(["a", "b"])
     expect(capped.deferred).toEqual([
-      { userStory: "c", reason: expect.stringContaining("2 user stories at once") },
+      {
+        userStory: "c",
+        reason: expect.stringContaining("2 user stories at once"),
+      },
     ])
     const onePod = computePosition(
       input({ userStories: three, pods: [{ key: "impl", builderSeats: 1 }] })
@@ -234,8 +256,18 @@ describe("computePosition — waves and dispatch", () => {
   it("counts user stories already running against capacity", () => {
     const p = computePosition(
       input({
-        userStories: [userStory("a", "m1", { status: "running" }), userStory("b"), userStory("c")],
-        runs: [run("run", "running", { userStoryId: "a", milestoneId: "m1", isolated: true })],
+        userStories: [
+          userStory("a", "m1", { status: "running" }),
+          userStory("b"),
+          userStory("c"),
+        ],
+        runs: [
+          run("run", "running", {
+            userStoryId: "a",
+            milestoneId: "m1",
+            isolated: true,
+          }),
+        ],
         limits: { maxConcurrentUserStories: 2, maxUserStoryAttempts: 3 },
       })
     )
@@ -255,7 +287,9 @@ describe("computePosition — waves and dispatch", () => {
       })
     )
     expect(p.dispatch.map((d) => d.userStory)).toEqual(["a", "c"])
-    expect(p.deferred).toEqual([{ userStory: "b", reason: "touch hints overlap a" }])
+    expect(p.deferred).toEqual([
+      { userStory: "b", reason: "touch hints overlap a" },
+    ])
   })
 
   it("runs one at a time in a non-git workspace, and none while it is busy", () => {
@@ -276,17 +310,26 @@ describe("computePosition — waves and dispatch", () => {
   })
 
   it("holds a user story without acceptance criteria and asks the lead", () => {
-    const p = computePosition(input({ userStories: [userStory("a", "m1", { acceptanceCount: 0 })] }))
+    const p = computePosition(
+      input({ userStories: [userStory("a", "m1", { acceptanceCount: 0 })] })
+    )
     expect(p.dispatch).toEqual([])
-    expect(p.milestone?.blocked).toEqual([{ userStory: "a", reason: "has no acceptance criteria" }])
-    expect(p.pendingDecisions[0]).toMatchObject({ kind: "user_story_unspecified", owner: "lead" })
+    expect(p.milestone?.blocked).toEqual([
+      { userStory: "a", reason: "has no acceptance criteria" },
+    ])
+    expect(p.pendingDecisions[0]).toMatchObject({
+      kind: "user_story_unspecified",
+      owner: "lead",
+    })
   })
 })
 
 describe("computePosition — failures and judgment", () => {
   it("retries a user story that stopped without a rejected proof", () => {
     const p = computePosition(
-      input({ userStories: [userStory("a", "m1", { status: "failed", attempts: 1 })] })
+      input({
+        userStories: [userStory("a", "m1", { status: "failed", attempts: 1 })],
+      })
     )
     expect(p.milestone?.retryable).toEqual(["a"])
     expect(p.dispatch).toEqual([{ userStory: "a", retry: true }])
@@ -295,7 +338,13 @@ describe("computePosition — failures and judgment", () => {
   it("hands a rejected proof to the lead instead of retrying", () => {
     const p = computePosition(
       input({
-        userStories: [userStory("a", "m1", { status: "failed", attempts: 1, proofVerdict: "rejected" })],
+        userStories: [
+          userStory("a", "m1", {
+            status: "failed",
+            attempts: 1,
+            proofVerdict: "rejected",
+          }),
+        ],
       })
     )
     expect(p.dispatch).toEqual([])
@@ -306,28 +355,98 @@ describe("computePosition — failures and judgment", () => {
 
   it("hands repeated failures (soft) and exhausted attempts (hard) to the lead", () => {
     const soft = computePosition(
-      input({ userStories: [userStory("a", "m1", { status: "failed", attempts: 2 })] })
+      input({
+        userStories: [userStory("a", "m1", { status: "failed", attempts: 2 })],
+      })
     )
-    expect(soft.pendingDecisions[0]).toMatchObject({ key: "user_story_failed:a:2", kind: "user_story_failed" })
+    expect(soft.pendingDecisions[0]).toMatchObject({
+      key: "user_story_failed:a:2",
+      kind: "user_story_failed",
+    })
     expect(soft.dispatch).toEqual([])
     const hard = computePosition(
-      input({ userStories: [userStory("a", "m1", { status: "failed", attempts: 3 })] })
+      input({
+        userStories: [userStory("a", "m1", { status: "failed", attempts: 3 })],
+      })
     )
     expect(hard.pendingDecisions[0].summary).toContain("used all 3 attempts")
+  })
+
+  it("retries a failed model request past the soft limit and names the cause", () => {
+    const lastFailure = {
+      reason:
+        'Phase "Refine" failed (model request): The model hit the output limit.',
+      infrastructure: true,
+    }
+    const soft = computePosition(
+      input({
+        userStories: [
+          userStory("a", "m1", { status: "failed", attempts: 2, lastFailure }),
+        ],
+      })
+    )
+    expect(soft.pendingDecisions).toEqual([])
+    expect(soft.dispatch).toEqual([{ userStory: "a", retry: true }])
+    const hard = computePosition(
+      input({
+        userStories: [
+          userStory("a", "m1", { status: "failed", attempts: 3, lastFailure }),
+        ],
+      })
+    )
+    expect(hard.pendingDecisions[0].summary).toContain(
+      'Cause: Phase "Refine" failed (model request)'
+    )
+    expect(hard.pendingDecisions[0].summary).toContain(
+      "splitting or rewriting it won't help"
+    )
+  })
+
+  it("includes the failure cause when a work failure goes to the lead", () => {
+    const p = computePosition(
+      input({
+        userStories: [
+          userStory("a", "m1", {
+            status: "failed",
+            attempts: 2,
+            lastFailure: {
+              reason: 'Phase "Build" failed (tool execution): tests failed',
+              infrastructure: false,
+            },
+          }),
+        ],
+      })
+    )
+    expect(p.pendingDecisions[0].summary).toContain(
+      'Cause: Phase "Build" failed (tool execution)'
+    )
+    expect(p.dispatch).toEqual([])
   })
 
   it("sends judgment to the user when the lead lacks the right, or in manual drive", () => {
     const noRight = computePosition(
       input({
         lead: { address: "lead@orch", rights: [] },
-        userStories: [userStory("a", "m1", { status: "failed", attempts: 1, proofVerdict: "rejected" })],
+        userStories: [
+          userStory("a", "m1", {
+            status: "failed",
+            attempts: 1,
+            proofVerdict: "rejected",
+          }),
+        ],
       })
     )
     expect(noRight.pendingDecisions[0].owner).toBe("user")
     const manual = computePosition(
       input({
         feature: { ...input().feature, driveMode: "manual" },
-        userStories: [userStory("a", "m1", { status: "failed", attempts: 1, proofVerdict: "rejected" })],
+        userStories: [
+          userStory("a", "m1", {
+            status: "failed",
+            attempts: 1,
+            proofVerdict: "rejected",
+          }),
+        ],
       })
     )
     expect(manual.pendingDecisions[0].owner).toBe("user")
@@ -336,22 +455,41 @@ describe("computePosition — failures and judgment", () => {
   it("reports user stories blocked by a cancelled dependency", () => {
     const p = computePosition(
       input({
-        userStories: [userStory("a", "m1", { status: "cancelled" }), userStory("b", "m1", { status: "blocked" })],
+        userStories: [
+          userStory("a", "m1", { status: "cancelled" }),
+          userStory("b", "m1", { status: "blocked" }),
+        ],
         edges: [edge("a", "b")],
       })
     )
     expect(p.milestone?.blocked).toEqual([
       { userStory: "b", reason: "depends on cancelled user story a" },
     ])
-    expect(p.pendingDecisions[0]).toMatchObject({ kind: "user_story_blocked", owner: "lead" })
+    expect(p.pendingDecisions[0]).toMatchObject({
+      kind: "user_story_blocked",
+      owner: "lead",
+    })
   })
 
   it("surfaces escalated merge conflicts and escalations for the user", () => {
     const p = computePosition(
       input({
-        milestones: [milestone("m1", { status: "integrating", integrationBranch: "mc/i/m1/integration" })],
+        milestones: [
+          milestone("m1", {
+            status: "integrating",
+            integrationBranch: "mc/i/m1/integration",
+          }),
+        ],
         userStories: [userStory("a", "m1", { status: "integrating" })],
-        mergeQueue: [{ id: "q1", userStoryId: "a", milestoneId: "m1", status: "conflict", escalated: true }],
+        mergeQueue: [
+          {
+            id: "q1",
+            userStoryId: "a",
+            milestoneId: "m1",
+            status: "conflict",
+            escalated: true,
+          },
+        ],
         escalations: [{ id: "e1", from: "qa@impl", subject: "Spec is wrong" }],
       })
     )
@@ -371,7 +509,10 @@ describe("computePosition — milestone lifecycle", () => {
       })
     )
     expect(p.maneuver.kind).toBe("run_hook")
-    expect(p.feature.nextHook).toMatchObject({ hook: "before_user_stories", milestoneId: "m1" })
+    expect(p.feature.nextHook).toMatchObject({
+      hook: "before_user_stories",
+      milestoneId: "m1",
+    })
     expect(p.dispatch).toEqual([])
     const reviewed = computePosition(
       input({
@@ -385,12 +526,24 @@ describe("computePosition — milestone lifecycle", () => {
 
   it("runs the milestone review, then asks the lead to judge the DoD", () => {
     const base = {
-      milestones: [milestone("m1", { status: "review", hooks: ["after_all_user_stories" as const] })],
+      milestones: [
+        milestone("m1", {
+          status: "review",
+          hooks: ["after_all_user_stories" as const],
+        }),
+      ],
       userStories: [userStory("a", "m1", { status: "done" })],
     }
-    expect(computePosition(input(base)).feature.nextHook?.hook).toBe("after_all_user_stories")
+    expect(computePosition(input(base)).feature.nextHook?.hook).toBe(
+      "after_all_user_stories"
+    )
     const reviewed = computePosition(
-      input({ ...base, runs: [run("after_all_user_stories", "completed", { milestoneId: "m1" })] })
+      input({
+        ...base,
+        runs: [
+          run("after_all_user_stories", "completed", { milestoneId: "m1" }),
+        ],
+      })
     )
     expect(reviewed.pendingDecisions).toEqual([
       expect.objectContaining({ key: "milestone_dod:m1", owner: "lead" }),
@@ -404,7 +557,10 @@ describe("computePosition — milestone lifecycle", () => {
         userStories: [userStory("a", "m1", { status: "done" })],
       })
     )
-    expect(p.maneuver).toMatchObject({ kind: "complete_milestone", milestoneId: "m1" })
+    expect(p.maneuver).toMatchObject({
+      kind: "complete_milestone",
+      milestoneId: "m1",
+    })
     expect(p.milestone?.doneConditionMet).toBe(true)
   })
 
@@ -432,13 +588,22 @@ describe("computePosition — milestone lifecycle", () => {
     const base = {
       feature: { ...input().feature, hooks: ["between_milestones" as const] },
       milestones: [milestone("m1", { status: "completed" }), milestone("m2")],
-      userStories: [userStory("a", "m1", { status: "done" }), userStory("b", "m2")],
+      userStories: [
+        userStory("a", "m1", { status: "done" }),
+        userStory("b", "m2"),
+      ],
     }
     const release = computePosition(input(base))
     expect(release.feature.activeMilestoneId).toBe("m2")
-    expect(release.feature.nextHook).toMatchObject({ hook: "between_milestones", milestoneId: "m1" })
+    expect(release.feature.nextHook).toMatchObject({
+      hook: "between_milestones",
+      milestoneId: "m1",
+    })
     const next = computePosition(
-      input({ ...base, runs: [run("between_milestones", "completed", { milestoneId: "m1" })] })
+      input({
+        ...base,
+        runs: [run("between_milestones", "completed", { milestoneId: "m1" })],
+      })
     )
     expect(next.dispatch.map((d) => d.userStory)).toEqual(["b"])
   })
@@ -449,7 +614,9 @@ describe("computePosition — milestone lifecycle", () => {
       milestones: [milestone("m1", { status: "completed" })],
       userStories: [userStory("a", "m1", { status: "done" })],
     }
-    expect(computePosition(input(base)).feature.nextHook?.hook).toBe("on_complete")
+    expect(computePosition(input(base)).feature.nextHook?.hook).toBe(
+      "on_complete"
+    )
     const done = computePosition(
       input({ ...base, runs: [run("on_complete", "completed")] })
     )
@@ -464,13 +631,14 @@ describe("computePosition — milestone lifecycle", () => {
       userStories: [userStory("a", "m1", { status: "done" })],
     }
     const earlier = run("on_complete", "completed", { createdAt: 100 })
-    expect(computePosition(input({ ...base, runs: [earlier] })).feature.nextHook?.hook).toBe(
-      "on_complete"
-    )
+    expect(
+      computePosition(input({ ...base, runs: [earlier] })).feature.nextHook
+        ?.hook
+    ).toBe("on_complete")
     const later = run("on_complete", "completed", { createdAt: 600 })
-    expect(computePosition(input({ ...base, runs: [earlier, later] })).maneuver.kind).toBe(
-      "complete_feature"
-    )
+    expect(
+      computePosition(input({ ...base, runs: [earlier, later] })).maneuver.kind
+    ).toBe("complete_feature")
   })
 
   it("asks for user stories when the active milestone is empty", () => {
@@ -480,7 +648,10 @@ describe("computePosition — milestone lifecycle", () => {
         userStories: [userStory("a", "m1", { status: "done" })],
       })
     )
-    expect(p.pendingDecisions[0]).toMatchObject({ kind: "milestone_empty", owner: "lead" })
+    expect(p.pendingDecisions[0]).toMatchObject({
+      kind: "milestone_empty",
+      owner: "lead",
+    })
   })
 })
 
@@ -489,7 +660,10 @@ describe("computePosition — budgets and identity", () => {
     const p = computePosition(
       input({
         userStories: [userStory("a")],
-        budgets: budgetMeters({}, { ...NO_USAGE, maxPlanRevisionsPerMilestone: 8, maxActiveHours: 8 }),
+        budgets: budgetMeters(
+          {},
+          { ...NO_USAGE, maxPlanRevisionsPerMilestone: 8, maxActiveHours: 8 }
+        ),
       })
     )
     expect(p.pendingDecisions.map((d) => [d.key, d.owner])).toEqual([
@@ -504,13 +678,19 @@ describe("computePosition — budgets and identity", () => {
       { ...NO_USAGE, maxPlanRevisionsPerMilestone: 10 },
       { key: "m1", final: true }
     )
-    expect(meters.find((m) => m.key === "maxPlanRevisionsPerMilestone")).toMatchObject({
+    expect(
+      meters.find((m) => m.key === "maxPlanRevisionsPerMilestone")
+    ).toMatchObject({
       scope: "m1, final",
       final: true,
       level: "hard",
     })
-    expect(meters.find((m) => m.key === "maxMessagesPerHour")?.scope).toBe("last hour")
-    const p = computePosition(input({ userStories: [userStory("a")], budgets: meters }))
+    expect(meters.find((m) => m.key === "maxMessagesPerHour")?.scope).toBe(
+      "last hour"
+    )
+    const p = computePosition(
+      input({ userStories: [userStory("a")], budgets: meters })
+    )
     expect(p.pendingDecisions).toEqual([])
   })
 
@@ -540,7 +720,9 @@ describe("computePosition — budgets and identity", () => {
       milestoneId: "m1",
     })
     const lead = computePosition(
-      input({ userStories: [userStory("a", "m1", { status: "failed", attempts: 3 })] })
+      input({
+        userStories: [userStory("a", "m1", { status: "failed", attempts: 3 })],
+      })
     )
     expect(lead.pendingDecisions[0]).toMatchObject({ owner: "lead" })
     expect(lead.pendingDecisions[0].action).toBeUndefined()
@@ -553,7 +735,9 @@ describe("computePosition — budgets and identity", () => {
     )
     const moved = {
       ...state,
-      userStories: state.userStories.map((s) => (s.id === "a" ? { ...s, status: "running" } : s)),
+      userStories: state.userStories.map((s) =>
+        s.id === "a" ? { ...s, status: "running" } : s
+      ),
     }
     expect(positionFingerprint(computePosition(moved))).not.toBe(
       positionFingerprint(computePosition(state))
@@ -562,7 +746,12 @@ describe("computePosition — budgets and identity", () => {
 
   it("renders a position for a seat", () => {
     const text = renderPosition(
-      computePosition(input({ userStories: [userStory("a"), userStory("b")], edges: [edge("a", "b")] }))
+      computePosition(
+        input({
+          userStories: [userStory("a"), userStory("b")],
+          edges: [edge("a", "b")],
+        })
+      )
     )
     expect(text).toContain("Active milestone: m1")
     expect(text).toContain("Waves: 1) a  2) b")

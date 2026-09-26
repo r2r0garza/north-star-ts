@@ -30,6 +30,9 @@ export interface PositionUserStoryInput {
   touchHints: string[]
   acceptanceCount: number
   proofVerdict: "accepted" | "rejected" | null
+  // Set for a failed user story: why its latest run failed, and whether the
+  // model request failed rather than the user story's own work.
+  lastFailure?: { reason: string; infrastructure: boolean } | null
 }
 
 export interface PositionMilestoneInput {
@@ -68,7 +71,11 @@ export interface PositionInput {
   }
   milestones: PositionMilestoneInput[]
   userStories: PositionUserStoryInput[]
-  edges: Array<{ milestoneId: string; fromUserStoryId: string; toUserStoryId: string }>
+  edges: Array<{
+    milestoneId: string
+    fromUserStoryId: string
+    toUserStoryId: string
+  }>
   runs: PositionRunInput[]
   mergeQueue: Array<{
     id: string
@@ -77,7 +84,12 @@ export interface PositionInput {
     status: string
     escalated: boolean
   }>
-  proposals: Array<{ id: string; kind: string; proposer: string; summary: string }>
+  proposals: Array<{
+    id: string
+    kind: string
+    proposer: string
+    summary: string
+  }>
   // Escalations addressed to the user that nobody has acknowledged.
   escalations: Array<{ id: string; from: string; subject: string }>
   workspace: {
@@ -208,7 +220,11 @@ const HOOK_LABEL: Record<string, string> = {
   run: "user story run",
 }
 
-function hookRef(hook: HookName, milestoneId: string | null, milestoneKey?: string): HookRef {
+function hookRef(
+  hook: HookName,
+  milestoneId: string | null,
+  milestoneKey?: string
+): HookRef {
   return {
     hook,
     milestoneId,
@@ -223,7 +239,10 @@ function hookState(
   milestoneId: string | null
 ): PositionRunInput["status"] | "none" {
   const latest = runs
-    .filter((run) => run.hook === hook && run.milestoneId === milestoneId && !run.userStoryId)
+    .filter(
+      (run) =>
+        run.hook === hook && run.milestoneId === milestoneId && !run.userStoryId
+    )
     .sort((a, b) => b.createdAt - a.createdAt)[0]
   return latest?.status ?? "none"
 }
@@ -272,7 +291,12 @@ export function computePosition(input: PositionInput): Position {
       summary: `Escalation from ${escalation.from}: ${escalation.subject}`,
     })
   for (const meter of input.budgets) {
-    if (meter.key === "maxConcurrentUserStories" || meter.level === "ok" || meter.final) continue
+    if (
+      meter.key === "maxConcurrentUserStories" ||
+      meter.level === "ok" ||
+      meter.final
+    )
+      continue
     if (meter.key === "maxUserStoryAttempts") continue // per user story, below
     const lead =
       meter.key === "maxPlanRevisionsPerMilestone" ||
@@ -286,9 +310,13 @@ export function computePosition(input: PositionInput): Position {
     })
   }
 
-  const milestones = [...input.milestones].sort((a, b) => a.position - b.position)
+  const milestones = [...input.milestones].sort(
+    (a, b) => a.position - b.position
+  )
   const liveUserStories = (milestoneId: string) =>
-    input.userStories.filter((s) => s.milestoneId === milestoneId && s.status !== "cancelled")
+    input.userStories.filter(
+      (s) => s.milestoneId === milestoneId && s.status !== "cancelled"
+    )
   const anyUserStories = input.userStories.some((s) => s.status !== "cancelled")
   const running = input.runs.filter((run) => run.status === "running")
   const runningHookRun = running.find((run) => !run.userStoryId)
@@ -320,7 +348,10 @@ export function computePosition(input: PositionInput): Position {
     lead: input.lead?.address ?? null,
     userStories: userStoryRefs,
   }
-  const finish = (maneuver: Maneuver, extra: Partial<typeof empty> = {}): Position => {
+  const finish = (
+    maneuver: Maneuver,
+    extra: Partial<typeof empty> = {}
+  ): Position => {
     // Only Autopilot runs hooks itself; otherwise a due hook waits on the user.
     if (maneuver.kind === "run_hook" && feature.driveMode !== "autopilot")
       decide({
@@ -329,7 +360,11 @@ export function computePosition(input: PositionInput): Position {
         owner: "user",
         target: { kind: "hook", id: maneuver.hook.hook },
         summary: `${maneuver.text}`,
-        action: { kind: "run_hook", hook: maneuver.hook.hook, milestoneId: maneuver.hook.milestoneId },
+        action: {
+          kind: "run_hook",
+          hook: maneuver.hook.hook,
+          milestoneId: maneuver.hook.milestoneId,
+        },
       })
     const merged = { ...empty, ...extra }
     return { ...merged, maneuver, pendingDecisions: decisions }
@@ -339,16 +374,23 @@ export function computePosition(input: PositionInput): Position {
   if (!anyUserStories) {
     const pendingPlan = input.proposals.some((p) => p.kind === "plan")
     if (pendingPlan)
-      return finish({ kind: "decide", text: "Waiting for the planning proposal to be applied." })
+      return finish({
+        kind: "decide",
+        text: "Waiting for the planning proposal to be applied.",
+      })
     if (!feature.hooks.includes("plan")) {
       decide({
         key: "no_plan",
         kind: "no_plan",
         owner: "user",
         target: { kind: "feature", id: feature.id },
-        summary: "There are no user stories to work on. Add user stories, or add a planning hook to the feature playbook.",
+        summary:
+          "There are no user stories to work on. Add user stories, or add a planning hook to the feature playbook.",
       })
-      return finish({ kind: "decide", text: "Waiting for a plan: add milestones and user stories." })
+      return finish({
+        kind: "decide",
+        text: "Waiting for a plan: add milestones and user stories.",
+      })
     }
     const state = hookState(input.runs, "plan", null)
     if (state === "running")
@@ -359,7 +401,8 @@ export function computePosition(input: PositionInput): Position {
         kind: "hook_failed",
         owner: "user",
         target: { kind: "hook", id: "plan" },
-        summary: "The planning hook failed. Run it again or write the plan by hand.",
+        summary:
+          "The planning hook failed. Run it again or write the plan by hand.",
         action: { kind: "run_hook", hook: "plan", milestoneId: null },
       })
       return finish({ kind: "decide", text: "Planning failed." })
@@ -370,7 +413,8 @@ export function computePosition(input: PositionInput): Position {
         kind: "no_plan",
         owner: "user",
         target: { kind: "feature", id: feature.id },
-        summary: "Planning finished without a proposal. Run it again or add user stories by hand.",
+        summary:
+          "Planning finished without a proposal. Run it again or add user stories by hand.",
         action: { kind: "run_hook", hook: "plan", milestoneId: null },
       })
       return finish({ kind: "decide", text: "Planning produced no plan." })
@@ -383,7 +427,9 @@ export function computePosition(input: PositionInput): Position {
   }
 
   // ── the active milestone: the first one not finished (milestones run in order)
-  const activeIndex = milestones.findIndex((m) => !TERMINAL_MILESTONE.has(m.status))
+  const activeIndex = milestones.findIndex(
+    (m) => !TERMINAL_MILESTONE.has(m.status)
+  )
   if (activeIndex < 0) {
     // Everything finished: completion hook, then the feature is done.
     const last = milestones.filter((m) => m.status === "completed").at(-1)
@@ -394,7 +440,9 @@ export function computePosition(input: PositionInput): Position {
       // only a run after the last milestone finished counts.
       const since = last.finishedAt ?? 0
       const state = hookState(
-        input.runs.filter((run) => run.hook !== "on_complete" || run.createdAt >= since),
+        input.runs.filter(
+          (run) => run.hook !== "on_complete" || run.createdAt >= since
+        ),
         "on_complete",
         null
       )
@@ -406,7 +454,8 @@ export function computePosition(input: PositionInput): Position {
           kind: "hook_failed",
           owner: "user",
           target: { kind: "hook", id: "on_complete" },
-          summary: "The completion hook failed. Run it again to finish the feature.",
+          summary:
+            "The completion hook failed. Run it again to finish the feature.",
           action: { kind: "run_hook", hook: "on_complete", milestoneId: null },
         })
         return finish({ kind: "decide", text: "The completion hook failed." })
@@ -440,7 +489,10 @@ export function computePosition(input: PositionInput): Position {
     const state = hookState(input.runs, "between_milestones", previous.id)
     if (state === "running")
       return finish(
-        { kind: "wait", text: `The release hook for ${previous.key} is running.` },
+        {
+          kind: "wait",
+          text: `The release hook for ${previous.key} is running.`,
+        },
         { feature: featureState }
       )
     if (state === "failed") {
@@ -450,7 +502,11 @@ export function computePosition(input: PositionInput): Position {
         owner: "user",
         target: { kind: "milestone", id: previous.id },
         summary: `The release hook for ${previous.key} failed. Run it again, or start ${milestone.key} yourself.`,
-        action: { kind: "run_hook", hook: "between_milestones", milestoneId: previous.id },
+        action: {
+          kind: "run_hook",
+          hook: "between_milestones",
+          milestoneId: previous.id,
+        },
       })
       return finish(
         { kind: "decide", text: `The release for ${previous.key} failed.` },
@@ -460,14 +516,20 @@ export function computePosition(input: PositionInput): Position {
     if (state === "none") {
       const hook = hookRef("between_milestones", previous.id, previous.key)
       return finish(
-        { kind: "run_hook", hook, text: `Run the release hook for ${previous.key}.` },
+        {
+          kind: "run_hook",
+          hook,
+          text: `Run the release hook for ${previous.key}.`,
+        },
         { feature: { ...featureState, nextHook: hook } }
       )
     }
   }
 
   const userStories = liveUserStories(milestone.id)
-  const allMilestoneUserStories = input.userStories.filter((s) => s.milestoneId === milestone.id)
+  const allMilestoneUserStories = input.userStories.filter(
+    (s) => s.milestoneId === milestone.id
+  )
   const edges = input.edges.filter((e) => e.milestoneId === milestone.id)
   let waves: string[][] = []
   let criticalPath: string[] = []
@@ -491,8 +553,12 @@ export function computePosition(input: PositionInput): Position {
   const retryable: string[] = []
   const soft = Math.max(1, Math.floor(input.limits.maxUserStoryAttempts * 0.8))
 
-  for (const userStory of [...allMilestoneUserStories].sort((a, b) => a.position - b.position)) {
-    const preds = predecessors(userStory.id).map((id) => byId.get(id)).filter(Boolean) as PositionUserStoryInput[]
+  for (const userStory of [...allMilestoneUserStories].sort(
+    (a, b) => a.position - b.position
+  )) {
+    const preds = predecessors(userStory.id)
+      .map((id) => byId.get(id))
+      .filter(Boolean) as PositionUserStoryInput[]
     const cancelledPred = preds.find((p) => p.status === "cancelled")
     const unmet = preds.filter((p) => p.status !== "done")
     switch (userStory.status) {
@@ -523,13 +589,21 @@ export function computePosition(input: PositionInput): Position {
         break
       }
       case "failed": {
+        const failure = userStory.lastFailure
+        const why = failure ? ` Cause: ${failure.reason}` : ""
+        // A failed model request says nothing about the user story's work, so
+        // it doesn't wait on a decision until the attempts run out.
+        const infrastructure = failure?.infrastructure === true
+        const hint = infrastructure
+          ? " The model request failed, not the user story's work; splitting or rewriting it won't help."
+          : ""
         if (userStory.attempts >= input.limits.maxUserStoryAttempts) {
           decide({
             key: `user_story_failed:${userStory.id}:${userStory.attempts}`,
             kind: "user_story_failed",
             owner: ownerFor("revise_plan", "assign_user_story"),
             target: { kind: "user_story", id: userStory.id },
-            summary: `User story ${userStory.key} failed and used all ${input.limits.maxUserStoryAttempts} attempts. Split it, cancel it, or ask the user for more attempts.`,
+            summary: `User story ${userStory.key} failed and used all ${input.limits.maxUserStoryAttempts} attempts. Split it, cancel it, or ask the user for more attempts.${why}${hint}`,
           })
         } else if (userStory.proofVerdict === "rejected") {
           decide({
@@ -537,15 +611,15 @@ export function computePosition(input: PositionInput): Position {
             kind: "proof_rejected",
             owner: ownerFor("assign_user_story", "revise_plan"),
             target: { kind: "user_story", id: userStory.id },
-            summary: `User story ${userStory.key}'s proof was rejected on attempt ${userStory.attempts}. Retry it with a note, revise it, or cancel it.`,
+            summary: `User story ${userStory.key}'s proof was rejected on attempt ${userStory.attempts}. Retry it with a note, revise it, or cancel it.${why}`,
           })
-        } else if (userStory.attempts >= soft) {
+        } else if (userStory.attempts >= soft && !infrastructure) {
           decide({
             key: `user_story_failed:${userStory.id}:${userStory.attempts}`,
             kind: "user_story_failed",
             owner: ownerFor("assign_user_story", "revise_plan"),
             target: { kind: "user_story", id: userStory.id },
-            summary: `User story ${userStory.key} failed on attempt ${userStory.attempts} of ${input.limits.maxUserStoryAttempts}. Retry it with a note, or revise the plan.`,
+            summary: `User story ${userStory.key} failed on attempt ${userStory.attempts} of ${input.limits.maxUserStoryAttempts}. Retry it with a note, or revise the plan.${why}`,
           })
         } else if (!unmet.length) retryable.push(userStory.id)
         break
@@ -567,7 +641,10 @@ export function computePosition(input: PositionInput): Position {
         } else if (unmet.length) {
           waiting.push({ userStory: userStory.id, on: unmet.map((p) => p.id) })
         } else if (userStory.acceptanceCount === 0) {
-          blocked.push({ userStory: userStory.id, reason: "has no acceptance criteria" })
+          blocked.push({
+            userStory: userStory.id,
+            reason: "has no acceptance criteria",
+          })
           decide({
             key: `user_story_unspecified:${userStory.id}`,
             kind: "user_story_unspecified",
@@ -581,7 +658,11 @@ export function computePosition(input: PositionInput): Position {
   }
 
   for (const entry of input.mergeQueue)
-    if (entry.milestoneId === milestone.id && entry.status === "conflict" && entry.escalated)
+    if (
+      entry.milestoneId === milestone.id &&
+      entry.status === "conflict" &&
+      entry.escalated
+    )
       decide({
         key: `merge_conflict:${entry.id}`,
         kind: "merge_conflict",
@@ -610,7 +691,11 @@ export function computePosition(input: PositionInput): Position {
   }
   const withMilestone = (
     maneuver: Maneuver,
-    extra: { nextHook?: HookRef | null; dispatch?: Position["dispatch"]; deferred?: Position["deferred"] } = {}
+    extra: {
+      nextHook?: HookRef | null
+      dispatch?: Position["dispatch"]
+      deferred?: Position["deferred"]
+    } = {}
   ) =>
     finish(maneuver, {
       feature: { ...featureState, nextHook: extra.nextHook ?? null },
@@ -627,14 +712,23 @@ export function computePosition(input: PositionInput): Position {
       target: { kind: "milestone", id: milestone.id },
       summary: `Milestone ${milestone.key} has no user stories. Add or propose user stories for it.`,
     })
-    return withMilestone({ kind: "decide", text: `Milestone ${milestone.key} has no user stories yet.` })
+    return withMilestone({
+      kind: "decide",
+      text: `Milestone ${milestone.key} has no user stories yet.`,
+    })
   }
 
   // Review the user story set before the first user story starts.
-  if (milestone.status === "planned" && milestone.hooks.includes("before_user_stories")) {
+  if (
+    milestone.status === "planned" &&
+    milestone.hooks.includes("before_user_stories")
+  ) {
     const state = hookState(input.runs, "before_user_stories", milestone.id)
     if (state === "running")
-      return withMilestone({ kind: "wait", text: `The planning review for ${milestone.key} is running.` })
+      return withMilestone({
+        kind: "wait",
+        text: `The planning review for ${milestone.key} is running.`,
+      })
     if (state === "failed") {
       decide({
         key: `hook_failed:before_user_stories:${milestone.id}`,
@@ -642,25 +736,46 @@ export function computePosition(input: PositionInput): Position {
         owner: "user",
         target: { kind: "milestone", id: milestone.id },
         summary: `The planning review for ${milestone.key} failed. Run it again, or start its user stories yourself.`,
-        action: { kind: "run_hook", hook: "before_user_stories", milestoneId: milestone.id },
+        action: {
+          kind: "run_hook",
+          hook: "before_user_stories",
+          milestoneId: milestone.id,
+        },
       })
-      return withMilestone({ kind: "decide", text: `The planning review for ${milestone.key} failed.` })
+      return withMilestone({
+        kind: "decide",
+        text: `The planning review for ${milestone.key} failed.`,
+      })
     }
     if (state === "none") {
       const hook = hookRef("before_user_stories", milestone.id, milestone.key)
       return withMilestone(
-        { kind: "run_hook", hook, text: `Run the planning review for ${milestone.key}.` },
+        {
+          kind: "run_hook",
+          hook,
+          text: `Run the planning review for ${milestone.key}.`,
+        },
         { nextHook: hook }
       )
     }
   }
 
   // ── the milestone's work is merged: review, judgment, landing ─────────────
-  if (allSettled && ["review", "active", "integrating"].includes(milestone.status)) {
+  if (
+    allSettled &&
+    ["review", "active", "integrating"].includes(milestone.status)
+  ) {
     if (milestone.hooks.includes("after_all_user_stories")) {
-      const state = hookState(input.runs, "after_all_user_stories", milestone.id)
+      const state = hookState(
+        input.runs,
+        "after_all_user_stories",
+        milestone.id
+      )
       if (state === "running")
-        return withMilestone({ kind: "wait", text: `The milestone review for ${milestone.key} is running.` })
+        return withMilestone({
+          kind: "wait",
+          text: `The milestone review for ${milestone.key} is running.`,
+        })
       if (state === "failed") {
         decide({
           key: `hook_failed:after_all_user_stories:${milestone.id}`,
@@ -668,20 +783,38 @@ export function computePosition(input: PositionInput): Position {
           owner: "user",
           target: { kind: "milestone", id: milestone.id },
           summary: `The milestone review for ${milestone.key} failed. Run it again.`,
-          action: { kind: "run_hook", hook: "after_all_user_stories", milestoneId: milestone.id },
+          action: {
+            kind: "run_hook",
+            hook: "after_all_user_stories",
+            milestoneId: milestone.id,
+          },
         })
-        return withMilestone({ kind: "decide", text: `The milestone review for ${milestone.key} failed.` })
+        return withMilestone({
+          kind: "decide",
+          text: `The milestone review for ${milestone.key} failed.`,
+        })
       }
       if (state === "none" && milestone.status === "review") {
-        const hook = hookRef("after_all_user_stories", milestone.id, milestone.key)
+        const hook = hookRef(
+          "after_all_user_stories",
+          milestone.id,
+          milestone.key
+        )
         return withMilestone(
-          { kind: "run_hook", hook, text: `Run the milestone review for ${milestone.key}.` },
+          {
+            kind: "run_hook",
+            hook,
+            text: `Run the milestone review for ${milestone.key}.`,
+          },
           { nextHook: hook }
         )
       }
     }
     if (milestone.status !== "review")
-      return withMilestone({ kind: "wait", text: `Every user story in ${milestone.key} is done; the milestone is moving to review.` })
+      return withMilestone({
+        kind: "wait",
+        text: `Every user story in ${milestone.key} is done; the milestone is moving to review.`,
+      })
     if (!milestone.dodReviewed && !manual) {
       decide({
         key: `milestone_dod:${milestone.id}`,
@@ -690,7 +823,10 @@ export function computePosition(input: PositionInput): Position {
         target: { kind: "milestone", id: milestone.id },
         summary: `Every user story in ${milestone.key} is merged. Judge whether the milestone meets its definition of done, then complete it.`,
       })
-      return withMilestone({ kind: "decide", text: `Milestone ${milestone.key} needs its definition-of-done judgment.` })
+      return withMilestone({
+        kind: "decide",
+        text: `Milestone ${milestone.key} needs its definition-of-done judgment.`,
+      })
     }
     milestoneState.doneConditionMet = true
     if (!milestone.integrationBranch && !manual)
@@ -710,7 +846,10 @@ export function computePosition(input: PositionInput): Position {
           ? `Milestone ${milestone.key} is ready to land: merge ${milestone.integrationBranch} and mark it merged.`
           : `Milestone ${milestone.key} is ready to land: review and approve the ${milestone.mergePolicy === "open_pr" ? "pull request" : "merge"}.`,
     })
-    return withMilestone({ kind: "decide", text: `Milestone ${milestone.key} is waiting to land.` })
+    return withMilestone({
+      kind: "decide",
+      text: `Milestone ${milestone.key} is waiting to land.`,
+    })
   }
 
   // ── dispatch: ready user stories, critical path first, then position ──────────
@@ -721,13 +860,16 @@ export function computePosition(input: PositionInput): Position {
     ...retryable.map((id) => ({ id, retry: true })),
   ].sort(
     (a, b) =>
-      Number(critical.has(b.id)) - Number(critical.has(a.id)) || order(a.id) - order(b.id)
+      Number(critical.has(b.id)) - Number(critical.has(a.id)) ||
+      order(a.id) - order(b.id)
   )
   const dispatch: Position["dispatch"] = []
   const deferred: Position["deferred"] = []
   const podsFree = { ...capacity.podsFree }
   let free = capacity.concurrencyFree
-  const building = allMilestoneUserStories.filter((s) => s.status === "running" || s.status === "proving")
+  const building = allMilestoneUserStories.filter(
+    (s) => s.status === "running" || s.status === "proving"
+  )
   for (const candidate of candidates) {
     const userStory = byId.get(candidate.id)!
     const pod = userStory.podKey ?? feature.defaultPodKey
@@ -776,7 +918,10 @@ export function computePosition(input: PositionInput): Position {
   ].filter(Boolean)
   if (waitingOn.length)
     return withMilestone(
-      { kind: "wait", text: `Waiting on user stories: ${waitingOn.join(", ")}.` },
+      {
+        kind: "wait",
+        text: `Waiting on user stories: ${waitingOn.join(", ")}.`,
+      },
       { deferred }
     )
   return withMilestone(
@@ -794,7 +939,8 @@ export function computePosition(input: PositionInput): Position {
 function defaultAction(d: Decision): DecisionAction | undefined {
   if (d.owner !== "user") return undefined
   if (d.kind === "budget") return { kind: "edit_budgets" }
-  if (d.target.kind === "user_story") return { kind: "open_user_story", userStoryId: d.target.id }
+  if (d.target.kind === "user_story")
+    return { kind: "open_user_story", userStoryId: d.target.id }
   if (d.target.kind === "milestone")
     return d.kind === "milestone_dod"
       ? { kind: "judge_milestone", milestoneId: d.target.id }
@@ -841,7 +987,9 @@ function computeCapacity(input: PositionInput): Position["capacity"] {
     concurrencyFree: free,
     podsFree,
     mode: "git",
-    reason: free ? null : `the budget allows ${input.limits.maxConcurrentUserStories} user stories at once`,
+    reason: free
+      ? null
+      : `the budget allows ${input.limits.maxConcurrentUserStories} user stories at once`,
   }
 }
 
@@ -904,7 +1052,8 @@ function fnv1a(text: string): string {
 
 export function renderPosition(position: Position): string {
   const key = (id: string) => position.userStories[id]?.key ?? id
-  const keys = (ids: string[]) => (ids.length ? ids.map(key).join(", ") : "none")
+  const keys = (ids: string[]) =>
+    ids.length ? ids.map(key).join(", ") : "none"
   const lines = [
     `Feature: ${position.feature.status}, ${position.feature.driveMode} drive.`,
   ]
@@ -921,9 +1070,12 @@ export function renderPosition(position: Position): string {
         `Waiting: ${m.waiting.map((w) => `${key(w.userStory)} (on ${keys(w.on)})`).join("; ")}`
       )
     if (m.blocked.length)
-      lines.push(`Blocked: ${m.blocked.map((b) => `${key(b.userStory)} (${b.reason})`).join("; ")}`)
+      lines.push(
+        `Blocked: ${m.blocked.map((b) => `${key(b.userStory)} (${b.reason})`).join("; ")}`
+      )
     if (m.retryable.length) lines.push(`Retryable: ${keys(m.retryable)}`)
-  } else if (position.feature.complete) lines.push("Every milestone is complete.")
+  } else if (position.feature.complete)
+    lines.push("Every milestone is complete.")
   else lines.push("No active milestone.")
   lines.push(
     `Capacity: ${position.capacity.concurrencyFree} slot(s) free${position.capacity.reason ? ` (${position.capacity.reason})` : ""}.`
@@ -935,7 +1087,9 @@ export function renderPosition(position: Position): string {
     lines.push(
       `Deferred: ${position.deferred.map((d) => `${key(d.userStory)} (${d.reason})`).join("; ")}`
     )
-  const budgets = position.budgets.filter((b) => b.level !== "ok" && b.key !== "maxConcurrentUserStories")
+  const budgets = position.budgets.filter(
+    (b) => b.level !== "ok" && b.key !== "maxConcurrentUserStories"
+  )
   if (budgets.length)
     lines.push(
       `Budgets: ${budgets.map((b) => `${b.label} ${formatAmount(b.used)}/${b.limit} (${b.level})`).join("; ")}`
