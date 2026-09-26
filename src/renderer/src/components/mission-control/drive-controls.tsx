@@ -76,7 +76,9 @@ export function DriveControls({
   const finished = ["completed", "cancelled", "failed"].includes(feature.status)
   const editable = draft || paused
   const shownMode = editable ? mode : feature.driveMode
-  const waiting = (position?.pendingDecisions ?? []).filter((d) => d.owner === "user").length
+  const waiting = (position?.pendingDecisions ?? []).filter(
+    (d) => d.owner === "user"
+  ).length
 
   const act = async (work: () => Promise<FeatureGraph>) => {
     setPending(true)
@@ -91,9 +93,14 @@ export function DriveControls({
   const drive = window.cowork.missionControl.drive
   const start = () =>
     act(async () => {
-      const result = await drive.start(feature.id, { mode, autoApplyPlan: autoApply })
+      const result = await drive.start(feature.id, {
+        mode,
+        autoApplyPlan: autoApply,
+      })
       if (result.planningError)
-        toast.warning(`Started, but planning couldn't run: ${result.planningError}`)
+        toast.warning(
+          `Started, but planning couldn't run: ${result.planningError}`
+        )
       return result.graph
     })
   const changeMode = (value: DriveMode) => {
@@ -143,7 +150,8 @@ export function DriveControls({
         <div className="ml-auto flex items-center gap-2">
           {waiting > 0 && (
             <Button size="sm" variant="outline" onClick={onShowWaiting}>
-              <Bell className="size-4 text-amber-500" /> Waiting on you ({waiting})
+              <Bell className="size-4 text-amber-500" /> Waiting on you (
+              {waiting})
             </Button>
           )}
           {draft && (
@@ -279,7 +287,12 @@ export function BudgetMeters({
     }
     setSaving(true)
     try {
-      onGraph(await window.cowork.missionControl.drive.setBudgets(graph.feature.id, patch))
+      onGraph(
+        await window.cowork.missionControl.drive.setBudgets(
+          graph.feature.id,
+          patch
+        )
+      )
       setOpen(false)
     } catch (error) {
       toast.error(errorMessage(error))
@@ -290,27 +303,45 @@ export function BudgetMeters({
   return (
     <div>
       <div className="mb-2 flex items-center">
-        <span className="text-xs font-medium text-muted-foreground">Budgets</span>
-        <Button size="sm" variant="ghost" className="ml-auto h-6 text-xs" onClick={openEditor}>
+        <span className="text-xs font-medium text-muted-foreground">
+          Budgets
+        </span>
+        <Button
+          size="sm"
+          variant="ghost"
+          className="ml-auto h-6 text-xs"
+          onClick={openEditor}
+        >
           Edit budgets
         </Button>
       </div>
       <div className="grid gap-x-4 gap-y-2 sm:grid-cols-2 lg:grid-cols-3">
         {meters.map((meter) => {
-          const ratio = meter.limit > 0 ? Math.min(1, meter.used / meter.limit) : 1
+          const ratio =
+            meter.limit > 0 ? Math.min(1, meter.used / meter.limit) : 1
           // A full concurrency slot count is normal operation, not a warning.
           const level =
-            meter.key === "maxConcurrentUserStories" || meter.final ? "ok" : meter.level
+            meter.key === "maxConcurrentUserStories" || meter.final
+              ? "ok"
+              : meter.level
           return (
-            <div key={meter.key} className="text-xs">
+            <div key={meter.key} className="text-xs" title={meter.help}>
               <div className="flex gap-2">
                 <span className="truncate text-muted-foreground">
                   {meter.label}
-                  {meter.scope && <span className="opacity-70"> · {meter.scope}</span>}
+                  {meter.scope && (
+                    <span className="opacity-70"> · {meter.scope}</span>
+                  )}
                 </span>
                 <span className="ml-auto shrink-0 tabular-nums">
                   {amount(meter.used)} / {meter.limit}
                   {meter.unit === "hours" ? " h" : ""}
+                  {meter.context && (
+                    <span className="text-muted-foreground">
+                      {" "}
+                      · {meter.context}
+                    </span>
+                  )}
                 </span>
               </div>
               <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-muted">
@@ -331,16 +362,21 @@ export function BudgetMeters({
           <DialogHeader>
             <DialogTitle>Budgets</DialogTitle>
             <DialogDescription>
-              Hard limits for this feature. Only you can change them; leave a field empty
-              for its default.
+              Hard limits for this feature. Only you can change them; leave a
+              field empty for its default.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
             {BUDGET_SPECS.map((spec) => (
-              <div key={spec.key} className="grid grid-cols-[1fr_7rem] items-center gap-3">
+              <div
+                key={spec.key}
+                className="grid grid-cols-[1fr_7rem] items-center gap-3"
+              >
                 <div>
                   <Label htmlFor={`budget-${spec.key}`}>{spec.label}</Label>
-                  <p className="text-xs text-muted-foreground">At the limit: {spec.onHard}</p>
+                  <p className="text-xs text-muted-foreground">
+                    At the limit: {spec.onHard}
+                  </p>
                 </div>
                 <Input
                   id={`budget-${spec.key}`}
@@ -348,7 +384,10 @@ export function BudgetMeters({
                   placeholder={String(spec.default)}
                   value={values[spec.key] ?? ""}
                   onChange={(e) =>
-                    setValues((current) => ({ ...current, [spec.key]: e.target.value }))
+                    setValues((current) => ({
+                      ...current,
+                      [spec.key]: e.target.value,
+                    }))
                   }
                 />
               </div>

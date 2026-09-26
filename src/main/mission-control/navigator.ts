@@ -308,7 +308,15 @@ export function positionInput(
     budgets: budgetMeters(
       feature.budgets,
       budgetUsage(feature, measured, now, final),
-      measured ? { key: measured.key, final } : null
+      measured
+        ? {
+            key: measured.key,
+            final,
+            userStories: userStories.filter(
+              (s) => s.milestoneId === measured.id && s.status !== "cancelled"
+            ).length,
+          }
+        : null
     ),
   }
 }

@@ -96,6 +96,10 @@ export interface BudgetMeter {
   scope?: string
   // The milestone it measures is finished: shown for the record, never acted on.
   final?: boolean
+  // What the number is a part of, when that isn't obvious from the label.
+  context?: string
+  // A longer explanation of what counts, for a tooltip.
+  help?: string
 }
 
 export type BudgetUsage = Record<BudgetKey, number>
@@ -111,7 +115,8 @@ export function budgetMeters(
   budgets: Record<string, unknown> | null | undefined,
   usage: BudgetUsage,
   // The milestone the per-milestone budgets measure; final when it has finished.
-  milestone?: { key: string; final: boolean } | null
+  // userStories is its live user story count, for context.
+  milestone?: { key: string; final: boolean; userStories?: number } | null
 ): BudgetMeter[] {
   return BUDGET_SPECS.map((spec) => {
     const limit = budgetLimit(budgets, spec.key)
@@ -126,6 +131,9 @@ export function budgetMeters(
         : spec.key === "maxConcurrentUserStories"
           ? "now"
           : "total"
+    // Agent-added user stories are a subset of the milestone's; showing the
+    // total keeps "2 / 5" from reading as over the limit on a 7-story milestone.
+    const agentStories = spec.key === "maxAgentUserStoriesPerMilestone"
     return {
       key: spec.key,
       label: spec.label,
@@ -135,6 +143,14 @@ export function budgetMeters(
       level: budgetLevel(used, limit),
       ...(scope ? { scope } : {}),
       ...(perMilestone && milestone?.final ? { final: true } : {}),
+      ...(agentStories && milestone?.userStories !== undefined
+        ? { context: `${milestone.userStories} in milestone` }
+        : {}),
+      ...(agentStories
+        ? {
+            help: "Counts user stories seats added on their own (such as the lead splitting one). Stories from a plan you applied don't count.",
+          }
+        : {}),
     }
   })
 }
