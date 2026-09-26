@@ -85,7 +85,9 @@ async function deleteMilestoneConfirmed(
   graph: FeatureGraph,
   milestone: Milestone
 ): Promise<FeatureGraph | null> {
-  const count = graph.userStories.filter((s) => s.milestoneId === milestone.id).length
+  const count = graph.userStories.filter(
+    (s) => s.milestoneId === milestone.id
+  ).length
   if (
     !window.confirm(
       `Delete milestone “${milestone.name}”${count ? ` and its ${count} ${count === 1 ? "user story" : "user stories"}` : ""}? This cannot be undone.`
@@ -101,7 +103,11 @@ async function deleteUserStoryConfirmed(
   graph: FeatureGraph,
   userStory: UserStory
 ): Promise<FeatureGraph | null> {
-  if (!window.confirm(`Delete user story “${userStory.title}”? This cannot be undone.`))
+  if (
+    !window.confirm(
+      `Delete user story “${userStory.title}”? This cannot be undone.`
+    )
+  )
     return null
   return window.cowork.missionControl.userStories.delete(
     userStory.id,
@@ -144,7 +150,9 @@ function UserStoryEditor({
   const [acceptance, setAcceptance] = useState(
     userStory.spec.acceptance.length > 0 ? userStory.spec.acceptance : [""]
   )
-  const [outOfScope, setOutOfScope] = useState(userStory.spec.outOfScope.join("\n"))
+  const [outOfScope, setOutOfScope] = useState(
+    userStory.spec.outOfScope.join("\n")
+  )
   const [touchHints, setTouchHints] = useState(
     userStory.spec.touchHints.length > 0 ? userStory.spec.touchHints : [""]
   )
@@ -213,7 +221,9 @@ function UserStoryEditor({
               <span className="text-xs text-muted-foreground">{label}</span>
               <Input
                 value={story[field]}
-                onChange={(e) => setStory({ ...story, [field]: e.target.value })}
+                onChange={(e) =>
+                  setStory({ ...story, [field]: e.target.value })
+                }
                 placeholder={example}
                 aria-label={`Story: ${label}`}
               />
@@ -377,8 +387,8 @@ function UserStoryEditor({
       </div>
       {specFrozen && (
         <p className="text-xs text-muted-foreground">
-          This user story has run, so its spec is frozen as the proof's contract.
-          Title, key, pod, and playbook can still change.
+          This user story has run, so its spec is frozen as the proof's
+          contract. Title, key, pod, and playbook can still change.
         </p>
       )}
       <UserStoryRunPanel
@@ -387,7 +397,10 @@ function UserStoryEditor({
         workspacePath={workspacePath}
         onRefresh={onRefresh}
       />
-      <AnchoredComms graph={graph} anchor={{ kind: "user_story", id: userStory.id }} />
+      <AnchoredComms
+        graph={graph}
+        anchor={{ kind: "user_story", id: userStory.id }}
+      />
       <div className="flex gap-2">
         <Button
           onClick={() =>
@@ -442,7 +455,9 @@ function MilestoneView({
   onDeleted: (graph: FeatureGraph) => void
   onRefresh: () => Promise<void>
 }) {
-  const userStories = graph.userStories.filter((userStory) => userStory.milestoneId === milestone.id)
+  const userStories = graph.userStories.filter(
+    (userStory) => userStory.milestoneId === milestone.id
+  )
   const edges = graph.edges.filter((edge) => edge.milestoneId === milestone.id)
   const result = deriveWaves(userStories, edges)
   const [milestoneName, setMilestoneName] = useState(milestone.name)
@@ -524,7 +539,9 @@ function MilestoneView({
             disabledReason:
               notActive ??
               (userStories.some((s) => s.status === "done") &&
-              userStories.every((s) => s.status === "done" || s.status === "cancelled")
+              userStories.every(
+                (s) => s.status === "done" || s.status === "cancelled"
+              )
                 ? null
                 : "Every user story must be done before the milestone review."),
           },
@@ -533,7 +550,8 @@ function MilestoneView({
       {milestone.dodReview && (
         <div className="rounded-md border p-3 text-sm">
           <span className="text-muted-foreground">
-            Definition of done judged met by <code>{milestone.dodReview.by}</code>:
+            Definition of done judged met by{" "}
+            <code>{milestone.dodReview.by}</code>:
           </span>{" "}
           {milestone.dodReview.summary}
         </div>
@@ -632,7 +650,9 @@ function MilestoneView({
               : undefined
           }
           onClick={() =>
-            void addUserStory().catch((error) => toast.error(errorMessage(error)))
+            void addUserStory().catch((error) =>
+              toast.error(errorMessage(error))
+            )
           }
         >
           <Plus className="size-4" /> Add user story
@@ -677,12 +697,15 @@ function MilestoneView({
                         <code className="block truncate pr-8 text-xs text-muted-foreground">
                           {userStory.key}
                         </code>
-                        {edges.filter((edge) => edge.toUserStoryId === userStory.id)
-                          .length > 0 && (
+                        {edges.filter(
+                          (edge) => edge.toUserStoryId === userStory.id
+                        ).length > 0 && (
                           <div className="mt-2 pr-8 text-xs text-muted-foreground">
                             Depends on{" "}
                             {edges
-                              .filter((edge) => edge.toUserStoryId === userStory.id)
+                              .filter(
+                                (edge) => edge.toUserStoryId === userStory.id
+                              )
                               .map(
                                 (edge) =>
                                   userStories.find(
@@ -831,7 +854,10 @@ function FeatureView({
   onGraph: (graph: FeatureGraph) => void
   onPickWorkspace: () => Promise<Workspace | null>
   onMilestone: (id: string) => void
-  onOpenAnchor: (anchor: { kind: "user_story" | "milestone"; id: string }) => void
+  onOpenAnchor: (anchor: {
+    kind: "user_story" | "milestone"
+    id: string
+  }) => void
 }) {
   const feature = graph.feature
   const navigator = useNavigator(feature.id)
@@ -845,10 +871,13 @@ function FeatureView({
   // The latest milestone whose user stories are all done: the one a release covers.
   const finishedMilestone =
     [...graph.milestones].reverse().find((milestone) => {
-      const userStories = graph.userStories.filter((s) => s.milestoneId === milestone.id)
+      const userStories = graph.userStories.filter(
+        (s) => s.milestoneId === milestone.id
+      )
       return (
         milestone.status === "completed" ||
-        (userStories.length > 0 && userStories.every((s) => s.status === "done"))
+        (userStories.length > 0 &&
+          userStories.every((s) => s.status === "done"))
       )
     }) ?? null
   const save = async () =>
@@ -862,9 +891,7 @@ function FeatureView({
   // Rig and workspace are bound for good at start (the repository enforces
   // this too). The project is just a label, so it's editable in any status.
   const editableBinding = feature.status === "draft"
-  const finished = ["completed", "cancelled", "failed"].includes(
-    feature.status
-  )
+  const finished = ["completed", "cancelled", "failed"].includes(feature.status)
   const bind = (
     patch: Partial<Pick<Feature, "rigId" | "projectId" | "workspaceId">>
   ) =>
@@ -1192,8 +1219,12 @@ function FeatureView({
                     </div>
                   </div>
                   <span className="ml-auto text-xs text-muted-foreground">
-                    {userStories.filter((userStory) => userStory.status === "done").length}/
-                    {userStories.length} userStories
+                    {
+                      userStories.filter(
+                        (userStory) => userStory.status === "done"
+                      ).length
+                    }
+                    /{userStories.length} userStories
                   </span>
                 </button>
                 <Button
@@ -1259,6 +1290,41 @@ export function FeaturesTab({
   useEffect(() => {
     void reload()
   }, [])
+  // The list shows each feature's status, which the Navigator and merge queue
+  // change in the background: refetch the features (not workspaces/projects)
+  // on their events so a finished feature doesn't read "active" until a remount.
+  useEffect(() => {
+    // One fetch at a time; an event during a fetch queues one more, so the
+    // last change (e.g. the feature completing) is never dropped.
+    let inFlight = false
+    let again = false
+    const refreshList = () => {
+      if (inFlight) {
+        again = true
+        return
+      }
+      inFlight = true
+      void window.cowork.missionControl.features
+        .list()
+        .then(setItems)
+        .catch(() => {})
+        .finally(() => {
+          inFlight = false
+          if (again) {
+            again = false
+            refreshList()
+          }
+        })
+    }
+    const offIntegration =
+      window.cowork.missionControl.integration.onChanged(refreshList)
+    const offNavigator =
+      window.cowork.missionControl.navigator.onChanged(refreshList)
+    return () => {
+      offIntegration()
+      offNavigator()
+    }
+  }, [])
   const applyGraph = (next: FeatureGraph) => {
     onGraphChange(next)
     void reload()
@@ -1303,8 +1369,7 @@ export function FeaturesTab({
   const featureId = graph?.feature.id ?? null
   const refreshGraph = useCallback(async () => {
     if (!featureId) return
-    const next =
-      await window.cowork.missionControl.features.get(featureId)
+    const next = await window.cowork.missionControl.features.get(featureId)
     if (next) onGraphChange(next)
   }, [featureId, onGraphChange])
   // Merges land in the background (plan 106.5) and the Navigator drives
@@ -1315,15 +1380,19 @@ export function FeaturesTab({
     const refresh = (changed: string) => {
       if (changed === featureId) void refreshGraph()
     }
-    const offIntegration = window.cowork.missionControl.integration.onChanged(refresh)
-    const offNavigator = window.cowork.missionControl.navigator.onChanged(refresh)
+    const offIntegration =
+      window.cowork.missionControl.integration.onChanged(refresh)
+    const offNavigator =
+      window.cowork.missionControl.navigator.onChanged(refresh)
     return () => {
       offIntegration()
       offNavigator()
     }
   }, [featureId, refreshGraph])
-  const milestone = graph?.milestones.find((item) => item.id === milestoneId) ?? null
-  const userStory = graph?.userStories.find((item) => item.id === userStoryId) ?? null
+  const milestone =
+    graph?.milestones.find((item) => item.id === milestoneId) ?? null
+  const userStory =
+    graph?.userStories.find((item) => item.id === userStoryId) ?? null
   if (graph && userStory)
     return (
       <UserStoryEditor
@@ -1331,8 +1400,7 @@ export function FeaturesTab({
         graph={graph}
         userStory={userStory}
         workspacePath={
-          workspaces.find((w) => w.id === graph.feature.workspaceId)?.path ??
-          ""
+          workspaces.find((w) => w.id === graph.feature.workspaceId)?.path ?? ""
         }
         onSaved={(next) => {
           applyGraph(next)
