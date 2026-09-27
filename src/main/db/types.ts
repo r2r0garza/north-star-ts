@@ -46,10 +46,22 @@ export interface ToolCallRecord {
   arguments: string
 }
 
+// Files a repository generates rather than writes by hand (a code index, a
+// lockfile, codegen output), and the command that rebuilds them. When a
+// Mission Control merge conflicts only on such files, the merge queue runs the
+// command instead of asking the integrator to merge them by hand.
+export interface GeneratedFilesRule {
+  // Repository-relative globs, e.g. ".code-index/**" or "**/package-lock.json".
+  paths: string[]
+  // Run from the repository root with a shell; it rewrites the files.
+  command: string
+}
+
 export interface Workspace {
   id: string
   path: string
   name: string | null
+  generatedFiles: GeneratedFilesRule[]
   createdAt: number
   updatedAt: number
 }

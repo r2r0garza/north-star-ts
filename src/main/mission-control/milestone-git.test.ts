@@ -1,5 +1,12 @@
 import { execFileSync } from "child_process"
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs"
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "fs"
 import { tmpdir } from "os"
 import path from "path"
 import { afterEach, describe, expect, it } from "vitest"
@@ -12,6 +19,7 @@ import {
   integrationBranchName,
   landingSummary,
   landLocally,
+  generatedRulesFor,
   mergeUserStory,
   prepareResolution,
   startIntegrationBranch,
@@ -44,7 +52,12 @@ function scratch(name: string): string {
 const INTEGRATION = integrationBranchName("billing", "m1")
 
 // A user story worktree with one file written (uncommitted, as a worker leaves it).
-async function userStory(root: string, key: string, file: string, content: string) {
+async function userStory(
+  root: string,
+  key: string,
+  file: string,
+  content: string
+) {
   const directory = scratch(key)
   const created = await createUserStoryWorktree({
     root,
@@ -59,14 +72,18 @@ async function userStory(root: string, key: string, file: string, content: strin
 }
 
 afterEach(() => {
-  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true })
+  for (const dir of dirs.splice(0))
+    rmSync(dir, { recursive: true, force: true })
 })
 
 describe("milestone integration git", () => {
   it("starts the integration branch without touching the user's checkout", async () => {
     const root = repo()
     const head = git(root, "rev-parse", "HEAD")
-    const started = await startIntegrationBranch({ workspace: root, branch: INTEGRATION })
+    const started = await startIntegrationBranch({
+      workspace: root,
+      branch: INTEGRATION,
+    })
     expect(started).toMatchObject({ baseRef: "main", baseOid: head })
     expect(git(root, "rev-parse", INTEGRATION)).toBe(head)
     expect(git(root, "branch", "--show-current")).toBe("main")
@@ -101,14 +118,16 @@ describe("milestone integration git", () => {
       root,
       integrationBranch: INTEGRATION,
       userStoryHead: a.head,
-      message: "user story invoice-api: API\n\nMission-Control-User-Story: user-story-a",
+      message:
+        "user story invoice-api: API\n\nMission-Control-User-Story: user-story-a",
       scratchDirectory: scratch("merge-a"),
     })
     const second = await mergeUserStory({
       root,
       integrationBranch: INTEGRATION,
       userStoryHead: b.head,
-      message: "user story invoice-pdf: PDF\n\nMission-Control-User-Story: user-story-b",
+      message:
+        "user story invoice-pdf: PDF\n\nMission-Control-User-Story: user-story-b",
       scratchDirectory: scratch("merge-b"),
     })
     expect(first.status).toBe("merged")
@@ -144,8 +163,18 @@ describe("milestone integration git", () => {
   it("aborts a conflict cleanly, then commits an integrator's resolution", async () => {
     const root = repo()
     await startIntegrationBranch({ workspace: root, branch: INTEGRATION })
-    const a = await userStory(root, "a", "shared.txt", "one\nTWO from a\nthree\n")
-    const b = await userStory(root, "b", "shared.txt", "one\nTWO from b\nthree\n")
+    const a = await userStory(
+      root,
+      "a",
+      "shared.txt",
+      "one\nTWO from a\nthree\n"
+    )
+    const b = await userStory(
+      root,
+      "b",
+      "shared.txt",
+      "one\nTWO from b\nthree\n"
+    )
     await mergeUserStory({
       root,
       integrationBranch: INTEGRATION,
@@ -174,7 +203,9 @@ describe("milestone integration git", () => {
       directory,
     })
     expect(prepared).toEqual({ startOid: before, files: ["shared.txt"] })
-    expect(readFileSync(path.join(directory, "shared.txt"), "utf8")).toContain("<<<<<<<")
+    expect(readFileSync(path.join(directory, "shared.txt"), "utf8")).toContain(
+      "<<<<<<<"
+    )
     const finalize = () =>
       finalizeResolution({
         root,
@@ -183,14 +214,23 @@ describe("milestone integration git", () => {
         startOid: prepared.startOid,
         userStoryHead: b.head,
         conflictFiles: prepared.files,
-        message: "user story b: resolved\n\nMission-Control-User-Story: user-story-b",
+        message:
+          "user story b: resolved\n\nMission-Control-User-Story: user-story-b",
       })
-    expect(await finalize()).toEqual({ status: "unresolved", files: ["shared.txt"] })
-    writeFileSync(path.join(directory, "shared.txt"), "one\nTWO from a and b\nthree\n")
+    expect(await finalize()).toEqual({
+      status: "unresolved",
+      files: ["shared.txt"],
+    })
+    writeFileSync(
+      path.join(directory, "shared.txt"),
+      "one\nTWO from a and b\nthree\n"
+    )
     const done = await finalize()
     expect(done.status).toBe("merged")
     expect(git(root, "show", `${INTEGRATION}:shared.txt`)).toContain("a and b")
-    expect(git(root, "merge-base", "--is-ancestor", b.head, INTEGRATION)).toBe("")
+    expect(git(root, "merge-base", "--is-ancestor", b.head, INTEGRATION)).toBe(
+      ""
+    )
   })
 
   it("won't move an integration branch someone checked out", async () => {
@@ -299,7 +339,9 @@ describe("milestone integration git", () => {
     })
     expect(landed.fastForward).toBe(false)
     expect(git(root, "rev-parse", "main")).toBe(landed.mergeCommit)
-    expect(git(root, "log", "-1", "--format=%s", "main")).toBe("Merge milestone m1")
+    expect(git(root, "log", "-1", "--format=%s", "main")).toBe(
+      "Merge milestone m1"
+    )
     expect(git(root, "branch", "--show-current")).toBe("elsewhere")
     expect((await listWorktrees(root)).length).toBe(2)
   })
@@ -317,5 +359,158 @@ describe("worktreeDiff", () => {
     expect(diff).toContain("+changed")
     expect(diff).toContain("+brand new")
     expect(git(root, "status", "--porcelain")).toContain("?? new.txt")
+  })
+})
+
+describe("regenerating generated files on a merge conflict", () => {
+  // A user story that writes several files, e.g. a source file and the index a
+  // repository regenerates from its sources.
+  async function storyWith(
+    root: string,
+    key: string,
+    files: Record<string, string>
+  ) {
+    const directory = scratch(key)
+    const created = await createUserStoryWorktree({
+      root,
+      integrationBranch: INTEGRATION,
+      userStoryKey: key,
+      attempt: 1,
+      directory,
+    })
+    for (const [file, content] of Object.entries(files)) {
+      mkdirSync(path.dirname(path.join(directory, file)), { recursive: true })
+      writeFileSync(path.join(directory, file), content)
+    }
+    await commitWorktreeChanges(directory, `user story ${key}`)
+    return { head: git(root, "rev-parse", created.branch) }
+  }
+
+  // Rebuilds the "index" from the sources, as a repository's generator would.
+  const INDEX_RULE = {
+    paths: [".code-index/**"],
+    command: "mkdir -p .code-index && ls src > .code-index/files.txt",
+  }
+
+  async function twoStoriesSharingTheIndex(extra: Record<string, string> = {}) {
+    const root = repo()
+    await startIntegrationBranch({ workspace: root, branch: INTEGRATION })
+    const a = await storyWith(root, "a", {
+      "src/a.py": "a\n",
+      ".code-index/files.txt": "a.py\n",
+    })
+    const b = await storyWith(root, "b", {
+      "src/b.py": "b\n",
+      ".code-index/files.txt": "b.py\n",
+      ...extra,
+    })
+    await mergeUserStory({
+      root,
+      integrationBranch: INTEGRATION,
+      userStoryHead: a.head,
+      message: "user story a",
+      scratchDirectory: scratch("merge-a"),
+    })
+    return { root, b }
+  }
+
+  it("matches conflicts against a workspace's rules, inside its subpath", () => {
+    const spec = { rules: [INDEX_RULE], subpath: "" }
+    expect(generatedRulesFor([".code-index/files.txt"], spec)).toEqual([
+      INDEX_RULE,
+    ])
+    expect(
+      generatedRulesFor([".code-index/files.txt", "src/a.py"], spec)
+    ).toBeNull()
+    expect(
+      generatedRulesFor(["web/.code-index/x.json"], {
+        rules: [INDEX_RULE],
+        subpath: "web",
+      })
+    ).toEqual([INDEX_RULE])
+    expect(
+      generatedRulesFor(["api/.code-index/x.json"], {
+        rules: [INDEX_RULE],
+        subpath: "web",
+      })
+    ).toBeNull()
+    const lockfile = { paths: ["**/package-lock.json"], command: "npm install" }
+    expect(
+      generatedRulesFor(["app/package-lock.json"], {
+        rules: [lockfile],
+        subpath: "",
+      })
+    ).toEqual([lockfile])
+  })
+
+  it("regenerates and merges when only generated files conflict", async () => {
+    const { root, b } = await twoStoriesSharingTheIndex()
+    const outcome = await mergeUserStory({
+      root,
+      integrationBranch: INTEGRATION,
+      userStoryHead: b.head,
+      message: "user story b",
+      scratchDirectory: scratch("merge-b"),
+      regenerate: { rules: [INDEX_RULE], subpath: "" },
+    })
+    expect(outcome).toMatchObject({
+      status: "merged",
+      regenerated: [".code-index/files.txt"],
+    })
+    // The index holds both stories' sources, and the merge kept both sides.
+    expect(git(root, "show", `${INTEGRATION}:.code-index/files.txt`)).toBe(
+      "a.py\nb.py"
+    )
+    expect(git(root, "show", `${INTEGRATION}:src/b.py`)).toBe("b")
+    expect(git(root, "log", "-1", "--format=%s", INTEGRATION)).toBe(
+      "user story b"
+    )
+  })
+
+  it("hands the conflict to the integrator when regenerating fails", async () => {
+    const { root, b } = await twoStoriesSharingTheIndex()
+    const head = git(root, "rev-parse", INTEGRATION)
+    const outcome = await mergeUserStory({
+      root,
+      integrationBranch: INTEGRATION,
+      userStoryHead: b.head,
+      message: "user story b",
+      scratchDirectory: scratch("merge-b"),
+      regenerate: {
+        rules: [{ ...INDEX_RULE, command: "exit 3" }],
+        subpath: "",
+      },
+    })
+    expect(outcome).toMatchObject({
+      status: "conflict",
+      files: [".code-index/files.txt"],
+      regenerateError: expect.stringContaining("`exit 3` failed"),
+    })
+    expect(git(root, "rev-parse", INTEGRATION)).toBe(head)
+  })
+
+  it("leaves a conflict in real source files to the integrator", async () => {
+    const { root, b } = await twoStoriesSharingTheIndex({
+      "shared.txt": "one\nB\nthree\n",
+    })
+    // Make the integration side change shared.txt too.
+    const c = await storyWith(root, "c", { "shared.txt": "one\nC\nthree\n" })
+    await mergeUserStory({
+      root,
+      integrationBranch: INTEGRATION,
+      userStoryHead: c.head,
+      message: "user story c",
+      scratchDirectory: scratch("merge-c"),
+    })
+    const outcome = await mergeUserStory({
+      root,
+      integrationBranch: INTEGRATION,
+      userStoryHead: b.head,
+      message: "user story b",
+      scratchDirectory: scratch("merge-b"),
+      regenerate: { rules: [INDEX_RULE], subpath: "" },
+    })
+    expect(outcome.status).toBe("conflict")
+    expect(outcome).not.toHaveProperty("regenerateError")
   })
 })

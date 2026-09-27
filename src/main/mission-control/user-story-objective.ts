@@ -1,4 +1,9 @@
-import type { Feature, Milestone, UserStory } from "../db/types"
+import type {
+  Feature,
+  GeneratedFilesRule,
+  Milestone,
+  UserStory,
+} from "../db/types"
 import { formatStory } from "../../shared/mission-control/story"
 
 // The user story objective IS the spec (plan 106.3, decision 5): a rendered,
@@ -45,8 +50,11 @@ export function renderIntentChain(input: {
       lines.push(`  Done when: ${milestone.definitionOfDone.trim()}`)
   }
   if (userStory) {
-    lines.push(`User story "${userStory.title}": ${userStory.spec.goal.trim() || userStory.title}`)
-    if (userStory.spec.story) lines.push(`  Story: ${formatStory(userStory.spec.story)}`)
+    lines.push(
+      `User story "${userStory.title}": ${userStory.spec.goal.trim() || userStory.title}`
+    )
+    if (userStory.spec.story)
+      lines.push(`  Story: ${formatStory(userStory.spec.story)}`)
   }
   return lines.join("\n")
 }
@@ -81,7 +89,9 @@ export function renderUserStoryObjective(input: {
   return [
     `<!-- mission-control user story objective v${USER_STORY_OBJECTIVE_VERSION} -->`,
     `# User story ${userStory.key}: ${userStory.title}`,
-    ...(userStory.spec.story ? ["", "## Story", formatStory(userStory.spec.story)] : []),
+    ...(userStory.spec.story
+      ? ["", "## Story", formatStory(userStory.spec.story)]
+      : []),
     "",
     "## Goal",
     userStory.spec.goal.trim() || userStory.title,
@@ -96,7 +106,9 @@ export function renderUserStoryObjective(input: {
     "",
     "## Touch hints",
     list(userStory.spec.touchHints),
-    ...(userStory.spec.notes.trim() ? ["", "## Notes", userStory.spec.notes.trim()] : []),
+    ...(userStory.spec.notes.trim()
+      ? ["", "## Notes", userStory.spec.notes.trim()]
+      : []),
     ...(input.attemptNote
       ? [
           "",
@@ -121,7 +133,8 @@ export function renderHookObjective(input: {
   milestone?: Milestone | null
   nextMilestone?: Milestone | null
 }): string {
-  const { hook, feature, milestones, userStories, milestone, nextMilestone } = input
+  const { hook, feature, milestones, userStories, milestone, nextMilestone } =
+    input
   const userStoryLines = (milestoneId: string) =>
     userStories
       .filter((s) => s.milestoneId === milestoneId)
@@ -141,7 +154,11 @@ export function renderHookObjective(input: {
     renderIntentChain({ feature, milestone }),
   ]
   if (milestone) {
-    lines.push("", `## User stories in milestone ${milestone.key}`, userStoryLines(milestone.id))
+    lines.push(
+      "",
+      `## User stories in milestone ${milestone.key}`,
+      userStoryLines(milestone.id)
+    )
   } else {
     lines.push("", "## Milestones")
     for (const m of milestones)
@@ -193,9 +210,12 @@ export function renderConflictObjective(input: {
   integrationBranch: string
   userStoryBranch: string
   files: string[]
+  // The workspace's generated files: rebuilt by their command, never merged.
+  generatedFiles?: GeneratedFilesRule[]
 }): string {
   const { feature, milestone, userStory } = input
   const criteria = userStoryCriteria(userStory)
+  const generated = input.generatedFiles ?? []
   return [
     `<!-- mission-control conflict objective v${USER_STORY_OBJECTIVE_VERSION} -->`,
     `# Resolve the merge of user story ${userStory.key}: ${userStory.title}`,
@@ -211,6 +231,17 @@ export function renderConflictObjective(input: {
     "- Remove every conflict marker. Run the project's checks if it has them.",
     "- Do not commit, abort the merge, switch branches, rebase, or push. Mission Control commits the merge after the proof is accepted.",
     "- The proof step then re-verifies this user story against its acceptance criteria on the merged result.",
+    ...(generated.length
+      ? [
+          "",
+          "## Generated files",
+          "This workspace generates these files; don't merge them by hand. Resolve the other conflicts first, then take either side of these (`git checkout --ours -- <file>`) and rebuild them by running the command from the workspace root:",
+          ...generated.map(
+            (rule) =>
+              `- ${rule.paths.map((p) => `\`${p}\``).join(", ")}: \`${rule.command}\``
+          ),
+        ]
+      : []),
     "",
     "## User story goal",
     userStory.spec.goal.trim() || userStory.title,

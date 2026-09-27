@@ -47,6 +47,7 @@ import {
   userStoryBranchPrefix,
   startIntegrationBranch,
   workspaceSubpath,
+  type RegenerateSpec,
   worktreeDiff,
   type LandingSummary,
 } from "./milestone-git"
@@ -148,7 +149,9 @@ function message(error: unknown): string {
 // Touched files that none of the user story's touch hints cover: the drift signal
 // 106.8 consumes. A user story without hints declared nothing, so nothing drifts.
 export function filesOutsideHints(files: string[], hints: string[]): string[] {
-  const patterns = hints.map((h) => h.trim().replace(/^\.?\/+/, "")).filter(Boolean)
+  const patterns = hints
+    .map((h) => h.trim().replace(/^\.?\/+/, ""))
+    .filter(Boolean)
   if (!patterns.length) return []
   const matcher = ignore().add(patterns)
   return files.filter((file) => !matcher.ignores(file))
@@ -163,7 +166,8 @@ function proofSummary(proof: UserStoryProof | null): string {
   return [
     `Proof ${proof.verdict} by ${verifier}:`,
     ...proof.criteria.map(
-      (c) => `- ${c.id} ${c.status}: ${c.evidence.replace(/\s+/g, " ").slice(0, 200)}`
+      (c) =>
+        `- ${c.id} ${c.status}: ${c.evidence.replace(/\s+/g, " ").slice(0, 200)}`
     ),
   ].join("\n")
 }
@@ -181,8 +185,26 @@ export function userStoryMergeMessage(input: {
     "",
     `Mission-Control-User-Story: ${input.userStory.id}`,
     `Mission-Control-Proof: ${input.playbookRunId ?? "none"}`,
-    ...(input.resolvedBy ? [`Mission-Control-Resolved-By: ${input.resolvedBy}`] : []),
+    ...(input.resolvedBy
+      ? [`Mission-Control-Resolved-By: ${input.resolvedBy}`]
+      : []),
   ].join("\n")
+}
+
+// The feature's workspace rules for generated files, with the workspace's
+// place in the repository, or null when it declares none.
+async function regenerateSpecFor(
+  feature: Feature,
+  root: string
+): Promise<RegenerateSpec | null> {
+  const workspace = feature.workspaceId
+    ? getWorkspace(feature.workspaceId)
+    : null
+  if (!workspace?.generatedFiles.length) return null
+  return {
+    rules: workspace.generatedFiles,
+    subpath: await workspaceSubpath(root, workspace.path).catch(() => ""),
+  }
 }
 
 function workspacePathOf(feature: Feature): string | null {
@@ -201,7 +223,10 @@ function context(milestoneId: string) {
 
 export class MilestoneIntegration {
   private readonly chains = new Map<string, Promise<void>>()
-  private readonly retryTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  private readonly retryTimers = new Map<
+    string,
+    ReturnType<typeof setTimeout>
+  >()
   private readonly prepares = new Map<string, Promise<unknown>>()
   // The boot sweep: queue work and new worktrees wait for it, so it can never
   // remove a worktree that is being created or merged in.
@@ -223,7 +248,8 @@ export class MilestoneIntegration {
       const pending = [...this.chains.values()]
       if (!pending.length) return
       await Promise.all(pending)
-      if ([...this.chains.values()].every((chain) => pending.includes(chain))) return
+      if ([...this.chains.values()].every((chain) => pending.includes(chain)))
+        return
     }
   }
 
@@ -236,7 +262,10 @@ export class MilestoneIntegration {
   async workspaceMode(feature: Feature): Promise<WorkspaceMode> {
     const workspace = workspacePathOf(feature)
     if (!workspace)
-      return { mode: "single_flight", reason: "The feature has no workspace yet." }
+      return {
+        mode: "single_flight",
+        reason: "The feature has no workspace yet.",
+      }
     const root = await repositoryRoot(workspace)
     return root
       ? { mode: "git", root }
@@ -263,7 +292,10 @@ export class MilestoneIntegration {
     const mode = await this.workspaceMode(input.feature)
     if (mode.mode !== "git") return null
     await this.ready
-    const milestone = await this.ensureMilestoneStarted(input.milestone.id, workspace)
+    const milestone = await this.ensureMilestoneStarted(
+      input.milestone.id,
+      workspace
+    )
     const root = milestone.repoRoot!
     const directory = path.join(
       this.deps.worktreeRoot(),
@@ -277,7 +309,10 @@ export class MilestoneIntegration {
       attempt: input.attempt,
       directory,
     })
-    const workspacePath = path.join(directory, await workspaceSubpath(root, workspace))
+    const workspacePath = path.join(
+      directory,
+      await workspaceSubpath(root, workspace)
+    )
     return {
       workspacePath,
       worktreePath: directory,
@@ -293,7 +328,10 @@ export class MilestoneIntegration {
 
   // Idempotent and serialized per milestone: concurrent first user stories both see
   // one integration branch.
-  private async ensureMilestoneStarted(milestoneId: string, workspace: string): Promise<Milestone> {
+  private async ensureMilestoneStarted(
+    milestoneId: string,
+    workspace: string
+  ): Promise<Milestone> {
     const previous = this.prepares.get(milestoneId) ?? Promise.resolve()
     const next = previous
       .catch(() => {})
@@ -313,7 +351,8 @@ export class MilestoneIntegration {
     try {
       return await next
     } finally {
-      if (this.prepares.get(milestoneId) === next) this.prepares.delete(milestoneId)
+      if (this.prepares.get(milestoneId) === next)
+        this.prepares.delete(milestoneId)
     }
   }
 
@@ -324,7 +363,8 @@ export class MilestoneIntegration {
     if (!userStory?.worktreePath) return
     const { milestone } = context(userStory.milestoneId)
     if (["running", "proving", "integrating"].includes(userStory.status)) return
-    if (milestone.repoRoot) await removeWorktree(milestone.repoRoot, userStory.worktreePath)
+    if (milestone.repoRoot)
+      await removeWorktree(milestone.repoRoot, userStory.worktreePath)
     features.setUserStoryExecution(
       userStory.id,
       { worktreePath: null },
@@ -338,7 +378,9 @@ export class MilestoneIntegration {
     const { milestone } = context(userStory.milestoneId)
     const run = playbooks
       .listPlaybookRuns({ userStoryId })
-      .find((r) => r.hook === "run" && r.worktreePath === userStory.worktreePath)
+      .find(
+        (r) => r.hook === "run" && r.worktreePath === userStory.worktreePath
+      )
     const workspacePath =
       userStory.worktreePath && run?.processRunId
         ? (processWorkspace(run.processRunId) ?? userStory.worktreePath)
@@ -355,9 +397,12 @@ export class MilestoneIntegration {
 
   // The user story's changes against the integration commit it started from,
   // including uncommitted edits while its worktree exists.
-  async userStoryDiff(userStoryId: string): Promise<{ diff: string; truncated: boolean }> {
+  async userStoryDiff(
+    userStoryId: string
+  ): Promise<{ diff: string; truncated: boolean }> {
     const userStory = features.getUserStory(userStoryId)
-    if (!userStory?.baseOid || !userStory.branch) return { diff: "", truncated: false }
+    if (!userStory?.baseOid || !userStory.branch)
+      return { diff: "", truncated: false }
     const { milestone } = context(userStory.milestoneId)
     const root = milestone.repoRoot
     if (!root) return { diff: "", truncated: false }
@@ -379,7 +424,10 @@ export class MilestoneIntegration {
 
   // Inside the user story runner's settle transaction: an accepted user story in its
   // own worktree waits in the merge queue instead of being done.
-  enqueueAcceptedUserStory(userStory: UserStory, playbookRun: PlaybookRun): MergeQueueEntry {
+  enqueueAcceptedUserStory(
+    userStory: UserStory,
+    playbookRun: PlaybookRun
+  ): MergeQueueEntry {
     features.setUserStoryExecution(
       userStory.id,
       { status: "integrating", proof: playbookRun.proof ?? userStory.proof },
@@ -403,11 +451,16 @@ export class MilestoneIntegration {
     return this.enqueueWork(milestoneId, () => this.drain(milestoneId))
   }
 
-  private enqueueWork(milestoneId: string, work: () => Promise<void>): Promise<void> {
+  private enqueueWork(
+    milestoneId: string,
+    work: () => Promise<void>
+  ): Promise<void> {
     const previous = this.chains.get(milestoneId) ?? this.ready
     const next = previous
       .then(() => (this.stopped ? undefined : work()))
-      .catch((error) => console.error(`[integration] milestone ${milestoneId}:`, error))
+      .catch((error) =>
+        console.error(`[integration] milestone ${milestoneId}:`, error)
+      )
     this.chains.set(milestoneId, next)
     void next.finally(() => {
       if (this.chains.get(milestoneId) === next) this.chains.delete(milestoneId)
@@ -439,10 +492,16 @@ export class MilestoneIntegration {
 
   // Dependency order first (wave level), then proof-accepted time.
   private nextQueued(milestoneId: string): MergeQueueEntry | null {
-    const queued = mergeQueue.listMergeEntries({ milestoneId, statuses: ["queued"] })
+    const queued = mergeQueue.listMergeEntries({
+      milestoneId,
+      statuses: ["queued"],
+    })
     if (!queued.length) return null
     const userStories = features.listUserStories(milestoneId)
-    const levels = deriveWaves(userStories, features.listEdges(milestoneId)).levels
+    const levels = deriveWaves(
+      userStories,
+      features.listEdges(milestoneId)
+    ).levels
     const position = new Map(userStories.map((s) => [s.id, s.position]))
     return [...queued].sort(
       (a, b) =>
@@ -456,14 +515,28 @@ export class MilestoneIntegration {
   // inside this chain. The integration branch moved with a compare-and-swap,
   // so the user story either is in it (finish the bookkeeping) or isn't (requeue).
   private async recoverInterrupted(milestoneId: string): Promise<void> {
-    const stale = mergeQueue.listMergeEntries({ milestoneId, statuses: ["merging"] })
+    const stale = mergeQueue.listMergeEntries({
+      milestoneId,
+      statuses: ["merging"],
+    })
     if (!stale.length) return
     const { milestone } = context(milestoneId)
     for (const entry of stale) {
       const root = milestone.repoRoot
-      const head = root ? await revParse(root, `refs/heads/${milestone.integrationBranch}`) : null
-      if (root && head && entry.userStoryHead && (await isAncestor(root, entry.userStoryHead, head))) {
-        const commit = await findUserStoryMerge(root, milestone.integrationBranch!, entry.userStoryId)
+      const head = root
+        ? await revParse(root, `refs/heads/${milestone.integrationBranch}`)
+        : null
+      if (
+        root &&
+        head &&
+        entry.userStoryHead &&
+        (await isAncestor(root, entry.userStoryHead, head))
+      ) {
+        const commit = await findUserStoryMerge(
+          root,
+          milestone.integrationBranch!,
+          entry.userStoryId
+        )
         await this.completeMerge(entry, commit, ["merging"])
       } else {
         mergeQueue.updateMergeEntry(
@@ -475,14 +548,23 @@ export class MilestoneIntegration {
     }
   }
 
-  private async mergeEntry(entry: MergeQueueEntry): Promise<"continue" | "stop"> {
+  private async mergeEntry(
+    entry: MergeQueueEntry
+  ): Promise<"continue" | "stop"> {
     const { milestone, feature } = context(entry.milestoneId)
     const userStory = features.getUserStory(entry.userStoryId)
     const root = milestone.repoRoot
-    if (!userStory || !root || !milestone.integrationBranch || !userStory.branch) {
-      this.escalate(entry, "The user story or its integration branch is no longer available.", [
-        "queued",
-      ])
+    if (
+      !userStory ||
+      !root ||
+      !milestone.integrationBranch ||
+      !userStory.branch
+    ) {
+      this.escalate(
+        entry,
+        "The user story or its integration branch is no longer available.",
+        ["queued"]
+      )
       return "continue"
     }
     const lease = await repositoryDelegationLeases
@@ -490,7 +572,9 @@ export class MilestoneIntegration {
       .catch((error) => {
         mergeQueue.updateMergeEntry(
           entry.id,
-          { note: `Waiting for the repository: ${message(error).replace(/^repository_busy:/, "")}` },
+          {
+            note: `Waiting for the repository: ${message(error).replace(/^repository_busy:/, "")}`,
+          },
           ["queued"]
         )
         this.changed(feature.id)
@@ -522,13 +606,22 @@ export class MilestoneIntegration {
           userStory.worktreePath,
           `user story ${userStory.key}: ${userStory.title}\n\nWork left uncommitted at proof acceptance, recorded by Mission Control.\n\nMission-Control-User-Story: ${userStory.id}`
         )
-      const userStoryHead = await revParse(root, `refs/heads/${userStory.branch}`)
+      const userStoryHead = await revParse(
+        root,
+        `refs/heads/${userStory.branch}`
+      )
       if (!userStoryHead) {
-        this.escalate(started, `The user story branch ${userStory.branch} is missing.`, ["merging"])
+        this.escalate(
+          started,
+          `The user story branch ${userStory.branch} is missing.`,
+          ["merging"]
+        )
         return "continue"
       }
       const touched = userStory.baseOid
-        ? await changedFiles(root, userStory.baseOid, userStoryHead).catch(() => [])
+        ? await changedFiles(root, userStory.baseOid, userStoryHead).catch(
+            () => []
+          )
         : []
       mergeQueue.updateMergeEntry(entry.id, {
         userStoryHead,
@@ -542,23 +635,32 @@ export class MilestoneIntegration {
       const outcome = await mergeUserStory({
         root,
         integrationBranch: milestone.integrationBranch,
+        regenerate: await regenerateSpecFor(feature, root),
         userStoryHead,
         message: userStoryMergeMessage({
           userStory,
-          proof: playbookRun?.proof ?? (userStory.proof as UserStoryProof | null),
+          proof:
+            playbookRun?.proof ?? (userStory.proof as UserStoryProof | null),
           playbookRunId: entry.playbookRunId,
         }),
         scratchDirectory: this.scratchDirectory(feature.id, "merge"),
       })
       switch (outcome.status) {
         case "merged":
-          await this.completeMerge(started, outcome.mergeCommit, ["merging"])
+          await this.completeMerge(
+            started,
+            outcome.mergeCommit,
+            ["merging"],
+            outcome.regenerated
+          )
           return "continue"
         case "already_merged":
           await this.completeMerge(started, null, ["merging"])
           return "continue"
         case "moved":
-          mergeQueue.updateMergeEntry(entry.id, { status: "queued" }, ["merging"])
+          mergeQueue.updateMergeEntry(entry.id, { status: "queued" }, [
+            "merging",
+          ])
           return "continue"
         case "blocked":
           this.escalate(started, outcome.reason, ["merging"])
@@ -569,7 +671,9 @@ export class MilestoneIntegration {
             {
               status: "conflict",
               conflictFiles: outcome.files,
-              note: `Conflicts with the integration branch in ${outcome.files.length} file(s).`,
+              note: outcome.regenerateError
+                ? `Conflicts only in generated files, but regenerating them failed (${outcome.regenerateError}); handing them to the integrator.`
+                : `Conflicts with the integration branch in ${outcome.files.length} file(s).`,
             },
             ["merging"]
           )
@@ -578,7 +682,10 @@ export class MilestoneIntegration {
       }
       return "continue"
     } catch (error) {
-      this.escalate(entry, `The merge failed: ${message(error)}`, ["merging", "queued"])
+      this.escalate(entry, `The merge failed: ${message(error)}`, [
+        "merging",
+        "queued",
+      ])
       return "continue"
     } finally {
       repositoryDelegationLeases.release(lease)
@@ -597,7 +704,8 @@ export class MilestoneIntegration {
   private async completeMerge(
     entry: MergeQueueEntry,
     mergeCommit: string | null,
-    from: MergeQueueEntry["status"][]
+    from: MergeQueueEntry["status"][],
+    regenerated?: string[]
   ): Promise<void> {
     const merged = getDb().transaction(() => {
       const updated = mergeQueue.updateMergeEntry(
@@ -606,7 +714,11 @@ export class MilestoneIntegration {
           status: "merged",
           mergeCommit,
           finishedAt: Date.now(),
-          note: mergeCommit ? null : "Nothing to merge: the user story made no changes.",
+          note: !mergeCommit
+            ? "Nothing to merge: the user story made no changes."
+            : regenerated?.length
+              ? `Merged after regenerating ${regenerated.length} conflicting generated file(s): ${regenerated.join(", ")}.`
+              : null,
           escalated: false,
         },
         from
@@ -627,7 +739,8 @@ export class MilestoneIntegration {
     const { milestone, feature } = context(entry.milestoneId)
     const userStory = features.getUserStory(entry.userStoryId)
     if (milestone.repoRoot) {
-      if (userStory?.worktreePath) await removeWorktree(milestone.repoRoot, userStory.worktreePath)
+      if (userStory?.worktreePath)
+        await removeWorktree(milestone.repoRoot, userStory.worktreePath)
       if (merged.resolutionWorktree)
         await removeWorktree(milestone.repoRoot, merged.resolutionWorktree)
     }
@@ -664,13 +777,25 @@ export class MilestoneIntegration {
 
   // Run the milestone's after_each_user_story hook in a fresh worktree holding the
   // conflicted merge. `manual` (the user asked) skips the automatic cap.
-  private async startResolution(entryId: string, manual: boolean): Promise<void> {
+  private async startResolution(
+    entryId: string,
+    manual: boolean
+  ): Promise<void> {
     const entry = mergeQueue.getMergeEntry(entryId)
     if (!entry || entry.status !== "conflict") return
     const { milestone, feature } = context(entry.milestoneId)
     const userStory = features.getUserStory(entry.userStoryId)
-    if (!userStory || !milestone.repoRoot || !milestone.integrationBranch || !entry.userStoryHead) {
-      this.escalate(entry, "The user story can't be merged: its branch or the integration branch is gone.", ["conflict"])
+    if (
+      !userStory ||
+      !milestone.repoRoot ||
+      !milestone.integrationBranch ||
+      !entry.userStoryHead
+    ) {
+      this.escalate(
+        entry,
+        "The user story can't be merged: its branch or the integration branch is gone.",
+        ["conflict"]
+      )
       return
     }
     if (!this.deps.startResolution) {
@@ -775,7 +900,10 @@ export class MilestoneIntegration {
     mergeQueue.updateMergeEntry(entry.id, { resolutionWorktree: null })
   }
 
-  private async finalize(entry: MergeQueueEntry, run: PlaybookRun): Promise<void> {
+  private async finalize(
+    entry: MergeQueueEntry,
+    run: PlaybookRun
+  ): Promise<void> {
     const { milestone, feature } = context(entry.milestoneId)
     const userStory = features.getUserStory(entry.userStoryId)
     const root = milestone.repoRoot
@@ -788,9 +916,11 @@ export class MilestoneIntegration {
       !entry.userStoryHead ||
       !existsSync(entry.resolutionWorktree)
     ) {
-      this.escalate(entry, "The resolution worktree is gone, so the merge can't be committed.", [
-        "resolving",
-      ])
+      this.escalate(
+        entry,
+        "The resolution worktree is gone, so the merge can't be committed.",
+        ["resolving"]
+      )
       return
     }
     const lease = await repositoryDelegationLeases
@@ -798,12 +928,17 @@ export class MilestoneIntegration {
       .catch(() => null)
     if (!lease) {
       // Try again shortly; the entry stays resolving with its worktree.
-      setTimeout(() => this.onResolutionSettled(run.id), this.deps.leaseRetryMs ?? LEASE_RETRY_MS).unref?.()
+      setTimeout(
+        () => this.onResolutionSettled(run.id),
+        this.deps.leaseRetryMs ?? LEASE_RETRY_MS
+      ).unref?.()
       return
     }
     try {
       const verifier =
-        run.proof?.verifiedBy.kind === "seat" ? run.proof.verifiedBy.address : null
+        run.proof?.verifiedBy.kind === "seat"
+          ? run.proof.verifiedBy.address
+          : null
       const outcome = await finalizeResolution({
         root,
         integrationBranch: milestone.integrationBranch,
@@ -830,7 +965,10 @@ export class MilestoneIntegration {
           await this.dropResolutionWorktree(entry)
           mergeQueue.updateMergeEntry(
             entry.id,
-            { status: "queued", note: "Integration moved during resolution; merging again." },
+            {
+              status: "queued",
+              note: "Integration moved during resolution; merging again.",
+            },
             ["resolving"]
           )
           void this.kick(milestone.id)
@@ -850,7 +988,11 @@ export class MilestoneIntegration {
       }
     } catch (error) {
       await this.dropResolutionWorktree(entry)
-      this.escalate(entry, `Committing the resolution failed: ${message(error)}`, ["resolving"])
+      this.escalate(
+        entry,
+        `Committing the resolution failed: ${message(error)}`,
+        ["resolving"]
+      )
     } finally {
       repositoryDelegationLeases.release(lease)
       this.changed(feature.id)
@@ -865,7 +1007,11 @@ export class MilestoneIntegration {
     if (!entry) throw new Error("That merge is no longer queued.")
     const updated = mergeQueue.updateMergeEntry(
       entryId,
-      { status: "queued", escalated: false, note: "Retry requested by the user" },
+      {
+        status: "queued",
+        escalated: false,
+        note: "Retry requested by the user",
+      },
       ["conflict"]
     )
     if (!updated) throw new Error("Only a conflicted merge can be retried.")
@@ -878,7 +1024,9 @@ export class MilestoneIntegration {
     const entry = mergeQueue.getMergeEntry(entryId)
     if (!entry || entry.status !== "conflict")
       throw new Error("Only a conflicted merge can be resolved.")
-    return this.enqueueWork(entry.milestoneId, () => this.startResolution(entryId, true))
+    return this.enqueueWork(entry.milestoneId, () =>
+      this.startResolution(entryId, true)
+    )
   }
 
   // Give up on merging this user story attempt: the user story fails (and can be
@@ -890,7 +1038,11 @@ export class MilestoneIntegration {
       const cancelled = getDb().transaction(() => {
         const updated = mergeQueue.updateMergeEntry(
           entryId,
-          { status: "cancelled", finishedAt: Date.now(), note: "Abandoned by the user" },
+          {
+            status: "cancelled",
+            finishedAt: Date.now(),
+            note: "Abandoned by the user",
+          },
           ["conflict", "queued"]
         )
         if (!updated) return null
@@ -904,7 +1056,8 @@ export class MilestoneIntegration {
           )
         return updated
       })()
-      if (!cancelled) throw new Error("Only a queued or conflicted merge can be abandoned.")
+      if (!cancelled)
+        throw new Error("Only a queued or conflicted merge can be abandoned.")
       await this.dropResolutionWorktree(cancelled)
       await this.releaseUserStoryWorktree(entry.userStoryId)
       this.advanceMilestone(entry.milestoneId)
@@ -920,11 +1073,16 @@ export class MilestoneIntegration {
   // safe to call on every read (status) and after plan edits (user story delete).
   advanceMilestone(milestoneId: string): void {
     const milestone = features.getMilestone(milestoneId)
-    if (!milestone || !["active", "integrating"].includes(milestone.status)) return
-    const userStories = features.listUserStories(milestoneId).filter((s) => s.status !== "cancelled")
+    if (!milestone || !["active", "integrating"].includes(milestone.status))
+      return
+    const userStories = features
+      .listUserStories(milestoneId)
+      .filter((s) => s.status !== "cancelled")
     if (!userStories.length) return
     const allDone = userStories.every((s) => s.status === "done")
-    const settled = userStories.every((s) => s.status === "done" || s.status === "integrating")
+    const settled = userStories.every(
+      (s) => s.status === "done" || s.status === "integrating"
+    )
     const target = allDone
       ? "review"
       : settled && milestone.status === "active"
@@ -943,9 +1101,17 @@ export class MilestoneIntegration {
             : "Every user story is done"
         )
       else if (settled && milestone.status === "active")
-        features.advanceMilestoneStatus(milestoneId, "integrating", "Every user story is merging")
+        features.advanceMilestoneStatus(
+          milestoneId,
+          "integrating",
+          "Every user story is merging"
+        )
       else if (!settled && milestone.status === "integrating")
-        features.advanceMilestoneStatus(milestoneId, "active", "A user story left the merge queue")
+        features.advanceMilestoneStatus(
+          milestoneId,
+          "active",
+          "A user story left the merge queue"
+        )
     } catch (error) {
       console.warn("[integration] milestone status:", error)
       return
@@ -959,12 +1125,18 @@ export class MilestoneIntegration {
     this.advanceMilestone(milestoneId)
     let { milestone } = context(milestoneId)
     const { feature } = context(milestoneId)
-    const workspace: MilestoneIntegrationStatus["workspace"] = feature.workspaceId
-      ? await this.workspaceMode(feature)
-      : { mode: "none", reason: "The feature has no workspace yet." }
-    const root = milestone.repoRoot ?? (workspace.mode === "git" ? workspace.root : null)
+    const workspace: MilestoneIntegrationStatus["workspace"] =
+      feature.workspaceId
+        ? await this.workspaceMode(feature)
+        : { mode: "none", reason: "The feature has no workspace yet." }
+    const root =
+      milestone.repoRoot ?? (workspace.mode === "git" ? workspace.root : null)
     let summary: LandingSummary | null = null
-    if (milestone.repoRoot && milestone.integrationBranch && milestone.baseRef) {
+    if (
+      milestone.repoRoot &&
+      milestone.integrationBranch &&
+      milestone.baseRef
+    ) {
       summary = await landingSummary(
         milestone.repoRoot,
         milestone.baseRef,
@@ -983,7 +1155,9 @@ export class MilestoneIntegration {
         milestone = features.getMilestone(milestoneId)!
       }
     }
-    const remote = root ? await pushRemote(root, milestone.baseRef ?? "HEAD") : null
+    const remote = root
+      ? await pushRemote(root, milestone.baseRef ?? "HEAD")
+      : null
     const gh = remote ? await ghAvailable() : false
     const gitReason =
       workspace.mode === "git" ? undefined : "Needs a git workspace."
@@ -994,7 +1168,8 @@ export class MilestoneIntegration {
       baseRef: milestone.baseRef,
       baseOid: milestone.baseOid,
       policy: milestone.mergePolicy.mode,
-      policyLocked: !!milestone.integrationBranch || milestone.status !== "planned",
+      policyLocked:
+        !!milestone.integrationBranch || milestone.status !== "planned",
       policies: {
         manual: { available: true, visible: true },
         local_merge: {
@@ -1005,7 +1180,9 @@ export class MilestoneIntegration {
         open_pr: {
           available: workspace.mode === "git" && !!remote && gh,
           visible: !!remote,
-          reason: gitReason ?? (gh ? undefined : "Install and sign in to the GitHub CLI (gh)."),
+          reason:
+            gitReason ??
+            (gh ? undefined : "Install and sign in to the GitHub CLI (gh)."),
         },
       },
       queue: mergeQueue.listMergeEntries({ milestoneId }),
@@ -1026,7 +1203,9 @@ export class MilestoneIntegration {
   ): Promise<MilestoneLanding> {
     const { milestone, feature } = context(milestoneId)
     if (milestone.status !== "review")
-      throw new Error("The milestone can land once every user story has merged.")
+      throw new Error(
+        "The milestone can land once every user story has merged."
+      )
     const root = milestone.repoRoot
     if (!root || !milestone.integrationBranch || !milestone.baseRef)
       throw new Error("This milestone has no integration branch to land.")
@@ -1035,7 +1214,9 @@ export class MilestoneIntegration {
         ? "local_merge"
         : milestone.mergePolicy.mode
     if (mode === "manual")
-      throw new Error("A manual milestone is merged by you; mark it merged when you're done.")
+      throw new Error(
+        "A manual milestone is merged by you; mark it merged when you're done."
+      )
     if (mode === "local_merge") {
       const lease = await repositoryDelegationLeases.acquire(
         root,
@@ -1048,7 +1229,8 @@ export class MilestoneIntegration {
           expectedBaseOid: approval.baseOid,
           head: milestone.integrationBranch,
           expectedHeadOid: approval.headOid,
-          message: `Merge milestone ${milestone.key}: ${milestone.name}\n\n${milestone.outcome.trim()}\n\nMission-Control-Milestone: ${milestone.id}`.trim(),
+          message:
+            `Merge milestone ${milestone.key}: ${milestone.name}\n\n${milestone.outcome.trim()}\n\nMission-Control-Milestone: ${milestone.id}`.trim(),
           scratchDirectory: this.scratchDirectory(feature.id, "land"),
         })
         return await this.completeMilestone(milestoneId, {
@@ -1065,7 +1247,10 @@ export class MilestoneIntegration {
         repositoryDelegationLeases.release(lease)
       }
     }
-    const headOid = await revParse(root, `refs/heads/${milestone.integrationBranch}`)
+    const headOid = await revParse(
+      root,
+      `refs/heads/${milestone.integrationBranch}`
+    )
     if (headOid !== approval.headOid)
       throw new Error(
         `${milestone.integrationBranch} moved since you reviewed it. Review it again before approving.`
@@ -1089,7 +1274,9 @@ export class MilestoneIntegration {
   }
 
   private pullRequestBody(milestone: Milestone): string {
-    const userStories = features.listUserStories(milestone.id).filter((s) => s.status === "done")
+    const userStories = features
+      .listUserStories(milestone.id)
+      .filter((s) => s.status === "done")
     return [
       "## Outcome",
       milestone.outcome.trim() || milestone.name,
@@ -1118,23 +1305,39 @@ export class MilestoneIntegration {
   ): Promise<MilestoneLanding> {
     const { milestone } = context(milestoneId)
     if (milestone.status !== "review")
-      throw new Error("The milestone can be marked merged once every user story is done.")
-    if (by === "navigator" && (milestone.integrationBranch || !milestone.dodReview))
-      throw new Error("Only the user can land a milestone with an integration branch.")
+      throw new Error(
+        "The milestone can be marked merged once every user story is done."
+      )
+    if (
+      by === "navigator" &&
+      (milestone.integrationBranch || !milestone.dodReview)
+    )
+      throw new Error(
+        "Only the user can land a milestone with an integration branch."
+      )
     if (milestone.integrationBranch && milestone.mergePolicy.mode !== "manual")
-      throw new Error("Use the merge policy's action, or switch the policy to manual first.")
+      throw new Error(
+        "Use the merge policy's action, or switch the policy to manual first."
+      )
     const head =
       milestone.repoRoot && milestone.integrationBranch
-        ? await revParse(milestone.repoRoot, `refs/heads/${milestone.integrationBranch}`)
+        ? await revParse(
+            milestone.repoRoot,
+            `refs/heads/${milestone.integrationBranch}`
+          )
         : null
     return this.completeMilestone(milestoneId, {
       mode: milestone.mergePolicy.mode,
       completedBy: by,
       at: Date.now(),
       base: milestone.baseRef ?? "",
-      baseOid: milestone.baseRef && milestone.repoRoot
-        ? await revParse(milestone.repoRoot, `refs/heads/${milestone.baseRef}`)
-        : null,
+      baseOid:
+        milestone.baseRef && milestone.repoRoot
+          ? await revParse(
+              milestone.repoRoot,
+              `refs/heads/${milestone.baseRef}`
+            )
+          : null,
       head: head ?? "",
     })
   }
@@ -1181,11 +1384,18 @@ export class MilestoneIntegration {
     for (const userStory of features.listUserStories(milestone.id)) {
       if (userStory.worktreePath) {
         await removeWorktree(root, userStory.worktreePath)
-        features.setUserStoryExecution(userStory.id, { worktreePath: null }, "Milestone completed; worktree removed")
+        features.setUserStoryExecution(
+          userStory.id,
+          { worktreePath: null },
+          "Milestone completed; worktree removed"
+        )
       }
     }
-    for (const entry of mergeQueue.listMergeEntries({ milestoneId: milestone.id }))
-      if (entry.resolutionWorktree) await removeWorktree(root, entry.resolutionWorktree)
+    for (const entry of mergeQueue.listMergeEntries({
+      milestoneId: milestone.id,
+    }))
+      if (entry.resolutionWorktree)
+        await removeWorktree(root, entry.resolutionWorktree)
     const mergedUserStories = new Set(
       features
         .listUserStories(milestone.id)
@@ -1193,9 +1403,17 @@ export class MilestoneIntegration {
         .map((s) => s.branch)
         .filter((b): b is string => !!b)
     )
-    await deleteMergedBranches(root, [...mergedUserStories], `refs/heads/${milestone.integrationBranch}`)
+    await deleteMergedBranches(
+      root,
+      [...mergedUserStories],
+      `refs/heads/${milestone.integrationBranch}`
+    )
     if (milestone.baseRef)
-      await deleteMergedBranches(root, [milestone.integrationBranch], `refs/heads/${milestone.baseRef}`)
+      await deleteMergedBranches(
+        root,
+        [milestone.integrationBranch],
+        `refs/heads/${milestone.baseRef}`
+      )
   }
 
   // ── cleanup and recovery ──────────────────────────────────────────────────
@@ -1210,25 +1428,43 @@ export class MilestoneIntegration {
       const root = milestone.repoRoot
       if (!root || !milestone.integrationBranch || !existsSync(root)) continue
       for (const userStory of features.listUserStories(milestone.id))
-        if (userStory.worktreePath) await removeWorktree(root, userStory.worktreePath)
-      for (const entry of mergeQueue.listMergeEntries({ milestoneId: milestone.id }))
-        if (entry.resolutionWorktree) await removeWorktree(root, entry.resolutionWorktree)
-      for (const branch of await listBranches(root, userStoryBranchPrefix(milestone.integrationBranch)))
+        if (userStory.worktreePath)
+          await removeWorktree(root, userStory.worktreePath)
+      for (const entry of mergeQueue.listMergeEntries({
+        milestoneId: milestone.id,
+      }))
+        if (entry.resolutionWorktree)
+          await removeWorktree(root, entry.resolutionWorktree)
+      for (const branch of await listBranches(
+        root,
+        userStoryBranchPrefix(milestone.integrationBranch)
+      ))
         await deleteMissionControlBranch(root, branch)
       const landed = milestone.baseRef
-        ? (await deleteMergedBranches(root, [milestone.integrationBranch], `refs/heads/${milestone.baseRef}`)).length > 0
+        ? (
+            await deleteMergedBranches(
+              root,
+              [milestone.integrationBranch],
+              `refs/heads/${milestone.baseRef}`
+            )
+          ).length > 0
         : false
-      const exists = await revParse(root, `refs/heads/${milestone.integrationBranch}`)
+      const exists = await revParse(
+        root,
+        `refs/heads/${milestone.integrationBranch}`
+      )
       if (!landed && exists) {
         const baseOid = milestone.baseOid
         // Nothing was ever merged into it: safe to delete.
-        if (baseOid && exists === baseOid) await deleteMissionControlBranch(root, milestone.integrationBranch)
+        if (baseOid && exists === baseOid)
+          await deleteMissionControlBranch(root, milestone.integrationBranch)
         else kept.push(milestone.integrationBranch)
       }
     }
-    await rm(path.join(this.deps.worktreeRoot(), featureId), { recursive: true, force: true }).catch(
-      () => {}
-    )
+    await rm(path.join(this.deps.worktreeRoot(), featureId), {
+      recursive: true,
+      force: true,
+    }).catch(() => {})
     return { keptBranches: kept }
   }
 
@@ -1245,9 +1481,12 @@ export class MilestoneIntegration {
           milestoneId: milestone.id,
           statuses: ["queued", "merging", "resolving"],
         })
-        for (const entry of open.filter((e) => e.status === "resolving" && e.resolutionRunId))
+        for (const entry of open.filter(
+          (e) => e.status === "resolving" && e.resolutionRunId
+        ))
           this.onResolutionSettled(entry.resolutionRunId!)
-        if (open.some((e) => e.status !== "resolving")) void this.kick(milestone.id)
+        if (open.some((e) => e.status !== "resolving"))
+          void this.kick(milestone.id)
       }
   }
 
@@ -1268,30 +1507,38 @@ export class MilestoneIntegration {
       for (const milestone of features.listMilestones(feature.id)) {
         if (milestone.repoRoot) repoRoots.add(milestone.repoRoot)
         for (const userStory of features.listUserStories(milestone.id))
-          if (userStory.worktreePath) referenced.add(path.resolve(userStory.worktreePath))
+          if (userStory.worktreePath)
+            referenced.add(path.resolve(userStory.worktreePath))
         for (const entry of mergeQueue.listMergeEntries({
           milestoneId: milestone.id,
           statuses: ["resolving"],
         }))
-          if (entry.resolutionWorktree) referenced.add(path.resolve(entry.resolutionWorktree))
+          if (entry.resolutionWorktree)
+            referenced.add(path.resolve(entry.resolutionWorktree))
       }
     for (const [featureDir, names] of listed) {
       const dir = path.join(root, featureDir)
       const feature = features.getFeature(featureDir)
       const milestoneRoots = feature
-        ? features.listMilestones(feature.id).map((m) => m.repoRoot).filter((r): r is string => !!r)
+        ? features
+            .listMilestones(feature.id)
+            .map((m) => m.repoRoot)
+            .filter((r): r is string => !!r)
         : []
       for (const name of names) {
         const worktree = path.resolve(dir, name)
         if (referenced.has(worktree)) continue
         const repo = milestoneRoots.find((r) => existsSync(r))
         if (repo) await removeWorktree(repo, worktree)
-        else await rm(worktree, { recursive: true, force: true }).catch(() => {})
+        else
+          await rm(worktree, { recursive: true, force: true }).catch(() => {})
       }
-      if (!feature) await rm(dir, { recursive: true, force: true }).catch(() => {})
+      if (!feature)
+        await rm(dir, { recursive: true, force: true }).catch(() => {})
     }
     for (const repo of repoRoots)
-      if (existsSync(repo)) await runGit(repo, ["worktree", "prune"]).catch(() => {})
+      if (existsSync(repo))
+        await runGit(repo, ["worktree", "prune"]).catch(() => {})
   }
 }
 

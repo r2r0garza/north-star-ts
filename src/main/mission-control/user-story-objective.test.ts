@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 import type { Feature, Milestone, UserStory } from "../db/types"
 import {
+  renderConflictObjective,
   renderIntentChain,
   renderUserStoryObjective,
 } from "./user-story-objective"
@@ -65,5 +66,36 @@ describe("user story objective", () => {
     })
     expect(text).not.toContain("## Story")
     expect(text).toContain("## Goal\nMigrate")
+  })
+})
+
+describe("renderConflictObjective", () => {
+  const input = {
+    feature,
+    milestone,
+    userStory: story({ goal: "Add a PDF export endpoint." }),
+    integrationBranch: "mc/billing/m1/integration",
+    userStoryBranch: "mc/billing/m1/userStories/a-1",
+    files: ["src/app.py", ".code-index/symbols.jsonl"],
+  }
+
+  it("tells the integrator to regenerate the workspace's generated files", () => {
+    const text = renderConflictObjective({
+      ...input,
+      generatedFiles: [
+        {
+          paths: [".code-index/**"],
+          command: "codex-agentic-os index pre-commit",
+        },
+      ],
+    })
+    expect(text).toContain("## Generated files")
+    expect(text).toContain(
+      "`.code-index/**`: `codex-agentic-os index pre-commit`"
+    )
+  })
+
+  it("says nothing about generated files when the workspace declares none", () => {
+    expect(renderConflictObjective(input)).not.toContain("## Generated files")
   })
 })

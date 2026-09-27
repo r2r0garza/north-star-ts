@@ -1,4 +1,5 @@
 import * as features from "../db/repositories/features"
+import { getWorkspace } from "../db/repositories/workspaces"
 import { PLAYBOOK_HOOKS } from "../db/repositories/playbooks"
 import type { PlaybookHookName, PlaybookRun } from "../db/types"
 import {
@@ -44,9 +45,13 @@ export async function startHookRun(
   if (input.milestoneId && !milestone)
     throw new Error(`Milestone not found in this feature: ${input.milestoneId}`)
   if (milestoneHook && !milestone)
-    throw new Error(`The ${input.hook.replace(/_/g, " ")} hook runs on a milestone.`)
+    throw new Error(
+      `The ${input.hook.replace(/_/g, " ")} hook runs on a milestone.`
+    )
   if (input.hook === "between_milestones" && !milestone)
-    throw new Error("Choose the finished milestone to run the between-milestones hook on.")
+    throw new Error(
+      "Choose the finished milestone to run the between-milestones hook on."
+    )
 
   const playbook = milestoneHook
     ? playbookFor("milestone", milestone!.playbookId)
@@ -90,7 +95,9 @@ export async function startConflictResolution(
 ): Promise<PlaybookRun> {
   const { feature, milestone, userStory } = input
   if (feature.status !== "active")
-    throw new Error("The feature isn't active, so no seat can resolve the conflict.")
+    throw new Error(
+      "The feature isn't active, so no seat can resolve the conflict."
+    )
   const playbook = playbookFor("milestone", milestone.playbookId)
   if (!playbook.hooks.some((hook) => hook.hook === "after_each_user_story"))
     throw new Error(
@@ -110,6 +117,9 @@ export async function startConflictResolution(
       integrationBranch: milestone.integrationBranch ?? "",
       userStoryBranch: userStory.branch ?? "",
       files: input.files,
+      generatedFiles: feature.workspaceId
+        ? (getWorkspace(feature.workspaceId)?.generatedFiles ?? [])
+        : [],
     }),
     intentChain: renderIntentChain({ feature, milestone, userStory }),
     title: `User story ${userStory.key}: resolve merge conflict`,

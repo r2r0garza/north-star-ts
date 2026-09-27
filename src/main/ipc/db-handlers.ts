@@ -13,6 +13,7 @@ import {
   dashboards,
 } from "../db/repositories"
 import type {
+  GeneratedFilesRule,
   Conversation,
   Mode,
   TaskStatus,
@@ -210,8 +211,11 @@ export function registerDbHandlers(
   )
   ipcMain.handle(
     "db:workspaces:update",
-    (_e, id: string, patch: { name?: string }) =>
-      workspaces.updateWorkspace(id, patch)
+    (
+      _e,
+      id: string,
+      patch: { name?: string; generatedFiles?: GeneratedFilesRule[] }
+    ) => workspaces.updateWorkspace(id, patch)
   )
   ipcMain.handle("db:workspaces:delete", async (_e, id: string) => {
     await indexWatcher?.stop(id)

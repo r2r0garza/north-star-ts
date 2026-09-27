@@ -16,6 +16,7 @@ import type {
   TaskEvent,
   TaskStatus,
   Todo,
+  GeneratedFilesRule,
   Workspace,
   ProcessDefinition,
   ProcessGraph,
@@ -1702,7 +1703,11 @@ const api = {
           path,
           name
         ) as Promise<Workspace>,
-      update: (id: string, patch: { name?: string }) =>
+      // generatedFiles: files the merge queue regenerates instead of merging.
+      update: (
+        id: string,
+        patch: { name?: string; generatedFiles?: GeneratedFilesRule[] }
+      ) =>
         ipcRenderer.invoke(
           "db:workspaces:update",
           id,
@@ -2499,6 +2504,7 @@ export type {
   TaskStatus,
   Todo,
   TodoStatus,
+  GeneratedFilesRule,
   Workspace,
   SubagentArtifact,
   ProcessDefinition,

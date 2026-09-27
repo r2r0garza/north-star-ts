@@ -1,11 +1,12 @@
 import { randomUUID } from "crypto"
 import { getDb } from "../connection"
-import type { Workspace } from "../types"
+import type { GeneratedFilesRule, Workspace } from "../types"
 
 interface WorkspaceRow {
   id: string
   path: string
   name: string | null
+  generated_files: string | null
   created_at: number
   updated_at: number
 }
@@ -15,9 +16,33 @@ function toWorkspace(row: WorkspaceRow): Workspace {
     id: row.id,
     path: row.path,
     name: row.name,
+    generatedFiles: parseGeneratedFiles(row.generated_files),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   }
+}
+
+function parseGeneratedFiles(value: string | null): GeneratedFilesRule[] {
+  try {
+    return normalizeGeneratedFiles(JSON.parse(value ?? "[]"))
+  } catch {
+    return []
+  }
+}
+
+// Keep well-formed rules only: at least one non-empty glob and a command.
+export function normalizeGeneratedFiles(value: unknown): GeneratedFilesRule[] {
+  if (!Array.isArray(value)) return []
+  return value.flatMap((rule) => {
+    const paths = Array.isArray(rule?.paths)
+      ? rule.paths
+          .filter((p: unknown): p is string => typeof p === "string")
+          .map((p: string) => p.trim().replace(/^\.?\/+/, ""))
+          .filter(Boolean)
+      : []
+    const command = typeof rule?.command === "string" ? rule.command.trim() : ""
+    return paths.length && command ? [{ paths, command }] : []
+  })
 }
 
 // Last segment of a path, e.g. "/Users/me/proj" -> "proj". Used as a default name.
@@ -89,13 +114,24 @@ export function listWorkspaces(): Workspace[] {
 
 export function updateWorkspace(
   id: string,
-  patch: { name?: string }
+  patch: { name?: string; generatedFiles?: GeneratedFilesRule[] }
 ): Workspace {
   const now = Date.now()
   if (patch.name !== undefined) {
     getDb()
       .prepare("UPDATE workspaces SET name = ?, updated_at = ? WHERE id = ?")
       .run(patch.name, now, id)
+  }
+  if (patch.generatedFiles !== undefined) {
+    getDb()
+      .prepare(
+        "UPDATE workspaces SET generated_files = ?, updated_at = ? WHERE id = ?"
+      )
+      .run(
+        JSON.stringify(normalizeGeneratedFiles(patch.generatedFiles)),
+        now,
+        id
+      )
   }
   return getWorkspace(id)!
 }

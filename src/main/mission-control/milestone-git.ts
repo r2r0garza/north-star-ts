@@ -1,6 +1,7 @@
-import { execFile } from "child_process"
+import { exec, execFile } from "child_process"
 import { readFile, realpath } from "fs/promises"
 import path from "path"
+import type { GeneratedFilesRule } from "../db/types"
 import { promisify } from "util"
 import {
   addWorktree,
@@ -48,8 +49,12 @@ export function userStoryBranchPrefix(integrationBranch: string): string {
 
 // The repository root for a workspace, or null when it is not in a git
 // repository (Mission Control then keeps user stories single-flight).
-export async function repositoryRoot(workspace: string): Promise<string | null> {
-  return runGit(workspace, ["rev-parse", "--show-toplevel"], { timeout: 10_000 }).then(
+export async function repositoryRoot(
+  workspace: string
+): Promise<string | null> {
+  return runGit(workspace, ["rev-parse", "--show-toplevel"], {
+    timeout: 10_000,
+  }).then(
     (root) => root || null,
     () => null
   )
@@ -69,7 +74,10 @@ export async function workspaceSubpath(
   return relative.startsWith("..") ? "" : relative
 }
 
-export async function revParse(root: string, ref: string): Promise<string | null> {
+export async function revParse(
+  root: string,
+  ref: string
+): Promise<string | null> {
   return runGit(root, ["rev-parse", "-q", "--verify", `${ref}^{commit}`]).then(
     (oid) => oid || null,
     () => null
@@ -81,7 +89,12 @@ export async function isAncestor(
   ancestor: string,
   descendant: string
 ): Promise<boolean> {
-  return gitSucceeds(root, ["merge-base", "--is-ancestor", ancestor, descendant])
+  return gitSucceeds(root, [
+    "merge-base",
+    "--is-ancestor",
+    ancestor,
+    descendant,
+  ])
 }
 
 async function branchOid(root: string, branch: string): Promise<string | null> {
@@ -106,9 +119,11 @@ async function commitGit(cwd: string, args: string[]): Promise<string> {
 }
 
 async function unmergedPaths(checkout: string): Promise<string[]> {
-  const text = await runGit(checkout, ["diff", "--name-only", "--diff-filter=U"]).catch(
-    () => ""
-  )
+  const text = await runGit(checkout, [
+    "diff",
+    "--name-only",
+    "--diff-filter=U",
+  ]).catch(() => "")
   return text.split("\n").filter(Boolean)
 }
 
@@ -121,7 +136,8 @@ async function moveBranch(
   expected: string,
   reason: string
 ): Promise<boolean> {
-  if (!isMissionControlBranch(branch)) throw new Error(`Refusing to move ${branch}`)
+  if (!isMissionControlBranch(branch))
+    throw new Error(`Refusing to move ${branch}`)
   return runGit(root, [
     "update-ref",
     "-m",
@@ -165,9 +181,12 @@ export async function startIntegrationBranch(input: {
       )
     throw error
   }
-  const baseRef = await runGit(root, ["symbolic-ref", "--short", "-q", "HEAD"]).catch(
-    () => ""
-  )
+  const baseRef = await runGit(root, [
+    "symbolic-ref",
+    "--short",
+    "-q",
+    "HEAD",
+  ]).catch(() => "")
   if (!baseRef)
     throw new Error(
       "The workspace is on a detached HEAD. Check out the branch the milestone should land on, then run the user story again."
@@ -191,7 +210,10 @@ export async function startIntegrationBranch(input: {
 // A branch name under the milestone's user stories prefix that doesn't exist yet. A
 // leftover from an interrupted launch keeps its work; the new attempt gets a
 // suffixed name instead.
-async function freeUserStoryBranch(root: string, base: string): Promise<string> {
+async function freeUserStoryBranch(
+  root: string,
+  base: string
+): Promise<string> {
   for (let n = 1; n < 100; n++) {
     const candidate = n === 1 ? base : `${base}-${n}`
     if (!(await branchOid(root, candidate))) return candidate
@@ -254,9 +276,12 @@ export async function changedFiles(
 // ── the merge ────────────────────────────────────────────────────────────────
 
 export type MergeOutcome =
-  | { status: "merged"; mergeCommit: string }
+  // `regenerated`: conflicted generated files rebuilt by their command.
+  | { status: "merged"; mergeCommit: string; regenerated?: string[] }
   | { status: "already_merged" }
-  | { status: "conflict"; files: string[] }
+  // `regenerateError`: every conflict was a generated file, but rebuilding
+  // them failed, so they go to the integrator after all.
+  | { status: "conflict"; files: string[]; regenerateError?: string }
   // The integration branch moved while we merged; retry from its new head.
   | { status: "moved" }
   // Something outside the queue's control; nothing was changed.
@@ -275,12 +300,94 @@ async function checkedOutGuard(
 // Merge a user story head into the integration branch: --no-ff in a scratch
 // detached worktree, then compare-and-swap the branch. A conflict is aborted
 // and the scratch worktree removed, so the repository is exactly as before.
+// ── generated files ─────────────────────────────────────────────────────────
+
+export interface RegenerateSpec {
+  rules: GeneratedFilesRule[]
+  // The workspace's path inside the repository ("" at the root). Rule globs
+  // and commands are relative to the workspace.
+  subpath: string
+  // Runs a rule's command; replaced in tests.
+  run?: (cwd: string, command: string) => Promise<void>
+}
+
+const REGENERATE_TIMEOUT_MS = 5 * 60_000
+
+async function runShell(cwd: string, command: string): Promise<void> {
+  await execAsync(command, {
+    cwd,
+    timeout: REGENERATE_TIMEOUT_MS,
+    maxBuffer: 16 * 1024 * 1024,
+  })
+}
+
+// The rules that cover every one of `files` (repository-relative), or null
+// when any file isn't a declared generated file.
+export function generatedRulesFor(
+  files: string[],
+  spec: Pick<RegenerateSpec, "rules" | "subpath">
+): GeneratedFilesRule[] | null {
+  if (!files.length || !spec.rules.length) return null
+  const prefix = spec.subpath ? `${spec.subpath.replace(/\/+$/, "")}/` : ""
+  const used = new Set<GeneratedFilesRule>()
+  for (const file of files) {
+    if (prefix && !file.startsWith(prefix)) return null
+    const relative = file.slice(prefix.length)
+    const rule = spec.rules.find((r) =>
+      r.paths.some((glob) => path.posix.matchesGlob(relative, glob))
+    )
+    if (!rule) return null
+    used.add(rule)
+  }
+  return spec.rules.filter((rule) => used.has(rule))
+}
+
+// In a merge stopped on conflicts that are all generated files: keep the
+// integration side, rebuild them with their rules' commands, stage the
+// result, and commit the merge. Throws when rebuilding fails or leaves
+// conflicts; the caller aborts the merge.
+async function regenerateAndCommit(
+  checkout: string,
+  files: string[],
+  rules: GeneratedFilesRule[],
+  spec: RegenerateSpec,
+  message: string
+): Promise<void> {
+  await runGit(checkout, ["checkout", "--ours", "--", ...files])
+  await runGit(checkout, ["add", "--", ...files])
+  const cwd = path.join(checkout, spec.subpath)
+  for (const rule of rules) {
+    try {
+      await (spec.run ?? runShell)(cwd, rule.command)
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error)
+      throw new Error(`\`${rule.command}\` failed: ${detail.slice(0, 300)}`)
+    }
+  }
+  for (const glob of rules.flatMap((rule) => rule.paths))
+    // A glob the command left untouched matches nothing; that's fine.
+    await runGit(checkout, [
+      "add",
+      "-A",
+      "--",
+      `:(glob)${path.posix.join(spec.subpath, glob)}`,
+    ]).catch(() => {})
+  const remaining = await unmergedPaths(checkout)
+  if (remaining.length)
+    throw new Error(
+      `conflicts remain after regenerating: ${remaining.join(", ")}`
+    )
+  await commitGit(checkout, ["commit", "--no-verify", "-m", message])
+}
+
 export async function mergeUserStory(input: {
   root: string
   integrationBranch: string
   userStoryHead: string
   message: string
   scratchDirectory: string
+  // Generated files to rebuild rather than hand-merge on a conflict.
+  regenerate?: RegenerateSpec | null
 }): Promise<MergeOutcome> {
   const { root, integrationBranch, userStoryHead } = input
   const head = await branchOid(root, integrationBranch)
@@ -289,12 +396,18 @@ export async function mergeUserStory(input: {
       status: "blocked",
       reason: `The integration branch ${integrationBranch} is missing.`,
     }
-  if (await isAncestor(root, userStoryHead, head)) return { status: "already_merged" }
+  if (await isAncestor(root, userStoryHead, head))
+    return { status: "already_merged" }
   const guard = await checkedOutGuard(root, integrationBranch)
   if (guard) return { status: "blocked", reason: guard }
 
-  await addWorktree({ root, directory: input.scratchDirectory, startPoint: head })
+  await addWorktree({
+    root,
+    directory: input.scratchDirectory,
+    startPoint: head,
+  })
   try {
+    let regenerated: string[] | undefined
     try {
       await commitGit(input.scratchDirectory, [
         "merge",
@@ -306,14 +419,47 @@ export async function mergeUserStory(input: {
       ])
     } catch (error) {
       const files = await unmergedPaths(input.scratchDirectory)
-      await runGit(input.scratchDirectory, ["merge", "--abort"]).catch(() => {})
-      if (files.length) return { status: "conflict", files }
-      return {
-        status: "blocked",
-        reason: `git merge failed: ${error instanceof Error ? error.message : String(error)}`,
+      const rules = input.regenerate
+        ? generatedRulesFor(files, input.regenerate)
+        : null
+      let regenerateError: string | undefined
+      if (rules && input.regenerate) {
+        try {
+          await regenerateAndCommit(
+            input.scratchDirectory,
+            files,
+            rules,
+            input.regenerate,
+            input.message
+          )
+          regenerated = files
+        } catch (regenerateFailure) {
+          regenerateError =
+            regenerateFailure instanceof Error
+              ? regenerateFailure.message
+              : String(regenerateFailure)
+        }
+      }
+      if (!regenerated) {
+        await runGit(input.scratchDirectory, ["merge", "--abort"]).catch(
+          () => {}
+        )
+        if (files.length)
+          return {
+            status: "conflict",
+            files,
+            ...(regenerateError ? { regenerateError } : {}),
+          }
+        return {
+          status: "blocked",
+          reason: `git merge failed: ${error instanceof Error ? error.message : String(error)}`,
+        }
       }
     }
-    const mergeCommit = await runGit(input.scratchDirectory, ["rev-parse", "HEAD"])
+    const mergeCommit = await runGit(input.scratchDirectory, [
+      "rev-parse",
+      "HEAD",
+    ])
     const moved = await moveBranch(
       root,
       integrationBranch,
@@ -321,7 +467,13 @@ export async function mergeUserStory(input: {
       head,
       "mission-control: merge user story"
     )
-    return moved ? { status: "merged", mergeCommit } : { status: "moved" }
+    return moved
+      ? {
+          status: "merged",
+          mergeCommit,
+          ...(regenerated ? { regenerated } : {}),
+        }
+      : { status: "moved" }
   } finally {
     await removeWorktree(root, input.scratchDirectory)
   }
@@ -362,7 +514,9 @@ export async function prepareResolution(input: {
 }): Promise<{ startOid: string; files: string[] }> {
   const startOid = await branchOid(input.root, input.integrationBranch)
   if (!startOid)
-    throw new Error(`The integration branch ${input.integrationBranch} is missing.`)
+    throw new Error(
+      `The integration branch ${input.integrationBranch} is missing.`
+    )
   await addWorktree({
     root: input.root,
     directory: input.directory,
@@ -380,10 +534,15 @@ export async function prepareResolution(input: {
 
 const CONFLICT_MARKER = /^(<{7}|>{7})(?: |$)/m
 
-async function filesWithMarkers(checkout: string, files: string[]): Promise<string[]> {
+async function filesWithMarkers(
+  checkout: string,
+  files: string[]
+): Promise<string[]> {
   const marked: string[] = []
   for (const file of files) {
-    const text = await readFile(path.join(checkout, file), "utf8").catch(() => "")
+    const text = await readFile(path.join(checkout, file), "utf8").catch(
+      () => ""
+    )
     if (CONFLICT_MARKER.test(text)) marked.push(file)
   }
   return marked
@@ -408,13 +567,20 @@ export async function finalizeResolution(input: {
   const { directory } = input
   const marked = await filesWithMarkers(directory, input.conflictFiles)
   if (marked.length) return { status: "unresolved", files: marked }
-  const mergeInProgress = (await inProgressOperation(directory)) === "MERGE_HEAD"
+  const mergeInProgress =
+    (await inProgressOperation(directory)) === "MERGE_HEAD"
   let mergeCommit: string
   if (mergeInProgress) {
     await runGit(directory, ["add", "-A"])
     const unmerged = await unmergedPaths(directory)
     if (unmerged.length) return { status: "unresolved", files: unmerged }
-    await commitGit(directory, ["commit", "--no-verify", "-q", "-m", input.message])
+    await commitGit(directory, [
+      "commit",
+      "--no-verify",
+      "-q",
+      "-m",
+      input.message,
+    ])
     mergeCommit = await runGit(directory, ["rev-parse", "HEAD"])
   } else {
     // The integrator committed the merge itself: accept it only if it is a
@@ -551,17 +717,25 @@ export async function landLocally(input: {
   const fastForward = await isAncestor(root, baseOid, headOid)
   const checkout = await branchCheckout(root, base)
   if (checkout) {
-    const dirty = await runGit(checkout, ["status", "--porcelain", "--untracked-files=no"])
+    const dirty = await runGit(checkout, [
+      "status",
+      "--porcelain",
+      "--untracked-files=no",
+    ])
     if (dirty)
       throw new Error(
         `${checkout} has uncommitted changes on ${base}. Commit or stash them, then approve again.`
       )
     const operation = await inProgressOperation(checkout)
     if (operation)
-      throw new Error(`Finish the git operation in progress in ${checkout} first.`)
+      throw new Error(
+        `Finish the git operation in progress in ${checkout} first.`
+      )
     try {
       if (fastForward)
-        await runGit(checkout, ["merge", "--ff-only", headOid], { timeout: 120_000 })
+        await runGit(checkout, ["merge", "--ff-only", headOid], {
+          timeout: 120_000,
+        })
       else
         await commitGit(checkout, [
           "merge",
@@ -578,12 +752,19 @@ export async function landLocally(input: {
         `Merging into ${base} failed and was aborted, leaving ${base} unchanged: ${error instanceof Error ? error.message : String(error)}`
       )
     }
-    return { mergeCommit: await runGit(checkout, ["rev-parse", "HEAD"]), fastForward }
+    return {
+      mergeCommit: await runGit(checkout, ["rev-parse", "HEAD"]),
+      fastForward,
+    }
   }
 
   let next = headOid
   if (!fastForward) {
-    await addWorktree({ root, directory: input.scratchDirectory, startPoint: baseOid })
+    await addWorktree({
+      root,
+      directory: input.scratchDirectory,
+      startPoint: baseOid,
+    })
     try {
       await commitGit(input.scratchDirectory, [
         "merge",
@@ -593,7 +774,9 @@ export async function landLocally(input: {
         input.message,
         headOid,
       ]).catch(async (error) => {
-        await runGit(input.scratchDirectory, ["merge", "--abort"]).catch(() => {})
+        await runGit(input.scratchDirectory, ["merge", "--abort"]).catch(
+          () => {}
+        )
         throw new Error(
           `Merging into ${base} conflicts; ${base} is unchanged. Merge it manually or switch the policy to manual: ${error instanceof Error ? error.message : String(error)}`
         )
@@ -611,7 +794,9 @@ export async function landLocally(input: {
     next,
     baseOid,
   ]).catch(() => {
-    throw new Error(`${base} moved while landing; nothing was changed. Review again.`)
+    throw new Error(
+      `${base} moved while landing; nothing was changed. Review again.`
+    )
   })
   return { mergeCommit: next, fastForward }
 }
@@ -619,8 +804,12 @@ export async function landLocally(input: {
 // ── pull requests ───────────────────────────────────────────────────────────
 
 const execFileAsync = promisify(execFile)
+const execAsync = promisify(exec)
 
-export async function pushRemote(root: string, branch: string): Promise<string | null> {
+export async function pushRemote(
+  root: string,
+  branch: string
+): Promise<string | null> {
   for (const key of [`branch.${branch}.pushRemote`, "remote.pushDefault"]) {
     const value = await runGit(root, ["config", "--get", key]).catch(() => "")
     if (value) return value
@@ -650,15 +839,24 @@ export async function openPullRequest(input: {
   title: string
   body: string
 }): Promise<{ url: string; remote: string }> {
-  if (!isMissionControlBranch(input.branch)) throw new Error(`Refusing to push ${input.branch}`)
+  if (!isMissionControlBranch(input.branch))
+    throw new Error(`Refusing to push ${input.branch}`)
   const remote = await pushRemote(input.root, input.base)
   if (!remote) throw new Error("This repository has no remote to push to.")
   if (!(await ghAvailable()))
     throw new Error("The GitHub CLI (gh) is not installed or not on PATH.")
   await runGit(
     input.root,
-    ["push", "--set-upstream", remote, `refs/heads/${input.branch}:refs/heads/${input.branch}`],
-    { timeout: NETWORK_TIMEOUT_MS, env: { GIT_ASKPASS: "true", SSH_ASKPASS: "true" } }
+    [
+      "push",
+      "--set-upstream",
+      remote,
+      `refs/heads/${input.branch}:refs/heads/${input.branch}`,
+    ],
+    {
+      timeout: NETWORK_TIMEOUT_MS,
+      env: { GIT_ASKPASS: "true", SSH_ASKPASS: "true" },
+    }
   )
   const { stdout } = await execFileAsync(
     "gh",
@@ -678,12 +876,21 @@ export async function openPullRequest(input: {
       cwd: input.root,
       timeout: NETWORK_TIMEOUT_MS,
       encoding: "utf8",
-      env: { ...process.env, GH_PROMPT_DISABLED: "1", GIT_TERMINAL_PROMPT: "0" },
+      env: {
+        ...process.env,
+        GH_PROMPT_DISABLED: "1",
+        GIT_TERMINAL_PROMPT: "0",
+      },
       maxBuffer: 1024 * 1024,
     }
   )
-  const url = stdout.trim().split("\n").reverse().find((line) => /^https?:\/\//.test(line))
-  if (!url) throw new Error(`gh did not report a pull request URL: ${stdout.trim()}`)
+  const url = stdout
+    .trim()
+    .split("\n")
+    .reverse()
+    .find((line) => /^https?:\/\//.test(line))
+  if (!url)
+    throw new Error(`gh did not report a pull request URL: ${stdout.trim()}`)
   return { url, remote }
 }
 
@@ -701,13 +908,21 @@ export async function deleteMergedBranches(
     if (!oid) continue
     if (!(await isAncestor(root, oid, into))) continue
     if (await branchCheckout(root, branch)) continue
-    if (await runGit(root, ["branch", "-D", branch]).then(() => true, () => false))
+    if (
+      await runGit(root, ["branch", "-D", branch]).then(
+        () => true,
+        () => false
+      )
+    )
       deleted.push(branch)
   }
   return deleted
 }
 
-export async function listBranches(root: string, prefix: string): Promise<string[]> {
+export async function listBranches(
+  root: string,
+  prefix: string
+): Promise<string[]> {
   const text = await runGit(root, [
     "for-each-ref",
     "--format=%(refname:short)",
@@ -723,11 +938,19 @@ export async function worktreeDiff(
   base: string,
   limit: number
 ): Promise<{ diff: string; truncated: boolean }> {
-  let diff = await runGit(worktree, ["diff", "--no-color", "--no-ext-diff", base])
+  let diff = await runGit(worktree, [
+    "diff",
+    "--no-color",
+    "--no-ext-diff",
+    base,
+  ])
   const untracked = (
-    await runGit(worktree, ["ls-files", "--others", "--exclude-standard", "-z"]).catch(
-      () => ""
-    )
+    await runGit(worktree, [
+      "ls-files",
+      "--others",
+      "--exclude-standard",
+      "-z",
+    ]).catch(() => "")
   )
     .split("\0")
     .filter(Boolean)
@@ -736,7 +959,12 @@ export async function worktreeDiff(
     const text = await execFileAsync(
       "git",
       ["diff", "--no-index", "--no-color", "--", "/dev/null", file],
-      { cwd: worktree, encoding: "utf8", timeout: 15_000, maxBuffer: 4 * 1024 * 1024 }
+      {
+        cwd: worktree,
+        encoding: "utf8",
+        timeout: 15_000,
+        maxBuffer: 4 * 1024 * 1024,
+      }
     ).then(
       (result) => result.stdout,
       // Exit status 1 means "there are differences" for --no-index.

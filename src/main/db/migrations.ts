@@ -128,6 +128,7 @@ const MIGRATIONS: Array<(db: Database.Database) => void> = [
       "UPDATE index_files SET indexed_stage = 'file_map' WHERE ext IN ('.py', '.pyi')"
     ),
   retireMissionControlWorktreeWorkspaces,
+  ensureGeneratedFilesColumn,
 ]
 
 function tableExists(db: Database.Database, table: string): boolean {
@@ -163,6 +164,12 @@ function addColumnIfMissing(
 
 function ensureProcessResultContentColumn(db: Database.Database): void {
   addColumnIfMissing(db, "process_phase_runs", "result_content", "TEXT")
+}
+
+// v58: a workspace's generated files and the command that rebuilds them
+// (JSON GeneratedFilesRule[]), so merges regenerate rather than hand-merge them.
+function ensureGeneratedFilesColumn(db: Database.Database): void {
+  addColumnIfMissing(db, "workspaces", "generated_files", "TEXT")
 }
 
 // v55: when a phase run's validator review started (null when none is in
@@ -408,6 +415,7 @@ export function runMigrations(
       ensureProcessRuntimeProfileColumns(db)
       ensureProcessResultContentColumn(db)
       ensurePhaseReviewColumn(db)
+      ensureGeneratedFilesColumn(db)
       ensureMissionControlPlaybooks(db)
       ensureMissionControlComms(db)
       ensureContextScopes(db)

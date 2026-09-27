@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
+import { GeneratedFilesEditor } from "./generated-files-editor"
 import {
   CircleDot,
   CircleHelp,
@@ -844,6 +845,7 @@ function FeatureView({
   projects,
   onGraph,
   onPickWorkspace,
+  onWorkspaceSaved,
   onMilestone,
   onOpenAnchor,
 }: {
@@ -853,6 +855,7 @@ function FeatureView({
   projects: Project[]
   onGraph: (graph: FeatureGraph) => void
   onPickWorkspace: () => Promise<Workspace | null>
+  onWorkspaceSaved: (workspace: Workspace) => void
   onMilestone: (id: string) => void
   onOpenAnchor: (anchor: {
     kind: "user_story" | "milestone"
@@ -899,9 +902,9 @@ function FeatureView({
       .update(feature.id, patch)
       .then(onGraph)
       .catch((error) => toast.error(errorMessage(error)))
-  const workspaceName =
-    workspaces.find((workspace) => workspace.id === feature.workspaceId)
-      ?.name ?? "None"
+  const featureWorkspace =
+    workspaces.find((workspace) => workspace.id === feature.workspaceId) ?? null
+  const workspaceName = featureWorkspace?.name ?? "None"
   const addMilestone = async () => {
     const next = await window.cowork.missionControl.milestones.create({
       featureId: feature.id,
@@ -1116,6 +1119,14 @@ function FeatureView({
             The rig and workspace lock when the feature starts.
           </p>
         ) : null}
+        {featureWorkspace && (
+          <div className="sm:col-span-3">
+            <GeneratedFilesEditor
+              workspace={featureWorkspace}
+              onSaved={onWorkspaceSaved}
+            />
+          </div>
+        )}
       </div>
       <div className="w-72">
         <PlaybookPicker
@@ -1437,6 +1448,11 @@ export function FeaturesTab({
         projects={projects}
         onGraph={applyGraph}
         onPickWorkspace={saveWorkspace}
+        onWorkspaceSaved={(saved) =>
+          setWorkspaces((current) =>
+            current.map((item) => (item.id === saved.id ? saved : item))
+          )
+        }
         onMilestone={onMilestoneChange}
         onOpenAnchor={(anchor) => {
           if (anchor.kind === "milestone") {
