@@ -62,6 +62,10 @@ describe("overlap schedule estimate", () => {
     expect(scheduleCapacity(feature(5, { maxConcurrentUserStories: 1 }))).toBe(
       1
     )
+    // The task runner's work lane caps a budget raised past it.
+    expect(
+      scheduleCapacity(feature(10, { maxConcurrentUserStories: 10 }))
+    ).toBe(6)
   })
 
   it("estimates a planning proposal both ways before it's applied", () => {

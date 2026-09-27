@@ -1,4 +1,5 @@
 import { runAgentLoop, type ChatEvent, type ChatResult } from "../agent"
+import { TASK_LANE_SLOTS, type TaskLane } from "../../shared/task-lanes"
 import { SHUTDOWN_ABORT_REASON, PAUSE_ABORT_REASON } from "../agent/abort"
 import {
   createTask,
@@ -148,6 +149,8 @@ export interface TaskKindCapability {
   // sourceConversationId null), so a source-less task of this kind is NOT an
   // orphan and must be exempt from the reapOrphans safety net (plan 022).
   hasIndependentSurface?: boolean
+  // The lane whose slots this kind runs in. Unset: "interactive", like a chat.
+  lane?: TaskLane
 }
 
 // The default kind for a durable agent turn enqueued from the UI: manual resume
@@ -251,7 +254,10 @@ export class TaskRunner {
   // writes would hit a deleted task and throw an FK error on the task_events
   // insert (plan 022).
   private inflight = new Map<string, Promise<void>>()
+  // An overall cap across lanes (Infinity unless the caller sets one), then
+  // each lane's own slots.
   private readonly concurrency: number
+  private readonly laneSlots: Record<TaskLane, number>
   private listeners = new Set<TaskEventListener>()
   // The pump sleeps on this resolver when idle (a wakeable queue, not a busy
   // poll). enqueue/resume/completion call wakeup() to re-pump.
@@ -276,9 +282,14 @@ export class TaskRunner {
   ])
 
   constructor(
-    opts: { concurrency?: number; backoff?: Partial<BackoffConfig> } = {}
+    opts: {
+      concurrency?: number
+      lanes?: Partial<Record<TaskLane, number>>
+      backoff?: Partial<BackoffConfig>
+    } = {}
   ) {
-    this.concurrency = opts.concurrency ?? 2
+    this.concurrency = opts.concurrency ?? Number.POSITIVE_INFINITY
+    this.laneSlots = { ...TASK_LANE_SLOTS, ...opts.lanes }
     this.backoff = { ...DEFAULT_BACKOFF, ...opts.backoff }
   }
 
@@ -366,6 +377,10 @@ export class TaskRunner {
   // gets the conservative default: manual resume only.
   private capabilityOf(kind: string): TaskKindCapability {
     return this.kinds.get(kind) ?? { autoResume: false }
+  }
+
+  private laneOf(task: Task): TaskLane {
+    return this.capabilityOf(kindOf(task)).lane ?? "interactive"
   }
 
   // Enqueue a new durable agent turn. The task runs in its OWN forked
@@ -776,14 +791,22 @@ export class TaskRunner {
   }
 
   // Pull the next runnable task id from the queue, skipping any whose
-  // conversation already has a running task. Per-conversation serialization
-  // keeps message seq ordering sane (two tasks on the same conversation would
-  // otherwise interleave appendMessage writes). Prunes vanished tasks.
+  // conversation already has a running task or whose lane is full.
+  // Per-conversation serialization keeps message seq ordering sane (two tasks
+  // on the same conversation would otherwise interleave appendMessage
+  // writes). Prunes vanished tasks.
   private takeNext(): string | undefined {
     const busy = new Set<string>()
+    const inLane: Record<TaskLane, number> = {
+      interactive: 0,
+      work: 0,
+      background: 0,
+    }
     for (const id of this.running.keys()) {
       const task = getTask(id)
-      if (task) busy.add(task.conversationId)
+      if (!task) continue
+      busy.add(task.conversationId)
+      inLane[this.laneOf(task)]++
     }
     // A backing-off task isn't in `running` (its slot is freed) but it's still
     // logically in-flight on its conversation. Treat its conversation as busy too
@@ -801,6 +824,8 @@ export class TaskRunner {
         continue
       }
       if (busy.has(task.conversationId)) continue
+      const lane = this.laneOf(task)
+      if (inLane[lane] >= this.laneSlots[lane]) continue
       this.queue.splice(i, 1)
       return task.id
     }

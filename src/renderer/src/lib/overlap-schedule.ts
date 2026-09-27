@@ -1,4 +1,5 @@
 import { budgetLimit } from "../../../shared/mission-control/budgets"
+import { TASK_LANE_SLOTS } from "../../../shared/task-lanes"
 import type { PlanChange } from "../../../shared/mission-control/plan-changes"
 import {
   overlappingPairs,
@@ -22,9 +23,13 @@ export interface OverlapEstimate {
 }
 
 // How many user stories can run at once: the concurrency budget, further
-// limited by the default pod's builder seats, as the Navigator counts them.
+// limited by the default pod's builder seats, as the Navigator counts them,
+// and by the task runner's work lane.
 export function scheduleCapacity(feature: Feature): number {
-  const budget = budgetLimit(feature.budgets, "maxConcurrentUserStories")
+  const budget = Math.min(
+    budgetLimit(feature.budgets, "maxConcurrentUserStories"),
+    TASK_LANE_SLOTS.work
+  )
   const rig = feature.rigSnapshot
   const pod = rig?.pods.find((p) => p.key === feature.defaultPodKey)
   if (!rig || !pod) return Math.max(1, budget)

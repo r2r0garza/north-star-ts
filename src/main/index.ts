@@ -1484,11 +1484,12 @@ app.whenReady().then(async () => {
   // consults the registry to decide which orphaned kinds auto-resume.
   // todo_run: a handed-off todo list. Auto-resume so a long list survives a
   // restart and continues (plan 016).
-  taskRunner.registerKind("todo_run", { autoResume: true })
+  taskRunner.registerKind("todo_run", { autoResume: true, lane: "work" })
   // workspace_index: deterministic (no LLM) executor; auto-resume so a paused or
   // crash-interrupted index continues from its cursor on next boot (plan 008).
   taskRunner.registerKind("workspace_index", {
     autoResume: true,
+    lane: "background",
     // Observable/cancellable via the indexing panel, and born source-less by
     // design — exempt from the plan 022 orphan reaper.
     hasIndependentSurface: true,
@@ -1503,6 +1504,7 @@ app.whenReady().then(async () => {
   // worker conversation) at the next boot rather than letting them accumulate.
   taskRunner.registerKind(SUMMARIZE_KIND, {
     autoResume: false,
+    lane: "background",
     run: summaryService.execute,
   })
   // process_run: the DAG orchestrator (plan 025). Deterministic executor seam —
@@ -1514,6 +1516,7 @@ app.whenReady().then(async () => {
   // and is observable via the 026 monitor, so it's exempt from the 022 reaper.
   taskRunner.registerKind(PROCESS_RUN_KIND, {
     autoResume: true,
+    lane: "work",
     hasIndependentSurface: true,
     run: processService.execute,
   })
@@ -1529,11 +1532,13 @@ app.whenReady().then(async () => {
   // source-less and observable in Comms, so exempt from the 022 reaper.
   taskRunner.registerKind(SEAT_WAKE_KIND, {
     autoResume: true,
+    lane: "work",
     hasIndependentSurface: true,
     run: seatSessions.execute,
   })
   taskRunner.registerKind(DASHBOARD_REFRESH_KIND, {
     autoResume: false,
+    lane: "background",
     hasIndependentSurface: true,
     run: dashboardService.execute,
   })
