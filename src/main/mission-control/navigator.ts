@@ -98,6 +98,9 @@ export interface NavigatorDeps {
   onResumed?(featureId: string): void
   onCancelled?(featureId: string): void
   onChanged?(featureId: string): void
+  // A feature just started (before planning): e.g. index its workspace so
+  // seats can query it instead of searching file by file.
+  onFeatureStarted?(feature: Feature): void
   debounceMs?: number
   heartbeatMs?: number
   now?: () => number
@@ -851,6 +854,11 @@ export class Navigator {
     features.setFeatureDrive(featureId, {
       accountedAt: options.mode === "manual" ? null : this.now(),
     })
+    try {
+      this.deps.onFeatureStarted?.(features.getFeature(featureId)!)
+    } catch (err) {
+      console.error("[navigator] onFeatureStarted failed:", err)
+    }
     let planning: PlaybookRun | null = null
     let planningError: string | null = null
     const planned = features

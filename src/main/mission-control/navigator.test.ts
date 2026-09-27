@@ -78,7 +78,9 @@ vi.mock("../agent", () => ({
         processPhaseRunId: input.processPhaseRunId!,
         args: {
           verdict: "accepted",
-          criteria: [{ id: "AC-1", status: "met", evidence: "Checked the file." }],
+          criteria: [
+            { id: "AC-1", status: "met", evidence: "Checked the file." },
+          ],
         },
       })
       content = "verified"
@@ -188,11 +190,13 @@ function makeNavigator(
   overrides: Partial<ConstructorParameters<typeof Navigator>[0]> = {}
 ): Navigator {
   const nav = new Navigator({
-    startUserStory: (userStoryId, options) => runner.startUserStory(userStoryId, options),
+    startUserStory: (userStoryId, options) =>
+      runner.startUserStory(userStoryId, options),
     startHook: (input) => startHookRun(runner, input),
     cancelPlaybookRun: (id) => runner.cancelPlaybookRun(id),
     workspaceMode: (feature) => integration.workspaceMode(feature),
-    advanceMilestone: (milestoneId) => integration.advanceMilestone(milestoneId),
+    advanceMilestone: (milestoneId) =>
+      integration.advanceMilestone(milestoneId),
     kickMerges: (milestoneId) => void integration.kick(milestoneId),
     completeMilestone: async (milestoneId) => {
       await integration.markMerged(milestoneId, "navigator")
@@ -229,13 +233,17 @@ function setup() {
     integration,
   })
   service.onRunSettled((id) => runner.settle(id))
-  bus = new SeatComms({ dispatch: () => {}, notifyUser: (t, b) => notices.push(`${t}: ${b}`) })
+  bus = new SeatComms({
+    dispatch: () => {},
+    notifyUser: (t, b) => notices.push(`${t}: ${b}`),
+  })
   installSeatComms(bus)
   navigator = makeNavigator()
   installMapTools(
     new MapToolService({
       position: (id) => navigator.position(id),
-      startUserStory: (userStoryId, options) => runner.startUserStory(userStoryId, options),
+      startUserStory: (userStoryId, options) =>
+        runner.startUserStory(userStoryId, options),
       cancelUserStory: (userStoryId) => runner.cancelUserStory(userStoryId),
       completeMilestone: async (milestoneId) => {
         await integration.markMerged(milestoneId, "navigator")
@@ -246,11 +254,23 @@ function setup() {
 
 // Orchestration (lead) oversees implementation (two builders and QA).
 function rig(
-  leadRights: RigDecisionRight[] = ["assign_user_story", "revise_plan", "accept_proof"]
+  leadRights: RigDecisionRight[] = [
+    "assign_user_story",
+    "revise_plan",
+    "accept_proof",
+  ]
 ) {
   const created = rigs.createRig({ name: "Team" })
-  const orchestration = rigs.createPod({ rigId: created.id, key: "orchestration", name: "Orchestration" })
-  const implementation = rigs.createPod({ rigId: created.id, key: "implementation", name: "Implementation" })
+  const orchestration = rigs.createPod({
+    rigId: created.id,
+    key: "orchestration",
+    name: "Orchestration",
+  })
+  const implementation = rigs.createPod({
+    rigId: created.id,
+    key: "implementation",
+    name: "Implementation",
+  })
   const lead = rigs.createSeat({
     podId: orchestration.id,
     key: "lead",
@@ -261,9 +281,23 @@ function rig(
   })
   rigs.updatePod(orchestration.id, { leadSeatId: lead.id })
   for (const key of ["builder", "builder-2"])
-    rigs.createSeat({ podId: implementation.id, key, role: "builder", agentRefId: "agentref:v1:builder", agentLabel: key })
-  rigs.createSeat({ podId: implementation.id, key: "qa", role: "qa", agentRefId: "agentref:v1:qa", agentLabel: "qa" })
-  rigs.setOversight(created.id, [{ overseerPodId: orchestration.id, overseenPodId: implementation.id }])
+    rigs.createSeat({
+      podId: implementation.id,
+      key,
+      role: "builder",
+      agentRefId: "agentref:v1:builder",
+      agentLabel: key,
+    })
+  rigs.createSeat({
+    podId: implementation.id,
+    key: "qa",
+    role: "qa",
+    agentRefId: "agentref:v1:qa",
+    agentLabel: "qa",
+  })
+  rigs.setOversight(created.id, [
+    { overseerPodId: orchestration.id, overseenPodId: implementation.id },
+  ])
   return created
 }
 
@@ -274,7 +308,10 @@ const LEAD: Omit<SeatTurnIdentity, "featureId"> = {
   wakeHop: null,
 }
 
-function draftFeature(workspace: string, leadRights?: Parameters<typeof rig>[0]) {
+function draftFeature(
+  workspace: string,
+  leadRights?: Parameters<typeof rig>[0]
+) {
   const graph = features.createFeature({
     key: "billing",
     name: "Billing",
@@ -313,7 +350,10 @@ async function settle(rounds = 20) {
 }
 
 // What the approval dialog does: review, then approve that base and head.
-async function approveLanding(milestoneId: string, options?: { localMerge?: boolean }) {
+async function approveLanding(
+  milestoneId: string,
+  options?: { localMerge?: boolean }
+) {
   const status = await integration.status(milestoneId)
   await integration.land(
     milestoneId,
@@ -340,9 +380,24 @@ const PLAN = [
     name: "Invoices",
     outcome: "Invoices exist.",
     userStories: [
-      { key: "api", title: "Invoice API", acceptance: ["api works"], touch_hints: ["api/**"] },
-      { key: "pdf", title: "Invoice PDF", acceptance: ["pdf works"], touch_hints: ["pdf/**"] },
-      { key: "ui", title: "Invoice UI", acceptance: ["ui works"], depends_on: ["api", "pdf"] },
+      {
+        key: "api",
+        title: "Invoice API",
+        acceptance: ["api works"],
+        touch_hints: ["api/**"],
+      },
+      {
+        key: "pdf",
+        title: "Invoice PDF",
+        acceptance: ["pdf works"],
+        touch_hints: ["pdf/**"],
+      },
+      {
+        key: "ui",
+        title: "Invoice UI",
+        acceptance: ["ui works"],
+        depends_on: ["api", "pdf"],
+      },
     ],
   },
   {
@@ -370,7 +425,8 @@ afterEach(() => {
   integration?.stop()
   unsubscribe?.()
   unsubscribe = null
-  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true })
+  for (const dir of dirs.splice(0))
+    rmSync(dir, { recursive: true, force: true })
 })
 
 describe.skipIf(!sqliteLoads)("Navigator autopilot", () => {
@@ -404,11 +460,16 @@ describe.skipIf(!sqliteLoads)("Navigator autopilot", () => {
     expect(userStoriesOf(id).every((s) => s.origin === "agent")).toBe(true)
     // Autopilot milestones land by an approved local merge: the starter
     // milestone switched at start, the planned one was created that way.
-    expect(milestones.map((m) => m.mergePolicy.mode)).toEqual(["local_merge", "local_merge"])
+    expect(milestones.map((m) => m.mergePolicy.mode)).toEqual([
+      "local_merge",
+      "local_merge",
+    ])
     // User stories the user applied from a proposal don't spend the budget for
     // user stories seats add on their own.
     const position = await navigator.position(id)
-    expect(position.budgets.find((b) => b.key === "maxAgentUserStoriesPerMilestone")).toMatchObject({
+    expect(
+      position.budgets.find((b) => b.key === "maxAgentUserStoriesPerMilestone")
+    ).toMatchObject({
       used: 0,
       scope: "milestone-1",
     })
@@ -428,24 +489,45 @@ describe.skipIf(!sqliteLoads)("Navigator autopilot", () => {
       .filter((r) => !r.userStoryId)
       .map((r) => r.hook)
     expect(hooksRun).toEqual(
-      expect.arrayContaining(["plan", "before_user_stories", "after_all_user_stories"])
+      expect.arrayContaining([
+        "plan",
+        "before_user_stories",
+        "after_all_user_stories",
+      ])
     )
-    const apiRun = playbooks.listPlaybookRuns({ userStoryId: byKey("api").id })[0]
-    const pdfRun = playbooks.listPlaybookRuns({ userStoryId: byKey("pdf").id })[0]
+    const apiRun = playbooks.listPlaybookRuns({
+      userStoryId: byKey("api").id,
+    })[0]
+    const pdfRun = playbooks.listPlaybookRuns({
+      userStoryId: byKey("pdf").id,
+    })[0]
     const uiRun = playbooks.listPlaybookRuns({ userStoryId: byKey("ui").id })[0]
     expect(apiRun.worktreePath).not.toBe(pdfRun.worktreePath)
-    expect(uiRun.createdAt).toBeGreaterThanOrEqual(Math.max(apiRun.createdAt, pdfRun.createdAt))
+    expect(uiRun.createdAt).toBeGreaterThanOrEqual(
+      Math.max(apiRun.createdAt, pdfRun.createdAt)
+    )
     const startTick = ticks
       .listTicks(id, 200)
-      .find((t) => t.actions.filter((a) => a.kind === "start_user_story" && a.ok).length === 2)
-    expect(startTick?.actions.map((a) => a.target).sort()).toEqual(["api", "pdf"])
+      .find(
+        (t) =>
+          t.actions.filter((a) => a.kind === "start_user_story" && a.ok)
+            .length === 2
+      )
+    expect(startTick?.actions.map((a) => a.target).sort()).toEqual([
+      "api",
+      "pdf",
+    ])
     // The conflict was resolved by the integrator (the lead) and merged.
     expect(byKey("api").status).toBe("done")
     expect(byKey("pdf").status).toBe("done")
     expect(byKey("ui").status).toBe("done")
-    expect(git(root, "show", `${m1.integrationBranch}:shared.txt`)).toBe("one\nAPI\nPDF\nthree")
+    expect(git(root, "show", `${m1.integrationBranch}:shared.txt`)).toBe(
+      "one\nAPI\nPDF\nthree"
+    )
     expect(
-      playbooks.listPlaybookRuns({ featureId: id }).some((r) => r.hook === "after_each_user_story")
+      playbooks
+        .listPlaybookRuns({ featureId: id })
+        .some((r) => r.hook === "after_each_user_story")
     ).toBe(true)
 
     // Every user story merged: the lead is asked to judge the definition of done.
@@ -479,19 +561,26 @@ describe.skipIf(!sqliteLoads)("Navigator autopilot", () => {
     ).toBe(true)
     expect(byKey("pay").status).toBe("done")
     expect(m2.status).toBe("review")
-    await getMapTools()!.completeMilestone(turn, { milestone: m2.key, summary: "Paid." })
+    await getMapTools()!.completeMilestone(turn, {
+      milestone: m2.key,
+      summary: "Paid.",
+    })
     // The user switched this one to manual, then merged it here anyway.
     features.setMilestoneMergePolicy(m2.id, "manual")
     await approveLanding(m2.id, { localMerge: true })
     await settle()
 
     expect(features.getFeature(id)!.status).toBe("completed")
-    expect(features.getMilestone(m2.id)!.landing).toMatchObject({ mode: "local_merge" })
+    expect(features.getMilestone(m2.id)!.landing).toMatchObject({
+      mode: "local_merge",
+    })
     expect(git(root, "branch", "--show-current")).toBe("main")
     expect(readFileSync(path.join(root, "pay.txt"), "utf8")).toBe("pay\n")
     // Finished: per-milestone meters show the last milestone's final numbers.
     const final = await navigator.position(id)
-    expect(final.budgets.find((b) => b.key === "maxUserStoryAttempts")).toMatchObject({
+    expect(
+      final.budgets.find((b) => b.key === "maxUserStoryAttempts")
+    ).toMatchObject({
       used: 1,
       scope: "m-payments, final",
       final: true,
@@ -500,7 +589,12 @@ describe.skipIf(!sqliteLoads)("Navigator autopilot", () => {
     // The next sprint: a completed feature takes no new work until the
     // user reopens it, and it reopens paused.
     expect(() =>
-      features.createMilestone({ featureId: id, key: "m-refunds", name: "Refunds", outcome: "Refunds." })
+      features.createMilestone({
+        featureId: id,
+        key: "m-refunds",
+        name: "Refunds",
+        outcome: "Refunds.",
+      })
     ).toThrow(/Reopen it/)
     navigator.reopen(id)
     expect(features.getFeature(id)).toMatchObject({
@@ -508,13 +602,25 @@ describe.skipIf(!sqliteLoads)("Navigator autopilot", () => {
       finishedAt: null,
     })
     const m3 = features
-      .createMilestone({ featureId: id, key: "m-refunds", name: "Refunds", outcome: "Refunds." })
+      .createMilestone({
+        featureId: id,
+        key: "m-refunds",
+        name: "Refunds",
+        outcome: "Refunds.",
+      })
       .milestones.at(-1)!
     expect(m3.mergePolicy.mode).toBe("local_merge")
-    features.createUserStory({ milestoneId: m3.id, key: "refund", title: "Refund", spec: { acceptance: ["refunds"] } })
+    features.createUserStory({
+      milestoneId: m3.id,
+      key: "refund",
+      title: "Refund",
+      spec: { acceptance: ["refunds"] },
+    })
     builds.set("refund", { "refund.txt": "refund\n" })
     await settle()
-    expect(playbooks.listPlaybookRuns({ featureId: id, status: "running" })).toHaveLength(0)
+    expect(
+      playbooks.listPlaybookRuns({ featureId: id, status: "running" })
+    ).toHaveLength(0)
     navigator.resume(id)
     await settle()
     // The release for the last finished milestone ran first, then the sprint.
@@ -523,8 +629,13 @@ describe.skipIf(!sqliteLoads)("Navigator autopilot", () => {
         .listPlaybookRuns({ featureId: id })
         .some((r) => r.hook === "between_milestones" && r.milestoneId === m2.id)
     ).toBe(true)
-    expect(userStoriesOf(id).find((s) => s.key === "refund")!.status).toBe("done")
-    await getMapTools()!.completeMilestone(turn, { milestone: m3.key, summary: "Refunds work." })
+    expect(userStoriesOf(id).find((s) => s.key === "refund")!.status).toBe(
+      "done"
+    )
+    await getMapTools()!.completeMilestone(turn, {
+      milestone: m3.key,
+      summary: "Refunds work.",
+    })
     await approveLanding(m3.id)
     await settle()
     expect(features.getFeature(id)!.status).toBe("completed")
@@ -535,9 +646,17 @@ describe.skipIf(!sqliteLoads)("Navigator autopilot", () => {
     const root = repo()
     const id = draftFeature(root)
     const milestone = features.getFeatureGraph(id)!.milestones[0]
-    features.createUserStory({ milestoneId: milestone.id, key: "a", title: "A", spec: { acceptance: ["works"] } })
+    features.createUserStory({
+      milestoneId: milestone.id,
+      key: "a",
+      title: "A",
+      spec: { acceptance: ["works"] },
+    })
     features.updateMilestone(milestone.id, {
-      playbookId: playbooks.createPlaybook({ name: "Bare", altitude: "milestone" }).id,
+      playbookId: playbooks.createPlaybook({
+        name: "Bare",
+        altitude: "milestone",
+      }).id,
     })
     // Every start fails (say, the repository has uncommitted changes).
     let attempts = 0
@@ -559,8 +678,24 @@ describe.skipIf(!sqliteLoads)("Navigator autopilot", () => {
     }
     expect(attempts).toBe(4)
     expect(notices.some((n) => n.includes("stuck"))).toBe(true)
-    const failed = ticks.listTicks(id).filter((t) => t.actions.some((a) => !a.ok))
+    const failed = ticks
+      .listTicks(id)
+      .filter((t) => t.actions.some((a) => !a.ok))
     expect(failed[0].actions[0].detail).toContain("uncommitted changes")
+  })
+
+  it("tells the host when a feature starts, so its workspace can be indexed", async () => {
+    setup()
+    const root = repo()
+    const id = draftFeature(root)
+    plannedMilestones = []
+    const started: string[] = []
+    navigator = makeNavigator({
+      onFeatureStarted: (feature) =>
+        started.push(`${feature.id}:${feature.status}`),
+    })
+    await navigator.startDrive(id, { mode: "manual" })
+    expect(started).toEqual([`${id}:active`])
   })
 
   it("does nothing new when a tick sees the same position", async () => {
@@ -593,7 +728,9 @@ describe.skipIf(!sqliteLoads)("Navigator autopilot", () => {
     // Drive time accrues in bounded steps; a long gap (app closed) never counts.
     clock += 10 * 60 * 60 * 1000
     await navigator.tick(id)
-    expect(features.getFeature(id)!.drive.activeMs).toBeLessThanOrEqual(2 * 60 * 1000)
+    expect(features.getFeature(id)!.drive.activeMs).toBeLessThanOrEqual(
+      2 * 60 * 1000
+    )
     for (let i = 0; i < 40; i++) {
       clock += 2 * 60 * 1000
       await navigator.tick(id)
@@ -603,7 +740,9 @@ describe.skipIf(!sqliteLoads)("Navigator autopilot", () => {
     expect(paused.drive).toMatchObject({ pausedBy: "budget" })
     expect(notices.some((n) => n.includes("paused"))).toBe(true)
     // Nothing starts while paused.
-    await expect(runner.startUserStory(userStoriesOf(id)[0].id)).rejects.toThrow(/Start the feature/)
+    await expect(
+      runner.startUserStory(userStoriesOf(id)[0].id)
+    ).rejects.toThrow(/Start the feature/)
     expect(() => navigator.resume(id)).toThrow(/Raise the budget/)
     features.setFeatureBudgets(id, { maxActiveHours: 4 })
     navigator.resume(id)
@@ -625,7 +764,10 @@ describe.skipIf(!sqliteLoads)("Navigator copilot and map tools", () => {
         spec: { acceptance: [`${key} works`], touchHints: [`${key}/**`] },
       })
     // A milestone playbook without a planning review, so user stories are ready at once.
-    const playbook = playbooks.createPlaybook({ name: "Bare", altitude: "milestone" })
+    const playbook = playbooks.createPlaybook({
+      name: "Bare",
+      altitude: "milestone",
+    })
     features.updateMilestone(milestone.id, { playbookId: playbook.id })
     builds.set("a", { "a.txt": "a\n" })
     builds.set("b", { "b.txt": "b\n" })
@@ -639,9 +781,13 @@ describe.skipIf(!sqliteLoads)("Navigator copilot and map tools", () => {
     expect(playbooks.listPlaybookRuns({ featureId: id })).toHaveLength(0)
     const first = directions(id)
     expect(first).toHaveLength(1)
-    expect(first[0].body).toContain("Ready to start now (assign_user_story, critical path first): a, b")
+    expect(first[0].body).toContain(
+      "Ready to start now (assign_user_story, critical path first): a, b"
+    )
 
-    const assigned = await getMapTools()!.assignUserStory(turn, { userStory: "a" })
+    const assigned = await getMapTools()!.assignUserStory(turn, {
+      userStory: "a",
+    })
     expect(assigned).toMatchObject({ ok: true })
     await navigator.idle()
     // A new direction superseded the one still queued.
@@ -662,17 +808,27 @@ describe.skipIf(!sqliteLoads)("Navigator copilot and map tools", () => {
     const { id, turn } = await copilot(["assign_user_story"])
     const tools = getMapTools()!
     const revised = tools.revisePlan(turn, {
-      changes: [{ op: "add_user_story", userStory: { title: "Extra", acceptance: ["x"] } }],
+      changes: [
+        {
+          op: "add_user_story",
+          userStory: { title: "Extra", acceptance: ["x"] },
+        },
+      ],
       reason: "Found missing work",
     })
     expect(revised).toMatchObject({ ok: true, data: { status: "pending" } })
     expect(userStoriesOf(id).map((s) => s.key)).toEqual(["a", "b"])
-    expect(tools.cancelUserStory(turn, { userStory: "a", reason: "no" })).toMatchObject({
+    expect(
+      tools.cancelUserStory(turn, { userStory: "a", reason: "no" })
+    ).toMatchObject({
       ok: false,
       code: "lacks_decision_right",
     })
     expect(
-      await tools.completeMilestone(turn, { milestone: "milestone-1", summary: "x" })
+      await tools.completeMilestone(turn, {
+        milestone: "milestone-1",
+        summary: "x",
+      })
     ).toMatchObject({ ok: false, code: "lacks_decision_right" })
   })
 
@@ -681,11 +837,23 @@ describe.skipIf(!sqliteLoads)("Navigator copilot and map tools", () => {
     const tools = getMapTools()!
     const applied = tools.revisePlan(turn, {
       changes: [
-        { op: "add_user_story", userStory: { key: "c", title: "C", acceptance: ["c"], depends_on: ["a"] } },
-        { op: "split_user_story", userStory: "b", into: [
-          { key: "b1", title: "B1", acceptance: ["b1"] },
-          { key: "b2", title: "B2", acceptance: ["b2"], depends_on: ["b1"] },
-        ] },
+        {
+          op: "add_user_story",
+          userStory: {
+            key: "c",
+            title: "C",
+            acceptance: ["c"],
+            depends_on: ["a"],
+          },
+        },
+        {
+          op: "split_user_story",
+          userStory: "b",
+          into: [
+            { key: "b1", title: "B1", acceptance: ["b1"] },
+            { key: "b2", title: "B2", acceptance: ["b2"], depends_on: ["b1"] },
+          ],
+        },
         { op: "reorder", order: ["c", "a"] },
       ],
       reason: "Refine the plan",
@@ -697,11 +865,21 @@ describe.skipIf(!sqliteLoads)("Navigator copilot and map tools", () => {
     expect(key("c")).toMatchObject({ origin: "agent", position: 0 })
     const edges = features
       .listEdges(key("a").milestoneId)
-      .map((e) => `${userStories.find((s) => s.id === e.fromUserStoryId)!.key}>${userStories.find((s) => s.id === e.toUserStoryId)!.key}`)
+      .map(
+        (e) =>
+          `${userStories.find((s) => s.id === e.fromUserStoryId)!.key}>${userStories.find((s) => s.id === e.toUserStoryId)!.key}`
+      )
     expect(edges.sort()).toEqual(["a>c", "b1>b2"])
     // Every change is attributed to the seat, with its reason.
-    const created = features.listRevisions(id).filter((r) => r.change.op === "create")
-    expect(created.every((r) => r.actor === "lead@orchestration" && r.reason === "Refine the plan")).toBe(true)
+    const created = features
+      .listRevisions(id)
+      .filter((r) => r.change.op === "create")
+    expect(
+      created.every(
+        (r) =>
+          r.actor === "lead@orchestration" && r.reason === "Refine the plan"
+      )
+    ).toBe(true)
 
     // A cycle is refused and nothing changes.
     const cyclic = tools.revisePlan(turn, {
@@ -719,7 +897,12 @@ describe.skipIf(!sqliteLoads)("Navigator copilot and map tools", () => {
     // Rejections go back to the proposer in the user's words.
     const pending = proposals.listProposals(id, "pending")[0]
     rejectProposal(pending.id, "The bar stays.", (proposal, body) => {
-      bus.userNote({ featureId: id, to: proposal.proposer, body, subject: "Proposal rejected" })
+      bus.userNote({
+        featureId: id,
+        to: proposal.proposer,
+        body,
+        subject: "Proposal rejected",
+      })
     })
     const note = seatComms
       .listMessages({ featureId: id, toAddress: "lead@orchestration" })
@@ -734,7 +917,9 @@ describe.skipIf(!sqliteLoads)("Navigator copilot and map tools", () => {
       changes: [{ op: "add_dependency", from: "a", to: "b" }],
       reason: "b needs a",
     })
-    expect(tools.cancelUserStory(turn, { userStory: "a", reason: "Not needed" })).toMatchObject({
+    expect(
+      tools.cancelUserStory(turn, { userStory: "a", reason: "Not needed" })
+    ).toMatchObject({
       ok: true,
       message: expect.stringContaining("Blocked until you replan: b"),
     })
@@ -742,7 +927,9 @@ describe.skipIf(!sqliteLoads)("Navigator copilot and map tools", () => {
     expect(b().status).toBe("blocked")
     await navigator.idle()
     const position = await navigator.position(id)
-    expect(position.pendingDecisions.map((d) => d.kind)).toContain("user_story_blocked")
+    expect(position.pendingDecisions.map((d) => d.kind)).toContain(
+      "user_story_blocked"
+    )
     tools.revisePlan(turn, {
       changes: [{ op: "remove_dependency", from: "a", to: "b" }],
       reason: "b stands alone",
@@ -753,16 +940,26 @@ describe.skipIf(!sqliteLoads)("Navigator copilot and map tools", () => {
   it("refuses seat messages past the hourly message budget, but still escalates", async () => {
     const { id, turn } = await copilot()
     features.setFeatureBudgets(id, { maxMessagesPerHour: 1 })
-    const first = bus.send({ ...turn, profile: "work" }, { to: "qa@implementation", body: "Hi" })
+    const first = bus.send(
+      { ...turn, profile: "work" },
+      { to: "qa@implementation", body: "Hi" }
+    )
     expect(first).toMatchObject({ ok: true })
-    const second = bus.send({ ...turn, profile: "work" }, { to: "qa@implementation", body: "Again" })
+    const second = bus.send(
+      { ...turn, profile: "work" },
+      { to: "qa@implementation", body: "Again" }
+    )
     expect(second).toMatchObject({ ok: false, code: "feature_rate_limit" })
-    expect(bus.escalate({ ...turn, profile: "work" }, { reason: "Blocked" })).toMatchObject({
+    expect(
+      bus.escalate({ ...turn, profile: "work" }, { reason: "Blocked" })
+    ).toMatchObject({
       ok: true,
     })
     // The Navigator's own directions are not seat chatter.
     const position = await navigator.position(id)
-    expect(position.budgets.find((b) => b.key === "maxMessagesPerHour")).toMatchObject({
+    expect(
+      position.budgets.find((b) => b.key === "maxMessagesPerHour")
+    ).toMatchObject({
       used: 2,
       level: "hard",
     })
@@ -775,7 +972,10 @@ describe.skipIf(!sqliteLoads)("Navigator copilot and map tools", () => {
     tools.revisePlan(turn, {
       changes: [
         { op: "edit_user_story", userStory: "a", patch: { goal: "A, better" } },
-        { op: "add_user_story", userStory: { key: "c", title: "C", acceptance: ["c"] } },
+        {
+          op: "add_user_story",
+          userStory: { key: "c", title: "C", acceptance: ["c"] },
+        },
       ],
       reason: "Sharpen a, add c",
     })
@@ -784,7 +984,9 @@ describe.skipIf(!sqliteLoads)("Navigator copilot and map tools", () => {
     // Then user story a starts, so editing it no longer applies.
     await tools.assignUserStory(turn, { userStory: "a" })
     const problems = checkProposal(proposals.getProposal(proposal.id)!)
-    expect(problems).toEqual([{ index: 0, error: expect.stringContaining("has started") }])
+    expect(problems).toEqual([
+      { index: 0, error: expect.stringContaining("has started") },
+    ])
     // The dry run changed nothing.
     expect(userStoriesOf(id).map((s) => s.key)).toEqual(["a", "b"])
     expect(() => applyProposal(proposal.id)).toThrow(/has started/)
@@ -798,30 +1000,58 @@ describe.skipIf(!sqliteLoads)("Navigator copilot and map tools", () => {
     expect(userStoriesOf(id).map((s) => s.key)).toEqual(["a", "b", "c"])
     expect(notes[0]).toContain("has started")
     // User-applied user stories don't spend the seats' own user story budget.
-    expect(features.countSeatCreatedUserStories(userStoriesOf(id)[0].milestoneId)).toBe(0)
+    expect(
+      features.countSeatCreatedUserStories(userStoriesOf(id)[0].milestoneId)
+    ).toBe(0)
   })
 
   it("lets the user judge a milestone done and answer an escalation", async () => {
     const { id, turn } = await copilot(["assign_user_story"])
     const position = await navigator.position(id)
     // No lead DoD right: the user gets the judgment, with an action for it.
-    const escalation = bus.escalate({ ...turn, profile: "work" }, { reason: "Need a call on scope" })
-    expect(escalation).toMatchObject({ ok: true, message: { toAddress: "user@rig" } })
-    const replied = bus.userReply(escalation.ok ? escalation.message.id : "", "Keep it small.")
-    expect(replied).toMatchObject({ ok: true, message: { toAddress: "lead@orchestration", kind: "steer" } })
-    expect(seatComms.getMessage(escalation.ok ? escalation.message.id : "")!.status).toBe("replied")
-    expect(position.pendingDecisions.every((d) => d.owner === "user" || d.kind !== "milestone_dod")).toBe(true)
+    const escalation = bus.escalate(
+      { ...turn, profile: "work" },
+      { reason: "Need a call on scope" }
+    )
+    expect(escalation).toMatchObject({
+      ok: true,
+      message: { toAddress: "user@rig" },
+    })
+    const replied = bus.userReply(
+      escalation.ok ? escalation.message.id : "",
+      "Keep it small."
+    )
+    expect(replied).toMatchObject({
+      ok: true,
+      message: { toAddress: "lead@orchestration", kind: "steer" },
+    })
+    expect(
+      seatComms.getMessage(escalation.ok ? escalation.message.id : "")!.status
+    ).toBe("replied")
+    expect(
+      position.pendingDecisions.every(
+        (d) => d.owner === "user" || d.kind !== "milestone_dod"
+      )
+    ).toBe(true)
     // Judging before the work is merged is refused.
     const milestone = features.listMilestones(id)[0]
-    await expect(judgeMilestoneDone(milestone.id, "done", async () => {})).rejects.toThrow(/unfinished user stories/)
+    await expect(
+      judgeMilestoneDone(milestone.id, "done", async () => {})
+    ).rejects.toThrow(/unfinished user stories/)
   })
 
   it("stops agent revisions at the budget: further changes become proposals", async () => {
     const { id, turn } = await copilot()
-    features.setFeatureBudgets(id, { maxPlanRevisionsPerMilestone: 1, maxAgentUserStoriesPerMilestone: 5 })
+    features.setFeatureBudgets(id, {
+      maxPlanRevisionsPerMilestone: 1,
+      maxAgentUserStoriesPerMilestone: 5,
+    })
     const tools = getMapTools()!
     expect(
-      tools.revisePlan(turn, { changes: [{ op: "reorder", order: ["b", "a"] }], reason: "one" })
+      tools.revisePlan(turn, {
+        changes: [{ op: "reorder", order: ["b", "a"] }],
+        reason: "one",
+      })
     ).toMatchObject({ ok: true })
     const second = tools.revisePlan(turn, {
       changes: [{ op: "reorder", order: ["a", "b"] }],

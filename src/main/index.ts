@@ -100,6 +100,7 @@ import { generateCommitMessage } from "./git/commit-message"
 import { openInIde } from "./ide/open"
 import { resolveInWorkspaceReal } from "./agent/tools/workspace"
 import { registerDbHandlers } from "./ipc/db-handlers"
+import { autoIndexWorkspace } from "./index/auto-index"
 import { registerSettingsHandlers } from "./ipc/settings-handlers"
 import {
   refreshCodexSubscriptionModelsOnStartup,
@@ -218,8 +219,7 @@ const seatSessions = new SeatSessionService({
   cancelTask: (taskId) => taskRunner.cancel(taskId),
 })
 const seatComms = new SeatComms({
-  dispatch: (featureId, address) =>
-    seatSessions.dispatch(featureId, address),
+  dispatch: (featureId, address) => seatSessions.dispatch(featureId, address),
   notifyUser: (title, body) => {
     if (!Notification.isSupported()) return
     new Notification({ title, body, silent: false }).show()
@@ -275,11 +275,13 @@ function notifyUser(title: string, body: string): void {
   new Notification({ title, body, silent: false }).show()
 }
 const milestoneNavigator: Navigator = new Navigator({
-  startUserStory: (userStoryId, options) => userStoryRunner.startUserStory(userStoryId, options),
+  startUserStory: (userStoryId, options) =>
+    userStoryRunner.startUserStory(userStoryId, options),
   startHook: (input) => startHookRun(userStoryRunner, input),
   cancelPlaybookRun: (id) => userStoryRunner.cancelPlaybookRun(id),
   workspaceMode: (feature) => milestoneIntegration.workspaceMode(feature),
-  advanceMilestone: (milestoneId) => milestoneIntegration.advanceMilestone(milestoneId),
+  advanceMilestone: (milestoneId) =>
+    milestoneIntegration.advanceMilestone(milestoneId),
   kickMerges: (milestoneId) => void milestoneIntegration.kick(milestoneId),
   completeMilestone: async (milestoneId) => {
     await milestoneIntegration.markMerged(milestoneId, "navigator")
@@ -296,14 +298,27 @@ const milestoneNavigator: Navigator = new Navigator({
     if (wc && !wc.isDestroyed())
       wc.send("missionControl:navigator:changed", featureId)
   },
+  // Seats orient through index_query_tool; without this, a feature's workspace
+  // was only indexed if the user happened to open a chat in it.
+  onFeatureStarted: (feature) => {
+    if (feature.workspaceId)
+      autoIndexWorkspace(
+        feature.workspaceId,
+        "high",
+        indexService,
+        indexWatcher
+      )
+  },
 })
 installNavigator(milestoneNavigator)
 // Lead seats' map tools (plan 106.6), decision-rights gated server-side.
 installMapTools(
   new MapToolService({
     position: (featureId) => milestoneNavigator.position(featureId),
-    startUserStory: (userStoryId, options) => userStoryRunner.startUserStory(userStoryId, options),
-    cancelUserStory: (userStoryId) => userStoryRunner.cancelUserStory(userStoryId),
+    startUserStory: (userStoryId, options) =>
+      userStoryRunner.startUserStory(userStoryId, options),
+    cancelUserStory: (userStoryId) =>
+      userStoryRunner.cancelUserStory(userStoryId),
     completeMilestone: async (milestoneId) => {
       await milestoneIntegration.markMerged(milestoneId, "navigator")
     },
@@ -1204,7 +1219,9 @@ ipcMain.handle(
     try {
       const bytes = await readFile(abs)
       const truncated = bytes.byteLength > FILE_READ_TEXT_LIMIT
-      const userStory = truncated ? bytes.subarray(0, FILE_READ_TEXT_LIMIT) : bytes
+      const userStory = truncated
+        ? bytes.subarray(0, FILE_READ_TEXT_LIMIT)
+        : bytes
       if (isBinaryBuffer(userStory)) {
         return { content: null, truncated, error: null, kind: "binary" }
       }
@@ -1273,7 +1290,8 @@ for (const action of ["switchBranch", "createBranch"] as const) {
         return { ok: false, error: "Enter a branch name." }
       }
       const blocker = await repositoryDelegationLeases.blocker(workspace.trim())
-      if (blocker) return { ok: false, error: `repository_busy: ${blocker.label}` }
+      if (blocker)
+        return { ok: false, error: `repository_busy: ${blocker.label}` }
       return new GitService(workspace.trim())[action](branch)
     }
   )
@@ -1306,7 +1324,8 @@ ipcMain.handle(
       return { ok: false, error: "Enter a commit message." }
     }
     const blocker = await repositoryDelegationLeases.blocker(workspace.trim())
-    if (blocker) return { ok: false, error: `repository_busy: ${blocker.label}` }
+    if (blocker)
+      return { ok: false, error: `repository_busy: ${blocker.label}` }
     return new GitService(workspace.trim()).commitSelected(paths, message)
   }
 )
