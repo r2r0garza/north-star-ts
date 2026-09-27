@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest"
 import { typeScriptExtractor } from "./typescript-extractor"
 import { fallbackExtractor } from "./fallback-extractor"
+import { pythonExtractor } from "./python-extractor"
 import { pickExtractor } from "./index"
 
 describe("typeScriptExtractor", () => {
@@ -117,5 +118,117 @@ describe("pickExtractor", () => {
     expect(pickExtractor({ relPath: "a.rs", ext: ".rs" })).toBe(
       fallbackExtractor
     )
+  })
+})
+
+describe("pythonExtractor", () => {
+  const extract = (content: string) =>
+    pythonExtractor.extract({ relPath: "m.py", ext: ".py", content }).symbols
+
+  it("supports .py and .pyi, and the registry picks it", () => {
+    expect(pickExtractor({ relPath: "a.py", ext: ".py" })).toBe(pythonExtractor)
+    expect(pythonExtractor.supports({ relPath: "a.pyi", ext: ".pyi" })).toBe(
+      true
+    )
+    expect(pythonExtractor.supports({ relPath: "a.ts", ext: ".ts" })).toBe(
+      false
+    )
+  })
+
+  it("extracts classes, methods, functions, and constants with lines", () => {
+    const symbols = extract(
+      [
+        '"""Module docstring.',
+        "",
+        "class NotAClass:",
+        '"""',
+        "MAX_ATTEMPTS: int = 3",
+        "",
+        "@dataclass(frozen=True)",
+        "class AgentRun:",
+        "    not_before: str | None = None",
+        "",
+        "class RunCoordinator:",
+        '    """Coordinates runs."""',
+        "",
+        "    def create(self, run_id: str) -> AgentRun:",
+        "        def helper():",
+        "            pass",
+        "        return AgentRun()",
+        "",
+        "    async def claim_next(self, agent_id):",
+        "        pass",
+        "",
+        "def _normalize(value):",
+        "    class Local:",
+        "        pass",
+        "    return value",
+      ].join("\n")
+    )
+    expect(symbols.filter((s) => s.kind !== "import")).toEqual([
+      {
+        name: "MAX_ATTEMPTS",
+        kind: "const",
+        line: 5,
+        detail: { exported: true },
+      },
+      { name: "AgentRun", kind: "class", line: 8, detail: { exported: true } },
+      {
+        name: "RunCoordinator",
+        kind: "class",
+        line: 11,
+        detail: { exported: true },
+      },
+      {
+        name: "create",
+        kind: "method",
+        line: 14,
+        detail: { class: "RunCoordinator" },
+      },
+      {
+        name: "claim_next",
+        kind: "method",
+        line: 19,
+        detail: { class: "RunCoordinator" },
+      },
+      {
+        name: "_normalize",
+        kind: "function",
+        line: 22,
+        detail: { exported: false },
+      },
+    ])
+  })
+
+  it("tags imports with their module, including multi-line and aliased forms", () => {
+    const symbols = extract(
+      [
+        "import json, os.path as osp",
+        "from datetime import datetime, timezone  # utc",
+        "from .runtime import (",
+        "    RunCoordinator,",
+        "    AgentRun as Run,",
+        ")",
+        "try:",
+        "    import tomllib",
+        "except ImportError:",
+        "    tomllib = None",
+        "def f():",
+        "    import inside_function",
+      ].join("\n")
+    )
+    expect(
+      symbols
+        .filter((s) => s.kind === "import")
+        .map((s) => [s.name, s.detail?.module])
+    ).toEqual([
+      ["json", "json"],
+      ["osp", "os.path"],
+      ["datetime", "datetime"],
+      ["timezone", "datetime"],
+      ["RunCoordinator", ".runtime"],
+      ["Run", ".runtime"],
+      ["tomllib", "tomllib"],
+    ])
   })
 })

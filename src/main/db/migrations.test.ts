@@ -92,7 +92,7 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
     const db = new Database(":memory:")
     db.pragma("foreign_keys = ON")
     runMigrations(db)
-    expect(db.pragma("user_version", { simple: true })).toBe(55)
+    expect(db.pragma("user_version", { simple: true })).toBe(56)
     expect(db.pragma("foreign_key_check")).toHaveLength(0)
     db.close()
   })
@@ -650,7 +650,7 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
 
     runMigrations(db)
 
-    expect(db.pragma("user_version", { simple: true })).toBe(55)
+    expect(db.pragma("user_version", { simple: true })).toBe(56)
     expect(
       (db.pragma("table_info(process_phases)") as Array<{ name: string }>).map(
         (c) => c.name
@@ -868,7 +868,7 @@ describe.skipIf(!sqliteLoads)("SCHEMA_V9 — orphan reap (plan 022)", () => {
     // Apply V9 (the reaper) and any later migrations, up to the latest version.
     runMigrations(db)
 
-    expect(db.pragma("user_version", { simple: true })).toBe(55)
+    expect(db.pragma("user_version", { simple: true })).toBe(56)
 
     // Reaped: orphan + its nested descendant, and all their state.
     const taskIds = (
@@ -934,13 +934,15 @@ describe.skipIf(!sqliteLoads)("completion policy migration", () => {
   })
 })
 
-describe.skipIf(!sqliteLoads)("mission control playbooks migration (v49)", () => {
-  it("rebuilds phase agents with a nullable agent name and keeps their rows", () => {
-    const db = new Database(":memory:")
-    db.pragma("foreign_keys = ON")
-    runMigrations(db)
-    db.pragma("foreign_keys = OFF")
-    db.exec(`
+describe.skipIf(!sqliteLoads)(
+  "mission control playbooks migration (v49)",
+  () => {
+    it("rebuilds phase agents with a nullable agent name and keeps their rows", () => {
+      const db = new Database(":memory:")
+      db.pragma("foreign_keys = ON")
+      runMigrations(db)
+      db.pragma("foreign_keys = OFF")
+      db.exec(`
       DROP TABLE process_phase_agents;
       CREATE TABLE process_phase_agents (
         id TEXT PRIMARY KEY,
@@ -956,43 +958,46 @@ describe.skipIf(!sqliteLoads)("mission control playbooks migration (v49)", () =>
         VALUES ('a', 'p', 'coder', '["x"]', NULL, 0);
       PRAGMA user_version = 48;
     `)
-    db.pragma("foreign_keys = ON")
+      db.pragma("foreign_keys = ON")
 
-    runMigrations(db)
+      runMigrations(db)
 
-    expect(db.pragma("user_version", { simple: true })).toBe(55)
-    const columns = db.pragma("table_info(process_phase_agents)") as Array<{
-      name: string
-      notnull: number
-    }>
-    expect(columns.find((c) => c.name === "agent_name")?.notnull).toBe(0)
-    expect(columns.map((c) => c.name)).toEqual(
-      expect.arrayContaining(["seat_role", "runtime_config"])
-    )
-    expect(
-      db.prepare("SELECT agent_name, skills FROM process_phase_agents").get()
-    ).toEqual({ agent_name: "coder", skills: '["x"]' })
-    for (const [table, column] of [
-      ["process_phases", "proof_step"],
-      ["process_runs", "seat_bindings"],
-      ["process_runs", "mission_control"],
-      ["process_phase_runs", "seat_address"],
-    ])
+      expect(db.pragma("user_version", { simple: true })).toBe(56)
+      const columns = db.pragma("table_info(process_phase_agents)") as Array<{
+        name: string
+        notnull: number
+      }>
+      expect(columns.find((c) => c.name === "agent_name")?.notnull).toBe(0)
+      expect(columns.map((c) => c.name)).toEqual(
+        expect.arrayContaining(["seat_role", "runtime_config"])
+      )
       expect(
-        (db.pragma(`table_info(${table})`) as Array<{ name: string }>).map(
-          (c) => c.name
-        )
-      ).toContain(column)
-    for (const table of ["playbooks", "playbook_hooks", "playbook_runs"])
-      expect(
-        db
-          .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?")
-          .get(table)
-      ).toBeTruthy()
-    expect(db.pragma("foreign_key_check")).toHaveLength(0)
-    db.close()
-  })
-})
+        db.prepare("SELECT agent_name, skills FROM process_phase_agents").get()
+      ).toEqual({ agent_name: "coder", skills: '["x"]' })
+      for (const [table, column] of [
+        ["process_phases", "proof_step"],
+        ["process_runs", "seat_bindings"],
+        ["process_runs", "mission_control"],
+        ["process_phase_runs", "seat_address"],
+      ])
+        expect(
+          (db.pragma(`table_info(${table})`) as Array<{ name: string }>).map(
+            (c) => c.name
+          )
+        ).toContain(column)
+      for (const table of ["playbooks", "playbook_hooks", "playbook_runs"])
+        expect(
+          db
+            .prepare(
+              "SELECT name FROM sqlite_master WHERE type='table' AND name=?"
+            )
+            .get(table)
+        ).toBeTruthy()
+      expect(db.pragma("foreign_key_check")).toHaveLength(0)
+      db.close()
+    })
+  }
+)
 
 describe.skipIf(!sqliteLoads)("mission control comms migration (v50)", () => {
   it("adds seat sessions, threads, messages, and the phase context mode", () => {
@@ -1002,14 +1007,19 @@ describe.skipIf(!sqliteLoads)("mission control comms migration (v50)", () => {
     for (const table of ["seat_sessions", "seat_threads", "seat_messages"])
       expect(
         db
-          .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?")
+          .prepare(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name=?"
+          )
           .get(table)
       ).toBeTruthy()
     db.exec(
       "INSERT INTO process_definitions (id, name, created_at, updated_at) VALUES ('d', 'D', 0, 0); INSERT INTO process_phases (id, process_id, key, name, position) VALUES ('p', 'd', 'k', 'K', 0);"
     )
     expect(
-      db.prepare("SELECT context_mode FROM process_phases WHERE id = 'p'").pluck().get()
+      db
+        .prepare("SELECT context_mode FROM process_phases WHERE id = 'p'")
+        .pluck()
+        .get()
     ).toBe("step")
     db.close()
   })
@@ -1023,7 +1033,9 @@ describe.skipIf(!sqliteLoads)("mission control comms migration (v50)", () => {
     runMigrations(db)
     expect(
       db
-        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='seat_messages'")
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name='seat_messages'"
+        )
         .get()
     ).toBeTruthy()
     db.close()
@@ -1053,14 +1065,26 @@ describe.skipIf(!sqliteLoads)("context scopes migration (v51)", () => {
         ('a', 'd', 'a', 'A', 0, 'fresh'), ('b', 'd', 'b', 'B', 1, 'seat_session');
     `)
     runMigrations(db)
-    expect(db.pragma("user_version", { simple: true })).toBe(55)
+    expect(db.pragma("user_version", { simple: true })).toBe(56)
     // v51 moved them to the initiative scope; v54 renamed it to feature.
     expect(
-      db.prepare("SELECT context_mode FROM process_phases ORDER BY position").pluck().all()
+      db
+        .prepare("SELECT context_mode FROM process_phases ORDER BY position")
+        .pluck()
+        .all()
     ).toEqual(["step", "feature"])
     expect(
-      db.prepare("SELECT feature_id, scope, scope_key, playbook_run_id FROM seat_sessions").get()
-    ).toEqual({ feature_id: "i", scope: "feature", scope_key: "feature", playbook_run_id: null })
+      db
+        .prepare(
+          "SELECT feature_id, scope, scope_key, playbook_run_id FROM seat_sessions"
+        )
+        .get()
+    ).toEqual({
+      feature_id: "i",
+      scope: "feature",
+      scope_key: "feature",
+      playbook_run_id: null,
+    })
     expect(db.pragma("foreign_key_check")).toHaveLength(0)
     db.close()
   })
@@ -1082,7 +1106,9 @@ describe.skipIf(!sqliteLoads)("navigator migration (v53)", () => {
       drive: "{}",
       budgets: '{"maxConcurrentSlices":2}',
     })
-    expect(db.prepare("SELECT dod_review FROM missions").pluck().get()).toBeNull()
+    expect(
+      db.prepare("SELECT dod_review FROM missions").pluck().get()
+    ).toBeNull()
     db.prepare(
       "INSERT INTO plan_proposals (id, initiative_id, mission_id, kind, changes, proposer, created_at) VALUES ('p', 'i', 'm', 'slice', '[]', 'lead@orch', 0)"
     ).run()
@@ -1092,8 +1118,12 @@ describe.skipIf(!sqliteLoads)("navigator migration (v53)", () => {
     // Both belong to the initiative and go with it.
     db.pragma("foreign_keys = ON")
     db.prepare("DELETE FROM initiatives").run()
-    expect(db.prepare("SELECT COUNT(*) FROM plan_proposals").pluck().get()).toBe(0)
-    expect(db.prepare("SELECT COUNT(*) FROM navigator_ticks").pluck().get()).toBe(0)
+    expect(
+      db.prepare("SELECT COUNT(*) FROM plan_proposals").pluck().get()
+    ).toBe(0)
+    expect(
+      db.prepare("SELECT COUNT(*) FROM navigator_ticks").pluck().get()
+    ).toBe(0)
     db.close()
   })
 })
@@ -1134,65 +1164,119 @@ describe.skipIf(!sqliteLoads)("work terms migration (v54)", () => {
 
     runMigrations(db)
 
-    expect(db.pragma("user_version", { simple: true })).toBe(55)
+    expect(db.pragma("user_version", { simple: true })).toBe(56)
     const tables = db
       .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
       .pluck()
       .all() as string[]
-    expect(tables).toEqual(expect.arrayContaining(["features", "milestones", "user_stories", "user_story_edges"]))
-    for (const old of ["initiatives", "missions", "slices", "slice_edges"]) expect(tables).not.toContain(old)
+    expect(tables).toEqual(
+      expect.arrayContaining([
+        "features",
+        "milestones",
+        "user_stories",
+        "user_story_edges",
+      ])
+    )
+    for (const old of ["initiatives", "missions", "slices", "slice_edges"])
+      expect(tables).not.toContain(old)
     const oldNames = db
       .prepare("SELECT name, sql FROM sqlite_master WHERE sql IS NOT NULL")
       .all()
-      .filter((row) => /initiative|slice|\bmissions?\b|mission_id/i.test((row as { sql: string }).sql))
+      .filter((row) =>
+        /initiative|slice|\bmissions?\b|mission_id/i.test(
+          (row as { sql: string }).sql
+        )
+      )
     expect(oldNames).toEqual([])
 
-    expect(db.prepare("SELECT intent, budgets, rig_snapshot FROM features").get()).toEqual({
+    expect(
+      db.prepare("SELECT intent, budgets, rig_snapshot FROM features").get()
+    ).toEqual({
       intent: "Slice the invoices",
-      budgets: '{"maxConcurrentUserStories":2,"maxPlanRevisionsPerMilestone":3}',
-      rig_snapshot: '{"seats":[{"decisionRights":["assign_user_story","accept_proof"]}]}',
+      budgets:
+        '{"maxConcurrentUserStories":2,"maxPlanRevisionsPerMilestone":3}',
+      rig_snapshot:
+        '{"seats":[{"decisionRights":["assign_user_story","accept_proof"]}]}',
     })
-    expect(db.prepare("SELECT feature_id, key, name FROM milestones").get()).toEqual({
+    expect(
+      db.prepare("SELECT feature_id, key, name FROM milestones").get()
+    ).toEqual({
       feature_id: "i",
       key: "mission-1",
       name: "First mission",
     })
-    expect(db.prepare("SELECT milestone_id, spec FROM user_stories WHERE id = 'a'").get()).toEqual({
+    expect(
+      db
+        .prepare("SELECT milestone_id, spec FROM user_stories WHERE id = 'a'")
+        .get()
+    ).toEqual({
       milestone_id: "m",
       spec: '{"goal":"a slice of work"}',
     })
-    expect(db.prepare("SELECT from_user_story_id, to_user_story_id FROM user_story_edges").get()).toEqual({
+    expect(
+      db
+        .prepare(
+          "SELECT from_user_story_id, to_user_story_id FROM user_story_edges"
+        )
+        .get()
+    ).toEqual({
       from_user_story_id: "a",
       to_user_story_id: "b",
     })
-    expect(db.prepare("SELECT target_kind, change FROM work_revisions").get()).toEqual({
+    expect(
+      db.prepare("SELECT target_kind, change FROM work_revisions").get()
+    ).toEqual({
       target_kind: "user_story",
-      change: '{"op":"add_user_story","milestone":"mission-1","userStory":{"key":"invoice-api","title":"Invoice API"}}',
+      change:
+        '{"op":"add_user_story","milestone":"mission-1","userStory":{"key":"invoice-api","title":"Invoice API"}}',
     })
-    expect(db.prepare("SELECT kind, changes FROM plan_proposals").get()).toEqual({
+    expect(
+      db.prepare("SELECT kind, changes FROM plan_proposals").get()
+    ).toEqual({
       kind: "user_story",
-      changes: '[{"op":"split_user_story","userStory":"invoice-api","into":[]}]',
+      changes:
+        '[{"op":"split_user_story","userStory":"invoice-api","into":[]}]',
     })
-    expect(db.prepare("SELECT summary, decision_keys FROM navigator_ticks").get()).toEqual({
+    expect(
+      db.prepare("SELECT summary, decision_keys FROM navigator_ticks").get()
+    ).toEqual({
       summary: "Slice a failed.",
       decision_keys: '["user_story_failed:a:2"]',
     })
-    expect(db.prepare("SELECT altitude FROM playbooks").pluck().get()).toBe("milestone")
-    expect(db.prepare("SELECT hook, feature_id, milestone_id, user_story_id FROM playbook_runs").get()).toEqual({
+    expect(db.prepare("SELECT altitude FROM playbooks").pluck().get()).toBe(
+      "milestone"
+    )
+    expect(
+      db
+        .prepare(
+          "SELECT hook, feature_id, milestone_id, user_story_id FROM playbook_runs"
+        )
+        .get()
+    ).toEqual({
       hook: "after_all_user_stories",
       feature_id: "i",
       milestone_id: "m",
       user_story_id: "a",
     })
-    expect(db.prepare("SELECT scope, scope_key FROM seat_sessions ORDER BY id").all()).toEqual([
+    expect(
+      db.prepare("SELECT scope, scope_key FROM seat_sessions ORDER BY id").all()
+    ).toEqual([
       { scope: "feature", scope_key: "feature" },
       { scope: "user_story", scope_key: "run" },
     ])
-    expect(db.prepare("SELECT anchor_kind, subject FROM seat_threads").get()).toEqual({
+    expect(
+      db.prepare("SELECT anchor_kind, subject FROM seat_threads").get()
+    ).toEqual({
       anchor_kind: "user_story",
       subject: "About the slice",
     })
-    expect(db.prepare("SELECT milestone_id, user_story_id, user_story_head FROM merge_queue").get()).toEqual({
+    expect(
+      db
+        .prepare(
+          "SELECT milestone_id, user_story_id, user_story_head FROM merge_queue"
+        )
+        .get()
+    ).toEqual({
       milestone_id: "m",
       user_story_id: "a",
       user_story_head: "abc",
@@ -1202,12 +1286,47 @@ describe.skipIf(!sqliteLoads)("work terms migration (v54)", () => {
     // Cascades still follow the renamed references.
     db.pragma("foreign_keys = ON")
     db.prepare("DELETE FROM features").run()
-    for (const table of ["milestones", "user_stories", "user_story_edges", "seat_sessions", "merge_queue"])
+    for (const table of [
+      "milestones",
+      "user_stories",
+      "user_story_edges",
+      "seat_sessions",
+      "merge_queue",
+    ])
       expect(db.prepare(`SELECT COUNT(*) FROM ${table}`).pluck().get()).toBe(0)
 
     // Running it again changes nothing.
     runMigrations(db)
-    expect(db.pragma("user_version", { simple: true })).toBe(55)
+    expect(db.pragma("user_version", { simple: true })).toBe(56)
     db.close()
+  })
+})
+
+describe("python extractor migration (v56)", () => {
+  it("marks already-indexed Python files for re-extraction, and nothing else", () => {
+    const db = new Database(":memory:")
+    runMigrations(db, { through: 55 })
+    const now = Date.now()
+    db.prepare(
+      "INSERT INTO workspaces (id, path, name, created_at, updated_at) VALUES ('w', '/w', 'w', ?, ?)"
+    ).run(now, now)
+    const file = db.prepare(
+      "INSERT INTO index_files (id, workspace_id, path, ext, size, mtime, hash, indexed_stage, updated_at) VALUES (?, 'w', ?, ?, 1, 1, 'h', 'symbols', ?)"
+    )
+    file.run("py", "src/runtime.py", ".py", now)
+    file.run("pyi", "src/stubs.pyi", ".pyi", now)
+    file.run("ts", "web/app.ts", ".ts", now)
+
+    runMigrations(db)
+
+    const stages = Object.fromEntries(
+      (
+        db.prepare("SELECT id, indexed_stage FROM index_files").all() as Array<{
+          id: string
+          indexed_stage: string
+        }>
+      ).map((row) => [row.id, row.indexed_stage])
+    )
+    expect(stages).toEqual({ py: "file_map", pyi: "file_map", ts: "symbols" })
   })
 })

@@ -119,6 +119,14 @@ const MIGRATIONS: Array<(db: Database.Database) => void> = [
   ensureNavigator,
   healAndRenameWorkTerms,
   ensurePhaseReviewColumn,
+  // v56: the Python extractor. Re-indexing re-extracts only new or changed
+  // files, so without this, Python files indexed before it existed would keep
+  // their empty symbol lists forever. Mark them dirty once; the next index run
+  // (every feature start triggers one) extracts them.
+  (db) =>
+    db.exec(
+      "UPDATE index_files SET indexed_stage = 'file_map' WHERE ext IN ('.py', '.pyi')"
+    ),
 ]
 
 function tableExists(db: Database.Database, table: string): boolean {
