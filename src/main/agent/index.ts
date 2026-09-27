@@ -163,7 +163,7 @@ import {
   setConversationTitleIfUntitled,
 } from "../db/repositories/conversations"
 import { actionAllowlist } from "../db/repositories"
-import { getWorkspace } from "../db/repositories/workspaces"
+import { getWorkspace, workingDirectoryOf } from "../db/repositories/workspaces"
 import { getProject } from "../db/repositories/projects"
 import { getAccount } from "../db/repositories/provider-accounts"
 import {
@@ -537,6 +537,12 @@ function appendCommandCompletionEvents(input: {
   return true
 }
 
+// DeepSeek's native tool-call markup (DSML, and its tool-call block tokens),
+// which providers normally convert into structured tool calls. Seen as text
+// only when conversion failed, e.g. a call cut off at the output cap.
+const UNPARSED_TOOL_CALL =
+  /<[｜|]\s*DSML\s*[｜|]\s*(?:invoke|function_calls|parameter)|<[｜|]tool[▁_ ]call/i
+
 function validateModelRoundForLoop(input: {
   round: CompletionRound
   commandCompletionPending: boolean
@@ -547,18 +553,30 @@ function validateModelRoundForLoop(input: {
   const text = recovered.text.trim()
   const hasToolCalls =
     structuredToolCalls.length > 0 || recovered.toolCalls.length > 0
-  // Cut off at the cap with nothing usable, or mid tool call: ask the loop to
-  // re-issue the round with a higher cap. At the top step, fall through to the
-  // existing handling (empty → fail below; tool call → the post-round check).
+  // Cut off at the cap: ask the loop to re-issue the round with a higher cap.
+  // Partial text isn't a usable answer either — it may be a tool call the
+  // provider couldn't parse because it was truncated (nav-test-5: QA's final
+  // "answer" was half a DSML exec_command, so the phase ended without a
+  // proof). At the top step, fall through to the existing handling.
   if (
     input.round.finishReason === "length" &&
     input.canRaiseOutputCap &&
-    (hasToolCalls || !text) &&
     !input.commandCompletionPending
   ) {
     throw new ModelResponseValidationError(
       "The model hit the output limit before finishing its response.",
       { retryable: false, outputLimit: true }
+    )
+  }
+  // Tool-call markup that reached us as text (the provider didn't turn it into
+  // a structured call) is a failed call, never a final answer.
+  if (!hasToolCalls && UNPARSED_TOOL_CALL.test(input.round.text)) {
+    const truncated = input.round.finishReason === "length"
+    throw new ModelResponseValidationError(
+      truncated
+        ? "The model hit the output limit in the middle of a tool call."
+        : "The model's tool call arrived as unparsed text instead of a tool call.",
+      { retryable: !truncated }
     )
   }
   if (text || hasToolCalls || input.commandCompletionPending) return
@@ -880,10 +898,8 @@ function resolveConversationDir(
   conversation: Conversation | undefined
 ): string | undefined {
   if (!conversation) return undefined
-  if (conversation.workspaceId) {
-    const ws = getWorkspace(conversation.workspaceId)
-    if (ws?.path) return ws.path
-  }
+  const own = workingDirectoryOf(conversation)
+  if (own) return own
   if (conversation.projectId) {
     const project = getProject(conversation.projectId)
     if (project?.workspaceId) {
@@ -1609,8 +1625,9 @@ export async function runAgentLoop(
   // Workspace-index summary (plan 008): cheap structured orientation. Advisory,
   // most droppable. Gated by the "use index for context" setting + a workspace.
   if (useIndex && conversation?.workspaceId) {
-    // A Mission Control user story's worktree is a workspace of its own but is
-    // never indexed; summarize its repository's main checkout instead.
+    // A Mission Control worker works in a worktree but belongs to its feature's
+    // workspace, so this is the indexed checkout. A workspace the user picked
+    // may itself be an unindexed git worktree; summarize its main checkout then.
     const workspacePath = getWorkspace(conversation.workspaceId)?.path
     const indexed = workspacePath
       ? await indexedWorkspaceFor(workspacePath)
@@ -2970,6 +2987,7 @@ async function spawnSubagentBatch(input: {
     const worker = createConversation({
       mode: input.parentConversation?.mode ?? "interactive",
       workspaceId: input.parentConversation?.workspaceId ?? null,
+      workingDirectory: input.parentConversation?.workingDirectory ?? null,
       accountId: input.parentConversation?.accountId ?? null,
       modelId: input.parentConversation?.modelId ?? null,
       agentName: agent?.name ?? null,
@@ -3234,6 +3252,7 @@ async function spawnSubagent(input: {
   const worker = createConversation({
     mode: input.parentConversation?.mode ?? "interactive",
     workspaceId: input.parentConversation?.workspaceId ?? null,
+    workingDirectory: input.parentConversation?.workingDirectory ?? null,
     accountId: input.parentConversation?.accountId ?? null,
     modelId: input.parentConversation?.modelId ?? null,
     agentName: child.name,

@@ -139,6 +139,20 @@ function streamText(content: string): AsyncIterable<any> {
   })()
 }
 
+function streamTextEnding(
+  content: string,
+  finishReason: string
+): AsyncIterable<any> {
+  return (async function* () {
+    yield { choices: [{ delta: { content }, finish_reason: finishReason }] }
+  })()
+}
+
+// nav-test-5's QA reply: a DSML tool call cut off mid-parameter, which the
+// provider passed through as text.
+const TRUNCATED_DSML =
+  'Let me verify the last rewrite path.\n<｜DSML｜ invoke name="exec_command">\n<｜DSML｜ parameter name="command" string="true">cd repo && python - <<\'PY\'\nco.create("run-1", not_before='
+
 function streamEmpty(finishReason: string | null): AsyncIterable<any> {
   return (async function* () {
     yield {
@@ -1001,6 +1015,80 @@ describe.skipIf(!sqliteLoads)("agent loop tool-error feedback", () => {
     expect(getBudget(conversation.id, "after-seq:1")).toMatchObject({
       status: "exhausted",
       attemptsConsumed: 1,
+    })
+  })
+
+  it("re-issues a truncated text reply instead of taking it as the answer", async () => {
+    const workspace = await makeWorkspace()
+    const conversation = createConversation({ mode: "interactive" })
+
+    scriptedCompletions.push(
+      () => streamTextEnding(TRUNCATED_DSML, "length"),
+      () => streamText("Verified: the schedule survives every rewrite path.")
+    )
+
+    const result = await runAgentLoop({
+      conversationId: conversation.id,
+      workspace,
+      userMessage: "verify the story",
+      abort: new AbortController(),
+      onEvent: () => {},
+    })
+
+    expect(result).toEqual({
+      content: "Verified: the schedule survives every rewrite path.",
+    })
+    expect(completionRequests.map((r) => r.maxTokens)).toEqual([8192, 16_384])
+  })
+
+  it("fails a reply that is still a truncated tool call at the top cap", async () => {
+    const workspace = await makeWorkspace()
+    const conversation = createConversation({ mode: "interactive" })
+
+    scriptedCompletions.push(
+      () => streamTextEnding(TRUNCATED_DSML, "length"),
+      () => streamTextEnding(TRUNCATED_DSML, "length"),
+      () => streamTextEnding(TRUNCATED_DSML, "length")
+    )
+
+    const result = await runAgentLoop({
+      conversationId: conversation.id,
+      workspace,
+      userMessage: "verify the story",
+      abort: new AbortController(),
+      onEvent: () => {},
+    })
+
+    expect(result.error).toContain("in the middle of a tool call")
+    expect(result.retryable).toBe(false)
+  })
+
+  it("retries a tool call that arrived as unparsed text", async () => {
+    const workspace = await makeWorkspace()
+    const conversation = createConversation({ mode: "interactive" })
+
+    scriptedCompletions.push(
+      () =>
+        streamTextEnding(
+          '<｜DSML｜ invoke name="list_files_tool">\n<｜DSML｜ parameter name="path" string="true">.</｜DSML｜ parameter>\n</｜DSML｜ invoke>',
+          "stop"
+        ),
+      () => streamText("Done.")
+    )
+
+    const result = await runAgentLoop({
+      conversationId: conversation.id,
+      workspace,
+      userMessage: "list the files",
+      abort: new AbortController(),
+      onEvent: () => {},
+    })
+
+    expect(result).toEqual({ content: "Done." })
+    expect(completionRequests).toHaveLength(2)
+    expect(getBudget(conversation.id, "after-seq:1")).toMatchObject({
+      status: "completed",
+      attemptsConsumed: 2,
     })
   })
 
