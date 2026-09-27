@@ -9,6 +9,7 @@ import type {
   ProposalStatus,
 } from "../../shared/mission-control/plan-changes"
 import type { UserStoryNarrative } from "../../shared/mission-control/story"
+import type { OverlapPolicy } from "../../shared/mission-control/waves"
 
 // A conversation's view/mode. One per view: Chat / Interactive / North Star.
 export type Mode = "chat" | "interactive" | "north_star"
@@ -719,6 +720,9 @@ export type DriveMode = "manual" | "copilot" | "autopilot"
 export interface FeatureDrive {
   // Apply the feature planning proposal without waiting for the user.
   autoApplyPlan: boolean
+  // User stories whose touch hints overlap: "wait" runs them one at a time;
+  // "parallel" runs them together and lets the merge queue handle collisions.
+  overlapPolicy: OverlapPolicy
   // Wall-clock time spent driving (copilot/autopilot while active). Accrued in
   // small increments, so time the app was closed or asleep is never counted.
   activeMs: number

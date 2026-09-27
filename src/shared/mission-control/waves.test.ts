@@ -5,6 +5,8 @@ import {
   readySet,
   touchHintRoot,
   touchHintsOverlap,
+  overlappingPairs,
+  scheduleSteps,
 } from "./waves"
 
 const nodes = (ids: string[]) =>
@@ -77,12 +79,76 @@ describe("touch hints", () => {
   })
 
   it("overlaps on shared directories only", () => {
-    expect(touchHintsOverlap(["src/billing/**"], ["src/billing/invoice.ts"])).toBe(true)
-    expect(touchHintsOverlap(["src/billing"], ["src/billing/pdf/**"])).toBe(true)
-    expect(touchHintsOverlap(["src/billing/**"], ["src/billing-old/x.ts"])).toBe(false)
+    expect(
+      touchHintsOverlap(["src/billing/**"], ["src/billing/invoice.ts"])
+    ).toBe(true)
+    expect(touchHintsOverlap(["src/billing"], ["src/billing/pdf/**"])).toBe(
+      true
+    )
+    expect(
+      touchHintsOverlap(["src/billing/**"], ["src/billing-old/x.ts"])
+    ).toBe(false)
     expect(touchHintsOverlap(["src/api/**"], ["src/pdf/**"])).toBe(false)
     expect(touchHintsOverlap(["**/*.ts"], ["docs/x.md"])).toBe(true)
     // No hints declare nothing.
     expect(touchHintsOverlap([], ["src/**"])).toBe(false)
+  })
+})
+
+describe("scheduleSteps", () => {
+  // nav-test-4's plan: every story touches runtime.py.
+  const stories = [
+    {
+      id: "persist",
+      touchHints: ["src/runtime.py", "src/cli.py"],
+      position: 0,
+    },
+    {
+      id: "claim",
+      touchHints: ["src/runtime.py", "tests/test_runtime.py"],
+      position: 1,
+    },
+    {
+      id: "read",
+      touchHints: ["src/runtime.py", "src/payloads.py"],
+      position: 2,
+    },
+    {
+      id: "worker",
+      touchHints: ["src/worker.py", "src/runtime.py"],
+      position: 3,
+    },
+  ]
+  const edges = [
+    { fromUserStoryId: "persist", toUserStoryId: "claim" },
+    { fromUserStoryId: "persist", toUserStoryId: "read" },
+    { fromUserStoryId: "claim", toUserStoryId: "worker" },
+    { fromUserStoryId: "read", toUserStoryId: "worker" },
+  ]
+
+  it("serializes overlapping stories when they wait", () => {
+    expect(
+      scheduleSteps(stories, edges, { maxConcurrent: 3, overlap: "wait" })
+    ).toEqual([["persist"], ["claim"], ["read"], ["worker"]])
+  })
+
+  it("runs independent overlapping stories together when parallel, within the cap", () => {
+    expect(
+      scheduleSteps(stories, edges, { maxConcurrent: 3, overlap: "parallel" })
+    ).toEqual([["persist"], ["claim", "read"], ["worker"]])
+    expect(
+      scheduleSteps(stories, edges, { maxConcurrent: 1, overlap: "parallel" })
+    ).toHaveLength(4)
+  })
+
+  it("treats dependencies outside the set as met", () => {
+    const remaining = stories.slice(1)
+    expect(
+      scheduleSteps(remaining, edges, { maxConcurrent: 3, overlap: "parallel" })
+    ).toEqual([["claim", "read"], ["worker"]])
+  })
+
+  it("lists only independent overlapping pairs", () => {
+    expect(overlappingPairs(stories, edges)).toEqual([["claim", "read"]])
   })
 })

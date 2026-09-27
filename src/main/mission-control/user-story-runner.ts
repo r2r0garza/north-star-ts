@@ -384,8 +384,12 @@ export class UserStoryRunner {
         `User story ${userStory.key} depends on unmerged user stories: ${blockers.map((b) => b.key).join(", ")}. A user story starts once its predecessors are done${milestone.integrationBranch ? " and merged into the integration branch" : ""}.`
       )
     // Overlapping touch hints serialize by default (decision 7): two user stories
-    // editing the same area in parallel is how merge conflicts are made.
-    if (!options.allowTouchOverlap) {
+    // editing the same area in parallel is how merge conflicts are made. The
+    // feature's "parallel" policy, or a one-off "Run anyway", opts out.
+    if (
+      !options.allowTouchOverlap &&
+      feature.drive.overlapPolicy !== "parallel"
+    ) {
       const overlapping = features
         .listUserStories(milestone.id)
         .filter(

@@ -23,6 +23,8 @@ import {
 } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
 import type { BudgetMeter, DriveMode, FeatureGraph, Position } from "@/types"
+import { milestoneOverlapEstimate } from "@/lib/overlap-schedule"
+import { OverlapEstimates } from "./overlap-estimate"
 
 // Feature drive controls (plan 106.6): the drive mode, Start / Pause /
 // Resume / Cancel, auto-applying the planning proposal, budget meters, and
@@ -33,6 +35,23 @@ function errorMessage(error: unknown) {
     .replace(/^Error invoking remote method '[^']+':\s*/, "")
     .replace(/^\w*Error:\s*/, "")
 }
+
+const OVERLAP_POLICIES: Array<{
+  value: "wait" | "parallel"
+  label: string
+  help: string
+}> = [
+  {
+    value: "wait",
+    label: "Wait",
+    help: "User stories whose touch hints overlap run one at a time. Slower, but they rarely conflict at merge.",
+  },
+  {
+    value: "parallel",
+    label: "Run in parallel",
+    help: "Overlapping user stories run together. Faster when they touch different parts of shared files; a real collision is resolved in the merge queue, which costs time.",
+  },
+]
 
 const MODES: Array<{ value: DriveMode; label: string; help: string }> = [
   {
@@ -107,6 +126,12 @@ export function DriveControls({
     setMode(value)
     if (paused) void act(() => drive.setMode(feature.id, value))
   }
+  // Unlike the drive mode, this applies at the next dispatch, so it can
+  // change at any time until the feature finishes.
+  const changeOverlapPolicy = (value: "wait" | "parallel") =>
+    void act(() => drive.setOverlapPolicy(feature.id, value))
+  const overlapPolicy = feature.drive.overlapPolicy
+  const estimate = finished ? null : milestoneOverlapEstimate(graph)
   const changeAutoApply = (value: boolean) => {
     setAutoApply(value)
     if (paused) void act(() => drive.setAutoApplyPlan(feature.id, value))
@@ -129,6 +154,35 @@ export function DriveControls({
             </SelectTrigger>
             <SelectContent>
               {MODES.map((item) => (
+                <SelectItem key={item.value} value={item.value}>
+                  {item.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <div
+          className="flex items-center gap-2"
+          title={OVERLAP_POLICIES.find((p) => p.value === overlapPolicy)?.help}
+        >
+          <Label className="text-xs text-muted-foreground">
+            Overlapping stories
+          </Label>
+          <Select
+            value={overlapPolicy}
+            disabled={finished || pending}
+            onValueChange={(value) =>
+              changeOverlapPolicy(value as "wait" | "parallel")
+            }
+          >
+            <SelectTrigger
+              className="h-8 w-40"
+              aria-label="Overlapping stories"
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {OVERLAP_POLICIES.map((item) => (
                 <SelectItem key={item.value} value={item.value}>
                   {item.label}
                 </SelectItem>
@@ -222,6 +276,7 @@ export function DriveControls({
             ? ""
             : " Pause to change the mode."}
       </p>
+      {estimate && <OverlapEstimates estimates={[estimate]} />}
       {paused && feature.drive.pauseReason && (
         <div className="rounded-md border border-amber-500/40 bg-amber-500/5 p-2 text-sm">
           Paused: {feature.drive.pauseReason}

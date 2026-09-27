@@ -16,8 +16,11 @@ import type { UserStoryDraft } from "../../../../shared/mission-control/plan-cha
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
+import { proposalOverlapEstimates } from "@/lib/overlap-schedule"
+import { OverlapEstimates } from "./overlap-estimate"
 import type {
   Decision,
+  Feature,
   FeatureGraph,
   PlanChange,
   PlanProposal,
@@ -48,8 +51,12 @@ function UserStoryLines({ userStory }: { userStory: UserStoryDraft }) {
       ) : (
         <div className="text-amber-600">No acceptance criteria</div>
       )}
-      {userStory.dependsOn?.length ? <div>After: {userStory.dependsOn.join(", ")}</div> : null}
-      {userStory.touchHints?.length ? <div>Touches: {userStory.touchHints.join(", ")}</div> : null}
+      {userStory.dependsOn?.length ? (
+        <div>After: {userStory.dependsOn.join(", ")}</div>
+      ) : null}
+      {userStory.touchHints?.length ? (
+        <div>Touches: {userStory.touchHints.join(", ")}</div>
+      ) : null}
     </div>
   )
 }
@@ -65,9 +72,13 @@ function ChangeView({ change }: { change: PlanChange }) {
       <div className="space-y-1">
         <div className={`font-medium ${tone}`}>
           + Milestone {change.milestone.name}
-          {change.milestone.key ? <code className="ml-1 text-xs">{change.milestone.key}</code> : null}
+          {change.milestone.key ? (
+            <code className="ml-1 text-xs">{change.milestone.key}</code>
+          ) : null}
         </div>
-        <div className="pl-4 text-xs text-muted-foreground">{change.milestone.outcome}</div>
+        <div className="pl-4 text-xs text-muted-foreground">
+          {change.milestone.outcome}
+        </div>
         {change.milestone.definitionOfDone && (
           <div className="pl-4 text-xs text-muted-foreground">
             Done when: {change.milestone.definitionOfDone}
@@ -77,7 +88,9 @@ function ChangeView({ change }: { change: PlanChange }) {
           <div key={index} className="pl-4">
             <div className="text-sm">
               + {userStory.title}
-              {userStory.key ? <code className="ml-1 text-xs">{userStory.key}</code> : null}
+              {userStory.key ? (
+                <code className="ml-1 text-xs">{userStory.key}</code>
+              ) : null}
             </div>
             <UserStoryLines userStory={userStory} />
           </div>
@@ -121,10 +134,13 @@ function ChangeView({ change }: { change: PlanChange }) {
 
 function ProposalCard({
   proposal,
+  feature,
   onGraph,
   onResolved,
 }: {
   proposal: PlanProposal
+  // For the schedule estimate: capacity comes from its budget and rig.
+  feature: Feature
   onGraph: (graph: FeatureGraph) => void
   onResolved: () => Promise<void>
 }) {
@@ -145,17 +161,28 @@ function ProposalCard({
   }
   const proposals = window.cowork.missionControl.proposals
   // Changes that no longer apply to the plan as it is now (it moved on).
-  const problems = new Map((proposal.problems ?? []).map((p) => [p.index, p.error]))
+  const problems = new Map(
+    (proposal.problems ?? []).map((p) => [p.index, p.error])
+  )
   const applicable = proposal.changes.length - problems.size
   return (
     <div className="space-y-2 rounded-md border p-3">
       <div className="flex flex-wrap items-center gap-2 text-sm">
         <Badge variant="secondary">
-          {proposal.kind === "plan" ? "Planning proposal" : proposal.kind === "user_story" ? "New user story" : "Plan change"}
+          {proposal.kind === "plan"
+            ? "Planning proposal"
+            : proposal.kind === "user_story"
+              ? "New user story"
+              : "Plan change"}
         </Badge>
         {problems.size > 0 && (
-          <Badge variant="outline" className="border-amber-500/60 text-amber-700 dark:text-amber-400">
-            {applicable ? `${problems.size} change${problems.size === 1 ? "" : "s"} stale` : "stale"}
+          <Badge
+            variant="outline"
+            className="border-amber-500/60 text-amber-700 dark:text-amber-400"
+          >
+            {applicable
+              ? `${problems.size} change${problems.size === 1 ? "" : "s"} stale`
+              : "stale"}
           </Badge>
         )}
         <span className="text-muted-foreground">
@@ -164,6 +191,9 @@ function ProposalCard({
         </span>
       </div>
       {proposal.reason && <p className="text-sm">{proposal.reason}</p>}
+      <OverlapEstimates
+        estimates={proposalOverlapEstimates(proposal.changes, feature)}
+      />
       <div className="space-y-2 rounded bg-muted/40 p-2 text-sm">
         {proposal.changes.map((change, index) => (
           <div key={index} className={problems.has(index) ? "opacity-60" : ""}>
@@ -190,11 +220,20 @@ function ProposalCard({
               size="sm"
               variant="destructive"
               disabled={pending}
-              onClick={() => void act(() => proposals.reject(proposal.id, note), "Proposal rejected")}
+              onClick={() =>
+                void act(
+                  () => proposals.reject(proposal.id, note),
+                  "Proposal rejected"
+                )
+              }
             >
               Reject
             </Button>
-            <Button size="sm" variant="ghost" onClick={() => setRejecting(false)}>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => setRejecting(false)}
+            >
               Back
             </Button>
           </div>
@@ -205,7 +244,9 @@ function ProposalCard({
             <Button
               size="sm"
               disabled={pending}
-              onClick={() => void act(() => proposals.apply(proposal.id), "Proposal applied")}
+              onClick={() =>
+                void act(() => proposals.apply(proposal.id), "Proposal applied")
+              }
             >
               <Check className="size-4" /> Apply
             </Button>
@@ -220,7 +261,8 @@ function ProposalCard({
                 )
               }
             >
-              <Check className="size-4" /> Apply the {applicable} that still appl
+              <Check className="size-4" /> Apply the {applicable} that still
+              appl
               {applicable === 1 ? "ies" : "y"}
             </Button>
           ) : (
@@ -228,7 +270,12 @@ function ProposalCard({
               Nothing in it applies anymore.
             </span>
           )}
-          <Button size="sm" variant="outline" disabled={pending} onClick={() => setRejecting(true)}>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={pending}
+            onClick={() => setRejecting(true)}
+          >
             <X className="size-4" /> Reject…
           </Button>
         </div>
@@ -280,7 +327,8 @@ function DecisionCard({
       setPending(false)
     }
   }
-  const milestoneKey = (id: string) => graph.milestones.find((m) => m.id === id)?.key ?? "milestone"
+  const milestoneKey = (id: string) =>
+    graph.milestones.find((m) => m.id === id)?.key ?? "milestone"
   return (
     <div className="space-y-2 rounded-md border border-amber-500/40 bg-amber-500/5 p-3 text-sm">
       <div>{decision.summary}</div>
@@ -310,7 +358,8 @@ function DecisionCard({
                 )
               }
             >
-              <Play className="size-4" /> Run {HOOK_LABELS[action.hook] ?? action.hook}
+              <Play className="size-4" /> Run{" "}
+              {HOOK_LABELS[action.hook] ?? action.hook}
             </Button>
           )}
           {action.kind === "judge_milestone" &&
@@ -321,14 +370,22 @@ function DecisionCard({
                   disabled={pending}
                   onClick={() =>
                     void run(
-                      () => window.cowork.missionControl.proposals.judgeMilestone(action.milestoneId, summary),
+                      () =>
+                        window.cowork.missionControl.proposals.judgeMilestone(
+                          action.milestoneId,
+                          summary
+                        ),
                       `Milestone ${milestoneKey(action.milestoneId)} judged done`
                     )
                   }
                 >
                   <Check className="size-4" /> Milestone is done
                 </Button>
-                <Button size="sm" variant="ghost" onClick={() => setJudging(false)}>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => setJudging(false)}
+                >
                   Back
                 </Button>
               </>
@@ -337,18 +394,33 @@ function DecisionCard({
                 <Check className="size-4" /> Complete milestone…
               </Button>
             ))}
-          {(action.kind === "judge_milestone" || action.kind === "open_milestone") && (
-            <Button size="sm" variant="outline" onClick={() => navigation.openMilestone(action.milestoneId)}>
+          {(action.kind === "judge_milestone" ||
+            action.kind === "open_milestone") && (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => navigation.openMilestone(action.milestoneId)}
+            >
               Open milestone {milestoneKey(action.milestoneId)}
             </Button>
           )}
           {action.kind === "open_user_story" && (
-            <Button size="sm" variant="outline" onClick={() => navigation.openUserStory(action.userStoryId)}>
-              Open user story {graph.userStories.find((s) => s.id === action.userStoryId)?.key ?? ""}
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => navigation.openUserStory(action.userStoryId)}
+            >
+              Open user story{" "}
+              {graph.userStories.find((s) => s.id === action.userStoryId)
+                ?.key ?? ""}
             </Button>
           )}
           {action.kind === "edit_budgets" && (
-            <Button size="sm" variant="outline" onClick={navigation.editBudgets}>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={navigation.editBudgets}
+            >
               Edit budgets
             </Button>
           )}
@@ -393,8 +465,8 @@ function EscalationCard({
       </div>
       <p className="whitespace-pre-wrap">{message.body}</p>
       <p className="text-xs text-muted-foreground">
-        An escalation doesn't stop the drive. Answer it here, act on what it asks for (the items
-        above), or mark it handled.
+        An escalation doesn't stop the drive. Answer it here, act on what it
+        asks for (the items above), or mark it handled.
       </p>
       {replying && (
         <Textarea
@@ -410,11 +482,20 @@ function EscalationCard({
             <Button
               size="sm"
               disabled={pending || !body.trim()}
-              onClick={() => void run(() => comms.reply(message.id, body), `Reply sent to ${message.fromAddress}`)}
+              onClick={() =>
+                void run(
+                  () => comms.reply(message.id, body),
+                  `Reply sent to ${message.fromAddress}`
+                )
+              }
             >
               <Send className="size-4" /> Send reply
             </Button>
-            <Button size="sm" variant="ghost" onClick={() => setReplying(false)}>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => setReplying(false)}
+            >
               Back
             </Button>
           </>
@@ -427,7 +508,9 @@ function EscalationCard({
           size="sm"
           variant="outline"
           disabled={pending}
-          onClick={() => void run(() => comms.acknowledge(message.id), "Marked handled")}
+          onClick={() =>
+            void run(() => comms.acknowledge(message.id), "Marked handled")
+          }
         >
           <Check className="size-4" /> Mark handled
         </Button>
@@ -462,7 +545,10 @@ export function WaitingOnYou({
     setProposals(nextProposals)
     setEscalations(
       mail.messages.filter(
-        (m) => m.toAddress === "user@rig" && m.kind === "escalation" && m.status === "delivered"
+        (m) =>
+          m.toAddress === "user@rig" &&
+          m.kind === "escalation" &&
+          m.status === "delivered"
       )
     )
   }, [featureId])
@@ -471,7 +557,8 @@ export function WaitingOnYou({
     const refresh = (changed: string) => {
       if (changed === featureId) void reload().catch(() => {})
     }
-    const offNavigator = window.cowork.missionControl.navigator.onChanged(refresh)
+    const offNavigator =
+      window.cowork.missionControl.navigator.onChanged(refresh)
     const offComms = window.cowork.missionControl.comms.onChanged(refresh)
     return () => {
       offNavigator()
@@ -483,22 +570,30 @@ export function WaitingOnYou({
   const resolved = proposals.filter((p) => p.status !== "pending")
   // Decisions the inbox doesn't already show as a proposal or escalation.
   const others = (position?.pendingDecisions ?? []).filter(
-    (d) => d.owner === "user" && !["proposal", "plan_proposal", "escalation"].includes(d.kind)
+    (d) =>
+      d.owner === "user" &&
+      !["proposal", "plan_proposal", "escalation"].includes(d.kind)
   )
   const empty = !pending.length && !escalations.length && !others.length
 
   return (
-    <div id="mission-control-waiting" className="space-y-3 rounded-lg border p-4">
+    <div
+      id="mission-control-waiting"
+      className="space-y-3 rounded-lg border p-4"
+    >
       <div className="flex items-center gap-2">
         <Inbox className="size-4" />
         <h3 className="font-medium">Waiting on you</h3>
         {!empty && (
-          <Badge variant="secondary">{pending.length + escalations.length + others.length}</Badge>
+          <Badge variant="secondary">
+            {pending.length + escalations.length + others.length}
+          </Badge>
         )}
       </div>
       {empty && (
         <p className="text-sm text-muted-foreground">
-          Nothing needs you right now. Proposals from seats and escalations land here.
+          Nothing needs you right now. Proposals from seats and escalations land
+          here.
         </p>
       )}
       {others.map((decision) => (
@@ -511,10 +606,21 @@ export function WaitingOnYou({
         />
       ))}
       {pending.map((proposal) => (
-        <ProposalCard key={proposal.id} proposal={proposal} onGraph={onGraph} onResolved={reload} />
+        <ProposalCard
+          key={proposal.id}
+          proposal={proposal}
+          feature={graph.feature}
+          onGraph={onGraph}
+          onResolved={reload}
+        />
       ))}
       {escalations.map((message) => (
-        <EscalationCard key={message.id} message={message} navigation={navigation} onChanged={reload} />
+        <EscalationCard
+          key={message.id}
+          message={message}
+          navigation={navigation}
+          onChanged={reload}
+        />
       ))}
       {resolved.length > 0 && (
         <div>
@@ -524,15 +630,24 @@ export function WaitingOnYou({
             onClick={() => setHistory((value) => !value)}
             aria-expanded={history}
           >
-            {history ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
+            {history ? (
+              <ChevronDown className="size-3" />
+            ) : (
+              <ChevronRight className="size-3" />
+            )}
             Resolved proposals ({resolved.length})
           </button>
           {history &&
             resolved.map((proposal) => (
-              <div key={proposal.id} className="mt-2 border-l pl-3 text-xs text-muted-foreground">
-                <span className="capitalize">{proposal.status}</span> · {proposal.kind} from{" "}
-                <code>{proposal.proposer}</code>
-                {proposal.resolutionNote ? ` — “${proposal.resolutionNote}”` : ""}
+              <div
+                key={proposal.id}
+                className="mt-2 border-l pl-3 text-xs text-muted-foreground"
+              >
+                <span className="capitalize">{proposal.status}</span> ·{" "}
+                {proposal.kind} from <code>{proposal.proposer}</code>
+                {proposal.resolutionNote
+                  ? ` — “${proposal.resolutionNote}”`
+                  : ""}
                 <div>{proposal.changes.map(describePlanChange).join("; ")}</div>
               </div>
             ))}
@@ -547,7 +662,8 @@ export function WaitingOnYou({
 export function PlanHistory({ graph }: { graph: FeatureGraph }) {
   const [open, setOpen] = useState(false)
   const label = (kind: string, id: string) => {
-    if (kind === "user_story") return graph.userStories.find((s) => s.id === id)?.key ?? "user story"
+    if (kind === "user_story")
+      return graph.userStories.find((s) => s.id === id)?.key ?? "user story"
     if (kind === "milestone" || kind === "edge")
       return graph.milestones.find((m) => m.id === id)?.key ?? kind
     return "feature"
@@ -562,7 +678,11 @@ export function PlanHistory({ graph }: { graph: FeatureGraph }) {
         onClick={() => setOpen((value) => !value)}
         aria-expanded={open}
       >
-        {open ? <ChevronDown className="size-4" /> : <ChevronRight className="size-4" />}
+        {open ? (
+          <ChevronDown className="size-4" />
+        ) : (
+          <ChevronRight className="size-4" />
+        )}
         Plan changes ({revisions.length})
       </button>
       {open && (
@@ -576,7 +696,8 @@ export function PlanHistory({ graph }: { graph: FeatureGraph }) {
                 {revision.actor}
               </Badge>
               <span className="text-muted-foreground">
-                {revision.change.op.replace(/_/g, " ")} {label(revision.targetKind, revision.targetId)}
+                {revision.change.op.replace(/_/g, " ")}{" "}
+                {label(revision.targetKind, revision.targetId)}
                 {revision.reason ? ` — ${revision.reason}` : ""}
               </span>
             </div>

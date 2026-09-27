@@ -292,6 +292,22 @@ describe("computePosition — waves and dispatch", () => {
     ])
   })
 
+  it("dispatches overlapping user stories together under the parallel policy", () => {
+    const p = computePosition(
+      input({
+        feature: { ...input().feature, overlapPolicy: "parallel" },
+        pods: [{ key: "impl", builderSeats: 3 }],
+        userStories: [
+          userStory("a", "m1", { touchHints: ["src/billing/**"] }),
+          userStory("b", "m1", { touchHints: ["src/billing/invoice.ts"] }),
+          userStory("c", "m1", { touchHints: ["docs/**"] }),
+        ],
+      })
+    )
+    expect(p.dispatch.map((d) => d.userStory)).toEqual(["a", "b", "c"])
+    expect(p.deferred).toEqual([])
+  })
+
   it("runs one at a time in a non-git workspace, and none while it is busy", () => {
     const single = computePosition(
       input({

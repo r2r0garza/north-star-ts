@@ -2,7 +2,13 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
 import Database from "better-sqlite3"
 import { execFileSync } from "child_process"
 import { randomUUID } from "crypto"
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs"
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "fs"
 import { tmpdir } from "os"
 import path from "path"
 import { runMigrations } from "../db/migrations"
@@ -72,7 +78,9 @@ vi.mock("../agent", () => ({
         processPhaseRunId: input.processPhaseRunId!,
         args: {
           verdict: "accepted",
-          criteria: [{ id: "AC-1", status: "met", evidence: "Checked the file." }],
+          criteria: [
+            { id: "AC-1", status: "met", evidence: "Checked the file." },
+          ],
         },
       })
       content = "verified"
@@ -186,12 +194,40 @@ function setup(options: { resolve?: boolean } = {}) {
 
 function rig() {
   const created = rigs.createRig({ name: "Team" })
-  const lead = rigs.createPod({ rigId: created.id, key: "orchestration", name: "Orchestration" })
-  const pod = rigs.createPod({ rigId: created.id, key: "implementation", name: "Implementation" })
-  rigs.createSeat({ podId: lead.id, key: "lead", role: "lead", agentRefId: "agentref:v1:lead", agentLabel: "lead" })
-  rigs.createSeat({ podId: pod.id, key: "builder", role: "builder", agentRefId: "agentref:v1:builder", agentLabel: "builder" })
-  rigs.createSeat({ podId: pod.id, key: "qa", role: "qa", agentRefId: "agentref:v1:qa", agentLabel: "qa" })
-  rigs.setOversight(created.id, [{ overseerPodId: lead.id, overseenPodId: pod.id }])
+  const lead = rigs.createPod({
+    rigId: created.id,
+    key: "orchestration",
+    name: "Orchestration",
+  })
+  const pod = rigs.createPod({
+    rigId: created.id,
+    key: "implementation",
+    name: "Implementation",
+  })
+  rigs.createSeat({
+    podId: lead.id,
+    key: "lead",
+    role: "lead",
+    agentRefId: "agentref:v1:lead",
+    agentLabel: "lead",
+  })
+  rigs.createSeat({
+    podId: pod.id,
+    key: "builder",
+    role: "builder",
+    agentRefId: "agentref:v1:builder",
+    agentLabel: "builder",
+  })
+  rigs.createSeat({
+    podId: pod.id,
+    key: "qa",
+    role: "qa",
+    agentRefId: "agentref:v1:qa",
+    agentLabel: "qa",
+  })
+  rigs.setOversight(created.id, [
+    { overseerPodId: lead.id, overseenPodId: pod.id },
+  ])
   return created
 }
 
@@ -257,7 +293,8 @@ beforeEach(() => {
 
 afterEach(() => {
   integration?.stop()
-  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true })
+  for (const dir of dirs.splice(0))
+    rmSync(dir, { recursive: true, force: true })
 })
 
 describe.skipIf(!sqliteLoads)("milestone integration", () => {
@@ -265,10 +302,20 @@ describe.skipIf(!sqliteLoads)("milestone integration", () => {
     setup()
     const root = repo()
     const userHead = git(root, "rev-parse", "HEAD")
-    const { milestone, userStory } = featureIn(root, ["invoice-api", "invoice-pdf", "invoice-ui"])
+    const { milestone, userStory } = featureIn(root, [
+      "invoice-api",
+      "invoice-pdf",
+      "invoice-ui",
+    ])
     features.setUserStoryEdges(milestone.id, [
-      { fromUserStoryId: userStory("invoice-api").id, toUserStoryId: userStory("invoice-ui").id },
-      { fromUserStoryId: userStory("invoice-pdf").id, toUserStoryId: userStory("invoice-ui").id },
+      {
+        fromUserStoryId: userStory("invoice-api").id,
+        toUserStoryId: userStory("invoice-ui").id,
+      },
+      {
+        fromUserStoryId: userStory("invoice-pdf").id,
+        toUserStoryId: userStory("invoice-ui").id,
+      },
     ])
     builds.set("invoice-api", { "api.txt": "api\n" })
     builds.set("invoice-pdf", { "pdf.txt": "pdf\n" })
@@ -285,7 +332,9 @@ describe.skipIf(!sqliteLoads)("milestone integration", () => {
       baseOid: userHead,
     })
     // The dependent user story waits for merges, not just proofs.
-    await expect(runner.startUserStory(userStory("invoice-ui").id)).rejects.toThrow(/unmerged user stories/)
+    await expect(
+      runner.startUserStory(userStory("invoice-ui").id)
+    ).rejects.toThrow(/unmerged user stories/)
     // Worktrees stay out of the user's workspace lists.
     expect(listWorkspaces().map((w) => w.path)).toEqual([root])
 
@@ -296,13 +345,28 @@ describe.skipIf(!sqliteLoads)("milestone integration", () => {
     await integration.idle()
     // Every worker of each user story ran in that user story's own worktree.
     const workspaces = new Set(loopCalls.map((c) => c.workspace))
-    expect([...workspaces].sort()).toEqual([api.worktreePath, pdf.worktreePath].sort())
-    expect(features.getUserStory(userStory("invoice-api").id)!.status).toBe("done")
-    expect(features.getUserStory(userStory("invoice-pdf").id)!.status).toBe("done")
-    const subjects = git(root, "log", "--first-parent", "--format=%s", started.integrationBranch!)
+    expect([...workspaces].sort()).toEqual(
+      [api.worktreePath, pdf.worktreePath].sort()
+    )
+    expect(features.getUserStory(userStory("invoice-api").id)!.status).toBe(
+      "done"
+    )
+    expect(features.getUserStory(userStory("invoice-pdf").id)!.status).toBe(
+      "done"
+    )
+    const subjects = git(
+      root,
+      "log",
+      "--first-parent",
+      "--format=%s",
+      started.integrationBranch!
+    )
       .split("\n")
       .slice(0, 2)
-    expect(subjects).toEqual(["user story invoice-api: invoice-api", "user story invoice-pdf: invoice-pdf"])
+    expect(subjects).toEqual([
+      "user story invoice-api: invoice-api",
+      "user story invoice-pdf: invoice-pdf",
+    ])
     // Merged worktrees are removed.
     expect(existsSync(api.worktreePath!)).toBe(false)
     expect(existsSync(pdf.worktreePath!)).toBe(false)
@@ -311,13 +375,21 @@ describe.skipIf(!sqliteLoads)("milestone integration", () => {
     const uiUserStory = features.getUserStory(userStory("invoice-ui").id)!
     expect(existsSync(path.join(ui.worktreePath!, "api.txt"))).toBe(true)
     expect(existsSync(path.join(ui.worktreePath!, "pdf.txt"))).toBe(true)
-    expect(uiUserStory.baseOid).toBe(git(root, "rev-parse", started.integrationBranch!))
+    expect(uiUserStory.baseOid).toBe(
+      git(root, "rev-parse", started.integrationBranch!)
+    )
     await drive(ui.processRunId!)
     await integration.idle()
     expect(features.getMilestone(milestone.id)!.status).toBe("review")
 
     // The merge commit carries the proof and the trailers.
-    const body = git(root, "log", "-1", "--format=%B", started.integrationBranch!)
+    const body = git(
+      root,
+      "log",
+      "-1",
+      "--format=%B",
+      started.integrationBranch!
+    )
     expect(body).toContain(`Mission-Control-User-Story: ${uiUserStory.id}`)
     expect(body).toContain(`Mission-Control-Proof: ${ui.id}`)
     expect(body).toContain("AC-1 met")
@@ -341,21 +413,35 @@ describe.skipIf(!sqliteLoads)("milestone integration", () => {
     await drive(b.processRunId!)
     await integration.idle()
 
-    const entry = mergeQueue.listMergeEntries({ userStoryId: userStory("b").id })[0]
-    expect(entry).toMatchObject({ status: "resolving", conflictFiles: ["shared.txt"] })
+    const entry = mergeQueue.listMergeEntries({
+      userStoryId: userStory("b").id,
+    })[0]
+    expect(entry).toMatchObject({
+      status: "resolving",
+      conflictFiles: ["shared.txt"],
+    })
     expect(features.getUserStory(userStory("b").id)!.status).toBe("integrating")
     const resolutionRun = playbooks.getPlaybookRun(entry.resolutionRunId!)!
-    expect(resolutionRun).toMatchObject({ hook: "after_each_user_story", userStoryId: userStory("b").id })
+    expect(resolutionRun).toMatchObject({
+      hook: "after_each_user_story",
+      userStoryId: userStory("b").id,
+    })
 
     await settleAll()
-    const integrator = loopCalls.find((c) => c.userMessage.includes("Resolve the merge conflict"))!
+    const integrator = loopCalls.find((c) =>
+      c.userMessage.includes("Resolve the merge conflict")
+    )!
     // No integrator seat in this rig: the lead stands in.
     expect(integrator.agentName).toBe("agentref:v1:lead")
     expect(integrator.userMessage).toContain("shared.txt")
     expect(mergeQueue.getMergeEntry(entry.id)!.status).toBe("merged")
     expect(features.getUserStory(userStory("b").id)!.status).toBe("done")
-    const integrationBranch = features.getMilestone(milestone.id)!.integrationBranch!
-    expect(git(root, "show", `${integrationBranch}:shared.txt`)).toContain("a and b")
+    const integrationBranch = features.getMilestone(
+      milestone.id
+    )!.integrationBranch!
+    expect(git(root, "show", `${integrationBranch}:shared.txt`)).toContain(
+      "a and b"
+    )
     expect(git(root, "log", "-1", "--format=%B", integrationBranch)).toContain(
       "Mission-Control-Resolved-By:"
     )
@@ -375,7 +461,9 @@ describe.skipIf(!sqliteLoads)("milestone integration", () => {
     await drive(b.processRunId!)
     await integration.idle()
 
-    const entry = mergeQueue.listMergeEntries({ userStoryId: userStory("b").id })[0]
+    const entry = mergeQueue.listMergeEntries({
+      userStoryId: userStory("b").id,
+    })[0]
     expect(entry).toMatchObject({ status: "conflict", escalated: true })
     expect(notices.join("\n")).toMatch(/user story b needs you/)
     expect(git(root, "status", "--porcelain")).toBe("")
@@ -385,12 +473,16 @@ describe.skipIf(!sqliteLoads)("milestone integration", () => {
     await integration.abandon(entry.id)
     const failed = features.getUserStory(userStory("b").id)!
     expect(failed.status).toBe("failed")
-    expect(git(root, "branch", "--list", failed.branch!)).toContain(failed.branch!)
+    expect(git(root, "branch", "--list", failed.branch!)).toContain(
+      failed.branch!
+    )
     expect(features.getMilestone(milestone.id)!.status).toBe("active")
     // A retry starts from the integration head, which now has user story a.
     builds.set("b", { "b.txt": "b\n" })
     const retry = await runner.startUserStory(userStory("b").id)
-    expect(readFileSync(path.join(retry.worktreePath!, "shared.txt"), "utf8")).toBe("a\n")
+    expect(
+      readFileSync(path.join(retry.worktreePath!, "shared.txt"), "utf8")
+    ).toBe("a\n")
   })
 
   it("escalates when the milestone playbook has no after-each-user-story hook", async () => {
@@ -407,7 +499,9 @@ describe.skipIf(!sqliteLoads)("milestone integration", () => {
     await drive(a.processRunId!)
     await drive(b.processRunId!)
     await integration.idle()
-    const entry = mergeQueue.listMergeEntries({ userStoryId: userStory("b").id })[0]
+    const entry = mergeQueue.listMergeEntries({
+      userStoryId: userStory("b").id,
+    })[0]
     expect(entry).toMatchObject({ status: "conflict", escalated: true })
     expect(entry.note).toMatch(/no after each user story hook/)
     expect((await listWorktrees(root)).length).toBe(2)
@@ -425,8 +519,12 @@ describe.skipIf(!sqliteLoads)("milestone integration", () => {
     integration.stop()
     await drive(a.processRunId!)
     await drive(b.processRunId!)
-    const entryA = mergeQueue.listMergeEntries({ userStoryId: userStory("a").id })[0]
-    const entryB = mergeQueue.listMergeEntries({ userStoryId: userStory("b").id })[0]
+    const entryA = mergeQueue.listMergeEntries({
+      userStoryId: userStory("a").id,
+    })[0]
+    const entryB = mergeQueue.listMergeEntries({
+      userStoryId: userStory("b").id,
+    })[0]
     expect([entryA.status, entryB.status]).toEqual(["queued", "queued"])
 
     // Simulate a crash mid-merge for a: its merge landed on the integration
@@ -438,10 +536,28 @@ describe.skipIf(!sqliteLoads)("milestone integration", () => {
     const headA = git(root, "rev-parse", userStoryA.branch!)
     const scratch = path.join(worktreeRoot, "crash-merge")
     git(root, "worktree", "add", "--detach", scratch, mc.integrationBranch!)
-    git(scratch, "merge", "--no-ff", "-m", `user story a\n\nMission-Control-User-Story: ${userStoryA.id}`, headA)
-    git(root, "update-ref", `refs/heads/${mc.integrationBranch}`, git(scratch, "rev-parse", "HEAD"))
-    mergeQueue.updateMergeEntry(entryA.id, { status: "merging", userStoryHead: headA })
-    mergeQueue.updateMergeEntry(entryB.id, { status: "merging", userStoryHead: null })
+    git(
+      scratch,
+      "merge",
+      "--no-ff",
+      "-m",
+      `user story a\n\nMission-Control-User-Story: ${userStoryA.id}`,
+      headA
+    )
+    git(
+      root,
+      "update-ref",
+      `refs/heads/${mc.integrationBranch}`,
+      git(scratch, "rev-parse", "HEAD")
+    )
+    mergeQueue.updateMergeEntry(entryA.id, {
+      status: "merging",
+      userStoryHead: headA,
+    })
+    mergeQueue.updateMergeEntry(entryB.id, {
+      status: "merging",
+      userStoryHead: null,
+    })
 
     // Restart: a fresh service sweeps the stray worktree and resumes.
     setupRestart()
@@ -450,13 +566,23 @@ describe.skipIf(!sqliteLoads)("milestone integration", () => {
     expect(existsSync(scratch)).toBe(false)
     expect(mergeQueue.getMergeEntry(entryA.id)).toMatchObject({
       status: "merged",
-      mergeCommit: git(root, "log", "-1", "--format=%H", "--grep", userStoryA.id, mc.integrationBranch!),
+      mergeCommit: git(
+        root,
+        "log",
+        "-1",
+        "--format=%H",
+        "--grep",
+        userStoryA.id,
+        mc.integrationBranch!
+      ),
     })
     expect(mergeQueue.getMergeEntry(entryB.id)!.status).toBe("merged")
     expect(features.getMilestone(milestone.id)!.status).toBe("review")
     // Each user story merged exactly once.
     expect(
-      git(root, "log", "--merges", "--format=%s", mc.integrationBranch!).split("\n")
+      git(root, "log", "--merges", "--format=%s", mc.integrationBranch!).split(
+        "\n"
+      )
     ).toHaveLength(2)
   })
 
@@ -468,7 +594,9 @@ describe.skipIf(!sqliteLoads)("milestone integration", () => {
     builds.set("a", { "a.txt": "a\n" })
     const a = await runner.startUserStory(userStory("a").id)
     // Locked once started, except back to manual.
-    expect(() => features.setMilestoneMergePolicy(milestone.id, "open_pr")).toThrow(/locked/)
+    expect(() =>
+      features.setMilestoneMergePolicy(milestone.id, "open_pr")
+    ).toThrow(/locked/)
     await drive(a.processRunId!)
     await integration.idle()
 
@@ -481,13 +609,20 @@ describe.skipIf(!sqliteLoads)("milestone integration", () => {
     expect(status.queue.map((e) => e.status)).toEqual(["merged"])
     expect(git(root, "rev-parse", "main")).toBe(status.baseOid)
     await expect(
-      integration.land(milestone.id, { baseOid: status.summary!.baseOid!, headOid: "stale" })
+      integration.land(milestone.id, {
+        baseOid: status.summary!.baseOid!,
+        headOid: "stale",
+      })
     ).rejects.toThrow(/moved since you reviewed/)
     const landing = await integration.land(milestone.id, {
       baseOid: status.summary!.baseOid!,
       headOid: status.summary!.headOid!,
     })
-    expect(landing).toMatchObject({ mode: "local_merge", fastForward: true, completedBy: "user" })
+    expect(landing).toMatchObject({
+      mode: "local_merge",
+      fastForward: true,
+      completedBy: "user",
+    })
     expect(readFileSync(path.join(root, "a.txt"), "utf8")).toBe("a\n")
     const done = features.getMilestone(milestone.id)!
     expect(done.status).toBe("completed")
@@ -525,9 +660,19 @@ describe.skipIf(!sqliteLoads)("milestone integration", () => {
     const a = await runner.startUserStory(userStory("a").id)
     await drive(a.processRunId!)
     await integration.idle()
-    git(root, "merge", "--no-ff", "-m", "my merge", "mc/billing/milestone-1/integration")
+    git(
+      root,
+      "merge",
+      "--no-ff",
+      "-m",
+      "my merge",
+      "mc/billing/milestone-1/integration"
+    )
     const status = await integration.status(milestone.id)
-    expect(status.landing).toMatchObject({ completedBy: "detected", mode: "manual" })
+    expect(status.landing).toMatchObject({
+      completedBy: "detected",
+      mode: "manual",
+    })
     expect(features.getMilestone(milestone.id)!.status).toBe("completed")
   })
 
@@ -542,10 +687,31 @@ describe.skipIf(!sqliteLoads)("milestone integration", () => {
       spec: { ...userStory("b").spec, touchHints: ["src/billing/invoice.ts"] },
     })
     await runner.startUserStory(userStory("a").id)
-    await expect(runner.startUserStory(userStory("b").id)).rejects.toThrow(/touch_overlap/)
+    await expect(runner.startUserStory(userStory("b").id)).rejects.toThrow(
+      /touch_overlap/
+    )
     await expect(
       runner.startUserStory(userStory("b").id, { allowTouchOverlap: true })
     ).resolves.toMatchObject({ status: "running" })
+  })
+
+  it("runs overlapping user stories together under the feature's parallel policy", async () => {
+    setup()
+    const root = repo()
+    const { feature, userStory } = featureIn(root, ["a", "b"])
+    features.updateUserStory(userStory("a").id, {
+      spec: { ...userStory("a").spec, touchHints: ["src/billing/**"] },
+    })
+    features.updateUserStory(userStory("b").id, {
+      spec: { ...userStory("b").spec, touchHints: ["src/billing/invoice.ts"] },
+    })
+    features.setFeatureDrive(feature.id, { overlapPolicy: "parallel" })
+    await runner.startUserStory(userStory("a").id)
+    await expect(
+      runner.startUserStory(userStory("b").id)
+    ).resolves.toMatchObject({
+      status: "running",
+    })
   })
 
   it("caps concurrent user stories at the feature budget", async () => {
@@ -557,7 +723,9 @@ describe.skipIf(!sqliteLoads)("milestone integration", () => {
       feature.id
     )
     await runner.startUserStory(userStory("a").id)
-    await expect(runner.startUserStory(userStory("b").id)).rejects.toThrow(/1 running user stories at once/)
+    await expect(runner.startUserStory(userStory("b").id)).rejects.toThrow(
+      /1 running user stories at once/
+    )
     // The refused attempt left no worktree behind.
     expect((await listWorktrees(root)).length).toBe(2)
   })
@@ -595,7 +763,9 @@ describe.skipIf(!sqliteLoads)("milestone integration", () => {
     const { keptBranches } = await integration.cleanupFeature(feature.id)
     // The integration branch holds merged work that never reached main.
     expect(keptBranches).toEqual(["mc/billing/milestone-1/integration"])
-    expect(git(root, "branch", "--list", "mc/billing/milestone-1/userStories/*")).toBe("")
+    expect(
+      git(root, "branch", "--list", "mc/billing/milestone-1/userStories/*")
+    ).toBe("")
     expect((await listWorktrees(root)).length).toBe(1)
     expect(existsSync(path.join(worktreeRoot, feature.id))).toBe(false)
   })

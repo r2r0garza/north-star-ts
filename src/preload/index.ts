@@ -668,10 +668,9 @@ const api = {
           reason
         ) as Promise<FeatureGraph>,
       delete: (id: string) =>
-        ipcRenderer.invoke(
-          "missionControl:features:delete",
-          id
-        ) as Promise<{ keptBranches: string[] }>,
+        ipcRenderer.invoke("missionControl:features:delete", id) as Promise<{
+          keptBranches: string[]
+        }>,
       start: (id: string) =>
         ipcRenderer.invoke(
           "missionControl:features:start",
@@ -701,7 +700,12 @@ const api = {
         patch: Partial<
           Pick<
             Milestone,
-            "key" | "name" | "outcome" | "definitionOfDone" | "position" | "playbookId"
+            | "key"
+            | "name"
+            | "outcome"
+            | "definitionOfDone"
+            | "position"
+            | "playbookId"
           >
         >,
         reason?: string
@@ -946,7 +950,10 @@ const api = {
           patch
         ) as Promise<PlaybookWithHooks>,
       delete: (id: string) =>
-        ipcRenderer.invoke("missionControl:playbooks:delete", id) as Promise<void>,
+        ipcRenderer.invoke(
+          "missionControl:playbooks:delete",
+          id
+        ) as Promise<void>,
       createHookProcess: (id: string, hook: PlaybookHookName) =>
         ipcRenderer.invoke(
           "missionControl:playbooks:createHookProcess",
@@ -980,22 +987,29 @@ const api = {
     execution: {
       // allowTouchOverlap: run even though a user story with overlapping touch
       // hints is still building (plan 106.5).
-      runUserStory: (userStoryId: string, options?: { allowTouchOverlap?: boolean }) =>
-        ipcRenderer.invoke("missionControl:userStories:run", userStoryId, options) as Promise<
-          PlaybookRun
-        >,
+      runUserStory: (
+        userStoryId: string,
+        options?: { allowTouchOverlap?: boolean }
+      ) =>
+        ipcRenderer.invoke(
+          "missionControl:userStories:run",
+          userStoryId,
+          options
+        ) as Promise<PlaybookRun>,
       cancelUserStory: (userStoryId: string) =>
-        ipcRenderer.invoke("missionControl:userStories:cancel", userStoryId) as Promise<
-          void
-        >,
+        ipcRenderer.invoke(
+          "missionControl:userStories:cancel",
+          userStoryId
+        ) as Promise<void>,
       runHook: (input: {
         featureId: string
         milestoneId?: string | null
         hook: PlaybookHookName
       }) =>
-        ipcRenderer.invoke("missionControl:hooks:run", input) as Promise<
-          PlaybookRun
-        >,
+        ipcRenderer.invoke(
+          "missionControl:hooks:run",
+          input
+        ) as Promise<PlaybookRun>,
     },
     // Milestone integration (plan 106.5): worktrees, the merge queue, and the
     // milestone's merge policy.
@@ -1030,11 +1044,20 @@ const api = {
           milestoneId
         ) as Promise<MilestoneLanding>,
       retry: (entryId: string) =>
-        ipcRenderer.invoke("missionControl:integration:retry", entryId) as Promise<void>,
+        ipcRenderer.invoke(
+          "missionControl:integration:retry",
+          entryId
+        ) as Promise<void>,
       resolve: (entryId: string) =>
-        ipcRenderer.invoke("missionControl:integration:resolve", entryId) as Promise<void>,
+        ipcRenderer.invoke(
+          "missionControl:integration:resolve",
+          entryId
+        ) as Promise<void>,
       abandon: (entryId: string) =>
-        ipcRenderer.invoke("missionControl:integration:abandon", entryId) as Promise<void>,
+        ipcRenderer.invoke(
+          "missionControl:integration:abandon",
+          entryId
+        ) as Promise<void>,
       userStoryInfo: (userStoryId: string) =>
         ipcRenderer.invoke(
           "missionControl:integration:userStoryInfo",
@@ -1057,7 +1080,10 @@ const api = {
           cb(featureId)
         ipcRenderer.on("missionControl:integration:changed", listener)
         return () => {
-          ipcRenderer.removeListener("missionControl:integration:changed", listener)
+          ipcRenderer.removeListener(
+            "missionControl:integration:changed",
+            listener
+          )
         }
       },
     },
@@ -1070,10 +1096,9 @@ const api = {
           messages: SeatMessage[]
         }>,
       seats: (featureId: string) =>
-        ipcRenderer.invoke(
-          "missionControl:comms:seats",
-          featureId
-        ) as Promise<SeatOverview[]>,
+        ipcRenderer.invoke("missionControl:comms:seats", featureId) as Promise<
+          SeatOverview[]
+        >,
       steer: (input: {
         featureId: string
         to: string
@@ -1114,8 +1139,15 @@ const api = {
     },
     // The Navigator and drive controls (plan 106.6).
     drive: {
-      start: (id: string, options: { mode: DriveMode; autoApplyPlan?: boolean }) =>
-        ipcRenderer.invoke("missionControl:drive:start", id, options) as Promise<{
+      start: (
+        id: string,
+        options: { mode: DriveMode; autoApplyPlan?: boolean }
+      ) =>
+        ipcRenderer.invoke(
+          "missionControl:drive:start",
+          id,
+          options
+        ) as Promise<{
           graph: FeatureGraph
           planningError: string | null
         }>,
@@ -1126,12 +1158,21 @@ const api = {
           reason
         ) as Promise<FeatureGraph>,
       resume: (id: string) =>
-        ipcRenderer.invoke("missionControl:drive:resume", id) as Promise<FeatureGraph>,
+        ipcRenderer.invoke(
+          "missionControl:drive:resume",
+          id
+        ) as Promise<FeatureGraph>,
       cancel: (id: string) =>
-        ipcRenderer.invoke("missionControl:drive:cancel", id) as Promise<FeatureGraph>,
+        ipcRenderer.invoke(
+          "missionControl:drive:cancel",
+          id
+        ) as Promise<FeatureGraph>,
       // A completed feature takes more milestones: it reopens paused.
       reopen: (id: string) =>
-        ipcRenderer.invoke("missionControl:drive:reopen", id) as Promise<FeatureGraph>,
+        ipcRenderer.invoke(
+          "missionControl:drive:reopen",
+          id
+        ) as Promise<FeatureGraph>,
       setMode: (id: string, mode: DriveMode) =>
         ipcRenderer.invoke(
           "missionControl:drive:setMode",
@@ -1141,6 +1182,14 @@ const api = {
       setAutoApplyPlan: (id: string, value: boolean) =>
         ipcRenderer.invoke(
           "missionControl:drive:setAutoApplyPlan",
+          id,
+          value
+        ) as Promise<FeatureGraph>,
+      // "wait" runs overlapping user stories one at a time; "parallel" leaves
+      // collisions to the merge queue. Takes effect at the next dispatch.
+      setOverlapPolicy: (id: string, value: "wait" | "parallel") =>
+        ipcRenderer.invoke(
+          "missionControl:drive:setOverlapPolicy",
           id,
           value
         ) as Promise<FeatureGraph>,
@@ -1170,7 +1219,10 @@ const api = {
           cb(featureId)
         ipcRenderer.on("missionControl:navigator:changed", listener)
         return () =>
-          ipcRenderer.removeListener("missionControl:navigator:changed", listener)
+          ipcRenderer.removeListener(
+            "missionControl:navigator:changed",
+            listener
+          )
       },
     },
     proposals: {

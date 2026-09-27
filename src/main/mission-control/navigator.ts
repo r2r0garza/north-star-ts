@@ -31,6 +31,7 @@ import {
   type PositionInput,
   type PositionUserStoryInput,
 } from "../../shared/mission-control/position"
+import type { OverlapPolicy } from "../../shared/mission-control/waves"
 import { NAVIGATOR_ADDRESS, seatDirectory, USER_ADDRESS } from "./comms"
 import type { WorkspaceMode } from "./integration"
 import { activeMilestoneOf, applyProposal } from "./map-tools"
@@ -222,6 +223,7 @@ export function positionInput(
       driveMode: feature.driveMode,
       hooks: hookNames(feature.playbookId, "feature"),
       defaultPodKey: feature.defaultPodKey,
+      overlapPolicy: feature.drive.overlapPolicy,
     },
     milestones: milestones.map((m) => ({
       id: m.id,
@@ -979,6 +981,15 @@ export class Navigator {
   setMode(featureId: string, mode: DriveMode): Feature {
     const after = features.setDriveMode(featureId, mode)
     if (mode === "autopilot") this.autopilotMergePolicy(featureId)
+    this.poke(featureId)
+    return after
+  }
+
+  // Takes effect at the next dispatch, so it can change while the feature runs.
+  setOverlapPolicy(featureId: string, value: OverlapPolicy): Feature {
+    const feature = features.getFeature(featureId)
+    if (!feature) throw new Error(`Feature not found: ${featureId}`)
+    const after = features.setFeatureDrive(featureId, { overlapPolicy: value })
     this.poke(featureId)
     return after
   }

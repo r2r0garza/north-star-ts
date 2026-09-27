@@ -65,7 +65,11 @@ export function registerMissionControlHandlers(
   // mode are the user's alone: no tool reaches these handlers.
   ipcMain.handle(
     "missionControl:drive:start",
-    async (_event, id: string, options: { mode: DriveMode; autoApplyPlan?: boolean }) => {
+    async (
+      _event,
+      id: string,
+      options: { mode: DriveMode; autoApplyPlan?: boolean }
+    ) => {
       const started = await navigator.startDrive(id, {
         mode: options?.mode ?? "manual",
         autoApplyPlan: options?.autoApplyPlan === true,
@@ -73,10 +77,13 @@ export function registerMissionControlHandlers(
       return { graph: graphOf(id), planningError: started.planningError }
     }
   )
-  ipcMain.handle("missionControl:drive:pause", (_event, id: string, reason?: string) => {
-    navigator.pause(id, reason?.trim() || "Paused by the user", "user")
-    return graphOf(id)
-  })
+  ipcMain.handle(
+    "missionControl:drive:pause",
+    (_event, id: string, reason?: string) => {
+      navigator.pause(id, reason?.trim() || "Paused by the user", "user")
+      return graphOf(id)
+    }
+  )
   ipcMain.handle("missionControl:drive:resume", (_event, id: string) => {
     navigator.resume(id)
     return graphOf(id)
@@ -89,10 +96,20 @@ export function registerMissionControlHandlers(
     navigator.cancel(id)
     return graphOf(id)
   })
-  ipcMain.handle("missionControl:drive:setMode", (_event, id: string, mode: DriveMode) => {
-    navigator.setMode(id, mode)
-    return graphOf(id)
-  })
+  ipcMain.handle(
+    "missionControl:drive:setMode",
+    (_event, id: string, mode: DriveMode) => {
+      navigator.setMode(id, mode)
+      return graphOf(id)
+    }
+  )
+  ipcMain.handle(
+    "missionControl:drive:setOverlapPolicy",
+    (_event, id: string, value: string) => {
+      navigator.setOverlapPolicy(id, value === "parallel" ? "parallel" : "wait")
+      return graphOf(id)
+    }
+  )
   ipcMain.handle(
     "missionControl:drive:setAutoApplyPlan",
     (_event, id: string, value: boolean) => {
@@ -112,7 +129,8 @@ export function registerMissionControlHandlers(
   )
   ipcMain.handle(
     "missionControl:navigator:ticks",
-    (_event, id: string, limit?: number) => navigatorTicks.listTicks(id, limit ?? 50)
+    (_event, id: string, limit?: number) =>
+      navigatorTicks.listTicks(id, limit ?? 50)
   )
   // Rejections and partial applications go back to the seat that proposed,
   // in the user's words.
@@ -128,7 +146,8 @@ export function registerMissionControlHandlers(
       body,
       subject,
     })
-    if (!result.ok) console.warn("[proposals] note not delivered:", result.message)
+    if (!result.ok)
+      console.warn("[proposals] note not delivered:", result.message)
   }
   // Pending proposals carry which of their changes no longer apply.
   ipcMain.handle("missionControl:proposals:list", (_event, featureId: string) =>
@@ -145,7 +164,8 @@ export function registerMissionControlHandlers(
     (_event, id: string, options?: { partial?: boolean }) => {
       const proposal = applyProposal(id, "user", {
         partial: options?.partial === true,
-        deliver: (resolved, body) => deliverToProposer(resolved, body, "Proposal partly applied"),
+        deliver: (resolved, body) =>
+          deliverToProposer(resolved, body, "Proposal partly applied"),
       })
       return graphOf(proposal.featureId)
     }
@@ -170,8 +190,9 @@ export function registerMissionControlHandlers(
       return graphOf(proposal.featureId)
     }
   )
-  ipcMain.handle("missionControl:comms:acknowledge", (_event, messageId: string) =>
-    seatComms.acknowledge(messageId)
+  ipcMain.handle(
+    "missionControl:comms:acknowledge",
+    (_event, messageId: string) => seatComms.acknowledge(messageId)
   )
   ipcMain.handle(
     "missionControl:comms:reply",
@@ -183,8 +204,9 @@ export function registerMissionControlHandlers(
   )
   // Milestone integration (plan 106.5). Landing is the one call that may change
   // the user's branch, and only with the base/head the user reviewed.
-  ipcMain.handle("missionControl:integration:status", (_event, milestoneId: string) =>
-    integration.status(milestoneId)
+  ipcMain.handle(
+    "missionControl:integration:status",
+    (_event, milestoneId: string) => integration.status(milestoneId)
   )
   ipcMain.handle(
     "missionControl:integration:setPolicy",
@@ -199,30 +221,39 @@ export function registerMissionControlHandlers(
       approval: { baseOid: string; headOid: string },
       options?: { localMerge?: boolean }
     ) => {
-      if (typeof approval?.baseOid !== "string" || typeof approval?.headOid !== "string")
+      if (
+        typeof approval?.baseOid !== "string" ||
+        typeof approval?.headOid !== "string"
+      )
         throw new Error("Review the merge before approving it.")
       return integration.land(milestoneId, approval, {
         localMerge: options?.localMerge === true,
       })
     }
   )
-  ipcMain.handle("missionControl:integration:markMerged", (_event, milestoneId: string) =>
-    integration.markMerged(milestoneId)
+  ipcMain.handle(
+    "missionControl:integration:markMerged",
+    (_event, milestoneId: string) => integration.markMerged(milestoneId)
   )
-  ipcMain.handle("missionControl:integration:retry", (_event, entryId: string) =>
-    integration.retry(entryId)
+  ipcMain.handle(
+    "missionControl:integration:retry",
+    (_event, entryId: string) => integration.retry(entryId)
   )
-  ipcMain.handle("missionControl:integration:resolve", (_event, entryId: string) =>
-    integration.resolve(entryId)
+  ipcMain.handle(
+    "missionControl:integration:resolve",
+    (_event, entryId: string) => integration.resolve(entryId)
   )
-  ipcMain.handle("missionControl:integration:abandon", (_event, entryId: string) =>
-    integration.abandon(entryId)
+  ipcMain.handle(
+    "missionControl:integration:abandon",
+    (_event, entryId: string) => integration.abandon(entryId)
   )
-  ipcMain.handle("missionControl:integration:userStoryInfo", (_event, userStoryId: string) =>
-    integration.info(userStoryId)
+  ipcMain.handle(
+    "missionControl:integration:userStoryInfo",
+    (_event, userStoryId: string) => integration.info(userStoryId)
   )
-  ipcMain.handle("missionControl:integration:userStoryDiff", (_event, userStoryId: string) =>
-    integration.userStoryDiff(userStoryId)
+  ipcMain.handle(
+    "missionControl:integration:userStoryDiff",
+    (_event, userStoryId: string) => integration.userStoryDiff(userStoryId)
   )
   ipcMain.handle(
     "missionControl:integration:openWorktree",
@@ -280,8 +311,11 @@ export function registerMissionControlHandlers(
   )
   ipcMain.handle(
     "missionControl:playbooks:update",
-    (_event, id: string, patch: { name?: string; description?: string | null }) =>
-      playbooks.updatePlaybook(id, patch)
+    (
+      _event,
+      id: string,
+      patch: { name?: string; description?: string | null }
+    ) => playbooks.updatePlaybook(id, patch)
   )
   ipcMain.handle("missionControl:playbooks:delete", (_event, id: string) =>
     playbooks.deletePlaybook(id)
@@ -307,9 +341,8 @@ export function registerMissionControlHandlers(
       }
     ) => playbooks.listPlaybookRuns(filter)
   )
-  ipcMain.handle(
-    "missionControl:playbookRuns:cancel",
-    (_event, id: string) => userStoryRunner.cancelPlaybookRun(id)
+  ipcMain.handle("missionControl:playbookRuns:cancel", (_event, id: string) =>
+    userStoryRunner.cancelPlaybookRun(id)
   )
   ipcMain.handle(
     "missionControl:userStories:run",
@@ -319,8 +352,10 @@ export function registerMissionControlHandlers(
         actor: "user",
       })
   )
-  ipcMain.handle("missionControl:userStories:cancel", (_event, userStoryId: string) =>
-    userStoryRunner.cancelUserStory(userStoryId)
+  ipcMain.handle(
+    "missionControl:userStories:cancel",
+    (_event, userStoryId: string) =>
+      userStoryRunner.cancelUserStory(userStoryId)
   )
   ipcMain.handle(
     "missionControl:hooks:run",
@@ -334,9 +369,7 @@ export function registerMissionControlHandlers(
     ) => startHookRun(userStoryRunner, input)
   )
 
-  ipcMain.handle("missionControl:features:list", () =>
-    features.listFeatures()
-  )
+  ipcMain.handle("missionControl:features:list", () => features.listFeatures())
   ipcMain.handle("missionControl:features:get", (_event, id: string) =>
     features.getFeatureGraph(id)
   )
@@ -348,31 +381,39 @@ export function registerMissionControlHandlers(
     (_event, id: string, patch, actor?: string, reason?: string) =>
       features.updateFeature(id, patch, actor, reason)
   )
-  ipcMain.handle("missionControl:features:delete", async (_event, id: string) => {
-    // Seat sessions are hidden conversations the cascade does not reach.
-    const conversations = seatSessionsRepo
-      .listSeatSessions({ featureId: id })
-      .map((session) => session.conversationId)
-      .filter((cid): cid is string => !!cid)
-    if (playbooks.listPlaybookRuns({ featureId: id, status: "running" }).length)
-      throw new Error("A playbook run is in progress here. Cancel it first.")
-    // Worktrees and mc/ branches go first, while the rows naming them exist.
-    const { keptBranches } = await integration.cleanupFeature(id)
-    features.deleteFeature(id)
-    seatSessions.cancelFeature(id)
-    await deleteConversationsWithArtifacts(conversations)
-    return { keptBranches }
-  })
+  ipcMain.handle(
+    "missionControl:features:delete",
+    async (_event, id: string) => {
+      // Seat sessions are hidden conversations the cascade does not reach.
+      const conversations = seatSessionsRepo
+        .listSeatSessions({ featureId: id })
+        .map((session) => session.conversationId)
+        .filter((cid): cid is string => !!cid)
+      if (
+        playbooks.listPlaybookRuns({ featureId: id, status: "running" }).length
+      )
+        throw new Error("A playbook run is in progress here. Cancel it first.")
+      // Worktrees and mc/ branches go first, while the rows naming them exist.
+      const { keptBranches } = await integration.cleanupFeature(id)
+      features.deleteFeature(id)
+      seatSessions.cancelFeature(id)
+      await deleteConversationsWithArtifacts(conversations)
+      return { keptBranches }
+    }
+  )
   // Starting through the Navigator in the feature's chosen drive mode.
-  ipcMain.handle("missionControl:features:start", async (_event, id: string) => {
-    const feature = features.getFeature(id)
-    if (!feature) throw new Error(`Feature not found: ${id}`)
-    await navigator.startDrive(id, {
-      mode: feature.driveMode,
-      autoApplyPlan: feature.drive.autoApplyPlan,
-    })
-    return graphOf(id)
-  })
+  ipcMain.handle(
+    "missionControl:features:start",
+    async (_event, id: string) => {
+      const feature = features.getFeature(id)
+      if (!feature) throw new Error(`Feature not found: ${id}`)
+      await navigator.startDrive(id, {
+        mode: feature.driveMode,
+        autoApplyPlan: feature.drive.autoApplyPlan,
+      })
+      return graphOf(id)
+    }
+  )
   ipcMain.handle(
     "missionControl:features:reseat",
     (_event, id: string, reason?: string) => {
@@ -438,9 +479,8 @@ export function registerMissionControlHandlers(
     (_event, milestoneId: string, edges, actor?: string, reason?: string) =>
       features.setUserStoryEdges(milestoneId, edges, actor, reason)
   )
-  ipcMain.handle(
-    "missionControl:revisions:list",
-    (_event, featureId: string) => features.listRevisions(featureId)
+  ipcMain.handle("missionControl:revisions:list", (_event, featureId: string) =>
+    features.listRevisions(featureId)
   )
 
   ipcMain.handle("missionControl:rigs:list", () => rigs.listRigs())

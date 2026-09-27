@@ -1,4 +1,4 @@
-import { deriveWaves, touchHintsOverlap } from "./waves"
+import { deriveWaves, touchHintsOverlap, type OverlapPolicy } from "./waves"
 import type { BudgetMeter } from "./budgets"
 
 // The Navigator's position (plan 106.6): a PURE function of durable state.
@@ -68,6 +68,8 @@ export interface PositionInput {
     // The hooks the feature's playbook defines.
     hooks: HookName[]
     defaultPodKey: string | null
+    // Absent means "wait", the default.
+    overlapPolicy?: OverlapPolicy
   }
   milestones: PositionMilestoneInput[]
   userStories: PositionUserStoryInput[]
@@ -888,10 +890,12 @@ export function computePosition(input: PositionInput): Position {
       deferred.push({ userStory: userStory.id, reason: `pod ${pod} is busy` })
       continue
     }
-    const overlap = [
-      ...building,
-      ...dispatch.map((d) => byId.get(d.userStory)!),
-    ].find((other) => touchHintsOverlap(userStory.touchHints, other.touchHints))
+    const overlap =
+      input.feature.overlapPolicy === "parallel"
+        ? undefined
+        : [...building, ...dispatch.map((d) => byId.get(d.userStory)!)].find(
+            (other) => touchHintsOverlap(userStory.touchHints, other.touchHints)
+          )
     if (overlap) {
       deferred.push({
         userStory: userStory.id,

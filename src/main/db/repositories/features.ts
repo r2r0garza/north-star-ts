@@ -171,6 +171,7 @@ function spec(value?: Partial<UserStorySpec>): UserStorySpec {
 }
 export const DEFAULT_DRIVE: FeatureDrive = {
   autoApplyPlan: false,
+  overlapPolicy: "wait",
   activeMs: 0,
   accountedAt: null,
   pauseReason: null,
@@ -180,6 +181,7 @@ function drive(value: string | null): FeatureDrive {
   const parsed = parse<Partial<FeatureDrive>>(value, {})
   return {
     autoApplyPlan: parsed.autoApplyPlan === true,
+    overlapPolicy: parsed.overlapPolicy === "parallel" ? "parallel" : "wait",
     activeMs:
       typeof parsed.activeMs === "number" && parsed.activeMs >= 0
         ? parsed.activeMs
@@ -297,9 +299,9 @@ function toRevision(row: RevisionRow): WorkRevision {
 }
 
 export function getFeature(id: string): Feature | null {
-  const row = getDb()
-    .prepare("SELECT * FROM features WHERE id = ?")
-    .get(id) as FeatureRow | undefined
+  const row = getDb().prepare("SELECT * FROM features WHERE id = ?").get(id) as
+    | FeatureRow
+    | undefined
   return row ? toFeature(row) : null
 }
 export function listFeatures(): Feature[] {
@@ -319,9 +321,9 @@ export function listMilestones(featureId: string): Milestone[] {
   ).map(toMilestone)
 }
 export function getMilestone(id: string): Milestone | null {
-  const row = getDb().prepare("SELECT * FROM milestones WHERE id = ?").get(id) as
-    | MilestoneRow
-    | undefined
+  const row = getDb()
+    .prepare("SELECT * FROM milestones WHERE id = ?")
+    .get(id) as MilestoneRow | undefined
   return row ? toMilestone(row) : null
 }
 export function listUserStories(milestoneId: string): UserStory[] {
@@ -334,15 +336,17 @@ export function listUserStories(milestoneId: string): UserStory[] {
   ).map(toUserStory)
 }
 export function getUserStory(id: string): UserStory | null {
-  const row = getDb().prepare("SELECT * FROM user_stories WHERE id = ?").get(id) as
-    | UserStoryRow
-    | undefined
+  const row = getDb()
+    .prepare("SELECT * FROM user_stories WHERE id = ?")
+    .get(id) as UserStoryRow | undefined
   return row ? toUserStory(row) : null
 }
 export function listEdges(milestoneId: string): UserStoryEdge[] {
   return (
     getDb()
-      .prepare("SELECT * FROM user_story_edges WHERE milestone_id = ? ORDER BY id")
+      .prepare(
+        "SELECT * FROM user_story_edges WHERE milestone_id = ? ORDER BY id"
+      )
       .all(milestoneId) as EdgeRow[]
   ).map(toEdge)
 }
@@ -446,7 +450,9 @@ export function getFeatureGraph(id: string): FeatureGraph | null {
   const feature = getFeature(id)
   if (!feature) return null
   const milestones = listMilestones(id)
-  const userStories = milestones.flatMap((milestone) => listUserStories(milestone.id))
+  const userStories = milestones.flatMap((milestone) =>
+    listUserStories(milestone.id)
+  )
   const edges = milestones.flatMap((milestone) => listEdges(milestone.id))
   const current = currentRigSnapshot(feature)
   return {
@@ -674,7 +680,12 @@ export function updateMilestone(
   patch: Partial<
     Pick<
       Milestone,
-      "key" | "name" | "outcome" | "definitionOfDone" | "position" | "playbookId"
+      | "key"
+      | "name"
+      | "outcome"
+      | "definitionOfDone"
+      | "position"
+      | "playbookId"
     >
   >,
   actor = "user",
@@ -860,7 +871,8 @@ export function updateUserStory(
     )
     add("key", key)
   }
-  if (patch.title !== undefined) add("title", text(patch.title, "User story title"))
+  if (patch.title !== undefined)
+    add("title", text(patch.title, "User story title"))
   if (patch.spec !== undefined) add("spec", JSON.stringify(spec(patch.spec)))
   if (patch.podKey !== undefined) add("pod_key", patch.podKey)
   if (patch.position !== undefined) add("position", patch.position)
@@ -913,7 +925,9 @@ export function setUserStoryEdges(
   }
   const cycle = findCycle(userStories, edges)
   if (cycle) {
-    const labels = new Map(userStories.map((userStory) => [userStory.id, userStory.key]))
+    const labels = new Map(
+      userStories.map((userStory) => [userStory.id, userStory.key])
+    )
     throw new Error(
       `User story dependencies must be acyclic: ${cycle.map((id) => labels.get(id) ?? id).join(" → ")}`
     )
@@ -927,20 +941,16 @@ export function setUserStoryEdges(
       "INSERT INTO user_story_edges (id, milestone_id, from_user_story_id, to_user_story_id) VALUES (?, ?, ?, ?)"
     )
     for (const edge of edges)
-      insert.run(randomUUID(), milestoneId, edge.fromUserStoryId, edge.toUserStoryId)
+      insert.run(
+        randomUUID(),
+        milestoneId,
+        edge.fromUserStoryId,
+        edge.toUserStoryId
+      )
   })()
   const featureId = featureIdForMilestone(milestoneId)
   const after = listEdges(milestoneId)
-  audit(
-    featureId,
-    "edge",
-    milestoneId,
-    "replace",
-    before,
-    after,
-    actor,
-    reason
-  )
+  audit(featureId, "edge", milestoneId, "replace", before, after, actor, reason)
   touch(featureId)
   return getFeatureGraph(featureId)!
 }
@@ -1025,7 +1035,16 @@ export function setMilestoneExecutionStatus(
       id
     )
   const after = getMilestone(id)!
-  audit(before.featureId, "milestone", id, "execute", before, after, actor, reason)
+  audit(
+    before.featureId,
+    "milestone",
+    id,
+    "execute",
+    before,
+    after,
+    actor,
+    reason
+  )
   touch(before.featureId)
   return after
 }
@@ -1044,10 +1063,14 @@ export function setMilestoneMergePolicy(
   if (!before) throw new Error(`Milestone not found: ${id}`)
   if (!MERGE_POLICY_MODES.includes(mode))
     throw new Error(`Unknown merge policy: ${mode}`)
-  if (before.mergePolicy.mode === mode) return getFeatureGraph(before.featureId)!
+  if (before.mergePolicy.mode === mode)
+    return getFeatureGraph(before.featureId)!
   if (["completed", "cancelled"].includes(before.status))
     throw new Error("A finished milestone's merge policy can't change.")
-  if ((before.integrationBranch || before.status !== "planned") && mode !== "manual")
+  if (
+    (before.integrationBranch || before.status !== "planned") &&
+    mode !== "manual"
+  )
     throw new Error(
       "The merge policy is locked once the milestone starts. It can only change to manual."
     )
@@ -1085,7 +1108,13 @@ export function setMilestoneIntegration(
     .prepare(
       "UPDATE milestones SET integration_branch = ?, base_ref = ?, base_oid = ?, repo_root = ? WHERE id = ?"
     )
-    .run(input.integrationBranch, input.baseRef, input.baseOid, input.repoRoot, id)
+    .run(
+      input.integrationBranch,
+      input.baseRef,
+      input.baseOid,
+      input.repoRoot,
+      id
+    )
   const after = getMilestone(id)!
   audit(
     before.featureId,
@@ -1101,7 +1130,10 @@ export function setMilestoneIntegration(
   return after
 }
 
-export function setMilestoneLanding(id: string, landing: MilestoneLanding): Milestone {
+export function setMilestoneLanding(
+  id: string,
+  landing: MilestoneLanding
+): Milestone {
   const before = getMilestone(id)
   if (!before) throw new Error(`Milestone not found: ${id}`)
   getDb()
@@ -1122,7 +1154,9 @@ export function advanceMilestoneStatus(
   if (!milestone) throw new Error(`Milestone not found: ${id}`)
   const path = milestoneStatusPath(milestone.status, target)
   if (!path)
-    throw new Error(`Invalid status transition: ${milestone.status} → ${target}`)
+    throw new Error(
+      `Invalid status transition: ${milestone.status} → ${target}`
+    )
   let current = milestone
   for (const status of path)
     current = setMilestoneExecutionStatus(id, status, reason, actor)
@@ -1154,7 +1188,8 @@ export function setDriveMode(
 ): Feature {
   const before = getFeature(id)
   if (!before) throw new Error(`Feature not found: ${id}`)
-  if (!DRIVE_MODES.includes(mode)) throw new Error(`Unknown drive mode: ${mode}`)
+  if (!DRIVE_MODES.includes(mode))
+    throw new Error(`Unknown drive mode: ${mode}`)
   if (before.driveMode === mode) return before
   if (!["draft", "paused"].includes(before.status))
     throw new Error("Pause the feature before changing its drive mode.")
@@ -1195,7 +1230,16 @@ export function setFeatureBudgets(
   getDb()
     .prepare("UPDATE features SET budgets = ?, updated_at = ? WHERE id = ?")
     .run(JSON.stringify(next), Date.now(), id)
-  audit(id, "feature", id, "budgets", before.budgets, next, actor, "Budgets updated")
+  audit(
+    id,
+    "feature",
+    id,
+    "budgets",
+    before.budgets,
+    next,
+    actor,
+    "Budgets updated"
+  )
   emitWorkChanged(id)
   return getFeature(id)!
 }
@@ -1256,7 +1300,9 @@ export function setMilestoneDodReview(
     before.dodReview,
     review,
     actor,
-    review ? `Definition of done judged met: ${review.summary}` : "DoD review cleared"
+    review
+      ? `Definition of done judged met: ${review.summary}`
+      : "DoD review cleared"
   )
   touch(before.featureId)
   return getMilestone(id)!
@@ -1281,14 +1327,12 @@ export function countRevisions(
   targetId: string,
   op: string
 ): number {
-  return (
-    getDb()
-      .prepare(
-        "SELECT COUNT(*) FROM work_revisions WHERE feature_id = ? AND target_id = ? AND json_extract(change, '$.op') = ?"
-      )
-      .pluck()
-      .get(featureId, targetId, op) as number
-  )
+  return getDb()
+    .prepare(
+      "SELECT COUNT(*) FROM work_revisions WHERE feature_id = ? AND target_id = ? AND json_extract(change, '$.op') = ?"
+    )
+    .pluck()
+    .get(featureId, targetId, op) as number
 }
 
 // User stories a seat added to a milestone on its own authority (revise_plan). User stories

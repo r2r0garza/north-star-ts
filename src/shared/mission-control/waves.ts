@@ -65,7 +65,9 @@ export function deriveWaves<T extends WaveNode>(
 ): WaveResult<T> {
   const cycle = findCycle(nodes, edges)
   if (cycle)
-    throw new Error(`User story dependencies must be acyclic: ${cycle.join(" → ")}`)
+    throw new Error(
+      `User story dependencies must be acyclic: ${cycle.join(" → ")}`
+    )
   const { incoming, outgoing } = adjacency(nodes, edges)
   const levels = new Map<string, number>()
   const queue = nodes
@@ -154,12 +156,98 @@ export function touchHintRoot(hint: string): string {
 // declare nothing, so they never overlap.
 export function touchHintsOverlap(a: string[], b: string[]): boolean {
   const within = (path: string, dir: string) =>
-    path === dir ||
-    path.startsWith(dir.endsWith("/") ? dir : `${dir}/`)
+    path === dir || path.startsWith(dir.endsWith("/") ? dir : `${dir}/`)
   for (const left of a.map(touchHintRoot))
     for (const right of b.map(touchHintRoot)) {
       if (left === "" || right === "") return true
       if (within(left, right) || within(right, left)) return true
     }
   return false
+}
+
+// ── overlap policy and schedule estimate ────────────────────────────────────
+
+// Whether user stories whose touch hints overlap wait for each other (the
+// default) or run in parallel and leave any collision to the merge queue.
+export type OverlapPolicy = "wait" | "parallel"
+
+export interface ScheduleStory {
+  id: string
+  touchHints: string[]
+  position?: number
+}
+
+// A unit-time estimate of the steps a set of user stories takes: each step
+// starts every story whose predecessors are done, up to maxConcurrent, and
+// under "wait" skips a story whose touch hints overlap one already starting in
+// that step, as the Navigator does. Edges to stories outside the set count as
+// met (done, or in an earlier milestone).
+export function scheduleSteps(
+  stories: ScheduleStory[],
+  edges: WaveEdge[],
+  options: { maxConcurrent: number; overlap: OverlapPolicy }
+): string[][] {
+  const ids = new Set(stories.map((story) => story.id))
+  const deps = new Map(stories.map((story) => [story.id, [] as string[]]))
+  for (const edge of edges)
+    if (ids.has(edge.fromUserStoryId) && ids.has(edge.toUserStoryId))
+      deps.get(edge.toUserStoryId)!.push(edge.fromUserStoryId)
+  const ordered = [...stories].sort(
+    (a, b) => (a.position ?? 0) - (b.position ?? 0)
+  )
+  const cap = Math.max(1, options.maxConcurrent)
+  const done = new Set<string>()
+  const steps: string[][] = []
+  while (done.size < stories.length) {
+    const step: ScheduleStory[] = []
+    for (const story of ordered) {
+      if (step.length >= cap) break
+      if (done.has(story.id)) continue
+      if (!deps.get(story.id)!.every((id) => done.has(id))) continue
+      if (
+        options.overlap === "wait" &&
+        step.some((other) =>
+          touchHintsOverlap(other.touchHints, story.touchHints)
+        )
+      )
+        continue
+      step.push(story)
+    }
+    // A cycle leaves nothing startable; deriveWaves reports cycles.
+    if (!step.length) break
+    for (const story of step) done.add(story.id)
+    steps.push(step.map((story) => story.id))
+  }
+  return steps
+}
+
+// Independent stories (neither depends on the other, even indirectly) whose
+// touch hints overlap: the pairs "wait" serializes and "parallel" doesn't.
+export function overlappingPairs(
+  stories: ScheduleStory[],
+  edges: WaveEdge[]
+): Array<[string, string]> {
+  const ids = new Set(stories.map((story) => story.id))
+  const parents = new Map(stories.map((story) => [story.id, [] as string[]]))
+  for (const edge of edges)
+    if (ids.has(edge.fromUserStoryId) && ids.has(edge.toUserStoryId))
+      parents.get(edge.toUserStoryId)!.push(edge.fromUserStoryId)
+  const ancestors = (id: string, seen = new Set<string>()): Set<string> => {
+    for (const parent of parents.get(id) ?? [])
+      if (!seen.has(parent)) {
+        seen.add(parent)
+        ancestors(parent, seen)
+      }
+    return seen
+  }
+  const pairs: Array<[string, string]> = []
+  for (let i = 0; i < stories.length; i++)
+    for (let j = i + 1; j < stories.length; j++) {
+      const a = stories[i]
+      const b = stories[j]
+      if (ancestors(a.id).has(b.id) || ancestors(b.id).has(a.id)) continue
+      if (touchHintsOverlap(a.touchHints, b.touchHints))
+        pairs.push([a.id, b.id])
+    }
+  return pairs
 }
