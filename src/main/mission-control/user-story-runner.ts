@@ -57,6 +57,7 @@ export interface UserStoryRunnerDeps {
     sourceConversationId: null
     objective: string
     workspacePath: string
+    workingDirectory: string | null
     seatBindings: SeatBindingsSnapshot
     missionControl: MissionControlRunLink
     title: string
@@ -294,7 +295,10 @@ export class UserStoryRunner {
           typeof request.objective === "function"
             ? request.objective(isolated)
             : request.objective,
-        workspacePath: isolated?.workspacePath ?? workspacePath,
+        // The run belongs to the feature's workspace; an isolated one works
+        // in its worktree, which is never registered as a workspace.
+        workspacePath,
+        workingDirectory: isolated?.workspacePath ?? null,
         seatBindings,
         missionControl: {
           featureId: feature.id,

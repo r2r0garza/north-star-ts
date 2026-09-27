@@ -17,7 +17,10 @@ import {
   listTasks,
 } from "../../db/repositories/tasks"
 import { listMessages } from "../../db/repositories/messages"
-import { getWorkspace, upsertWorkspace } from "../../db/repositories/workspaces"
+import {
+  upsertWorkspace,
+  workingDirectoryOf,
+} from "../../db/repositories/workspaces"
 import * as processes from "../../db/repositories/processes"
 import * as settingsService from "../../settings/service"
 import { listApprovals, resolveApproval } from "../../db/repositories/approvals"
@@ -304,6 +307,27 @@ interface ResolvedWorker {
 
 type AgentDefinition = NonNullable<Awaited<ReturnType<typeof loadAgent>>>
 
+// Where a run's workers work (plan 026): the run's own workspace — for a
+// Mission Control user story, its worktree of that workspace — falling back to
+// the source conversation's, so a folder chosen in the New Run modal wins and
+// runs launched from a conversation keep inheriting its workspace. Worker
+// conversations are stamped with the same workspace and working directory.
+function runPlace(
+  run: ProcessRun,
+  source: Conversation | undefined
+): {
+  workspaceId: string | null
+  workingDirectory: string | null
+  workspace: string | undefined
+} {
+  const owner = run.workspaceId || run.workingDirectory ? run : source
+  return {
+    workspaceId: owner?.workspaceId ?? null,
+    workingDirectory: owner?.workingDirectory ?? null,
+    workspace: workingDirectoryOf(owner),
+  }
+}
+
 // Settled-run observers (plan 106.3): Mission Control applies a slice or hook
 // outcome when its top-level Process run reaches a terminal status.
 export type RunSettledListener = (processRunId: string) => void
@@ -344,6 +368,10 @@ export class ProcessService {
     // screen has no source conversation to inherit a workspace from, so the
     // picked folder is deduped into the workspaces table and stamped on the run.
     workspacePath?: string | null
+    // Where the workers work when it isn't `workspacePath` itself: a Mission
+    // Control user story's worktree of it. Stored on the run, never registered
+    // as a workspace.
+    workingDirectory?: string | null
     runtimeConfig?: ProcessRuntimeConfig | null
     // Mission Control runs (plan 106.3): the frozen seat bindings and the
     // container link, plus a fixed display title instead of a generated one.
@@ -362,6 +390,7 @@ export class ProcessService {
       processId: input.processId,
       sourceConversationId: input.sourceConversationId,
       workspaceId,
+      workingDirectory: input.workingDirectory?.trim() || null,
       objective: input.objective,
       runtimeConfig: input.runtimeConfig,
       seatBindings: input.seatBindings ?? null,
@@ -875,14 +904,12 @@ export class ProcessService {
         taskId,
         signal,
         emit,
-        workspace: (() => {
-          const id =
-            run.workspaceId ??
-            (run.sourceConversationId
-              ? getConversation(run.sourceConversationId)?.workspaceId
-              : null)
-          return id ? getWorkspace(id)?.path : undefined
-        })(),
+        workspace: runPlace(
+          run,
+          run.sourceConversationId
+            ? getConversation(run.sourceConversationId)
+            : undefined
+        ).workspace,
         runPhase: this.makeRunPhase(run),
         decompose: this.makeDecompose(run),
         buildEachSubtaskPrompt: this.makeBuildEachSubtaskPrompt(run),
@@ -985,6 +1012,7 @@ export class ProcessService {
           processId: phase.subprocessId,
           sourceConversationId: parentRun.sourceConversationId,
           workspaceId: parentRun.workspaceId,
+          workingDirectory: parentRun.workingDirectory ?? null,
           // A per-child sub-process is driven by the child's decomposed briefing;
           // a top-level sub-process phase inherits the parent run's objective.
           objective: subtaskPrompt ?? parentRun.objective,
@@ -1123,13 +1151,10 @@ export class ProcessService {
         ? getConversation(run.sourceConversationId)
         : undefined
 
-      // Prefer the run's own picked workspace (plan 026), falling back to the
-      // source conversation's — so a folder chosen in the New Run modal wins, and
-      // runs launched from a conversation keep inheriting its workspace.
-      const workspaceId = run.workspaceId ?? source?.workspaceId ?? null
-      const workspace = workspaceId
-        ? getWorkspace(workspaceId)?.path
-        : undefined
+      const { workspaceId, workingDirectory, workspace } = runPlace(
+        run,
+        source
+      )
       const reworkNote =
         processes.getPhaseRun(phaseRun.id)?.reworkNote ?? undefined
 
@@ -1258,6 +1283,7 @@ export class ProcessService {
         createConversation({
           mode: source?.mode ?? "interactive",
           workspaceId,
+          workingDirectory,
           accountId: workerRuntime.selection.accountId,
           modelId: workerRuntime.selection.modelId,
           agentName,
@@ -1406,10 +1432,7 @@ export class ProcessService {
       try {
         resolved = await this.resolveWorker(run, phase, {
           preferSeat: phaseRun.seatAddress,
-          workspace: (() => {
-            const id = run.workspaceId ?? source?.workspaceId ?? null
-            return id ? getWorkspace(id)?.path : undefined
-          })(),
+          workspace: runPlace(run, source).workspace,
         })
       } catch (err) {
         return {
@@ -1425,12 +1448,10 @@ export class ProcessService {
         slot: "decomposer",
       })
 
-      // Prefer the run's own picked workspace (plan 026), falling back to the
-      // source conversation's — same rule as makeRunPhase.
-      const workspaceId = run.workspaceId ?? source?.workspaceId ?? null
-      const workspace = workspaceId
-        ? getWorkspace(workspaceId)?.path
-        : undefined
+      const { workspaceId, workingDirectory, workspace } = runPlace(
+        run,
+        source
+      )
       const reworkNote =
         processes.getPhaseRun(phaseRun.id)?.reworkNote ?? undefined
 
@@ -1445,6 +1466,7 @@ export class ProcessService {
         createConversation({
           mode: source?.mode ?? "interactive",
           workspaceId,
+          workingDirectory,
           accountId: decomposerRuntime.selection.accountId,
           modelId: decomposerRuntime.selection.modelId,
           agentName,
@@ -1613,10 +1635,10 @@ export class ProcessService {
 
       // The dedicated reviewer agent, falling back to the phase's own resolved
       // agent (pool[0]) when none is configured.
-      const workspaceId = run.workspaceId ?? source?.workspaceId ?? null
-      const workspace = workspaceId
-        ? getWorkspace(workspaceId)?.path
-        : undefined
+      const { workspaceId, workingDirectory, workspace } = runPlace(
+        run,
+        source
+      )
       let reviewer: ResolvedWorker
       try {
         reviewer = phase.validatorAgent
@@ -1656,6 +1678,7 @@ export class ProcessService {
         createConversation({
           mode: source?.mode ?? "interactive",
           workspaceId,
+          workingDirectory,
           accountId: validatorRuntime.selection.accountId,
           modelId: validatorRuntime.selection.modelId,
           agentName,

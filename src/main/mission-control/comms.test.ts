@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach, vi } from "vitest"
 import Database from "better-sqlite3"
 import { randomUUID } from "crypto"
+import { mkdirSync, mkdtempSync, rmSync } from "fs"
+import path from "path"
 import { tmpdir } from "os"
 import { runMigrations } from "../db/migrations"
 import { sqliteLoadsForTests } from "../test/sqlite"
@@ -869,7 +871,8 @@ function binding(address: string, role: string) {
 function activeUserStoryRun(
   feature: Feature,
   userStory: UserStory,
-  qaContext: "step" | "user_story" | "feature"
+  qaContext: "step" | "user_story" | "feature",
+  workingDirectory: string | null = null
 ) {
   const def = processes.createProcessDefinition({ name: "User story" })
   const phases = Object.fromEntries(
@@ -905,6 +908,8 @@ function activeUserStoryRun(
   const run = processes.createProcessRun({
     processId: def.id,
     sourceConversationId: null,
+    workspaceId: feature.workspaceId,
+    workingDirectory,
     status: "running",
     seatBindings: {
       version: 1,
@@ -1208,3 +1213,68 @@ describe("wakeHopFor", () => {
     expect(wakeHopFor([from("builder@impl", 3), from(USER_ADDRESS, 0)])).toBe(0)
   })
 })
+
+describe.skipIf(!sqliteLoads)(
+  "seat comms: where a wake turn reads files",
+  () => {
+    // A user story worktree whose workspace is a subfolder of the repository.
+    function worktree() {
+      const root = mkdtempSync(path.join(tmpdir(), "mc-wake-worktree-"))
+      const directory = path.join(root, "web")
+      mkdirSync(directory)
+      return { root, directory }
+    }
+
+    it("wakes a user story session in its run's worktree", async () => {
+      const { feature, userStory } = orchestrated()
+      const { directory } = worktree()
+      activeUserStoryRun(feature, userStory, "user_story", directory)
+      ok(
+        bus.send(seat(feature, "builder@implementation"), {
+          to: "qa@implementation",
+          body: "Which edge cases will you check?",
+        })
+      )
+      await drainWakes()
+      expect(turns[0].workspace).toBe(directory)
+    })
+
+    it("reads mail about a user story in that user story's worktree, and the feature workspace once it is gone", async () => {
+      const { feature, userStory } = orchestrated()
+      const { root, directory } = worktree()
+      const { run } = activeUserStoryRun(
+        feature,
+        userStory,
+        "feature",
+        directory
+      )
+      features.setUserStoryExecution(
+        userStory.id,
+        { processRunId: run.id, worktreePath: root },
+        "Started in a worktree"
+      )
+      const aboutTheUserStory = seat(feature, "builder@implementation", {
+        anchor: { kind: "user_story", id: userStory.id },
+      })
+      ok(
+        bus.send(aboutTheUserStory, {
+          to: "lead@orchestration",
+          body: "I added web/invoice.ts; please look.",
+        })
+      )
+      await drainWakes()
+      // The lead's feature session isn't tied to the run, but the mail is.
+      expect(turns[0].workspace).toBe(directory)
+
+      rmSync(root, { recursive: true, force: true })
+      ok(
+        bus.send(aboutTheUserStory, {
+          to: "lead@orchestration",
+          body: "It merged.",
+        })
+      )
+      await drainWakes()
+      expect(turns[1].workspace).toBe(tmpdir())
+    })
+  }
+)

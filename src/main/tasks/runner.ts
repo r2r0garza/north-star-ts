@@ -23,7 +23,7 @@ import {
   deleteConversationWithArtifacts,
   deleteConversationsWithArtifacts,
 } from "../conversations/lifecycle"
-import { getWorkspace } from "../db/repositories/workspaces"
+import { workingDirectoryOf } from "../db/repositories/workspaces"
 import { replaceTodos } from "../db/repositories/todos"
 import type {
   FailureContext,
@@ -400,6 +400,7 @@ export class TaskRunner {
     const taskConversation = createConversation({
       mode: source?.mode ?? "interactive",
       workspaceId: source?.workspaceId ?? null,
+      workingDirectory: source?.workingDirectory ?? null,
       accountId: source?.accountId ?? null,
       modelId: source?.modelId ?? null,
       title: input.title ?? input.message.slice(0, 60),
@@ -467,6 +468,7 @@ export class TaskRunner {
     const taskConversation = createConversation({
       mode: source?.mode ?? "interactive",
       workspaceId: source?.workspaceId ?? input.input.workspaceId ?? null,
+      workingDirectory: source?.workingDirectory ?? null,
       accountId: source?.accountId ?? null,
       modelId: source?.modelId ?? null,
       title: input.title ?? input.kind,
@@ -982,12 +984,10 @@ export class TaskRunner {
 
   // Resolve the absolute workspace directory for a conversation (or undefined for
   // a Chat-mode conversation with no workspace). The renderer can't supply this
-  // for a background task, so the runner derives it: conversation → workspaceId →
-  // workspace.path.
+  // for a background task, so the runner derives it: the conversation's working
+  // directory (a Mission Control worktree), else workspaceId → workspace.path.
   private resolveWorkspace(conversationId: string): string | undefined {
-    const conversation = getConversation(conversationId)
-    if (!conversation?.workspaceId) return undefined
-    return getWorkspace(conversation.workspaceId)?.path
+    return workingDirectoryOf(getConversation(conversationId))
   }
 
   // Persist an event to the durable log and forward it to live subscribers.

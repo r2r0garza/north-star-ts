@@ -73,6 +73,10 @@ export interface Conversation {
   mode: Mode
   title: string | null
   workspaceId: string | null
+  // The directory the conversation works in when it isn't its workspace's own
+  // folder: a Mission Control user story's git worktree of that workspace.
+  // Null = the workspace's path. Resolve with workingDirectoryOf.
+  workingDirectory?: string | null
   // The project this conversation belongs to (SCHEMA_V12), or null for the "No
   // Project" bucket. ON DELETE SET NULL — deleting a project keeps its
   // conversations, moving them to "No Project".
@@ -1102,6 +1106,10 @@ export interface ProcessRun {
   // conversation to inherit a workspace from, so it carries its own. Null = the
   // run resolves its workspace from the source conversation (or none).
   workspaceId: string | null
+  // Where the run's workers actually work when it isn't the workspace's own
+  // folder: a Mission Control user story's git worktree of `workspaceId`. The
+  // worktree is never a workspace of its own. Null = the workspace's path.
+  workingDirectory?: string | null
   // The process_run task that drives this run (holds the runner slot, anchors
   // approval gates + checkpoints). SET NULL if the task is deleted.
   taskId: string | null

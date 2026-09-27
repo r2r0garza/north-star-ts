@@ -572,7 +572,7 @@ export class SeatSessionService {
         if (home.session) this.markSessionActivity(home.conversationId, true)
         const result = await this.deps.runTurn({
           conversationId: home.conversationId,
-          workspace: homeWorkspace(home, workspace),
+          workspace: homeWorkspace(home, delivered, workspace),
           signal: ctx.signal,
           agentOverride: home.agentOverride,
           contextSections: home.contextSections,
@@ -774,29 +774,54 @@ export class SeatSessionService {
 
 // ── lookups ─────────────────────────────────────────────────────────────────
 
-// Where a wake turn looks at files: the folder the seat's work happened in.
-// A user story built in its own worktree (plan 106.5) is read there while the
-// worktree exists; otherwise the feature workspace.
-function homeWorkspace(home: Home, fallback: string): string {
+// Where a wake turn looks at files. Mail about a user story is read in that
+// user story's worktree while it exists: a teammate's message about a file it
+// just created there names a file the feature workspace doesn't have yet.
+// Otherwise the folder the seat's own work happened in (a user story built in
+// its own worktree, plan 106.5), else the feature workspace.
+function homeWorkspace(
+  home: Home,
+  delivered: SeatMessage[],
+  fallback: string
+): string {
+  for (const message of delivered) {
+    const anchor = threadAnchor(message)
+    const path =
+      anchor?.kind === "user_story" ? userStoryDirectory(anchor.id) : null
+    if (path && existsSync(path)) return path
+  }
   const row = (
     home.session?.playbookRunId
       ? getDb()
           .prepare(
-            `SELECT w.path AS path FROM playbook_runs pb
+            `SELECT COALESCE(r.working_directory, w.path) AS path
+             FROM playbook_runs pb
              JOIN process_runs r ON r.id = pb.process_run_id
-             JOIN workspaces w ON w.id = r.workspace_id
+             LEFT JOIN workspaces w ON w.id = r.workspace_id
              WHERE pb.id = ?`
           )
           .get(home.session.playbookRunId)
       : getDb()
           .prepare(
-            `SELECT w.path AS path FROM conversations c
-             JOIN workspaces w ON w.id = c.workspace_id
+            `SELECT COALESCE(c.working_directory, w.path) AS path
+             FROM conversations c
+             LEFT JOIN workspaces w ON w.id = c.workspace_id
              WHERE c.id = ?`
           )
           .get(home.conversationId)
-  ) as { path: string } | undefined
+  ) as { path: string | null } | undefined
   return row?.path && existsSync(row.path) ? row.path : fallback
+}
+
+// The folder a user story's current attempt works in: its run's working
+// directory (the worktree, plus the workspace's subfolder in the repository).
+function userStoryDirectory(userStoryId: string): string | null {
+  const userStory = features.getUserStory(userStoryId)
+  if (!userStory?.worktreePath) return null
+  const run = userStory.processRunId
+    ? processes.getProcessRun(userStory.processRunId)
+    : undefined
+  return run?.workingDirectory ?? userStory.worktreePath
 }
 
 interface FinishedWorker {

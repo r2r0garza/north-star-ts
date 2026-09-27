@@ -63,8 +63,21 @@ export function upsertWorkspace(path: string, name?: string): Workspace {
   return getWorkspace(id)!
 }
 
-// Hidden workspaces (Mission Control slice worktrees, plan 106.5) back runs
-// but stay out of the user's workspace lists.
+// The directory a conversation or Process run works in: its own working
+// directory (a Mission Control worktree) when it has one, else its
+// workspace's path.
+export function workingDirectoryOf(
+  owner:
+    | { workspaceId: string | null; workingDirectory?: string | null }
+    | null
+    | undefined
+): string | undefined {
+  if (owner?.workingDirectory) return owner.workingDirectory
+  return owner?.workspaceId ? getWorkspace(owner.workspaceId)?.path : undefined
+}
+
+// Hidden workspaces (older Mission Control worktrees, plan 106.5) stay out of
+// the user's workspace lists.
 export function listWorkspaces(): Workspace[] {
   const rows = getDb()
     .prepare(
@@ -72,15 +85,6 @@ export function listWorkspaces(): Workspace[] {
     )
     .all() as WorkspaceRow[]
   return rows.map(toWorkspace)
-}
-
-// Register an app-managed folder as a hidden workspace.
-export function upsertHiddenWorkspace(path: string, name?: string): Workspace {
-  const workspace = upsertWorkspace(path, name)
-  getDb()
-    .prepare("UPDATE workspaces SET hidden = 1 WHERE id = ?")
-    .run(workspace.id)
-  return workspace
 }
 
 export function updateWorkspace(

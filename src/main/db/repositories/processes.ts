@@ -161,6 +161,7 @@ interface ProcessRunRow {
   process_id: string | null
   source_conversation_id: string | null
   workspace_id: string | null
+  working_directory: string | null
   task_id: string | null
   objective: string | null
   title: string | null
@@ -183,6 +184,7 @@ function toRun(row: ProcessRunRow): ProcessRun {
     processId: row.process_id,
     sourceConversationId: row.source_conversation_id,
     workspaceId: row.workspace_id,
+    workingDirectory: row.working_directory,
     taskId: row.task_id,
     objective: row.objective,
     title: row.title,
@@ -784,6 +786,7 @@ export function createProcessRun(input: {
   processId: string | null
   sourceConversationId: string | null
   workspaceId?: string | null
+  workingDirectory?: string | null
   taskId?: string | null
   objective?: string | null
   // A nested run's caller (plan 038.1): the sub-process phase-run that started it.
@@ -797,13 +800,14 @@ export function createProcessRun(input: {
   const now = Date.now()
   getDb()
     .prepare(
-      "INSERT INTO process_runs (id, process_id, source_conversation_id, workspace_id, task_id, objective, parent_phase_run_id, status, started_at, finished_at, created_at, completion_contracts, runtime_config, seat_bindings, mission_control) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+      "INSERT INTO process_runs (id, process_id, source_conversation_id, workspace_id, working_directory, task_id, objective, parent_phase_run_id, status, started_at, finished_at, created_at, completion_contracts, runtime_config, seat_bindings, mission_control) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )
     .run(
       id,
       input.processId,
       input.sourceConversationId,
       input.workspaceId ?? null,
+      input.workingDirectory ?? null,
       input.taskId ?? null,
       input.objective ?? null,
       input.parentPhaseRunId ?? null,

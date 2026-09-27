@@ -13,7 +13,7 @@ import { getDb } from "../db/connection"
 import * as features from "../db/repositories/features"
 import * as mergeQueue from "../db/repositories/merge-queue"
 import * as playbooks from "../db/repositories/playbooks"
-import { getWorkspace, upsertHiddenWorkspace } from "../db/repositories/workspaces"
+import { getWorkspace } from "../db/repositories/workspaces"
 import type {
   Feature,
   MergePolicyMode,
@@ -278,7 +278,6 @@ export class MilestoneIntegration {
       directory,
     })
     const workspacePath = path.join(directory, await workspaceSubpath(root, workspace))
-    upsertHiddenWorkspace(workspacePath, `${input.userStory.key} (user story worktree)`)
     return {
       workspacePath,
       worktreePath: directory,
@@ -704,7 +703,6 @@ export class MilestoneIntegration {
         directory,
         workspace ? await workspaceSubpath(milestone.repoRoot, workspace) : ""
       )
-      upsertHiddenWorkspace(workspacePath, `${userStory.key} (merge resolution)`)
       const claimed = mergeQueue.updateMergeEntry(
         entry.id,
         {
@@ -1300,8 +1298,8 @@ export class MilestoneIntegration {
 function processWorkspace(processRunId: string): string | null {
   const row = getDb()
     .prepare(
-      "SELECT w.path AS path FROM process_runs r JOIN workspaces w ON w.id = r.workspace_id WHERE r.id = ?"
+      "SELECT COALESCE(r.working_directory, w.path) AS path FROM process_runs r LEFT JOIN workspaces w ON w.id = r.workspace_id WHERE r.id = ?"
     )
-    .get(processRunId) as { path: string } | undefined
+    .get(processRunId) as { path: string | null } | undefined
   return row?.path ?? null
 }

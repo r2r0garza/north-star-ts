@@ -127,6 +127,7 @@ const MIGRATIONS: Array<(db: Database.Database) => void> = [
     db.exec(
       "UPDATE index_files SET indexed_stage = 'file_map' WHERE ext IN ('.py', '.pyi')"
     ),
+  retireMissionControlWorktreeWorkspaces,
 ]
 
 function tableExists(db: Database.Database, table: string): boolean {
@@ -254,6 +255,70 @@ function healAndRenameWorkTerms(db: Database.Database): void {
   renameWorkTerms(db)
 }
 
+// A Mission Control worktree: <userData>/mission-control/worktrees/<featureId>/…
+const MISSION_CONTROL_WORKTREE =
+  /[\\/]mission-control[\\/]worktrees[\\/]([^\\/]+)[\\/]/
+
+// v57: a conversation or run keeps the directory it works in on its own row
+// (working_directory), so a Mission Control user story's worktree no longer
+// needs a workspace of its own. Idempotent for the self-heal pass.
+function ensureWorkingDirectoryColumns(db: Database.Database): void {
+  addColumnIfMissing(db, "conversations", "working_directory", "TEXT")
+  addColumnIfMissing(db, "process_runs", "working_directory", "TEXT")
+}
+
+// v57: every user story attempt used to register its worktree as a workspace,
+// leaving a permanent, never-indexed row behind once the worktree was removed.
+// Move each such workspace's conversations and runs onto their feature's
+// workspace (keeping the worktree as their working directory), then delete it
+// unless a project or feature still points at it.
+function retireMissionControlWorktreeWorkspaces(db: Database.Database): void {
+  ensureWorkingDirectoryColumns(db)
+  const worktrees = (
+    db.prepare("SELECT id, path FROM workspaces").all() as Array<{
+      id: string
+      path: string
+    }>
+  ).flatMap((row) => {
+    const match = MISSION_CONTROL_WORKTREE.exec(row.path)
+    return match ? [{ ...row, featureId: match[1] }] : []
+  })
+  if (!worktrees.length) return
+  const worktreeIds = new Set(worktrees.map((w) => w.id))
+  const featureWorkspace = tableExists(db, "features")
+    ? db.prepare("SELECT workspace_id FROM features WHERE id = ?").pluck()
+    : null
+  const referencedBy = ["projects", "features"]
+    .filter((table) => columnExists(db, table, "workspace_id"))
+    .map((table) =>
+      db
+        .prepare(`SELECT 1 FROM ${table} WHERE workspace_id = ? LIMIT 1`)
+        .pluck()
+    )
+  const indexTables = [
+    "index_symbols",
+    "index_metadata",
+    "index_files",
+    "index_runs",
+  ].filter((table) => tableExists(db, table))
+  for (const worktree of worktrees) {
+    const found = featureWorkspace?.get(worktree.featureId) as
+      | string
+      | null
+      | undefined
+    const target = found && !worktreeIds.has(found) ? found : null
+    for (const table of ["conversations", "process_runs"])
+      db.prepare(
+        `UPDATE ${table} SET working_directory = COALESCE(working_directory, ?), workspace_id = ? WHERE workspace_id = ?`
+      ).run(worktree.path, target, worktree.id)
+    if (referencedBy.some((stmt) => stmt.get(worktree.id))) continue
+    // Foreign keys are off while migrating, so cascades don't fire.
+    for (const table of indexTables)
+      db.prepare(`DELETE FROM ${table} WHERE workspace_id = ?`).run(worktree.id)
+    db.prepare("DELETE FROM workspaces WHERE id = ?").run(worktree.id)
+  }
+}
+
 function ensureProcessRuntimeProfileColumns(db: Database.Database): void {
   addColumnIfMissing(db, "process_phases", "runtime_config", "TEXT")
   addColumnIfMissing(db, "process_phase_agents", "runtime_config", "TEXT")
@@ -352,6 +417,7 @@ export function runMigrations(
       ensureCodexSubscriptionProviderConstraints(db)
       ensureProjectPositionColumn(db)
       ensureSubagentArtifactsTable(db)
+      ensureWorkingDirectoryColumns(db)
     })()
   } finally {
     if (fkWasOn) db.pragma("foreign_keys = ON")

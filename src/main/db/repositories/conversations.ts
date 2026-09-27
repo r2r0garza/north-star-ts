@@ -18,6 +18,7 @@ interface ConversationRow {
   mode: Mode
   title: string | null
   workspace_id: string | null
+  working_directory: string | null
   project_id: string | null
   account_id: string | null
   model_id: string | null
@@ -57,6 +58,7 @@ function toConversation(row: ConversationRow): Conversation {
     mode: row.mode,
     title: row.title,
     workspaceId: row.workspace_id,
+    workingDirectory: row.working_directory,
     projectId: row.project_id,
     accountId: row.account_id,
     modelId: row.model_id,
@@ -70,6 +72,7 @@ function toConversation(row: ConversationRow): Conversation {
 export function createConversation(input: {
   mode: Mode
   workspaceId?: string | null
+  workingDirectory?: string | null
   projectId?: string | null
   title?: string | null
   accountId?: string | null
@@ -80,13 +83,14 @@ export function createConversation(input: {
   const now = Date.now()
   getDb()
     .prepare(
-      "INSERT INTO conversations (id, mode, title, workspace_id, project_id, account_id, model_id, agent_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+      "INSERT INTO conversations (id, mode, title, workspace_id, working_directory, project_id, account_id, model_id, agent_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )
     .run(
       id,
       input.mode,
       input.title ?? null,
       input.workspaceId ?? null,
+      input.workingDirectory ?? null,
       input.projectId ?? null,
       input.accountId ?? null,
       input.modelId ?? null,
@@ -354,7 +358,9 @@ export function updateConversation(
     values.push(patch.title)
   }
   if (patch.workspaceId !== undefined) {
-    sets.push("workspace_id = ?")
+    // Choosing a workspace also moves the conversation out of any worktree it
+    // was working in.
+    sets.push("workspace_id = ?", "working_directory = NULL")
     values.push(patch.workspaceId)
   }
   if (patch.projectId !== undefined) {

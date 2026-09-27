@@ -335,14 +335,40 @@ describe.skipIf(!sqliteLoads)("milestone integration", () => {
     await expect(
       runner.startUserStory(userStory("invoice-ui").id)
     ).rejects.toThrow(/unmerged user stories/)
-    // Worktrees stay out of the user's workspace lists.
+    // Worktrees are never registered as workspaces: each run belongs to the
+    // feature's workspace and works in its own worktree.
     expect(listWorkspaces().map((w) => w.path)).toEqual([root])
+    expect(db.prepare("SELECT path FROM workspaces").pluck().all()).toEqual([
+      root,
+    ])
+    const workspaceId = upsertWorkspace(root).id
+    for (const run of [api, pdf]) {
+      const processRun = processes.getProcessRun(run.processRunId!)!
+      expect(processRun.workspaceId).toBe(workspaceId)
+      expect(processRun.workingDirectory).toBe(run.worktreePath)
+    }
+    expect(integration.info(userStory("invoice-api").id).workspacePath).toBe(
+      api.worktreePath
+    )
 
     // Drive the second one first: merge order is dependency level, then the
     // time each proof was accepted.
     await drive(pdf.processRunId!)
     await drive(api.processRunId!)
     await integration.idle()
+    // Every worker ran in its worktree, in a conversation that says so.
+    const workers = db
+      .prepare(
+        "SELECT workspace_id, working_directory FROM conversations WHERE working_directory IS NOT NULL"
+      )
+      .all() as Array<{ workspace_id: string; working_directory: string }>
+    expect(workers.length).toBeGreaterThan(0)
+    for (const worker of workers) {
+      expect(worker.workspace_id).toBe(workspaceId)
+      expect([api.worktreePath, pdf.worktreePath]).toContain(
+        worker.working_directory
+      )
+    }
     // Every worker of each user story ran in that user story's own worktree.
     const workspaces = new Set(loopCalls.map((c) => c.workspace))
     expect([...workspaces].sort()).toEqual(

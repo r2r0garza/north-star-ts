@@ -92,7 +92,7 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
     const db = new Database(":memory:")
     db.pragma("foreign_keys = ON")
     runMigrations(db)
-    expect(db.pragma("user_version", { simple: true })).toBe(56)
+    expect(db.pragma("user_version", { simple: true })).toBe(57)
     expect(db.pragma("foreign_key_check")).toHaveLength(0)
     db.close()
   })
@@ -650,7 +650,7 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
 
     runMigrations(db)
 
-    expect(db.pragma("user_version", { simple: true })).toBe(56)
+    expect(db.pragma("user_version", { simple: true })).toBe(57)
     expect(
       (db.pragma("table_info(process_phases)") as Array<{ name: string }>).map(
         (c) => c.name
@@ -868,7 +868,7 @@ describe.skipIf(!sqliteLoads)("SCHEMA_V9 — orphan reap (plan 022)", () => {
     // Apply V9 (the reaper) and any later migrations, up to the latest version.
     runMigrations(db)
 
-    expect(db.pragma("user_version", { simple: true })).toBe(56)
+    expect(db.pragma("user_version", { simple: true })).toBe(57)
 
     // Reaped: orphan + its nested descendant, and all their state.
     const taskIds = (
@@ -962,7 +962,7 @@ describe.skipIf(!sqliteLoads)(
 
       runMigrations(db)
 
-      expect(db.pragma("user_version", { simple: true })).toBe(56)
+      expect(db.pragma("user_version", { simple: true })).toBe(57)
       const columns = db.pragma("table_info(process_phase_agents)") as Array<{
         name: string
         notnull: number
@@ -1065,7 +1065,7 @@ describe.skipIf(!sqliteLoads)("context scopes migration (v51)", () => {
         ('a', 'd', 'a', 'A', 0, 'fresh'), ('b', 'd', 'b', 'B', 1, 'seat_session');
     `)
     runMigrations(db)
-    expect(db.pragma("user_version", { simple: true })).toBe(56)
+    expect(db.pragma("user_version", { simple: true })).toBe(57)
     // v51 moved them to the initiative scope; v54 renamed it to feature.
     expect(
       db
@@ -1164,7 +1164,7 @@ describe.skipIf(!sqliteLoads)("work terms migration (v54)", () => {
 
     runMigrations(db)
 
-    expect(db.pragma("user_version", { simple: true })).toBe(56)
+    expect(db.pragma("user_version", { simple: true })).toBe(57)
     const tables = db
       .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
       .pluck()
@@ -1297,7 +1297,7 @@ describe.skipIf(!sqliteLoads)("work terms migration (v54)", () => {
 
     // Running it again changes nothing.
     runMigrations(db)
-    expect(db.pragma("user_version", { simple: true })).toBe(56)
+    expect(db.pragma("user_version", { simple: true })).toBe(57)
     db.close()
   })
 })
@@ -1330,3 +1330,102 @@ describe("python extractor migration (v56)", () => {
     expect(stages).toEqual({ py: "file_map", pyi: "file_map", ts: "symbols" })
   })
 })
+
+describe.skipIf(!sqliteLoads)(
+  "Mission Control worktree workspaces migration (v57)",
+  () => {
+    it("moves worktree conversations and runs onto their feature's workspace and deletes the rows", () => {
+      const db = new Database(":memory:")
+      runMigrations(db, { through: 56 })
+      const now = Date.now()
+      const worktrees = "/Users/me/Library/App/mission-control/worktrees"
+      const workspace = db.prepare(
+        "INSERT INTO workspaces (id, path, name, created_at, updated_at, hidden) VALUES (?, ?, ?, ?, ?, ?)"
+      )
+      workspace.run("main", "/code/app", "app", now, now, 0)
+      workspace.run("story", `${worktrees}/f1/us-1-1-abc`, "us-1", now, now, 1)
+      workspace.run(
+        "sub",
+        `${worktrees}/f1/us-2-1-def/web`,
+        "us-2",
+        now,
+        now,
+        0
+      )
+      workspace.run(
+        "orphan",
+        `${worktrees}/gone/us-3-1-ghi`,
+        "us-3",
+        now,
+        now,
+        1
+      )
+      workspace.run("pinned", `${worktrees}/f1/us-4-1-jkl`, "us-4", now, now, 1)
+      db.prepare(
+        "INSERT INTO features (id, key, name, intent, definition_of_done, workspace_id, status, created_at, updated_at) VALUES ('f1', 'app', 'App', '', '', 'main', 'active', ?, ?)"
+      ).run(now, now)
+      // A project pointed at a worktree keeps it.
+      db.prepare(
+        "INSERT INTO projects (id, name, workspace_id, created_at, updated_at) VALUES ('p', 'P', 'pinned', ?, ?)"
+      ).run(now, now)
+      const conversation = db.prepare(
+        "INSERT INTO conversations (id, mode, workspace_id, created_at, updated_at) VALUES (?, 'interactive', ?, ?, ?)"
+      )
+      conversation.run("c-story", "story", now, now)
+      conversation.run("c-sub", "sub", now, now)
+      conversation.run("c-orphan", "orphan", now, now)
+      conversation.run("c-main", "main", now, now)
+      const run = db.prepare(
+        "INSERT INTO process_runs (id, workspace_id, status, created_at) VALUES (?, ?, 'completed', ?)"
+      )
+      run.run("r-story", "story", now)
+      run.run("r-orphan", "orphan", now)
+      db.prepare(
+        "INSERT INTO index_runs (id, workspace_id, enabled, stage, priority, files_scanned, files_total, created_at, updated_at) VALUES ('ir', 'story', 1, 'file_map', 'low', 0, 0, ?, ?)"
+      ).run(now, now)
+
+      runMigrations(db)
+
+      expect(
+        db.prepare("SELECT id FROM workspaces ORDER BY id").pluck().all()
+      ).toEqual(["main", "pinned"])
+      const place = (table: string, id: string) =>
+        db
+          .prepare(
+            `SELECT workspace_id, working_directory FROM ${table} WHERE id = ?`
+          )
+          .get(id)
+      expect(place("conversations", "c-story")).toEqual({
+        workspace_id: "main",
+        working_directory: `${worktrees}/f1/us-1-1-abc`,
+      })
+      expect(place("conversations", "c-sub")).toEqual({
+        workspace_id: "main",
+        working_directory: `${worktrees}/f1/us-2-1-def/web`,
+      })
+      // Its feature is gone: no workspace to move to, but it keeps its folder.
+      expect(place("conversations", "c-orphan")).toEqual({
+        workspace_id: null,
+        working_directory: `${worktrees}/gone/us-3-1-ghi`,
+      })
+      expect(place("conversations", "c-main")).toEqual({
+        workspace_id: "main",
+        working_directory: null,
+      })
+      expect(place("process_runs", "r-story")).toEqual({
+        workspace_id: "main",
+        working_directory: `${worktrees}/f1/us-1-1-abc`,
+      })
+      expect(place("process_runs", "r-orphan")).toEqual({
+        workspace_id: null,
+        working_directory: `${worktrees}/gone/us-3-1-ghi`,
+      })
+      expect(db.prepare("SELECT COUNT(*) FROM index_runs").pluck().get()).toBe(
+        0
+      )
+      db.pragma("foreign_keys = ON")
+      expect(db.pragma("foreign_key_check")).toEqual([])
+      db.close()
+    })
+  }
+)
