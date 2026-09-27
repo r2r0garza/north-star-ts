@@ -1,7 +1,6 @@
 import { TOOL_EFFECTS, type Tool } from "./types"
 import { truncateForModel, toolError } from "./output"
-import { getWorkspaceByPath } from "../../db/repositories/workspaces"
-import { getRunByWorkspace } from "../../db/repositories/index-runs"
+import { indexedWorkspaceFor } from "../../index/indexed-workspace"
 import * as indexFilesRepo from "../../db/repositories/index-files"
 import { listMetadata } from "../../db/repositories/index-metadata"
 import * as indexSymbolsRepo from "../../db/repositories/index-symbols"
@@ -28,7 +27,7 @@ export const indexQueryTool: Tool = {
       name: "index_query_tool",
       description:
         "Query the workspace index for fast orientation. Operations: " +
-        "`find_symbol` (where a function/class/interface/type/enum/const is declared), " +
+        "`find_symbol` (where a function/class/method/interface/type/enum/const is declared), " +
         "`what_imports` (which files import a module), " +
         "`list_files` (files whose path matches a substring/extension), " +
         "`metadata` (parsed package.json/tsconfig/framework/git-branch). " +
@@ -54,7 +53,7 @@ export const indexQueryTool: Tool = {
           kind: {
             type: "string",
             description:
-              "Optional filter for find_symbol (e.g. 'function', 'class', 'interface', " +
+              "Optional filter for find_symbol (e.g. 'function', 'class', 'method', 'interface', " +
               "'type', 'enum', 'const').",
           },
           limit: {
@@ -81,18 +80,17 @@ export const indexQueryTool: Tool = {
         "The index is only available with a workspace."
       )
     }
-    const ws = getWorkspaceByPath(ctx.workspace)
-    if (!ws) {
-      return notIndexed("This workspace has no index yet.")
-    }
-    const run = getRunByWorkspace(ws.id)
-    if (!run || run.filesScanned === 0) {
+    const resolved = await indexedWorkspaceFor(ctx.workspace)
+    if (!resolved) {
       return notIndexed("This workspace has not been indexed yet.")
     }
+    const { workspace: ws, run } = resolved
     // A staleness/partial banner appended to results so the model calibrates trust.
     const partial =
       run.stage !== "symbols" ||
       (run.filesTotal > 0 && run.filesScanned < run.filesTotal)
+    const withBanner = (body: string, partialIndex: boolean) =>
+      bannered(body, partialIndex, resolved.viaMainCheckout)
 
     switch (op) {
       case "find_symbol": {
@@ -312,9 +310,18 @@ function notIndexed(message: string, partial = false): string {
   return `${message}${staleness} The index is advisory — refine the symbol or path query when appropriate, then use a narrowly scoped search_tool or read_file_tool call if needed.`
 }
 
-function withBanner(body: string, partial: boolean): string {
+function bannered(
+  body: string,
+  partial: boolean,
+  viaMainCheckout: boolean
+): string {
   const banner = partial
     ? "\n\n[index partial/building — treat misses as un-indexed, not absent]"
     : ""
-  return truncateForModel(body + banner).text
+  // A worktree answered from its repository's index: paths are repo-relative
+  // and hold here, but this worktree's own edits aren't in it.
+  const source = viaMainCheckout
+    ? "\n\n[index of the repository's main checkout — paths apply in this worktree; changes made here aren't indexed]"
+    : ""
+  return truncateForModel(body + banner + source).text
 }

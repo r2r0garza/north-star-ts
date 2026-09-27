@@ -97,6 +97,7 @@ import { dashboardReadTool } from "./tools/dashboard_read"
 import { loadSystemPrompt } from "./system-prompt"
 import { logSystemPrompt } from "./prompt-log"
 import { buildIndexSummary } from "../index/summary"
+import { indexedWorkspaceFor } from "../index/indexed-workspace"
 import {
   contextBuilder,
   SECTION_PRIORITY,
@@ -1608,7 +1609,15 @@ export async function runAgentLoop(
   // Workspace-index summary (plan 008): cheap structured orientation. Advisory,
   // most droppable. Gated by the "use index for context" setting + a workspace.
   if (useIndex && conversation?.workspaceId) {
-    const indexSummary = buildIndexSummary(conversation.workspaceId)
+    // A Mission Control user story's worktree is a workspace of its own but is
+    // never indexed; summarize its repository's main checkout instead.
+    const workspacePath = getWorkspace(conversation.workspaceId)?.path
+    const indexed = workspacePath
+      ? await indexedWorkspaceFor(workspacePath)
+      : null
+    const indexSummary = buildIndexSummary(
+      indexed?.workspace.id ?? conversation.workspaceId
+    )
     if (indexSummary) {
       sections.push({
         name: "index",
