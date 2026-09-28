@@ -576,7 +576,10 @@ describe.skipIf(!sqliteLoads)("seat comms: steer and escalate", () => {
       })
     )
     expect(top).toMatchObject({ toAddress: "user@rig", status: "delivered" })
-    expect(notifications).toHaveLength(2)
+    // The one to the user notifies through Waiting on you instead.
+    expect(notifications).toEqual([
+      "Escalation from builder@implementation to lead@orchestration",
+    ])
   })
 })
 
@@ -1178,7 +1181,7 @@ describe.skipIf(!sqliteLoads)("seat comms: escaping a deep chain", () => {
     expect(escalated.body).toContain(
       "Routed to you instead of lead@orchestration"
     )
-    expect(notifications).toHaveLength(1)
+    expect(notifications).toHaveLength(0) // Waiting on you notifies
     expect(wakeTasks).toHaveLength(0)
   })
 

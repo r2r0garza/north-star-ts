@@ -599,8 +599,9 @@ export class SeatComms {
 
     emitCommsChanged(feature.id)
     if (result.ok) {
-      // Every escalation reaches the user too, wherever it is routed.
-      if (input.kind === "escalation")
+      // Every escalation reaches the user too, wherever it is routed. One to
+      // the user is a decision in Waiting on you, which notifies on its own.
+      if (input.kind === "escalation" && !toUser)
         this.runtime.notifyUser(
           `Escalation from ${input.from} to ${input.to}`,
           subjectFrom(input.body)
