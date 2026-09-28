@@ -35,7 +35,11 @@ import {
 } from "@/components/terminal-drawer"
 import { Toaster } from "@/components/ui/sonner"
 import type { Mode, Task } from "@/types"
-import { maybeNotify, refreshNotificationSettings } from "@/lib/notify"
+import {
+  isQuietTask,
+  maybeNotify,
+  refreshNotificationSettings,
+} from "@/lib/notify"
 import { applyThemeCss } from "@/lib/theme"
 import { cn } from "@/lib/utils"
 import App, { type AppHandle, type ConversationSearchOpen } from "./App"
@@ -49,7 +53,6 @@ const DEFAULT_MODE_TO_VIEW = {
 // Deterministic infrastructure task kinds that repaint their own UI in place and
 // run automatically (on open / poll), so a completion OS-notification would just
 // be noise. Excluded from the background-task notification handler below.
-const SILENT_TASK_KINDS = new Set(["dashboard_refresh", "workspace_index"])
 
 // Tracks window fullscreen state so the sidebar toggle can reposition (the
 // macOS traffic lights disappear in fullscreen, freeing the left edge).
@@ -363,8 +366,7 @@ function Shell() {
           // place (a dashboard refresh repaints its widgets; an index updates the
           // strip) and run on open / poll — notifying on each would spam. Never
           // OS-notify for them, regardless of source.
-          const taskKind = (task.input as { kind?: string } | null)?.kind
-          if (taskKind && SILENT_TASK_KINDS.has(taskKind)) return
+          if (isQuietTask(task.input)) return
           // Source-less tasks are infrastructure with their own UI surface
           // (workspace_index) — born sourceConversationId=null by design. They're
           // not user-facing background work, so don't notify about them.
@@ -667,7 +669,9 @@ function Shell() {
             <ProcessScreen onClose={() => setProcessOpen(false)} />
           )}
           {missionControlOpen && (
-            <MissionControlScreen onClose={() => setMissionControlOpen(false)} />
+            <MissionControlScreen
+              onClose={() => setMissionControlOpen(false)}
+            />
           )}
           {mcpOpen && <McpScreen onClose={() => setMcpOpen(false)} />}
           {dashboardsOpen && (

@@ -114,6 +114,9 @@ const PROOF_STEP_INSTRUCTION =
 // executor finds its run on first run AND on autoResume after a crash.
 interface ProcessRunInput {
   processRunId?: string
+  // A Mission Control run: its progress shows in Mission Control, so no
+  // "background task finished" notification.
+  quiet?: boolean
 }
 
 interface ProcessWorkerTaskInput {
@@ -415,7 +418,10 @@ export class ProcessService {
       kind: PROCESS_RUN_KIND,
       title: `Process: ${definition.name}`,
       sourceConversationId: input.sourceConversationId,
-      input: { processRunId: run.id } satisfies ProcessRunInput,
+      input: {
+        processRunId: run.id,
+        ...(input.missionControl ? { quiet: true } : {}),
+      } satisfies ProcessRunInput,
     })
 
     // Generate a short display title from the objective (mirrors how a

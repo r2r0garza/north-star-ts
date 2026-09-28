@@ -137,8 +137,10 @@ import * as seatSessionsRepo from "../db/repositories/seat-sessions"
 import type { AgentDefinition } from "../agent/agents/types"
 
 const enqueued: string[] = []
+const enqueuedInputs: unknown[] = []
 const fakeRunner = {
-  enqueueKind: () => {
+  enqueueKind: (request: { input?: unknown }) => {
+    enqueuedInputs.push(request.input)
     const conversationId = randomUUID()
     const taskId = randomUUID()
     const now = Date.now()
@@ -643,6 +645,13 @@ describe.skipIf(!sqliteLoads)("user story execution", () => {
       hangLoops = false
       vi.useRealTimers()
     }
+  })
+
+  it("marks a user story's run quiet, so it doesn't raise task notifications", async () => {
+    const rig = orchestratedRig()
+    const { userStory } = billingFeature(rig.id)
+    await runner.startUserStory(userStory.id)
+    expect(enqueuedInputs.at(-1)).toMatchObject({ quiet: true })
   })
 
   it("records the failed phase and its error as the user story's failure cause", async () => {

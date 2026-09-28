@@ -85,3 +85,23 @@ export async function maybeNotify(input: NotifyInput): Promise<void> {
     conversationId: input.conversationId,
   })
 }
+
+// Task kinds that never raise a "background task finished" notification:
+// infrastructure that repaints its own surface (a dashboard, the index strip),
+// and Mission Control's seat wakes and sessions, which report in Mission
+// Control; it notifies on its own when something needs the user or a feature
+// is done.
+const QUIET_TASK_KINDS = new Set([
+  "dashboard_refresh",
+  "workspace_index",
+  "seat_wake",
+  "seat_session",
+])
+
+export function isQuietTask(input: unknown): boolean {
+  const task = input as { kind?: string; quiet?: boolean } | null
+  // A Mission Control run is marked quiet by the Process service.
+  return (
+    task?.quiet === true || (!!task?.kind && QUIET_TASK_KINDS.has(task.kind))
+  )
+}
