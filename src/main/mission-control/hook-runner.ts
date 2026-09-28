@@ -117,6 +117,7 @@ export async function startConflictResolution(
       integrationBranch: milestone.integrationBranch ?? "",
       userStoryBranch: userStory.branch ?? "",
       files: input.files,
+      environment: input.environment ?? null,
       generatedFiles: feature.workspaceId
         ? (getWorkspace(feature.workspaceId)?.generatedFiles ?? [])
         : [],

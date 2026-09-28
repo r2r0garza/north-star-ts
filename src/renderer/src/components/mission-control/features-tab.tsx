@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { GeneratedFilesEditor } from "./generated-files-editor"
+import { WorktreeSetupEditor } from "./worktree-setup-editor"
 import {
   CircleDot,
   CircleHelp,
@@ -1147,6 +1148,12 @@ function FeatureView({
               workspace={featureWorkspace}
               onSaved={onWorkspaceSaved}
             />
+            <div className="mt-4">
+              <WorktreeSetupEditor
+                workspace={featureWorkspace}
+                onSaved={onWorkspaceSaved}
+              />
+            </div>
           </div>
         )}
       </div>

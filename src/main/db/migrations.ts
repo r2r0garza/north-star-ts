@@ -129,6 +129,7 @@ const MIGRATIONS: Array<(db: Database.Database) => void> = [
     ),
   retireMissionControlWorktreeWorkspaces,
   ensureGeneratedFilesColumn,
+  ensureWorktreeSetupColumn,
 ]
 
 function tableExists(db: Database.Database, table: string): boolean {
@@ -164,6 +165,12 @@ function addColumnIfMissing(
 
 function ensureProcessResultContentColumn(db: Database.Database): void {
   addColumnIfMissing(db, "process_phase_runs", "result_content", "TEXT")
+}
+
+// v59: how a workspace's Mission Control worktrees get an environment (JSON
+// WorktreeSetup: paths linked from the main checkout and a setup command).
+function ensureWorktreeSetupColumn(db: Database.Database): void {
+  addColumnIfMissing(db, "workspaces", "worktree_setup", "TEXT")
 }
 
 // v58: a workspace's generated files and the command that rebuilds them
@@ -416,6 +423,7 @@ export function runMigrations(
       ensureProcessResultContentColumn(db)
       ensurePhaseReviewColumn(db)
       ensureGeneratedFilesColumn(db)
+      ensureWorktreeSetupColumn(db)
       ensureMissionControlPlaybooks(db)
       ensureMissionControlComms(db)
       ensureContextScopes(db)

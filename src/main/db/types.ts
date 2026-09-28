@@ -57,11 +57,22 @@ export interface GeneratedFilesRule {
   command: string
 }
 
+// How a Mission Control worktree of this workspace gets a working
+// environment: a fresh worktree has only tracked files, so ignored ones
+// (.venv, node_modules) are missing and agents went looking for a test runner.
+export interface WorktreeSetup {
+  // Workspace-relative paths symlinked from the main checkout, e.g. ".venv".
+  linkPaths: string[]
+  // Run in each new worktree from the workspace root, e.g. an install step.
+  command: string
+}
+
 export interface Workspace {
   id: string
   path: string
   name: string | null
   generatedFiles: GeneratedFilesRule[]
+  worktreeSetup: WorktreeSetup
   createdAt: number
   updatedAt: number
 }

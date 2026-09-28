@@ -92,7 +92,7 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
     const db = new Database(":memory:")
     db.pragma("foreign_keys = ON")
     runMigrations(db)
-    expect(db.pragma("user_version", { simple: true })).toBe(58)
+    expect(db.pragma("user_version", { simple: true })).toBe(59)
     expect(db.pragma("foreign_key_check")).toHaveLength(0)
     db.close()
   })
@@ -650,7 +650,7 @@ describe.skipIf(!sqliteLoads)("runMigrations", () => {
 
     runMigrations(db)
 
-    expect(db.pragma("user_version", { simple: true })).toBe(58)
+    expect(db.pragma("user_version", { simple: true })).toBe(59)
     expect(
       (db.pragma("table_info(process_phases)") as Array<{ name: string }>).map(
         (c) => c.name
@@ -868,7 +868,7 @@ describe.skipIf(!sqliteLoads)("SCHEMA_V9 — orphan reap (plan 022)", () => {
     // Apply V9 (the reaper) and any later migrations, up to the latest version.
     runMigrations(db)
 
-    expect(db.pragma("user_version", { simple: true })).toBe(58)
+    expect(db.pragma("user_version", { simple: true })).toBe(59)
 
     // Reaped: orphan + its nested descendant, and all their state.
     const taskIds = (
@@ -962,7 +962,7 @@ describe.skipIf(!sqliteLoads)(
 
       runMigrations(db)
 
-      expect(db.pragma("user_version", { simple: true })).toBe(58)
+      expect(db.pragma("user_version", { simple: true })).toBe(59)
       const columns = db.pragma("table_info(process_phase_agents)") as Array<{
         name: string
         notnull: number
@@ -1065,7 +1065,7 @@ describe.skipIf(!sqliteLoads)("context scopes migration (v51)", () => {
         ('a', 'd', 'a', 'A', 0, 'fresh'), ('b', 'd', 'b', 'B', 1, 'seat_session');
     `)
     runMigrations(db)
-    expect(db.pragma("user_version", { simple: true })).toBe(58)
+    expect(db.pragma("user_version", { simple: true })).toBe(59)
     // v51 moved them to the initiative scope; v54 renamed it to feature.
     expect(
       db
@@ -1164,7 +1164,7 @@ describe.skipIf(!sqliteLoads)("work terms migration (v54)", () => {
 
     runMigrations(db)
 
-    expect(db.pragma("user_version", { simple: true })).toBe(58)
+    expect(db.pragma("user_version", { simple: true })).toBe(59)
     const tables = db
       .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
       .pluck()
@@ -1297,7 +1297,7 @@ describe.skipIf(!sqliteLoads)("work terms migration (v54)", () => {
 
     // Running it again changes nothing.
     runMigrations(db)
-    expect(db.pragma("user_version", { simple: true })).toBe(58)
+    expect(db.pragma("user_version", { simple: true })).toBe(59)
     db.close()
   })
 })

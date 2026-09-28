@@ -1,4 +1,8 @@
 import { randomBytes } from "crypto"
+import {
+  prepareWorktreeEnvironment,
+  type WorktreeEnvironment,
+} from "./worktree-env"
 import { existsSync } from "fs"
 import { readdir, rm } from "fs/promises"
 import path from "path"
@@ -80,6 +84,8 @@ export interface IsolatedUserStoryWorkspace {
   // inside it when the workspace is a subfolder of the repository.
   workspacePath: string
   worktreePath: string
+  // How the worktree was given an environment (the workspace's setup).
+  environment?: WorktreeEnvironment | null
   branch: string
   baseOid: string
   integrationBranch: string
@@ -93,6 +99,7 @@ export interface ResolutionLaunchInput {
   workspacePath: string
   worktreePath: string
   files: string[]
+  environment?: WorktreeEnvironment | null
   // Records the launched playbook run on the queue entry inside the launch
   // transaction, so the run can't settle before the entry knows about it.
   onLaunch(run: PlaybookRun): void
@@ -189,6 +196,20 @@ export function userStoryMergeMessage(input: {
       ? [`Mission-Control-Resolved-By: ${input.resolvedBy}`]
       : []),
   ].join("\n")
+}
+
+// Give a new worktree the workspace's environment (linked paths, setup
+// command), or null when the workspace configures none.
+async function prepareEnvironment(
+  feature: Feature,
+  mainWorkspace: string,
+  worktreeWorkspace: string
+): Promise<WorktreeEnvironment | null> {
+  const setup = feature.workspaceId
+    ? getWorkspace(feature.workspaceId)?.worktreeSetup
+    : null
+  if (!setup) return null
+  return prepareWorktreeEnvironment({ mainWorkspace, worktreeWorkspace, setup })
 }
 
 // The feature's workspace rules for generated files, with the workspace's
@@ -313,9 +334,15 @@ export class MilestoneIntegration {
       directory,
       await workspaceSubpath(root, workspace)
     )
+    const environment = await prepareEnvironment(
+      input.feature,
+      workspace,
+      workspacePath
+    )
     return {
       workspacePath,
       worktreePath: directory,
+      environment,
       branch: created.branch,
       baseOid: created.baseOid,
       integrationBranch: milestone.integrationBranch!,
@@ -859,6 +886,9 @@ export class MilestoneIntegration {
         return
       }
       this.changed(feature.id)
+      const environment = workspace
+        ? await prepareEnvironment(feature, workspace, workspacePath)
+        : null
       await this.deps.startResolution({
         feature,
         milestone,
@@ -866,6 +896,7 @@ export class MilestoneIntegration {
         workspacePath,
         worktreePath: directory,
         files,
+        environment,
         onLaunch: (run) => {
           mergeQueue.updateMergeEntry(entry.id, { resolutionRunId: run.id })
         },

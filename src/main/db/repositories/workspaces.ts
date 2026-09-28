@@ -1,12 +1,13 @@
 import { randomUUID } from "crypto"
 import { getDb } from "../connection"
-import type { GeneratedFilesRule, Workspace } from "../types"
+import type { GeneratedFilesRule, Workspace, WorktreeSetup } from "../types"
 
 interface WorkspaceRow {
   id: string
   path: string
   name: string | null
   generated_files: string | null
+  worktree_setup: string | null
   created_at: number
   updated_at: number
 }
@@ -17,6 +18,7 @@ function toWorkspace(row: WorkspaceRow): Workspace {
     path: row.path,
     name: row.name,
     generatedFiles: parseGeneratedFiles(row.generated_files),
+    worktreeSetup: parseWorktreeSetup(row.worktree_setup),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   }
@@ -43,6 +45,37 @@ export function normalizeGeneratedFiles(value: unknown): GeneratedFilesRule[] {
     const command = typeof rule?.command === "string" ? rule.command.trim() : ""
     return paths.length && command ? [{ paths, command }] : []
   })
+}
+
+function parseWorktreeSetup(value: string | null): WorktreeSetup {
+  try {
+    return normalizeWorktreeSetup(JSON.parse(value ?? "{}"))
+  } catch {
+    return { linkPaths: [], command: "" }
+  }
+}
+
+// Workspace-relative link paths (no absolute or parent paths) and a trimmed
+// command.
+export function normalizeWorktreeSetup(value: unknown): WorktreeSetup {
+  const v = (value ?? {}) as { linkPaths?: unknown; command?: unknown }
+  const linkPaths = Array.isArray(v.linkPaths)
+    ? [
+        ...new Set(
+          v.linkPaths
+            .filter((p): p is string => typeof p === "string")
+            .map((p) =>
+              p
+                .trim()
+                .replace(/^\.?\/+/, "")
+                .replace(/\/+$/, "")
+            )
+            .filter((p) => p && !p.split("/").includes(".."))
+        ),
+      ]
+    : []
+  const command = typeof v.command === "string" ? v.command.trim() : ""
+  return { linkPaths, command }
 }
 
 // Last segment of a path, e.g. "/Users/me/proj" -> "proj". Used as a default name.
@@ -114,7 +147,11 @@ export function listWorkspaces(): Workspace[] {
 
 export function updateWorkspace(
   id: string,
-  patch: { name?: string; generatedFiles?: GeneratedFilesRule[] }
+  patch: {
+    name?: string
+    generatedFiles?: GeneratedFilesRule[]
+    worktreeSetup?: WorktreeSetup
+  }
 ): Workspace {
   const now = Date.now()
   if (patch.name !== undefined) {
@@ -132,6 +169,13 @@ export function updateWorkspace(
         now,
         id
       )
+  }
+  if (patch.worktreeSetup !== undefined) {
+    getDb()
+      .prepare(
+        "UPDATE workspaces SET worktree_setup = ?, updated_at = ? WHERE id = ?"
+      )
+      .run(JSON.stringify(normalizeWorktreeSetup(patch.worktreeSetup)), now, id)
   }
   return getWorkspace(id)!
 }

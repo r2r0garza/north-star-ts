@@ -1,4 +1,5 @@
 import type { AgentDefinition } from "../agent/agents/types"
+import type { WorktreeEnvironment } from "./worktree-env"
 import { getDb } from "../db/connection"
 import * as features from "../db/repositories/features"
 import * as playbooks from "../db/repositories/playbooks"
@@ -113,6 +114,7 @@ export interface LaunchRequest {
 export interface IsolatedWorkspace {
   workspacePath: string
   worktreePath: string
+  environment?: WorktreeEnvironment | null
   branch?: string
   baseOid?: string
   integrationBranch?: string
@@ -441,6 +443,7 @@ export class UserStoryRunner {
               ? {
                   branch: isolated.branch,
                   integrationBranch: isolated.integrationBranch,
+                  environment: isolated.environment ?? null,
                 }
               : null,
         }),

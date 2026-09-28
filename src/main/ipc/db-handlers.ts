@@ -14,6 +14,7 @@ import {
 } from "../db/repositories"
 import type {
   GeneratedFilesRule,
+  WorktreeSetup,
   Conversation,
   Mode,
   TaskStatus,
@@ -214,7 +215,11 @@ export function registerDbHandlers(
     (
       _e,
       id: string,
-      patch: { name?: string; generatedFiles?: GeneratedFilesRule[] }
+      patch: {
+        name?: string
+        generatedFiles?: GeneratedFilesRule[]
+        worktreeSetup?: WorktreeSetup
+      }
     ) => workspaces.updateWorkspace(id, patch)
   )
   ipcMain.handle("db:workspaces:delete", async (_e, id: string) => {

@@ -66,7 +66,7 @@ describe.skipIf(!sqliteLoads)("v8 migration", () => {
   })
 
   it("reaches the latest user_version", () => {
-    expect(db.pragma("user_version", { simple: true })).toBe(58)
+    expect(db.pragma("user_version", { simple: true })).toBe(59)
   })
 
   it("widens tasks.status to accept 'paused'", () => {

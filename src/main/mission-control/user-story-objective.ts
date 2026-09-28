@@ -4,6 +4,7 @@ import type {
   Milestone,
   UserStory,
 } from "../db/types"
+import { renderEnvironment, type WorktreeEnvironment } from "./worktree-env"
 import { formatStory } from "../../shared/mission-control/story"
 
 // The user story objective IS the spec (plan 106.3, decision 5): a rendered,
@@ -63,6 +64,7 @@ export function renderIntentChain(input: {
 export interface UserStoryWorkspaceNote {
   branch: string
   integrationBranch: string
+  environment?: WorktreeEnvironment | null
 }
 
 function renderWorkspaceNote(note: UserStoryWorkspaceNote): string[] {
@@ -73,6 +75,7 @@ function renderWorkspaceNote(note: UserStoryWorkspaceNote): string[] {
       "Other user stories build in their own worktrees at the same time, so stay inside this user story's scope. " +
       "Committing is optional: when the proof is accepted, Mission Control commits anything left uncommitted and merges this branch through the milestone's merge queue. " +
       "Do not switch branches, rebase, merge other branches, or push.",
+    ...renderEnvironment(note.environment),
   ]
 }
 
@@ -214,6 +217,7 @@ export function renderConflictObjective(input: {
   files: string[]
   // The workspace's generated files: rebuilt by their command, never merged.
   generatedFiles?: GeneratedFilesRule[]
+  environment?: WorktreeEnvironment | null
 }): string {
   const { feature, milestone, userStory } = input
   const criteria = userStoryCriteria(userStory)
@@ -233,6 +237,7 @@ export function renderConflictObjective(input: {
     "- Remove every conflict marker. Run the project's checks if it has them.",
     "- Do not commit, abort the merge, switch branches, rebase, or push. Mission Control commits the merge after the proof is accepted.",
     "- The proof step then re-verifies this user story against its acceptance criteria on the merged result.",
+    ...renderEnvironment(input.environment),
     ...(generated.length
       ? [
           "",

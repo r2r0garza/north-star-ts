@@ -16,6 +16,7 @@ export type {
   Todo,
   TodoStatus,
   GeneratedFilesRule,
+  WorktreeSetup,
   Workspace,
   SubagentArtifact,
 } from "../../preload/index"
