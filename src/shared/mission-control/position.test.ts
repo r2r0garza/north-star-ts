@@ -389,6 +389,29 @@ describe("computePosition — failures and judgment", () => {
     expect(hard.pendingDecisions[0].summary).toContain("used all 3 attempts")
   })
 
+  it("puts an approval a running user story waits on in front of the user", () => {
+    const p = computePosition(
+      input({
+        userStories: [userStory("a", "m1", { status: "running" })],
+        runApprovals: [
+          {
+            id: "ap1",
+            userStoryId: "a",
+            summary: "User story a: test wants to send it back to build.",
+          },
+        ],
+      })
+    )
+    expect(p.pendingDecisions).toEqual([
+      expect.objectContaining({
+        key: "run_approval:ap1",
+        kind: "run_approval",
+        owner: "user",
+        target: { kind: "user_story", id: "a" },
+      }),
+    ])
+  })
+
   it("retries a failed model request past the soft limit and names the cause", () => {
     const lastFailure = {
       reason:

@@ -119,6 +119,7 @@ vi.mock("../agent/agents/loader", () => ({
 }))
 
 import * as processes from "../db/repositories/processes"
+import { createApproval } from "../db/repositories/approvals"
 import * as rigs from "../db/repositories/rigs"
 import * as features from "../db/repositories/features"
 import * as playbooks from "../db/repositories/playbooks"
@@ -858,6 +859,34 @@ describe.skipIf(!sqliteLoads)("Navigator copilot and map tools", () => {
         summary: "x",
       })
     ).toMatchObject({ ok: false, code: "lacks_decision_right" })
+  })
+
+  it("surfaces an approval a running user story waits on as a user decision", async () => {
+    const { id, turn } = await copilot()
+    await getMapTools()!.assignUserStory(turn, { userStory: "a" })
+    const run = playbooks.listPlaybookRuns({
+      featureId: id,
+      status: "running",
+    })[0]
+    const taskId = processes.getProcessRun(run.processRunId!)!.taskId!
+    createApproval({
+      taskId,
+      request: {
+        kind: "process_flag_gate",
+        phaseKey: "test",
+        flagTargetKey: "build",
+        flagReason: "AC-2 fails.",
+      },
+    })
+    const position = await navigator.position(id)
+    expect(position.pendingDecisions).toContainEqual(
+      expect.objectContaining({
+        kind: "run_approval",
+        owner: "user",
+        summary:
+          "User story a: test wants to send it back to build. AC-2 fails.",
+      })
+    )
   })
 
   it("orders added user stories with blocks and runs_last", async () => {

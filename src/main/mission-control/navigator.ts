@@ -2,6 +2,7 @@ import * as features from "../db/repositories/features"
 import * as mergeQueue from "../db/repositories/merge-queue"
 import * as ticks from "../db/repositories/navigator-ticks"
 import * as processes from "../db/repositories/processes"
+import { listApprovals } from "../db/repositories/approvals"
 import * as playbooks from "../db/repositories/playbooks"
 import * as proposalsRepo from "../db/repositories/proposals"
 import * as comms from "../db/repositories/seat-comms"
@@ -14,6 +15,7 @@ import type {
   NavigatorTickState,
   PlaybookHookName,
   PlaybookRun,
+  UserStory,
   RigGraph,
   UserStoryProof,
 } from "../db/types"
@@ -290,6 +292,7 @@ export function positionInput(
         p.changes.slice(0, 2).map(describePlanChange).join("; ") ||
         "(no changes)",
     })),
+    runApprovals: runApprovalsOf(playbookRuns, userStories),
     escalations: comms
       .listMessages({
         featureId: feature.id,
@@ -1023,6 +1026,43 @@ function errorText(error: unknown): string {
     /^touch_overlap: /,
     ""
   )
+}
+
+// Approvals a running user story or hook's Process run is waiting on, for
+// Waiting on you: they live on the run's task, which Mission Control doesn't
+// otherwise show (a QA send-back outside Autopilot waited unseen).
+function runApprovalsOf(
+  runs: PlaybookRun[],
+  userStories: UserStory[]
+): NonNullable<PositionInput["runApprovals"]> {
+  const keyOf = new Map(userStories.map((s) => [s.id, s.key]))
+  return runs.flatMap((run) => {
+    if (run.status !== "running" || !run.processRunId) return []
+    const taskId = processes.getProcessRun(run.processRunId)?.taskId
+    if (!taskId) return []
+    const what = run.userStoryId
+      ? `User story ${keyOf.get(run.userStoryId) ?? "?"}`
+      : `The ${run.hook.replace(/_/g, " ")} hook`
+    return listApprovals({ taskId, status: "pending" }).map((approval) => {
+      const request = (approval.request ?? {}) as {
+        kind?: string
+        phaseKey?: string
+        flagTargetKey?: string
+        flagReason?: string
+      }
+      const summary =
+        request.kind === "process_flag_gate"
+          ? `${what}: ${request.phaseKey || "a phase"} wants to send it back to ${request.flagTargetKey || "an earlier phase"}. ${request.flagReason ?? ""}`.trim()
+          : request.kind === "process_validator_gate"
+            ? `${what}: ${request.phaseKey || "a phase"}'s reviewer didn't approve it after its retries; decide what happens next.`
+            : `${what} is waiting for your approval at ${request.phaseKey || "a phase"}.`
+      return {
+        id: approval.id,
+        userStoryId: run.userStoryId,
+        summary: summary.slice(0, 400),
+      }
+    })
+  })
 }
 
 // How long the longest-running phase of the feature has been going, in

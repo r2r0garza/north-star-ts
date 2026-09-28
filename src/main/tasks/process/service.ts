@@ -941,7 +941,10 @@ export class ProcessService {
         // Cross-phase flag-back (plan 031.2): the definition's autonomy toggle, and
         // the reset applier (delegated to flagback.ts — one reset code path shared
         // with the confirm route).
-        requireFlagApproval: graph.definition.requireFlagApproval,
+        // On Autopilot, QA sending work back to build is the normal loop, not
+        // a question for the user; the flag cap and phase time limit bound it.
+        requireFlagApproval:
+          graph.definition.requireFlagApproval && !this.onAutopilot(run),
         applyFlag: (flag) =>
           applyFlagBack({
             taskId,
@@ -1485,6 +1488,14 @@ export class ProcessService {
         releaseSeat?.()
       }
     }
+  }
+
+  // A Mission Control run whose feature is driven on Autopilot.
+  private onAutopilot(run: ProcessRun): boolean {
+    const link = this.missionControlRoot(run)?.missionControl
+    return (
+      !!link && features.getFeature(link.featureId)?.driveMode === "autopilot"
+    )
   }
 
   // The feature's "Minutes per phase" budget for a Mission Control run, or

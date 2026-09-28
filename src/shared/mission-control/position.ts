@@ -101,6 +101,13 @@ export interface PositionInput {
   }>
   // Escalations addressed to the user that nobody has acknowledged.
   escalations: Array<{ id: string; from: string; subject: string }>
+  // Approvals a running user story or hook is waiting on (a QA send-back
+  // outside Autopilot, a phase gate), so they reach Waiting on you.
+  runApprovals?: Array<{
+    id: string
+    userStoryId: string | null
+    summary: string
+  }>
   workspace: {
     mode: "git" | "single_flight" | "none"
     // Another playbook run occupies the (non-git) workspace.
@@ -130,6 +137,7 @@ export type DecisionKind =
   | "milestone_dod"
   | "milestone_landing"
   | "budget"
+  | "run_approval"
 
 export interface Decision {
   // Stable identity: the same pending decision keeps its key across ticks, and
@@ -290,6 +298,16 @@ export function computePosition(input: PositionInput): Position {
       owner: "user",
       target: { kind: "proposal", id: proposal.id },
       summary: `Review ${proposal.kind === "plan" ? "the planning proposal" : "a plan proposal"} from ${proposal.proposer}: ${proposal.summary}`,
+    })
+  for (const approval of input.runApprovals ?? [])
+    decide({
+      key: `run_approval:${approval.id}`,
+      kind: "run_approval",
+      owner: "user",
+      target: approval.userStoryId
+        ? { kind: "user_story", id: approval.userStoryId }
+        : { kind: "feature", id: input.feature.id },
+      summary: approval.summary,
     })
   for (const escalation of input.escalations)
     decide({

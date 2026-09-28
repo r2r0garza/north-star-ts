@@ -70,6 +70,21 @@ vi.mock("../agent", () => ({
     }
     loopCalls.push(call)
     const msg = input.userMessage ?? ""
+    // QA sends the work back to build once (flag_for_rework's durable effect).
+    if (flagBackOnce && input.processProofStep && input.processRunId) {
+      flagBackOnce = false
+      const run = processes.getProcessRun(input.processRunId)!
+      const build = processes
+        .listPhases(run.processId!)
+        .find((p) => p.key === "build")!
+      processes.createFlag({
+        runId: input.processRunId,
+        flaggingPhaseRunId: input.processPhaseRunId!,
+        targetPhaseId: build.id,
+        reason: "AC-2 fails.",
+      })
+      return { content: "flagged" }
+    }
     let content = "done"
     if (msg.startsWith("# Review the")) content = '{"approved": true}'
     if (input.processProofStep && proofSubmissions.length) {
@@ -94,6 +109,7 @@ vi.mock("../agent", () => ({
 // The dispatch router's classifier reply.
 let routerReply = ""
 let hangLoops = false
+let flagBackOnce = false
 vi.mock("../agent/providers", () => {
   class NoActiveProviderError extends Error {}
   return {
@@ -119,6 +135,7 @@ vi.mock("../agent/agents/loader", () => ({
 }))
 
 import * as processes from "../db/repositories/processes"
+import { listApprovals } from "../db/repositories/approvals"
 import * as rigs from "../db/repositories/rigs"
 import * as features from "../db/repositories/features"
 import * as playbooks from "../db/repositories/playbooks"
@@ -644,6 +661,37 @@ describe.skipIf(!sqliteLoads)("user story execution", () => {
     } finally {
       hangLoops = false
       vi.useRealTimers()
+    }
+  })
+
+  it("applies a QA send-back on Autopilot, and asks the user otherwise", async () => {
+    for (const mode of ["autopilot", "manual"] as const) {
+      const rig = orchestratedRig()
+      const { userStory } = billingFeature(rig.id)
+      const featureId = features.getMilestone(userStory.milestoneId)!.featureId
+      db.prepare("UPDATE features SET drive_mode = ? WHERE id = ?").run(
+        mode,
+        featureId
+      )
+      proofSubmissions.push(acceptedProof)
+      flagBackOnce = true
+      const playbookRun = await runner.startUserStory(userStory.id)
+      await drive(playbookRun.processRunId!)
+      const taskId = processes.getProcessRun(playbookRun.processRunId!)!.taskId!
+      const pending = listApprovals({ taskId, status: "pending" })
+      if (mode === "autopilot") {
+        expect(pending).toEqual([])
+        expect(features.getUserStory(userStory.id)!.status).toBe("done")
+      } else {
+        expect(pending).toEqual([
+          expect.objectContaining({
+            request: expect.objectContaining({ kind: "process_flag_gate" }),
+          }),
+        ])
+      }
+      proofSubmissions.length = 0
+      db.prepare("DELETE FROM features").run()
+      db.prepare("DELETE FROM rigs").run()
     }
   })
 
