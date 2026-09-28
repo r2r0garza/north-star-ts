@@ -251,6 +251,7 @@ export function positionInput(
       touchHints: s.spec.touchHints,
       acceptanceCount: s.spec.acceptance.length,
       proofVerdict: (s.proof as UserStoryProof | null)?.verdict ?? null,
+      runsLast: s.spec.runsLast,
       lastFailure: s.status === "failed" ? lastFailure(s.id) : null,
     })),
     edges: milestones.flatMap((m) =>

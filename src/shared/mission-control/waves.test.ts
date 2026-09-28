@@ -7,6 +7,7 @@ import {
   touchHintsOverlap,
   overlappingPairs,
   scheduleSteps,
+  withRunsLastEdges,
 } from "./waves"
 
 const nodes = (ids: string[]) =>
@@ -150,5 +151,28 @@ describe("scheduleSteps", () => {
 
   it("lists only independent overlapping pairs", () => {
     expect(overlappingPairs(stories, edges)).toEqual([["claim", "read"]])
+  })
+})
+
+describe("withRunsLastEdges", () => {
+  it("makes a runs-last story wait for every other live story, but not other finals", () => {
+    const stories = [
+      { id: "a" },
+      { id: "b", status: "cancelled" },
+      { id: "c" },
+      { id: "proof", runsLast: true },
+      { id: "docs", runsLast: true },
+    ]
+    const edges = withRunsLastEdges(stories, [
+      { fromUserStoryId: "a", toUserStoryId: "proof" },
+    ])
+    expect(
+      edges.map((e) => `${e.fromUserStoryId}>${e.toUserStoryId}`).sort()
+    ).toEqual(["a>docs", "a>proof", "c>docs", "c>proof"])
+  })
+
+  it("leaves a plan without runs-last stories unchanged", () => {
+    const edges = [{ fromUserStoryId: "a", toUserStoryId: "b" }]
+    expect(withRunsLastEdges([{ id: "a" }, { id: "b" }], edges)).toBe(edges)
   })
 })

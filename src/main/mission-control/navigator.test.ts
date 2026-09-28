@@ -860,6 +860,110 @@ describe.skipIf(!sqliteLoads)("Navigator copilot and map tools", () => {
     ).toMatchObject({ ok: false, code: "lacks_decision_right" })
   })
 
+  it("orders added user stories with blocks and runs_last", async () => {
+    const { id, turn } = await copilot()
+    const tools = getMapTools()!
+    const edgeKeys = () => {
+      const stories = userStoriesOf(id)
+      const key = (sid: string) => stories.find((s) => s.id === sid)!.key
+      return features
+        .listEdges(stories[0].milestoneId)
+        .map((e) => `${key(e.fromUserStoryId)}>${key(e.toUserStoryId)}`)
+        .sort()
+    }
+    const story = (k: string) => userStoriesOf(id).find((s) => s.key === k)!
+
+    // c needs a, and b (already planned) must wait for c.
+    expect(
+      tools.revisePlan(turn, {
+        changes: [
+          {
+            op: "add_user_story",
+            userStory: {
+              key: "c",
+              title: "C",
+              acceptance: ["c"],
+              depends_on: ["a"],
+              blocks: ["b"],
+            },
+          },
+          {
+            op: "add_user_story",
+            userStory: {
+              key: "proof",
+              title: "Proof",
+              acceptance: ["all"],
+              runs_last: true,
+            },
+          },
+        ],
+        reason: "Order the additions",
+      })
+    ).toMatchObject({ ok: true })
+    expect(edgeKeys()).toEqual(["a>c", "c>b"])
+    expect(story("proof").spec.runsLast).toBe(true)
+
+    // A story added later is covered too: proof waits for it without an edge.
+    tools.revisePlan(turn, {
+      changes: [
+        {
+          op: "add_user_story",
+          userStory: { key: "d", title: "D", acceptance: ["d"] },
+        },
+      ],
+      reason: "One more",
+    })
+    await expect(runner.startUserStory(story("proof").id)).rejects.toThrow(
+      /depends on unmerged user stories: .*\bd\b/
+    )
+    const position = await navigator.position(id)
+    expect(position.milestone!.waves.at(-1)).toEqual([story("proof").id])
+
+    // Refused: a runs-last story that blocks others, a dependent of a
+    // runs-last story, and blocking a story that has started.
+    expect(
+      tools.revisePlan(turn, {
+        changes: [
+          {
+            op: "add_user_story",
+            userStory: {
+              key: "e",
+              title: "E",
+              acceptance: ["e"],
+              runs_last: true,
+              blocks: ["b"],
+            },
+          },
+        ],
+        reason: "x",
+      })
+    ).toMatchObject({ ok: false })
+    expect(
+      tools.revisePlan(turn, {
+        changes: [{ op: "add_dependency", from: "proof", to: "d" }],
+        reason: "x",
+      })
+    ).toMatchObject({ ok: false })
+    await tools.assignUserStory(turn, { userStory: "a" })
+    expect(
+      tools.revisePlan(turn, {
+        changes: [
+          {
+            op: "add_user_story",
+            userStory: {
+              key: "f",
+              title: "F",
+              acceptance: ["f"],
+              blocks: ["a"],
+            },
+          },
+        ],
+        reason: "x",
+      })
+    ).toMatchObject({ ok: false })
+    expect(userStoriesOf(id).some((s) => s.key === "f")).toBe(false)
+  })
+
   it("applies bounded revisions and turns out-of-scope edits into proposals", async () => {
     const { id, turn } = await copilot()
     const tools = getMapTools()!

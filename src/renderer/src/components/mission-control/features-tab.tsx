@@ -27,6 +27,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
+import { Switch } from "@/components/ui/switch"
 import { Label } from "@/components/ui/label"
 import {
   Select,
@@ -158,6 +159,7 @@ function UserStoryEditor({
     userStory.spec.touchHints.length > 0 ? userStory.spec.touchHints : [""]
   )
   const [notes, setNotes] = useState(userStory.spec.notes)
+  const [runsLast, setRunsLast] = useState(userStory.spec.runsLast)
   const [podKey, setPodKey] = useState(userStory.podKey ?? "default")
   const pods = graph.feature.rigSnapshot?.pods ?? []
   const save = async () => {
@@ -168,6 +170,7 @@ function UserStoryEditor({
       outOfScope: lines(outOfScope),
       touchHints: touchHints.map((item) => item.trim()).filter(Boolean),
       notes,
+      runsLast,
     }
     onSaved(
       await window.cowork.missionControl.userStories.update(
@@ -372,6 +375,25 @@ function UserStoryEditor({
             </SelectContent>
           </Select>
         </div>
+        <label
+          className="flex items-start gap-2 text-sm sm:col-span-2"
+          title="For an integration proof or docs: it waits for every other user story in the milestone, including ones added later. Nothing can depend on it."
+        >
+          <Switch
+            size="sm"
+            className="mt-0.5"
+            checked={runsLast}
+            disabled={specFrozen}
+            onCheckedChange={setRunsLast}
+          />
+          <span>
+            Runs last
+            <span className="block text-xs text-muted-foreground">
+              Waits for every other user story in this milestone, including ones
+              added later.
+            </span>
+          </span>
+        </label>
         <PlaybookPicker
           altitude="user_story"
           value={userStory.playbookId}

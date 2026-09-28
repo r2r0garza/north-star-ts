@@ -190,11 +190,13 @@ export function renderHookObjective(input: {
       "If you have the `propose_plan` tool, submit the whole plan with ONE call: every milestone in order, each with its outcome, definition of done, and user stories. " +
         "Give every user story a short key, a goal, concrete acceptance criteria (each one checkable), touch hints for the files it will change, and `depends_on` keys for user stories it must wait for. " +
         "Keep user stories small enough to build and prove in one sitting, and keep independent user stories independent so they run in parallel. " +
+        "Mark a user story that must come after all the others (an integration proof, docs) `runs_last` instead of listing every other story in its `depends_on`. " +
         "The user reviews and applies the proposal. Without the tool, write the plan in your final message."
     )
   else
     lines.push(
-      "If you have map tools, submit each recommended change with `propose_user_story` or `revise_plan` rather than only describing it; otherwise list them in your final message."
+      "If you have map tools, submit each recommended change with `propose_user_story` or `revise_plan` rather than only describing it; otherwise list them in your final message. " +
+        "When you add a user story, set `depends_on` for what it needs and `blocks` for not-started stories that need it: stories already planned in later waves don't wait for a new story otherwise."
     )
   return lines.join("\n")
 }

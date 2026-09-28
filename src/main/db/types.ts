@@ -726,6 +726,9 @@ export interface UserStorySpec {
   outOfScope: string[]
   touchHints: string[]
   notes: string
+  // Runs after every other user story in its milestone, including ones added
+  // later (an integration proof, docs). Nothing may depend on it.
+  runsLast: boolean
 }
 
 // How the Navigator drives a feature (plan 106.6): manual shows "next up"

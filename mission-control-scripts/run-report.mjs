@@ -13,6 +13,7 @@ import { join } from "node:path"
 import {
   overlappingPairs,
   scheduleSteps,
+  withRunsLastEdges,
 } from "../src/shared/mission-control/waves.ts"
 
 // ── arguments ───────────────────────────────────────────────────────────────
@@ -298,13 +299,15 @@ section("Plan shape (as it ran)", () => {
       id: s.id,
       key: s.key,
       touchHints: JSON.parse(s.spec || "{}").touchHints ?? [],
+      runsLast: JSON.parse(s.spec || "{}").runsLast === true,
       position: s.position,
     }))
-    const edges = all(
+    const explicit = all(
       `SELECT from_user_story_id AS fromUserStoryId, to_user_story_id AS toUserStoryId
        FROM user_story_edges WHERE milestone_id = ?`,
       m.id
     )
+    const edges = withRunsLastEdges(items, explicit)
     const keyOf = new Map(items.map((s) => [s.id, s.key]))
     const wait = scheduleSteps(items, edges, { maxConcurrent: cap, overlap: "wait" })
     const parallel = scheduleSteps(items, edges, { maxConcurrent: cap, overlap: "parallel" })

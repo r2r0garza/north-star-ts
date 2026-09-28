@@ -17,10 +17,10 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
 import { proposalOverlapEstimates } from "@/lib/overlap-schedule"
+import { addedStoryImpacts, type AddedStoryImpact } from "@/lib/proposal-impact"
 import { OverlapEstimates } from "./overlap-estimate"
 import type {
   Decision,
-  Feature,
   FeatureGraph,
   PlanChange,
   PlanProposal,
@@ -132,18 +132,65 @@ function ChangeView({ change }: { change: PlanChange }) {
   )
 }
 
+const listed = (keys: string[]) =>
+  keys.length > 5
+    ? `${keys.slice(0, 5).join(", ")} and ${keys.length - 5} more`
+    : keys.join(", ")
+
+// How an added user story fits the stories already planned: waves come from
+// dependencies, so stories in later waves don't wait for a new story unless
+// it blocks them (or they run last).
+function AddedStoryImpacts({ impacts }: { impacts: AddedStoryImpact[] }) {
+  if (!impacts.length) return null
+  return (
+    <div className="space-y-1 text-xs">
+      {impacts.map((impact) =>
+        impact.runsLast ? (
+          <p key={impact.key} className="text-muted-foreground">
+            <code>{impact.key}</code> runs last: it waits for every other user
+            story in the milestone, including ones added later.
+          </p>
+        ) : (
+          <div key={impact.key} className="space-y-0.5">
+            {impact.notWaiting.length > 0 && (
+              <p className="flex gap-1 text-amber-700 dark:text-amber-400">
+                <AlertTriangle className="mt-0.5 size-3 shrink-0" />
+                <span>
+                  Nothing makes {listed(impact.notWaiting)} wait for{" "}
+                  <code>{impact.key}</code>: they're in later waves but may
+                  start before it finishes. If they need it, reject with a note
+                  asking for <code>blocks</code>.
+                </span>
+              </p>
+            )}
+            {impact.waiting.length > 0 && (
+              <p className="text-muted-foreground">
+                {listed(impact.waiting)} will wait for <code>{impact.key}</code>
+                .
+              </p>
+            )}
+          </div>
+        )
+      )}
+    </div>
+  )
+}
+
 function ProposalCard({
   proposal,
-  feature,
+  graph,
   onGraph,
   onResolved,
 }: {
   proposal: PlanProposal
-  // For the schedule estimate: capacity comes from its budget and rig.
-  feature: Feature
+  // For the schedule estimate and the effect of added user stories on the
+  // stories already planned.
+  graph: FeatureGraph
   onGraph: (graph: FeatureGraph) => void
   onResolved: () => Promise<void>
 }) {
+  const feature = graph.feature
+  const impacts = addedStoryImpacts(proposal, graph)
   const [rejecting, setRejecting] = useState(false)
   const [note, setNote] = useState("")
   const [pending, setPending] = useState(false)
@@ -194,6 +241,7 @@ function ProposalCard({
       <OverlapEstimates
         estimates={proposalOverlapEstimates(proposal.changes, feature)}
       />
+      <AddedStoryImpacts impacts={impacts} />
       <div className="space-y-2 rounded bg-muted/40 p-2 text-sm">
         {proposal.changes.map((change, index) => (
           <div key={index} className={problems.has(index) ? "opacity-60" : ""}>
@@ -609,7 +657,7 @@ export function WaitingOnYou({
         <ProposalCard
           key={proposal.id}
           proposal={proposal}
-          feature={graph.feature}
+          graph={graph}
           onGraph={onGraph}
           onResolved={reload}
         />

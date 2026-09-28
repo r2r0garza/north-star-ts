@@ -67,6 +67,7 @@ function specOf(draft: UserStoryDraft): Partial<UserStorySpec> {
     outOfScope: draft.outOfScope ?? [],
     touchHints: draft.touchHints ?? [],
     notes: draft.notes ?? "",
+    runsLast: draft.runsLast === true,
   }
 }
 
@@ -81,7 +82,11 @@ export function seatScopeRefusal(
   for (const change of changes) {
     if (!SEAT_APPLICABLE_OPS.has(change.op))
       return `"${change.op}" changes the feature, a milestone's outcome, or adds a milestone, which only the user may do.`
-    if (change.op === "add_user_story" && change.milestone && change.milestone !== activeMilestone.key)
+    if (
+      change.op === "add_user_story" &&
+      change.milestone &&
+      change.milestone !== activeMilestone.key
+    )
       return `Changes are limited to the active milestone (${activeMilestone.key}); ${change.milestone} is another milestone.`
   }
   return null
@@ -105,10 +110,14 @@ function milestoneByKey(scope: Scope, key: string): Milestone {
 }
 
 function userStoryByKey(milestoneId: string, key: string): UserStory {
-  const userStory = features.listUserStories(milestoneId).find((s) => s.key === key)
+  const userStory = features
+    .listUserStories(milestoneId)
+    .find((s) => s.key === key)
   if (!userStory) {
     const milestone = features.getMilestone(milestoneId)
-    fail(`No user story "${key}" in milestone ${milestone?.key ?? milestoneId}.`)
+    fail(
+      `No user story "${key}" in milestone ${milestone?.key ?? milestoneId}.`
+    )
   }
   return userStory
 }
@@ -125,7 +134,10 @@ function assertPod(scope: Scope, pod: string | null | undefined): void {
 function edgesOf(milestoneId: string) {
   return features
     .listEdges(milestoneId)
-    .map((e) => ({ fromUserStoryId: e.fromUserStoryId, toUserStoryId: e.toUserStoryId }))
+    .map((e) => ({
+      fromUserStoryId: e.fromUserStoryId,
+      toUserStoryId: e.toUserStoryId,
+    }))
 }
 
 function setEdges(
@@ -133,9 +145,16 @@ function setEdges(
   edges: Array<{ fromUserStoryId: string; toUserStoryId: string }>,
   input: ApplyInput
 ): void {
-  const unique = new Map(edges.map((e) => [`${e.fromUserStoryId}:${e.toUserStoryId}`, e]))
+  const unique = new Map(
+    edges.map((e) => [`${e.fromUserStoryId}:${e.toUserStoryId}`, e])
+  )
   try {
-    features.setUserStoryEdges(milestoneId, [...unique.values()], input.actor, input.reason)
+    features.setUserStoryEdges(
+      milestoneId,
+      [...unique.values()],
+      input.actor,
+      input.reason
+    )
   } catch (error) {
     fail(error instanceof Error ? error.message : String(error))
   }
@@ -150,7 +169,9 @@ function createUserStory(
   assertPod(scope, draft.pod)
   const milestone = features.getMilestone(milestoneId)!
   if (["completed", "cancelled"].includes(milestone.status))
-    fail(`Milestone ${milestone.key} is ${milestone.status}; user stories can't be added to it.`)
+    fail(
+      `Milestone ${milestone.key} is ${milestone.status}; user stories can't be added to it.`
+    )
   const userStory = features.addUserStory({
     milestoneId,
     key: slug(draft.key ?? draft.title),
@@ -176,7 +197,8 @@ function addDependencies(
 ): void {
   if (!dependsOn?.length) return
   const extra = dependsOn.map((key) => ({
-    fromUserStoryId: created.get(slug(key)) ?? userStoryByKey(milestoneId, key).id,
+    fromUserStoryId:
+      created.get(slug(key)) ?? userStoryByKey(milestoneId, key).id,
     toUserStoryId: userStoryId,
   }))
   setEdges(milestoneId, [...edgesOf(milestoneId), ...extra], input)
@@ -188,14 +210,17 @@ function fillOrCreateMilestone(
   first: boolean,
   input: ApplyInput
 ): Milestone {
-  const byKey = draft.key ? scope.milestones.find((m) => m.key === draft.key) : undefined
+  const byKey = draft.key
+    ? scope.milestones.find((m) => m.key === draft.key)
+    : undefined
   const empty = (m: Milestone) =>
     m.status === "planned" && features.listUserStories(m.id).length === 0
   // The feature's untouched starter milestone takes the first planned one.
   const starter = scope.milestones.find(
     (m) => empty(m) && m.key === "milestone-1" && !m.outcome.trim()
   )
-  const target = byKey && empty(byKey) ? byKey : first && starter ? starter : null
+  const target =
+    byKey && empty(byKey) ? byKey : first && starter ? starter : null
   if (target) {
     features.updateMilestone(
       target.id,
@@ -211,7 +236,10 @@ function fillOrCreateMilestone(
     )
     return features.getMilestone(target.id)!
   }
-  if (byKey) fail(`Milestone "${byKey.key}" already has user stories; propose changes to it instead.`)
+  if (byKey)
+    fail(
+      `Milestone "${byKey.key}" already has user stories; propose changes to it instead.`
+    )
   const graph = features.createMilestone({
     featureId: scope.feature.id,
     key: slug(draft.key ?? draft.name),
@@ -236,7 +264,10 @@ export function refreshBlocked(milestoneId: string, actor: string): void {
       .filter((e) => e.toUserStoryId === userStory.id)
       .map((e) => byId.get(e.fromUserStoryId))
       .find((p) => p?.status === "cancelled")
-    if (cancelledPred && (userStory.status === "draft" || userStory.status === "ready"))
+    if (
+      cancelledPred &&
+      (userStory.status === "draft" || userStory.status === "ready")
+    )
       features.setUserStoryExecution(
         userStory.id,
         { status: "blocked" },
@@ -268,8 +299,30 @@ function applyOne(
   switch (change.op) {
     case "add_user_story": {
       const target = milestoneId(change.milestone)
+      const blocks = change.userStory.blocks ?? []
+      if (blocks.length && change.userStory.runsLast)
+        fail("A user story that runs last can't have user stories wait for it.")
+      // Checked before creating anything, so a refusal leaves the plan as it was.
+      const blocked = blocks.map((key) => userStoryByKey(target, key))
+      for (const story of blocked)
+        if (!NOT_STARTED.has(story.status) && story.status !== "failed")
+          fail(
+            `User story ${story.key} is ${story.status}; only a user story that hasn't started can be made to wait for a new one.`
+          )
       const userStory = createUserStory(scope, target, change.userStory, input)
       addDependencies(target, userStory.id, change.userStory.dependsOn, input)
+      if (blocked.length)
+        setEdges(
+          target,
+          [
+            ...edgesOf(target),
+            ...blocked.map((story) => ({
+              fromUserStoryId: userStory.id,
+              toUserStoryId: story.id,
+            })),
+          ],
+          input
+        )
       result.createdUserStoryIds.push(userStory.id)
       break
     }
@@ -277,25 +330,39 @@ function applyOne(
       const target = milestoneId()
       const original = userStoryByKey(target, change.userStory)
       if (!NOT_STARTED.has(original.status) && original.status !== "failed")
-        fail(`User story ${original.key} is ${original.status}; only a user story that isn't running or finished can be split.`)
+        fail(
+          `User story ${original.key} is ${original.status}; only a user story that isn't running or finished can be split.`
+        )
       const edges = edgesOf(target)
-      const preds = edges.filter((e) => e.toUserStoryId === original.id).map((e) => e.fromUserStoryId)
-      const succs = edges.filter((e) => e.fromUserStoryId === original.id).map((e) => e.toUserStoryId)
-      const created = change.into.map((draft) => createUserStory(scope, target, draft, input))
+      const preds = edges
+        .filter((e) => e.toUserStoryId === original.id)
+        .map((e) => e.fromUserStoryId)
+      const succs = edges
+        .filter((e) => e.fromUserStoryId === original.id)
+        .map((e) => e.toUserStoryId)
+      const created = change.into.map((draft) =>
+        createUserStory(scope, target, draft, input)
+      )
       const keyToId = new Map(
-        change.into.map((draft, index) => [slug(draft.key ?? draft.title), created[index].id])
+        change.into.map((draft, index) => [
+          slug(draft.key ?? draft.title),
+          created[index].id,
+        ])
       )
       const next = edges.filter(
-        (e) => e.fromUserStoryId !== original.id && e.toUserStoryId !== original.id
+        (e) =>
+          e.fromUserStoryId !== original.id && e.toUserStoryId !== original.id
       )
       change.into.forEach((draft, index) => {
         const id = created[index].id
-        for (const pred of preds) next.push({ fromUserStoryId: pred, toUserStoryId: id })
+        for (const pred of preds)
+          next.push({ fromUserStoryId: pred, toUserStoryId: id })
         for (const key of draft.dependsOn ?? []) {
           const from = keyToId.get(slug(key)) ?? userStoryByKey(target, key).id
           next.push({ fromUserStoryId: from, toUserStoryId: id })
         }
-        for (const succ of succs) next.push({ fromUserStoryId: id, toUserStoryId: succ })
+        for (const succ of succs)
+          next.push({ fromUserStoryId: id, toUserStoryId: succ })
       })
       setEdges(target, next, input)
       features.setUserStoryExecution(
@@ -315,10 +382,18 @@ function applyOne(
       const edges = edgesOf(target)
       if (change.op === "add_dependency") {
         if (!NOT_STARTED.has(to.status) && to.status !== "failed")
-          fail(`User story ${to.key} is ${to.status}; a dependency can only be added to a user story that hasn't started.`)
-        setEdges(target, [...edges, { fromUserStoryId: from.id, toUserStoryId: to.id }], input)
+          fail(
+            `User story ${to.key} is ${to.status}; a dependency can only be added to a user story that hasn't started.`
+          )
+        setEdges(
+          target,
+          [...edges, { fromUserStoryId: from.id, toUserStoryId: to.id }],
+          input
+        )
       } else {
-        const next = edges.filter((e) => !(e.fromUserStoryId === from.id && e.toUserStoryId === to.id))
+        const next = edges.filter(
+          (e) => !(e.fromUserStoryId === from.id && e.toUserStoryId === to.id)
+        )
         if (next.length === edges.length)
           fail(`${to.key} does not depend on ${from.key}.`)
         setEdges(target, next, input)
@@ -332,7 +407,12 @@ function applyOne(
       const rest = userStories.filter((s) => !listed.some((l) => l.id === s.id))
       ;[...listed, ...rest].forEach((userStory, position) => {
         if (userStory.position !== position)
-          features.updateUserStory(userStory.id, { position }, input.actor, input.reason)
+          features.updateUserStory(
+            userStory.id,
+            { position },
+            input.actor,
+            input.reason
+          )
       })
       break
     }
@@ -340,7 +420,9 @@ function applyOne(
       const target = milestoneId()
       const userStory = userStoryByKey(target, change.userStory)
       if (userStory.startedAt || !NOT_STARTED.has(userStory.status))
-        fail(`User story ${userStory.key} has started; only a user story that has not started can be edited. Split or cancel it instead.`)
+        fail(
+          `User story ${userStory.key} has started; only a user story that has not started can be edited. Split or cancel it instead.`
+        )
       assertPod(scope, change.patch.pod)
       const { pod, title, ...specPatch } = change.patch
       features.updateUserStory(
@@ -358,7 +440,12 @@ function applyOne(
       break
     }
     case "add_milestone": {
-      const milestone = fillOrCreateMilestone(scope, change.milestone, firstMilestone.value, input)
+      const milestone = fillOrCreateMilestone(
+        scope,
+        change.milestone,
+        firstMilestone.value,
+        input
+      )
       firstMilestone.value = false
       const created: UserStory[] = []
       for (const draft of change.milestone.userStories ?? []) {
@@ -372,8 +459,16 @@ function applyOne(
           created[index].id,
         ])
       )
-      for (const [index, draft] of (change.milestone.userStories ?? []).entries())
-        addDependencies(milestone.id, created[index].id, draft.dependsOn, input, keyToId)
+      for (const [index, draft] of (
+        change.milestone.userStories ?? []
+      ).entries())
+        addDependencies(
+          milestone.id,
+          created[index].id,
+          draft.dependsOn,
+          input,
+          keyToId
+        )
       result.createdMilestoneIds.push(milestone.id)
       result.createdUserStoryIds.push(...created.map((s) => s.id))
       break
@@ -381,12 +476,24 @@ function applyOne(
     case "edit_milestone": {
       const milestone = milestoneByKey(scope, change.milestone)
       if (["completed", "cancelled"].includes(milestone.status))
-        fail(`Milestone ${milestone.key} is ${milestone.status} and can't be edited.`)
-      features.updateMilestone(milestone.id, change.patch, input.actor, input.reason)
+        fail(
+          `Milestone ${milestone.key} is ${milestone.status} and can't be edited.`
+        )
+      features.updateMilestone(
+        milestone.id,
+        change.patch,
+        input.actor,
+        input.reason
+      )
       break
     }
     case "edit_feature":
-      features.updateFeature(scope.feature.id, change.patch, input.actor, input.reason)
+      features.updateFeature(
+        scope.feature.id,
+        change.patch,
+        input.actor,
+        input.reason
+      )
       break
   }
   result.applied.push(describePlanChange(change))
@@ -423,7 +530,10 @@ function applyAll(
 ): void {
   const tolerant = options.partial || options.dryRun
   getDb().transaction(() => {
-    const scope: Scope = { feature, milestones: features.listMilestones(feature.id) }
+    const scope: Scope = {
+      feature,
+      milestones: features.listMilestones(feature.id),
+    }
     const firstMilestone = { value: true }
     for (const [index, change] of input.changes.entries()) {
       try {
@@ -436,7 +546,9 @@ function applyAll(
         const milestones = scope.milestones.length
         const first = firstMilestone.value
         try {
-          getDb().transaction(() => applyOne(scope, change, input, result, firstMilestone))()
+          getDb().transaction(() =>
+            applyOne(scope, change, input, result, firstMilestone)
+          )()
         } catch (error) {
           scope.milestones.length = milestones
           firstMilestone.value = first
@@ -448,14 +560,21 @@ function applyAll(
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
-        throw new PlanEditError(`Change ${index + 1} (${change.op}): ${message}`)
+        throw new PlanEditError(
+          `Change ${index + 1} (${change.op}): ${message}`
+        )
       }
     }
     const touched = new Set(
-      [input.milestoneId, ...result.createdMilestoneIds].filter((id): id is string => !!id)
+      [input.milestoneId, ...result.createdMilestoneIds].filter(
+        (id): id is string => !!id
+      )
     )
     for (const milestone of features.listMilestones(feature.id))
-      if (touched.has(milestone.id) || input.changes.some((c) => c.op === "split_user_story"))
+      if (
+        touched.has(milestone.id) ||
+        input.changes.some((c) => c.op === "split_user_story")
+      )
         refreshBlocked(milestone.id, input.actor)
     // Thrown inside the transaction so everything above rolls back.
     if (options.dryRun) throw new DryRun()

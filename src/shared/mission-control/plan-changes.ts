@@ -21,6 +21,11 @@ export interface UserStoryDraft {
   pod?: string | null
   // Keys of user stories in the same milestone this one waits for.
   dependsOn?: string[]
+  // Keys of existing, not-started user stories that must wait for this one
+  // (add_user_story only: in a new milestone, `dependsOn` says it all).
+  blocks?: string[]
+  // Run after every other user story in the milestone, including later ones.
+  runsLast?: boolean
 }
 
 export interface UserStoryEdit {
@@ -32,6 +37,7 @@ export interface UserStoryEdit {
   touchHints?: string[]
   notes?: string
   pod?: string | null
+  runsLast?: boolean
 }
 
 export interface MilestoneDraft {
@@ -98,7 +104,11 @@ export type ProposalStatus = "pending" | "applied" | "rejected"
 // One line per change, for proposal diffs, revision reasons, and tool results.
 export function describePlanChange(change: PlanChange): string {
   const deps = (draft: UserStoryDraft) =>
-    draft.dependsOn?.length ? ` (after ${draft.dependsOn.join(", ")})` : ""
+    [
+      draft.dependsOn?.length ? ` (after ${draft.dependsOn.join(", ")})` : "",
+      draft.blocks?.length ? ` (before ${draft.blocks.join(", ")})` : "",
+      draft.runsLast ? " (runs last)" : "",
+    ].join("")
   switch (change.op) {
     case "add_user_story":
       return `+ user story ${change.userStory.key ?? change.userStory.title}${change.milestone ? ` in ${change.milestone}` : ""}: ${change.userStory.title}${deps(change.userStory)}`
@@ -130,11 +140,14 @@ function str(value: unknown): string | undefined {
 function strings(value: unknown): string[] | undefined {
   if (value === undefined || value === null) return undefined
   if (!Array.isArray(value)) return undefined
-  return value.filter((v): v is string => typeof v === "string" && !!v.trim()).map((v) => v.trim())
+  return value
+    .filter((v): v is string => typeof v === "string" && !!v.trim())
+    .map((v) => v.trim())
 }
 
 export function parseUserStoryDraft(value: unknown): UserStoryDraft | string {
-  if (!value || typeof value !== "object") return "A user story must be an object."
+  if (!value || typeof value !== "object")
+    return "A user story must be an object."
   const v = value as Record<string, unknown>
   const title = str(v.title)
   if (!title) return "Every user story needs a `title`."
@@ -155,6 +168,8 @@ export function parseUserStoryDraft(value: unknown): UserStoryDraft | string {
     ...(strings(v.depends_on ?? v.dependsOn)
       ? { dependsOn: strings(v.depends_on ?? v.dependsOn) }
       : {}),
+    ...(strings(v.blocks)?.length ? { blocks: strings(v.blocks) } : {}),
+    ...((v.runs_last ?? v.runsLast) === true ? { runsLast: true } : {}),
   }
 }
 
@@ -172,19 +187,23 @@ function parseUserStoryEdit(value: unknown): UserStoryEdit | string {
     patch.touchHints = strings(v.touch_hints ?? v.touchHints)
   if (typeof v.notes === "string") patch.notes = v.notes
   if (v.pod === null || str(v.pod)) patch.pod = str(v.pod) ?? null
+  const runsLast = v.runs_last ?? v.runsLast
+  if (typeof runsLast === "boolean") patch.runsLast = runsLast
   if (!Object.keys(patch).length) return "`patch` changes nothing."
   return patch
 }
 
 export function parseMilestoneDraft(value: unknown): MilestoneDraft | string {
-  if (!value || typeof value !== "object") return "A milestone must be an object."
+  if (!value || typeof value !== "object")
+    return "A milestone must be an object."
   const v = value as Record<string, unknown>
   const name = str(v.name)
   if (!name) return "Every milestone needs a `name`."
   const userStories: UserStoryDraft[] = []
   const drafts = v.user_stories ?? v.userStories
   if (drafts !== undefined) {
-    if (!Array.isArray(drafts)) return "A milestone's `user_stories` must be a list."
+    if (!Array.isArray(drafts))
+      return "A milestone's `user_stories` must be a list."
     for (const item of drafts) {
       const draft = parseUserStoryDraft(item)
       if (typeof draft === "string") return `Milestone ${name}: ${draft}`
@@ -196,7 +215,10 @@ export function parseMilestoneDraft(value: unknown): MilestoneDraft | string {
     name,
     outcome: typeof v.outcome === "string" ? v.outcome : "",
     ...(typeof (v.definition_of_done ?? v.definitionOfDone) === "string"
-      ? { definitionOfDone: (v.definition_of_done ?? v.definitionOfDone) as string }
+      ? {
+          definitionOfDone: (v.definition_of_done ??
+            v.definitionOfDone) as string,
+        }
       : {}),
     userStories,
   }
@@ -204,18 +226,24 @@ export function parseMilestoneDraft(value: unknown): MilestoneDraft | string {
 
 // Validate one change's shape (not its effect on the plan).
 export function parsePlanChange(value: unknown): PlanChange | string {
-  if (!value || typeof value !== "object") return "Each change must be an object."
+  if (!value || typeof value !== "object")
+    return "Each change must be an object."
   const v = value as Record<string, unknown>
   const op = v.op
   switch (op) {
     case "add_user_story": {
       const userStory = parseUserStoryDraft(v.user_story ?? v.userStory)
       if (typeof userStory === "string") return userStory
-      return { op, ...(str(v.milestone) ? { milestone: str(v.milestone) } : {}), userStory }
+      return {
+        op,
+        ...(str(v.milestone) ? { milestone: str(v.milestone) } : {}),
+        userStory,
+      }
     }
     case "split_user_story": {
       const userStory = str(v.user_story ?? v.userStory)
-      if (!userStory) return "split_user_story needs the `user_story` key to split."
+      if (!userStory)
+        return "split_user_story needs the `user_story` key to split."
       if (!Array.isArray(v.into) || v.into.length < 2)
         return "split_user_story needs `into`: at least two user stories."
       const into: UserStoryDraft[] = []
@@ -230,12 +258,14 @@ export function parsePlanChange(value: unknown): PlanChange | string {
     case "remove_dependency": {
       const from = str(v.from)
       const to = str(v.to)
-      if (!from || !to) return `${op} needs \`from\` and \`to\` user story keys.`
+      if (!from || !to)
+        return `${op} needs \`from\` and \`to\` user story keys.`
       return { op, from, to }
     }
     case "reorder": {
       const order = strings(v.order)
-      if (!order?.length) return "reorder needs `order`: user story keys in their new order."
+      if (!order?.length)
+        return "reorder needs `order`: user story keys in their new order."
       return { op, order }
     }
     case "edit_user_story": {
@@ -254,7 +284,11 @@ export function parsePlanChange(value: unknown): PlanChange | string {
       const milestone = str(v.milestone)
       const p = (v.patch ?? {}) as Record<string, unknown>
       if (!milestone) return "edit_milestone needs the `milestone` key."
-      const patch: { name?: string; outcome?: string; definitionOfDone?: string } = {}
+      const patch: {
+        name?: string
+        outcome?: string
+        definitionOfDone?: string
+      } = {}
       if (str(p.name)) patch.name = str(p.name)
       if (typeof p.outcome === "string") patch.outcome = p.outcome
       const dod = p.definition_of_done ?? p.definitionOfDone

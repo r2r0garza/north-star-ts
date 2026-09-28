@@ -17,7 +17,10 @@ function service(ctx: ToolContext) {
 }
 
 function unavailable(): string {
-  return toolError("unavailable", "Map tools are only available to Mission Control lead seats.")
+  return toolError(
+    "unavailable",
+    "Map tools are only available to Mission Control lead seats."
+  )
 }
 
 function text(value: unknown): string | null {
@@ -34,7 +37,10 @@ function result(outcome: MapResult): string {
 const USER_STORY_SCHEMA = {
   type: "object",
   properties: {
-    key: { type: "string", description: "Short kebab-case key, e.g. invoice-api." },
+    key: {
+      type: "string",
+      description: "Short kebab-case key, e.g. invoice-api.",
+    },
     title: { type: "string" },
     story: {
       type: "object",
@@ -42,12 +48,19 @@ const USER_STORY_SCHEMA = {
         "Who benefits and why: As a <as_a>, I want <i_want>, so that <so_that>. " +
         "Omit it for purely technical work (a migration, a refactor).",
       properties: {
-        as_a: { type: "string", description: "The user or role, e.g. billing admin." },
+        as_a: {
+          type: "string",
+          description: "The user or role, e.g. billing admin.",
+        },
         i_want: { type: "string", description: "What they want to do." },
         so_that: { type: "string", description: "The benefit to them." },
       },
     },
-    goal: { type: "string", description: "What the user story achieves, as the engineering objective." },
+    goal: {
+      type: "string",
+      description:
+        "What the user story achieves, as the engineering objective.",
+    },
     acceptance: {
       type: "array",
       items: { type: "string" },
@@ -59,14 +72,32 @@ const USER_STORY_SCHEMA = {
     touch_hints: {
       type: "array",
       items: { type: "string" },
-      description: "Paths or globs the user story will change; overlapping user stories don't run in parallel.",
+      description:
+        "Paths or globs the user story will change; overlapping user stories don't run in parallel.",
     },
     notes: { type: "string" },
-    pod: { type: "string", description: "Pod key to build it in (default: the feature's pod)." },
+    pod: {
+      type: "string",
+      description: "Pod key to build it in (default: the feature's pod).",
+    },
     depends_on: {
       type: "array",
       items: { type: "string" },
-      description: "Keys of user stories in the same milestone that must merge first.",
+      description:
+        "Keys of user stories in the same milestone that must merge first.",
+    },
+    blocks: {
+      type: "array",
+      items: { type: "string" },
+      description:
+        "When adding to an existing plan: keys of not-started user stories that must wait for this one. " +
+        "Without it, stories already planned in later waves don't wait for a new story.",
+    },
+    runs_last: {
+      type: "boolean",
+      description:
+        "Run after every other user story in the milestone, including ones added later: for an " +
+        "integration or regression proof, or docs. Nothing may depend on it.",
     },
   },
   required: ["title", "acceptance"],
@@ -115,8 +146,11 @@ export const assignUserStoryTool: Tool = {
     const s = service(ctx)
     if (!s) return unavailable()
     const userStory = text(args.user_story)
-    if (!userStory) return toolError("bad_args", "assign_user_story needs `user_story`.")
-    return result(await s.tools.assignUserStory(s.turn, { userStory, pod: text(args.pod) }))
+    if (!userStory)
+      return toolError("bad_args", "assign_user_story needs `user_story`.")
+    return result(
+      await s.tools.assignUserStory(s.turn, { userStory, pod: text(args.pod) })
+    )
   },
 }
 
@@ -133,7 +167,10 @@ export const retryUserStoryTool: Tool = {
         type: "object",
         properties: {
           user_story: { type: "string" },
-          note: { type: "string", description: "What went wrong and what to do differently." },
+          note: {
+            type: "string",
+            description: "What went wrong and what to do differently.",
+          },
         },
         required: ["user_story", "note"],
       },
@@ -144,7 +181,11 @@ export const retryUserStoryTool: Tool = {
     if (!s) return unavailable()
     const userStory = text(args.user_story)
     const note = text(args.note)
-    if (!userStory || !note) return toolError("bad_args", "retry_user_story needs `user_story` and `note`.")
+    if (!userStory || !note)
+      return toolError(
+        "bad_args",
+        "retry_user_story needs `user_story` and `note`."
+      )
     return result(await s.tools.retryUserStory(s.turn, { userStory, note }))
   },
 }
@@ -162,7 +203,10 @@ export const cancelUserStoryTool: Tool = {
         type: "object",
         properties: {
           user_story: { type: "string" },
-          reason: { type: "string", description: "Why; recorded in the revision log." },
+          reason: {
+            type: "string",
+            description: "Why; recorded in the revision log.",
+          },
         },
         required: ["user_story", "reason"],
       },
@@ -173,7 +217,11 @@ export const cancelUserStoryTool: Tool = {
     if (!s) return unavailable()
     const userStory = text(args.user_story)
     const reason = text(args.reason)
-    if (!userStory || !reason) return toolError("bad_args", "cancel_user_story needs `user_story` and `reason`.")
+    if (!userStory || !reason)
+      return toolError(
+        "bad_args",
+        "cancel_user_story needs `user_story` and `reason`."
+      )
     return result(s.tools.cancelUserStory(s.turn, { userStory, reason }))
   },
 }
@@ -215,19 +263,26 @@ export const revisePlanTool: Tool = {
                   ],
                 },
                 user_story: {
-                  description: "A user story key (split/edit) or a new user story object (add_user_story).",
+                  description:
+                    "A user story key (split/edit) or a new user story object (add_user_story).",
                 },
                 into: { type: "array", items: USER_STORY_SCHEMA },
                 from: { type: "string" },
                 to: { type: "string" },
                 order: { type: "array", items: { type: "string" } },
                 patch: { type: "object" },
-                milestone: { description: "Milestone key (edit_milestone) or new milestone (add_milestone)." },
+                milestone: {
+                  description:
+                    "Milestone key (edit_milestone) or new milestone (add_milestone).",
+                },
               },
               required: ["op"],
             },
           },
-          reason: { type: "string", description: "Why; recorded with every change." },
+          reason: {
+            type: "string",
+            description: "Why; recorded with every change.",
+          },
         },
         required: ["changes", "reason"],
       },
@@ -237,7 +292,10 @@ export const revisePlanTool: Tool = {
     const s = service(ctx)
     if (!s) return unavailable()
     return result(
-      s.tools.revisePlan(s.turn, { changes: args.changes, reason: text(args.reason) ?? "" })
+      s.tools.revisePlan(s.turn, {
+        changes: args.changes,
+        reason: text(args.reason) ?? "",
+      })
     )
   },
 }
@@ -254,9 +312,15 @@ export const proposeUserStoryTool: Tool = {
       parameters: {
         type: "object",
         properties: {
-          milestone: { type: "string", description: "Milestone key (default: the active milestone)." },
+          milestone: {
+            type: "string",
+            description: "Milestone key (default: the active milestone).",
+          },
           user_story: USER_STORY_SCHEMA,
-          reason: { type: "string", description: "Why this user story is needed." },
+          reason: {
+            type: "string",
+            description: "Why this user story is needed.",
+          },
         },
         required: ["user_story", "reason"],
       },
@@ -301,7 +365,10 @@ export const proposePlanTool: Tool = {
               required: ["name", "outcome", "user_stories"],
             },
           },
-          reason: { type: "string", description: "A short summary of the plan's shape." },
+          reason: {
+            type: "string",
+            description: "A short summary of the plan's shape.",
+          },
         },
         required: ["milestones"],
       },
@@ -311,7 +378,10 @@ export const proposePlanTool: Tool = {
     const s = service(ctx)
     if (!s) return unavailable()
     return result(
-      s.tools.proposePlan(s.turn, { milestones: args.milestones, reason: text(args.reason) ?? undefined })
+      s.tools.proposePlan(s.turn, {
+        milestones: args.milestones,
+        reason: text(args.reason) ?? undefined,
+      })
     )
   },
 }
@@ -329,10 +399,14 @@ export const completeMilestoneTool: Tool = {
       parameters: {
         type: "object",
         properties: {
-          milestone: { type: "string", description: "The active milestone's key." },
+          milestone: {
+            type: "string",
+            description: "The active milestone's key.",
+          },
           summary: {
             type: "string",
-            description: "How the merged user stories meet the milestone's definition of done.",
+            description:
+              "How the merged user stories meet the milestone's definition of done.",
           },
         },
         required: ["milestone", "summary"],
@@ -345,8 +419,13 @@ export const completeMilestoneTool: Tool = {
     const milestone = text(args.milestone)
     const summary = text(args.summary)
     if (!milestone || !summary)
-      return toolError("bad_args", "complete_milestone needs `milestone` and `summary`.")
-    return result(await s.tools.completeMilestone(s.turn, { milestone, summary }))
+      return toolError(
+        "bad_args",
+        "complete_milestone needs `milestone` and `summary`."
+      )
+    return result(
+      await s.tools.completeMilestone(s.turn, { milestone, summary })
+    )
   },
 }
 
@@ -360,4 +439,6 @@ export const mapTools: Tool[] = [
   proposePlanTool,
   completeMilestoneTool,
 ]
-export const MAP_TOOL_NAMES = new Set(mapTools.map((tool) => tool.definition.function.name))
+export const MAP_TOOL_NAMES = new Set(
+  mapTools.map((tool) => tool.definition.function.name)
+)

@@ -165,6 +165,40 @@ export function touchHintsOverlap(a: string[], b: string[]): boolean {
   return false
 }
 
+// ── runs last ───────────────────────────────────────────────────────────────
+
+export interface RunsLastNode {
+  id: string
+  status?: string
+  runsLast?: boolean
+}
+
+// A user story that runs last (an integration proof, docs) waits for every
+// other live user story in its milestone, including ones added after the plan
+// was applied: this adds those implicit edges to one milestone's explicit ones.
+// Stories that also run last don't wait for each other, and cancelled ones
+// are skipped.
+export function withRunsLastEdges(
+  stories: RunsLastNode[],
+  edges: WaveEdge[]
+): WaveEdge[] {
+  const last = stories.filter((story) => story.runsLast)
+  if (!last.length) return edges
+  const seen = new Set(
+    edges.map((e) => `${e.fromUserStoryId}>${e.toUserStoryId}`)
+  )
+  const implicit: WaveEdge[] = []
+  for (const final of last)
+    for (const story of stories) {
+      if (story.runsLast || story.status === "cancelled") continue
+      const key = `${story.id}>${final.id}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      implicit.push({ fromUserStoryId: story.id, toUserStoryId: final.id })
+    }
+  return [...edges, ...implicit]
+}
+
 // ── overlap policy and schedule estimate ────────────────────────────────────
 
 // Whether user stories whose touch hints overlap wait for each other (the

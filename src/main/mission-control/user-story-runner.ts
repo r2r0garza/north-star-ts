@@ -29,7 +29,10 @@ import {
   renderUserStoryObjective,
   userStoryCriteria,
 } from "./user-story-objective"
-import { touchHintsOverlap } from "../../shared/mission-control/waves"
+import {
+  touchHintsOverlap,
+  withRunsLastEdges,
+} from "../../shared/mission-control/waves"
 import {
   DEFAULT_MAX_CONCURRENT_USER_STORIES,
   type IsolatedUserStoryWorkspace,
@@ -378,8 +381,15 @@ export class UserStoryRunner {
       throw new Error(
         `User story ${userStory.key} has used all ${cap} attempts allowed by the feature's budget.`
       )
-    const blockers = features
-      .listEdges(milestone.id)
+    const siblings = features.listUserStories(milestone.id)
+    const blockers = withRunsLastEdges(
+      siblings.map((s) => ({
+        id: s.id,
+        status: s.status,
+        runsLast: s.spec.runsLast,
+      })),
+      features.listEdges(milestone.id)
+    )
       .filter((edge) => edge.toUserStoryId === userStory.id)
       .map((edge) => features.getUserStory(edge.fromUserStoryId))
       .filter((dep): dep is UserStory => !!dep && dep.status !== "done")

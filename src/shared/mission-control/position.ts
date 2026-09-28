@@ -1,4 +1,9 @@
-import { deriveWaves, touchHintsOverlap, type OverlapPolicy } from "./waves"
+import {
+  deriveWaves,
+  touchHintsOverlap,
+  withRunsLastEdges,
+  type OverlapPolicy,
+} from "./waves"
 import type { BudgetMeter } from "./budgets"
 
 // The Navigator's position (plan 106.6): a PURE function of durable state.
@@ -30,6 +35,8 @@ export interface PositionUserStoryInput {
   touchHints: string[]
   acceptanceCount: number
   proofVerdict: "accepted" | "rejected" | null
+  // Waits for every other user story in the milestone (implicit edges).
+  runsLast?: boolean
   // Set for a failed user story: why its latest run failed, and whether the
   // model request failed rather than the user story's own work.
   lastFailure?: { reason: string; infrastructure: boolean } | null
@@ -532,7 +539,10 @@ export function computePosition(input: PositionInput): Position {
   const allMilestoneUserStories = input.userStories.filter(
     (s) => s.milestoneId === milestone.id
   )
-  const edges = input.edges.filter((e) => e.milestoneId === milestone.id)
+  const edges = withRunsLastEdges(
+    allMilestoneUserStories,
+    input.edges.filter((e) => e.milestoneId === milestone.id)
+  )
   let waves: string[][] = []
   let criticalPath: string[] = []
   try {

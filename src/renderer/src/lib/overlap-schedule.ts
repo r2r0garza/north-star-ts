@@ -4,6 +4,7 @@ import type { PlanChange } from "../../../shared/mission-control/plan-changes"
 import {
   overlappingPairs,
   scheduleSteps,
+  withRunsLastEdges,
   type ScheduleStory,
   type WaveEdge,
 } from "../../../shared/mission-control/waves"
@@ -83,9 +84,13 @@ export function milestoneOverlapEstimate(
       key: s.key,
       touchHints: s.spec.touchHints,
       position: s.position,
+      runsLast: s.spec.runsLast,
     }))
   if (!stories.length) return null
-  const edges = graph.edges.filter((e) => e.milestoneId === milestone.id)
+  const edges = withRunsLastEdges(
+    stories,
+    graph.edges.filter((e) => e.milestoneId === milestone.id)
+  )
   return estimate(
     milestone.key,
     stories,
@@ -106,13 +111,22 @@ export function proposalOverlapEstimates(
     if (!drafts.length) return []
     const stories = drafts.map((draft, position) => {
       const key = draft.key ?? draft.title
-      return { id: key, key, touchHints: draft.touchHints ?? [], position }
+      return {
+        id: key,
+        key,
+        touchHints: draft.touchHints ?? [],
+        position,
+        runsLast: draft.runsLast === true,
+      }
     })
-    const edges = drafts.flatMap((draft) =>
-      (draft.dependsOn ?? []).map((from) => ({
-        fromUserStoryId: from,
-        toUserStoryId: draft.key ?? draft.title,
-      }))
+    const edges = withRunsLastEdges(
+      stories,
+      drafts.flatMap((draft) =>
+        (draft.dependsOn ?? []).map((from) => ({
+          fromUserStoryId: from,
+          toUserStoryId: draft.key ?? draft.title,
+        }))
+      )
     )
     return [
       estimate(

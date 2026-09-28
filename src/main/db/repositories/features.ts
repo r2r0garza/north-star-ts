@@ -112,6 +112,7 @@ const EMPTY_SPEC: UserStorySpec = {
   outOfScope: [],
   touchHints: [],
   notes: "",
+  runsLast: false,
 }
 
 function parse<T>(value: string | null, fallback: T): T {
@@ -167,6 +168,7 @@ function spec(value?: Partial<UserStorySpec>): UserStorySpec {
     touchHints:
       value?.touchHints?.map((item) => item.trim()).filter(Boolean) ?? [],
     notes: value?.notes ?? "",
+    runsLast: value?.runsLast === true,
   }
 }
 export const DEFAULT_DRIVE: FeatureDrive = {
@@ -851,6 +853,14 @@ export function updateUserStory(
     throw new Error(
       "A started user story spec can only be revised by the execution workflow."
     )
+  if (
+    patch.spec?.runsLast &&
+    !before.spec.runsLast &&
+    listEdges(before.milestoneId).some((e) => e.fromUserStoryId === id)
+  )
+    throw new Error(
+      `User story ${before.key} has user stories that depend on it, so it can't run last.`
+    )
   const sets: string[] = []
   const values: unknown[] = []
   const add = (c: string, v: unknown) => {
@@ -923,6 +933,15 @@ export function setUserStoryEdges(
       throw new Error("Duplicate user story dependencies are not allowed.")
     unique.add(key)
   }
+  // Every other story implicitly precedes a story that runs last, so a
+  // dependent of one would loop.
+  const last = userStories.find(
+    (s) => s.spec.runsLast && edges.some((e) => e.fromUserStoryId === s.id)
+  )
+  if (last)
+    throw new Error(
+      `User story ${last.key} runs last, so no user story can depend on it.`
+    )
   const cycle = findCycle(userStories, edges)
   if (cycle) {
     const labels = new Map(
