@@ -457,7 +457,7 @@ describe.skipIf(!sqliteLoads)("seat comms: addresses and bounds", () => {
     expect(big).toMatchObject({ ok: false, code: "message_too_large" })
 
     const deep = bus.send(
-      seat(feature, "builder@implementation", { wakeHop: 4 }),
+      seat(feature, "builder@implementation", { wakeHop: 20 }),
       {
         to: "qa@implementation",
         body: "relaying again",
@@ -1161,7 +1161,7 @@ describe.skipIf(!sqliteLoads)("seat comms: wake visibility", () => {
 describe.skipIf(!sqliteLoads)("seat comms: escaping a deep chain", () => {
   it("routes a too-deep escalation to the user instead of refusing it", () => {
     const { feature } = orchestrated()
-    const deep = seat(feature, "builder@implementation", { wakeHop: 4 })
+    const deep = seat(feature, "builder@implementation", { wakeHop: 20 })
     const refused = bus.send(deep, { to: "lead@orchestration", body: "hi" })
     expect(refused).toMatchObject({ ok: false, code: "hop_limit" })
     expect(!refused.ok && refused.message).toContain(
@@ -1172,7 +1172,7 @@ describe.skipIf(!sqliteLoads)("seat comms: escaping a deep chain", () => {
     expect(escalated).toMatchObject({
       toAddress: "user@rig",
       status: "delivered",
-      hop: 5,
+      hop: 21,
       kind: "escalation",
     })
     expect(escalated.body).toContain(

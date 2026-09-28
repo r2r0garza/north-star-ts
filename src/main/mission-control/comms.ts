@@ -59,7 +59,9 @@ export interface CommsBounds {
 
 export const DEFAULT_COMMS_BOUNDS: CommsBounds = {
   maxMessagesPerThreadPerHour: 20,
-  maxHopDepth: 4,
+  // Reply chains up to 20 hops go through; hop 21 is refused. 4 cut off
+  // ordinary coordination (the lead confirming QA's findings to a builder).
+  maxHopDepth: 20,
   maxMessageBytes: 8 * 1024,
   maxInboxDepth: 200,
 }
