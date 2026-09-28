@@ -37,6 +37,8 @@ const builds = new Map<string, Record<string, string>>()
 let resolution: Record<string, string> | null = null
 // The plan the lead's planning step proposes.
 let plannedMilestones: unknown[] = []
+// A user story the milestone's planning review adds, once.
+let reviewAddsStory: Record<string, unknown> | null = null
 
 vi.mock("../agent", () => ({
   SHUTDOWN_ABORT_REASON,
@@ -64,6 +66,17 @@ vi.mock("../agent", () => ({
         reason: "Two milestones",
       })
       content = result.ok ? "Plan proposed." : result.message
+    } else if (
+      reviewAddsStory &&
+      msg.includes("Review the milestone's user stories") &&
+      input.missionControlSeat
+    ) {
+      const result = getMapTools()!.proposeUserStory(input.missionControlSeat, {
+        userStory: reviewAddsStory,
+        reason: "The definition of done needs it.",
+      })
+      reviewAddsStory = null
+      content = result.ok ? "Proposed." : result.message
     } else if (msg.includes("Build the user story")) {
       const key = /# User story ([a-z0-9-]+):/.exec(msg)?.[1] ?? ""
       for (const [file, text] of Object.entries(builds.get(key) ?? {}))
@@ -418,6 +431,7 @@ beforeEach(() => {
   resolution = null
   notices.length = 0
   plannedMilestones = PLAN
+  reviewAddsStory = null
   clock = 1_000_000
 })
 
@@ -697,6 +711,44 @@ describe.skipIf(!sqliteLoads)("Navigator autopilot", () => {
     })
     await navigator.startDrive(id, { mode: "manual" })
     expect(started).toEqual([`${id}:active`])
+  })
+
+  it("with auto-apply on, applies what the planning review adds too", async () => {
+    setup()
+    const root = repo()
+    const id = draftFeature(root)
+    reviewAddsStory = {
+      key: "audit",
+      title: "Audit log",
+      acceptance: ["audited"],
+    }
+    await navigator.startDrive(id, { mode: "autopilot", autoApplyPlan: true })
+    await settle()
+    expect(proposals.listProposals(id, "pending")).toEqual([])
+    const applied = proposals
+      .listProposals(id, "applied")
+      .map((p) => p.kind)
+      .sort()
+    expect(applied).toEqual(["plan", "user_story"])
+    expect(userStoriesOf(id).some((s) => s.key === "audit")).toBe(true)
+  })
+
+  it("with auto-apply off, the planning review's additions wait for the user", async () => {
+    setup()
+    const root = repo()
+    const id = draftFeature(root)
+    reviewAddsStory = {
+      key: "audit",
+      title: "Audit log",
+      acceptance: ["audited"],
+    }
+    await navigator.startDrive(id, { mode: "autopilot" })
+    await settle()
+    applyProposal(proposals.listProposals(id, "pending")[0].id, "user")
+    await settle()
+    expect(proposals.listProposals(id, "pending").map((p) => p.kind)).toEqual([
+      "user_story",
+    ])
   })
 
   it("does nothing new when a tick sees the same position", async () => {

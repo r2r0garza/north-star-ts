@@ -14,6 +14,7 @@ import type {
   NavigatorTickAction,
   NavigatorTickState,
   PlaybookHookName,
+  PlanProposal,
   PlaybookRun,
   UserStory,
   RigGraph,
@@ -680,13 +681,19 @@ export class Navigator {
     actions: NavigatorTickAction[]
   ): Promise<void> {
     const actor = NAVIGATOR_ADDRESS
-    // The planning proposal, when the user opted into applying it unreviewed.
+    // The planning proposal, when the user opted into applying it unreviewed,
+    // and what the milestone's planning review adds to it: that review is part
+    // of planning (every run so far, it added the stories the plan missed).
     if (feature.drive.autoApplyPlan) {
       for (const proposal of proposalsRepo.listProposals(
         feature.id,
         "pending"
       )) {
-        if (proposal.kind !== "plan") continue
+        if (
+          proposal.kind !== "plan" &&
+          !fromPlanningReview(proposal, feature.id)
+        )
+          continue
         try {
           applyProposal(proposal.id, actor)
           actions.push({
@@ -1026,6 +1033,22 @@ function errorText(error: unknown): string {
     /^touch_overlap: /,
     ""
   )
+}
+
+// A proposal the lead made while a milestone's planning review
+// (before_user_stories) was running.
+function fromPlanningReview(
+  proposal: PlanProposal,
+  featureId: string
+): boolean {
+  return playbooks
+    .listPlaybookRuns({ featureId })
+    .some(
+      (run) =>
+        run.hook === "before_user_stories" &&
+        proposal.createdAt >= run.createdAt &&
+        proposal.createdAt <= (run.finishedAt ?? Number.POSITIVE_INFINITY)
+    )
 }
 
 // Approvals a running user story or hook's Process run is waiting on, for

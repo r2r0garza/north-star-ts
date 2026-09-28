@@ -198,7 +198,7 @@ export function DriveControls({
               disabled={!editable || pending}
               onCheckedChange={changeAutoApply}
             />
-            Auto-apply planning proposal
+            Auto-apply planning (the plan and what its review adds)
           </label>
         )}
         <div className="ml-auto flex items-center gap-2">
