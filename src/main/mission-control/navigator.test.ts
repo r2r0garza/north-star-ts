@@ -711,13 +711,12 @@ describe.skipIf(!sqliteLoads)("Navigator autopilot", () => {
     expect(ticks.listTicks(id).length).toBe(before)
   })
 
-  it("auto-pauses at the active-time budget and stays resumable once it is raised", async () => {
+  it("doesn't count time spent waiting with no work in flight", async () => {
     setup()
     const root = repo()
     const id = draftFeature(root)
-    const graph = features.getFeatureGraph(id)!
     features.createUserStory({
-      milestoneId: graph.milestones[0].id,
+      milestoneId: features.getFeatureGraph(id)!.milestones[0].id,
       key: "a",
       title: "A",
       spec: { acceptance: ["works"] },
@@ -725,6 +724,35 @@ describe.skipIf(!sqliteLoads)("Navigator autopilot", () => {
     features.setFeatureBudgets(id, { maxActiveHours: 1 })
     await navigator.startDrive(id, { mode: "copilot" })
     await navigator.idle()
+    // Nothing running: the feature is waiting (here, on the lead or user).
+    for (let i = 0; i < 40; i++) {
+      clock += 2 * 60 * 1000
+      await navigator.tick(id)
+    }
+    const feature = features.getFeature(id)!
+    expect(feature.drive.activeMs).toBe(0)
+    expect(feature.status).toBe("active")
+  })
+
+  it("auto-pauses at the active-time budget and stays resumable once it is raised", async () => {
+    setup()
+    const root = repo()
+    const id = draftFeature(root)
+    const graph = features.getFeatureGraph(id)!
+    for (const key of ["a", "b"])
+      features.createUserStory({
+        milestoneId: graph.milestones[0].id,
+        key,
+        title: key.toUpperCase(),
+        spec: { acceptance: ["works"] },
+      })
+    features.setFeatureBudgets(id, { maxActiveHours: 1 })
+    await navigator.startDrive(id, { mode: "copilot" })
+    await navigator.idle()
+    // Work in flight: user story a is running (its run is never driven here).
+    await runner.startUserStory(
+      userStoriesOf(id).find((s) => s.key === "a")!.id
+    )
     // Drive time accrues in bounded steps; a long gap (app closed) never counts.
     clock += 10 * 60 * 60 * 1000
     await navigator.tick(id)
@@ -741,7 +769,7 @@ describe.skipIf(!sqliteLoads)("Navigator autopilot", () => {
     expect(notices.some((n) => n.includes("paused"))).toBe(true)
     // Nothing starts while paused.
     await expect(
-      runner.startUserStory(userStoriesOf(id)[0].id)
+      runner.startUserStory(userStoriesOf(id).find((s) => s.key === "b")!.id)
     ).rejects.toThrow(/Start the feature/)
     expect(() => navigator.resume(id)).toThrow(/Raise the budget/)
     features.setFeatureBudgets(id, { maxActiveHours: 4 })

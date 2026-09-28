@@ -134,3 +134,15 @@ export function updateTask(
 export function deleteTask(id: string): void {
   getDb().prepare("DELETE FROM tasks WHERE id = ?").run(id)
 }
+
+// Whether a task of `kind` for a Mission Control feature is queued or running
+// (the kind's input carries the feature id, like a seat wake's).
+export function hasActiveFeatureTask(kind: string, featureId: string): boolean {
+  return Boolean(
+    getDb()
+      .prepare(
+        "SELECT 1 FROM tasks WHERE status IN ('queued', 'running') AND json_extract(input, '$.kind') = ? AND json_extract(input, '$.featureId') = ? LIMIT 1"
+      )
+      .get(kind, featureId)
+  )
+}

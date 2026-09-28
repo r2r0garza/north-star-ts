@@ -42,6 +42,8 @@ import {
   playbookFor,
   processRunFailure,
 } from "./user-story-runner"
+import { SEAT_WAKE_KIND } from "./sessions"
+import { hasActiveFeatureTask } from "../db/repositories/tasks"
 
 // The Navigator (plan 106.6): GPS for a feature. Deterministic and
 // restart-safe — it keeps no state of its own beyond the tick log. On every
@@ -519,10 +521,16 @@ export class Navigator {
     )
   }
 
-  // Fold elapsed driving time into the feature's active-time budget.
+  // Fold elapsed driving time into the feature's active-time budget. Only
+  // time with work in flight counts: a user story or hook running, or a seat
+  // taking a turn. Waiting on the user (a milestone to land, a proposal to
+  // apply) isn't driving; in nav-test-6 a finished milestone waiting
+  // overnight to land used up the 8-hour budget.
   private accrue(feature: Feature): Feature {
     const driving =
-      feature.status === "active" && feature.driveMode !== "manual"
+      feature.status === "active" &&
+      feature.driveMode !== "manual" &&
+      workInFlight(feature.id)
     const now = this.now()
     const { accountedAt, activeMs } = feature.drive
     if (!driving) {
@@ -1011,6 +1019,13 @@ function errorText(error: unknown): string {
   return (error instanceof Error ? error.message : String(error)).replace(
     /^touch_overlap: /,
     ""
+  )
+}
+
+function workInFlight(featureId: string): boolean {
+  return (
+    playbooks.listPlaybookRuns({ featureId, status: "running" }).length > 0 ||
+    hasActiveFeatureTask(SEAT_WAKE_KIND, featureId)
   )
 }
 
