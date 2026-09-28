@@ -699,6 +699,42 @@ describe.skipIf(!sqliteLoads)("Navigator autopilot", () => {
     expect(failed[0].actions[0].detail).toContain("uncommitted changes")
   })
 
+  it("tells a lead that judges early that running stories finish on their own", async () => {
+    setup()
+    const root = repo()
+    const id = draftFeature(root)
+    plannedMilestones = []
+    await navigator.startDrive(id, { mode: "manual" })
+    const milestone = features.getFeatureGraph(id)!.milestones[0]
+    features.createUserStory({
+      milestoneId: milestone.id,
+      key: "proof",
+      title: "Proof",
+      spec: { acceptance: ["proven"] },
+    })
+    const story = features
+      .listUserStories(milestone.id)
+      .find((s) => s.key === "proof")!
+    const turn = { ...LEAD, featureId: id }
+    const judge = () =>
+      getMapTools()!.completeMilestone(turn, {
+        milestone: milestone.key,
+        summary: "Proven.",
+      })
+
+    features.setUserStoryExecution(story.id, { status: "running" }, "test")
+    const early = await judge()
+    expect(early).toMatchObject({ ok: false, code: "not_done" })
+    expect(!early.ok && early.message).toContain("proof (running)")
+    expect(!early.ok && early.message).toContain("nothing to escalate")
+
+    // A story that isn't moving on its own gets no such reassurance.
+    features.setUserStoryExecution(story.id, { status: "failed" }, "test")
+    const failed = await judge()
+    expect(!failed.ok && failed.message).toContain("proof (failed)")
+    expect(!failed.ok && failed.message).not.toContain("nothing to escalate")
+  })
+
   it("tells the host when a feature starts, so its workspace can be indexed", async () => {
     setup()
     const root = repo()
