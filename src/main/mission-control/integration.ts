@@ -665,20 +665,33 @@ export class MilestoneIntegration {
         case "blocked":
           this.escalate(started, outcome.reason, ["merging"])
           return "stop"
-        case "conflict":
+        case "conflict": {
+          const note = outcome.regenerateError
+            ? `Conflicts only in generated files, but regenerating them failed (${outcome.regenerateError}); handing them to the integrator.`
+            : `Conflicts with the integration branch in ${outcome.files.length} file(s).`
           mergeQueue.updateMergeEntry(
             entry.id,
-            {
-              status: "conflict",
-              conflictFiles: outcome.files,
-              note: outcome.regenerateError
-                ? `Conflicts only in generated files, but regenerating them failed (${outcome.regenerateError}); handing them to the integrator.`
-                : `Conflicts with the integration branch in ${outcome.files.length} file(s).`,
-            },
+            { status: "conflict", conflictFiles: outcome.files, note },
             ["merging"]
           )
+          // The entry's note is replaced as the merge moves on; keep why
+          // regeneration didn't handle the conflict in the user story's history.
+          if (outcome.regenerateError)
+            features.recordRevision(
+              feature.id,
+              "user_story",
+              userStory.id,
+              "execute",
+              {
+                regenerateError: outcome.regenerateError,
+                files: outcome.files,
+              },
+              "mission-control",
+              note
+            )
           conflict = true
           return "continue"
+        }
       }
       return "continue"
     } catch (error) {

@@ -356,22 +356,38 @@ async function regenerateAndCommit(
   await runGit(checkout, ["checkout", "--ours", "--", ...files])
   await runGit(checkout, ["add", "--", ...files])
   const cwd = path.join(checkout, spec.subpath)
+  const run = spec.run ?? runShell
+  // Stage whatever a rule's command rewrote. A glob the command left
+  // untouched matches nothing; that's fine.
+  const stage = async (rule: GeneratedFilesRule) => {
+    for (const glob of rule.paths)
+      await runGit(checkout, [
+        "add",
+        "-A",
+        "--",
+        `:(glob)${path.posix.join(spec.subpath, glob)}`,
+      ]).catch(() => {})
+  }
+  const failure = (rule: GeneratedFilesRule, error: unknown) =>
+    new Error(
+      `\`${rule.command}\` failed: ${(error instanceof Error ? error.message : String(error)).slice(0, 300)}`
+    )
   for (const rule of rules) {
     try {
-      await (spec.run ?? runShell)(cwd, rule.command)
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error)
-      throw new Error(`\`${rule.command}\` failed: ${detail.slice(0, 300)}`)
+      await run(cwd, rule.command)
+    } catch {
+      // Pre-commit-style generators exit non-zero when they rewrite files
+      // ("stage these and retry") and pass once their output is staged. So
+      // stage and run once more; only a second failure is a real one.
+      await stage(rule)
+      try {
+        await run(cwd, rule.command)
+      } catch (error) {
+        throw failure(rule, error)
+      }
     }
+    await stage(rule)
   }
-  for (const glob of rules.flatMap((rule) => rule.paths))
-    // A glob the command left untouched matches nothing; that's fine.
-    await runGit(checkout, [
-      "add",
-      "-A",
-      "--",
-      `:(glob)${path.posix.join(spec.subpath, glob)}`,
-    ]).catch(() => {})
   const remaining = await unmergedPaths(checkout)
   if (remaining.length)
     throw new Error(

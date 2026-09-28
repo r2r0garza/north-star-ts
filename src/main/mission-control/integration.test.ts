@@ -123,7 +123,11 @@ import * as rigs from "../db/repositories/rigs"
 import * as features from "../db/repositories/features"
 import * as mergeQueue from "../db/repositories/merge-queue"
 import * as playbooks from "../db/repositories/playbooks"
-import { listWorkspaces, upsertWorkspace } from "../db/repositories/workspaces"
+import {
+  listWorkspaces,
+  updateWorkspace,
+  upsertWorkspace,
+} from "../db/repositories/workspaces"
 import { ProcessService } from "../tasks/process/service"
 import { UserStoryRunner, recordUserStoryProof } from "./user-story-runner"
 import { startConflictResolution } from "./hook-runner"
@@ -509,6 +513,61 @@ describe.skipIf(!sqliteLoads)("milestone integration", () => {
     expect(
       readFileSync(path.join(retry.worktreePath!, "shared.txt"), "utf8")
     ).toBe("a\n")
+  })
+
+  it("regenerates conflicting generated files in the queue, without the integrator", async () => {
+    setup({ resolve: false })
+    const root = repo()
+    const { feature, userStory } = featureIn(root, ["a", "b"])
+    updateWorkspace(feature.workspaceId!, {
+      generatedFiles: [
+        {
+          paths: ["*.generated"],
+          command: "echo rebuilt > out.generated",
+        },
+      ],
+    })
+    builds.set("a", { "a.txt": "a\n", "out.generated": "a\n" })
+    builds.set("b", { "b.txt": "b\n", "out.generated": "b\n" })
+    const a = await runner.startUserStory(userStory("a").id)
+    const b = await runner.startUserStory(userStory("b").id)
+    await drive(a.processRunId!)
+    await drive(b.processRunId!)
+    await integration.idle()
+
+    const entry = mergeQueue.listMergeEntries({
+      userStoryId: userStory("b").id,
+    })[0]
+    expect(entry).toMatchObject({ status: "merged", resolutionAttempts: 0 })
+    expect(entry.note).toContain(
+      "regenerating 1 conflicting generated file(s): out.generated"
+    )
+  })
+
+  it("keeps why regeneration failed in the user story's history", async () => {
+    setup({ resolve: false })
+    const root = repo()
+    const { feature, userStory } = featureIn(root, ["a", "b"])
+    updateWorkspace(feature.workspaceId!, {
+      generatedFiles: [{ paths: ["*.generated"], command: "exit 2" }],
+    })
+    builds.set("a", { "out.generated": "a\n" })
+    builds.set("b", { "out.generated": "b\n" })
+    const a = await runner.startUserStory(userStory("a").id)
+    const b = await runner.startUserStory(userStory("b").id)
+    await drive(a.processRunId!)
+    await drive(b.processRunId!)
+    await integration.idle()
+
+    const history = features
+      .listRevisions(feature.id)
+      .filter((r) => r.targetId === userStory("b").id)
+      .map((r) => r.reason ?? "")
+    expect(
+      history.some((reason) =>
+        /regenerating them failed \(`exit 2` failed/.test(reason)
+      )
+    ).toBe(true)
   })
 
   it("escalates when the milestone playbook has no after-each-user-story hook", async () => {

@@ -467,6 +467,32 @@ describe("regenerating generated files on a merge conflict", () => {
     )
   })
 
+  it("reruns a pre-commit-style command that exits non-zero after rewriting", async () => {
+    const { root, b } = await twoStoriesSharingTheIndex()
+    // Fails while its rewrite is unstaged ("stage these and retry"), passes
+    // once staged — like codex-agentic-os's `index pre-commit`.
+    const preCommit = {
+      paths: [".code-index/**"],
+      command:
+        "mkdir -p .code-index && ls src > .code-index/files.txt && git diff --quiet -- .code-index",
+    }
+    const outcome = await mergeUserStory({
+      root,
+      integrationBranch: INTEGRATION,
+      userStoryHead: b.head,
+      message: "user story b",
+      scratchDirectory: scratch("merge-b"),
+      regenerate: { rules: [preCommit], subpath: "" },
+    })
+    expect(outcome).toMatchObject({
+      status: "merged",
+      regenerated: [".code-index/files.txt"],
+    })
+    expect(git(root, "show", `${INTEGRATION}:.code-index/files.txt`)).toBe(
+      "a.py\nb.py"
+    )
+  })
+
   it("hands the conflict to the integrator when regenerating fails", async () => {
     const { root, b } = await twoStoriesSharingTheIndex()
     const head = git(root, "rev-parse", INTEGRATION)
