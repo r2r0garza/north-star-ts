@@ -68,6 +68,10 @@ vi.mock("./providers", () => {
 })
 
 import { createConversation } from "../db/repositories/conversations"
+import {
+  addConversationNote,
+  takeConversationNotes,
+} from "../db/repositories/conversation-notes"
 import { appendMessage, listMessages } from "../db/repositories/messages"
 import {
   listToolCallLifecycle,
@@ -991,6 +995,33 @@ describe.skipIf(!sqliteLoads)("agent loop tool-error feedback", () => {
       status: "exhausted",
       attemptsConsumed: 3,
     })
+  })
+
+  it("delivers a note left mid-turn before the next model round, once", async () => {
+    const workspace = await makeWorkspace()
+    const conversation = createConversation({ mode: "interactive" })
+    addConversationNote(
+      conversation.id,
+      "Stop investigating and write the plan.",
+      "user"
+    )
+
+    scriptedCompletions.push(() => streamText("Plan written."))
+    const result = await runAgentLoop({
+      conversationId: conversation.id,
+      workspace,
+      userMessage: "refine the story",
+      abort: new AbortController(),
+      onEvent: () => {},
+    })
+
+    expect(result).toEqual({ content: "Plan written." })
+    const last = completionRequests[0].messages.at(-1)
+    expect(last).toMatchObject({ role: "user" })
+    expect(String(last.content)).toContain(
+      "Note from the user while you work:\n\nStop investigating and write the plan."
+    )
+    expect(takeConversationNotes(conversation.id)).toEqual([])
   })
 
   it("re-issues an empty length response with a higher output cap", async () => {

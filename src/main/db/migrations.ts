@@ -130,6 +130,7 @@ const MIGRATIONS: Array<(db: Database.Database) => void> = [
   retireMissionControlWorktreeWorkspaces,
   ensureGeneratedFilesColumn,
   ensureWorktreeSetupColumn,
+  ensureConversationNotes,
 ]
 
 function tableExists(db: Database.Database, table: string): boolean {
@@ -165,6 +166,22 @@ function addColumnIfMissing(
 
 function ensureProcessResultContentColumn(db: Database.Database): void {
   addColumnIfMissing(db, "process_phase_runs", "result_content", "TEXT")
+}
+
+// v60: notes delivered to a running agent before its next model round (a
+// user's nudge, or Mission Control telling a long phase to wrap up).
+function ensureConversationNotes(db: Database.Database): void {
+  db.exec(`
+CREATE TABLE IF NOT EXISTS conversation_notes (
+  id              TEXT PRIMARY KEY,
+  conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  body            TEXT NOT NULL,
+  source          TEXT NOT NULL,
+  created_at      INTEGER NOT NULL,
+  delivered_at    INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_conversation_notes_pending ON conversation_notes(conversation_id, delivered_at);
+`)
 }
 
 // v59: how a workspace's Mission Control worktrees get an environment (JSON
@@ -424,6 +441,7 @@ export function runMigrations(
       ensurePhaseReviewColumn(db)
       ensureGeneratedFilesColumn(db)
       ensureWorktreeSetupColumn(db)
+      ensureConversationNotes(db)
       ensureMissionControlPlaybooks(db)
       ensureMissionControlComms(db)
       ensureContextScopes(db)

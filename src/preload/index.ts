@@ -998,6 +998,14 @@ const api = {
           userStoryId,
           options
         ) as Promise<PlaybookRun>,
+      // A note the running phase reads before its next model round; returns
+      // the phases nudged.
+      nudgeUserStory: (userStoryId: string, text: string) =>
+        ipcRenderer.invoke(
+          "missionControl:userStories:nudge",
+          userStoryId,
+          text
+        ) as Promise<string[]>,
       cancelUserStory: (userStoryId: string) =>
         ipcRenderer.invoke(
           "missionControl:userStories:cancel",

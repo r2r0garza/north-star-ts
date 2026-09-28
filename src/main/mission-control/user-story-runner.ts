@@ -5,6 +5,7 @@ import * as features from "../db/repositories/features"
 import * as playbooks from "../db/repositories/playbooks"
 import * as processes from "../db/repositories/processes"
 import { getTask, updateTask } from "../db/repositories/tasks"
+import { addConversationNote } from "../db/repositories/conversation-notes"
 import { getWorkspace } from "../db/repositories/workspaces"
 import type {
   Feature,
@@ -521,6 +522,31 @@ export class UserStoryRunner {
       finishedAt: Date.now(),
     })
     this.settle(processRun.id)
+  }
+
+  // Leave a note for whatever phase of the user story is running; its worker
+  // reads it before its next model round, without being cancelled. Returns
+  // the phases nudged.
+  nudgeUserStory(userStoryId: string, text: string): string[] {
+    const body = text.trim()
+    if (!body) throw new Error("Write what the running phase should do.")
+    const running = playbooks
+      .listPlaybookRuns({ userStoryId, status: "running" })
+      .at(0)
+    const nudged: string[] = []
+    if (running?.processRunId)
+      for (const phaseRun of processes.listPhaseRuns({
+        runId: running.processRunId,
+      })) {
+        if (phaseRun.status !== "running" || !phaseRun.taskId) continue
+        const task = getTask(phaseRun.taskId)
+        if (!task) continue
+        addConversationNote(task.conversationId, body, "user")
+        nudged.push(processes.getPhase(phaseRun.phaseId)?.name ?? "phase")
+      }
+    if (!nudged.length)
+      throw new Error("No phase of this user story is running right now.")
+    return nudged
   }
 
   cancelUserStory(userStoryId: string): void {

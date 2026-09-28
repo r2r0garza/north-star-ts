@@ -3,6 +3,7 @@ import { Loader2, Play, RotateCcw, Square } from "lucide-react"
 import { toast } from "sonner"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
 import {
   RunMonitor,
   RuntimeProvidersContext,
@@ -60,7 +61,9 @@ export function UserStoryRunPanel({
 
   const load = useCallback(async () => {
     const [userStoryRuns, active, integration] = await Promise.all([
-      window.cowork.missionControl.playbookRuns.list({ userStoryId: userStory.id }),
+      window.cowork.missionControl.playbookRuns.list({
+        userStoryId: userStory.id,
+      }),
       window.cowork.missionControl.playbookRuns.list({ status: "running" }),
       window.cowork.missionControl.integration
         .status(userStory.milestoneId)
@@ -74,9 +77,12 @@ export function UserStoryRunPanel({
     setBusyRun(
       git
         ? null
-        : (active.find((run) => run.userStoryId !== userStory.id && !run.worktreePath) ?? null)
+        : (active.find(
+            (run) => run.userStoryId !== userStory.id && !run.worktreePath
+          ) ?? null)
     )
-    const runId = userStory.processRunId ?? userStoryRuns[0]?.processRunId ?? null
+    const runId =
+      userStory.processRunId ?? userStoryRuns[0]?.processRunId ?? null
     const run = runId ? await window.cowork.db.processes.runs.get(runId) : null
     setProcessRun(run ?? null)
     if (run?.processId) {
@@ -157,7 +163,9 @@ export function UserStoryRunPanel({
       userStory.status === "failed" ? "Retry started" : "User story run started"
     )
 
-  const proof = isUserStoryProof(userStory.proof) ? userStory.proof : latest?.proof ?? null
+  const proof = isUserStoryProof(userStory.proof)
+    ? userStory.proof
+    : (latest?.proof ?? null)
 
   return (
     <div className="space-y-4 rounded-md border p-4">
@@ -175,7 +183,10 @@ export function UserStoryRunPanel({
               disabled={pending}
               onClick={() =>
                 void act(
-                  () => window.cowork.missionControl.execution.cancelUserStory(userStory.id),
+                  () =>
+                    window.cowork.missionControl.execution.cancelUserStory(
+                      userStory.id
+                    ),
                   "User story run cancelled"
                 )
               }
@@ -206,18 +217,24 @@ export function UserStoryRunPanel({
       {!running && canStart && disabledReason && (
         <p className="text-xs text-muted-foreground">{disabledReason}</p>
       )}
+      {running && <NudgeBox userStoryId={userStory.id} />}
       {overlap && !running && canStart && (
         <div className="flex flex-wrap items-center gap-2 rounded-md border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-xs">
           <span className="flex-1">{overlap}</span>
-          <Button size="sm" variant="outline" disabled={pending} onClick={() => void run(true)}>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={pending}
+            onClick={() => void run(true)}
+          >
             Run anyway
           </Button>
         </div>
       )}
       {userStory.status === "integrating" && (
         <p className="text-xs text-muted-foreground">
-          Proof accepted. The user story is in the milestone's merge queue and is done once
-          it merges into the integration branch.
+          Proof accepted. The user story is in the milestone's merge queue and
+          is done once it merges into the integration branch.
         </p>
       )}
       <UserStoryWorktreePanel userStory={userStory} />
@@ -229,7 +246,11 @@ export function UserStoryRunPanel({
         </p>
       )}
       {proof ? (
-        <ProofPanel proof={proof} spec={userStory.spec} workspacePath={workspacePath} />
+        <ProofPanel
+          proof={proof}
+          spec={userStory.spec}
+          workspacePath={workspacePath}
+        />
       ) : (
         <p className="text-sm text-muted-foreground">
           {running
@@ -251,6 +272,53 @@ export function UserStoryRunPanel({
           </RuntimeProvidersContext.Provider>
         </div>
       )}
+    </div>
+  )
+}
+
+// Steer a running phase without cancelling it: the note reaches the worker
+// before its next model round.
+function NudgeBox({ userStoryId }: { userStoryId: string }) {
+  const [text, setText] = useState("")
+  const [sending, setSending] = useState(false)
+  const send = async () => {
+    setSending(true)
+    try {
+      const phases =
+        await window.cowork.missionControl.execution.nudgeUserStory(
+          userStoryId,
+          text
+        )
+      toast.success(
+        `Sent to ${phases.join(", ")}; it reads it before its next step.`
+      )
+      setText("")
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : String(error))
+    } finally {
+      setSending(false)
+    }
+  }
+  return (
+    <div className="flex gap-2">
+      <Input
+        className="h-8 text-xs"
+        placeholder="Nudge the running phase, e.g. Stop investigating and write the plan now."
+        aria-label="Nudge the running phase"
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && text.trim() && !sending) void send()
+        }}
+      />
+      <Button
+        size="sm"
+        variant="outline"
+        disabled={!text.trim() || sending}
+        onClick={() => void send()}
+      >
+        Nudge
+      </Button>
     </div>
   )
 }

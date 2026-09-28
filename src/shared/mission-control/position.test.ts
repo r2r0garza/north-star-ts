@@ -17,6 +17,7 @@ const NO_USAGE: BudgetUsage = {
   maxAgentUserStoriesPerMilestone: 0,
   maxMessagesPerHour: 0,
   maxActiveHours: 0,
+  maxPhaseMinutes: 0,
 }
 
 function milestone(

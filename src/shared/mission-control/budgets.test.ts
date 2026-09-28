@@ -8,6 +8,7 @@ const usage: BudgetUsage = {
   maxAgentUserStoriesPerMilestone: 2,
   maxMessagesPerHour: 0,
   maxActiveHours: 0,
+  maxPhaseMinutes: 0,
 }
 
 describe("budgetMeters", () => {

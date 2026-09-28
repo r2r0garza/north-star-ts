@@ -9,6 +9,7 @@ export type BudgetKey =
   | "maxAgentUserStoriesPerMilestone"
   | "maxMessagesPerHour"
   | "maxActiveHours"
+  | "maxPhaseMinutes"
 
 export type BudgetLevel = "ok" | "soft" | "hard"
 
@@ -63,6 +64,14 @@ export const BUDGET_SPECS: readonly BudgetSpec[] = [
     default: 8,
     unit: "hours",
     onHard: "The feature pauses itself.",
+  },
+  {
+    key: "maxPhaseMinutes",
+    label: "Minutes per phase",
+    default: 20,
+    unit: "minutes",
+    onHard:
+      "The phase is told to wrap up; at twice the limit it stops and the user story retries.",
   },
 ]
 

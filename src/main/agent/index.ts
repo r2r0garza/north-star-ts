@@ -97,6 +97,7 @@ import { dashboardReadTool } from "./tools/dashboard_read"
 import { loadSystemPrompt } from "./system-prompt"
 import { logSystemPrompt } from "./prompt-log"
 import { buildIndexSummary } from "../index/summary"
+import { takeConversationNotes } from "../db/repositories/conversation-notes"
 import { indexedWorkspaceFor } from "../index/indexed-workspace"
 import {
   contextBuilder,
@@ -1928,6 +1929,14 @@ export async function runAgentLoop(
           content: stopNote(abort.signal),
         })
         return { stopped: true }
+      }
+
+      // Notes that arrived mid-turn (a user's nudge, or Mission Control
+      // telling a long phase to wrap up) join before the next model round.
+      for (const note of takeConversationNotes(conversationId)) {
+        const content = `${note.source === "user" ? "Note from the user while you work" : "Note from Mission Control"}:\n\n${note.body}`
+        appendMessage({ conversationId, role: "user", content })
+        messages.push({ role: "user", content })
       }
 
       // Recompute the toolset from the live plan-mode flag: an approval during

@@ -1,6 +1,7 @@
 import * as features from "../db/repositories/features"
 import * as mergeQueue from "../db/repositories/merge-queue"
 import * as ticks from "../db/repositories/navigator-ticks"
+import * as processes from "../db/repositories/processes"
 import * as playbooks from "../db/repositories/playbooks"
 import * as proposalsRepo from "../db/repositories/proposals"
 import * as comms from "../db/repositories/seat-comms"
@@ -178,6 +179,7 @@ export function budgetUsage(
       : 0,
     maxMessagesPerHour: comms.countSeatMessagesSince(feature.id, now - HOUR_MS),
     maxActiveHours: Math.round((feature.drive.activeMs / HOUR_MS) * 100) / 100,
+    maxPhaseMinutes: longestRunningPhaseMinutes(feature.id, now),
   }
 }
 
@@ -1021,6 +1023,22 @@ function errorText(error: unknown): string {
     /^touch_overlap: /,
     ""
   )
+}
+
+// How long the longest-running phase of the feature has been going, in
+// minutes: the "Minutes per phase" meter.
+function longestRunningPhaseMinutes(featureId: string, now: number): number {
+  let longest = 0
+  for (const run of playbooks.listPlaybookRuns({
+    featureId,
+    status: "running",
+  })) {
+    if (!run.processRunId) continue
+    for (const phaseRun of processes.listPhaseRuns({ runId: run.processRunId }))
+      if (phaseRun.status === "running" && phaseRun.startedAt)
+        longest = Math.max(longest, now - phaseRun.startedAt)
+  }
+  return Math.round(longest / 60_000)
 }
 
 function workInFlight(featureId: string): boolean {

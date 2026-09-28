@@ -353,6 +353,11 @@ export function registerMissionControlHandlers(
       })
   )
   ipcMain.handle(
+    "missionControl:userStories:nudge",
+    (_event, userStoryId: string, text: string) =>
+      userStoryRunner.nudgeUserStory(userStoryId, text)
+  )
+  ipcMain.handle(
     "missionControl:userStories:cancel",
     (_event, userStoryId: string) =>
       userStoryRunner.cancelUserStory(userStoryId)

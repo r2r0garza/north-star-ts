@@ -300,8 +300,11 @@ export function computePosition(input: PositionInput): Position {
       summary: `Escalation from ${escalation.from}: ${escalation.subject}`,
     })
   for (const meter of input.budgets) {
+    // Full concurrency is normal operation, and a long phase is handled by
+    // the phase itself (told to wrap up, then stopped): neither is a decision.
     if (
       meter.key === "maxConcurrentUserStories" ||
+      meter.key === "maxPhaseMinutes" ||
       meter.level === "ok" ||
       meter.final
     )

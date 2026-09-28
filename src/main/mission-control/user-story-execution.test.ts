@@ -44,7 +44,16 @@ vi.mock("../agent", () => ({
     processRunId?: string
     processPhaseRunId?: string
     missionControlSeat?: { address: string; profile: string; anchor: unknown }
+    abort?: AbortController
   }) => {
+    // A worker that never finishes on its own, like nav-test-8's refine.
+    if (hangLoops && input.abort) {
+      const signal = input.abort.signal
+      await new Promise((resolve) =>
+        signal.addEventListener("abort", resolve, { once: true })
+      )
+      return { stopped: true }
+    }
     const call: LoopCall = {
       conversationId: input.conversationId,
       userMessage: input.userMessage,
@@ -84,6 +93,7 @@ vi.mock("../agent", () => ({
 }))
 // The dispatch router's classifier reply.
 let routerReply = ""
+let hangLoops = false
 vi.mock("../agent/providers", () => {
   class NoActiveProviderError extends Error {}
   return {
@@ -593,6 +603,46 @@ describe.skipIf(!sqliteLoads)("user story execution", () => {
     )
     expect(features.getUserStory(userStory.id)!.attempts).toBe(0)
     expect(enqueued).toHaveLength(0)
+  })
+
+  it("tells a phase past its time limit to wrap up, and stops it at twice the limit", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] })
+    try {
+      const rig = orchestratedRig()
+      const { userStory } = billingFeature(rig.id)
+      const featureId = features.getMilestone(userStory.milestoneId)!.featureId
+      features.setFeatureBudgets(featureId, { maxPhaseMinutes: 1 })
+      hangLoops = true
+      const playbookRun = await runner.startUserStory(userStory.id)
+      const driving = drive(playbookRun.processRunId!)
+
+      await vi.advanceTimersByTimeAsync(61_000)
+      const notes = db
+        .prepare("SELECT body, source FROM conversation_notes")
+        .all() as Array<{ body: string; source: string }>
+      expect(notes).toEqual([
+        expect.objectContaining({
+          source: "mission-control",
+          body: expect.stringContaining("finish the phase now"),
+        }),
+      ])
+
+      await vi.advanceTimersByTimeAsync(60_000)
+      await driving
+      const [phaseRun] = processes.listPhaseRuns({
+        runId: playbookRun.processRunId!,
+      })
+      expect(phaseRun).toMatchObject({
+        status: "failed",
+        failure: expect.objectContaining({ code: "phase_time_limit" }),
+      })
+      expect(playbooks.getPlaybookRun(playbookRun.id)!.outcomeReason).toContain(
+        "ran past its 1-minute limit and was stopped at 2 minutes"
+      )
+    } finally {
+      hangLoops = false
+      vi.useRealTimers()
+    }
   })
 
   it("records the failed phase and its error as the user story's failure cause", async () => {

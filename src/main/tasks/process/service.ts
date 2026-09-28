@@ -23,6 +23,8 @@ import {
 } from "../../db/repositories/workspaces"
 import * as processes from "../../db/repositories/processes"
 import * as settingsService from "../../settings/service"
+import { addConversationNote } from "../../db/repositories/conversation-notes"
+import { budgetLimit } from "../../../shared/mission-control/budgets"
 import { listApprovals, resolveApproval } from "../../db/repositories/approvals"
 import { getDb } from "../../db/connection"
 import { createCheckpoint } from "../../db/repositories/task-checkpoints"
@@ -293,6 +295,17 @@ function abortedResult(
   signal: AbortSignal
 ): { paused: true } | { stopped: true } {
   return isResumableAbort(signal) ? { paused: true } : { stopped: true }
+}
+
+const PHASE_TIME_LIMIT = new Error("phase_time_limit")
+
+// What a phase past its time limit is told before its next model round.
+function wrapUpNote(minutes: number): string {
+  return (
+    `You've spent ${minutes} minutes on this phase, its time limit. Stop investigating and finish the phase now with what you know: ` +
+    "give your result (and record the proof, if this phase asks for one). If something blocks you, say so in your result rather than working around it. " +
+    `At ${2 * minutes} minutes the phase will be stopped and the user story retried.`
+  )
 }
 
 // Who runs a phase (or one of its sub-tasks): a named agent, or a bound Mission
@@ -1151,10 +1164,7 @@ export class ProcessService {
         ? getConversation(run.sourceConversationId)
         : undefined
 
-      const { workspaceId, workingDirectory, workspace } = runPlace(
-        run,
-        source
-      )
+      const { workspaceId, workingDirectory, workspace } = runPlace(run, source)
       const reworkNote =
         processes.getPhaseRun(phaseRun.id)?.reworkNote ?? undefined
 
@@ -1324,6 +1334,57 @@ export class ProcessService {
           { once: true }
         )
 
+      // Mission Control's per-phase time limit: past it, the worker is told to
+      // wrap up; at twice it, the phase stops with a failure so the user
+      // story retries with a fresh context (nav-test-8's refine ran an hour).
+      const limitMinutes = this.phaseMinuteLimit(run)
+      let overTime = false
+      const timers: Array<ReturnType<typeof setTimeout>> = []
+      if (limitMinutes) {
+        const limitMs = limitMinutes * 60_000
+        const elapsed =
+          Date.now() -
+          (processes.getPhaseRun(phaseRun.id)?.startedAt ?? Date.now())
+        timers.push(
+          setTimeout(
+            () =>
+              addConversationNote(
+                worker.id,
+                wrapUpNote(limitMinutes),
+                "mission-control"
+              ),
+            Math.max(0, limitMs - elapsed)
+          ),
+          setTimeout(
+            () => {
+              overTime = true
+              childAbort.abort(PHASE_TIME_LIMIT)
+            },
+            Math.max(0, 2 * limitMs - elapsed)
+          )
+        )
+      }
+      const overTimeFailure = () => ({
+        error: `The phase ran past its time limit: told to wrap up at ${limitMinutes} min, stopped at ${2 * limitMinutes!} min.`,
+        retryable: false,
+        failure: {
+          code: "phase_time_limit",
+          stage: "scheduler" as const,
+          message: `The phase ran past its ${limitMinutes}-minute limit and was stopped at ${2 * limitMinutes!} minutes.`,
+          retryable: false,
+          attempt: null,
+          maxAttempts: null,
+          runId: run.id,
+          phaseRunId: phaseRun.id,
+          phaseId: phase.id,
+          taskId: run.taskId,
+          workerTaskId,
+          agentName,
+          cause: null,
+          occurredAt: Date.now(),
+        },
+      })
+
       let releaseSeat: (() => void) | null = null
       try {
         // One turn at a time per transcript: a seat-session step waits for a
@@ -1371,6 +1432,7 @@ export class ProcessService {
           suppressUserQuestions: true,
           onEvent: () => {},
         })
+        if (overTime) return overTimeFailure()
         if (result.stopped || childAbort.signal.aborted)
           return { stopped: true }
         if (result.error)
@@ -1389,6 +1451,7 @@ export class ProcessService {
           outputIdentity,
         } satisfies PhaseResult
       } catch (err) {
+        if (overTime) return overTimeFailure()
         // Cancelled while waiting for the seat's session to free up.
         if (childAbort.signal.aborted) return { stopped: true }
         return {
@@ -1411,10 +1474,21 @@ export class ProcessService {
           },
         }
       } finally {
+        for (const timer of timers) clearTimeout(timer)
         if (inSession) seatSessions!.markSessionActivity(worker.id, false)
         releaseSeat?.()
       }
     }
+  }
+
+  // The feature's "Minutes per phase" budget for a Mission Control run, or
+  // null (no limit) for other Processes or a budget of 0.
+  private phaseMinuteLimit(run: ProcessRun): number | null {
+    const link = this.missionControlRoot(run)?.missionControl
+    if (!link) return null
+    const feature = features.getFeature(link.featureId)
+    if (!feature) return null
+    return budgetLimit(feature.budgets, "maxPhaseMinutes") || null
   }
 
   // Build the DECOMPOSITION closure for a run (plan 025.1). A fan-out phase forks
@@ -1448,10 +1522,7 @@ export class ProcessService {
         slot: "decomposer",
       })
 
-      const { workspaceId, workingDirectory, workspace } = runPlace(
-        run,
-        source
-      )
+      const { workspaceId, workingDirectory, workspace } = runPlace(run, source)
       const reworkNote =
         processes.getPhaseRun(phaseRun.id)?.reworkNote ?? undefined
 
@@ -1635,10 +1706,7 @@ export class ProcessService {
 
       // The dedicated reviewer agent, falling back to the phase's own resolved
       // agent (pool[0]) when none is configured.
-      const { workspaceId, workingDirectory, workspace } = runPlace(
-        run,
-        source
-      )
+      const { workspaceId, workingDirectory, workspace } = runPlace(run, source)
       let reviewer: ResolvedWorker
       try {
         reviewer = phase.validatorAgent
@@ -1956,9 +2024,7 @@ export class ProcessService {
 
   // The top-level run carrying Mission Control state. A nested sub-process run
   // (plan 038.1) inherits its root's seat bindings and container link.
-  private missionControlRoot(
-    run: ProcessRun
-  ): {
+  private missionControlRoot(run: ProcessRun): {
     seatBindings: SeatBindingsSnapshot | null
     missionControl: MissionControlRunLink | null
   } | null {
