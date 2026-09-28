@@ -129,6 +129,7 @@ import {
   createCompletionRoundWithRetry,
   ModelRequestRetryExhaustedError,
   ModelResponseValidationError,
+  StreamStalledError,
   type CompletionRound,
 } from "./model-request-retry"
 import { generateTitle } from "./title"
@@ -243,6 +244,8 @@ const MAX_OUTPUT_TOKENS = 8192
 // text or tool call. Such a round is re-issued at the next step up instead of
 // failing the turn; the base cap stays low so ordinary turns aren't affected.
 const OUTPUT_TOKEN_STEPS = [MAX_OUTPUT_TOKENS, 16_384, 32_768] as const
+// How many times a round whose stream hung is re-issued before the turn fails.
+const MAX_STREAM_STALLS = 2
 
 export function nextOutputTokenCap(current: number): number | null {
   return OUTPUT_TOKEN_STEPS.find((step) => step > current) ?? null
@@ -1947,6 +1950,18 @@ export async function runAgentLoop(
       const baseRoundId = `after-seq:${getMaxMessageSeq(conversationId)}`
       let logicalRoundId = baseRoundId
       let outputCap: number = MAX_OUTPUT_TOKENS
+      // Each re-issue (a higher cap, a hung stream) gets a fresh logical id,
+      // so its own transient-retry budget.
+      let stalls = 0
+      const roundId = () =>
+        [
+          baseRoundId,
+          ...(outputCap > MAX_OUTPUT_TOKENS ? [`cap-${outputCap}`] : []),
+          ...(stalls ? [`stall-${stalls}`] : []),
+        ].join(":")
+      // The current attempt's connection, so a hung one can be closed without
+      // stopping the turn.
+      const current: { abort: AbortController | null } = { abort: null }
       let round: CompletionRound
       for (;;) {
         const nextCap = nextOutputTokenCap(outputCap)
@@ -2052,30 +2067,50 @@ export async function runAgentLoop(
                 })
               }
             })(),
-            request: () =>
-              createCompletion(
+            request: () => {
+              const controller = new AbortController()
+              if (abort.signal.aborted) controller.abort(abort.signal.reason)
+              else
+                abort.signal.addEventListener(
+                  "abort",
+                  () => controller.abort(abort.signal.reason),
+                  { once: true }
+                )
+              current.abort = controller
+              return createCompletion(
                 llm.client,
                 llm.model,
                 outputCap,
                 { messages, tools, stream: true },
                 [
                   undefined,
-                  // The abort signal. On the OpenAI-backed path the SDK forwards it to
-                  // fetch. On the Portkey path, breaking the iterator cancels the body.
-                  { signal: abort.signal },
+                  // The attempt's abort signal (chained to the turn's). On the
+                  // OpenAI-backed path the SDK forwards it to fetch. On the
+                  // Portkey path, breaking the iterator cancels the body.
+                  { signal: controller.signal },
                 ],
                 llm.apiMode
-              ),
+              )
+            },
           })
           break
         } catch (error) {
+          if (error instanceof StreamStalledError && !abort.signal.aborted) {
+            // Close the hung connection, then re-issue the round.
+            current.abort?.abort(error)
+            if (stalls < MAX_STREAM_STALLS) {
+              stalls += 1
+              logicalRoundId = roundId()
+              continue
+            }
+          }
           const truncated =
             error instanceof ModelResponseValidationError && error.outputLimit
           if (truncated && nextCap !== null && !abort.signal.aborted) {
             // A fresh logical round id gives the re-issued round its own
             // transient-retry budget; the truncated one's budget is spent.
             outputCap = nextCap
-            logicalRoundId = `${baseRoundId}:cap-${outputCap}`
+            logicalRoundId = roundId()
             continue
           }
           if (outputCap > MAX_OUTPUT_TOKENS && rejectsOutputCap(error))

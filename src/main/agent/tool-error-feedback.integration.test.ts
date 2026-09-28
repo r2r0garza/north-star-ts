@@ -68,6 +68,7 @@ vi.mock("./providers", () => {
 })
 
 import { createConversation } from "../db/repositories/conversations"
+import { MODEL_STREAM_IDLE } from "./model-request-retry"
 import {
   addConversationNote,
   takeConversationNotes,
@@ -994,6 +995,81 @@ describe.skipIf(!sqliteLoads)("agent loop tool-error feedback", () => {
     expect(getBudget(conversation.id, "after-seq:1")).toMatchObject({
       status: "exhausted",
       attemptsConsumed: 3,
+    })
+  })
+
+  describe("hung streams", () => {
+    const saved = { ...MODEL_STREAM_IDLE }
+    beforeEach(() => {
+      MODEL_STREAM_IDLE.firstChunkMs = 40
+      MODEL_STREAM_IDLE.betweenChunksMs = 40
+    })
+    afterEach(() => Object.assign(MODEL_STREAM_IDLE, saved))
+
+    const hanging = (firstChunk?: string): AsyncIterable<any> =>
+      (async function* () {
+        if (firstChunk)
+          yield {
+            choices: [{ delta: { content: firstChunk }, finish_reason: null }],
+          }
+        await new Promise(() => {})
+      })()
+
+    it("re-issues a round whose stream never sends anything", async () => {
+      const workspace = await makeWorkspace()
+      const conversation = createConversation({ mode: "interactive" })
+      scriptedCompletions.push(
+        () => hanging(),
+        () => streamText("Recovered.")
+      )
+      const result = await runAgentLoop({
+        conversationId: conversation.id,
+        workspace,
+        userMessage: "go",
+        abort: new AbortController(),
+        onEvent: () => {},
+      })
+      expect(result).toEqual({ content: "Recovered." })
+      expect(completionRequests).toHaveLength(2)
+      expect(getBudget(conversation.id, "after-seq:1:stall-1")).toMatchObject({
+        status: "completed",
+      })
+    })
+
+    it("discards a stream that stops mid-reply and re-issues the round", async () => {
+      const workspace = await makeWorkspace()
+      const conversation = createConversation({ mode: "interactive" })
+      scriptedCompletions.push(
+        () => hanging("Half an ans"),
+        () => streamText("Whole answer.")
+      )
+      const result = await runAgentLoop({
+        conversationId: conversation.id,
+        workspace,
+        userMessage: "go",
+        abort: new AbortController(),
+        onEvent: () => {},
+      })
+      expect(result).toEqual({ content: "Whole answer." })
+    })
+
+    it("fails the turn when the stream stays hung through every re-issue", async () => {
+      const workspace = await makeWorkspace()
+      const conversation = createConversation({ mode: "interactive" })
+      scriptedCompletions.push(
+        () => hanging(),
+        () => hanging(),
+        () => hanging()
+      )
+      const result = await runAgentLoop({
+        conversationId: conversation.id,
+        workspace,
+        userMessage: "go",
+        abort: new AbortController(),
+        onEvent: () => {},
+      })
+      expect(result.error).toContain("looks hung")
+      expect(completionRequests).toHaveLength(3)
     })
   })
 

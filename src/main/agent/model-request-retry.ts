@@ -14,6 +14,78 @@ export const MODEL_REQUEST_RETRY = {
   maxElapsedMs: 120_000,
 }
 
+// How long a model request may go silent. Reasoning models can think a while
+// before the first chunk, so that wait is generous; after that, a stream that
+// sends nothing for minutes has hung (nav-test-9: a Codex-subscription stream
+// stayed open with no data for 15 minutes and blocked the phase).
+export const MODEL_STREAM_IDLE = {
+  firstChunkMs: 5 * 60_000,
+  betweenChunksMs: 2 * 60_000,
+}
+
+// A request or its stream sent nothing for too long. Not retried within the
+// round's transient budget (its time window is gone by then); the agent loop
+// re-issues the round.
+export class StreamStalledError extends Error {
+  constructor(
+    readonly waitedMs: number,
+    readonly firstChunk: boolean
+  ) {
+    super(
+      `The model ${firstChunk ? "sent no response" : "stopped sending"} for ${Math.round(waitedMs / 1000)} s; the request looks hung.`
+    )
+    this.name = "StreamStalledError"
+  }
+}
+
+// Settle with `promise`, or reject with `stalled()` after `ms`. One `then`,
+// so a result or error arrives no later than awaiting `promise` directly.
+function withinTime<T>(
+  promise: Promise<T>,
+  ms: number,
+  stalled: () => Error
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(stalled()), ms)
+    promise.then(
+      (value) => {
+        clearTimeout(timer)
+        resolve(value)
+      },
+      (error) => {
+        clearTimeout(timer)
+        reject(error)
+      }
+    )
+  })
+}
+
+// The stream's chunks, failing with StreamStalledError when the next one
+// doesn't arrive in time.
+async function* idleGuarded<T>(
+  stream: AsyncIterable<T>,
+  idle: typeof MODEL_STREAM_IDLE
+): AsyncGenerator<T> {
+  const iterator = stream[Symbol.asyncIterator]()
+  let first = true
+  try {
+    for (;;) {
+      const ms = first ? idle.firstChunkMs : idle.betweenChunksMs
+      const next = await withinTime(
+        iterator.next(),
+        ms,
+        () => new StreamStalledError(ms, first)
+      )
+      if (next.done) return
+      first = false
+      yield next.value
+    }
+  } finally {
+    // Don't wait: a hung stream's return() can hang too.
+    void Promise.resolve(iterator.return?.()).catch(() => {})
+  }
+}
+
 export interface CompletionRound {
   text: string
   toolFragments: ToolCallDelta[]
@@ -388,6 +460,7 @@ export async function createCompletionRoundWithRetry(input: {
   random?: () => number
   repository?: RetryRepository
   config?: typeof MODEL_REQUEST_RETRY
+  idle?: typeof MODEL_STREAM_IDLE
 }): Promise<CompletionRound> {
   const {
     conversationId,
@@ -431,15 +504,24 @@ export async function createCompletionRoundWithRetry(input: {
       // loop can execute tools, so a parent blocked in spawn_subagents holds none.
       releasePermit = await modelRequestPermits.acquire(signal)
       const startedAt = clock.now()
-      const stream = await request()
-      const round = await consumeCompletionStream(stream, signal, {
-        startedAt,
-        now: clock.now,
-        requestIdentity: input.requestIdentity,
-        recoverVisibleText: input.recoverVisibleText,
-        attemptId,
-        onAttemptEvent: input.onAttemptEvent,
-      })
+      const idle = input.idle ?? MODEL_STREAM_IDLE
+      const stream = await withinTime(
+        request(),
+        idle.firstChunkMs,
+        () => new StreamStalledError(idle.firstChunkMs, true)
+      )
+      const round = await consumeCompletionStream(
+        idleGuarded(stream, idle),
+        signal,
+        {
+          startedAt,
+          now: clock.now,
+          requestIdentity: input.requestIdentity,
+          recoverVisibleText: input.recoverVisibleText,
+          attemptId,
+          onAttemptEvent: input.onAttemptEvent,
+        }
+      )
       if (!signal.aborted && validateRound) {
         try {
           validateRound(round)
@@ -476,7 +558,9 @@ export async function createCompletionRoundWithRetry(input: {
       const retryable =
         error instanceof ModelResponseValidationError
           ? error.retryable
-          : isTransientError(error)
+          : error instanceof StreamStalledError
+            ? false
+            : isTransientError(error)
       if (!retryable) {
         input.onAttemptEvent?.({
           type: "rollback",
