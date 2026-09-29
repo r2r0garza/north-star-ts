@@ -761,7 +761,9 @@ export interface FeatureDrive {
   accountedAt: number | null
   // Why the feature is paused, when it is.
   pauseReason: string | null
-  pausedBy: "user" | "budget" | null
+  pausedBy: "user" | "budget" | "health" | null
+  // Health detectors the user muted for this feature (plan 106.8).
+  healthMuted: string[]
 }
 
 export interface Feature {
@@ -1516,4 +1518,76 @@ export interface NavigatorTickState {
   milestoneStatus?: string | null
   // user story key → status, for the active milestone.
   userStories?: Record<string, string>
+}
+
+// ── Mission Control health (plan 106.8) ────────────────────────────────────
+
+// Progress moves the map; ceremony is ritual around the work; neutral events
+// are recorded for context (a run started, the drive resumed) but weigh nothing.
+export type McEventClass = "progress" | "ceremony" | "neutral"
+
+export interface McEvent {
+  id: string
+  featureId: string
+  milestoneId: string | null
+  userStoryId: string | null
+  seatAddress: string | null
+  class: McEventClass
+  type: string
+  weight: number
+  // The row this event was derived from (message, revision, proof, merge
+  // entry…); unique per type, so a replayed write records nothing twice.
+  refId: string | null
+  detail: Record<string, unknown> | null
+  createdAt: number
+}
+
+export type HealthSeverity = "info" | "warn" | "critical"
+
+export type HealthSignalStatus = "open" | "acknowledged" | "resolved" | "muted"
+
+export type HealthAnchorKind =
+  | "feature"
+  | "milestone"
+  | "user_story"
+  | "seat"
+  | "thread"
+
+// One concrete thing a signal rests on, for the evidence drill-down.
+export interface HealthEvidence {
+  kind: "event" | "message" | "proof" | "file" | "failure"
+  label: string
+  at: number | null
+  refId?: string
+  // Where the user can open it.
+  link?: { kind: "user_story" | "milestone" | "thread"; id: string }
+}
+
+export interface HealthSignal {
+  id: string
+  featureId: string
+  detector: string
+  anchorKind: HealthAnchorKind
+  anchorId: string
+  anchorLabel: string
+  severity: HealthSeverity
+  status: HealthSignalStatus
+  summary: string
+  evidence: HealthEvidence[]
+  fireCount: number
+  firstSeenAt: number
+  lastSeenAt: number
+  // When the warn-level alert went out (user + context-bearing seat).
+  alertedAt: number | null
+  alertedTo: string | null
+  // When the critical response ran (auto-pause).
+  criticalAt: number | null
+  acknowledgedAt: number | null
+  resolvedAt: number | null
+  // Refocus requests this signal made, where they went, and how many times
+  // the drift continued after one was delivered.
+  refocusCount: number
+  lastRefocusAt: number | null
+  refocusConversations: string[]
+  ignoredCount: number
 }

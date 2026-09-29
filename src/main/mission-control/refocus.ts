@@ -1,6 +1,7 @@
 import { addConversationNote } from "../db/repositories/conversation-notes"
 import { getDb } from "../db/connection"
 import * as features from "../db/repositories/features"
+import { recordEvent } from "../db/repositories/mc-events"
 import type { Feature, Milestone, UserStory } from "../db/types"
 import { featureSetting } from "../../shared/mission-control/budgets"
 import {
@@ -135,6 +136,32 @@ export function renderRefocusEvent(
       lead: leadFor(trigger),
     }
   )}`
+}
+
+// A reminder landed in a seat's transcript: ceremony on the health stream,
+// and the moment a drift signal's "was the Refocus ignored?" clock starts
+// (plan 106.8). `noteId` keys a queued reminder, so a replay records once.
+export function recordRefocusDelivered(
+  identity: SeatTurnIdentity,
+  trigger: RefocusTrigger,
+  conversationId: string,
+  noteId: string | null
+): void {
+  recordEvent({
+    featureId: identity.featureId,
+    type: "refocus_delivered",
+    userStoryId:
+      identity.anchor?.kind === "user_story" ? identity.anchor.id : null,
+    milestoneId:
+      identity.anchor?.kind === "milestone" ? identity.anchor.id : null,
+    seatAddress: identity.address,
+    refId: noteId,
+    detail: {
+      trigger: trigger.kind,
+      conversationId,
+      ...(trigger.kind === "drift" ? { code: trigger.signal.code } : {}),
+    },
+  })
 }
 
 // How many model rounds a working seat runs between interval reminders

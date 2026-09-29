@@ -1,5 +1,6 @@
 import { randomUUID } from "crypto"
 import { getDb } from "../connection"
+import { recordEvent } from "./mc-events"
 import type {
   RigDecisionRight,
   SeatMessage,
@@ -172,7 +173,44 @@ export function insertMessage(input: {
       now,
       input.status === "delivered" ? now : null
     )
+  recordMessageEvent(id, input)
   return getMessage(id)!
+}
+
+const MESSAGE_EVENTS = {
+  message: "message_sent",
+  direction: "direction",
+  steer: "steer",
+  escalation: "escalation",
+  alert: "alert",
+} as const
+
+// Every message is ceremony on the health stream (plan 106.8), except the
+// user's own words; a refusal counts too (hammering a bound is ceremony).
+function recordMessageEvent(
+  id: string,
+  input: Parameters<typeof insertMessage>[0]
+): void {
+  const thread = getThread(input.threadId)
+  recordEvent({
+    featureId: input.featureId,
+    type:
+      input.status === "refused"
+        ? "message_refused"
+        : MESSAGE_EVENTS[input.kind],
+    ...(thread?.anchorKind === "user_story"
+      ? { userStoryId: thread.anchorId }
+      : thread?.anchorKind === "milestone"
+        ? { milestoneId: thread.anchorId }
+        : {}),
+    seatAddress: input.fromAddress,
+    refId: id,
+    detail: {
+      to: input.toAddress,
+      threadId: input.threadId,
+      kind: input.kind,
+    },
+  })
 }
 
 export function getMessage(id: string): SeatMessage | undefined {
@@ -334,11 +372,12 @@ export function expireQueuedFrom(
 }
 
 // Seat-sent messages in a feature since a time, for the hourly message
-// budget. The user and the Navigator don't count; refusals don't either.
+// budget. The user, the Navigator, and health alerts don't count; refusals
+// don't either.
 export function countSeatMessagesSince(featureId: string, since: number): number {
   return getDb()
     .prepare(
-      "SELECT COUNT(*) FROM seat_messages WHERE feature_id = ? AND created_at >= ? AND status <> 'refused' AND from_address NOT IN ('user@rig', 'navigator@rig')"
+      "SELECT COUNT(*) FROM seat_messages WHERE feature_id = ? AND created_at >= ? AND status <> 'refused' AND from_address NOT IN ('user@rig', 'navigator@rig', 'health@rig')"
     )
     .pluck()
     .get(featureId, since) as number

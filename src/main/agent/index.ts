@@ -101,6 +101,7 @@ import { takeConversationNotes } from "../db/repositories/conversation-notes"
 import {
   afterSeatTurn,
   parseRefocusTrigger,
+  recordRefocusDelivered,
   refocusInterval,
   renderRefocusEvent,
   REFOCUS_NOTE_SOURCE,
@@ -1986,7 +1987,15 @@ export async function runAgentLoop(
             trigger && seatIdentity
               ? renderRefocusEvent(seatIdentity, trigger)
               : null
-          if (content) deliverRefocus(content)
+          if (content) {
+            deliverRefocus(content)
+            recordRefocusDelivered(
+              seatIdentity!,
+              trigger!,
+              conversationId,
+              note.id
+            )
+          }
           continue
         }
         const content = `${note.source === "user" ? "Note from the user while you work" : "Note from Mission Control"}:\n\n${note.body}`
@@ -1994,12 +2003,12 @@ export async function runAgentLoop(
         messages.push({ role: "user", content })
       }
       if (refocusEvery > 0 && roundsSinceRefocus >= refocusEvery) {
-        const content = renderRefocusEvent(seatIdentity!, {
-          kind: "interval",
-          rounds: refocusEvery,
-        })
-        if (content) deliverRefocus(content)
-        else roundsSinceRefocus = 0
+        const trigger = { kind: "interval" as const, rounds: refocusEvery }
+        const content = renderRefocusEvent(seatIdentity!, trigger)
+        if (content) {
+          deliverRefocus(content)
+          recordRefocusDelivered(seatIdentity!, trigger, conversationId, null)
+        } else roundsSinceRefocus = 0
       }
       roundsSinceRefocus++
 

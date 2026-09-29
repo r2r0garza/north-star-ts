@@ -1,6 +1,7 @@
 import { randomUUID } from "crypto"
 import { getDb } from "../connection"
 import type { MergeQueueEntry, MergeQueueStatus } from "../types"
+import { recordEvent } from "./mc-events"
 
 // The Mission Control merge queue (plan 106.5). One row per user story attempt whose
 // proof was accepted; the integration service moves it through
@@ -220,5 +221,21 @@ export function updateMergeEntry(
   const result = getDb()
     .prepare(`UPDATE merge_queue SET ${sets.join(", ")} WHERE ${where}`)
     .run(...values)
-  return result.changes === 1 ? getMergeEntry(id) : null
+  if (result.changes !== 1) return null
+  const entry = getMergeEntry(id)
+  if (entry && patch.status === "merged") {
+    const featureId = getDb()
+      .prepare("SELECT feature_id FROM milestones WHERE id = ?")
+      .pluck()
+      .get(entry.milestoneId) as string | undefined
+    if (featureId)
+      recordEvent({
+        featureId,
+        type: "merge_landed",
+        milestoneId: entry.milestoneId,
+        userStoryId: entry.userStoryId,
+        refId: entry.id,
+      })
+  }
+  return entry
 }

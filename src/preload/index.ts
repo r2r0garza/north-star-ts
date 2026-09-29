@@ -78,8 +78,13 @@ import type {
   PlanProposal,
   SeatMemory,
   SeatMemoryRetraction,
+  HealthSignal,
 } from "../main/db/types"
 import type { Position } from "../shared/mission-control/position"
+import type {
+  HealthAnchors,
+  HealthReport,
+} from "../main/mission-control/health/monitor"
 import type { FollowupTarget } from "../shared/mission-control/plan-changes"
 import type { ActionKind } from "../main/agent/approval/types"
 import type { PickedElement } from "../main/browser/types"
@@ -1242,6 +1247,45 @@ const api = {
             "missionControl:navigator:changed",
             listener
           )
+      },
+    },
+    // Health (plan 106.8): progress vs ceremony, detector signals, and their
+    // lifecycle. Thresholds are feature budgets (drive.setBudgets).
+    health: {
+      report: (featureId: string) =>
+        ipcRenderer.invoke(
+          "missionControl:health:report",
+          featureId
+        ) as Promise<HealthReport>,
+      // User story / milestone id → worst live severity, for health dots.
+      anchors: (featureId: string) =>
+        ipcRenderer.invoke(
+          "missionControl:health:anchors",
+          featureId
+        ) as Promise<HealthAnchors>,
+      setSignalStatus: (
+        signalId: string,
+        action: "acknowledge" | "resolve" | "mute" | "unmute"
+      ) =>
+        ipcRenderer.invoke(
+          "missionControl:health:setSignalStatus",
+          signalId,
+          action
+        ) as Promise<HealthSignal>,
+      muteDetector: (featureId: string, detector: string, muted: boolean) =>
+        ipcRenderer.invoke(
+          "missionControl:health:muteDetector",
+          featureId,
+          detector,
+          muted
+        ) as Promise<HealthReport>,
+      // Fires with the feature id whenever its signals change.
+      onChanged: (cb: (featureId: string) => void) => {
+        const listener = (_event: IpcRendererEvent, featureId: string) =>
+          cb(featureId)
+        ipcRenderer.on("missionControl:health:changed", listener)
+        return () =>
+          ipcRenderer.removeListener("missionControl:health:changed", listener)
       },
     },
     // Seat memory (plan 106.7): review, share, and retract a seat's lessons.
@@ -2649,7 +2693,23 @@ export type {
   SeatMemoryKind,
   SeatMemoryStatus,
   SeatMemoryRetraction,
+  HealthSignal,
+  HealthSignalStatus,
+  HealthSeverity,
+  HealthEvidence,
+  HealthAnchorKind,
 } from "../main/db/types"
+export type {
+  HealthReport,
+  HealthAnchors,
+  HealthStatus,
+} from "../main/mission-control/health/monitor"
+export type {
+  HealthWindow,
+  SeriesPoint,
+  BreakdownRow,
+  Throughput,
+} from "../main/mission-control/health/metrics"
 export type {
   Position,
   Decision,

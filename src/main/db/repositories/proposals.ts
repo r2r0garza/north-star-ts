@@ -1,5 +1,6 @@
 import { randomUUID } from "crypto"
 import { getDb } from "../connection"
+import { recordEvent } from "./mc-events"
 import type { PlanProposal } from "../types"
 import type {
   PlanChange,
@@ -85,6 +86,16 @@ export function createProposal(input: {
       input.followup ? JSON.stringify(input.followup) : null,
       Date.now()
     )
+  const anchor = input.followup?.anchor
+  recordEvent({
+    featureId: input.featureId,
+    type: input.kind === "followup" ? "followup_proposed" : "proposal_created",
+    milestoneId: anchor?.kind === "milestone" ? anchor.id : input.milestoneId,
+    userStoryId: anchor?.kind === "user_story" ? anchor.id : null,
+    seatAddress: input.proposer,
+    refId: id,
+    detail: { kind: input.kind },
+  })
   emitWorkChanged(input.featureId)
   return getProposal(id)!
 }

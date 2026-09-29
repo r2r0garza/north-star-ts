@@ -7,6 +7,7 @@ import * as processes from "../db/repositories/processes"
 import { getTask, updateTask } from "../db/repositories/tasks"
 import { addConversationNote } from "../db/repositories/conversation-notes"
 import { getWorkspace } from "../db/repositories/workspaces"
+import { recordEvent } from "../db/repositories/mc-events"
 import type {
   Feature,
   MissionControlRunLink,
@@ -876,6 +877,13 @@ export function recordUserStoryProof(input: {
         message: decision.message,
       }
     case "already_accepted":
+      // Anti proof-polishing (plan 106.8): the attempt itself is the signal.
+      recordEvent({
+        featureId: feature.id,
+        type: "proof_after_acceptance",
+        userStoryId: userStory.id,
+        seatAddress: verifier.address,
+      })
       return {
         ok: false,
         code: "already_accepted",
@@ -908,6 +916,16 @@ export function recordUserStoryProof(input: {
   })()
 
   const accepted = decision.proof.verdict === "accepted"
+  recordProofEvents(
+    feature.id,
+    userStory.id,
+    playbookRun.id,
+    verifier.address,
+    {
+      proof: decision.proof,
+      proofRevisions: decision.proofRevisions,
+    }
+  )
   return {
     ok: true,
     status: decision.proof.verdict,
@@ -918,4 +936,38 @@ export function recordUserStoryProof(input: {
         ? "Proof recorded as rejected. No revisions remain this attempt, so the user story will fail with this proof attached."
         : `Proof recorded as rejected. It may be revised ${maxProofRevisions(feature) - decision.proofRevisions} more time(s) this attempt after the issues are fixed.`,
   }
+}
+
+// The health stream's view of a recorded proof (plan 106.8): acceptance and
+// each criterion met for the first time are progress; a rejection is ceremony.
+function recordProofEvents(
+  featureId: string,
+  userStoryId: string,
+  playbookRunId: string,
+  verifier: string,
+  recorded: { proof: UserStoryProof; proofRevisions: number }
+): void {
+  const base = { featureId, userStoryId, seatAddress: verifier }
+  if (recorded.proof.verdict === "rejected") {
+    recordEvent({
+      ...base,
+      type: "proof_rejected",
+      refId: `${playbookRunId}:${recorded.proofRevisions}`,
+      detail: {
+        notMet: recorded.proof.criteria
+          .filter((c) => c.status !== "met")
+          .map((c) => c.id),
+      },
+    })
+    return
+  }
+  recordEvent({ ...base, type: "proof_accepted", refId: playbookRunId })
+  for (const criterion of recorded.proof.criteria)
+    if (criterion.status === "met")
+      recordEvent({
+        ...base,
+        type: "criterion_met",
+        refId: `${userStoryId}:${criterion.id}`,
+        detail: { criterion: criterion.id },
+      })
 }

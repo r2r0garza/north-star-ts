@@ -1,6 +1,7 @@
 import { parseCompletionContract } from "../../process/completion-contract"
 import { randomUUID } from "crypto"
 import { getDb } from "../connection"
+import { contextForProcessRun, recordEvent } from "./mc-events"
 import type {
   EdgeTrigger,
   PhaseCompletionContract,
@@ -1095,7 +1096,39 @@ export function updatePhaseRun(
       .prepare(`UPDATE process_phase_runs SET ${sets.join(", ")} WHERE id = ?`)
       .run(...values)
   }
-  return getPhaseRun(id)!
+  const after = getPhaseRun(id)!
+  recordRoundEvents(after, patch.validatorRound, patch.reworkRound)
+  return after
+}
+
+// Validator and rework rounds inside a Mission Control run are ceremony on the
+// health stream (plan 106.8); keyed by phase run and round, so exactly once.
+function recordRoundEvents(
+  phaseRun: ProcessPhaseRun,
+  validatorRound: number | undefined,
+  reworkRound: number | undefined
+): void {
+  if (!validatorRound && !reworkRound) return
+  const context = contextForProcessRun(phaseRun.runId)
+  if (!context) return
+  const base = {
+    featureId: context.featureId,
+    milestoneId: context.milestoneId,
+    userStoryId: context.userStoryId,
+    seatAddress: phaseRun.seatAddress ?? null,
+  }
+  if (validatorRound)
+    recordEvent({
+      ...base,
+      type: "validator_round",
+      refId: `${phaseRun.id}:v${validatorRound}`,
+    })
+  if (reworkRound)
+    recordEvent({
+      ...base,
+      type: "rework_round",
+      refId: `${phaseRun.id}:r${reworkRound}`,
+    })
 }
 
 export function createPhaseAttempt(input: {

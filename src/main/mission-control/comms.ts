@@ -30,11 +30,14 @@ import type { SeatTurnIdentity } from "./seat-turns"
 
 export const USER_ADDRESS = "user@rig"
 export const NAVIGATOR_ADDRESS = "navigator@rig"
+// Health alerts (plan 106.8) come from the health monitor, not a seat.
+export const HEALTH_ADDRESS = "health@rig"
 
 // The hop a wake turn's new exchanges continue from. Normally the deepest
 // delivered message, so relaying mail to a third seat can't reset the chain.
-// A Navigator position or a user message in the batch is a fresh prompt the
-// seat is answering, not a relay, so its new exchanges start a new chain.
+// A Navigator position, a health alert, or a user message in the batch is a
+// fresh prompt the seat is answering, not a relay, so its new exchanges start
+// a new chain.
 // Replies still take their parent's hop, and the per-thread rate limit bounds
 // any loop.
 export function wakeHopFor(
@@ -43,7 +46,9 @@ export function wakeHopFor(
   if (
     delivered.some(
       (m) =>
-        m.fromAddress === NAVIGATOR_ADDRESS || m.fromAddress === USER_ADDRESS
+        m.fromAddress === NAVIGATOR_ADDRESS ||
+        m.fromAddress === HEALTH_ADDRESS ||
+        m.fromAddress === USER_ADDRESS
     )
   )
     return 0
@@ -427,6 +432,35 @@ export class SeatComms {
       threadId: thread?.id ?? null,
       subject,
       hop: 0,
+      enforceRate: false,
+    })
+  }
+
+  // A health alert (plan 106.8) to the seat with the context to analyze it: a
+  // structured report with evidence, never throttled by the chatter bounds
+  // (alerts are deduplicated per signal upstream).
+  alert(input: {
+    featureId: string
+    to: string
+    body: string
+    anchor?: { kind: SeatThreadAnchorKind; id: string } | null
+  }): CommsResult {
+    const feature = features.getFeature(input.featureId)
+    if (!feature?.rigSnapshot)
+      return fail("unavailable", "The feature has no rig snapshot.")
+    const subject = `Health → ${input.to}`
+    const thread = comms.findThreadBySubject(feature.id, subject)
+    return this.post({
+      feature,
+      from: HEALTH_ADDRESS,
+      to: input.to,
+      body: input.body,
+      kind: "alert",
+      threadId: thread?.id ?? null,
+      anchor: thread ? null : (input.anchor ?? null),
+      subject,
+      hop: 0,
+      expectsReply: true,
       enforceRate: false,
     })
   }

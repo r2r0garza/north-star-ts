@@ -132,6 +132,7 @@ const MIGRATIONS: Array<(db: Database.Database) => void> = [
   ensureWorktreeSetupColumn,
   ensureConversationNotes,
   ensureSeatMemory,
+  ensureHealth,
 ]
 
 function tableExists(db: Database.Database, table: string): boolean {
@@ -225,6 +226,56 @@ CREATE TABLE IF NOT EXISTS seat_memory_exposures (
   PRIMARY KEY (memory_id, conversation_id)
 );
 CREATE INDEX IF NOT EXISTS idx_seat_memory_exposures_conversation ON seat_memory_exposures(conversation_id);
+`)
+}
+
+// v62 (plan 106.8): the progress/ceremony event stream and the health
+// signals detectors raise over it. Idempotent for the self-heal pass.
+function ensureHealth(db: Database.Database): void {
+  if (!tableExists(db, "features")) return
+  db.exec(`
+CREATE TABLE IF NOT EXISTS mc_events (
+  id            TEXT PRIMARY KEY,
+  feature_id    TEXT NOT NULL REFERENCES features(id) ON DELETE CASCADE,
+  milestone_id  TEXT,
+  user_story_id TEXT,
+  seat_address  TEXT,
+  class         TEXT NOT NULL,
+  type          TEXT NOT NULL,
+  weight        REAL NOT NULL,
+  ref_id        TEXT,
+  detail        TEXT,
+  created_at    INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_mc_events_feature_created ON mc_events(feature_id, created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_mc_events_ref ON mc_events(type, ref_id) WHERE ref_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS health_signals (
+  id                    TEXT PRIMARY KEY,
+  feature_id            TEXT NOT NULL REFERENCES features(id) ON DELETE CASCADE,
+  detector              TEXT NOT NULL,
+  anchor_kind           TEXT NOT NULL,
+  anchor_id             TEXT NOT NULL,
+  anchor_label          TEXT NOT NULL DEFAULT '',
+  severity              TEXT NOT NULL,
+  status                TEXT NOT NULL,
+  summary               TEXT NOT NULL,
+  evidence              TEXT NOT NULL DEFAULT '[]',
+  fire_count            INTEGER NOT NULL DEFAULT 1,
+  first_seen_at         INTEGER NOT NULL,
+  last_seen_at          INTEGER NOT NULL,
+  alerted_at            INTEGER,
+  alerted_to            TEXT,
+  critical_at           INTEGER,
+  acknowledged_at       INTEGER,
+  resolved_at           INTEGER,
+  refocus_count         INTEGER NOT NULL DEFAULT 0,
+  last_refocus_at       INTEGER,
+  refocus_conversations TEXT NOT NULL DEFAULT '[]',
+  ignored_count         INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_health_signals_feature ON health_signals(feature_id, status, last_seen_at DESC);
+CREATE INDEX IF NOT EXISTS idx_health_signals_anchor ON health_signals(feature_id, detector, anchor_kind, anchor_id);
 `)
 }
 
@@ -487,6 +538,7 @@ export function runMigrations(
       ensureWorktreeSetupColumn(db)
       ensureConversationNotes(db)
       ensureSeatMemory(db)
+      ensureHealth(db)
       ensureMissionControlPlaybooks(db)
       ensureMissionControlComms(db)
       ensureContextScopes(db)

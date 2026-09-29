@@ -31,5 +31,7 @@ export function parseSeatAddress(value: string): SeatAddress | null {
 }
 
 export function isReservedRigAddress(value: string): boolean {
-  return value === "user@rig" || value === "navigator@rig"
+  return (
+    value === "user@rig" || value === "navigator@rig" || value === "health@rig"
+  )
 }

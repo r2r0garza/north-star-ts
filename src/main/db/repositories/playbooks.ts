@@ -1,6 +1,7 @@
 import { randomUUID } from "crypto"
 import { getDb } from "../connection"
 import { emitWorkChanged } from "../../mission-control/work-events"
+import { recordEvent } from "./mc-events"
 import type {
   Playbook,
   PlaybookAltitude,
@@ -441,6 +442,17 @@ export function finishPlaybookRun(
     .run(status, outcomeReason, Date.now(), id)
   if (result.changes === 1) {
     const run = getPlaybookRun(id)
+    // A hook that finished its job moved the map (plan 106.8); a user
+    // story's own run counts through its done status instead.
+    if (run && status === "completed" && run.hook !== "run")
+      recordEvent({
+        featureId: run.featureId,
+        type: "hook_completed",
+        milestoneId: run.milestoneId,
+        userStoryId: run.userStoryId,
+        refId: run.id,
+        detail: { hook: run.hook },
+      })
     if (run) emitWorkChanged(run.featureId)
   }
   return result.changes === 1

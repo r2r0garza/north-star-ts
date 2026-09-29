@@ -914,7 +914,7 @@ export class Navigator {
   pause(
     featureId: string,
     reason: string,
-    by: "user" | "budget" = "user"
+    by: "user" | "budget" | "health" = "user"
   ): Feature {
     const before = features.getFeature(featureId)
     if (!before) throw new Error(`Feature not found: ${featureId}`)

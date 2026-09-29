@@ -1,5 +1,6 @@
 import { randomUUID } from "crypto"
 import { getDb } from "../connection"
+import { contextForTask, recordEvent } from "./mc-events"
 import type { Approval, ApprovalStatus } from "../types"
 
 // Durable human-in-the-loop gate records. The task runner dual-writes the
@@ -50,6 +51,16 @@ export function createApproval(input: {
       now,
       null
     )
+  // An approval a Mission Control run waits on is ceremony (plan 106.8).
+  const context = contextForTask(input.taskId)
+  if (context)
+    recordEvent({
+      featureId: context.featureId,
+      type: "approval_requested",
+      milestoneId: context.milestoneId,
+      userStoryId: context.userStoryId,
+      refId: id,
+    })
   return getApproval(id)!
 }
 

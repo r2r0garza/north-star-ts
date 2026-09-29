@@ -25,6 +25,7 @@ import { deleteConversationsWithArtifacts } from "../conversations/lifecycle"
 import { startHookRun } from "../mission-control/hook-runner"
 import type { MilestoneIntegration } from "../mission-control/integration"
 import type { Navigator } from "../mission-control/navigator"
+import type { HealthMonitor } from "../mission-control/health/monitor"
 import {
   applyProposal,
   checkProposal,
@@ -63,6 +64,7 @@ export function registerMissionControlHandlers(
   seatSessions: SeatSessionService,
   integration: MilestoneIntegration,
   navigator: Navigator,
+  health: HealthMonitor,
   // Open a folder in the user's IDE (settings), for user story worktrees.
   openFolder: (folder: string) => Promise<string>
 ): void {
@@ -142,6 +144,33 @@ export function registerMissionControlHandlers(
     "missionControl:navigator:ticks",
     (_event, id: string, limit?: number) =>
       navigatorTicks.listTicks(id, limit ?? 50)
+  )
+  // Health (plan 106.8). Thresholds are feature budgets (budgets:set); the
+  // signal lifecycle and detector mutes are the user's alone.
+  ipcMain.handle("missionControl:health:report", (_event, id: string) =>
+    health.report(id)
+  )
+  ipcMain.handle("missionControl:health:anchors", (_event, id: string) =>
+    health.anchors(id)
+  )
+  ipcMain.handle(
+    "missionControl:health:setSignalStatus",
+    (
+      _event,
+      signalId: string,
+      action: "acknowledge" | "resolve" | "mute" | "unmute"
+    ) => {
+      if (!["acknowledge", "resolve", "mute", "unmute"].includes(action))
+        throw new Error(`Unknown signal action: ${action}`)
+      return health.setSignalStatus(signalId, action)
+    }
+  )
+  ipcMain.handle(
+    "missionControl:health:muteDetector",
+    (_event, id: string, detector: string, muted: boolean) => {
+      health.setDetectorMuted(id, detector, muted === true)
+      return health.report(id)
+    }
   )
   // Rejections and partial applications go back to the seat that proposed,
   // in the user's words.

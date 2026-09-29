@@ -128,7 +128,13 @@ import { onWorkChanged } from "./mission-control/work-events"
 import {
   installSeatSummarizer,
   onConversationCompacted,
+  signalDrift,
 } from "./mission-control/refocus"
+import {
+  HealthMonitor,
+  installHealthMonitor,
+} from "./mission-control/health/monitor"
+import { onEventRecorded } from "./db/repositories/mc-events"
 import { installSeatComms, SeatComms } from "./mission-control/comms"
 import { onCommsChanged } from "./mission-control/comms-events"
 import {
@@ -300,7 +306,10 @@ const milestoneNavigator: Navigator = new Navigator({
     if (!result.ok) throw new Error(result.message)
   },
   notifyUser,
-  onResumed: (featureId) => seatSessions.dispatchFeature(featureId),
+  onResumed: (featureId) => {
+    seatSessions.dispatchFeature(featureId)
+    healthMonitor.onResumed(featureId)
+  },
   onCancelled: (featureId) => seatSessions.cancelFeature(featureId),
   onChanged: (featureId) => {
     const wc = mainWindow?.webContents
@@ -320,6 +329,24 @@ const milestoneNavigator: Navigator = new Navigator({
   },
 })
 installNavigator(milestoneNavigator)
+// Health (plan 106.8): progress vs ceremony, pathology detectors, alerts to
+// the context-bearing seat, Refocus for the offenders, and auto-pause.
+const healthMonitor: HealthMonitor = new HealthMonitor({
+  notifyUser,
+  alert: (input) => {
+    const result = seatComms.alert(input)
+    if (!result.ok) throw new Error(result.message)
+  },
+  pause: (featureId, reason) =>
+    void milestoneNavigator.pause(featureId, reason, "health"),
+  refocus: (conversationId, signal) => signalDrift(conversationId, signal),
+  onChanged: (featureId) => {
+    const wc = mainWindow?.webContents
+    if (wc && !wc.isDestroyed())
+      wc.send("missionControl:health:changed", featureId)
+  },
+})
+installHealthMonitor(healthMonitor)
 // Lead seats' map tools (plan 106.6), decision-rights gated server-side.
 installMapTools(
   new MapToolService({
@@ -333,7 +360,11 @@ installMapTools(
     },
   })
 )
-onWorkChanged((featureId) => milestoneNavigator.poke(featureId))
+onWorkChanged((featureId) => {
+  milestoneNavigator.poke(featureId)
+  healthMonitor.poke(featureId)
+})
+onEventRecorded((featureId) => healthMonitor.poke(featureId))
 processService.onRunSettled((processRunId) => {
   userStoryRunner.settle(processRunId)
   // Mail held while the run still had steps for its seats can now wake them.
@@ -1562,6 +1593,7 @@ app.whenReady().then(async () => {
     seatSessions,
     milestoneIntegration,
     milestoneNavigator,
+    healthMonitor,
     (folder) => openInIde(folder, folder, settingsService.getIde().ide)
   )
   // Sweep orphaned Mission Control worktrees and resume merge queues. Queue
@@ -1583,6 +1615,7 @@ app.whenReady().then(async () => {
   })
   // Every active feature resumes from its durable position.
   milestoneNavigator.start()
+  healthMonitor.start()
   registerTerminalHandlers(terminalService)
   registerFileWatchHandlers()
   await indexWatcher.setEnabled(settingsService.getIndexing().watchWorkspaces)
@@ -1655,6 +1688,7 @@ app.on("will-quit", () => {
   // or leaves the branch untouched, and the next boot's reconcile resumes.
   milestoneIntegration.stop()
   milestoneNavigator.stop()
+  healthMonitor.stop()
   browserManager.dispose()
   terminalService.dispose()
   // Disconnect every pooled MCP client (stops spawned stdio processes / closes

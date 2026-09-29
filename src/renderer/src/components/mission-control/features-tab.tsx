@@ -43,6 +43,7 @@ import { UserStoryRunPanel } from "./user-story-run-panel"
 import { HookControls } from "./hook-controls"
 import { PlaybookPicker } from "./playbook-picker"
 import { AnchoredComms, CommsTab } from "./comms-tab"
+import { HealthDot, HealthTab, useHealthAnchors } from "./health-tab"
 import { MilestoneIntegrationPanel } from "./milestone-integration-panel"
 import { NavigatorStrip, useNavigator } from "./navigator-strip"
 import { DriveControls } from "./drive-controls"
@@ -484,6 +485,7 @@ function MilestoneView({
   )
   const edges = graph.edges.filter((edge) => edge.milestoneId === milestone.id)
   const result = deriveWaves(userStories, edges)
+  const health = useHealthAnchors(graph.feature.id)
   const [milestoneName, setMilestoneName] = useState(milestone.name)
   const [outcome, setOutcome] = useState(milestone.outcome)
   const [definitionOfDone, setDefinitionOfDone] = useState(
@@ -714,7 +716,14 @@ function MilestoneView({
                               agent
                             </Badge>
                           )}
-                          <Badge className="ml-auto" variant="outline">
+                          <HealthDot
+                            className="ml-auto"
+                            severity={health[userStory.id]}
+                          />
+                          <Badge
+                            className={health[userStory.id] ? "" : "ml-auto"}
+                            variant="outline"
+                          >
                             {userStory.status}
                           </Badge>
                         </div>
@@ -837,6 +846,7 @@ function MilestoneView({
                   agent
                 </Badge>
               )}
+              <HealthDot className="ml-2" severity={health[userStory.id]} />
               <span className="ml-auto shrink-0 pl-3 text-muted-foreground">
                 Wave {(result.levels.get(userStory.id) ?? 0) + 1}
               </span>
@@ -887,7 +897,8 @@ function FeatureView({
 }) {
   const feature = graph.feature
   const navigator = useNavigator(feature.id)
-  const [view, setView] = useState<"overview" | "comms">("overview")
+  const health = useHealthAnchors(feature.id)
+  const [view, setView] = useState<"overview" | "comms" | "health">("overview")
   // Bumped to open the budget editor from the inbox.
   const [budgetRequest, setBudgetRequest] = useState(0)
   const [name, setName] = useState(feature.name)
@@ -940,13 +951,17 @@ function FeatureView({
   }
   const viewTabs = (
     <div className="flex gap-4 border-b">
-      {(["overview", "comms"] as const).map((item) => (
+      {(["overview", "comms", "health"] as const).map((item) => (
         <button
           key={item}
           className={`-mb-px py-2 text-sm font-medium ${view === item ? "border-b-2 border-primary" : "text-muted-foreground"}`}
           onClick={() => setView(item)}
         >
-          {item === "overview" ? "Overview" : "Comms"}
+          {item === "overview"
+            ? "Overview"
+            : item === "comms"
+              ? "Comms"
+              : "Health"}
         </button>
       ))}
     </div>
@@ -956,6 +971,18 @@ function FeatureView({
       <div className="space-y-5">
         {viewTabs}
         <CommsTab graph={graph} onOpenAnchor={onOpenAnchor} />
+      </div>
+    )
+  if (view === "health")
+    return (
+      <div className="space-y-5">
+        {viewTabs}
+        <HealthTab
+          graph={graph}
+          onGraph={onGraph}
+          onOpenAnchor={onOpenAnchor}
+          onOpenComms={() => setView("comms")}
+        />
       </div>
     )
   return (
@@ -1256,8 +1283,9 @@ function FeatureView({
                     className={`size-4 ${milestone.status === "completed" ? "text-emerald-500" : milestone.status === "active" ? "text-primary" : "text-muted-foreground"}`}
                   />
                   <div>
-                    <div className="font-medium">
+                    <div className="flex items-center gap-2 font-medium">
                       {index + 1}. {milestone.name}
+                      <HealthDot severity={health[milestone.id]} />
                     </div>
                     <div className="text-xs text-muted-foreground">
                       {milestone.outcome || "Add an outcome"}

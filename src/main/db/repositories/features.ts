@@ -25,6 +25,7 @@ import {
 } from "../../mission-control/work-state"
 import { emitWorkChanged } from "../../mission-control/work-events"
 import { normalizeStory } from "../../../shared/mission-control/story"
+import { recordEvent } from "./mc-events"
 
 interface FeatureRow {
   id: string
@@ -178,6 +179,7 @@ export const DEFAULT_DRIVE: FeatureDrive = {
   accountedAt: null,
   pauseReason: null,
   pausedBy: null,
+  healthMuted: [],
 }
 function drive(value: string | null): FeatureDrive {
   const parsed = parse<Partial<FeatureDrive>>(value, {})
@@ -193,9 +195,14 @@ function drive(value: string | null): FeatureDrive {
     pauseReason:
       typeof parsed.pauseReason === "string" ? parsed.pauseReason : null,
     pausedBy:
-      parsed.pausedBy === "user" || parsed.pausedBy === "budget"
+      parsed.pausedBy === "user" ||
+      parsed.pausedBy === "budget" ||
+      parsed.pausedBy === "health"
         ? parsed.pausedBy
         : null,
+    healthMuted: Array.isArray(parsed.healthMuted)
+      ? parsed.healthMuted.filter((d): d is string => typeof d === "string")
+      : [],
   }
 }
 function toFeature(row: FeatureRow): Feature {
@@ -414,12 +421,13 @@ function audit(
 ): void {
   const feature = getFeature(featureId)
   if (!feature || feature.status === "draft") return
+  const revisionId = randomUUID()
   getDb()
     .prepare(
       "INSERT INTO work_revisions (id, feature_id, target_kind, target_id, actor, change, reason, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
     )
     .run(
-      randomUUID(),
+      revisionId,
       featureId,
       targetKind,
       targetId,
@@ -428,6 +436,16 @@ function audit(
       reason?.trim() || "User-authored structural change",
       Date.now()
     )
+  // A seat revising the plan is ceremony (plan 106.8). One event per
+  // revise_plan call: its individual creates and edits aren't counted again.
+  if (op === "revise_plan")
+    recordEvent({
+      featureId,
+      type: "plan_revision",
+      milestoneId: targetKind === "milestone" ? targetId : null,
+      seatAddress: actor,
+      refId: revisionId,
+    })
 }
 function currentRigSnapshot(feature: Feature): RigGraph | null {
   return feature.rigId ? getRigGraph(feature.rigId) : null
@@ -602,6 +620,12 @@ export function startFeature(id: string): FeatureGraph {
       "UPDATE features SET rig_snapshot = ?, status = 'active', started_at = ?, updated_at = ? WHERE id = ?"
     )
     .run(JSON.stringify(snapshot), now, now, id)
+  // Where "time since progress" starts counting (plan 106.8).
+  recordEvent({
+    featureId: id,
+    type: "feature_active",
+    detail: { from: "draft" },
+  })
   emitWorkChanged(id)
   return getFeatureGraph(id)!
 }
@@ -1027,8 +1051,40 @@ export function setUserStoryExecution(
   const after = getUserStory(id)!
   const featureId = featureIdForMilestone(before.milestoneId)
   audit(featureId, "user_story", id, "execute", before, after, actor, reason)
+  if (after.status !== before.status)
+    recordStatusEvent(featureId, after, reason)
   touch(featureId)
   return after
+}
+
+// The health stream's view of a user story status change (plan 106.8). A
+// done user story is terminal, so its event is keyed by the story; starts and
+// failures are keyed per attempt.
+function recordStatusEvent(
+  featureId: string,
+  userStory: UserStory,
+  reason: string
+): void {
+  const base = {
+    featureId,
+    milestoneId: userStory.milestoneId,
+    userStoryId: userStory.id,
+  }
+  if (userStory.status === "done")
+    recordEvent({ ...base, type: "user_story_done", refId: userStory.id })
+  else if (userStory.status === "running")
+    recordEvent({
+      ...base,
+      type: "user_story_started",
+      refId: `${userStory.id}:${userStory.attempts}`,
+    })
+  else if (userStory.status === "failed")
+    recordEvent({
+      ...base,
+      type: "user_story_failed",
+      refId: `${userStory.id}:${userStory.attempts}`,
+      detail: { reason: reason.slice(0, 500), attempt: userStory.attempts },
+    })
 }
 
 // Move a milestone to a status along a legal path (execution-owned, audited).
@@ -1064,6 +1120,13 @@ export function setMilestoneExecutionStatus(
     actor,
     reason
   )
+  if (status === "completed")
+    recordEvent({
+      featureId: before.featureId,
+      type: "milestone_completed",
+      milestoneId: id,
+      refId: id,
+    })
   touch(before.featureId)
   return after
 }
@@ -1297,6 +1360,13 @@ export function setFeatureStatus(
       id
     )
   audit(id, "feature", id, "status", before.status, status, actor, reason)
+  // Where "time since progress" starts counting again (plan 106.8).
+  if (status === "active")
+    recordEvent({
+      featureId: id,
+      type: "feature_active",
+      detail: { from: before.status },
+    })
   emitWorkChanged(id)
   return getFeature(id)!
 }
