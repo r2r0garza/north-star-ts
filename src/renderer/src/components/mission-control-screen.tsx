@@ -20,6 +20,12 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import {
@@ -32,6 +38,8 @@ import {
 import { Textarea } from "@/components/ui/textarea"
 import { Markdown } from "@/components/markdown"
 import { FeaturesTab } from "@/components/mission-control/features-tab"
+import { SeatMemoryTab } from "@/components/mission-control/seat-memory-tab"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
   PlaybooksTab,
   playbookEditingHeader,
@@ -170,6 +178,7 @@ function SeatDialog({
   seat,
   agents,
   providers,
+  seatAddresses,
   onOpenChange,
   onSaved,
 }: {
@@ -178,9 +187,13 @@ function SeatDialog({
   seat: RigSeat | null
   agents: AgentSummary[]
   providers: AccountWithModels[]
+  // Every seat in the rig, for sharing a lesson.
+  seatAddresses: string[]
   onOpenChange: (open: boolean) => void
   onSaved: () => Promise<void>
 }) {
+  const [tab, setTab] = useState("settings")
+  const [pendingLessons, setPendingLessons] = useState(0)
   const [key, setKey] = useState("")
   const [role, setRole] = useState("")
   const [charter, setCharter] = useState("")
@@ -193,6 +206,7 @@ function SeatDialog({
   const [mcpServers, setMcpServers] = useState("")
   useEffect(() => {
     if (!open) return
+    setTab("settings")
     setKey(seat?.key ?? "")
     setRole(seat?.role ?? "")
     setCharter(seat?.charter ?? "")
@@ -241,6 +255,115 @@ function SeatDialog({
     onOpenChange(false)
     await onSaved()
   }
+  const settings = (
+    <div className="grid gap-4">
+      <div className="grid grid-cols-2 gap-3">
+        <div className="space-y-1">
+          <Label>Seat key</Label>
+          <Input
+            value={key}
+            onChange={(event) => setKey(event.target.value)}
+            placeholder="builder"
+          />
+        </div>
+        <div className="space-y-1">
+          <Label>Role</Label>
+          <Input
+            value={role}
+            onChange={(event) => setRole(event.target.value)}
+            placeholder="builder"
+          />
+        </div>
+      </div>
+      <div className="space-y-1">
+        <Label>Agent</Label>
+        <Select value={agentRefId} onValueChange={setAgentRefId}>
+          <SelectTrigger>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="vacant">Vacant</SelectItem>
+            {agents.map((agent) => (
+              <SelectItem key={agent.refId} value={agent.refId}>
+                {agent.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+      <div className="space-y-1">
+        <Label>Charter</Label>
+        <Textarea
+          value={charter}
+          onChange={(event) => setCharter(event.target.value)}
+          rows={5}
+          placeholder="What this seat owns, and what it does not own."
+        />
+      </div>
+      <div className="grid gap-3 sm:grid-cols-3">
+        <div className="space-y-1">
+          <Label>Skills</Label>
+          <Input
+            value={skills}
+            onChange={(event) => setSkills(event.target.value)}
+            placeholder="inherit (blank)"
+          />
+        </div>
+        <div className="space-y-1">
+          <Label>Tools</Label>
+          <Input
+            value={tools}
+            onChange={(event) => setTools(event.target.value)}
+            placeholder="inherit (blank)"
+          />
+        </div>
+        <div className="space-y-1">
+          <Label>MCP servers</Label>
+          <Input
+            value={mcpServers}
+            onChange={(event) => setMcpServers(event.target.value)}
+            placeholder="inherit (blank)"
+          />
+        </div>
+      </div>
+      <p className="text-xs text-muted-foreground">
+        Comma-separated narrowing. Blank inherits the agent definition.
+      </p>
+      <div className="space-y-2">
+        <Label>Decision rights</Label>
+        <div className="flex flex-wrap gap-2">
+          {RIGHTS.map((right) => (
+            <Button
+              key={right.value}
+              type="button"
+              size="sm"
+              variant={rights.includes(right.value) ? "secondary" : "outline"}
+              onClick={() =>
+                setRights((current) =>
+                  current.includes(right.value)
+                    ? current.filter((value) => value !== right.value)
+                    : [...current, right.value]
+                )
+              }
+            >
+              {right.label}
+            </Button>
+          ))}
+        </div>
+      </div>
+      <div className="space-y-1">
+        <Label>Worker runtime</Label>
+        <RuntimeSelect
+          providers={providers}
+          value={runtimeConfig}
+          onChange={setRuntimeConfig}
+        />
+      </div>
+    </div>
+  )
+  // A seat's lessons (plan 106.7) are on their own tab; they are never
+  // edited by saving the seat.
+  const onSettings = !seat || tab === "settings"
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
@@ -250,117 +373,38 @@ function SeatDialog({
         <DialogHeader>
           <DialogTitle>{seat ? "Edit seat" : "Add seat"}</DialogTitle>
         </DialogHeader>
-        <div className="grid gap-4">
-          <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-1">
-              <Label>Seat key</Label>
-              <Input
-                value={key}
-                onChange={(event) => setKey(event.target.value)}
-                placeholder="builder"
+        {seat ? (
+          <Tabs value={tab} onValueChange={setTab}>
+            <TabsList>
+              <TabsTrigger value="settings">Settings</TabsTrigger>
+              <TabsTrigger value="memory">
+                Memory
+                {pendingLessons > 0 && (
+                  <Badge variant="secondary" className="ml-1">
+                    {pendingLessons} to review
+                  </Badge>
+                )}
+              </TabsTrigger>
+            </TabsList>
+            <TabsContent value="settings">{settings}</TabsContent>
+            <TabsContent value="memory">
+              <SeatMemoryTab
+                rigId={pod.rigId}
+                address={`${seat.key}@${pod.key}`}
+                seatAddresses={seatAddresses}
+                onPendingChange={setPendingLessons}
               />
-            </div>
-            <div className="space-y-1">
-              <Label>Role</Label>
-              <Input
-                value={role}
-                onChange={(event) => setRole(event.target.value)}
-                placeholder="builder"
-              />
-            </div>
-          </div>
-          <div className="space-y-1">
-            <Label>Agent</Label>
-            <Select value={agentRefId} onValueChange={setAgentRefId}>
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="vacant">Vacant</SelectItem>
-                {agents.map((agent) => (
-                  <SelectItem key={agent.refId} value={agent.refId}>
-                    {agent.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="space-y-1">
-            <Label>Charter</Label>
-            <Textarea
-              value={charter}
-              onChange={(event) => setCharter(event.target.value)}
-              rows={5}
-              placeholder="What this seat owns, and what it does not own."
-            />
-          </div>
-          <div className="grid gap-3 sm:grid-cols-3">
-            <div className="space-y-1">
-              <Label>Skills</Label>
-              <Input
-                value={skills}
-                onChange={(event) => setSkills(event.target.value)}
-                placeholder="inherit (blank)"
-              />
-            </div>
-            <div className="space-y-1">
-              <Label>Tools</Label>
-              <Input
-                value={tools}
-                onChange={(event) => setTools(event.target.value)}
-                placeholder="inherit (blank)"
-              />
-            </div>
-            <div className="space-y-1">
-              <Label>MCP servers</Label>
-              <Input
-                value={mcpServers}
-                onChange={(event) => setMcpServers(event.target.value)}
-                placeholder="inherit (blank)"
-              />
-            </div>
-          </div>
-          <p className="text-xs text-muted-foreground">
-            Comma-separated narrowing. Blank inherits the agent definition.
-          </p>
-          <div className="space-y-2">
-            <Label>Decision rights</Label>
-            <div className="flex flex-wrap gap-2">
-              {RIGHTS.map((right) => (
-                <Button
-                  key={right.value}
-                  type="button"
-                  size="sm"
-                  variant={
-                    rights.includes(right.value) ? "secondary" : "outline"
-                  }
-                  onClick={() =>
-                    setRights((current) =>
-                      current.includes(right.value)
-                        ? current.filter((value) => value !== right.value)
-                        : [...current, right.value]
-                    )
-                  }
-                >
-                  {right.label}
-                </Button>
-              ))}
-            </div>
-          </div>
-          <div className="space-y-1">
-            <Label>Worker runtime</Label>
-            <RuntimeSelect
-              providers={providers}
-              value={runtimeConfig}
-              onChange={setRuntimeConfig}
-            />
-          </div>
-        </div>
+            </TabsContent>
+          </Tabs>
+        ) : (
+          settings
+        )}
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>
-            Cancel
+            {onSettings ? "Cancel" : "Close"}
           </Button>
           <Button
+            className={onSettings ? undefined : "hidden"}
             disabled={!slug(key) || !slug(role)}
             onClick={() =>
               void save().catch((error) => toast.error(errorMessage(error)))
@@ -439,16 +483,34 @@ function RigDetail({
             {graph.rig.description || "Reusable team topology"}
           </p>
         </div>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() =>
-            void window.cowork.missionControl.rigs.export(graph.rig.id)
-          }
-        >
-          {" "}
-          <Download className="size-4" /> Save as template
-        </Button>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="outline" size="sm">
+              <Download className="size-4" /> Save as template
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem
+              onSelect={() =>
+                void window.cowork.missionControl.rigs.export(graph.rig.id)
+              }
+            >
+              Topology only
+            </DropdownMenuItem>
+            {/* Seat lessons (plan 106.7) travel only when asked for. */}
+            <DropdownMenuItem
+              onSelect={() =>
+                void window.cowork.missionControl.rigs.export(
+                  graph.rig.id,
+                  undefined,
+                  { includeMemories: true }
+                )
+              }
+            >
+              With active seat lessons
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
         <Button
           variant="outline"
           size="sm"
@@ -737,6 +799,10 @@ function RigDetail({
           seat={editingSeat.seat}
           agents={agents}
           providers={providers}
+          seatAddresses={graph.seats.flatMap((seat) => {
+            const pod = podById.get(seat.podId)
+            return pod ? [`${seat.key}@${pod.key}`] : []
+          })}
           onOpenChange={(open) => !open && setEditingSeat(null)}
           onSaved={onRefresh}
         />

@@ -6,6 +6,7 @@ import type {
 } from "../db/types"
 import { renderEnvironment, type WorktreeEnvironment } from "./worktree-env"
 import { formatStory } from "../../shared/mission-control/story"
+import { renderIntentChain } from "./intent-chain"
 
 // The user story objective IS the spec (plan 106.3, decision 5): a rendered,
 // versioned block rather than a paraphrase. Acceptance criteria get stable ids
@@ -30,35 +31,8 @@ function list(items: string[]): string {
   return items.length ? items.map((item) => `- ${item}`).join("\n") : "(none)"
 }
 
-// The static Refocus intent chain (dynamic reminders arrive in 106.7): why this
-// work exists, from the feature down to the unit being executed.
-export function renderIntentChain(input: {
-  feature: Feature
-  milestone?: Milestone | null
-  userStory?: UserStory | null
-}): string {
-  const { feature, milestone, userStory } = input
-  const lines = [
-    `Feature "${feature.name}": ${feature.intent.trim() || "(no intent stated)"}`,
-  ]
-  if (feature.definitionOfDone.trim())
-    lines.push(`  Done when: ${feature.definitionOfDone.trim()}`)
-  if (milestone) {
-    lines.push(
-      `Milestone "${milestone.name}": ${milestone.outcome.trim() || "(no outcome stated)"}`
-    )
-    if (milestone.definitionOfDone.trim())
-      lines.push(`  Done when: ${milestone.definitionOfDone.trim()}`)
-  }
-  if (userStory) {
-    lines.push(
-      `User story "${userStory.title}": ${userStory.spec.goal.trim() || userStory.title}`
-    )
-    if (userStory.spec.story)
-      lines.push(`  Story: ${formatStory(userStory.spec.story)}`)
-  }
-  return lines.join("\n")
-}
+// The Refocus intent chain moved to intent-chain.ts (plan 106.7).
+export { renderIntentChain } from "./intent-chain"
 
 // Where an isolated user story builds (plan 106.5): its own worktree and branch.
 export interface UserStoryWorkspaceNote {
@@ -135,6 +109,8 @@ export function renderHookObjective(input: {
   userStories: UserStory[]
   milestone?: Milestone | null
   nextMilestone?: Milestone | null
+  // Pending follow-ups for the milestone review, rendered (plan 106.7).
+  followups?: string | null
 }): string {
   const { hook, feature, milestones, userStories, milestone, nextMilestone } =
     input
@@ -171,6 +147,7 @@ export function renderHookObjective(input: {
         userStoryLines(m.id)
       )
   }
+  if (input.followups) lines.push("", input.followups)
   if (nextMilestone)
     lines.push(
       "",

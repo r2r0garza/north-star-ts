@@ -163,3 +163,44 @@ export function budgetMeters(
     }
   })
 }
+
+// Feature settings that aren't limits (plan 106.7). They live in the same
+// user-owned feature.budgets record (whole numbers, set only from the budgets
+// editor) but never get a meter.
+export type FeatureSettingKey = "refocusEveryRounds" | "autoActivateLessons"
+
+export interface FeatureSettingSpec {
+  key: FeatureSettingKey
+  label: string
+  help: string
+  kind: "number" | "toggle"
+  default: number
+}
+
+export const FEATURE_SETTING_SPECS: readonly FeatureSettingSpec[] = [
+  {
+    key: "refocusEveryRounds",
+    label: "Refocus every N tool rounds",
+    help: "Re-show a working seat why its work exists, every N model rounds in one step. 0 turns the interval reminder off; kickoff and after-compaction reminders still happen.",
+    kind: "number",
+    default: 12,
+  },
+  {
+    key: "autoActivateLessons",
+    label: "Auto-activate seat lessons",
+    help: "Lessons seats learn here go straight into later sessions instead of waiting for your review.",
+    kind: "toggle",
+    default: 0,
+  },
+]
+
+export function featureSetting(
+  budgets: Record<string, unknown> | null | undefined,
+  key: FeatureSettingKey
+): number {
+  const value = budgets?.[key]
+  const spec = FEATURE_SETTING_SPECS.find((s) => s.key === key)!
+  return typeof value === "number" && Number.isInteger(value) && value >= 0
+    ? value
+    : spec.default
+}

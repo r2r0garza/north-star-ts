@@ -76,8 +76,11 @@ import type {
   DriveMode,
   NavigatorTick,
   PlanProposal,
+  SeatMemory,
+  SeatMemoryRetraction,
 } from "../main/db/types"
 import type { Position } from "../shared/mission-control/position"
+import type { FollowupTarget } from "../shared/mission-control/plan-changes"
 import type { ActionKind } from "../main/agent/approval/types"
 import type { PickedElement } from "../main/browser/types"
 import type { GitDiffResult } from "../main/git/diff"
@@ -819,11 +822,17 @@ const api = {
           id,
           name
         ) as Promise<RigGraph>,
-      export: (id: string, workspace?: string) =>
+      // `includeMemories` adds the rig's active seat lessons (plan 106.7).
+      export: (
+        id: string,
+        workspace?: string,
+        options?: { includeMemories?: boolean }
+      ) =>
         ipcRenderer.invoke(
           "missionControl:rigs:export",
           id,
-          workspace
+          workspace,
+          options
         ) as Promise<{ canceled: boolean; path?: string }>,
       import: (workspace?: string) =>
         ipcRenderer.invoke("missionControl:rigs:import", workspace) as Promise<{
@@ -1235,7 +1244,54 @@ const api = {
           )
       },
     },
+    // Seat memory (plan 106.7): review, share, and retract a seat's lessons.
+    seatMemory: {
+      // Without a seat address, every lesson in the rig.
+      list: (rigId: string, seatAddress?: string) =>
+        ipcRenderer.invoke(
+          "missionControl:seatMemory:list",
+          rigId,
+          seatAddress
+        ) as Promise<SeatMemory[]>,
+      pendingCount: (rigId: string) =>
+        ipcRenderer.invoke(
+          "missionControl:seatMemory:pendingCount",
+          rigId
+        ) as Promise<number>,
+      review: (id: string, decision: "approve" | "reject", content?: string) =>
+        ipcRenderer.invoke(
+          "missionControl:seatMemory:review",
+          id,
+          decision,
+          content
+        ) as Promise<SeatMemory | null>,
+      share: (id: string, targetAddress: string) =>
+        ipcRenderer.invoke(
+          "missionControl:seatMemory:share",
+          id,
+          targetAddress
+        ) as Promise<SeatMemory>,
+      retract: (id: string, reason: string) =>
+        ipcRenderer.invoke(
+          "missionControl:seatMemory:retract",
+          id,
+          reason
+        ) as Promise<SeatMemoryRetraction>,
+    },
     proposals: {
+      // Land a follow-up (plan 106.7). `target` null uses its default (a later
+      // milestone); the milestone in flight needs `allowCurrent`.
+      applyFollowup: (
+        id: string,
+        target: FollowupTarget | null,
+        options?: { allowCurrent?: boolean }
+      ) =>
+        ipcRenderer.invoke(
+          "missionControl:proposals:applyFollowup",
+          id,
+          target,
+          options
+        ) as Promise<FeatureGraph>,
       list: (featureId: string) =>
         ipcRenderer.invoke(
           "missionControl:proposals:list",
@@ -2589,6 +2645,10 @@ export type {
   NavigatorTick,
   NavigatorTickAction,
   PlanProposal,
+  SeatMemory,
+  SeatMemoryKind,
+  SeatMemoryStatus,
+  SeatMemoryRetraction,
 } from "../main/db/types"
 export type {
   Position,
@@ -2598,7 +2658,11 @@ export type {
   Maneuver,
 } from "../shared/mission-control/position"
 export type { BudgetMeter, BudgetKey } from "../shared/mission-control/budgets"
-export type { PlanChange } from "../shared/mission-control/plan-changes"
+export type {
+  PlanChange,
+  FollowupTarget,
+  ProposalFollowup,
+} from "../shared/mission-control/plan-changes"
 export type {
   ProcessImportResult,
   ProcessRunIncidentExport,

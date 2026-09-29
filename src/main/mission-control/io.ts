@@ -3,6 +3,7 @@ import type {
   Provider,
   RigDecisionRight,
   RigGraph,
+  SeatMemoryKind,
 } from "../db/types"
 import type { AgentDefinition, ExternalAgentSourceKind } from "../agent/agents/types"
 import { getDb } from "../db/connection"
@@ -14,6 +15,7 @@ import {
   setOversight,
   updatePod,
 } from "../db/repositories/rigs"
+import { createSeatMemory, listSeatMemories } from "../db/repositories/seat-memories"
 
 const PROVIDERS: ReadonlySet<Provider> = new Set([
   "portkey",
@@ -59,6 +61,9 @@ export interface RigExport {
     position: number
   }>
   oversight: Array<{ overseerPodKey: string; overseenPodKey: string }>
+  // Active seat lessons (plan 106.7), only when the user opts in. Provenance
+  // is stripped: on import they arrive active, marked "imported".
+  seatMemories?: Array<{ address: string; content: string; kind: SeatMemoryKind }>
 }
 
 export interface RigImportResult {
@@ -102,7 +107,8 @@ function localRuntime(
 
 export function buildRigExport(
   graph: RigGraph,
-  agents: AgentDefinition[] = []
+  agents: AgentDefinition[] = [],
+  options: { includeMemories?: boolean } = {}
 ): RigExport {
   const podById = new Map(graph.pods.map((pod) => [pod.id, pod]))
   const seatById = new Map(graph.seats.map((seat) => [seat.id, seat]))
@@ -152,6 +158,17 @@ export function buildRigExport(
       overseerPodKey: podById.get(edge.overseerPodId)!.key,
       overseenPodKey: podById.get(edge.overseenPodId)!.key,
     })),
+    ...(options.includeMemories
+      ? {
+          seatMemories: listSeatMemories({ rigId: graph.rig.id, status: "active" })
+            .reverse()
+            .map((memory) => ({
+              address: memory.seatAddress,
+              content: memory.content,
+              kind: memory.kind,
+            })),
+        }
+      : {}),
   }
 }
 
@@ -223,6 +240,22 @@ export function importRigExport(
         overseenPodId: podIds.get(edge.overseenPodKey)!,
       }))
     )
+    const addresses = new Set(value.seats.map((seat) => `${seat.key}@${seat.podKey}`))
+    for (const memory of value.seatMemories ?? []) {
+      if (!addresses.has(memory.address)) {
+        warnings.push(`Skipped a lesson for ${memory.address}: no such seat.`)
+        continue
+      }
+      if (!["lesson", "convention", "pitfall"].includes(memory.kind)) continue
+      createSeatMemory({
+        rigId: rig.id,
+        seatAddress: memory.address,
+        content: memory.content,
+        kind: memory.kind,
+        status: "active",
+        source: "imported",
+      })
+    }
     if (!getRigGraph(rig.id)) throw new Error("Imported rig was not persisted")
     return { rigId: rig.id, warnings }
   })()

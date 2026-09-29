@@ -1,10 +1,12 @@
 import type { AgentDefinition } from "../agent/agents/types"
 import type { ContextSection } from "../agent/context/context-builder"
 import type { SeatBinding, SeatBindingsSnapshot } from "../db/types"
+import { renderRefocus } from "./intent-chain"
 
 // Seat context layering (plan 106.3, decision 3). Every role-bound worker sees,
 // in order: agent body (the base prompt) → seat charter → rig culture → pod
-// culture → the static intent chain → the Process kickoff (the user message).
+// culture → the Refocus intent chain (106.7: the chain, the seat, and the
+// "is this necessary?" question) → the Process kickoff (the user message).
 // This provider renders the middle layers as one context section; the agent
 // loop places it in the system block like any other section.
 
@@ -43,7 +45,15 @@ export function renderSeatContext(
       "Pod mission and culture",
       [seat.podMission.trim(), seat.podCulture.trim()].filter(Boolean).join("\n\n")
     ),
-    ...block("Intent chain (why this work exists)", snapshot.intentChain),
+    ...block(
+      "Refocus: why this work exists",
+      snapshot.intentChain.trim()
+        ? renderRefocus({
+            chain: snapshot.intentChain.trim(),
+            seat: { address: seat.address, charter: seat.charter },
+          })
+        : ""
+    ),
   ]
     .join("\n")
     .trim()

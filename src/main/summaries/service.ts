@@ -62,7 +62,13 @@ interface SummarizeInput {
 }
 
 export class SummaryService {
-  constructor(private readonly runner: TaskRunner) {}
+  // `onCompacted` runs after a new digest is stored: the conversation's older
+  // turns now replay as the summary. Mission Control refocuses a seat then
+  // (plan 106.7), because compaction is when the local picture takes over.
+  constructor(
+    private readonly runner: TaskRunner,
+    private readonly onCompacted?: (conversationId: string) => void
+  ) {}
 
   // The executor the runner invokes for the `summarize` kind. Registered at app
   // init: runner.registerKind(SUMMARIZE_KIND, { autoResume: false, run }). No
@@ -140,6 +146,11 @@ export class SummaryService {
         messageCount: newMessageCount,
         tokenEstimate: defaultTokenCounter.count(summary),
       })
+      try {
+        this.onCompacted?.(conversationId)
+      } catch (err) {
+        console.warn("[summaries] compaction listener failed:", err)
+      }
       return { content: `summarized ${newMessageCount} messages` }
     } catch (err) {
       if (signal.aborted) return { stopped: true }

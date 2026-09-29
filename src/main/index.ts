@@ -125,6 +125,10 @@ import {
 import { installNavigator, Navigator } from "./mission-control/navigator"
 import { installMapTools, MapToolService } from "./mission-control/map-tools"
 import { onWorkChanged } from "./mission-control/work-events"
+import {
+  installSeatSummarizer,
+  onConversationCompacted,
+} from "./mission-control/refocus"
 import { installSeatComms, SeatComms } from "./mission-control/comms"
 import { onCommsChanged } from "./mission-control/comms-events"
 import {
@@ -167,7 +171,12 @@ const indexService = new IndexService(taskRunner)
 const indexWatcher = new IndexWatcher(taskRunner, indexService)
 // The rolling conversation summarizer (plan 019), driven as a task kind on the
 // runner. Holds the runner reference so the post-turn trigger can enqueue.
-const summaryService = new SummaryService(taskRunner)
+const summaryService = new SummaryService(taskRunner, onConversationCompacted)
+// Seat conversations compact like chats (plan 106.7): a long seat session is
+// summarized after its turns, and its next turn gets a Refocus.
+installSeatSummarizer((conversationId) =>
+  summaryService.maybeSummarize(conversationId)
+)
 // The Process engine (plan 025), driven as the deterministic `process_run` task
 // kind. Holds the runner reference so startRun can enqueue the orchestrator task.
 const processService = new ProcessService(taskRunner)

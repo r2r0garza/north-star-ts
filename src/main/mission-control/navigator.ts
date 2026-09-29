@@ -284,15 +284,20 @@ export function positionInput(
         escalated: e.escalated,
       }))
     ),
-    proposals: proposalsRepo.listProposals(feature.id, "pending").map((p) => ({
-      id: p.id,
-      kind: p.kind,
-      proposer: p.proposer,
-      summary:
-        p.reason ||
-        p.changes.slice(0, 2).map(describePlanChange).join("; ") ||
-        "(no changes)",
-    })),
+    // Follow-ups (plan 106.7) are ideas for later work: they wait in the
+    // inbox and never steer the drive.
+    proposals: proposalsRepo
+      .listProposals(feature.id, "pending")
+      .filter((p) => p.kind !== "followup")
+      .map((p) => ({
+        id: p.id,
+        kind: p.kind,
+        proposer: p.proposer,
+        summary:
+          p.reason ||
+          p.changes.slice(0, 2).map(describePlanChange).join("; ") ||
+          "(no changes)",
+      })),
     runApprovals: runApprovalsOf(playbookRuns, userStories),
     escalations: comms
       .listMessages({
@@ -690,8 +695,9 @@ export class Navigator {
         "pending"
       )) {
         if (
-          proposal.kind !== "plan" &&
-          !fromPlanningReview(proposal, feature.id)
+          proposal.kind === "followup" ||
+          (proposal.kind !== "plan" &&
+            !fromPlanningReview(proposal, feature.id))
         )
           continue
         try {

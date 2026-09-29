@@ -98,6 +98,17 @@ import { loadSystemPrompt } from "./system-prompt"
 import { logSystemPrompt } from "./prompt-log"
 import { buildIndexSummary } from "../index/summary"
 import { takeConversationNotes } from "../db/repositories/conversation-notes"
+import {
+  afterSeatTurn,
+  parseRefocusTrigger,
+  refocusInterval,
+  renderRefocusEvent,
+  REFOCUS_NOTE_SOURCE,
+} from "../mission-control/refocus"
+import {
+  recordSeatLessons,
+  seatMemorySection,
+} from "../mission-control/seat-memory"
 import { indexedWorkspaceFor } from "../index/indexed-workspace"
 import {
   contextBuilder,
@@ -1441,6 +1452,21 @@ export async function runAgentLoop(
       : "")
   const sections: ContextSection[] = [...(opts.extraContextSections ?? [])]
 
+  // Seat memory (plan 106.7): the seat's active lessons, after its charter.
+  // Injecting records an exposure, so a retraction can find this session.
+  const seatIdentity =
+    opts.missionControlSeat && (opts.agentDepth ?? 0) === 0
+      ? opts.missionControlSeat
+      : null
+  if (seatIdentity) {
+    try {
+      const lessons = seatMemorySection(seatIdentity, conversationId)
+      if (lessons) sections.push(lessons)
+    } catch (err) {
+      console.warn("[seat-memory] injection failed:", err)
+    }
+  }
+
   // Environment orientation: date + model always, and (when a workspace exists)
   // platform + workspace path + a git block for a real repo. Assembled fresh each
   // turn from what's actually true — no git noise for a non-repo folder, no
@@ -1688,6 +1714,8 @@ export async function runAgentLoop(
   // Recording it would double the reference log and spend a second extraction
   // call on text the retry is about to record anyway.
   let turnWillRetry = false
+  // Where this turn begins in the transcript, for seat lesson extraction.
+  const turnStartSeq = getMaxMessageSeq(conversationId)
   if (userMessage !== undefined) {
     let userContent = userMessage || "What files are in the workspace?"
     let modelContent =
@@ -1915,6 +1943,20 @@ export async function runAgentLoop(
     // token so the two pieces don't run together in the bubble.
     let streamedText = false
 
+    // Refocus (plan 106.7): a working seat is re-shown why its work exists
+    // every N model rounds of one step. Any other reminder (compaction,
+    // drift) restarts the count.
+    const refocusEvery =
+      seatIdentity?.profile === "work"
+        ? refocusInterval(seatIdentity.featureId)
+        : 0
+    let roundsSinceRefocus = 0
+    const deliverRefocus = (content: string) => {
+      appendMessage({ conversationId, role: "user", content })
+      messages.push({ role: "user", content })
+      roundsSinceRefocus = 0
+    }
+
     // Agentic loop: call the model, run any tools it asks for, repeat until the
     // model returns a turn with no tool calls (the final answer). No round-trip
     // cap — like Claude Code, we let the model run until it's done; multi-step
@@ -1937,10 +1979,29 @@ export async function runAgentLoop(
       // Notes that arrived mid-turn (a user's nudge, or Mission Control
       // telling a long phase to wrap up) join before the next model round.
       for (const note of takeConversationNotes(conversationId)) {
+        if (note.source === REFOCUS_NOTE_SOURCE) {
+          // Only a seat turn can be refocused; anywhere else it's dropped.
+          const trigger = parseRefocusTrigger(note.body)
+          const content =
+            trigger && seatIdentity
+              ? renderRefocusEvent(seatIdentity, trigger)
+              : null
+          if (content) deliverRefocus(content)
+          continue
+        }
         const content = `${note.source === "user" ? "Note from the user while you work" : "Note from Mission Control"}:\n\n${note.body}`
         appendMessage({ conversationId, role: "user", content })
         messages.push({ role: "user", content })
       }
+      if (refocusEvery > 0 && roundsSinceRefocus >= refocusEvery) {
+        const content = renderRefocusEvent(seatIdentity!, {
+          kind: "interval",
+          rounds: refocusEvery,
+        })
+        if (content) deliverRefocus(content)
+        else roundsSinceRefocus = 0
+      }
+      roundsSinceRefocus++
 
       // Recompute the toolset from the live plan-mode flag: an approval during
       // the previous iteration's present_plan call flips planMode off, so this
@@ -2814,6 +2875,20 @@ export async function runAgentLoop(
         : undefined
     return failTurn(conversationId, message, retryable, undefined, failure)
   } finally {
+    // A seat turn (plan 106.7): its conversation may now be long enough to
+    // compact (the next turn then gets a Refocus), and a working turn may
+    // have taught the seat a lesson worth keeping for its successors.
+    if (!turnWillRetry && seatIdentity) {
+      afterSeatTurn(conversationId)
+      if (seatIdentity.profile === "work" && !abort.signal.aborted)
+        void recordSeatLessons({
+          identity: seatIdentity,
+          conversationId,
+          sinceSeq: turnStartSeq,
+        }).catch((err) =>
+          console.warn("[seat-memory] lesson record failed:", err)
+        )
+    }
     // Record the turn for automatic memory on EVERY terminal path, not only the
     // clean final-answer one. Turns that end in a user stop, an output-cap
     // truncation, or a thrown model error still carry durable user-stated facts,

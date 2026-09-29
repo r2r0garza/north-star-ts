@@ -642,10 +642,12 @@ export function rejectProposal(
   deliver(
     resolved,
     [
-      `The user rejected your ${resolved.kind === "plan" ? "planning proposal" : "proposal"}${note.trim() ? `: ${note.trim()}` : "."}`,
+      `The user rejected your ${resolved.kind === "plan" ? "planning proposal" : resolved.kind === "followup" ? "follow-up" : "proposal"}${note.trim() ? `: ${note.trim()}` : "."}`,
       "",
       "It proposed:",
-      ...resolved.changes.map((change) => `- ${describePlanChange(change)}`),
+      ...(resolved.followup
+        ? [`- follow-up: ${resolved.followup.title}`]
+        : resolved.changes.map((change) => `- ${describePlanChange(change)}`)),
       "",
       "Don't build or re-propose it unchanged.",
     ].join("\n")

@@ -13,6 +13,7 @@ import {
   renderIntentChain,
 } from "./user-story-objective"
 import type { ResolutionLaunchInput } from "./integration"
+import { renderFollowupsForReview } from "./followups"
 
 // Milestone and feature hooks (plan 106.3, decision 4). Each hook is its own
 // small Process run whose objective is composed from its container. They are
@@ -76,6 +77,11 @@ export async function startHookRun(
       userStories,
       milestone: milestoneHook ? milestone : null,
       nextMilestone,
+      // The milestone review weighs the follow-ups seats parked (106.7).
+      followups:
+        input.hook === "after_all_user_stories" && milestone
+          ? renderFollowupsForReview(feature.id, milestone.id)
+          : null,
     }),
     intentChain: renderIntentChain({ feature, milestone }),
     title: milestone

@@ -4,8 +4,8 @@ import { getDb } from "../connection"
 // Notes for a conversation that's mid-turn (a running agent): the agent loop
 // picks them up before its next model round, so a running phase can be
 // steered without cancelling it. From the user (a nudge) or from Mission
-// Control (a phase running long).
-export type ConversationNoteSource = "user" | "mission-control"
+// Control (a phase running long, a Refocus reminder, a retracted lesson).
+export type ConversationNoteSource = "user" | "mission-control" | "refocus"
 
 export interface ConversationNote {
   id: string

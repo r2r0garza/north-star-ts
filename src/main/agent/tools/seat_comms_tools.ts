@@ -2,6 +2,7 @@ import { TOOL_EFFECTS, type Tool, type ToolContext } from "./types"
 import { toolError } from "./output"
 import { getSeatComms, type CommsResult } from "../../mission-control/comms"
 import type { SeatMessage } from "../../db/types"
+import { proposeFollowupTool } from "./propose_followup"
 
 // Mission Control Comms tools (plan 106.4). Offered only to seat turns — role-
 // bound playbook workers and seat-session turns — and never to an answer-only
@@ -228,11 +229,14 @@ export const escalateTool: Tool = {
   },
 }
 
+// propose_followup (plan 106.7) rides with Comms: every seat turn that may
+// message may also park an out-of-scope idea.
 export const seatCommsTools: Tool[] = [
   sendMessageTool,
   replyTool,
   listInboxTool,
   escalateTool,
+  proposeFollowupTool,
 ]
 export const SEAT_COMMS_TOOL_NAMES = new Set(
   seatCommsTools.map((tool) => tool.definition.function.name)

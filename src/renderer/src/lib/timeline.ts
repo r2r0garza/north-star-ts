@@ -2,6 +2,7 @@ import type { Message as DbMessage } from "@/types"
 import {
   formatSeatMessageEvent,
   isCommandCompletionEvent,
+  isRefocusEvent,
   isSeatMessageEvent,
 } from "../../../shared/runtime-messages"
 
@@ -63,6 +64,9 @@ export type TimelineItem =
       role: "user" | "assistant"
       content: string
       createdAt: number
+      // Injected runtime context rendered as a chip, not a bubble (a
+      // Mission Control Refocus reminder, plan 106.7).
+      notice?: "refocus"
     }
   | { kind: "tools"; key: string; calls: ToolUse[] }
 
@@ -297,6 +301,7 @@ export function buildTimeline(rows: DbMessage[]): TimelineItem[] {
             ? formatSeatMessageEvent(m.content)
             : m.content,
           createdAt: m.createdAt,
+          ...(isRefocusEvent(m.content) ? { notice: "refocus" as const } : {}),
         })
       }
       continue

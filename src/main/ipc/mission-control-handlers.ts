@@ -32,6 +32,17 @@ import {
   rejectProposal,
 } from "../mission-control/map-tools"
 import * as proposalsRepo from "../db/repositories/proposals"
+import * as seatMemoriesRepo from "../db/repositories/seat-memories"
+import {
+  listSeatMemoriesForSeat,
+  retractSeatMemory,
+  shareSeatMemory,
+} from "../mission-control/seat-memory"
+import {
+  applyFollowup,
+  defaultFollowupTarget,
+} from "../mission-control/followups"
+import type { FollowupTarget } from "../../shared/mission-control/plan-changes"
 import * as navigatorTicks from "../db/repositories/navigator-ticks"
 import { parseSeatAddress } from "../../shared/mission-control/address"
 import type {
@@ -150,14 +161,62 @@ export function registerMissionControlHandlers(
       console.warn("[proposals] note not delivered:", result.message)
   }
   // Pending proposals carry which of their changes no longer apply.
+  // A pending follow-up carries where it lands by default instead (106.7).
   ipcMain.handle("missionControl:proposals:list", (_event, featureId: string) =>
     proposalsRepo
       .listProposals(featureId)
       .map((proposal) =>
-        proposal.status === "pending"
-          ? { ...proposal, problems: checkProposal(proposal) }
-          : proposal
+        proposal.status !== "pending"
+          ? proposal
+          : proposal.kind === "followup"
+            ? { ...proposal, defaultTarget: defaultFollowupTarget(proposal) }
+            : { ...proposal, problems: checkProposal(proposal) }
       )
+  )
+  ipcMain.handle(
+    "missionControl:proposals:applyFollowup",
+    (
+      _event,
+      id: string,
+      target: FollowupTarget | null,
+      options?: { allowCurrent?: boolean }
+    ) => {
+      const proposal = applyFollowup(id, target ?? null, {
+        by: "user",
+        allowCurrent: options?.allowCurrent === true,
+      })
+      return graphOf(proposal.featureId)
+    }
+  )
+
+  // Seat memory (plan 106.7). Every write here is the user's: no tool
+  // reaches these handlers.
+  ipcMain.handle(
+    "missionControl:seatMemory:list",
+    (_event, rigId: string, seatAddress?: string) =>
+      listSeatMemoriesForSeat(rigId, seatAddress || undefined)
+  )
+  ipcMain.handle(
+    "missionControl:seatMemory:pendingCount",
+    (_event, rigId: string) => seatMemoriesRepo.countPendingSeatMemories(rigId)
+  )
+  ipcMain.handle(
+    "missionControl:seatMemory:review",
+    (_event, id: string, decision: "approve" | "reject", content?: string) =>
+      seatMemoriesRepo.reviewSeatMemory(
+        id,
+        decision === "approve" ? "approve" : "reject",
+        typeof content === "string" ? content : undefined
+      )
+  )
+  ipcMain.handle(
+    "missionControl:seatMemory:share",
+    (_event, id: string, targetAddress: string) =>
+      shareSeatMemory(id, targetAddress)
+  )
+  ipcMain.handle(
+    "missionControl:seatMemory:retract",
+    (_event, id: string, reason: string) => retractSeatMemory(id, reason ?? "")
   )
   ipcMain.handle(
     "missionControl:proposals:apply",
@@ -541,10 +600,17 @@ export function registerMissionControlHandlers(
 
   ipcMain.handle(
     "missionControl:rigs:export",
-    async (_event, id: string, workspace?: string) => {
+    async (
+      _event,
+      id: string,
+      workspace?: string,
+      exportOptions?: { includeMemories?: boolean }
+    ) => {
       const graph = rigs.getRigGraph(id)
       if (!graph) throw new Error(`Rig not found: ${id}`)
-      const exported = buildRigExport(graph, await agents(workspace))
+      const exported = buildRigExport(graph, await agents(workspace), {
+        includeMemories: exportOptions?.includeMemories === true,
+      })
       const safeName = graph.rig.name
         .trim()
         .replace(/[^a-z0-9._ -]+/gi, "-")

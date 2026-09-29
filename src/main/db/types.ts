@@ -4,7 +4,9 @@
 // without pulling better-sqlite3 into the preload bundle.
 
 import type {
+  FollowupTarget,
   PlanChange,
+  ProposalFollowup,
   ProposalKind,
   ProposalStatus,
 } from "../../shared/mission-control/plan-changes"
@@ -1412,6 +1414,8 @@ export interface PlanProposal {
   // Seat address (or "navigator@rig") that proposed it.
   proposer: string
   reason: string
+  // Set for kind "followup" (plan 106.7); its changes stay empty until applied.
+  followup: ProposalFollowup | null
   status: ProposalStatus
   resolvedBy: string | null
   resolutionNote: string | null
@@ -1420,6 +1424,60 @@ export interface PlanProposal {
   // Pending proposals only, computed on read: changes that no longer apply to
   // the plan as it is now, by index.
   problems?: Array<{ index: number; error: string }>
+  // Pending follow-ups only, computed on read: where applying lands it unless
+  // the user picks another place.
+  defaultTarget?: FollowupTarget
+}
+
+// Seat memory (plan 106.7): a short lesson attached to a seat of a rig, injected
+// into every later turn in that seat once active. Never written by a tool:
+// lessons are extracted after seat turns, reviewed by the user, shared only by
+// the user (a copy that keeps its lineage), and retracted with every copy.
+export type SeatMemoryKind = "lesson" | "convention" | "pitfall"
+export type SeatMemoryStatus = "pending_review" | "active" | "retracted"
+// learned: extracted from a seat turn; shared: copied from another seat's
+// lesson (derivedFrom); imported: arrived with a rig template.
+export type SeatMemorySource = "learned" | "shared" | "imported"
+
+export interface SeatMemory {
+  id: string
+  rigId: string
+  seatAddress: string
+  content: string
+  kind: SeatMemoryKind
+  status: SeatMemoryStatus
+  source: SeatMemorySource
+  originFeatureId: string | null
+  originConversationId: string | null
+  originSessionId: string | null
+  originUserStoryId: string | null
+  originMessageId: string | null
+  derivedFrom: string | null
+  useCount: number
+  lastUsedAt: number | null
+  createdAt: number
+  reviewedAt: number | null
+  retractedAt: number | null
+  retractReason: string | null
+  // Computed on read for the Memory tab.
+  exposureCount?: number
+  originLabel?: string | null
+}
+
+export interface SeatMemoryExposure {
+  memoryId: string
+  conversationId: string
+  featureId: string | null
+  seatAddress: string
+  injectedAt: number
+}
+
+// What retracting a lesson did: every copy it retracted, and the live seat
+// sessions that had been shown one and were told to disregard it.
+export interface SeatMemoryRetraction {
+  retracted: SeatMemory[]
+  exposedConversations: number
+  notified: Array<{ featureId: string; address: string }>
 }
 
 export interface NavigatorTickAction {

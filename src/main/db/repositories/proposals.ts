@@ -3,6 +3,7 @@ import { getDb } from "../connection"
 import type { PlanProposal } from "../types"
 import type {
   PlanChange,
+  ProposalFollowup,
   ProposalKind,
   ProposalStatus,
 } from "../../../shared/mission-control/plan-changes"
@@ -19,6 +20,7 @@ interface ProposalRow {
   changes: string
   proposer: string
   reason: string
+  followup: string | null
   status: ProposalStatus
   resolved_by: string | null
   resolution_note: string | null
@@ -33,6 +35,14 @@ function toProposal(row: ProposalRow): PlanProposal {
   } catch {
     changes = []
   }
+  let followup: ProposalFollowup | null = null
+  try {
+    followup = row.followup
+      ? (JSON.parse(row.followup) as ProposalFollowup)
+      : null
+  } catch {
+    followup = null
+  }
   return {
     id: row.id,
     featureId: row.feature_id,
@@ -41,6 +51,7 @@ function toProposal(row: ProposalRow): PlanProposal {
     changes,
     proposer: row.proposer,
     reason: row.reason,
+    followup,
     status: row.status,
     resolvedBy: row.resolved_by,
     resolutionNote: row.resolution_note,
@@ -56,11 +67,12 @@ export function createProposal(input: {
   changes: PlanChange[]
   proposer: string
   reason: string
+  followup?: ProposalFollowup | null
 }): PlanProposal {
   const id = randomUUID()
   getDb()
     .prepare(
-      "INSERT INTO plan_proposals (id, feature_id, milestone_id, kind, changes, proposer, reason, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)"
+      "INSERT INTO plan_proposals (id, feature_id, milestone_id, kind, changes, proposer, reason, followup, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)"
     )
     .run(
       id,
@@ -70,6 +82,7 @@ export function createProposal(input: {
       JSON.stringify(input.changes),
       input.proposer,
       input.reason.trim(),
+      input.followup ? JSON.stringify(input.followup) : null,
       Date.now()
     )
   emitWorkChanged(input.featureId)
@@ -101,6 +114,26 @@ export function listProposals(
           .all(featureId)
   ) as ProposalRow[]
   return rows.map(toProposal)
+}
+
+// Pending follow-ups anchored in a milestone (its user stories or itself), for
+// the milestone review.
+export function listPendingFollowups(
+  featureId: string,
+  milestoneId: string
+): PlanProposal[] {
+  return listProposals(featureId, "pending").filter(
+    (p) => p.kind === "followup" && p.milestoneId === milestoneId
+  )
+}
+
+// Record the changes a follow-up turned into when it was applied.
+export function setProposalChanges(id: string, changes: PlanChange[]): void {
+  getDb()
+    .prepare(
+      "UPDATE plan_proposals SET changes = ? WHERE id = ? AND status = 'pending'"
+    )
+    .run(JSON.stringify(changes), id)
 }
 
 // Resolve a pending proposal. Compare-and-swap on status, so applying and

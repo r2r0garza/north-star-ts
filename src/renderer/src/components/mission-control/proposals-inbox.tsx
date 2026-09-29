@@ -15,6 +15,13 @@ import { describePlanChange } from "../../../../shared/mission-control/plan-chan
 import type { UserStoryDraft } from "../../../../shared/mission-control/plan-changes"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
 import { proposalOverlapEstimates } from "@/lib/overlap-schedule"
 import { addedStoryImpacts, type AddedStoryImpact } from "@/lib/proposal-impact"
@@ -22,6 +29,7 @@ import { OverlapEstimates } from "./overlap-estimate"
 import type {
   Decision,
   FeatureGraph,
+  FollowupTarget,
   PlanChange,
   PlanProposal,
   Position,
@@ -326,6 +334,150 @@ function ProposalCard({
           >
             <X className="size-4" /> Reject…
           </Button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+const NEW_MILESTONE = "__new_milestone__"
+
+// A follow-up idea (plan 106.7): an out-of-scope idea a seat parked instead of
+// building. Applying it lands it where the user picks — a later milestone by
+// default; the milestone in flight only when chosen explicitly.
+function FollowupCard({
+  proposal,
+  graph,
+  onGraph,
+  onResolved,
+}: {
+  proposal: PlanProposal
+  graph: FeatureGraph
+  onGraph: (graph: FeatureGraph) => void
+  onResolved: () => Promise<void>
+}) {
+  const followup = proposal.followup!
+  const open = graph.milestones.filter(
+    (m) => !["completed", "cancelled"].includes(m.status)
+  )
+  const active = open[0] ?? null
+  const initial =
+    proposal.defaultTarget?.kind === "user_story"
+      ? proposal.defaultTarget.milestone
+      : NEW_MILESTONE
+  const [target, setTarget] = useState(initial)
+  const [rejecting, setRejecting] = useState(false)
+  const [note, setNote] = useState("")
+  const [pending, setPending] = useState(false)
+  const act = async (work: () => Promise<FeatureGraph>, done: string) => {
+    setPending(true)
+    try {
+      onGraph(await work())
+      toast.success(done)
+      await onResolved()
+    } catch (error) {
+      toast.error(errorMessage(error))
+    } finally {
+      setPending(false)
+    }
+  }
+  const proposals = window.cowork.missionControl.proposals
+  const choice: FollowupTarget =
+    target === NEW_MILESTONE
+      ? { kind: "milestone" }
+      : { kind: "user_story", milestone: target }
+  const current = !!active && target === active.key
+  return (
+    <div className="space-y-2 rounded-md border p-3">
+      <div className="flex flex-wrap items-center gap-2 text-sm">
+        <Badge variant="outline">Follow-up idea</Badge>
+        <span className="text-muted-foreground">
+          from <code>{proposal.proposer}</code>
+          {followup.anchor
+            ? ` while on ${followup.anchor.kind.replace("_", " ")} ${followup.anchor.key}`
+            : ""}{" "}
+          · suggested as a {followup.altitude.replace("_", " ")}
+        </span>
+      </div>
+      <p className="text-sm font-medium">{followup.title}</p>
+      <p className="text-sm whitespace-pre-wrap text-muted-foreground">
+        {followup.rationale}
+      </p>
+      {rejecting ? (
+        <div className="space-y-2">
+          <Textarea
+            rows={2}
+            value={note}
+            placeholder="Why not? The seat that proposed it reads this."
+            onChange={(e) => setNote(e.target.value)}
+          />
+          <div className="flex gap-2">
+            <Button
+              size="sm"
+              variant="destructive"
+              disabled={pending}
+              onClick={() =>
+                void act(
+                  () => proposals.reject(proposal.id, note),
+                  "Follow-up dropped"
+                )
+              }
+            >
+              Drop
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => setRejecting(false)}
+            >
+              Back
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <div className="flex flex-wrap items-center gap-2">
+          <Select value={target} onValueChange={setTarget}>
+            <SelectTrigger size="sm" className="h-8 w-64 text-xs">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {open.map((m) => (
+                <SelectItem key={m.id} value={m.key}>
+                  User story in {m.key}
+                  {m.id === active?.id ? " (in flight)" : ""}
+                </SelectItem>
+              ))}
+              <SelectItem value={NEW_MILESTONE}>As a new milestone</SelectItem>
+            </SelectContent>
+          </Select>
+          <Button
+            size="sm"
+            disabled={pending}
+            onClick={() =>
+              void act(
+                () =>
+                  proposals.applyFollowup(proposal.id, choice, {
+                    allowCurrent: current,
+                  }),
+                "Follow-up added to the plan"
+              )
+            }
+          >
+            <Check className="size-4" /> Add to plan
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={pending}
+            onClick={() => setRejecting(true)}
+          >
+            <X className="size-4" /> Drop…
+          </Button>
+          {current && (
+            <span className="text-xs text-amber-700 dark:text-amber-400">
+              Adds work to the milestone in flight.
+            </span>
+          )}
         </div>
       )}
     </div>
@@ -653,15 +805,25 @@ export function WaitingOnYou({
           onGraph={onGraph}
         />
       ))}
-      {pending.map((proposal) => (
-        <ProposalCard
-          key={proposal.id}
-          proposal={proposal}
-          graph={graph}
-          onGraph={onGraph}
-          onResolved={reload}
-        />
-      ))}
+      {pending.map((proposal) =>
+        proposal.kind === "followup" && proposal.followup ? (
+          <FollowupCard
+            key={proposal.id}
+            proposal={proposal}
+            graph={graph}
+            onGraph={onGraph}
+            onResolved={reload}
+          />
+        ) : (
+          <ProposalCard
+            key={proposal.id}
+            proposal={proposal}
+            graph={graph}
+            onGraph={onGraph}
+            onResolved={reload}
+          />
+        )
+      )}
       {escalations.map((message) => (
         <EscalationCard
           key={message.id}
@@ -696,7 +858,11 @@ export function WaitingOnYou({
                 {proposal.resolutionNote
                   ? ` — “${proposal.resolutionNote}”`
                   : ""}
-                <div>{proposal.changes.map(describePlanChange).join("; ")}</div>
+                <div>
+                  {proposal.followup && !proposal.changes.length
+                    ? `Follow-up: ${proposal.followup.title}`
+                    : proposal.changes.map(describePlanChange).join("; ")}
+                </div>
               </div>
             ))}
         </div>

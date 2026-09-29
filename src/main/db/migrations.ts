@@ -131,6 +131,7 @@ const MIGRATIONS: Array<(db: Database.Database) => void> = [
   ensureGeneratedFilesColumn,
   ensureWorktreeSetupColumn,
   ensureConversationNotes,
+  ensureSeatMemory,
 ]
 
 function tableExists(db: Database.Database, table: string): boolean {
@@ -181,6 +182,49 @@ CREATE TABLE IF NOT EXISTS conversation_notes (
   delivered_at    INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_conversation_notes_pending ON conversation_notes(conversation_id, delivered_at);
+`)
+}
+
+// v61 (plan 106.7): seat memory with provenance and contact tracing, and the
+// follow-up payload on plan proposals. Idempotent for the self-heal pass.
+function ensureSeatMemory(db: Database.Database): void {
+  if (tableExists(db, "plan_proposals"))
+    addColumnIfMissing(db, "plan_proposals", "followup", "TEXT")
+  if (!tableExists(db, "rigs")) return
+  db.exec(`
+CREATE TABLE IF NOT EXISTS seat_memories (
+  id                     TEXT PRIMARY KEY,
+  rig_id                 TEXT NOT NULL REFERENCES rigs(id) ON DELETE CASCADE,
+  seat_address           TEXT NOT NULL,
+  content                TEXT NOT NULL,
+  kind                   TEXT NOT NULL,
+  status                 TEXT NOT NULL,
+  source                 TEXT NOT NULL DEFAULT 'learned',
+  origin_feature_id      TEXT,
+  origin_conversation_id TEXT,
+  origin_session_id      TEXT,
+  origin_user_story_id   TEXT,
+  origin_message_id      TEXT,
+  derived_from           TEXT REFERENCES seat_memories(id) ON DELETE SET NULL,
+  use_count              INTEGER NOT NULL DEFAULT 0,
+  last_used_at           INTEGER,
+  created_at             INTEGER NOT NULL,
+  reviewed_at            INTEGER,
+  retracted_at           INTEGER,
+  retract_reason         TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_seat_memories_seat ON seat_memories(rig_id, seat_address, status);
+CREATE INDEX IF NOT EXISTS idx_seat_memories_derived ON seat_memories(derived_from);
+
+CREATE TABLE IF NOT EXISTS seat_memory_exposures (
+  memory_id       TEXT NOT NULL REFERENCES seat_memories(id) ON DELETE CASCADE,
+  conversation_id TEXT NOT NULL,
+  feature_id      TEXT,
+  seat_address    TEXT NOT NULL,
+  injected_at     INTEGER NOT NULL,
+  PRIMARY KEY (memory_id, conversation_id)
+);
+CREATE INDEX IF NOT EXISTS idx_seat_memory_exposures_conversation ON seat_memory_exposures(conversation_id);
 `)
 }
 
@@ -442,6 +486,7 @@ export function runMigrations(
       ensureGeneratedFilesColumn(db)
       ensureWorktreeSetupColumn(db)
       ensureConversationNotes(db)
+      ensureSeatMemory(db)
       ensureMissionControlPlaybooks(db)
       ensureMissionControlComms(db)
       ensureContextScopes(db)

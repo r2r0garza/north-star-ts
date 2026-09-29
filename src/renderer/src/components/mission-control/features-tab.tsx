@@ -1058,11 +1058,16 @@ function FeatureView({
               </SelectContent>
             </Select>
           ) : (
-            <div className="truncate text-sm">
-              {rigs.find((rig) => rig.id === feature.rigId)?.name ??
-                (feature.rigSnapshot
-                  ? `${feature.rigSnapshot.rig.name} (deleted — ran on saved copy)`
-                  : "None")}
+            <div className="flex min-w-0 items-center gap-2">
+              <div className="truncate text-sm">
+                {rigs.find((rig) => rig.id === feature.rigId)?.name ??
+                  (feature.rigSnapshot
+                    ? `${feature.rigSnapshot.rig.name} (deleted — ran on saved copy)`
+                    : "None")}
+              </div>
+              {feature.rigId && (
+                <PendingLessonsBadge rigId={feature.rigId} graph={graph} />
+              )}
             </div>
           )}
         </div>
@@ -1706,5 +1711,38 @@ export function FeaturesTab({
         </DialogContent>
       </Dialog>
     </div>
+  )
+}
+
+// Lessons the rig's seats learned that wait for review (plan 106.7). They're
+// reviewed on each seat's Memory tab in the rig editor.
+function PendingLessonsBadge({
+  rigId,
+  graph,
+}: {
+  rigId: string
+  // Refetched whenever the feature's work changes (a turn may have ended).
+  graph: FeatureGraph
+}) {
+  const [pending, setPending] = useState(0)
+  useEffect(() => {
+    let live = true
+    void window.cowork.missionControl.seatMemory
+      .pendingCount(rigId)
+      .then((count) => live && setPending(count))
+      .catch(() => {})
+    return () => {
+      live = false
+    }
+  }, [rigId, graph])
+  if (!pending) return null
+  return (
+    <Badge
+      variant="outline"
+      className="shrink-0"
+      title="Review them on each seat's Memory tab: Rigs → this rig → edit the seat."
+    >
+      Pending lessons ({pending})
+    </Badge>
   )
 }

@@ -13,8 +13,10 @@ import { cn } from "@/lib/utils"
 import type { Message } from "@/types"
 import {
   formatSeatMessageEvent,
+  isRefocusEvent,
   isSeatMessageEvent,
 } from "../../../../shared/runtime-messages"
+import { RefocusChip } from "./refocus-chip"
 
 // A read-only view of a seat's transcript (plan 106.4): the session or worker
 // conversation a message was delivered into, scrolled to the tagged turn.
@@ -102,6 +104,8 @@ function TranscriptRow({ row }: { row: Message }) {
         <span className="truncate">result</span>
       </div>
     )
+  if (row.role === "user" && isRefocusEvent(row.content))
+    return <RefocusChip content={row.content!} />
   const seatMail = row.role === "user" && isSeatMessageEvent(row.content)
   const label = seatMail
     ? "incoming mail"

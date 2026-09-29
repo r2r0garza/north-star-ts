@@ -1,7 +1,10 @@
 import { useEffect, useState } from "react"
 import { Bell, Pause, Play, RotateCcw, Rocket, Square } from "lucide-react"
 import { toast } from "sonner"
-import { BUDGET_SPECS } from "../../../../shared/mission-control/budgets"
+import {
+  BUDGET_SPECS,
+  FEATURE_SETTING_SPECS,
+} from "../../../../shared/mission-control/budgets"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
@@ -319,7 +322,7 @@ export function BudgetMeters({
   }, [editRequest])
   function openEditor() {
     const next: Record<string, string> = {}
-    for (const spec of BUDGET_SPECS) {
+    for (const spec of [...BUDGET_SPECS, ...FEATURE_SETTING_SPECS]) {
       const value = graph.feature.budgets[spec.key]
       next[spec.key] = typeof value === "number" ? String(value) : ""
     }
@@ -329,6 +332,19 @@ export function BudgetMeters({
   const save = async () => {
     const patch: Record<string, number | null> = {}
     for (const spec of BUDGET_SPECS) {
+      const raw = values[spec.key]?.trim() ?? ""
+      if (!raw) patch[spec.key] = null
+      else {
+        const value = Number(raw)
+        if (!Number.isInteger(value) || value < 0) {
+          toast.error(`${spec.label} must be a whole number of 0 or more.`)
+          return
+        }
+        patch[spec.key] = value
+      }
+    }
+    // Refocus and seat memory settings (plan 106.7) share the record.
+    for (const spec of FEATURE_SETTING_SPECS) {
       const raw = values[spec.key]?.trim() ?? ""
       if (!raw) patch[spec.key] = null
       else {
@@ -413,7 +429,7 @@ export function BudgetMeters({
         </div>
       </div>
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent>
+        <DialogContent className="max-h-[85vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Budgets</DialogTitle>
             <DialogDescription>
@@ -445,6 +461,50 @@ export function BudgetMeters({
                     }))
                   }
                 />
+              </div>
+            ))}
+            <p className="pt-2 text-xs font-medium text-muted-foreground">
+              Refocus and seat memory
+            </p>
+            {FEATURE_SETTING_SPECS.map((spec) => (
+              <div
+                key={spec.key}
+                className="grid grid-cols-[1fr_7rem] items-center gap-3"
+              >
+                <div>
+                  <Label htmlFor={`setting-${spec.key}`}>{spec.label}</Label>
+                  <p className="text-xs text-muted-foreground">{spec.help}</p>
+                </div>
+                {spec.kind === "toggle" ? (
+                  <Switch
+                    id={`setting-${spec.key}`}
+                    className="justify-self-end"
+                    checked={
+                      (values[spec.key]?.trim()
+                        ? Number(values[spec.key])
+                        : spec.default) > 0
+                    }
+                    onCheckedChange={(checked) =>
+                      setValues((current) => ({
+                        ...current,
+                        [spec.key]: checked ? "1" : "0",
+                      }))
+                    }
+                  />
+                ) : (
+                  <Input
+                    id={`setting-${spec.key}`}
+                    inputMode="numeric"
+                    placeholder={String(spec.default)}
+                    value={values[spec.key] ?? ""}
+                    onChange={(e) =>
+                      setValues((current) => ({
+                        ...current,
+                        [spec.key]: e.target.value,
+                      }))
+                    }
+                  />
+                )}
               </div>
             ))}
           </div>

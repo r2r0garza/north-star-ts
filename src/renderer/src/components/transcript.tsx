@@ -9,6 +9,7 @@ import { Marker, MarkerIcon, MarkerContent } from "@/components/ui/marker"
 import { Spinner } from "@/components/ui/spinner"
 import { ToolGroup } from "@/components/tool-group"
 import { ChangedFilesBar } from "@/components/changed-files-bar"
+import { RefocusChip } from "@/components/mission-control/refocus-chip"
 import type { TimelineItem, ToolUse } from "@/lib/timeline"
 import { cn } from "@/lib/utils"
 
@@ -106,6 +107,12 @@ const SettledTranscriptRow = memo(function SettledTranscriptRow({
       </MessageScrollerItem>
     )
   }
+  if (item.notice === "refocus")
+    return (
+      <MessageScrollerItem scrollAnchor={scrollAnchor}>
+        <RefocusChip content={item.content} />
+      </MessageScrollerItem>
+    )
   const align = item.role === "user" ? "end" : "start"
   return (
     <MessageScrollerItem scrollAnchor={scrollAnchor}>

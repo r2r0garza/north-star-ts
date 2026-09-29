@@ -86,3 +86,31 @@ export function formatSeatMessageEvent(content: string): string {
     })
     .join("\n\n")
 }
+
+// A Mission Control Refocus reminder (plan 106.7) delivered into a seat's
+// transcript mid-step: after compaction, on the round interval, or on a drift
+// signal. Persisted with the user role so it replays as model input; the
+// renderer collapses it into a chip. The first line names the trigger.
+export const REFOCUS_EVENT_PREFIX = "Runtime event: Mission Control refocus"
+
+export type RefocusTriggerKind = "compaction" | "interval" | "drift"
+
+export function isRefocusEvent(content: string | null): boolean {
+  return content?.startsWith(REFOCUS_EVENT_PREFIX) === true
+}
+
+export function refocusEventHeader(trigger: RefocusTriggerKind): string {
+  return `${REFOCUS_EVENT_PREFIX} (${trigger}).`
+}
+
+// The trigger and the reminder text, for display.
+export function parseRefocusEvent(
+  content: string
+): { trigger: string; body: string } | null {
+  if (!isRefocusEvent(content)) return null
+  const match = /^[^\n]*\(([a-z_]+)\)\.?\n?/.exec(content)
+  return {
+    trigger: match?.[1] ?? "reminder",
+    body: content.slice(match?.[0].length ?? 0).trim(),
+  }
+}

@@ -98,7 +98,26 @@ export const PLAN_CHANGE_OPS: readonly PlanChangeOp[] = [
   "edit_feature",
 ]
 
-export type ProposalKind = "user_story" | "plan" | "revise_plan"
+export type ProposalKind = "user_story" | "plan" | "revise_plan" | "followup"
+
+// A follow-up idea (plan 106.7): something a seat wanted that is outside its
+// current work. It carries no plan changes until the user applies it, and the
+// user picks where it lands — a later milestone by default, never the one in
+// flight without an explicit choice.
+export type FollowupAltitude = "user_story" | "milestone" | "feature"
+
+export interface ProposalFollowup {
+  title: string
+  rationale: string
+  altitude: FollowupAltitude
+  // The work the seat was doing when it had the idea.
+  anchor: { kind: "user_story" | "milestone"; id: string; key: string } | null
+}
+
+// Where the user lands an accepted follow-up.
+export type FollowupTarget =
+  | { kind: "user_story"; milestone: string }
+  | { kind: "milestone" }
 export type ProposalStatus = "pending" | "applied" | "rejected"
 
 // One line per change, for proposal diffs, revision reasons, and tool results.
