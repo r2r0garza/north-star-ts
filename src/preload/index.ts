@@ -91,6 +91,10 @@ import type { PickedElement } from "../main/browser/types"
 import type { GitDiffResult } from "../main/git/diff"
 import type { SeatOverview } from "../main/mission-control/sessions"
 import type {
+  PlaybookAgentRole,
+  ProcessRunHistoryEntry,
+} from "../main/mission-control/playbook-import"
+import type {
   MilestoneIntegrationStatus,
   UserStoryWorkspaceInfo,
 } from "../main/mission-control/integration"
@@ -118,6 +122,7 @@ import type {
   NotificationSettings,
   OnboardingSettings,
   ConversationSettings,
+  SidebarSettings,
   LocalRuntimeProfile,
 } from "../main/settings/service"
 import type {
@@ -500,6 +505,19 @@ const api = {
       workspacePath?: string | null
       runtimeConfig?: ProcessRuntimeConfig | null
     }) => ipcRenderer.invoke("process:startRun", input) as Promise<ProcessRun>,
+    // Quick run (plan 106.9): the seat roles a definition needs bound, and a
+    // run with no feature whose roles bind to the picked agents (role → ref).
+    quickRunRoles: (processId: string) =>
+      ipcRenderer.invoke("process:quickRunRoles", processId) as Promise<
+        string[]
+      >,
+    quickRun: (input: {
+      processId: string
+      objective: string
+      workspacePath: string
+      runtimeConfig?: ProcessRuntimeConfig | null
+      roleAgents?: Record<string, string>
+    }) => ipcRenderer.invoke("process:quickRun", input) as Promise<ProcessRun>,
     // Cancel a run (aborts its backing task; running phases unwind).
     cancel: (processRunId: string) =>
       ipcRenderer.invoke("process:cancel", processRunId) as Promise<void>,
@@ -982,6 +1000,30 @@ const api = {
           id,
           hook
         ) as Promise<PlaybookWithHooks>,
+      // Processes sunset (plan 106.9).
+      importProcess: (processId: string) =>
+        ipcRenderer.invoke(
+          "missionControl:playbooks:importProcess",
+          processId
+        ) as Promise<PlaybookWithHooks>,
+      roleConversion: (processId: string) =>
+        ipcRenderer.invoke(
+          "missionControl:playbooks:roleConversion",
+          processId
+        ) as Promise<PlaybookAgentRole[]>,
+      convertRoles: (input: {
+        processId: string
+        mapping: Record<string, string>
+        rigId?: string | null
+      }) =>
+        ipcRenderer.invoke(
+          "missionControl:playbooks:convertRoles",
+          input
+        ) as Promise<{ converted: number; missingRoles: string[] }>,
+      history: () =>
+        ipcRenderer.invoke("missionControl:playbooks:history") as Promise<
+          ProcessRunHistoryEntry[]
+        >,
     },
     playbookRuns: {
       list: (filter: {
@@ -2296,6 +2338,14 @@ const api = {
         "settings:setConversations",
         next
       ) as Promise<ConversationSettings>,
+    // Which sidebar destinations show (plan 106.9: legacy Processes).
+    getSidebar: () =>
+      ipcRenderer.invoke("settings:getSidebar") as Promise<SidebarSettings>,
+    setSidebar: (next: SidebarSettings) =>
+      ipcRenderer.invoke(
+        "settings:setSidebar",
+        next
+      ) as Promise<SidebarSettings>,
     // The selectable IDEs (id + label) for the Settings dropdown. Static list;
     // mirrored from the main-process IDE registry so the renderer needs no import.
     ideOptions: () =>
@@ -2751,6 +2801,7 @@ export type {
   NotificationSettings,
   OnboardingSettings,
   ConversationSettings,
+  SidebarSettings,
   Backend,
   LocalRuntimeProfile,
   FilePermission,
@@ -2807,6 +2858,10 @@ export type { ApproveResult } from "../main/dashboards/service"
 export type { PickedElement } from "../main/browser/types"
 export type { GitDiffResult } from "../main/git/diff"
 export type { SeatOverview } from "../main/mission-control/sessions"
+export type {
+  PlaybookAgentRole,
+  ProcessRunHistoryEntry,
+} from "../main/mission-control/playbook-import"
 export type {
   MilestoneIntegrationStatus,
   PolicyOption,

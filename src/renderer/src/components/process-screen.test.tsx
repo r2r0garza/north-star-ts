@@ -8,6 +8,7 @@ import {
   PhaseCompletionEvidence,
   RunCompletionSummary,
   PhaseAttemptHistory,
+  ProcessScreen,
   RuntimeBadge,
   RuntimeProvidersContext,
   recoverProcessMonitorGates,
@@ -860,5 +861,55 @@ describe("phaseStatusText", () => {
     expect(phaseStatusText("running", 1_700_000_000_000)).toBe("Reviewing")
     expect(phaseStatusText("running", null)).toBe("Running")
     expect(phaseStatusText("completed", 1_700_000_000_000)).toBe("Done")
+  })
+})
+
+describe("ProcessScreen", () => {
+  it("opens the builder on a newly created definition", async () => {
+    const created = {
+      id: "new-process",
+      name: "New Process",
+      description: null,
+      requireFlagApproval: true,
+      createdAt: 1,
+      updatedAt: 1,
+    }
+    // The list is empty until the create lands, so a stale refresh would not
+    // contain the new id.
+    const list = vi.fn().mockResolvedValue([])
+    ;(window as unknown as { cowork: unknown }).cowork = {
+      db: {
+        processes: {
+          list,
+          create: vi.fn().mockImplementation(async () => {
+            list.mockResolvedValue([created])
+            return created
+          }),
+          get: vi.fn().mockResolvedValue({
+            definition: created,
+            phases: [],
+            agents: [],
+            edges: [],
+          }),
+        },
+      },
+      missionControl: {
+        playbooks: { processIds: vi.fn().mockResolvedValue([]) },
+      },
+      agents: { list: vi.fn().mockResolvedValue([]) },
+      providers: { listWithModels: vi.fn().mockResolvedValue([]) },
+    }
+    act(() => {
+      root.render(renderWithTooltip(<ProcessScreen onClose={() => {}} />))
+    })
+    await flushPromises()
+    expect(container.textContent).toContain("0 processes")
+
+    clickByText("New Process")
+    for (let i = 0; i < 5; i++) await flushPromises()
+
+    expect(
+      container.querySelector('[aria-label="Back to processes"]')
+    ).toBeTruthy()
   })
 })

@@ -9,6 +9,7 @@ import {
 } from "react"
 import {
   ArrowLeft,
+  BookOpen,
   Bot,
   ChevronRight,
   Circle,
@@ -161,6 +162,7 @@ import type {
   TaskEventPayload,
   TaskLiveEvent,
   GitDiffResult,
+  PlaybookWithHooks,
 } from "@/types"
 
 // The durable approval row's `request` blob for a process gate (mirrors
@@ -291,7 +293,7 @@ function runtimeLabel(
   return `${account?.account.displayName ?? selection.accountId} / ${model?.modelName ?? selection.modelId}`
 }
 
-function nextRuntimeConfig(
+export function nextRuntimeConfig(
   current: ProcessRuntimeConfig | null | undefined,
   slot: ProcessRuntimeSlot,
   selection: ProcessRuntimeSelection | null
@@ -316,7 +318,7 @@ type RuntimePickerGroup = {
   items: RuntimePickerItem[]
 }
 
-function RuntimePicker({
+export function RuntimePicker({
   label,
   providers,
   value,
@@ -634,7 +636,18 @@ export function RuntimeBadge({ phaseRun }: { phaseRun: ProcessPhaseRun }) {
   )
 }
 
-export function ProcessScreen({ onClose }: { onClose: () => void }) {
+export function ProcessScreen({
+  onClose,
+  embedded = false,
+  onPlaybookCreated,
+}: {
+  onClose: () => void
+  // Inside Mission Control's Playbooks tab (plan 106.9): no screen header and
+  // no Esc-to-close — the tab owns navigation.
+  embedded?: boolean
+  // After "Use as user story playbook" creates (or finds) the playbook.
+  onPlaybookCreated?: (playbook: PlaybookWithHooks) => void
+}) {
   const [definitions, setDefinitions] = useState<ProcessDefinition[] | null>(
     null
   )
@@ -685,6 +698,7 @@ export function ProcessScreen({ onClose }: { onClose: () => void }) {
   // Esc closes the view, dropping the user back to their last open conversation.
   // Matches the sidebar-navigation behavior.
   useEffect(() => {
+    if (embedded) return
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.preventDefault()
@@ -693,7 +707,7 @@ export function ProcessScreen({ onClose }: { onClose: () => void }) {
     }
     window.addEventListener("keydown", onKeyDown)
     return () => window.removeEventListener("keydown", onKeyDown)
-  }, [onClose])
+  }, [embedded, onClose])
 
   // Guard against acting on a definition that vanished from a refreshed list.
   useEffect(() => {
@@ -735,7 +749,9 @@ export function ProcessScreen({ onClose }: { onClose: () => void }) {
       const def = await window.cowork.db.processes.create({
         name: "New Process",
       })
-      loadDefinitions()
+      // Await the refresh: the vanished-definition guard would otherwise see
+      // the stale list and clear the selection before the builder opens.
+      await loadDefinitions()
       setSelectedId(def.id)
       setPane("builder")
       setActiveRunId(null)
@@ -775,6 +791,23 @@ export function ProcessScreen({ onClose }: { onClose: () => void }) {
     }
   }
 
+  // The same definition, run by a Mission Control user story playbook (plan
+  // 106.9). No copy: edits here show up in the playbook.
+  async function useAsPlaybook(definition: ProcessDefinition) {
+    try {
+      const playbook =
+        await window.cowork.missionControl.playbooks.importProcess(
+          definition.id
+        )
+      toast.success(`“${playbook.name}” is a user story playbook`, {
+        description: "Find it in Mission Control → Playbooks.",
+      })
+      onPlaybookCreated?.(playbook)
+    } catch (err) {
+      toast.error(`Could not create the playbook: ${err}`)
+    }
+  }
+
   // Return from a builder/run takeover to the card browser.
   function backToCards() {
     setSelectedId(null)
@@ -802,25 +835,30 @@ export function ProcessScreen({ onClose }: { onClose: () => void }) {
   return (
     <div
       data-slot="process-screen"
-      className="flex min-h-0 flex-1 flex-col bg-background pt-11 text-sm text-foreground"
+      className={cn(
+        "flex min-h-0 flex-1 flex-col bg-background text-sm text-foreground",
+        !embedded && "pt-11"
+      )}
     >
       {/* Header row (matches the app's h-11 top bar; the Shell drag bar sits
           above via pt-11). */}
-      <div className="flex h-11 shrink-0 items-center justify-between border-b px-4">
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label="Close processes"
-          className="group/back flex items-center gap-2 rounded-md text-left"
-        >
-          <ArrowLeft className="size-4 text-muted-foreground transition-colors group-hover/back:text-foreground" />
-          <h1 className="font-heading text-base font-medium">Processes</h1>
-        </button>
-        <Button variant="ghost" size="icon-sm" onClick={onClose}>
-          <XIcon />
-          <span className="sr-only">Close</span>
-        </Button>
-      </div>
+      {!embedded && (
+        <div className="flex h-11 shrink-0 items-center justify-between border-b px-4">
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close processes"
+            className="group/back flex items-center gap-2 rounded-md text-left"
+          >
+            <ArrowLeft className="size-4 text-muted-foreground transition-colors group-hover/back:text-foreground" />
+            <h1 className="font-heading text-base font-medium">Processes</h1>
+          </button>
+          <Button variant="ghost" size="icon-sm" onClick={onClose}>
+            <XIcon />
+            <span className="sr-only">Close</span>
+          </Button>
+        </div>
+      )}
 
       {selected ? (
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
@@ -961,6 +999,7 @@ export function ProcessScreen({ onClose }: { onClose: () => void }) {
                         setActiveRunId(null)
                       }}
                       onExport={() => exportDefinition(d)}
+                      onUseAsPlaybook={() => void useAsPlaybook(d)}
                       onDelete={() => setPendingDelete(d)}
                     />
                   ))}
@@ -1047,11 +1086,13 @@ function ProcessCard({
   definition,
   onOpen,
   onExport,
+  onUseAsPlaybook,
   onDelete,
 }: {
   definition: ProcessDefinition
   onOpen: () => void
   onExport: () => void
+  onUseAsPlaybook: () => void
   onDelete: () => void
 }) {
   return (
@@ -1082,6 +1123,22 @@ function ProcessCard({
           >
             <Download className="size-3.5" />
           </button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                aria-label={`Use ${definition.name} as a user story playbook`}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onUseAsPlaybook()
+                }}
+                className="rounded p-1 text-muted-foreground opacity-0 transition-opacity group-hover/card:opacity-100 hover:bg-muted hover:text-foreground focus:opacity-100"
+              >
+                <BookOpen className="size-3.5" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent>Use as user story playbook</TooltipContent>
+          </Tooltip>
           <button
             type="button"
             aria-label={`Delete ${definition.name}`}

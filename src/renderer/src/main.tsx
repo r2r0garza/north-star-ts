@@ -121,6 +121,9 @@ function Shell() {
   // Whether the Process view is open (opened from the sidebar footer). An in-panel
   // destination in the center region; authors process DAGs + monitors live runs.
   const [processOpen, setProcessOpen] = useState(false)
+  // Whether the sidebar shows the legacy Processes button (plan 106.9). Off by
+  // default; Mission Control's Playbooks tab reaches every Process workflow.
+  const [showProcesses, setShowProcesses] = useState(false)
   const [missionControlOpen, setMissionControlOpen] = useState(false)
   // Whether the MCP view is open (opened from the sidebar footer). An in-panel
   // destination in the center region; browses/edits mcp.json server configs.
@@ -397,6 +400,23 @@ function Shell() {
     })
   }, [openSidebarTab])
 
+  // Re-read after Settings closes so the switch applies right away.
+  useEffect(() => {
+    if (settingsOpen) return
+    let cancelled = false
+    window.cowork.settings
+      .getSidebar()
+      .then((next) => {
+        if (!cancelled) setShowProcesses(next.showLegacyProcesses)
+      })
+      .catch((err) => {
+        console.warn("[settings] failed to load sidebar settings:", err)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [settingsOpen])
+
   // First launch: if no LLM provider is configured yet, open Settings to the
   // Providers tab so the user configures one before sending a message.
   useEffect(() => {
@@ -585,6 +605,7 @@ function Shell() {
             setMcpOpen(false)
             setDashboardsOpen(false)
           }}
+          showProcesses={showProcesses}
           onProcessClick={() => {
             setProcessOpen(true)
             setMissionControlOpen(false)

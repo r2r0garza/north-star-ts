@@ -18,6 +18,12 @@ import {
   importProcessExport,
   type ProcessImportResult,
 } from "../process/io"
+import { agentSources } from "../agent/agents/sources"
+import { loadAgents } from "../agent/agents/loader"
+import {
+  quickRunRoles,
+  startQuickRun,
+} from "../mission-control/playbook-import"
 
 // Control channels for the Process engine (plan 025). Definition/run CRUD lives
 // on the `db:processes:*` channels (db-handlers.ts); these are the *control verbs*
@@ -42,6 +48,32 @@ export function registerProcessHandlers(
         runtimeConfig?: ProcessRuntimeConfig | null
       }
     ) => processService.startRun(input)
+  )
+
+  // Quick run (plan 106.9): any definition against an objective, with no
+  // feature. Seat-role phases bind to the agents picked per role.
+  ipcMain.handle("process:quickRunRoles", (_e, processId: string) =>
+    quickRunRoles(processId)
+  )
+  ipcMain.handle(
+    "process:quickRun",
+    (
+      _e,
+      input: {
+        processId: string
+        objective: string
+        workspacePath: string
+        runtimeConfig?: ProcessRuntimeConfig | null
+        roleAgents?: Record<string, string>
+      }
+    ) =>
+      startQuickRun(
+        {
+          loadAgents: (workspace) => loadAgents(agentSources(workspace)),
+          startRun: (run) => processService.startRun(run),
+        },
+        input
+      )
   )
 
   // Cancel a run: abort its backing task (running phases observe the signal and

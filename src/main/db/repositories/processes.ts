@@ -408,7 +408,18 @@ export function updateProcessDefinition(
 }
 
 // CASCADE clears phases, phase agents, and edges (FKs to process_definitions).
+// A definition a playbook runs can't be deleted (playbook_hooks RESTRICTs it);
+// say which playbook instead of surfacing the bare FK error.
 export function deleteProcessDefinition(id: string): void {
+  const playbook = getDb()
+    .prepare(
+      "SELECT p.name FROM playbook_hooks h JOIN playbooks p ON p.id = h.playbook_id WHERE h.process_id = ? LIMIT 1"
+    )
+    .get(id) as { name: string } | undefined
+  if (playbook)
+    throw new Error(
+      `The playbook "${playbook.name}" runs this process. Delete that playbook first.`
+    )
   getDb().prepare("DELETE FROM process_definitions WHERE id = ?").run(id)
 }
 
@@ -728,6 +739,23 @@ export function updatePhaseAgent(
       .run(stringifyRuntimeConfig(patch.runtimeConfig), id)
   }
   return getPhaseAgent(id)
+}
+
+// Rebind a pool row from a named agent to a seat role, in place (plan 106.9's
+// role conversion). Skills, tools, runtime, and position are kept.
+export function setPhaseAgentSeatRole(
+  id: string,
+  seatRole: string
+): ProcessPhaseAgent {
+  const identity = phaseAgentIdentity({ seatRole })
+  getDb()
+    .prepare(
+      "UPDATE process_phase_agents SET agent_name = NULL, seat_role = ? WHERE id = ?"
+    )
+    .run(identity.seatRole, id)
+  const agent = getPhaseAgent(id)
+  if (!agent) throw new Error(`Phase agent not found: ${id}`)
+  return agent
 }
 
 export function deletePhaseAgent(id: string): void {

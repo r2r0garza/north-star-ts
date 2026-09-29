@@ -16,6 +16,12 @@ import {
   type RigExport,
 } from "../mission-control/io"
 import { createDefaultPlaybook } from "../mission-control/playbook-defaults"
+import {
+  convertAgentsToSeatRoles,
+  importProcessAsPlaybook,
+  listAgentsForRoleConversion,
+  listProcessRunHistory,
+} from "../mission-control/playbook-import"
 import type { UserStoryRunner } from "../mission-control/user-story-runner"
 import type { SeatComms } from "../mission-control/comms"
 import type { SeatSessionService } from "../mission-control/sessions"
@@ -407,6 +413,31 @@ export function registerMissionControlHandlers(
   )
   ipcMain.handle("missionControl:playbooks:delete", (_event, id: string) =>
     playbooks.deletePlaybook(id)
+  )
+  // Processes sunset (plan 106.9): a Process as a user story playbook, the
+  // optional agent → seat role conversion, and the run history.
+  ipcMain.handle(
+    "missionControl:playbooks:importProcess",
+    (_event, processId: string) => importProcessAsPlaybook(processId)
+  )
+  ipcMain.handle(
+    "missionControl:playbooks:roleConversion",
+    async (_event, processId: string) =>
+      listAgentsForRoleConversion(processId, await agents())
+  )
+  ipcMain.handle(
+    "missionControl:playbooks:convertRoles",
+    (
+      _event,
+      input: {
+        processId: string
+        mapping: Record<string, string>
+        rigId?: string | null
+      }
+    ) => convertAgentsToSeatRoles(input)
+  )
+  ipcMain.handle("missionControl:playbooks:history", () =>
+    listProcessRunHistory()
   )
   ipcMain.handle(
     "missionControl:playbooks:createHookProcess",

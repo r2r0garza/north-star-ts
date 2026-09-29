@@ -133,6 +133,7 @@ const MIGRATIONS: Array<(db: Database.Database) => void> = [
   ensureConversationNotes,
   ensureSeatMemory,
   ensureHealth,
+  ensurePlaybookHookOwnership,
 ]
 
 function tableExists(db: Database.Database, table: string): boolean {
@@ -227,6 +228,19 @@ CREATE TABLE IF NOT EXISTS seat_memory_exposures (
 );
 CREATE INDEX IF NOT EXISTS idx_seat_memory_exposures_conversation ON seat_memory_exposures(conversation_id);
 `)
+}
+
+// v63 (plan 106.9): whether a playbook hook owns its Process definition. Hooks
+// created in Mission Control own theirs (deleting the playbook deletes it); a
+// Process imported as a playbook stays the user's (0), so deleting the playbook
+// leaves it alone and the legacy Processes list keeps showing it.
+function ensurePlaybookHookOwnership(db: Database.Database): void {
+  addColumnIfMissing(
+    db,
+    "playbook_hooks",
+    "owns_process",
+    "INTEGER NOT NULL DEFAULT 1"
+  )
 }
 
 // v62 (plan 106.8): the progress/ceremony event stream and the health
@@ -540,6 +554,7 @@ export function runMigrations(
       ensureSeatMemory(db)
       ensureHealth(db)
       ensureMissionControlPlaybooks(db)
+      ensurePlaybookHookOwnership(db)
       ensureMissionControlComms(db)
       ensureContextScopes(db)
       ensureMissionIntegration(db)

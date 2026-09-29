@@ -154,8 +154,8 @@ export function SkillsScreen({ onClose }: { onClose: () => void }) {
     ]
   }, [tree])
 
-  const loadTree = useCallback(() => {
-    window.cowork.skills.tree().then(setTree)
+  const loadTree = useCallback(async () => {
+    setTree(await window.cowork.skills.tree())
   }, [])
 
   // Load on mount. The component is mounted only while the Skills view is open
@@ -287,7 +287,7 @@ export function SkillsScreen({ onClose }: { onClose: () => void }) {
         description: mode.description.trim(),
         body: mode.body,
       })
-      loadTree()
+      await loadTree()
       setSelectedKey(skillKey(mode.dir, name))
       setMode({ kind: "view" })
       setDraft(null)
@@ -308,12 +308,13 @@ export function SkillsScreen({ onClose }: { onClose: () => void }) {
   // After the modal imports a skill: refresh the tree, select the new skill (its
   // folder name is the last segment of the returned <dir>/<name>/SKILL.md path),
   // and drop to View.
-  function onImported(newPath: string, dir: string) {
+  async function onImported(newPath: string, dir: string) {
     const name = newPath
       .replace(/[/\\]SKILL\.md$/, "")
       .split(/[/\\]/)
       .pop()!
-    loadTree()
+    // Await the refresh so the vanished-selection guard sees the new skill.
+    await loadTree()
     setSelectedKey(skillKey(dir, name))
     setMode({ kind: "view" })
     setDraft(null)

@@ -290,8 +290,8 @@ export function AgentsScreen({ onClose }: { onClose: () => void }) {
     ]
   }, [tree])
 
-  const loadTree = useCallback(() => {
-    window.cowork.agents.tree().then(setTree)
+  const loadTree = useCallback(async () => {
+    setTree(await window.cowork.agents.tree())
   }, [])
 
   // Load on mount. The component is mounted only while the Agents view is open
@@ -410,8 +410,9 @@ export function AgentsScreen({ onClose }: { onClose: () => void }) {
 
   // After a best-effort import, refresh the tree and select the first agent that
   // landed. `newPath` is `<dir>/<name>.agent.md`; derive the name from its stem.
-  function onImported(newPath: string, dir: string) {
-    loadTree()
+  // Await the refresh so the vanished-selection guard sees the new agent.
+  async function onImported(newPath: string, dir: string) {
+    await loadTree()
     const base = newPath.split(/[\\/]/).pop() ?? ""
     const name = base.endsWith(".agent.md")
       ? base.slice(0, -".agent.md".length)
@@ -465,7 +466,7 @@ export function AgentsScreen({ onClose }: { onClose: () => void }) {
       // Persist the full form (tools/skills/children/body/user-invocable) — create
       // only scaffolds name+description with defaults.
       await window.cowork.agents.save(path, toFields({ ...draft, name }))
-      loadTree()
+      await loadTree()
       setSelectedKey(agentKey(mode.dir, name))
       setMode({ kind: "view" })
       setDraft(null)

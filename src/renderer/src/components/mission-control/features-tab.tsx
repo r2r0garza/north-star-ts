@@ -48,6 +48,14 @@ import { MilestoneIntegrationPanel } from "./milestone-integration-panel"
 import { NavigatorStrip, useNavigator } from "./navigator-strip"
 import { DriveControls } from "./drive-controls"
 import { PlanHistory, WaitingOnYou } from "./proposals-inbox"
+import { FeaturesProjectRail } from "./features-project-rail"
+import {
+  ALL_FEATURES,
+  filterFeatures,
+  groupFeaturesByProject,
+  isStaleFilter,
+  type FeatureProjectFilter,
+} from "./feature-project-filter"
 import type {
   Feature,
   FeatureGraph,
@@ -1331,6 +1339,8 @@ export function FeaturesTab({
   onGraphChange,
   onMilestoneChange,
   onUserStoryChange,
+  projectFilter,
+  onProjectFilterChange,
 }: {
   rigs: Rig[]
   graph: FeatureGraph | null
@@ -1339,8 +1349,12 @@ export function FeaturesTab({
   onGraphChange: (graph: FeatureGraph | null) => void
   onMilestoneChange: (id: string | null) => void
   onUserStoryChange: (id: string | null) => void
+  // Owned by the screen so it survives tab switches and opening a feature.
+  projectFilter: FeatureProjectFilter
+  onProjectFilterChange: (filter: FeatureProjectFilter) => void
 }) {
   const [items, setItems] = useState<Feature[]>([])
+  const [loaded, setLoaded] = useState(false)
   const [workspaces, setWorkspaces] = useState<Workspace[]>([])
   const [projects, setProjects] = useState<Project[]>([])
   const [createOpen, setCreateOpen] = useState(false)
@@ -1359,10 +1373,31 @@ export function FeaturesTab({
     setItems(nextItems)
     setWorkspaces(nextWorkspaces)
     setProjects(nextProjects)
+    setLoaded(true)
   }
   useEffect(() => {
     void reload()
   }, [])
+  const groups = useMemo(
+    () => groupFeaturesByProject(items, projects),
+    [items, projects]
+  )
+  const filterIsStale = loaded && isStaleFilter(projectFilter, groups)
+  useEffect(() => {
+    if (filterIsStale) onProjectFilterChange(ALL_FEATURES)
+  }, [filterIsStale, onProjectFilterChange])
+  const visibleItems = filterIsStale
+    ? items
+    : filterFeatures(items, projectFilter)
+  const filteredProject =
+    projectFilter.kind === "project"
+      ? (projects.find((project) => project.id === projectFilter.id) ?? null)
+      : null
+  const openCreate = () => {
+    // A selected project pre-fills the link (and so the workspace).
+    setProjectId(filteredProject?.id ?? "none")
+    setCreateOpen(true)
+  }
   // The list shows each feature's status, which the Navigator and merge queue
   // change in the background: refetch the features (not workspaces/projects)
   // on their events so a finished feature doesn't read "active" until a remount.
@@ -1407,7 +1442,10 @@ export function FeaturesTab({
       ? null
       : (projects.find((project) => project.id === projectId) ?? null)
   const canCreate = Boolean(
-    slug(name) && intent.trim() && rigId && (linkedProject?.workspaceId || workspaceId)
+    slug(name) &&
+    intent.trim() &&
+    rigId &&
+    (linkedProject?.workspaceId || workspaceId)
   )
   const create = async () => {
     const next = await window.cowork.missionControl.features.create({
@@ -1532,80 +1570,94 @@ export function FeaturesTab({
       />
     )
   return (
-    <div>
-      <div className="mb-5 flex items-center justify-between">
-        <div>
-          <h2 className="font-semibold">Features</h2>
-          <p className="text-sm text-muted-foreground">
-            Write the work map your rig will drive.
-          </p>
+    <div className="flex min-h-0 min-w-0 flex-1">
+      <FeaturesProjectRail
+        groups={groups}
+        selection={filterIsStale ? ALL_FEATURES : projectFilter}
+        onSelect={onProjectFilterChange}
+      />
+      <div className="min-w-0 flex-1 overflow-y-auto p-6">
+        <div className="mb-5 flex items-center justify-between">
+          <div>
+            <h2 className="font-semibold">Features</h2>
+            <p className="text-sm text-muted-foreground">
+              Write the work map your rig will drive.
+            </p>
+          </div>
+          <Button onClick={openCreate}>
+            <Plus className="size-4" /> New feature
+          </Button>
         </div>
-        <Button onClick={() => setCreateOpen(true)}>
-          <Plus className="size-4" /> New feature
-        </Button>
-      </div>
-      {items.length === 0 ? (
-        <div className="grid place-items-center rounded-xl border border-dashed py-16 text-center">
-          <GitBranch className="mb-3 size-9 text-muted-foreground" />
-          <h3 className="font-medium">Map your first feature</h3>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Define intent, milestones, user stories, and their dependency waves.
-          </p>
-        </div>
-      ) : (
-        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-          {items.map((item) => (
-            <Card
-              key={item.id}
-              className="cursor-pointer hover:bg-muted/30"
-              onClick={() =>
-                void window.cowork.missionControl.features
-                  .get(item.id)
-                  .then((value) => value && onGraphChange(value))
-              }
-            >
-              <CardHeader>
-                <CardTitle>{item.name}</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <p className="line-clamp-2 text-sm text-muted-foreground">
-                  {item.intent || "No intent written yet."}
-                </p>
-                <div className="mt-4 flex items-center">
-                  <Badge variant="outline">{item.status}</Badge>
-                  <Button
-                    className="ml-auto"
-                    variant="ghost"
-                    size="icon-sm"
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      if (
-                        !window.confirm(
-                          `Delete feature “${item.name}” with all its milestones and user stories? This cannot be undone.`
+        {items.length === 0 ? (
+          <div className="grid place-items-center rounded-xl border border-dashed py-16 text-center">
+            <GitBranch className="mb-3 size-9 text-muted-foreground" />
+            <h3 className="font-medium">Map your first feature</h3>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Define intent, milestones, user stories, and their dependency
+              waves.
+            </p>
+          </div>
+        ) : visibleItems.length === 0 ? (
+          <div className="rounded-xl border border-dashed py-16 text-center text-sm text-muted-foreground">
+            {filteredProject
+              ? `No features in ${filteredProject.name} yet.`
+              : "No features here yet."}
+          </div>
+        ) : (
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+            {visibleItems.map((item) => (
+              <Card
+                key={item.id}
+                className="cursor-pointer hover:bg-muted/30"
+                onClick={() =>
+                  void window.cowork.missionControl.features
+                    .get(item.id)
+                    .then((value) => value && onGraphChange(value))
+                }
+              >
+                <CardHeader>
+                  <CardTitle>{item.name}</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <p className="line-clamp-2 text-sm text-muted-foreground">
+                    {item.intent || "No intent written yet."}
+                  </p>
+                  <div className="mt-4 flex items-center">
+                    <Badge variant="outline">{item.status}</Badge>
+                    <Button
+                      className="ml-auto"
+                      variant="ghost"
+                      size="icon-sm"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        if (
+                          !window.confirm(
+                            `Delete feature “${item.name}” with all its milestones and user stories? This cannot be undone.`
+                          )
                         )
-                      )
-                        return
-                      void window.cowork.missionControl.features
-                        .delete(item.id)
-                        .then((result) => {
-                          // Unmerged integration work is never deleted silently.
-                          if (result?.keptBranches.length)
-                            toast.info(
-                              `Kept ${result.keptBranches.join(", ")}: it has merged work that never reached its base branch. Delete it yourself when you no longer need it.`
-                            )
-                          return reload()
-                        })
-                        .catch((error) => toast.error(errorMessage(error)))
-                    }}
-                  >
-                    <Trash2 className="size-4" />
-                  </Button>
-                </div>
-              </CardContent>
-            </Card>
-          ))}
-        </div>
-      )}
+                          return
+                        void window.cowork.missionControl.features
+                          .delete(item.id)
+                          .then((result) => {
+                            // Unmerged integration work is never deleted silently.
+                            if (result?.keptBranches.length)
+                              toast.info(
+                                `Kept ${result.keptBranches.join(", ")}: it has merged work that never reached its base branch. Delete it yourself when you no longer need it.`
+                              )
+                            return reload()
+                          })
+                          .catch((error) => toast.error(errorMessage(error)))
+                      }}
+                    >
+                      <Trash2 className="size-4" />
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        )}
+      </div>
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
         <DialogContent
           className="sm:max-w-xl"

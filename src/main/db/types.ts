@@ -950,6 +950,9 @@ export interface PlaybookHook {
   playbookId: string
   hook: PlaybookHookName
   processId: string
+  // False for a Process imported as a playbook (plan 106.9): the definition
+  // stays the user's, so deleting the playbook leaves it in place.
+  ownsProcess: boolean
 }
 
 export interface PlaybookWithHooks extends Playbook {

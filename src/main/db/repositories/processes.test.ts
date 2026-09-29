@@ -66,7 +66,7 @@ describe.skipIf(!sqliteLoads)("v15 migration", () => {
   })
 
   it("reaches the latest user_version", () => {
-    expect(db.pragma("user_version", { simple: true })).toBe(62)
+    expect(db.pragma("user_version", { simple: true })).toBe(63)
   })
 
   it("adds the v24 subprocess_id column to process_phases", () => {

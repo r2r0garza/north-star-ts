@@ -503,6 +503,7 @@ export function AppSidebar({
   onSkillsClick,
   onAgentsClick,
   onProcessClick,
+  showProcesses,
   onMissionControlClick,
   onMcpClick,
   onDashboardsClick,
@@ -522,6 +523,8 @@ export function AppSidebar({
   onSkillsClick: () => void
   onAgentsClick: () => void
   onProcessClick: () => void
+  // Legacy Processes button (plan 106.9), behind a Settings switch.
+  showProcesses: boolean
   onMissionControlClick: () => void
   onMcpClick: () => void
   onDashboardsClick: () => void
@@ -946,16 +949,18 @@ export function AppSidebar({
           <Network className="size-4" />
           Mission Control
         </Button>
-        <Button
-          type="button"
-          size="sm"
-          variant="ghost"
-          onClick={onProcessClick}
-          className="w-full justify-start"
-        >
-          <Workflow className="size-4" />
-          Processes
-        </Button>
+        {showProcesses && (
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            onClick={onProcessClick}
+            className="w-full justify-start"
+          >
+            <Workflow className="size-4" />
+            Processes
+          </Button>
+        )}
         <Button
           type="button"
           size="sm"

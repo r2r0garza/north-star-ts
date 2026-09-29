@@ -1,5 +1,9 @@
 # PR26: Process UI — the sidebar view, DAG builder, and live run monitor
 
+> **Legacy (plan `106.9`, 2026-09-29).** The Processes sidebar button is hidden by default; turn it
+> back on in Settings → General → Sidebar. The same screen is embedded in Mission Control → Playbooks →
+> All process definitions, and the Process engine remains the playbook runtime.
+
 > Status: **DONE** (renderer-only; typecheck + build clean). Built on `025` (the Process engine:
 > definitions/runs schema, the `process_run` task kind, `process:*` + `db:processes:*` IPC + the
 > preload bridge — all of which already existed; this PR is purely its renderer). Reuses the

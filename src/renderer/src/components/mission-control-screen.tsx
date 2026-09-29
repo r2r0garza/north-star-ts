@@ -38,6 +38,10 @@ import {
 import { Textarea } from "@/components/ui/textarea"
 import { Markdown } from "@/components/markdown"
 import { FeaturesTab } from "@/components/mission-control/features-tab"
+import {
+  ALL_FEATURES,
+  type FeatureProjectFilter,
+} from "@/components/mission-control/feature-project-filter"
 import { SeatMemoryTab } from "@/components/mission-control/seat-memory-tab"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
@@ -857,6 +861,8 @@ export function MissionControlScreen({ onClose }: { onClose: () => void }) {
   const [tab, setTab] = useState<"features" | "rigs" | "playbooks">("features")
   const [rigs, setRigs] = useState<Rig[]>([])
   const [featureGraph, setFeatureGraph] = useState<FeatureGraph | null>(null)
+  const [projectFilter, setProjectFilter] =
+    useState<FeatureProjectFilter>(ALL_FEATURES)
   const [playbookEditing, setPlaybookEditing] =
     useState<PlaybookEditing | null>(null)
   const [milestoneId, setMilestoneId] = useState<string | null>(null)
@@ -1106,7 +1112,14 @@ export function MissionControlScreen({ onClose }: { onClose: () => void }) {
           </button>
         </div>
       )}
-      <div className="flex-1 overflow-y-auto p-6">
+      <div
+        className={
+          // The Features list lays out its own rail and scroll area.
+          tab === "features" && !featureGraph
+            ? "flex min-h-0 flex-1"
+            : "flex-1 overflow-y-auto p-6"
+        }
+      >
         {tab === "features" ? (
           <FeaturesTab
             rigs={rigs}
@@ -1116,6 +1129,8 @@ export function MissionControlScreen({ onClose }: { onClose: () => void }) {
             onGraphChange={setFeatureGraph}
             onMilestoneChange={setMilestoneId}
             onUserStoryChange={setUserStoryId}
+            projectFilter={projectFilter}
+            onProjectFilterChange={setProjectFilter}
           />
         ) : tab === "playbooks" ? (
           <PlaybooksTab

@@ -34,7 +34,11 @@ export const PLAYBOOK_HOOKS: Record<
   readonly PlaybookHookName[]
 > = {
   user_story: ["run"],
-  milestone: ["before_user_stories", "after_each_user_story", "after_all_user_stories"],
+  milestone: [
+    "before_user_stories",
+    "after_each_user_story",
+    "after_all_user_stories",
+  ],
   feature: ["plan", "between_milestones", "on_complete"],
 }
 
@@ -51,6 +55,7 @@ interface PlaybookHookRow {
   playbook_id: string
   hook: PlaybookHookName
   process_id: string
+  owns_process: number
 }
 interface PlaybookRunRow {
   id: string
@@ -85,6 +90,7 @@ function toHook(row: PlaybookHookRow): PlaybookHook {
     playbookId: row.playbook_id,
     hook: row.hook,
     processId: row.process_id,
+    ownsProcess: row.owns_process !== 0,
   }
 }
 function toRun(row: PlaybookRunRow): PlaybookRun {
@@ -134,9 +140,9 @@ export function assertHookForAltitude(
 // ── playbooks ────────────────────────────────────────────────────────────────
 
 export function getPlaybook(id: string): PlaybookWithHooks | null {
-  const row = getDb().prepare("SELECT * FROM playbooks WHERE id = ?").get(id) as
-    | PlaybookRow
-    | undefined
+  const row = getDb()
+    .prepare("SELECT * FROM playbooks WHERE id = ?")
+    .get(id) as PlaybookRow | undefined
   return row ? { ...toPlaybook(row), hooks: listHooks(row.id) } : null
 }
 
@@ -201,8 +207,9 @@ export function updatePlaybook(
 }
 
 // Deleting a playbook also deletes the hook definitions it owns, unless another
-// playbook still references one. Past Process runs keep their rows (their
-// process_id is SET NULL), and playbook_runs keep their history.
+// playbook still references one. An imported Process (not owned) is kept.
+// Past Process runs keep their rows (their process_id is SET NULL), and
+// playbook_runs keep their history.
 export function deletePlaybook(id: string): void {
   const playbook = getPlaybook(id)
   if (!playbook) return
@@ -214,6 +221,7 @@ export function deletePlaybook(id: string): void {
         .prepare(`UPDATE ${table} SET playbook_id = NULL WHERE playbook_id = ?`)
         .run(id)
     for (const hook of playbook.hooks) {
+      if (!hook.ownsProcess) continue
       const stillUsed = getDb()
         .prepare("SELECT 1 FROM playbook_hooks WHERE process_id = ? LIMIT 1")
         .get(hook.processId)
@@ -233,7 +241,9 @@ export function deletePlaybook(id: string): void {
 export function listHooks(playbookId: string): PlaybookHook[] {
   return (
     getDb()
-      .prepare("SELECT * FROM playbook_hooks WHERE playbook_id = ? ORDER BY hook")
+      .prepare(
+        "SELECT * FROM playbook_hooks WHERE playbook_id = ? ORDER BY hook"
+      )
       .all(playbookId) as PlaybookHookRow[]
   ).map(toHook)
 }
@@ -249,10 +259,12 @@ export function getHook(
 }
 
 // Point a hook at an existing Process definition (replacing any previous one).
+// `ownsProcess: false` marks a Process the user built elsewhere (plan 106.9).
 export function setHook(
   playbookId: string,
   hook: string,
-  processId: string
+  processId: string,
+  options: { ownsProcess?: boolean } = {}
 ): PlaybookWithHooks {
   const playbook = getPlaybook(playbookId)
   if (!playbook) throw new Error(`Playbook not found: ${playbookId}`)
@@ -265,9 +277,15 @@ export function setHook(
       .run(playbookId, name)
     getDb()
       .prepare(
-        "INSERT INTO playbook_hooks (id, playbook_id, hook, process_id) VALUES (?, ?, ?, ?)"
+        "INSERT INTO playbook_hooks (id, playbook_id, hook, process_id, owns_process) VALUES (?, ?, ?, ?, ?)"
       )
-      .run(randomUUID(), playbookId, name, processId)
+      .run(
+        randomUUID(),
+        playbookId,
+        name,
+        processId,
+        options.ownsProcess === false ? 0 : 1
+      )
     getDb()
       .prepare("UPDATE playbooks SET updated_at = ? WHERE id = ?")
       .run(Date.now(), playbookId)
@@ -305,12 +323,14 @@ export function removeHook(
   return playbook
 }
 
-// Every Process definition some playbook uses, so the legacy Processes list can
-// hide playbook steps behind a filter chip.
+// Every Process definition a playbook owns, so the legacy Processes list can
+// hide playbook steps behind a filter chip. Imported Processes stay listed.
 export function listPlaybookProcessIds(): string[] {
   return (
     getDb()
-      .prepare("SELECT DISTINCT process_id FROM playbook_hooks")
+      .prepare(
+        "SELECT DISTINCT process_id FROM playbook_hooks WHERE owns_process = 1"
+      )
       .all() as Array<{ process_id: string }>
   ).map((row) => row.process_id)
 }
