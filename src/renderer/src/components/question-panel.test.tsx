@@ -13,9 +13,19 @@ import type { Question, QuestionAnswer } from "@/types"
 let container: HTMLDivElement
 let root: Root
 
-function mount(questions: Question[], onSubmit: (a: QuestionAnswer[]) => void) {
+function mount(
+  questions: Question[],
+  onSubmit: (a: QuestionAnswer[]) => void,
+  collapsible = false
+) {
   act(() => {
-    root.render(<QuestionPanel questions={questions} onSubmit={onSubmit} />)
+    root.render(
+      <QuestionPanel
+        questions={questions}
+        onSubmit={onSubmit}
+        collapsible={collapsible}
+      />
+    )
   })
 }
 
@@ -55,6 +65,119 @@ const single = (n: number): Question => ({
   question: `Q${n}?`,
   header: `Q${n}`,
   options: [{ label: `A${n}` }, { label: `B${n}` }, { label: `C${n}` }],
+})
+
+describe("QuestionPanel collapse flow", () => {
+  it("is opt-in and starts expanded", () => {
+    const onSubmit = vi.fn()
+    mount([single(1)], onSubmit)
+    expect(
+      container.querySelector('[aria-label="Collapse questions"]')
+    ).toBeNull()
+
+    mount([single(1)], onSubmit, true)
+    const collapse = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Collapse questions"]'
+    )!
+    expect(collapse.getAttribute("aria-expanded")).toBe("true")
+    expect(container.textContent).toContain("Q1?")
+  })
+
+  it("preserves a free-form draft across collapse and expand", () => {
+    const onSubmit = vi.fn()
+    mount([single(1)], onSubmit, true)
+
+    const other = optionButtons().find(
+      (button) => button.textContent === "Other…"
+    )!
+    act(() => other.click())
+    const textarea = container.querySelector("textarea")!
+    act(() => {
+      Object.getOwnPropertyDescriptor(
+        HTMLTextAreaElement.prototype,
+        "value"
+      )?.set?.call(textarea, "My custom answer")
+      textarea.dispatchEvent(new Event("input", { bubbles: true }))
+    })
+
+    const collapse = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Collapse questions"]'
+    )!
+    act(() => collapse.click())
+    expect(container.querySelector("textarea")).toBeNull()
+
+    const expand = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Expand questions"]'
+    )!
+    expect(expand.getAttribute("aria-expanded")).toBe("false")
+    act(() => expand.click())
+    expect(
+      container.querySelector<HTMLTextAreaElement>("textarea")?.value
+    ).toBe("My custom answer")
+  })
+
+  it("does not handle hidden keyboard shortcuts while collapsed", () => {
+    const onSubmit = vi.fn()
+    mount([single(1)], onSubmit, true)
+
+    const collapse = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Collapse questions"]'
+    )!
+    act(() => collapse.click())
+    press("ArrowDown")
+    press("Enter")
+    expect(onSubmit).not.toHaveBeenCalled()
+
+    const expand = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Expand questions"]'
+    )!
+    act(() => expand.click())
+    press("Enter")
+    expect(onSubmit).toHaveBeenCalledWith([{ selected: ["A1"] }])
+  })
+
+  it("collapses a presented plan and preserves refinement feedback", () => {
+    const onSubmit = vi.fn()
+    const plan: Question = {
+      question: "",
+      header: "Plan",
+      body: "# Plan\n\nReview this implementation plan.",
+      otherLabel: "Refine Plan…",
+      options: [{ label: "Yes, approve" }],
+    }
+    mount([plan], onSubmit, true)
+
+    expect(container.textContent).toContain("Review this implementation plan.")
+    const refine = optionButtons().find(
+      (button) => button.textContent === "Refine Plan…"
+    )!
+    act(() => refine.click())
+    const textarea = container.querySelector("textarea")!
+    act(() => {
+      Object.getOwnPropertyDescriptor(
+        HTMLTextAreaElement.prototype,
+        "value"
+      )?.set?.call(textarea, "Keep the existing API.")
+      textarea.dispatchEvent(new Event("input", { bubbles: true }))
+    })
+
+    const collapse = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Collapse plan"]'
+    )!
+    act(() => collapse.click())
+    expect(container.textContent).not.toContain(
+      "Review this implementation plan."
+    )
+
+    const expand = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Expand plan"]'
+    )!
+    act(() => expand.click())
+    expect(container.textContent).toContain("Review this implementation plan.")
+    expect(
+      container.querySelector<HTMLTextAreaElement>("textarea")?.value
+    ).toBe("Keep the existing API.")
+  })
 })
 
 describe("QuestionPanel keyboard flow", () => {

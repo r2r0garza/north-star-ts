@@ -3269,6 +3269,7 @@ function App(
                 questions={liveQuestion.questions}
                 onSubmit={answerQuestion}
                 onCancel={questionCancellable ? cancelQuestion : undefined}
+                collapsible
               />
             </div>
           )}

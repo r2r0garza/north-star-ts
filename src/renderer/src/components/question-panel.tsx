@@ -1,5 +1,12 @@
 import { useEffect, useRef, useState } from "react"
-import { Check, ChevronLeft, ChevronRight, CircleHelp } from "lucide-react"
+import {
+  Check,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  ChevronUp,
+  CircleHelp,
+} from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Markdown } from "@/components/markdown"
 import { cn } from "@/lib/utils"
@@ -69,6 +76,7 @@ export function QuestionPanel({
   questions,
   onSubmit,
   onCancel,
+  collapsible = false,
 }: {
   questions: Question[]
   onSubmit: (answers: QuestionAnswer[]) => void
@@ -76,6 +84,9 @@ export function QuestionPanel({
   // is shown. Used e.g. for the plan approval, where the user may decide not to
   // proceed with the plan at all rather than approve or keep refining.
   onCancel?: () => void
+  // The live conversation can minimize the panel to regain transcript space.
+  // Inline task gates omit this and remain fully visible.
+  collapsible?: boolean
 }) {
   // Per-question selected option labels (OTHER is a member when chosen) and the
   // free-form text typed for Other. Indexed parallel to `questions`.
@@ -91,6 +102,7 @@ export function QuestionPanel({
   // (presets + Other). Distinct from selection: this is just where the arrows
   // are pointing. Re-seeded when the question changes (see effect below).
   const [activeIdx, setActiveIdx] = useState(0)
+  const [collapsed, setCollapsed] = useState(false)
 
   function toggle(qi: number, value: string, multi: boolean) {
     setSelected((prev) => {
@@ -192,6 +204,8 @@ export function QuestionPanel({
     if (e.metaKey || e.ctrlKey || e.altKey) return
     // The Other textarea (or any field) owns its own keys — stand down.
     if (isTypingTarget(e.target)) return
+    // Hidden options must not react to global navigation or submit shortcuts.
+    if (collapsed) return
 
     const len = optionValues.length
     if (e.key === "ArrowDown") {
@@ -221,189 +235,220 @@ export function QuestionPanel({
   // When any question carries a body (e.g. plan approval), the panel title and
   // question-text rendering change to match the plan-review context.
   const isPlanReview = questions.some((q) => q.body)
+  const title = isPlanReview
+    ? "Approve or keep working on the plan"
+    : multiple
+      ? "A few questions"
+      : "A quick question"
+  const collapseLabel = `${collapsed ? "Expand" : "Collapse"} ${
+    isPlanReview ? "plan" : "questions"
+  }`
 
   return (
-    <div className="flex flex-col gap-3 rounded-lg border bg-card p-4 text-sm">
-      <div className="flex items-center gap-2 font-medium text-foreground">
-        <CircleHelp className="size-4 shrink-0 text-primary" />
-        <span>
-          {isPlanReview
-            ? "Approve or keep working on the plan"
-            : multiple
-              ? "A few questions"
-              : "A quick question"}
-        </span>
+    <div
+      className={cn(
+        "flex flex-col rounded-lg border bg-card text-sm",
+        collapsed ? "gap-0 p-2.5" : "gap-3 p-4"
+      )}
+    >
+      <div className="flex items-center justify-between gap-2 font-medium text-foreground">
+        <div className="flex min-w-0 items-center gap-2">
+          <CircleHelp className="size-4 shrink-0 text-primary" />
+          <span className="truncate">{title}</span>
+        </div>
+        {collapsible && (
+          <Button
+            type="button"
+            size="icon-sm"
+            variant="ghost"
+            onClick={() => setCollapsed((value) => !value)}
+            aria-expanded={!collapsed}
+            aria-label={collapseLabel}
+            title={collapseLabel}
+            className="shrink-0"
+          >
+            {collapsed ? (
+              <ChevronUp className="size-4" />
+            ) : (
+              <ChevronDown className="size-4" />
+            )}
+          </Button>
+        )}
       </div>
 
-      {/* Header tabs — one per question; click to jump. A check marks answered
-          questions; the current one is highlighted. Only shown for 2+. */}
-      {multiple && (
-        <div className="flex flex-wrap gap-1.5">
-          {questions.map((qq, qi) => (
-            <button
-              key={qi}
-              type="button"
-              onClick={() => setCurrent(qi)}
-              className={cn(
-                "flex items-center gap-1 rounded-md px-2 py-1 text-[0.7rem] font-medium transition-colors",
-                qi === current
-                  ? "bg-primary text-primary-foreground"
-                  : "bg-muted text-muted-foreground hover:bg-accent"
-              )}
-            >
-              {answered(qi) && <Check className="size-3 shrink-0" />}
-              {qq.header}
-            </button>
-          ))}
-        </div>
-      )}
+      {!collapsed && (
+        <>
+          {/* Header tabs — one per question; click to jump. A check marks answered
+              questions; the current one is highlighted. Only shown for 2+. */}
+          {multiple && (
+            <div className="flex flex-wrap gap-1.5">
+              {questions.map((qq, qi) => (
+                <button
+                  key={qi}
+                  type="button"
+                  onClick={() => setCurrent(qi)}
+                  className={cn(
+                    "flex items-center gap-1 rounded-md px-2 py-1 text-[0.7rem] font-medium transition-colors",
+                    qi === current
+                      ? "bg-primary text-primary-foreground"
+                      : "bg-muted text-muted-foreground hover:bg-accent"
+                  )}
+                >
+                  {answered(qi) && <Check className="size-3 shrink-0" />}
+                  {qq.header}
+                </button>
+              ))}
+            </div>
+          )}
 
-      {/* Current question + its options. */}
-      <div className="flex flex-col gap-2">
-        {/* Skip the question text when a body is present (plan approval) — the
+          {/* Current question + its options. */}
+          <div className="flex flex-col gap-2">
+            {/* Skip the question text when a body is present (plan approval) — the
             body + panel title already provide full context. */}
-        {q.question && !q.body && (
-          <span className="font-medium">{q.question}</span>
-        )}
-        {/* Optional Markdown context (e.g. the plan being approved), capped in
+            {q.question && !q.body && (
+              <span className="font-medium">{q.question}</span>
+            )}
+            {/* Optional Markdown context (e.g. the plan being approved), capped in
             height and scrolled internally so a long body never dominates. */}
-        {q.body && (
-          <div className="max-h-[40vh] overflow-y-auto rounded-md border bg-muted/30 px-3 py-2">
-            <Markdown content={q.body} />
-          </div>
-        )}
-        <div className="flex flex-col gap-1.5">
-          {q.options.map((opt, optIndex) => {
-            const on = sel.includes(opt.label)
-            const active = optIndex === safeActive
-            return (
+            {q.body && (
+              <div className="max-h-[40vh] overflow-y-auto rounded-md border bg-muted/30 px-3 py-2">
+                <Markdown content={q.body} />
+              </div>
+            )}
+            <div className="flex flex-col gap-1.5">
+              {q.options.map((opt, optIndex) => {
+                const on = sel.includes(opt.label)
+                const active = optIndex === safeActive
+                return (
+                  <button
+                    key={opt.label}
+                    type="button"
+                    onClick={() => toggle(current, opt.label, multi)}
+                    onMouseEnter={() => setActiveIdx(optIndex)}
+                    className={cn(
+                      "flex items-start gap-2 rounded-md border px-3 py-2 text-left transition-colors",
+                      on
+                        ? "border-primary bg-primary/5"
+                        : "border-input hover:bg-accent",
+                      active && "ring-2 ring-ring ring-offset-1"
+                    )}
+                  >
+                    <span
+                      className={cn(
+                        "mt-0.5 flex size-4 shrink-0 items-center justify-center rounded-full border",
+                        on
+                          ? "border-primary bg-primary text-primary-foreground"
+                          : "border-input"
+                      )}
+                    >
+                      {on && <Check className="size-3" />}
+                    </span>
+                    <span className="flex flex-col">
+                      <span className="font-medium">{opt.label}</span>
+                      {opt.description && (
+                        <span className="text-xs text-muted-foreground">
+                          {opt.description}
+                        </span>
+                      )}
+                    </span>
+                  </button>
+                )
+              })}
+              {/* Free-form choice — label customisable per question (e.g. "Refine Plan…"). */}
               <button
-                key={opt.label}
                 type="button"
-                onClick={() => toggle(current, opt.label, multi)}
-                onMouseEnter={() => setActiveIdx(optIndex)}
+                onClick={() => toggle(current, OTHER, multi)}
+                onMouseEnter={() => setActiveIdx(OTHER_IDX)}
                 className={cn(
-                  "flex items-start gap-2 rounded-md border px-3 py-2 text-left transition-colors",
-                  on
+                  "flex items-center gap-2 rounded-md border px-3 py-2 text-left transition-colors",
+                  otherSelected
                     ? "border-primary bg-primary/5"
                     : "border-input hover:bg-accent",
-                  active && "ring-2 ring-ring ring-offset-1"
+                  safeActive === OTHER_IDX && "ring-2 ring-ring ring-offset-1"
                 )}
               >
                 <span
                   className={cn(
-                    "mt-0.5 flex size-4 shrink-0 items-center justify-center rounded-full border",
-                    on
+                    "flex size-4 shrink-0 items-center justify-center rounded-full border",
+                    otherSelected
                       ? "border-primary bg-primary text-primary-foreground"
                       : "border-input"
                   )}
                 >
-                  {on && <Check className="size-3" />}
+                  {otherSelected && <Check className="size-3" />}
                 </span>
-                <span className="flex flex-col">
-                  <span className="font-medium">{opt.label}</span>
-                  {opt.description && (
-                    <span className="text-xs text-muted-foreground">
-                      {opt.description}
-                    </span>
-                  )}
-                </span>
+                <span className="font-medium">{q.otherLabel ?? "Other…"}</span>
               </button>
-            )
-          })}
-          {/* Free-form choice — label customisable per question (e.g. "Refine Plan…"). */}
-          <button
-            type="button"
-            onClick={() => toggle(current, OTHER, multi)}
-            onMouseEnter={() => setActiveIdx(OTHER_IDX)}
-            className={cn(
-              "flex items-center gap-2 rounded-md border px-3 py-2 text-left transition-colors",
-              otherSelected
-                ? "border-primary bg-primary/5"
-                : "border-input hover:bg-accent",
-              safeActive === OTHER_IDX && "ring-2 ring-ring ring-offset-1"
-            )}
-          >
-            <span
-              className={cn(
-                "flex size-4 shrink-0 items-center justify-center rounded-full border",
-                otherSelected
-                  ? "border-primary bg-primary text-primary-foreground"
-                  : "border-input"
+              {otherSelected && (
+                <textarea
+                  autoFocus
+                  value={otherText[current]}
+                  onChange={(e) =>
+                    setOtherText((prev) => {
+                      const next = [...prev]
+                      next[current] = e.target.value
+                      return next
+                    })
+                  }
+                  onKeyDown={(e) => {
+                    // In a multi-select question Enter must never advance/submit, so
+                    // let it insert a newline (default). In single-select, plain Enter
+                    // advances to the next question or submits, mirroring the composer;
+                    // Shift+Enter always inserts a newline.
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      if (multi) return
+                      e.preventDefault()
+                      if (isLast) submit()
+                      else if (answered(current))
+                        setCurrent((c) => Math.min(questions.length - 1, c + 1))
+                    }
+                  }}
+                  rows={2}
+                  placeholder={q.otherLabel ?? "Type your answer…"}
+                  className="field-sizing-content w-full resize-none rounded-md border border-input bg-transparent px-3 py-2 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+                />
               )}
-            >
-              {otherSelected && <Check className="size-3" />}
-            </span>
-            <span className="font-medium">{q.otherLabel ?? "Other…"}</span>
-          </button>
-          {otherSelected && (
-            <textarea
-              autoFocus
-              value={otherText[current]}
-              onChange={(e) =>
-                setOtherText((prev) => {
-                  const next = [...prev]
-                  next[current] = e.target.value
-                  return next
-                })
-              }
-              onKeyDown={(e) => {
-                // In a multi-select question Enter must never advance/submit, so
-                // let it insert a newline (default). In single-select, plain Enter
-                // advances to the next question or submits, mirroring the composer;
-                // Shift+Enter always inserts a newline.
-                if (e.key === "Enter" && !e.shiftKey) {
-                  if (multi) return
-                  e.preventDefault()
-                  if (isLast) submit()
-                  else if (answered(current))
-                    setCurrent((c) => Math.min(questions.length - 1, c + 1))
-                }
-              }}
-              rows={2}
-              placeholder={q.otherLabel ?? "Type your answer…"}
-              className="field-sizing-content w-full resize-none rounded-md border border-input bg-transparent px-3 py-2 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
-            />
-          )}
-        </div>
-      </div>
+            </div>
+          </div>
 
-      {/* Footer: Cancel backs out entirely; Back / Next page between questions;
-          Submit sends everything. */}
-      <div className="flex items-center justify-between">
-        <div className="flex gap-2">
-          {onCancel && (
-            <Button size="sm" variant="ghost" onClick={onCancel}>
-              Cancel
+          {/* Footer: Cancel backs out entirely; Back / Next page between questions;
+              Submit sends everything. */}
+          <div className="flex items-center justify-between">
+            <div className="flex gap-2">
+              {onCancel && (
+                <Button size="sm" variant="ghost" onClick={onCancel}>
+                  Cancel
+                </Button>
+              )}
+              {multiple && (
+                <>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => setCurrent((c) => Math.max(0, c - 1))}
+                    disabled={isFirst}
+                  >
+                    <ChevronLeft className="size-4" /> Back
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() =>
+                      setCurrent((c) => Math.min(questions.length - 1, c + 1))
+                    }
+                    disabled={isLast}
+                  >
+                    Next <ChevronRight className="size-4" />
+                  </Button>
+                </>
+              )}
+            </div>
+            <Button size="sm" onClick={submit} disabled={!allAnswered}>
+              Submit
             </Button>
-          )}
-          {multiple && (
-            <>
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => setCurrent((c) => Math.max(0, c - 1))}
-                disabled={isFirst}
-              >
-                <ChevronLeft className="size-4" /> Back
-              </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() =>
-                  setCurrent((c) => Math.min(questions.length - 1, c + 1))
-                }
-                disabled={isLast}
-              >
-                Next <ChevronRight className="size-4" />
-              </Button>
-            </>
-          )}
-        </div>
-        <Button size="sm" onClick={submit} disabled={!allAnswered}>
-          Submit
-        </Button>
-      </div>
+          </div>
+        </>
+      )}
     </div>
   )
 }

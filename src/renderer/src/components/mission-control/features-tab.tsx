@@ -1369,19 +1369,22 @@ export function FeaturesTab({
     onGraphChange(next)
     void reload()
   }
+  const linkedProject =
+    projectId === "none"
+      ? null
+      : (projects.find((project) => project.id === projectId) ?? null)
+  const canCreate = Boolean(
+    slug(name) && intent.trim() && rigId && (linkedProject?.workspaceId || workspaceId)
+  )
   const create = async () => {
-    const linked =
-      projectId === "none"
-        ? null
-        : (projects.find((project) => project.id === projectId) ?? null)
     const next = await window.cowork.missionControl.features.create({
       key: slug(name),
       name,
       intent,
       definitionOfDone: done,
       rigId: rigId || null,
-      projectId: linked?.id ?? null,
-      workspaceId: linked?.workspaceId ?? (workspaceId || null),
+      projectId: linkedProject?.id ?? null,
+      workspaceId: linkedProject?.workspaceId ?? (workspaceId || null),
     })
     setCreateOpen(false)
     setName("")
@@ -1581,7 +1584,9 @@ export function FeaturesTab({
           </DialogHeader>
           <div className="grid gap-3">
             <div className="space-y-1">
-              <Label>Name</Label>
+              <Label>
+                Name <span className="text-destructive">*</span>
+              </Label>
               <Input
                 value={name}
                 onChange={(e) => setName(e.target.value)}
@@ -1589,23 +1594,29 @@ export function FeaturesTab({
               />
             </div>
             <div className="space-y-1">
-              <Label>Intent</Label>
+              <Label>
+                Intent <span className="text-destructive">*</span>
+              </Label>
               <Textarea
+                className="field-sizing-fixed overflow-y-auto"
                 value={intent}
                 onChange={(e) => setIntent(e.target.value)}
-                rows={3}
+                rows={10}
               />
             </div>
             <div className="space-y-1">
               <Label>Definition of done</Label>
               <Textarea
+                className="field-sizing-fixed overflow-y-auto"
                 value={done}
                 onChange={(e) => setDone(e.target.value)}
                 rows={3}
               />
             </div>
             <div className="space-y-1">
-              <Label>Rig</Label>
+              <Label>
+                Rig <span className="text-destructive">*</span>
+              </Label>
               <Select value={rigId} onValueChange={setRigId}>
                 <SelectTrigger className="text-foreground [&>svg]:text-foreground">
                   <SelectValue
@@ -1640,7 +1651,9 @@ export function FeaturesTab({
             </div>
             {projectId === "none" && (
               <div className="space-y-1">
-                <Label>Workspace</Label>
+                <Label>
+                  Workspace <span className="text-destructive">*</span>
+                </Label>
                 <div className="flex gap-2">
                   <Select value={workspaceId} onValueChange={setWorkspaceId}>
                     <SelectTrigger className="min-w-0 flex-1 text-foreground [&>svg]:text-foreground">
@@ -1682,7 +1695,7 @@ export function FeaturesTab({
               Cancel
             </Button>
             <Button
-              disabled={!slug(name)}
+              disabled={!canCreate}
               onClick={() =>
                 void create().catch((error) => toast.error(errorMessage(error)))
               }
