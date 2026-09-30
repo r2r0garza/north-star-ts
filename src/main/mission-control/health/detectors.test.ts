@@ -202,6 +202,19 @@ describe("stalled", () => {
     expect(critical[0].severity).toBe("critical")
   })
 
+  it("doesn't count time spent waiting on the user with nothing running", () => {
+    // The plan sat unapplied for 106 minutes; the planning review just started.
+    const justStarted = snapshot({
+      events: [event("hook_completed", NOW - 106 * MIN)],
+      workersSince: NOW - 1000,
+    })
+    expect(stalled(justStarted)).toEqual([])
+    // The same worker quiet past the threshold still warns.
+    expect(
+      stalled({ ...justStarted, workersSince: NOW - 50 * MIN })[0]
+    ).toMatchObject({ severity: "warn" })
+  })
+
   it("restarts the clock when the drive resumes, and needs a worker running", () => {
     expect(
       stalled(

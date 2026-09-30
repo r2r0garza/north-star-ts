@@ -172,6 +172,7 @@ function spec(value?: Partial<UserStorySpec>): UserStorySpec {
     runsLast: value?.runsLast === true,
   }
 }
+export const NEW_FEATURE_DRIVE_MODE: Feature["driveMode"] = "autopilot"
 export const DEFAULT_DRIVE: FeatureDrive = {
   autoApplyPlan: false,
   overlapPolicy: "wait",
@@ -506,7 +507,7 @@ export function createFeature(input: {
   getDb().transaction(() => {
     getDb()
       .prepare(
-        "INSERT INTO features (id, key, name, intent, definition_of_done, rig_id, workspace_id, project_id, default_pod_key, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?)"
+        "INSERT INTO features (id, key, name, intent, definition_of_done, rig_id, workspace_id, project_id, default_pod_key, drive_mode, drive, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?)"
       )
       .run(
         id,
@@ -520,6 +521,10 @@ export function createFeature(input: {
         input.workspaceId ?? null,
         input.projectId ?? null,
         input.defaultPodKey ?? null,
+        // The first milestone is created under manual; Start in Autopilot
+        // switches it to Autopilot's merge policy (Navigator.startDrive).
+        "manual",
+        JSON.stringify({ ...DEFAULT_DRIVE, autoApplyPlan: true }),
         now,
         now
       )
@@ -529,6 +534,12 @@ export function createFeature(input: {
       name: "First milestone",
       outcome: "",
     })
+    // New features default to Autopilot with planning applied (plan 106.11);
+    // overlap stays "wait" until workspace analysis shows isolated parallel
+    // work is ready. Existing features keep their stored choices.
+    getDb()
+      .prepare("UPDATE features SET drive_mode = ? WHERE id = ?")
+      .run(NEW_FEATURE_DRIVE_MODE, id)
   })()
   return getFeatureGraph(id)!
 }

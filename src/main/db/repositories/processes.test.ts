@@ -66,7 +66,7 @@ describe.skipIf(!sqliteLoads)("v15 migration", () => {
   })
 
   it("reaches the latest user_version", () => {
-    expect(db.pragma("user_version", { simple: true })).toBe(63)
+    expect(db.pragma("user_version", { simple: true })).toBe(64)
   })
 
   it("adds the v24 subprocess_id column to process_phases", () => {
@@ -548,9 +548,9 @@ describe.skipIf(!sqliteLoads)("mission control fields (plan 106.3)", () => {
       position: 0,
     })
     expect(bound).toMatchObject({ agentName: null, seatRole: "builder" })
-    expect(() =>
-      createPhaseAgent({ phaseId: phase.id, position: 1 })
-    ).toThrow(/exactly one/)
+    expect(() => createPhaseAgent({ phaseId: phase.id, position: 1 })).toThrow(
+      /exactly one/
+    )
     expect(() =>
       createPhaseAgent({
         phaseId: phase.id,
@@ -563,7 +563,12 @@ describe.skipIf(!sqliteLoads)("mission control fields (plan 106.3)", () => {
 
   it("round-trips seat bindings, the container link, and seat addresses", () => {
     const def = createProcessDefinition({ name: "P" })
-    const phase = createPhase({ processId: def.id, key: "k", name: "K", position: 0 })
+    const phase = createPhase({
+      processId: def.id,
+      key: "k",
+      name: "K",
+      position: 0,
+    })
     const run = createProcessRun({
       processId: def.id,
       sourceConversationId: null,

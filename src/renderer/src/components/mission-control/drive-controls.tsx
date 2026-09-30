@@ -80,6 +80,8 @@ export function DriveControls({
   onGraph,
   onShowWaiting,
   budgetRequest = 0,
+  variant = "full",
+  waitingCount,
 }: {
   graph: FeatureGraph
   position: Position | null
@@ -87,7 +89,13 @@ export function DriveControls({
   onShowWaiting: () => void
   // Changes when something else (the inbox) asks to edit budgets.
   budgetRequest?: number
+  // "settings": only the drive mode, overlap, and auto-apply controls, for
+  // Advanced settings; the Feature home owns the actions (plan 106.11).
+  variant?: "full" | "settings"
+  // The unified Waiting on you count, when the caller has it.
+  waitingCount?: number
 }) {
+  const full = variant === "full"
   const feature = graph.feature
   const [pending, setPending] = useState(false)
   const [mode, setMode] = useState<DriveMode>(feature.driveMode)
@@ -98,9 +106,9 @@ export function DriveControls({
   const finished = ["completed", "cancelled", "failed"].includes(feature.status)
   const editable = draft || paused
   const shownMode = editable ? mode : feature.driveMode
-  const waiting = (position?.pendingDecisions ?? []).filter(
-    (d) => d.owner === "user"
-  ).length
+  const waiting =
+    waitingCount ??
+    (position?.pendingDecisions ?? []).filter((d) => d.owner === "user").length
 
   const act = async (work: () => Promise<FeatureGraph>) => {
     setPending(true)
@@ -125,9 +133,11 @@ export function DriveControls({
         )
       return result.graph
     })
+  // Saved at once (drafts too), so Start — from here or the Feature home —
+  // uses what's shown.
   const changeMode = (value: DriveMode) => {
     setMode(value)
-    if (paused) void act(() => drive.setMode(feature.id, value))
+    if (editable) void act(() => drive.setMode(feature.id, value))
   }
   // Unlike the drive mode, this applies at the next dispatch, so it can
   // change at any time until the feature finishes.
@@ -137,14 +147,16 @@ export function DriveControls({
   const estimate = finished ? null : milestoneOverlapEstimate(graph)
   const changeAutoApply = (value: boolean) => {
     setAutoApply(value)
-    if (paused) void act(() => drive.setAutoApplyPlan(feature.id, value))
+    if (editable) void act(() => drive.setAutoApplyPlan(feature.id, value))
   }
 
   return (
-    <div className="space-y-3 rounded-lg border p-4">
+    <div className={full ? "space-y-3 rounded-lg border p-4" : "space-y-3"}>
       <div className="flex flex-wrap items-center gap-3">
-        <code className="text-xs text-muted-foreground">{feature.key}</code>
-        <Badge>{feature.status}</Badge>
+        {full && (
+          <code className="text-xs text-muted-foreground">{feature.key}</code>
+        )}
+        {full && <Badge>{feature.status}</Badge>}
         <div className="flex items-center gap-2">
           <Label className="text-xs text-muted-foreground">Drive</Label>
           <Select
@@ -204,72 +216,74 @@ export function DriveControls({
             Auto-apply planning (the plan and what its review adds)
           </label>
         )}
-        <div className="ml-auto flex items-center gap-2">
-          {waiting > 0 && (
-            <Button size="sm" variant="outline" onClick={onShowWaiting}>
-              <Bell className="size-4 text-amber-500" /> Waiting on you (
-              {waiting})
-            </Button>
-          )}
-          {draft && (
-            <Button
-              size="sm"
-              disabled={pending || !feature.rigId}
-              title={feature.rigId ? undefined : "Choose a rig first"}
-              onClick={() => void start()}
-            >
-              <Rocket className="size-4" /> Start
-            </Button>
-          )}
-          {active && (
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={pending}
-              onClick={() => void act(() => drive.pause(feature.id))}
-            >
-              <Pause className="size-4" /> Pause
-            </Button>
-          )}
-          {paused && (
-            <Button
-              size="sm"
-              disabled={pending}
-              onClick={() => void act(() => drive.resume(feature.id))}
-            >
-              <Play className="size-4" /> Resume
-            </Button>
-          )}
-          {feature.status === "completed" && (
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={pending}
-              title="Add more milestones to this feature"
-              onClick={() => void act(() => drive.reopen(feature.id))}
-            >
-              <RotateCcw className="size-4" /> Reopen
-            </Button>
-          )}
-          {!draft && !finished && (
-            <Button
-              size="sm"
-              variant="ghost"
-              className="text-muted-foreground hover:text-destructive"
-              disabled={pending}
-              onClick={() => {
-                if (
-                  window.confirm(
-                    `Cancel “${feature.name}”? Running user stories and hooks stop, and it can't be resumed. Branches and worktrees stay until you delete it.`
+        {full && (
+          <div className="ml-auto flex items-center gap-2">
+            {waiting > 0 && (
+              <Button size="sm" variant="outline" onClick={onShowWaiting}>
+                <Bell className="size-4 text-amber-500" /> Waiting on you (
+                {waiting})
+              </Button>
+            )}
+            {draft && (
+              <Button
+                size="sm"
+                disabled={pending || !feature.rigId}
+                title={feature.rigId ? undefined : "Choose a rig first"}
+                onClick={() => void start()}
+              >
+                <Rocket className="size-4" /> Start
+              </Button>
+            )}
+            {active && (
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={pending}
+                onClick={() => void act(() => drive.pause(feature.id))}
+              >
+                <Pause className="size-4" /> Pause
+              </Button>
+            )}
+            {paused && (
+              <Button
+                size="sm"
+                disabled={pending}
+                onClick={() => void act(() => drive.resume(feature.id))}
+              >
+                <Play className="size-4" /> Resume
+              </Button>
+            )}
+            {feature.status === "completed" && (
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={pending}
+                title="Add more milestones to this feature"
+                onClick={() => void act(() => drive.reopen(feature.id))}
+              >
+                <RotateCcw className="size-4" /> Reopen
+              </Button>
+            )}
+            {!draft && !finished && (
+              <Button
+                size="sm"
+                variant="ghost"
+                className="text-muted-foreground hover:text-destructive"
+                disabled={pending}
+                onClick={() => {
+                  if (
+                    window.confirm(
+                      `Cancel “${feature.name}”? Running user stories and hooks stop, and it can't be resumed. Branches and worktrees stay until you delete it.`
+                    )
                   )
-                )
-                  void act(() => drive.cancel(feature.id))
-              }}
-            >
-              <Square className="size-4" /> Cancel
-            </Button>
-          )}
-        </div>
+                    void act(() => drive.cancel(feature.id))
+                }}
+              >
+                <Square className="size-4" /> Cancel
+              </Button>
+            )}
+          </div>
+        )}
       </div>
       <p className="text-xs text-muted-foreground">
         {MODES.find((item) => item.value === shownMode)?.help}
@@ -280,12 +294,12 @@ export function DriveControls({
             : " Pause to change the mode."}
       </p>
       {estimate && <OverlapEstimates estimates={[estimate]} />}
-      {paused && feature.drive.pauseReason && (
+      {full && paused && feature.drive.pauseReason && (
         <div className="rounded-md border border-amber-500/40 bg-amber-500/5 p-2 text-sm">
           Paused: {feature.drive.pauseReason}
         </div>
       )}
-      {!draft && position && (
+      {full && !draft && position && (
         <BudgetMeters
           graph={graph}
           meters={position.budgets}

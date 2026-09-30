@@ -357,6 +357,30 @@ describe.skipIf(!sqliteLoads)("user story execution", () => {
     expect(playbooks.getPlaybookRun(playbookRun.id)!.status).toBe("completed")
   })
 
+  it("refuses a second start while the first is still preparing, so a story never runs twice", async () => {
+    const rig = orchestratedRig()
+    const { userStory } = billingFeature(rig.id)
+    // The Navigator and the lead seat start the same story at once.
+    const [first, second] = await Promise.allSettled([
+      runner.startUserStory(userStory.id),
+      runner.startUserStory(userStory.id),
+    ])
+    expect(first.status).toBe("fulfilled")
+    expect(second).toMatchObject({
+      status: "rejected",
+      reason: expect.objectContaining({
+        message: expect.stringMatching(/already starting/),
+      }),
+    })
+    expect(
+      playbooks.listPlaybookRuns({
+        userStoryId: userStory.id,
+        status: "running",
+      })
+    ).toHaveLength(1)
+    expect(features.getUserStory(userStory.id)?.attempts).toBe(1)
+  })
+
   it("fails before any worker starts when a playbook role is missing from the rig", async () => {
     const rig = orchestratedRig()
     const { userStory } = billingFeature(rig.id)

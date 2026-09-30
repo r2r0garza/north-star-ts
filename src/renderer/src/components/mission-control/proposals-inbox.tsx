@@ -529,9 +529,44 @@ function DecisionCard({
   }
   const milestoneKey = (id: string) =>
     graph.milestones.find((m) => m.id === id)?.key ?? "milestone"
+  // A decision without an inline action still gets a destination: its target,
+  // or Comms, with the kind shown for diagnosis — never a dead card.
+  const fallback = !action
+  const target = decision.target
   return (
     <div className="space-y-2 rounded-md border border-amber-500/40 bg-amber-500/5 p-3 text-sm">
       <div>{decision.summary}</div>
+      {fallback && (
+        <div className="flex flex-wrap items-center gap-2">
+          {target.kind === "milestone" &&
+          graph.milestones.some((m) => m.id === target.id) ? (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => navigation.openMilestone(target.id)}
+            >
+              Open milestone {milestoneKey(target.id)}
+            </Button>
+          ) : target.kind === "user_story" &&
+            graph.userStories.some((s) => s.id === target.id) ? (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => navigation.openUserStory(target.id)}
+            >
+              Open user story{" "}
+              {graph.userStories.find((s) => s.id === target.id)?.key ?? ""}
+            </Button>
+          ) : (
+            <Button size="sm" variant="outline" onClick={navigation.openComms}>
+              Open Comms
+            </Button>
+          )}
+          <span className="text-xs text-muted-foreground">
+            No direct action for this here ({decision.kind.replace(/_/g, " ")}).
+          </span>
+        </div>
+      )}
       {action?.kind === "judge_milestone" && judging && (
         <Textarea
           rows={2}
@@ -722,21 +757,33 @@ function EscalationCard({
   )
 }
 
-export function WaitingOnYou({
-  graph,
-  position,
-  onGraph,
-  navigation,
-}: {
-  graph: FeatureGraph
+// Everything waiting on the user, from one source (plan 106.11): the count
+// the Feature home shows and the cards Waiting on you renders are the same
+// list, so they can't disagree.
+export interface WaitingItems {
+  proposals: PlanProposal[]
+  resolved: PlanProposal[]
+  escalations: SeatMessage[]
+  // Navigator decisions the inbox doesn't already show as a proposal or
+  // escalation.
+  decisions: Decision[]
+  count: number
+  // The highest-priority item: decisions (they block the drive) first,
+  // then proposals, then escalations.
+  top:
+    | { kind: "decision"; decision: Decision }
+    | { kind: "proposal"; proposal: PlanProposal }
+    | { kind: "escalation"; message: SeatMessage }
+    | null
+  reload: () => Promise<void>
+}
+
+export function useWaitingItems(
+  featureId: string,
   position: Position | null
-  onGraph: (graph: FeatureGraph) => void
-  navigation: InboxNavigation
-}) {
-  const featureId = graph.feature.id
+): WaitingItems {
   const [proposals, setProposals] = useState<PlanProposal[]>([])
   const [escalations, setEscalations] = useState<SeatMessage[]>([])
-  const [history, setHistory] = useState(false)
   const reload = useCallback(async () => {
     const [nextProposals, mail] = await Promise.all([
       window.cowork.missionControl.proposals.list(featureId),
@@ -753,6 +800,8 @@ export function WaitingOnYou({
     )
   }, [featureId])
   useEffect(() => {
+    setProposals([])
+    setEscalations([])
     void reload().catch(() => {})
     const refresh = (changed: string) => {
       if (changed === featureId) void reload().catch(() => {})
@@ -764,73 +813,163 @@ export function WaitingOnYou({
       offNavigator()
       offComms()
     }
-  }, [featureId, reload, graph])
-
+  }, [featureId, reload])
   const pending = proposals.filter((p) => p.status === "pending")
-  const resolved = proposals.filter((p) => p.status !== "pending")
-  // Decisions the inbox doesn't already show as a proposal or escalation.
-  const others = (position?.pendingDecisions ?? []).filter(
+  const decisions = (position?.pendingDecisions ?? []).filter(
     (d) =>
       d.owner === "user" &&
       !["proposal", "plan_proposal", "escalation"].includes(d.kind)
   )
+  const top = decisions[0]
+    ? ({ kind: "decision", decision: decisions[0] } as const)
+    : pending[0]
+      ? ({ kind: "proposal", proposal: pending[0] } as const)
+      : escalations[0]
+        ? ({ kind: "escalation", message: escalations[0] } as const)
+        : null
+  return {
+    proposals: pending,
+    resolved: proposals.filter((p) => p.status !== "pending"),
+    escalations,
+    decisions,
+    count: pending.length + escalations.length + decisions.length,
+    top,
+    reload,
+  }
+}
+
+export const WAITING_ANCHOR = "mission-control-waiting"
+
+// Bring the first actionable item into view, focus it, and highlight it
+// briefly. False when nothing is rendered to focus.
+export function focusFirstWaiting(): boolean {
+  const first = document.querySelector<HTMLElement>(
+    `#${WAITING_ANCHOR} [data-waiting-item]`
+  )
+  if (!first) return false
+  first.scrollIntoView({ behavior: "smooth", block: "center" })
+  first.focus({ preventScroll: true })
+  first.classList.add("ring-2", "ring-amber-500")
+  window.setTimeout(
+    () => first.classList.remove("ring-2", "ring-amber-500"),
+    2000
+  )
+  return true
+}
+
+export function WaitingOnYou({
+  graph,
+  waiting,
+  onGraph,
+  navigation,
+}: {
+  graph: FeatureGraph
+  waiting: WaitingItems
+  onGraph: (graph: FeatureGraph) => void
+  navigation: InboxNavigation
+}) {
+  const [history, setHistory] = useState(false)
+  const {
+    proposals: pending,
+    resolved,
+    escalations,
+    decisions: others,
+    reload,
+  } = waiting
+  // Announce new decisions for screen readers.
+  const [announcement, setAnnouncement] = useState("")
+  const [seen, setSeen] = useState(waiting.count)
+  useEffect(() => {
+    if (waiting.count > seen) {
+      const top = waiting.top
+      setAnnouncement(
+        `New decision waiting on you: ${
+          top?.kind === "decision"
+            ? top.decision.summary
+            : top?.kind === "proposal"
+              ? `a ${top.proposal.kind} proposal from ${top.proposal.proposer}`
+              : top?.kind === "escalation"
+                ? `an escalation from ${top.message.fromAddress}`
+                : ""
+        }`
+      )
+    }
+    setSeen(waiting.count)
+    // Only a change in the count announces.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [waiting.count])
   const empty = !pending.length && !escalations.length && !others.length
+  if (empty && !resolved.length)
+    return (
+      <div className="sr-only" aria-live="polite">
+        {announcement}
+      </div>
+    )
 
   return (
-    <div
-      id="mission-control-waiting"
-      className="space-y-3 rounded-lg border p-4"
-    >
+    <div id={WAITING_ANCHOR} className="space-y-3 rounded-lg border p-4">
+      <div className="sr-only" aria-live="polite">
+        {announcement}
+      </div>
       <div className="flex items-center gap-2">
         <Inbox className="size-4" />
-        <h3 className="font-medium">Waiting on you</h3>
-        {!empty && (
-          <Badge variant="secondary">
-            {pending.length + escalations.length + others.length}
-          </Badge>
-        )}
+        <h3 className="font-medium">
+          {empty ? "Decisions" : "Waiting on you"}
+        </h3>
+        {!empty && <Badge variant="secondary">{waiting.count}</Badge>}
       </div>
-      {empty && (
-        <p className="text-sm text-muted-foreground">
-          Nothing needs you right now. Proposals from seats and escalations land
-          here.
-        </p>
-      )}
       {others.map((decision) => (
-        <DecisionCard
+        <div
           key={decision.key}
-          graph={graph}
-          decision={decision}
-          navigation={navigation}
-          onGraph={onGraph}
-        />
+          data-waiting-item
+          tabIndex={-1}
+          className="rounded-md outline-none"
+        >
+          <DecisionCard
+            graph={graph}
+            decision={decision}
+            navigation={navigation}
+            onGraph={onGraph}
+          />
+        </div>
       ))}
-      {pending.map((proposal) =>
-        proposal.kind === "followup" && proposal.followup ? (
-          <FollowupCard
-            key={proposal.id}
-            proposal={proposal}
-            graph={graph}
-            onGraph={onGraph}
-            onResolved={reload}
-          />
-        ) : (
-          <ProposalCard
-            key={proposal.id}
-            proposal={proposal}
-            graph={graph}
-            onGraph={onGraph}
-            onResolved={reload}
-          />
-        )
-      )}
+      {pending.map((proposal) => (
+        <div
+          key={proposal.id}
+          data-waiting-item
+          tabIndex={-1}
+          className="rounded-md outline-none"
+        >
+          {proposal.kind === "followup" && proposal.followup ? (
+            <FollowupCard
+              proposal={proposal}
+              graph={graph}
+              onGraph={onGraph}
+              onResolved={reload}
+            />
+          ) : (
+            <ProposalCard
+              proposal={proposal}
+              graph={graph}
+              onGraph={onGraph}
+              onResolved={reload}
+            />
+          )}
+        </div>
+      ))}
       {escalations.map((message) => (
-        <EscalationCard
+        <div
           key={message.id}
-          message={message}
-          navigation={navigation}
-          onChanged={reload}
-        />
+          data-waiting-item
+          tabIndex={-1}
+          className="rounded-md outline-none"
+        >
+          <EscalationCard
+            message={message}
+            navigation={navigation}
+            onChanged={reload}
+          />
+        </div>
       ))}
       {resolved.length > 0 && (
         <div>

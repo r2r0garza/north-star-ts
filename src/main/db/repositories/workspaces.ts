@@ -1,6 +1,11 @@
 import { randomUUID } from "crypto"
 import { getDb } from "../connection"
-import type { GeneratedFilesRule, Workspace, WorktreeSetup } from "../types"
+import type {
+  GeneratedFilesRule,
+  Workspace,
+  WorktreeSetup,
+  WorktreeSetupStep,
+} from "../types"
 
 interface WorkspaceRow {
   id: string
@@ -51,31 +56,102 @@ function parseWorktreeSetup(value: string | null): WorktreeSetup {
   try {
     return normalizeWorktreeSetup(JSON.parse(value ?? "{}"))
   } catch {
-    return { linkPaths: [], command: "" }
+    return { linkPaths: [], steps: [] }
   }
 }
 
-// Workspace-relative link paths (no absolute or parent paths) and a trimmed
-// command.
+// A workspace-relative path: no absolute or parent segments, no leading "./"
+// or trailing slash. Null when it would leave the workspace.
+function relativePath(value: string): string | null {
+  const p = value
+    .trim()
+    .replace(/^\.?\/+/, "")
+    .replace(/\/+$/, "")
+  if (p === ".") return ""
+  return p.split("/").includes("..") ? null : p
+}
+
+// Workspace-relative link paths and well-formed setup steps. The older shape
+// with a single `command` becomes one user-authored step, so its behavior is
+// unchanged (plan 106.11).
 export function normalizeWorktreeSetup(value: unknown): WorktreeSetup {
-  const v = (value ?? {}) as { linkPaths?: unknown; command?: unknown }
+  const v = (value ?? {}) as {
+    linkPaths?: unknown
+    command?: unknown
+    steps?: unknown
+  }
   const linkPaths = Array.isArray(v.linkPaths)
     ? [
         ...new Set(
           v.linkPaths
             .filter((p): p is string => typeof p === "string")
-            .map((p) =>
-              p
-                .trim()
-                .replace(/^\.?\/+/, "")
-                .replace(/\/+$/, "")
-            )
-            .filter((p) => p && !p.split("/").includes(".."))
+            .map(relativePath)
+            .filter((p): p is string => !!p)
         ),
       ]
     : []
-  const command = typeof v.command === "string" ? v.command.trim() : ""
-  return { linkPaths, command }
+  const steps: WorktreeSetupStep[] = []
+  const ids = new Set<string>()
+  const raw = Array.isArray(v.steps)
+    ? v.steps
+    : typeof v.command === "string" && v.command.trim()
+      ? [
+          {
+            id: "legacy-command",
+            label: "Setup command",
+            command: v.command,
+            cwd: "",
+            source: "user",
+          },
+        ]
+      : []
+  for (const item of raw as Array<Record<string, unknown>>) {
+    const command = typeof item?.command === "string" ? item.command.trim() : ""
+    const cwd = relativePath(typeof item?.cwd === "string" ? item.cwd : "")
+    if (!command || cwd === null) continue
+    let id =
+      typeof item.id === "string" && item.id.trim()
+        ? item.id.trim()
+        : `step-${steps.length + 1}`
+    while (ids.has(id)) id = `${id}-${steps.length + 1}`
+    ids.add(id)
+    const label =
+      typeof item.label === "string" && item.label.trim()
+        ? item.label.trim()
+        : command
+    const source = item.source === "analysis" ? "analysis" : "user"
+    const commands = (value: unknown) =>
+      Array.isArray(value)
+        ? value
+            .map((c: { label?: unknown; command?: unknown }) => ({
+              label: typeof c?.label === "string" ? c.label.trim() : "",
+              command: typeof c?.command === "string" ? c.command.trim() : "",
+            }))
+            .filter((c) => c.command)
+            .map((c) => ({ label: c.label || c.command, command: c.command }))
+        : []
+    const shared = item.kind === "python-shared-venv"
+    const venv = shared && typeof item.venv === "string" ? relativePath(item.venv) : null
+    steps.push({
+      id,
+      label,
+      command,
+      cwd,
+      source,
+      ...(typeof item.findingKey === "string" && item.findingKey
+        ? { findingKey: item.findingKey }
+        : {}),
+      ...(shared
+        ? {
+            kind: "python-shared-venv" as const,
+            venv: venv || ".venv",
+            fallback: commands(item.fallback),
+            refresh: commands(item.refresh),
+          }
+        : {}),
+    })
+  }
+  return { linkPaths, steps }
 }
 
 // Last segment of a path, e.g. "/Users/me/proj" -> "proj". Used as a default name.

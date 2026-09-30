@@ -699,6 +699,45 @@ describe.skipIf(!sqliteLoads)("Navigator autopilot", () => {
     expect(failed[0].actions[0].detail).toContain("uncommitted changes")
   })
 
+  it("doesn't start a story again while its worktree is still being prepared", async () => {
+    setup()
+    const root = repo()
+    const id = draftFeature(root)
+    const milestone = features.getFeatureGraph(id)!.milestones[0]
+    features.createUserStory({
+      milestoneId: milestone.id,
+      key: "a",
+      title: "A",
+      spec: { acceptance: ["works"] },
+    })
+    features.updateMilestone(milestone.id, {
+      playbookId: playbooks.createPlaybook({
+        name: "Bare",
+        altitude: "milestone",
+      }).id,
+    })
+    // A long setup: the story stays draft while it runs.
+    let starts = 0
+    navigator.stop()
+    navigator = makeNavigator({
+      startUserStory: async () => {
+        starts++
+        throw new Error("should not be called")
+      },
+      isStartingUserStory: () => true,
+    })
+    await navigator.startDrive(id, { mode: "autopilot" })
+    await navigator.idle()
+    expect(starts).toBe(0)
+    // Nothing started and nothing failed: it's simply still preparing.
+    expect(
+      ticks
+        .listTicks(id)
+        .flatMap((t) => t.actions)
+        .filter((a) => a.kind === "start_user_story")
+    ).toEqual([])
+  })
+
   it("tells a lead that judges early that running stories finish on their own", async () => {
     setup()
     const root = repo()

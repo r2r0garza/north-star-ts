@@ -18,6 +18,7 @@ import type {
   Todo,
   GeneratedFilesRule,
   WorktreeSetup,
+  WorktreeSetupStep,
   Workspace,
   ProcessDefinition,
   ProcessGraph,
@@ -81,6 +82,11 @@ import type {
   HealthSignal,
 } from "../main/db/types"
 import type { Position } from "../shared/mission-control/position"
+import type {
+  ApplyAllItem,
+  SetupRunView,
+  WorkspaceAnalysis,
+} from "../shared/mission-control/workspace-analysis"
 import type {
   HealthAnchors,
   HealthReport,
@@ -1203,11 +1209,107 @@ const api = {
           ipcRenderer.removeListener("missionControl:comms:changed", listener)
       },
     },
+    // Workspace setup findings (plan 106.11). Findings are named by key; the
+    // renderer never sends commands or settings.
+    analysis: {
+      get: (featureId: string) =>
+        ipcRenderer.invoke(
+          "missionControl:analysis:get",
+          featureId
+        ) as Promise<WorkspaceAnalysis | null>,
+      checkFreshness: (featureId: string) =>
+        ipcRenderer.invoke(
+          "missionControl:analysis:checkFreshness",
+          featureId
+        ) as Promise<WorkspaceAnalysis | null>,
+      analyze: (featureId: string) =>
+        ipcRenderer.invoke(
+          "missionControl:analysis:analyze",
+          featureId
+        ) as Promise<WorkspaceAnalysis | null>,
+      cancel: (featureId: string) =>
+        ipcRenderer.invoke(
+          "missionControl:analysis:cancel",
+          featureId
+        ) as Promise<void>,
+      applyFix: (featureId: string, key: string, alternative?: number | null) =>
+        ipcRenderer.invoke(
+          "missionControl:analysis:applyFix",
+          featureId,
+          key,
+          alternative ?? null
+        ) as Promise<{
+          analysis: WorkspaceAnalysis | null
+          run: SetupRunView | null
+        }>,
+      previewApplyAll: (featureId: string) =>
+        ipcRenderer.invoke(
+          "missionControl:analysis:previewApplyAll",
+          featureId
+        ) as Promise<ApplyAllItem[]>,
+      applyAll: (featureId: string, selected: string[]) =>
+        ipcRenderer.invoke(
+          "missionControl:analysis:applyAll",
+          featureId,
+          selected
+        ) as Promise<{
+          analysis: WorkspaceAnalysis | null
+          run: SetupRunView | null
+        }>,
+      dismiss: (featureId: string, key: string, dismissed = true) =>
+        ipcRenderer.invoke(
+          "missionControl:analysis:dismiss",
+          featureId,
+          key,
+          dismissed
+        ) as Promise<WorkspaceAnalysis | null>,
+      run: (featureId: string) =>
+        ipcRenderer.invoke(
+          "missionControl:analysis:run",
+          featureId
+        ) as Promise<SetupRunView | null>,
+      cancelRun: (runId: string) =>
+        ipcRenderer.invoke(
+          "missionControl:analysis:cancelRun",
+          runId
+        ) as Promise<void>,
+      // Fires with the feature id whenever its analysis changes.
+      onChanged: (cb: (featureId: string) => void) => {
+        const listener = (_event: IpcRendererEvent, featureId: string) =>
+          cb(featureId)
+        ipcRenderer.on("missionControl:analysis:changed", listener)
+        return () => {
+          ipcRenderer.removeListener(
+            "missionControl:analysis:changed",
+            listener
+          )
+        }
+      },
+      onRunChanged: (cb: (run: SetupRunView) => void) => {
+        const listener = (_event: IpcRendererEvent, run: SetupRunView) =>
+          cb(run)
+        ipcRenderer.on("missionControl:analysis:runChanged", listener)
+        return () => {
+          ipcRenderer.removeListener(
+            "missionControl:analysis:runChanged",
+            listener
+          )
+        }
+      },
+    },
     // The Navigator and drive controls (plan 106.6).
     drive: {
+      // Runs the workspace preflight first (plan 106.11); when it finds
+      // blockers the feature stays a draft and `preflight.blocked` is true.
       start: (
         id: string,
-        options: { mode: DriveMode; autoApplyPlan?: boolean }
+        options: {
+          mode: DriveMode
+          autoApplyPlan?: boolean
+          skipPreflight?: boolean
+          // The setup review was answered; don't pause for it again.
+          reviewed?: boolean
+        }
       ) =>
         ipcRenderer.invoke(
           "missionControl:drive:start",
@@ -1216,6 +1318,13 @@ const api = {
         ) as Promise<{
           graph: FeatureGraph
           planningError: string | null
+          preflight: {
+            blocked: boolean
+            applied: string[]
+            blockers: string[]
+            // Setup to review before starting; not started when non-empty.
+            review: string[]
+          }
         }>,
       pause: (id: string, reason?: string) =>
         ipcRenderer.invoke(
@@ -2669,6 +2778,7 @@ export type {
   TodoStatus,
   GeneratedFilesRule,
   WorktreeSetup,
+  WorktreeSetupStep,
   Workspace,
   SubagentArtifact,
   ProcessDefinition,
@@ -2768,6 +2878,16 @@ export type {
   Maneuver,
 } from "../shared/mission-control/position"
 export type { BudgetMeter, BudgetKey } from "../shared/mission-control/budgets"
+export type {
+  ApplyAllItem,
+  Evidence,
+  Finding,
+  FindingCategory,
+  Fix,
+  Readiness,
+  SetupRunView,
+  WorkspaceAnalysis,
+} from "../shared/mission-control/workspace-analysis"
 export type {
   PlanChange,
   FollowupTarget,

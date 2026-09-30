@@ -8,6 +8,7 @@ import { getTask, updateTask } from "../db/repositories/tasks"
 import { addConversationNote } from "../db/repositories/conversation-notes"
 import { getWorkspace } from "../db/repositories/workspaces"
 import { recordEvent } from "../db/repositories/mc-events"
+import { emitWorkChanged } from "./work-events"
 import type {
   Feature,
   MissionControlRunLink,
@@ -106,6 +107,10 @@ export interface LaunchRequest {
   isolate?: () => Promise<IsolatedUserStoryWorkspace | null>
   // A worktree prepared by the caller (conflict resolution).
   isolated?: IsolatedWorkspace
+  // Runs inside the launch transaction before the playbook run exists: a
+  // last check that nothing changed across the awaits (a story another
+  // caller started meanwhile). Throw to refuse the launch.
+  recheck?: () => void
   // Runs inside the launch transaction, after the playbook run exists.
   onLaunch?: (
     playbookRun: PlaybookRun,
@@ -225,11 +230,16 @@ export class UserStoryRunner {
     const { feature, playbook, hook } = request
     const workspacePath = featureWorkspacePath(feature)
     const wantsIsolation = !!request.isolate || !!request.isolated
-    const assertSlot = (isolated: boolean) => {
+    // Before preparing a worktree, stories still being prepared count too, so
+    // a long setup is never thrown away for lack of a slot at the end.
+    const assertSlot = (isolated: boolean, countPreparing = false) => {
       if (isolated) {
         if (!request.userStory || hook !== "run") return
         const cap = maxConcurrentUserStories(feature)
-        if (isolatedUserStoryRuns(feature).length >= cap)
+        const preparing = countPreparing
+          ? this.preparing(feature.id, request.userStory.id)
+          : 0
+        if (isolatedUserStoryRuns(feature).length + preparing >= cap)
           throw new Error(
             `The feature's budget allows ${cap} running user stories at once. Wait for one to finish or raise maxConcurrentSlices.`
           )
@@ -242,7 +252,7 @@ export class UserStoryRunner {
         )
     }
     if (!wantsIsolation) assertSlot(false)
-    else if (request.userStory && hook === "run") assertSlot(true)
+    else if (request.userStory && hook === "run") assertSlot(true, true)
     const hookRow = playbook.hooks.find((h) => h.hook === hook)
     if (!hookRow)
       throw new Error(
@@ -276,8 +286,9 @@ export class UserStoryRunner {
     try {
       playbookRun = getDb().transaction(() => {
         // Re-check under the write lock: another launch may have raced us
-        // across the awaits above.
+        // across the awaits above (worktree setup can take a while).
         assertSlot(!!isolated)
+        request.recheck?.()
         const created = playbooks.createPlaybookRun({
           playbookId: playbook.id,
           hook,
@@ -364,9 +375,71 @@ export class UserStoryRunner {
   // even though a user story with overlapping touch hints is still building.
   // `note` travels to this attempt's workers (a lead's retry note, 106.6), and
   // `actor` attributes the start in the revision log.
+  // User stories whose start is in progress (preparing the worktree and its
+  // setup steps can take a while): a second start fails fast instead of
+  // launching a duplicate attempt.
+  // story → its feature, when the start began, and what it's doing now.
+  private readonly starting = new Map<
+    string,
+    { featureId: string; since: number; step: string | null }
+  >()
+
+  // Stories whose worktree is being prepared, for the "Preparing worktree"
+  // state (plan 106.11).
+  preparingUserStories(
+    featureId: string
+  ): Array<{ userStoryId: string; since: number; step: string | null }> {
+    return [...this.starting.entries()]
+      .filter(([, s]) => s.featureId === featureId)
+      .map(([userStoryId, s]) => ({
+        userStoryId,
+        since: s.since,
+        step: s.step,
+      }))
+  }
+
+  // Is this story's start in progress (its worktree still being prepared)?
+  isStarting(userStoryId: string): boolean {
+    return this.starting.has(userStoryId)
+  }
+
+  // Stories of a feature being prepared, other than `except`: they hold a
+  // concurrency slot already, however long their setup takes.
+  private preparing(featureId: string, except: string | null): number {
+    let count = 0
+    for (const [story, entry] of this.starting)
+      if (entry.featureId === featureId && story !== except) count++
+    return count
+  }
+
   async startUserStory(
     userStoryId: string,
     options: { allowTouchOverlap?: boolean; note?: string; actor?: string } = {}
+  ): Promise<PlaybookRun> {
+    if (this.starting.has(userStoryId)) {
+      const key = features.getUserStory(userStoryId)?.key ?? userStoryId
+      throw new Error(
+        `User story ${key} is already starting. It will be running in a moment; there's no need to start it again.`
+      )
+    }
+    const featureId = (() => {
+      const story = features.getUserStory(userStoryId)
+      const milestone = story ? features.getMilestone(story.milestoneId) : null
+      return milestone?.featureId ?? ""
+    })()
+    this.starting.set(userStoryId, { featureId, since: Date.now(), step: null })
+    if (featureId) emitWorkChanged(featureId)
+    try {
+      return await this.startUserStoryNow(userStoryId, options)
+    } finally {
+      this.starting.delete(userStoryId)
+      if (featureId) emitWorkChanged(featureId)
+    }
+  }
+
+  private async startUserStoryNow(
+    userStoryId: string,
+    options: { allowTouchOverlap?: boolean; note?: string; actor?: string }
   ): Promise<PlaybookRun> {
     const userStory = features.getUserStory(userStoryId)
     if (!userStory) throw new Error(`User story not found: ${userStoryId}`)
@@ -458,8 +531,25 @@ export class UserStoryRunner {
               milestone,
               userStory,
               attempt,
+              onProgress: (step) => {
+                const entry = this.starting.get(userStory.id)
+                if (!entry) return
+                entry.step = step
+                emitWorkChanged(feature.id)
+              },
             })
         : undefined,
+      recheck: () => {
+        const now = features.getUserStory(userStory.id)
+        if (
+          !now ||
+          !["draft", "ready", "failed"].includes(now.status) ||
+          now.attempts !== userStory.attempts
+        )
+          throw new Error(
+            `User story ${userStory.key} was started by someone else meanwhile (now ${now?.status ?? "gone"}).`
+          )
+      },
       onLaunch: (_run, isolated) => {
         features.setUserStoryExecution(
           userStory.id,

@@ -1,12 +1,15 @@
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { GeneratedFilesEditor } from "./generated-files-editor"
 import { WorktreeSetupEditor } from "./worktree-setup-editor"
 import {
+  ChevronDown,
+  ChevronRight,
   CircleDot,
   CircleHelp,
   FolderOpen,
   GitBranch,
   List,
+  Loader2,
   Plus,
   Trash2,
   XIcon,
@@ -46,8 +49,20 @@ import { AnchoredComms, CommsTab } from "./comms-tab"
 import { HealthDot, HealthTab, useHealthAnchors } from "./health-tab"
 import { MilestoneIntegrationPanel } from "./milestone-integration-panel"
 import { NavigatorStrip, useNavigator } from "./navigator-strip"
-import { DriveControls } from "./drive-controls"
-import { PlanHistory, WaitingOnYou } from "./proposals-inbox"
+import { BudgetMeters, DriveControls } from "./drive-controls"
+import {
+  focusFirstWaiting,
+  PlanHistory,
+  useWaitingItems,
+  WAITING_ANCHOR,
+  WaitingOnYou,
+} from "./proposals-inbox"
+import { FeatureHome } from "./feature-home"
+import {
+  readinessLine,
+  useWorkspaceAnalysis,
+  WorkspaceChecklist,
+} from "./workspace-checklist"
 import { FeaturesProjectRail } from "./features-project-rail"
 import {
   ALL_FEATURES,
@@ -60,11 +75,13 @@ import type {
   Feature,
   FeatureGraph,
   Milestone,
+  Position,
   Project,
   Rig,
   UserStorySpec,
   UserStory,
   Workspace,
+  WorkspaceAnalysis,
 } from "@/types"
 
 function slug(value: string) {
@@ -133,6 +150,33 @@ function lines(value: string) {
     .filter(Boolean)
 }
 
+// A story whose worktree is being prepared (plan 106.11): still "draft"
+// until its environment is ready, which can take a while.
+function preparingOf(position: Position | null, userStoryId: string) {
+  return position?.preparing?.find((p) => p.userStory === userStoryId) ?? null
+}
+
+function PreparingNotice({
+  preparing,
+}: {
+  preparing: { since: number; step: string | null }
+}) {
+  const minutes = Math.floor((Date.now() - preparing.since) / 60_000)
+  return (
+    <div className="flex items-center gap-2 rounded-md border border-sky-500/40 bg-sky-500/5 p-3 text-sm">
+      <Loader2 className="size-4 shrink-0 animate-spin text-sky-500" />
+      <div>
+        <div className="font-medium">Preparing its worktree…</div>
+        <div className="text-xs text-muted-foreground">
+          {preparing.step ?? "Starting"}
+          {minutes >= 1 ? ` · ${minutes} min so far` : ""}. The story starts as
+          soon as its environment is ready.
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function UserStoryEditor({
   graph,
   userStory,
@@ -172,6 +216,10 @@ function UserStoryEditor({
   const [runsLast, setRunsLast] = useState(userStory.spec.runsLast)
   const [podKey, setPodKey] = useState(userStory.podKey ?? "default")
   const pods = graph.feature.rigSnapshot?.pods ?? []
+  const preparing = preparingOf(
+    useNavigator(graph.feature.id).position,
+    userStory.id
+  )
   const save = async () => {
     const spec: UserStorySpec = {
       story: normalizeStory(story),
@@ -201,6 +249,7 @@ function UserStoryEditor({
   }
   return (
     <div className="space-y-5">
+      {preparing && <PreparingNotice preparing={preparing} />}
       <div className="grid gap-3 sm:grid-cols-2">
         <div className="space-y-1">
           <Label>Title</Label>
@@ -728,12 +777,26 @@ function MilestoneView({
                             className="ml-auto"
                             severity={health[userStory.id]}
                           />
-                          <Badge
-                            className={health[userStory.id] ? "" : "ml-auto"}
-                            variant="outline"
-                          >
-                            {userStory.status}
-                          </Badge>
+                          {preparingOf(navigator.position, userStory.id) ? (
+                            <Badge
+                              className={`gap-1 ${health[userStory.id] ? "" : "ml-auto"}`}
+                              variant="outline"
+                              title={
+                                preparingOf(navigator.position, userStory.id)
+                                  ?.step ?? undefined
+                              }
+                            >
+                              <Loader2 className="size-3 animate-spin" />
+                              Preparing worktree
+                            </Badge>
+                          ) : (
+                            <Badge
+                              className={health[userStory.id] ? "" : "ml-auto"}
+                              variant="outline"
+                            >
+                              {userStory.status}
+                            </Badge>
+                          )}
                         </div>
                         <code className="block truncate pr-8 text-xs text-muted-foreground">
                           {userStory.key}
@@ -909,6 +972,74 @@ function FeatureView({
   const [view, setView] = useState<"overview" | "comms" | "health">("overview")
   // Bumped to open the budget editor from the inbox.
   const [budgetRequest, setBudgetRequest] = useState(0)
+  const analysisState = useWorkspaceAnalysis(
+    feature.id,
+    feature.workspaceId,
+    `${feature.updatedAt}:${workspaces.find((w) => w.id === feature.workspaceId)?.updatedAt ?? 0}`
+  )
+  const waiting = useWaitingItems(feature.id, navigator.position)
+  const [detailsOpen, setDetailsOpen] = useState(false)
+  const [checklistOpen, setChecklistOpen] = useState(false)
+  const [setupOpen, setSetupOpen] = useState(false)
+  const [advancedOpen, setAdvancedOpen] = useState(false)
+  // Open by default: once a feature runs, what it's doing is the point.
+  const [activityOpen, setActivityOpen] = useState(true)
+  const reviewRef = useRef<HTMLDivElement | null>(null)
+  const openReview = () => {
+    setSetupOpen(true)
+    window.setTimeout(
+      () =>
+        reviewRef.current?.scrollIntoView({
+          behavior: "smooth",
+          block: "start",
+        }),
+      50
+    )
+  }
+  // The inbox's "Edit budgets" opens the editor inside Advanced settings.
+  useEffect(() => {
+    if (!budgetRequest) return
+    setSetupOpen(true)
+    setAdvancedOpen(true)
+  }, [budgetRequest])
+  // Fixes change the workspace's settings and the overlap policy in main;
+  // keep this view's copies current when the analysis reports a change.
+  const latest = useRef({ feature, workspaces, onWorkspaceSaved, onGraph })
+  latest.current = { feature, workspaces, onWorkspaceSaved, onGraph }
+  useEffect(
+    () =>
+      window.cowork.missionControl.analysis.onChanged((changed) => {
+        const current = latest.current
+        if (changed !== current.feature.id) return
+        void window.cowork.db.workspaces
+          .list()
+          .then((list) => {
+            const next = list.find((w) => w.id === current.feature.workspaceId)
+            const before = current.workspaces.find((w) => w.id === next?.id)
+            if (next && next.updatedAt !== before?.updatedAt)
+              current.onWorkspaceSaved(next)
+          })
+          .catch(() => {})
+        void window.cowork.missionControl.features
+          .get(changed)
+          .then((next) => {
+            if (
+              next &&
+              next.feature.drive.overlapPolicy !==
+                current.feature.drive.overlapPolicy
+            )
+              current.onGraph(next)
+          })
+          .catch(() => {})
+      }),
+    []
+  )
+  const showWaiting = () => {
+    if (!focusFirstWaiting())
+      document
+        .getElementById(WAITING_ANCHOR)
+        ?.scrollIntoView({ behavior: "smooth", block: "start" })
+  }
   const [name, setName] = useState(feature.name)
   const [intent, setIntent] = useState(feature.intent)
   const [done, setDone] = useState(feature.definitionOfDone)
@@ -996,32 +1127,17 @@ function FeatureView({
   return (
     <div className="space-y-5">
       {viewTabs}
-      <DriveControls
-        key={`${feature.id}:${feature.status}`}
+      <FeatureHome
         graph={graph}
         position={navigator.position}
+        workspace={featureWorkspace}
+        analysis={analysisState}
+        waiting={waiting}
         onGraph={onGraph}
-        budgetRequest={budgetRequest}
-        onShowWaiting={() =>
-          document
-            .getElementById("mission-control-waiting")
-            ?.scrollIntoView({ behavior: "smooth", block: "start" })
-        }
+        onShowWaiting={showWaiting}
+        onEditDetails={() => setDetailsOpen(true)}
+        onReviewSetup={openReview}
       />
-      {feature.status !== "draft" && <NavigatorStrip state={navigator} />}
-      {feature.status !== "draft" && (
-        <WaitingOnYou
-          graph={graph}
-          position={navigator.position}
-          onGraph={onGraph}
-          navigation={{
-            openMilestone: onMilestone,
-            openUserStory: (id) => onOpenAnchor({ kind: "user_story", id }),
-            openComms: () => setView("comms"),
-            editBudgets: () => setBudgetRequest((n) => n + 1),
-          }}
-        />
-      )}
       {graph.rigDrifted && !finished && (
         <div className="flex items-center rounded-md border border-amber-500/40 bg-amber-500/5 p-3 text-sm">
           <span>The selected rig changed since this feature started.</span>
@@ -1040,204 +1156,288 @@ function FeatureView({
           </Button>
         </div>
       )}
-      <div className="grid gap-4 rounded-lg border p-4 lg:grid-cols-2">
-        <div className="space-y-3">
-          <div className="space-y-1">
-            <Label>Name</Label>
-            <Input value={name} onChange={(e) => setName(e.target.value)} />
-          </div>
-          <div className="space-y-1">
-            <Label>Intent</Label>
-            <Textarea
-              rows={6}
-              value={intent}
-              onChange={(e) => setIntent(e.target.value)}
-            />
-          </div>
-        </div>
-        <div className="space-y-3">
-          <div className="space-y-1">
-            <Label>Definition of done</Label>
-            <Textarea
-              rows={6}
-              value={done}
-              onChange={(e) => setDone(e.target.value)}
-            />
-          </div>
+      {feature.status !== "draft" && (
+        <WaitingOnYou
+          graph={graph}
+          waiting={waiting}
+          onGraph={onGraph}
+          navigation={{
+            openMilestone: onMilestone,
+            openUserStory: (id) => onOpenAnchor({ kind: "user_story", id }),
+            openComms: () => setView("comms"),
+            editBudgets: () => setBudgetRequest((n) => n + 1),
+          }}
+        />
+      )}
+      <div className="rounded-lg border p-4">
+        <div className="mb-2 flex items-center">
+          <h3 className="text-sm font-medium">Feature details</h3>
           <Button
-            onClick={() =>
-              void save().catch((error) => toast.error(errorMessage(error)))
-            }
+            size="sm"
+            variant="ghost"
+            className="ml-auto h-7"
+            onClick={() => setDetailsOpen(true)}
           >
-            Save definition
+            Edit details
           </Button>
         </div>
-      </div>
-      <div className="grid gap-3 rounded-lg border p-4 sm:grid-cols-3">
-        <div className="min-w-0">
-          <div className="mb-1 text-xs text-muted-foreground">Rig</div>
-          {editableBinding ? (
-            <Select
-              value={feature.rigId ?? ""}
-              onValueChange={(rigId) => void bind({ rigId })}
-            >
-              <SelectTrigger className="h-8 w-full text-foreground [&>svg]:text-foreground">
-                <SelectValue placeholder="Choose a rig" />
-              </SelectTrigger>
-              <SelectContent>
-                {rigs.map((rig) => (
-                  <SelectItem key={rig.id} value={rig.id}>
-                    {rig.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          ) : (
-            <div className="flex min-w-0 items-center gap-2">
-              <div className="truncate text-sm">
+        <dl className="grid gap-x-6 gap-y-2 text-sm sm:grid-cols-3">
+          <div className="min-w-0">
+            <dt className="text-xs text-muted-foreground">Rig</dt>
+            <dd className="flex min-w-0 items-center gap-2">
+              <span className="truncate">
                 {rigs.find((rig) => rig.id === feature.rigId)?.name ??
                   (feature.rigSnapshot
                     ? `${feature.rigSnapshot.rig.name} (deleted — ran on saved copy)`
                     : "None")}
-              </div>
-              {feature.rigId && (
+              </span>
+              {!editableBinding && feature.rigId && (
                 <PendingLessonsBadge rigId={feature.rigId} graph={graph} />
               )}
-            </div>
-          )}
-        </div>
-        <div className="min-w-0">
-          <div className="mb-1 text-xs text-muted-foreground">Project</div>
-          <Select
-            value={feature.projectId ?? "none"}
-            onValueChange={(value) => {
-              const project = projects.find((item) => item.id === value)
-              // While draft, a linked project brings its workspace, as on
-              // create; once started the workspace is locked, so only relabel.
-              void bind(
-                project
-                  ? editableBinding
-                    ? {
-                        projectId: project.id,
-                        workspaceId: project.workspaceId,
-                      }
-                    : { projectId: project.id }
-                  : { projectId: null }
-              )
-            }}
-          >
-            <SelectTrigger className="h-8 w-full text-foreground [&>svg]:text-foreground">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="none">No project</SelectItem>
-              {projects.map((project) => (
-                <SelectItem key={project.id} value={project.id}>
-                  {project.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-        <div className="min-w-0">
-          <div className="mb-1 text-xs text-muted-foreground">Workspace</div>
-          {editableBinding && !feature.projectId ? (
-            <div className="flex gap-2">
-              <Select
-                value={feature.workspaceId ?? ""}
-                onValueChange={(workspaceId) => void bind({ workspaceId })}
-              >
-                <SelectTrigger className="h-8 min-w-0 flex-1 text-foreground [&>svg]:text-foreground">
-                  <SelectValue placeholder="Choose a workspace" />
-                </SelectTrigger>
-                <SelectContent>
-                  {workspaces.map((workspace) => (
-                    <SelectItem key={workspace.id} value={workspace.id}>
-                      {workspace.name || workspace.path}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <Button
-                size="icon-sm"
-                variant="outline"
-                title="Choose folder"
-                onClick={() =>
-                  void onPickWorkspace()
-                    .then((workspace) =>
-                      workspace ? bind({ workspaceId: workspace.id }) : null
+            </dd>
+          </div>
+          <div className="min-w-0">
+            <dt className="text-xs text-muted-foreground">Project</dt>
+            <dd className="truncate">
+              {projects.find((project) => project.id === feature.projectId)
+                ?.name ?? "No project"}
+            </dd>
+          </div>
+          <div className="min-w-0">
+            <dt className="text-xs text-muted-foreground">Workspace</dt>
+            <dd className="truncate" title={featureWorkspace?.path}>
+              {workspaceName}
+            </dd>
+          </div>
+          <div className="min-w-0 sm:col-span-3">
+            <dt className="text-xs text-muted-foreground">
+              Definition of done
+            </dt>
+            <dd className="line-clamp-2 whitespace-pre-wrap text-muted-foreground">
+              {feature.definitionOfDone || "Not written yet"}
+            </dd>
+          </div>
+        </dl>
+      </div>
+      <Dialog open={detailsOpen} onOpenChange={setDetailsOpen}>
+        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-3xl">
+          <DialogHeader>
+            <DialogTitle>Feature details</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="grid gap-4 rounded-lg border p-4 lg:grid-cols-2">
+              <div className="space-y-3">
+                <div className="space-y-1">
+                  <Label>Name</Label>
+                  <Input
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label>Intent</Label>
+                  <Textarea
+                    rows={6}
+                    value={intent}
+                    onChange={(e) => setIntent(e.target.value)}
+                  />
+                </div>
+              </div>
+              <div className="space-y-3">
+                <div className="space-y-1">
+                  <Label>Definition of done</Label>
+                  <Textarea
+                    rows={6}
+                    value={done}
+                    onChange={(e) => setDone(e.target.value)}
+                  />
+                </div>
+                <Button
+                  onClick={() =>
+                    void save().catch((error) =>
+                      toast.error(errorMessage(error))
                     )
-                    .catch((error) => toast.error(errorMessage(error)))
-                }
-              >
-                <FolderOpen className="size-4" />
-              </Button>
+                  }
+                >
+                  Save definition
+                </Button>
+              </div>
             </div>
-          ) : (
-            <div className="truncate text-sm">{workspaceName}</div>
-          )}
-        </div>
-        {editableBinding ? (
-          <p className="text-xs text-muted-foreground sm:col-span-3">
-            The rig and workspace lock when the feature starts.
-          </p>
-        ) : null}
-        {featureWorkspace && (
-          <div className="sm:col-span-3">
-            <GeneratedFilesEditor
-              workspace={featureWorkspace}
-              onSaved={onWorkspaceSaved}
-            />
-            <div className="mt-4">
-              <WorktreeSetupEditor
-                workspace={featureWorkspace}
-                onSaved={onWorkspaceSaved}
-              />
+            <div className="grid gap-3 rounded-lg border p-4 sm:grid-cols-3">
+              <div className="min-w-0">
+                <div className="mb-1 text-xs text-muted-foreground">Rig</div>
+                {editableBinding ? (
+                  <Select
+                    value={feature.rigId ?? ""}
+                    onValueChange={(rigId) => void bind({ rigId })}
+                  >
+                    <SelectTrigger className="h-8 w-full text-foreground [&>svg]:text-foreground">
+                      <SelectValue placeholder="Choose a rig" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {rigs.map((rig) => (
+                        <SelectItem key={rig.id} value={rig.id}>
+                          {rig.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                ) : (
+                  <div className="flex min-w-0 items-center gap-2">
+                    <div className="truncate text-sm">
+                      {rigs.find((rig) => rig.id === feature.rigId)?.name ??
+                        (feature.rigSnapshot
+                          ? `${feature.rigSnapshot.rig.name} (deleted — ran on saved copy)`
+                          : "None")}
+                    </div>
+                    {feature.rigId && (
+                      <PendingLessonsBadge
+                        rigId={feature.rigId}
+                        graph={graph}
+                      />
+                    )}
+                  </div>
+                )}
+              </div>
+              <div className="min-w-0">
+                <div className="mb-1 text-xs text-muted-foreground">
+                  Project
+                </div>
+                <Select
+                  value={feature.projectId ?? "none"}
+                  onValueChange={(value) => {
+                    const project = projects.find((item) => item.id === value)
+                    // While draft, a linked project brings its workspace, as on
+                    // create; once started the workspace is locked, so only relabel.
+                    void bind(
+                      project
+                        ? editableBinding
+                          ? {
+                              projectId: project.id,
+                              workspaceId: project.workspaceId,
+                            }
+                          : { projectId: project.id }
+                        : { projectId: null }
+                    )
+                  }}
+                >
+                  <SelectTrigger className="h-8 w-full text-foreground [&>svg]:text-foreground">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">No project</SelectItem>
+                    {projects.map((project) => (
+                      <SelectItem key={project.id} value={project.id}>
+                        {project.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="min-w-0">
+                <div className="mb-1 text-xs text-muted-foreground">
+                  Workspace
+                </div>
+                {editableBinding && !feature.projectId ? (
+                  <div className="flex gap-2">
+                    <Select
+                      value={feature.workspaceId ?? ""}
+                      onValueChange={(workspaceId) =>
+                        void bind({ workspaceId })
+                      }
+                    >
+                      <SelectTrigger className="h-8 min-w-0 flex-1 text-foreground [&>svg]:text-foreground">
+                        <SelectValue placeholder="Choose a workspace" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {workspaces.map((workspace) => (
+                          <SelectItem key={workspace.id} value={workspace.id}>
+                            {workspace.name || workspace.path}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <Button
+                      size="icon-sm"
+                      variant="outline"
+                      title="Choose folder"
+                      onClick={() =>
+                        void onPickWorkspace()
+                          .then((workspace) =>
+                            workspace
+                              ? bind({ workspaceId: workspace.id })
+                              : null
+                          )
+                          .catch((error) => toast.error(errorMessage(error)))
+                      }
+                    >
+                      <FolderOpen className="size-4" />
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="truncate text-sm">{workspaceName}</div>
+                )}
+              </div>
+              {editableBinding ? (
+                <p className="text-xs text-muted-foreground sm:col-span-3">
+                  The rig and workspace lock when the feature starts.
+                </p>
+              ) : null}
             </div>
           </div>
-        )}
-      </div>
-      <div className="w-72">
-        <PlaybookPicker
-          altitude="feature"
-          value={feature.playbookId}
-          onChange={async (playbookId) =>
-            onGraph(
-              await window.cowork.missionControl.features.update(
-                feature.id,
-                { playbookId },
-                reasonFor(graph, "Change feature playbook")
-              )
-            )
-          }
-        />
-      </div>
+        </DialogContent>
+      </Dialog>
       {feature.status !== "draft" && (
-        <HookControls
-          graph={graph}
-          title="Feature playbook"
-          actions={[
-            {
-              hook: "plan",
-              label: "Run planning",
-              disabledReason:
-                feature.status === "active"
-                  ? null
-                  : "Resume the feature to run its playbooks.",
-            },
-            {
-              hook: "between_milestones",
-              label: "Run release",
-              milestoneId: finishedMilestone?.id ?? null,
-              disabledReason:
-                feature.status !== "active"
-                  ? "Resume the feature to run its playbooks."
-                  : finishedMilestone
-                    ? null
-                    : "A release runs after a milestone's user stories are all done.",
-            },
-          ]}
-        />
+        <Disclosure
+          title="Activity and diagnostics"
+          hint="Navigator, manual hooks, plan changes"
+          open={activityOpen}
+          onOpenChange={setActivityOpen}
+        >
+          <div className="space-y-4">
+            <NavigatorStrip state={navigator} />
+            <HookControls
+              graph={graph}
+              title="Feature playbook"
+              actions={[
+                {
+                  hook: "plan",
+                  label: "Run planning",
+                  disabledReason:
+                    feature.status === "active"
+                      ? null
+                      : "Resume the feature to run its playbooks.",
+                },
+                {
+                  hook: "between_milestones",
+                  label: "Run release",
+                  milestoneId: finishedMilestone?.id ?? null,
+                  disabledReason:
+                    feature.status !== "active"
+                      ? "Resume the feature to run its playbooks."
+                      : finishedMilestone
+                        ? null
+                        : "A release runs after a milestone's user stories are all done.",
+                },
+              ]}
+            />
+            <PlanHistory graph={graph} />
+          </div>
+        </Disclosure>
+      )}
+      {feature.status !== "draft" && featureWorkspace && (
+        <Disclosure
+          title="Workspace setup"
+          hint={readinessLine(analysisState.analysis).text}
+          open={checklistOpen}
+          onOpenChange={setChecklistOpen}
+        >
+          <WorkspaceChecklist
+            featureId={feature.id}
+            state={analysisState}
+            compact
+          />
+        </Disclosure>
       )}
       <div>
         <div className="mb-3 flex items-center justify-between">
@@ -1326,8 +1526,168 @@ function FeatureView({
           })}
         </div>
       </div>
-      <PlanHistory graph={graph} />
+      <div ref={reviewRef}>
+        <Disclosure
+          title="Review setup"
+          hint="How Mission Control will run this feature"
+          open={setupOpen}
+          onOpenChange={setSetupOpen}
+        >
+          <SetupSummary
+            graph={graph}
+            workspace={featureWorkspace}
+            analysis={analysisState.analysis}
+          />
+          <Disclosure
+            title="Advanced settings"
+            hint="Drive mode, overlap, worktree environment, generated files, budgets, playbook"
+            open={advancedOpen}
+            onOpenChange={setAdvancedOpen}
+            nested
+          >
+            <div className="space-y-5">
+              <DriveControls
+                key={`${feature.id}:${feature.status}`}
+                graph={graph}
+                position={navigator.position}
+                onGraph={onGraph}
+                onShowWaiting={showWaiting}
+                variant="settings"
+              />
+              {featureWorkspace && (
+                <>
+                  <WorktreeSetupEditor
+                    workspace={featureWorkspace}
+                    onSaved={onWorkspaceSaved}
+                  />
+                  <GeneratedFilesEditor
+                    workspace={featureWorkspace}
+                    onSaved={onWorkspaceSaved}
+                  />
+                </>
+              )}
+              <BudgetMeters
+                graph={graph}
+                meters={navigator.position?.budgets ?? []}
+                onGraph={onGraph}
+                editRequest={budgetRequest}
+              />
+              <div className="w-72">
+                <PlaybookPicker
+                  altitude="feature"
+                  value={feature.playbookId}
+                  onChange={async (playbookId) =>
+                    onGraph(
+                      await window.cowork.missionControl.features.update(
+                        feature.id,
+                        { playbookId },
+                        reasonFor(graph, "Change feature playbook")
+                      )
+                    )
+                  }
+                />
+              </div>
+            </div>
+          </Disclosure>
+        </Disclosure>
+      </div>
     </div>
+  )
+}
+
+// A titled section that starts collapsed (plan 106.11: progressive
+// disclosure). Controlled, so other parts of the page can open it.
+function Disclosure({
+  title,
+  hint,
+  open,
+  onOpenChange,
+  nested = false,
+  children,
+}: {
+  title: string
+  hint?: string
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  nested?: boolean
+  children: React.ReactNode
+}) {
+  return (
+    <div className={nested ? "mt-4 border-t pt-4" : "rounded-lg border p-4"}>
+      <button
+        type="button"
+        className="flex w-full items-center gap-2 text-left"
+        onClick={() => onOpenChange(!open)}
+        aria-expanded={open}
+      >
+        {open ? (
+          <ChevronDown className="size-4 shrink-0" />
+        ) : (
+          <ChevronRight className="size-4 shrink-0" />
+        )}
+        <span className={nested ? "text-sm font-medium" : "font-medium"}>
+          {title}
+        </span>
+        {hint && (
+          <span className="truncate text-xs text-muted-foreground">{hint}</span>
+        )}
+      </button>
+      {open && <div className="mt-4">{children}</div>}
+    </div>
+  )
+}
+
+// Review setup's plain-language summary: what Mission Control will do,
+// before the precise controls.
+function SetupSummary({
+  graph,
+  workspace,
+  analysis,
+}: {
+  graph: FeatureGraph
+  workspace: Workspace | null
+  analysis: WorkspaceAnalysis | null
+}) {
+  const feature = graph.feature
+  const automation =
+    feature.driveMode === "autopilot"
+      ? `Autopilot: Mission Control starts ready work itself and hands judgment calls to the lead seat${feature.drive.autoApplyPlan ? "; the plan is applied without waiting for review" : ""}.`
+      : feature.driveMode === "copilot"
+        ? "Co-pilot: the lead seat directs the work after every change; you watch and decide."
+        : "Manual: you start each story and hook; the Navigator shows what's next."
+  const isolation = analysis?.findings.find(
+    (f) => f.key === "git-isolation:parallel"
+  )
+  const parallel =
+    feature.drive.overlapPolicy === "parallel"
+      ? "Stories whose files overlap run at the same time; real conflicts are resolved at merge."
+      : isolation
+        ? "Stories whose files overlap take turns. Independent stories still run in parallel, each in its own worktree."
+        : "Stories whose files overlap take turns."
+  const setup = workspace?.worktreeSetup
+  const environment = !workspace
+    ? "No workspace chosen yet."
+    : setup && (setup.linkPaths.length || setup.steps.length)
+      ? `Each worktree ${setup.linkPaths.length ? `links ${setup.linkPaths.join(", ")}` : ""}${setup.linkPaths.length && setup.steps.length ? " and " : ""}${setup.steps.length ? `runs ${setup.steps.length} setup step${setup.steps.length === 1 ? "" : "s"} (${setup.steps.map((s) => s.command).join(", ")})` : ""}.`
+      : "Worktrees get only tracked files; nothing is linked or installed."
+  const generated = workspace?.generatedFiles.length
+    ? `${workspace.generatedFiles.length} group${workspace.generatedFiles.length === 1 ? "" : "s"} of generated files are regenerated after merges instead of merged by hand.`
+    : "No generated files are declared; conflicts in them go to the integrator seat."
+  const rows: Array<[string, string]> = [
+    ["Automation", automation],
+    ["Parallel work", parallel],
+    ["Project environment", environment],
+    ["Generated outputs", generated],
+  ]
+  return (
+    <dl className="space-y-2 text-sm">
+      {rows.map(([label, text]) => (
+        <div key={label} className="grid gap-1 sm:grid-cols-[10rem_1fr]">
+          <dt className="text-xs font-medium text-muted-foreground">{label}</dt>
+          <dd>{text}</dd>
+        </div>
+      ))}
+    </dl>
   )
 }
 

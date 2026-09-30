@@ -17,6 +17,7 @@ export type {
   TodoStatus,
   GeneratedFilesRule,
   WorktreeSetup,
+  WorktreeSetupStep,
   Workspace,
   SubagentArtifact,
 } from "../../preload/index"
@@ -247,6 +248,14 @@ export type {
   BudgetMeter,
   BudgetKey,
   PlanChange,
+  ApplyAllItem,
+  Evidence,
+  Finding,
+  FindingCategory,
+  Fix,
+  Readiness,
+  SetupRunView,
+  WorkspaceAnalysis,
 } from "../../preload/index"
 
 // Live dashboard types (plan 033), surfaced for the Dashboards screen.

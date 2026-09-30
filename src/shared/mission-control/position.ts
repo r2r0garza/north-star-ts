@@ -215,6 +215,10 @@ export interface Position {
   pendingDecisions: Decision[]
   lead: string | null
   userStories: Record<string, UserStoryRef>
+  // Stories whose worktree is being prepared (plan 106.11): still "draft"
+  // until it's ready. Not part of the computed position; the Navigator adds
+  // it when it reports one.
+  preparing?: Array<{ userStory: string; since: number; step: string | null }>
 }
 
 export type Maneuver =

@@ -78,6 +78,17 @@ export const HEALTH_EVENTS = {
     label: "User story attempt failed",
   },
   feature_active: { class: "neutral", weight: 0, label: "Drive started" },
+  // A worktree's setup steps (plan 106.11): detail names the failed step.
+  worktree_setup_failed: {
+    class: "neutral",
+    weight: 0,
+    label: "Worktree setup failed",
+  },
+  worktree_setup_ok: {
+    class: "neutral",
+    weight: 0,
+    label: "Worktree setup ran",
+  },
   steer: { class: "neutral", weight: 0, label: "Message from the user" },
 } as const satisfies Record<string, HealthEventSpec>
 
@@ -100,6 +111,7 @@ export type HealthDetector =
   | "approval_by_proxy"
   | "refocus_ignored"
   | "retry_churn"
+  | "setup_failed"
 
 export interface HealthDetectorSpec {
   key: HealthDetector
@@ -165,6 +177,13 @@ export const HEALTH_DETECTORS: readonly HealthDetectorSpec[] = [
     pathology: "Thrash",
     description:
       "A user story used up its attempts, or failed the same way twice in a row.",
+  },
+  {
+    key: "setup_failed",
+    label: "Worktree setup failed",
+    pathology: "Broken environment",
+    description:
+      "A workspace setup step failed in a new worktree, so agents there work without the environment they need. Fix the step in Workspace setup.",
   },
 ]
 

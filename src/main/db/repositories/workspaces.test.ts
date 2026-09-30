@@ -37,3 +37,84 @@ describe.skipIf(!sqliteLoads)("workspace generated files", () => {
     ])
   })
 })
+
+describe.skipIf(!sqliteLoads)("workspace worktree setup", () => {
+  beforeEach(() => {
+    db = new Database(":memory:")
+    runMigrations(db)
+  })
+
+  it("reads a legacy single command as one user step", () => {
+    const ws = upsertWorkspace("/repo")
+    db.prepare("UPDATE workspaces SET worktree_setup = ? WHERE id = ?").run(
+      JSON.stringify({ linkPaths: [".venv/"], command: " uv sync " }),
+      ws.id
+    )
+    expect(getWorkspace(ws.id)!.worktreeSetup).toEqual({
+      linkPaths: [".venv"],
+      steps: [
+        {
+          id: "legacy-command",
+          label: "Setup command",
+          command: "uv sync",
+          cwd: "",
+          source: "user",
+        },
+      ],
+    })
+  })
+
+  it("keeps ordered, well-formed steps confined to the workspace", () => {
+    const ws = upsertWorkspace("/repo")
+    updateWorkspace(ws.id, {
+      worktreeSetup: {
+        linkPaths: ["../outside", "node_modules"],
+        steps: [
+          {
+            id: "api",
+            label: "Install API",
+            command: "uv sync",
+            cwd: "./api/",
+            source: "analysis",
+            findingKey: "main-env:api:uv",
+          },
+          {
+            id: "bad",
+            label: "x",
+            command: "rm -rf /",
+            cwd: "../..",
+            source: "user",
+          },
+          { id: "empty", label: "x", command: " ", cwd: "", source: "user" },
+          {
+            id: "api",
+            label: "",
+            command: "pnpm install",
+            cwd: "",
+            source: "user",
+          },
+        ],
+      },
+    })
+    expect(getWorkspace(ws.id)!.worktreeSetup).toEqual({
+      linkPaths: ["node_modules"],
+      steps: [
+        {
+          id: "api",
+          label: "Install API",
+          command: "uv sync",
+          cwd: "api",
+          source: "analysis",
+          findingKey: "main-env:api:uv",
+        },
+        {
+          id: "api-2",
+          label: "pnpm install",
+          command: "pnpm install",
+          cwd: "",
+          source: "user",
+        },
+      ],
+    })
+  })
+})

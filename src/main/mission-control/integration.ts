@@ -17,6 +17,8 @@ import { getDb } from "../db/connection"
 import * as features from "../db/repositories/features"
 import * as mergeQueue from "../db/repositories/merge-queue"
 import * as playbooks from "../db/repositories/playbooks"
+import { recordEvent } from "../db/repositories/mc-events"
+import { toolEnv, warmShellPath } from "./workspace-analysis/tool-env"
 import { getWorkspace } from "../db/repositories/workspaces"
 import type {
   Feature,
@@ -199,17 +201,55 @@ export function userStoryMergeMessage(input: {
 }
 
 // Give a new worktree the workspace's environment (linked paths, setup
-// command), or null when the workspace configures none.
+// steps), or null when the workspace configures none. The outcome is a health
+// event, so a failed step surfaces in Health (plan 106.11).
 async function prepareEnvironment(
   feature: Feature,
   mainWorkspace: string,
-  worktreeWorkspace: string
+  worktreeWorkspace: string,
+  userStoryId: string | null = null,
+  onStep?: (label: string) => void
 ): Promise<WorktreeEnvironment | null> {
   const setup = feature.workspaceId
     ? getWorkspace(feature.workspaceId)?.worktreeSetup
     : null
   if (!setup) return null
-  return prepareWorktreeEnvironment({ mainWorkspace, worktreeWorkspace, setup })
+  const environment = await prepareWorktreeEnvironment({
+    mainWorkspace,
+    worktreeWorkspace,
+    setup,
+    onStep,
+  })
+  if (environment?.steps.length) {
+    const failed = environment.steps.find((s) => s.status === "failed")
+    recordEvent({
+      featureId: feature.id,
+      userStoryId,
+      type: failed ? "worktree_setup_failed" : "worktree_setup_ok",
+      refId: `${worktreeWorkspace}:${Date.now()}`,
+      detail: failed
+        ? {
+            step: failed.label,
+            command: failed.command,
+            cwd: failed.cwd,
+            exitCode: failed.exitCode,
+            error: failed.error,
+            outputTail: failed.outputTail.slice(-600),
+          }
+        : {
+            steps: environment.steps.length,
+            // How long each step took, and how it ended, for diagnosing a
+            // slow setup (plan 106.11).
+            timings: environment.steps.map((s) => ({
+              label: s.label,
+              ms: s.durationMs,
+              status: s.status,
+              outputTail: s.outputTail.slice(-300),
+            })),
+          },
+    })
+  }
+  return environment
 }
 
 // The feature's workspace rules for generated files, with the workspace's
@@ -222,9 +262,27 @@ async function regenerateSpecFor(
     ? getWorkspace(feature.workspaceId)
     : null
   if (!workspace?.generatedFiles.length) return null
+  await warmShellPath()
+  const env = toolEnv()
+  // Project-local tools (a console script in .venv/bin, a package bin in
+  // node_modules/.bin) come from the main checkout.
+  const bins = [
+    ".venv/bin",
+    "venv/bin",
+    ".venv/Scripts",
+    "node_modules/.bin",
+    ...workspace.worktreeSetup.linkPaths.flatMap((p) => [
+      `${p}/bin`,
+      `${p}/.bin`,
+    ]),
+  ]
+    .map((p) => path.join(workspace.path, p))
+    .filter((dir, i, all) => all.indexOf(dir) === i && existsSync(dir))
+  env.PATH = [...bins, env.PATH].filter(Boolean).join(path.delimiter)
   return {
     rules: workspace.generatedFiles,
     subpath: await workspaceSubpath(root, workspace.path).catch(() => ""),
+    env,
   }
 }
 
@@ -307,6 +365,8 @@ export class MilestoneIntegration {
     milestone: Milestone
     userStory: UserStory
     attempt: number
+    // What's being prepared right now, for the "Preparing worktree" state.
+    onProgress?: (step: string) => void
   }): Promise<IsolatedUserStoryWorkspace | null> {
     const workspace = workspacePathOf(input.feature)
     if (!workspace) return null
@@ -323,21 +383,29 @@ export class MilestoneIntegration {
       input.feature.id,
       `${input.userStory.key}-${input.attempt}-${suffix()}`
     )
-    const created = await createUserStoryWorktree({
-      root,
-      integrationBranch: milestone.integrationBranch!,
-      userStoryKey: input.userStory.key,
-      attempt: input.attempt,
-      directory,
-    })
+    // Git operations take turns per repository (quick); the environment
+    // setup after them runs in parallel with other stories'.
+    input.onProgress?.("Creating the worktree")
+    const created = await this.gitTurn(root, () =>
+      createUserStoryWorktree({
+        root,
+        integrationBranch: milestone.integrationBranch!,
+        userStoryKey: input.userStory.key,
+        attempt: input.attempt,
+        directory,
+      })
+    )
     const workspacePath = path.join(
       directory,
       await workspaceSubpath(root, workspace)
     )
+    input.onProgress?.("Setting up the environment")
     const environment = await prepareEnvironment(
       input.feature,
       workspace,
-      workspacePath
+      workspacePath,
+      input.userStory.id,
+      input.onProgress
     )
     return {
       workspacePath,
@@ -476,6 +544,22 @@ export class MilestoneIntegration {
       this.retryTimers.delete(milestoneId)
     }
     return this.enqueueWork(milestoneId, () => this.drain(milestoneId))
+  }
+
+  private readonly gitTurns = new Map<string, Promise<unknown>>()
+
+  // One Git worktree/branch operation at a time per repository, so parallel
+  // story starts don't trip over Git's lock files.
+  private gitTurn<T>(root: string, work: () => Promise<T>): Promise<T> {
+    const previous = this.gitTurns.get(root) ?? Promise.resolve()
+    const next = previous.catch(() => {}).then(work)
+    this.gitTurns.set(root, next)
+    void next
+      .finally(() => {
+        if (this.gitTurns.get(root) === next) this.gitTurns.delete(root)
+      })
+      .catch(() => {})
+    return next
   }
 
   private enqueueWork(
@@ -887,7 +971,12 @@ export class MilestoneIntegration {
       }
       this.changed(feature.id)
       const environment = workspace
-        ? await prepareEnvironment(feature, workspace, workspacePath)
+        ? await prepareEnvironment(
+            feature,
+            workspace,
+            workspacePath,
+            userStory.id
+          )
         : null
       await this.deps.startResolution({
         feature,

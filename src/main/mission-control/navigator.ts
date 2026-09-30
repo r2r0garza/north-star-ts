@@ -88,6 +88,11 @@ export interface NavigatorDeps {
     userStoryId: string,
     options: { note?: string; actor: string }
   ): Promise<PlaybookRun>
+  // A start already in progress (worktree setup running), so dispatch skips it.
+  isStartingUserStory?(userStoryId: string): boolean
+  preparingUserStories?(
+    featureId: string
+  ): Array<{ userStoryId: string; since: number; step: string | null }>
   startHook(input: {
     featureId: string
     milestoneId: string | null
@@ -528,9 +533,20 @@ export class Navigator {
   async position(featureId: string): Promise<Position> {
     const feature = features.getFeature(featureId)
     if (!feature) throw new Error(`Feature not found: ${featureId}`)
-    return computePosition(
+    const position = computePosition(
       positionInput(feature, await this.workspace(feature), this.now())
     )
+    const preparing = this.deps.preparingUserStories?.(featureId) ?? []
+    return preparing.length
+      ? {
+          ...position,
+          preparing: preparing.map((p) => ({
+            userStory: p.userStoryId,
+            since: p.since,
+            step: p.step,
+          })),
+        }
+      : position
   }
 
   // Fold elapsed driving time into the feature's active-time budget. Only
@@ -744,32 +760,35 @@ export class Navigator {
       return
     }
     if (maneuver.kind === "dispatch") {
-      for (const item of position.dispatch) {
-        const key = position.userStories[item.userStory]?.key ?? item.userStory
-        try {
-          await this.deps.startUserStory(item.userStory, {
-            actor,
-            ...(item.retry
-              ? {
-                  note: "Automatic retry by the Navigator: the previous attempt stopped without a rejected proof. Check what interrupted it before repeating the same approach.",
-                }
-              : {}),
-          })
-          actions.push({
-            kind: item.retry ? "retry_user_story" : "start_user_story",
-            target: key,
-            ok: true,
-            detail: `Started ${key}`,
-          })
-        } catch (error) {
-          actions.push({
-            kind: item.retry ? "retry_user_story" : "start_user_story",
-            target: key,
-            ok: false,
-            detail: errorText(error),
-          })
-        }
-      }
+      // Start them together: each start prepares a worktree and its setup,
+      // which can take a while, so one story never waits on another's.
+      const results = await Promise.all(
+        position.dispatch.map(
+          async (item): Promise<NavigatorTickAction | null> => {
+            const key =
+              position.userStories[item.userStory]?.key ?? item.userStory
+            const kind = item.retry ? "retry_user_story" : "start_user_story"
+            // Its worktree is still being prepared (setup can take minutes); it
+            // stays "draft" until that's done, so don't start it again. Not an
+            // action: the position shows it as preparing.
+            if (this.deps.isStartingUserStory?.(item.userStory)) return null
+            try {
+              await this.deps.startUserStory(item.userStory, {
+                actor,
+                ...(item.retry
+                  ? {
+                      note: "Automatic retry by the Navigator: the previous attempt stopped without a rejected proof. Check what interrupted it before repeating the same approach.",
+                    }
+                  : {}),
+              })
+              return { kind, target: key, ok: true, detail: `Started ${key}` }
+            } catch (error) {
+              return { kind, target: key, ok: false, detail: errorText(error) }
+            }
+          }
+        )
+      )
+      actions.push(...results.filter((a): a is NavigatorTickAction => !!a))
       return
     }
     if (maneuver.kind === "complete_milestone") {

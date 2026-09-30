@@ -114,6 +114,11 @@ export type HealthAnchors = Record<string, HealthSeverity>
 
 // ── durable state → snapshot ────────────────────────────────────────────────
 
+function workersSince(featureId: string): number | null {
+  const runs = playbooks.listPlaybookRuns({ featureId, status: "running" })
+  return runs.length ? Math.min(...runs.map((r) => r.createdAt)) : null
+}
+
 function activeWorkers(featureId: string): number {
   return (
     playbooks.listPlaybookRuns({ featureId, status: "running" }).length +
@@ -145,6 +150,7 @@ export function loadSnapshot(feature: Feature, now: number): HealthSnapshot {
     settings: healthSettings(feature.budgets),
     events: events.listEvents(feature.id),
     activeWorkers: activeWorkers(feature.id),
+    workersSince: workersSince(feature.id),
     userStories: userStories.map((u) => ({
       id: u.id,
       key: u.key,

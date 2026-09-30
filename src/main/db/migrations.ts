@@ -134,6 +134,7 @@ const MIGRATIONS: Array<(db: Database.Database) => void> = [
   ensureSeatMemory,
   ensureHealth,
   ensurePlaybookHookOwnership,
+  ensureWorkspaceAnalyses,
 ]
 
 function tableExists(db: Database.Database, table: string): boolean {
@@ -241,6 +242,41 @@ function ensurePlaybookHookOwnership(db: Database.Database): void {
     "owns_process",
     "INTEGER NOT NULL DEFAULT 1"
   )
+}
+
+// v64 (plan 106.11): a Feature's workspace setup analysis (findings, the
+// user's dismissals, results of checks that ran project code, and the exact
+// commands the user approved). One row per Feature; JSON columns.
+function ensureWorkspaceAnalyses(db: Database.Database): void {
+  if (!tableExists(db, "features")) return
+  // A prerelease build (the first 106.11 attempt) created this table with
+  // another shape. Its rows are derived analysis results, recomputed by the
+  // next Analyze, so replace the table rather than migrate them.
+  const expected = [
+    "feature_id",
+    "workspace_id",
+    "data",
+    "dismissals",
+    "check_results",
+    "approvals",
+    "updated_at",
+  ]
+  if (
+    tableExists(db, "workspace_analyses") &&
+    expected.some((column) => !columnExists(db, "workspace_analyses", column))
+  )
+    db.exec("DROP TABLE workspace_analyses;")
+  db.exec(`
+CREATE TABLE IF NOT EXISTS workspace_analyses (
+  feature_id     TEXT PRIMARY KEY REFERENCES features(id) ON DELETE CASCADE,
+  workspace_id   TEXT NOT NULL,
+  data           TEXT NOT NULL,
+  dismissals     TEXT NOT NULL DEFAULT '{}',
+  check_results  TEXT NOT NULL DEFAULT '{}',
+  approvals      TEXT NOT NULL DEFAULT '[]',
+  updated_at     INTEGER NOT NULL
+);
+`)
 }
 
 // v62 (plan 106.8): the progress/ceremony event stream and the health
@@ -553,6 +589,7 @@ export function runMigrations(
       ensureConversationNotes(db)
       ensureSeatMemory(db)
       ensureHealth(db)
+      ensureWorkspaceAnalyses(db)
       ensureMissionControlPlaybooks(db)
       ensurePlaybookHookOwnership(db)
       ensureMissionControlComms(db)

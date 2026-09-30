@@ -76,6 +76,10 @@ export interface HealthSnapshot {
   events: McEvent[]
   // Playbook runs and seat turns in flight.
   activeWorkers: number
+  // When the oldest running playbook run started. A stall is measured from
+  // there at the earliest: time spent waiting on the user with nothing
+  // running (an unapplied plan) isn't a stall.
+  workersSince?: number | null
   userStories: SnapshotUserStory[]
   maxAttempts: number
   // Oldest first; recent enough for the message detectors.
@@ -207,7 +211,8 @@ export function stalled(s: HealthSnapshot): Finding[] {
   const since = Math.max(
     progress?.createdAt ?? 0,
     resumed?.createdAt ?? 0,
-    s.feature.startedAt ?? 0
+    s.feature.startedAt ?? 0,
+    s.workersSince ?? 0
   )
   if (!since) return []
   const quiet = s.now - since
@@ -499,6 +504,43 @@ export function retryChurn(s: HealthSnapshot): Finding[] {
   return findings
 }
 
+// ── setup_failed (broken environment, plan 106.11) ─────────────────────────
+
+// The latest worktree setup in the window failed: stories there run without
+// the environment the workspace's setup steps were meant to give them.
+export function setupFailed(s: HealthSnapshot): Finding[] {
+  const setups = s.events.filter(
+    (e) => e.type === "worktree_setup_failed" || e.type === "worktree_setup_ok"
+  )
+  const last = setups.at(-1)
+  if (!last || last.type !== "worktree_setup_failed") return []
+  const failures = setups.filter((e) => e.type === "worktree_setup_failed")
+  const step = String(last.detail?.step ?? "a setup step")
+  const reason = String(last.detail?.error ?? "failed")
+  return [
+    {
+      detector: "setup_failed",
+      anchor: { kind: "feature", id: s.feature.id, label: "Workspace setup" },
+      severity: "warn",
+      summary: `The setup step "${step}" failed in a new worktree: ${clip(reason, 160)}`,
+      evidence: failures.slice(-EVIDENCE_MAX).map(
+        (e): HealthEvidence => ({
+          kind: "failure",
+          label: `${String(e.detail?.step ?? "Setup")}: ${clip(String(e.detail?.error ?? "failed"), 160)}${e.detail?.outputTail ? ` · ${clip(String(e.detail.outputTail), 120)}` : ""}`,
+          at: e.createdAt,
+          refId: e.refId ?? e.id,
+          ...(e.userStoryId
+            ? { link: { kind: "user_story" as const, id: e.userStoryId } }
+            : {}),
+        })
+      ),
+      latestAt: last.createdAt,
+      offenders: { addresses: [], userStoryIds: [] },
+      podKey: null,
+    },
+  ]
+}
+
 // refocus_ignored needs signal history (when a Refocus was requested and
 // delivered), so the monitor raises it; see refocusIgnored in monitor.ts.
 export const DETECTORS: ReadonlyArray<
@@ -511,6 +553,7 @@ export const DETECTORS: ReadonlyArray<
   ["scope_drift", scopeDrift],
   ["approval_by_proxy", approvalByProxy],
   ["retry_churn", retryChurn],
+  ["setup_failed", setupFailed],
 ]
 
 export function runDetectors(

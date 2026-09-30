@@ -75,7 +75,15 @@ import type {
   AgentTree,
   AgentFolder,
 } from "./agent/agents/types"
-import { listWorkspaces } from "./db/repositories/workspaces"
+import {
+  getWorkspace as getWorkspaceRow,
+  listWorkspaces,
+  updateWorkspace as updateWorkspaceRow,
+} from "./db/repositories/workspaces"
+import { getFeature as getFeatureRow } from "./db/repositories/features"
+import { WorkspaceAnalysisService } from "./mission-control/workspace-analysis"
+import { registerWorkspaceAnalysisHandlers } from "./ipc/workspace-analysis-handlers"
+import { resolveLlm, createCompletion } from "./agent/providers"
 import * as settingsService from "./settings/service"
 import { listWorkspaceFiles } from "./files/list"
 import { listWorkspaceDirectory } from "./files/tree"
@@ -292,6 +300,9 @@ function notifyUser(title: string, body: string): void {
 const milestoneNavigator: Navigator = new Navigator({
   startUserStory: (userStoryId, options) =>
     userStoryRunner.startUserStory(userStoryId, options),
+  isStartingUserStory: (userStoryId) => userStoryRunner.isStarting(userStoryId),
+  preparingUserStories: (featureId) =>
+    userStoryRunner.preparingUserStories(featureId),
   startHook: (input) => startHookRun(userStoryRunner, input),
   cancelPlaybookRun: (id) => userStoryRunner.cancelPlaybookRun(id),
   workspaceMode: (feature) => milestoneIntegration.workspaceMode(feature),
@@ -382,6 +393,65 @@ taskRunner.subscribe((_taskId, event) => {
 // recipe headless. Holds the runner reference so ensureRefresh can enqueue.
 const dashboardService = new DashboardService(taskRunner)
 const terminalService = new TerminalService()
+
+// Workspace setup findings (plan 106.11): Analyze workspace, the checklist's
+// fixes (run in the integrated terminal), and Start's preflight.
+const workspaceAnalysis = new WorkspaceAnalysisService({
+  terminals: terminalService,
+  getFeature: (id) => getFeatureRow(id) ?? undefined,
+  getWorkspace: getWorkspaceRow,
+  updateWorkspace: (id, patch) => updateWorkspaceRow(id, patch),
+  setOverlapPolicy: (featureId, value) =>
+    milestoneNavigator.setOverlapPolicy(featureId, value),
+  // One bounded, non-streaming call to the active provider; null when none
+  // is configured (the built-in checks still run).
+  complete: () => {
+    let resolved: ReturnType<typeof resolveLlm>
+    try {
+      resolved = resolveLlm()
+    } catch {
+      return null
+    }
+    const { client, model, apiMode } = resolved
+    return async (system, user, signal) => {
+      const res = (await createCompletion(
+        client,
+        model,
+        4000,
+        {
+          messages: [
+            { role: "system", content: system },
+            { role: "user", content: user },
+          ],
+        },
+        [undefined, { signal }],
+        apiMode
+      )) as { choices?: { message?: { content?: unknown } }[] }
+      const content = res.choices?.[0]?.message?.content
+      return typeof content === "string"
+        ? content
+        : Array.isArray(content)
+          ? content
+              .map((part) =>
+                typeof part === "object" && part && "text" in part
+                  ? String((part as { text: unknown }).text)
+                  : ""
+              )
+              .join("")
+          : ""
+    }
+  },
+  onChanged: (featureId) => {
+    const wc = mainWindow?.webContents
+    if (wc && !wc.isDestroyed())
+      wc.send("missionControl:analysis:changed", featureId)
+  },
+  onRunChanged: (run) => {
+    const wc = mainWindow?.webContents
+    if (wc && !wc.isDestroyed())
+      wc.send("missionControl:analysis:runChanged", run)
+  },
+})
 // The agent's browser (secondary window + WebContentsView driven over CDP).
 // Owned here so runChat can hand each live turn a signal-bound handle; disposed
 // on will-quit. Lazily creates its window on first agent use.
@@ -1594,8 +1664,10 @@ app.whenReady().then(async () => {
     milestoneIntegration,
     milestoneNavigator,
     healthMonitor,
-    (folder) => openInIde(folder, folder, settingsService.getIde().ide)
+    (folder) => openInIde(folder, folder, settingsService.getIde().ide),
+    workspaceAnalysis
   )
+  registerWorkspaceAnalysisHandlers(workspaceAnalysis)
   // Sweep orphaned Mission Control worktrees and resume merge queues. Queue
   // work (including merges the reconcile below enqueues) waits for the sweep.
   void milestoneIntegration

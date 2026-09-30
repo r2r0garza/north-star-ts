@@ -32,6 +32,7 @@ import { startHookRun } from "../mission-control/hook-runner"
 import type { MilestoneIntegration } from "../mission-control/integration"
 import type { Navigator } from "../mission-control/navigator"
 import type { HealthMonitor } from "../mission-control/health/monitor"
+import type { WorkspaceAnalysisService } from "../mission-control/workspace-analysis"
 import {
   applyProposal,
   checkProposal,
@@ -72,7 +73,8 @@ export function registerMissionControlHandlers(
   navigator: Navigator,
   health: HealthMonitor,
   // Open a folder in the user's IDE (settings), for user story worktrees.
-  openFolder: (folder: string) => Promise<string>
+  openFolder: (folder: string) => Promise<string>,
+  analysis: WorkspaceAnalysisService
 ): void {
   const graphOf = (id: string) => {
     const graph = features.getFeatureGraph(id)
@@ -82,18 +84,52 @@ export function registerMissionControlHandlers(
 
   // The Navigator and drive controls (plan 106.6). Budgets and the drive
   // mode are the user's alone: no tool reaches these handlers.
+  // Start runs the workspace preflight first (plan 106.11): it applies what's
+  // safe and stops on blockers, unless the user chose to start anyway. The
+  // feature activates, and the rig is snapshotted, only after it passes.
+  // `reviewed`: the user already chose what to do about the setup that
+  // saves commands (Apply and start, or Start without them).
+  const preflight = async (id: string, skip: boolean, reviewed: boolean) => {
+    const none = [] as string[]
+    if (skip)
+      return { blocked: false, applied: none, blockers: none, review: none }
+    const result = await analysis.preflight(id)
+    return {
+      blocked: !result.ok,
+      applied: result.applied,
+      blockers: result.blockers,
+      review: result.ok && !reviewed ? result.review : none,
+    }
+  }
   ipcMain.handle(
     "missionControl:drive:start",
     async (
       _event,
       id: string,
-      options: { mode: DriveMode; autoApplyPlan?: boolean }
+      options: {
+        mode: DriveMode
+        autoApplyPlan?: boolean
+        skipPreflight?: boolean
+        reviewed?: boolean
+      }
     ) => {
+      const checked = await preflight(
+        id,
+        options?.skipPreflight === true,
+        options?.reviewed === true
+      )
+      // Blockers stop Start; unreviewed setup pauses it for one review.
+      if (checked.blocked || checked.review.length)
+        return { graph: graphOf(id), planningError: null, preflight: checked }
       const started = await navigator.startDrive(id, {
         mode: options?.mode ?? "manual",
         autoApplyPlan: options?.autoApplyPlan === true,
       })
-      return { graph: graphOf(id), planningError: started.planningError }
+      return {
+        graph: graphOf(id),
+        planningError: started.planningError,
+        preflight: checked,
+      }
     }
   )
   ipcMain.handle(
@@ -531,6 +567,12 @@ export function registerMissionControlHandlers(
     async (_event, id: string) => {
       const feature = features.getFeature(id)
       if (!feature) throw new Error(`Feature not found: ${id}`)
+      // No review sheet on this path: start with what's safe.
+      const checked = await preflight(id, false, true)
+      if (checked.blocked)
+        throw new Error(
+          "The workspace needs your input before this feature can start. Open the feature to see what to fix."
+        )
       await navigator.startDrive(id, {
         mode: feature.driveMode,
         autoApplyPlan: feature.drive.autoApplyPlan,

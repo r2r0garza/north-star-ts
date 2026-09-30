@@ -3,6 +3,7 @@ import { readFile, realpath } from "fs/promises"
 import path from "path"
 import type { GeneratedFilesRule } from "../db/types"
 import { promisify } from "util"
+import { runLongCommand } from "./long-command"
 import {
   addWorktree,
   branchCheckout,
@@ -309,16 +310,18 @@ export interface RegenerateSpec {
   subpath: string
   // Runs a rule's command; replaced in tests.
   run?: (cwd: string, command: string) => Promise<void>
+  // The environment commands run with: the user's tool PATH plus the main
+  // checkout's project bins (.venv/bin, node_modules/.bin), since a scratch
+  // merge checkout has no environment of its own (plan 106.11).
+  env?: Record<string, string>
 }
 
-const REGENERATE_TIMEOUT_MS = 5 * 60_000
-
-async function runShell(cwd: string, command: string): Promise<void> {
-  await execAsync(command, {
-    cwd,
-    timeout: REGENERATE_TIMEOUT_MS,
-    maxBuffer: 16 * 1024 * 1024,
-  })
+// A code generator may be slow; like setup steps, it's stopped only when it
+// goes quiet for a long time (see long-command.ts).
+function shellWith(env: Record<string, string> | undefined) {
+  return async (cwd: string, command: string): Promise<void> => {
+    await runLongCommand(command, { cwd, ...(env ? { env } : {}) })
+  }
 }
 
 // The rules that cover every one of `files` (repository-relative), or null
@@ -356,7 +359,7 @@ async function regenerateAndCommit(
   await runGit(checkout, ["checkout", "--ours", "--", ...files])
   await runGit(checkout, ["add", "--", ...files])
   const cwd = path.join(checkout, spec.subpath)
-  const run = spec.run ?? runShell
+  const run = spec.run ?? shellWith(spec.env)
   // Stage whatever a rule's command rewrote. A glob the command left
   // untouched matches nothing; that's fine.
   const stage = async (rule: GeneratedFilesRule) => {

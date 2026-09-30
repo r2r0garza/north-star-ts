@@ -65,8 +65,35 @@ export interface GeneratedFilesRule {
 export interface WorktreeSetup {
   // Workspace-relative paths symlinked from the main checkout, e.g. ".venv".
   linkPaths: string[]
-  // Run in each new worktree from the workspace root, e.g. an install step.
+  // Run in order in each new worktree, e.g. an install step per project root
+  // (plan 106.11). A failed step stops the ones after it.
+  steps: WorktreeSetupStep[]
+}
+
+export interface WorktreeSetupStep {
+  // Stable, so workspace analysis findings can refer to the step.
+  id: string
+  label: string
+  // One command, run with a shell.
   command: string
+  // Workspace-relative directory to run in; "" is the workspace root.
+  cwd: string
+  // Who wrote it: the user, or an applied workspace-analysis finding.
+  source: "user" | "analysis"
+  findingKey?: string
+  // "python-shared-venv": a built-in step (plan 106.11). The worktree gets a
+  // thin venv of its own that reuses the main checkout's installed packages
+  // and puts the worktree's own source first, so there's nothing to download
+  // and imports get the story's code, not the main checkout's. `command` is
+  // then only a description.
+  kind?: "command" | "python-shared-venv"
+  // For python-shared-venv: the venv directory (relative to cwd), the full
+  // setup to run when the main checkout has no usable venv, and the install
+  // to run on top when the worktree's dependencies differ from the main
+  // checkout's (a merged story added one).
+  venv?: string
+  fallback?: Array<{ label: string; command: string }>
+  refresh?: Array<{ label: string; command: string }>
 }
 
 export interface Workspace {

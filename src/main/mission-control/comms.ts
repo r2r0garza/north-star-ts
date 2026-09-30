@@ -736,7 +736,12 @@ export function commsContextSection(
     )
     if (turn.profile === "consult")
       lines.push(
-        "This turn was started by incoming mail, so you can read and search but not change the workspace. Answer, coordinate, or escalate; do the work itself in your playbook steps."
+        "This turn was started by incoming mail, so you can read and search but not change the workspace. Answer, coordinate, or escalate; do the work itself in your playbook steps.",
+        // nav-test-16: a builder and QA reported "no execution tools" from
+        // mail turns and the lead escalated it to the user while the story's
+        // own Test step was already running pytest.
+        "You can't run commands or tests, or edit files, in this turn. That's expected, not a blocker: don't report missing tools and don't escalate them. A running story's own Build and Test steps make the edits and run the tests; reply with what that step should do, and stop.",
+        "The same holds for your teammates' mail turns: verification comes from a story's Test step as a recorded proof. Don't treat \"couldn't run tests from a mail turn\" as a reason to escalate; wait for the proof."
       )
   }
   return {
