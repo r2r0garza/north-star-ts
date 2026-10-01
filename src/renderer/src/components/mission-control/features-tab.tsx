@@ -34,6 +34,16 @@ import { Input } from "@/components/ui/input"
 import { Switch } from "@/components/ui/switch"
 import { Label } from "@/components/ui/label"
 import {
+  Combobox,
+  ComboboxContent,
+  ComboboxEmpty,
+  ComboboxInput,
+  ComboboxItem,
+  ComboboxList,
+  ComboboxTrigger,
+  ComboboxValue,
+} from "@/components/ui/combobox"
+import {
   Select,
   SelectContent,
   SelectItem,
@@ -64,6 +74,7 @@ import {
   WorkspaceChecklist,
 } from "./workspace-checklist"
 import { FeaturesProjectRail } from "./features-project-rail"
+import { WorkspaceLabel } from "@/components/workspace-label"
 import {
   ALL_FEATURES,
   filterFeatures,
@@ -1352,7 +1363,7 @@ function FeatureView({
                       <SelectContent>
                         {workspaces.map((workspace) => (
                           <SelectItem key={workspace.id} value={workspace.id}>
-                            {workspace.name || workspace.path}
+                            <WorkspaceLabel workspace={workspace} />
                           </SelectItem>
                         ))}
                       </SelectContent>
@@ -1724,6 +1735,17 @@ export function FeaturesTab({
   const [rigId, setRigId] = useState("")
   const [workspaceId, setWorkspaceId] = useState("")
   const [projectId, setProjectId] = useState("none")
+  const createDialogRef = useRef<HTMLDivElement | null>(null)
+  const rigItems = rigs.map((rig) => ({ value: rig.id, label: rig.name }))
+  const projectItems = [
+    { value: "none", label: "No project" },
+    ...projects.map((project) => ({ value: project.id, label: project.name })),
+  ]
+  const workspaceItems = workspaces.map((workspace) => ({
+    value: workspace.id,
+    label: `${workspace.name || ""} ${workspace.path}`.trim(),
+    workspace,
+  }))
   const reload = async () => {
     const [nextItems, nextWorkspaces, nextProjects] = await Promise.all([
       window.cowork.missionControl.features.list(),
@@ -2020,6 +2042,7 @@ export function FeaturesTab({
       </div>
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
         <DialogContent
+          ref={createDialogRef}
           className="sm:max-w-xl"
           onBackdropClick={() => setCreateOpen(false)}
           onInteractOutside={(event) => event.preventDefault()}
@@ -2062,37 +2085,71 @@ export function FeaturesTab({
               <Label>
                 Rig <span className="text-destructive">*</span>
               </Label>
-              <Select value={rigId} onValueChange={setRigId}>
-                <SelectTrigger className="text-foreground [&>svg]:text-foreground">
-                  <SelectValue
-                    className="text-foreground"
-                    placeholder="Choose a rig"
+              <Combobox
+                items={rigItems}
+                value={rigItems.find((item) => item.value === rigId) ?? null}
+                isItemEqualToValue={(a, b) => a?.value === b?.value}
+                onValueChange={(item) => setRigId(item?.value ?? "")}
+              >
+                <ComboboxTrigger className="flex h-8 w-full items-center justify-between gap-2 rounded-lg border border-input bg-transparent px-2.5 text-left text-sm transition-colors outline-none hover:bg-accent focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50">
+                  <ComboboxValue placeholder="Choose a rig">
+                    {(item: (typeof rigItems)[number] | null) => (
+                      <span className="truncate">
+                        {item?.label ?? "Choose a rig"}
+                      </span>
+                    )}
+                  </ComboboxValue>
+                </ComboboxTrigger>
+                <ComboboxContent portalContainer={createDialogRef}>
+                  <ComboboxInput
+                    placeholder="Search rigs…"
+                    showTrigger={false}
                   />
-                </SelectTrigger>
-                <SelectContent>
-                  {rigs.map((rig) => (
-                    <SelectItem key={rig.id} value={rig.id}>
-                      {rig.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+                  <ComboboxEmpty>No rigs found.</ComboboxEmpty>
+                  <ComboboxList>
+                    {(item: (typeof rigItems)[number]) => (
+                      <ComboboxItem key={item.value} value={item}>
+                        <span className="truncate">{item.label}</span>
+                      </ComboboxItem>
+                    )}
+                  </ComboboxList>
+                </ComboboxContent>
+              </Combobox>
             </div>
             <div className="space-y-1">
               <Label>Linked project (optional)</Label>
-              <Select value={projectId} onValueChange={setProjectId}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="none">No project</SelectItem>
-                  {projects.map((project) => (
-                    <SelectItem key={project.id} value={project.id}>
-                      {project.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <Combobox
+                items={projectItems}
+                value={
+                  projectItems.find((item) => item.value === projectId) ?? null
+                }
+                isItemEqualToValue={(a, b) => a?.value === b?.value}
+                onValueChange={(item) => setProjectId(item?.value ?? "none")}
+              >
+                <ComboboxTrigger className="flex h-8 w-full items-center justify-between gap-2 rounded-lg border border-input bg-transparent px-2.5 text-left text-sm transition-colors outline-none hover:bg-accent focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50">
+                  <ComboboxValue>
+                    {(item: (typeof projectItems)[number] | null) => (
+                      <span className="truncate">
+                        {item?.label ?? "No project"}
+                      </span>
+                    )}
+                  </ComboboxValue>
+                </ComboboxTrigger>
+                <ComboboxContent portalContainer={createDialogRef}>
+                  <ComboboxInput
+                    placeholder="Search projects…"
+                    showTrigger={false}
+                  />
+                  <ComboboxEmpty>No projects found.</ComboboxEmpty>
+                  <ComboboxList>
+                    {(item: (typeof projectItems)[number]) => (
+                      <ComboboxItem key={item.value} value={item}>
+                        <span className="truncate">{item.label}</span>
+                      </ComboboxItem>
+                    )}
+                  </ComboboxList>
+                </ComboboxContent>
+              </Combobox>
             </div>
             {projectId === "none" && (
               <div className="space-y-1">
@@ -2100,21 +2157,44 @@ export function FeaturesTab({
                   Workspace <span className="text-destructive">*</span>
                 </Label>
                 <div className="flex gap-2">
-                  <Select value={workspaceId} onValueChange={setWorkspaceId}>
-                    <SelectTrigger className="min-w-0 flex-1 text-foreground [&>svg]:text-foreground">
-                      <SelectValue
-                        className="text-foreground"
-                        placeholder="Choose a workspace"
+                  <Combobox
+                    items={workspaceItems}
+                    value={
+                      workspaceItems.find(
+                        (item) => item.value === workspaceId
+                      ) ?? null
+                    }
+                    isItemEqualToValue={(a, b) => a?.value === b?.value}
+                    onValueChange={(item) => setWorkspaceId(item?.value ?? "")}
+                  >
+                    <ComboboxTrigger className="flex h-8 min-w-0 flex-1 items-center justify-between gap-2 rounded-lg border border-input bg-transparent px-2.5 text-left text-sm transition-colors outline-none hover:bg-accent focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50">
+                      <ComboboxValue placeholder="Choose a workspace">
+                        {(item: (typeof workspaceItems)[number] | null) => (
+                          <span className="min-w-0 truncate">
+                            {item ? (
+                              <WorkspaceLabel workspace={item.workspace} />
+                            ) : (
+                              "Choose a workspace"
+                            )}
+                          </span>
+                        )}
+                      </ComboboxValue>
+                    </ComboboxTrigger>
+                    <ComboboxContent portalContainer={createDialogRef}>
+                      <ComboboxInput
+                        placeholder="Search workspaces…"
+                        showTrigger={false}
                       />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {workspaces.map((workspace) => (
-                        <SelectItem key={workspace.id} value={workspace.id}>
-                          {workspace.name || workspace.path}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                      <ComboboxEmpty>No workspaces found.</ComboboxEmpty>
+                      <ComboboxList>
+                        {(item: (typeof workspaceItems)[number]) => (
+                          <ComboboxItem key={item.value} value={item}>
+                            <WorkspaceLabel workspace={item.workspace} />
+                          </ComboboxItem>
+                        )}
+                      </ComboboxList>
+                    </ComboboxContent>
+                  </Combobox>
                   <Button
                     type="button"
                     variant="outline"

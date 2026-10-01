@@ -39,6 +39,7 @@ import { ScreenHeader } from "@/components/screen-header"
 import { SkillUploadModal } from "@/components/skill-upload-modal"
 import { toast } from "sonner"
 import type { SkillFolder, SkillMetadata, SkillTree } from "@/types"
+import { WorkspaceSectionLabel } from "@/components/workspace-label"
 
 // The Skills view — an in-panel destination (rendered in the center region of
 // the app shell, beside the still-visible sidebar) for browsing, editing,
@@ -809,7 +810,7 @@ function WorkspaceSection({
           className="group/ws flex w-full items-center gap-1.5 rounded-md px-2 py-2 text-left hover:bg-accent disabled:hover:bg-transparent"
         >
           <ChevronRight className="size-4 shrink-0 text-muted-foreground transition-transform group-data-[state=open]/ws:rotate-90" />
-          <span className="truncate font-medium">{ws.label}</span>
+          <WorkspaceSectionLabel label={ws.label} path={ws.path} />
           <span className="ml-auto shrink-0 text-xs text-muted-foreground">
             {wsSkills.length}
           </span>

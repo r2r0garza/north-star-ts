@@ -32,6 +32,7 @@ import type {
   McpTransport,
   McpTree,
 } from "@/types"
+import { WorkspaceSectionLabel } from "@/components/workspace-label"
 
 // The MCP view — an in-panel destination (center region, beside the sidebar) for
 // browsing, editing, creating, and deleting MCP servers. DEFINITIONS live in
@@ -447,7 +448,7 @@ function ServerBrowser({
             ) : (
               tree.workspaces.map((ws) => (
                 <div key={ws.path} className="mb-6">
-                  <h3 className="mb-2 text-sm font-medium">{ws.label}</h3>
+                  <WorkspaceSectionLabel label={ws.label} path={ws.path} />
                   <FolderGrid
                     folders={ws.folders}
                     query={query}
