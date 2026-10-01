@@ -175,6 +175,7 @@ import {
   startPlanMaintenance,
   stopPlanMaintenance,
 } from "./agent/tools/plan-file"
+import { ensureChatVenv } from "./python/chat-venv"
 
 // The durable task runner — a singleton owned by the main process. Started in
 // app.whenReady (after the DB handlers register) and stopped on will-quit.
@@ -1709,6 +1710,13 @@ app.whenReady().then(async () => {
   startMemoryMaintenance()
   await startPlanMaintenance()
   createWindow()
+  // Interactive chat's Python venv (~/.<system-slug>/venv): check or create it in
+  // the background so launch never waits on it. Chat turns await the same
+  // promise, so the first turn can't race the creation.
+  void ensureChatVenv().then((status) => {
+    if (status.state === "unavailable")
+      console.warn(`[python] chat venv unavailable: ${status.reason}`)
+  })
 
   app.on("activate", () => {
     // macOS: re-create a window when the dock icon is clicked and none are open.

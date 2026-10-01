@@ -12,16 +12,19 @@ import {
   stat,
   readdir,
   open as fsOpen,
+  realpath,
 } from "fs/promises"
 import type { Dir } from "fs"
 import type { FileHandle } from "fs/promises"
 import { tmpdir } from "os"
-import { join } from "path"
+import { delimiter, join } from "path"
 import {
+  applyEnvOverlay,
   LocalEnvironment,
   materializePythonHeredocCommand,
   normalizeAsarUnpackedExecutablePath,
   normalizeHostShellCommand,
+  reassertPathPrepend,
 } from "./local"
 import { runToolCallBatches } from "../tool-batch-scheduler"
 import { TOOL_EFFECTS } from "../tools/types"
@@ -760,6 +763,42 @@ describe("LocalEnvironment file ops", () => {
       ).toThrow("outside the workspace")
     }
   )
+
+  it.skipIf(!localProfileCapabilities("workspace-write").supported)(
+    "keeps readOnlyPaths unwritable to commands even inside the workspace",
+    async () => {
+      // realpath: Seatbelt matches resolved paths (/var -> /private/var).
+      const realWorkspace = await realpath(workspace)
+      const skillRoot = join(realWorkspace, ".github", "skills", "demo")
+      await mkdir(skillRoot, { recursive: true })
+      await writeFile(join(skillRoot, "tool.sh"), "echo skill-ran\n")
+      const sandboxed = new LocalEnvironment(realWorkspace, "workspace-write")
+      const handle = await sandboxed.spawnCommand(
+        [
+          `sh '${skillRoot}/tool.sh'`,
+          "echo ws > ws.txt && echo ws-write-ok",
+          `echo x > '${skillRoot}/tool.sh' || echo skill-write-denied`,
+          `touch '${skillRoot}/new.txt' || echo skill-create-denied`,
+        ].join("; "),
+        { cwd: realWorkspace, tty: false, readOnlyPaths: [skillRoot] }
+      )
+      const out = await new Promise<string>((resolve) => {
+        let text = ""
+        handle.onData((chunk) => {
+          text += chunk.data.toString("utf8")
+        })
+        handle.onExit(() => resolve(text))
+      })
+
+      expect(out).toContain("skill-ran")
+      expect(out).toContain("ws-write-ok")
+      expect(out).toContain("skill-write-denied")
+      expect(out).toContain("skill-create-denied")
+      expect(await readFile(join(skillRoot, "tool.sh"), "utf8")).toBe(
+        "echo skill-ran\n"
+      )
+    }
+  )
 })
 
 describe("Local runtime profiles", () => {
@@ -778,6 +817,19 @@ describe("Local runtime profiles", () => {
     expect(profile).toContain("(deny network*)")
     expect(profile).toContain("(deny file-write*)")
     expect(profile).not.toContain("allow file-write")
+  })
+
+  it("appends readOnlyPaths denies after the workspace-write allows", () => {
+    const profile = buildDarwinSandboxProfile("workspace-write", "/repo", [
+      '/repo/.github/skills/demo "x"',
+    ])
+    const deny =
+      '(deny file-write* (subpath "/repo/.github/skills/demo \\"x\\""))'
+    expect(profile).toContain(deny)
+    // Seatbelt applies the last matching rule, so the deny must follow the allow.
+    expect(profile.indexOf(deny)).toBeGreaterThan(
+      profile.indexOf('(allow file-write* (subpath "/repo"))')
+    )
   })
 
   it("builds a macOS workspace-write profile limited to workspace/temp writes", () => {
@@ -1489,3 +1541,40 @@ describe.skipIf(process.platform === "win32")(
     )
   }
 )
+
+describe("chat venv env overlay", () => {
+  const overlay = { prependPath: ["/venv/bin"], vars: { VIRTUAL_ENV: "/venv" } }
+
+  it("puts the overlay dirs first and sets its vars", () => {
+    const env = applyEnvOverlay(
+      { PATH: ["/usr/bin", "/venv/bin", "/bin"].join(delimiter), HOME: "/h" },
+      overlay
+    )
+    expect(env.PATH).toBe(["/venv/bin", "/usr/bin", "/bin"].join(delimiter))
+    expect(env.VIRTUAL_ENV).toBe("/venv")
+    expect(env.HOME).toBe("/h")
+  })
+
+  it("leaves the environment alone without an overlay", () => {
+    const env = { PATH: "/usr/bin" }
+    expect(applyEnvOverlay(env, undefined)).toBe(env)
+  })
+
+  it("re-prepends PATH inside login-shell commands", () => {
+    expect(
+      reassertPathPrepend("pip install x", overlay, "darwin", "/bin/zsh")
+    ).toBe(`export PATH='/venv/bin':"$PATH"; pip install x`)
+    expect(
+      reassertPathPrepend(
+        "pip install x",
+        overlay,
+        "darwin",
+        "/opt/homebrew/bin/fish"
+      )
+    ).toBe(`set -gx PATH '/venv/bin' $PATH; pip install x`)
+    expect(reassertPathPrepend("pip install x", overlay, "win32")).toBe(
+      "pip install x"
+    )
+    expect(reassertPathPrepend("ls", undefined, "darwin")).toBe("ls")
+  })
+})

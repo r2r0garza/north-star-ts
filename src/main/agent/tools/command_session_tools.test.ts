@@ -1,6 +1,15 @@
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { tmpdir } from "os"
-import { access, mkdtemp, readFile, rm, symlink } from "fs/promises"
+import {
+  access,
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from "fs/promises"
 import { isAbsolute, join, relative, resolve } from "path"
 import { EventEmitter } from "events"
 import { PassThrough } from "stream"
@@ -396,6 +405,147 @@ describe("command session tools", () => {
       }
     }
   )
+
+  describe("skill:// resources", () => {
+    let skillRoot: string
+    let realSkillRoot: string
+
+    beforeEach(async () => {
+      skillRoot = await mkdtemp(join(tmpdir(), "cmd-skill-"))
+      realSkillRoot = await realpath(skillRoot)
+      await mkdir(join(skillRoot, "scripts"))
+      await writeFile(
+        join(skillRoot, "scripts", "hello.js"),
+        "process.stdout.write('hello ' + process.argv[2])\n"
+      )
+    })
+
+    afterEach(async () => {
+      await rm(skillRoot, { recursive: true, force: true })
+    })
+
+    it("runs an activated skill's bundled script through exec_command and run_shell_tool", async () => {
+      const script = join(realSkillRoot, "scripts", "hello.js")
+      const seen: Array<Record<string, unknown> | undefined> = []
+      const context = ctx({
+        skillResourceRoots: { demo: skillRoot },
+        gate: async (action) => {
+          seen.push(action.detail)
+          return "approved"
+        },
+      })
+      const command = `${JSON.stringify(process.execPath)} skill://demo/scripts/hello.js world`
+
+      const exec = parseResult(
+        await execCommandTool.execute({ command }, context)
+      )
+      const compat = await runShellTool.execute({ command }, context)
+
+      expect(exec.output).toBe("hello world")
+      expect(compat).toContain("hello world")
+      // The gate approves the command that actually runs, not the URI form.
+      expect(seen[0]?.command).toContain(`'${script}'`)
+      expect(seen[0]?.command).not.toContain("skill://")
+      expect(seen[0]?.skillResources).toEqual([
+        { uri: "skill://demo/scripts/hello.js", path: script },
+      ])
+      expect(seen[0]?.readOnlyRoots).toEqual(
+        expect.arrayContaining([realSkillRoot])
+      )
+    })
+
+    it("refuses an inactive or escaping skill URI before approval", async () => {
+      let gateCalls = 0
+      for (const command of [
+        "cat skill://other/SKILL.md",
+        "cat skill://demo/../secret",
+      ]) {
+        const result = await execCommandTool.execute(
+          { command },
+          ctx({
+            skillResourceRoots: { demo: skillRoot },
+            gate: async () => {
+              gateCalls += 1
+              return "approved"
+            },
+          })
+        )
+        expect(result, command).toContain("ERROR[skill_resource]")
+      }
+      expect(gateCalls).toBe(0)
+      expect(testCommandSessions.size).toBe(0)
+    })
+
+    it("refuses skill:// commands in a container backend", async () => {
+      const env = fakeEnv([])
+      let gateCalls = 0
+      const result = await execCommandTool.execute(
+        { command: "python3 skill://demo/scripts/hello.js" },
+        ctx({
+          env,
+          skillResourceRoots: { demo: skillRoot },
+          gate: async () => {
+            gateCalls += 1
+            return "approved"
+          },
+        })
+      )
+
+      expect(result).toContain("ERROR[skill_resource]")
+      expect(result).toContain("container backend")
+      expect(gateCalls).toBe(0)
+      expect(env.spawnedCwds).toEqual([])
+    })
+
+    it.skipIf(process.platform === "win32")(
+      "refuses when a resource is swapped for an escaping symlink during approval",
+      async () => {
+        const outside = await mkdtemp(join(tmpdir(), "cmd-skill-outside-"))
+        try {
+          await writeFile(join(outside, "evil.js"), "")
+          const result = await execCommandTool.execute(
+            {
+              command: `${JSON.stringify(process.execPath)} skill://demo/scripts/hello.js`,
+            },
+            ctx({
+              skillResourceRoots: { demo: skillRoot },
+              gate: async () => {
+                await rm(join(skillRoot, "scripts"), { recursive: true })
+                await symlink(outside, join(skillRoot, "scripts"))
+                return "approved"
+              },
+            })
+          )
+
+          expect(result).toContain("ERROR[skill_resource]")
+          expect(testCommandSessions.size).toBe(0)
+        } finally {
+          await rm(outside, { recursive: true, force: true })
+        }
+      }
+    )
+
+    it("passes activated skill roots to the spawn as read-only paths", async () => {
+      let spawnOpts: SpawnCommandOptions | undefined
+      const env = {
+        ...fakeEnv([]),
+        async spawnCommand(_command: string, opts: SpawnCommandOptions) {
+          spawnOpts = opts
+          const handle = new FakeCommandHandle([])
+          handle.start()
+          return handle
+        },
+      } as Environment
+      await execCommandTool.execute(
+        { command: "echo hi" },
+        ctx({ env, skillResourceRoots: { demo: skillRoot } })
+      )
+
+      expect(spawnOpts?.readOnlyPaths).toEqual(
+        expect.arrayContaining([realSkillRoot])
+      )
+    })
+  })
 
   it("materializes Windows Python heredocs for exec_command sessions and cleans them up", async () => {
     const workspace = await mkdtemp(join(tmpdir(), "cmd-heredoc-ws-"))

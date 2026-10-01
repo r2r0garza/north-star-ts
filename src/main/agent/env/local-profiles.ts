@@ -62,9 +62,15 @@ export function assertLocalProfileSupported(
 
 export function buildDarwinSandboxProfile(
   profile: Exclude<LocalRuntimeProfile, "host-access">,
-  workspace: string
+  workspace: string,
+  readOnlyPaths: string[] = []
 ): string {
   const escapedWorkspace = escapeSeatbeltString(workspace)
+  // Seatbelt applies the last matching rule, so these denies come after the
+  // workspace/temp allows and win even for a skill root inside the workspace.
+  const readOnlyDenies = readOnlyPaths.map(
+    (path) => `(deny file-write* (subpath "${escapeSeatbeltString(path)}"))`
+  )
   if (profile === "read-only") {
     return [
       "(version 1)",
@@ -82,6 +88,7 @@ export function buildDarwinSandboxProfile(
     `(allow file-write* (subpath "/private/tmp"))`,
     `(allow file-write* (subpath "/tmp"))`,
     `(allow file-write* (subpath "/private/var/folders"))`,
+    ...readOnlyDenies,
   ].join("\n")
 }
 

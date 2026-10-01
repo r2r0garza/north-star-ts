@@ -23,6 +23,15 @@ vi.mock("electron", () => ({
   },
 }))
 vi.mock("./memory/service", () => ({ recordMemoryTurn: vi.fn(async () => {}) }))
+// Chat Python venv: no real interpreter in tests. Only turns that set
+// chatPythonVenv ever consult it.
+vi.mock("../python/chat-venv", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../python/chat-venv")>()),
+  resolveChatVenvOverlay: async () => ({
+    prependPath: ["/venv/bin"],
+    vars: { VIRTUAL_ENV: "/venv" },
+  }),
+}))
 
 type CompletionRequest = {
   messages: any[]
@@ -1367,6 +1376,87 @@ describe.skipIf(!sqliteLoads)("agent loop tool-error feedback", () => {
       ).toEqual({ content: "Done." })
     }
   )
+
+  it.each([
+    { label: "passes a chat's Python venv to its subagents", chat: true },
+    { label: "keeps the venv from subagents of other runs", chat: false },
+  ])("$label", async ({ chat }) => {
+    const workspace = await makeWorkspace()
+    const agentsDir = join(workspace, ".cowork", "agents")
+    await mkdir(agentsDir, { recursive: true })
+    await writeFile(
+      join(agentsDir, "parent.agent.md"),
+      [
+        "---",
+        "name: parent",
+        "description: Delegates work.",
+        "tools: [agent]",
+        "children: [child]",
+        "user-invocable: true",
+        "---",
+        "Delegate suitable work.",
+      ].join("\n"),
+      "utf-8"
+    )
+    await writeFile(
+      join(agentsDir, "child.agent.md"),
+      [
+        "---",
+        "name: child",
+        "description: Handles delegated work.",
+        "tools: [read]",
+        "---",
+        "Read files and report back.",
+      ].join("\n"),
+      "utf-8"
+    )
+    const conversation = createConversation({
+      mode: "interactive",
+      agentName: "parent",
+    })
+    // Record rather than assert inside the callbacks: a throw in the child's
+    // completion is caught by the child loop and would not fail the test.
+    const sawVenvNote: boolean[] = []
+    const recordVenvNote = (request: CompletionRequest) =>
+      sawVenvNote.push(
+        (
+          request.messages.find((message) => message.role === "system")
+            ?.content as string
+        ).includes("## Python packages")
+      )
+
+    scriptedCompletions.push((request) => {
+      recordVenvNote(request)
+      return streamToolCalls([
+        {
+          id: "spawn-1",
+          name: "spawn_subagent",
+          arguments: JSON.stringify({ agent_name: "child", prompt: "Go." }),
+        },
+      ])
+    })
+    scriptedCompletions.push((request) => {
+      recordVenvNote(request)
+      return streamText("Child done.")
+    })
+    scriptedCompletions.push(() => streamText("Done."))
+
+    expect(
+      await runAgentLoop({
+        conversationId: conversation.id,
+        workspace,
+        agentDir: workspace,
+        userMessage: "Handle this task.",
+        abort: new AbortController(),
+        conversationSubagentsEnabled: true,
+        chatPythonVenv: chat,
+        onEvent: () => {},
+      })
+    ).toEqual({ content: "Done." })
+    expect(scriptedCompletions).toHaveLength(0)
+    // [parent's first request, child's request]
+    expect(sawVenvNote).toEqual([chat, chat])
+  })
 
   // Plan 033.4 offering policy: dashboard_read rides with dashboard_write in
   // non-Chat modes but stays offered in plan mode; custom agents opt in through

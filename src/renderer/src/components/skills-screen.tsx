@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
 import type { ReactNode } from "react"
 import {
-  ArrowLeft,
   ChevronRight,
   FolderOpen,
   Plus,
@@ -36,6 +35,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Markdown } from "@/components/markdown"
+import { ScreenHeader } from "@/components/screen-header"
 import { SkillUploadModal } from "@/components/skill-upload-modal"
 import { toast } from "sonner"
 import type { SkillFolder, SkillMetadata, SkillTree } from "@/types"
@@ -344,28 +344,24 @@ export function SkillsScreen({ onClose }: { onClose: () => void }) {
       data-slot="skills-screen"
       className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background pt-11 text-sm text-foreground"
     >
-      {/* Header row (matches the app's h-11 top bar; the Shell drag bar sits
-          above via pt-11). */}
-      <div className="flex h-11 shrink-0 items-center justify-between border-b px-4">
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label="Close skills"
-          className="group/back flex items-center gap-2 rounded-md text-left"
-        >
-          <ArrowLeft className="size-4 text-muted-foreground transition-colors group-hover/back:text-foreground" />
-          <h1 className="font-heading text-base font-medium">Skills</h1>
-        </button>
-        <Button variant="ghost" size="icon-sm" onClick={onClose}>
-          <XIcon />
-          <span className="sr-only">Close</span>
-        </Button>
-      </div>
+      <ScreenHeader
+        title={
+          mode.kind === "create"
+            ? "New skill"
+            : selected
+              ? selected.name
+              : "Skills"
+        }
+        onBack={mode.kind === "create" || selected ? backToCards : onClose}
+        backLabel={
+          mode.kind === "create" || selected ? "Back to skills" : "Close skills"
+        }
+        onClose={onClose}
+      />
 
       {mode.kind === "create" ? (
         <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-          <div className="flex h-12 shrink-0 items-center justify-between gap-2 border-b px-4">
-            <p className="truncate font-medium">New skill</p>
+          <div className="flex h-12 shrink-0 items-center justify-end gap-2 border-b px-4">
             <div className="flex shrink-0 items-center gap-2">
               <Button
                 variant="outline"
@@ -446,22 +442,9 @@ export function SkillsScreen({ onClose }: { onClose: () => void }) {
       ) : selected ? (
         <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
           <div className="flex h-12 shrink-0 items-center justify-between gap-2 border-b px-4">
-            <div className="flex min-w-0 flex-1 items-center gap-2">
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                onClick={backToCards}
-                aria-label="Back to skills"
-              >
-                <ArrowLeft />
-              </Button>
-              <div className="min-w-0">
-                <p className="truncate font-medium">{selected.name}</p>
-                <p className="truncate font-mono text-xs text-muted-foreground">
-                  {selected.path}
-                </p>
-              </div>
-            </div>
+            <p className="min-w-0 flex-1 truncate font-mono text-xs text-muted-foreground">
+              {selected.path}
+            </p>
             <div className="flex shrink-0 items-center gap-2">
               {mode.kind === "edit" ? (
                 <>

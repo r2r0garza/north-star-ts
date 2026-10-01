@@ -41,6 +41,10 @@ interface ShellActionOptions extends AnalyzeOptions {
   tool?: string
   platform?: NodeJS.Platform
   runtimeProfile?: string
+  // Activated skill roots: shell writes into them are hard-blocked.
+  readOnlyRoots?: string[]
+  // skill:// tokens the command was rewritten from, shown with the approval.
+  skillResources?: Array<{ uri: string; path: string }>
 }
 
 const COMMAND_SEPARATORS = new Set([";", "&&", "||", "|", "\n"])
@@ -181,6 +185,12 @@ export function shellActionForCommand(
       workspace: opts.workspace,
       shellAnalysis,
       ...(opts.runtimeProfile ? { runtimeProfile: opts.runtimeProfile } : {}),
+      ...(opts.readOnlyRoots?.length
+        ? { readOnlyRoots: opts.readOnlyRoots }
+        : {}),
+      ...(opts.skillResources?.length
+        ? { skillResources: opts.skillResources }
+        : {}),
     },
   }
 }
@@ -500,6 +510,16 @@ function candidatePaths(argv: string[], cwd?: string): string[] {
       .map((arg) => normalizePathCandidate(arg, cwd))
       .filter((path): path is string => !!path)
   )
+}
+
+// Resolves a shell argument the way the analyzer resolves path candidates,
+// treating a bare name as cwd-relative (callers already know it's a path).
+export function resolveShellPathArg(arg: string, cwd?: string): string | null {
+  return normalizePathCandidate(arg, cwd, true)
+}
+
+export function isPathInside(parent: string, child: string): boolean {
+  return isInside(parent, child)
 }
 
 function normalizePathCandidate(

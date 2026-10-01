@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
 import type { ReactNode } from "react"
 import {
-  ArrowLeft,
   ChevronRight,
   FolderOpen,
   Plus,
@@ -43,6 +42,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import { Markdown } from "@/components/markdown"
+import { ScreenHeader } from "@/components/screen-header"
 import { AgentUploadModal } from "@/components/agent-upload-modal"
 import { toast } from "sonner"
 import { cn } from "@/lib/utils"
@@ -502,28 +502,24 @@ export function AgentsScreen({ onClose }: { onClose: () => void }) {
       data-slot="agents-screen"
       className="flex min-h-0 flex-1 flex-col bg-background pt-11 text-sm text-foreground"
     >
-      {/* Header row (matches the app's h-11 top bar; the Shell drag bar sits
-          above via pt-11). */}
-      <div className="flex h-11 shrink-0 items-center justify-between border-b px-4">
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label="Close agents"
-          className="group/back flex items-center gap-2 rounded-md text-left"
-        >
-          <ArrowLeft className="size-4 text-muted-foreground transition-colors group-hover/back:text-foreground" />
-          <h1 className="font-heading text-base font-medium">Agents</h1>
-        </button>
-        <Button variant="ghost" size="icon-sm" onClick={onClose}>
-          <XIcon />
-          <span className="sr-only">Close</span>
-        </Button>
-      </div>
+      <ScreenHeader
+        title={
+          mode.kind === "create"
+            ? "New agent"
+            : selected
+              ? displayName(selected)
+              : "Agents"
+        }
+        onBack={mode.kind === "create" || selected ? backToCards : onClose}
+        backLabel={
+          mode.kind === "create" || selected ? "Back to agents" : "Close agents"
+        }
+        onClose={onClose}
+      />
 
       {mode.kind === "create" && draft ? (
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
           <FormHeader
-            title="New agent"
             saving={saving}
             saveLabel={saving ? "Creating…" : "Create"}
             canSave={!!draft.name.trim() && !!mode.dir}
@@ -545,7 +541,6 @@ export function AgentsScreen({ onClose }: { onClose: () => void }) {
       ) : mode.kind === "edit" && draft && selected ? (
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
           <FormHeader
-            title={displayName(selected)}
             subtitle={selected.path}
             saving={saving}
             saveLabel={saving ? "Saving…" : "Save"}
@@ -564,22 +559,9 @@ export function AgentsScreen({ onClose }: { onClose: () => void }) {
       ) : selected ? (
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
           <div className="flex h-12 shrink-0 items-center justify-between gap-2 border-b px-4">
-            <div className="flex min-w-0 items-center gap-2">
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                onClick={backToCards}
-                aria-label="Back to agents"
-              >
-                <ArrowLeft />
-              </Button>
-              <div className="min-w-0">
-                <p className="truncate font-medium">{displayName(selected)}</p>
-                <p className="truncate font-mono text-xs text-muted-foreground">
-                  {selected.path}
-                </p>
-              </div>
-            </div>
+            <p className="min-w-0 truncate font-mono text-xs text-muted-foreground">
+              {selected.path}
+            </p>
             <div className="flex shrink-0 items-center gap-2">
               <Button variant="outline" size="sm" onClick={revealAgent}>
                 <FolderOpen className="size-4" />
@@ -798,7 +780,6 @@ function toFields(d: Draft) {
 // ── Form header (shared by create + edit) ───────────────────────────────────
 
 function FormHeader({
-  title,
   subtitle,
   saving,
   saveLabel,
@@ -806,7 +787,6 @@ function FormHeader({
   onCancel,
   onSave,
 }: {
-  title: string
   subtitle?: string
   saving: boolean
   saveLabel: string
@@ -816,14 +796,9 @@ function FormHeader({
 }) {
   return (
     <div className="flex h-12 shrink-0 items-center justify-between gap-2 border-b px-4">
-      <div className="min-w-0">
-        <p className="truncate font-medium">{title}</p>
-        {subtitle && (
-          <p className="truncate font-mono text-xs text-muted-foreground">
-            {subtitle}
-          </p>
-        )}
-      </div>
+      <p className="min-w-0 truncate font-mono text-xs text-muted-foreground">
+        {subtitle}
+      </p>
       <div className="flex shrink-0 items-center gap-2">
         <Button
           variant="outline"

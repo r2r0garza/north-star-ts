@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
 import type { ReactNode } from "react"
-import { ArrowLeft, FolderOpen, Plus, Trash2, XIcon } from "lucide-react"
+import { FolderOpen, Plus, Trash2, XIcon } from "lucide-react"
 import {
   Card,
   CardAction,
@@ -11,6 +11,7 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
+import { ScreenHeader } from "@/components/screen-header"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
@@ -226,6 +227,14 @@ export function McpScreen({ onClose }: { onClose: () => void }) {
     setMode({ kind: "create", filePath: writableTargets[0]?.path ?? "" })
   }
 
+  // Return from a view/edit/create takeover to the server grid.
+  function backToList() {
+    if (!confirmDiscard()) return
+    setSelectedKey(null)
+    setMode({ kind: "view" })
+    setDraft(null)
+  }
+
   function cancelForm() {
     if (!confirmDiscard()) return
     setMode({ kind: "view" })
@@ -298,23 +307,27 @@ export function McpScreen({ onClose }: { onClose: () => void }) {
       data-slot="mcp-screen"
       className="flex min-h-0 w-full flex-1 flex-col bg-background pt-11"
     >
-      {/* Title row sits below the app's h-11 top drag bar (pt-11 on the root).
-          Actions live in the tabs row below (mirrors the Agents/Skills views). */}
-      <div className="flex h-11 shrink-0 items-center justify-between border-b px-4">
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label="Close MCP servers"
-          className="group/back flex items-center gap-2 rounded-md text-left"
-        >
-          <ArrowLeft className="size-4 text-muted-foreground transition-colors group-hover/back:text-foreground" />
-          <h1 className="font-heading text-base font-medium">MCP Servers</h1>
-        </button>
-        <Button variant="ghost" size="icon-sm" onClick={onClose}>
-          <XIcon />
-          <span className="sr-only">Close</span>
-        </Button>
-      </div>
+      <ScreenHeader
+        title={
+          mode.kind === "create" ? (
+            "New MCP server"
+          ) : selected ? (
+            <>
+              <span className="truncate">{selected.name}</span>
+              <Badge variant="secondary">{selected.transport}</Badge>
+            </>
+          ) : (
+            "MCP Servers"
+          )
+        }
+        onBack={mode.kind === "create" || selected ? backToList : onClose}
+        backLabel={
+          mode.kind === "create" || selected
+            ? "Back to servers"
+            : "Close MCP servers"
+        }
+        onClose={onClose}
+      />
 
       {showForm && draft ? (
         <ServerForm
@@ -330,7 +343,6 @@ export function McpScreen({ onClose }: { onClose: () => void }) {
       ) : selected ? (
         <ServerView
           server={selected}
-          onBack={() => setSelectedKey(null)}
           onEdit={isWritable(selected.kind) ? startEditing : undefined}
           onDelete={isWritable(selected.kind) ? deleteServer : undefined}
           onChanged={loadTree}
@@ -530,13 +542,11 @@ function FolderGrid({
 // ── Read-only detail (with inline state controls) ────────────────────────────
 function ServerView({
   server,
-  onBack,
   onEdit,
   onDelete,
   onChanged,
 }: {
   server: McpServer & { kind: McpFolder["kind"] }
-  onBack: () => void
   onEdit?: () => void
   onDelete?: () => void
   onChanged: () => void
@@ -567,28 +577,12 @@ function ServerView({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-      {/* Detail header with back-to-list (the top title-row back arrow closes the
-          whole view; this returns to the server grid). */}
+      {/* Detail actions; the server name and back-to-list live in the top
+          ScreenHeader. */}
       <div className="flex h-12 shrink-0 items-center justify-between gap-2 border-b px-4">
-        <div className="flex min-w-0 items-center gap-2">
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            onClick={onBack}
-            aria-label="Back to servers"
-          >
-            <ArrowLeft />
-          </Button>
-          <div className="min-w-0">
-            <p className="flex items-center gap-2 truncate font-medium">
-              {server.name}
-              <Badge variant="secondary">{server.transport}</Badge>
-            </p>
-            <p className="truncate font-mono text-xs text-muted-foreground">
-              {server.path}
-            </p>
-          </div>
-        </div>
+        <p className="min-w-0 truncate font-mono text-xs text-muted-foreground">
+          {server.path}
+        </p>
         <div className="flex shrink-0 items-center gap-2">
           {onEdit && (
             <Button variant="outline" size="sm" onClick={onEdit}>
@@ -736,9 +730,6 @@ function ServerForm({
     <ScrollArea className="min-h-0 flex-1">
       <div className="max-w-2xl space-y-5 px-6 py-5">
         <div className="flex items-center gap-2">
-          <h2 className="text-lg font-medium">
-            {creating ? "New MCP server" : draft.name}
-          </h2>
           <div className="ml-auto flex items-center gap-2">
             <Button variant="outline" size="sm" onClick={onCancel}>
               Cancel

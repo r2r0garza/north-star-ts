@@ -6,6 +6,7 @@ import type {
   CommandCleanupError,
   CommandExit,
   CommandSessionHandle,
+  Environment,
 } from "../env/types"
 import type {
   CommandCompletionInbox,
@@ -15,6 +16,10 @@ import { renderContextEnvelope } from "../context/provenance"
 import { truncateForModel, toolError } from "./output"
 import { TOOL_EFFECTS, type Tool, type ToolContext } from "./types"
 import { repositoryDelegationLeases } from "../subagents/repository-lease"
+import {
+  activeSkillResourceRootPaths,
+  resolveSkillResourcesInCommand,
+} from "./skill_resources"
 
 const DEFAULT_TIMEOUT_MS = 30_000
 const MAX_TIMEOUT_MS = 600_000
@@ -387,17 +392,28 @@ async function startCommand(
       ),
     }
   }
+  // skill:// tokens become real host paths, so only a local backend can run
+  // them; a container has no view of the host's skill directories.
+  let skillCommand: Awaited<ReturnType<typeof resolveSkillResourcesInCommand>>
+  try {
+    skillCommand = await resolveSkillCommand(command, ctx, env)
+  } catch (err) {
+    return { error: skillResourceError(err) }
+  }
+  const readOnlyRoots = await activeSkillResourceRootPaths(ctx)
   const envProfile =
     ctx.env instanceof LocalEnvironment
       ? ctx.env.localRuntimeProfile
       : ctx.env
         ? "container"
         : "host-access"
-  const action = shellActionForCommand(command, {
+  const action = shellActionForCommand(skillCommand.command, {
     tool: opts.compatibility ? "run_shell_tool" : "exec_command",
     cwd,
     workspace: workspaceRoot,
     runtimeProfile: envProfile,
+    readOnlyRoots,
+    skillResources: skillCommand.resources,
   })
   const outcome = ctx.gate ? await ctx.gate(action) : ("denied" as const)
   if (outcome === "blocked") {
@@ -438,6 +454,21 @@ async function startCommand(
       ),
     }
   }
+  // Re-resolve so a skill file swapped for a symlink (or deactivated) while the
+  // approval prompt was open can't change what runs.
+  try {
+    const recheck = await resolveSkillCommand(command, ctx, env)
+    if (recheck.command !== skillCommand.command) {
+      return {
+        error: toolError(
+          "skill_resource",
+          "A skill resource changed after approval; the command was not run."
+        ),
+      }
+    }
+  } catch (err) {
+    return { error: skillResourceError(err) }
+  }
   const leaseBlocker = await repositoryDelegationLeases.blocker(
     cwd,
     ctx.repositoryLeaseToken
@@ -447,10 +478,11 @@ async function startCommand(
       error: toolError("repository_busy", leaseBlocker.label),
     }
   }
-  const handle = await env.spawnCommand(command, {
+  const handle = await env.spawnCommand(skillCommand.command, {
     cwd: spawnCwd,
     tty: args.tty === true,
     signal: ctx.signal,
+    readOnlyPaths: readOnlyRoots,
   })
   const session = createSession({
     command,
@@ -485,6 +517,29 @@ async function startCommand(
     output: renderSince(session, 0, maxOutputBytes),
     timeoutMs,
   }
+}
+
+async function resolveSkillCommand(
+  command: string,
+  ctx: ToolContext,
+  env: Environment
+): ReturnType<typeof resolveSkillResourcesInCommand> {
+  const platform =
+    env instanceof LocalEnvironment ? env.commandPlatform() : "linux"
+  const resolved = await resolveSkillResourcesInCommand(ctx, command, platform)
+  if (resolved.resources.length > 0 && !(env instanceof LocalEnvironment)) {
+    throw new Error(
+      "skill:// paths can't be used in shell commands with the container backend: the skill's files are not in the container. Read them with read_file instead."
+    )
+  }
+  return resolved
+}
+
+function skillResourceError(err: unknown): string {
+  return toolError(
+    "skill_resource",
+    err instanceof Error ? err.message : "Invalid skill resource path."
+  )
 }
 
 function createSession(input: {

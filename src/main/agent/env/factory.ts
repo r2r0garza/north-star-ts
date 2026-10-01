@@ -1,4 +1,4 @@
-import { LocalEnvironment } from "./local"
+import { LocalEnvironment, type LocalEnvOverlay } from "./local"
 import { ContainerEnvironment } from "./container"
 import type { Environment, LocalRuntimeProfile } from "./types"
 
@@ -15,7 +15,10 @@ export type EnvConfig =
 export async function createEnvironment(
   workspace: string,
   conversationId: string,
-  cfg: EnvConfig
+  cfg: EnvConfig,
+  // Local only: extra environment for every command (the chat Python venv). A
+  // container has its own interpreter, so the overlay does not apply there.
+  localEnvOverlay?: LocalEnvOverlay
 ): Promise<Environment> {
   if (cfg.kind === "container") {
     const env = new ContainerEnvironment({
@@ -27,7 +30,9 @@ export async function createEnvironment(
     await env.start()
     return env
   }
-  return new LocalEnvironment(workspace, cfg.profile ?? "host-access")
+  return new LocalEnvironment(workspace, cfg.profile ?? "host-access", {
+    envOverlay: localEnvOverlay,
+  })
 }
 
 // Until the settings pane (.plan/004) lands, the backend is selected by a single

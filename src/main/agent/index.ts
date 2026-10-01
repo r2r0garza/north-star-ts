@@ -24,6 +24,9 @@ import { terminateOwnedCommandSessions } from "./tools/command_session_tools"
 import type { BrowserHandle } from "../browser/manager"
 import { TOOL_EFFECTS, type ToolImage } from "./tools/types"
 import { readFileTool } from "./tools/read_file_tool"
+import { CHAT_SHELL_TOOL_NAMES, chatShellContext } from "./tools/chat_shell"
+import { toolError } from "./tools/output"
+import type { ToolContext } from "./tools/types"
 import {
   readDocumentTool,
   supportedDocumentKind,
@@ -128,6 +131,7 @@ import { repairDanglingToolCalls } from "./repair"
 import { offeredToolNames, unavailableToolResult } from "./tool-availability"
 import { createEnvironment } from "./env"
 import { LocalEnvironment } from "./env/local"
+import { CHAT_VENV_PROMPT, resolveChatVenvOverlay } from "../python/chat-venv"
 import type { Environment } from "./env/types"
 import * as settingsService from "../settings/service"
 import {
@@ -830,6 +834,12 @@ export interface RunAgentLoopOptions {
   // resumed task doesn't re-request an already-decided action — advisory, never a
   // gate bypass.
   taskId?: string
+  // Interactive chat (runChat) and the subagents it spawns, at any depth: put
+  // the app's Python venv first on PATH for this turn's local commands, unless
+  // the workspace has its own Python environment. Every other caller (Mission
+  // Control, Playbooks, background tasks) leaves it off, and so do subagents
+  // spawned from them, since they inherit the parent's value.
+  chatPythonVenv?: boolean
   // Start this turn in plan mode: the agent may read/search and write only its
   // plan file (write_plan), and must call present_plan for approval before it can
   // touch the workspace. Session-only (the renderer passes it per send; not
@@ -1344,11 +1354,22 @@ export async function runAgentLoop(
               (d) => !MUTATING_TOOL_NAMES.has(d.function.name)
             )
           : toolDefinitions
-        : hasAttachments
-          ? attachedDocuments.length > 0
-            ? [readFileTool.definition, readDocumentTool.definition]
-            : [readFileTool.definition]
-          : []),
+        : [
+            // Chat: read_file for attachments and skill:// resources, and the
+            // command tools, which run in the conversation's scratch dir
+            // (tools/chat_shell.ts).
+            ...(hasAttachments || skills.length > 0
+              ? [readFileTool.definition]
+              : []),
+            ...(hasAttachments && attachedDocuments.length > 0
+              ? [readDocumentTool.definition]
+              : []),
+            ...(planMode
+              ? []
+              : toolDefinitions.filter((d) =>
+                  CHAT_SHELL_TOOL_NAMES.has(d.function.name)
+                )),
+          ]),
       ...(showTodos
         ? // run_todos_in_background delegates to a background writer, so it's
           // withheld in plan mode along with the direct FS tools.
@@ -1452,6 +1473,22 @@ export async function runAgentLoop(
       ? `\n\n${opts.processCompletionInstruction}`
       : "")
   const sections: ContextSection[] = [...(opts.extraContextSections ?? [])]
+
+  const chatVenvOverlay = opts.chatPythonVenv
+    ? await resolveChatVenvOverlay(hasWorkspace ? workspace : undefined)
+    : null
+  if (chatVenvOverlay) {
+    sections.push({
+      name: "python_venv",
+      priority: SECTION_PRIORITY.environment,
+      content: CHAT_VENV_PROMPT,
+      provenance: {
+        trust: "system",
+        channel: "runtime",
+        source: "chat_python_venv",
+      },
+    })
+  }
 
   // Seat memory (plan 106.7): the seat's active lessons, after its charter.
   // Injecting records an exposure, so a retraction can find this session.
@@ -1923,7 +1960,12 @@ export async function runAgentLoop(
         envConfig.kind === "local"
           ? (envConfig.profile ?? "host-access")
           : "host-access"
-      env = await createEnvironment(workspace!, conversationId, envConfig)
+      env = await createEnvironment(
+        workspace!,
+        conversationId,
+        envConfig,
+        chatVenvOverlay ?? undefined
+      )
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err)
       return failTurn(
@@ -1934,7 +1976,9 @@ export async function runAgentLoop(
       )
     }
   } else {
-    env = new LocalEnvironment("")
+    env = new LocalEnvironment("", "host-access", {
+      envOverlay: chatVenvOverlay ?? undefined,
+    })
   }
 
   try {
@@ -2669,6 +2713,7 @@ export async function runAgentLoop(
                     ),
                     skillResourceRoots,
                     parentSignal: callSignal,
+                    parentChatPythonVenv: opts.chatPythonVenv,
                     parentAutoMode: autoMode,
                     subscribeParentAutoMode: (subscriber) => {
                       autoModeSubscribers.add(subscriber)
@@ -2697,6 +2742,7 @@ export async function runAgentLoop(
                     agentDir,
                     parentConversation: conversation,
                     parentSignal: callSignal,
+                    parentChatPythonVenv: opts.chatPythonVenv,
                     depth: (opts.agentDepth ?? 0) + 1,
                     ancestors: [
                       ...(opts.agentAncestors ?? []),
@@ -2750,7 +2796,9 @@ export async function runAgentLoop(
             result =
               call.name === readSkillTool.definition.function.name
                 ? await readSkillTool.execute(args, ctx)
-                : await runTool(call.name, args, ctx)
+                : !hasWorkspace && CHAT_SHELL_TOOL_NAMES.has(call.name)
+                  ? await runChatShellTool(call.name, args, ctx)
+                  : await runTool(call.name, args, ctx)
           }
           // Keep the actual gate result, including recovered successes and the
           // reason for a block, instead of a tool's generic blocked message.
@@ -2976,6 +3024,25 @@ async function childInstructionResource(input: {
   return readFile(path, "utf8")
 }
 
+// A Chat command tool, run with its context rooted in the conversation's
+// scratch dir (see tools/chat_shell.ts).
+async function runChatShellTool(
+  name: string,
+  args: Record<string, unknown>,
+  ctx: ToolContext
+): Promise<string> {
+  let shellCtx: ToolContext
+  try {
+    shellCtx = await chatShellContext(ctx)
+  } catch (err) {
+    return toolError(
+      "no_workspace",
+      err instanceof Error ? err.message : String(err)
+    )
+  }
+  return runTool(name, args, shellCtx)
+}
+
 async function spawnSubagentBatch(input: {
   input: SpawnSubagentsInput
   parentConversation: Conversation | undefined
@@ -2985,6 +3052,8 @@ async function spawnSubagentBatch(input: {
   parentToolNames: Set<string>
   skillResourceRoots: Record<string, string>
   parentSignal: AbortSignal
+  // A chat's subagents share its Python venv; see RunAgentLoopOptions.
+  parentChatPythonVenv?: boolean
   parentAutoMode: boolean
   subscribeParentAutoMode: (
     subscriber: (enabled: boolean) => void
@@ -3227,6 +3296,7 @@ async function spawnSubagentBatch(input: {
         agentAncestors: input.ancestors,
         suppressUserQuestions: true,
         subagentRun: true,
+        chatPythonVenv: input.parentChatPythonVenv,
         repositoryLeaseToken: lease?.token,
         beforeApproval: (signal) => approvalCoordinator.acquire(signal),
         onApprovalWaitingChange: (waiting) => {
@@ -3363,6 +3433,8 @@ async function spawnSubagent(input: {
   agentDir?: string
   parentConversation: Conversation | undefined
   parentSignal: AbortSignal
+  // A chat's subagents share its Python venv; see RunAgentLoopOptions.
+  parentChatPythonVenv?: boolean
   depth: number
   ancestors: string[]
 }): Promise<{ content?: string; error?: string; stopped?: boolean }> {
@@ -3428,6 +3500,7 @@ async function spawnSubagent(input: {
       agentAncestors: input.ancestors,
       suppressUserQuestions: true,
       subagentRun: true,
+      chatPythonVenv: input.parentChatPythonVenv,
     })
     if (result.stopped || childAbort.signal.aborted) return { stopped: true }
     if (result.error) return { error: result.error }
@@ -3490,6 +3563,7 @@ export async function runChat(
       // directly and intentionally do not consult this conversation preference.
       conversationSubagentsEnabled:
         settingsService.getConversations().allowConversationSubagents,
+      chatPythonVenv: true,
       onEvent,
       abort,
       enqueueTask,

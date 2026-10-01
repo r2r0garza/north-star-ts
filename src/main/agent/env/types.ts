@@ -83,6 +83,10 @@ export interface SpawnCommandOptions {
   tty: boolean
   // Abort seam: Stop/app cleanup terminates the command session.
   signal?: AbortSignal
+  // Host paths the command must not write (activated skill roots). Enforced by
+  // the local sandboxed profiles; host-access relies on the approval gate, and
+  // a container never mounts these paths.
+  readOnlyPaths?: string[]
 }
 
 export type LocalRuntimeProfile =

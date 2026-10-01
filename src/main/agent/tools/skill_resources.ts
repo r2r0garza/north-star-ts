@@ -59,6 +59,106 @@ export async function resolveSkillResourcePath(
   return realTarget
 }
 
+export interface CommandSkillResource {
+  uri: string
+  path: string
+}
+
+const SKILL_URI_PREFIX = "skill://"
+// What ends a skill:// token depends on the quoting context it sits in.
+const TOKEN_END = {
+  none: /[\s;&|<>()'"`$\\]/,
+  '"': /[\s"`$\\]/,
+  "'": /[\s']/,
+} as const
+
+// Rewrites every skill://name/path token in a shell command to the resolved
+// real path, quoted for the context it appears in. Each token goes through
+// resolveSkillResourcePath, so the command inherits the same activation,
+// traversal, exact-case, and symlink checks as read_file. Throws on any token
+// that fails them; the caller must not run the command in that case.
+export async function resolveSkillResourcesInCommand(
+  ctx: ToolContext,
+  command: string,
+  platform: NodeJS.Platform = process.platform
+): Promise<{ command: string; resources: CommandSkillResource[] }> {
+  if (!command.includes(SKILL_URI_PREFIX)) return { command, resources: [] }
+  const windows = platform === "win32"
+  const resources: CommandSkillResource[] = []
+  let out = ""
+  let quote: "'" | '"' | null = null
+  let i = 0
+  while (i < command.length) {
+    if (
+      command.startsWith(SKILL_URI_PREFIX, i) &&
+      !/[A-Za-z0-9+.-]/.test(command[i - 1] ?? "")
+    ) {
+      const endPattern = TOKEN_END[quote ?? "none"]
+      let end = i + SKILL_URI_PREFIX.length
+      while (end < command.length && !endPattern.test(command[end])) end += 1
+      const uri = command.slice(i, end)
+      const path = await resolveSkillResourcePath(ctx, uri)
+      resources.push({ uri, path })
+      out += quotePathForShell(path, quote, windows)
+      i = end
+      continue
+    }
+    const ch = command[i]
+    if (ch === "\\" && quote !== "'" && !windows) {
+      out += command.slice(i, i + 2)
+      i += 2
+      continue
+    }
+    if (quote === null && (ch === '"' || (ch === "'" && !windows))) quote = ch
+    else if (ch === quote) quote = null
+    out += ch
+    i += 1
+  }
+  return { command: out, resources }
+}
+
+function quotePathForShell(
+  path: string,
+  quote: "'" | '"' | null,
+  windows: boolean
+): string {
+  // Control characters and backticks quote differently across sh, zsh, fish,
+  // and cmd.exe; refusing is safer than guessing which one runs the command.
+  if (/[\x00-\x1f`]/.test(path)) {
+    throw new Error(
+      "Skill resource path contains characters that cannot be quoted safely for the shell."
+    )
+  }
+  if (windows) {
+    if (/["%]/.test(path)) {
+      throw new Error(
+        "Skill resource path contains characters that cannot be quoted safely for cmd.exe."
+      )
+    }
+    return quote === '"' ? path : `"${path}"`
+  }
+  if (quote === '"') return path.replace(/["$\\]/g, "\\$&")
+  const singleQuoted = path.replace(/'/g, `'\\''`)
+  return quote === "'" ? singleQuoted : `'${singleQuoted}'`
+}
+
+// Every activated skill root, both as registered and as its real path, so a
+// write guard matches whichever spelling a command uses.
+export async function activeSkillResourceRootPaths(
+  ctx: ToolContext
+): Promise<string[]> {
+  const roots = new Set<string>()
+  for (const root of Object.values(ctx.skillResourceRoots ?? {})) {
+    roots.add(resolve(root))
+    try {
+      roots.add(await realpath(root))
+    } catch {
+      // A missing root has nothing to protect.
+    }
+  }
+  return [...roots]
+}
+
 function parseSkillResourceUri(uri: string): {
   name: string
   relativePath: string

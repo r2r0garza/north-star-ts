@@ -58,6 +58,8 @@ export function createReadSkillTool(skills: SkillMetadata[]): Tool {
           "---",
           `Skill resource root: skill://${skill.name}/`,
           "Use this read-only skill:// URI prefix for files bundled beside this SKILL.md. " +
+            `Shell commands may use it too, e.g. \`python3 skill://${skill.name}/scripts/tool.py\`; ` +
+            "the runtime substitutes the real path, and commands still run from their usual working directory. " +
             "Writes, edits, renames, and deletions to skill resources are not allowed.",
           manifest,
         ]
