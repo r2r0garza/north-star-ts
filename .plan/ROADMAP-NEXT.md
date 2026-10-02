@@ -3,16 +3,14 @@
 > **Note (2026-09-26):** the `106.x` plans predate a rename — Initiatives are now **Features**,
 > Missions are **Milestones**, and Slices are **User stories**. Each pending `106.x` plan has a mapping note at the top.
 
-1. **`107` — Content-derived descriptions for automatic-memory skills.** The memory skill
-   description is the only signal the model uses to decide whether to `read_skill` a category, and
-   today `renderCategorySkill` overwrites the scaffold's "load when…" guidance with
-   `<Heading>. Currently N records.` once a category has facts. Render a bounded (≤400-char),
-   deterministic description instead: it restores the load-when clause, adds a `Topics:` line
-   computed lexically from the active facts (`deriveTopics` in `facts.ts`, with no model call), and
-   includes the fact count and a scope-override note. Empty categories say "no need to load". It
-   must not churn files when the facts are unchanged. This is step 1 of a possible memory-retrieval
-   revamp; the topic-split layout (index plus per-topic files) is deferred until real usage shows
-   categories too large to load whole.
+1. **`108` — Per-round context usage logging.** Measure how large each model request gets during long
+   agent runs before deciding on any in-turn context management. Send `stream_options.include_usage`
+   on streamed chat requests (with a one-time fallback for bridges that reject it), and log one JSON
+   line per round to `userData/logs/context-usage.jsonl`: provider-reported prompt/completion tokens
+   where present, plus a local `gpt-tokenizer` (`o200k`) count of the request with a per-role
+   breakdown and its largest message. When the provider reports no usage, the local count is used.
+   Counts and IDs only, no message content. Measurement only: trimming old tool output and in-turn
+   summarization stay out of scope until this data shows long runs approaching their context window.
 2. **`092.1` — Agent lifecycle hook contract, storage, runner, and safety controls.** Define versioned
    event/result/metadata schemas, canonical guarded `.hook.cjs` + `.hook.json` storage under
    `~/.<system>/hooks/`, exact-source-hash review state, stable Agent-ref targeting, deterministic matching,

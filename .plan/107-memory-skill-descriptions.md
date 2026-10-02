@@ -1,6 +1,6 @@
 # PR107: Content-derived descriptions for automatic-memory skills
 
-> Status: **PLANNED**. Step 1 of a possible memory-retrieval revamp. Follow-up to `081` (semantic
+> Status: **IMPLEMENTED** on `feat/process-revamp`. Step 1 of a possible memory-retrieval revamp. Follow-up to `081` (semantic
 > merge). `081` fixed how facts are _stored_; this plan fixes how the model decides to _read_ them.
 > A topic-split layout (one index plus rendered per-topic files) is the possible step 2, and is
 > deferred until we have evidence that categories get too large to load whole (see Out of scope).
@@ -160,3 +160,20 @@ separate store and is not touched.
 3. **Hiding empty skills.** Should empty memory skills be left out of the catalog entirely? That
    saves a few tokens, but it hides the fact that memory exists at all, which may matter for
    "do you remember…" questions. Leaning no.
+
+## Implementation notes
+
+- `deriveTopics` matches the plan, with one refinement. A unigram scores only on its occurrences
+  *outside* a recurring bigram. So a word that only ever appears inside a bigram drops out, and a
+  bigram outranks its own words unless the word also recurs on its own. Scores are rounded before
+  sorting so summation order (which follows input order) can't reorder ties.
+- The override clause names the overridden global skills, for example `load before relying on
+  global memory-preferences`, rather than a fixed "preferences/identity".
+- **Added beyond the plan:** existing files would otherwise keep the old description until a new
+  fact arrived. The per-turn `ensure*MemorySkills` now calls `refreshCategorySkill`, which rewrites
+  a category skill only when its *body* already equals the render. That limits the rewrite to the
+  frontmatter, so a bullet the store hasn't adopted is never dropped. Old empty scaffolds get the
+  "empty; no need to load" line on the next turn.
+- `editCategorySkill` skips the `SKILL.md` write when the render is byte-identical. A
+  confirmation-only promotion now updates `facts.json` but leaves the skill file and its mtime
+  alone.

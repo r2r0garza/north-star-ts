@@ -49,8 +49,11 @@ const {
   normalizeSeatLessons,
   recordMemoryTurn,
   reconcilePendingMemoryOnStartup,
+  renderCategorySkillForTest,
   validatedMemoryCandidatesForTest,
 } = await import("./service")
+const { parseSkill } = await import("../skills/loader")
+const { appendFact, emptyFactStore } = await import("./facts")
 
 const evidence = [
   {
@@ -495,7 +498,7 @@ describe("semantic merge", () => {
     // The superseded row stops being injected, rather than sitting alongside
     // its own contradiction forever.
     expect(stored).not.toContain(".plan/ROADMAP.md")
-    expect(stored).toContain("Currently 1 records")
+    expect(stored).toContain("1 active fact.")
 
     const facts = JSON.parse(await readFile(knowledgeFacts, "utf-8"))
     expect(facts.facts).toHaveLength(2)
@@ -534,6 +537,23 @@ describe("semantic merge", () => {
     const facts = JSON.parse(await readFile(knowledgeFacts, "utf-8"))
     expect(facts.facts).toHaveLength(1)
     expect(facts.facts[0].confirmations).toBe(2)
+  })
+
+  it("does not rewrite the skill file when a confirmation leaves the render unchanged", async () => {
+    await stage(ROADMAP_OLD)
+    harness.responses = [classifyToKnowledge]
+    await reconcilePendingMemoryOnStartup()
+    const before = await readFile(knowledge, "utf-8")
+    const beforeStat = await stat(knowledge)
+
+    await stage(ROADMAP_OLD, "conv-8")
+    harness.responses = [classifyToKnowledge]
+    await reconcilePendingMemoryOnStartup()
+
+    const facts = JSON.parse(await readFile(knowledgeFacts, "utf-8"))
+    expect(facts.facts[0].confirmations).toBe(2)
+    expect(await readFile(knowledge, "utf-8")).toBe(before)
+    expect((await stat(knowledge)).mtimeMs).toBe(beforeStat.mtimeMs)
   })
 
   it("leaves the category file untouched when a merge drops unaccounted items", async () => {
@@ -617,6 +637,10 @@ describe("semantic merge", () => {
     expect(stored).toContain("## Scope overrides")
     expect(stored).toContain("overrides global memory-preferences")
     expect(stored).toContain(NPM_RULE)
+    // Visible at prompt level, not only in the body nobody reads unprompted.
+    expect(stored).toContain(
+      "1 overrides global memory — load before relying on global memory-preferences."
+    )
     expect(
       warnings.some((message) => message.includes("cross-scope conflict"))
     ).toBe(true)
@@ -790,5 +814,171 @@ describe("seat lessons (plan 106.7)", () => {
         kind: "pitfall",
       },
     ])
+  })
+})
+
+describe("category skill descriptions", () => {
+  const description = (rendered: string) =>
+    parseSkill(rendered, "SKILL.md", "memory-lessons", "test")?.description
+
+  function storeOf(texts: string[]) {
+    const store = emptyFactStore()
+    for (const text of texts)
+      appendFact(store, { text }, "2026-01-01T00:00:00Z")
+    return store
+  }
+
+  it("tells the model an empty category is not worth loading", () => {
+    expect(
+      description(renderCategorySkillForTest("lessons", emptyFactStore()))
+    ).toBe("Lessons & Insights — empty; no need to load.")
+  })
+
+  // The regression this replaced: the first write overwrote the guidance with
+  // a bare record count.
+  it("keeps the load-when guidance once the category has facts", () => {
+    const text = description(
+      renderCategorySkillForTest(
+        "lessons",
+        storeOf(["Skipping the migration assertion broke the release."])
+      )
+    )
+    expect(text).toContain(
+      "Lessons & Insights — load when prior failures, gotchas, or decisions may affect the task."
+    )
+    expect(text).toContain("1 active fact.")
+    expect(text).not.toContain("Topics:")
+    expect(text).not.toContain("override")
+  })
+
+  it("lists topics derived from the facts", () => {
+    const text = description(
+      renderCategorySkillForTest(
+        "lessons",
+        storeOf([
+          "Electron IPC handlers must be registered before the window loads.",
+          "Electron IPC payloads are structured-cloned.",
+          "Recreate the python venv after upgrading Homebrew.",
+          "The python venv lives under .venv.",
+        ])
+      )
+    )
+    expect(text).toContain("Topics: electron ipc, python venv.")
+    expect(text).toContain("4 active facts.")
+  })
+
+  it("only mentions overrides when a live conflict exists", () => {
+    const store = storeOf(["This project uses pnpm; npm must not be used."])
+    store.conflicts.push({
+      factId: "missing",
+      globalCategory: "preferences",
+      globalText: "Use npm.",
+      detectedAt: "2026-01-01T00:00:00Z",
+    })
+    expect(
+      description(renderCategorySkillForTest("knowledge", store))
+    ).not.toContain("override")
+
+    store.conflicts.push({
+      factId: store.facts[0].id,
+      globalCategory: "preferences",
+      globalText: "Use npm.",
+      detectedAt: "2026-01-01T00:00:00Z",
+    })
+    expect(
+      description(renderCategorySkillForTest("knowledge", store))
+    ).toContain(
+      "1 overrides global memory — load before relying on global memory-preferences."
+    )
+  })
+
+  it("stays within budget with a full category of long facts", () => {
+    const facts = Array.from(
+      { length: 200 },
+      (_, i) =>
+        `Subsystem${i % 40} widget${i % 37} gadget${i % 31} sprocket${i % 29} uses a deliberately verbose configuration${i % 23} pipeline${i % 19} registry${i % 17} that keeps going ${"lorem ipsum ".repeat(20)}`
+    )
+    const store = storeOf(facts)
+    for (const fact of store.facts.slice(0, 50)) {
+      store.conflicts.push({
+        factId: fact.id,
+        globalCategory: "preferences",
+        globalText: "x",
+        detectedAt: "2026-01-01T00:00:00Z",
+      })
+    }
+    const rendered = renderCategorySkillForTest("knowledge", store)
+    const text = description(rendered)
+    expect(text).toBeDefined()
+    expect(text!.length).toBeLessThanOrEqual(400)
+    expect(text).toContain("load when")
+    expect(text).toContain("200 active facts.")
+  })
+
+  it("round-trips through the skill loader", () => {
+    const rendered = renderCategorySkillForTest(
+      "knowledge",
+      storeOf([
+        "The build uses electron-vite: main, preload, renderer.",
+        "electron-vite emits CJS for main and preload.",
+      ])
+    )
+    const parsed = parseSkill(rendered, "SKILL.md", "memory-knowledge", "test")
+    expect(parsed?.name).toBe("memory-knowledge")
+    expect(parsed?.description.split("\n")[0]).toBe(
+      "Workspace Domain Knowledge — load when project, product, business, workflow, architecture, or repo facts may affect the task."
+    )
+    expect(parsed?.description).toContain("Topics: electron vite")
+  })
+})
+
+describe("category skill refresh", () => {
+  let identity: string
+
+  beforeEach(async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "memory-refresh-"))
+    harness.home = path.join(root, "home")
+    harness.userData = path.join(root, "userData")
+    harness.memoryEnabled = true
+    harness.responses = []
+    harness.prompts = []
+    identity = path.join(
+      harness.home,
+      ".cowork",
+      "skills",
+      "memory-identity",
+      "SKILL.md"
+    )
+    await mkdir(path.dirname(identity), { recursive: true })
+    await mkdir(harness.userData, { recursive: true })
+  })
+
+  const legacy = (bullets: string[]) =>
+    `---\nname: memory-identity\ndescription: |\n  User identity information. Load when personal/user facts matter.\nmetadata:\n  managed-by: memory\n---\n\n# User Identity\n\n` +
+    renderCategorySkillForTest("identity", emptyFactStore())
+      .split("# User Identity\n\n")[1]
+      .trimEnd() +
+    "\n" +
+    bullets.map((bullet) => `- ${bullet}\n`).join("")
+
+  it("upgrades an old scaffold's description in place", async () => {
+    await writeFile(identity, legacy([]), "utf-8")
+
+    await recordMemoryTurn({ conversationId: "c1", assistantText: "ok" })
+
+    expect(await readFile(identity, "utf-8")).toBe(
+      renderCategorySkillForTest("identity", emptyFactStore())
+    )
+  })
+
+  // A bullet the store has not adopted yet is a fact. Refreshing the
+  // description must not be the write that drops it.
+  it("leaves a file alone when its body holds bullets the store lacks", async () => {
+    const before = legacy(["Riley works on the payments team."])
+    await writeFile(identity, before, "utf-8")
+
+    await recordMemoryTurn({ conversationId: "c1", assistantText: "ok" })
+
+    expect(await readFile(identity, "utf-8")).toBe(before)
   })
 })
