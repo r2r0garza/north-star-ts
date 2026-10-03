@@ -7,6 +7,7 @@ import {
   rmSync,
   writeFileSync,
 } from "fs"
+import { createHash } from "crypto"
 import { tmpdir } from "os"
 import path from "path"
 
@@ -44,7 +45,11 @@ describe("seedBundledEntries", () => {
       "bundled qa"
     )
     expect(existsSync(path.join(userDir, ".DS_Store"))).toBe(false)
-    expect(manifest()).toEqual({ agents: ["coding.agent.md", "qa.agent.md"] })
+    expect(manifest().agents).toEqual(["coding.agent.md", "qa.agent.md"])
+    expect(Object.keys(manifest().hashes)).toEqual([
+      "agents/coding.agent.md",
+      "agents/qa.agent.md",
+    ])
   })
 
   it("does not resurrect an entry the user deleted", () => {
@@ -95,5 +100,48 @@ describe("seedBundledEntries", () => {
     expect(
       readFileSync(path.join(userDir, "my-skill", "scripts", "a.sh"), "utf8")
     ).toBe("x")
+  })
+
+  it("refreshes an unedited copy when the bundled version changes", () => {
+    seed()
+    writeFileSync(path.join(bundledDir, "qa.agent.md"), "bundled qa v2")
+    seed()
+    expect(readFileSync(path.join(userDir, "qa.agent.md"), "utf8")).toBe(
+      "bundled qa v2"
+    )
+    // And again for the next release: the recorded hash moved with it.
+    writeFileSync(path.join(bundledDir, "qa.agent.md"), "bundled qa v3")
+    seed()
+    expect(readFileSync(path.join(userDir, "qa.agent.md"), "utf8")).toBe(
+      "bundled qa v3"
+    )
+  })
+
+  it("recognizes a copy seeded before hashes were recorded by its previous hash", () => {
+    mkdirSync(userDir, { recursive: true })
+    writeFileSync(path.join(userDir, "qa.agent.md"), "bundled qa v1")
+    writeFileSync(path.join(userDir, "coding.agent.md"), "my coding edits")
+    writeFileSync(
+      manifestPath,
+      JSON.stringify({ agents: ["coding.agent.md", "qa.agent.md"] })
+    )
+    const sha = (text: string) =>
+      createHash("sha256").update(text).digest("hex")
+    seedBundledEntries({
+      kind: "agents",
+      bundledDir,
+      userDir,
+      manifestPath,
+      previousHashes: {
+        "qa.agent.md": [sha("bundled qa v1")],
+        "coding.agent.md": [sha("bundled coding v1")],
+      },
+    })
+    expect(readFileSync(path.join(userDir, "qa.agent.md"), "utf8")).toBe(
+      "bundled qa"
+    )
+    expect(readFileSync(path.join(userDir, "coding.agent.md"), "utf8")).toBe(
+      "my coding edits"
+    )
   })
 })

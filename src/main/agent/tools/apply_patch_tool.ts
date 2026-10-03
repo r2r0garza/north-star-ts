@@ -16,6 +16,7 @@ import {
   MANAGED_MEMORY_WRITE_ERROR,
 } from "./file/mutation"
 import { isSkillResourceUri } from "./skill_resources"
+import { writeScopeError } from "./write_scope"
 
 function errorFromMessage(message: string): string {
   const [code, ...rest] = message.split(":")
@@ -146,6 +147,16 @@ export const applyPatchTool: Tool = {
       )
     ) {
       return toolError("not_allowed", MANAGED_MEMORY_WRITE_ERROR)
+    }
+    for (const op of operations) {
+      // A delete or move acts on the entry itself, not a symlink's target.
+      const outOfScope = await writeScopeError(
+        ctx,
+        env,
+        "new_path" in op ? [op.path, op.new_path] : [op.path],
+        { followLeaf: op.type !== "delete" && !("new_path" in op) }
+      )
+      if (outOfScope) return outOfScope
     }
     let planned: PlannedPatch
     try {

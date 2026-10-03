@@ -118,3 +118,35 @@ describe.skipIf(!sqliteLoads)("workspace worktree setup", () => {
     })
   })
 })
+
+describe.skipIf(!sqliteLoads)("workspace Mission Control settings", () => {
+  beforeEach(() => {
+    db = new Database(":memory:")
+    runMigrations(db)
+  })
+
+  it("defaults the checks directory and stores a normalized one", () => {
+    const ws = upsertWorkspace("/repo")
+    expect(ws.missionControl).toEqual({ checksDir: "e2e" })
+    updateWorkspace(ws.id, { missionControl: { checksDir: "./e2e/qa/" } })
+    expect(getWorkspace(ws.id)!.missionControl.checksDir).toBe("e2e/qa")
+  })
+
+  it("refuses a checks directory that is the root, leaves the workspace, or is in .git", () => {
+    const ws = upsertWorkspace("/repo")
+    for (const checksDir of ["", ".", "/abs", "../out", "a/../../b", ".git/x"])
+      expect(() =>
+        updateWorkspace(ws.id, { missionControl: { checksDir } })
+      ).toThrow(/checks directory/)
+    expect(getWorkspace(ws.id)!.missionControl.checksDir).toBe("e2e")
+  })
+
+  it("falls back to the default when a stored value is unusable", () => {
+    const ws = upsertWorkspace("/repo")
+    db.prepare("UPDATE workspaces SET mission_control = ? WHERE id = ?").run(
+      JSON.stringify({ checksDir: "../escape" }),
+      ws.id
+    )
+    expect(getWorkspace(ws.id)!.missionControl.checksDir).toBe("e2e")
+  })
+})

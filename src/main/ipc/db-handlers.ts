@@ -14,6 +14,7 @@ import {
 } from "../db/repositories"
 import type {
   GeneratedFilesRule,
+  WorkspaceMissionControlSettings,
   WorktreeSetup,
   Conversation,
   Mode,
@@ -219,6 +220,7 @@ export function registerDbHandlers(
         name?: string
         generatedFiles?: GeneratedFilesRule[]
         worktreeSetup?: WorktreeSetup
+        missionControl?: Partial<WorkspaceMissionControlSettings>
       }
     ) => workspaces.updateWorkspace(id, patch)
   )

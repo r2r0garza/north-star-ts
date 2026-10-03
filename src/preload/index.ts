@@ -17,6 +17,7 @@ import type {
   TaskStatus,
   Todo,
   GeneratedFilesRule,
+  WorkspaceMissionControlSettings,
   WorktreeSetup,
   WorktreeSetupStep,
   Workspace,
@@ -1970,6 +1971,8 @@ const api = {
           name?: string
           generatedFiles?: GeneratedFilesRule[]
           worktreeSetup?: WorktreeSetup
+          // Where QA seats write acceptance checks (plan 109.01).
+          missionControl?: Partial<WorkspaceMissionControlSettings>
         }
       ) =>
         ipcRenderer.invoke(
@@ -2777,6 +2780,7 @@ export type {
   Todo,
   TodoStatus,
   GeneratedFilesRule,
+  WorkspaceMissionControlSettings,
   WorktreeSetup,
   WorktreeSetupStep,
   Workspace,

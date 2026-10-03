@@ -7,6 +7,7 @@ import type { Environment } from "../env/types"
 import type { TodoStatus } from "../../db/types"
 import type { BrowserHandle } from "../../browser/manager"
 import type { SeatTurnIdentity } from "../../mission-control/seat-turns"
+import type { WriteScope } from "./write_scope"
 import type {
   SpawnSubagentsInput,
   SubagentResult,
@@ -203,6 +204,11 @@ export interface ToolContext {
   // or a wake). The Comms tools take the sender from here, never from model
   // arguments. Absent otherwise — the Comms tools then report unavailable.
   missionControlSeat?: SeatTurnIdentity
+  // Workspace-relative directories the write-family tools may change (plan
+  // 109.01). Set server-side from the seat's role: a Mission Control `qa`
+  // seat writes only its checks and scratch directories. Absent = anywhere in
+  // the workspace. See write_scope.ts.
+  writeScope?: WriteScope
 }
 
 export interface ToolEffects {

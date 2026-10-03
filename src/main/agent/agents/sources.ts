@@ -29,14 +29,26 @@ export function bundledAgentsDir(): string {
 // Startup setup for the user-level agents dir, mirroring initUserSkills():
 // creates ~/.<system>/agents and copies in any app-bundled agent not seeded
 // before (tracked per agent in ~/.<system>/bundled-seed.json), never overwriting
-// or resurrecting the user's copies. See config/bundled-seed.ts.
+// edited copies or resurrecting deleted ones. An unedited copy is refreshed when
+// the bundled version changes. See config/bundled-seed.ts.
 export function initUserAgents(): void {
   seedBundledEntries({
     kind: "agents",
     bundledDir: bundledAgentsDir(),
     userDir: userAgentsDir(),
     manifestPath: bundledSeedManifestPath(),
+    previousHashes: PREVIOUS_BUNDLED_AGENT_HASHES,
   })
+}
+
+// SHA-256 of bundled agent versions shipped before the seed manifest recorded
+// hashes. An unedited copy matching one is refreshed to the current version;
+// an edited copy is left alone. Never add to this: later versions are tracked
+// by the manifest itself.
+const PREVIOUS_BUNDLED_AGENT_HASHES: Record<string, string[]> = {
+  "qa-agent.agent.md": [
+    "c3333927a6ff1ea7e88ae2fa3a05d4e58478dd3478fd07c44f0e02cbe4e97c63",
+  ],
 }
 
 // Resolve the ordered agent-source directories for a given workspace. Order

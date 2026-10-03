@@ -96,12 +96,21 @@ export interface WorktreeSetupStep {
   refresh?: Array<{ label: string; command: string }>
 }
 
+// A workspace's Mission Control settings (plan 109.01). `checksDir` is the
+// workspace-relative directory QA seats write acceptance checks under, one
+// subdirectory per user story. It's tracked in git, so checks are committed
+// on the user story branch and merge with the code.
+export interface WorkspaceMissionControlSettings {
+  checksDir: string
+}
+
 export interface Workspace {
   id: string
   path: string
   name: string | null
   generatedFiles: GeneratedFilesRule[]
   worktreeSetup: WorktreeSetup
+  missionControl: WorkspaceMissionControlSettings
   createdAt: number
   updatedAt: number
 }

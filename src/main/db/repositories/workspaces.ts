@@ -3,9 +3,14 @@ import { getDb } from "../connection"
 import type {
   GeneratedFilesRule,
   Workspace,
+  WorkspaceMissionControlSettings,
   WorktreeSetup,
   WorktreeSetupStep,
 } from "../types"
+import {
+  DEFAULT_CHECKS_DIR,
+  normalizeChecksDir,
+} from "../../../shared/mission-control/checks"
 
 interface WorkspaceRow {
   id: string
@@ -13,6 +18,7 @@ interface WorkspaceRow {
   name: string | null
   generated_files: string | null
   worktree_setup: string | null
+  mission_control: string | null
   created_at: number
   updated_at: number
 }
@@ -24,6 +30,7 @@ function toWorkspace(row: WorkspaceRow): Workspace {
     name: row.name,
     generatedFiles: parseGeneratedFiles(row.generated_files),
     worktreeSetup: parseWorktreeSetup(row.worktree_setup),
+    missionControl: parseMissionControl(row.mission_control),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   }
@@ -131,7 +138,8 @@ export function normalizeWorktreeSetup(value: unknown): WorktreeSetup {
             .map((c) => ({ label: c.label || c.command, command: c.command }))
         : []
     const shared = item.kind === "python-shared-venv"
-    const venv = shared && typeof item.venv === "string" ? relativePath(item.venv) : null
+    const venv =
+      shared && typeof item.venv === "string" ? relativePath(item.venv) : null
     steps.push({
       id,
       label,
@@ -152,6 +160,25 @@ export function normalizeWorktreeSetup(value: unknown): WorktreeSetup {
     })
   }
   return { linkPaths, steps }
+}
+
+function parseMissionControl(
+  value: string | null
+): WorkspaceMissionControlSettings {
+  try {
+    return normalizeMissionControlSettings(JSON.parse(value ?? "{}"))
+  } catch {
+    return normalizeMissionControlSettings({})
+  }
+}
+
+// Fill defaults and drop what can't be valid: a checks directory that is the
+// workspace root, leaves it, or sits in .git falls back to the default.
+export function normalizeMissionControlSettings(
+  value: unknown
+): WorkspaceMissionControlSettings {
+  const v = (value ?? {}) as { checksDir?: unknown }
+  return { checksDir: normalizeChecksDir(v.checksDir) ?? DEFAULT_CHECKS_DIR }
 }
 
 // Last segment of a path, e.g. "/Users/me/proj" -> "proj". Used as a default name.
@@ -227,6 +254,7 @@ export function updateWorkspace(
     name?: string
     generatedFiles?: GeneratedFilesRule[]
     worktreeSetup?: WorktreeSetup
+    missionControl?: Partial<WorkspaceMissionControlSettings>
   }
 ): Workspace {
   const now = Date.now()
@@ -252,6 +280,30 @@ export function updateWorkspace(
         "UPDATE workspaces SET worktree_setup = ?, updated_at = ? WHERE id = ?"
       )
       .run(JSON.stringify(normalizeWorktreeSetup(patch.worktreeSetup)), now, id)
+  }
+  if (patch.missionControl !== undefined) {
+    const current = getWorkspace(id)?.missionControl
+    if (
+      patch.missionControl.checksDir !== undefined &&
+      normalizeChecksDir(patch.missionControl.checksDir) === null
+    )
+      throw new Error(
+        "The checks directory must be a folder inside the workspace (not the workspace root or .git)."
+      )
+    getDb()
+      .prepare(
+        "UPDATE workspaces SET mission_control = ?, updated_at = ? WHERE id = ?"
+      )
+      .run(
+        JSON.stringify(
+          normalizeMissionControlSettings({
+            ...current,
+            ...patch.missionControl,
+          })
+        ),
+        now,
+        id
+      )
   }
   return getWorkspace(id)!
 }

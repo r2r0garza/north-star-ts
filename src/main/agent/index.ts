@@ -27,6 +27,7 @@ import { readFileTool } from "./tools/read_file_tool"
 import { CHAT_SHELL_TOOL_NAMES, chatShellContext } from "./tools/chat_shell"
 import { toolError } from "./tools/output"
 import type { ToolContext } from "./tools/types"
+import type { WriteScope } from "./tools/write_scope"
 import {
   readDocumentTool,
   supportedDocumentKind,
@@ -899,6 +900,11 @@ export interface RunAgentLoopOptions {
   // by mail (consult / answer_only) — narrows the toolset to read/search tools
   // so a message can never cause a side effect.
   missionControlSeat?: SeatTurnIdentity
+  // Workspace-relative directories this turn's write-family tools may change
+  // (plan 109.01): a Mission Control `qa` seat's checks and scratch
+  // directories. Absent = the whole workspace. Inherited by any subagent this
+  // turn spawns, so delegating can't widen it.
+  writeScope?: WriteScope
   // Extra system-block context sections supplied by the caller — e.g. the
   // Mission Control seat context (charter, cultures, intent chain). Budgeted
   // by the ContextBuilder like every other section.
@@ -2855,6 +2861,7 @@ export async function runAgentLoop(
                     skillResourceRoots,
                     parentSignal: callSignal,
                     parentChatPythonVenv: opts.chatPythonVenv,
+                    parentWriteScope: opts.writeScope,
                     parentAutoMode: autoMode,
                     subscribeParentAutoMode: (subscriber) => {
                       autoModeSubscribers.add(subscriber)
@@ -2884,6 +2891,7 @@ export async function runAgentLoop(
                     parentConversation: conversation,
                     parentSignal: callSignal,
                     parentChatPythonVenv: opts.chatPythonVenv,
+                    parentWriteScope: opts.writeScope,
                     depth: (opts.agentDepth ?? 0) + 1,
                     ancestors: [
                       ...(opts.agentAncestors ?? []),
@@ -2899,6 +2907,7 @@ export async function runAgentLoop(
             processRunId: opts.processRunId,
             processPhaseRunId: opts.processPhaseRunId,
             missionControlSeat: opts.missionControlSeat,
+            writeScope: opts.writeScope,
           }
           // MCP tool calls (mcp__<server>__<tool>) route to the connection pool via
           // the manager, not the static tool registry. Gate first: calling a
@@ -3195,6 +3204,8 @@ async function spawnSubagentBatch(input: {
   parentSignal: AbortSignal
   // A chat's subagents share its Python venv; see RunAgentLoopOptions.
   parentChatPythonVenv?: boolean
+  // The parent's write scope; a child never writes more widely than it.
+  parentWriteScope?: WriteScope
   parentAutoMode: boolean
   subscribeParentAutoMode: (
     subscriber: (enabled: boolean) => void
@@ -3438,6 +3449,7 @@ async function spawnSubagentBatch(input: {
         suppressUserQuestions: true,
         subagentRun: true,
         chatPythonVenv: input.parentChatPythonVenv,
+        writeScope: input.parentWriteScope,
         repositoryLeaseToken: lease?.token,
         beforeApproval: (signal) => approvalCoordinator.acquire(signal),
         onApprovalWaitingChange: (waiting) => {
@@ -3576,6 +3588,8 @@ async function spawnSubagent(input: {
   parentSignal: AbortSignal
   // A chat's subagents share its Python venv; see RunAgentLoopOptions.
   parentChatPythonVenv?: boolean
+  // The parent's write scope; a child never writes more widely than it.
+  parentWriteScope?: WriteScope
   depth: number
   ancestors: string[]
 }): Promise<{ content?: string; error?: string; stopped?: boolean }> {
@@ -3642,6 +3656,7 @@ async function spawnSubagent(input: {
       suppressUserQuestions: true,
       subagentRun: true,
       chatPythonVenv: input.parentChatPythonVenv,
+      writeScope: input.parentWriteScope,
     })
     if (result.stopped || childAbort.signal.aborted) return { stopped: true }
     if (result.error) return { error: result.error }

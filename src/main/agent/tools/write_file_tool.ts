@@ -17,6 +17,7 @@ import {
   validRevision,
 } from "./file/mutation"
 import { isSkillResourceUri } from "./skill_resources"
+import { writeScopeError } from "./write_scope"
 
 // Creates, overwrites, or appends to a file inside the workspace, creating
 // parent directories as needed. Writes atomically and returns a short
@@ -113,6 +114,8 @@ export const writeFileTool: Tool = {
     if (isManagedMemoryPath(target)) {
       return toolError("not_allowed", MANAGED_MEMORY_WRITE_ERROR)
     }
+    const outOfScope = await writeScopeError(ctx, env, [path])
+    if (outOfScope) return outOfScope
 
     let existingInfo
     try {

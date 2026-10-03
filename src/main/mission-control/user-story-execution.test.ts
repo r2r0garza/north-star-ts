@@ -1,7 +1,9 @@
-import { describe, it, expect, beforeEach, vi } from "vitest"
+import { describe, it, expect, beforeEach, afterAll, vi } from "vitest"
 import Database from "better-sqlite3"
 import { randomUUID } from "crypto"
+import { existsSync, mkdtempSync, rmSync } from "fs"
 import { tmpdir } from "os"
+import { join } from "path"
 import { runMigrations } from "../db/migrations"
 import { sqliteLoadsForTests } from "../test/sqlite"
 
@@ -27,6 +29,7 @@ interface LoopCall {
   proofStep: boolean
   proofResult?: RecordProofResult
   seat?: { address: string; profile: string; anchor: unknown }
+  writeScope?: { allow: string[] }
 }
 const loopCalls: LoopCall[] = []
 // What a proof-step worker submits through record_proof, per call (FIFO).
@@ -44,6 +47,7 @@ vi.mock("../agent", () => ({
     processRunId?: string
     processPhaseRunId?: string
     missionControlSeat?: { address: string; profile: string; anchor: unknown }
+    writeScope?: { allow: string[] }
     abort?: AbortController
   }) => {
     // A worker that never finishes on its own, like nav-test-8's refine.
@@ -67,6 +71,7 @@ vi.mock("../agent", () => ({
         .join("\n"),
       proofStep: !!input.processProofStep,
       seat: input.missionControlSeat,
+      writeScope: input.writeScope,
     }
     loopCalls.push(call)
     const msg = input.userMessage ?? ""
@@ -235,8 +240,13 @@ function orchestratedRig(options: { qaAgent?: string | null } = {}) {
   return rig
 }
 
+// QA steps create their checks and scratch directories in the workspace, so it
+// is a folder of this file's own rather than the shared temp dir.
+const workspaceDir = mkdtempSync(join(tmpdir(), "mc-exec-"))
+afterAll(() => rmSync(workspaceDir, { recursive: true, force: true }))
+
 function billingFeature(rigId: string) {
-  const workspace = upsertWorkspace(tmpdir())
+  const workspace = upsertWorkspace(workspaceDir)
   const graph = features.createFeature({
     key: "billing",
     name: "Billing",
@@ -355,6 +365,31 @@ describe.skipIf(!sqliteLoads)("user story execution", () => {
       builderAddresses: ["builder@implementation"],
     })
     expect(playbooks.getPlaybookRun(playbookRun.id)!.status).toBe("completed")
+  })
+
+  it("confines the QA seat's writes to its checks and scratch directories (plan 109.01)", async () => {
+    const rig = orchestratedRig()
+    const { userStory } = billingFeature(rig.id)
+    proofSubmissions.push(acceptedProof)
+
+    const playbookRun = await runner.startUserStory(userStory.id)
+    await drive(playbookRun.processRunId!)
+
+    const workers = loopCalls.filter(
+      (c) => !c.userMessage?.startsWith("# Review the")
+    )
+    const checks = "e2e"
+    const scratch = `.mission-control/scratch/${playbookRun.processRunId}`
+    // Builders write anywhere, as before.
+    expect(workers[0].writeScope).toBeUndefined()
+    expect(workers[1].writeScope).toBeUndefined()
+    expect(workers[2].writeScope).toEqual({ allow: [checks, scratch] })
+    expect(workers[2].sectionContent).toContain(`\`${checks}/\``)
+    expect(workers[2].sectionContent).toContain(
+      "`@billing.milestone-1.invoice-model`"
+    )
+    expect(existsSync(join(workspaceDir, checks))).toBe(true)
+    expect(existsSync(join(workspaceDir, scratch, ".gitignore"))).toBe(true)
   })
 
   it("refuses a second start while the first is still preparing, so a story never runs twice", async () => {

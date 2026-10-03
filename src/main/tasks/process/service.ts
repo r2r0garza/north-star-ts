@@ -42,6 +42,7 @@ import {
 } from "../../mission-control/seat-context"
 import { commsContextSection } from "../../mission-control/comms"
 import { getSeatSessions } from "../../mission-control/sessions"
+import { seatWriteScope, type SeatScope } from "../../mission-control/qa-scope"
 import {
   seatTurns,
   type SeatTurnIdentity,
@@ -1394,6 +1395,9 @@ export class ProcessService {
         },
       })
 
+      const scoped = await this.seatWriteScope(run, seat, workspace)
+      if ("error" in scoped) return { error: scoped.error, retryable: false }
+      const { seatScope } = scoped
       let releaseSeat: (() => void) | null = null
       try {
         // One turn at a time per transcript: a seat-session step waits for a
@@ -1432,8 +1436,10 @@ export class ProcessService {
             ...(seatTurn && feature
               ? [commsContextSection(feature, seatTurn)]
               : []),
+            ...(seatScope ? [seatScope.contextSection] : []),
           ],
           missionControlSeat: seatTurn ?? undefined,
+          writeScope: seatScope?.writeScope,
           processProofStep:
             !!phase.proofStep && !!this.missionControlRoot(run)?.missionControl,
           // Headless worker: no user to answer a clarifying question (it would only
@@ -1605,6 +1611,9 @@ export class ProcessService {
           reworkNote,
         }) + (attempt > 1 ? decompositionRetryNote : "")
 
+      const scoped = await this.seatWriteScope(run, resolved.seat, workspace)
+      if ("error" in scoped) return { error: scoped.error, retryable: false }
+      const { seatScope } = scoped
       try {
         const result = await runAgentLoop({
           conversationId: worker.id,
@@ -1617,7 +1626,11 @@ export class ProcessService {
           ...(resolved.agentOverride
             ? { agentOverride: resolved.agentOverride }
             : {}),
-          extraContextSections: resolved.contextSections,
+          extraContextSections: [
+            ...(resolved.contextSections ?? []),
+            ...(seatScope ? [seatScope.contextSection] : []),
+          ],
+          writeScope: seatScope?.writeScope,
           // Headless worker — no user to answer a clarifying question.
           suppressUserQuestions: true,
           onEvent: () => {},
@@ -2037,6 +2050,31 @@ export class ProcessService {
       workspace: routing.workspace,
       signal: routing.signal,
     })
+  }
+
+  // Where a seat-bound worker may write (plan 109.01): a `qa` seat only in its
+  // checks directory and the run's scratch directory. Resolved
+  // from the seat's role on the frozen bindings, never from the model. An
+  // error (git ignores the checks directory) fails the step, not retryable.
+  private async seatWriteScope(
+    run: ProcessRun,
+    seat: SeatBinding | null,
+    workspace: string | undefined
+  ): Promise<{ seatScope?: SeatScope } | { error: string }> {
+    const link = this.missionControlRoot(run)?.missionControl
+    if (!seat || !link) return {}
+    try {
+      return {
+        seatScope: await seatWriteScope({
+          role: seat.role,
+          link,
+          runId: run.id,
+          workingDirectory: workspace,
+        }),
+      }
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) }
+    }
   }
 
   // The top-level run carrying Mission Control state. A nested sub-process run

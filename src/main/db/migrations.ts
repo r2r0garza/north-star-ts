@@ -135,6 +135,7 @@ const MIGRATIONS: Array<(db: Database.Database) => void> = [
   ensureHealth,
   ensurePlaybookHookOwnership,
   ensureWorkspaceAnalyses,
+  ensureWorkspaceMissionControlColumn,
 ]
 
 function tableExists(db: Database.Database, table: string): boolean {
@@ -333,6 +334,12 @@ CREATE INDEX IF NOT EXISTS idx_health_signals_anchor ON health_signals(feature_i
 // WorktreeSetup: paths linked from the main checkout and a setup command).
 function ensureWorktreeSetupColumn(db: Database.Database): void {
   addColumnIfMissing(db, "workspaces", "worktree_setup", "TEXT")
+}
+
+// v65 (plan 109.01): a workspace's Mission Control settings (JSON
+// WorkspaceMissionControlSettings: where QA seats write acceptance checks).
+function ensureWorkspaceMissionControlColumn(db: Database.Database): void {
+  addColumnIfMissing(db, "workspaces", "mission_control", "TEXT")
 }
 
 // v58: a workspace's generated files and the command that rebuilds them
@@ -586,6 +593,7 @@ export function runMigrations(
       ensurePhaseReviewColumn(db)
       ensureGeneratedFilesColumn(db)
       ensureWorktreeSetupColumn(db)
+      ensureWorkspaceMissionControlColumn(db)
       ensureConversationNotes(db)
       ensureSeatMemory(db)
       ensureHealth(db)

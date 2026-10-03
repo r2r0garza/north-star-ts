@@ -1,6 +1,6 @@
 # PR109: QA seats that verify independently — checks, running apps, and a seat browser
 
-> Status: **PLANNED** (parent; delivered as `109.01`–`109.05`). Follow-up to `106.3` (playbooks and proofs), `106.5` (worktrees), and `106.11`
+> Status: **IN PROGRESS** (parent; delivered as `109.01`–`109.06`; `109.01` done 2026-10-03). Follow-up to `106.3` (playbooks and proofs), `106.5` (worktrees), and `106.11`
 > (worktree setup). Uses the current names: Features, Milestones, User stories.
 
 ## Context
@@ -52,10 +52,15 @@ assumes a web stack. The browser and Playwright are tools for UI projects, not r
    enforced at the tool boundary (write/edit/apply_patch/filesystem lifecycle tools), not just in the
    prompt. Shell commands can't be path-confined, so the prompt also says not to modify product code,
    and the test step's diff check (decision 5) catches violations.
-2. **Checks live in the repo, with the story.** Default: `.mission-control/checks/<user-story-slug>/`.
-   A workspace can point it at its own convention (e.g. `e2e/`). The checks are committed on the user
-   story branch, so they merge with the code and `reverify` can re-run them after a conflict resolution.
-3. **Checks are commands.** A check manifest (`checks.json` in the story's checks directory) maps each
+2. **Checks live in the repo, as shared test code.** Default checks directory: `e2e/` (a workspace
+   can point it elsewhere). Checks are organized by what they test, not by user story: page objects,
+   fixtures, and specs by product area, following the project's own structure when it has one, so
+   stories reuse page objects instead of duplicating them. A story is traced by its tag
+   `@<feature>.<milestone>.<story>` and its manifest `<checksDir>/stories/<storyRef>.json`. The checks
+   are committed on the user story branch, so they merge with the code, the user can re-run them like
+   any other tests, and `reverify` can re-run them after a conflict resolution. (Revised during
+   `109.01`: originally one hidden folder per story, which duplicated test code.)
+3. **Checks are commands.** A check manifest (the story's `stories/<storyRef>.json`) maps each
    acceptance criterion to one or more executable checks. Each check has a command, a cwd, the app
    services it needs (decision 6), and a timeout. Whatever the command runs is up to the check: a
    Playwright spec, `curl` against an API, a CLI invocation with expected output, a pytest file. QA uses
@@ -137,7 +142,7 @@ assumes a web stack. The browser and Playwright are tools for UI projects, not r
 9. **Proofs record how each criterion was verified.** Each proof criterion gets
    `method: "qa_check" | "app_exercised" | "builder_tests" | "command" | "code_read"`. For
    `qa_check`, it also gets `checkIds`. For `app_exercised`, it gets artifacts (screenshots, console and
-   network excerpts, saved under the checks directory's `evidence/`). The gate in `proof.ts`:
+   network excerpts, saved in app data under `evidence/<phase-run-id>/`, not in the repo). The gate in `proof.ts`:
    - `code_read` alone can't be `met`. It must be `not_verifiable` with a reason;
    - a criterion the manifest covers with a QA check can't be `met` unless that check ran and passed in
      this test step (the check runner records results on the phase run; the model can't claim them);
