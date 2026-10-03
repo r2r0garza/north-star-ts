@@ -1,3 +1,4 @@
+import { appLaunchDrafts } from "./app-launch"
 import { createHash } from "crypto"
 import { existsSync, readdirSync, statSync } from "fs"
 import { open, readFile } from "fs/promises"
@@ -65,6 +66,8 @@ export interface CurrentSettings {
   steps: Array<SetupStepShape & { source?: "user" | "analysis" }>
   generatedFiles: Array<{ paths: string[]; command: string }>
   overlapPolicy: "wait" | "parallel"
+  // The workspace's app launch services (plan 109.03).
+  appServices?: Array<{ key: string; command: string; cwd: string }>
 }
 
 // Results of probes that execute project code, run on the user's approval
@@ -378,6 +381,14 @@ export async function analyzeWorkspace(
   drafts.push(...worktreeDrafts(inventory, ignored, contexts, input.settings))
   drafts.push(...localConfigDrafts(ignored))
   drafts.push(...buildCostDrafts(inventory, contexts))
+  drafts.push(
+    ...(await appLaunchDrafts({
+      workspace,
+      roots: inventory.roots,
+      files,
+      read,
+    }))
+  )
 
   // ── 4. Generated files ────────────────────────────────────────────────────
   stage("Looking for generated files")

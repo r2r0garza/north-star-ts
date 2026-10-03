@@ -274,6 +274,55 @@ describe.skipIf(!sqliteLoads)("WorkspaceAnalysisService", () => {
     )
   })
 
+  it("proposes an app launch recipe from a dev script and saves it only on Apply", async () => {
+    const root = repo({
+      "package.json": JSON.stringify({
+        name: "shop",
+        scripts: { dev: "vite", build: "vite build" },
+        devDependencies: { vite: "^5.0.0" },
+      }),
+      "package-lock.json": "{}",
+    })
+    const { feature, workspace } = featureFor(root)
+    const svc = service()
+    const analysis = await svc.analyze(feature.id)
+    const finding = analysis.findings.find((f) => f.key === "app-launch:recipe")
+    expect(finding).toMatchObject({
+      status: "open",
+      category: "app-launch",
+      fix: {
+        kind: "apply-settings",
+        patch: {
+          appLaunch: {
+            add: [
+              {
+                key: "web",
+                command: "npm run dev -- --port {port} --strictPort",
+                port: "auto",
+                ready: { http: "/" },
+              },
+            ],
+          },
+        },
+      },
+    })
+    // It persists a command: never applied by Start on its own.
+    await svc.preflight(feature.id)
+    expect(getWorkspace(workspace.id)!.appLaunch.services).toEqual([])
+    const result = await svc.applyFix(feature.id, "app-launch:recipe")
+    expect(getWorkspace(workspace.id)!.appLaunch.services).toEqual([
+      expect.objectContaining({
+        key: "web",
+        command: "npm run dev -- --port {port} --strictPort",
+        source: "analysis",
+        findingKey: "app-launch:recipe",
+      }),
+    ])
+    expect(
+      result.analysis?.findings.find((f) => f.key === "app-launch:recipe")
+    ).toMatchObject({ status: "resolved", resolution: "Already configured" })
+  })
+
   it("dismisses and restores a finding", async () => {
     const { feature } = featureFor(repo(python, { ".env.local": "x" }))
     const svc = service()

@@ -97,6 +97,11 @@ const UNIVERSAL = new Set([
   // step, which must be able to run and re-freeze its checks.
   "run_checks",
   "refreeze_checks",
+  // App lifecycle (plan 109.03): offered only to a Mission Control builder
+  // or QA step, which must be able to start the app it builds or verifies.
+  "app_start",
+  "app_status",
+  "app_stop",
 ])
 
 export function isUniversalTool(name: string): boolean {

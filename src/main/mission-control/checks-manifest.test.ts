@@ -8,12 +8,12 @@ import {
 const storyRef = "billing.m1.login"
 const criterionIds = ["AC-1", "AC-2"]
 
-function validate(manifest: unknown, servicesAvailable = false) {
+function validate(manifest: unknown, serviceKeys: string[] = []) {
   return validateChecksManifest({
     text: typeof manifest === "string" ? manifest : JSON.stringify(manifest),
     criterionIds,
     storyRef,
-    servicesAvailable,
+    serviceKeys,
   })
 }
 
@@ -133,7 +133,7 @@ describe("validateChecksManifest", () => {
     }
   })
 
-  it("refuses services until a launch recipe exists", () => {
+  it("accepts only services from the launch recipe", () => {
     const manifest = {
       criteria: {
         "AC-1": [{ ...good.criteria["AC-1"][0], services: ["web"] }],
@@ -143,7 +143,11 @@ describe("validateChecksManifest", () => {
     const refused = validate(manifest)
     expect(refused.ok).toBe(false)
     if (!refused.ok) expect(refused.errors[0]).toMatch(/no app launch recipe/)
-    expect(validate(manifest, true).ok).toBe(true)
+    const unknown = validate(manifest, ["api"])
+    expect(unknown.ok).toBe(false)
+    if (!unknown.ok)
+      expect(unknown.errors[0]).toMatch(/aren't in the app launch recipe: web/)
+    expect(validate(manifest, ["web", "api"]).ok).toBe(true)
   })
 
   it("warns when a command selects neither the story tag nor a file", () => {

@@ -50,9 +50,27 @@ vi.mock("../agent", () => ({
     missionControlSeat?: { address: string; profile: string; anchor: unknown }
     writeScope?: { allow: string[] }
     processQaChecks?: "author" | "verify"
+    processAppLaunch?: boolean
     workspace?: string
     abort?: AbortController
   }) => {
+    // A builder or QA step that starts the app (plan 109.03).
+    if (startApp && input.processAppLaunch) {
+      const out = await appStartTool.execute({}, {
+        workspace: input.workspace,
+        processRunId: input.processRunId,
+        processPhaseRunId: input.processPhaseRunId,
+        signal: input.abort?.signal,
+      } as never)
+      appStarts.push({
+        phaseRunId: input.processPhaseRunId!,
+        ready: /"status": "ready"/.test(out),
+        pids: testAppServices.pids(),
+        briefed: (input.extraContextSections ?? []).some((section) =>
+          section.content.includes("## Running the app")
+        ),
+      })
+    }
     // A worker that never finishes on its own, like nav-test-8's refine.
     if (hangLoops && input.abort) {
       const signal = input.abort.signal
@@ -118,6 +136,14 @@ vi.mock("../agent", () => ({
     return { content }
   },
 }))
+// Workers start the app when it's offered, and what they started.
+let startApp = false
+const appStarts: Array<{
+  phaseRunId: string
+  ready: boolean
+  pids: number[]
+  briefed: boolean
+}> = []
 // The dispatch router's classifier reply.
 let routerReply = ""
 let hangLoops = false
@@ -164,6 +190,9 @@ import {
 } from "./user-story-runner"
 import { startHookRun } from "./hook-runner"
 import { writeFakeManifest } from "../test/qa-manifest"
+import { appStartTool } from "../agent/tools/app_launch_tools"
+import { testAppServices } from "./app-launch"
+import { updateWorkspace } from "../db/repositories/workspaces"
 import { installSeatSessions, SeatSessionService } from "./sessions"
 import * as seatSessionsRepo from "../db/repositories/seat-sessions"
 import type { AgentDefinition } from "../agent/agents/types"
@@ -315,6 +344,8 @@ beforeEach(() => {
   cancelledTasks.length = 0
   routerReply = ""
   manifestSkips = 0
+  startApp = false
+  appStarts.length = 0
   rmSync(join(workspaceDir, "e2e"), { recursive: true, force: true })
   setup()
 })
@@ -790,6 +821,97 @@ describe.skipIf(!sqliteLoads)("user story execution", () => {
       vi.useRealTimers()
     }
   })
+
+  describe.skipIf(process.platform === "win32")(
+    "app launch (plan 109.03)",
+    () => {
+      const alive = (pid: number) => {
+        try {
+          process.kill(pid, 0)
+          return true
+        } catch {
+          return false
+        }
+      }
+      const allDead = async (pids: number[]) => {
+        for (let i = 0; i < 60 && pids.some(alive); i++)
+          await new Promise((r) => setTimeout(r, 50))
+        return !pids.some(alive)
+      }
+      function withRecipe(workspaceId: string) {
+        updateWorkspace(workspaceId, {
+          appLaunch: {
+            services: [
+              {
+                key: "web",
+                label: "Web",
+                command: `${JSON.stringify(process.execPath)} -e "require('http').createServer((q,s)=>s.end('ok')).listen(Number(process.env.PORT),'127.0.0.1')"`,
+                cwd: "",
+                port: "auto",
+                ready: { http: "/" },
+                readyTimeoutMs: 15_000,
+                source: "user",
+              },
+            ],
+          },
+        })
+      }
+
+      it("offers app tools to builder and QA steps and stops what they started when each step ends", async () => {
+        const rig = orchestratedRig()
+        const { feature, userStory } = billingFeature(rig.id)
+        withRecipe(feature.workspaceId!)
+        startApp = true
+        proofSubmissions.push(acceptedProof)
+        const playbookRun = await runner.startUserStory(userStory.id)
+        await drive(playbookRun.processRunId!)
+        expect(features.getUserStory(userStory.id)!.status).toBe("done")
+        // spec, build (builder) and checks, test (QA): every step started it.
+        expect(appStarts).toHaveLength(4)
+        expect(appStarts.every((s) => s.ready && s.briefed)).toBe(true)
+        expect(new Set(appStarts.map((s) => s.phaseRunId)).size).toBe(4)
+        expect(testAppServices.size).toBe(0)
+        expect(await allDead(appStarts.flatMap((s) => s.pids))).toBe(true)
+      })
+
+      it("stops the app when the run is cancelled mid-step", async () => {
+        const rig = orchestratedRig()
+        const { feature, userStory } = billingFeature(rig.id)
+        withRecipe(feature.workspaceId!)
+        startApp = true
+        hangLoops = true
+        try {
+          const playbookRun = await runner.startUserStory(userStory.id)
+          const abort = new AbortController()
+          const driving = drive(playbookRun.processRunId!, abort.signal)
+          for (let i = 0; i < 200 && !appStarts.length; i++)
+            await new Promise((r) => setTimeout(r, 25))
+          expect(appStarts).toHaveLength(1)
+          expect(testAppServices.size).toBe(1)
+          abort.abort()
+          await driving
+          // The scheduler returns on abort; the step's teardown follows as its
+          // worker unwinds.
+          for (let i = 0; i < 100 && testAppServices.size; i++)
+            await new Promise((r) => setTimeout(r, 25))
+          expect(testAppServices.size).toBe(0)
+          expect(await allDead(appStarts[0].pids)).toBe(true)
+        } finally {
+          hangLoops = false
+        }
+      })
+
+      it("doesn't offer app tools without a recipe", async () => {
+        const rig = orchestratedRig()
+        const { userStory } = billingFeature(rig.id)
+        startApp = true
+        proofSubmissions.push(acceptedProof)
+        const playbookRun = await runner.startUserStory(userStory.id)
+        await drive(playbookRun.processRunId!)
+        expect(appStarts).toEqual([])
+      })
+    }
+  )
 
   it("applies a QA send-back on Autopilot, and asks the user otherwise", async () => {
     for (const mode of ["autopilot", "manual"] as const) {

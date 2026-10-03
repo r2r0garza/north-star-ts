@@ -83,6 +83,7 @@ import {
 } from "./db/repositories/workspaces"
 import { getFeature as getFeatureRow } from "./db/repositories/features"
 import { WorkspaceAnalysisService } from "./mission-control/workspace-analysis"
+import { stopAllServicesSync } from "./mission-control/app-launch"
 import { registerWorkspaceAnalysisHandlers } from "./ipc/workspace-analysis-handlers"
 import { resolveLlm, createCompletion } from "./agent/providers"
 import * as settingsService from "./settings/service"
@@ -1771,6 +1772,9 @@ app.on("will-quit", () => {
   milestoneIntegration.stop()
   milestoneNavigator.stop()
   healthMonitor.stop()
+  // App services seats started (plan 109.03): their process groups, so no
+  // dev server outlives the app.
+  stopAllServicesSync()
   browserManager.dispose()
   terminalService.dispose()
   // Disconnect every pooled MCP client (stops spawned stdio processes / closes

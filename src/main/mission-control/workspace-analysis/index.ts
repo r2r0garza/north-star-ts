@@ -67,7 +67,8 @@ export interface WorkspaceAnalysisDeps {
   getWorkspace(id: string): Workspace | undefined
   updateWorkspace(
     id: string,
-    patch: Pick<Workspace, "worktreeSetup" | "generatedFiles">
+    patch: Pick<Workspace, "worktreeSetup" | "generatedFiles"> &
+      Partial<Pick<Workspace, "appLaunch">>
   ): Workspace
   setOverlapPolicy(featureId: string, value: "wait" | "parallel"): void
   // The model, when a provider is configured; null means unavailable.
@@ -147,6 +148,7 @@ export class WorkspaceAnalysisService {
       steps: workspace.worktreeSetup.steps,
       generatedFiles: workspace.generatedFiles,
       overlapPolicy: feature.drive.overlapPolicy,
+      appServices: workspace.appLaunch.services,
     }
   }
 
@@ -510,12 +512,14 @@ export class WorkspaceAnalysisService {
       patch.worktreeLinkPaths?.remove?.length ||
       patch.worktreeSetupSteps?.add?.length ||
       patch.worktreeSetupSteps?.remove?.length ||
-      patch.generatedFiles?.add?.length
+      patch.generatedFiles?.add?.length ||
+      patch.appLaunch?.add?.length
     ) {
       const next = applyPatch(
         {
           worktreeSetup: workspace.worktreeSetup,
           generatedFiles: workspace.generatedFiles,
+          appLaunch: workspace.appLaunch,
         },
         patch,
         findingKey
@@ -529,6 +533,10 @@ export class WorkspaceAnalysisService {
         ...(patch.generatedFiles?.add ?? []).map((r) => ({
           command: r.command,
           cwd: "",
+        })),
+        ...(patch.appLaunch?.add ?? []).map((service) => ({
+          command: service.command,
+          cwd: service.cwd,
         })),
       ])
     }
@@ -619,6 +627,11 @@ export class WorkspaceAnalysisService {
                       label: `Saved as the regeneration command for ${r.paths.join(", ")}`,
                       command: r.command,
                       cwd: "",
+                    })),
+                    ...(fix.patch.appLaunch?.add ?? []).map((service) => ({
+                      label: `Saved as the app launch service ${service.label}`,
+                      command: service.command,
+                      cwd: service.cwd,
                     })),
                   ]
                 : []
@@ -974,6 +987,7 @@ function savesOrRunsCommand(fix: Fix): boolean {
   if (fix.kind !== "apply-settings") return false
   return (
     !!fix.patch.worktreeSetupSteps?.add?.length ||
-    !!fix.patch.generatedFiles?.add?.length
+    !!fix.patch.generatedFiles?.add?.length ||
+    !!fix.patch.appLaunch?.add?.length
   )
 }

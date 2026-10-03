@@ -1,9 +1,15 @@
 import path from "path"
 import type {
+  AppLaunch,
+  AppService,
   GeneratedFilesRule,
   WorktreeSetup,
   WorktreeSetupStep,
 } from "../../db/types"
+import {
+  substitutePorts,
+  validateAppLaunch,
+} from "../../../shared/mission-control/app-launch"
 import type { WorkspaceSettingsPatch } from "../../../shared/mission-control/workspace-analysis"
 import { ruleCovered } from "./assemble"
 import {
@@ -22,6 +28,8 @@ import {
 export interface WorkspaceSettings {
   worktreeSetup: WorktreeSetup
   generatedFiles: GeneratedFilesRule[]
+  // Present in the result only when the patch adds services.
+  appLaunch?: AppLaunch
 }
 
 // Setup steps run in this order: toolchains, dependencies, code generation,
@@ -72,6 +80,22 @@ export function validatePatch(
     }
     const v = checkGeneratedCommand(rule.command, workspace)
     if (!v.ok) return `\`${rule.command}\`: ${v.reason}`
+  }
+  const services = patch.appLaunch?.add ?? []
+  if (services.length) {
+    const recipe = validateAppLaunch({
+      services: services.map((s) => ({ ...s, source: "analysis" })),
+    })
+    if (!recipe.ok) return recipe.errors[0]
+    // Placeholders aren't shell syntax: check the command with sample ports.
+    const ports = Object.fromEntries(services.map((s, i) => [s.key, 40000 + i]))
+    for (const service of recipe.recipe.services) {
+      const dir = checkRelativePath(service.cwd)
+      if (!dir.ok) return `${service.cwd}: ${dir.reason}`
+      const command = substitutePorts(service.command, 39999, ports)
+      const v = checkSetupCommand(command, path.join(workspace, service.cwd))
+      if (!v.ok) return `\`${service.command}\`: ${v.reason}`
+    }
   }
   return null
 }
@@ -153,5 +177,47 @@ export function applyPatch(
       sameCommand.paths = [...new Set([...sameCommand.paths, ...rule.paths])]
     else generatedFiles.push({ paths: [...rule.paths], command: rule.command })
   }
-  return { worktreeSetup: { linkPaths, steps }, generatedFiles }
+  return {
+    worktreeSetup: { linkPaths, steps },
+    generatedFiles,
+    ...(patch.appLaunch?.add?.length
+      ? {
+          appLaunch: mergeServices(
+            current.appLaunch ?? { services: [] },
+            patch,
+            findingKey
+          ),
+        }
+      : {}),
+  }
+}
+
+// Add a finding's proposed services. Re-applying replaces the services it
+// saved before unless the user edited them (then they're "user"); a service
+// with the same command and directory as one already there isn't added
+// again. Keys stay unique.
+function mergeServices(
+  current: AppLaunch,
+  patch: WorkspaceSettingsPatch,
+  findingKey: string
+): AppLaunch {
+  const adding = patch.appLaunch?.add ?? []
+  const same = (a: { command: string; cwd: string }, b: typeof a) =>
+    a.command.trim() === b.command.trim() && a.cwd === b.cwd
+  const services: AppService[] = current.services.filter(
+    (s) =>
+      !(
+        s.source === "analysis" &&
+        s.findingKey === findingKey &&
+        !adding.some((a) => same(a, s))
+      )
+  )
+  for (const service of adding) {
+    if (services.some((s) => same(s, service))) continue
+    let key = service.key
+    for (let n = 2; services.some((s) => s.key === key); n++)
+      key = `${service.key}-${n}`
+    services.push({ ...service, key, source: "analysis", findingKey })
+  }
+  return { services }
 }

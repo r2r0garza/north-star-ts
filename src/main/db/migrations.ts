@@ -137,6 +137,7 @@ const MIGRATIONS: Array<(db: Database.Database) => void> = [
   ensureWorkspaceAnalyses,
   ensureWorkspaceMissionControlColumn,
   ensurePhaseRunQaChecksColumn,
+  ensureWorkspaceAppLaunchColumn,
 ]
 
 function tableExists(db: Database.Database, table: string): boolean {
@@ -347,6 +348,12 @@ function ensureWorkspaceMissionControlColumn(db: Database.Database): void {
 // (JSON PhaseRunQaChecks: freeze, drift, run_checks results).
 function ensurePhaseRunQaChecksColumn(db: Database.Database): void {
   addColumnIfMissing(db, "process_phase_runs", "qa_checks", "TEXT")
+}
+
+// v67 (plan 109.03): how a workspace's app is started for Mission Control
+// seats (JSON AppLaunch: services, ports, readiness, dependencies).
+function ensureWorkspaceAppLaunchColumn(db: Database.Database): void {
+  addColumnIfMissing(db, "workspaces", "app_launch", "TEXT")
 }
 
 // v58: a workspace's generated files and the command that rebuilds them
@@ -602,6 +609,7 @@ export function runMigrations(
       ensureWorktreeSetupColumn(db)
       ensureWorkspaceMissionControlColumn(db)
       ensurePhaseRunQaChecksColumn(db)
+      ensureWorkspaceAppLaunchColumn(db)
       ensureConversationNotes(db)
       ensureSeatMemory(db)
       ensureHealth(db)

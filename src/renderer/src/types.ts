@@ -15,6 +15,8 @@ export type {
   TaskStatus,
   Todo,
   TodoStatus,
+  AppLaunch,
+  AppService,
   GeneratedFilesRule,
   WorktreeSetup,
   WorktreeSetupStep,

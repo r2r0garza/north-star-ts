@@ -16,6 +16,8 @@ import type {
   TaskEvent,
   TaskStatus,
   Todo,
+  AppLaunch,
+  AppService,
   GeneratedFilesRule,
   WorkspaceMissionControlSettings,
   WorktreeSetup,
@@ -1983,6 +1985,8 @@ const api = {
           name?: string
           generatedFiles?: GeneratedFilesRule[]
           worktreeSetup?: WorktreeSetup
+          // How the app is started for seats (plan 109.03).
+          appLaunch?: AppLaunch
           // Where QA seats write acceptance checks (plan 109.01).
           missionControl?: Partial<WorkspaceMissionControlSettings>
         }
@@ -2791,6 +2795,8 @@ export type {
   TaskStatus,
   Todo,
   TodoStatus,
+  AppLaunch,
+  AppService,
   GeneratedFilesRule,
   WorkspaceMissionControlSettings,
   WorktreeSetup,

@@ -93,6 +93,13 @@ export function patchSatisfied(
     return false
   if (patch.generatedFiles?.add?.some((rule) => !ruleCovered(settings, rule)))
     return false
+  if (
+    patch.appLaunch?.add?.some(
+      (service) =>
+        !(settings.appServices ?? []).some((s) => sameStep(s, service))
+    )
+  )
+    return false
   return true
 }
 
@@ -138,6 +145,9 @@ export function assembleFindings(input: {
             ? "Already configured (with your command)"
             : "Already configured"
       } else {
+        const ownRecipe =
+          !!fixPatch(draft.fix)?.appLaunch?.add?.length &&
+          !!input.settings.appServices?.length
         const alternative = draft.alternatives?.find((alt) => {
           const altPatch = fixPatch(alt)
           return altPatch && patchSatisfied(input.settings, altPatch)
@@ -169,7 +179,8 @@ export function assembleFindings(input: {
             },
           }
           finding.alternatives = []
-        } else if (alternative) {
+        } else if (alternative || ownRecipe) {
+          // An app launch recipe the user wrote: don't second-guess it.
           finding.status = "resolved"
           finding.resolution = "Configured another way"
         }
@@ -207,6 +218,7 @@ function commandFree(patch: WorkspaceSettingsPatch): boolean {
   return (
     !patch.worktreeSetupSteps?.add?.length &&
     !patch.generatedFiles?.add?.length &&
+    !patch.appLaunch?.add?.length &&
     !patch.worktreeSetupSteps?.remove?.length &&
     !patch.worktreeLinkPaths?.remove?.length
   )

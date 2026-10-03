@@ -12,6 +12,12 @@ import type {
 } from "../../shared/mission-control/plan-changes"
 import type { UserStoryNarrative } from "../../shared/mission-control/story"
 import type { OverlapPolicy } from "../../shared/mission-control/waves"
+import type { AppLaunch } from "../../shared/mission-control/app-launch"
+export type {
+  AppLaunch,
+  AppService,
+  AppServiceReady,
+} from "../../shared/mission-control/app-launch"
 
 // A conversation's view/mode. One per view: Chat / Interactive / North Star.
 export type Mode = "chat" | "interactive" | "north_star"
@@ -110,6 +116,8 @@ export interface Workspace {
   name: string | null
   generatedFiles: GeneratedFilesRule[]
   worktreeSetup: WorktreeSetup
+  // How the app is started for Mission Control seats (plan 109.03).
+  appLaunch: AppLaunch
   missionControl: WorkspaceMissionControlSettings
   createdAt: number
   updatedAt: number

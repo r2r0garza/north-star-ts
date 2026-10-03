@@ -15,6 +15,16 @@ import type {
 import { resolveInWorkspaceReal } from "../agent/tools/workspace"
 import { gitSucceeds, runGit } from "../agent/subagents/worktrees"
 import { CommandError, runLongCommand } from "./long-command"
+import {
+  describeServices,
+  recipeForLink,
+  serviceEnvironment,
+  startServices,
+} from "./app-launch"
+import {
+  substitutePorts,
+  type AppLaunch,
+} from "../../shared/mission-control/app-launch"
 import { QA_ROLE, checksForRun } from "./qa-scope"
 import { userStoryCriteria } from "./user-story-objective"
 import {
@@ -61,6 +71,8 @@ export interface StoryChecks {
   milestoneStories: Map<string, string[]>
   // A conflict resolution re-verifying the merged result.
   reverify: boolean
+  // The workspace's app launch recipe: the services a check may declare.
+  recipe: AppLaunch
 }
 
 export function storyChecks(link: MissionControlRunLink): StoryChecks | null {
@@ -90,6 +102,7 @@ export function storyChecks(link: MissionControlRunLink): StoryChecks | null {
     manifestPath: storyManifestPath(checksDir, storyRef),
     milestoneStories,
     reverify: link.hook === "after_each_user_story",
+    recipe: recipeForLink(link),
   }
 }
 
@@ -345,7 +358,12 @@ export type ManifestRead =
 
 export async function readStoryManifest(
   root: string,
-  input: { manifestPath: string; criterionIds: string[]; storyRef: string }
+  input: {
+    manifestPath: string
+    criterionIds: string[]
+    storyRef: string
+    recipe: AppLaunch
+  }
 ): Promise<ManifestRead> {
   let text: string
   try {
@@ -363,6 +381,7 @@ export async function readStoryManifest(
     text,
     criterionIds: input.criterionIds,
     storyRef: input.storyRef,
+    serviceKeys: input.recipe.services.map((service) => service.key),
   })
   if (!result.ok)
     return {
@@ -399,6 +418,7 @@ async function manifestsForRun(
       manifestPath: storyManifestPath(story.checksDir, ref),
       criterionIds: story.milestoneStories.get(ref) ?? story.criterionIds,
       storyRef: ref,
+      recipe: story.recipe,
     })
     if (read.ok) manifests.push({ storyRef: ref, manifest: read.manifest })
     else problems.push(read.message)
@@ -408,7 +428,7 @@ async function manifestsForRun(
 
 // ── the run's QA checks state ───────────────────────────────────────────────
 
-function rootRun(run: ProcessRun): ProcessRun {
+export function rootRun(run: ProcessRun): ProcessRun {
   let current = run
   for (let depth = 0; current.parentPhaseRunId && depth < 16; depth++) {
     const parent = processes.getPhaseRun(current.parentPhaseRunId)
@@ -503,11 +523,57 @@ function tail(text: string, chars = TAIL_CHARS): string {
   return trimmed.length > chars ? `…${trimmed.slice(-chars)}` : trimmed
 }
 
+// What a check needs from the app: its declared services started (owned by
+// the phase run, so they're reused across checks and stopped at phase end)
+// and their URLs. A service that won't start fails the check with its output.
+async function checkServices(
+  root: string,
+  check: AutomatedCheck,
+  app: { owner: string; recipe: AppLaunch },
+  signal?: AbortSignal
+): Promise<
+  | {
+      ok: true
+      command: string
+      env: Record<string, string>
+    }
+  | { ok: false; output: string }
+> {
+  if (!check.services.length)
+    return { ok: true, command: check.command, env: {} }
+  const started = await startServices({
+    owner: app.owner,
+    root,
+    recipe: app.recipe,
+    keys: check.services,
+    signal,
+  })
+  if (!started.ok)
+    return {
+      ok: false,
+      output: `${started.message}\n${describeServices(started.services)}`,
+    }
+  const { env, ports } = serviceEnvironment(started.services)
+  try {
+    return {
+      ok: true,
+      command: substitutePorts(check.command, null, ports),
+      env,
+    }
+  } catch (err) {
+    return {
+      ok: false,
+      output: `The check's command: ${err instanceof Error ? err.message : String(err)}`,
+    }
+  }
+}
+
 async function runOne(
   root: string,
   check: AutomatedCheck & { criterionId: string },
   storyRef: string,
   attempt: number,
+  app: { owner: string; recipe: AppLaunch },
   signal?: AbortSignal
 ): Promise<CheckResult> {
   const started = Date.now()
@@ -531,15 +597,27 @@ async function runOne(
       outputTail: `cwd "${check.cwd}": ${err instanceof Error ? err.message : String(err)}`,
     }
   }
+  const services = await checkServices(root, check, app, signal)
+  if (!services.ok)
+    return {
+      ...base,
+      passed: false,
+      exitCode: null,
+      timedOut: false,
+      durationMs: Date.now() - started,
+      outputTail: tail(services.output),
+    }
   try {
-    const { stdout, stderr } = await runLongCommand(check.command, {
+    const { stdout, stderr } = await runLongCommand(services.command, {
       cwd,
       // CI keeps test runners non-interactive (Playwright otherwise serves
       // its HTML report after a failure and waits for Ctrl+C).
-      env: { ...process.env, CI: "1", FORCE_COLOR: "0" } as Record<
-        string,
-        string
-      >,
+      env: {
+        ...process.env,
+        CI: "1",
+        FORCE_COLOR: "0",
+        ...services.env,
+      } as Record<string, string>,
       quietLimitMs: check.timeoutMs,
       overallLimitMs: check.timeoutMs,
       signal,
@@ -636,6 +714,7 @@ export async function runQaChecks(input: {
       }
   }
   const results: CheckResult[] = []
+  const app = { owner: ctx.phaseRun.id, recipe: ctx.story.recipe }
   for (const { storyRef, check } of selected) {
     if (input.signal?.aborted) break
     const first = await runOne(
@@ -643,12 +722,13 @@ export async function runQaChecks(input: {
       check,
       storyRef,
       1,
+      app,
       input.signal
     )
     results.push(first)
     if (!first.passed && !input.signal?.aborted)
       results.push(
-        await runOne(input.workspace, check, storyRef, 2, input.signal)
+        await runOne(input.workspace, check, storyRef, 2, app, input.signal)
       )
   }
   updateQaChecks(ctx.phaseRun.id, (current) => ({
@@ -761,6 +841,11 @@ export function authorStepNote(story: StoryChecks): string {
     "} }",
     "```",
     "  An automated check is a command that exits 0 when the criterion holds. Select this story's tests by tag, not by file: a spec file holds several stories' tests. `cwd` is workspace-relative (\"\" for the root). Use `exploratory` only for what can't be checked mechanically (exact copy, visual layout); the test step verifies those in the running app.",
+    ...(story.recipe.services.length
+      ? [
+          `- A check that needs the running app lists the services it needs in \`"services"\` (from this workspace's app launch recipe: ${story.recipe.services.map((service) => `\`${service.key}\``).join(", ")}). \`run_checks\` starts them first, on free ports, and gives the check their URLs: \`BASE_URL\` (the first one), \`APP_<KEY>_URL\` and \`APP_<KEY>_PORT\` in its environment, and \`{port:<key>}\` in its command. Don't hard-code ports or start the app inside the check.`,
+        ]
+      : []),
     "- `run_checks` runs the manifest's automated checks. Use it to confirm each check runs and fails for the right reason: the feature isn't built yet, so failures are expected now.",
     "- This step completes only when the manifest exists and validates. When it does, the checks directory is frozen: the builder may run your checks but not change them unnoticed.",
   ].join("\n")

@@ -1,6 +1,7 @@
 import { randomUUID } from "crypto"
 import { getDb } from "../connection"
 import type {
+  AppLaunch,
   GeneratedFilesRule,
   Workspace,
   WorkspaceMissionControlSettings,
@@ -11,6 +12,10 @@ import {
   DEFAULT_CHECKS_DIR,
   normalizeChecksDir,
 } from "../../../shared/mission-control/checks"
+import {
+  normalizeAppLaunch,
+  validateAppLaunch,
+} from "../../../shared/mission-control/app-launch"
 
 interface WorkspaceRow {
   id: string
@@ -18,6 +23,7 @@ interface WorkspaceRow {
   name: string | null
   generated_files: string | null
   worktree_setup: string | null
+  app_launch: string | null
   mission_control: string | null
   created_at: number
   updated_at: number
@@ -30,6 +36,7 @@ function toWorkspace(row: WorkspaceRow): Workspace {
     name: row.name,
     generatedFiles: parseGeneratedFiles(row.generated_files),
     worktreeSetup: parseWorktreeSetup(row.worktree_setup),
+    appLaunch: parseAppLaunch(row.app_launch),
     missionControl: parseMissionControl(row.mission_control),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -64,6 +71,14 @@ function parseWorktreeSetup(value: string | null): WorktreeSetup {
     return normalizeWorktreeSetup(JSON.parse(value ?? "{}"))
   } catch {
     return { linkPaths: [], steps: [] }
+  }
+}
+
+function parseAppLaunch(value: string | null): AppLaunch {
+  try {
+    return normalizeAppLaunch(JSON.parse(value ?? "{}"))
+  } catch {
+    return { services: [] }
   }
 }
 
@@ -254,6 +269,7 @@ export function updateWorkspace(
     name?: string
     generatedFiles?: GeneratedFilesRule[]
     worktreeSetup?: WorktreeSetup
+    appLaunch?: AppLaunch
     missionControl?: Partial<WorkspaceMissionControlSettings>
   }
 ): Workspace {
@@ -280,6 +296,20 @@ export function updateWorkspace(
         "UPDATE workspaces SET worktree_setup = ?, updated_at = ? WHERE id = ?"
       )
       .run(JSON.stringify(normalizeWorktreeSetup(patch.worktreeSetup)), now, id)
+  }
+  if (patch.appLaunch !== undefined) {
+    // Saved only when valid: a cycle or a dangling reference would fail at
+    // start time instead, in a headless phase nobody is watching.
+    const validation = validateAppLaunch(patch.appLaunch)
+    if (!validation.ok)
+      throw new Error(
+        `The app launch recipe isn't valid: ${validation.errors.join(" ")}`
+      )
+    getDb()
+      .prepare(
+        "UPDATE workspaces SET app_launch = ?, updated_at = ? WHERE id = ?"
+      )
+      .run(JSON.stringify(validation.recipe), now, id)
   }
   if (patch.missionControl !== undefined) {
     const current = getWorkspace(id)?.missionControl

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { GeneratedFilesEditor } from "./generated-files-editor"
 import { WorktreeSetupEditor } from "./worktree-setup-editor"
+import { AppLaunchEditor } from "./app-launch-editor"
 import { ChecksDirEditor } from "./checks-dir-editor"
 import {
   ChevronDown,
@@ -1552,7 +1553,7 @@ function FeatureView({
           />
           <Disclosure
             title="Advanced settings"
-            hint="Drive mode, overlap, worktree environment, generated files, checks directory, budgets, playbook"
+            hint="Drive mode, overlap, worktree environment, generated files, app launch, checks directory, budgets, playbook"
             open={advancedOpen}
             onOpenChange={setAdvancedOpen}
             nested
@@ -1573,6 +1574,10 @@ function FeatureView({
                     onSaved={onWorkspaceSaved}
                   />
                   <GeneratedFilesEditor
+                    workspace={featureWorkspace}
+                    onSaved={onWorkspaceSaved}
+                  />
+                  <AppLaunchEditor
                     workspace={featureWorkspace}
                     onSaved={onWorkspaceSaved}
                   />

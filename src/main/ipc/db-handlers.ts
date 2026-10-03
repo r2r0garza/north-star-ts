@@ -13,6 +13,7 @@ import {
   dashboards,
 } from "../db/repositories"
 import type {
+  AppLaunch,
   GeneratedFilesRule,
   WorkspaceMissionControlSettings,
   WorktreeSetup,
@@ -220,6 +221,7 @@ export function registerDbHandlers(
         name?: string
         generatedFiles?: GeneratedFilesRule[]
         worktreeSetup?: WorktreeSetup
+        appLaunch?: AppLaunch
         missionControl?: Partial<WorkspaceMissionControlSettings>
       }
     ) => workspaces.updateWorkspace(id, patch)

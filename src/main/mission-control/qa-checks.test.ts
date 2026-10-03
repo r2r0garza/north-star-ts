@@ -5,6 +5,7 @@ import { mkdtemp, rm } from "fs/promises"
 import { tmpdir } from "os"
 import { join } from "path"
 import type {
+  AppLaunch,
   MissionControlRunLink,
   ProcessPhaseRun,
   ProcessRun,
@@ -35,8 +36,9 @@ vi.mock("../db/repositories/features", () => ({
   getMilestone: (id: string) => (id === "m1" ? { id, key: "m1" } : null),
   listUserStories: () => stories,
 }))
+let appLaunch: AppLaunch = { services: [] }
 vi.mock("../db/repositories/workspaces", () => ({
-  getWorkspace: () => ({ missionControl: { checksDir: "e2e" } }),
+  getWorkspace: () => ({ missionControl: { checksDir: "e2e" }, appLaunch }),
 }))
 
 const stories = [
@@ -63,6 +65,13 @@ import {
   startVerifyStep,
   summarizeCheckRun,
 } from "./qa-checks"
+import { testAppServices } from "./app-launch"
+import {
+  appStartTool,
+  appStatusTool,
+  appStopTool,
+} from "../agent/tools/app_launch_tools"
+import type { ToolContext } from "../agent/tools/types"
 
 const link: MissionControlRunLink = {
   featureId: "f1",
@@ -149,8 +158,22 @@ beforeEach(async () => {
   } as unknown as ProcessRun
 })
 afterEach(async () => {
+  appLaunch = { services: [] }
+  await testAppServices.clear()
   await rm(root, { recursive: true, force: true })
 })
+
+const NODE = JSON.stringify(process.execPath)
+const webService: AppLaunch["services"][number] = {
+  key: "web",
+  label: "Web",
+  command: `${NODE} -e "require('http').createServer((q,s)=>s.end('hello')).listen(Number(process.env.PORT),'127.0.0.1')"`,
+  cwd: "",
+  port: "auto",
+  ready: { http: "/" },
+  readyTimeoutMs: 15_000,
+  source: "user",
+}
 
 describe("qaStepKind", () => {
   it("is author for a QA step, verify for a QA proof step, else none", () => {
@@ -429,5 +452,129 @@ describe("run_checks", () => {
       ["billing.m1.logout", "logout-1"],
     ])
     expect(outcome.problems).toEqual([])
+  })
+})
+
+describe.skipIf(process.platform === "win32")("app services", () => {
+  it("run_checks starts a check's services and gives it their URLs", async () => {
+    appLaunch = { services: [webService] }
+    const probe = `${NODE} -e "fetch(process.env.BASE_URL).then(r=>r.text()).then(t=>process.exit(t==='hello'&&process.env.APP_WEB_URL===process.env.BASE_URL?0:1))"`
+    write(
+      "e2e/stories/billing.m1.login.json",
+      JSON.stringify({
+        criteria: {
+          "AC-1": [
+            {
+              id: "ac1",
+              kind: "automated",
+              command: probe,
+              services: ["web"],
+            },
+          ],
+          "AC-2": [
+            {
+              id: "ac2",
+              kind: "automated",
+              command: `${NODE} -e "process.exit(Number('{port:web}')>0?0:1)"`,
+              services: ["web"],
+            },
+          ],
+        },
+      })
+    )
+    const outcome = await runQaChecks({
+      processRunId: "r1",
+      phaseRunId: "verify",
+      workspace: root,
+    })
+    expect(outcome.ok).toBe(true)
+    if (!outcome.ok) return
+    expect(outcome.results.map((r) => [r.checkId, r.passed])).toEqual([
+      ["ac1", true],
+      ["ac2", true],
+    ])
+    // One instance, reused by both checks, owned by the step.
+    expect(testAppServices.size).toBe(1)
+  })
+
+  it("fails a check whose services won't start, with their output", async () => {
+    appLaunch = {
+      services: [
+        {
+          ...webService,
+          command: `${NODE} -e "console.error('no db'); process.exit(2)"`,
+        },
+      ],
+    }
+    write(
+      "e2e/stories/billing.m1.login.json",
+      manifest({ ac1: "true" }).replace(
+        '"timeoutMs":1500',
+        '"timeoutMs":1500,"services":["web"]'
+      )
+    )
+    const outcome = await runQaChecks({
+      processRunId: "r1",
+      phaseRunId: "verify",
+      workspace: root,
+    })
+    expect(outcome.ok).toBe(true)
+    if (!outcome.ok) return
+    expect(outcome.results[0]).toMatchObject({ checkId: "ac1", passed: false })
+    expect(outcome.results[0].outputTail).toMatch(/didn't start[\s\S]*no db/)
+  })
+
+  it("refuses a manifest naming a service the recipe doesn't have", async () => {
+    appLaunch = { services: [webService] }
+    write(
+      "e2e/stories/billing.m1.login.json",
+      manifest({ ac1: "true" }).replace(
+        '"timeoutMs":1500',
+        '"timeoutMs":1500,"services":["api"]'
+      )
+    )
+    const outcome = await runQaChecks({
+      processRunId: "r1",
+      phaseRunId: "verify",
+      workspace: root,
+    })
+    expect(outcome).toMatchObject({ ok: false, code: "no_manifest" })
+    if (!outcome.ok)
+      expect(outcome.message).toMatch(/aren't in the app launch recipe: api/)
+  })
+
+  it("app tools start, report, and stop the step's services", async () => {
+    appLaunch = { services: [webService] }
+    const ctx = {
+      workspace: root,
+      processRunId: "r1",
+      processPhaseRunId: "verify",
+    } as ToolContext
+    const started = await appStartTool.execute({}, ctx)
+    const port = Number(/"port": (\d+)/.exec(started)![1])
+    expect(started).toMatch(/"status": "ready"/)
+    expect(await (await fetch(`http://127.0.0.1:${port}/`)).text()).toBe(
+      "hello"
+    )
+    expect(await appStatusTool.execute({ logs: "web" }, ctx)).toMatch(
+      new RegExp(`web \\(Web\\): ready at http://localhost:${port}`)
+    )
+    expect(await appStopTool.execute({}, ctx)).toBe("Stopped 1 service.")
+    expect(testAppServices.size).toBe(0)
+  })
+
+  it("app tools are refused to other roles and outside a run", async () => {
+    appLaunch = { services: [webService] }
+    run.seatBindings!.seats["qa@pod"].role = "reviewer"
+    const refused = await appStartTool.execute({}, {
+      workspace: root,
+      processRunId: "r1",
+      processPhaseRunId: "verify",
+    } as ToolContext)
+    expect(refused).toMatch(/only available to a builder or QA seat/)
+    expect(
+      await appStatusTool.execute({}, { workspace: root } as ToolContext)
+    ).toMatch(/only available/)
+    expect(testAppServices.size).toBe(0)
   })
 })

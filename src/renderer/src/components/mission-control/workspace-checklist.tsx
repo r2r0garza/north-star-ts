@@ -203,6 +203,11 @@ function commandsOf(
         command: r.command,
         cwd: "",
       })),
+      ...(fix.patch.appLaunch?.add ?? []).map((service) => ({
+        label: `Starts ${service.label}`,
+        command: service.command,
+        cwd: service.cwd,
+      })),
     ]
   return []
 }

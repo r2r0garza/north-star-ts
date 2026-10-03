@@ -150,3 +150,49 @@ describe.skipIf(!sqliteLoads)("workspace Mission Control settings", () => {
     expect(getWorkspace(ws.id)!.missionControl.checksDir).toBe("e2e")
   })
 })
+
+describe.skipIf(!sqliteLoads)("workspace app launch recipe", () => {
+  beforeEach(() => {
+    db = new Database(":memory:")
+    runMigrations(db)
+  })
+
+  const web = {
+    key: "web",
+    label: "Web",
+    command: "pnpm dev --port {port}",
+    cwd: "./web/",
+    port: "auto" as const,
+    ready: { http: "/" },
+    source: "user" as const,
+  }
+
+  it("defaults to no services and stores a normalized recipe", () => {
+    const ws = upsertWorkspace("/repo")
+    expect(ws.appLaunch).toEqual({ services: [] })
+    updateWorkspace(ws.id, { appLaunch: { services: [web] } })
+    expect(getWorkspace(ws.id)!.appLaunch.services).toEqual([
+      { ...web, cwd: "web" },
+    ])
+  })
+
+  it("refuses a recipe with a cycle or an unknown service", () => {
+    const ws = upsertWorkspace("/repo")
+    expect(() =>
+      updateWorkspace(ws.id, {
+        appLaunch: {
+          services: [
+            { ...web, dependsOn: ["api"] },
+            { ...web, key: "api", dependsOn: ["web"] },
+          ],
+        },
+      })
+    ).toThrow(/cycle/)
+    expect(() =>
+      updateWorkspace(ws.id, {
+        appLaunch: { services: [{ ...web, dependsOn: ["db"] }] },
+      })
+    ).toThrow(/depends on "db", which isn't a service/)
+    expect(getWorkspace(ws.id)!.appLaunch).toEqual({ services: [] })
+  })
+})

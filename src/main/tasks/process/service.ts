@@ -56,6 +56,12 @@ import {
   seatTurns,
   type SeatTurnIdentity,
 } from "../../mission-control/seat-turns"
+import {
+  APP_LAUNCH_ROLES,
+  appLaunchContextSection,
+  recipeForLink,
+  stopServices,
+} from "../../mission-control/app-launch"
 import * as features from "../../db/repositories/features"
 import type { ContextSection } from "../../agent/context/context-builder"
 import type {
@@ -1441,6 +1447,14 @@ export class ProcessService {
         console.warn("[process] could not prepare the QA checks:", err)
       }
       const workerPrompt = qaNote ? `${prompt}\n\n${qaNote}` : prompt
+      // App launch (plan 109.03): a builder or QA step can start the app
+      // from the workspace's recipe. What it starts belongs to this phase
+      // run and is stopped when the phase ends, however it ends.
+      const appRecipe =
+        seat && missionControl && workspace && APP_LAUNCH_ROLES.has(seat.role)
+          ? recipeForLink(missionControl)
+          : null
+      const appLaunch = !!appRecipe?.services.length
       let releaseSeat: (() => void) | null = null
       try {
         // One turn at a time per transcript: a seat-session step waits for a
@@ -1481,6 +1495,7 @@ export class ProcessService {
                 ? [commsContextSection(feature, seatTurn)]
                 : []),
               ...(seatScope ? [seatScope.contextSection] : []),
+              ...(appLaunch ? [appLaunchContextSection(appRecipe!)] : []),
             ],
             missionControlSeat: seatTurn ?? undefined,
             writeScope: seatScope?.writeScope,
@@ -1488,6 +1503,7 @@ export class ProcessService {
               !!phase.proofStep &&
               !!this.missionControlRoot(run)?.missionControl,
             processQaChecks: qaKind ?? undefined,
+            processAppLaunch: appLaunch,
             // Headless worker: no user to answer a clarifying question (it would only
             // stall until interrupted). The kickoff frames the work as self-contained.
             suppressUserQuestions: true,
@@ -1560,6 +1576,11 @@ export class ProcessService {
         for (const timer of timers) clearTimeout(timer)
         if (inSession) seatSessions!.markSessionActivity(worker.id, false)
         releaseSeat?.()
+        // Whatever this step started (app_start, or a check's services
+        // through run_checks) stops with it.
+        await stopServices({ owner: phaseRun.id }).catch((err) =>
+          console.warn("[process] could not stop the app's services:", err)
+        )
       }
     }
   }

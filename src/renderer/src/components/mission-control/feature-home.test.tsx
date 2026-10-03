@@ -97,6 +97,7 @@ const workspace = {
   name: "repo",
   generatedFiles: [],
   worktreeSetup: { linkPaths: [], steps: [] },
+  appLaunch: { services: [] },
   missionControl: { checksDir: "e2e" },
   createdAt: 0,
   updatedAt: 0,

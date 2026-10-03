@@ -1,3 +1,5 @@
+import type { AppService } from "./app-launch"
+
 // Workspace setup findings (plan 106.11). Analysis inspects a Feature's
 // workspace and returns a checklist: each finding names a concrete problem in
 // plain language, shows its evidence, and carries a fix the user can apply.
@@ -26,6 +28,8 @@ export type FindingCategory =
   | "build-cost"
   // Dirty tree, unborn HEAD, unsupported layout.
   | "project-state"
+  // How seats start the app to test it (plan 109.03).
+  | "app-launch"
 
 export const CATEGORY_LABELS: Record<FindingCategory, string> = {
   "git-isolation": "Isolated work",
@@ -37,6 +41,7 @@ export const CATEGORY_LABELS: Record<FindingCategory, string> = {
   database: "Databases",
   "build-cost": "Build cost",
   "project-state": "Project state",
+  "app-launch": "Running the app",
 }
 
 export type FindingSeverity = "blocker" | "warning" | "info"
@@ -73,12 +78,17 @@ export interface SetupStepShape {
   refresh?: Array<{ label: string; command: string }>
 }
 
-// A change to the settings findings target: the workspace's worktree setup
-// and generated-file rules, and the Feature's overlap policy.
+// A proposed app launch service (plan 109.03): who wrote it is set on Apply.
+export type AppServiceShape = Omit<AppService, "source" | "findingKey">
+
+// A change to the settings findings target: the workspace's worktree setup,
+// generated-file rules, and app launch recipe, and the Feature's overlap
+// policy.
 export interface WorkspaceSettingsPatch {
   worktreeLinkPaths?: { add?: string[]; remove?: string[] }
   worktreeSetupSteps?: { add?: SetupStepShape[]; remove?: string[] }
   generatedFiles?: { add?: GeneratedFilesRuleShape[] }
+  appLaunch?: { add?: AppServiceShape[] }
   overlapPolicy?: "parallel" | "wait"
 }
 
@@ -262,6 +272,7 @@ export const CATEGORY_ORDER: FindingCategory[] = [
   "generated-files",
   "database",
   "build-cost",
+  "app-launch",
 ]
 
 export function sortFindings(findings: Finding[]): Finding[] {

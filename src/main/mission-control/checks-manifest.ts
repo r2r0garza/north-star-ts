@@ -55,12 +55,12 @@ function normalizeCwd(value: string): string | null {
 // Validate a manifest's text against the user story's criterion ids. Every
 // criterion needs at least one check; an automated check needs a command; ids
 // are unique across the manifest; a cwd stays inside the workspace. Services
-// are refused until app launch recipes exist (`servicesAvailable`).
+// must name services in the workspace's app launch recipe (`serviceKeys`).
 export function validateChecksManifest(input: {
   text: string
   criterionIds: string[]
   storyRef: string
-  servicesAvailable?: boolean
+  serviceKeys?: string[]
 }): ManifestValidation {
   const errors: string[] = []
   const warnings: string[] = []
@@ -173,9 +173,13 @@ export function validateChecksManifest(input: {
         errors.push(`Check "${id}" has "services" that aren't a list of names.`)
         return
       }
-      if (services.length && !input.servicesAvailable) {
+      const known = input.serviceKeys ?? []
+      const unknown = services.filter((key) => !known.includes(key))
+      if (unknown.length) {
         errors.push(
-          `Check "${id}" declares services (${services.join(", ")}), but this workspace has no app launch recipe yet, so nothing can start them. Have the check start what it needs itself, or remove "services".`
+          known.length
+            ? `Check "${id}" declares services that aren't in the app launch recipe: ${unknown.join(", ")}. Services: ${known.join(", ")}.`
+            : `Check "${id}" declares services (${services.join(", ")}), but this workspace has no app launch recipe, so nothing can start them. Have the check start what it needs itself, or remove "services".`
         )
         return
       }
