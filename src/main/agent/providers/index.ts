@@ -4,7 +4,7 @@ import * as providerAccountsRepo from "../../db/repositories/provider-accounts"
 import * as modelsRepo from "../../db/repositories/models"
 import * as settingsService from "../../settings/service"
 import { getApiKey, setApiKey } from "../../settings/secrets"
-import type { ApiMode, ProviderAccount } from "../../db/types"
+import type { ApiMode, Provider, ProviderAccount } from "../../db/types"
 import { buildCodexSubscriptionClient } from "./codex-subscription"
 
 // The LLM routing layer. Resolves a provider account + model — either an explicit
@@ -63,6 +63,7 @@ export interface ResolvedClient {
   model: string
   accountId: string
   apiMode: ApiMode
+  provider: Provider
 }
 
 // A per-conversation (or default) selection. Either field null → fall back to the
@@ -211,6 +212,7 @@ export function resolveLlm(
     model,
     accountId: account.id,
     apiMode: account.apiMode,
+    provider: account.provider,
   }
 }
 

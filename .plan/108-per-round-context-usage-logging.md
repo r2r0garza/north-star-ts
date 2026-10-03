@@ -1,6 +1,6 @@
 # PR108: Per-round context usage logging
 
-> Status: **PLANNED**. Step 1 (measurement only) of possible in-turn context management for long
+> Status: **IMPLEMENTED** on `feat/process-revamp`. Step 1 (measurement only) of possible in-turn context management for long
 > agent runs. Follow-up to `019` (rolling summaries) and `9e424d2` (full-transcript replay until
 > summarization). Trimming old tool output and in-turn compaction are deferred until this plan's
 > data shows they're needed (see Out of scope).
@@ -173,3 +173,34 @@ One JSON line per completed or failed round, appended to
    time.
 3. **Retention.** Is 10 MB with one rotated file enough to catch a few multi-hour runs? Each line
    is ~0.5 KB, so 10 MB is ~20k rounds. Likely fine.
+
+## Implementation notes
+
+- **Where the request flag lives.** `withStreamUsage` (`model-request-retry.ts`) wraps the
+  `createCompletion` call in the loop's `request()` closure. It sends `stream_options` whenever
+  `apiMode === "completions"`, which covers `openai`, `openai_compatible`, and `portkey`; the Codex
+  subscription account is `codex_responses` and builds its own request. Bridges often refuse an
+  unknown parameter with a bare 400 that never names it, so the fallback doesn't rely on the error
+  text. Any 400/422 on a request that included `stream_options` (or, with no status, an error
+  that names it) is retried once without it. The account is remembered only if that retry
+  succeeds. If the retry fails too, the request itself was bad and the retry's error is thrown.
+  The retry happens inside the same transport attempt, so it doesn't use up the round's retry
+  budget. The cost is one extra request when a request is genuinely invalid.
+- **Per attempt, not just per round.** The `rollback` attempt event now carries its `error`, and the
+  loop logs each rolled-back attempt (`retry`, `stalled`, `truncated`, `error`). An attempt that
+  throws without a rollback (an abort) is logged from the loop's catch. A re-issued round (stall,
+  raised output cap) keeps its `round` number; its new logical id is in `roundId`.
+- **Extra fields beyond the sketch:** `taskId`, `agentDepth` (subagent turns log too), `roundId`,
+  `accountId`, `request.ratio`, `request.usageRequested`, and `seat` as
+  `{ address, profile, featureId, anchor }` so the data can be grouped per seat or user story
+  (open question 2). `provider` comes from a new `provider` field on `ResolvedClient`.
+- **The trailing usage chunk** (empty `choices`) needed no change: `consumeCompletionStream`
+  already skips choice-less chunks and keeps the first usage it sees. `tool-stream.ts` is untouched.
+  `usageFromChunk` now also reads Responses-style `input_tokens`/`output_tokens`.
+- **Response estimate** counts the raw streamed text plus tool-call fragment names/arguments, so
+  text-encoded tool calls are included.
+- **Special tokens.** `countTokens` throws on `<|endoftext|>` in text by default, so counting
+  disables the special-token check (a file the agent read may contain one).
+- **Not done:** CLI providers (Claude Code, Codex CLI). They run their own loop and report one usage
+  figure per turn (Codex `turn.completed`) or none, so there's no per-round line to write. This can
+  be added if the per-turn total turns out to be useful.

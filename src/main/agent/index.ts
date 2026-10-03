@@ -146,8 +146,18 @@ import {
   ModelRequestRetryExhaustedError,
   ModelResponseValidationError,
   StreamStalledError,
+  streamUsageRequested,
+  withStreamUsage,
   type CompletionRound,
+  type ModelResponseAttemptDiagnostics,
 } from "./model-request-retry"
+import {
+  measureRequest,
+  measureResponse,
+  REQUEST_SIZE_ESTIMATOR,
+  type RequestSize,
+} from "./context/request-size"
+import { contextUsageLog, type ContextUsageOutcome } from "./context/usage-log"
 import { generateTitle } from "./title"
 export { generateTitle } from "./title"
 import { sanitizeFailureContext } from "../tasks/process/failure-sanitizer"
@@ -1996,6 +2006,68 @@ export async function runAgentLoop(
         ? refocusInterval(seatIdentity.featureId)
         : 0
     let roundsSinceRefocus = 0
+    // Per-round context usage log (plan 108). Measurement only: it never
+    // changes the request and never fails the turn.
+    let modelRound = 0
+    const logContextUsage = (input: {
+      requestSize: RequestSize | null
+      roundId: string
+      attempt: number
+      outcome: ContextUsageOutcome
+      diagnostics: ModelResponseAttemptDiagnostics | null
+      responseEstimate: number | null
+      finishReason: string | null
+    }) => {
+      const size = input.requestSize
+      if (!size) return
+      try {
+        const reported = input.diagnostics?.usage?.promptTokens ?? null
+        void contextUsageLog.append({
+          at: new Date().toISOString(),
+          conversationId,
+          taskId: taskId ?? null,
+          agentDepth: opts.agentDepth ?? 0,
+          turnStartSeq,
+          round: modelRound,
+          roundId: input.roundId,
+          attempt: input.attempt,
+          provider: llm.provider ?? null,
+          accountId: llm.accountId,
+          model: llm.model,
+          mode: conversation?.mode ?? "chat",
+          seat: seatIdentity
+            ? {
+                address: seatIdentity.address,
+                profile: seatIdentity.profile,
+                featureId: seatIdentity.featureId,
+                anchor: seatIdentity.anchor,
+              }
+            : null,
+          request: {
+            reported,
+            estimated: size.total,
+            estimator: REQUEST_SIZE_ESTIMATOR,
+            ratio:
+              reported !== null && size.total > 0
+                ? Math.round((reported / size.total) * 1000) / 1000
+                : null,
+            usageRequested: streamUsageRequested(llm),
+            byRole: size.byRole,
+            toolDefs: size.toolDefs,
+            messageCount: size.messageCount,
+            largest: size.largestMessage,
+          },
+          response: {
+            reported: input.diagnostics?.usage?.completionTokens ?? null,
+            estimated: input.responseEstimate,
+            finishReason: input.finishReason,
+          },
+          outcome: input.outcome,
+        })
+      } catch (error) {
+        console.warn("[ctx] context usage logging failed:", error)
+      }
+    }
     const deliverRefocus = (content: string) => {
       appendMessage({ conversationId, role: "user", content })
       messages.push({ role: "user", content })
@@ -2076,6 +2148,45 @@ export async function runAgentLoop(
       // The current attempt's connection, so a hung one can be closed without
       // stopping the turn.
       const current: { abort: AbortController | null } = { abort: null }
+      modelRound += 1
+      let requestSize: RequestSize | null = null
+      try {
+        requestSize = measureRequest(messages, tools)
+      } catch (error) {
+        console.warn("[ctx] request measurement failed:", error)
+      }
+      // The transport attempt in flight, and whether its line is written: a
+      // rolled-back attempt logs itself; one that throws without a rollback
+      // (an abort) is logged by the catch below.
+      let attempt = 0
+      let attemptLogged = false
+      const logFailedAttempt = (error: unknown, retrying: boolean) => {
+        attemptLogged = true
+        logContextUsage({
+          requestSize,
+          roundId: logicalRoundId,
+          attempt,
+          outcome: abort.signal.aborted
+            ? "aborted"
+            : error instanceof StreamStalledError
+              ? "stalled"
+              : error instanceof ModelResponseValidationError &&
+                  error.outputLimit
+                ? "truncated"
+                : retrying
+                  ? "retry"
+                  : "error",
+          diagnostics:
+            error instanceof ModelResponseValidationError
+              ? (error.diagnostics ?? null)
+              : null,
+          responseEstimate: null,
+          finishReason:
+            error instanceof ModelResponseValidationError
+              ? (error.diagnostics?.finishReason ?? null)
+              : null,
+        })
+      }
       let round: CompletionRound
       for (;;) {
         const nextCap = nextOutputTokenCap(outputCap)
@@ -2105,6 +2216,8 @@ export async function runAgentLoop(
               let visibleText = false
               return (event) => {
                 if (event.type === "start") {
+                  attempt = event.attempt
+                  attemptLogged = false
                   attemptText = ""
                   withheldText = false
                   visibleText = false
@@ -2173,6 +2286,7 @@ export async function runAgentLoop(
                   })
                   return
                 }
+                logFailedAttempt(event.error, event.retrying)
                 onEvent({
                   type: "stream_attempt",
                   phase: "rollback",
@@ -2191,24 +2305,32 @@ export async function runAgentLoop(
                   { once: true }
                 )
               current.abort = controller
-              return createCompletion(
-                llm.client,
-                llm.model,
-                outputCap,
-                { messages, tools, stream: true },
-                [
-                  undefined,
-                  // The attempt's abort signal (chained to the turn's). On the
-                  // OpenAI-backed path the SDK forwards it to fetch. On the
-                  // Portkey path, breaking the iterator cancels the body.
-                  { signal: controller.signal },
-                ],
-                llm.apiMode
+              return withStreamUsage(llm, (streamOptions) =>
+                createCompletion(
+                  llm.client,
+                  llm.model,
+                  outputCap,
+                  {
+                    messages,
+                    tools,
+                    stream: true,
+                    ...(streamOptions ? { stream_options: streamOptions } : {}),
+                  },
+                  [
+                    undefined,
+                    // The attempt's abort signal (chained to the turn's). On the
+                    // OpenAI-backed path the SDK forwards it to fetch. On the
+                    // Portkey path, breaking the iterator cancels the body.
+                    { signal: controller.signal },
+                  ],
+                  llm.apiMode
+                )
               )
             },
           })
           break
         } catch (error) {
+          if (!attemptLogged) logFailedAttempt(error, false)
           if (error instanceof StreamStalledError && !abort.signal.aborted) {
             // Close the hung connection, then re-issue the round.
             current.abort?.abort(error)
@@ -2241,6 +2363,25 @@ export async function runAgentLoop(
       // tool fragments, so a retry cannot execute an abandoned partial tool call
       // or duplicate partial prose in the live UI.
       const usage = round.diagnostics.usage
+      logContextUsage({
+        requestSize,
+        roundId: logicalRoundId,
+        attempt,
+        outcome: abort.signal.aborted
+          ? "aborted"
+          : round.finishReason === "length"
+            ? "truncated"
+            : "ok",
+        diagnostics: round.diagnostics,
+        responseEstimate: measureResponse(
+          round.text,
+          round.toolFragments.map((fragment) => ({
+            name: fragment.function?.name ?? "",
+            arguments: fragment.function?.arguments ?? "",
+          }))
+        ),
+        finishReason: round.finishReason,
+      })
       if (usage) {
         hasTurnUsage = true
         turnUsage.promptTokens += usage.promptTokens ?? 0

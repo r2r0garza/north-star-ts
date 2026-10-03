@@ -23,6 +23,71 @@ export const MODEL_STREAM_IDLE = {
   betweenChunksMs: 2 * 60_000,
 }
 
+// Streamed Chat Completions only report usage when asked (plan 108). Some
+// OpenAI-compatible bridges reject the unknown parameter; such an account is
+// remembered for the session and asked again only after a restart.
+const STREAM_USAGE_OPTIONS = { include_usage: true } as const
+const streamUsageRejectedAccounts = new Set<string>()
+
+export function streamUsageRequested(identity: {
+  accountId: string
+  apiMode: ApiMode
+}): boolean {
+  return (
+    identity.apiMode === "completions" &&
+    !streamUsageRejectedAccounts.has(identity.accountId)
+  )
+}
+
+// A failure that could be the provider refusing stream_options. Bridges often
+// reject unknown parameters with a bare 400/422 that never names the field, so
+// any 400/422 qualifies; withStreamUsage's retry without it tells the cases
+// apart. With no numeric status, the error must name stream_options.
+export function mayRejectStreamOptions(error: unknown): boolean {
+  const e = (error ?? {}) as {
+    status?: unknown
+    code?: unknown
+    message?: unknown
+    error?: unknown
+  }
+  if (typeof e.status === "number") return e.status === 400 || e.status === 422
+  let body = ""
+  try {
+    body = JSON.stringify(e.error ?? "")
+  } catch {
+    // An unserializable body just isn't searched.
+  }
+  const text = `${String(e.code ?? "")} ${String(e.message ?? error)} ${body}`
+  return /stream_options/i.test(text)
+}
+
+// Send a streamed request asking for usage. If a request with stream_options
+// fails in a way that could be a refusal of it, retry once without it: when
+// that succeeds, the account is remembered for the session and never asked
+// again; when it fails too, the request itself was bad and the retry's error
+// is the one thrown. Usage reporting never fails a turn on its own.
+export async function withStreamUsage<T>(
+  identity: { accountId: string; apiMode: ApiMode },
+  send: (streamOptions: typeof STREAM_USAGE_OPTIONS | undefined) => Promise<T>
+): Promise<T> {
+  if (!streamUsageRequested(identity)) return send(undefined)
+  try {
+    return await send(STREAM_USAGE_OPTIONS)
+  } catch (error) {
+    if (!mayRejectStreamOptions(error)) throw error
+  }
+  const result = await send(undefined)
+  streamUsageRejectedAccounts.add(identity.accountId)
+  console.warn(
+    `[ctx] provider account ${identity.accountId} rejected stream_options; continuing without usage reporting.`
+  )
+  return result
+}
+
+export const testStreamUsage = {
+  reset: () => streamUsageRejectedAccounts.clear(),
+}
+
 // A request or its stream sent nothing for too long. Not retried within the
 // round's transient budget (its time window is gone by then); the agent loop
 // re-issues the round.
@@ -97,7 +162,13 @@ export type CompletionAttemptEvent =
   | { type: "start"; attemptId: string; attempt: number }
   | { type: "text"; attemptId: string; delta: string }
   | { type: "commit"; attemptId: string }
-  | { type: "rollback"; attemptId: string; retrying: boolean }
+  | {
+      type: "rollback"
+      attemptId: string
+      retrying: boolean
+      // Why the attempt was rolled back.
+      error: unknown
+    }
 
 export class ModelRequestRetryExhaustedError extends Error {
   readonly retryable: boolean
@@ -281,8 +352,12 @@ function finiteNumber(value: unknown): number | undefined {
 function usageFromChunk(chunk: any): ModelResponseAttemptDiagnostics["usage"] {
   const usage = chunk?.usage
   if (!usage || typeof usage !== "object") return null
-  const promptTokens = finiteNumber(usage.prompt_tokens)
-  const completionTokens = finiteNumber(usage.completion_tokens)
+  // Chat Completions spells it prompt/completion; the Responses API (the
+  // Codex subscription bridge passes its usage through) spells it input/output.
+  const promptTokens =
+    finiteNumber(usage.prompt_tokens) ?? finiteNumber(usage.input_tokens)
+  const completionTokens =
+    finiteNumber(usage.completion_tokens) ?? finiteNumber(usage.output_tokens)
   const totalTokens = finiteNumber(usage.total_tokens)
   if (
     promptTokens === undefined &&
@@ -566,6 +641,7 @@ export async function createCompletionRoundWithRetry(input: {
           type: "rollback",
           attemptId,
           retrying: false,
+          error,
         })
         repository.exhaustBudget({
           conversationId,
@@ -590,6 +666,7 @@ export async function createCompletionRoundWithRetry(input: {
           type: "rollback",
           attemptId,
           retrying: false,
+          error,
         })
         repository.exhaustBudget({
           conversationId,
@@ -600,7 +677,12 @@ export async function createCompletionRoundWithRetry(input: {
         break
       }
 
-      input.onAttemptEvent?.({ type: "rollback", attemptId, retrying: true })
+      input.onAttemptEvent?.({
+        type: "rollback",
+        attemptId,
+        retrying: true,
+        error,
+      })
       await clock.sleep(delay, signal)
       if (signal.aborted) throw error
     } finally {
