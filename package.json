@@ -23,6 +23,7 @@
     "files": [
       "out/**/*",
       "skills/**/*",
+      "agents/**/*",
       "prompts/**/*",
       "package.json"
     ],

@@ -53,6 +53,7 @@ import { assertSkillSecurity } from "./agent/skills/security"
 import {
   agentSources,
   agentSourceEntries as getAgentSourceEntries,
+  initUserAgents,
   userAgentsDir,
 } from "./agent/agents/sources"
 import {
@@ -1692,10 +1693,11 @@ app.whenReady().then(async () => {
   registerTerminalHandlers(terminalService)
   registerFileWatchHandlers()
   await indexWatcher.setEnabled(settingsService.getIndexing().watchWorkspaces)
-  // Materialize the user-level skills dir (~/.<system>/skills) and, on first
-  // launch only, seed it with the app-bundled skills so users get editable
-  // copies of the built-ins.
+  // Materialize ~/.<system>/skills and ~/.<system>/agents, copying in any
+  // app-bundled built-in not seeded before (tracked per entry, so user edits and
+  // deletions stick). See config/bundled-seed.ts.
   initUserSkills()
+  initUserAgents()
   void reconcilePendingMemoryOnStartup().catch((err) =>
     console.warn("[memory] startup reconcile failed:", err)
   )

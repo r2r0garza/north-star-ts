@@ -1,5 +1,9 @@
 import { app } from "electron"
 import path from "path"
+import {
+  bundledSeedManifestPath,
+  seedBundledEntries,
+} from "../../config/bundled-seed"
 import * as settingsService from "../../settings/service"
 import { dataDirName, systemDisplayName } from "../../config/system-name"
 import type {
@@ -13,6 +17,26 @@ import type {
 // rebrand relocates this dir exactly as it relocates the skills dir.
 export function userAgentsDir(): string {
   return path.join(app.getPath("home"), dataDirName(), "agents")
+}
+
+// The read-only agents that ship with the app: <app>/agents. In dev this is the
+// repo's agents/ folder; when packaged it's bundled via build.files. Like
+// bundledSkillsDir(), it's not a live load source — it only seeds the user dir.
+export function bundledAgentsDir(): string {
+  return path.join(app.getAppPath(), "agents")
+}
+
+// Startup setup for the user-level agents dir, mirroring initUserSkills():
+// creates ~/.<system>/agents and copies in any app-bundled agent not seeded
+// before (tracked per agent in ~/.<system>/bundled-seed.json), never overwriting
+// or resurrecting the user's copies. See config/bundled-seed.ts.
+export function initUserAgents(): void {
+  seedBundledEntries({
+    kind: "agents",
+    bundledDir: bundledAgentsDir(),
+    userDir: userAgentsDir(),
+    manifestPath: bundledSeedManifestPath(),
+  })
 }
 
 // Resolve the ordered agent-source directories for a given workspace. Order

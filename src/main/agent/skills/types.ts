@@ -26,7 +26,7 @@ export interface SkillMetadata {
 //   custom    — a folder the user registered (removable)
 //   github    — <workspace>/.github/skills (zero-config, workspace-scoped)
 //   workspace — <workspace>/.<system>/skills
-// Note: there's no "app" kind — the app-bundled dir seeds `user` on first launch
+// Note: there's no "app" kind — the app-bundled dir seeds `user` (each skill once)
 // and is not itself a live source.
 export type SkillSourceKind = "user" | "custom" | "github" | "workspace"
 export interface SkillSourceRow {
