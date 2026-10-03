@@ -112,6 +112,7 @@ export type HealthDetector =
   | "refocus_ignored"
   | "retry_churn"
   | "setup_failed"
+  | "weak_proof"
 
 export interface HealthDetectorSpec {
   key: HealthDetector
@@ -184,6 +185,13 @@ export const HEALTH_DETECTORS: readonly HealthDetectorSpec[] = [
     pathology: "Broken environment",
     description:
       "A workspace setup step failed in a new worktree, so agents there work without the environment they need. Fix the step in Workspace setup.",
+  },
+  {
+    key: "weak_proof",
+    label: "Weak proof",
+    pathology: "Grading its own homework",
+    description:
+      "A user story was accepted on criteria verified only by the builder's own tests, or whose proof doesn't say how they were verified. Nothing independent showed they hold.",
   },
 ]
 

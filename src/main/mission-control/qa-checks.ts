@@ -913,6 +913,15 @@ export function verifyStepNote(input: {
     lines.push(
       `No checks were frozen for this user story (the playbook has no checks step, or it didn't finish). If \`${story.manifestPath}\` exists, \`run_checks\` runs it; otherwise verify each criterion with your own checks.`
     )
+  lines.push(
+    "",
+    "### How each criterion was verified",
+    "Every criterion in `record_proof` says how you verified it (`method`), and the harness checks the claim against what it recorded in this step:",
+    "- `qa_check`: the manifest's automated checks for it passed here through `run_checks`. List every one of them in `checkIds`. A criterion with automated checks can't be met any other way, and a check that failed or didn't run here means it isn't met.",
+    "- `app_exercised`: you drove the running app. Cite the evidence paths `browser_screenshot` (or `save_evidence`) returned in `artifacts`. Exploratory criteria need this.",
+    "- `command`: a command you ran yourself (curl, the CLI). `builder_tests`: only the builder's tests; allowed, but flagged on the user story.",
+    "- `code_read`: you only read the code. That never makes a criterion met: record it `not_verifiable` with a reason."
+  )
   if (input.changed.length) {
     const own = input.changed.filter((c) => !c.shared)
     const shared = input.changed.filter((c) => c.shared)

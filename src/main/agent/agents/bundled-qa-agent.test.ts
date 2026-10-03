@@ -42,6 +42,13 @@ describe("bundled QA agent", () => {
     expect(prompt).toMatch(/only opens local apps/)
   })
 
+  it("says each criterion records how it was verified (plan 109.05)", () => {
+    expect(prompt).toMatch(
+      /In a Mission Control proof that's each criterion's `method`/
+    )
+    expect(prompt).toMatch(/reading code is never "met"/)
+  })
+
   it("doesn't mention tools later slices add", () => {
     expect(prompt).not.toContain("run_checks")
   })

@@ -1065,15 +1065,35 @@ export interface SeatBindingsSnapshot {
 
 export type ProofCriterionStatus = "met" | "not_met" | "not_verifiable"
 
+// How a proof criterion was verified (plan 109.05). Proofs recorded before
+// it have none, shown as "unspecified".
+export type ProofVerificationMethod =
+  | "qa_check"
+  | "app_exercised"
+  | "builder_tests"
+  | "command"
+  | "code_read"
+
+// A QA check a criterion cites, as the harness recorded it in the test step.
+export interface ProofCheckResult {
+  checkId: string
+  status: "passed" | "flaky" | "failed" | "not_run"
+  attempts: number
+}
+
+export interface UserStoryProofCriterion {
+  id: string
+  status: ProofCriterionStatus
+  evidence: string
+  method?: ProofVerificationMethod
+  checks?: ProofCheckResult[]
+  artifacts?: string[]
+  reason?: string
+}
+
 export interface UserStoryProof {
   version: 1
-  criteria: Array<{
-    id: string
-    status: ProofCriterionStatus
-    evidence: string
-    artifacts?: string[]
-    reason?: string
-  }>
+  criteria: UserStoryProofCriterion[]
   verdict: "accepted" | "rejected"
   verifiedBy:
     | { kind: "seat"; address: string }

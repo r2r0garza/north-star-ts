@@ -43,6 +43,11 @@ export interface SnapshotUserStory {
   attempts: number
   podKey: string | null
   touchHints: string[]
+  // Met criteria of the accepted proof that rest only on the builder's tests
+  // or don't say how they were verified (plan 109.05).
+  weakProof?: Array<{ id: string; method: string | null }>
+  proofAcceptedAt?: number | null
+  proofVerifier?: string | null
 }
 
 export interface SnapshotMessage {
@@ -541,6 +546,50 @@ export function setupFailed(s: HealthSnapshot): Finding[] {
   ]
 }
 
+// ── weak_proof (self-graded work, plan 109.05) ──────────────────────────────
+
+// A user story accepted on criteria nothing independent verified: only the
+// builder's tests, or a proof that doesn't say how. Informational: the story
+// is already accepted, so it's a pointer for review, not a drift to refocus.
+export function weakProof(s: HealthSnapshot): Finding[] {
+  const findings: Finding[] = []
+  for (const story of s.userStories) {
+    if (story.status === "cancelled" || !story.weakProof?.length) continue
+    const builderOnly = story.weakProof.filter(
+      (c) => c.method === "builder_tests"
+    )
+    const unspecified = story.weakProof.filter((c) => !c.method)
+    const parts = [
+      builderOnly.length
+        ? `${builderOnly.map((c) => c.id).join(", ")} only on the builder's tests`
+        : null,
+      unspecified.length
+        ? `${unspecified.map((c) => c.id).join(", ")} without saying how ${unspecified.length === 1 ? "it was" : "they were"} verified`
+        : null,
+    ].filter(Boolean)
+    const at = story.proofAcceptedAt ?? s.now
+    findings.push({
+      detector: "weak_proof",
+      anchor: { kind: "user_story", id: story.id, label: story.key },
+      severity: "info",
+      summary: `${story.key} was accepted with ${parts.join(", and ")}.`,
+      evidence: story.weakProof.map(
+        (c): HealthEvidence => ({
+          kind: "event",
+          label: `${c.id}: ${c.method === "builder_tests" ? "builder's tests only" : "method unspecified"}${story.proofVerifier ? ` · ${story.proofVerifier}` : ""}`,
+          at,
+          refId: `${story.id}:${c.id}`,
+          link: { kind: "user_story", id: story.id },
+        })
+      ),
+      latestAt: at,
+      offenders: { addresses: [], userStoryIds: [] },
+      podKey: story.podKey,
+    })
+  }
+  return findings
+}
+
 // refocus_ignored needs signal history (when a Refocus was requested and
 // delivered), so the monitor raises it; see refocusIgnored in monitor.ts.
 export const DETECTORS: ReadonlyArray<
@@ -554,6 +603,7 @@ export const DETECTORS: ReadonlyArray<
   ["approval_by_proxy", approvalByProxy],
   ["retry_churn", retryChurn],
   ["setup_failed", setupFailed],
+  ["weak_proof", weakProof],
 ]
 
 export function runDetectors(

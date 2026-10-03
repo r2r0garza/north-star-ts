@@ -16,6 +16,7 @@ import type {
   PlaybookHookName,
   PlaybookRun,
   PlaybookWithHooks,
+  ProcessPhaseRun,
   ProcessRun,
   SeatBindingsSnapshot,
   UserStoryProof,
@@ -23,12 +24,16 @@ import type {
 } from "../db/types"
 import { ensureDefaultPlaybook } from "./playbook-defaults"
 import { QA_ROLE } from "./qa-scope"
-import { checksDriftBlock } from "./qa-checks"
+import { checksDriftBlock, readStoryManifest, storyChecks } from "./qa-checks"
 import {
+  checkOutcomes,
   decideProof,
   DEFAULT_MAX_PROOF_REVISIONS,
   parseProofSubmission,
+  type ProofSubmission,
+  type ProofVerification,
 } from "./proof"
+import { savedEvidence } from "./evidence"
 import { collectSeatRoles, resolveSeatBindings } from "./seat-resolver"
 import {
   renderIntentChain,
@@ -896,11 +901,53 @@ export type RecordProofResult =
     }
   | { ok: false; code: string; message: string }
 
-export function recordUserStoryProof(input: {
+// What the gate needs to judge how each criterion was verified (plan 109.05):
+// the story's manifest from the worktree, the check results the harness
+// recorded on this step, and which cited artifacts are saved evidence.
+async function proofVerification(input: {
+  link: MissionControlRunLink
+  phaseRun: ProcessPhaseRun
+  workspace: string
+  submission: ProofSubmission
+}): Promise<ProofVerification> {
+  const story = storyChecks(input.link)
+  let coverage: ProofVerification["coverage"] = null
+  if (story) {
+    const read = await readStoryManifest(input.workspace, story)
+    if (read.ok)
+      coverage = Object.fromEntries(
+        Object.entries(read.manifest.criteria).map(([id, checks]) => [
+          id.toUpperCase(),
+          {
+            automated: checks
+              .filter((c) => c.kind === "automated")
+              .map((c) => c.id),
+            exploratory: checks
+              .filter((c) => c.kind === "exploratory")
+              .map((c) => c.id),
+          },
+        ])
+      )
+  }
+  return {
+    coverage,
+    checks: story
+      ? checkOutcomes(input.phaseRun.qaChecks?.results ?? [], story.storyRef)
+      : {},
+    evidence: await savedEvidence(
+      input.phaseRun.id,
+      input.submission.criteria.flatMap((c) => c.artifacts ?? [])
+    ),
+  }
+}
+
+export async function recordUserStoryProof(input: {
   processRunId: string
   processPhaseRunId: string
+  // The worktree the step works in, where the story's manifest is read.
+  workspace: string
   args: Record<string, unknown>
-}): RecordProofResult {
+}): Promise<RecordProofResult> {
   const run = processes.getProcessRun(input.processRunId)
   const phaseRun = processes.getPhaseRun(input.processPhaseRunId)
   if (!run || !phaseRun)
@@ -938,8 +985,27 @@ export function recordUserStoryProof(input: {
     }
   const userStory = features.getUserStory(link.userStoryId)
   const feature = features.getFeature(link.featureId)
+  if (!userStory || !feature)
+    return {
+      ok: false,
+      code: "unavailable",
+      message: "The user story is no longer available.",
+    }
+
+  const criteria = userStoryCriteria(userStory)
+  const submission = parseProofSubmission(input.args, criteria)
+  if (typeof submission === "string")
+    return { ok: false, code: "bad_args", message: submission }
+  const verification = await proofVerification({
+    link,
+    phaseRun,
+    workspace: input.workspace,
+    submission,
+  })
+
+  // Read after the awaits: the run may have moved on meanwhile.
   const playbookRun = playbooks.getPlaybookRun(link.playbookRunId)
-  if (!userStory || !feature || !playbookRun)
+  if (!playbookRun)
     return {
       ok: false,
       code: "unavailable",
@@ -951,11 +1017,6 @@ export function recordUserStoryProof(input: {
       code: "run_finished",
       message: "This user story run has already finished.",
     }
-
-  const criteria = userStoryCriteria(userStory)
-  const submission = parseProofSubmission(input.args, criteria)
-  if (typeof submission === "string")
-    return { ok: false, code: "bad_args", message: submission }
   // The builder changed QA's frozen checks (plan 109.02): no acceptance until
   // QA reviews and re-freezes them. A rejection is always allowed.
   const drift = checksDriftBlock(phaseRun)
@@ -965,6 +1026,7 @@ export function recordUserStoryProof(input: {
   const decision = decideProof({
     submission,
     criteria,
+    verification,
     verifier,
     builderAddresses: builderAddresses(root),
     isCommandPhase,

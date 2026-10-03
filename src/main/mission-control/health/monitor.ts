@@ -12,6 +12,7 @@ import type {
   HealthSignal,
   HealthSignalStatus,
   McEvent,
+  UserStoryProof,
 } from "../../db/types"
 import {
   HEALTH_DETECTORS,
@@ -30,6 +31,7 @@ import {
   type AlertContent,
 } from "./alerts"
 import { runDetectors, type Finding, type HealthSnapshot } from "./detectors"
+import { weakProofCriteria } from "../proof"
 import {
   breakdown,
   lastProgress,
@@ -126,6 +128,18 @@ function activeWorkers(featureId: string): number {
   )
 }
 
+// When an accepted proof was accepted, and by which seat.
+function proofSummary(proof: unknown): {
+  proofAcceptedAt: number | null
+  proofVerifier: string | null
+} {
+  const p = proof as Partial<UserStoryProof> | null
+  return {
+    proofAcceptedAt: typeof p?.acceptedAt === "number" ? p.acceptedAt : null,
+    proofVerifier: p?.verifiedBy?.kind === "seat" ? p.verifiedBy.address : null,
+  }
+}
+
 export function loadSnapshot(feature: Feature, now: number): HealthSnapshot {
   const milestones = features.listMilestones(feature.id)
   const userStories = milestones.flatMap((m) => features.listUserStories(m.id))
@@ -159,6 +173,8 @@ export function loadSnapshot(feature: Feature, now: number): HealthSnapshot {
       attempts: u.attempts,
       podKey: u.podKey ?? feature.defaultPodKey,
       touchHints: u.spec.touchHints,
+      weakProof: weakProofCriteria(u.proof),
+      ...proofSummary(u.proof),
     })),
     maxAttempts: maxUserStoryAttempts(feature),
     messages: comms

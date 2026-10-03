@@ -960,6 +960,20 @@ const api = {
           edges
         ) as Promise<RigOversight[]>,
     },
+    // Saved proof evidence (plan 109.05): screenshots for the proof view, and
+    // opening an evidence file. Only paths under the app-data evidence dir.
+    evidence: {
+      read: (path: string) =>
+        ipcRenderer.invoke("missionControl:evidence:read", path) as Promise<{
+          path: string
+          dataUrl: string | null
+        } | null>,
+      open: (path: string) =>
+        ipcRenderer.invoke(
+          "missionControl:evidence:open",
+          path
+        ) as Promise<void>,
+    },
     // Playbooks and execution (plan 106.3).
     playbooks: {
       list: () =>
@@ -2852,6 +2866,8 @@ export type {
   SeatBindingsSnapshot,
   UserStoryProof,
   ProofCriterionStatus,
+  ProofVerificationMethod,
+  ProofCheckResult,
   MissionControlRunLink,
   MergePolicyMode,
   MergeQueueEntry,

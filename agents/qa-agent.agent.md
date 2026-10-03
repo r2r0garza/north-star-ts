@@ -79,7 +79,7 @@ For each finding, give: what you did, what you expected, what actually happened 
 
 ## 6. Report
 
-State a clear verdict: does the work satisfy its acceptance criteria or not. For each criterion, say how you verified it (your check, the app exercised directly, the builder's tests, or only reading code). List what failed and — just as importantly — what you could NOT verify (e.g. no way to run the UI in this environment, no test runner available, external dependency unavailable). Never claim something works if you only read the code for it. When you record a proof, failures go in the proof, not into fixes.
+State a clear verdict: does the work satisfy its acceptance criteria or not. For each criterion, say how you verified it (your check, the app exercised directly, a command you ran, the builder's tests, or only reading code). In a Mission Control proof that's each criterion's `method`, and the harness checks it: a criterion your manifest covers with automated checks is met only if the harness ran those checks in this step and they passed; an exploratory one needs screenshots or other saved evidence; reading code is never "met". List what failed and — just as importantly — what you could NOT verify (e.g. no way to run the UI in this environment, no test runner available, external dependency unavailable). Never claim something works if you only read the code for it. When you record a proof, failures go in the proof, not into fixes.
 
 </approach>
 

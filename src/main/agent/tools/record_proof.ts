@@ -16,10 +16,16 @@ export const recordProofTool: Tool = {
       name: "record_proof",
       description:
         "Record this user story's proof: one entry per acceptance criterion (ids AC-1, AC-2, … as " +
-        "listed in your objective), each with a status and concrete evidence, plus an overall " +
-        'verdict. "accepted" requires every criterion met. An accepted proof is frozen; a ' +
-        "rejected one may be revised a limited number of times. Call it once you have verified " +
-        "every criterion yourself.",
+        "listed in your objective), each with a status, how you verified it (method), and " +
+        'concrete evidence, plus an overall verdict. "accepted" requires every criterion met. ' +
+        "The harness checks each met criterion against what it recorded in this step: a " +
+        "criterion the check manifest covers with automated checks is met only if those checks " +
+        "passed here through run_checks (cite them in checkIds); an exploratory criterion needs " +
+        'method "app_exercised" with saved evidence (screenshot paths) in artifacts; reading the ' +
+        'code alone is never "met" (record it not_verifiable with a reason). Relying only on the ' +
+        "builder's tests is allowed but flagged. An accepted proof is frozen; a rejected one may " +
+        "be revised a limited number of times. Call it once you have verified every criterion " +
+        "yourself.",
       parameters: {
         type: "object",
         properties: {
@@ -31,11 +37,34 @@ export const recordProofTool: Tool = {
               properties: {
                 id: {
                   type: "string",
-                  description: "The criterion id from the objective, e.g. AC-1.",
+                  description:
+                    "The criterion id from the objective, e.g. AC-1.",
                 },
                 status: {
                   type: "string",
                   enum: ["met", "not_met", "not_verifiable"],
+                },
+                method: {
+                  type: "string",
+                  enum: [
+                    "qa_check",
+                    "app_exercised",
+                    "builder_tests",
+                    "command",
+                    "code_read",
+                  ],
+                  description:
+                    "How you verified it: qa_check (QA checks from the manifest, run with " +
+                    "run_checks), app_exercised (you drove the running app; cite screenshots), " +
+                    "builder_tests (only the builder's tests), command (a command you ran " +
+                    "yourself, e.g. curl or the CLI), code_read (you only read the code).",
+                },
+                checkIds: {
+                  type: "array",
+                  items: { type: "string" },
+                  description:
+                    "The manifest check ids that verified it. Required for qa_check; must " +
+                    "include every automated check the manifest lists for this criterion.",
                 },
                 evidence: {
                   type: "string",
@@ -46,7 +75,8 @@ export const recordProofTool: Tool = {
                   type: "array",
                   items: { type: "string" },
                   description:
-                    "Workspace-relative paths of files that support the evidence.",
+                    "Files that support the evidence: the evidence paths browser_screenshot and " +
+                    "save_evidence returned, or workspace-relative paths.",
                 },
                 reason: {
                   type: "string",
@@ -54,7 +84,7 @@ export const recordProofTool: Tool = {
                     "Required when accepting a not_verifiable criterion: why it cannot be verified.",
                 },
               },
-              required: ["id", "status", "evidence"],
+              required: ["id", "status", "method", "evidence"],
             },
           },
           verdict: { type: "string", enum: ["accepted", "rejected"] },
@@ -69,16 +99,21 @@ export const recordProofTool: Tool = {
         "unavailable",
         "record_proof is only available inside a Mission Control user story run."
       )
-    const result = recordUserStoryProof({
+    const result = await recordUserStoryProof({
       processRunId: ctx.processRunId,
       processPhaseRunId: ctx.processPhaseRunId,
+      workspace: ctx.workspace,
       args,
     })
     if (!result.ok) return toolError(result.code, result.message)
     return JSON.stringify({
       status: result.status,
       verifiedBy: result.proof.verifiedBy,
-      criteria: result.proof.criteria.map((c) => ({ id: c.id, status: c.status })),
+      criteria: result.proof.criteria.map((c) => ({
+        id: c.id,
+        status: c.status,
+        method: c.method,
+      })),
       warnings: result.proof.warnings ?? [],
       message: result.message,
     })

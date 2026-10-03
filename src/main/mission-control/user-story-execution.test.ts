@@ -35,6 +35,8 @@ interface LoopCall {
   qaChecks?: "author" | "verify"
   // The seat browser handle input this worker would get (plan 109.04).
   seatBrowser?: { phaseRunId: string; label: string; origins: string[] }
+  // What run_checks returned in the test step (plan 109.05).
+  checksRun?: string
 }
 const loopCalls: LoopCall[] = []
 // What a proof-step worker submits through record_proof, per call (FIFO).
@@ -113,7 +115,15 @@ vi.mock("../agent", () => ({
     loopCalls.push(call)
     // QA's checks step (plan 109.02) completes only with a valid manifest.
     if (input.processQaChecks !== "author" || manifestSkips-- <= 0)
-      writeFakeManifest(input)
+      writeFakeManifest(input, checkCommand ?? undefined)
+    // The test step runs QA's checks first, as its kickoff says (plan 109.05).
+    if (runChecksInVerify && input.processQaChecks === "verify")
+      call.checksRun = await runChecksTool.execute({}, {
+        workspace: input.workspace,
+        processRunId: input.processRunId,
+        processPhaseRunId: input.processPhaseRunId,
+        signal: input.abort?.signal,
+      } as never)
     const msg = input.userMessage ?? ""
     // QA sends the work back to build once (flag_for_rework's durable effect).
     if (flagBackOnce && input.processProofStep && input.processRunId) {
@@ -133,10 +143,11 @@ vi.mock("../agent", () => ({
     let content = "done"
     if (msg.startsWith("# Review the")) content = '{"approved": true}'
     if (input.processProofStep && proofSubmissions.length) {
-      call.proofResult = recordUserStoryProof({
+      call.proofResult = await recordUserStoryProof({
         processRunId: input.processRunId!,
         processPhaseRunId: input.processPhaseRunId!,
-        args: proofSubmissions.shift()!,
+        workspace: input.workspace!,
+        args: proveInApp(input.processPhaseRunId!, proofSubmissions.shift()!),
       })
       content = "verified"
     }
@@ -168,6 +179,10 @@ let routerReply = ""
 let hangLoops = false
 // How many checks-step turns finish without writing the manifest.
 let manifestSkips = 0
+// QA writes automated checks running this command instead of exploratory
+// ones, and whether the test step calls run_checks before its proof.
+let checkCommand: string | null = null
+let runChecksInVerify = false
 let flagBackOnce = false
 vi.mock("../agent/providers", () => {
   class NoActiveProviderError extends Error {}
@@ -208,8 +223,9 @@ import {
   type RecordProofResult,
 } from "./user-story-runner"
 import { startHookRun } from "./hook-runner"
-import { writeFakeManifest } from "../test/qa-manifest"
+import { proveInApp, writeFakeManifest } from "../test/qa-manifest"
 import { appStartTool } from "../agent/tools/app_launch_tools"
+import { runChecksTool } from "../agent/tools/qa_checks_tools"
 import { testAppServices } from "./app-launch"
 import { updateWorkspace } from "../db/repositories/workspaces"
 import { installSeatSessions, SeatSessionService } from "./sessions"
@@ -363,6 +379,8 @@ beforeEach(() => {
   cancelledTasks.length = 0
   routerReply = ""
   manifestSkips = 0
+  checkCommand = null
+  runChecksInVerify = false
   startApp = false
   appStarts.length = 0
   seatBrowserInputs.length = 0
@@ -449,6 +467,95 @@ describe.skipIf(!sqliteLoads)("user story execution", () => {
       builderAddresses: ["builder@implementation"],
     })
     expect(playbooks.getPlaybookRun(playbookRun.id)!.status).toBe("completed")
+  })
+
+  describe("the proof gate reads what the harness recorded (plan 109.05)", () => {
+    const NODE = JSON.stringify(process.execPath)
+    const ids = ["AC-1", "AC-2"].map(
+      (id) => `billing.milestone-1.invoice-model-${id}`
+    )
+    const byChecks = {
+      verdict: "accepted",
+      criteria: ["AC-1", "AC-2"].map((id, i) => ({
+        id,
+        status: "met",
+        method: "qa_check",
+        checkIds: [ids[i]],
+        evidence: "QA's check passed.",
+      })),
+    }
+    async function run(submission: Record<string, unknown>) {
+      const rig = orchestratedRig()
+      const { userStory } = billingFeature(rig.id)
+      proofSubmissions.push(submission)
+      const playbookRun = await runner.startUserStory(userStory.id)
+      await drive(playbookRun.processRunId!)
+      return {
+        verify: loopCalls.find((c) => c.proofStep)!,
+        story: features.getUserStory(userStory.id)!,
+      }
+    }
+
+    it("accepts covered criteria whose checks passed through run_checks in the test step", async () => {
+      checkCommand = `${NODE} -e "process.exit(0)"`
+      runChecksInVerify = true
+      const { verify, story } = await run(byChecks)
+      expect(verify.checksRun).toMatch(/2 passed, 0 failed/)
+      expect(verify.proofResult).toMatchObject({ ok: true, status: "accepted" })
+      expect(story.proof).toMatchObject({
+        criteria: [
+          {
+            id: "AC-1",
+            method: "qa_check",
+            checks: [{ checkId: ids[0], status: "passed", attempts: 1 }],
+          },
+          { id: "AC-2", method: "qa_check" },
+        ],
+      })
+    })
+
+    it("refuses covered criteria whose checks failed, or never ran in the test step", async () => {
+      checkCommand = `${NODE} -e "process.exit(1)"`
+      runChecksInVerify = true
+      const failed = await run(byChecks)
+      expect(failed.verify.proofResult).toMatchObject({
+        ok: false,
+        code: "proof_rejected_by_rules",
+        message: expect.stringMatching(/AC-1: check .* failed in this step/),
+      })
+      expect(failed.story.status).not.toBe("done")
+    })
+
+    it("refuses covered criteria when run_checks wasn't called", async () => {
+      checkCommand = `${NODE} -e "process.exit(0)"`
+      const { verify } = await run(byChecks)
+      expect(verify.proofResult).toMatchObject({
+        ok: false,
+        code: "proof_rejected_by_rules",
+        message: expect.stringMatching(
+          /has no result in this step\. Run it with run_checks/
+        ),
+      })
+    })
+
+    it("refuses an exploratory criterion exercised without saved evidence", async () => {
+      const { verify } = await run({
+        verdict: "accepted",
+        criteria: ["AC-1", "AC-2"].map((id) => ({
+          id,
+          status: "met",
+          method: "app_exercised",
+          evidence: "Clicked through it.",
+        })),
+      })
+      expect(verify.proofResult).toMatchObject({
+        ok: false,
+        code: "proof_rejected_by_rules",
+        message: expect.stringMatching(
+          /AC-1: verifying in the app needs evidence/
+        ),
+      })
+    })
   })
 
   it("confines the QA seat's writes to its checks and scratch directories (plan 109.01)", async () => {
@@ -643,10 +750,12 @@ describe.skipIf(!sqliteLoads)("user story execution", () => {
     const playbookRun = await detachedRunner.startUserStory(userStory.id)
     await driveDetached(playbookRun.processRunId!)
 
-    const again = recordUserStoryProof({
+    const qaRun = qaPhaseRun(playbookRun.processRunId!)
+    const again = await recordUserStoryProof({
       processRunId: playbookRun.processRunId!,
-      processPhaseRunId: qaPhaseRun(playbookRun.processRunId!).id,
-      args: { ...acceptedProof, verdict: "rejected" },
+      processPhaseRunId: qaRun.id,
+      workspace: workspaceDir,
+      args: proveInApp(qaRun.id, { ...acceptedProof, verdict: "rejected" }),
     })
     expect(again).toMatchObject({ ok: false, code: "already_accepted" })
     expect(playbooks.getPlaybookRun(playbookRun.id)!.proof).toMatchObject({
@@ -668,18 +777,23 @@ describe.skipIf(!sqliteLoads)("user story execution", () => {
     const { detachedRunner, driveDetached } = unsettledRunner()
     const playbookRun = await detachedRunner.startUserStory(userStory.id)
     await driveDetached(playbookRun.processRunId!)
+    const qaRun = qaPhaseRun(playbookRun.processRunId!)
     const record = () =>
       recordUserStoryProof({
         processRunId: playbookRun.processRunId!,
-        processPhaseRunId: qaPhaseRun(playbookRun.processRunId!).id,
-        args: rejected,
+        processPhaseRunId: qaRun.id,
+        workspace: workspaceDir,
+        args: proveInApp(qaRun.id, rejected),
       })
 
-    expect(record()).toMatchObject({ ok: true, status: "rejected" })
-    const last = record()
+    expect(await record()).toMatchObject({ ok: true, status: "rejected" })
+    const last = await record()
     expect(last).toMatchObject({ ok: true, status: "rejected" })
     expect((last as { message: string }).message).toMatch(/No revisions remain/)
-    expect(record()).toMatchObject({ ok: false, code: "revisions_exhausted" })
+    expect(await record()).toMatchObject({
+      ok: false,
+      code: "revisions_exhausted",
+    })
     expect(playbooks.getPlaybookRun(playbookRun.id)!.proofRevisions).toBe(2)
 
     runner.reconcile()

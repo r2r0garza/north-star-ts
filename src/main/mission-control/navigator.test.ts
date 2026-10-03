@@ -89,15 +89,16 @@ vi.mock("../agent", () => ({
         writeFileSync(path.join(input.workspace, file), text)
     }
     if (input.processProofStep) {
-      recordUserStoryProof({
+      await recordUserStoryProof({
         processRunId: input.processRunId!,
         processPhaseRunId: input.processPhaseRunId!,
-        args: {
+        workspace: input.workspace,
+        args: proveInApp(input.processPhaseRunId!, {
           verdict: "accepted",
           criteria: [
             { id: "AC-1", status: "met", evidence: "Checked the file." },
           ],
-        },
+        }),
       })
       content = "verified"
     }
@@ -162,7 +163,7 @@ import { onWorkChanged } from "./work-events"
 import type { SeatTurnIdentity } from "./seat-turns"
 import type { AgentDefinition } from "../agent/agents/types"
 import type { RigDecisionRight } from "../db/types"
-import { writeFakeManifest } from "../test/qa-manifest"
+import { proveInApp, writeFakeManifest } from "../test/qa-manifest"
 
 const fakeRunner = {
   enqueueKind: () => {

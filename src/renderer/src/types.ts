@@ -198,6 +198,8 @@ export type {
   SeatBindingsSnapshot,
   UserStoryProof,
   ProofCriterionStatus,
+  ProofVerificationMethod,
+  ProofCheckResult,
   MissionControlRunLink,
   MergePolicyMode,
   MergeQueueEntry,
