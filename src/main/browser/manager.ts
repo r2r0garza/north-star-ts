@@ -2,7 +2,15 @@ import type { BrowserWindow } from "electron"
 import { BrowserSession } from "./session"
 import { BrowserWindowHost, type TabInfo } from "./window"
 import { SidebarBrowserHost, type SidebarBounds } from "./sidebar-host"
+import { isSeatTabId, SeatBrowserPool, type SeatHandleInput } from "./seat"
+import { ParkedViewHost } from "./parked-host"
 import * as settingsService from "../settings/service"
+import {
+  INTERACT_TIMEOUT_MS,
+  NAVIGATE_TIMEOUT_MS,
+  SCREENSHOT_TIMEOUT_MS,
+  SNAPSHOT_TIMEOUT_MS,
+} from "./timeouts"
 import type {
   BrowserRefDescription,
   InteractionResult,
@@ -39,27 +47,23 @@ export type OpenRequester = () => void
 // Where the ACTIVE conversation's view is displayed. "sidebar" embeds it in the
 // main app window's right panel (the default); "window" shows it in the separate
 // Agent Browser window (the classic pop-out). A view has one parent at a time, so
-// switching surface re-parents the active view between the two hosts.
+// switching surface re-parents the active view between the hosts.
 export type BrowserSurface = "window" | "sidebar"
 
 // The single owner of the agent's browser. TABBED: one BrowserSession
-// (WebContentsView) per conversation, keyed by conversationId. Every tab's view
-// is "homed" in the BrowserWindowHost (hidden until shown); the manager may
-// re-parent the ACTIVE tab's view into the SidebarBrowserHost (embedded in the
-// main window) when the surface is "sidebar". Instantiated once in
-// src/main/index.ts and disposed on will-quit.
+// (WebContentsView) per conversation, keyed by conversationId. A tab's view sits
+// in the surface showing it (the SidebarBrowserHost embedded in the main window,
+// or the BrowserWindowHost) only while it's shown there; every other tab is
+// parked, visible, in the never-shown ParkedViewHost. A view hidden with
+// setVisible(false) can't be screenshotted, so background conversations (and
+// the active one while the sidebar panel is closed) must stay parked to keep
+// working. See placeTabs. Instantiated once in src/main/index.ts and disposed on
+// will-quit.
 //
 // The agent loop never touches a session directly — it gets a per-turn
 // BrowserHandle (bound to that turn's AbortSignal AND its conversationId) built
 // alongside `env` and released when the turn ends. The tab persists across turns
 // (so "navigate, then next turn screenshot" works); only the handle is per-turn.
-
-// Per-action timeouts. Navigation waits longest (real page loads); reads and
-// interactions are quicker. All are bounded so a hung page can't wedge a turn.
-const NAVIGATE_TIMEOUT_MS = 30_000
-const SNAPSHOT_TIMEOUT_MS = 15_000
-const SCREENSHOT_TIMEOUT_MS = 15_000
-const INTERACT_TIMEOUT_MS = 15_000
 
 // A snapshot of the live page in this conversation's tab, for surfacing to the
 // agent WITHOUT it having to call a read tool. `state()` returns this when a
@@ -113,11 +117,15 @@ export interface BrowserHandle {
   // The live page in this conversation's tab, or null if nothing is open
   // (no tab / closed / blank). Read-only — must NOT create a tab.
   state(): BrowserState | null
+  // Mission Control seat handles only (plan 109.04): save a text excerpt (a
+  // console or network page) to the phase run's evidence directory. Returns
+  // the saved file's path.
+  saveEvidence?(name: string, content: string): Promise<string>
 }
 
 export class BrowserManager {
-  // The separate Agent Browser window. Every tab's view is homed here (hidden)
-  // and shown here when the surface is "window".
+  // The separate Agent Browser window. Holds only the tab it shows (the active
+  // conversation's when the surface is "window", or a seat's).
   private readonly windowHost = new BrowserWindowHost()
   // The in-app embed surface: layers the active tab's view over the main window's
   // right panel when the surface is "sidebar".
@@ -131,10 +139,11 @@ export class BrowserManager {
   // Current display surface. Default "sidebar" — the browser lives in the app's
   // right panel unless the user pops it out.
   private surface: BrowserSurface = "sidebar"
-  // The conversation whose view is currently re-parented INTO the sidebar host
-  // (removed from the window host). Tracked so we can restore it to the window
-  // host when the active tab changes or the surface flips to "window".
+  // The conversation whose view is currently embedded in the sidebar host.
   private sidebarEmbeddedId: string | null = null
+  // The conversation tab the window shows when the surface is "window" and no
+  // seat is shown: the active conversation, unless a handoff revealed another.
+  private windowConversationId: string | null = null
   private disposed = false
   // Where picked elements go (main app renderer). Set via setPickForwarder.
   private pickForwarder: PickForwarder | null = null
@@ -142,6 +151,72 @@ export class BrowserManager {
   private conversationActivator: ConversationActivator | null = null
   // Requests the app open its right panel in Browser mode. Set via setOpenRequester.
   private openRequester: OpenRequester | null = null
+  // Where a seat's evidence is saved. Set via setEvidenceRoot (needs app data).
+  private evidenceRoot: ((phaseRunId: string) => string) | null = null
+  // Where every view not on screen runs (a never-shown window; see
+  // ParkedViewHost): background conversation tabs and hidden seat tabs.
+  private readonly parkedHost = new ParkedViewHost()
+  // Mission Control seat tabs (plan 109.04): isolated, local-only, capped, and
+  // shown (when the setting allows) in the Agent Browser window — never the
+  // sidebar, which follows the conversation being viewed.
+  private readonly seats = new SeatBrowserPool({
+    createSession: (partition) => {
+      return new BrowserSession({
+        partition,
+        backgroundThrottling: false,
+      })
+    },
+    addView: (id, view) => this.parkedHost.addView(id, view),
+    removeView: (id) => {
+      if (this.windowSeatId === id) this.windowSeatId = null
+      this.windowHost.removeView(id)
+      this.parkedHost.removeView(id)
+    },
+    showSeat: (id) => {
+      this.setWindowSeat(id)
+      this.windowHost.reveal()
+      this.windowHost.showView(id)
+      this.pushTabs()
+    },
+    hideSeat: (id) => {
+      if (this.windowSeatId !== id) return
+      this.setWindowSeat(null)
+      this.refreshActiveView()
+      if (this.surface === "sidebar") this.windowHost.hide()
+    },
+    tabsChanged: () => this.pushTabs(),
+    revealSetting: () => settingsService.getBrowser().revealMissionControl,
+    evidenceDir: (phaseRunId) => {
+      if (!this.evidenceRoot) throw new Error("No evidence directory is set.")
+      return this.evidenceRoot(phaseRunId)
+    },
+  })
+  // The seat tab the Agent Browser window is showing instead of the active
+  // conversation's, or null. Only this seat's view is in the window; the
+  // others stay in the parked host, where they keep painting.
+  private windowSeatId: string | null = null
+
+  // Move a seat's view into the Agent Browser window (to be shown there), and
+  // the previously shown one back to the parked host. A view the window isn't
+  // showing would be hidden, and a hidden view can't be screenshotted. Showing
+  // a seat parks the conversation tab the window was showing.
+  private setWindowSeat(id: string | null): void {
+    const prev = this.windowSeatId
+    if (prev === id) return
+    if (prev) {
+      const view = this.seats.viewOf(prev)
+      this.windowHost.removeView(prev)
+      if (view) this.parkedHost.addView(prev, view)
+    }
+    this.windowSeatId = null
+    const view = id ? this.seats.viewOf(id) : null
+    if (id && view) {
+      this.windowSeatId = id
+      this.placeTabs()
+      this.parkedHost.removeView(id)
+      this.windowHost.addView(id, view)
+    }
+  }
 
   // Wire the destination for picked elements. Called once from main/index.ts.
   setPickForwarder(forward: PickForwarder): void {
@@ -160,6 +235,11 @@ export class BrowserManager {
     this.openRequester = open
   }
 
+  // Wire where seat evidence is saved (app data). Called once from main/index.ts.
+  setEvidenceRoot(root: (phaseRunId: string) => string): void {
+    this.evidenceRoot = root
+  }
+
   // Give the sidebar host the main app window to embed views into. Called once
   // from createWindow() in main/index.ts.
   setMainWindow(win: BrowserWindow): void {
@@ -170,12 +250,26 @@ export class BrowserManager {
   // that conversation. The app's switch will loop back via setActiveConversation
   // to actually show the tab, so this doesn't change view state itself.
   requestConversationActivation(conversationId: string): void {
-    if (this.disposed || !this.tabs.has(conversationId)) return
+    if (this.disposed) return
+    // A seat tab has no conversation to switch to: show it in the window.
+    if (isSeatTabId(conversationId)) {
+      if (!this.seats.isVisible(conversationId)) return
+      this.setWindowSeat(conversationId)
+      this.windowHost.showView(conversationId)
+      this.pushTabs()
+      return
+    }
+    if (!this.tabs.has(conversationId)) return
+    // Back to the conversation tabs; the app's switch loops back to show it.
+    if (this.windowSeatId) {
+      this.setWindowSeat(null)
+      this.refreshActiveView()
+    }
     this.conversationActivator?.(conversationId)
   }
 
   // Get-or-create the tab (session) for a conversation. Wires per-tab listeners
-  // and homes the view in the window host (hidden until shown/embedded).
+  // and parks the view (until it's shown).
   private ensureTab(conversationId: string): BrowserSession {
     if (this.disposed) throw new Error("BrowserManager is disposed")
     const existing = this.tabs.get(conversationId)
@@ -208,7 +302,7 @@ export class BrowserManager {
       }
     }
     this.tabs.set(conversationId, session)
-    this.windowHost.addView(conversationId, session.view)
+    this.placeTabs()
     // If nothing is shown yet, show this new tab so the surface isn't blank.
     if (this.activeConversationId === null) this.refreshActiveView()
     this.pushTabs()
@@ -223,44 +317,56 @@ export class BrowserManager {
     this.appPickModeEmitter = emit
   }
 
-  // Move the active tab's view onto the sidebar host (embedded), restoring any
-  // previously-embedded view back to the window host first. A null id detaches
-  // the current embed. Keeps exactly one view parented to the sidebar host.
-  private updateSidebarEmbed(id: string | null): void {
-    if (this.sidebarEmbeddedId === id) return
-    // Restore the previously-embedded view to its window-host home (hidden).
-    if (this.sidebarEmbeddedId) {
+  // Put every conversation tab's view where it belongs. At most one is embedded
+  // in the sidebar (the active tab, on the "sidebar" surface, while the panel is
+  // on screen) and at most one is in the window (windowConversationId, on the
+  // "window" surface, unless a seat is shown there). Every other view is parked
+  // visible, so it can still be screenshotted and driven. Views are taken out of
+  // their old parent before going into a new one (a view has one parent), and
+  // parked before the shown ones leave the parked host so its window isn't
+  // destroyed and recreated in between. Idempotent.
+  private placeTabs(): void {
+    const has = (id: string | null): id is string => !!id && this.tabs.has(id)
+    const sidebarId =
+      this.surface === "sidebar" &&
+      this.sidebarHost.isShowing() &&
+      has(this.activeConversationId)
+        ? this.activeConversationId
+        : null
+    const windowId =
+      this.surface === "window" &&
+      !this.windowSeatId &&
+      has(this.windowConversationId)
+        ? this.windowConversationId
+        : null
+
+    if (this.sidebarEmbeddedId && this.sidebarEmbeddedId !== sidebarId) {
       this.sidebarHost.detachCurrent()
-      const prev = this.tabs.get(this.sidebarEmbeddedId)
-      if (prev) this.windowHost.addView(this.sidebarEmbeddedId, prev.view)
       this.sidebarEmbeddedId = null
     }
-    if (id) {
-      const session = this.tabs.get(id)
-      if (session) {
-        // Remove from the window host so the view has a single parent, then embed.
-        this.windowHost.removeView(id)
-        this.sidebarHost.attach(session.view)
-        this.sidebarEmbeddedId = id
-      }
+    for (const [id, session] of this.tabs) {
+      if (id === sidebarId || id === windowId) continue
+      this.windowHost.removeView(id)
+      this.parkedHost.addView(id, session.view)
     }
+    if (sidebarId) {
+      this.windowHost.removeView(sidebarId)
+      this.parkedHost.removeView(sidebarId)
+      this.sidebarHost.attach(this.tabs.get(sidebarId)!.view)
+      this.sidebarEmbeddedId = sidebarId
+    }
+    if (windowId) {
+      this.parkedHost.removeView(windowId)
+      this.windowHost.addView(windowId, this.tabs.get(windowId)!.view)
+    }
+    this.windowHost.showView(this.windowSeatId ?? windowId)
   }
 
   // Show the active conversation's tab on the CURRENT surface (or blank if it has
-  // no tab). Sidebar: embed it in the app panel and hide the window host. Window:
-  // detach any embed and show it in the separate window.
+  // no tab), parking the rest.
   private refreshActiveView(): void {
-    const id =
-      this.activeConversationId && this.tabs.has(this.activeConversationId)
-        ? this.activeConversationId
-        : null
-    if (this.surface === "sidebar") {
-      this.updateSidebarEmbed(id)
-      this.windowHost.showView(null)
-    } else {
-      this.updateSidebarEmbed(null)
-      this.windowHost.showView(id)
-    }
+    this.windowConversationId = this.activeConversationId
+    this.placeTabs()
     this.pushTabs()
   }
 
@@ -276,16 +382,20 @@ export class BrowserManager {
 
   // The renderer reports the sidebar Browser slot's rectangle (or null to hide).
   // Only meaningful while the surface is "sidebar"; harmless otherwise (the
-  // sidebar host has no view attached).
+  // sidebar host has no view attached). Embeds the active tab when the slot
+  // appears and parks it when the slot goes away.
   reportSidebarBounds(bounds: SidebarBounds | null): void {
     if (this.disposed) return
     this.sidebarHost.reportBounds(bounds)
+    this.placeTabs()
   }
 
   // Explicitly show/hide the embedded view (panel closed / obscured by a modal).
+  // A hidden embed is parked so the agent can keep using it.
   setSidebarVisible(visible: boolean): void {
     if (this.disposed) return
     this.sidebarHost.setVisible(visible)
+    this.placeTabs()
   }
 
   // Bring the browser forward on whichever surface is active: sidebar → ask the
@@ -310,6 +420,7 @@ export class BrowserManager {
   // tab) via the same forwarder path.
   private pushTabs(): void {
     const tabs: TabInfo[] = []
+    const windowShowsSeat = this.windowSeatId !== null
     for (const [id, session] of this.tabs) {
       const wc = session.webContents
       if (wc.isDestroyed()) continue
@@ -322,7 +433,12 @@ export class BrowserManager {
         active: id === this.activeConversationId,
       })
     }
-    this.windowHost.sendToChrome("browser:tabs", tabs)
+    // The window also lists visible seat tabs; the app's panel never does.
+    const windowTabs = [
+      ...tabs.map((t) => (windowShowsSeat ? { ...t, active: false } : t)),
+      ...this.seats.tabInfos(this.windowSeatId),
+    ]
+    this.windowHost.sendToChrome("browser:tabs", windowTabs)
     this.appTabsEmitter?.(tabs)
   }
 
@@ -355,6 +471,8 @@ export class BrowserManager {
   setActiveConversation(conversationId: string | null): void {
     if (this.disposed) return
     this.activeConversationId = conversationId
+    // In window mode the window follows the conversation the user switched to.
+    if (this.surface === "window") this.setWindowSeat(null)
     this.refreshActiveView()
   }
 
@@ -413,8 +531,9 @@ export class BrowserManager {
       this.sidebarEmbeddedId = null
     }
     this.windowHost.removeView(conversationId)
+    this.parkedHost.removeView(conversationId)
     session.dispose()
-    if (this.tabs.size === 0) {
+    if (this.tabs.size === 0 && !this.windowSeatId) {
       this.windowHost.hide()
     } else {
       // If we closed the shown tab, fall back to showing the active
@@ -521,11 +640,26 @@ export class BrowserManager {
             this.openRequester?.()
         } else {
           this.windowHost.reveal()
-          this.windowHost.showView(conversationId)
+          this.setWindowSeat(null)
+          this.windowConversationId = conversationId
+          this.placeTabs()
           this.pushTabs()
         }
       },
     }
+  }
+
+  // A per-turn handle for a Mission Control seat's tab (plan 109.04). The tab
+  // is created on first use (waiting for a free slot under the cap) and lives
+  // until releaseSeat() at phase end.
+  seatHandle(input: SeatHandleInput): BrowserHandle {
+    if (this.disposed) throw new Error("BrowserManager is disposed")
+    return this.seats.handle(input)
+  }
+
+  // Phase end: close the seat's tab and clear its partition's storage.
+  releaseSeat(phaseRunId: string): Promise<void> {
+    return this.seats.release(phaseRunId)
   }
 
   // Called on app `before-quit`: clear the browser window's user-close veto so
@@ -541,6 +675,8 @@ export class BrowserManager {
     this.sidebarHost.detachCurrent()
     for (const session of this.tabs.values()) session.dispose()
     this.tabs.clear()
+    this.seats.dispose()
+    this.parkedHost.dispose()
     this.windowHost.dispose()
   }
 }

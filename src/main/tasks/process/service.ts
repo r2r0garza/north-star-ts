@@ -3,6 +3,11 @@ import { createHash } from "crypto"
 import { app } from "electron"
 import { join } from "path"
 import { runAgentLoop, generateTitle } from "../../agent"
+import {
+  getSeatBrowser,
+  seatBrowserContextSection,
+  seatBrowserLabel,
+} from "../../mission-control/seat-browser"
 import { SHUTDOWN_ABORT_REASON, PAUSE_ABORT_REASON } from "../../agent/abort"
 import {
   createConversation,
@@ -59,6 +64,7 @@ import {
 import {
   APP_LAUNCH_ROLES,
   appLaunchContextSection,
+  ownerServiceUrls,
   recipeForLink,
   stopServices,
 } from "../../mission-control/app-launch"
@@ -1455,6 +1461,13 @@ export class ProcessService {
           ? recipeForLink(missionControl)
           : null
       const appLaunch = !!appRecipe?.services.length
+      // Seat browser (plan 109.04): a seat's work step drives the app in an
+      // isolated, local-only background tab owned by this phase run, closed
+      // (and its storage cleared) when the phase ends.
+      const seatBrowser = seatTurn && workspace ? getSeatBrowser() : null
+      const seatBrowserLabelText = seatBrowser
+        ? seatBrowserLabel(seatTurn!.address, missionControl!)
+        : ""
       let releaseSeat: (() => void) | null = null
       try {
         // One turn at a time per transcript: a seat-session step waits for a
@@ -1496,6 +1509,7 @@ export class ProcessService {
                 : []),
               ...(seatScope ? [seatScope.contextSection] : []),
               ...(appLaunch ? [appLaunchContextSection(appRecipe!)] : []),
+              ...(seatBrowser ? [seatBrowserContextSection()] : []),
             ],
             missionControlSeat: seatTurn ?? undefined,
             writeScope: seatScope?.writeScope,
@@ -1504,6 +1518,16 @@ export class ProcessService {
               !!this.missionControlRoot(run)?.missionControl,
             processQaChecks: qaKind ?? undefined,
             processAppLaunch: appLaunch,
+            seatBrowser: seatBrowser
+              ? (signal) =>
+                  seatBrowser.handle({
+                    phaseRunId: phaseRun.id,
+                    conversationId: worker.id,
+                    label: seatBrowserLabelText,
+                    signal,
+                    allowedOrigins: () => ownerServiceUrls(phaseRun.id),
+                  })
+              : undefined,
             // Headless worker: no user to answer a clarifying question (it would only
             // stall until interrupted). The kickoff frames the work as self-contained.
             suppressUserQuestions: true,
@@ -1581,6 +1605,11 @@ export class ProcessService {
         await stopServices({ owner: phaseRun.id }).catch((err) =>
           console.warn("[process] could not stop the app's services:", err)
         )
+        await seatBrowser
+          ?.release(phaseRun.id)
+          .catch((err) =>
+            console.warn("[process] could not close the seat's browser:", err)
+          )
       }
     }
   }

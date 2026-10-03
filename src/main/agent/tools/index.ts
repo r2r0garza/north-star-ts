@@ -199,6 +199,12 @@ export const browserTools: Tool[] = [
   browserHandoffTool,
 ]
 export const browserToolDefinitions = browserTools.map((t) => t.definition)
+// A Mission Control seat's browser (plan 109.04): no browser_handoff, since no
+// human is waiting in a headless phase. A login wall becomes an escalation or
+// a criterion that couldn't be verified.
+export const seatBrowserToolDefinitions = browserToolDefinitions.filter(
+  (d) => d.function.name !== browserHandoffTool.definition.function.name
+)
 
 // Web tools — headless web access, offered in every mode independent of the
 // workspace or the visible browser (a Chat session can search/fetch too).

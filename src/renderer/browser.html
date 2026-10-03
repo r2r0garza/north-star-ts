@@ -58,6 +58,10 @@
         background: rgba(128, 128, 128, 0.18);
         border-color: rgba(128, 128, 128, 0.45);
       }
+      /* A Mission Control seat's tab (watch-only). */
+      .tab.seat {
+        font-style: italic;
+      }
       .tab .title {
         overflow: hidden;
         text-overflow: ellipsis;
@@ -117,6 +121,10 @@
       }
       #url:focus {
         border-color: rgba(80, 130, 255, 0.8);
+      }
+      button:disabled {
+        opacity: 0.4;
+        cursor: default;
       }
       /* Pick-mode toggle: highlighted when active. */
       #pick.active {

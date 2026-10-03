@@ -6,6 +6,7 @@ import { askUser } from "./questions/broker"
 import {
   toolDefinitions,
   browserToolDefinitions,
+  seatBrowserToolDefinitions,
   webSearchDefinition,
   webFetchDefinition,
   runTool,
@@ -841,6 +842,12 @@ export interface RunAgentLoopOptions {
   // singleton) rather than imported — same cycle-avoidance as enqueueTask. Absent
   // in contexts with no browser (e.g. the durable task runner, unit tests).
   provideBrowser?: (signal: AbortSignal) => BrowserHandle
+  // A Mission Control seat's browser for a `work` turn (plan 109.04): an
+  // isolated, local-only tab owned by the phase run. Kept apart from
+  // provideBrowser on purpose: it doesn't make the turn a live one, isn't lent
+  // to CLI providers, and comes without browser_handoff (no human is waiting
+  // in a headless phase).
+  seatBrowser?: (signal: AbortSignal) => BrowserHandle
   // The durable task this run belongs to, when driven by the runner's runOne.
   // Absent on the live `chat` path (which has no task). Used only to surface this
   // task's prior gate decisions in the approvals context section (plan 021) so a
@@ -1230,7 +1237,11 @@ export async function runAgentLoop(
   // The agent browser is offered when the caller wired a provider (the live chat
   // path does; the durable task runner does not — a background task has no window
   // to drive). Bound to this turn's signal so Stop unwinds an in-flight browser op.
-  const browser = opts.provideBrowser?.(abort.signal)
+  const browser =
+    opts.provideBrowser?.(abort.signal) ?? opts.seatBrowser?.(abort.signal)
+  const browserTools = opts.provideBrowser
+    ? browserToolDefinitions
+    : seatBrowserToolDefinitions
 
   // Custom-agent tool restriction. When the selected agent declares a `tools`
   // frontmatter, this is the set of internal tool names it may be offered (plus
@@ -1406,7 +1417,7 @@ export async function runAgentLoop(
           : [todoWriteTool.definition, runTodosInBackgroundTool.definition]
         : []),
       ...(useIndex ? [indexQueryTool.definition] : []),
-      ...(browser ? browserToolDefinitions : []),
+      ...(browser ? browserTools : []),
       // Web tools are offered in every mode, independent of workspace/browser.
       // In plan mode, web_fetch remains behind its ordinary per-origin approval
       // gate; it researches external sources without mutating the workspace.

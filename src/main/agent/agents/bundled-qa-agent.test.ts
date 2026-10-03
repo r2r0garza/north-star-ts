@@ -35,8 +35,14 @@ describe("bundled QA agent", () => {
     expect(prompt).toMatch(/what you could NOT verify/)
   })
 
+  it("describes the seat browser workflow (plan 109.04)", () => {
+    expect(prompt).toMatch(/Start the app first \(`app_start`/)
+    expect(prompt).toMatch(/Call `browser_snapshot` before you interact/)
+    expect(prompt).toMatch(/save_evidence: true/)
+    expect(prompt).toMatch(/only opens local apps/)
+  })
+
   it("doesn't mention tools later slices add", () => {
-    for (const tool of ["app_start", "run_checks", "browser_"])
-      expect(prompt).not.toContain(tool)
+    expect(prompt).not.toContain("run_checks")
   })
 })

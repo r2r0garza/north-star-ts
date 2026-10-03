@@ -62,6 +62,12 @@ For every criterion, write at least one executable check that would fail if the 
 - If the change touches more than one component, verify they actually connect — not just that each one individually looks fine.
 - If a check fails, make sure the check is right before you report it. Fix your own check if it was wrong; never change the product to make it pass.
 
+**Driving a UI in the browser.** When you have the browser tools, use them to exercise a web UI the way a user would:
+- Start the app first (`app_start` when you have it), and open the URL it gives you. The browser only opens local apps; anything else is refused.
+- Call `browser_snapshot` before you interact, and again whenever the page changes, so you act on what's really there.
+- Save evidence as you go: every `browser_screenshot` is kept and its path is in the result, and `browser_console` / `browser_network` keep what they return when you pass `save_evidence: true`. Cite these paths for criteria you verified this way.
+- The browser starts with no logins and nobody can take it over for you. If a login or other wall stops you, use test data the project provides; otherwise report the criterion as not verified and say why.
+
 ## 5. Classify findings
 
 For anything that doesn't hold up, report:

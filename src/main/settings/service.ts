@@ -140,9 +140,13 @@ export interface McpSourcesSettings {
 // window pops to the front when the agent navigates in the conversation you're
 // viewing: "always" reveals it, "never" keeps it hidden (the page still runs and
 // screenshots still work; a browser_handoff for a captcha/login still reveals).
+// `revealMissionControl` (plan 109.04) shows a Mission Control seat's browser
+// tab in the Agent Browser window when the seat drives the app it's testing;
+// off (the default) keeps seat browsers hidden in the background.
 export type BrowserReveal = "always" | "never"
 export interface BrowserSettings {
   revealOnAgentUse: BrowserReveal
+  revealMissionControl: boolean
 }
 
 // User-editable brand colors (Settings → Appearance), overriding the .env
@@ -244,6 +248,7 @@ const DEFAULT_MCP_SOURCES: McpSourcesSettings = { folders: [] }
 
 const DEFAULT_BROWSER: BrowserSettings = {
   revealOnAgentUse: "always",
+  revealMissionControl: false,
 }
 
 const DEFAULT_THEME: ThemeSettings = {
@@ -559,6 +564,7 @@ function loadBrowser(): BrowserSettings {
       browserCache = {
         revealOnAgentUse:
           parsed.revealOnAgentUse === "never" ? "never" : "always",
+        revealMissionControl: parsed.revealMissionControl === true,
       }
       return browserCache
     } catch {

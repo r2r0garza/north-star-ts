@@ -73,6 +73,7 @@ bridge.onTabs((tabs: ChromeTab[]) => {
       dot.className = "spinner"
       el.appendChild(dot)
     }
+    if (tab.seat) el.classList.add("seat")
     const title = document.createElement("span")
     title.className = "title"
     title.textContent = tab.title
@@ -81,10 +82,16 @@ bridge.onTabs((tabs: ChromeTab[]) => {
     tabsEl.appendChild(el)
   }
   // Drive the URL bar from the active tab (unless the user is mid-edit).
-  if (!editing) {
-    const active = tabs.find((t) => t.active)
-    urlInput.value = active?.url ?? ""
-  }
+  const active = tabs.find((t) => t.active)
+  if (!editing) urlInput.value = active?.url ?? ""
+  // A Mission Control seat's tab is the agent's to drive: the user can click
+  // around in the page, but the URL bar, Pick, and close act on conversation
+  // tabs only, so they're disabled while a seat tab is shown.
+  const seat = !!active?.seat
+  urlInput.readOnly = seat
+  reloadBtn.disabled = seat
+  pickBtn.disabled = seat
+  closeBtn.disabled = seat
 })
 
 // Main pushes the authoritative pick-mode state (e.g. auto-off after a pick).

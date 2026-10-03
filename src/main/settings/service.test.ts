@@ -398,11 +398,29 @@ describe("settings service — skill sources (capabilities)", () => {
 
 describe("settings service — browser (tabbed browser, plan: Phase 4)", () => {
   it("defaults revealOnAgentUse to always", () => {
-    expect(service.getBrowser()).toEqual({ revealOnAgentUse: "always" })
+    expect(service.getBrowser()).toEqual({
+      revealOnAgentUse: "always",
+      revealMissionControl: false,
+    })
+  })
+
+  it("round-trips revealMissionControl and coerces non-booleans to off", () => {
+    service.setBrowser({
+      revealOnAgentUse: "always",
+      revealMissionControl: true,
+    })
+    service._resetCacheForTests()
+    expect(service.getBrowser().revealMissionControl).toBe(true)
+    service._resetCacheForTests()
+    store.set("browser", JSON.stringify({ revealMissionControl: "yes" }))
+    expect(service.getBrowser().revealMissionControl).toBe(false)
   })
 
   it("round-trips a persisted change to never", () => {
-    service.setBrowser({ revealOnAgentUse: "never" })
+    service.setBrowser({
+      revealOnAgentUse: "never",
+      revealMissionControl: false,
+    })
     service._resetCacheForTests()
     expect(service.getBrowser().revealOnAgentUse).toBe("never")
   })

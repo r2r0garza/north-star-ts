@@ -472,6 +472,15 @@ export function serviceStatus(input: {
     .map((e) => view(e, e.service.key === input.logs))
 }
 
+// The URLs of the owner's services (app_start, or a check's services through
+// run_checks): the origins a seat's browser may open besides loopback ones
+// (plan 109.04).
+export function ownerServiceUrls(owner: string): string[] {
+  return [...running.values()]
+    .filter((e) => e.owner === owner && e.port !== null)
+    .map((e) => serviceUrl(e.port!))
+}
+
 async function stopEntries(entries: RunningService[]): Promise<number> {
   // Dependents first: the reverse of the order they were started in.
   const live = entries.reverse()

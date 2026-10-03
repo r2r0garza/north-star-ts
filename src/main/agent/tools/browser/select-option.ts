@@ -1,6 +1,7 @@
 import { TOOL_EFFECTS, type Tool, type ToolContext } from "../types"
 import type { ToolAction } from "../../approval/types"
 import { toolError } from "../output"
+import { browserFailure } from "./errors"
 import {
   browserActionIdentity,
   browserOrigin,
@@ -55,10 +56,7 @@ export const browserSelectOptionTool: Tool = {
       target = described.target
       targetFingerprint = described.targetFingerprint
     } catch (err) {
-      return toolError(
-        "select_option_failed",
-        err instanceof Error ? err.message : String(err)
-      )
+      return browserFailure("select_option_failed", err)
     }
 
     const state = ctx.browser.state()
@@ -103,10 +101,7 @@ export const browserSelectOptionTool: Tool = {
       const value = result.value ? ` (value: ${result.value})` : ""
       return `Selected "${result.option}" in ${result.target}${value}. Page is now ${result.url} (title: ${result.title || "untitled"}). Call browser_snapshot to see the current elements.`
     } catch (err) {
-      return toolError(
-        "select_option_failed",
-        err instanceof Error ? err.message : String(err)
-      )
+      return browserFailure("select_option_failed", err)
     }
   },
 }

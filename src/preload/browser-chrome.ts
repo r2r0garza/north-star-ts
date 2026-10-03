@@ -13,6 +13,8 @@ export interface ChromeTab {
   url: string
   loading: boolean
   active: boolean
+  // A Mission Control seat's tab: watch-only from the chrome.
+  seat?: boolean
 }
 
 const api = {

@@ -1,6 +1,7 @@
 import { TOOL_EFFECTS, type Tool, type ToolContext } from "../types"
 import type { ToolAction } from "../../approval/types"
 import { toolError } from "../output"
+import { browserFailure } from "./errors"
 import {
   browserActionIdentity,
   browserOrigin,
@@ -59,10 +60,7 @@ export const browserTypeTool: Tool = {
       target = described.target
       targetFingerprint = described.targetFingerprint
     } catch (err) {
-      return toolError(
-        "type_failed",
-        err instanceof Error ? err.message : String(err)
-      )
+      return browserFailure("type_failed", err)
     }
     const state = ctx.browser.state()
     const url = state?.url ?? ""
@@ -111,10 +109,7 @@ export const browserTypeTool: Tool = {
       const submitted = submit ? " and submitted" : ""
       return `Typed into ${target}${submitted}. Page is now ${url} (title: ${title || "untitled"}). Call browser_snapshot to see the current elements.`
     } catch (err) {
-      return toolError(
-        "type_failed",
-        err instanceof Error ? err.message : String(err)
-      )
+      return browserFailure("type_failed", err)
     }
   },
 }

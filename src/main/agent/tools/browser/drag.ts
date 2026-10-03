@@ -1,6 +1,7 @@
 import { TOOL_EFFECTS, type Tool, type ToolContext } from "../types"
 import type { ToolAction } from "../../approval/types"
 import { toolError } from "../output"
+import { browserFailure } from "./errors"
 import { browserActionIdentity, browserOrigin } from "./approval"
 
 export const browserDragTool: Tool = {
@@ -40,10 +41,7 @@ export const browserDragTool: Tool = {
       toTarget = to.target
       targetFingerprint = `${from.targetFingerprint}->${to.targetFingerprint}`
     } catch (err) {
-      return toolError(
-        "drag_failed",
-        err instanceof Error ? err.message : String(err)
-      )
+      return browserFailure("drag_failed", err)
     }
     const target = `${fromTarget} to ${toTarget}`
     const url = ctx.browser.state()?.url ?? ""
@@ -79,10 +77,7 @@ export const browserDragTool: Tool = {
       const { target, url, title } = await ctx.browser.drag(fromRef, toRef)
       return `Dragged ${target}. Page is now ${url} (title: ${title || "untitled"}). Call browser_snapshot to see current elements.`
     } catch (err) {
-      return toolError(
-        "drag_failed",
-        err instanceof Error ? err.message : String(err)
-      )
+      return browserFailure("drag_failed", err)
     }
   },
 }

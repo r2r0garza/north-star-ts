@@ -8,13 +8,14 @@ import type { BrowserSession } from "./session"
 // layered *beneath* that chrome bar, ONE visible at a time (the active tab).
 //
 // This host is a pure display layer: the BrowserManager owns the sessions/views
-// (one per conversation) and tells the host which to show. All views are added
-// as children of the window but only the active one is visible + laid out;
-// background tabs stay setVisible(false) yet keep running/painting (CDP
-// screenshots drive the renderer's compositor regardless of on-screen state).
+// (one per conversation) and tells the host which to show. The manager adds a
+// view here only while it's the one shown; every other tab is parked visible in
+// the ParkedViewHost. A view hidden with setVisible(false) can't be
+// screenshotted (the CDP capture never resolves), so tabs must never wait here
+// hidden.
 //
-// The window is created hidden (show:false). Even hidden, an attached view's
-// page runs and paints, so CDP screenshots work before the user reveals it.
+// The window is created hidden (show:false). Even hidden, a visible view's page
+// runs and paints, so CDP screenshots work before the user reveals it.
 
 // Height of the chrome (tab strip 36 + control bar 44). Must match the CSS in
 // src/renderer/browser.html so views sit flush beneath the chrome.
@@ -27,12 +28,16 @@ export interface TabInfo {
   url: string
   loading: boolean
   active: boolean
+  // A Mission Control seat's tab (plan 109.04): shown here for watching, not
+  // driven from the chrome's URL bar.
+  seat?: boolean
 }
 
 export class BrowserWindowHost {
   private window: BrowserWindow | null = null
-  // All views currently hosted, keyed by conversationId. Every view is a child
-  // of the window; only `activeId`'s view is visible + laid out.
+  // Views currently hosted, keyed by tab id. In practice only the shown one:
+  // the manager parks the rest elsewhere. Only `activeId`'s view is visible +
+  // laid out.
   private views = new Map<string, BrowserSession["view"]>()
   private activeId: string | null = null
   private resizeHandler: (() => void) | null = null
@@ -82,7 +87,8 @@ export class BrowserWindowHost {
     return win
   }
 
-  // Register a view as a hidden child of the window (a new tab). Idempotent.
+  // Add a view as a hidden child of the window, to be shown with showView.
+  // Idempotent.
   addView(id: string, view: BrowserSession["view"]): void {
     const win = this.ensureWindow()
     if (this.views.has(id)) return

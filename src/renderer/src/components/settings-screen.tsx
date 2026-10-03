@@ -1816,7 +1816,32 @@ export function SettingsScreen({
                             checked={browser.revealOnAgentUse === "always"}
                             onCheckedChange={(checked) =>
                               saveBrowser({
+                                ...browser,
                                 revealOnAgentUse: checked ? "always" : "never",
+                              })
+                            }
+                          />
+                        </Field>
+                        <Field orientation="horizontal">
+                          <FieldContent>
+                            <FieldLabel htmlFor="browser-reveal-mission-control">
+                              Show the Mission Control browser when the agent
+                              uses it
+                            </FieldLabel>
+                            <FieldDescription>
+                              Show a seat's browser tab when a Mission Control
+                              agent (such as QA) drives the app it's testing.
+                              When off, seat browsers run hidden in the
+                              background.
+                            </FieldDescription>
+                          </FieldContent>
+                          <Switch
+                            id="browser-reveal-mission-control"
+                            checked={browser.revealMissionControl}
+                            onCheckedChange={(checked) =>
+                              saveBrowser({
+                                ...browser,
+                                revealMissionControl: checked,
                               })
                             }
                           />

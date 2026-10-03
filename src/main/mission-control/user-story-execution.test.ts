@@ -6,6 +6,8 @@ import { tmpdir } from "os"
 import { join } from "path"
 import { runMigrations } from "../db/migrations"
 import { sqliteLoadsForTests } from "../test/sqlite"
+import type { SeatHandleInput } from "../browser/seat"
+import { installSeatBrowser } from "./seat-browser"
 
 const sqliteLoads = sqliteLoadsForTests()
 
@@ -31,6 +33,8 @@ interface LoopCall {
   seat?: { address: string; profile: string; anchor: unknown }
   writeScope?: { allow: string[] }
   qaChecks?: "author" | "verify"
+  // The seat browser handle input this worker would get (plan 109.04).
+  seatBrowser?: { phaseRunId: string; label: string; origins: string[] }
 }
 const loopCalls: LoopCall[] = []
 // What a proof-step worker submits through record_proof, per call (FIFO).
@@ -51,6 +55,7 @@ vi.mock("../agent", () => ({
     writeScope?: { allow: string[] }
     processQaChecks?: "author" | "verify"
     processAppLaunch?: boolean
+    seatBrowser?: (signal: AbortSignal) => unknown
     workspace?: string
     abort?: AbortController
   }) => {
@@ -95,6 +100,16 @@ vi.mock("../agent", () => ({
       writeScope: input.writeScope,
       qaChecks: input.processQaChecks,
     }
+    if (input.seatBrowser) {
+      const before = seatBrowserInputs.length
+      input.seatBrowser(new AbortController().signal)
+      const seen = seatBrowserInputs[before]
+      call.seatBrowser = seen && {
+        phaseRunId: seen.phaseRunId,
+        label: seen.label,
+        origins: seen.allowedOrigins(),
+      }
+    }
     loopCalls.push(call)
     // QA's checks step (plan 109.02) completes only with a valid manifest.
     if (input.processQaChecks !== "author" || manifestSkips-- <= 0)
@@ -136,6 +151,10 @@ vi.mock("../agent", () => ({
     return { content }
   },
 }))
+// The installed seat browser (plan 109.04): the handles workers asked for and
+// the phase runs whose tabs were released.
+const seatBrowserInputs: SeatHandleInput[] = []
+const seatBrowserReleases: string[] = []
 // Workers start the app when it's offered, and what they started.
 let startApp = false
 const appStarts: Array<{
@@ -346,6 +365,9 @@ beforeEach(() => {
   manifestSkips = 0
   startApp = false
   appStarts.length = 0
+  seatBrowserInputs.length = 0
+  seatBrowserReleases.length = 0
+  installSeatBrowser(null)
   rmSync(join(workspaceDir, "e2e"), { recursive: true, force: true })
   setup()
 })
@@ -912,6 +934,54 @@ describe.skipIf(!sqliteLoads)("user story execution", () => {
       })
     }
   )
+
+  it("gives seat work steps an isolated browser and closes it when each step ends (plan 109.04)", async () => {
+    installSeatBrowser({
+      handle: (input) => {
+        seatBrowserInputs.push(input)
+        return {} as never
+      },
+      release: async (phaseRunId) => {
+        seatBrowserReleases.push(phaseRunId)
+      },
+    })
+    const rig = orchestratedRig()
+    const { userStory } = billingFeature(rig.id)
+    proofSubmissions.push(acceptedProof)
+    const playbookRun = await runner.startUserStory(userStory.id)
+    await drive(playbookRun.processRunId!)
+    expect(features.getUserStory(userStory.id)!.status).toBe("done")
+
+    const workers = loopCalls.filter(
+      (c) => !c.userMessage?.startsWith("# Review the")
+    )
+    expect(workers.map((c) => c.seatBrowser?.label)).toEqual([
+      "builder@implementation · billing.milestone-1.invoice-model",
+      "qa@implementation · billing.milestone-1.invoice-model",
+      "builder@implementation · billing.milestone-1.invoice-model",
+      "qa@implementation · billing.milestone-1.invoice-model",
+    ])
+    // One tab per phase run, each released when its step ended.
+    const phaseRunIds = workers.map((c) => c.seatBrowser!.phaseRunId)
+    expect(new Set(phaseRunIds).size).toBe(4)
+    expect([...seatBrowserReleases].sort()).toEqual([...phaseRunIds].sort())
+    // Nothing started, so only loopback origins are open to it.
+    expect(workers.every((c) => c.seatBrowser!.origins.length === 0)).toBe(true)
+    expect(workers[3].sectionContent).toContain("## Your browser")
+  })
+
+  it("gives seat steps no browser when none is installed", async () => {
+    const rig = orchestratedRig()
+    const { userStory } = billingFeature(rig.id)
+    proofSubmissions.push(acceptedProof)
+    const playbookRun = await runner.startUserStory(userStory.id)
+    await drive(playbookRun.processRunId!)
+    const workers = loopCalls.filter(
+      (c) => !c.userMessage?.startsWith("# Review the")
+    )
+    expect(workers.every((c) => !c.seatBrowser)).toBe(true)
+    expect(workers[3].sectionContent).not.toContain("## Your browser")
+  })
 
   it("applies a QA send-back on Autopilot, and asks the user otherwise", async () => {
     for (const mode of ["autopilot", "manual"] as const) {

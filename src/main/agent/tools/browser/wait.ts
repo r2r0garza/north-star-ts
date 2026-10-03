@@ -1,6 +1,7 @@
 import { TOOL_EFFECTS, type Tool, type ToolContext } from "../types"
 import type { ToolAction } from "../../approval/types"
 import { toolError } from "../output"
+import { browserFailure } from "./errors"
 import { browserActionIdentity, browserOrigin } from "./approval"
 
 const CONDITIONS = new Set([
@@ -68,10 +69,7 @@ export const browserWaitTool: Tool = {
         target = `${condition} ${described.target}`
         targetFingerprint = described.targetFingerprint
       } catch (err) {
-        return toolError(
-          "wait_failed",
-          err instanceof Error ? err.message : String(err)
-        )
+        return browserFailure("wait_failed", err)
       }
     }
     const url = ctx.browser.state()?.url ?? ""
@@ -116,10 +114,7 @@ export const browserWaitTool: Tool = {
       })
       return `Wait completed. Page is now ${result.url} (title: ${result.title || "untitled"}).`
     } catch (err) {
-      return toolError(
-        "wait_failed",
-        err instanceof Error ? err.message : String(err)
-      )
+      return browserFailure("wait_failed", err)
     }
   },
 }

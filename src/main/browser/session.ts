@@ -42,6 +42,8 @@ export interface ScreenshotResult {
   jpeg: Buffer
   width: number
   height: number
+  // Where a Mission Control seat's copy was saved as evidence (plan 109.04).
+  evidencePath?: string
 }
 
 export interface NavigateResult {
@@ -128,10 +130,19 @@ export class BrowserSession {
   >()
   private pendingDialog: BrowserDialogState | null = null
 
-  constructor() {
+  // `partition` defaults to the persistent conversation partition. A Mission
+  // Control seat passes its own non-persistent one (no `persist:` prefix) and
+  // turns background throttling off, so a page in a hidden window still paints,
+  // screenshots, and runs timers (plan 109.04).
+  constructor(
+    options: { partition?: string; backgroundThrottling?: boolean } = {}
+  ) {
     this.view = new WebContentsView({
       webPreferences: {
-        partition: BROWSER_PARTITION,
+        partition: options.partition ?? BROWSER_PARTITION,
+        ...(options.backgroundThrottling === false
+          ? { backgroundThrottling: false }
+          : {}),
         // The page is untrusted content the agent navigates to — keep it isolated
         // and sandboxed. Element picking is handled by CDP's native inspect mode,
         // so no page preload or page-world bridge is needed.
@@ -1707,6 +1718,17 @@ export class BrowserSession {
           ? sanitizeUrl(data.url)
           : sanitizeUrl(this.view.webContents.getURL()),
     }
+  }
+
+  // Wipe everything the page stored in this session's partition (cookies,
+  // local/session storage, IndexedDB, cache). Used before disposing a seat's
+  // throwaway partition; never called on the shared conversation partition.
+  async clearStorage(): Promise<void> {
+    const wc = this.view.webContents
+    if (wc.isDestroyed()) return
+    const ses = wc.session
+    await ses.clearStorageData()
+    await ses.clearCache()
   }
 
   dispose(): void {

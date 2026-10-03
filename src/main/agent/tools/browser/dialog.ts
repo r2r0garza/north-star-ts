@@ -1,6 +1,7 @@
 import { TOOL_EFFECTS, type Tool, type ToolContext } from "../types"
 import type { ToolAction } from "../../approval/types"
 import { toolError } from "../output"
+import { browserFailure } from "./errors"
 import { browserActionIdentity, browserOrigin } from "./approval"
 
 export const browserHandleDialogTool: Tool = {
@@ -85,10 +86,7 @@ export const browserHandleDialogTool: Tool = {
       )
       return `Handled ${target}. Page is now ${result.url} (title: ${result.title || "untitled"}).`
     } catch (err) {
-      return toolError(
-        "dialog_failed",
-        err instanceof Error ? err.message : String(err)
-      )
+      return browserFailure("dialog_failed", err)
     }
   },
 }
