@@ -19,7 +19,7 @@ export class CommandError extends Error {
     readonly code: number | null,
     readonly stdout: string,
     readonly stderr: string,
-    readonly stoppedFor: "quiet" | "overall" | null
+    readonly stoppedFor: "quiet" | "overall" | "aborted" | null
   ) {
     super(message)
   }
@@ -40,6 +40,8 @@ export function runLongCommand(
     env?: Record<string, string>
     quietLimitMs?: number
     overallLimitMs?: number
+    // Stops the command (and what it spawned) when aborted.
+    signal?: AbortSignal
   }
 ): Promise<{ stdout: string; stderr: string }> {
   const quietLimit = options.quietLimitMs ?? QUIET_LIMIT_MS
@@ -60,10 +62,10 @@ export function runLongCommand(
     )
     let stdout = ""
     let stderr = ""
-    let stoppedFor: "quiet" | "overall" | null = null
+    let stoppedFor: "quiet" | "overall" | "aborted" | null = null
     const keep = (text: string) =>
       text.length > OUTPUT_KEEP ? text.slice(-OUTPUT_KEEP) : text
-    const stop = (why: "quiet" | "overall") => {
+    const stop = (why: "quiet" | "overall" | "aborted") => {
       stoppedFor = why
       try {
         if (!isWin && child.pid) process.kill(-child.pid, "SIGKILL")
@@ -78,6 +80,9 @@ export function runLongCommand(
       quiet = setTimeout(() => stop("quiet"), quietLimit)
     }
     const overall = setTimeout(() => stop("overall"), overallLimit)
+    const onAbort = () => stop("aborted")
+    if (options.signal?.aborted) onAbort()
+    else options.signal?.addEventListener("abort", onAbort, { once: true })
     child.stdout.on("data", (chunk: Buffer) => {
       stdout = keep(stdout + chunk.toString("utf8"))
       heard()
@@ -89,6 +94,7 @@ export function runLongCommand(
     const done = () => {
       clearTimeout(quiet)
       clearTimeout(overall)
+      options.signal?.removeEventListener("abort", onAbort)
     }
     child.on("error", (error) => {
       done()
@@ -105,7 +111,9 @@ export function runLongCommand(
           ? `stopped after ${minutes(quietLimit)} without any output (it may be waiting for input or hung)`
           : stoppedFor === "overall"
             ? `stopped after running for ${minutes(overallLimit)}`
-            : `exited with ${code ?? "a signal"}`
+            : stoppedFor === "aborted"
+              ? "stopped"
+              : `exited with ${code ?? "a signal"}`
       // Callers show the message; end it with what the command last said.
       const last = (stderr.trim() || stdout.trim())
         .split("\n")

@@ -44,6 +44,15 @@ import { commsContextSection } from "../../mission-control/comms"
 import { getSeatSessions } from "../../mission-control/sessions"
 import { seatWriteScope, type SeatScope } from "../../mission-control/qa-scope"
 import {
+  authorStepNote,
+  builderStepNote,
+  completeAuthorStep,
+  qaStepKind,
+  startVerifyStep,
+  storyChecks,
+  worktreeChanges,
+} from "../../mission-control/qa-checks"
+import {
   seatTurns,
   type SeatTurnIdentity,
 } from "../../mission-control/seat-turns"
@@ -110,6 +119,10 @@ const PROOF_STEP_INSTRUCTION =
   'what you ran or inspected and what you observed. Use verdict "accepted" only when ' +
   'every criterion is met; otherwise record "rejected". Artifacts are workspace-relative ' +
   "file paths. The tool validates your proof and explains anything it rejects."
+
+// How many times a checks step that finished without a valid manifest is sent
+// the validator's message before the step fails (plan 109.02).
+const MANIFEST_REPAIR_ROUNDS = 2
 
 // The process_run task's input blob (015 producer contract): the run id, so the
 // executor finds its run on first run AND on autoResume after a crash.
@@ -1398,6 +1411,36 @@ export class ProcessService {
       const scoped = await this.seatWriteScope(run, seat, workspace)
       if ("error" in scoped) return { error: scoped.error, retryable: false }
       const { seatScope } = scoped
+      // QA acceptance checks (plan 109.02): a QA step in a user story run
+      // either authors the checks (completes only with a valid manifest, then
+      // freezes them) or verifies (drift since the freeze is recorded first).
+      // A builder step after the freeze is told the checks are QA's.
+      const qaKind = qaStepKind({
+        role: seat?.role,
+        proofStep: !!phase.proofStep,
+        link: missionControl,
+      })
+      let qaNote: string | null = null
+      let worktreeBefore: Record<string, string> | null = null
+      try {
+        if (qaKind === "author" && workspace) {
+          const story = storyChecks(missionControl!)
+          qaNote = story ? authorStepNote(story) : null
+          worktreeBefore = await worktreeChanges(workspace)
+        } else if (qaKind === "verify" && workspace) {
+          qaNote = await startVerifyStep({
+            run,
+            phaseRunId: phaseRun.id,
+            workspace,
+            resuming: resumingWorker,
+          })
+        } else if (seat && missionControl?.userStoryId) {
+          qaNote = builderStepNote(run)
+        }
+      } catch (err) {
+        console.warn("[process] could not prepare the QA checks:", err)
+      }
+      const workerPrompt = qaNote ? `${prompt}\n\n${qaNote}` : prompt
       let releaseSeat: (() => void) | null = null
       try {
         // One turn at a time per transcript: a seat-session step waits for a
@@ -1409,53 +1452,78 @@ export class ProcessService {
             childAbort.signal
           )
         if (inSession) seatSessions!.markSessionActivity(worker.id, true)
-        const result = await runAgentLoop({
-          conversationId: worker.id,
-          workspace,
-          agentDir: workspace,
-          userMessage: resumingWorker ? undefined : prompt,
-          abort: childAbort,
-          taskId: workerTaskId ?? undefined,
-          // Phases are autonomous; the phase gate is the HITL point.
-          autoMode: true,
-          // Cross-phase flag-back context (plan 031.2): lets this worker's
-          // flag_for_rework tool reach the run's graph + record a durable flag.
-          processRunId: run.id,
-          processPhaseRunId: phaseRun.id,
-          processCompletionInstruction: completionInstruction(
-            phase.completionContract ?? { policy: "legacy" },
-            attemptId
-          ),
-          // Mission Control seat-bound worker (plan 106.3): the seat's narrowed
-          // agent and its layered context. Absent for ordinary Processes.
-          ...(resolved.agentOverride
-            ? { agentOverride: resolved.agentOverride }
-            : {}),
-          extraContextSections: [
-            ...(resolved.contextSections ?? []),
-            ...(seatTurn && feature
-              ? [commsContextSection(feature, seatTurn)]
-              : []),
-            ...(seatScope ? [seatScope.contextSection] : []),
-          ],
-          missionControlSeat: seatTurn ?? undefined,
-          writeScope: seatScope?.writeScope,
-          processProofStep:
-            !!phase.proofStep && !!this.missionControlRoot(run)?.missionControl,
-          // Headless worker: no user to answer a clarifying question (it would only
-          // stall until interrupted). The kickoff frames the work as self-contained.
-          suppressUserQuestions: true,
-          onEvent: () => {},
-        })
-        if (overTime) return overTimeFailure()
-        if (result.stopped || childAbort.signal.aborted)
-          return { stopped: true }
-        if (result.error)
-          return {
-            error: result.error,
-            retryable: result.retryable,
-            failure: result.failure,
-          }
+        const loop = (userMessage: string | undefined) =>
+          runAgentLoop({
+            conversationId: worker.id,
+            workspace,
+            agentDir: workspace,
+            userMessage,
+            abort: childAbort,
+            taskId: workerTaskId ?? undefined,
+            // Phases are autonomous; the phase gate is the HITL point.
+            autoMode: true,
+            // Cross-phase flag-back context (plan 031.2): lets this worker's
+            // flag_for_rework tool reach the run's graph + record a durable flag.
+            processRunId: run.id,
+            processPhaseRunId: phaseRun.id,
+            processCompletionInstruction: completionInstruction(
+              phase.completionContract ?? { policy: "legacy" },
+              attemptId
+            ),
+            // Mission Control seat-bound worker (plan 106.3): the seat's narrowed
+            // agent and its layered context. Absent for ordinary Processes.
+            ...(resolved.agentOverride
+              ? { agentOverride: resolved.agentOverride }
+              : {}),
+            extraContextSections: [
+              ...(resolved.contextSections ?? []),
+              ...(seatTurn && feature
+                ? [commsContextSection(feature, seatTurn)]
+                : []),
+              ...(seatScope ? [seatScope.contextSection] : []),
+            ],
+            missionControlSeat: seatTurn ?? undefined,
+            writeScope: seatScope?.writeScope,
+            processProofStep:
+              !!phase.proofStep &&
+              !!this.missionControlRoot(run)?.missionControl,
+            processQaChecks: qaKind ?? undefined,
+            // Headless worker: no user to answer a clarifying question (it would only
+            // stall until interrupted). The kickoff frames the work as self-contained.
+            suppressUserQuestions: true,
+            onEvent: () => {},
+          })
+        let result = await loop(resumingWorker ? undefined : workerPrompt)
+        // The checks step completes only with a valid manifest: the
+        // validator's message goes back to the seat a bounded number of times.
+        for (let round = 0; ; round++) {
+          if (overTime) return overTimeFailure()
+          if (result.stopped || childAbort.signal.aborted)
+            return { stopped: true }
+          if (result.error)
+            return {
+              error: result.error,
+              retryable: result.retryable,
+              failure: result.failure,
+            }
+          if (qaKind !== "author" || !workspace) break
+          const gate = await completeAuthorStep({
+            phaseRunId: phaseRun.id,
+            link: missionControl!,
+            runId: run.id,
+            workspace,
+            before: worktreeBefore,
+          })
+          if (gate.ok) break
+          if (round >= MANIFEST_REPAIR_ROUNDS)
+            return {
+              error: `The checks step finished without a valid check manifest. ${gate.message}`,
+              retryable: false,
+            }
+          result = await loop(
+            `${gate.message}\n\nFix the manifest (and the checks it names), then finish the step again.`
+          )
+        }
         const output = this.lastAssistantOutput(
           processes.getPhaseRun(phaseRun.id) ?? phaseRun
         )

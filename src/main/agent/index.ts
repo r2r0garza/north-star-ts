@@ -90,6 +90,7 @@ import {
 import { containerNameForConversation } from "./env/container"
 import { flagForReworkTool } from "./tools/flag_for_rework"
 import { recordProofTool } from "./tools/record_proof"
+import { refreezeChecksTool, runChecksTool } from "./tools/qa_checks_tools"
 import { seatCommsTools } from "./tools/seat_comms_tools"
 import { mapTools } from "./tools/map_tools"
 import { isLeadSeat } from "../mission-control/map-tools"
@@ -894,6 +895,11 @@ export interface RunAgentLoopOptions {
   // it is offered record_proof. The tool re-derives the user story, criteria, and
   // seats from the run itself; this flag only controls the offer.
   processProofStep?: boolean
+  // Mission Control (plan 109.02): this worker is a QA seat's step in a user
+  // story run. Both kinds are offered run_checks; the test step ("verify") is
+  // also offered refreeze_checks. The tools re-derive the story and manifest
+  // from the run; this only controls the offer.
+  processQaChecks?: "author" | "verify"
   // Mission Control seat turn (plan 106.4): who is speaking on the rig and
   // what the turn may do. Offers the Comms tools (except answer-only), delivers
   // the seat's queued mail at each tool-round boundary, and — for a turn woken
@@ -1450,6 +1456,16 @@ export async function runAgentLoop(
         // narrowing may remove it.
         opts.processProofStep && opts.processRunId && !planMode
           ? [recordProofTool.definition]
+          : [],
+        // run_checks / refreeze_checks (plan 109.02): process-structural too,
+        // offered only to a QA seat's work step in a user story run.
+        opts.processQaChecks && opts.processRunId && !planMode
+          ? [
+              runChecksTool.definition,
+              ...(opts.processQaChecks === "verify"
+                ? [refreezeChecksTool.definition]
+                : []),
+            ]
           : []
       )
   // The non-droppable base prompt (mode prompt). Everything else is a droppable

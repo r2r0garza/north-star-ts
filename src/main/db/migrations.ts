@@ -136,6 +136,7 @@ const MIGRATIONS: Array<(db: Database.Database) => void> = [
   ensurePlaybookHookOwnership,
   ensureWorkspaceAnalyses,
   ensureWorkspaceMissionControlColumn,
+  ensurePhaseRunQaChecksColumn,
 ]
 
 function tableExists(db: Database.Database, table: string): boolean {
@@ -340,6 +341,12 @@ function ensureWorktreeSetupColumn(db: Database.Database): void {
 // WorkspaceMissionControlSettings: where QA seats write acceptance checks).
 function ensureWorkspaceMissionControlColumn(db: Database.Database): void {
   addColumnIfMissing(db, "workspaces", "mission_control", "TEXT")
+}
+
+// v66 (plan 109.02): a QA step's acceptance checks state on its phase run
+// (JSON PhaseRunQaChecks: freeze, drift, run_checks results).
+function ensurePhaseRunQaChecksColumn(db: Database.Database): void {
+  addColumnIfMissing(db, "process_phase_runs", "qa_checks", "TEXT")
 }
 
 // v58: a workspace's generated files and the command that rebuilds them
@@ -594,6 +601,7 @@ export function runMigrations(
       ensureGeneratedFilesColumn(db)
       ensureWorktreeSetupColumn(db)
       ensureWorkspaceMissionControlColumn(db)
+      ensurePhaseRunQaChecksColumn(db)
       ensureConversationNotes(db)
       ensureSeatMemory(db)
       ensureHealth(db)

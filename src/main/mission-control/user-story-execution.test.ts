@@ -30,6 +30,7 @@ interface LoopCall {
   proofResult?: RecordProofResult
   seat?: { address: string; profile: string; anchor: unknown }
   writeScope?: { allow: string[] }
+  qaChecks?: "author" | "verify"
 }
 const loopCalls: LoopCall[] = []
 // What a proof-step worker submits through record_proof, per call (FIFO).
@@ -48,6 +49,8 @@ vi.mock("../agent", () => ({
     processPhaseRunId?: string
     missionControlSeat?: { address: string; profile: string; anchor: unknown }
     writeScope?: { allow: string[] }
+    processQaChecks?: "author" | "verify"
+    workspace?: string
     abort?: AbortController
   }) => {
     // A worker that never finishes on its own, like nav-test-8's refine.
@@ -72,8 +75,12 @@ vi.mock("../agent", () => ({
       proofStep: !!input.processProofStep,
       seat: input.missionControlSeat,
       writeScope: input.writeScope,
+      qaChecks: input.processQaChecks,
     }
     loopCalls.push(call)
+    // QA's checks step (plan 109.02) completes only with a valid manifest.
+    if (input.processQaChecks !== "author" || manifestSkips-- <= 0)
+      writeFakeManifest(input)
     const msg = input.userMessage ?? ""
     // QA sends the work back to build once (flag_for_rework's durable effect).
     if (flagBackOnce && input.processProofStep && input.processRunId) {
@@ -114,6 +121,8 @@ vi.mock("../agent", () => ({
 // The dispatch router's classifier reply.
 let routerReply = ""
 let hangLoops = false
+// How many checks-step turns finish without writing the manifest.
+let manifestSkips = 0
 let flagBackOnce = false
 vi.mock("../agent/providers", () => {
   class NoActiveProviderError extends Error {}
@@ -154,6 +163,7 @@ import {
   type RecordProofResult,
 } from "./user-story-runner"
 import { startHookRun } from "./hook-runner"
+import { writeFakeManifest } from "../test/qa-manifest"
 import { installSeatSessions, SeatSessionService } from "./sessions"
 import * as seatSessionsRepo from "../db/repositories/seat-sessions"
 import type { AgentDefinition } from "../agent/agents/types"
@@ -304,11 +314,13 @@ beforeEach(() => {
   enqueued.length = 0
   cancelledTasks.length = 0
   routerReply = ""
+  manifestSkips = 0
+  rmSync(join(workspaceDir, "e2e"), { recursive: true, force: true })
   setup()
 })
 
 describe.skipIf(!sqliteLoads)("user story execution", () => {
-  it("runs spec → build → test with bound seats and marks the user story done on an accepted proof", async () => {
+  it("runs spec → checks → build → test with bound seats and marks the user story done on an accepted proof", async () => {
     const rig = orchestratedRig()
     const { userStory } = billingFeature(rig.id)
     proofSubmissions.push(acceptedProof)
@@ -325,10 +337,23 @@ describe.skipIf(!sqliteLoads)("user story execution", () => {
     )
     expect(workers.map((c) => c.agentName)).toEqual([
       "agentref:v1:builder",
+      "agentref:v1:qa",
       "agentref:v1:builder",
       "agentref:v1:qa",
     ])
-    expect(workers.map((c) => c.proofStep)).toEqual([false, false, true])
+    expect(workers.map((c) => c.proofStep)).toEqual([false, false, false, true])
+    // QA authors checks, then verifies; only QA steps get the check tools.
+    expect(workers.map((c) => c.qaChecks)).toEqual([
+      undefined,
+      "author",
+      undefined,
+      "verify",
+    ])
+    expect(workers[1].userMessage).toContain(
+      "e2e/stories/billing.milestone-1.invoice-model.json"
+    )
+    // The builder is told the frozen checks are QA's.
+    expect(workers[2].userMessage).toContain("QA's acceptance checks")
     // Seat narrowing reaches the worker as a runtime-only agent override.
     expect(workers[0].agentOverride?.tools).toEqual(["read", "edit"])
     // Seat charter, rig culture, pod culture, and intent chain are in context.
@@ -339,11 +364,12 @@ describe.skipIf(!sqliteLoads)("user story execution", () => {
     )
     expect(workers[0].sectionContent).toContain("Pod culture: tests first.")
     expect(workers[0].sectionContent).toContain("Customers can be invoiced.")
-    expect(workers[2].sectionContent).toContain("QA charter")
+    expect(workers[3].sectionContent).toContain("QA charter")
     // The objective is the rendered spec with stable criterion ids.
     expect(workers[0].userMessage).toContain("**AC-1**: Invoice has line items")
-    expect(workers[2].userMessage).toContain("record_proof")
-    expect(workers[2].proofResult).toMatchObject({
+    expect(workers[3].userMessage).toContain("record_proof")
+    expect(workers[3].userMessage).toContain("Start by calling `run_checks`")
+    expect(workers[3].proofResult).toMatchObject({
       ok: true,
       status: "accepted",
     })
@@ -355,7 +381,12 @@ describe.skipIf(!sqliteLoads)("user story execution", () => {
       "builder@implementation",
       "builder@implementation",
       "qa@implementation",
+      "qa@implementation",
     ])
+    // The checks step froze the checks directory.
+    expect(
+      phaseRuns.find((pr) => pr.qaChecks?.freeze)?.qaChecks?.freeze?.files
+    ).toHaveProperty(["e2e/stories/billing.milestone-1.invoice-model.json"])
 
     const done = features.getUserStory(userStory.id)!
     expect(done.status).toBe("done")
@@ -382,14 +413,46 @@ describe.skipIf(!sqliteLoads)("user story execution", () => {
     const scratch = `.mission-control/scratch/${playbookRun.processRunId}`
     // Builders write anywhere, as before.
     expect(workers[0].writeScope).toBeUndefined()
-    expect(workers[1].writeScope).toBeUndefined()
-    expect(workers[2].writeScope).toEqual({ allow: [checks, scratch] })
-    expect(workers[2].sectionContent).toContain(`\`${checks}/\``)
-    expect(workers[2].sectionContent).toContain(
+    expect(workers[2].writeScope).toBeUndefined()
+    // Both QA steps: authoring the checks and verifying.
+    expect(workers[1].writeScope).toEqual({ allow: [checks, scratch] })
+    expect(workers[3].writeScope).toEqual({ allow: [checks, scratch] })
+    expect(workers[3].sectionContent).toContain(`\`${checks}/\``)
+    expect(workers[3].sectionContent).toContain(
       "`@billing.milestone-1.invoice-model`"
     )
     expect(existsSync(join(workspaceDir, checks))).toBe(true)
     expect(existsSync(join(workspaceDir, scratch, ".gitignore"))).toBe(true)
+  })
+
+  it("sends the manifest validator's message back to the checks step (plan 109.02)", async () => {
+    const rig = orchestratedRig()
+    const { userStory } = billingFeature(rig.id)
+    proofSubmissions.push(acceptedProof)
+    manifestSkips = 1
+    const playbookRun = await runner.startUserStory(userStory.id)
+    await drive(playbookRun.processRunId!)
+
+    const authoring = loopCalls.filter((c) => c.qaChecks === "author")
+    expect(authoring).toHaveLength(2)
+    expect(authoring[1].userMessage).toMatch(/There is no check manifest/)
+    expect(features.getUserStory(userStory.id)!.status).toBe("done")
+  })
+
+  it("fails the checks step when the manifest never validates", async () => {
+    const rig = orchestratedRig()
+    const { userStory } = billingFeature(rig.id)
+    manifestSkips = 99
+    const playbookRun = await runner.startUserStory(userStory.id)
+    await drive(playbookRun.processRunId!)
+
+    // The first turn plus two repairs, then no build or test step.
+    expect(loopCalls.filter((c) => c.qaChecks === "author")).toHaveLength(3)
+    expect(loopCalls.some((c) => c.qaChecks === "verify")).toBe(false)
+    expect(features.getUserStory(userStory.id)!.status).toBe("failed")
+    expect(processRunFailure(playbookRun.processRunId!)?.reason).toMatch(
+      /without a valid check manifest/
+    )
   })
 
   it("refuses a second start while the first is still preparing, so a story never runs twice", async () => {
@@ -508,10 +571,15 @@ describe.skipIf(!sqliteLoads)("user story execution", () => {
     return { detachedRunner, driveDetached }
   }
 
+  // QA's proof step, not its checks step (plan 109.02).
   function qaPhaseRun(processRunId: string) {
     return processes
       .listPhaseRuns({ runId: processRunId })
-      .find((pr) => pr.seatAddress === "qa@implementation")!
+      .find(
+        (pr) =>
+          pr.seatAddress === "qa@implementation" &&
+          processes.getPhase(pr.phaseId)?.proofStep
+      )!
   }
 
   it("freezes an accepted proof", async () => {
@@ -962,12 +1030,14 @@ describe.skipIf(!sqliteLoads)("user story execution", () => {
           builderSession.conversationId,
           builderSession.conversationId,
         ])
-        expect(qa[index].conversationId).toBe(
-          sessionFor("qa@implementation", runId).conversationId
-        )
+        // QA's checks and test steps share its user story session too.
+        const qaSession = sessionFor("qa@implementation", runId)
+        expect(
+          qa.slice(index * 2, index * 2 + 2).map((c) => c.conversationId)
+        ).toEqual([qaSession.conversationId, qaSession.conversationId])
       }
       expect(builder[0].conversationId).not.toBe(builder[2].conversationId)
-      expect(qa[0].conversationId).not.toBe(qa[1].conversationId)
+      expect(qa[0].conversationId).not.toBe(qa[2].conversationId)
       // No long-lived session was needed.
       expect(
         seatSessionsRepo.listSeatSessions({
@@ -977,15 +1047,19 @@ describe.skipIf(!sqliteLoads)("user story execution", () => {
       ).toHaveLength(0)
       // Every role-bound worker is a seat turn, anchored to its user story.
       expect(workers.every((c) => c.seat?.profile === "work")).toBe(true)
-      expect(qa[1].seat?.anchor).toEqual({ kind: "user_story", id: second.id })
-      expect(qa[1].sectionContent).toContain("## Mission Control Comms")
+      expect(qa[3].seat?.anchor).toEqual({ kind: "user_story", id: second.id })
+      expect(qa[3].sectionContent).toContain("## Mission Control Comms")
       // Each step's frozen result is its own turn's output.
       const secondRun = playbooks.listPlaybookRuns({
         userStoryId: second.id,
       })[0]
       const testRun = processes
         .listPhaseRuns({ runId: secondRun.processRunId! })
-        .find((pr) => pr.seatAddress === "qa@implementation")!
+        .find(
+          (pr) =>
+            pr.seatAddress === "qa@implementation" &&
+            processes.getPhase(pr.phaseId)?.proofStep
+        )!
       expect(testRun.resultContent).toBe("verified")
     })
 
@@ -996,7 +1070,10 @@ describe.skipIf(!sqliteLoads)("user story execution", () => {
         "qa@implementation"
       )!
       expect(session.scope).toBe("feature")
-      expect(qa.map((c) => c.conversationId)).toEqual([
+      // Only the test step asked for the long-lived session; the checks step
+      // keeps its per-story one.
+      const tests = qa.filter((c) => c.qaChecks === "verify")
+      expect(tests.map((c) => c.conversationId)).toEqual([
         session.conversationId,
         session.conversationId,
       ])

@@ -35,9 +35,9 @@ interface DefaultPlaybook {
 
 export const DEFAULT_PLAYBOOKS: Record<PlaybookAltitude, DefaultPlaybook> = {
   user_story: {
-    name: "Spec → Build → Test",
+    name: "Spec → Author checks → Build → Test",
     description:
-      "Refine the user story spec against the codebase, build it, then verify every acceptance criterion and record the proof.",
+      "Refine the user story spec against the codebase, have QA write acceptance checks from the spec, build it, then run the checks, test the running app, and record the proof.",
     hooks: {
       run: [
         {
@@ -47,14 +47,23 @@ export const DEFAULT_PLAYBOOKS: Record<PlaybookAltitude, DefaultPlaybook> = {
           contextScope: "user_story",
         },
         {
+          // Plan 109.02: QA writes its checks before the build exists, so the
+          // builder can't shape them. Completes only with a valid manifest;
+          // the checks directory is then frozen.
+          key: "checks",
+          name: "Write acceptance checks for each criterion from the spec (do not read or wait for the implementation; edit only the checks directory)",
+          role: "qa",
+          contextScope: "user_story",
+        },
+        {
           key: "build",
-          name: "Build the user story to its acceptance criteria",
+          name: "Build the user story to its acceptance criteria; make the QA checks pass without editing them",
           role: "builder",
           contextScope: "user_story",
         },
         {
           key: "test",
-          name: "Test the build against each acceptance criterion and record the proof",
+          name: "Run the QA checks, test the running app against each criterion, and record the proof",
           role: "qa",
           // No validator: this step already verifies every criterion and the
           // proof tool gates it (independent verifier, frozen proof). A
@@ -202,4 +211,163 @@ export function ensureDefaultPlaybook(
     playbooks.listPlaybooks().find((p) => p.altitude === altitude) ??
     createDefaultPlaybook(altitude)
   )
+}
+
+// ── Reset to default (plan 109.02) ──────────────────────────────────────────
+
+// A step as compared between a playbook and the shipped template.
+export interface PlaybookStepSummary {
+  key: string
+  name: string
+  role: string | null
+  proofStep: boolean
+  validator: boolean
+  contextScope: PhaseContextScope
+}
+
+export type PlaybookStepChange =
+  | { change: "added"; step: PlaybookStepSummary }
+  | { change: "removed"; step: PlaybookStepSummary }
+  | {
+      change: "changed"
+      step: PlaybookStepSummary
+      from: PlaybookStepSummary
+      fields: Array<keyof PlaybookStepSummary>
+    }
+  | { change: "unchanged"; step: PlaybookStepSummary }
+
+export interface PlaybookDefaultDiff {
+  playbookId: string
+  name: { current: string; template: string }
+  hooks: Array<{ hook: PlaybookHookName; steps: PlaybookStepChange[] }>
+  // False when the playbook already matches the template.
+  differs: boolean
+}
+
+function templateSteps(step: DefaultStep): PlaybookStepSummary {
+  return {
+    key: step.key,
+    name: step.name,
+    role: step.role,
+    proofStep: step.proofStep ?? false,
+    validator: step.validator ?? false,
+    contextScope: step.contextScope,
+  }
+}
+
+// A hook's steps in run order (the defaults are a chain; position breaks
+// ties for anything the user rewired).
+function currentSteps(processId: string): PlaybookStepSummary[] {
+  const graph = processes.getProcessGraph(processId)
+  if (!graph) return []
+  return [...graph.phases]
+    .sort((a, b) => a.position - b.position)
+    .map((phase) => ({
+      key: phase.key,
+      name: phase.name,
+      role:
+        graph.agents.find((agent) => agent.phaseId === phase.id)?.seatRole ??
+        null,
+      proofStep: !!phase.proofStep,
+      validator: phase.validator,
+      contextScope: phase.contextScope ?? "step",
+    }))
+}
+
+const COMPARED: Array<keyof PlaybookStepSummary> = [
+  "name",
+  "role",
+  "proofStep",
+  "validator",
+  "contextScope",
+]
+
+export function diffSteps(
+  current: PlaybookStepSummary[],
+  template: PlaybookStepSummary[]
+): PlaybookStepChange[] {
+  const byKey = new Map(current.map((step) => [step.key, step]))
+  const changes: PlaybookStepChange[] = template.map((step) => {
+    const from = byKey.get(step.key)
+    if (!from) return { change: "added", step }
+    const fields = COMPARED.filter((field) => from[field] !== step[field])
+    return fields.length
+      ? { change: "changed", step, from, fields }
+      : { change: "unchanged", step }
+  })
+  const templateKeys = new Set(template.map((step) => step.key))
+  for (const step of current)
+    if (!templateKeys.has(step.key)) changes.push({ change: "removed", step })
+  return changes
+}
+
+// How a playbook differs from the shipped template for its altitude, hook by
+// hook, so the user sees what Reset to default would change.
+export function diffPlaybookWithDefault(
+  playbookId: string
+): PlaybookDefaultDiff {
+  const playbook = playbooks.getPlaybook(playbookId)
+  if (!playbook) throw new Error(`Playbook not found: ${playbookId}`)
+  const template = DEFAULT_PLAYBOOKS[playbook.altitude]
+  const hookNames = new Set<PlaybookHookName>([
+    ...(Object.keys(template.hooks) as PlaybookHookName[]),
+    ...playbook.hooks.map((hook) => hook.hook),
+  ])
+  const hooks = [...hookNames].map((hook) => {
+    const attached = playbook.hooks.find((h) => h.hook === hook)
+    return {
+      hook,
+      steps: diffSteps(
+        attached ? currentSteps(attached.processId) : [],
+        (template.hooks[hook] ?? []).map(templateSteps)
+      ),
+    }
+  })
+  return {
+    playbookId,
+    name: { current: playbook.name, template: template.name },
+    hooks,
+    differs:
+      playbook.name !== template.name ||
+      hooks.some((h) => h.steps.some((step) => step.change !== "unchanged")),
+  }
+}
+
+// Replace a playbook's steps with the shipped template's, in place: the same
+// playbook id, so the features, milestones, and user stories pinned to it keep
+// it. Each hook gets a fresh step group; the old one is deleted when no other
+// playbook uses it and no run history references it.
+export function resetPlaybookToDefault(playbookId: string): PlaybookWithHooks {
+  const playbook = playbooks.getPlaybook(playbookId)
+  if (!playbook) throw new Error(`Playbook not found: ${playbookId}`)
+  const template = DEFAULT_PLAYBOOKS[playbook.altitude]
+  const replaced = getDb().transaction(() => {
+    playbooks.updatePlaybook(playbook.id, {
+      name: template.name,
+      description: template.description,
+    })
+    const renamed = playbooks.getPlaybook(playbook.id)!
+    for (const hook of playbook.hooks)
+      if (!(hook.hook in template.hooks))
+        playbooks.removeHook(playbook.id, hook.hook)
+    for (const [hook, steps] of Object.entries(template.hooks) as Array<
+      [PlaybookHookName, DefaultStep[]]
+    >)
+      playbooks.setHook(
+        playbook.id,
+        hook,
+        buildHookProcess(renamed, hook, steps)
+      )
+    return playbook.hooks.filter((hook) => hook.ownsProcess)
+  })()
+  for (const hook of replaced) {
+    if (playbooks.listPlaybookProcessIds().includes(hook.processId)) continue
+    try {
+      processes.deleteProcessDefinition(hook.processId)
+    } catch {
+      // Run history still references its phases: keep it as an ordinary
+      // Process rather than lose that history.
+    }
+  }
+  return playbooks.getPlaybook(playbook.id)!
 }

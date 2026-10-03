@@ -1249,6 +1249,66 @@ export interface ProcessPhaseRun {
   // Mission Control and for agent-name-bound phases.
   seatAddress?: string | null
   runtimeSnapshot?: ProcessRuntimeSnapshot | null
+  // QA acceptance checks on a Mission Control QA step (plan 109.02): the
+  // freeze taken when the checks step completes, drift found when the test
+  // step starts, and the results `run_checks` recorded. Written only by the
+  // harness, never from model arguments.
+  qaChecks?: PhaseRunQaChecks | null
+}
+
+// A content snapshot of the checks directory: workspace-relative path → file
+// hash (a git blob id in a repository). `hash` covers the sorted paths and
+// file hashes together.
+export interface ChecksSnapshot {
+  checksDir: string
+  hash: string
+  files: Record<string, string>
+}
+
+export interface ChecksFreeze extends ChecksSnapshot {
+  frozenAt: number
+  // Why QA re-froze the checks in the test step (refreeze_checks).
+  reason?: string
+}
+
+export interface ChecksChange {
+  path: string
+  change: "added" | "modified" | "deleted"
+  // A page object, fixture, or helper other stories' checks may use, as
+  // opposed to this story's own specs and manifest.
+  shared: boolean
+  // Line counts from git, when both versions are known.
+  added?: number
+  removed?: number
+}
+
+export interface CheckResult {
+  checkId: string
+  criterionId: string
+  storyRef: string
+  // 1, or 2 for the single retry of a failing check.
+  attempt: number
+  passed: boolean
+  exitCode: number | null
+  timedOut: boolean
+  durationMs: number
+  outputTail: string
+  ranAt: number
+}
+
+export interface PhaseRunQaChecks {
+  freeze?: ChecksFreeze
+  // Set when the test step starts and the checks differ from the freeze.
+  // The proof can't be accepted until QA re-freezes them.
+  drift?: {
+    changed: ChecksChange[]
+    detectedAt: number
+    resolvedAt: number | null
+  }
+  // Files outside the checks and scratch directories that QA's checks step
+  // changed (shell writes bypass the write scope).
+  outsideWrites?: string[]
+  results?: CheckResult[]
 }
 
 export interface ProcessPhaseAttempt {

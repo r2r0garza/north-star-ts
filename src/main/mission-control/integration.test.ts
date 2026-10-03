@@ -52,7 +52,10 @@ vi.mock("../agent", () => ({
     processProofStep?: boolean
     processRunId?: string
     processPhaseRunId?: string
+    processQaChecks?: "author" | "verify"
   }) => {
+    // QA's checks step (plan 109.02) needs a valid manifest to complete.
+    writeFakeManifest(input)
     const msg = input.userMessage ?? ""
     loopCalls.push({
       workspace: input.workspace,
@@ -135,6 +138,7 @@ import { MilestoneIntegration } from "./integration"
 import { createDefaultPlaybook } from "./playbook-defaults"
 import type { AgentDefinition } from "../agent/agents/types"
 import { listWorktrees } from "../agent/subagents/worktrees"
+import { writeFakeManifest } from "../test/qa-manifest"
 
 const fakeRunner = {
   enqueueKind: () => {

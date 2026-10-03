@@ -42,3 +42,12 @@ export function userStoryRef(keys: {
     .map(segment)
     .join(".")
 }
+
+// Where a user story's check manifest lives (plan 109.02), relative to the
+// checks directory: `<checksDir>/stories/<storyRef>.json`. The harness finds
+// it from the story ref; the model never names the path.
+export const MANIFEST_DIR = "stories"
+
+export function storyManifestPath(checksDir: string, storyRef: string): string {
+  return `${checksDir}/${MANIFEST_DIR}/${storyRef}.json`
+}

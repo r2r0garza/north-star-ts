@@ -15,7 +15,11 @@ import {
   importRigExport,
   type RigExport,
 } from "../mission-control/io"
-import { createDefaultPlaybook } from "../mission-control/playbook-defaults"
+import {
+  createDefaultPlaybook,
+  diffPlaybookWithDefault,
+  resetPlaybookToDefault,
+} from "../mission-control/playbook-defaults"
 import {
   convertAgentsToSeatRoles,
   importProcessAsPlaybook,
@@ -438,6 +442,13 @@ export function registerMissionControlHandlers(
   ipcMain.handle(
     "missionControl:playbooks:createDefault",
     (_event, altitude: PlaybookAltitude) => createDefaultPlaybook(altitude)
+  )
+  ipcMain.handle("missionControl:playbooks:defaultDiff", (_event, id: string) =>
+    diffPlaybookWithDefault(id)
+  )
+  ipcMain.handle(
+    "missionControl:playbooks:resetToDefault",
+    (_event, id: string) => resetPlaybookToDefault(id)
   )
   ipcMain.handle(
     "missionControl:playbooks:update",

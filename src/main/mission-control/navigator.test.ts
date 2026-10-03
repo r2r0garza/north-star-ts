@@ -50,8 +50,11 @@ vi.mock("../agent", () => ({
     processProofStep?: boolean
     processRunId?: string
     processPhaseRunId?: string
+    processQaChecks?: "author" | "verify"
     missionControlSeat?: import("./seat-turns").SeatTurnIdentity
   }) => {
+    // QA's checks step (plan 109.02) needs a valid manifest to complete.
+    writeFakeManifest(input)
     const msg = input.userMessage ?? ""
     loopCalls.push({
       workspace: input.workspace,
@@ -159,6 +162,7 @@ import { onWorkChanged } from "./work-events"
 import type { SeatTurnIdentity } from "./seat-turns"
 import type { AgentDefinition } from "../agent/agents/types"
 import type { RigDecisionRight } from "../db/types"
+import { writeFakeManifest } from "../test/qa-manifest"
 
 const fakeRunner = {
   enqueueKind: () => {

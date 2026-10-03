@@ -211,6 +211,8 @@ export type {
   SeatMessageStatus,
   SeatOverview,
   PlaybookAgentRole,
+  PlaybookDefaultDiff,
+  PlaybookStepChange,
   ProcessRunHistoryEntry,
   MilestoneIntegrationStatus,
   PolicyOption,

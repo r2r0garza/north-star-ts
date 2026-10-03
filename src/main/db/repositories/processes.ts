@@ -11,6 +11,7 @@ import type {
   PhaseGatePolicy,
   PhaseRouting,
   PhaseRunStatus,
+  PhaseRunQaChecks,
   ProcessPhaseAttempt,
   ProcessDefinition,
   ProcessEdge,
@@ -224,6 +225,7 @@ interface ProcessPhaseRunRow {
   output_identity: string | null
   source_child_run_id: string | null
   seat_address: string | null
+  qa_checks?: string | null
 }
 
 function toPhaseRun(row: ProcessPhaseRunRow): ProcessPhaseRun {
@@ -255,6 +257,9 @@ function toPhaseRun(row: ProcessPhaseRunRow): ProcessPhaseRun {
     sourceChildRunId: row.source_child_run_id,
     seatAddress: row.seat_address,
     runtimeSnapshot: parseRuntimeSnapshot(row.runtime_snapshot),
+    qaChecks: row.qa_checks
+      ? (JSON.parse(row.qa_checks) as PhaseRunQaChecks)
+      : null,
   }
 }
 
@@ -1042,6 +1047,7 @@ export function updatePhaseRun(
     completionReceipt?: PhaseCompletionReceipt | null
     runtimeSnapshot?: ProcessRuntimeSnapshot | null
     seatAddress?: string | null
+    qaChecks?: PhaseRunQaChecks | null
   }
 ): ProcessPhaseRun {
   const sets: string[] = []
@@ -1117,6 +1123,10 @@ export function updatePhaseRun(
   if (patch.seatAddress !== undefined) {
     sets.push("seat_address = ?")
     values.push(patch.seatAddress)
+  }
+  if (patch.qaChecks !== undefined) {
+    sets.push("qa_checks = ?")
+    values.push(patch.qaChecks === null ? null : JSON.stringify(patch.qaChecks))
   }
   if (sets.length > 0) {
     values.push(id)

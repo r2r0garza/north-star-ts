@@ -22,6 +22,8 @@ import type {
   UserStory,
 } from "../db/types"
 import { ensureDefaultPlaybook } from "./playbook-defaults"
+import { QA_ROLE } from "./qa-scope"
+import { checksDriftBlock } from "./qa-checks"
 import {
   decideProof,
   DEFAULT_MAX_PROOF_REVISIONS,
@@ -857,7 +859,9 @@ function runTree(root: ProcessRun): ProcessRun[] {
 }
 
 // Seats that did build-type work in this run: every seat-bound phase-run that
-// is not a proof step.
+// is not a proof step. A QA seat's checks step (plan 109.02) writes acceptance
+// checks, not the build (its write scope keeps it out of product code), so it
+// doesn't make QA a builder.
 function builderAddresses(root: ProcessRun): string[] {
   const addresses = new Set<string>()
   for (const run of runTree(root)) {
@@ -867,7 +871,11 @@ function builderAddresses(root: ProcessRun): string[] {
         .map((phase) => phase.id)
     )
     for (const phaseRun of processes.listPhaseRuns({ runId: run.id }))
-      if (phaseRun.seatAddress && !proofPhases.has(phaseRun.phaseId))
+      if (
+        phaseRun.seatAddress &&
+        !proofPhases.has(phaseRun.phaseId) &&
+        root.seatBindings?.seats[phaseRun.seatAddress]?.role !== QA_ROLE
+      )
         addresses.add(phaseRun.seatAddress)
   }
   return [...addresses]
@@ -948,6 +956,11 @@ export function recordUserStoryProof(input: {
   const submission = parseProofSubmission(input.args, criteria)
   if (typeof submission === "string")
     return { ok: false, code: "bad_args", message: submission }
+  // The builder changed QA's frozen checks (plan 109.02): no acceptance until
+  // QA reviews and re-freezes them. A rejection is always allowed.
+  const drift = checksDriftBlock(phaseRun)
+  if (submission.verdict === "accepted" && drift)
+    return { ok: false, code: "checks_changed", message: drift }
 
   const decision = decideProof({
     submission,

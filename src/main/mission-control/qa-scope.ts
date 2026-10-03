@@ -26,7 +26,7 @@ export interface SeatScope {
 
 // The run's checks directory (the workspace setting) and, for a user story
 // run, the story's reference. A milestone run (e.g. reverify) has no story.
-function checksForRun(link: MissionControlRunLink): {
+export function checksForRun(link: MissionControlRunLink): {
   checksDir: string
   storyRef: string | null
 } {

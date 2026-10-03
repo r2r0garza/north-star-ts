@@ -101,6 +101,7 @@ import type {
   PlaybookAgentRole,
   ProcessRunHistoryEntry,
 } from "../main/mission-control/playbook-import"
+import type { PlaybookDefaultDiff } from "../main/mission-control/playbook-defaults"
 import type {
   MilestoneIntegrationStatus,
   UserStoryWorkspaceInfo,
@@ -980,6 +981,17 @@ const api = {
         ipcRenderer.invoke(
           "missionControl:playbooks:createDefault",
           altitude
+        ) as Promise<PlaybookWithHooks>,
+      // Reset to default (plan 109.02): the step diff first, then the reset.
+      defaultDiff: (id: string) =>
+        ipcRenderer.invoke(
+          "missionControl:playbooks:defaultDiff",
+          id
+        ) as Promise<PlaybookDefaultDiff>,
+      resetToDefault: (id: string) =>
+        ipcRenderer.invoke(
+          "missionControl:playbooks:resetToDefault",
+          id
         ) as Promise<PlaybookWithHooks>,
       update: (
         id: string,
@@ -2986,6 +2998,11 @@ export type {
   PlaybookAgentRole,
   ProcessRunHistoryEntry,
 } from "../main/mission-control/playbook-import"
+export type {
+  PlaybookDefaultDiff,
+  PlaybookStepChange,
+  PlaybookStepSummary,
+} from "../main/mission-control/playbook-defaults"
 export type {
   MilestoneIntegrationStatus,
   PolicyOption,
