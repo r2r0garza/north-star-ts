@@ -60,8 +60,9 @@ assumes a web stack. The browser and Playwright are tools for UI projects, not r
    services it needs (decision 6), and a timeout. Whatever the command runs is up to the check: a
    Playwright spec, `curl` against an API, a CLI invocation with expected output, a pytest file. QA uses
    the project's existing test framework when there is one. When the project has none, QA writes plain
-   scripts and **does not** add dependencies to the user's project (no `npm i -D @playwright/test`
-   behind the user's back). Adding a framework is a proposal (`propose_followup`), not a side effect.
+   scripts, or Playwright checks on North Star's bundled runner for UI criteria (decision 11). It
+   **does not** add dependencies to the user's project (no `npm i -D @playwright/test` behind the
+   user's back). Adding a framework is a proposal (`propose_followup`), not a side effect.
 4. **QA writes checks first (new default playbook step).** The default user story playbook becomes
    **Spec → Author checks → Build → Test**:
 
@@ -147,10 +148,28 @@ assumes a web stack. The browser and Playwright are tools for UI projects, not r
     `app_start`; drive it through the browser for UI work; save evidence; never touch product code;
     report what wasn't verified. Remove "you do not fix" phrasing that blocks writing checks, and keep
     "you do not fix product code."
+11. **North Star bundles the Playwright test runner, not the Playwright MCP.** QA can write Playwright
+    checks in any workspace, whether or not the project has Playwright, without adding a dependency to
+    the user's project (decision 3 still holds). The app ships `@playwright/test` without browsers and
+    runs it with its own Electron as Node, so users don't need Node installed. Browsers come from the
+    workspace's own Playwright, the user's installed Chrome, or a one-time consented download into app
+    data, in that order. Details in `109.06`.
+
+    **The Playwright MCP was considered and rejected.** It does the same job as the seat browser
+    (`109.04`): live, ref-based page driving. Shipping both would give the model two overlapping
+    browser toolsets to choose between inconsistently. It would also mean a second safety model: the MCP
+    launches its own Chromium, so the origin guard, per-run partitions, concurrency cap, phase-end
+    teardown, and the reveal setting would all need to be rebuilt as MCP flags and kept in sync. The
+    runner adds what the seat browser can't (durable, re-runnable checks, and Electron apps through
+    `_electron.launch`). The MCP adds nothing it can't.
+12. **Each tool's job is stated where the model chooses it.** QA has two ways to test a UI: Playwright
+    checks through `run_checks`, and the seat browser. The rule is **explore with the browser, assert
+    with Playwright**. It's stated in three places: the tool descriptions, the QA agent prompt, and each
+    step's kickoff (`109.06`).
 
 ## Slices
 
-The work ships as five slices, each in its own plan file, in dependency order. This file holds the
+The work ships as six slices, each in its own plan file, in dependency order. This file holds the
 shared context, product decisions, risks, and scope. The slice files hold the implementation detail.
 
 | Slice | Plan | Delivers | Decisions |
@@ -160,19 +179,19 @@ shared context, product decisions, risks, and scope. The slice files hold the im
 | `109.03` | [App launch recipes](109.03-app-launch-recipes.md) | Per-workspace launch recipe, `app_start` / `app_status` / `app_stop`, teardown | 6 |
 | `109.04` | [Seat browser](109.04-seat-browser.md) | Background browser for seats, origin guard, the Mission Control reveal setting | 7, 8 |
 | `109.05` | [Verification method in proofs](109.05-proof-verification-method.md) | `method` per proof criterion and the stricter proof gate | 9 |
+| `109.06` | [Bundled Playwright runner](109.06-bundled-playwright-runner.md) | Playwright checks in any workspace, browser resolution, tool-choice guidance | 11, 12 |
 
 `109.01` must land before `109.02`, because the `checks` step needs the write scope. `109.03` and
 `109.04` are independent of `109.02` and of each other, but `109.04`'s origin guard allows the URLs
 that `109.03` returns, so `109.04` should land after `109.03`. `109.05` needs `109.02`'s recorded check
-results and `109.04`'s saved evidence.
+results and `109.04`'s saved evidence. `109.06` needs `109.02`'s manifest and `109.03`'s app URLs, and
+its tool-choice guidance assumes `109.04`'s browser, so it lands last.
 
 ## Risks and open questions
 
-- **Electron apps under test.** Electron apps can't be driven by our seat browser. Playwright's
-  `_electron.launch` is the natural check, but only if the project has Playwright. Until then, QA falls
-  back to scripted checks plus code-level evidence, and the proof says so honestly. Should North Star
-  offer an opt-in, app-managed Playwright install (outside the user's repo) later? Deferred until
-  someone hits it.
+- **Electron apps under test.** The seat browser can't drive an Electron app. `109.06` covers them with
+  Playwright's `_electron.launch` through the bundled runner. Until `109.06` ships, QA falls back to
+  scripted checks plus code-level evidence, and the proof says so honestly.
 - **Shell escapes the write scope.** A QA seat can still `echo > src/x.ts`. The prompt, the diff
   reported in the test step, and the builder/QA split make this visible, not impossible. Is visible
   enough? (We think yes. Real sandboxing is `067`'s territory.)
