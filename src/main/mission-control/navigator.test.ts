@@ -35,6 +35,16 @@ const loopCalls: LoopCall[] = []
 // What each user story's build step writes, by user story key: file → content.
 const builds = new Map<string, Record<string, string>>()
 let resolution: Record<string, string> | null = null
+// The wave gate's QA turn (plan 110.02): every batch criterion passes,
+// unless a test scripts it.
+type GateTurn = (input: {
+  processQaChecks?: "author" | "verify" | "gate"
+  processRunId?: string
+  processPhaseRunId?: string
+  workspace?: string
+}) => Promise<unknown>
+const passGate: GateTurn = (input) => recordFakeGate(input)
+let gateTurn: GateTurn = passGate
 // The plan the lead's planning step proposes.
 let plannedMilestones: unknown[] = []
 // A user story the milestone's planning review adds, once.
@@ -50,11 +60,13 @@ vi.mock("../agent", () => ({
     processProofStep?: boolean
     processRunId?: string
     processPhaseRunId?: string
-    processQaChecks?: "author" | "verify"
+    processQaChecks?: "author" | "verify" | "gate"
     missionControlSeat?: import("./seat-turns").SeatTurnIdentity
   }) => {
     // QA's checks step (plan 109.02) needs a valid manifest to complete.
     writeFakeManifest(input)
+    // The wave gate's QA step (plan 110.02) records the gate.
+    await gateTurn(input)
     const msg = input.userMessage ?? ""
     loopCalls.push({
       workspace: input.workspace,
@@ -165,7 +177,11 @@ import { onWorkChanged } from "./work-events"
 import type { SeatTurnIdentity } from "./seat-turns"
 import type { AgentDefinition } from "../agent/agents/types"
 import type { RigDecisionRight } from "../db/types"
-import { proveInApp, writeFakeManifest } from "../test/qa-manifest"
+import {
+  proveInApp,
+  recordFakeGate,
+  writeFakeManifest,
+} from "../test/qa-manifest"
 
 const fakeRunner = {
   enqueueKind: () => {
@@ -436,6 +452,7 @@ beforeEach(() => {
   loopCalls.length = 0
   builds.clear()
   resolution = null
+  gateTurn = passGate
   notices.length = 0
   plannedMilestones = PLAN
   reviewAddsStory = null

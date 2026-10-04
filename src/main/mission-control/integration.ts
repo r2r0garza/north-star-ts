@@ -29,12 +29,19 @@ import type {
   PlaybookRun,
   UserStoryProof,
   UserStory,
+  WaveGate,
 } from "../db/types"
 import { deriveWaves } from "../../shared/mission-control/waves"
-import { hasWaveGate } from "./wave-gate"
+import { concludeWaveGate, hasWaveGate } from "./wave-gate"
+import * as waveGates from "../db/repositories/wave-gates"
+import { summarizeGateReport, isWaveGateReport } from "./gate-record"
+import { DEFAULT_CHECKS_DIR } from "../../shared/mission-control/checks"
+import type { IsolatedWorkspace } from "./user-story-runner"
 import {
   changedFiles,
+  commitGateSuite,
   commitWorktreeChanges,
+  createGateWorktree,
   createUserStoryWorktree,
   deleteMergedBranches,
   findUserStoryMerge,
@@ -137,6 +144,8 @@ export interface MilestoneIntegrationStatus {
   queue: MergeQueueEntry[]
   summary: LandingSummary | null
   landing: MilestoneLanding | null
+  // The milestone's wave acceptance gates, newest first (plan 110).
+  gates: WaveGate[]
 }
 
 export interface UserStoryWorkspaceInfo {
@@ -287,6 +296,14 @@ async function regenerateSpecFor(
   }
 }
 
+// The workspace's checks directory (plan 109.01).
+function checksDirOf(feature: Feature): string {
+  const workspace = feature.workspaceId
+    ? getWorkspace(feature.workspaceId)
+    : null
+  return workspace?.missionControl.checksDir ?? DEFAULT_CHECKS_DIR
+}
+
 function workspacePathOf(feature: Feature): string | null {
   return feature.workspaceId
     ? (getWorkspace(feature.workspaceId)?.path ?? null)
@@ -420,6 +437,139 @@ export class MilestoneIntegration {
         await deleteMissionControlBranch(root, created.branch)
       },
     }
+  }
+
+  // ── the wave gate (plan 110.02) ───────────────────────────────────────────
+
+  // A detached worktree at the milestone's integration head, with the
+  // workspace's environment, for its acceptance gate. Null when there is no
+  // integration branch (not a git workspace): the gate runs in place.
+  async prepareGateRun(input: {
+    feature: Feature
+    milestone: Milestone
+  }): Promise<IsolatedWorkspace | null> {
+    const workspace = workspacePathOf(input.feature)
+    if (!workspace) return null
+    if ((await this.workspaceMode(input.feature)).mode !== "git") return null
+    await this.ready
+    const milestone = features.getMilestone(input.milestone.id)
+    const root = milestone?.repoRoot
+    if (!milestone || !root || !milestone.integrationBranch) return null
+    const directory = path.join(
+      this.deps.worktreeRoot(),
+      input.feature.id,
+      `gate-${milestone.key}-${suffix()}`
+    )
+    const { baseOid } = await this.gitTurn(root, () =>
+      createGateWorktree({
+        root,
+        integrationBranch: milestone.integrationBranch!,
+        directory,
+      })
+    )
+    const discard = () => removeWorktree(root, directory)
+    try {
+      const workspacePath = path.join(
+        directory,
+        await workspaceSubpath(root, workspace)
+      )
+      const environment = await prepareEnvironment(
+        input.feature,
+        workspace,
+        workspacePath
+      )
+      return {
+        workspacePath,
+        worktreePath: directory,
+        environment,
+        baseOid,
+        integrationBranch: milestone.integrationBranch,
+        discard,
+      }
+    } catch (error) {
+      await discard()
+      throw error
+    }
+  }
+
+  // The gate's run completed: commit its checks directory to the
+  // integration branch (pass or fail, so fix stories branch from the exact
+  // failing checks), finish the gate from QA's record, and remove the
+  // worktree. Restart-safe: a replay finds the gate's commit by its trailer.
+  onGateSettled(playbookRunId: string): void {
+    const run = playbooks.getPlaybookRun(playbookRunId)
+    if (!run || run.status !== "running" || !run.milestoneId) return
+    const milestoneId = run.milestoneId
+    void this.enqueueWork(milestoneId, async () => {
+      const gate = waveGates.getWaveGateByRun(run.id)
+      const { milestone, feature } = context(milestoneId)
+      const suite: { commit: string | null; note?: string } = { commit: null }
+      const root = milestone.repoRoot
+      if (
+        gate?.status === "running" &&
+        run.worktreePath &&
+        root &&
+        milestone.integrationBranch
+      ) {
+        if (!existsSync(run.worktreePath))
+          suite.note =
+            "The gate's worktree is gone, so its suite wasn't committed."
+        else {
+          const lease = await repositoryDelegationLeases
+            .acquire(root, `Mission Control acceptance gate (${milestone.key})`)
+            .catch(() => null)
+          if (!lease) {
+            setTimeout(
+              () => this.onGateSettled(run.id),
+              this.deps.leaseRetryMs ?? LEASE_RETRY_MS
+            ).unref?.()
+            return
+          }
+          try {
+            const outcome = await commitGateSuite({
+              root,
+              integrationBranch: milestone.integrationBranch,
+              worktree: run.worktreePath,
+              workspacePath:
+                (run.processRunId && processWorkspace(run.processRunId)) ||
+                run.worktreePath,
+              checksDir: checksDirOf(feature),
+              gateId: gate.id,
+              message: `test(${milestone.key}): acceptance gate round ${gate.round}${
+                isWaveGateReport(gate.report)
+                  ? `\n\n${summarizeGateReport(gate.report)}`
+                  : ""
+              }`,
+            })
+            if (outcome.status === "committed") suite.commit = outcome.commit
+            else if (outcome.status === "refused") suite.note = outcome.reason
+          } catch (error) {
+            suite.note = `Committing the suite failed: ${message(error)}`
+          } finally {
+            repositoryDelegationLeases.release(lease)
+          }
+        }
+      }
+      concludeWaveGate(run.id, suite)
+      await this.dropGateWorktree(run.id)
+      this.advanceMilestone(milestoneId)
+      this.changed(feature.id)
+    })
+  }
+
+  // Remove a finished gate run's worktree.
+  async dropGateWorktree(playbookRunId: string): Promise<void> {
+    const run = playbooks.getPlaybookRun(playbookRunId)
+    if (
+      !run ||
+      run.hook !== "after_each_wave" ||
+      run.status === "running" ||
+      !run.worktreePath ||
+      !run.milestoneId
+    )
+      return
+    const root = features.getMilestone(run.milestoneId)?.repoRoot
+    if (root) await removeWorktree(root, run.worktreePath)
   }
 
   // Idempotent and serialized per milestone: concurrent first user stories both see
@@ -1333,6 +1483,7 @@ export class MilestoneIntegration {
       queue: mergeQueue.listMergeEntries({ milestoneId }),
       summary,
       landing: milestone.landing,
+      gates: waveGates.listWaveGates(milestoneId).reverse(),
     }
   }
 
@@ -1661,6 +1812,9 @@ export class MilestoneIntegration {
           if (entry.resolutionWorktree)
             referenced.add(path.resolve(entry.resolutionWorktree))
       }
+    // A running wave gate's worktree (plan 110.02).
+    for (const run of playbooks.listPlaybookRuns({ status: "running" }))
+      if (run.worktreePath) referenced.add(path.resolve(run.worktreePath))
     for (const [featureDir, names] of listed) {
       const dir = path.join(root, featureDir)
       const feature = features.getFeature(featureDir)

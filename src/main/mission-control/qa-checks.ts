@@ -4,6 +4,7 @@ import { tmpdir } from "os"
 import { join, posix } from "path"
 import * as features from "../db/repositories/features"
 import * as processes from "../db/repositories/processes"
+import * as waveGates from "../db/repositories/wave-gates"
 import type {
   CheckResult,
   ChecksChange,
@@ -12,6 +13,8 @@ import type {
   PhaseRunQaChecks,
   ProcessPhaseRun,
   ProcessRun,
+  UserStory,
+  WaveGate,
 } from "../db/types"
 import { resolveInWorkspaceReal } from "../agent/tools/workspace"
 import { gitSucceeds, runGit } from "../agent/subagents/worktrees"
@@ -32,7 +35,10 @@ import { runPlaywrightCheck } from "./playwright-runner"
 import { waitForTestBrowser } from "./playwright-install"
 import { recordEvent } from "../db/repositories/mc-events"
 import { holdPhaseClock } from "../tasks/process/phase-clock"
-import { userStoryCriteria } from "./user-story-objective"
+import {
+  userStoryCriteria,
+  type UserStoryCriterion,
+} from "./user-story-objective"
 import {
   automatedChecks,
   localImports,
@@ -55,16 +61,21 @@ import {
 // lives on phase runs and is written here, never from model arguments.
 
 // What a QA seat's step does in a user story run: a proof step verifies; any
-// other QA step authors checks. Other roles, and runs without a user story,
-// have no QA checks step.
-export type QaStepKind = "author" | "verify"
+// other QA step authors checks. A QA proof step in a milestone's wave gate
+// (plan 110.02) writes and runs the acceptance suite and records the gate.
+// Other roles and other runs have no QA checks step.
+export type QaStepKind = "author" | "verify" | "gate"
 
 export function qaStepKind(input: {
   role: string | null | undefined
   proofStep: boolean
   link: MissionControlRunLink | null | undefined
 }): QaStepKind | null {
-  if (input.role !== QA_ROLE || !input.link?.userStoryId) return null
+  if (input.role !== QA_ROLE || !input.link) return null
+  if (!input.link.userStoryId)
+    return input.link.hook === "after_each_wave" && input.proofStep
+      ? "gate"
+      : null
   return input.proofStep ? "verify" : "author"
 }
 
@@ -114,9 +125,59 @@ export function storyChecks(link: MissionControlRunLink): StoryChecks | null {
   }
 }
 
+// ── the wave gate's checks context (plan 110.02) ────────────────────────────
+
+export interface GateCheckStory {
+  userStory: UserStory
+  storyRef: string
+  criteria: UserStoryCriterion[]
+  batch: boolean
+}
+
+export interface GateChecks {
+  checksDir: string
+  recipe: AppLaunch
+  gate: WaveGate
+  milestoneId: string
+  // Every story of the feature, by ref: the batch, and the stories whose
+  // checks earlier gates (or 109.02's per-story checks) put in the suite.
+  stories: Map<string, GateCheckStory>
+}
+
+export function gateChecks(link: MissionControlRunLink): GateChecks | null {
+  if (link.hook !== "after_each_wave" || link.userStoryId) return null
+  const gate = waveGates.getWaveGateByRun(link.playbookRunId)
+  const feature = features.getFeature(link.featureId)
+  if (!gate || !feature) return null
+  const batch = new Set(gate.storyIds)
+  const stories = new Map<string, GateCheckStory>()
+  for (const milestone of features.listMilestones(feature.id))
+    for (const story of features.listUserStories(milestone.id)) {
+      if (story.status === "cancelled") continue
+      const storyRef = userStoryRef({
+        featureKey: feature.key,
+        milestoneKey: milestone.key,
+        userStoryKey: story.key,
+      })
+      stories.set(storyRef, {
+        userStory: story,
+        storyRef,
+        criteria: userStoryCriteria(story),
+        batch: batch.has(story.id),
+      })
+    }
+  return {
+    checksDir: checksForRun(link).checksDir,
+    recipe: recipeForLink(link),
+    gate,
+    milestoneId: gate.milestoneId,
+    stories,
+  }
+}
+
 // ── snapshots ───────────────────────────────────────────────────────────────
 
-async function isRepository(root: string): Promise<boolean> {
+export async function isRepository(root: string): Promise<boolean> {
   return gitSucceeds(root, ["rev-parse", "--is-inside-work-tree"])
 }
 
@@ -399,15 +460,59 @@ export async function readStoryManifest(
   return result
 }
 
+export interface ManifestSet {
+  manifests: Array<{ storyRef: string; manifest: ChecksManifest }>
+  problems: string[]
+  // Per story ref, why its manifest couldn't be used.
+  invalid: Record<string, string>
+}
+
+// The wave gate's suite: every manifest in the checks directory that belongs
+// to one of the feature's stories (the accumulated suite), and a problem for
+// each batch story without a usable one.
+export async function gateManifests(
+  root: string,
+  gate: Pick<GateChecks, "checksDir" | "recipe" | "stories">
+): Promise<ManifestSet> {
+  const names = await readdir(
+    await resolveInWorkspaceReal(root, `${gate.checksDir}/${MANIFEST_DIR}`)
+  ).catch(() => [] as string[])
+  const present = new Set(
+    names.filter((n) => n.endsWith(".json")).map((n) => n.slice(0, -5))
+  )
+  const set: ManifestSet = { manifests: [], problems: [], invalid: {} }
+  for (const [ref, story] of [...gate.stories].sort(([a], [b]) =>
+    a.localeCompare(b)
+  )) {
+    if (!present.has(ref)) {
+      if (story.batch) {
+        const message = `There is no check manifest at \`${storyManifestPath(gate.checksDir, ref)}\` for ${story.userStory.key}, which is in this gate's batch. Write it.`
+        set.problems.push(message)
+        set.invalid[ref] = message
+      }
+      continue
+    }
+    const read = await readStoryManifest(root, {
+      manifestPath: storyManifestPath(gate.checksDir, ref),
+      criterionIds: story.criteria.map((c) => c.id),
+      storyRef: ref,
+      recipe: gate.recipe,
+    })
+    if (read.ok) set.manifests.push({ storyRef: ref, manifest: read.manifest })
+    else {
+      set.problems.push(read.message)
+      set.invalid[ref] = read.message
+    }
+  }
+  return set
+}
+
 // The manifests run_checks uses: the story's own, or, on reverify, every
 // manifest of this milestone's stories present in the merged result.
 async function manifestsForRun(
   root: string,
   story: StoryChecks
-): Promise<{
-  manifests: Array<{ storyRef: string; manifest: ChecksManifest }>
-  problems: string[]
-}> {
+): Promise<ManifestSet> {
   const refs = [story.storyRef]
   if (story.reverify) {
     const names = await readdir(
@@ -419,8 +524,7 @@ async function manifestsForRun(
         if (story.milestoneStories.has(ref)) refs.push(ref)
     }
   }
-  const manifests: Array<{ storyRef: string; manifest: ChecksManifest }> = []
-  const problems: string[] = []
+  const set: ManifestSet = { manifests: [], problems: [], invalid: {} }
   for (const ref of refs) {
     const read = await readStoryManifest(root, {
       manifestPath: storyManifestPath(story.checksDir, ref),
@@ -428,10 +532,13 @@ async function manifestsForRun(
       storyRef: ref,
       recipe: story.recipe,
     })
-    if (read.ok) manifests.push({ storyRef: ref, manifest: read.manifest })
-    else problems.push(read.message)
+    if (read.ok) set.manifests.push({ storyRef: ref, manifest: read.manifest })
+    else {
+      set.problems.push(read.message)
+      set.invalid[ref] = read.message
+    }
   }
-  return { manifests, problems }
+  return set
 }
 
 // ── the run's QA checks state ───────────────────────────────────────────────
@@ -468,7 +575,7 @@ export function latestFreeze(root: ProcessRun) {
     .sort((a, b) => b!.frozenAt - a!.frozenAt)[0]
 }
 
-function updateQaChecks(
+export function updateQaChecks(
   phaseRunId: string,
   patch: (current: PhaseRunQaChecks) => PhaseRunQaChecks
 ): PhaseRunQaChecks {
@@ -478,18 +585,22 @@ function updateQaChecks(
   return next
 }
 
-// Server-side context of a QA tool call: the run, the step, the story.
-type QaToolContext =
-  | {
+// Server-side context of a QA tool call: the run, the step, and the story
+// (or, at a wave gate, the gate) whose checks it runs.
+export type QaToolContext =
+  | ({
       ok: true
       root: ProcessRun
       phaseRun: ProcessPhaseRun
-      kind: QaStepKind
-      story: StoryChecks
-    }
+      checksDir: string
+      recipe: AppLaunch
+    } & (
+      | { kind: "author" | "verify"; story: StoryChecks }
+      | { kind: "gate"; gate: GateChecks }
+    ))
   | { ok: false; code: string; message: string }
 
-function qaToolContext(
+export function qaToolContext(
   processRunId: string,
   phaseRunId: string
 ): QaToolContext {
@@ -511,15 +622,34 @@ function qaToolContext(
     proofStep: !!phase?.proofStep,
     link: root.missionControl,
   })
-  const story = root.missionControl ? storyChecks(root.missionControl) : null
-  if (!kind || !story)
-    return {
-      ok: false,
-      code: "unavailable",
-      message:
-        "QA checks are only available to a QA seat in a Mission Control user story run.",
-    }
-  return { ok: true, root, phaseRun, kind, story }
+  const base = { ok: true as const, root, phaseRun }
+  if (kind === "gate") {
+    const gate = gateChecks(root.missionControl!)
+    if (gate)
+      return {
+        ...base,
+        kind,
+        gate,
+        checksDir: gate.checksDir,
+        recipe: gate.recipe,
+      }
+  } else if (kind) {
+    const story = storyChecks(root.missionControl!)
+    if (story)
+      return {
+        ...base,
+        kind,
+        story,
+        checksDir: story.checksDir,
+        recipe: story.recipe,
+      }
+  }
+  return {
+    ok: false,
+    code: "unavailable",
+    message:
+      "QA checks are only available to a QA seat in a Mission Control user story run or acceptance gate.",
+  }
 }
 
 // ── run_checks ──────────────────────────────────────────────────────────────
@@ -799,10 +929,10 @@ export async function runQaChecks(input: {
 }): Promise<RunChecksOutcome> {
   const ctx = qaToolContext(input.processRunId, input.phaseRunId)
   if (!ctx.ok) return ctx
-  const { manifests, problems } = await manifestsForRun(
-    input.workspace,
-    ctx.story
-  )
+  const { manifests, problems } =
+    ctx.kind === "gate"
+      ? await gateManifests(input.workspace, ctx.gate)
+      : await manifestsForRun(input.workspace, ctx.story)
   if (!manifests.length)
     return {
       ok: false,
@@ -840,9 +970,14 @@ export async function runQaChecks(input: {
   }
   const app = {
     owner: ctx.phaseRun.id,
-    recipe: ctx.story.recipe,
-    checksDir: ctx.story.checksDir,
+    recipe: ctx.recipe,
+    checksDir: ctx.checksDir,
   }
+  // At a wave gate a result counts only for the suite it ran against.
+  const suiteHash =
+    ctx.kind === "gate"
+      ? (await snapshotChecks(input.workspace, ctx.checksDir)).hash
+      : undefined
   const key = (storyRef: string, checkId: string) => `${storyRef}\0${checkId}`
   const runAll = async (list: typeof selected) => {
     const byCheck = new Map<string, CheckResult[]>()
@@ -883,8 +1018,10 @@ export async function runQaChecks(input: {
     (await awaitTestBrowser(ctx, input.signal))
   )
     for (const [k, attempts] of await runAll(waiting)) byCheck.set(k, attempts)
-  const results = selected.flatMap(
-    ({ storyRef, check }) => byCheck.get(key(storyRef, check.id)) ?? []
+  const results = selected.flatMap(({ storyRef, check }) =>
+    (byCheck.get(key(storyRef, check.id)) ?? []).map((result) =>
+      suiteHash ? { ...result, suiteHash } : result
+    )
   )
   updateQaChecks(ctx.phaseRun.id, (current) => ({
     ...current,
@@ -1012,9 +1149,9 @@ async function readModule(
 // With no app launch recipe, Playwright checks must start the app themselves
 // (plan 109.07). The checks step can't finish with one that can't reach it:
 // once frozen, the test step couldn't fix it.
-async function unreachableChecks(
+export async function unreachableChecks(
   root: string,
-  story: StoryChecks,
+  story: Pick<StoryChecks, "checksDir" | "recipe">,
   manifest: ChecksManifest
 ): Promise<string[]> {
   if (story.recipe.services.length) return []
@@ -1083,6 +1220,22 @@ export async function completeAuthorStep(input: {
   return { ok: true, warnings: read.warnings }
 }
 
+// How a check reaches the running app: through the recipe's services, or,
+// with no recipe, a shared fixture that starts the app itself (plan 109.07).
+// Shared by the checks step and the wave gate (plan 110.02).
+export function appGuidance(
+  story: Pick<StoryChecks, "checksDir" | "recipe">
+): string[] {
+  return story.recipe.services.length
+    ? [
+        `- A check that needs the running app lists the services it needs in \`"services"\` (from this workspace's app launch recipe: ${story.recipe.services.map((service) => `\`${service.key}\``).join(", ")}). \`run_checks\` starts them first, on free ports. A Playwright check gets the first one as its \`baseURL\`; any check gets \`BASE_URL\` (the first one), \`APP_<KEY>_URL\` and \`APP_<KEY>_PORT\` in its environment, and a command check \`{port:<key>}\` in its command. Don't hard-code ports or start the app inside the check.`,
+      ]
+    : [
+        `- This workspace has no app launch recipe, so \`run_checks\` starts nothing and gives Playwright no \`baseURL\`. A check that needs the running app starts it itself, through one shared fixture in \`${story.checksDir}/fixtures/\` (reuse it when it exists): a worker-scoped fixture that picks a free port (listen on port 0, read it, close), starts the app on it, waits until it answers over HTTP, provides that URL as \`baseURL\`, and stops the app when the worker ends. Specs import \`test\` and \`expect\` from that fixture and navigate relative to \`baseURL\` (\`page.goto("/")\`).`,
+        "- The fixture decides how to start the app when it runs: the project's start command with `PORT` set when there is one (a package.json `start` or `dev` script, or `node server.js`), and otherwise a small `node:http` server over the workspace's static files (index.html and its assets). Checks run with their `cwd` (the workspace root by default) as the current directory. Never hard-code a port, never read `BASE_URL` (nothing sets it), and don't open files with `file://`: a check that can't reach the app is refused.",
+      ]
+}
+
 // The checks step's kickoff: what to write and where, and how it completes.
 export function authorStepNote(story: StoryChecks): string {
   return [
@@ -1104,14 +1257,7 @@ export function authorStepNote(story: StoryChecks): string {
       story.storyRef +
       ' @AC-1", …)`.',
     '- An Electron app is checked with `_electron` from `@playwright/test`: `import electronPath from "electron"`, then `const app = await _electron.launch({ executablePath: electronPath, args: ["path/to/main.js"] })` and `const window = await app.firstWindow()`, and assert on `window` like a page. Pass `executablePath` so the project\'s own Electron runs. The check starts the app itself, so it needs no services and no browser.',
-    ...(story.recipe.services.length
-      ? [
-          `- A check that needs the running app lists the services it needs in \`"services"\` (from this workspace's app launch recipe: ${story.recipe.services.map((service) => `\`${service.key}\``).join(", ")}). \`run_checks\` starts them first, on free ports. A Playwright check gets the first one as its \`baseURL\`; any check gets \`BASE_URL\` (the first one), \`APP_<KEY>_URL\` and \`APP_<KEY>_PORT\` in its environment, and a command check \`{port:<key>}\` in its command. Don't hard-code ports or start the app inside the check.`,
-        ]
-      : [
-          `- This workspace has no app launch recipe, so \`run_checks\` starts nothing and gives Playwright no \`baseURL\`. A check that needs the running app starts it itself, through one shared fixture in \`${story.checksDir}/fixtures/\` (reuse it when it exists): a worker-scoped fixture that picks a free port (listen on port 0, read it, close), starts the app on it, waits until it answers over HTTP, provides that URL as \`baseURL\`, and stops the app when the worker ends. Specs import \`test\` and \`expect\` from that fixture and navigate relative to \`baseURL\` (\`page.goto("/")\`).`,
-          "- The fixture decides how to start the app when it runs, not now (the app isn't built yet): the project's start command with `PORT` set when there is one (a package.json `start` or `dev` script, or `node server.js`), and otherwise a small `node:http` server over the workspace's static files (index.html and its assets). Checks run with their `cwd` (the workspace root by default) as the current directory. Never hard-code a port, never read `BASE_URL` (nothing sets it), and don't open files with `file://`: the step can't finish with a check that can't reach the app.",
-        ]),
+    ...appGuidance(story),
     "- `run_checks` runs the manifest's automated checks. Use it to confirm each check runs and fails for the right reason: the feature isn't built yet, so assertion failures are expected now. A check reported as \"couldn't reach the app\" is not one of them: it never exercised its criterion, so fix it before you finish.",
     "- This step completes only when the manifest exists and validates. When it does, the checks directory is frozen: the builder may run your checks but not change them unnoticed.",
   ].join("\n")

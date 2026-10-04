@@ -3,7 +3,8 @@ import { tmpdir } from "os"
 import { dirname, join } from "path"
 import { evidenceDir, setEvidenceRoot } from "../mission-control/evidence"
 import * as processes from "../db/repositories/processes"
-import { storyChecks } from "../mission-control/qa-checks"
+import { gateChecks, storyChecks } from "../mission-control/qa-checks"
+import { recordWaveGate } from "../mission-control/gate-step"
 
 // What a fake QA seat writes in the checks step (plan 109.02), so tests that
 // drive the default user story playbook get past its manifest gate: one
@@ -11,7 +12,7 @@ import { storyChecks } from "../mission-control/qa-checks"
 // automated check running it. A no-op for any other turn.
 export function writeFakeManifest(
   input: {
-    processQaChecks?: "author" | "verify"
+    processQaChecks?: "author" | "verify" | "gate"
     processRunId?: string
     workspace?: string
   },
@@ -71,4 +72,46 @@ export function proveInApp(
       c.method ? c : { ...c, method: "app_exercised", artifacts: [shot] }
     ),
   }
+}
+
+// What a fake QA seat records at a wave gate (plan 110.02): every criterion
+// of the batch passed, proven by a screenshot (the fake manifests are
+// exploratory). `outcomes` overrides a criterion ("<storyKey> AC-1") with
+// another outcome's fields. A no-op for any other turn.
+export async function recordFakeGate(
+  input: {
+    processQaChecks?: "author" | "verify" | "gate"
+    processRunId?: string
+    processPhaseRunId?: string
+    workspace?: string
+  },
+  outcomes: Record<string, Record<string, unknown>> = {}
+) {
+  if (input.processQaChecks !== "gate" || !input.workspace) return null
+  const run = processes.getProcessRun(input.processRunId!)
+  const gate = run?.missionControl ? gateChecks(run.missionControl) : null
+  if (!gate) return null
+  const shot = proveInApp(input.processPhaseRunId!, {
+    criteria: [{ id: "AC-1" }],
+  }) as { criteria: Array<{ artifacts: string[] }> }
+  const artifacts = shot.criteria[0].artifacts
+  return recordWaveGate({
+    processRunId: input.processRunId!,
+    processPhaseRunId: input.processPhaseRunId!,
+    workspace: input.workspace,
+    args: {
+      stories: [...gate.stories.values()]
+        .filter((s) => s.batch && s.criteria.length)
+        .map((s) => ({
+          story: s.storyRef,
+          criteria: s.criteria.map((c) => ({
+            id: c.id,
+            outcome: "passed",
+            evidence: "Saw it in the running app.",
+            artifacts,
+            ...outcomes[`${s.userStory.key} ${c.id}`],
+          })),
+        })),
+    },
+  })
 }

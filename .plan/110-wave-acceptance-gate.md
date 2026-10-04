@@ -1,6 +1,6 @@
 # PR110: Wave acceptance gate — exploratory QA per story, Playwright suite per wave
 
-> Status: **IN PROGRESS** — `110.01` done (2026-10-04); `110.02`–`110.05` remain. Proposed 2026-10-04. Follow-up to `109` (QA seats that verify independently) and
+> Status: **IN PROGRESS** — `110.01` and `110.02` done (2026-10-04); `110.03`–`110.05` remain. Proposed 2026-10-04. Follow-up to `109` (QA seats that verify independently) and
 > `106.5` (worktrees and the merge queue). Changes `109.02`'s per-story checks step; keeps `109.03`–
 > `109.06`. Uses the current names: Features, Milestones, User stories.
 
@@ -249,6 +249,51 @@ starts from them. `110.05` is independent after `110.01`.
   installs pick it up through Reset to default.
 - **UI.** "Merged · awaiting gate" badge, an "awaiting gate" count in the Navigator strip, a manual
   **Run acceptance gate** control on the milestone, and the hook in the Playbooks tab.
+
+## `110.02` as built (2026-10-04)
+
+- **Launch.** `startWaveGate(runner, …)` launches the `after_each_wave` hook through the runner in a
+  detached worktree at the integration head (`integration.prepareGateRun`, with the workspace's
+  `106.11` environment). The `wave_gates` row opens inside the launch transaction, after a recheck that
+  no gate is open and the batch didn't change across the worktree setup; a second start while one is
+  being prepared fails fast. Without an integration branch (not a git workspace) the gate runs in
+  place. A playbook that dropped its gate still passes the batch through, as in `110.01`.
+- **The QA step.** `qaStepKind` gains `gate`: a QA proof step in an `after_each_wave` run. It gets the
+  seat browser, the app tools, `run_checks`, and the new `record_gate` (not `record_proof`). When the
+  step starts, the recipe's services are started (owned by the phase run) and the kickoff note
+  (`gateStepNote`) lists the batch's criteria and manifests, the earlier stories already in the suite,
+  decision 5's locating rules (including state-dependent labels), the recipe or no-recipe fixture
+  guidance (shared with the checks step as `appGuidance`), and the four outcomes. The gate objective
+  (`renderGateObjective`) names the batch and the worktree's rules.
+- **The suite.** At a gate, `run_checks` runs every manifest in `<checksDir>/stories/` that belongs to
+  one of the feature's stories (the accumulated suite), and stamps each result with the checks
+  directory's content hash (`suiteHash`).
+- **`record_gate` and its rules** (`gate-record.ts`, pure). A result counts only if it ran on the suite
+  as it is when recorded, and every automated check in the suite needs one, so QA re-runs the whole
+  suite after its last change (whole-directory granularity: simpler and stricter than per-check
+  fingerprints). Every batch criterion and every earlier criterion whose check failed or couldn't reach
+  the app must be triaged. `passed`: its checks pass (an exploratory-only criterion needs a saved
+  screenshot). `check_fixed`: also a failure of its check earlier on the step and a justification.
+  `app_bug`: a check that failed on an assertion, and the `problem`. `unreachable`: a check that
+  couldn't reach the app (or couldn't run), and the `reason`. Every batch story needs a valid manifest,
+  and the no-recipe reachability lint runs on the batch's manifests here. Files changed against the
+  integration head that held an earlier story's tests (by tag, or its manifest) need a `check_fixed`
+  on that story; they and changes to shared code are recorded and highlighted. The record is stored on
+  the running gate; recording again replaces it.
+- **Settling.** When the gate's run completes, `integration.onGateSettled` (on the milestone's queue
+  chain, under the repository lease) stages only the checks directory, commits it with a
+  `Mission-Control-Gate: <id>` trailer, and fast-forwards the integration branch to it with a
+  compare-and-swap, refusing if the gate's commits touch anything outside the checks directory or the
+  branch moved. A replay finds its own commit by the trailer. Then `concludeWaveGate` finishes the gate
+  from the record, pass or fail: batch stories whose criteria all passed become `done`, the rest stay
+  `merged`; the gate passes only if nothing failed (earlier regressions included). A run that ended
+  without a record fails the gate. The worktree is removed either way, and the boot sweep keeps a
+  running gate's worktree.
+- **Until `110.03`.** A failed gate is the existing `hook_failed` decision ("Run it again") on the same
+  batch; fix stories and the round cap replace that next.
+- **UI.** The milestone's integration panel lists its gates, newest first: status, batch, the suite
+  commit, and per story and criterion the outcome, the problem / justification / reason, the check
+  results, and screenshots; changes to already-passed checks are highlighted.
 
 ## Out of scope
 

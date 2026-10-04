@@ -138,3 +138,15 @@ export function finishWaveGate(
     .run(...values, id, ...from)
   return result.changes === 1 ? getWaveGate(id) : null
 }
+
+// QA's record (plan 110.02) on a gate that is still running. The latest
+// record wins until the gate finishes.
+export function setRunningWaveGateReport(id: string, report: unknown): boolean {
+  return (
+    getDb()
+      .prepare(
+        "UPDATE wave_gates SET report = ? WHERE id = ? AND status = 'running'"
+      )
+      .run(JSON.stringify(report), id).changes === 1
+  )
+}

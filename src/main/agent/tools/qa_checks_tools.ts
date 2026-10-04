@@ -26,7 +26,8 @@ export const runChecksTool: Tool = {
         "recorded on this step by the harness; the proof is judged against them. Returns " +
         "pass/fail per check, each Playwright test's result, the output of failures, and where " +
         "failure traces and screenshots were saved. In a merge re-verification, runs the checks " +
-        "of every user story in the milestone. When Playwright checks need a test browser that " +
+        "of every user story in the milestone; at an acceptance gate, the whole accumulated " +
+        "suite of the feature's stories. When Playwright checks need a test browser that " +
         "isn't installed yet, the call waits until the user provides one, then runs them.",
       parameters: {
         type: "object",

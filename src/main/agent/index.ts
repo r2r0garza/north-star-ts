@@ -92,6 +92,7 @@ import { containerNameForConversation } from "./env/container"
 import { flagForReworkTool } from "./tools/flag_for_rework"
 import { recordProofTool } from "./tools/record_proof"
 import { refreezeChecksTool, runChecksTool } from "./tools/qa_checks_tools"
+import { recordGateTool } from "./tools/record_gate"
 import { appLaunchTools } from "./tools/app_launch_tools"
 import { seatCommsTools } from "./tools/seat_comms_tools"
 import { mapTools } from "./tools/map_tools"
@@ -905,9 +906,10 @@ export interface RunAgentLoopOptions {
   processProofStep?: boolean
   // Mission Control (plan 109.02): this worker is a QA seat's step in a user
   // story run. Both kinds are offered run_checks; the test step ("verify") is
-  // also offered refreeze_checks. The tools re-derive the story and manifest
-  // from the run; this only controls the offer.
-  processQaChecks?: "author" | "verify"
+  // also offered refreeze_checks. A wave gate's QA step ("gate", plan 110.02)
+  // is offered run_checks and record_gate. The tools re-derive the story (or
+  // gate) and manifests from the run; this only controls the offer.
+  processQaChecks?: "author" | "verify" | "gate"
   // Mission Control (plan 109.03): this worker is a builder or QA seat's step
   // and the workspace has an app launch recipe. Offers app_start /
   // app_status / app_stop; the tools re-derive the recipe and the owning
@@ -1481,6 +1483,9 @@ export async function runAgentLoop(
               runChecksTool.definition,
               ...(opts.processQaChecks === "verify"
                 ? [refreezeChecksTool.definition]
+                : []),
+              ...(opts.processQaChecks === "gate"
+                ? [recordGateTool.definition]
                 : []),
             ]
           : [],

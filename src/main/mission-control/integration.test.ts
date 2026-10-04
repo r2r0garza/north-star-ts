@@ -41,6 +41,16 @@ const loopCalls: LoopCall[] = []
 const builds = new Map<string, Record<string, string>>()
 // What the integrator writes into the conflicted files.
 let resolution: Record<string, string> | null = null
+// The wave gate's QA turn (plan 110.02): every batch criterion passes,
+// unless a test scripts it.
+type GateTurn = (input: {
+  processQaChecks?: "author" | "verify" | "gate"
+  processRunId?: string
+  processPhaseRunId?: string
+  workspace?: string
+}) => Promise<unknown>
+const passGate: GateTurn = (input) => recordFakeGate(input)
+let gateTurn: GateTurn = passGate
 
 vi.mock("../agent", () => ({
   SHUTDOWN_ABORT_REASON,
@@ -52,10 +62,12 @@ vi.mock("../agent", () => ({
     processProofStep?: boolean
     processRunId?: string
     processPhaseRunId?: string
-    processQaChecks?: "author" | "verify"
+    processQaChecks?: "author" | "verify" | "gate"
   }) => {
     // QA's checks step (plan 109.02) needs a valid manifest to complete.
     writeFakeManifest(input)
+    // The wave gate's QA step (plan 110.02) records the gate.
+    await gateTurn(input)
     const msg = input.userMessage ?? ""
     loopCalls.push({
       workspace: input.workspace,
@@ -140,7 +152,13 @@ import { MilestoneIntegration } from "./integration"
 import { createDefaultPlaybook } from "./playbook-defaults"
 import type { AgentDefinition } from "../agent/agents/types"
 import { listWorktrees } from "../agent/subagents/worktrees"
-import { proveInApp, writeFakeManifest } from "../test/qa-manifest"
+import { gateChecks, runQaChecks } from "./qa-checks"
+import type { WaveGateReport } from "../db/types"
+import {
+  proveInApp,
+  recordFakeGate,
+  writeFakeManifest,
+} from "../test/qa-manifest"
 
 const fakeRunner = {
   enqueueKind: () => {
@@ -310,6 +328,7 @@ beforeEach(() => {
   loopCalls.length = 0
   builds.clear()
   resolution = null
+  gateTurn = passGate
   notices.length = 0
 })
 
@@ -367,7 +386,13 @@ describe.skipIf(!sqliteLoads)("milestone integration", () => {
       milestoneId: milestone.id,
       hook: "after_each_wave",
     })
-    expect(run).toMatchObject({ hook: "after_each_wave", status: "completed" })
+    // The gate runs in its own worktree at the integration head.
+    expect(run).toMatchObject({ hook: "after_each_wave", status: "running" })
+    expect(existsSync(run.worktreePath!)).toBe(true)
+    await drive(run.processRunId!)
+    await integration.idle()
+    expect(playbooks.getPlaybookRun(run.id)!.status).toBe("completed")
+    expect(existsSync(run.worktreePath!)).toBe(false)
     const [gate] = waveGates.listWaveGates(milestone.id)
     expect(gate).toMatchObject({
       round: 1,
@@ -395,11 +420,13 @@ describe.skipIf(!sqliteLoads)("milestone integration", () => {
     await integration.idle()
     expect(features.getUserStory(userStory("ui").id)!.status).toBe("merged")
     expect(features.getMilestone(milestone.id)!.status).toBe("integrating")
-    await startHookRun(runner, {
+    const secondRun = await startHookRun(runner, {
       featureId: feature.id,
       milestoneId: milestone.id,
       hook: "after_each_wave",
     })
+    await drive(secondRun.processRunId!)
+    await integration.idle()
     const second = waveGates.listWaveGates(milestone.id)[1]
     expect(second).toMatchObject({
       round: 2,
@@ -436,6 +463,175 @@ describe.skipIf(!sqliteLoads)("milestone integration", () => {
     })
   })
 
+  // A gate QA turn that rewrites each batch story's manifest with one
+  // automated command check per criterion, runs the whole suite, writes a
+  // stray product file (never committed), and records `outcomes`.
+  function scriptedGate(
+    command: string,
+    outcomes: Record<string, Record<string, unknown>> = {}
+  ): GateTurn {
+    return async (input) => {
+      if (input.processQaChecks !== "gate") return
+      const run = processes.getProcessRun(input.processRunId!)!
+      const gate = gateChecks(run.missionControl!)!
+      for (const story of gate.stories.values()) {
+        if (!story.batch) continue
+        const file = path.join(
+          input.workspace!,
+          "e2e",
+          "stories",
+          `${story.storyRef}.json`
+        )
+        writeFileSync(
+          file,
+          JSON.stringify({
+            criteria: Object.fromEntries(
+              story.criteria.map((c) => [
+                c.id,
+                [
+                  {
+                    id: `${story.userStory.key}-${c.id.toLowerCase()}`,
+                    kind: "automated",
+                    command,
+                    cwd: "",
+                    timeoutMs: 30000,
+                  },
+                ],
+              ])
+            ),
+          })
+        )
+      }
+      writeFileSync(path.join(input.workspace!, "stray.txt"), "qa\n")
+      const ran = await runQaChecks({
+        processRunId: input.processRunId!,
+        phaseRunId: input.processPhaseRunId!,
+        workspace: input.workspace!,
+      })
+      expect(ran.ok).toBe(true)
+      return recordFakeGate(input, outcomes)
+    }
+  }
+
+  async function mergedStory(key: string) {
+    setup()
+    const root = repo()
+    const made = featureIn(root, [key], { gate: true })
+    builds.set(key, { [`${key}.txt`]: `${key}\n` })
+    const run = await runner.startUserStory(made.userStory(key).id)
+    await drive(run.processRunId!)
+    await integration.idle()
+    expect(features.getUserStory(made.userStory(key).id)!.status).toBe("merged")
+    return { root, ...made }
+  }
+
+  async function runGate(featureId: string, milestoneId: string) {
+    const run = await startHookRun(runner, {
+      featureId,
+      milestoneId,
+      hook: "after_each_wave",
+    })
+    await drive(run.processRunId!)
+    await integration.idle()
+    return playbooks.getPlaybookRun(run.id)!
+  }
+
+  it("commits the gate's suite to the integration branch and passes the batch", async () => {
+    const { root, feature, milestone, userStory } = await mergedStory("a")
+    gateTurn = scriptedGate('node -e "process.exit(0)"')
+    const run = await runGate(feature.id, milestone.id)
+    expect(run.status).toBe("completed")
+    const [gate] = waveGates.listWaveGates(milestone.id)
+    expect(gate.status).toBe("passed")
+    expect(features.getUserStory(userStory("a").id)!.status).toBe("done")
+    const report = gate.report as WaveGateReport
+    expect(report).toMatchObject({
+      outcome: "passed",
+      suite: { checks: 1, passed: 1 },
+      stories: [
+        {
+          key: "a",
+          batch: true,
+          criteria: [
+            {
+              id: "AC-1",
+              outcome: "passed",
+              checks: [{ checkId: "a-ac-1", status: "passed", attempts: 1 }],
+            },
+          ],
+        },
+      ],
+    })
+    // The suite is on the integration branch; QA's stray file is not.
+    const branch = features.getMilestone(milestone.id)!.integrationBranch!
+    expect(gate.checksCommit).toBe(git(root, "rev-parse", branch))
+    expect(git(root, "log", "-1", "--format=%B", branch)).toContain(
+      `Mission-Control-Gate: ${gate.id}`
+    )
+    const files = git(root, "show", "--name-only", "--format=", branch)
+    expect(files).toBe("e2e/stories/billing.milestone-1.a.json")
+    expect(
+      git(root, "show", `${branch}:e2e/stories/billing.milestone-1.a.json`)
+    ).toContain("a-ac-1")
+  })
+
+  it("fails the gate on an app bug, keeps the story merged, and still commits the suite", async () => {
+    const { root, feature, milestone, userStory } = await mergedStory("a")
+    gateTurn = scriptedGate('node -e "process.exit(1)"', {
+      "a AC-1": {
+        outcome: "app_bug",
+        problem: "The file is missing its heading.",
+        artifacts: undefined,
+      },
+    })
+    const run = await runGate(feature.id, milestone.id)
+    expect(run.status).toBe("failed")
+    expect(run.outcomeReason).toMatch(/round 1 failed: a didn't pass/)
+    const [gate] = waveGates.listWaveGates(milestone.id)
+    expect(gate.status).toBe("failed")
+    expect(gate.report).toMatchObject({
+      outcome: "failed",
+      stories: [
+        {
+          key: "a",
+          criteria: [
+            {
+              outcome: "app_bug",
+              problem: "The file is missing its heading.",
+              checks: [{ checkId: "a-ac-1", status: "failed", attempts: 2 }],
+            },
+          ],
+        },
+      ],
+    })
+    expect(features.getUserStory(userStory("a").id)!.status).toBe("merged")
+    const branch = features.getMilestone(milestone.id)!.integrationBranch!
+    expect(gate.checksCommit).toBe(git(root, "rev-parse", branch))
+  })
+
+  it("refuses a record that calls a failing check passed", async () => {
+    const { feature, milestone } = await mergedStory("a")
+    let refused: unknown = null
+    const record = scriptedGate('node -e "process.exit(1)"', {
+      "a AC-1": { artifacts: undefined },
+    })
+    gateTurn = async (input) => {
+      refused = await record(input)
+    }
+    const run = await runGate(feature.id, milestone.id)
+    expect(refused).toMatchObject({
+      ok: false,
+      code: "gate_rejected_by_rules",
+      message: expect.stringContaining("a-ac-1 failed on the current suite"),
+    })
+    // Nothing recorded: the gate fails, and says why.
+    expect(run.status).toBe("failed")
+    expect(waveGates.listWaveGates(milestone.id)[0]).toMatchObject({
+      status: "failed",
+      report: { reason: expect.stringMatching(/without recording a result/) },
+    })
+  })
+
   it("fails the gate when its run ends without a result, keeping the batch merged", async () => {
     setup()
     const root = repo()
@@ -462,11 +658,13 @@ describe.skipIf(!sqliteLoads)("milestone integration", () => {
     expect(waveGates.getWaveGate(gate.id)!.status).toBe("failed")
     expect(features.getUserStory(userStory("a").id)!.status).toBe("merged")
     // Re-running it opens the next round.
-    await startHookRun(runner, {
+    const rerun = await startHookRun(runner, {
       featureId: feature.id,
       milestoneId: milestone.id,
       hook: "after_each_wave",
     })
+    await drive(rerun.processRunId!)
+    await integration.idle()
     expect(waveGates.listWaveGates(milestone.id).map((g) => g.status)).toEqual([
       "failed",
       "passed",

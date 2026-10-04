@@ -233,6 +233,19 @@ describe("qaStepKind", () => {
       })
     ).toBeNull()
   })
+
+  it("is gate for a QA proof step in a milestone's wave gate (plan 110.02)", () => {
+    const gate = {
+      ...link,
+      userStoryId: null,
+      hook: "after_each_wave" as const,
+    }
+    expect(qaStepKind({ role: "qa", proofStep: true, link: gate })).toBe("gate")
+    expect(qaStepKind({ role: "qa", proofStep: false, link: gate })).toBeNull()
+    expect(
+      qaStepKind({ role: "builder", proofStep: true, link: gate })
+    ).toBeNull()
+  })
 })
 
 describe("the checks step", () => {

@@ -57,6 +57,7 @@ import {
   storyChecks,
   worktreeChanges,
 } from "../../mission-control/qa-checks"
+import { startGateStep } from "../../mission-control/gate-step"
 import {
   seatTurns,
   type SeatTurnIdentity,
@@ -1432,7 +1433,9 @@ export class ProcessService {
       // QA acceptance checks (plan 109.02): a QA step in a user story run
       // either authors the checks (completes only with a valid manifest, then
       // freezes them) or verifies (drift since the freeze is recorded first).
-      // A builder step after the freeze is told the checks are QA's.
+      // A builder step after the freeze is told the checks are QA's. A wave
+      // gate's QA step (plan 110.02) writes and runs the acceptance suite in
+      // the gate's worktree, with the app started from the recipe.
       const qaKind = qaStepKind({
         role: seat?.role,
         proofStep: !!phase.proofStep,
@@ -1445,6 +1448,13 @@ export class ProcessService {
           const story = storyChecks(missionControl!)
           qaNote = story ? authorStepNote(story) : null
           worktreeBefore = await worktreeChanges(workspace)
+        } else if (qaKind === "gate" && workspace) {
+          qaNote = await startGateStep({
+            run,
+            phaseRunId: phaseRun.id,
+            workspace,
+            resuming: resumingWorker,
+          })
         } else if (qaKind === "verify" && workspace) {
           qaNote = await startVerifyStep({
             run,
@@ -1522,9 +1532,11 @@ export class ProcessService {
             ],
             missionControlSeat: seatTurn ?? undefined,
             writeScope: seatScope?.writeScope,
+            // A wave gate records with record_gate, not record_proof.
             processProofStep:
               !!phase.proofStep &&
-              !!this.missionControlRoot(run)?.missionControl,
+              !!this.missionControlRoot(run)?.missionControl &&
+              qaKind !== "gate",
             processQaChecks: qaKind ?? undefined,
             processAppLaunch: appLaunch,
             seatBrowser: seatBrowser

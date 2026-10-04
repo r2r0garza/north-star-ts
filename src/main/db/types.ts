@@ -1046,11 +1046,72 @@ export interface WaveGate {
   storyIds: string[]
   status: WaveGateStatus
   playbookRunId: string | null
-  // Per story and criterion outcomes (plan 110.02); free-form until then.
+  // While running: QA's latest record_gate (a WaveGateReport). Finished: that
+  // record with the gate's outcome, or a { reason } when there was none.
   report: unknown | null
   checksCommit: string | null
   createdAt: number
   finishedAt: number | null
+}
+
+// How QA triaged one criterion at a wave gate (plan 110.02, decision 7).
+// `unreachable` covers setup problems too (the check couldn't run): they go
+// to the user as setup, never as a fix story.
+export type GateCriterionOutcome =
+  | "passed"
+  | "app_bug"
+  | "check_fixed"
+  | "unreachable"
+
+export interface GateCriterionResult {
+  id: string
+  outcome: GateCriterionOutcome
+  evidence: string
+  // The criterion's automated checks in the manifest, with what the harness
+  // recorded for each on the suite as recorded.
+  checks: ProofCheckResult[]
+  artifacts?: string[]
+  // app_bug: what the app does wrong.
+  problem?: string
+  // check_fixed: why the check over-specified the criterion.
+  justification?: string
+  // unreachable: what kept the check from reaching the app.
+  reason?: string
+}
+
+export interface GateStoryResult {
+  userStoryId: string
+  key: string
+  storyRef: string
+  // In this gate's batch, or an earlier story whose check failed here.
+  batch: boolean
+  criteria: GateCriterionResult[]
+}
+
+// A file in the checks directory changed since the integration head the gate
+// started from. `earlierStories` are keys of stories outside the batch whose
+// tests the file held: changes to checks that already passed a gate.
+export interface GateCheckChange {
+  path: string
+  change: "added" | "modified" | "deleted"
+  earlierStories: string[]
+}
+
+export interface WaveGateReport {
+  version: 1
+  stories: GateStoryResult[]
+  checkChanges: GateCheckChange[]
+  // Automated checks run on the suite as recorded, and how many passed.
+  suite: { checks: number; passed: number }
+  warnings: string[]
+  recordedBy: string
+  recordedAt: number
+  processRunId: string
+  // Set when the gate finishes.
+  outcome?: "passed" | "failed"
+  reason?: string
+  // Why the suite couldn't be committed, when it couldn't.
+  commitNote?: string
 }
 
 export interface MissionControlRunLink {
@@ -1107,7 +1168,9 @@ export type ProofVerificationMethod =
 // A QA check a criterion cites, as the harness recorded it in the test step.
 export interface ProofCheckResult {
   checkId: string
-  status: "passed" | "flaky" | "failed" | "not_run"
+  // unreachable: the check never reached the app (a wave gate's setup
+  // outcome, plan 110.02).
+  status: "passed" | "flaky" | "failed" | "not_run" | "unreachable"
   attempts: number
 }
 
@@ -1374,6 +1437,9 @@ export interface CheckResult {
   // setup problem, not evidence about the criterion (plan 109.07). Counts as
   // not passed.
   unreachable?: string
+  // At a wave gate (plan 110.02): the checks directory's content hash when
+  // this ran, so a result counts only for the suite it ran against.
+  suiteHash?: string
 }
 
 export interface PhaseRunQaChecks {

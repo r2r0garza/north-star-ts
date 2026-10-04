@@ -25,7 +25,7 @@ import type {
 } from "../db/types"
 import type { Finding } from "../../shared/mission-control/workspace-analysis"
 import { ensureDefaultPlaybook } from "./playbook-defaults"
-import { failWaveGateForRun } from "./wave-gate"
+import { concludeWaveGate, failWaveGateForRun } from "./wave-gate"
 import { QA_ROLE } from "./qa-scope"
 import { checksDriftBlock, readStoryManifest, storyChecks } from "./qa-checks"
 import {
@@ -49,7 +49,6 @@ import {
 } from "../../shared/mission-control/waves"
 import {
   DEFAULT_MAX_CONCURRENT_USER_STORIES,
-  type IsolatedUserStoryWorkspace,
   type MilestoneIntegration,
 } from "./integration"
 
@@ -127,7 +126,7 @@ export interface LaunchRequest {
   // Give the run its own worktree (user story runs). Called after every check
   // passes; null means the workspace can't isolate and the run is
   // single-flight in place.
-  isolate?: () => Promise<IsolatedUserStoryWorkspace | null>
+  isolate?: () => Promise<IsolatedWorkspace | null>
   // A worktree prepared by the caller (conflict resolution).
   isolated?: IsolatedWorkspace
   // Runs inside the launch transaction before the playbook run exists: a
@@ -256,6 +255,11 @@ function describeRun(run: PlaybookRun): string {
 
 export class UserStoryRunner {
   constructor(private readonly deps: UserStoryRunnerDeps) {}
+
+  // Worktrees and the merge queue, when the app has them (106.5).
+  get integration(): MilestoneIntegration | undefined {
+    return this.deps.integration
+  }
 
   // ── launching ─────────────────────────────────────────────────────────────
 
@@ -764,6 +768,14 @@ export class UserStoryRunner {
 
     if (!playbookRun.userStoryId) {
       const status = run.status as "completed" | "failed" | "cancelled"
+      // A wave gate (plan 110.02) that ran to the end: the integration
+      // service commits its suite, then the gate finishes from QA's record.
+      if (playbookRun.hook === "after_each_wave" && status === "completed") {
+        if (this.deps.integration)
+          this.deps.integration.onGateSettled(playbookRun.id)
+        else concludeWaveGate(playbookRun.id, { commit: null })
+        return
+      }
       this.applyOutcome(
         playbookRun.id,
         status,
@@ -859,6 +871,11 @@ export class UserStoryRunner {
       return { userStory, merge: false }
     })()
     const integration = this.deps.integration
+    // A gate that ended without a result gives its worktree back.
+    if (status !== "completed" && integration)
+      void integration
+        .dropGateWorktree(playbookRunId)
+        .catch((err) => console.warn("[integration] gate worktree:", err))
     if (!settled || !integration) return
     if (settled.merge) void integration.kick(settled.userStory.milestoneId)
     else {

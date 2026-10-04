@@ -44,6 +44,10 @@ const CHECK_META: Record<
   flaky: { label: "flaky", className: "text-amber-600 dark:text-amber-500" },
   failed: { label: "failed", className: "text-destructive" },
   not_run: { label: "not run", className: "text-muted-foreground" },
+  unreachable: {
+    label: "couldn't reach the app",
+    className: "text-amber-600 dark:text-amber-500",
+  },
 }
 
 const STATUS_META: Record<
@@ -91,7 +95,7 @@ function MethodBadge({ method }: { method?: ProofVerificationMethod }) {
   )
 }
 
-function CheckResults({ checks }: { checks: ProofCheckResult[] }) {
+export function CheckResults({ checks }: { checks: ProofCheckResult[] }) {
   return (
     <ul className="space-y-0.5 text-xs">
       {checks.map((check) => {
@@ -120,7 +124,7 @@ function CheckResults({ checks }: { checks: ProofCheckResult[] }) {
 // Saved evidence lives in app data (absolute paths); main reads it only from
 // the evidence directory. Screenshots show as thumbnails, other files as
 // names; clicking opens the file.
-function EvidenceFiles({ paths }: { paths: string[] }) {
+export function EvidenceFiles({ paths }: { paths: string[] }) {
   const [files, setFiles] = useState<
     Record<string, { dataUrl: string | null } | null>
   >({})

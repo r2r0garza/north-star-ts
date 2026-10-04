@@ -34,6 +34,7 @@ import type {
   Milestone,
   MilestoneIntegrationStatus,
 } from "@/types"
+import { WaveGateHistory } from "./wave-gate-panel"
 
 // Milestone integration (plan 106.5): the integration branch, the merge policy,
 // the merge queue, and the landing step. Landing a milestone is an explicit
@@ -432,6 +433,8 @@ export function MilestoneIntegrationPanel({
           ))}
         </div>
       )}
+
+      <WaveGateHistory graph={graph} gates={status.gates} />
 
       {milestone.status === "review" && (
         <div className="space-y-3 rounded-md border border-primary/40 bg-primary/5 p-3">

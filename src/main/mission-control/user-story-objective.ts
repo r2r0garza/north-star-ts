@@ -244,3 +244,51 @@ export function renderConflictObjective(input: {
     renderIntentChain({ feature, milestone, userStory }),
   ].join("\n")
 }
+
+// The objective for a milestone's wave acceptance gate (plan 110.02): the
+// batch of merged user stories, proven together on the integration head. The
+// QA step's kickoff adds how the suite is written, run, and recorded.
+export function renderGateObjective(input: {
+  feature: Feature
+  milestone: Milestone
+  batch: UserStory[]
+  round: number
+  // Where the gate runs: a worktree at the integration head.
+  workspace?: {
+    integrationBranch: string
+    environment?: WorktreeEnvironment | null
+  } | null
+}): string {
+  const { feature, milestone } = input
+  return [
+    `<!-- mission-control gate objective v${USER_STORY_OBJECTIVE_VERSION} -->`,
+    `# Acceptance gate, round ${input.round} — milestone ${milestone.key}`,
+    "",
+    `These user stories merged into the milestone's integration branch since its last acceptance gate. Prove every one of their acceptance criteria on the integrated product, together, before any user story that depends on them starts.`,
+    "",
+    "## The batch",
+    ...input.batch.flatMap((story) => {
+      const criteria = userStoryCriteria(story)
+      return [
+        "",
+        `### ${story.key}: ${story.title}`,
+        story.spec.goal.trim() || story.title,
+        criteria.length
+          ? criteria.map((c) => `- **${c.id}**: ${c.text}`).join("\n")
+          : "(no acceptance criteria)",
+      ]
+    }),
+    ...(input.workspace
+      ? [
+          "",
+          "## Your workspace",
+          `You are working in a git worktree at the head of the integration branch \`${input.workspace.integrationBranch}\` (detached). ` +
+            "Do not commit, switch branches, merge, rebase, or push: when the gate ends, Mission Control commits the checks directory to the integration branch, and nothing else.",
+          ...renderEnvironment(input.workspace.environment),
+        ]
+      : []),
+    "",
+    "## Why this milestone exists",
+    renderIntentChain({ feature, milestone }),
+  ].join("\n")
+}

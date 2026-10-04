@@ -53,7 +53,7 @@ export async function startHookRun(
   // The wave acceptance gate (plan 110) proves the milestone's merged user
   // stories together.
   if (input.hook === "after_each_wave")
-    return startWaveGate({ feature, milestone: milestone! })
+    return startWaveGate(runner, { feature, milestone: milestone! })
   if (input.hook === "between_milestones" && !milestone)
     throw new Error(
       "Choose the finished milestone to run the between-milestones hook on."
